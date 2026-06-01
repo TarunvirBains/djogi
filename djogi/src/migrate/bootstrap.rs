@@ -165,18 +165,18 @@ impl std::fmt::Display for BootstrapError {
         match self {
             BootstrapError::InvalidExtensionName { name } => write!(
                 f,
-                "phase 0 bootstrap: extension name `{name}` does not match the \
+                "bootstrap migration: extension name `{name}` does not match the \
                  Postgres-identifier grammar (ASCII letter or underscore followed \
                  by ASCII alphanumerics or underscores, 1-63 bytes)"
             ),
             BootstrapError::UnknownExtension { name } => write!(
                 f,
-                "phase 0 bootstrap: extension `{name}` is not in Djogi's \
+                "bootstrap migration: extension `{name}` is not in Djogi's \
                  known-extension allowlist; add it to ALLOWED_EXTENSIONS in \
                  migrate/bootstrap.rs to enable installation"
             ),
             BootstrapError::Db { step, source } => {
-                write!(f, "phase 0 bootstrap: {step} failed: {source}")
+                write!(f, "bootstrap migration: {step} failed: {source}")
             }
         }
     }
@@ -380,10 +380,10 @@ pub(crate) fn compose_phase_zero(
     let exts = compose_extension_installs(extensions)?;
     let node = compose_node_seed(database, node_id)?;
     let mut out = String::with_capacity(heeranjid.len() + exts.len() + node.len() + 256);
-    out.push_str("-- ╭───────────────────────────────────────────────────────────────╮\n");
-    out.push_str("-- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n");
+    out.push_str("-- ╭────────────────────────────────────────────────────────────────╮\n");
+    out.push_str("-- │ Djogi bootstrap migration — HeeRanjID + extensions + node seed │\n");
     out.push_str("-- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n");
-    out.push_str("-- ╰───────────────────────────────────────────────────────────────╯\n\n");
+    out.push_str("-- ╰────────────────────────────────────────────────────────────────╯\n\n");
     out.push_str(&heeranjid);
     if !exts.is_empty() {
         out.push_str("\n\n");
@@ -519,14 +519,17 @@ pub enum AutoEmitError {
 impl std::fmt::Display for AutoEmitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AutoEmitError::Compose(e) => write!(f, "phase 0 auto-emit: {e}"),
+            AutoEmitError::Compose(e) => write!(f, "bootstrap migration auto-emit: {e}"),
             AutoEmitError::Io { path, source } => write!(
                 f,
-                "phase 0 auto-emit: i/o failure at {}: {source}",
+                "bootstrap migration auto-emit: i/o failure at {}: {source}",
                 path.display()
             ),
             AutoEmitError::PendingJson(e) => {
-                write!(f, "phase 0 auto-emit: pending JSON serialization: {e}")
+                write!(
+                    f,
+                    "bootstrap migration auto-emit: pending JSON serialization: {e}"
+                )
             }
         }
     }
@@ -573,7 +576,7 @@ impl From<BootstrapError> for AutoEmitError {
 /// applies first.
 /// **Down side.** is bootstrap — there is no meaningful
 /// rollback. The down-side file is comment-only with an explicit
-/// "phase 0 has no rollback" marker. `db reset` never invokes the
+/// "bootstrap migration has no rollback" marker. `db reset` never invokes the
 /// down side; this exists only to satisfy the migration-pair
 /// convention and keep tooling that reads the down side simple.
 /// **Pending JSON.** The pending JSON tracks the same way as
@@ -716,15 +719,19 @@ const PHASE_ZERO_SLUG: &str = "phase_zero_bootstrap";
 /// be mistaken for missing or corrupt.
 fn compose_phase_zero_down_text() -> String {
     let mut out = String::with_capacity(512);
-    out.push_str("-- Djogi Phase 0 bootstrap — down (no-op).\n");
+    out.push_str("-- Djogi bootstrap migration — down (no-op).\n");
     out.push_str("--\n");
-    out.push_str("-- Phase 0 installs framework dependencies (HeeRanjID schema +\n");
+    out.push_str(
+        "-- The bootstrap migration installs framework dependencies (HeeRanjID schema +\n",
+    );
     out.push_str("-- Postgres extensions + node-id GUC) that every subsequent\n");
     out.push_str("-- migration depends on. Rolling those back would invalidate the\n");
-    out.push_str("-- entire schema, so Phase 0 has no meaningful down side.\n");
+    out.push_str("-- entire schema, so the bootstrap migration has no meaningful down side.\n");
     out.push_str("--\n");
-    out.push_str("-- `djogi db reset` re-replays Phase 0 from scratch on the\n");
-    out.push_str("-- recreated database. The migration ledger tracks Phase 0 like\n");
+    out.push_str("-- `djogi db reset` re-replays the bootstrap migration from scratch on the\n");
+    out.push_str(
+        "-- recreated database. The migration ledger tracks the bootstrap migration like\n",
+    );
     out.push_str("-- any other migration; rolling it back is not a supported flow.\n");
     out
 }
@@ -1267,7 +1274,7 @@ mod tests {
         let models = BTreeMap::new();
         let emitted =
             ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");
-        assert_eq!(emitted.len(), 1, "one Phase 0 per database");
+        assert_eq!(emitted.len(), 1, "one bootstrap migration per database");
         assert_eq!(emitted[0].database, "main");
         assert!(emitted[0].extensions.is_empty(), "no extensions in models");
         assert!(emitted[0].up_sql_path.exists());
@@ -1280,7 +1287,7 @@ mod tests {
         assert!(!up.contains("CREATE EXTENSION"));
         // Down SQL is comment-only.
         let down = fs::read_to_string(&emitted[0].down_sql_path).unwrap();
-        assert!(down.contains("Phase 0 bootstrap — down"));
+        assert!(down.contains("bootstrap migration — down"));
         assert!(!down.contains("DROP "), "down must not contain real DDL");
         // Pending JSON parses cleanly.
         let pending_bytes = fs::read(&emitted[0].pending_json_path).unwrap();
@@ -1309,7 +1316,7 @@ mod tests {
             ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("second");
         assert!(
             second.is_empty(),
-            "second run must be a no-op once Phase 0 exists"
+            "second run must be a no-op once the bootstrap migration exists"
         );
         let _ = std::fs::remove_dir_all(&work);
     }
@@ -1389,7 +1396,7 @@ mod tests {
 
         let emitted =
             ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");
-        assert_eq!(emitted.len(), 2, "one Phase 0 per database");
+        assert_eq!(emitted.len(), 2, "one bootstrap migration per database");
 
         // Each database gets only its own extensions; PostGIS-on-main
         // dedups across (billing, shipping); crud_log gets only pg_trgm.
@@ -1455,17 +1462,17 @@ mod tests {
         }];
         let emitted =
             ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");
-        assert_eq!(emitted.len(), 1, "exactly one Phase 0 (main)");
+        assert_eq!(emitted.len(), 1, "exactly one bootstrap migration (main)");
         let main_emit = emitted.iter().find(|e| e.database == "main").unwrap();
         assert_eq!(
             main_emit.extensions,
             ["btree_gist"].iter().map(|s| s.to_string()).collect(),
-            "EXCLUDE-derived btree_gist must surface in Phase 0 extensions",
+            "EXCLUDE-derived btree_gist must surface in bootstrap-migration extensions",
         );
         let up = fs::read_to_string(&main_emit.up_sql_path).unwrap();
         assert!(
             up.contains("CREATE EXTENSION IF NOT EXISTS \"btree_gist\""),
-            "Phase 0 up SQL must auto-install btree_gist: {up}",
+            "bootstrap-migration up SQL must auto-install btree_gist: {up}",
         );
         let _ = std::fs::remove_dir_all(&work);
     }
@@ -1493,12 +1500,12 @@ mod tests {
         fs::create_dir_all(pending_database_dir(&work, "main")).unwrap();
         fs::write(
             dir.join(up_filename(PHASE_ZERO_VERSION)),
-            "-- existing Phase 0 up",
+            "-- existing bootstrap-migration up",
         )
         .unwrap();
         fs::write(
             dir.join(down_filename(PHASE_ZERO_VERSION)),
-            "-- existing Phase 0 down",
+            "-- existing bootstrap-migration down",
         )
         .unwrap();
         fs::write(pending_json_path(&work, &bucket), b"{}").unwrap();
@@ -1512,7 +1519,7 @@ mod tests {
 
         // Confirm the existing up-sql was NOT overwritten.
         let content = fs::read_to_string(dir.join(up_filename(PHASE_ZERO_VERSION))).unwrap();
-        assert_eq!(content, "-- existing Phase 0 up");
+        assert_eq!(content, "-- existing bootstrap-migration up");
         let _ = std::fs::remove_dir_all(&work);
     }
 }

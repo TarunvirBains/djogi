@@ -166,26 +166,25 @@ fn parse_computed_args(
                 }
                 sql = Some(value);
             }
-            // `stored` — flag form, always rejected with deferral message.
+            // `stored` — flag form, always rejected with "not yet supported" message.
             Meta::Path(path) if path.is_ident("stored") => {
                 return Err(syn::Error::new_spanned(
                     path,
-                    "`stored` computed columns are deferred to Phase 8.5 — \
+                    "`stored` computed columns are not yet supported — \
                      the migration differ has not yet accumulated 6+ months \
-                     of long-running stability evidence post-publish, so \
-                     generating column DDL from `#[computed(stored)]` is \
-                     out of scope for v0.1.0; ship a non-stored computed \
-                     (drop the `stored` keyword) and revisit when the \
-                     deferral lifts",
+                     of long-running stability evidence, so generating \
+                     column DDL from `#[computed(stored)]` is out of scope \
+                     for now; ship a non-stored computed (drop the `stored` \
+                     keyword)",
                 ));
             }
             // Reject `stored = true|false` and any other shape.
             Meta::NameValue(nv) if nv.path.is_ident("stored") => {
                 return Err(syn::Error::new_spanned(
                     nv,
-                    "`stored` computed columns are deferred to Phase 8.5 — \
-                     v0.1.0 accepts neither `stored` (flag) nor \
-                     `stored = ...` shapes; ship a non-stored computed",
+                    "`stored` computed columns are not yet supported — \
+                     neither `stored` (flag) nor `stored = ...` shapes are \
+                     accepted; ship a non-stored computed",
                 ));
             }
             Meta::NameValue(nv) if nv.path.is_ident("sql") => {
@@ -411,8 +410,7 @@ mod tests {
         assert_eq!(ty_str, "f64");
     }
 
-    /// `stored` flag rejected with a deferral message that
-    /// names the future phase explicitly per `feedback_anchored_deferrals`.
+    /// Rejects the `stored` flag form with a clear "not yet supported" message.
     #[test]
     fn rejects_computed_stored_keyword() {
         let s = parse_struct(quote! {
@@ -423,11 +421,10 @@ mod tests {
         });
         let err = parse_computed_attrs(&s).expect_err("stored rejected");
         let msg = err.to_string();
-        assert!(msg.contains("Phase 8.5"), "got: {msg}");
-        assert!(msg.contains("deferred"), "got: {msg}");
+        assert!(msg.contains("not yet supported"), "got: {msg}");
     }
 
-    /// `stored = true|false` shape also rejected — same deferral.
+    /// `stored = true|false` shape also rejected — same "not yet supported" error.
     #[test]
     fn rejects_computed_stored_assignment() {
         let s = parse_struct(quote! {
@@ -437,7 +434,7 @@ mod tests {
             }
         });
         let err = parse_computed_attrs(&s).expect_err("stored = true rejected");
-        assert!(err.to_string().contains("Phase 8.5"));
+        assert!(err.to_string().contains("not yet supported"));
     }
 
     /// Empty SQL string rejected — silent-no-op surface.

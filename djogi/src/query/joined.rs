@@ -2976,7 +2976,7 @@ mod tests {
         let sql_root = acc_root.sql();
         assert!(
             sql_root.starts_with("name = $"),
-            "root-context emission must remain bare (Phase 2 contract): {sql_root}"
+            "root-context emission must remain bare (bare-emission contract): {sql_root}"
         );
     }
 
