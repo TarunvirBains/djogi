@@ -384,8 +384,8 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
 ///    `migrations compose` writes to disk and `db reset` replays —
 ///    no parallel install path. Phase 0 installs HeeRanjID, every
 ///    requested extension, and seeds both the `heer.node_id` and
-///    `heer.ranj_node_id` GUCs at both the database (`ALTER DATABASE`)
-///    and session (`SET`) levels.
+///    `heer.ranj_node_id` GUCs at the session (`SET`) level; pool
+///    post_connect handles persistence for new connections (djogi#381).
 /// 6. Open a `DjogiPool` (deadpool-postgres) and return it as a
 ///    `DjogiContext`.
 ///
@@ -487,9 +487,10 @@ pub async fn setup_test_db_with_extensions(
     .map_err(|e| DjogiError::Db(DbError::other(format!("phase 0 bootstrap failed: {e}"))))?;
 
     // The setup client is dropped here — the connection driver task
-    // will finish. Phase 0's `ALTER DATABASE ... SET heer.node_id`
-    // and the matching `heer.ranj_node_id` write persist for every
-    // NEW connection the DjogiPool opens.
+    // will finish. Phase 0's session-level `SET heer.node_id` and
+    // `SET heer.ranj_node_id` cover the bootstrap connection; pool
+    // post_connect sets them for every new DjogiPool connection
+    // (djogi#381).
     drop(test_client);
 
     // Build the DjogiPool (tokio-postgres / deadpool) for the app context.

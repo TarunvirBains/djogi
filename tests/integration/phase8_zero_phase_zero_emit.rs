@@ -159,7 +159,7 @@ fn compose_auto_emits_phase_zero_with_postgis_dependency_on_first_run() {
     assert!(down_path.exists(), "down SQL must exist");
     assert!(pending_path.exists(), "pending JSON must exist");
 
-    // Up SQL inspection: HeeRanjID install + PostGIS extension + ALTER DATABASE.
+    // Up SQL inspection: HeeRanjID install + PostGIS extension + session-level GUC seed.
     let up_sql = fs::read_to_string(&up_path).expect("read up");
     assert!(
         up_sql.contains("HeeRanjID base schema"),
@@ -170,11 +170,11 @@ fn compose_auto_emits_phase_zero_with_postgis_dependency_on_first_run() {
         "up SQL must include PostGIS install (got: {up_sql})"
     );
     assert!(
-        up_sql.contains("ALTER DATABASE \"main\" SET heer.node_id = '1'"),
+        up_sql.contains("SET heer.node_id = '1'"),
         "up SQL must include heer.node_id GUC seed"
     );
     assert!(
-        up_sql.contains("ALTER DATABASE \"main\" SET heer.ranj_node_id = '1'"),
+        up_sql.contains("SET heer.ranj_node_id = '1'"),
         "up SQL must include heer.ranj_node_id GUC seed (powers ranjid_next())"
     );
 

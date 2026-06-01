@@ -140,7 +140,7 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
     // 2. Build a workspace and compose Phase 0 for the virgin DB.
     //    The bucket targets database == virgin_db so the auto-emit
     //    fires for the right database name (matches what the runner
-    //    will use when issuing ALTER DATABASE).
+    //    will use for the bucket key).
     let work = temp_workspace("db_reset_replay");
     let guard = lock_for(&work);
     let bucket = BucketKey {

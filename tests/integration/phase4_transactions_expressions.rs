@@ -1396,9 +1396,9 @@ async fn prefetch_works_inside_atomic(mut ctx: djogi::DjogiContext) {
 //
 // All three tests seed + query inside a single `atomic()` scope. Same
 // rationale as `bulk_update_arithmetic_expression` / `field_vs_field_filter`:
-// `heer.node_id` is pinned at the database level via
+// `heer.node_id` is set at the session level via Phase 0
 // sync-model provisioning, but a context opened before the
-// ALTER DATABASE took effect can still be missing the GUC. Opening a
+// session SET took effect can still be missing the GUC. Opening a
 // fresh transaction inside the test grants all seeds + reads the same
 // transactional session — predictable and race-free.
 // ---------------------------------------------------------------------------
@@ -1535,7 +1535,7 @@ async fn annotate_single_aggregate(mut ctx: djogi::DjogiContext) {
 async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
     // Seed + query inside a single `atomic()` scope. The Phase 2
     // historical fixture used raw transaction setup
-    // that were open before `ALTER DATABASE ... SET heer.node_id = '1'`
+    // that were open before Phase 0's session-level `SET heer.node_id = '1'`
     // took effect. `atomic()` threads the same kind of transactional
     // session through `DjogiContext::Transaction` so the expression-IR
     // entry point exercises the same tx-backed code path Phase 2 uses.

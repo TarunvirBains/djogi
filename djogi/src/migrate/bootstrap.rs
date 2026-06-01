@@ -59,11 +59,9 @@
 //!   extension is already installed.
 //! - Seed inserts use `ON CONFLICT (...) DO NOTHING` — see
 //!   `heeranjid::postgres_schema::SEED_SQL` for the exact column list.
-//! - `ALTER DATABASE ... SET heer.node_id = '<n>'` is a metadata
-//!   write that takes effect on every NEW connection — re-running it
-//!   with the same value is a no-op.
-//! - `SET heer.node_id = '<n>'` (session-level) is similarly a no-op
-//!   when the value is unchanged.
+//! - `SET heer.node_id = '<n>'` (session-level) is a no-op when the
+//!   value is unchanged. Database-level GUC persistence is handled by
+//!   the pool's `post_connect` hook, not Phase 0 SQL (djogi#381).
 //!
 //! Re-runs are safe because `db reset` replays Phase 0 every cycle,
 //! and the migration ledger replays Phase 0 once per fresh database.
@@ -310,10 +308,9 @@ pub(crate) fn compose_extension_installs(
     Ok(out)
 }
 
-/// Compose the node-id seed SQL — the `ALTER DATABASE` (database-level
-/// GUC for new connections) and a session-level `SET` (so the running
-/// connection that just executed Phase 0 sees the value immediately,
-/// without needing to drop and re-establish).
+/// Compose the node-id seed SQL — session-level `SET` statements so
+/// the running connection that just executed Phase 0 sees the value
+/// immediately, without needing to drop and re-establish.
 ///
 /// Seeds **both** `heer.node_id` (consumed by `heerid_next()` via
 /// `current_heer_node_id()`) and `heer.ranj_node_id` (consumed by
@@ -327,21 +324,19 @@ pub(crate) fn compose_extension_installs(
 /// of the box. Multi-node operators that want different ids per
 /// generator must override the Phase 0 SQL.
 ///
-/// All four statements are idempotent: re-running with the same value
-/// is a metadata-only no-op on the database side and a session-write
-/// no-op on the client side.
+/// Both statements are idempotent: re-running with the same value is a
+/// session-write no-op on the client side.
 ///
-/// **Why both** an ALTER DATABASE and a session SET: the Phase 0 SQL
-/// runs through whatever connection the runner has — typically a
-/// pool-backed `tokio_postgres::Client`. The pool's `post_connect`
-/// hook (set in `pg::pool`) sets `heer.node_id` per-connection for
-/// every NEW connection it opens. The ALTER DATABASE persists the
-/// default so freshly-opened connections inherit it without needing
-/// the post-connect hook (belt-and-braces). The session-level SET
-/// covers the running connection itself — without it, an additive
-/// migration applied immediately after Phase 0 in the same `apply`
-/// run would lack the GUC and `current_heer_node_id()` /
-/// `current_heer_ranj_node_id()` would raise.
+/// **Why session SET only** (no ALTER DATABASE): the database name from
+/// app-level labels rarely matches the actual Postgres database name
+/// (djogi#381). The pool's `post_connect` hook (set in `pg::pool`) sets
+/// `heer.node_id` per-connection for every NEW connection it opens,
+/// providing full coverage for GUC persistence without needing
+/// database-level defaults. The session-level SET covers the running
+/// connection itself — without it, an additive migration applied
+/// immediately after Phase 0 in the same `apply` run would lack the
+/// GUC and `current_heer_node_id()` / `current_heer_ranj_node_id()`
+/// would raise.
 ///
 /// `node_id` must be a non-negative `i32`; the SQL uses the raw
 /// integer (no quoting) which is safe because the type is integer-
@@ -350,38 +345,19 @@ pub(crate) fn compose_extension_installs(
 /// passes the value out of range later; the seed here only writes
 /// the GUC literal.
 ///
-/// **Why an unquoted database name** is acceptable here: the
-/// production caller passes the database name from
-/// `extract_database_from_url`, which round-trips through
-/// `is_valid_pg_identifier` (ASCII letter or underscore followed by
-/// ASCII alphanumerics or underscores, 1-63 bytes). The bootstrap
-/// composer re-validates as defence-in-depth so a future caller that
-/// skips the URL helper still gets a typed error rather than an SQL
-/// injection.
-pub(crate) fn compose_node_seed(database: &str, node_id: i32) -> Result<String, BootstrapError> {
-    // Re-validate the database identifier even though production
-    // callers pre-validate via `extract_database_from_url` +
-    // `is_valid_pg_identifier`. Defence-in-depth — a mis-routed
-    // caller still gets a typed error rather than an SQL injection.
-    validate_extension_name(database)?;
+/// The `_database` parameter is kept for API stability — callers that
+/// previously passed the database name continue to work without change.
+pub(crate) fn compose_node_seed(_database: &str, node_id: i32) -> Result<String, BootstrapError> {
+    // Only session-level SET — no ALTER DATABASE. The database name from
+    // app-level labels rarely matches the actual Postgres database name
+    // (djogi#381). Session SET covers the running connection; pool
+    // post_connect hook covers all future connections.
     let node_id_str = node_id.to_string();
-    // Two GUCs × two scopes = four statements. Pre-size for the worst
-    // case (database name appears twice, node id appears four times).
-    let mut out = String::with_capacity(database.len() * 2 + node_id_str.len() * 4 + 256);
-    out.push_str("-- HeeRanjID node-id GUC seed (database-level + session-level).\n");
+    let mut out = String::with_capacity(node_id_str.len() * 2 + 128);
+    out.push_str("-- HeeRanjID node-id GUC seed (session-level).\n");
     out.push_str(
         "-- `heer.node_id` powers heerid_next(); `heer.ranj_node_id` powers ranjid_next().\n",
     );
-    out.push_str("ALTER DATABASE \"");
-    out.push_str(database);
-    out.push_str("\" SET heer.node_id = '");
-    out.push_str(&node_id_str);
-    out.push_str("';\n");
-    out.push_str("ALTER DATABASE \"");
-    out.push_str(database);
-    out.push_str("\" SET heer.ranj_node_id = '");
-    out.push_str(&node_id_str);
-    out.push_str("';\n");
     out.push_str("SET heer.node_id = '");
     out.push_str(&node_id_str);
     out.push_str("';\n");
@@ -887,8 +863,7 @@ fn format_rfc3339_seconds(instant: OffsetDateTime) -> String {
 // ── Validators ────────────────────────────────────────────────────────────
 
 /// Validate that `name` is a plain Postgres identifier safe to
-/// interpolate into a `CREATE EXTENSION IF NOT EXISTS "<name>"`
-/// statement (or to splice into `ALTER DATABASE "<name>"`).
+/// interpolate into a `CREATE EXTENSION IF NOT EXISTS "<name>"` statement.
 ///
 /// Rules (byte-level, no regex per the Djogi-wide no-regex policy):
 ///
@@ -990,27 +965,24 @@ mod tests {
         }
     }
 
+    /// djogi#381 — compose_node_seed must NOT emit ALTER DATABASE because
+    /// the database name from app-level labels rarely matches the actual
+    /// Postgres database name. Session SET + pool post_connect provide
+    /// full coverage for GUC persistence.
     #[test]
-    fn compose_node_seed_emits_alter_and_session_set() {
-        let sql = compose_node_seed("djogi_test_abc", 7).unwrap();
-        // Both GUCs are seeded at both scopes: HeerId path (heer.node_id)
-        // and RanjId path (heer.ranj_node_id) need separate session
-        // variables. See compose_node_seed for the per-generator
-        // rationale.
-        assert!(sql.contains("ALTER DATABASE \"djogi_test_abc\" SET heer.node_id = '7'"));
-        assert!(sql.contains("ALTER DATABASE \"djogi_test_abc\" SET heer.ranj_node_id = '7'"));
-        assert!(sql.contains("SET heer.node_id = '7'"));
-        assert!(sql.contains("SET heer.ranj_node_id = '7'"));
-    }
+    fn compose_node_seed_only_emits_session_set_not_alter_database() {
+        let sql = compose_node_seed("my_actual_db_name", 1).unwrap();
 
-    #[test]
-    fn compose_node_seed_rejects_bad_database_name() {
-        match compose_node_seed("bad name", 1) {
-            Err(BootstrapError::InvalidExtensionName { name }) => {
-                assert_eq!(name, "bad name");
-            }
-            other => panic!("expected InvalidExtensionName, got {other:?}"),
-        }
+        // Must contain session-level SET for both GUCs:
+        assert!(sql.contains("SET heer.node_id = '1'"));
+        assert!(sql.contains("SET heer.ranj_node_id = '1'"));
+
+        // Must NOT contain ALTER DATABASE — this would fail against any
+        // database whose name differs from the app-level label.
+        assert!(
+            !sql.contains("ALTER DATABASE"),
+            "compose_node_seed must not emit ALTER DATABASE; use session SET + pool post_connect instead. Got:\n{sql}",
+        );
     }
 
     #[test]
@@ -1033,7 +1005,9 @@ mod tests {
         let sql = compose_phase_zero("djogi_test_db", &exts, 1).unwrap();
         let install_idx = sql.find("HeeRanjID base schema").expect("install present");
         let ext_idx = sql.find("CREATE EXTENSION").expect("extension present");
-        let seed_idx = sql.find("ALTER DATABASE").expect("seed present");
+        let seed_idx = sql
+            .find("HeeRanjID node-id GUC seed")
+            .expect("seed present");
         assert!(install_idx < ext_idx, "install must precede extensions");
         assert!(ext_idx < seed_idx, "extensions must precede node seed");
     }
@@ -1043,7 +1017,7 @@ mod tests {
         let exts = BTreeSet::new();
         let sql = compose_phase_zero("djogi_test_db", &exts, 1).unwrap();
         assert!(!sql.contains("CREATE EXTENSION"));
-        assert!(sql.contains("ALTER DATABASE"));
+        assert!(sql.contains("SET heer.node_id"));
     }
 
     #[test]
@@ -1342,7 +1316,7 @@ mod tests {
         // Up SQL contains HeeRanjID install + node seed; no extension section.
         let up = fs::read_to_string(&emitted[0].up_sql_path).unwrap();
         assert!(up.contains("HeeRanjID base schema"));
-        assert!(up.contains("ALTER DATABASE \"main\" SET heer.node_id"));
+        assert!(up.contains("SET heer.node_id = '1'"));
         assert!(!up.contains("CREATE EXTENSION"));
         // Down SQL is comment-only.
         let down = fs::read_to_string(&emitted[0].down_sql_path).unwrap();

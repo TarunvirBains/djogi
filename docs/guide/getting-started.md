@@ -164,13 +164,11 @@ let pool = djogi::DjogiPool::builder(&database_url)
     .await?;
 ```
 
-`ALTER DATABASE ... SET heer.node_id = ...` is a fallback for operators
-who intentionally want a database-level default and have owner privileges.
-Application examples should not require it; `post_connect` makes the setup
-explicit at the pool boundary and works in restricted CI/dev databases. Set
-both HeeRanjID session GUCs (`heer.node_id` and `heer.ranj_node_id`) to the
-same registered node id so every connection has the complete id-generation
-session state.
+Application examples should not require database-level GUC defaults; the
+pool's `post_connect` hook makes the setup explicit at the pool boundary
+and works in restricted CI/dev databases. Set both HeeRanjID session GUCs
+(`heer.node_id` and `heer.ranj_node_id`) to the same registered node id so
+every connection has the complete id-generation session state.
 
 For multi-node deployments, provision and register each node in HeeRanjID
 first, then start the service with its selected `HEER_NODE_ID` and run

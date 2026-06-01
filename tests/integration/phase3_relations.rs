@@ -81,8 +81,9 @@ pub struct Vehicle {
 /// (`id`, `created_at`, `updated_at`) are populated by the DB defaults
 /// via `RETURNING *`.
 ///
-/// `heer.node_id` is inherited from the ALTER DATABASE set by the
-/// `#[djogi_test]` bootstrap — the test database has it set.
+/// `heer.node_id` is inherited from the session-level `SET` in Phase 0
+/// bootstrap (djogi#381) and pool post_connect for new connections —
+/// the test database has it set.
 async fn seed_owner(ctx: &mut djogi::DjogiContext, name: &str) -> Owner {
     Owner::create(
         ctx,
