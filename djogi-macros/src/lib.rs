@@ -11,6 +11,10 @@
 //!   a many-to-many relation: the `ManyToMany<Target>` trait impl,
 //!   a named inherent accessor on the source type, and an
 //!   `inventory::submit!` registration record.
+//! - `djogi_main!(…)` — function-like macro generating `fn main()` that
+//!   references model types to prevent LTO linker from dropping inventory data.
+//! - `link_anchor!()` — per-crate fallback emitting a `#[used]` static + callable fn
+//!   that forces a model crate into the linkage graph.
 //!
 //! `#[derive(Model)]` is a no-op stub kept for potential future use.
 
@@ -18,8 +22,10 @@ mod apps;
 mod case;
 mod compose;
 mod djogi_enum;
+mod djogi_main;
 mod ident;
 mod jsonb_schema;
+mod link_anchor;
 mod many_to_many;
 mod model;
 mod primary_key_macro;
@@ -531,4 +537,53 @@ pub fn primary_key(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn trait_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     trait_impl::expand(attr.into(), item.into()).into()
+}
+
+/// Generate a `fn main()` that references model types to prevent the
+/// LTO linker from dropping inventory data, then delegates to
+/// `djogi_cli::run_from_env()`.
+///
+/// Referencing a single descriptor per crate forces ALL inventory from
+/// that crate into the final binary. This macro makes that reference
+/// explicit and auditable at the adopter's binary entry point.
+///
+/// # Usage
+///
+/// ```ignore
+/// djogi::djogi_main!(tracker::Elephant, billing::Invoice);
+/// ```
+#[proc_macro]
+pub fn djogi_main(input: TokenStream) -> TokenStream {
+    djogi_main::djogi_main(input.into()).into()
+}
+
+/// Emit a once-per-crate linkage anchor so an adopter binary can force
+/// link-time retention of THIS crate's `#[derive(Model)]` registrations
+/// without listing every model type (#370, branch b).
+///
+/// # What
+///
+/// Invoke `djogi::link_anchor!();` exactly once in a model crate's
+/// `lib.rs`. It emits a `#[used]` static (`<crate>::__DJOGI_LINK_ANCHOR`) —
+/// the dead-strip defense — plus a callable `<crate>::__djogi_link_anchor()`
+/// fn (returning `&'static ()`) that the adopter glue references once per
+/// crate. Referencing that fn pulls the crate's rlib member into the binary,
+/// and the crate's `inventory` statics are collected.
+///
+/// # Usage
+///
+/// ```ignore
+/// // In each model crate's lib.rs, once:
+/// djogi::link_anchor!();
+///
+/// // In the adopter's src/bin/djogi.rs, one reference per model crate:
+/// fn main() -> std::process::ExitCode {
+///     tracker::__djogi_link_anchor();
+///     billing::__djogi_link_anchor();
+///     djogi_cli::run_from_env()
+/// }
+/// ```
+#[proc_macro]
+pub fn link_anchor(input: TokenStream) -> TokenStream {
+    link_anchor::link_anchor(input.into()).into()
 }

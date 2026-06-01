@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "djogi"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "argon2",
  "async-trait",
@@ -569,11 +569,12 @@ dependencies = [
 
 [[package]]
 name = "djogi-cli"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "clap",
  "deadpool-postgres",
  "djogi",
+ "djogi-macros",
  "inventory",
  "serde",
  "serde_json",
@@ -586,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "djogi-macros"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "darling",
  "djogi",
@@ -604,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "djogi-shell"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "djogi",
  "tokio",
@@ -2474,7 +2475,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "proc-macro2",
  "sha2",

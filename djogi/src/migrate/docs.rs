@@ -100,8 +100,9 @@ pub struct DocsReport {
 // ── Public entry point ────────────────────────────────────────────────────
 
 /// Render the descriptor inventory to per-model markdown pages under
-/// `output_root`. Walks [`inventory::iter::<ModelDescriptor>`] directly;
-/// adopters rendering a fixture subset call [`render_inventory`].
+/// `output_root`. Delegates through [`generate_docs_with_provider`] using
+/// [`crate::migrate::InventoryDescriptorProvider`] so there is a single
+/// docs path and today's behavior is preserved.
 ///
 /// When `intent` is `Some`, per-model/field rationale from
 /// `<workspace>/.djogi/intent.json` merges into the Markdown with
@@ -111,10 +112,56 @@ pub fn generate_docs(
     output_root: &Path,
     intent: Option<&crate::intent::IntentFile>,
 ) -> Result<DocsReport, DocsError> {
-    // Snapshot the inventory into an owned slice so the two callers
-    // (production + tests) share a single render path.
-    let descriptors: Vec<&'static ModelDescriptor> =
-        ::inventory::iter::<ModelDescriptor>.into_iter().collect();
+    generate_docs_with_provider(
+        &crate::migrate::InventoryDescriptorProvider::new(),
+        output_root,
+        intent,
+    )
+}
+
+/// Render the descriptor pages from an injected [`DescriptorProvider`]
+/// (#370).
+///
+/// # What
+///
+/// The injectable sibling of [`generate_docs`]: it renders the models
+/// from `p.models()` instead of walking the global
+/// `inventory::iter::<ModelDescriptor>`.
+///
+/// # Why
+///
+/// `djogi docs` (the CLI command) calls this with the provider threaded
+/// from `run_with_provider`, so an adopter-linked binary documents *its*
+/// models. The standalone binary passes [`InventoryDescriptorProvider`]
+/// and reproduces today's behavior.
+///
+/// # How
+///
+/// Delegates to [`render_inventory`] — the same slice renderer
+/// [`generate_docs`] uses — after snapshotting `p.models()` into an
+/// owned slice. `intent` follows the same "macro attr wins,
+/// intent.json fallback" merge rule as [`generate_docs`].
+///
+/// # Errors
+///
+/// [`DocsError::Io`] on any filesystem failure under `output_root`.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::path::Path;
+/// use djogi::migrate::{generate_docs_with_provider, InventoryDescriptorProvider};
+/// let provider = InventoryDescriptorProvider::new();
+/// let report = generate_docs_with_provider(&provider, Path::new("target/djogi-docs"), None)?;
+/// println!("rendered {} pages", report.models_rendered);
+/// # Ok::<(), djogi::migrate::DocsError>(())
+/// ```
+pub fn generate_docs_with_provider(
+    p: &dyn crate::migrate::DescriptorProvider,
+    output_root: &Path,
+    intent: Option<&crate::intent::IntentFile>,
+) -> Result<DocsReport, DocsError> {
+    let descriptors: Vec<&'static ModelDescriptor> = p.models();
     render_inventory(&descriptors, output_root, intent)
 }
 
@@ -905,5 +952,35 @@ mod tests {
             !body.contains("\n> "),
             "no `## Rationale` blockquote when neither macro attr nor intent.json sets it; got: {body}"
         );
+    }
+
+    #[test]
+    fn generate_docs_with_provider_renders_provider_models() {
+        struct EmptyProvider;
+        impl crate::migrate::DescriptorProvider for EmptyProvider {
+            fn models(&self) -> Vec<&'static crate::descriptor::ModelDescriptor> {
+                Vec::new()
+            }
+            fn enums(&self) -> Vec<&'static crate::descriptor::EnumDescriptor> {
+                Vec::new()
+            }
+            fn apps(&self) -> &'static [crate::apps::AppDescriptor] {
+                crate::apps::AppRegistry::all()
+            }
+            fn deferrability_specs(&self) -> Vec<&'static crate::descriptor::DeferrabilitySpec> {
+                Vec::new()
+            }
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "djogi-docs-provider-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let report = generate_docs_with_provider(&EmptyProvider, &dir, None)
+            .expect("empty provider renders README only");
+        assert_eq!(report.models_rendered, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

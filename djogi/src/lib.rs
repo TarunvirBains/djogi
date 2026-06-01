@@ -97,6 +97,11 @@ pub mod transaction;
 pub mod types;
 pub mod visage;
 pub mod visage_boundary;
+// `DescriptorProvider` and `InventoryDescriptorProvider` re-exported at crate
+// root so adopter tooling can inject custom descriptor sets without reaching
+// into the internal migrate module hierarchy. The trait is intentionally
+// open (not sealed) for extensible test and external-tool usage.
+pub use migrate::{DescriptorProvider, InventoryDescriptorProvider};
 
 // T7 fixup — re-export `DjogiVisageOf` at crate root so adopter code that
 // bounds generics on "something that projects model M" can spell the
@@ -372,8 +377,8 @@ pub use pg::pool::DjogiPool;
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.
 pub use djogi_macros::{
-    DjogiEnum, JsonbSchema, Model, apps, deliberately_bypass_convention_with_raw_sql, many_to_many,
-    primary_key, reverse_one_to_many, reverse_one_to_one, trait_impl,
+    DjogiEnum, JsonbSchema, Model, apps, deliberately_bypass_convention_with_raw_sql, link_anchor,
+    many_to_many, primary_key, reverse_one_to_many, reverse_one_to_one, trait_impl,
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;

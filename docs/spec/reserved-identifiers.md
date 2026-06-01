@@ -57,6 +57,8 @@ These are emitted by `#[derive(...)]` and attribute-macros into the user's crate
 | `__djogi_through_visage_exists` | `many_to_many!` `expose` | Static check that the through-model declares the requested visage scope. |
 | `__djogi_rationale_outbox_*` | `#[outbox]`-decorated rationales | Per-rationale outbox helper symbols. |
 | `__djogi_cond`, `__djogi_rel`, `__djogi_inner`, `__djogi_exists`, `__djogi_path`, `__djogi_tid`, `__djogi_tid_str` | Various proc-macro emissions | Internal scratch identifiers in macro-emitted code. |
+| `__DJOGI_LINK_ANCHOR` | `djogi::link_anchor!()` | Per-crate linker anchor — `#[used]` static preventing dead-stripping of the crate's inventory registration statics under `--gc-sections`. Adopter glue references `__djogi_link_anchor()` to pull this symbol into the linkage graph. |
+| `__djogi_link_anchor` | `djogi::link_anchor!()` | Per-crate callable anchor function — returns a reference to `__DJOGI_LINK_ANCHOR`, keeping the static alive when the adopter binary calls `<crate>::__djogi_link_anchor()`. |
 
 ## Validation surfaces
 

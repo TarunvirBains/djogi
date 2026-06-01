@@ -1,0 +1,20 @@
+# Own workspace — isolate dep resolution from djogi's outer workspace.
+[workspace]
+
+[package]
+name = "adopter-forbid-unsafe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "adopter_forbid_unsafe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "djogi"
+path = "src/bin/djogi.rs"
+
+[dependencies]
+djogi = { path = "../../../../djogi" }
+djogi-cli = { path = "../../.." }

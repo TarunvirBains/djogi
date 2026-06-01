@@ -72,6 +72,7 @@ use crate::descriptor::{
     ModelDescriptor, PartitionSpec, PkType, RustSourceType,
 };
 use crate::fts::FtsDescriptor;
+use crate::migrate::provider::{DescriptorProvider, InventoryDescriptorProvider};
 use crate::relation::{OnDelete, RelationKind};
 
 use super::schema::{
@@ -350,33 +351,60 @@ fn insert_unique<K: Ord, V, E>(
     }
 }
 
-/// Project the global descriptor inventory into per-bucket
-/// [`AppliedSchema`]s.
+/// Project the schema graph from an injected [`DescriptorProvider`]
+/// (#370).
 ///
-/// Walks `inventory::iter::<ModelDescriptor>`,
-/// `inventory::iter::<EnumDescriptor>`, and [`AppRegistry::all`] —
-/// the production entry point. Use [`project_from_iters`] when you
-/// need to project from explicit iterables (tests).
+/// # What
 ///
-/// # Pre-projection registry gate (GH #158)
+/// The injectable sibling of [`project_from_inventory`]: it sources
+/// models/enums/apps/deferrability from `p` instead of the global
+/// `inventory` registry.
 ///
-/// Before producing any snapshot output this entry point invokes
-/// [`crate::relation::registry::validate_global_relation_accessor_registry`]
-/// to catch cross-kind reverse / M2M accessor collisions that rustc
-/// cannot see (the colliding macros emit different trait suffixes —
-/// `…ReverseRelation` vs `…ManyToManyRelation` — so both compile and
-/// the clash only manifests at downstream call sites). A failure is
-/// wrapped into [`ProjectionError::RelationAccessorCollisions`] before
-/// any per-bucket work runs, keeping the diagnostic anchored at the
-/// relation registry metadata rather than at the eventual ambiguity
-/// error.
-/// Custom bootstraps that bypass this entry point can call the
-/// validator directly to retain the same gate.
+/// # Why
+///
+/// `djogi-cli`'s descriptor-dependent commands call this with the
+/// provider threaded from `run_with_provider`, so an adopter-linked
+/// binary projects from *its* models. The published standalone binary
+/// passes [`InventoryDescriptorProvider`] and reproduces today's path.
+///
+/// # Pre-projection registry gate
+///
+/// Runs the relation-accessor collision gate
+/// ([`crate::relation::registry::validate_global_relation_accessor_registry`])
+/// before any projection work — exactly as [`project_from_inventory`] does
+/// via `project_from_inventory_with_relation_validator`. The gate validates
+/// the binary's Rust-side relation accessor names; dropping it would be a
+/// silent correctness regression (review FIX_BEFORE_PLAN-1). The gate
+/// operates on link-time-collected [`crate::relation::registry::ReverseRelationMarker`]
+/// statics, not provider data — it is the one deliberate ambient read,
+/// documented as such in the trait boundary (§5.2 of the design spec).
+#[allow(clippy::result_large_err)]
+pub fn project_from_provider(
+    p: &dyn DescriptorProvider,
+) -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError> {
+    crate::relation::registry::validate_global_relation_accessor_registry()
+        .map_err(ProjectionError::RelationAccessorCollisions)?;
+    project_from_iters_with_deferrability(
+        p.models(),
+        p.enums(),
+        p.apps().iter(),
+        p.deferrability_specs(),
+        rfc3339_now_seconds(),
+    )
+}
+
+/// Project from the compiled-in `inventory` registry and run the
+/// relation-accessor collision gate.
+///
+/// This delegates to [`project_from_provider`] with
+/// [`InventoryDescriptorProvider`], which reads descriptors via
+/// [`AppRegistry::all`] and the global `inventory::iter` collectors.
+///
+/// Tests and external tooling that need custom descriptor sets should
+/// use [`project_from_provider`] directly with a synthetic provider.
 #[allow(clippy::result_large_err)]
 pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError> {
-    project_from_inventory_with_relation_validator(
-        crate::relation::registry::validate_global_relation_accessor_registry,
-    )
+    project_from_provider(&InventoryDescriptorProvider::new())
 }
 
 /// Inner half of [`project_from_inventory`] with the relation-registry
@@ -395,6 +423,7 @@ pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, Pr
 /// implementation detail; outside callers should keep going through
 /// [`project_from_inventory`].
 #[allow(clippy::result_large_err)]
+#[allow(dead_code)]
 pub(crate) fn project_from_inventory_with_relation_validator<F>(
     validator: F,
 ) -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError>
@@ -445,7 +474,7 @@ where
 }
 
 #[allow(clippy::result_large_err)]
-fn project_from_iters_with_deferrability<'a, M, E, A, D>(
+pub(crate) fn project_from_iters_with_deferrability<'a, M, E, A, D>(
     models: M,
     enums: E,
     apps: A,
@@ -6387,5 +6416,30 @@ mod tests {
             global.indexes[0].table, "tags",
             "synthetic index must be owned by the `tags` table"
         );
+    }
+
+    #[test]
+    fn project_from_provider_runs_validator_and_projects_empty() {
+        struct EmptyProvider;
+        impl crate::migrate::DescriptorProvider for EmptyProvider {
+            fn models(&self) -> Vec<&'static crate::descriptor::ModelDescriptor> {
+                Vec::new()
+            }
+            fn enums(&self) -> Vec<&'static crate::descriptor::EnumDescriptor> {
+                Vec::new()
+            }
+            fn apps(&self) -> &'static [crate::apps::AppDescriptor] {
+                crate::apps::AppRegistry::all()
+            }
+            fn deferrability_specs(&self) -> Vec<&'static crate::descriptor::DeferrabilitySpec> {
+                Vec::new()
+            }
+        }
+        let out = project_from_provider(&EmptyProvider).expect("clean registry projects");
+        let global = BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        assert!(out.contains_key(&global), "global bucket always present");
     }
 }

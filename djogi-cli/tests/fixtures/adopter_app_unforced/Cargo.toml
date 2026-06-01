@@ -1,0 +1,4 @@
+# Own workspace — isolate dep resolution from djogi's outer workspace.
+[workspace]
+members = ["tracker", "billing", "bin"]
+resolver = "2"

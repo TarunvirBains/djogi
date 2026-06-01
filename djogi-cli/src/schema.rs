@@ -115,8 +115,12 @@ struct RelationEntry {
 /// [`SchemaError::NoModelsRegistered`] if the inventory is empty —
 /// almost always operator error (the binary was linked without a
 /// crate that uses `#[derive(Model)]`).
-pub fn run(format: SchemaFormat, output: Option<PathBuf>) -> Result<(), SchemaError> {
-    let document = collect_document();
+pub fn run(
+    format: SchemaFormat,
+    models: &[&'static ModelDescriptor],
+    output: Option<PathBuf>,
+) -> Result<(), SchemaError> {
+    let document = collect_document(models);
     if document.models.is_empty() {
         return Err(SchemaError::NoModelsRegistered);
     }
@@ -147,11 +151,8 @@ pub fn run(format: SchemaFormat, output: Option<PathBuf>) -> Result<(), SchemaEr
     Ok(())
 }
 
-fn collect_document() -> SchemaDocument {
-    let mut models: Vec<ModelEntry> = inventory::iter::<ModelDescriptor>
-        .into_iter()
-        .map(project_model)
-        .collect();
+fn collect_document(models: &[&'static ModelDescriptor]) -> SchemaDocument {
+    let mut models: Vec<ModelEntry> = models.iter().map(|m| project_model(m)).collect();
     models.sort_by(|a, b| {
         let app_cmp = a.app.cmp(&b.app);
         if app_cmp == std::cmp::Ordering::Equal {

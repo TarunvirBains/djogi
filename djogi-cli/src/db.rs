@@ -43,8 +43,8 @@ use std::process::ExitCode;
 
 use djogi::config::DjogiConfig;
 use djogi::migrate::{
-    ResetError, ResetReport, ResetRequest, SeedError, SeedOutcome, SeedReport, generate_docs,
-    reset_app_database, run_seeds,
+    DescriptorProvider, ResetError, ResetReport, ResetRequest, SeedError, SeedOutcome, SeedReport,
+    generate_docs_with_provider, reset_app_database, run_seeds,
 };
 
 /// Resolve the workspace root from the `--workspace` flag. Default:
@@ -664,11 +664,21 @@ fn is_valid_pg_identifier(name: &str) -> bool {
 /// `output` defaults to `target/djogi-docs/` under the workspace. The
 /// per-model files are written into `<output>/<app>/<Model>.md` and a
 /// top-level `<output>/README.md` indexes them.
-pub fn docs_cmd(output: Option<PathBuf>, workspace: Option<PathBuf>) -> ExitCode {
+pub fn docs_cmd(
+    provider: &dyn DescriptorProvider,
+    output: Option<PathBuf>,
+    workspace: Option<PathBuf>,
+) -> ExitCode {
+    // §5.6 — docs hard-refuses on zero descriptors (behavior change:
+    // was exit 0 rendering an empty README; now exit 2 + dual-cause).
+    if provider.models().is_empty() {
+        crate::print_zero_descriptor_diagnostic("docs");
+        return ExitCode::from(2);
+    }
     let workspace = resolve_workspace(workspace);
     let output = output.unwrap_or_else(|| workspace.join("target").join("djogi-docs"));
     // Cluster 8ζ T12.4 — load `<workspace>/.djogi/intent.json` if
-    // present. Absent file → `Ok(None)`, which `generate_docs`
+    // present. Absent file → `Ok(None)`, which `generate_docs_with_provider`
     // treats as "no intent merge"; a malformed file fails the
     // command with a clear error before any docs files are
     // written, so adopters notice typos instead of silently
@@ -680,7 +690,7 @@ pub fn docs_cmd(output: Option<PathBuf>, workspace: Option<PathBuf>) -> ExitCode
             return ExitCode::from(1);
         }
     };
-    match generate_docs(&output, intent.as_ref()) {
+    match generate_docs_with_provider(provider, &output, intent.as_ref()) {
         Ok(report) => {
             println!(
                 "docs: rendered {n} model page(s) into {path}",
@@ -921,17 +931,35 @@ mod tests {
         assert!(is_valid_pg_identifier(&"a".repeat(63)));
     }
 
-    /// `docs` against an empty inventory still produces a README and
-    /// returns success.
+    /// `docs` against a binary with zero registered models refuses with
+    /// exit 2 + the dual-cause diagnostic (#370 behavior change: was
+    /// exit 0 rendering an empty README).
     #[test]
-    fn docs_cmd_against_empty_inventory_succeeds() {
-        let work = temp_workspace("docs_empty");
+    fn docs_cmd_against_empty_provider_refuses() {
+        struct EmptyProvider;
+        impl djogi::migrate::DescriptorProvider for EmptyProvider {
+            fn models(&self) -> Vec<&'static djogi::descriptor::ModelDescriptor> {
+                Vec::new()
+            }
+            fn enums(&self) -> Vec<&'static djogi::descriptor::EnumDescriptor> {
+                Vec::new()
+            }
+            fn apps(&self) -> &'static [djogi::apps::AppDescriptor] {
+                djogi::apps::AppRegistry::all()
+            }
+            fn deferrability_specs(&self) -> Vec<&'static djogi::descriptor::DeferrabilitySpec> {
+                Vec::new()
+            }
+        }
+        let work = temp_workspace("docs_empty_refusal");
         let out = work.join("target/djogi-docs");
-        let exit = docs_cmd(Some(out.clone()), Some(work.clone()));
-        assert_eq!(exit, ExitCode::from(0));
-        // The renderer writes a sentinel README.
-        let readme = std::fs::read_to_string(out.join("README.md")).unwrap();
-        assert!(readme.contains("Djogi model reference"));
+        let exit = docs_cmd(&EmptyProvider, Some(out.clone()), Some(work.clone()));
+        assert_eq!(exit, ExitCode::from(2));
+        // No README is rendered on refusal.
+        assert!(
+            !out.join("README.md").exists(),
+            "refusal must not render docs"
+        );
         let _ = fs::remove_dir_all(&work);
     }
 }

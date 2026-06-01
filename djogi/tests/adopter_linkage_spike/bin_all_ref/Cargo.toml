@@ -1,0 +1,10 @@
+[package]
+name = "bin_all_ref"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tracker = { path = "../crates/tracker" }
+billing = { path = "../crates/billing" }
+djogi = { path = "../../.." }
+inventory = "0.3"

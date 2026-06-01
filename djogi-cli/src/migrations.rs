@@ -14,11 +14,11 @@ use std::process::ExitCode;
 use djogi::apps::AppRegistry;
 use djogi::migrate::{
     AppLifecycle, AttuneError, AttuneMode, AttuneRequest, BucketKey, ComposeError, ComposeRequest,
-    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PartialApplyResolution, PendingPlan, RepairConfirmation,
-    RepairError, RepairReport, RunnerCtx, RunnerError, SnapshotError, VerifyReport, VerifySeverity,
-    acquire_workspace_lock, apply_plan, attune, baseline_plan, compose, fake_apply_plan,
-    load_snapshot, project_from_inventory, repair_checksum_drift, repair_partial_apply,
-    repair_resume_partial_apply, repair_snapshot_rebuild, snapshot_path,
+    DescriptorProvider, GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PartialApplyResolution, PendingPlan,
+    RepairConfirmation, RepairError, RepairReport, RunnerCtx, RunnerError, SnapshotError,
+    VerifyReport, VerifySeverity, acquire_workspace_lock, apply_plan, attune, baseline_plan,
+    compose, fake_apply_plan, load_snapshot, project_from_provider, repair_checksum_drift,
+    repair_partial_apply, repair_resume_partial_apply, repair_snapshot_rebuild, snapshot_path,
 };
 
 // Re-export for the apply command's ledger state machine.
@@ -332,20 +332,22 @@ fn discover_snapshot_buckets_on_disk(
 
 /// `djogi migrations compose` entry point.
 pub fn compose_cmd(
+    provider: &dyn DescriptorProvider,
     name: &str,
     allow_destructive: bool,
     force_overwrite: bool,
     workspace: Option<PathBuf>,
 ) -> ExitCode {
     let workspace = resolve_workspace(workspace);
-    let models = match project_from_inventory() {
+    let models = match project_from_provider(provider) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("djogi migrations compose: projection error: {e}");
             return ExitCode::from(1);
         }
     };
-    let apps: Vec<AppLifecycle> = AppRegistry::all()
+    let apps: Vec<AppLifecycle> = provider
+        .apps()
         .iter()
         .map(|d| AppLifecycle {
             label: d.label.to_string(),
@@ -516,6 +518,11 @@ fn compose_with_inputs(
             // not an error. The status command is the one that
             // signals out-of-sync state via exit code.
             ExitCode::from(0)
+        }
+        Err(ComposeError::LinkageDropWithoutModels { ref text, .. }) => {
+            eprintln!("djogi migrations compose: {text}");
+            // Exit 2 — refusal: models must be compiled in before dropping app linkage.
+            ExitCode::from(2)
         }
         Err(e) => {
             eprintln!("djogi migrations compose: {e}");
@@ -1398,7 +1405,11 @@ fn attune_error_exit_code(err: &AttuneError) -> i32 {
 /// Exit codes: 0 on success (no error-level diagnostics), 1 on runtime
 /// error (config / network / SQL / projection), 2 on refusal
 /// (below PG 18).
-pub fn verify_cmd(workspace: Option<PathBuf>, strict: bool) -> ExitCode {
+pub fn verify_cmd(
+    provider: &dyn DescriptorProvider,
+    workspace: Option<PathBuf>,
+    strict: bool,
+) -> ExitCode {
     let workspace = resolve_workspace(workspace);
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -1412,7 +1423,7 @@ pub fn verify_cmd(workspace: Option<PathBuf>, strict: bool) -> ExitCode {
         }
     };
 
-    let exit = runtime.block_on(async { run_verify(&workspace, strict).await });
+    let exit = runtime.block_on(async { run_verify(provider, &workspace, strict).await });
     ExitCode::from(exit as u8)
 }
 
@@ -1432,8 +1443,25 @@ pub fn verify_cmd(workspace: Option<PathBuf>, strict: bool) -> ExitCode {
 ///   or at least one bucket reported an error-severity diagnostic.
 /// - `2` — the server is below the minimum supported Postgres version
 ///   (a server-global refusal: verify returns immediately).
-async fn run_verify(workspace: &Path, strict: bool) -> i32 {
+async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict: bool) -> i32 {
     use djogi::config::DjogiConfig;
+
+    // 0. Zero-descriptor refusal (§5.6 / REQ-370-8). `verify` refuses with
+    //    the dual-cause diagnostic + exit 2 ONLY when there are NEITHER
+    //    descriptors NOR on-disk snapshots — the genuinely unusable state
+    //    (a standalone binary with nothing to verify against). When
+    //    snapshots exist, verify DEGRADES to snapshot-only (the union below
+    //    enumerates the disk buckets), so we must not refuse here.
+    //
+    //    Guard on `provider.models().is_empty()` rather than the projected
+    //    `bucket_set`: projection always seeds the synthetic global bucket
+    //    (`(main, "")`), so the bucket set is never empty and is the wrong
+    //    signal for "no descriptors". This is the same guard the
+    //    compose/schema/docs gates in `lib.rs` use.
+    if provider.models().is_empty() && discover_snapshot_buckets_on_disk(workspace).is_empty() {
+        crate::print_zero_descriptor_diagnostic("migrations verify");
+        return 2;
+    }
 
     // 1. Load config from workspace.
     let config = match DjogiConfig::load_from_workspace(workspace) {
@@ -1444,8 +1472,8 @@ async fn run_verify(workspace: &Path, strict: bool) -> i32 {
         }
     };
 
-    // 2. Project schema from descriptor inventory.
-    let models = match project_from_inventory() {
+    // 2. Project schema from descriptor provider.
+    let models = match project_from_provider(provider) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("djogi migrations verify: projection error: {e}");
@@ -1463,9 +1491,15 @@ async fn run_verify(workspace: &Path, strict: bool) -> i32 {
     for bucket in discover_snapshot_buckets_on_disk(workspace) {
         bucket_set.insert(bucket);
     }
+    // The zero-descriptor refusal (step 0) already returned for the only
+    // state that yields an empty bucket set (no descriptors + no snapshots).
+    // Projection always seeds the synthetic global bucket, so reaching here
+    // with an empty set is impossible; if a future projection change ever
+    // breaks that invariant, fail closed with the dual-cause refusal rather
+    // than silently reporting success on a binary that verified nothing.
     if bucket_set.is_empty() {
-        println!("No registered apps found for verification.");
-        return 0;
+        crate::print_zero_descriptor_diagnostic("migrations verify");
+        return 2;
     }
 
     // 4. Policy configuration for the --strict flag.
@@ -2949,7 +2983,12 @@ mod tests {
             true,  // allow_destructive — billing's snapshot will produce DROP ops
             false, // force_overwrite
             &empty_models,
-            &[],
+            &[AppLifecycle {
+                label: "billing".to_string(),
+                database: "main".to_string(),
+                renamed_from: None,
+                tombstone: true, // intentional removal channel
+            }],
             now,
             None, // pk_flip_join_table_option — no flip in this test
         );

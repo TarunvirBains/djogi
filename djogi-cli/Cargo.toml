@@ -17,6 +17,9 @@ categories = ["command-line-utilities", "database"]
 name = "djogi"
 path = "src/main.rs"
 
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
 clap.workspace = true
 tokio.workspace = true
@@ -66,6 +69,10 @@ serde_json.workspace = true
 # crate (`djogi`) registers models via the same `inventory` crate;
 # the CLI binary must link the same version so the iter resolves.
 inventory.workspace = true
+# Re-exported from djogi-macros so adopters can use
+# `djogi_cli::djogi_main!(…)` and `djogi_cli::link_anchor!(Model)` at
+# the binary entry point to prevent LTO from dropping inventory data.
+djogi-macros.workspace = true
 
 # djogi#119 — the CLI integration tests below import shared helpers
 # from `djogi::testing::cli`, which is gated behind djogi's `testing`
@@ -91,4 +98,14 @@ harness = true
 [[test]]
 name = "phase8_djogi_analyze_recommendations"
 path = "tests/internal/phase8_djogi_analyze_recommendations.rs"
+harness = true
+
+[[test]]
+name = "adopter_linked_cli"
+path = "tests/internal/adopter_linked_cli.rs"
+harness = true
+
+[[test]]
+name = "descriptor_provider"
+path = "tests/internal/descriptor_provider.rs"
 harness = true

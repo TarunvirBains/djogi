@@ -69,6 +69,7 @@ pub mod pg_volatility;
 pub mod pk_flip;
 pub mod policy;
 pub mod projection;
+pub mod provider;
 pub mod repair;
 pub mod replay_plan;
 pub mod reset;
@@ -110,7 +111,10 @@ pub use diff::{
     PkFlipPartitionedMeta, PkFlipSelfFk, PkTypeFlipGroup, SchemaDelta, SchemaOperation,
     apply_pk_flip_join_table_option, diff_bucket_maps,
 };
-pub use docs::{DocsError, DocsReport, generate_docs, render_inventory, render_model_page};
+pub use docs::{
+    DocsError, DocsReport, generate_docs, generate_docs_with_provider, render_inventory,
+    render_model_page,
+};
 pub use guard::{
     DEFAULT_TIMEOUT as GUARD_DEFAULT_TIMEOUT, GuardError, LOCK_FILE_NAME, WorkspaceGuard,
     acquire as acquire_workspace_lock,
@@ -131,7 +135,8 @@ pub use naming::{
 pub use pg_volatility::{Volatility, classify_default_expression};
 pub use pk_flip::{PkFlipError, lower_pk_flip_group};
 pub use policy::{OutOfOrderPolicy, is_localhost_connection};
-pub use projection::{BucketKey, ProjectionError, project_from_inventory};
+pub use projection::{BucketKey, ProjectionError, project_from_inventory, project_from_provider};
+pub use provider::{DescriptorProvider, InventoryDescriptorProvider};
 pub use repair::{
     LedgerChange, PartialApplyResolution, RepairConfirmation, RepairError, RepairReport,
     SnapshotChange, repair_checksum_drift, repair_partial_apply, repair_resume_partial_apply,
