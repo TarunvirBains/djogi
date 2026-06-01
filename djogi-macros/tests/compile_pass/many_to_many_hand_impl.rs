@@ -22,7 +22,7 @@
 //     body `f.person_id().eq(ForeignKey::new(self.id.clone()))`
 //     compiles because the FK wrapper projects through its inner
 //     `T::Pk`'s `IntoFilterValue` impl.
-//   - The Task 7 `many_to_many!` macro stamps out this exact
+//   - The `many_to_many!` macro stamps out this exact
 //     shape on behalf of the user; this fixture locks in the hand-
 //     written form that macro output must match.
 //

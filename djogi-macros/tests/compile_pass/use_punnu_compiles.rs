@@ -1,4 +1,4 @@
-// Cluster 8δ T7.6 — `DjogiContext::use_punnu` compile-pass fixture.
+// `DjogiContext::use_punnu` compile-pass fixture.
 //
 // Witnesses that `ctx.use_punnu(&p)` resolves to the expected signature:
 //
@@ -19,10 +19,7 @@
 // Every lihaaf compile-fixture must have
 // `fn main` so the stored binary can link.
 //
-// Spec anchor:
-//   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//   §3 commit T7.6 — compile-fixture bullet (the plan calls it
-//   "Trybuild fixture"; this fixture is now run through lihaaf).
+// See also: `punnu_boot_hook_emitted.rs` for the boot-hook compile-pass check.
 
 use djogi::prelude::*;
 

@@ -1,4 +1,4 @@
-// Cluster 4 (djogi#216) Piece A — `#[field(domain = "<name>")]`
+// djogi#216 — `#[field(domain = "<name>")]`
 // attribute references an adopter-managed Postgres domain.
 //
 // Exercises the macro's parse + lower path for the new domain-reference

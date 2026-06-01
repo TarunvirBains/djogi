@@ -1,4 +1,4 @@
-// Cluster 8δ T7.2 — `#[derive(Model)]` auto-emits Cacheable.
+// `#[derive(Model)]` auto-emits Cacheable.
 //
 // Pins the spec contract that a bare `#[model(...)]` declaration —
 // no extra derive attributes, no hand-rolled `impl Cacheable` — is
@@ -15,9 +15,7 @@
 // Every lihaaf compile-fixture must
 // have `fn main` so the stored binary can link.
 //
-// Spec anchor:
-//   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//   §3 commit T7.2 — "Test names + assertions" bullet.
+// See also: `djogi-macros/tests/cacheable_emit.rs` for the in-crate assertions.
 
 use djogi::prelude::*;
 

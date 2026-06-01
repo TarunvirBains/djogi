@@ -1,4 +1,4 @@
-//! GH #227 Cluster 3 — mixed-scope presentation-codec conversion behavior.
+//! GH #227 — mixed-scope presentation-codec conversion behavior.
 //!
 //! Verifies three things in one mixed-scope fixture:
 //! - A `try_presentation_codec` on `public` makes that scope's visage use

@@ -1,4 +1,4 @@
-// Cluster 8δ T7.5 — macro-emitted `save` / `delete` bodies reference
+// Macro-emitted `save` / `delete` bodies reference
 // `::djogi::cache::InvalidationReason` only; no `::sassi::*` leakage.
 //
 // The fixture verifies that a bare `#[model]` declaration compiles
@@ -17,11 +17,7 @@
 // Every lihaaf compile-fixture must
 // have `fn main` so the stored binary can link.
 //
-// Spec anchor:
-//   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//   §3 commit T7.5 — compile-pass fixture bullet (the plan calls it
-//   "Trybuild compile-pass fixture"; this fixture is now run through
-//   lihaaf).
+// See also: `save_emits_on_commit_ranjid.rs` for the `pk = RanjId` variant.
 
 use djogi::prelude::*;
 

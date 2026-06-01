@@ -1,8 +1,8 @@
 // Tracked<T> composes with primitive, collection, and wrapper types.
 //
-// Jsonb<T> composition (Tracked<Jsonb<T>>) lands in Task 5 once Jsonb<T>
-// is introduced; this fixture stays on primitives + stdlib collections so it
-// compiles independently of later tasks.
+// Jsonb<T> composition (Tracked<Jsonb<T>>) requires Jsonb<T> to be present;
+// this fixture stays on primitives + stdlib collections so it
+// compiles independently.
 use djogi::prelude::*;
 
 fn _check_string() {

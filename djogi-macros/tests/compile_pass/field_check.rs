@@ -1,4 +1,4 @@
-// Cluster 2 djogi#105 — `#[field(check = "<sql>")]` attribute.
+// djogi#105 — `#[field(check = "<sql>")]` attribute.
 //
 // Exercises the macro's parse + lower path for the new adopter-supplied
 // CHECK-constraint attribute:

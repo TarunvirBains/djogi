@@ -1,4 +1,4 @@
-// Cluster 8δ T7.1 — `djogi::cache` re-export module compile-pass.
+// `djogi::cache` re-export module compile-pass.
 //
 // Verifies that an adopter can `use djogi::cache::*;` and reach every
 // sassi cache primitive without listing `sassi` in their own
@@ -15,9 +15,7 @@
 // Every lihaaf compile-fixture must
 // have `fn main` so the stored binary can link.
 //
-// Spec anchor:
-//   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//   §3 commit T7.1 — "Test names + assertions" bullet.
+// See also: `djogi/tests/cache_module.rs` for runtime assertions.
 
 #![allow(unused_imports)]
 

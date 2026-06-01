@@ -1,4 +1,4 @@
-// Cluster B5 (T14a) — A model with two self-FKs and NO
+// A model with two self-FKs and NO
 // `#[model(tree_edge = "...")]` declaration COMPILES FINE.
 //
 // `tree_edge` is sugar — it makes `Model::tree_descendants(id)` and

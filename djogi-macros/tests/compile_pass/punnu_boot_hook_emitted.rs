@@ -1,4 +1,4 @@
-// Cluster 8δ T7.4 — `#[derive(Model)]` auto-emits a `SassiBootHook`
+// `#[derive(Model)]` auto-emits a `SassiBootHook`
 // `inventory::submit!` block.
 //
 // Pins the spec contract that a bare `#[model(...)]` declaration emits
@@ -35,10 +35,7 @@
 // Every lihaaf compile-fixture must
 // have `fn main` so the stored binary can link.
 //
-// Spec anchor:
-//   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//   §3 commit T7.4 — compile-fixture bullet (the plan calls it
-//   "Trybuild fixture"; this fixture is now run through lihaaf).
+// See also: `djogi-macros/tests/adopter_crate_isolation.rs` for the path-isolation check.
 
 use djogi::prelude::*;
 

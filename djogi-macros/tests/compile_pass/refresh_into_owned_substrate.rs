@@ -1,4 +1,4 @@
-// Cluster 8δ T8.3 — `QuerySet::refresh_into` compile-pass fixture.
+// `QuerySet::refresh_into` compile-pass fixture.
 //
 // Witnesses that:
 //   1. `QuerySet::refresh_into` resolves and type-checks.
@@ -15,9 +15,7 @@
 // `djogi::cache::Punnu`, `djogi::cache::DeltaRefreshHandle`, etc. directly,
 // which is what this fixture does.
 //
-// Spec anchor:
-//   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//   §3 commit T8.3 — "Compile-pass fixture" bullet.
+// See also: `djogi/src/query/queryset.rs` for the `refresh_into` implementation.
 
 use djogi::prelude::*;
 

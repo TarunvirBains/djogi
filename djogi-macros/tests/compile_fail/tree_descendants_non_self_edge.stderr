@@ -1,5 +1,5 @@
 error[E0308]: mismatched types
-    --> $DIR/zero_tree_descendants_non_self_edge.rs:41:50
+    --> $DIR/tree_descendants_non_self_edge.rs:41:50
      |
   41 |     let _qs = NodeB5::objects().tree_descendants(NodeB5Related::owner(), id);
      |                                 ---------------- ^^^^^^^^^^^^^^^^^^^^^^ expected `RelationPath<NodeB5, NodeB5>`, found `RelationPath<NodeB5, OwnerB5>`

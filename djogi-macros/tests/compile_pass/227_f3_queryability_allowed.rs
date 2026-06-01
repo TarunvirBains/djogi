@@ -1,4 +1,4 @@
-//! GH #227 Cluster B F3 — codec-bearing scalar accessors return the
+//! GH #227 — codec-bearing scalar accessors return the
 //! presentation-gated field handle instead of a plain `FieldRef`.
 //!
 //! A monomorphic local codec keeps the fixture focused on accessor emission

@@ -4,8 +4,8 @@
 //! If any form regresses (parser rejects it, codegen fails on a valid
 //! combination), this file stops compiling and lihaaf surfaces it.
 //!
-//! Task 2 delivers the parser only — the visage structs themselves
-//! land in Task 3. This fixture therefore only exercises the parse path;
+//! The visage-annotation parser is the initial layer — the visage structs themselves
+//! depend on the full expansion. This fixture therefore only exercises the parse path;
 //! it does NOT yet reference `UserPublic`, `UserAdmin`, etc.
 use djogi::prelude::*;
 

@@ -1,4 +1,4 @@
-// Cluster 2 djogi#189 — `#[model(strict_ids)]` and
+// djogi#189 — `#[model(strict_ids)]` and
 // `#[field(strict_id_check)]` opt-in attributes.
 //
 // Exercises the macro's parse + lower path:

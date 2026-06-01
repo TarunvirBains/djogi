@@ -1,4 +1,4 @@
-// Cluster 4 (djogi#212) — `djogi::Interval` field type.
+// djogi#212 — `djogi::Interval` field type.
 //
 // Exercises the macro's parse + lower path for the new `Interval`
 // typed Postgres column type:

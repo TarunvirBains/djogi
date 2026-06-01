@@ -1,4 +1,4 @@
-// Cluster 4B (#101) — typed set operations: public-API
+// djogi#101 — typed set operations: public-API
 // compile-pass.
 //
 // Locks the user-facing surface of [`QuerySet::union`] /

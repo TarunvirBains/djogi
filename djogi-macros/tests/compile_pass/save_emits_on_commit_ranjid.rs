@@ -1,7 +1,7 @@
-// Cluster 8δ T7.5 — macro-emitted `save` / `delete` on_commit hooks compile
+// Macro-emitted `save` / `delete` on_commit hooks compile
 // for a `pk = RanjId` (UUIDv8) model.
 //
-// Extends the HeerId fixture (`phase8_t7_5_save_emits_on_commit.rs`) by
+// Extends the HeerId fixture (`save_emits_on_commit.rs`) by
 // verifying that the `__id_for_cache: <PK>` capture inside the `on_commit`
 // closure is `Send + 'static` for non-HeerId primary keys.
 //
@@ -26,11 +26,7 @@
 // Every lihaaf compile-fixture must
 // have `fn main` so the stored binary can link.
 //
-// Spec anchor:
-//   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//   §3 commit T7.5 — compile-pass fixture bullet (the plan calls it
-//   "Trybuild compile-pass fixture"; this fixture is now run through
-//   lihaaf).
+// See also: `save_emits_on_commit.rs` for the HeerId variant.
 
 use djogi::prelude::*;
 

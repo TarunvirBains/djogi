@@ -1,4 +1,4 @@
-// Verifies that Task 2's relation emission compiles end-to-end:
+// Verifies that relation emission compiles end-to-end:
 //
 //   - `#[model]` structs carrying `ForeignKey<T>`, `Option<ForeignKey<T>>`,
 //     and `OneToOneField<T>` type-check without adjustments;
@@ -11,10 +11,10 @@
 //     through the emitted paths and can be asserted on;
 //   - `#[field(on_delete = "cascade")]` is accepted on an FK field (the
 //     value is propagated to `FieldDescriptor::on_delete` — runtime check
-//     lands in the Task 3 integration tests).
+//     lands in the relations integration tests).
 //
 // This is the compile-pass counterpart to `basic_inject.rs` /
-// `fields_accessor.rs` — it pins the core Task 2 acceptance and falls back
+// `fields_accessor.rs` — it pins the core relation-emission acceptance and falls back
 // on the `_raw_ident_column_literal_strips_prefix`-style runtime assertion
 // pattern to guard against accidental regressions in the emitted literals
 // (e.g. if a future change forgot to strip `_id` or route the kind through

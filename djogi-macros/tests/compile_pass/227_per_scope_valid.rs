@@ -1,4 +1,4 @@
-//! GH #227 Cluster A — valid `per_scope` usage on an exposed scalar field.
+//! GH #227 — valid `per_scope` usage on an exposed scalar field.
 //!
 //! Uses a single-segment imported codec path (`MaskString`) so the emitted
 //! inventory/error metadata route through runtime type identity rather than the

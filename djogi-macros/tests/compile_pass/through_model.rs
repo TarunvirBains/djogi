@@ -1,6 +1,6 @@
 // Verifies that `#[model(table = "...", through)]` parses, compiles, and
 // populates `ModelDescriptor::is_through = true`. The through-marker flag
-// is a Task 6 foundation for the upcoming `ManyToMany<Target>` trait: the
+// is a foundation for the upcoming `ManyToMany<Target>` trait: the
 // runtime side gets the marker now so later commits can wire it into the
 // trait and tooling without a second macro churn.
 //

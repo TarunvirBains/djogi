@@ -1,4 +1,4 @@
-// Cluster 4 (djogi#213) — typed Postgres network field types.
+// djogi#213 — typed Postgres network field types.
 //
 // Exercises the macro's parse + lower path for the three network
 // column types behind the `network` feature flag:
