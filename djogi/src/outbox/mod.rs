@@ -69,7 +69,7 @@
 //! 7 migration differ can consume it. **That emission is not shipped
 //! today** — this module ships only the runtime payload/insert path.
 //! Integration tests hand-write the matching DDL in
-//! `tests/integration/migrations/phase4/*.sql`; / will
+//! `tests/integration/migrations/transactions/*.sql`; a later change will
 //! land the macro-side side-channel and retire those hand-written
 //! fixtures.
 

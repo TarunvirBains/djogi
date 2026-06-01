@@ -1864,7 +1864,7 @@ fn project_column(
         // (every field shares one nullable shape), so the projection
         // owns this rule for the two framework cols. the
         // hand-written CREATE TABLE statements (`tests/integration/
-        // migrations/phase3/*.sql` and friends) have always used this
+        // migrations/relations/*.sql` and friends) have always used this
         // shape — the migration engine produces the same DDL by
         // recording the default here.
         // Surfaced by (`#[djogi_test(sync_models = [...])]`)

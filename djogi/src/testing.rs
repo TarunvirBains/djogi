@@ -428,7 +428,7 @@ pub async fn setup_test_db_with_extensions(
         crate::migrate::bootstrap::DEFAULT_NODE_ID,
     )
     .await
-    .map_err(|e| DjogiError::Db(DbError::other(format!("phase 0 bootstrap failed: {e}"))))?;
+    .map_err(|e| DjogiError::Db(DbError::other(format!("bootstrap migration failed: {e}"))))?;
 
     // The setup client is dropped here — the connection driver task
     // will finish. the `ALTER DATABASE ... SET heer.node_id`

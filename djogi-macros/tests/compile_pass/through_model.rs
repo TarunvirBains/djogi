@@ -13,7 +13,7 @@
 //     `false` on ordinary models — this fixture asserts both branches.
 //
 // The two FK columns on `PersonGroup` mirror the `person_groups_p3` DDL
-// in `tests/integration/migrations/phase3/007_person_groups.sql`, so this
+// in `tests/integration/migrations/relations/007_person_groups.sql`, so this
 // file also catches a type-shape regression if either side of that pair
 // drifts.
 
