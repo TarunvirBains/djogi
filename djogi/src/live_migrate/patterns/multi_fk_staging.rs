@@ -22,8 +22,8 @@
 //! - Ordinal 2 : `ALTER TABLE … ADD CONSTRAINT fk2 … NOT VALID`
 //! - Ordinal 3 : `ALTER TABLE … VALIDATE CONSTRAINT fk2`
 //! - …
-//! No backfill is emitted — the FK addition validates existing rows
-//! in place. [`Pattern::IDEMPOTENT_PREDICATE`] is `false`.
+//!   No backfill is emitted — the FK addition validates existing rows
+//!   in place. [`Pattern::IDEMPOTENT_PREDICATE`] is `false`.
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};

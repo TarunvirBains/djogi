@@ -10,22 +10,22 @@
 //! recorded justification.
 //! This module owns the macro-side enforcement of that contract:
 //! - Every `MirJzSON` and `Option<MirJzSON>` field MUST carry
-//! `#[mirjzson(justification = "...")]`. A missing attribute fails
-//! at expand time with a span-precise error.
+//!   `#[mirjzson(justification = "...")]`. A missing attribute fails
+//!   at expand time with a span-precise error.
 //! - The justification literal must be present, non-empty, and not a
-//! placeholder token (`TODO`, `TBD`, `FIXME`, `...`, `none`, etc.).
-//! The denylist is small and ASCII case-insensitive; a minimum
-//! length of 12 trimmed bytes weeds out one-word non-answers.
+//!   placeholder token (`TODO`, `TBD`, `FIXME`, `...`, `none`, etc.).
+//!   The denylist is small and ASCII case-insensitive; a minimum
+//!   length of 12 trimmed bytes weeds out one-word non-answers.
 //! - The attribute is consumed by the macro before the struct is
-//! re-emitted, mirroring how `#[field(...)]` and `#[computed(...)]`
-//! are stripped — rustc has no notion of `mirjzson` as a helper
-//! attribute on the `#[model]` attribute macro, so leaving it in
-//! place produces an `unknown attribute` rustc error rather than the
-//! typed diagnostic this module emits.
+//!   re-emitted, mirroring how `#[field(...)]` and `#[computed(...)]`
+//!   are stripped — rustc has no notion of `mirjzson` as a helper
+//!   attribute on the `#[model]` attribute macro, so leaving it in
+//!   place produces an `unknown attribute` rustc error rather than the
+//!   typed diagnostic this module emits.
 //! - `#[mirjzson(...)]` on a non-`MirJzSON` field is rejected at
-//! expand time with a span at the misplaced attribute.
+//!   expand time with a span at the misplaced attribute.
 //! - `Jsonb<T>` (the typed-schema sibling) is **not** subject to this
-//! gate. The typed schema IS the justification.
+//!   gate. The typed schema IS the justification.
 //! # No regex
 //! Per `feedback_no_regex_in_djogi.md`: detection uses byte-level
 //! checks (`str::eq_ignore_ascii_case`, `str::trim`, last-segment
@@ -61,16 +61,16 @@ pub struct MirJzSONAttr {
 /// generation) can read the justification without re-parsing.
 /// Errors with a span-precise diagnostic on:
 /// - A `MirJzSON` / `Option<MirJzSON>` field without a
-/// `#[mirjzson(...)]` attribute.
+///   `#[mirjzson(...)]` attribute.
 /// - A `#[mirjzson(...)]` attribute on a field whose type is not
-/// `MirJzSON` / `Option<MirJzSON>`.
+///   `MirJzSON` / `Option<MirJzSON>`.
 /// - A missing, malformed, or placeholder `justification` value
-/// (see [`validate_justification`]).
+///   (see [`validate_justification`]).
 /// - A duplicate `#[mirjzson(...)]` attribute on the same field.
 /// - The bare `#[mirjzson]` form (no argument list).
 /// - Any key other than `justification` inside the argument list.
-/// Returns `Ok(Vec::new)` for structs that declare no `MirJzSON`
-/// fields and carry no stray `#[mirjzson(...)]` attributes.
+///   Returns `Ok(Vec::new)` for structs that declare no `MirJzSON`
+///   fields and carry no stray `#[mirjzson(...)]` attributes.
 pub fn parse_mirjzson_attrs(
     struct_item: &syn::ItemStruct,
 ) -> syn::Result<Vec<(syn::Ident, MirJzSONAttr)>> {
@@ -284,12 +284,12 @@ const MIN_JUSTIFICATION_BYTES: usize = 12;
 /// 1. Trim leading/trailing ASCII whitespace.
 /// 2. Reject empty-after-trim with `"justification is empty"`.
 /// 3. Reject the trimmed value if it matches one of
-/// [`PLACEHOLDER_JUSTIFICATIONS`] under ASCII case-insensitive
-/// comparison.
+///    [`PLACEHOLDER_JUSTIFICATIONS`] under ASCII case-insensitive
+///    comparison.
 /// 4. Reject when the trimmed length is below
-/// [`MIN_JUSTIFICATION_BYTES`] with a "too short" message.
-/// Errors carry the `lit_str` span so the diagnostic underlines the
-/// adopter's literal, not the enclosing attribute.
+///    [`MIN_JUSTIFICATION_BYTES`] with a "too short" message.
+///    Errors carry the `lit_str` span so the diagnostic underlines the
+///    adopter's literal, not the enclosing attribute.
 fn validate_justification(lit_str: &LitStr, value: &str) -> syn::Result<()> {
     let trimmed = value.trim();
     if trimmed.is_empty() {

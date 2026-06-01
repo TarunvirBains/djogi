@@ -69,14 +69,14 @@
 //! string-based filter-bypass surface in disguise.
 //! # Where
 //! - [`ForeignKey<T>`](crate::relation::ForeignKey) — the FK wrapper types
-//! junction-model columns use; both FK columns on [`Through`] are
-//! `ForeignKey<Source>` / `ForeignKey<Target>` and decode the target PK
-//! via `postgres_types::FromSql`.
+//!   junction-model columns use; both FK columns on [`Through`] are
+//!   `ForeignKey<Source>` / `ForeignKey<Target>` and decode the target PK
+//!   via `postgres_types::FromSql`.
 //! - [`QuerySet::filter`](crate::query::QuerySet::filter) — the typed
-//! closure API hand-written / macro-generated `related` bodies call
-//! into.
+//!   closure API hand-written / macro-generated `related` bodies call
+//!   into.
 //! - `docs/guide/relations.md` (landing in) — user-facing
-//! guide once the macro side lands.
+//!   guide once the macro side lands.
 
 use crate::DjogiError;
 use crate::model::Model;

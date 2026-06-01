@@ -2,19 +2,19 @@
 //! `#[field(default_volatility = "...")]`.
 //! Owns:
 //! 1. **Parsing** the `protected(...)` nested attribute into a
-//! [`ProtectedSpec`] that the descriptor emitter consumes when
-//! building the `Option<ProtectedFieldMetadata>` literal.
+//!    [`ProtectedSpec`] that the descriptor emitter consumes when
+//!    building the `Option<ProtectedFieldMetadata>` literal.
 //! 2. **Validating** the four rules from the v3 plan §6 with
-//! span-precise errors:
+//!    span-precise errors:
 //! - `sensitivity = "none"` cannot be combined with any other
-//! protected field.
+//!   protected field.
 //! - `sensitivity > none` requires a non-empty `rationale`.
 //! - `codec = "X"` must reference a registered codec ID.
 //! - `redaction = "hash_id"` is only valid on a HeerId / RanjId /
-//! custom-PK-compatible field type.
+//!   custom-PK-compatible field type.
 //! 3. **Parsing and validating** the optional
-//! `#[field(default_volatility = "...")]` override into
-//! [`DefaultVolatilityLit`].
+//!    `#[field(default_volatility = "...")]` override into
+//!    [`DefaultVolatilityLit`].
 //! # Codec ID validation strategy
 //! Proc macros run before any runtime dependency is available, so the
 //! macro crate cannot read `djogi::field_codec::REGISTRY` directly.

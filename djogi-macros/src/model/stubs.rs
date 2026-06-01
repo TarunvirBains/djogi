@@ -10,15 +10,15 @@
 //! Emission order mirrors `descriptor::expand`:
 //! 1. `id` — present for `pk = HeerId | RanjId | HeerIdDesc | RanjIdDesc |
 //! Serial`; omitted for `pk = None` (matches the descriptor's
-//! framework-prefix gating, keeping the single schema contract consistent).
+//!    framework-prefix gating, keeping the single schema contract consistent).
 //! 2. `created_at`, `updated_at` — always emitted, typed as
-//! `::djogi::types::DateTime`.
+//!    `::djogi::types::DateTime`.
 //! 3. User-declared columns in struct source order.
-//! Root `{Model}Fields` carries **no** `__djogi_path` slot. Path-aware
-//! traversal lives on the SQL-only sibling `{Model}SqlFields` so portable
-//! predicates target physical root columns only — relation traversal
-//! columns (e.g. `"department.name"`) are not portable across cache and
-//! refresh boundaries.
+//!    Root `{Model}Fields` carries **no** `__djogi_path` slot. Path-aware
+//!    traversal lives on the SQL-only sibling `{Model}SqlFields` so portable
+//!    predicates target physical root columns only — relation traversal
+//!    columns (e.g. `"department.name"`) are not portable across cache and
+//!    refresh boundaries.
 //! # `{Model}SqlFields`
 //! Path-aware companion view. Same accessor surface as `{Model}Fields`
 //! but every accessor returns [`FieldRef<Self, V>`](::djogi::query::FieldRef).

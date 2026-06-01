@@ -34,10 +34,10 @@ use std::marker::PhantomData;
 /// - Be non-empty.
 /// - Begin with an ASCII letter (`a`–`z`, `A`–`Z`) or underscore (`_`).
 /// - Contain only ASCII alphanumerics (`a`–`z`, `A`–`Z`, `0`–`9`) or
-/// underscores (`_`).
+///   underscores (`_`).
 /// - Be at most 63 bytes long (the Postgres `NAMEDATALEN - 1` limit).
-/// Returns `true` if the segment satisfies every rule, `false` otherwise.
-/// No regex engine is used — all checks are byte-level stdlib primitives.
+///   Returns `true` if the segment satisfies every rule, `false` otherwise.
+///   No regex engine is used — all checks are byte-level stdlib primitives.
 pub(crate) fn is_plain_ident(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.is_empty() || bytes.len() > 63 {
@@ -165,9 +165,9 @@ impl<M, V> JsonbPathRef<M, V> {
 /// - `Inet`: `::inet` — `std::net::IpAddr` (`network` feature only).
 /// - `Cidr`: `::cidr` — `djogi::CidrAddr` (`network` feature only).
 /// - `Macaddr`: `::macaddr` — `djogi::MacAddr` (`network` feature only).
-/// The enum is `#[non_exhaustive]` so future Postgres-cast surface (e.g.
-/// `::bytea`, `::tstzrange`, …) can be added without a SemVer break on
-/// downstream matches.
+///   The enum is `#[non_exhaustive]` so future Postgres-cast surface (e.g.
+///   `::bytea`, `::tstzrange`, …) can be added without a SemVer break on
+///   downstream matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum JsonbSqlCast {

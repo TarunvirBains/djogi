@@ -10,27 +10,27 @@
 //! the two are NOT byte-identical. The regression net is split
 //! into two layers:
 //! * **Emitter-output drift detector** — fixtures under
-//! `fixtures/pk_flip_emitter_output_section_*.sql` capture the
-//! CURRENT emitter's whitespace-normalised output for the
-//! canonical worked examples. Tests under
-//! `tests::whole_plan_byte_equality_section_*` and
-//! `tests::emitter_output_drift_check_section_*` assert the
-//! emitter's output equals these fixtures byte-for-byte after
-//! normalisation. ANY emitter change without a paired fixture
-//! update fails loud.
+//!   `fixtures/pk_flip_emitter_output_section_*.sql` capture the
+//!   CURRENT emitter's whitespace-normalised output for the
+//!   canonical worked examples. Tests under
+//!   `tests::whole_plan_byte_equality_section_*` and
+//!   `tests::emitter_output_drift_check_section_*` assert the
+//!   emitter's output equals these fixtures byte-for-byte after
+//!   normalisation. ANY emitter change without a paired fixture
+//!   update fails loud.
 //! * **Playbook structural anchors** — tests under
-//! `tests::fixture_section_*_carries_every_playbook_anchor_substring`
-//! walk each fixture and assert the presence of every
-//! load-bearing playbook substring (specific
-//! `CALL heeranjid_bulk_backfill(...)` / `ALTER TABLE ... SET
+//!   `tests::fixture_section_*_carries_every_playbook_anchor_substring`
+//!   walk each fixture and assert the presence of every
+//!   load-bearing playbook substring (specific
+//!   `CALL heeranjid_bulk_backfill(...)` / `ALTER TABLE ... SET
 //! NOT NULL` / `CREATE UNIQUE INDEX CONCURRENTLY` shapes). If
-//! the playbook adds or removes a step, that test must be
-//! updated. The two-sided invariant catches both emitter
-//! drift AND playbook drift.
-//! The playbook lives at
-//! `../HeeRanjID/docs/migrations/asc-to-desc.md`. Where this module
-//! and the playbook disagree on a load-bearing rule, the playbook
-//! wins.
+//!   the playbook adds or removes a step, that test must be
+//!   updated. The two-sided invariant catches both emitter
+//!   drift AND playbook drift.
+//!   The playbook lives at
+//!   `../HeeRanjID/docs/migrations/asc-to-desc.md`. Where this module
+//!   and the playbook disagree on a load-bearing rule, the playbook
+//!   wins.
 //! # Plan shape (single-table flip — playbook §3)
 //! | Segment | Kind | Statements |
 //! |---------|-----------------|-------------------------------------------------------------------------|
@@ -4627,13 +4627,13 @@ mod tests {
     /// `CARGO_MANIFEST_DIR` (the djogi crate). Tries two well-
     /// known locations:
     /// 1. `<workspace>/HeeRanjID-reference/docs/migrations/asc-to-desc.md`
-    /// the symlink at the project root (per project
-    /// memory rule).
+    ///    the symlink at the project root (per project
+    ///    memory rule).
     /// 2. `<workspace>/../HeeRanjID/docs/migrations/asc-to-desc.md`
-    /// the sibling-workspace layout (per CLAUDE.md
-    /// "Workspace Layout" section).
-    /// Returns `None` if neither path resolves to an existing
-    /// file. Caller skips the test with a clear message.
+    ///    the sibling-workspace layout (per CLAUDE.md
+    ///    "Workspace Layout" section).
+    ///    Returns `None` if neither path resolves to an existing
+    ///    file. Caller skips the test with a clear message.
     fn locate_playbook_md() -> Option<std::path::PathBuf> {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         // djogi/Cargo.toml → workspace root is one up.

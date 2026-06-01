@@ -24,10 +24,10 @@
 //! - [`Reversibility`] defaults to [`Reversibility::OneWay`].
 //! - [`Queryability`] defaults to [`Queryability::Disabled`].
 //! - Query and order accessors on generated visage fields are only available
-//! when the codec implements [`PresentationQueryCodec`] /
-//! [`PresentationOrderCodec`].
+//!   when the codec implements [`PresentationQueryCodec`] /
+//!   [`PresentationOrderCodec`].
 //! - Source-model `Model::objects` accessors remain privileged; the
-//! presentation codec does not restrict storage-truth queries.
+//!   presentation codec does not restrict storage-truth queries.
 //! # Startup validation
 //! Call [`validate_startup_inventory`] before serving traffic.
 //! This function iterates the linked-at-call-time

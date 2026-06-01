@@ -6,15 +6,15 @@
 //! 1. Non-empty.
 //! 2. Length ≤ 63 bytes (`NAMEDATALEN - 1`).
 //! 3. First byte is an ASCII letter or underscore; every remaining byte
-//! is ASCII alphanumeric or underscore.
+//!    is ASCII alphanumeric or underscore.
 //! 4. Not a reserved Postgres keyword (case-insensitive).
-//! The `#[model]` macro used to reserve only `id` / `created_at` /
-//! `updated_at` and accepted any other field name verbatim. A user field
-//! like `r#select` (raw Rust keyword escape) stripped to `select` and
-//! emitted unquoted produces invalid SQL; a field like `order` or `user`
-//! hits the same class of breakage. Validating here — at macro expansion
-//! time — turns that silent footgun into a targeted `syn::Error`
-//! pointing at the offending field.
+//!    The `#[model]` macro used to reserve only `id` / `created_at` /
+//!    `updated_at` and accepted any other field name verbatim. A user field
+//!    like `r#select` (raw Rust keyword escape) stripped to `select` and
+//!    emitted unquoted produces invalid SQL; a field like `order` or `user`
+//!    hits the same class of breakage. Validating here — at macro expansion
+//!    time — turns that silent footgun into a targeted `syn::Error`
+//!    pointing at the offending field.
 //! # Why validate here AND at runtime?
 //! `djogi/src/ident.rs` carries the runtime validator — `assert_plain_ident`
 //! and `const_assert_plain_ident` — that fires on macro-emitted
@@ -221,18 +221,18 @@ pub fn check_table_name(table: &str, span: proc_macro2::Span) -> syn::Result<()>
 /// 1. Non-empty.
 /// 2. Length ≤ 63 bytes (`NAMEDATALEN - 1`).
 /// 3. First byte is an ASCII letter or underscore; every remaining byte
-/// is ASCII alphanumeric or underscore.
-/// The reserved-keyword check and the framework-reserved `__djogi_`
-/// prefix check are intentionally NOT applied: domain identifiers are
-/// SQL type names, not column / table identifiers, and `domain = "text"`
-/// is a legitimate (if confusing) Postgres declaration. The
-/// `__djogi_` prefix likewise has no SQL-namespace collision risk on a
-/// domain name because djogi never emits its own domain identifiers
-/// Piece A only references adopter-managed domains.
-/// Schema-qualified names (`"public.positive_amount"`) are rejected by
-/// the byte-shape rule (the `.` is not an ASCII alnum / underscore
-/// byte) and are out of Piece A scope. Adopters needing them fall back
-/// to `FieldSqlType::Custom("public.positive_amount")` until Piece B.
+///    is ASCII alphanumeric or underscore.
+///    The reserved-keyword check and the framework-reserved `__djogi_`
+///    prefix check are intentionally NOT applied: domain identifiers are
+///    SQL type names, not column / table identifiers, and `domain = "text"`
+///    is a legitimate (if confusing) Postgres declaration. The
+///    `__djogi_` prefix likewise has no SQL-namespace collision risk on a
+///    domain name because djogi never emits its own domain identifiers
+///    Piece A only references adopter-managed domains.
+///    Schema-qualified names (`"public.positive_amount"`) are rejected by
+///    the byte-shape rule (the `.` is not an ASCII alnum / underscore
+///    byte) and are out of Piece A scope. Adopters needing them fall back
+///    to `FieldSqlType::Custom("public.positive_amount")` until Piece B.
 pub fn check_domain_name(name: &str, span: proc_macro2::Span) -> syn::Result<()> {
     let bytes = name.as_bytes();
 

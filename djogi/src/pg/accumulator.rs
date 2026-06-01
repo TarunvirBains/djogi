@@ -3,9 +3,9 @@
 //! `SqlAccumulator` is the SQL construction layer inside Djogi. It accumulates:
 //! 1. An SQL string with `$1`, `$2`, ... placeholders for every bound value.
 //! 2. A `Vec<Box<dyn postgres_types::ToSql + Sync + Send>>` carrying the bound
-//! values in positional order.
-//! The caller calls `into_parts` to get `(String, Vec<Box<dyn ToSql...>>)`,
-//! then executes the query via `tokio_postgres::Client::query` or similar.
+//!    values in positional order.
+//!    The caller calls `into_parts` to get `(String, Vec<Box<dyn ToSql...>>)`,
+//!    then executes the query via `tokio_postgres::Client::query` or similar.
 //! # Design rationale
 //! `postgres_types::ToSql` is the bind trait for tokio-postgres. `SqlAccumulator`
 //! stores bound values as `Box<dyn ToSql + Sync + Send>` so the caller can push
@@ -22,11 +22,11 @@
 //! Only `push_sql` inserts raw text, and its callers are restricted to:
 //! - SQL keywords (e.g. `" WHERE "`, `" ORDER BY "`, `" AND "`)
 //! - `&'static str` table names and column names baked by `#[model]` macros
-//! User data always flows through `push_bind` as a parameterised value.
-//! `push_null_literal` is the one special case — it appends the literal token
-//! `NULL` (not a bind slot) because Postgres's three-valued logic means
-//! `col = $1` with `NULL` bound is never `TRUE`, whereas `col IS NULL` is the
-//! correct SQL for null-equality checks.
+//!   User data always flows through `push_bind` as a parameterised value.
+//!   `push_null_literal` is the one special case — it appends the literal token
+//!   `NULL` (not a bind slot) because Postgres's three-valued logic means
+//!   `col = $1` with `NULL` bound is never `TRUE`, whereas `col IS NULL` is the
+//!   correct SQL for null-equality checks.
 
 use postgres_types::ToSql;
 use std::fmt::Write;
@@ -189,11 +189,11 @@ impl SqlAccumulator {
     /// `u32` overflows occurs (every case is a framework-internal invariant
     /// break):
     /// - parsing an inner placeholder digit run yields a value greater than
-    /// `u32::MAX` (e.g. `$9999999999`);
+    ///   `u32::MAX` (e.g. `$9999999999`);
     /// - a renumbered placeholder `n + offset` exceeds `u32::MAX`;
     /// - the post-splice `next_param` increment by `other_binds.len`
-    /// exceeds `u32::MAX` (this also catches the case where `other_binds.len`
-    /// itself does not fit in `u32`).
+    ///   exceeds `u32::MAX` (this also catches the case where `other_binds.len`
+    ///   itself does not fit in `u32`).
     pub fn extend_with(&mut self, other: SqlAccumulator) {
         let SqlAccumulator {
             sql: other_sql,

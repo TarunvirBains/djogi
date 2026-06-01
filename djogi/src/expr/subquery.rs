@@ -4,20 +4,20 @@
 //! # What this module ships
 //! Three typed wrappers, one macro seal:
 //! - [`Subquery<T, V>`] — `(SELECT <col> FROM T::table_name WHERE ...)`
-//! as a scalar [`Expr<V>`]. Built from a [`QuerySet<T>`] plus a
-//! [`FieldRef<T, V>`] picking the column to project.
+//!   as a scalar [`Expr<V>`]. Built from a [`QuerySet<T>`] plus a
+//!   [`FieldRef<T, V>`] picking the column to project.
 //! - [`Exists`] — `EXISTS (SELECT 1 FROM T::table_name WHERE ...)` as
-//! an [`Expr<bool>`]. Built from a [`QuerySet<T>`] alone; the emitter
-//! always renders `SELECT 1` because EXISTS only cares about row
-//! presence.
+//!   an [`Expr<bool>`]. Built from a [`QuerySet<T>`] alone; the emitter
+//!   always renders `SELECT 1` because EXISTS only cares about row
+//!   presence.
 //! - [`OuterRef<M, V>`] — correlated reference to a column in the
-//! enclosing query scope. Shape mirrors [`FieldRef<M, V>`] so the
-//! compiler catches value-type mismatches at `eq` / `lt` / arithmetic
-//! composition sites.
+//!   enclosing query scope. Shape mirrors [`FieldRef<M, V>`] so the
+//!   compiler catches value-type mismatches at `eq` / `lt` / arithmetic
+//!   composition sites.
 //! - [`__macro_support::__make_outer_ref`] — the sealed macro entry
-//! point `{Model}OuterRef::column` accessors route through (same
-//! identifier-validation pattern as
-//! [`crate::query::field::__macro_support::__make_field_ref`]).
+//!   point `{Model}OuterRef::column` accessors route through (same
+//!   identifier-validation pattern as
+//!   [`crate::query::field::__macro_support::__make_field_ref`]).
 //! # Design: store the queryset's `Q<T>` behind an erased emitter
 //! The subquery's `WHERE` predicate is the parent
 //! queryset's accumulated `Q<T>` tree, wrapped in an
@@ -53,22 +53,22 @@
 //! # Column qualification
 //! `OuterRef` exposes two emission modes:
 //! - [`OuterRef::as_expr`] — emits the column name **unqualified**. Postgres
-//! resolves an unqualified name against the enclosing query scope when
-//! the inner `FROM` list has no matching column, which covers the common
-//! case. When both tables expose a same-named column (every Djogi model
-//! has `id`, `created_at`, `updated_at`, so this is real), the emission
-//! is ambiguous and Postgres raises `42702`. Use this form when you've
-//! verified the inner / outer scopes share no column names.
+//!   resolves an unqualified name against the enclosing query scope when
+//!   the inner `FROM` list has no matching column, which covers the common
+//!   case. When both tables expose a same-named column (every Djogi model
+//!   has `id`, `created_at`, `updated_at`, so this is real), the emission
+//!   is ambiguous and Postgres raises `42702`. Use this form when you've
+//!   verified the inner / outer scopes share no column names.
 //! - [`OuterRef::as_qualified_expr`] — emits `<M::table_name>.<column>`
-//! so the reference disambiguates to the outer scope unconditionally.
-//! 's macro-emitted M2M `EXISTS` predicates use this
-//! form because the through-table and target-table always collide on
-//! framework-column names. Adopters writing correlated subqueries by
-//! hand should reach for this whenever the inner / outer column-name
-//! sets are not provably disjoint.
-//! Generalised `parent_table` threading for `select_related + filter_expr`
-//! composition (where the outer FROM may be aliased rather than literal
-//! `M::table_name`) is the next step on this surface and remains a
+//!   so the reference disambiguates to the outer scope unconditionally.
+//!   's macro-emitted M2M `EXISTS` predicates use this
+//!   form because the through-table and target-table always collide on
+//!   framework-column names. Adopters writing correlated subqueries by
+//!   hand should reach for this whenever the inner / outer column-name
+//!   sets are not provably disjoint.
+//!   Generalised `parent_table` threading for `select_related + filter_expr`
+//!   composition (where the outer FROM may be aliased rather than literal
+//!   `M::table_name`) is the next step on this surface and remains a
 //! + enhancement. See `docs/roadmap/future-work.md` §4.7.
 
 use crate::expr::Expr;
@@ -277,11 +277,11 @@ impl Exists {
 /// column reference "X" is ambiguous`. Workarounds:
 /// - Correlate on tables whose bare column names do not collide.
 /// - Use `ctx.raw_execute` / `ctx.raw_scalar` for explicitly-aliased
-/// correlations.
-/// The qualified form (carrying an outer-table alias) is deferred
-/// alongside the broader `parent_table` threading needed for
-/// `select_related + filter_expr` composition — flagged in the
-/// [`crate::expr::sql`] module header and on [`OuterRef::as_expr`].
+///   correlations.
+///   The qualified form (carrying an outer-table alias) is deferred
+///   alongside the broader `parent_table` threading needed for
+///   `select_related + filter_expr` composition — flagged in the
+///   [`crate::expr::sql`] module header and on [`OuterRef::as_expr`].
 /// # Construction
 /// Users do not call [`OuterRef::new`] directly. The
 /// `#[derive(Model)]` macro emits a `{Model}OuterRef` ZST helper with
@@ -384,8 +384,8 @@ impl<M: Model, V> OuterRef<M, V> {
     /// The returned expression is validated when SQL is built:
     /// - It is only legal inside a lateral-inner lowering scope.
     /// - Its source model `M` must match the actual lateral outer model.
-    /// Out-of-scope or wrong-model usage fails as a typed
-    /// `DjogiError::Predicate` before any SQL reaches PostgreSQL.
+    ///   Out-of-scope or wrong-model usage fails as a typed
+    ///   `DjogiError::Predicate` before any SQL reaches PostgreSQL.
     #[must_use = "OuterRef is inert unless promoted to Expr<V>"]
     pub fn as_lateral_outer_expr(self) -> Expr<V> {
         Expr::from_node(ExprNode::OuterRefAlias {

@@ -3,12 +3,12 @@
 //! This module hosts the expansion logic for the two
 //! reverse-accessor macros:
 //! - [`reverse_one_to_many`] — reverse of a forward `ForeignKey<Target>`,
-//! returns `Vec<Source>`.
+//!   returns `Vec<Source>`.
 //! - [`reverse_one_to_one`] — reverse of a forward `OneToOneField<Target>`
-//! (or a `ForeignKey<Target>` + `UNIQUE` pair), returns `Option<Source>`.
-//! The third Task 7 macro — `many_to_many!` — is **not** implemented
-//! here; it ships in a later commit once the `ManyToMany<Target>` trait
-//! (Task 6) is finalized.
+//!   (or a `ForeignKey<Target>` + `UNIQUE` pair), returns `Option<Source>`.
+//!   The third Task 7 macro — `many_to_many!` — is **not** implemented
+//!   here; it ships in a later commit once the `ManyToMany<Target>` trait
+//!   (Task 6) is finalized.
 //! # Why function-like and not derive
 //! A reverse accessor lives on the **opposite** side of the relation
 //! from where the FK column is declared. A `#[derive(Model)]` on
@@ -84,17 +84,17 @@
 //! The macro invocation reads `ReceivingType, method -> ReturnedType by
 //! via_column`. In this module:
 //! - `receiver_type` — the type the accessor method is attached to.
-//! Corresponds to the first positional argument in the invocation
-//! and to the `source` field in the `ReverseRelationMarker` (because
-//! reads "this model is the source of the reverse
-//! accessor").
+//!   Corresponds to the first positional argument in the invocation
+//!   and to the `source` field in the `ReverseRelationMarker` (because
+//!   reads "this model is the source of the reverse
+//!   accessor").
 //! - `returned_type` — the model the accessor queries. Corresponds to
-//! the arrow's right-hand side and to the `target` field in the
-//! `ReverseRelationMarker`.
-//! The `source` / `target` field names in `ReverseRelationMarker`
-//! match 's projection-generator vocabulary, not the
-//! forward-FK vocabulary where "source" means the FK-carrying row.
-//! Keep the two terminologies distinct when reading.
+//!   the arrow's right-hand side and to the `target` field in the
+//!   `ReverseRelationMarker`.
+//!   The `source` / `target` field names in `ReverseRelationMarker`
+//!   match 's projection-generator vocabulary, not the
+//!   forward-FK vocabulary where "source" means the FK-carrying row.
+//!   Keep the two terminologies distinct when reading.
 //! # Path routing
 //! All emitted type references route through `::djogi::*` rather than
 //! reaching into `heeranjid` / `time` / `uuid` / `tokio_postgres` directly. Macro

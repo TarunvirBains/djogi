@@ -1,12 +1,12 @@
 //! `#[derive(DjogiEnum)]` proc macro — typed Postgres enum support.
 //! Emits four things per enum:
 //! 1. `impl postgres_types::ToSql for MyEnum` — encodes the Rust variant as its mapped
-//! Postgres wire string. Uses `to_sql_checked!` for the forwarded type-check path.
+//!    Postgres wire string. Uses `to_sql_checked!` for the forwarded type-check path.
 //! 2. `impl<'a> postgres_types::FromSql<'a> for MyEnum` — decodes the wire bytes as a
-//! string, matches against known variants, returns `Err(EnumDecodeError { ... })` for
-//! unknown labels.
+//!    string, matches against known variants, returns `Err(EnumDecodeError { ... })` for
+//!    unknown labels.
 //! 3. `inventory::submit!(::djogi::descriptor::EnumDescriptor { ... })` — registers the
-//! enum's metadata for the migration differ.
+//!    enum's metadata for the migration differ.
 //! 4. `impl MyEnum { pub fn variants -> &'static [&'static str] }` — convenience fn.
 //! # Attribute grammar
 //! ```rust,ignore
@@ -21,10 +21,10 @@
 //! ```
 //! - `name` (required) — the Postgres type name.
 //! - `rename_all` (optional, default `"snake_case"`) — case conversion applied to all
-//! variants. Supported values: `snake_case`, `SCREAMING_SNAKE_CASE`, `lowercase`,
-//! `UPPERCASE`, `PascalCase`, `camelCase`, `kebab-case`.
-//! Per-variant override: `#[djogi_enum_variant(name = "...")]` takes precedence over
-//! `rename_all`.
+//!   variants. Supported values: `snake_case`, `SCREAMING_SNAKE_CASE`, `lowercase`,
+//!   `UPPERCASE`, `PascalCase`, `camelCase`, `kebab-case`.
+//!   Per-variant override: `#[djogi_enum_variant(name = "...")]` takes precedence over
+//!   `rename_all`.
 //! # Compile-time validation
 //! - Empty enum → error: "requires at least one variant".
 //! - Non-unit variant (tuple/struct) → error: "variants must be unit-only".

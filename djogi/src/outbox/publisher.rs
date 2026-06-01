@@ -11,11 +11,11 @@
 //! `PublishError` carries a `Transient` / `Permanent` distinction so the relay
 //! loop can decide whether to retry:
 //! - [`PublishError::Transient`] — downstream hiccup (network timeout, rate
-//! limit, broker restart). Pass `retryable = true` to `mark_failed`.
+//!   limit, broker restart). Pass `retryable = true` to `mark_failed`.
 //! - [`PublishError::Permanent`] — payload too large, schema violation, unknown
-//! channel. Pass `retryable = false` to `mark_failed`.
+//!   channel. Pass `retryable = false` to `mark_failed`.
 //! - [`PublishError::Provider`] — wraps an underlying provider error where the
-//! transience is unknown; the relay should treat this as transient by default.
+//!   transience is unknown; the relay should treat this as transient by default.
 
 use super::worker::OutboxRow;
 use async_trait::async_trait;

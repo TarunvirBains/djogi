@@ -64,8 +64,8 @@ pub struct ComputedAttr {
 /// - Unknown keys inside `#[computed(...)]` (e.g. `index = ...`).
 /// - The bare `#[computed]` form (without the required `sql = "..."`).
 /// - A field with both `#[computed(...)]` and `#[field(...)]`
-/// computed fields are virtual and must not double up with regular
-/// field metadata.
+///   computed fields are virtual and must not double up with regular
+///   field metadata.
 pub fn parse_computed_attrs(
     struct_item: &syn::ItemStruct,
 ) -> syn::Result<Vec<(syn::Ident, ComputedAttr)>> {

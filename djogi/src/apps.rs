@@ -75,18 +75,18 @@ impl SealToken {
 /// error.
 /// # Associated constants
 /// - `LABEL` — the stable string identifier used in migration files,
-/// ledger rows, and snapshot JSON. Defaults to the struct identifier
-/// lowercased byte-by-byte (`Vehicles` → `"vehicles"`); override
-/// via `#[app(label = "…")]` when the default would be awkward
-/// (`BillingAccounts` → `"billingaccounts"`).
+///   ledger rows, and snapshot JSON. Defaults to the struct identifier
+///   lowercased byte-by-byte (`Vehicles` → `"vehicles"`); override
+///   via `#[app(label = "…")]` when the default would be awkward
+///   (`BillingAccounts` → `"billingaccounts"`).
 /// - `DATABASE` — the database-target name this app belongs to. Set
-/// by `#[app(database = "…")]`; required (no default — an app
-/// without an explicit target is a compile error today to avoid
-/// silently landing tables in `main`).
+///   by `#[app(database = "…")]`; required (no default — an app
+///   without an explicit target is a compile error today to avoid
+///   silently landing tables in `main`).
 /// - `DESCRIPTOR` — the const [`AppDescriptor`] reflecting this
-/// app's runtime metadata. Registry consumers prefer iterating
-/// [`AppRegistry::all`], while code that knows a specific app at
-/// compile time can read the const directly.
+///   app's runtime metadata. Registry consumers prefer iterating
+///   [`AppRegistry::all`], while code that knows a specific app at
+///   compile time can read the const directly.
 pub trait App {
     /// Hidden seal witness emitted by [`djogi::apps!`].
     #[doc(hidden)]
@@ -167,23 +167,23 @@ inventory::collect!(AppDescriptor);
 /// Two flavours of collision exist in the registry; both panic loudly
 /// at startup so the wrong app cannot land in a migration directory:
 /// 1. **Same `(database, label)` declared twice.** The migration
-/// contract's literal identity collision — typically the result of
-/// declaring the same app in two `djogi::apps!` invocations across
-/// linked crates.
+///    contract's literal identity collision — typically the result of
+///    declaring the same app in two `djogi::apps!` invocations across
+///    linked crates.
 /// 2. **Same `label`, different `database`.** Legitimate under the
-/// full `(database, label)` identity contract but rejected in v1
-/// because [`crate::ModelDescriptor`] carries only `label`. The
-/// cross-app FK edge generator looks up a model's database via a
-/// `label → database` map; without workspace-wide label
-/// uniqueness, that map silently collapses one entry and a model
-/// routes to the wrong database. The descriptor-shape upgrade that
-/// would unlock the looser identity is deferred to
-/// `docs/spec/apps-and-database-domains.md`.
-/// Mirrors the `type_to_identity` collision panic in
-/// [`AppRegistry::cross_app_edges`].
-/// Lifted to a free function so unit tests can drive synthetic
-/// descriptor lists past the panic guard without going through the
-/// link-time `inventory` collection.
+///    full `(database, label)` identity contract but rejected in v1
+///    because [`crate::ModelDescriptor`] carries only `label`. The
+///    cross-app FK edge generator looks up a model's database via a
+///    `label → database` map; without workspace-wide label
+///    uniqueness, that map silently collapses one entry and a model
+///    routes to the wrong database. The descriptor-shape upgrade that
+///    would unlock the looser identity is deferred to
+///    `docs/spec/apps-and-database-domains.md`.
+///    Mirrors the `type_to_identity` collision panic in
+///    [`AppRegistry::cross_app_edges`].
+///    Lifted to a free function so unit tests can drive synthetic
+///    descriptor lists past the panic guard without going through the
+///    link-time `inventory` collection.
 fn validate_app_identity_uniqueness(sorted: &[AppDescriptor]) {
     for pair in sorted.windows(2) {
         if pair[0].label.is_empty() || pair[0].label != pair[1].label {
@@ -220,15 +220,15 @@ fn validate_app_identity_uniqueness(sorted: &[AppDescriptor]) {
 /// `inventory::iter::<AppDescriptor>` directly — `all` handles two
 /// concerns:
 /// 1. **Alphabetisation.** Inventory returns descriptors in link
-/// order, which is non-deterministic across rebuilds and
-/// toolchains. `all` returns them sorted by `label` so
-/// downstream artifacts (snapshot JSON, migration filenames,
-/// ledger seed rows) are byte-stable.
+///    order, which is non-deterministic across rebuilds and
+///    toolchains. `all` returns them sorted by `label` so
+///    downstream artifacts (snapshot JSON, migration filenames,
+///    ledger seed rows) are byte-stable.
 /// 2. **The synthetic global bucket.** `all` always prepends an
-/// entry for `LABEL = ""` / `DATABASE = "main"` so apps-unaware
-/// projects and mixed projects see the same shape from the
-/// registry — `main/<empty-label>/` is always a valid target in
-/// build.rs / snapshot / ledger code.
+///    entry for `LABEL = ""` / `DATABASE = "main"` so apps-unaware
+///    projects and mixed projects see the same shape from the
+///    registry — `main/<empty-label>/` is always a valid target in
+///    build.rs / snapshot / ledger code.
 pub struct AppRegistry;
 
 impl AppRegistry {
@@ -302,18 +302,18 @@ impl AppRegistry {
     /// `<database>/<app>/` directory and compose atomically.
     /// Migration planning consumes this list to:
     /// - Emit cross-app FK clauses with the correct
-    /// `REFERENCES "<target-schema>".<target-table>(id)` form.
+    ///   `REFERENCES "<target-schema>".<target-table>(id)` form.
     /// - Order per-app compose steps so target apps are applied
-    /// before source apps (FKs resolve at declaration time).
-    /// Models whose source or target resolves to the synthetic
-    /// global bucket (empty label) are treated normally — the
-    /// bucket is a valid app for FK-graph purposes.
-    /// Unresolvable targets (a `target_type_name` with no matching
-    /// `ModelDescriptor` in inventory) are silently skipped here
-    /// the validation layer reports unresolved targets so this graph
-    /// helper can stay allocation- and lookup-focused.
-    /// Result is memoised in a `OnceLock` since inventory is fixed
-    /// at link time.
+    ///   before source apps (FKs resolve at declaration time).
+    ///   Models whose source or target resolves to the synthetic
+    ///   global bucket (empty label) are treated normally — the
+    ///   bucket is a valid app for FK-graph purposes.
+    ///   Unresolvable targets (a `target_type_name` with no matching
+    ///   `ModelDescriptor` in inventory) are silently skipped here
+    ///   the validation layer reports unresolved targets so this graph
+    ///   helper can stay allocation- and lookup-focused.
+    ///   Result is memoised in a `OnceLock` since inventory is fixed
+    ///   at link time.
     pub fn cross_app_edges() -> &'static [CrossAppEdge] {
         static CACHE: OnceLock<Vec<CrossAppEdge>> = OnceLock::new();
         CACHE.get_or_init(|| {
@@ -532,16 +532,16 @@ pub struct AppIdentity {
 /// [`AppRegistry::cross_app_edges`].
 /// Migration planning uses these edges to:
 /// - Order per-app compose steps so target apps apply before source
-/// apps (FK constraints resolve at DDL time).
+///   apps (FK constraints resolve at DDL time).
 /// - Emit schema-qualified `REFERENCES "<target-schema>".<table>`
-/// clauses when source and target live in different databases /
-/// apps.
+///   clauses when source and target live in different databases /
+///   apps.
 /// - Reject cross-database FKs entirely at compose time — Postgres
-/// cannot enforce a FK across database targets.
-/// App identity is `(database, label)`: two apps with the same label
-/// in different databases are distinct participants. Both are
-/// recorded per edge so consumers can pattern-match the full
-/// identity without re-looking-up the registry.
+///   cannot enforce a FK across database targets.
+///   App identity is `(database, label)`: two apps with the same label
+///   in different databases are distinct participants. Both are
+///   recorded per edge so consumers can pattern-match the full
+///   identity without re-looking-up the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrossAppEdge {
     /// Database target owning the source model.

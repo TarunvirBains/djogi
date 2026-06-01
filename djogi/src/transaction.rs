@@ -262,22 +262,22 @@ impl Drop for PoolContextAtomicGuard<'_> {
 /// nested `atomic_with` calls are rejected (see [`atomic_with`] docs).
 /// # Variants
 /// - [`IsolationLevel::ReadCommitted`] — Postgres' session default. A
-/// statement sees only data committed before the statement begins
-/// (snapshot of the moment the statement starts). Different
-/// statements in one transaction can observe different commits. The
-/// weakest isolation Postgres provides; widest concurrency.
+///   statement sees only data committed before the statement begins
+///   (snapshot of the moment the statement starts). Different
+///   statements in one transaction can observe different commits. The
+///   weakest isolation Postgres provides; widest concurrency.
 /// - [`IsolationLevel::RepeatableRead`] — every statement in the
-/// transaction sees the same snapshot, taken at the moment of the
-/// transaction's first non-control statement. Reads are repeatable;
-/// concurrent writes that conflict raise SQLSTATE `40001`
-/// (serialization_failure) at commit time. [`retry_on_conflict`]
-/// classifies that as transient and re-runs the closure.
+///   transaction sees the same snapshot, taken at the moment of the
+///   transaction's first non-control statement. Reads are repeatable;
+///   concurrent writes that conflict raise SQLSTATE `40001`
+///   (serialization_failure) at commit time. [`retry_on_conflict`]
+///   classifies that as transient and re-runs the closure.
 /// - [`IsolationLevel::Serializable`] — strongest. Postgres' SSI
-/// (serializable snapshot isolation) monitors read/write dependencies
-/// between concurrent transactions and aborts one with `40001` if
-/// their interleaving could not be reproduced by some serial
-/// execution. Use for invariants that span multiple rows or tables
-/// (e.g. "no two events can overlap in the same room").
+///   (serializable snapshot isolation) monitors read/write dependencies
+///   between concurrent transactions and aborts one with `40001` if
+///   their interleaving could not be reproduced by some serial
+///   execution. Use for invariants that span multiple rows or tables
+///   (e.g. "no two events can overlap in the same room").
 /// # Retry composition
 /// Both `RepeatableRead` and `Serializable` can raise serialization
 /// failure on commit. [`retry_on_conflict`] composes naturally — wrap
@@ -402,13 +402,13 @@ impl RetryableErrorClasses {
 /// Backoff policy for [`retry_on_conflict_with_backoff`].
 /// The policy is deliberately dependency-free. Known-primitive audit:
 /// - Sleeping uses [`tokio::time::sleep`], already part of Djogi's async
-/// runtime substrate.
+///   runtime substrate.
 /// - Delay arithmetic uses [`std::time::Duration`] and saturating operations.
 /// - Optional jitter uses [`std::time::SystemTime`] as a lightweight entropy
-/// source rather than adding a `rand` dependency.
-/// The default policy treats [`DjogiError::PoolTimeout`] as a stronger pressure
-/// signal than lock conflicts: pool checkout exhaustion waits longer before
-/// retrying so callers do not immediately re-enter the saturated queue.
+///   source rather than adding a `rand` dependency.
+///   The default policy treats [`DjogiError::PoolTimeout`] as a stronger pressure
+///   signal than lock conflicts: pool checkout exhaustion waits longer before
+///   retrying so callers do not immediately re-enter the saturated queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransactionRetryBackoff {
     lock_conflict_initial_delay: Duration,
@@ -582,23 +582,23 @@ fn nanos_to_duration(nanos: u128) -> Duration {
 /// [`DjogiError::ConstraintModeOutsideTransaction`].
 /// # Variants
 /// - [`DeferScope::All`] — apply the new mode to every deferrable
-/// constraint in the current transaction. Emits
-/// `SET CONSTRAINTS ALL DEFERRED|IMMEDIATE`. Postgres' standard
-/// shape for the cycle-FK insertion pattern.
+///   constraint in the current transaction. Emits
+///   `SET CONSTRAINTS ALL DEFERRED|IMMEDIATE`. Postgres' standard
+///   shape for the cycle-FK insertion pattern.
 /// - [`DeferScope::Named`] — apply the new mode to specific named
-/// constraints. The framework validates each name against the
-/// model-descriptor inventory ([`crate::DeferrabilitySpec`])
-/// before emitting any SQL:
+///   constraints. The framework validates each name against the
+///   model-descriptor inventory ([`crate::DeferrabilitySpec`])
+///   before emitting any SQL:
 /// - Unknown name → [`DjogiError::UnknownConstraintName`].
 /// - Name found but `deferrable = false` →
-/// [`DjogiError::ConstraintNotDeferrable`].
+///   [`DjogiError::ConstraintNotDeferrable`].
 /// - All names valid + deferrable → emit
-/// `SET CONSTRAINTS "name1", "name2", ... DEFERRED|IMMEDIATE`.
-/// The constraint naming convention is the conventional
-/// `<table>_<column>_fkey` (truncated to Postgres' 63-byte
-/// identifier limit when necessary) — see
-/// `djogi/src/migrate/sql.rs::fk_constraint_name` for the canonical
-/// composition.
+///   `SET CONSTRAINTS "name1", "name2", ... DEFERRED|IMMEDIATE`.
+///   The constraint naming convention is the conventional
+///   `<table>_<column>_fkey` (truncated to Postgres' 63-byte
+///   identifier limit when necessary) — see
+///   `djogi/src/migrate/sql.rs::fk_constraint_name` for the canonical
+///   composition.
 /// # Slice form for `Named`
 /// `Named(&'static [&'static str])` accepts a slice of static names so
 /// the typical adopter call site is allocation-free:
@@ -1099,18 +1099,18 @@ where
 /// Run `closure` inside an atomic transaction scope.
 /// Two shapes:
 /// - `atomic(&mut pool_ctx, |ctx| Box::pin(async move { ... }))`
-/// preferred outermost form when the caller already has a pool-backed
-/// context. Opens a transaction, shares `pool_ctx`'s Sassi registry,
-/// commits on `Ok`, rolls back on `Err`, and drains on-commit callbacks
-/// after the commit.
+///   preferred outermost form when the caller already has a pool-backed
+///   context. Opens a transaction, shares `pool_ctx`'s Sassi registry,
+///   commits on `Ok`, rolls back on `Err`, and drains on-commit callbacks
+///   after the commit.
 /// - `atomic(&pool, |ctx| Box::pin(async move { ... }))` — compatibility
-/// shortcut when no parent context exists. Opens a fresh top-level
-/// transaction context.
+///   shortcut when no parent context exists. Opens a fresh top-level
+///   transaction context.
 /// - `atomic(&mut tx_ctx, |ctx| Box::pin(async move { ... }))` — nested.
-/// Emits `SAVEPOINT sp_<depth>` on entry; `RELEASE` on `Ok`, `ROLLBACK TO
+///   Emits `SAVEPOINT sp_<depth>` on entry; `RELEASE` on `Ok`, `ROLLBACK TO
 /// SAVEPOINT` + `RELEASE` on `Err`. On-commit callbacks registered inside
-/// a nested scope are promoted to the outer queue on success, discarded on
-/// `Err`.
+///   a nested scope are promoted to the outer queue on success, discarded on
+///   `Err`.
 /// # Panic semantics
 /// If the closure panics, `atomic` rolls back (or rolls back to the
 /// savepoint, in the nested case) **before** the panic resumes. The
@@ -1144,19 +1144,19 @@ where
 /// matches [`atomic`] exactly.
 /// # Scopes
 /// - `atomic_with(level, &mut pool_ctx, ...)` — preferred outermost
-/// shape when the caller already holds a pool-backed
-/// [`DjogiContext`]. Opens a transaction at `level`, shares the
-/// parent context's Sassi registry, commits on `Ok`, rolls back on
-/// `Err`.
+///   shape when the caller already holds a pool-backed
+///   [`DjogiContext`]. Opens a transaction at `level`, shares the
+///   parent context's Sassi registry, commits on `Ok`, rolls back on
+///   `Err`.
 /// - `atomic_with(level, &pool, ...)` — compatibility shortcut when
-/// no parent context exists. Opens a fresh top-level transaction
-/// context at `level`.
+///   no parent context exists. Opens a fresh top-level transaction
+///   context at `level`.
 /// - `atomic_with(level, &mut tx_ctx, ...)` — **rejected** with
-/// [`DjogiError::IsolationLevelOnNestedScope`]. Postgres pins
-/// isolation at the outer `BEGIN` for the entire transaction;
-/// `SAVEPOINT` does not open a sub-transaction with its own
-/// isolation knob. Use [`atomic`] for nested scopes — the nested
-/// scope inherits the outermost transaction's isolation level.
+///   [`DjogiError::IsolationLevelOnNestedScope`]. Postgres pins
+///   isolation at the outer `BEGIN` for the entire transaction;
+///   `SAVEPOINT` does not open a sub-transaction with its own
+///   isolation knob. Use [`atomic`] for nested scopes — the nested
+///   scope inherits the outermost transaction's isolation level.
 /// # Retry composition
 /// Both `RepeatableRead` and `Serializable` can raise SQLSTATE
 /// `40001` on commit-time conflict. Wrap the `atomic_with` call in
@@ -1176,12 +1176,12 @@ where
 /// before the panic resumes; the transaction never leaks.
 /// # Errors
 /// - [`DjogiError::IsolationLevelOnNestedScope`] when invoked on a
-/// transaction-backed `DjogiContext` (the nested savepoint scope).
-/// Classified as **terminal** — retrying cannot turn a nested
-/// savepoint into a fresh outermost transaction.
+///   transaction-backed `DjogiContext` (the nested savepoint scope).
+///   Classified as **terminal** — retrying cannot turn a nested
+///   savepoint into a fresh outermost transaction.
 /// - The underlying `BEGIN ISOLATION LEVEL <level>` SQL error if
-/// Postgres refuses the request (`25001` after the first
-/// statement, etc.). Classified by Postgres' SQLSTATE.
+///   Postgres refuses the request (`25001` after the first
+///   statement, etc.). Classified by Postgres' SQLSTATE.
 /// # Example
 /// ```ignore
 /// use djogi::DjogiContext;

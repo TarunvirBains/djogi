@@ -58,10 +58,10 @@ pub struct NotifyPublisher {
 impl NotifyPublisher {
     /// Create a new `NotifyPublisher`.
     /// - `pool` — the connection pool to acquire a connection from on each
-    /// `publish` call.
+    ///   `publish` call.
     /// - `channel` — the Postgres channel name (first argument to
-    /// `pg_notify`). Passed as a bind parameter, not interpolated into
-    /// SQL, so arbitrary content is safe.
+    ///   `pg_notify`). Passed as a bind parameter, not interpolated into
+    ///   SQL, so arbitrary content is safe.
     pub fn new(pool: DjogiPool, channel: String) -> Self {
         Self { pool, channel }
     }

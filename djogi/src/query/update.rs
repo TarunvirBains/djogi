@@ -17,12 +17,12 @@
 //! callers:
 //! - **Log or inspect** the queued assignments before execution.
 //! - **Retry** an UPDATE without re-running the filter closure. `UpdateStmt`
-//! is `Clone` because [`QuerySet`] is `Clone`; cloning the statement is
-//! exactly as cheap as cloning the underlying queryset.
+//!   is `Clone` because [`QuerySet`] is `Clone`; cloning the statement is
+//!   exactly as cheap as cloning the underlying queryset.
 //! - **Branch on short-circuit**: callers that already know a mutation is
-//! inert can avoid constructing it; otherwise mutation terminals run
-//! `validate_mutation_read_tail(...)` first (mirroring `insert_select.rs`),
-//! then short-circuit on pure `none` / empty assignments.
+//!   inert can avoid constructing it; otherwise mutation terminals run
+//!   `validate_mutation_read_tail(...)` first (mirroring `insert_select.rs`),
+//!   then short-circuit on pure `none` / empty assignments.
 //! # Constructor-only invariant on `UpdateAssignment`
 //! `UpdateAssignment`'s fields are `pub(crate)`; the only way to build one
 //! from outside this crate is [`FieldRef::set`], which funnels through
@@ -360,18 +360,18 @@ impl<T: Model> UpdateStmt<T> {
     /// inert paths short-circuit.
     /// Short-circuits to `Ok(0)` when either:
     /// - The underlying queryset is `QuerySet::none`-derived
-    /// (`is_empty` is `true`), or
+    ///   (`is_empty` is `true`), or
     /// - The closure produced zero assignments — `UPDATE ... SET ...`
-    /// with an empty SET list is a Postgres syntax error, so the
-    /// short-circuit here is both a contract shortcut and a safety
-    /// rail.
-    /// Takes `&mut DjogiContext`, matching [`QuerySet::fetch_all`] /
-    /// [`QuerySet::count`] — the same call site works against a pool-
-    /// backed context or a transaction-backed one post-Phase-4 retrofit.
-    /// Returns `u64` — the row-count from `tokio_postgres`'s
-    /// `CommandTag::rows_affected`. Postgres' UPDATE rowcount is
-    /// non-negative by definition, so there is no sign conversion at
-    /// the call site.
+    ///   with an empty SET list is a Postgres syntax error, so the
+    ///   short-circuit here is both a contract shortcut and a safety
+    ///   rail.
+    ///   Takes `&mut DjogiContext`, matching [`QuerySet::fetch_all`] /
+    ///   [`QuerySet::count`] — the same call site works against a pool-
+    ///   backed context or a transaction-backed one post-Phase-4 retrofit.
+    ///   Returns `u64` — the row-count from `tokio_postgres`'s
+    ///   `CommandTag::rows_affected`. Postgres' UPDATE rowcount is
+    ///   non-negative by definition, so there is no sign conversion at
+    ///   the call site.
     /// # Cache invalidation
     /// For macro-backed models with a registered Punnu, transaction-backed bulk
     /// updates collect affected primary keys internally with `UPDATE ... RETURNING
@@ -449,7 +449,7 @@ impl<T: Model> UpdateStmt<T> {
     /// Returns `Ok(Vec::new)` without issuing any SQL when:
     /// - The underlying queryset is `QuerySet::none`-derived.
     /// - The assignment list is empty (an UPDATE with an empty SET list is a
-    /// Postgres syntax error).
+    ///   Postgres syntax error).
     /// # Warning — unbounded materialization
     /// This method loads **one `ReturningPair<T>` per affected row** into memory.
     /// On large tables or unfiltered updates this can exhaust available memory.
@@ -521,16 +521,16 @@ impl<T: Model> QuerySet<T> {
     /// Two assignment forms are accepted in the closure:
     /// - Literal: `f.col.set(value)` where `value: V: IntoFilterValue`.
     /// - Expression IR: `f.col.set_expr(expr)` for `col = col + 1`,
-    /// `col = NOW`, `col = other_col`, and similar shapes the
-    /// [`crate::expr`] builder supports.
-    /// For SQL the expression builder cannot express, reach for
-    /// [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute).
-    /// The returned [`UpdateStmt`] is inert — the actual SQL runs when
-    /// the caller invokes [`UpdateStmt::execute`] with a
-    /// `&mut DjogiContext`. Splitting the builder from the terminal keeps
-    /// the call-site shape symmetric with the read terminals
-    /// (`fetch_all`, `count`, etc.) and lets callers log, inspect, or
-    /// retry the pending statement without re-running the closure.
+    ///   `col = NOW`, `col = other_col`, and similar shapes the
+    ///   [`crate::expr`] builder supports.
+    ///   For SQL the expression builder cannot express, reach for
+    ///   [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute).
+    ///   The returned [`UpdateStmt`] is inert — the actual SQL runs when
+    ///   the caller invokes [`UpdateStmt::execute`] with a
+    ///   `&mut DjogiContext`. Splitting the builder from the terminal keeps
+    ///   the call-site shape symmetric with the read terminals
+    ///   (`fetch_all`, `count`, etc.) and lets callers log, inspect, or
+    ///   retry the pending statement without re-running the closure.
     /// ```ignore
     /// Post::objects()
     ///     .filter(|f| f.published().eq(true))

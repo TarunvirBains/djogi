@@ -3,16 +3,16 @@
 //! runtime startup validation and audit/debug visibility.
 //! ## Record types
 //! - [`ProtectedPresentationScopeMetadata`] — per-scope metadata inside a
-//! field's presentation declaration. One entry per `(field, scope)` pair
-//! declared in `protected(per_scope = { ... })`.
+//!   field's presentation declaration. One entry per `(field, scope)` pair
+//!   declared in `protected(per_scope = { ... })`.
 //! - [`ProtectedPresentationFieldMetadata`] — per-field aggregate carrying
-//! a static slice of scope entries. This is a Stage-facing shape for richer
-//! introspection tooling; startup validation currently consumes
-//! `PresentationCodecUsage` entries directly.
+//!   a static slice of scope entries. This is a Stage-facing shape for richer
+//!   introspection tooling; startup validation currently consumes
+//!   `PresentationCodecUsage` entries directly.
 //! - [`PresentationCodecUsage`] — one submission per `(model, field, scope,
 //! codec)` usage. Consumed by [`super::validate_startup_inventory`] to call
-//! each codec's [`validate_startup`](super::PresentationCodecInfo::validate_startup)
-//! before the framework accepts traffic.
+//!   each codec's [`validate_startup`](super::PresentationCodecInfo::validate_startup)
+//!   before the framework accepts traffic.
 //! ## Design note
 //! All structs are `Copy` (enforced by the `Copy` derive) so macro-emitted
 //! `inventory::submit!` blocks and static slice initializers can embed values
@@ -35,7 +35,7 @@ use crate::presentation::{PresentationStartupError, Queryability, Reversibility}
 /// # Invariants
 /// - `scope` matches one of the model's declared scope keys.
 /// - `codec_path` is a Rust type path to the codec implementing
-/// [`PresentationCodecInfo`](super::PresentationCodecInfo).
+///   [`PresentationCodecInfo`](super::PresentationCodecInfo).
 /// - `reversible` and `queryability` reflect the codec's trait constants.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

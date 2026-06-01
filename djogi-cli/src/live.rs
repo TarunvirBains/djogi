@@ -3,22 +3,22 @@
 //! expand → backfill → flip → contract sequence the live-plan layer
 //! drives:
 //! - `live plan` — generate plan files for pending schema deltas
-//! classified [`OnlineSafetyClassification::ExpandContract`](djogi::live_migrate::OnlineSafetyClassification::ExpandContract).
+//!   classified [`OnlineSafetyClassification::ExpandContract`](djogi::live_migrate::OnlineSafetyClassification::ExpandContract).
 //! - `live show` — render plan-file metadata + persisted runtime state
-//! side by side, plus the active hook snapshot at the current step.
+//!   side by side, plus the active hook snapshot at the current step.
 //! - `live run` — drive the plan forward until the next operator gate,
-//! refusing destructive work without `--allow-destructive`
-//! `--justify "<reason>"`.
+//!   refusing destructive work without `--allow-destructive`
+//!   `--justify "<reason>"`.
 //! - `live resume` — pick up after an interruption; reads
-//! `backfill_rows_done` from the row and continues at the same step.
+//!   `backfill_rows_done` from the row and continues at the same step.
 //! - `live finalize` — execute remaining
-//! [`StepKind::FinalizeConstraints`](djogi::live_migrate::StepKind::FinalizeConstraints)
-//! /
-//! [`StepKind::CleanupLegacyState`](djogi::live_migrate::StepKind::CleanupLegacyState)
-//! steps, drop compatibility hooks, and promote the row to
-//! [`PlanStatus::Complete`](djogi::live_migrate::PlanStatus::Complete).
+//!   [`StepKind::FinalizeConstraints`](djogi::live_migrate::StepKind::FinalizeConstraints)
+//!   /
+//!   [`StepKind::CleanupLegacyState`](djogi::live_migrate::StepKind::CleanupLegacyState)
+//!   steps, drop compatibility hooks, and promote the row to
+//!   [`PlanStatus::Complete`](djogi::live_migrate::PlanStatus::Complete).
 //! - `live abandon` — terminal opt-out; gated on confirmation OR
-//! `--force` plus a non-production `DJOGI_ENV`.
+//!   `--force` plus a non-production `DJOGI_ENV`.
 //! # Exit codes
 //! Per of the plan:
 //! | Code | Meaning |
@@ -31,12 +31,12 @@
 //! | 5 | Plan state conflicts with request (e.g. `run` on `complete`). |
 //! # Out of scope for T10
 //! - **Live-DB integration tests.** T12 owns end-to-end coverage; T10
-//! ships clap parsing, helpers, and exit-code mapping.
+//!   ships clap parsing, helpers, and exit-code mapping.
 //! - **`djogi_codec_recode(...)`** — still a placeholder per T8.
 //! - **`djogi_schema_migrations.justification` persistence.** Adding
-//! the column requires a separate ALTER TABLE migration; T10 accepts
-//! `--justify` and routes the value through to the runner, but the
-//! actual column write lands in a follow-up phase.
+//!   the column requires a separate ALTER TABLE migration; T10 accepts
+//!   `--justify` and routes the value through to the runner, but the
+//!   actual column write lands in a follow-up phase.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

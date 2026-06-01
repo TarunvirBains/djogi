@@ -583,23 +583,23 @@ fn emit_rationale_advisories(
 /// Rules enforced here (after `FieldAttrs::parse` accepts the bare `version`
 /// flag permissively):
 /// 1. At most one field per model may carry `#[field(version)]`.
-/// A second occurrence produces a span-precise compile error at the
-/// second field.
+///    A second occurrence produces a span-precise compile error at the
+///    second field.
 /// 2. The annotated field's type must be exactly `i32` or `i64`. Accepted
-/// spellings:
+///    spellings:
 /// - bare `i32` / `i64` (single-segment path);
 /// - `std::primitive::i32` / `std::primitive::i64`;
 /// - `core::primitive::i32` / `core::primitive::i64`.
-/// Any other multi-segment path — including user-defined module aliases
-/// like `my_mod::i32` — is rejected at macro-expansion time so a
-/// misleadingly named type alias cannot silently satisfy the contract.
-/// `Option<i32>` (last segment `Option`) is likewise rejected.
-/// Type resolution is unavailable at macro-expansion time. The validator
-/// therefore accepts a small, explicit allowlist of qualified primitive
-/// spellings plus the bare form. A user who writes `type i32 = String;`
-/// in scope of the annotated field can still fool the check; this is the
-/// inherent ceiling of syntactic detection and matches the limitation of
-/// every other macro in the ecosystem that inspects field types.
+///   Any other multi-segment path — including user-defined module aliases
+///   like `my_mod::i32` — is rejected at macro-expansion time so a
+///   misleadingly named type alias cannot silently satisfy the contract.
+///   `Option<i32>` (last segment `Option`) is likewise rejected.
+///   Type resolution is unavailable at macro-expansion time. The validator
+///   therefore accepts a small, explicit allowlist of qualified primitive
+///   spellings plus the bare form. A user who writes `type i32 = String;`
+///   in scope of the annotated field can still fool the check; this is the
+///   inherent ceiling of syntactic detection and matches the limitation of
+///   every other macro in the ecosystem that inspects field types.
 fn validate_version_fields(
     struct_item: &ItemStruct,
     field_attrs: &[attrs::FieldAttrs],
@@ -660,8 +660,8 @@ fn validate_version_fields(
 /// - single-segment `i32` / `i64`
 /// - `std::primitive::i32` / `std::primitive::i64`
 /// - `core::primitive::i32` / `core::primitive::i64`
-/// Every other shape returns `false`, including `my_mod::i32` and other
-/// user-module paths that happen to end in `i32` / `i64`.
+///   Every other shape returns `false`, including `my_mod::i32` and other
+///   user-module paths that happen to end in `i32` / `i64`.
 fn is_version_primitive_path(path: &syn::Path) -> bool {
     // Reject any segment that carries angle-bracketed or parenthesized args
     // (e.g. a typo like `i32<>`). Version fields must be exactly the

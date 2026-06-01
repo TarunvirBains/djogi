@@ -1,15 +1,15 @@
 //! `djogi db` and `djogi docs` subcommand glue
 //! Three leaves:
 //! - `db reset` — drops, recreates, and replays committed migrations
-//! for the application database. Triple-gated (localhost +
-//! non-production profile + explicit `--yes`) per the brief.
+//!   for the application database. Triple-gated (localhost +
+//!   non-production profile + explicit `--yes`) per the brief.
 //! - `db seed` — runs operator-authored SQL fixtures from
-//! `seeds/<database>/`. Localhost-or-`--allow-non-localhost`.
+//!   `seeds/<database>/`. Localhost-or-`--allow-non-localhost`.
 //! - `docs` — renders per-model markdown reference pages from the
-//! descriptor inventory.
-//! All three flow through public APIs in `djogi::migrate` (or
-//! `::config`) so integration tests can exercise the underlying logic
-//! without spawning subprocesses.
+//!   descriptor inventory.
+//!   All three flow through public APIs in `djogi::migrate` (or
+//!   `::config`) so integration tests can exercise the underlying logic
+//!   without spawning subprocesses.
 //! # Exit codes
 //! Every subcommand in this module obeys a uniform three-value matrix
 //! so shell integrations can distinguish "operation refused" from
@@ -210,25 +210,25 @@ async fn run_reset(
 /// resolves to an audit DB URL and the pool can be constructed from
 /// that URL. Returns `None` (with a `tracing::warn!`) on any of:
 /// - URL resolution failure (no path component to splice; no
-/// `CRUD_LOG_URL` / `[database].crud_log_url` override; self-audit
-/// refusal because `database.url` already ends in `/crud_log`).
+///   `CRUD_LOG_URL` / `[database].crud_log_url` override; self-audit
+///   refusal because `database.url` already ends in `/crud_log`).
 /// - Syntactically invalid pool configuration or immediate pool
-/// construction failure.
-/// **Why best-effort.** The audit overlay is a defence-in-depth
-/// mechanism: an audit row exists so a future `db reset` cannot erase
-/// the migration history. Refusing the destructive `db reset` over an
-/// audit-side configuration glitch would invert the priority — the
-/// operator's recovery path (re-run reset to rebuild the DB) gets
-/// blocked by a sibling-DB outage. The runner's own audit-write loop
-/// already follows the same stance: a `Some(audit_pool)` whose first
-/// `INSERT` fails is logged + skipped without rolling back the
-/// committed app DDL (see [`super::audit`]'s
-/// `record_ddl_audit_for_plan` doc).
-/// **Operator visibility.** Degradation paths detected before replay
-/// print a warning to stderr and also emit a `tracing::warn!` with the
-/// offending URL (when known). A syntactically valid but unreachable
-/// audit DB may not fail until the runner's first audit insert; that
-/// later path follows the runner's existing best-effort tracing warning.
+///   construction failure.
+///   **Why best-effort.** The audit overlay is a defence-in-depth
+///   mechanism: an audit row exists so a future `db reset` cannot erase
+///   the migration history. Refusing the destructive `db reset` over an
+///   audit-side configuration glitch would invert the priority — the
+///   operator's recovery path (re-run reset to rebuild the DB) gets
+///   blocked by a sibling-DB outage. The runner's own audit-write loop
+///   already follows the same stance: a `Some(audit_pool)` whose first
+///   `INSERT` fails is logged + skipped without rolling back the
+///   committed app DDL (see [`super::audit`]'s
+///   `record_ddl_audit_for_plan` doc).
+///   **Operator visibility.** Degradation paths detected before replay
+///   print a warning to stderr and also emit a `tracing::warn!` with the
+///   offending URL (when known). A syntactically valid but unreachable
+///   audit DB may not fail until the runner's first audit insert; that
+///   later path follows the runner's existing best-effort tracing warning.
 async fn resolve_audit_pool_best_effort(config: &DjogiConfig) -> Option<deadpool_postgres::Pool> {
     let url = match djogi::migrate::resolve_audit_url(config) {
         Ok(u) => u,
@@ -453,24 +453,24 @@ fn print_seed_report(report: &SeedReport) {
 /// [`djogi::testing::teardown_test_db`] could fire.
 /// Triple-gated identical to `db reset`:
 /// 1. **Localhost.** `DjogiConfig::database.url` MUST resolve to
-/// `127.0.0.1` / `localhost` / `[::1]`, unless the operator passed
-/// `--allow-non-localhost` to override (parity with `db seed`'s
-/// lighter gate — sometimes operators run a remote dev cluster).
+///    `127.0.0.1` / `localhost` / `[::1]`, unless the operator passed
+///    `--allow-non-localhost` to override (parity with `db seed`'s
+///    lighter gate — sometimes operators run a remote dev cluster).
 /// 2. **Non-production.** `Djogi.toml::profile` MUST NOT equal
-/// `"production"`. Mirrors `db reset`'s second gate so the same
-/// rules govern any operation that issues `DROP DATABASE`.
+///    `"production"`. Mirrors `db reset`'s second gate so the same
+///    rules govern any operation that issues `DROP DATABASE`.
 /// 3. **Confirmation.** `--yes` is required, unless `--dry-run` is
-/// passed. `--dry-run` lists candidates without dropping; no
-/// confirmation needed because no side effect occurs.
-/// `maintenance_database` defaults to `"postgres"` — the conventional
-/// administrative DB present on every cluster — and is spliced into
-/// `database.url`'s path component to produce the admin connection
-/// URL (the application database itself can't drop other databases on
-/// the same cluster).
-/// Exit codes match the `db` matrix at the top of this module: `0` on
-/// success, `1` on runtime / SQL / connect failure, `2` on gate
-/// refusal (non-localhost without override, production profile,
-/// missing `--yes`).
+///    passed. `--dry-run` lists candidates without dropping; no
+///    confirmation needed because no side effect occurs.
+///    `maintenance_database` defaults to `"postgres"` — the conventional
+///    administrative DB present on every cluster — and is spliced into
+///    `database.url`'s path component to produce the admin connection
+///    URL (the application database itself can't drop other databases on
+///    the same cluster).
+///    Exit codes match the `db` matrix at the top of this module: `0` on
+///    success, `1` on runtime / SQL / connect failure, `2` on gate
+///    refusal (non-localhost without override, production profile,
+///    missing `--yes`).
 pub fn cleanup_test_dbs_cmd(
     dry_run: bool,
     yes: bool,

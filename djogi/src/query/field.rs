@@ -8,18 +8,18 @@
 //! `Condition::Leaf` that slots into the `QuerySet<T>` filter tree.
 //! # Why
 //! - **Type safety.** `M` binds a ref to one model, so mixing
-//! `UserFields.id` with a `Post`-targeted QuerySet is a compile error,
-//! not a runtime SQL error. `V` binds the lookup's RHS to the column's
-//! Rust type, so `view_count.eq("hello")` fails at the field-argument
-//! conversion bound — again at compile time.
+//!   `UserFields.id` with a `Post`-targeted QuerySet is a compile error,
+//!   not a runtime SQL error. `V` binds the lookup's RHS to the column's
+//!   Rust type, so `view_count.eq("hello")` fails at the field-argument
+//!   conversion bound — again at compile time.
 //! - **Zero runtime cost.** `FieldRef` is two phantom markers plus a
-//! `&'static str`; the whole struct is `Copy` and disappears after the
-//! leaf is built. No boxing, no reflection, no string formatting.
+//!   `&'static str`; the whole struct is `Copy` and disappears after the
+//!   leaf is built. No boxing, no reflection, no string formatting.
 //! - **String-only lookups are gated.** Methods like `contains`/
-//! `starts_with`/`regex` live in an `impl<M: Model> FieldRef<M, String>`
-//! block so calling `age.contains(...)` yields a helpful "no method named
-//! `contains` on `FieldRef<M, i64>`" error — the type system is the
-//! documentation.
+//!   `starts_with`/`regex` live in an `impl<M: Model> FieldRef<M, String>`
+//!   block so calling `age.contains(...)` yields a helpful "no method named
+//!   `contains` on `FieldRef<M, i64>`" error — the type system is the
+//!   documentation.
 //! # How (user surface)
 //! ```ignore
 //! use djogi::prelude::*;
@@ -410,18 +410,18 @@ impl DjogiFieldProvenance {
 /// add an impl per type.
 /// # Deliberate exclusions
 /// - **`String`**: Postgres text ordering depends on the database's
-/// collation, which doesn't match Rust's byte-lexicographic `Ord`.
-/// Adopters who want database-locale text ordering reach for
-/// `explicit_pg_predicate.gt(...)` until a future phase pins
-/// collation-aware portable ordering.
+///   collation, which doesn't match Rust's byte-lexicographic `Ord`.
+///   Adopters who want database-locale text ordering reach for
+///   `explicit_pg_predicate.gt(...)` until a future phase pins
+///   collation-aware portable ordering.
 /// - **`f32` / `f64`**: SQL `NULLS FIRST/LAST` and IEEE-754 NaN ordering
-/// diverge from Rust's `PartialOrd` semantics. A future phase may add a
-/// collation-pinned float ordering with explicit NaN handling.
+///   diverge from Rust's `PartialOrd` semantics. A future phase may add a
+///   collation-pinned float ordering with explicit NaN handling.
 /// - **`Option<U>`**: Rust's `Option` ordering (`None < Some(_)`) doesn't
-/// match SQL three-valued NULL semantics. Callers use `.some.gt(v)`
-/// instead.
+///   match SQL three-valued NULL semantics. Callers use `.some.gt(v)`
+///   instead.
 /// - **No blanket impl**: a `impl<T: PartialOrd + ToSql + …>` would
-/// silently include `Option<U>` and any future foreign type.
+///   silently include `Option<U>` and any future foreign type.
 /// # Adopter extension
 /// Custom scalar types that bind through `postgres_types::ToSql` and whose
 /// Rust `Ord` matches the SQL ordering Djogi emits can opt in:
@@ -2800,22 +2800,22 @@ mod sql_field_seal {
 /// Sealed conversion from a typed root field handle into a SQL `FieldRef`.
 /// Implemented for:
 /// - [`FieldRef<M, V>`] — legacy SQL-only handle. Returns the receiver
-/// unchanged.
+///   unchanged.
 /// - [`DjogiField<M, V>`] — root accessor return type. Returns
-/// the wrapped SQL `FieldRef` so the SQL helper sees the same column
-/// metadata it always has.
-/// Use this trait as a bound on SQL helper signatures (spatial group/cluster
-/// keys, single-column probes for aggregate emission helpers, etc.) so root
-/// accessors can flow through without an explicit `.explicit_pg_predicate`
-/// / `__sql_field` step. The bound is sealed, so downstream crates cannot
-/// add hostile impls that would smuggle arbitrary column strings into
-/// SQL emission sites — the only way to reach a `FieldRef<M, V>` here is
-/// through a value already produced by the validated `__make_field_ref` /
-/// `__make_djogi_field` constructors.
-/// The trait deliberately covers single columns only: helpers that fan
-/// out into a column tuple (`DISTINCT ON`, `GROUP BY`) reach for
-/// [`crate::query::queryset::IntoDistinctColumns`] /
-/// [`crate::query::grouped::IntoGroupKeyTuple`] instead.
+///   the wrapped SQL `FieldRef` so the SQL helper sees the same column
+///   metadata it always has.
+///   Use this trait as a bound on SQL helper signatures (spatial group/cluster
+///   keys, single-column probes for aggregate emission helpers, etc.) so root
+///   accessors can flow through without an explicit `.explicit_pg_predicate`
+///   / `__sql_field` step. The bound is sealed, so downstream crates cannot
+///   add hostile impls that would smuggle arbitrary column strings into
+///   SQL emission sites — the only way to reach a `FieldRef<M, V>` here is
+///   through a value already produced by the validated `__make_field_ref` /
+///   `__make_djogi_field` constructors.
+///   The trait deliberately covers single columns only: helpers that fan
+///   out into a column tuple (`DISTINCT ON`, `GROUP BY`) reach for
+///   [`crate::query::queryset::IntoDistinctColumns`] /
+///   [`crate::query::grouped::IntoGroupKeyTuple`] instead.
 pub trait IntoSqlField<M: Model, V>: sql_field_seal::Sealed {
     /// Convert into a `FieldRef<M, V>` carrying the same column metadata.
     fn into_sql_field(self) -> FieldRef<M, V>;
@@ -2900,23 +2900,23 @@ pub mod djogi_field_macro_support {
 /// shipped variants (typically `String` for JSONB-friendly types).
 /// # Two distinct responsibilities
 /// 1. **Bind-value conversion** — [`into_filter_value`](Self::into_filter_value)
-/// maps a Rust value to a typed [`FilterValue`] discriminant for the
-/// SQL bind site. This is the universal direction: every implementor
-/// must define it.
+///    maps a Rust value to a typed [`FilterValue`] discriminant for the
+///    SQL bind site. This is the universal direction: every implementor
+///    must define it.
 /// 2. **JSONB path LHS cast selection**
-/// [`jsonb_sql_cast`](Self::jsonb_sql_cast) returns the typed
-/// [`JsonbSqlCast`](crate::jsonb::JsonbSqlCast) that
-/// [`JsonbPathRef<M, Self>`](crate::jsonb::JsonbPathRef) applies to
-/// the text-extracted LHS before comparing against the bind. The
-/// default body walks a built-in lookup table keyed by
-/// `std::any::type_name::<Self>`; that covers every primitive Rust
-/// type djogi ships an impl for. **Wrapper implementors (custom PK
-/// newtypes from `primary_key!`, `ForeignKey<T>`, `OneToOneField<T>`,
-/// and any other inner-type-delegating shape) MUST override
-/// `jsonb_sql_cast` to delegate to the inner SQL value type's impl.**
-/// Otherwise the default lookup misses the wrapper's `type_name` and
-/// JSONB path comparisons silently fall back to text — `'10' < '9'`
-/// because text ordering is lexicographic.
+///    [`jsonb_sql_cast`](Self::jsonb_sql_cast) returns the typed
+///    [`JsonbSqlCast`](crate::jsonb::JsonbSqlCast) that
+///    [`JsonbPathRef<M, Self>`](crate::jsonb::JsonbPathRef) applies to
+///    the text-extracted LHS before comparing against the bind. The
+///    default body walks a built-in lookup table keyed by
+///    `std::any::type_name::<Self>`; that covers every primitive Rust
+///    type djogi ships an impl for. **Wrapper implementors (custom PK
+///    newtypes from `primary_key!`, `ForeignKey<T>`, `OneToOneField<T>`,
+///    and any other inner-type-delegating shape) MUST override
+///    `jsonb_sql_cast` to delegate to the inner SQL value type's impl.**
+///    Otherwise the default lookup misses the wrapper's `type_name` and
+///    JSONB path comparisons silently fall back to text — `'10' < '9'`
+///    because text ordering is lexicographic.
 pub trait IntoFilterValue {
     /// Convert `self` into the typed [`FilterValue`] discriminant the
     /// SQL bind site accepts.
@@ -2936,15 +2936,15 @@ pub trait IntoFilterValue {
     /// comparisons against the wrapper silently use text comparison.
     /// Examples in this crate:
     /// - [`primary_key!`](crate::primary_key!)-emitted custom PK newtypes
-    /// delegate to the inner Rust type the macro declared (e.g.
-    /// `LocalI64Id(i64)` delegates to `i64`).
+    ///   delegate to the inner Rust type the macro declared (e.g.
+    ///   `LocalI64Id(i64)` delegates to `i64`).
     /// - [`ForeignKey<T>`](crate::ForeignKey) delegates to `T::Pk`.
     /// - [`OneToOneField<T>`](crate::OneToOneField) delegates to `T::Pk`.
-    /// Returns `None` for `String` / `&str` (text extraction already
-    /// produces text — no cast needed) and for any type not in the
-    /// table. Adopters defining a custom scalar type for a JSONB path
-    /// extend this trait by implementing `IntoFilterValue` and
-    /// overriding `jsonb_sql_cast` to return the matching variant.
+    ///   Returns `None` for `String` / `&str` (text extraction already
+    ///   produces text — no cast needed) and for any type not in the
+    ///   table. Adopters defining a custom scalar type for a JSONB path
+    ///   extend this trait by implementing `IntoFilterValue` and
+    ///   overriding `jsonb_sql_cast` to return the matching variant.
     fn jsonb_sql_cast() -> Option<crate::jsonb::JsonbSqlCast>
     where
         Self: Sized,
@@ -2962,18 +2962,18 @@ pub trait IntoFilterValue {
 /// unrelated mismatches such as `FieldRef<M, i32>::eq("x")`.
 /// # Shipped impls
 /// - `impl<V: IntoFilterValue> IntoFieldFilterValue<V> for V` — the blanket
-/// that keeps every existing `field.eq(v)` call site compiling (passing
-/// the column's declared `V` directly).
+///   that keeps every existing `field.eq(v)` call site compiling (passing
+///   the column's declared `V` directly).
 /// - `IntoFieldFilterValue<String> for &str` — accept `&str` literals against
-/// `String` columns (issue #167).
+///   `String` columns (issue #167).
 /// - `impl<V: IntoFilterValue> IntoFieldFilterValue<Option<V>> for V` and
-/// `IntoFieldFilterValue<Option<String>> for &str` — pass the inner scalar
-/// against a nullable column; NULL rows are excluded by SQL three-valued
-/// logic at emission time (issue #107).
+///   `IntoFieldFilterValue<Option<String>> for &str` — pass the inner scalar
+///   against a nullable column; NULL rows are excluded by SQL three-valued
+///   logic at emission time (issue #107).
 /// - `impl<V: IntoFilterValue> IntoFieldFilterValue<Tracked<V>> for V` and
-/// `IntoFieldFilterValue<Tracked<String>> for &str` — pass the inner value
-/// against a `Tracked<V>` column; dirty-flag state is irrelevant on the
-/// SQL bind path (issue #166).
+///   `IntoFieldFilterValue<Tracked<String>> for &str` — pass the inner value
+///   against a `Tracked<V>` column; dirty-flag state is irrelevant on the
+///   SQL bind path (issue #166).
 /// # Why not blanket `Into<FilterValue>`?
 /// A bare `Into<FilterValue>` bound on `eq` would silently widen every typed
 /// `FieldRef<M, V>::eq` call to accept any SQL-bindable value, dropping the
@@ -3043,21 +3043,21 @@ impl IntoFieldFilterValue<Tracked<String>> for &str {
 /// emitter and Punnu agree on which forms reach each field type.
 /// # Shipped impls
 /// - `impl<V> IntoPortableFieldValue<V> for V` — the identity blanket: any
-/// value type can stand in as its own portable form (so existing
-/// `field.eq(v)` call sites continue to compile against `DjogiField<M, V>`).
+///   value type can stand in as its own portable form (so existing
+///   `field.eq(v)` call sites continue to compile against `DjogiField<M, V>`).
 /// - `IntoPortableFieldValue<String> for &str` — wraps `&str` in `String`
-/// for portable equality against String columns (issue #167).
+///   for portable equality against String columns (issue #167).
 /// - `impl<V> IntoPortableFieldValue<Option<V>> for V` and
-/// `IntoPortableFieldValue<Option<String>> for &str` — wrap the inner value
-/// in `Some(_)` for portable comparison against nullable columns. Sassi's
-/// `Field<M, Option<V>>::eq(Some(v))` evaluates `None` rows as false,
-/// matching SQL three-valued logic (issue #107).
+///   `IntoPortableFieldValue<Option<String>> for &str` — wrap the inner value
+///   in `Some(_)` for portable comparison against nullable columns. Sassi's
+///   `Field<M, Option<V>>::eq(Some(v))` evaluates `None` rows as false,
+///   matching SQL three-valued logic (issue #107).
 /// - `impl<V> IntoPortableFieldValue<Tracked<V>> for V` and
-/// `IntoPortableFieldValue<Tracked<String>> for &str` — wrap the inner
-/// value in `Tracked::new(_)` (always clean). [`Tracked<T>`]'s
-/// `PartialEq` / `PartialOrd` / `Ord` / `Hash` ignore the dirty flag, so
-/// comparing a freshly-constructed `Tracked` against a loaded row's
-/// `Tracked` reduces to comparing inner `T` values (issue #166).
+///   `IntoPortableFieldValue<Tracked<String>> for &str` — wrap the inner
+///   value in `Tracked::new(_)` (always clean). [`Tracked<T>`]'s
+///   `PartialEq` / `PartialOrd` / `Ord` / `Hash` ignore the dirty flag, so
+///   comparing a freshly-constructed `Tracked` against a loaded row's
+///   `Tracked` reduces to comparing inner `T` values (issue #166).
 pub trait IntoPortableFieldValue<FieldValue> {
     /// Convert `self` into the field's declared portable value type.
     /// The returned value flows into Sassi's `Field<M, FieldValue>::eq` /
@@ -4051,12 +4051,12 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     /// # SQL emission
     /// Emits `ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)` where:
     /// - `$lon` and `$lat` are the longitude and latitude of `center` bound
-    /// as parameters.
+    ///   as parameters.
     /// - `$r` is `km * 1000.0` (the radius in meters) bound as a parameter.
-    /// The radius is converted from kilometers to meters internally so the bind
-    /// type matches `ST_DWithin`'s `GEOGRAPHY` distance-in-meters signature.
-    /// All three values flow through `push_bind` — no string interpolation of
-    /// user-supplied data.
+    ///   The radius is converted from kilometers to meters internally so the bind
+    ///   type matches `ST_DWithin`'s `GEOGRAPHY` distance-in-meters signature.
+    ///   All three values flow through `push_bind` — no string interpolation of
+    ///   user-supplied data.
     /// # Example
     /// ```ignore
     /// Place::objects
@@ -4403,9 +4403,9 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// untyped JSON / WKT decode path.
     /// # Where
     /// - [`crate::expr::node::AggOp::SpatialConvexHull`] — IR variant
-    /// that the typed surface stores inside the `AggregateExpr` envelope.
+    ///   that the typed surface stores inside the `AggregateExpr` envelope.
     /// - [`crate::query::QuerySet::group_by`] — produces the
-    /// `GroupedQuerySet` that consumes this aggregate via `.annotate(...)`.
+    ///   `GroupedQuerySet` that consumes this aggregate via `.annotate(...)`.
     /// # Modifier composition
     /// Routes through the `Aggregate` envelope so all modifiers
     /// (`.distinct` / `.filter` / `.over` / `.order_by`)
@@ -4599,12 +4599,12 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// `::geography` for the typed-decode round-trip.
     /// # vs. [`Self::collect`] (when available) and [`Self::convex_hull`]
     /// - `ST_Union` *merges* overlapping/touching polygons, eliminating
-    /// shared edges — output area is the union of input areas.
+    ///   shared edges — output area is the union of input areas.
     /// - `ST_Collect` (T12, available on points) builds a multi-geometry
-    /// without merging — output is the bag of inputs.
+    ///   without merging — output is the bag of inputs.
     /// - `ST_ConvexHull(ST_Collect(...))` returns the smallest convex
-    /// polygon enclosing all inputs — strictly larger than the union
-    /// for non-convex shapes.
+    ///   polygon enclosing all inputs — strictly larger than the union
+    ///   for non-convex shapes.
     /// # Composition
     /// ```ignore
     /// // Merge per-region polygons into a single MultiPolygon per herd.
@@ -4648,9 +4648,9 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// stays identical.
     /// # vs. [`Self::union`]
     /// - `polygon_agg` collects polygons into a MultiPolygon
-    /// without merging — output is the bag of inputs.
+    ///   without merging — output is the bag of inputs.
     /// - `union` merges overlapping/touching polygons — output is
-    /// the geometric union.
+    ///   the geometric union.
     /// # Composition
     /// ```ignore
     /// let regions: Vec<(HerdId, MultiPolygon)> = Range::objects
@@ -4721,10 +4721,10 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// interpolation of user-supplied data.
     /// # vs. [`Self::cluster_intersecting`]
     /// - `cluster_intersecting` clusters geometries that *touch
-    /// or overlap*.
+    ///   or overlap*.
     /// - `cluster_within(d)` clusters geometries within `d` meters
-    /// of each other — the threshold is configurable, so adopters
-    /// can tune cluster granularity per use case.
+    ///   of each other — the threshold is configurable, so adopters
+    ///   can tune cluster granularity per use case.
     /// # Composition
     /// ```ignore
     /// // Cluster nearby territories within 10 km.
@@ -4759,14 +4759,14 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// merging shared edges — same input / output shape, different
     /// algorithm:
     /// - `union` (`ST_Union`) sorts inputs and merges along a
-    /// shared edge tree. Faster for moderate group sizes; memory-
-    /// intensive for very large input sets because the entire input
-    /// must fit in working memory.
+    ///   shared edge tree. Faster for moderate group sizes; memory-
+    ///   intensive for very large input sets because the entire input
+    ///   must fit in working memory.
     /// - `mem_union` (`ST_MemUnion`) runs a pairwise merge with
-    /// bounded working memory. Slower per-row but handles
-    /// terabyte-scale inputs without spilling.
-    /// Pick `mem_union` when input size exceeds working memory; pick
-    /// `union` for the common case.
+    ///   bounded working memory. Slower per-row but handles
+    ///   terabyte-scale inputs without spilling.
+    ///   Pick `mem_union` when input size exceeds working memory; pick
+    ///   `union` for the common case.
     /// # Composition
     /// ```ignore
     /// // Memory-friendly union over a very large input set.
@@ -4842,12 +4842,12 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::LineString> {
     /// works.
     /// # Sibling: `make_line` vs `line_agg`
     /// - [`FieldRef<M, GeoPoint>::make_line`] takes per-row **points**
-    /// and joins them into a single `LineString`. Use when each row
-    /// contributes one vertex.
+    ///   and joins them into a single `LineString`. Use when each row
+    ///   contributes one vertex.
     /// - This method takes per-row **LineStrings** and collects them
-    /// into a `MultiLineString`. Use when each row already carries a
-    /// path (GPS sub-tracks per device, route segments per leg, etc.)
-    /// and the per-group output should be the parallel multi-shape.
+    ///   into a `MultiLineString`. Use when each row already carries a
+    ///   path (GPS sub-tracks per device, route segments per leg, etc.)
+    ///   and the per-group output should be the parallel multi-shape.
     /// # Composition
     /// ```ignore
     /// // Per-route MultiLineString of all logged sub-tracks

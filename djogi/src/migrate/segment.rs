@@ -27,20 +27,20 @@
 //! Within a plan, operations are ordered to satisfy dependency
 //! constraints:
 //! 1. `AddEnum` runs before any column that references the new type
-//! (we do not emit cross-references in T3 — column types are raw
-//! SQL — so this is a "be safe" ordering, not a strict requirement).
+//!    (we do not emit cross-references in T3 — column types are raw
+//!    SQL — so this is a "be safe" ordering, not a strict requirement).
 //! 2. `AddTable` runs before `AddForeignKey` referencing it.
 //! 3. `RenameTable` runs before any further mutation on the renamed
-//! table.
+//!    table.
 //! 4. `DropForeignKey` runs before `DropTable` so the table can drop
-//! cleanly. The differ already groups FK drops with the column
-//! they came from, so within a single delta this is mostly
-//! automatic; the planner enforces it across the whole bucket.
+//!    cleanly. The differ already groups FK drops with the column
+//!    they came from, so within a single delta this is mostly
+//!    automatic; the planner enforces it across the whole bucket.
 //! 5. `DropTable` runs before `DropEnum` whose values appeared only
-//! in the dropped table.
+//!    in the dropped table.
 //! 6. Index ops cluster after structural ops on the same table.
 //! 7. Metadata-only ops cluster at the end.
-//! The full ordering is implemented in [`order_operations`].
+//!    The full ordering is implemented in [`order_operations`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -268,18 +268,18 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
 /// Classify a [`SchemaOperation`] into a [`SegmentKind`].
 /// Decision rules (in order):
 /// 1. [`SchemaOperation::RenameApp`] /
-/// [`SchemaOperation::MoveModelBetweenApps`] -> `MetadataOnly`.
+///    [`SchemaOperation::MoveModelBetweenApps`] -> `MetadataOnly`.
 /// 2. [`SchemaOperation::AddIndex`] /
-/// [`SchemaOperation::DropIndex`] whose
-/// `IndexSchema::requires_out_of_transaction == true` ->
-/// `NonTransactional`.
+///    [`SchemaOperation::DropIndex`] whose
+///    `IndexSchema::requires_out_of_transaction == true` ->
+///    `NonTransactional`.
 /// 3. Everything else -> `Transactional`.
-/// `PkTypeFlip` and `Unsupported` would error out before reaching
-/// this fn (the planner calls `lower_operation` after this fn picks
-/// the kind, but `lower_operation` is what surfaces the error — so
-/// the kind we pick for `PkTypeFlip` / `Unsupported` is structurally
-/// irrelevant). We pick `Transactional` as the safe default for
-/// those two variants.
+///    `PkTypeFlip` and `Unsupported` would error out before reaching
+///    this fn (the planner calls `lower_operation` after this fn picks
+///    the kind, but `lower_operation` is what surfaces the error — so
+///    the kind we pick for `PkTypeFlip` / `Unsupported` is structurally
+///    irrelevant). We pick `Transactional` as the safe default for
+///    those two variants.
 pub(crate) fn classify_operation(op: &SchemaOperation) -> SegmentKind {
     match op {
         SchemaOperation::RenameApp { .. } | SchemaOperation::MoveModelBetweenApps { .. } => {
@@ -393,35 +393,35 @@ fn order_operations(ops: &[SchemaOperation]) -> Vec<SchemaOperation> {
 /// dependencies.
 /// Returns `(ordered_tables, follow_up_fk_ops)`:
 /// - `ordered_tables` — the input tables, ordered so each table
-/// emits AFTER every table its inline FKs reference. Tables with
-/// no inline FKs (and no reverse references from cycle-breaking)
-/// keep their alphabetical order from the input.
+///   emits AFTER every table its inline FKs reference. Tables with
+///   no inline FKs (and no reverse references from cycle-breaking)
+///   keep their alphabetical order from the input.
 /// - `follow_up_fk_ops` — `AddForeignKey` operations synthesised when
-/// a cycle was broken. Empty in the common acyclic case.
-/// Algorithm: Kahn's. We build an adjacency map keyed by table name,
-/// with edges `dependent -> dependency`, plus reverse edges so we
-/// can decrement in-degrees. We pop tables with zero in-degree in
-/// **alphabetical order** for determinism (tied nodes in Kahn's
-/// algorithm are arbitrary; pinning to alphabetical keeps the same
-/// input always producing the same output).
-/// When a cycle is detected (some tables remain with non-zero
-/// in-degree after processing all zero-in-degree starts), we break
-/// it surgically: every cycle-member table emits without its inline
-/// FK columns, and the stripped FKs become standalone
-/// `AddForeignKey` ops that run AFTER all `CREATE TABLE` statements.
-/// Cycle members emit in alphabetical order; non-cycle tables that
-/// happen to land in `tail` because they were starved of in-degree
-/// also emit in alphabetical order (a structural property of Kahn's
-/// when ties are broken alphabetically).
-/// Ignored edges:
+///   a cycle was broken. Empty in the common acyclic case.
+///   Algorithm: Kahn's. We build an adjacency map keyed by table name,
+///   with edges `dependent -> dependency`, plus reverse edges so we
+///   can decrement in-degrees. We pop tables with zero in-degree in
+///   **alphabetical order** for determinism (tied nodes in Kahn's
+///   algorithm are arbitrary; pinning to alphabetical keeps the same
+///   input always producing the same output).
+///   When a cycle is detected (some tables remain with non-zero
+///   in-degree after processing all zero-in-degree starts), we break
+///   it surgically: every cycle-member table emits without its inline
+///   FK columns, and the stripped FKs become standalone
+///   `AddForeignKey` ops that run AFTER all `CREATE TABLE` statements.
+///   Cycle members emit in alphabetical order; non-cycle tables that
+///   happen to land in `tail` because they were starved of in-degree
+///   also emit in alphabetical order (a structural property of Kahn's
+///   when ties are broken alphabetically).
+///   Ignored edges:
 /// - **Self-references.** A table whose FK points at itself is
-/// admissible Postgres DDL — the inline `REFERENCES same_table`
-/// is fine because the table exists by the time the constraint
-/// check runs. We drop these edges so they never trigger the
-/// cycle-breaker.
+///   admissible Postgres DDL — the inline `REFERENCES same_table`
+///   is fine because the table exists by the time the constraint
+///   check runs. We drop these edges so they never trigger the
+///   cycle-breaker.
 /// - **External references.** An FK pointing at a table NOT in this
-/// batch (e.g., a table that already exists in the live schema)
-/// cannot constrain ordering within the batch — drop the edge.
+///   batch (e.g., a table that already exists in the live schema)
+///   cannot constrain ordering within the batch — drop the edge.
 fn toposort_add_tables(tables: Vec<TableSchema>) -> (Vec<TableSchema>, Vec<SchemaOperation>) {
     if tables.is_empty() {
         return (Vec::new(), Vec::new());

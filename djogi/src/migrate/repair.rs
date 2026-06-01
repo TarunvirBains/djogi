@@ -38,18 +38,18 @@
 //! `verify` cannot race with the ledger mutation.
 //! # Three repair flows
 //! 1. [`repair_checksum_drift`] — ledger row's `checksum_up` no longer
-//! matches the migration file's content. Repair updates the row to
-//! the freshly-computed checksum.
+//!    matches the migration file's content. Repair updates the row to
+//!    the freshly-computed checksum.
 //! 2. [`repair_partial_apply`] — non-transactional apply crashed
-//! mid-segment. Repair rewrites the row's status / progress to
-//! one of `RolledBack` / `Faked` / `Applied` based on the
-//! operator's resolution choice.
+//!    mid-segment. Repair rewrites the row's status / progress to
+//!    one of `RolledBack` / `Faked` / `Applied` based on the
+//!    operator's resolution choice.
 //! 3. [`repair_snapshot_rebuild`] — snapshot file is missing or
-//! corrupt. Repair walks the ledger and re-projects the cumulative
-//! schema, then writes the new snapshot.
-//! All three return a [`RepairReport`] documenting exactly what
-//! changed, so the operator can audit (and replay-via-shell-history
-//! when needed).
+//!    corrupt. Repair walks the ledger and re-projects the cumulative
+//!    schema, then writes the new snapshot.
+//!    All three return a [`RepairReport`] documenting exactly what
+//!    changed, so the operator can audit (and replay-via-shell-history
+//!    when needed).
 
 use std::path::PathBuf;
 
@@ -926,27 +926,27 @@ async fn repair_partial_apply_pinned(
 /// **Operator confirmation required.**
 /// **Safety checks.** Before any SQL runs, the function verifies:
 /// - `plan.version` (derived from the supplied `version` argument)
-/// matches the ledger row's `version`. (We also accept that the
-/// caller passes the ledger version directly; this argument is
-/// the resume-target.)
+///   matches the ledger row's `version`. (We also accept that the
+///   caller passes the ledger version directly; this argument is
+///   the resume-target.)
 /// - `plan`'s recomputed `checksum_up` matches the ledger row's
-/// `checksum_up`. A mismatch means a different plan than the one
-/// originally applied is being supplied — refusing to run is the
-/// only safe option.
+///   `checksum_up`. A mismatch means a different plan than the one
+///   originally applied is being supplied — refusing to run is the
+///   only safe option.
 /// - The ledger row's status is `failed` AND `total_steps` is set
-/// AND `applied_steps_count < total_steps`. Anything else has
-/// nothing to resume.
-/// **What it runs.** The non-transactional segment(s) in plan order.
-/// Each statement is executed via Djogi's internal batch executor
-/// (auto-commit).
-/// Resume now shares the runner's crash-safe claim/ack protocol:
-/// before a step runs, the ledger row records a structured in-flight
-/// claim in `partial_apply_note`; only after the SQL commits does the
-/// repair path acknowledge the new `applied_steps_count`. If the ack
-/// write fails, the claim note remains in place and future automatic
-/// resumes are refused until an operator reconciles the ambiguous
-/// boundary. On full success, the row is finalised to
-/// `status = 'applied'`.
+///   AND `applied_steps_count < total_steps`. Anything else has
+///   nothing to resume.
+///   **What it runs.** The non-transactional segment(s) in plan order.
+///   Each statement is executed via Djogi's internal batch executor
+///   (auto-commit).
+///   Resume now shares the runner's crash-safe claim/ack protocol:
+///   before a step runs, the ledger row records a structured in-flight
+///   claim in `partial_apply_note`; only after the SQL commits does the
+///   repair path acknowledge the new `applied_steps_count`. If the ack
+///   write fails, the claim note remains in place and future automatic
+///   resumes are refused until an operator reconciles the ambiguous
+///   boundary. On full success, the row is finalised to
+///   `status = 'applied'`.
 pub async fn repair_resume_partial_apply(
     ctx: &mut DjogiContext,
     _guard: &WorkspaceGuard,

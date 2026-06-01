@@ -27,18 +27,18 @@
 //! - `AggregateExpr<V, K>` (arity 1) — `Decoded = V`
 //! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>)` — `Decoded = (V1, V2)`
 //! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>, AggregateExpr<V3, K3>)`
-//! `Decoded = (V1, V2, V3)`
+//!   `Decoded = (V1, V2, V3)`
 //! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>, AggregateExpr<V3, K3>,
 //! AggregateExpr<V4, K4>)` — `Decoded = (V1, V2, V3, V4)`
-//! Plain ungrouped [`QuerySet::annotate`] applies the narrower
-//! [`PlainAnnotationTuple`] bound because that terminal synthesizes
-//! `OVER ` for aggregate slots. Only value aggregates can use that
-//! synthesized window. Ordered-set, hypothetical-set, and metadata
-//! aggregate kinds remain legal through scalar [`QuerySet::aggregate`]
-//! and grouped annotate, but do not compile on the plain annotate path.
-//! The trait is sealed by a private supertrait so downstream crates
-//! cannot add their own impls — same seal pattern as
-//! [`crate::query::queryset::IntoDistinctColumns`].
+//!   Plain ungrouped [`QuerySet::annotate`] applies the narrower
+//!   [`PlainAnnotationTuple`] bound because that terminal synthesizes
+//!   `OVER ` for aggregate slots. Only value aggregates can use that
+//!   synthesized window. Ordered-set, hypothetical-set, and metadata
+//!   aggregate kinds remain legal through scalar [`QuerySet::aggregate`]
+//!   and grouped annotate, but do not compile on the plain annotate path.
+//!   The trait is sealed by a private supertrait so downstream crates
+//!   cannot add their own impls — same seal pattern as
+//!   [`crate::query::queryset::IntoDistinctColumns`].
 //! # Why ordinal-prefix decode for `T` + name-based decode for aggregates
 //! The main row contains both `T`'s columns (emitted as
 //! `t.<c1>, t.<c2>, ...` in the canonical `FromPgRow::COLUMNS`
@@ -202,31 +202,31 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
     /// Returns `false` by default. Override to `true` only when the
     /// slot's emitter either:
     /// - References pair-side closure aliases (`la.` / `ra.`)
-    /// explicitly — `PairClosureKinshipSum<C>`.
+    ///   explicitly — `PairClosureKinshipSum<C>`.
     /// - Composes through pair-aware builders that qualify column
-    /// references (`l.col` / `r.col`) — window functions invoked
-    /// via `partition_by_pair` / `order_by_pair_asc` /
-    /// `order_by_pair_desc`.
-    /// Ordinary [`AggregateExpr<V>`] (e.g. `f.age.sum`) keeps
-    /// the default `false`: it emits a bare-column SQL fragment like
-    /// `SUM(age) OVER ` which is structurally ambiguous in joined
-    /// contexts where both sides may share column names (a guarantee
-    /// on self-joins, typical on heterogeneous joins).
-    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
-    /// consults this through the tuple bridge
-    /// ([`IntoAggregateTuple::is_joined_safe`]) before SQL build and
-    /// rejects the entire tuple with a typed `DjogiError::Validation`
-    /// when any slot is not joined-safe. The diagnostic message points
-    /// adopters at the pair-aware alternatives.
-    /// Note: window functions return `true` here even if the user
-    /// composes them with the non-pair `partition_by(field)` instead
-    /// of `partition_by_pair(side, field)` — that would still emit a
-    /// bare column reference. Detecting that variant requires
-    /// inspecting the `WindowSpec.partition_by` / `.order_by` strings
-    /// for `.`-qualification; a follow-on slice will tighten the gate.
-    /// For now, the slot-level opt-in keeps the surface minimal while
-    /// the ambiguous case (`AggregateExpr` with no pair-aware path)
-    /// stays rejected.
+    ///   references (`l.col` / `r.col`) — window functions invoked
+    ///   via `partition_by_pair` / `order_by_pair_asc` /
+    ///   `order_by_pair_desc`.
+    ///   Ordinary [`AggregateExpr<V>`] (e.g. `f.age.sum`) keeps
+    ///   the default `false`: it emits a bare-column SQL fragment like
+    ///   `SUM(age) OVER ` which is structurally ambiguous in joined
+    ///   contexts where both sides may share column names (a guarantee
+    ///   on self-joins, typical on heterogeneous joins).
+    ///   [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    ///   consults this through the tuple bridge
+    ///   ([`IntoAggregateTuple::is_joined_safe`]) before SQL build and
+    ///   rejects the entire tuple with a typed `DjogiError::Validation`
+    ///   when any slot is not joined-safe. The diagnostic message points
+    ///   adopters at the pair-aware alternatives.
+    ///   Note: window functions return `true` here even if the user
+    ///   composes them with the non-pair `partition_by(field)` instead
+    ///   of `partition_by_pair(side, field)` — that would still emit a
+    ///   bare column reference. Detecting that variant requires
+    ///   inspecting the `WindowSpec.partition_by` / `.order_by` strings
+    ///   for `.`-qualification; a follow-on slice will tighten the gate.
+    ///   For now, the slot-level opt-in keeps the surface minimal while
+    ///   the ambiguous case (`AggregateExpr` with no pair-aware path)
+    ///   stays rejected.
     fn is_joined_safe(&self) -> bool {
         false
     }
@@ -239,25 +239,25 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
     /// Returns `false` by default. Override to `true` when the slot's
     /// SQL emitter splices a pair-tuple alias literally:
     /// - [`PairClosureKinshipSum<C>`](crate::query::PairClosureKinshipSum)
-    /// emits `SUM(la.path_count * ra.path_count * ...)` referencing
-    /// the closure-pair `la` / `ra` aliases. Already covered by the
-    /// existing `requires_closure_pair_join` signal, but pair-tuple
-    /// scope is the broader gate (this slot needs both pair-side
-    /// aliases **and** the closure-pair LEFT JOINs).
+    ///   emits `SUM(la.path_count * ra.path_count * ...)` referencing
+    ///   the closure-pair `la` / `ra` aliases. Already covered by the
+    ///   existing `requires_closure_pair_join` signal, but pair-tuple
+    ///   scope is the broader gate (this slot needs both pair-side
+    ///   aliases **and** the closure-pair LEFT JOINs).
     /// - [`PairAreaOverlapRatio<L, R>`](crate::query::PairAreaOverlapRatio)
-    /// (spatial only) emits
-    /// `ST_Area(ST_Intersection(l.<lcol>, r.<rcol>))` referencing
-    /// the pair-side `l` / `r` aliases. Does **not** need closure
-    /// pair joins, so the existing `requires_closure_pair_join`
-    /// signal alone would let it sneak past the single-Model /
-    /// grouped annotate gates. This is the signal that catches it.
-    /// [`AnnotatedQuerySet::fetch_all`](crate::query::AnnotatedQuerySet::fetch_all)
-    /// and the grouped annotate terminals consult this through the tuple
-    /// bridge ([`IntoAggregateTuple::requires_pair_tuple_scope`]) before
-    /// SQL build and return a typed `DjogiError::Validation` when the
-    /// aggregate tuple includes any pair-only slot. The diagnostic
-    /// points adopters at the `self_pairs` / `cross_join_with`
-    /// entry points for the pair-tuple substrate.
+    ///   (spatial only) emits
+    ///   `ST_Area(ST_Intersection(l.<lcol>, r.<rcol>))` referencing
+    ///   the pair-side `l` / `r` aliases. Does **not** need closure
+    ///   pair joins, so the existing `requires_closure_pair_join`
+    ///   signal alone would let it sneak past the single-Model /
+    ///   grouped annotate gates. This is the signal that catches it.
+    ///   [`AnnotatedQuerySet::fetch_all`](crate::query::AnnotatedQuerySet::fetch_all)
+    ///   and the grouped annotate terminals consult this through the tuple
+    ///   bridge ([`IntoAggregateTuple::requires_pair_tuple_scope`]) before
+    ///   SQL build and return a typed `DjogiError::Validation` when the
+    ///   aggregate tuple includes any pair-only slot. The diagnostic
+    ///   points adopters at the `self_pairs` / `cross_join_with`
+    ///   entry points for the pair-tuple substrate.
     /// # Why this is separate from `requires_closure_pair_join`
     /// `requires_closure_pair_join` is the narrower signal: it asks
     /// whether the slot's SQL references the **closure-pair** `la.` /
@@ -391,12 +391,12 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// - [`AnnotatedQuerySet::fetch_all`]
     /// - [`crate::query::row_aggregate_terminal::AsMvtTerminal::fetch_one`]
     /// - [`crate::query::row_aggregate_terminal::AsGeobufTerminal::fetch_one`]
-    /// All three callers emit the same `SELECT * FROM (…) AS __djogi_q
+    ///   All three callers emit the same `SELECT * FROM (…) AS __djogi_q
     /// WHERE <alias> …` outer qualify wrap, so a window alias shadowing a
-    /// model column makes the outer WHERE predicate ambiguous at Postgres.
-    /// This check turns that runtime Postgres error into a typed
-    /// [`crate::DjogiError::Validation`] with a remediation hint before
-    /// any SQL is emitted.
+    ///   model column makes the outer WHERE predicate ambiguous at Postgres.
+    ///   This check turns that runtime Postgres error into a typed
+    ///   [`crate::DjogiError::Validation`] with a remediation hint before
+    ///   any SQL is emitted.
     /// # Default
     /// Returns `Ok` — covers the `` no-annotation case and any
     /// future aggregate-only tuple whose slots use framework-generated

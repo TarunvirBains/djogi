@@ -805,25 +805,25 @@ pub struct RunnerCtx {
     /// who have not yet provisioned the second DB.
     /// **Wiring status:**
     /// - **(T9.4 / T9.5)** added the field and wired
-    /// [`super::record_ddl_audit`] into `apply_plan_inner`'s
-    /// success-only path. The runner writes audit rows whenever
-    /// the caller supplies `Some(pool)`.
+    ///   [`super::record_ddl_audit`] into `apply_plan_inner`'s
+    ///   success-only path. The runner writes audit rows whenever
+    ///   the caller supplies `Some(pool)`.
     /// - **issue #118** wired the production CLI
-    /// dispatch (`db reset` replay path) to populate this field
-    /// from `crud_log_url` (env-var override or
-    /// derive-from-`database.url` fallback) via
-    /// [`super::resolve_audit_url`] + [`super::build_audit_pool`].
-    /// Tests that build `RunnerCtx` literals typically leave this
-    /// `None` — the dedicated audit-row coverage runs in
-    /// `tests/internal/sources/phase8_5_c2_118_*`.
-    /// **Why `deadpool_postgres::Pool` and not `DjogiPool`:** the
-    /// audit pool is not user-facing — adopters never see it, and
-    /// the runner constructs the audit-side `DjogiContext` itself
-    /// via `DjogiPool { inner: pool.clone }` at the call site.
-    /// Holding the raw pool here keeps the dependency on
-    /// `DjogiPool`'s wider invariants (post-connect callbacks,
-    /// status reporting) out of `RunnerCtx`'s shape — those are
-    /// app-side concerns that do not apply to the audit DB.
+    ///   dispatch (`db reset` replay path) to populate this field
+    ///   from `crud_log_url` (env-var override or
+    ///   derive-from-`database.url` fallback) via
+    ///   [`super::resolve_audit_url`] + [`super::build_audit_pool`].
+    ///   Tests that build `RunnerCtx` literals typically leave this
+    ///   `None` — the dedicated audit-row coverage runs in
+    ///   `tests/internal/sources/phase8_5_c2_118_*`.
+    ///   **Why `deadpool_postgres::Pool` and not `DjogiPool`:** the
+    ///   audit pool is not user-facing — adopters never see it, and
+    ///   the runner constructs the audit-side `DjogiContext` itself
+    ///   via `DjogiPool { inner: pool.clone }` at the call site.
+    ///   Holding the raw pool here keeps the dependency on
+    ///   `DjogiPool`'s wider invariants (post-connect callbacks,
+    ///   status reporting) out of `RunnerCtx`'s shape — those are
+    ///   app-side concerns that do not apply to the audit DB.
     pub audit_pool: Option<deadpool_postgres::Pool>,
 }
 
@@ -1233,32 +1233,32 @@ async fn apply_plan_inner(
 /// 1. Every segment has committed (transactional or non-transactional).
 /// 2. `mark_applied` flipped the ledger row to `applied`.
 /// 3. `save_snapshot` persisted the new schema-of-record to disk
-/// (when a snapshot was supplied by the caller; the `db reset`
-/// replay path deliberately does not).
-/// Calling it earlier would risk an audit row whose
-/// `snapshot_signature_hex` does not correspond to any persisted
-/// snapshot — the signature would be of an in-memory `AppliedSchema`
-/// that never reached disk. Per v3 plan §453 the audit row's purpose
-/// is to ground the migration trail to the schema-of-record file
-/// `djogi verify` (T9.6) inspects.
+///    (when a snapshot was supplied by the caller; the `db reset`
+///    replay path deliberately does not).
+///    Calling it earlier would risk an audit row whose
+///    `snapshot_signature_hex` does not correspond to any persisted
+///    snapshot — the signature would be of an in-memory `AppliedSchema`
+///    that never reached disk. Per v3 plan §453 the audit row's purpose
+///    is to ground the migration trail to the schema-of-record file
+///    `djogi verify` (T9.6) inspects.
 /// # Snapshot is optional (#118)
 /// The `snapshot` parameter is `Option<&AppliedSchema>`. The audit
 /// row's primary purpose — recording that a migration's DDL ran — is
 /// independent of whether new schema bytes hit disk on this apply:
 /// - **`Some(snapshot)`** — the runner just persisted these bytes to
-/// `snapshot_path`. The audit row's `snapshot_signature_hex` is
-/// the HMAC over those bytes (or the no-op zero hex when the
-/// signing key is unset).
+///   `snapshot_path`. The audit row's `snapshot_signature_hex` is
+///   the HMAC over those bytes (or the no-op zero hex when the
+///   signing key is unset).
 /// - **`None`** — no snapshot was persisted (e.g. `db reset` replay,
-/// which re-runs the existing migrations against a fresh DB
-/// without producing new schema bytes). The audit row carries
-/// `NULL` in the signature column. NULL distinguishes "no snapshot
-/// was written this apply" from "snapshot written, signed under
-/// the no-op key" (the latter produces 64 zero hex chars).
-/// Pre-issue-#118 this function took `&AppliedSchema` and the call
-/// site gated audit writes on snapshot presence — which meant `db
+///   which re-runs the existing migrations against a fresh DB
+///   without producing new schema bytes). The audit row carries
+///   `NULL` in the signature column. NULL distinguishes "no snapshot
+///   was written this apply" from "snapshot written, signed under
+///   the no-op key" (the latter produces 64 zero hex chars).
+///   Pre-issue-#118 this function took `&AppliedSchema` and the call
+///   site gated audit writes on snapshot presence — which meant `db
 /// reset` (the only production constructor of `RunnerCtx`) could
-/// never write audit rows.
+///   never write audit rows.
 /// # Three-database awareness
 /// The audit DB is operationally separate from the app DB
 /// (`crud_log_url` vs. `url`). We construct a fresh
@@ -1274,12 +1274,12 @@ async fn apply_plan_inner(
 /// - The app DB DDL has already committed.
 /// - The on-disk snapshot has already been persisted (when supplied).
 /// - The ledger row has already reached `applied`.
-/// Rolling any of those back because the audit DB is unreachable
-/// would be a worse outcome than a missing audit row. Operators
-/// rebuilding the audit trail can replay from the ledger + snapshot;
-/// they cannot recover from a runner that refused to record an
-/// otherwise-clean migration apply because a sibling DB happened to
-/// be down.
+///   Rolling any of those back because the audit DB is unreachable
+///   would be a worse outcome than a missing audit row. Operators
+///   rebuilding the audit trail can replay from the ledger + snapshot;
+///   they cannot recover from a runner that refused to record an
+///   otherwise-clean migration apply because a sibling DB happened to
+///   be down.
 /// # Per-segment rows
 /// One row per executed segment so the audit trail captures the same
 /// granularity the runner reports (the `Transactional /
@@ -1627,30 +1627,30 @@ impl std::error::Error for RollbackError {
 /// **Order of execution.** Apply runs transactional segments first
 /// then non-transactional. Rollback inverts that:
 /// 1. Non-transactional segments run first, in reverse statement
-/// order, autocommitting each step. (Apply's order is
-/// NonTx-segment-after-Tx-segment by segment-list position; the
-/// rollback walks segments in *reverse list position* and reverses
-/// each segment's statements.)
+///    order, autocommitting each step. (Apply's order is
+///    NonTx-segment-after-Tx-segment by segment-list position; the
+///    rollback walks segments in *reverse list position* and reverses
+///    each segment's statements.)
 /// 2. Transactional segments run last, all wrapped in one Postgres
-/// transaction so a partial-rollback failure rolls back cleanly.
-/// **Lossy down handling.** Pre-walks the plan and collects every
-/// operation whose `lossy.is_some`. With
-/// [`LossyRollbackPolicy::Refuse`] (the default), surfaces the list
-/// as [`RollbackError::LossyRollbackRefused`] before any SQL runs.
-/// With [`LossyRollbackPolicy::Allow { reason }`], the rollback
-/// proceeds and the reason is preserved in the ledger row's
-/// `partial_apply_note`.
-/// **Snapshot semantics.** Rollback does NOT re-derive the prior
-/// snapshot from the down SQL — that requires a full delta-replay
-/// engine which is not in T5's scope. The caller (typically T6's
-/// `apply` orchestrator with a snapshot history) supplies the prior
-/// snapshot explicitly via `prior_snapshot` and `prior_snapshot_path`.
-/// Pass `None` to skip the snapshot revert (tests, when the snapshot
-/// is not under test).
-/// **Ledger update.** On success, the ledger row's status flips to
-/// [`LedgerStatus::RolledBack`], `applied_steps_count` resets to 0,
-/// and `partial_apply_note` is filled with a record of the rollback
-/// (timestamp + lossy reason if any).
+///    transaction so a partial-rollback failure rolls back cleanly.
+///    **Lossy down handling.** Pre-walks the plan and collects every
+///    operation whose `lossy.is_some`. With
+///    [`LossyRollbackPolicy::Refuse`] (the default), surfaces the list
+///    as [`RollbackError::LossyRollbackRefused`] before any SQL runs.
+///    With [`LossyRollbackPolicy::Allow { reason }`], the rollback
+///    proceeds and the reason is preserved in the ledger row's
+///    `partial_apply_note`.
+///    **Snapshot semantics.** Rollback does NOT re-derive the prior
+///    snapshot from the down SQL — that requires a full delta-replay
+///    engine which is not in T5's scope. The caller (typically T6's
+///    `apply` orchestrator with a snapshot history) supplies the prior
+///    snapshot explicitly via `prior_snapshot` and `prior_snapshot_path`.
+///    Pass `None` to skip the snapshot revert (tests, when the snapshot
+///    is not under test).
+///    **Ledger update.** On success, the ledger row's status flips to
+///    [`LedgerStatus::RolledBack`], `applied_steps_count` resets to 0,
+///    and `partial_apply_note` is filled with a record of the rollback
+///    (timestamp + lossy reason if any).
 pub async fn rollback_plan(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
@@ -2824,16 +2824,16 @@ pub(crate) fn handle_release_result<T>(
 /// the probe means Postgres does not currently know about the table.
 /// Two legitimate cases produce that:
 /// 1. The current plan creates the table in an earlier segment of
-/// THIS run (`AddTable` statement). The runner treats this as
-/// `relpages = 0` (a freshly-created empty table cannot exceed
-/// the threshold).
+///    THIS run (`AddTable` statement). The runner treats this as
+///    `relpages = 0` (a freshly-created empty table cannot exceed
+///    the threshold).
 /// 2. The table genuinely does not exist and is not being created.
-/// That is a typo / mis-quoted identifier — the index would fail
-/// inside `BEGIN` anyway, but the strict-mode probe catches it
-/// earlier with a clearer `TargetTableNotFound` diagnostic.
-/// Silently dropping case 2 to `relpages = 0` would disable the
-/// strict warning path for any mis-targeted `CREATE INDEX`, which
-/// is exactly the failure mode strict-mode exists to catch.
+///    That is a typo / mis-quoted identifier — the index would fail
+///    inside `BEGIN` anyway, but the strict-mode probe catches it
+///    earlier with a clearer `TargetTableNotFound` diagnostic.
+///    Silently dropping case 2 to `relpages = 0` would disable the
+///    strict warning path for any mis-targeted `CREATE INDEX`, which
+///    is exactly the failure mode strict-mode exists to catch.
 async fn relpages_probe(
     ctx: &mut DjogiContext,
     runner_ctx: &RunnerCtx,
@@ -2908,29 +2908,29 @@ async fn relpages_probe(
 /// plan is a PK-type-flip migration.
 /// Implements D060–D063 from the v3 plan contract:
 /// - **D060** Logical-replication machinery active — `pg_stat_replication`
-/// walsenders OR enabled rows in `pg_subscription` for the current
-/// database → refusal. Postgres does not expose another backend's
-/// `session_replication_role` GUC via `pg_stat_activity`, so we
-/// detect the apply machinery itself rather than the GUC value.
+///   walsenders OR enabled rows in `pg_subscription` for the current
+///   database → refusal. Postgres does not expose another backend's
+///   `session_replication_role` GUC via `pg_stat_activity`, so we
+///   detect the apply machinery itself rather than the GUC value.
 /// - **D061** Pre-existing `zzz_*` triggers on the migrating tables
-/// → refusal (collision with the autofill install).
+///   → refusal (collision with the autofill install).
 /// - **D062** Already-disabled triggers on the migrating tables
-/// → refusal.
+///   → refusal.
 /// - **D063** Open transactions older than the configured threshold
-/// → refusal.
-/// The set of "migrating tables" is recovered from the cutover
-/// segment's labels — every `PkFlipPrep` / `PkFlipCutover` /
-/// `PkFlipBackfill` / `PkFlipConcurrentIndex` / `PkFlipNotNullProof`
-/// label carries the parent table name as its trailing token; we
-/// also collect every child table name from the multi-segment SQL
-/// via byte-level identifier scanning of the `up` text. This avoids
-/// re-walking the descriptor here — the segment plan already carries
-/// the full set the cutover will touch.
-/// **No regex** — the table-name extraction uses byte-level forward
-/// scans for `ALTER TABLE <ident> ` literal substrings; the
-/// identifier rules (ASCII letter or underscore, then alphanumerics
-/// or underscore, ≤ 63 bytes) are spelled out in plain English in
-/// the helper.
+///   → refusal.
+///   The set of "migrating tables" is recovered from the cutover
+///   segment's labels — every `PkFlipPrep` / `PkFlipCutover` /
+///   `PkFlipBackfill` / `PkFlipConcurrentIndex` / `PkFlipNotNullProof`
+///   label carries the parent table name as its trailing token; we
+///   also collect every child table name from the multi-segment SQL
+///   via byte-level identifier scanning of the `up` text. This avoids
+///   re-walking the descriptor here — the segment plan already carries
+///   the full set the cutover will touch.
+///   **No regex** — the table-name extraction uses byte-level forward
+///   scans for `ALTER TABLE <ident> ` literal substrings; the
+///   identifier rules (ASCII letter or underscore, then alphanumerics
+///   or underscore, ≤ 63 bytes) are spelled out in plain English in
+///   the helper.
 async fn pk_flip_preflight(
     ctx: &mut DjogiContext,
     runner_ctx: &RunnerCtx,
@@ -3752,27 +3752,27 @@ pub(crate) async fn compute_leaf_identity_cache(
 /// statement per leaf, sorted by `regclass::text` for determinism.
 /// Statements affected (by label prefix):
 /// - `PkFlipPartitionedBackfill <parent>` — body carries
-/// `CALL heeranjid_bulk_backfill('<EACH_LEAF_TABLE>', ...)`. Each
-/// leaf gets its own CALL line.
+///   `CALL heeranjid_bulk_backfill('<EACH_LEAF_TABLE>', ...)`. Each
+///   leaf gets its own CALL line.
 /// - `PkFlipPartitionedIndex <parent>` — body carries the parent
-/// UNIQUE-on-ONLY placeholder plus a comment block describing the
-/// per-leaf `CREATE UNIQUE INDEX CONCURRENTLY` + `ALTER INDEX
+///   UNIQUE-on-ONLY placeholder plus a comment block describing the
+///   per-leaf `CREATE UNIQUE INDEX CONCURRENTLY` + `ALTER INDEX
 /// ATTACH PARTITION` pattern. The comment is replaced with two
-/// concrete statements per leaf.
-/// Statements with no placeholder (`PkFlipPartitionedPrep`,
-/// `PkFlipPartitionedCutover`) are passed through untouched.
-/// **No regex.** Placeholder substitution uses byte-level
-/// `String::replace` semantics with a fixed literal token. Per-leaf
-/// statement composition uses straight string concatenation and the
-/// `writeln!` macro.
-/// **Failure modes.** If `pg_inherits` returns no leaves for a
-/// declared partitioned parent, behavior depends on [`PartitionExpansionMode`]:
+///   concrete statements per leaf.
+///   Statements with no placeholder (`PkFlipPartitionedPrep`,
+///   `PkFlipPartitionedCutover`) are passed through untouched.
+///   **No regex.** Placeholder substitution uses byte-level
+///   `String::replace` semantics with a fixed literal token. Per-leaf
+///   statement composition uses straight string concatenation and the
+///   `writeln!` macro.
+///   **Failure modes.** If `pg_inherits` returns no leaves for a
+///   declared partitioned parent, behavior depends on [`PartitionExpansionMode`]:
 /// - ApplyLenient: produces a single comment line so the segment SQL
-/// surfaces the empty-leaves state cleanly rather than running an
-/// `<EACH_LEAF_TABLE>` literal that would fail with `undefined_table`.
-/// Operator's job is to attach partitions before retrying.
+///   surfaces the empty-leaves state cleanly rather than running an
+///   `<EACH_LEAF_TABLE>` literal that would fail with `undefined_table`.
+///   Operator's job is to attach partitions before retrying.
 /// - ReplayStrict: refuses zero leaves because rollback/repair must not
-/// silently replay a shorter stream. Returns [`RunnerError::PartitionExpansionNoLeaves`].
+///   silently replay a shorter stream. Returns [`RunnerError::PartitionExpansionNoLeaves`].
 async fn expand_partition_leaf_placeholders(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,

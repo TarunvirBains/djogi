@@ -7,17 +7,17 @@
 //! # Why a separate ledger
 //! Seeds are conceptually separate from schema migrations:
 //! - Seeds populate reference / fixture data — they do not move the
-//! schema forward. The schema ledger (`djogi_schema_migrations`)
-//! carries the snapshot-version contract; conflating seeds with
-//! schema migrations would muddle the snapshot invariants the
-//! runner owes T5 / T7.
+//!   schema forward. The schema ledger (`djogi_schema_migrations`)
+//!   carries the snapshot-version contract; conflating seeds with
+//!   schema migrations would muddle the snapshot invariants the
+//!   runner owes T5 / T7.
 //! - Seeds are dev-flavoured: the gate is "localhost-or-explicit-allow"
-//! (lighter than `db reset`'s production refusal) so a CI integration
-//! suite can seed a remote test DB with `--allow-non-localhost`
-//! without going through the destructive-history path.
-//! The two ledgers share the `V1:<sha256-hex>` checksum format from
-//! [`super::ledger`] so future tooling can reason about checksums
-//! uniformly.
+//!   (lighter than `db reset`'s production refusal) so a CI integration
+//!   suite can seed a remote test DB with `--allow-non-localhost`
+//!   without going through the destructive-history path.
+//!   The two ledgers share the `V1:<sha256-hex>` checksum format from
+//!   [`super::ledger`] so future tooling can reason about checksums
+//!   uniformly.
 //! # No regex
 //! File-name discovery uses byte-level checks against `OsStr::to_str`.
 //! No regex engine, no regex notation. Files are accepted iff the
@@ -487,12 +487,12 @@ async fn fetch_seed_ledger_row(
 /// `FromPgRow` impl over a 1-tuple.
 /// Errors are surfaced as [`SeedError`] directly:
 /// - [`SeedError::LedgerWrite`] when the SELECT itself fails (relation
-/// missing, network drop, …).
+///   missing, network drop, …).
 /// - [`SeedError::LedgerDecode`] when the row exists but the
-/// `checksum_up` column does not deserialise into a `String` (a
-/// row written by an older Djogi or hand-edited). Distinct from
-/// `LedgerWrite` so operators can tell decode failures from
-/// connection / relation errors.
+///   `checksum_up` column does not deserialise into a `String` (a
+///   row written by an older Djogi or hand-edited). Distinct from
+///   `LedgerWrite` so operators can tell decode failures from
+///   connection / relation errors.
 pub async fn fetch_recorded_checksum(
     ctx: &mut DjogiContext,
     seed_name: &str,

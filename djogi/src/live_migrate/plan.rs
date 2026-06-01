@@ -4,18 +4,18 @@
 //! # Plan-file vs runtime-state separation (§1 D2)
 //! Two artefacts back every live migration:
 //! 1. **The plan file** — an immutable JSON document on disk that
-//! encodes the *definition* of the rollout: which steps run, in
-//! which order, with which parameters. Generated once by T8's
-//! pattern emitters, never edited after `djogi live run` opens it.
+//!    encodes the *definition* of the rollout: which steps run, in
+//!    which order, with which parameters. Generated once by T8's
+//!    pattern emitters, never edited after `djogi live run` opens it.
 //! 2. **The DB row** — a mutable row in `djogi_live_plans` that tracks
-//! the *runtime state*: where the operator is in the step graph,
-//! backfill progress, last error, completion timestamp. Updated by
-//! every checkpoint write.
-//! The split is the load-bearing safety invariant of : a plan
-//! cannot diverge from its own definition. The DB row records the SHA-256
-//! of the file at first run; checksum mismatch on resume aborts the run
-//! with an actionable refusal ("plan file edited after start;
-//! re-generate or abandon and retry").
+//!    the *runtime state*: where the operator is in the step graph,
+//!    backfill progress, last error, completion timestamp. Updated by
+//!    every checkpoint write.
+//!    The split is the load-bearing safety invariant of : a plan
+//!    cannot diverge from its own definition. The DB row records the SHA-256
+//!    of the file at first run; checksum mismatch on resume aborts the run
+//!    with an actionable refusal ("plan file edited after start;
+//!    re-generate or abandon and retry").
 //! # Step graph shape
 //! The step graph is a flat ordered list, not a DAG. Each step depends
 //! solely on the previous one having completed. Operator gates
@@ -350,18 +350,18 @@ impl Step {
     /// SQL (DROP COLUMN / DROP TABLE / DROP INDEX-style state removal).
     /// Two variants qualify:
     /// - [`StepKind::CleanupLegacyState`] — the canonical destructive
-    /// step in every expand → contract sequence; drops the legacy
-    /// column / table / index that the [`StepKind::ExpandSchema`] step
-    /// parallelled.
+    ///   step in every expand → contract sequence; drops the legacy
+    ///   column / table / index that the [`StepKind::ExpandSchema`] step
+    ///   parallelled.
     /// - [`StepKind::RunReversibleSchemaOp`] when its `up_sql` payload
-    /// contains a token that materially drops state. The check walks
-    /// the SQL byte-by-byte (no regex per project policy) and matches
-    /// the conservative set of literal tokens — false positives lead
-    /// to a `--justify` requirement, which is the safe direction.
-    /// All other step kinds are non-destructive — they either add state
-    /// (ExpandSchema, FinalizeConstraints), gate on operator confirmation
-    /// (ValidateBackfill / CutoverReads / CutoverWrites), or are pure
-    /// data writes (BackfillChunked).
+    ///   contains a token that materially drops state. The check walks
+    ///   the SQL byte-by-byte (no regex per project policy) and matches
+    ///   the conservative set of literal tokens — false positives lead
+    ///   to a `--justify` requirement, which is the safe direction.
+    ///   All other step kinds are non-destructive — they either add state
+    ///   (ExpandSchema, FinalizeConstraints), gate on operator confirmation
+    ///   (ValidateBackfill / CutoverReads / CutoverWrites), or are pure
+    ///   data writes (BackfillChunked).
     pub fn emits_destructive_sql(&self) -> bool {
         match (&self.kind, &self.parameters) {
             (StepKind::CleanupLegacyState, _) => true,
@@ -505,16 +505,16 @@ impl LivePlan {
     /// - the step list is empty,
     /// - ordinals don't form `0..steps.len` exactly (gap or duplicate),
     /// - the slug contains a byte that is not ASCII-alphanumeric or
-    /// underscore (the on-disk filename derives directly from the
-    /// slug, so non-portable bytes would corrupt the path).
-    /// Called by [`crate::live_migrate::plan_file::write_plan`] before
-    /// the file is written and by
-    /// [`crate::live_migrate::plan_file::read_plan`] after parsing.
-    /// Returns `true` iff at least one step in the plan emits
-    /// destructive SQL per [`Step::emits_destructive_sql`]. The CLI's
-    /// `live run` / `live finalize` gates use this to refuse a plan
-    /// without the operator-supplied `--allow-destructive --justify`
-    /// pair.
+    ///   underscore (the on-disk filename derives directly from the
+    ///   slug, so non-portable bytes would corrupt the path).
+    ///   Called by [`crate::live_migrate::plan_file::write_plan`] before
+    ///   the file is written and by
+    ///   [`crate::live_migrate::plan_file::read_plan`] after parsing.
+    ///   Returns `true` iff at least one step in the plan emits
+    ///   destructive SQL per [`Step::emits_destructive_sql`]. The CLI's
+    ///   `live run` / `live finalize` gates use this to refuse a plan
+    ///   without the operator-supplied `--allow-destructive --justify`
+    ///   pair.
     pub fn has_destructive_steps(&self) -> bool {
         self.steps.iter().any(Step::emits_destructive_sql)
     }

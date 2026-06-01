@@ -5,31 +5,31 @@
 //! plus conversion impls. This module holds the runtime-side types
 //! those emissions depend on:
 //! - [`DjogiVisage`] — #231 — projection metadata
-//! trait. Every emitted visage carries `type Model`, `SCOPE`,
-//! `COLUMNS`, `PROJECTIONS`, and `PROJECTION_LIST` items so
-//! framework-internal code (lints, debug formatters, future
-//! Tier-2 predicate rendering) can read the projection shape
-//! and reach the source-model table via
-//! `<V::Model as Model>::table_name` — through a single bound.
-//! Sealed against arbitrary downstream impls via the metadata
-//! seal `private::Sealed` (re-exported as
-//! `::djogi::__private::DjogiVisageSealed` for macro emission);
-//! see the trait's own rustdoc for the convention-boundary
-//! discussion.
+//!   trait. Every emitted visage carries `type Model`, `SCOPE`,
+//!   `COLUMNS`, `PROJECTIONS`, and `PROJECTION_LIST` items so
+//!   framework-internal code (lints, debug formatters, future
+//!   Tier-2 predicate rendering) can read the projection shape
+//!   and reach the source-model table via
+//!   `<V::Model as Model>::table_name` — through a single bound.
+//!   Sealed against arbitrary downstream impls via the metadata
+//!   seal `private::Sealed` (re-exported as
+//!   `::djogi::__private::DjogiVisageSealed` for macro emission);
+//!   see the trait's own rustdoc for the convention-boundary
+//!   discussion.
 //! - [`projection::ProjectionEntry`] — sealed `__private` enum
-//! discriminating column entries from derived-expression entries
-//! inside `PROJECTIONS`. The `pub` visibility is mandated by the
-//! trait constant's type; the `__private` module path and
-//! `#[non_exhaustive]` attribute carry the convention seal.
+//!   discriminating column entries from derived-expression entries
+//!   inside `PROJECTIONS`. The `pub` visibility is mandated by the
+//!   trait constant's type; the `__private` module path and
+//!   `#[non_exhaustive]` attribute carry the convention seal.
 //! - [`VisageError`] — the fallible-conversion error type, returned
-//! by every `TryFrom<&Model>` impl that nests a relation-form peer
-//! visage OR has a fallible derived entry. `#[non_exhaustive]`.
+//!   by every `TryFrom<&Model>` impl that nests a relation-form peer
+//!   visage OR has a fallible derived entry. `#[non_exhaustive]`.
 //! - `impl From<Infallible> for VisageError` — glue that lets
-//! generated code propagate `Infallible` with `?` when mixed-
-//! fallibility visages embed an infallible derived entry alongside
-//! a fallible one.
-//! No runtime execution happens here — every path is straight-line
-//! error construction or formatting.
+//!   generated code propagate `Infallible` with `?` when mixed-
+//!   fallibility visages embed an infallible derived entry alongside
+//!   a fallible one.
+//!   No runtime execution happens here — every path is straight-line
+//!   error construction or formatting.
 
 use std::convert::Infallible;
 
@@ -44,24 +44,24 @@ use std::convert::Infallible;
 /// generation, traversal helpers that need the source table name).
 /// # Items
 /// - [`Model`](Self::Model) — the source model `M` the visage is a
-/// projection of. The bound is `M: Model`, so generic consumers
-/// reach the source table at compile time via
-/// `<V::Model as crate::model::Model>::table_name` — no parallel
-/// `TABLE` constant on this trait.
+///   projection of. The bound is `M: Model`, so generic consumers
+///   reach the source table at compile time via
+///   `<V::Model as crate::model::Model>::table_name` — no parallel
+///   `TABLE` constant on this trait.
 /// - [`SCOPE`](Self::SCOPE) — stable scope key matching the visage's
-/// audience.
+///   audience.
 /// - [`COLUMNS`](Self::COLUMNS) — names appearing at each ordinal
-/// position of the visage's SELECT row, in struct-field order.
-/// Column entries: the raw column name. Derived entries: the
-/// entry's `name` (which equals the SELECT alias).
+///   position of the visage's SELECT row, in struct-field order.
+///   Column entries: the raw column name. Derived entries: the
+///   entry's `name` (which equals the SELECT alias).
 /// - [`PROJECTIONS`](Self::PROJECTIONS) — sealed `ProjectionEntry`
-/// list. Walked by framework-internal consumers only — the
-/// queryset hot path uses `PROJECTION_LIST` instead.
+///   list. Walked by framework-internal consumers only — the
+///   queryset hot path uses `PROJECTION_LIST` instead.
 /// - [`PROJECTION_LIST`](Self::PROJECTION_LIST) — pre-rendered
-/// comma-joined SELECT-list string. Column entries render
-/// verbatim; derived entries render as `(<sql>) AS <alias>`.
-/// `VisageQuerySet` splices this directly into the SELECT slot at
-/// query time.
+///   comma-joined SELECT-list string. Column entries render
+///   verbatim; derived entries render as `(<sql>) AS <alias>`.
+///   `VisageQuerySet` splices this directly into the SELECT slot at
+///   query time.
 /// # Consignment walkthrough — #231
 /// The motivating scenario from the spec: a `Consignment` model
 /// with three storage columns (`inbound_site`, `outbound_site`,
@@ -201,23 +201,23 @@ use std::convert::Infallible;
 /// `type Model` associated type instead, so generic code can pick
 /// the spelling that fits the call site:
 /// - `fn foo<V: DjogiVisageOf<M>, M: Model>(...)` — explicit `M`
-/// parameter, ergonomic when the caller already has an `M` in
-/// scope.
+///   parameter, ergonomic when the caller already has an `M` in
+///   scope.
 /// - `fn foo<V: DjogiVisage>(...)` — `V::Model` is reachable
-/// internally, ergonomic when the caller only ever names the
-/// visage.
-/// The reflexive blanket
-/// `impl<M: Model> DjogiVisageOf<M> for M` lets the marker accept
-/// the model itself as a "degenerate visage". That blanket is the
-/// reason `DjogiVisageOf<Self::Model>` alone is **not** a closed-
-/// world seal on `DjogiVisage` — any `M: Model` already satisfies
-/// `DjogiVisageOf<M>` reflexively, so a hand-rolled
-/// `impl DjogiVisage for MyModel { type Model = Self; ... }` would
-/// otherwise pass the pairing supertrait. The closed-world gate for
-/// `DjogiVisage` therefore lives on a separate metadata-only seal
-/// described in the next section; the `DjogiVisageOf<Self::Model>`
-/// supertrait stays because it carries the visage ↔ source-model
-/// pairing useful for generic code that only names `V`.
+///   internally, ergonomic when the caller only ever names the
+///   visage.
+///   The reflexive blanket
+///   `impl<M: Model> DjogiVisageOf<M> for M` lets the marker accept
+///   the model itself as a "degenerate visage". That blanket is the
+///   reason `DjogiVisageOf<Self::Model>` alone is **not** a closed-
+///   world seal on `DjogiVisage` — any `M: Model` already satisfies
+///   `DjogiVisageOf<M>` reflexively, so a hand-rolled
+///   `impl DjogiVisage for MyModel { type Model = Self; ... }` would
+///   otherwise pass the pairing supertrait. The closed-world gate for
+///   `DjogiVisage` therefore lives on a separate metadata-only seal
+///   described in the next section; the `DjogiVisageOf<Self::Model>`
+///   supertrait stays because it carries the visage ↔ source-model
+///   pairing useful for generic code that only names `V`.
 /// # Sealed via `private::Sealed` — metadata-only seal
 /// `DjogiVisage` carries `private::Sealed` (module-private to
 /// [`crate::visage`]) as its second supertrait. Unlike the

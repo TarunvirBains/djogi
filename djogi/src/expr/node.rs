@@ -9,24 +9,24 @@
 //! variant tree to walk.
 //! # Why separate the typed wrapper from the node?
 //! - **One emitter walk.** [`super::sql::emit_expr`] matches this enum
-//! exhaustively. If `ExprNode` were polymorphic in `T`, every emitter
-//! call site would monomorphise per-type; by erasing `T` at the enum
-//! boundary we get one codegen path and one set of tests.
+//!   exhaustively. If `ExprNode` were polymorphic in `T`, every emitter
+//!   call site would monomorphise per-type; by erasing `T` at the enum
+//!   boundary we get one codegen path and one set of tests.
 //! - **Arithmetic composition.** `Expr<i32> + Expr<i32>` yields `Expr<i32>`
-//! the typed wrapper enforces the operator is only available for
-//! numeric `T`, but the node it wraps stores a plain `Add(Box<_>, Box<_>)`
-//! regardless of `T`. Same pattern for comparisons (`Expr<T>.eq(Expr<T>)
+//!   the typed wrapper enforces the operator is only available for
+//!   numeric `T`, but the node it wraps stores a plain `Add(Box<_>, Box<_>)`
+//!   regardless of `T`. Same pattern for comparisons (`Expr<T>.eq(Expr<T>)
 //! -> Expr<bool>` — the wrapper changes `T` from `T` to `bool`, the node
-//! is a `Cmp { op: Eq, .. }`).
+//!   is a `Cmp { op: Eq, .. }`).
 //! - **Phase expansion.** Tasks 4 / 5 add `Case`, `Exists`, `Subquery`,
-//! `Aggregate`, and `OuterRef` variants. Keeping the enum untyped means
-//! those additions don't ripple into every type-parameterised site; only
-//! the emitter and a few typed constructors grow.
+//!   `Aggregate`, and `OuterRef` variants. Keeping the enum untyped means
+//!   those additions don't ripple into every type-parameterised site; only
+//!   the emitter and a few typed constructors grow.
 //! # Where
 //! - [`super::Expr`] — typed wrapper, the public surface.
 //! - [`super::sql::emit_expr`] — the matching emitter (one arm per variant).
 //! - [`crate::query::condition::Condition::Expr`] — the bridge that promotes
-//! an `Expr<bool>` into the filter tree.
+//!   an `Expr<bool>` into the filter tree.
 
 use crate::query::condition::FilterValue;
 use std::any::TypeId;
@@ -614,19 +614,19 @@ pub(crate) enum ExprNode {
 /// Carries the minimum the emitter needs to render
 /// `SELECT <col or 1> FROM <table> [WHERE <condition>]`:
 /// - `table` — always `<T as Model>::table_name` from the typed
-/// surface (a `&'static str`; never user input).
+///   surface (a `&'static str`; never user input).
 /// - `select_column` — `Some(col)` for scalar subqueries (the typed
-/// wrapper pins it via [`crate::query::field::FieldRef`] so the
-/// identifier is always validated); `None` for EXISTS, where the
-/// emitter renders `SELECT 1`.
+///   wrapper pins it via [`crate::query::field::FieldRef`] so the
+///   identifier is always validated); `None` for EXISTS, where the
+///   emitter renders `SELECT 1`.
 /// - `where_clause` — the correlated predicate, stored as a
-/// type-erased [`ErasedSubqueryPredicate`] handle.
-/// replaced the pre-flip `Option<Condition>` storage so expression
-/// subqueries carry full `Q<T>` predicates — including portable root
-/// field leaves — without round-tripping through `q_to_condition`.
-/// The handle owns a `Q<T>` for some concrete `T: Model`; the
-/// trait-object dispatch hides the model parameter so `SubqueryNode`
-/// stays type-erased.
+///   type-erased [`ErasedSubqueryPredicate`] handle.
+///   replaced the pre-flip `Option<Condition>` storage so expression
+///   subqueries carry full `Q<T>` predicates — including portable root
+///   field leaves — without round-tripping through `q_to_condition`.
+///   The handle owns a `Q<T>` for some concrete `T: Model`; the
+///   trait-object dispatch hides the model parameter so `SubqueryNode`
+///   stays type-erased.
 #[derive(Debug, Clone)]
 pub(crate) struct SubqueryNode {
     /// Subquery's `FROM` table — `<T as Model>::table_name` from the

@@ -26,8 +26,8 @@
 //! - `models` is sorted by `(app, type_name)`, both ascending.
 //! - Within each model, `fields` follows declaration order.
 //! - `relations` is sorted alphabetically by source-column name.
-//! Two consecutive runs against the same compiled binary produce
-//! byte-equal output, suitable for `diff` in CI.
+//!   Two consecutive runs against the same compiled binary produce
+//!   byte-equal output, suitable for `diff` in CI.
 
 use djogi::descriptor::{FieldDescriptor, ModelDescriptor, PkType};
 use djogi::relation::OnDelete;

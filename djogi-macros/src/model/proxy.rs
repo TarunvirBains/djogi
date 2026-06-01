@@ -2,23 +2,23 @@
 //! Holds parsers and the SQL-lowering pass for the three `#[model(...)]`
 //! keys that opt a model into proxy semantics:
 //! - `proxy_for = ParentType` — bare-identifier path naming the parent
-//! model (whose table this proxy shares).
+//!   model (whose table this proxy shares).
 //! - `default_order = [(field, dir), ...]` — list of `(ident, OrderDir)`
-//! pairs declaring the default ordering applied to every
-//! `QuerySet<ProxyModel>` on construction.
+//!   pairs declaring the default ordering applied to every
+//!   `QuerySet<ProxyModel>` on construction.
 //! - `default_filter = |f| ...` — closure expression lowered to a SQL
-//! fragment and AND-composed into every `QuerySet<ProxyModel>` via the
-//! `Model::default_filter_condition` override.
-//! Parsing: `proxy_for`, `default_order`, `default_filter` attribute keys
-//! parsed from `#[model(...)]`. Cross-attribute validation rejects orphan
-//! `default_order`/`default_filter` without `proxy_for`.
-//! SQL lowering: `lower_default_filter_to_sql` walks the closure body via
-//! recursive descent over `syn::Expr` and lowers recognised patterns
-//! (eq/neq/null/range/literal and/or chains) to a SQL fragment string.
-//! Unrecognised patterns surface a span-precise compile error.
-//! QuerySet wiring: the lowered SQL fragment feeds into
-//! `Model::default_filter_condition` which `QuerySet::new` AND-composes
-//! with any user-supplied filter at queryset construction time.
+//!   fragment and AND-composed into every `QuerySet<ProxyModel>` via the
+//!   `Model::default_filter_condition` override.
+//!   Parsing: `proxy_for`, `default_order`, `default_filter` attribute keys
+//!   parsed from `#[model(...)]`. Cross-attribute validation rejects orphan
+//!   `default_order`/`default_filter` without `proxy_for`.
+//!   SQL lowering: `lower_default_filter_to_sql` walks the closure body via
+//!   recursive descent over `syn::Expr` and lowers recognised patterns
+//!   (eq/neq/null/range/literal and/or chains) to a SQL fragment string.
+//!   Unrecognised patterns surface a span-precise compile error.
+//!   QuerySet wiring: the lowered SQL fragment feeds into
+//!   `Model::default_filter_condition` which `QuerySet::new` AND-composes
+//!   with any user-supplied filter at queryset construction time.
 //! # Identifier validation
 //! Per `feedback_no_regex_in_djogi` — no regex engine, no regex notation
 //! in this module's text. The `proxy_for` identifier validator uses the
@@ -61,14 +61,14 @@ pub enum OrderDir {
 /// 1. Non-empty.
 /// 2. ≤ 63 bytes (Postgres `NAMEDATALEN - 1`).
 /// 3. First byte is an ASCII letter (uppercase or lowercase) or
-/// underscore.
+///    underscore.
 /// 4. Every remaining byte is ASCII alphanumeric or underscore.
-/// Spelled out in plain English per `feedback_no_regex_in_djogi`. The
-/// byte-level implementation mirrors `check_ident` in
-/// `djogi-macros/src/ident.rs` so the safety contract stays in sync
-/// with the column / table validators.
-/// Returns `Err` with a span-precise diagnostic on the offending span
-/// when the identifier shape is wrong.
+///    Spelled out in plain English per `feedback_no_regex_in_djogi`. The
+///    byte-level implementation mirrors `check_ident` in
+///    `djogi-macros/src/ident.rs` so the safety contract stays in sync
+///    with the column / table validators.
+///    Returns `Err` with a span-precise diagnostic on the offending span
+///    when the identifier shape is wrong.
 pub fn validate_proxy_for_ident(ident: &syn::Ident) -> syn::Result<()> {
     let s = ident.to_string();
     let bytes = s.as_bytes();
@@ -448,7 +448,7 @@ mod tests {
 /// - The accessor binding is mis-spelled or shadowed.
 /// - An unrecognised method name appears in the predicate position.
 /// - A literal value type is outside the supported set
-/// (`bool`/integer/float/string/`null`).
+///   (`bool`/integer/float/string/`null`).
 pub fn lower_default_filter_to_sql(closure: &ExprClosure) -> syn::Result<String> {
     // The single input pattern must be a simple ident — the binding the
     // walker uses to recognise field-accessor expressions.

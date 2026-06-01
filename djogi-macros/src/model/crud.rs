@@ -51,17 +51,17 @@
 //! Task 6 integration test already validate.
 //! # SQL conventions
 //! - Column name == Rust field name (snake_case). This matches the injection
-//! convention in `inject.rs` and the `FromRow` impl in `from_row.rs`.
+//!   convention in `inject.rs` and the `FromRow` impl in `from_row.rs`.
 //! - `create` omits `id`, `created_at`, and `updated_at` from the `INSERT`
-//! columns — the Postgres defaults (`heerid_next`, `now`) populate them.
-//! `RETURNING *` sends the full row back so the returned `Self` has all
-//! fields populated from the database.
+//!   columns — the Postgres defaults (`heerid_next`, `now`) populate them.
+//!   `RETURNING *` sends the full row back so the returned `Self` has all
+//!   fields populated from the database.
 //! - `save` sets all user fields plus `updated_at = now`. Only user fields
-//! are written — `id` and `created_at` are immutable after creation.
+//!   are written — `id` and `created_at` are immutable after creation.
 //! - `delete` consumes `self` to prevent accidental use of a stale handle.
 //! - `save` and `refresh_from_db` take `&self` and borrow `self` directly
-//! across the async block — Rust 2024 RPITIT captures `&self`'s lifetime
-//! into the returned future, so no clone-capture is needed. `Model: Send
+//!   across the async block — Rust 2024 RPITIT captures `&self`'s lifetime
+//!   into the returned future, so no clone-capture is needed. `Model: Send
 //! + Sync` → `&Self: Send`, which keeps the returned future Send-bound.
 //! # `pk = None` special case
 //! Models with `#[model(pk = None)]` have no framework-injected `id` field

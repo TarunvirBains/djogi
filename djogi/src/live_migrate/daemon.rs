@@ -13,35 +13,35 @@
 //! The daemon's responsibility ends at the first operator gate.
 //! Specifically:
 //! - Auto-resumes [`StepKind::BackfillChunked`] (chunk-loop
-//! continuation; idempotent by the pattern's `WHERE` predicate
-//! contract).
+//!   continuation; idempotent by the pattern's `WHERE` predicate
+//!   contract).
 //! - Auto-resumes [`StepKind::ValidateBackfill`] only as a re-runnable
-//! gate query — the daemon does NOT auto-promote the plan past the
-//! validation gate; that decision stays with the operator via
-//! `live run`.
+//!   gate query — the daemon does NOT auto-promote the plan past the
+//!   validation gate; that decision stays with the operator via
+//!   `live run`.
 //! - Refuses to advance through [`StepKind::CutoverReads`],
-//! [`StepKind::CutoverWrites`], and [`StepKind::FinalizeConstraints`].
-//! Those gates are operator-only (`live run` / `live finalize`); the
-//! daemon would have no way to confirm the production application's
-//! read / write traffic has been re-routed before flipping the
-//! cutover, and an automated finalize would side-step the operator
-//! review of the post-backfill state. Any plan whose `current_step`
-//! has advanced into a cutover / finalize gate is invisible to the
-//! daemon's candidate filter.
+//!   [`StepKind::CutoverWrites`], and [`StepKind::FinalizeConstraints`].
+//!   Those gates are operator-only (`live run` / `live finalize`); the
+//!   daemon would have no way to confirm the production application's
+//!   read / write traffic has been re-routed before flipping the
+//!   cutover, and an automated finalize would side-step the operator
+//!   review of the post-backfill state. Any plan whose `current_step`
+//!   has advanced into a cutover / finalize gate is invisible to the
+//!   daemon's candidate filter.
 //! - Refuses to auto-resume [`PlanStatus::Paused`] plans. `Paused` is
-//! the operator's checkpoint state — the daemon never overrides an
-//! explicit operator pause.
+//!   the operator's checkpoint state — the daemon never overrides an
+//!   explicit operator pause.
 //! # Triple-gate
 //! Mirrors `db reset` semantics. A daemon invocation refuses to start
 //! when:
 //! 1. `DJOGI_ENV` is set to `production` (case-insensitive). The daemon
-//! is not approved for production deployments in the v1 surface;
-//! operator-driven `live resume` remains the sole production
-//! surface.
+//!    is not approved for production deployments in the v1 surface;
+//!    operator-driven `live resume` remains the sole production
+//!    surface.
 //! 2. The application database URL does not resolve to localhost AND
-//! the operator did not pass `--allow-non-localhost`. Mirrors the
-//! seed / reset gate so a misconfigured `DATABASE_URL` cannot have
-//! the daemon hammering a remote production box.
+//!    the operator did not pass `--allow-non-localhost`. Mirrors the
+//!    seed / reset gate so a misconfigured `DATABASE_URL` cannot have
+//!    the daemon hammering a remote production box.
 //! # Coordination
 //! Two daemons may legitimately race on the same plan (failover to a
 //! new host while the original daemon is still draining). The poll
@@ -198,23 +198,23 @@ impl From<DbError> for DaemonError {
 /// a `Duration` directly, but seconds-as-i64 round-trips cleanly.
 /// The candidate filter is two AND-ed predicates:
 /// 1. **Eligible step / status.** `status = 'running'` AND
-/// `current_step IN ('backfill_chunked', 'validate_backfill')`.
-/// Pending plans are operator-promoted via `live run`; Paused
-/// plans are explicit operator checkpoints; terminal states
-/// (Complete / Abandoned / Failed) are never auto-resumed.
+///    `current_step IN ('backfill_chunked', 'validate_backfill')`.
+///    Pending plans are operator-promoted via `live run`; Paused
+///    plans are explicit operator checkpoints; terminal states
+///    (Complete / Abandoned / Failed) are never auto-resumed.
 /// 2. **Stale (or never-progressed) AND free-to-claim.** The row must
-/// be stale — `last_progress_at < now - $1::interval OR
+///    be stale — `last_progress_at < now - $1::interval OR
 /// last_progress_at IS NULL` (a row that has never recorded
-/// progress is treated as stale by definition). The row must also
-/// be free to claim — `claimed_by_pid IS NULL OR claimed_by_pid =
+///    progress is treated as stale by definition). The row must also
+///    be free to claim — `claimed_by_pid IS NULL OR claimed_by_pid =
 /// $2`: unclaimed, OR already claimed by THIS daemon (so a
-/// restarted daemon process can re-claim its own previous work
-/// rather than waiting for the stale threshold).
-/// `$2` binds the running daemon's PID — passing it explicitly keeps
-/// the predicate self-contained without smuggling state through the
-/// SQL session.
-/// The query is documented as a constant so tests can assert its
-/// shape without reaching into private internals.
+///    restarted daemon process can re-claim its own previous work
+///    rather than waiting for the stale threshold).
+///    `$2` binds the running daemon's PID — passing it explicitly keeps
+///    the predicate self-contained without smuggling state through the
+///    SQL session.
+///    The query is documented as a constant so tests can assert its
+///    shape without reaching into private internals.
 const CANDIDATE_QUERY_SQL: &str = "\
 SELECT plan_id, target_database, app_label, slug, current_step \
 FROM djogi_live_plans \
@@ -338,13 +338,13 @@ pub async fn run_daemon(ctx: &mut DjogiContext, config: DaemonConfig) -> Result<
 /// Three independent refusals fire here:
 /// 1. `DJOGI_ENV` set to `production` (case-insensitive).
 /// 2. `DjogiConfig::profile` set to the literal lowercase
-/// `"production"` — mirrors the predicate `db reset` and
-/// `db cleanup-test-dbs` use so every long-running destructive
-/// surface follows the same rule. Strict lowercase match: a typo
-/// (`"Production"`, `"PROD"`) falls back to the safe-for-dev
-/// default rather than silently flipping the gate.
+///    `"production"` — mirrors the predicate `db reset` and
+///    `db cleanup-test-dbs` use so every long-running destructive
+///    surface follows the same rule. Strict lowercase match: a typo
+///    (`"Production"`, `"PROD"`) falls back to the safe-for-dev
+///    default rather than silently flipping the gate.
 /// 3. Application URL is not localhost AND `--allow-non-localhost`
-/// was not passed.
+///    was not passed.
 fn enforce_environment_gates(config: &DaemonConfig) -> Result<(), DaemonError> {
     if production_env_set() {
         return Err(DaemonError::Production);

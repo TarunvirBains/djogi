@@ -66,43 +66,43 @@
 //! ```
 //! ## Design notes baked into the SQL
 //! - **Direction is ANCESTORS.** The closure table walks *up* from each
-//! source row to its transitive ancestors. The named driver for this
-//! helper is kinship / pedigree analysis, where the "every ancestor of
-//! every source row" frame is the natural shape.
+//!   source row to its transitive ancestors. The named driver for this
+//!   helper is kinship / pedigree analysis, where the "every ancestor of
+//!   every source row" frame is the natural shape.
 //! - **Single recursive reference + `CROSS JOIN LATERAL VALUES`.**
-//! Postgres rejects recursive CTEs whose recursive term references
-//! the CTE name more than once. Multi-edge models (e.g.
-//! `mother_id` + `father_id` on an animal model) therefore enumerate
-//! self-FK edges via a `CROSS JOIN LATERAL (VALUES …) AS step(pid,
+//!   Postgres rejects recursive CTEs whose recursive term references
+//!   the CTE name more than once. Multi-edge models (e.g.
+//!   `mother_id` + `father_id` on an animal model) therefore enumerate
+//!   self-FK edges via a `CROSS JOIN LATERAL (VALUES …) AS step(pid,
 //! label)` clause that fans every edge column out into its own
-//! row pair — every distinct edge-sequence path still surfaces as
-//! its own CTE row, then the outer `GROUP BY` collapses
-//! `(source, ancestor, depth)` triples while surfacing the count as
-//! `path_count`. This preserves Wright-style multiplicity: an
-//! ancestor reachable by two distinct edge sequences shows up with
-//! `path_count = 2`. NULL-valued edge columns get filtered by the
-//! inner `JOIN T p ON p.id = step.pid` (NULL = anything is unknown).
+//!   row pair — every distinct edge-sequence path still surfaces as
+//!   its own CTE row, then the outer `GROUP BY` collapses
+//!   `(source, ancestor, depth)` triples while surfacing the count as
+//!   `path_count`. This preserves Wright-style multiplicity: an
+//!   ancestor reachable by two distinct edge sequences shows up with
+//!   `path_count = 2`. NULL-valued edge columns get filtered by the
+//!   inner `JOIN T p ON p.id = step.pid` (NULL = anything is unknown).
 //! - **Cycle column is `cycle_path`** (not `path`) so it does not
-//! collide with our user-visible edge-name accumulator.
+//!   collide with our user-visible edge-name accumulator.
 //! - **`ON CONFLICT … DO UPDATE` replaces, it does not add.** Each
-//! helper invocation walks the current graph from scratch via the
-//! recursive CTE, so EXCLUDED's `path_count` is already the correct
-//! total of distinct paths between every `(source, ancestor, depth)`
-//! triple in the present graph state. The pre-existing closure row's
-//! value is the previous (possibly stale) total; replacing it with
-//! EXCLUDED keeps the closure aligned with whatever lives in the
-//! source table now. Re-running the helper twice in a row is therefore
-//! idempotent — the second run computes the same totals and writes
-//! them on top of themselves. An `additive` merge would double on
-//! straight rerun and over-count on every incremental rerun (because
-//! the recursive walk re-derives existing paths on top of new ones),
-//! so it is wrong on every callsite that matters.
+//!   helper invocation walks the current graph from scratch via the
+//!   recursive CTE, so EXCLUDED's `path_count` is already the correct
+//!   total of distinct paths between every `(source, ancestor, depth)`
+//!   triple in the present graph state. The pre-existing closure row's
+//!   value is the previous (possibly stale) total; replacing it with
+//!   EXCLUDED keeps the closure aligned with whatever lives in the
+//!   source table now. Re-running the helper twice in a row is therefore
+//!   idempotent — the second run computes the same totals and writes
+//!   them on top of themselves. An `additive` merge would double on
+//!   straight rerun and over-count on every incremental rerun (because
+//!   the recursive walk re-derives existing paths on top of new ones),
+//!   so it is wrong on every callsite that matters.
 //! - **`RETURNING <source_col>`** plus the outer `COUNT` /
-//! `COUNT(DISTINCT)` lets the helper report both `rows_written`
-//! (unique `(source, ancestor, depth)` triples touched) and
-//! `sources_visited` (distinct source rows whose ancestors were
-//! walked) in a single round trip — no second query against the
-//! closure table.
+//!   `COUNT(DISTINCT)` lets the helper report both `rows_written`
+//!   (unique `(source, ancestor, depth)` triples touched) and
+//!   `sources_visited` (distinct source rows whose ancestors were
+//!   walked) in a single round trip — no second query against the
+//!   closure table.
 //! ## Required closure-table schema
 //! Adopters must create the closure table with at least:
 //! ```sql
@@ -405,18 +405,18 @@ pub(crate) fn validate_closure_metadata_idents<C: ClosureModel>() -> Result<(), 
 /// database.
 /// # Bind ordering
 /// 1. `roots` ids (when `Some(ids)` with non-empty `ids`)
-/// one bind slot per id, in caller-supplied order.
+///    one bind slot per id, in caller-supplied order.
 /// 2. `max_depth` — one bind slot total, attached to the WHERE on
-/// the consolidated single recursive SELECT. Bound as `i32` to
-/// match `closure.depth` (INTEGER / int4); `tokio_postgres`
-/// requires exact bind/column type match. Edge count does not
-/// affect this — every self-FK edge fans out through one
-/// `CROSS JOIN LATERAL VALUES` clause, not per-edge UNION ALL
-/// branches.
-/// `tokio_postgres` re-receives bind values in the order the helper
-/// pushes them; downstream readers should not assume `$1` is always
-/// `max_depth` etc. The bind count returned by
-/// [`SqlAccumulator::bind_count`] is the authoritative ordering.
+///    the consolidated single recursive SELECT. Bound as `i32` to
+///    match `closure.depth` (INTEGER / int4); `tokio_postgres`
+///    requires exact bind/column type match. Edge count does not
+///    affect this — every self-FK edge fans out through one
+///    `CROSS JOIN LATERAL VALUES` clause, not per-edge UNION ALL
+///    branches.
+///    `tokio_postgres` re-receives bind values in the order the helper
+///    pushes them; downstream readers should not assume `$1` is always
+///    `max_depth` etc. The bind count returned by
+///    [`SqlAccumulator::bind_count`] is the authoritative ordering.
 pub(crate) fn build_materialize_closure_sql<T, C>(
     opts: MaterializeClosureOptions<T::Pk>,
 ) -> SqlAccumulator

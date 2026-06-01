@@ -12,11 +12,11 @@
 //! and finalize SQL can reference both endpoints.
 //! # Step graph
 //! 1. [`StepKind::ExpandSchema`] — sentinel record. already
-//! added the column / `NOT VALID` constraint; this pattern owns
-//! only the validation half.
+//!    added the column / `NOT VALID` constraint; this pattern owns
+//!    only the validation half.
 //! 2. [`StepKind::BackfillChunked`] — UPDATE rows whose `<col>`
-//! fails the FK predicate. The pattern emits a complete
-//! UPDATE-tail fragment of the shape
+//!    fails the FK predicate. The pattern emits a complete
+//!    UPDATE-tail fragment of the shape
 //!    ```sql
 //!    SET <col> = NULL
 //!    WHERE id IN (SELECT id FROM <table>

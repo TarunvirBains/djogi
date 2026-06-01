@@ -39,7 +39,7 @@
 //! # Where
 //! - [`super::node::ExprNode::Case`] — the untyped payload.
 //! - [`super::sql::emit_expr`] — renders the SQL tokens (one arm per
-//! `(cond, val)` pair, then `ELSE <default> END`).
+//!   `(cond, val)` pair, then `ELSE <default> END`).
 
 use crate::expr::Expr;
 use crate::expr::node::ExprNode;

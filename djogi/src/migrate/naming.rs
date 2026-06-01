@@ -1,41 +1,41 @@
 //! Canonical version slug + filename naming for composed migrations.
 //! T6 owns this module. Two responsibilities:
 //! 1. **Version IDs.** A composed migration is named
-//! `V<YYYYMMDDHHMMSS>__<sanitized-slug>` (e.g.
-//! `V20260425010203__add_users`). The `V`-prefixed timestamp is the
-//! sortable version key; the slug is the operator-facing name. Two
-//! composes against the same descriptor inventory + snapshot
-//! produce identical SQL because the timestamp is taken from the
-//! caller (compose-time clock, not differ-time clock) and the rest
-//! of the lowering is deterministic — passing the same instant
-//! through this module twice yields the same version ID.
+//!    `V<YYYYMMDDHHMMSS>__<sanitized-slug>` (e.g.
+//!    `V20260425010203__add_users`). The `V`-prefixed timestamp is the
+//!    sortable version key; the slug is the operator-facing name. Two
+//!    composes against the same descriptor inventory + snapshot
+//!    produce identical SQL because the timestamp is taken from the
+//!    caller (compose-time clock, not differ-time clock) and the rest
+//!    of the lowering is deterministic — passing the same instant
+//!    through this module twice yields the same version ID.
 //! 2. **Filename slugs.** The on-disk migration file is
-//! `<version>__<slug>.sdjql` (up side) and `<version>__<slug>.down.sdjql`
-//! (down side). The slug is sanitised down to a strict identifier
-//! grammar so tooling — file globbing, `git diff`, commit messages
-//! never has to worry about whitespace, punctuation, or non-ASCII
-//! bytes inside a migration filename.
+//!    `<version>__<slug>.sdjql` (up side) and `<version>__<slug>.down.sdjql`
+//!    (down side). The slug is sanitised down to a strict identifier
+//!    grammar so tooling — file globbing, `git diff`, commit messages
+//!    never has to worry about whitespace, punctuation, or non-ASCII
+//!    bytes inside a migration filename.
 //! # Slug grammar (no regex)
 //! Per the project-wide no-regex rule, the sanitiser walks the input
 //! byte-by-byte and applies these rules:
 //! - Each input byte is lowercased if it's `b'A'..=b'Z'`.
 //! - ASCII alphanumerics (`b'0'..=b'9'`, `b'a'..=b'z'`) pass through
-//! unchanged.
+//!   unchanged.
 //! - Whitespace bytes (`b' '`, `b'\t'`, `b'-'`) collapse to a single
-//! `b'_'`.
+//!   `b'_'`.
 //! - Underscores pass through.
 //! - Every other byte (punctuation, multi-byte UTF-8) is dropped.
 //! - Repeated underscores collapse to one.
 //! - Leading and trailing underscores are trimmed.
 //! - The first byte must be `b'_'` or `u8::is_ascii_alphabetic`. If
-//! the first surviving byte is a digit, the slug is prefixed with
-//! `m_` so the resulting identifier is a valid Postgres-style name.
+//!   the first surviving byte is a digit, the slug is prefixed with
+//!   `m_` so the resulting identifier is a valid Postgres-style name.
 //! - The total length is capped at 63 bytes (matching the Postgres
-//! identifier byte limit). Longer slugs are truncated; the
-//! timestamp prefix lives in a separate field so the slug truncation
-//! does not collide with the version key.
-//! Rules are spelled out in plain English here and implemented with
-//! byte-level checks below — no regex notation.
+//!   identifier byte limit). Longer slugs are truncated; the
+//!   timestamp prefix lives in a separate field so the slug truncation
+//!   does not collide with the version key.
+//!   Rules are spelled out in plain English here and implemented with
+//!   byte-level checks below — no regex notation.
 //! # Determinism
 //! The sanitiser is a pure function of its byte input. The version-ID
 //! constructor is a pure function of an `OffsetDateTime` (caller

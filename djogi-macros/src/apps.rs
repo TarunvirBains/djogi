@@ -1,18 +1,18 @@
 //! `djogi::apps! { … }` function-like proc macro.
 //! Lowers a block of `#[app(...)] pub struct Foo;` declarations into:
 //! 1. The unit structs themselves, with every `#[app(...)]` attribute
-//! stripped (the emitted struct is plain Rust; all app metadata is
-//! captured in the [`App`] impl).
+//!    stripped (the emitted struct is plain Rust; all app metadata is
+//!    captured in the [`App`] impl).
 //! 2. One `impl ::djogi::apps::App for <Struct>` per entry, carrying
-//! the hidden seal witness required by `App`, with
-//! `LABEL` / `DATABASE` / `DESCRIPTOR` associated constants fully
-//! resolvable at const-eval time.
+//!    the hidden seal witness required by `App`, with
+//!    `LABEL` / `DATABASE` / `DESCRIPTOR` associated constants fully
+//!    resolvable at const-eval time.
 //! 3. One `inventory::submit!` of the struct's
-//! `::djogi::apps::AppDescriptor` per entry for migration and
-//! ledger consumers to discover.
+//!    `::djogi::apps::AppDescriptor` per entry for migration and
+//!    ledger consumers to discover.
 //! 4. A single zero-sized invocation sentinel emitted exactly once
-//! per `djogi::apps!` call. Two invocations in the same crate
-//! collide on the sentinel's name and rustc raises `duplicate
+//!    per `djogi::apps!` call. Two invocations in the same crate
+//!    collide on the sentinel's name and rustc raises `duplicate
 //! definition`.
 //! # Parser
 //! Hand-rolled, matching the model-index parser shape. Darling's
@@ -146,9 +146,9 @@ fn parse_app_decl(input: ParseStream<'_>) -> syn::Result<AppDecl> {
 /// - `database = "…"` (required),
 /// - `renamed_from = "old_label"` (optional lifecycle marker),
 /// - `tombstone` (optional lifecycle flag).
-/// Errors on duplicates, unknown keys, non-string values, or when
-/// `renamed_from` and `tombstone` both appear (mutually exclusive
-/// a tombstoned app is being retired, not renamed).
+///   Errors on duplicates, unknown keys, non-string values, or when
+///   `renamed_from` and `tombstone` both appear (mutually exclusive
+///   a tombstoned app is being retired, not renamed).
 struct ParsedAppAttr {
     label_override: Option<LitStr>,
     database: String,
@@ -328,9 +328,9 @@ fn derive_label(decl: &AppDecl) -> syn::Result<String> {
 /// 2. First byte is `b'_'` or `u8::is_ascii_alphabetic`.
 /// 3. Remaining bytes are `b'_'` or `u8::is_ascii_alphanumeric`.
 /// 4. Total length ≤ 63 bytes (Postgres `NAMEDATALEN - 1`).
-/// `via_override` only changes the error message's advice — "add an
-/// explicit `#[app(label = \"…\")]`" is only useful when the current
-/// failure came from the default-derivation path.
+///    `via_override` only changes the error message's advice — "add an
+///    explicit `#[app(label = \"…\")]`" is only useful when the current
+///    failure came from the default-derivation path.
 fn validate_label_shape(label: &str, span: Span, via_override: bool) -> syn::Result<()> {
     let bytes = label.as_bytes();
     if bytes.is_empty() {

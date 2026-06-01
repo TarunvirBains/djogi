@@ -4,10 +4,10 @@
 //! - `QuerySet<T>` → `GroupedQuerySet<T, K>` via `.group_by`
 //! - `GroupedQuerySet<T, K>` → `GroupedAnnotatedQuerySet<T, K, A>` via `.annotate`
 //! - `GroupedAnnotatedQuerySet<T, K, A>` is the only state with terminals
-//! (`.fetch_all`, `.stream`)
-//! Premature `.fetch_all` on `GroupedQuerySet<T, K>` is a compile error
-//! (no such method exists). This is enforced structurally rather than via
-//! runtime checks.
+//!   (`.fetch_all`, `.stream`)
+//!   Premature `.fetch_all` on `GroupedQuerySet<T, K>` is a compile error
+//!   (no such method exists). This is enforced structurally rather than via
+//!   runtime checks.
 
 #![allow(clippy::manual_async_fn)]
 
@@ -211,8 +211,8 @@ impl_into_group_key_tuple_djogi!(
 /// - `Join` — region path: LEFT JOIN + `ST_Contains` + GROUP BY region PK.
 /// - `Cluster` — DBSCAN path: `ST_ClusterDBSCAN(...) OVER ` window aggregate.
 /// - `Geohash` — geohash path: `ST_GeoHash(..., precision)` scalar function.
-/// Stored as `Option<SpatialGroupSource>` on `GroupedQuerySet` and
-/// `GroupedAnnotatedQuerySet`; `None` means a plain non-spatial GROUP BY.
+///   Stored as `Option<SpatialGroupSource>` on `GroupedQuerySet` and
+///   `GroupedAnnotatedQuerySet`; `None` means a plain non-spatial GROUP BY.
 #[cfg(feature = "spatial")]
 #[derive(Debug, Clone)]
 pub(crate) enum SpatialGroupSource {

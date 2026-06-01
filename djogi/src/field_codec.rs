@@ -37,21 +37,21 @@ use crate::migrate::OnlineSafetyClassification;
 /// Implementors are zero-sized marker types (a codec is *code*, not a
 /// runtime instance) and supply:
 /// - [`Self::ID`] — the compile-time string constant the descriptor
-/// stores in [`crate::descriptor::ProtectedFieldMetadata::codec`].
-/// Identifiers are short ASCII labels following the SQL-identifier
-/// convention used elsewhere in the framework: an ASCII letter or
-/// underscore followed by ASCII alphanumerics or underscores, up to
-/// 63 bytes. Validation lives in T3's macro layer; T4 only requires
-/// that the ID be a `&'static str`.
+///   stores in [`crate::descriptor::ProtectedFieldMetadata::codec`].
+///   Identifiers are short ASCII labels following the SQL-identifier
+///   convention used elsewhere in the framework: an ASCII letter or
+///   underscore followed by ASCII alphanumerics or underscores, up to
+///   63 bytes. Validation lives in T3's macro layer; T4 only requires
+///   that the ID be a `&'static str`.
 /// - [`Self::Decoded`] — the in-memory Rust type the application code
-/// sees (e.g. `String` for a plaintext column representation).
+///   sees (e.g. `String` for a plaintext column representation).
 /// - [`Self::Encoded`] — the at-rest shape stored in Postgres (e.g.
-/// `Vec<u8>` for an AEAD-protected column).
+///   `Vec<u8>` for an AEAD-protected column).
 /// - [`Self::Error`] — the codec's error type, returned from both
-/// [`encode`](Self::encode) and [`decode`](Self::decode).
-/// `encode` and `decode` round-trip a single value across the
-/// in-memory ↔ at-rest boundary. `classify_transition` answers
-/// migration questions: see the module-level docs for the rationale.
+///   [`encode`](Self::encode) and [`decode`](Self::decode).
+///   `encode` and `decode` round-trip a single value across the
+///   in-memory ↔ at-rest boundary. `classify_transition` answers
+///   migration questions: see the module-level docs for the rationale.
 pub trait FieldCodec: Send + Sync + 'static {
     /// Compile-time identifier referenced by
     /// `#[field(protected(codec = "<id>"))]`. Must be unique across
@@ -79,16 +79,16 @@ pub trait FieldCodec: Send + Sync + 'static {
 
     /// Classify the migration from `Self` to `Other`.
     /// - [`OnlineSafetyClassification::OnlineSafe`] is the convention
-    /// for the identity transition (`Self == Other`).
+    ///   for the identity transition (`Self == Other`).
     /// - [`OnlineSafetyClassification::ExpandContract`] hands the
-    /// migration over to 's live-plan layer.
+    ///   migration over to 's live-plan layer.
     /// - [`OnlineSafetyClassification::OfflineOnly`] refuses the
-    /// migration outright; the operator must acknowledge downtime
-    /// or rewrite the change by hand.
+    ///   migration outright; the operator must acknowledge downtime
+    ///   or rewrite the change by hand.
     /// - [`OnlineSafetyClassification::FastLockDestructiveGuarded`] is
-    /// gated by `--allow-destructive` in the runner.
-    /// Reads as an associated function because the answer is a
-    /// property of the two codec types, not of any value.
+    ///   gated by `--allow-destructive` in the runner.
+    ///   Reads as an associated function because the answer is a
+    ///   property of the two codec types, not of any value.
     fn classify_transition<Other: FieldCodec>() -> OnlineSafetyClassification;
 }
 

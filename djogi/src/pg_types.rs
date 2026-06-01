@@ -45,7 +45,7 @@ use std::error::Error;
 /// Represents a calendar duration as three independent fields:
 /// - `months` — calendar months (a year is 12 months).
 /// - `days` — calendar days (a day is NOT 24 hours; DST shifts move it
-/// by an hour, leap seconds shift it by a fractional second).
+///   by an hour, leap seconds shift it by a fractional second).
 /// - `microseconds` — sub-day time component.
 /// # Why three fields?
 /// Postgres `INTERVAL` is intrinsically a tagged three-tuple, not a
@@ -254,16 +254,16 @@ impl crate::descriptor::DjogiSqlType for Interval {
 /// the named value, or unbounded on this side.
 /// The variant set matches Postgres's range-bound semantics directly:
 /// * `Inclusive(t)` — the bound value `t` is part of the range.
-/// Renders as `[t,…]` (lower) or `[…,t]` (upper).
+///   Renders as `[t,…]` (lower) or `[…,t]` (upper).
 /// * `Exclusive(t)` — the bound value `t` is *not* part of the range.
-/// Renders as `(t,…]` (lower) or `[…,t)` (upper).
+///   Renders as `(t,…]` (lower) or `[…,t)` (upper).
 /// * `Unbounded` — no bound on this side. Postgres terminology calls
-/// this "infinite"; the wire format sets the `RANGE_LB_INF` /
-/// `RANGE_UB_INF` flag and omits the bound bytes entirely.
-/// The empty range is *not* a special `RangeBound` value — it is a
-/// separate state on the enclosing [`Range`]. Use [`Range::empty`] when
-/// you need the empty-range sentinel; an empty range carries no bound
-/// values regardless of which `RangeBound` variants you started with.
+///   this "infinite"; the wire format sets the `RANGE_LB_INF` /
+///   `RANGE_UB_INF` flag and omits the bound bytes entirely.
+///   The empty range is *not* a special `RangeBound` value — it is a
+///   separate state on the enclosing [`Range`]. Use [`Range::empty`] when
+///   you need the empty-range sentinel; an empty range carries no bound
+///   values regardless of which `RangeBound` variants you started with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RangeBound<T> {
     /// `[t,…]` / `[…,t]` — the bound value is part of the range.
@@ -329,15 +329,15 @@ pub enum RangeBound<T> {
 /// `Range<T>` is also the substrate for two future DB-level no-overlap
 /// surfaces tracked separately:
 /// * **** — `btree_gist` EXCLUDE constraint grammar
-/// (`#[model(exclude(...))]`) and `CREATE EXTENSION btree_gist`.
-/// The general-purpose no-overlap mechanism that works on every
-/// supported Postgres version.
+///   (`#[model(exclude(...))]`) and `CREATE EXTENSION btree_gist`.
+///   The general-purpose no-overlap mechanism that works on every
+///   supported Postgres version.
 /// * **** — PostgreSQL 18 temporal-constraint DDL
-/// (`WITHOUT OVERLAPS`, `PERIOD` foreign keys, `NOT ENFORCED`,
-/// named `NOT NULL`). The modern SQL-standard no-overlap mechanism
-/// on PG18+.
-/// Both lanes consume `Range<T>` columns as their inputs. Neither lane is
-/// part of #215.
+///   (`WITHOUT OVERLAPS`, `PERIOD` foreign keys, `NOT ENFORCED`,
+///   named `NOT NULL`). The modern SQL-standard no-overlap mechanism
+///   on PG18+.
+///   Both lanes consume `Range<T>` columns as their inputs. Neither lane is
+///   part of #215.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Range<T> {
     lower: RangeBound<T>,
@@ -894,16 +894,16 @@ impl MacAddr {
 /// canonical-form MAC address.
 /// Three failure modes:
 /// * `WrongLength { found }` — the input did not parse into exactly six
-/// octets (typically because the wrong number of `:` / `-` separators
-/// was present, or no separators at all).
+///   octets (typically because the wrong number of `:` / `-` separators
+///   was present, or no separators at all).
 /// * `InvalidOctet { index, octet }` — one of the six octet positions
-/// carried a token that was not a 2-byte uppercase / lowercase hex
-/// pair. The `index` is 0-based.
+///   carried a token that was not a 2-byte uppercase / lowercase hex
+///   pair. The `index` is 0-based.
 /// * `MixedSeparators` — the input mixed `:` and `-` separators, which
-/// is ambiguous. Pick one separator style.
-/// The variant payloads are deliberately concrete (lengths, indexes,
-/// the offending octet) so adopters can compose richer error messages
-/// without re-parsing.
+///   is ambiguous. Pick one separator style.
+///   The variant payloads are deliberately concrete (lengths, indexes,
+///   the offending octet) so adopters can compose richer error messages
+///   without re-parsing.
 #[cfg(feature = "network")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MacAddrParseError {

@@ -2,15 +2,15 @@
 //! # What this emits
 //! For every `#[derive(JsonbSchema)]` on a named struct, the macro emits:
 //! 1. A `{T}Path<M: Model>` struct carrying the JSONB column name and the
-//! accumulated path segments so far.
+//!    accumulated path segments so far.
 //! 2. One method per field on `{T}Path<M>`:
 //! - Scalar fields (from the cast-matrix allowlist OR fields annotated
-//! `#[jsonb(scalar)]`) return `JsonbPathRef<M, FieldType>`.
+//!   `#[jsonb(scalar)]`) return `JsonbPathRef<M, FieldType>`.
 //! - All other field types are assumed to implement `JsonbSchema`; the
-//! method returns `<NestedT as JsonbSchema>::Path<M>` with the path
-//! extended by the field's JSON key.
+//!   method returns `<NestedT as JsonbSchema>::Path<M>` with the path
+//!   extended by the field's JSON key.
 //! 3. `impl JsonbSchema for {T}` — wires `type Path<M> = {T}Path<M>` and
-//! provides the `root_path` and `__new_from_slice` constructors.
+//!    provides the `root_path` and `__new_from_slice` constructors.
 //! # Scalar allowlist
 //! Fields whose Rust type matches one of the following are treated as scalars
 //! (they produce a `JsonbPathRef<M, V>` leaf rather than descending into a
@@ -46,8 +46,8 @@
 //! - Empty named struct -> allowed (produces a `{T}Path<M>` with no methods).
 //! - Field with `#[serde(flatten)]` -> error.
 //! - `#[jsonb(scalar = "...")]` / `#[jsonb(scalar(...))]` -> error
-//! (the marker is a bare word; rejecting value forms keeps the door
-//! shut on adopter-supplied SQL cast text).
+//!   (the marker is a bare word; rejecting value forms keeps the door
+//!   shut on adopter-supplied SQL cast text).
 //! # Path routing
 //! All emitted type references go through `::djogi::*` paths so the user's
 //! crate only needs `djogi` as a dependency, not `heeranjid`, `time`, `uuid`,
@@ -429,7 +429,7 @@ enum SerdeFieldInfo {
 /// - `#[serde(rename = "X")]` -> `SerdeFieldInfo::Rename("X")`.
 /// - Any other serde attr (e.g. `skip_serializing_if`, `default`) -> ignored.
 /// - No serde attr -> `SerdeFieldInfo::NoRename`.
-/// Flatten takes priority over rename in the unlikely case both appear.
+///   Flatten takes priority over rename in the unlikely case both appear.
 fn inspect_serde_field(field: &syn::Field) -> SerdeFieldInfo {
     for attr in &field.attrs {
         if !attr.path().is_ident("serde") {

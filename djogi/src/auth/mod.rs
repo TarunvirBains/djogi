@@ -2,7 +2,7 @@
 //! # Module layout
 //! - [`AuthContext`] — value-typed auth state attached to a `DjogiContext`.
 //! - [`DjogiAuth`] — core authentication trait; implement to plug in a
-//! custom provider.
+//!   custom provider.
 //! - [`AuthError`] — authentication and authorization failure modes.
 
 use heeranjid::HeerId;

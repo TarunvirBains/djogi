@@ -9,18 +9,18 @@
 //! The validator enforces the Postgres unquoted-identifier contract:
 //! 1. Non-empty.
 //! 2. Length ≤ 63 bytes (`NAMEDATALEN - 1`), so Rust-level and
-//! Postgres-level identifier identity cannot diverge through
-//! server-side truncation.
+//!    Postgres-level identifier identity cannot diverge through
+//!    server-side truncation.
 //! 3. First byte is an ASCII letter or underscore; every remaining
-//! byte is ASCII alphanumeric or underscore. Djogi additionally
-//! rejects the `$` byte that Postgres tolerates in unquoted
-//! identifiers, to keep the class trivial to reason about.
-//! (Implementation is pure `u8::is_ascii_alphabetic` /
-//! `u8::is_ascii_alphanumeric` — no regex engine, no dependency.)
+//!    byte is ASCII alphanumeric or underscore. Djogi additionally
+//!    rejects the `$` byte that Postgres tolerates in unquoted
+//!    identifiers, to keep the class trivial to reason about.
+//!    (Implementation is pure `u8::is_ascii_alphabetic` /
+//!    `u8::is_ascii_alphanumeric` — no regex engine, no dependency.)
 //! 4. Not a reserved Postgres keyword (case-insensitive; catcode `R`
-//! in `pg_get_keywords` as of Postgres 18).
-//! Callers that emit literals from `#[derive(Model)]` are the intended
-//! audience; the panic messages read as framework bugs or bypass attempts.
+//!    in `pg_get_keywords` as of Postgres 18).
+//!    Callers that emit literals from `#[derive(Model)]` are the intended
+//!    audience; the panic messages read as framework bugs or bypass attempts.
 
 /// Postgres's usable identifier length — `NAMEDATALEN - 1` on a default
 /// build. Identifiers longer than this are silently truncated by the

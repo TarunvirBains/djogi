@@ -3,32 +3,32 @@
 //! `{Model}Public`, `{Model}SelfView`, `{Model}Admin`, `{Model}Export`.
 //! Each struct carries (in source order):
 //! 1. Framework columns (`id`, `created_at`, `updated_at`) — always
-//! included in every visage, regardless of user annotations.
+//!    included in every visage, regardless of user annotations.
 //! 2. User fields annotated with `expose(scope)` (scalar) or
-//! `expose(scope -> Peer)` (relation — narrow visage or full peer
-//! embed; see below). The deprecated `expose(scope = "Peer")`
-//! string-literal form is still parsed for backward compat but
-//! lowers to the same `RelationExposure` shape.
-//! Each visage derives `Debug`, `Clone`, `serde::Serialize`,
-//! `serde::Deserialize` unconditionally. Conversion impls:
+//!    `expose(scope -> Peer)` (relation — narrow visage or full peer
+//!    embed; see below). The deprecated `expose(scope = "Peer")`
+//!    string-literal form is still parsed for backward compat but
+//!    lowers to the same `RelationExposure` shape.
+//!    Each visage derives `Debug`, `Clone`, `serde::Serialize`,
+//!    `serde::Deserialize` unconditionally. Conversion impls:
 //! - **Scalar-only** visage (no relation-form entries): `impl From<&Model>`
-//! infallible straight-line construction.
+//!   infallible straight-line construction.
 //! - **Relation-nesting** visage (at least one `expose(scope -> Peer)`
-//! entry on a relation field): `impl TryFrom<&Model>` with
-//! `Error = VisageError`. Optional FK relations emit
-//! `Option<PeerVisage>` and route the resolved relation through
-//! `<PeerVisage as TryFrom<&Target>>::try_from` only when `Some`.
+//!   entry on a relation field): `impl TryFrom<&Model>` with
+//!   `Error = VisageError`. Optional FK relations emit
+//!   `Option<PeerVisage>` and route the resolved relation through
+//!   `<PeerVisage as TryFrom<&Target>>::try_from` only when `Some`.
 //! ## `expose(scope -> Peer)` grammar
 //! Selects one of two embed shapes based on the peer path's last segment:
 //! - **Narrow visage** — last segment is a `{Model}{Scope}` shape
-//! (`DepartmentPublic`); peer constructed via fallible `TryFrom`.
+//!   (`DepartmentPublic`); peer constructed via fallible `TryFrom`.
 //! - **Full peer model** — last segment matches the relation target's
-//! ident (`Department`); peer cloned out of the resolved relation,
-//! serde derives delegate to the target's own (de)serialise impls.
-//! Optional FKs emit `Option<PeerVisage>` honestly at the type level.
-//! Path routing: every type reference in emitted code goes through
-//! `::djogi::*` so users never depend on `serde` / `time` / `heeranjid`
-//! directly.
+//!   ident (`Department`); peer cloned out of the resolved relation,
+//!   serde derives delegate to the target's own (de)serialise impls.
+//!   Optional FKs emit `Option<PeerVisage>` honestly at the type level.
+//!   Path routing: every type reference in emitted code goes through
+//!   `::djogi::*` so users never depend on `serde` / `time` / `heeranjid`
+//!   directly.
 
 use crate::model::attrs::{ExposeSpec, FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
 use crate::model::derived::{DerivedAttr, FallibilityShape, detect_fallibility_shape};
@@ -283,8 +283,8 @@ fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
 /// const-safe identity:
 /// - multi-segment paths keep their canonical `a::b::c` spelling;
 /// - single-segment paths are prefixed with the model module's
-/// `module_path!` so the resulting string identifies the resolved
-/// local binding unambiguously within the adopter crate.
+///   `module_path!` so the resulting string identifies the resolved
+///   local binding unambiguously within the adopter crate.
 fn codec_inventory_identity_tokens(path: &syn::Path) -> TokenStream {
     if path.segments.len() == 1 {
         quote! { ::std::concat!(::std::module_path!(), "::", ::std::stringify!(#path)) }
@@ -941,19 +941,19 @@ fn emit_djogi_visage_impl(
 /// per the spec) rather than at the inner `!=` token.
 /// # Two surfaces, one body
 /// - **Inherent method** — `visage.assert_derived_parity(&other)`
-/// resolves via Rust's inherent-method-first method resolution. No
-/// trait import required at the call site; this is the ergonomic
-/// shape integration tests use.
+///   resolves via Rust's inherent-method-first method resolution. No
+///   trait import required at the call site; this is the ergonomic
+///   shape integration tests use.
 /// - **Trait impl** — `impl ::djogi::testing::DerivedParity for V`
-/// carries the same body. Reachable from generic code that bounds
-/// `where V: DerivedParity` — required by the async
-/// [`::djogi::testing::assert_derived_parity_fetched`] free helper
-/// (#231 reconciliation: CTO-required async convenience).
-/// Method resolution in Rust prefers inherent methods over trait
-/// methods for unqualified calls (`v.foo`); the trait method is
-/// reachable through generic bounds. Both surfaces share the same
-/// comparison body, so adopters never see different behaviour
-/// depending on which surface they reach.
+///   carries the same body. Reachable from generic code that bounds
+///   `where V: DerivedParity` — required by the async
+///   [`::djogi::testing::assert_derived_parity_fetched`] free helper
+///   (#231 reconciliation: CTO-required async convenience).
+///   Method resolution in Rust prefers inherent methods over trait
+///   methods for unqualified calls (`v.foo`); the trait method is
+///   reachable through generic bounds. Both surfaces share the same
+///   comparison body, so adopters never see different behaviour
+///   depending on which surface they reach.
 fn emit_assert_derived_parity(
     proj_name: &syn::Ident,
     scoped_derived: &[&DerivedAttr],
@@ -1069,17 +1069,17 @@ fn emit_assert_derived_parity(
 /// # Per-entry contents
 /// - `name` — derived field name (the `name = ...` key).
 /// - `ty_path` — token-string rendering of the entry's `ty = ...`,
-/// captured via `quote! { #ty }.to_string`. The exact text
-/// includes token-level whitespace (`"Option < String >"`) — that
-/// is the source spelling documentation generators want.
+///   captured via `quote! { #ty }.to_string`. The exact text
+///   includes token-level whitespace (`"Option < String >"`) — that
+///   is the source spelling documentation generators want.
 /// - `sql` — adopter's SQL expression, verbatim.
 /// - `rust` — adopter's Rust expression source, verbatim.
 /// - `doc` — `Some("...")` when the entry declared `doc = "..."`,
-/// `None` otherwise. The macro emits `None` / `Some("...")`
-/// literally inside the const literal so the slice is fully
-/// `&'static`.
+///   `None` otherwise. The macro emits `None` / `Some("...")`
+///   literally inside the const literal so the slice is fully
+///   `&'static`.
 /// - `scopes` — every scope the entry was declared against, in
-/// source order.
+///   source order.
 fn emit_visage_descriptor(
     ctx: &VisageEmitContext<'_>,
     scoped_derived: &[&DerivedAttr],

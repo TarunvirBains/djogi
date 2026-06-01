@@ -41,14 +41,14 @@
 //! ```
 //! # Safety model
 //! - All row data flows through [`SqlAccumulator::push_bind`] — never
-//! string-interpolated.
+//!   string-interpolated.
 //! - Alias and column names are validated with
-//! [`crate::ident::check_user_supplied_ident`] at [`InlineValues::new`] time,
-//! rejecting the `__djogi_` prefix and Postgres reserved keywords.
+//!   [`crate::ident::check_user_supplied_ident`] at [`InlineValues::new`] time,
+//!   rejecting the `__djogi_` prefix and Postgres reserved keywords.
 //! - SQL type casts (e.g. `::BIGINT`) come from sealed framework constants on
-//! [`ValuesScalar`] — not from user input.
+//!   [`ValuesScalar`] — not from user input.
 //! - No implicit `ON TRUE`. The join predicate is always a structured typed
-//! predicate, never a raw SQL string.
+//!   predicate, never a raw SQL string.
 //! # Empty behaviour
 //! Empty `InlineValues` is valid. Terminal methods short-circuit after
 //! validation:
@@ -74,11 +74,11 @@
 //! | [`QuerySet::cross_join_values`] | CROSS JOIN | `Vec<(T, Row)>` |
 //! # Non-goals
 //! - No implicit `ON TRUE` joins; cartesian products require the explicit
-//! [`QuerySet::cross_join_values`] API.
+//!   [`QuerySet::cross_join_values`] API.
 //! - No struct rows — only tuples.
 //! - Very large value lists should be loaded through a temp/staging table; Postgres
-//! plans large `VALUES` clauses expensively. Keep per-query VALUES under ~1 000
-//! rows; chunk larger inputs or use `COPY` + temp table.
+//!   plans large `VALUES` clauses expensively. Keep per-query VALUES under ~1 000
+//!   rows; chunk larger inputs or use `COPY` + temp table.
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
@@ -135,9 +135,9 @@ mod sealed {
 /// they do not implement this trait directly.
 /// # Contract
 /// - `SQL_CAST` is the Postgres type name used to cast the *first-row*
-/// placeholder: `$1::BIGINT`, `$1::TEXT`, etc.
+///   placeholder: `$1::BIGINT`, `$1::TEXT`, etc.
 /// - `push_bind_owned` pushes exactly one positional bind slot, performing any
-/// widening conversion required (e.g. `u32 → i64`).
+///   widening conversion required (e.g. `u32 → i64`).
 /// - `push_null` pushes a typed `NULL` bind for the same wire type.
 /// - `decode_values_col` decodes the scalar from a positional row column.
 pub trait ValuesScalar: sealed::SealedValuesScalar + Clone + Send + Sync + 'static {
@@ -783,17 +783,17 @@ impl<Row: ValuesRow> InlineValues<Row> {
     /// # Arguments
     /// - `rows` — the value data; may be empty (valid zero-row relation).
     /// - `alias` — SQL alias for the VALUES sub-relation (e.g. `"weights"`).
-    /// Must be a plain SQL identifier that does not start with `__djogi_`.
+    ///   Must be a plain SQL identifier that does not start with `__djogi_`.
     /// - `columns` — arity-checked tuple of `&'static str` column names.
-    /// Each name must pass the same validation as `alias`. No duplicates
-    /// after Postgres unquoted-identifier case folding.
+    ///   Each name must pass the same validation as `alias`. No duplicates
+    ///   after Postgres unquoted-identifier case folding.
     /// # Errors
     /// Returns [`DjogiError::Validation`] if:
     /// - `alias` or any column name fails identifier validation.
     /// - Column names contain duplicates, including mixed-case spellings that
-    /// fold to the same unquoted Postgres identifier.
+    ///   fold to the same unquoted Postgres identifier.
     /// - `rows.len × Row::ARITY` exceeds the Postgres parameter ceiling
-    /// (65 535). Chunk the list or use a staging table instead.
+    ///   (65 535). Chunk the list or use a staging table instead.
     /// # Example
     /// ```ignore
     /// let weights: InlineValues<(i64, f64)> = InlineValues::new(

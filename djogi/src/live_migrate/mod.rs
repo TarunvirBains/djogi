@@ -14,11 +14,11 @@
 //! The remaining three variants stay inside :
 //! - `OnlineSafe` — the runner applies it directly.
 //! - `FastLockDestructiveGuarded` — the runner applies it behind
-//! the `--allow-destructive` gate.
+//!   the `--allow-destructive` gate.
 //! - `OfflineOnly` — Djogi refuses to emit SQL; the operator must
-//! acknowledge downtime or handle the change manually.
-//! Those three are operator-acknowledgement or direct-apply
-//! branches; none of them are live-plan branches.
+//!   acknowledge downtime or handle the change manually.
+//!   Those three are operator-acknowledgement or direct-apply
+//!   branches; none of them are live-plan branches.
 //! # What this module does *not* consume
 //! Primary-key type flips are routed through their own dedicated
 //! [`SchemaOperation::PkTypeFlipGroup`] /

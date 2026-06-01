@@ -14,12 +14,12 @@
 //! projection therefore returns a [`BTreeMap`] keyed by [`BucketKey`]
 //! rather than a single [`AppliedSchema`]. The mapping rule:
 //! - Models with no `#[model(app = ...)]` declaration land in the
-//! synthetic global bucket — `("main", "")`.
+//!   synthetic global bucket — `("main", "")`.
 //! - Models with `#[model(app = SomeApp)]` land in
-//! `(SomeApp::DATABASE, SomeApp::LABEL)`.
+//!   `(SomeApp::DATABASE, SomeApp::LABEL)`.
 //! - Enums and FK targets are placed alongside the models that
-//! reference them — see "Cross-bucket FK targets" below for the
-//! resolution rule.
+//!   reference them — see "Cross-bucket FK targets" below for the
+//!   resolution rule.
 //! # Determinism
 //! Each per-bucket [`AppliedSchema`] is sorted alphabetically:
 //! `models` is a `BTreeMap` (alphabetical by table name), `enums` is
@@ -42,14 +42,14 @@
 //! Three uniqueness rules are enforced; violations return
 //! [`ProjectionError`] without partial state:
 //! 1. Every [`crate::descriptor::ModelDescriptor::type_name`] is
-//! globally unique. Two models cannot share a Rust type name even
-//! across modules — otherwise FK target resolution would silently
-//! pick the wrong table.
+//!    globally unique. Two models cannot share a Rust type name even
+//!    across modules — otherwise FK target resolution would silently
+//!    pick the wrong table.
 //! 2. Every `(database, app, table_name)` is unique within a
-//! bucket. Two models cannot land at the same Postgres table
-//! inside the same `(database, app)` bucket.
+//!    bucket. Two models cannot land at the same Postgres table
+//!    inside the same `(database, app)` bucket.
 //! 3. Every [`crate::descriptor::EnumDescriptor::postgres_type`] is
-//! globally unique. Two enums cannot share a `CREATE TYPE` name.
+//!    globally unique. Two enums cannot share a `CREATE TYPE` name.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -1438,26 +1438,26 @@ fn field_type_check(
 /// to a `time::Date`-storable value.
 /// Two clauses, both required:
 /// 1. `pg_catalog.isfinite(<expr>)` — rejects Postgres's two non-finite
-/// DATE special values (`'infinity'::date` and `'-infinity'::date`)
-/// that `time::Date` cannot represent at all. Without this guard a
-/// raw `INSERT … DATE '-infinity'` lands successfully and poisons
-/// the next typed `time::Date::from_sql` decode with
-/// `DjogiError::Decode`. `pg_catalog.isfinite(date)` is documented
-/// to return FALSE for both `+/-infinity` and NULL for NULL input,
-/// so the standard CHECK NULL-as-satisfied rule still passes SQL
-/// NULL through.
+///    DATE special values (`'infinity'::date` and `'-infinity'::date`)
+///    that `time::Date` cannot represent at all. Without this guard a
+///    raw `INSERT … DATE '-infinity'` lands successfully and poisons
+///    the next typed `time::Date::from_sql` decode with
+///    `DjogiError::Decode`. `pg_catalog.isfinite(date)` is documented
+///    to return FALSE for both `+/-infinity` and NULL for NULL input,
+///    so the standard CHECK NULL-as-satisfied rule still passes SQL
+///    NULL through.
 /// 2. `<expr> <= DATE '9999-12-31'` — caps the year at `time::Date`'s
-/// default MAX (`Date::MAX_YEAR = 9999`). Postgres DATE accepts
-/// much higher years (up to 5874897 AD); the upper-bound clause
-/// rejects writes that exceed the Rust type's representable range.
-/// **Callers are responsible for the NULL pass-through.** The helper
-/// returns a bare conjunction with no `<expr> IS NULL OR` outer wrap.
-/// At the scalar `FieldSqlType::Date` arm Postgres CHECK's
-/// NULL-treated-as-satisfied semantics handles SQL NULL (both clauses
-/// evaluate to NULL, the conjunction is NULL, CHECK is satisfied).
-/// At the range-endpoint arm `range_endpoint_checks` wraps the helper
-/// with `<endpoint> IS NULL OR (...)` so empty / unbounded / NULL
-/// ranges short-circuit before the helper runs.
+///    default MAX (`Date::MAX_YEAR = 9999`). Postgres DATE accepts
+///    much higher years (up to 5874897 AD); the upper-bound clause
+///    rejects writes that exceed the Rust type's representable range.
+///    **Callers are responsible for the NULL pass-through.** The helper
+///    returns a bare conjunction with no `<expr> IS NULL OR` outer wrap.
+///    At the scalar `FieldSqlType::Date` arm Postgres CHECK's
+///    NULL-treated-as-satisfied semantics handles SQL NULL (both clauses
+///    evaluate to NULL, the conjunction is NULL, CHECK is satisfied).
+///    At the range-endpoint arm `range_endpoint_checks` wraps the helper
+///    with `<endpoint> IS NULL OR (...)` so empty / unbounded / NULL
+///    ranges short-circuit before the helper runs.
 fn date_range_expr(column_expr: &str) -> String {
     format!("pg_catalog.isfinite({column_expr}) AND {column_expr} <= DATE '9999-12-31'")
 }
@@ -1466,24 +1466,24 @@ fn date_range_expr(column_expr: &str) -> String {
 /// resolves to a `time::OffsetDateTime`-storable value.
 /// Two clauses, both required:
 /// 1. `pg_catalog.isfinite(<expr>)` — rejects Postgres's two non-finite
-/// TIMESTAMPTZ special values (`'infinity'::timestamptz` and
-/// `'-infinity'::timestamptz`) that `time::OffsetDateTime` cannot
-/// represent. `pg_catalog.isfinite(timestamptz)` returns FALSE for
-/// both infinities and NULL for NULL input, so the standard CHECK
-/// NULL-as-satisfied rule still passes SQL NULL through.
+///    TIMESTAMPTZ special values (`'infinity'::timestamptz` and
+///    `'-infinity'::timestamptz`) that `time::OffsetDateTime` cannot
+///    represent. `pg_catalog.isfinite(timestamptz)` returns FALSE for
+///    both infinities and NULL for NULL input, so the standard CHECK
+///    NULL-as-satisfied rule still passes SQL NULL through.
 /// 2. `<expr> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'` — caps
-/// the value at `time::OffsetDateTime`'s default upper bound.
-/// Postgres TIMESTAMPTZ accepts much higher years (up to 294276 AD);
-/// the upper-bound clause rejects writes that exceed the Rust type's
-/// representable range. The literal uses the `TIMESTAMPTZ` keyword
-/// with explicit `+00` UTC offset so the comparison is
-/// timezone-invariant — using plain `TIMESTAMP '...'` (without TZ)
-/// would make Postgres interpret the literal in the session
-/// timezone, shifting the effective upper bound.
-/// **Callers are responsible for the NULL pass-through.** Same shape
-/// as `date_range_expr`: the scalar `FieldSqlType::Timestamptz` arm
-/// relies on CHECK's NULL semantics, and `range_endpoint_checks` adds
-/// the `<endpoint> IS NULL OR (...)` wrap for the range case.
+///    the value at `time::OffsetDateTime`'s default upper bound.
+///    Postgres TIMESTAMPTZ accepts much higher years (up to 294276 AD);
+///    the upper-bound clause rejects writes that exceed the Rust type's
+///    representable range. The literal uses the `TIMESTAMPTZ` keyword
+///    with explicit `+00` UTC offset so the comparison is
+///    timezone-invariant — using plain `TIMESTAMP '...'` (without TZ)
+///    would make Postgres interpret the literal in the session
+///    timezone, shifting the effective upper bound.
+///    **Callers are responsible for the NULL pass-through.** Same shape
+///    as `date_range_expr`: the scalar `FieldSqlType::Timestamptz` arm
+///    relies on CHECK's NULL semantics, and `range_endpoint_checks` adds
+///    the `<endpoint> IS NULL OR (...)` wrap for the range case.
 fn timestamptz_range_expr(column_expr: &str) -> String {
     format!(
         "pg_catalog.isfinite({column_expr}) AND \
@@ -1553,16 +1553,16 @@ fn range_endpoint_checks(range_column: &str, bound_check: fn(&str) -> String) ->
 /// `pg_catalog.bool_and(value IS NULL OR (pg_catalog.isfinite(value) AND value <=
 /// '9999-12-31'::pg_catalog.date))` over all unnested elements:
 /// - Rejects both `+infinity` and `-infinity` date elements — `pg_catalog.isfinite(date)`
-/// returns FALSE for both non-finite DATE special values, not just the upper one.
-/// The previous `upper_bound >= ALL(col)` strategy passed `-infinity` because
-/// `-infinity < upper_bound`, making `upper_bound >= -infinity` TRUE.
+///   returns FALSE for both non-finite DATE special values, not just the upper one.
+///   The previous `upper_bound >= ALL(col)` strategy passed `-infinity` because
+///   `-infinity < upper_bound`, making `upper_bound >= -infinity` TRUE.
 /// - Admits `NULL` elements (consistent with SQL array-element NULL semantics).
 /// - Admits empty arrays (COALESCE inside the helper maps the empty-set `bool_and`
-/// NULL to TRUE).
-/// **Why a helper function and not a direct expression?** Postgres CHECK clauses may not
-/// contain subqueries or `unnest(...)` aggregate forms directly; the helper function
-/// encapsulates the `unnest` + `bool_and` loop in a valid IMMUTABLE SQL function.
-/// This mirrors the `NumericArray` precedent in [`numeric_array_is_rust_decimal_check`].
+///   NULL to TRUE).
+///   **Why a helper function and not a direct expression?** Postgres CHECK clauses may not
+///   contain subqueries or `unnest(...)` aggregate forms directly; the helper function
+///   encapsulates the `unnest` + `bool_and` loop in a valid IMMUTABLE SQL function.
+///   This mirrors the `NumericArray` precedent in [`numeric_array_is_rust_decimal_check`].
 fn date_array_is_finite_check(array_column: &str) -> String {
     format!("{array_column} IS NULL OR djogi.__djogi_date_array_is_finite_v1({array_column})")
 }
@@ -1589,20 +1589,20 @@ fn numeric_array_is_rust_decimal_check(array_column: &str) -> String {
 /// - Neither present → `None` (no CHECK constraint).
 /// - Only one present → the present one verbatim (no extra parentheses).
 /// - Both present → `({type-derived}) AND ({adopter})` — single SQL
-/// expression, both clauses must pass.
-/// The single constraint slot keeps the ADD / DROP / AMEND lifecycle in
-/// the differ unchanged: a column has at most one CHECK at
-/// `<table>_<column>_check`. Constraint name uniqueness is guaranteed by
-/// `migrate/sql.rs::check_constraint_name`. The combined-expression
-/// approach loses a small amount of fault-diagnostic granularity (a CHECK
-/// violation surfaces the whole `(A) AND (B)` expression rather than
-/// pinpointing which clause failed), but Postgres includes the full
-/// expression text in the error message so adopters can still tell the
-/// type bound from the adopter bound on inspection.
-/// Defensive normalisation: both inputs are `trim`'d to avoid
-/// `"(expr1) AND (expr2)"` whitespace artefacts in snapshot output.
-/// The differ compares CHECK expressions by string equality, so any
-/// drift in whitespace would emit a spurious AMEND on every compose.
+///   expression, both clauses must pass.
+///   The single constraint slot keeps the ADD / DROP / AMEND lifecycle in
+///   the differ unchanged: a column has at most one CHECK at
+///   `<table>_<column>_check`. Constraint name uniqueness is guaranteed by
+///   `migrate/sql.rs::check_constraint_name`. The combined-expression
+///   approach loses a small amount of fault-diagnostic granularity (a CHECK
+///   violation surfaces the whole `(A) AND (B)` expression rather than
+///   pinpointing which clause failed), but Postgres includes the full
+///   expression text in the error message so adopters can still tell the
+///   type bound from the adopter bound on inspection.
+///   Defensive normalisation: both inputs are `trim`'d to avoid
+///   `"(expr1) AND (expr2)"` whitespace artefacts in snapshot output.
+///   The differ compares CHECK expressions by string equality, so any
+///   drift in whitespace would emit a spurious AMEND on every compose.
 fn combine_check_expressions(
     type_derived: Option<String>,
     adopter: Option<&str>,
@@ -1631,16 +1631,16 @@ fn combine_check_expressions(
 /// * [`PkType::HeerId`] / [`PkType::HeerIdDesc`] → [`StrictIdFamily::HeerId`]
 /// * [`PkType::RanjId`] / [`PkType::RanjIdDesc`] → [`StrictIdFamily::RanjId`]
 /// * [`PkType::Serial`] / [`PkType::None`] /
-/// [`PkType::Composite`] / [`PkType::Custom`] → [`StrictIdFamily::None`]
-/// The mapping is computed once per descriptor at projection entry and
-/// flows through [`project_model`] / [`project_column`] alongside
-/// [`pk_sql_type_text`]'s SQL-type substitution. This keeps the
-/// semantic-family and FK SQL-type substitutions parallel — both are
-/// resolved at the same projection-time crossing where every
-/// descriptor in the inventory is visible.
-/// (post-review hardening: SQL-type → semantic-family
-/// dispatch so `PkType::Custom` is never coerced into a HeerId / RanjId
-/// CHECK based on a coincidental SQL carrier match).
+///   [`PkType::Composite`] / [`PkType::Custom`] → [`StrictIdFamily::None`]
+///   The mapping is computed once per descriptor at projection entry and
+///   flows through [`project_model`] / [`project_column`] alongside
+///   [`pk_sql_type_text`]'s SQL-type substitution. This keeps the
+///   semantic-family and FK SQL-type substitutions parallel — both are
+///   resolved at the same projection-time crossing where every
+///   descriptor in the inventory is visible.
+///   (post-review hardening: SQL-type → semantic-family
+///   dispatch so `PkType::Custom` is never coerced into a HeerId / RanjId
+///   CHECK based on a coincidental SQL carrier match).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StrictIdFamily {
     /// HeerId / HeerIdDesc — BIGINT carrier, structural invariant
@@ -1693,28 +1693,28 @@ fn strict_id_family_of_pk(pk: &PkType) -> StrictIdFamily {
 /// pure family → CHECK mapper.
 /// # CHECK shape
 /// * [`StrictIdFamily::HeerId`] (BIGINT carrier) → `<col> >= 0`. The
-/// Rust `HeerId::from_i64` rejects every negative `i64` (bit 63 = 1),
-/// and the constructor for `HeerId::new` masks the remaining 63 bits
-/// (41 timestamp + 9 node + 13 sequence) into a valid layout without
-/// any reserved-bit slot to enforce. The only structural invariant
-/// is therefore `bit 63 = 0`, which lowers to `col >= 0` on the
-/// Postgres signed `BIGINT` carrier.
+///   Rust `HeerId::from_i64` rejects every negative `i64` (bit 63 = 1),
+///   and the constructor for `HeerId::new` masks the remaining 63 bits
+///   (41 timestamp + 9 node + 13 sequence) into a valid layout without
+///   any reserved-bit slot to enforce. The only structural invariant
+///   is therefore `bit 63 = 0`, which lowers to `col >= 0` on the
+///   Postgres signed `BIGINT` carrier.
 /// * [`StrictIdFamily::RanjId`] (UUID carrier) → `version=8 AND
 /// variant=RFC4122`. `RanjId::from_uuid` rejects every UUID whose
-/// version nibble (bits 76-79) is not `0b1000` or whose variant
-/// high bits (bits 62-63) are not `0b10`. The flip mask for
-/// `RanjIdDesc` (`0xFFFF_FFFF_FFFF_0FFF_0FFF_FFFF_8000_FFFF`)
-/// preserves both fields, so the ascending and descending variants
-/// share the same structural CHECK.
-/// The UUID CHECK extracts the two relevant nibbles from the canonical
-/// 8-4-4-4-12 lowercase text form Postgres emits via the `::text` cast:
-/// position 15 is the version hex digit (`'8'` for UUIDv8), position 20
-/// is the variant high nibble (`'8'`, `'9'`, `'a'`, `'b'` for RFC4122
-/// `10xx`). Postgres `uuid_out` canonicalises every UUID to lowercase
-/// hex, so case folding on the literal set is unnecessary. The
-/// substring path adds ~1–3 µs per row vs `<1 µs` for the BIGINT
-/// comparison — both are opt-in because automatic emission would break
-/// existing models that carry externally-generated IDs.
+///   version nibble (bits 76-79) is not `0b1000` or whose variant
+///   high bits (bits 62-63) are not `0b10`. The flip mask for
+///   `RanjIdDesc` (`0xFFFF_FFFF_FFFF_0FFF_0FFF_FFFF_8000_FFFF`)
+///   preserves both fields, so the ascending and descending variants
+///   share the same structural CHECK.
+///   The UUID CHECK extracts the two relevant nibbles from the canonical
+///   8-4-4-4-12 lowercase text form Postgres emits via the `::text` cast:
+///   position 15 is the version hex digit (`'8'` for UUIDv8), position 20
+///   is the variant high nibble (`'8'`, `'9'`, `'a'`, `'b'` for RFC4122
+///   `10xx`). Postgres `uuid_out` canonicalises every UUID to lowercase
+///   hex, so case folding on the literal set is unnecessary. The
+///   substring path adds ~1–3 µs per row vs `<1 µs` for the BIGINT
+///   comparison — both are opt-in because automatic emission would break
+///   existing models that carry externally-generated IDs.
 /// # NULL pass-through
 /// Both CHECK shapes evaluate to NULL on a NULL column value (`col >=
 /// 0` returns NULL on `col IS NULL`; `substring(NULL::text, ...)`

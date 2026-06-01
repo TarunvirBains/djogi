@@ -1,16 +1,16 @@
 //! Filesystem layout helpers for the migration tree.
 //! T6 owns this module. Two responsibilities:
 //! 1. **Path resolution.** Map a `(database, app)` [`BucketKey`] to
-//! the canonical on-disk paths for that bucket — committed
-//! migration files under `migrations/<database>/<app>/`, the
-//! snapshot at `migrations/<database>/<app>/schema_snapshot.json`,
-//! and the pending JSON staging file at
-//! `target/djogi_pending/<database>/<app>.json`.
+//!    the canonical on-disk paths for that bucket — committed
+//!    migration files under `migrations/<database>/<app>/`, the
+//!    snapshot at `migrations/<database>/<app>/schema_snapshot.json`,
+//!    and the pending JSON staging file at
+//!    `target/djogi_pending/<database>/<app>.json`.
 //! 2. **Filesystem scanning.** For the build.rs three-way match and
-//! the D004 (folder drift) diagnostic, walk the on-disk
-//! `migrations/` tree and report which `(database, app)` pairs
-//! actually exist as directories. Compared against the snapshot's
-//! `registered_apps` to surface orphaned / missing folders.
+//!    the D004 (folder drift) diagnostic, walk the on-disk
+//!    `migrations/` tree and report which `(database, app)` pairs
+//!    actually exist as directories. Compared against the snapshot's
+//!    `registered_apps` to surface orphaned / missing folders.
 //! # Workspace layout (frozen)
 //! ```text
 //! <workspace-root>/
@@ -243,23 +243,23 @@ fn scan_filesystem_filtered(
 /// `database_filter`:
 /// - `Some(name)` — only buckets whose `database` matches are included.
 /// - `None` — every bucket discovered by [`scan_filesystem`] is included.
-/// Filtering rules (shared by every consumer of this helper):
+///   Filtering rules (shared by every consumer of this helper):
 /// - Down-side files (suffix `.down.sdjql`) are skipped — the up-side
-/// filename is the canonical version identifier.
+///   filename is the canonical version identifier.
 /// - Files whose stem does not match the `V<14-digit>__<slug>` /
-/// `V<14-digit>` grammar (per [`recover_version_from_stem`]) are
-/// silently skipped.
+///   `V<14-digit>` grammar (per [`recover_version_from_stem`]) are
+///   silently skipped.
 /// - Buckets containing zero up-side migrations are absent from the
-/// returned map (the per-bucket inner map is only created on first
-/// insert).
-/// **Legacy rejection.** Schema migration files with a `.sql` extension
-/// (up or down side) are rejected with `io::ErrorKind::InvalidData` and
-/// a diagnostic naming the file and version. Duplicate same-version
-/// artifacts (e.g., `V1__x.sql` + `V1__x.sdjql`) produce a duplicate
-/// diagnostic before single-file legacy rejection.
-/// Returns `io::Error` directly so each caller can wrap it in a
-/// crate-local error variant (`AttuneError::FilesystemScanFailed`,
-/// `ResetError::MigrationScanFailed`, etc.).
+///   returned map (the per-bucket inner map is only created on first
+///   insert).
+///   **Legacy rejection.** Schema migration files with a `.sql` extension
+///   (up or down side) are rejected with `io::ErrorKind::InvalidData` and
+///   a diagnostic naming the file and version. Duplicate same-version
+///   artifacts (e.g., `V1__x.sql` + `V1__x.sdjql`) produce a duplicate
+///   diagnostic before single-file legacy rejection.
+///   Returns `io::Error` directly so each caller can wrap it in a
+///   crate-local error variant (`AttuneError::FilesystemScanFailed`,
+///   `ResetError::MigrationScanFailed`, etc.).
 pub fn scan_filesystem_with_files(
     workspace_root: &Path,
     database_filter: Option<&str>,

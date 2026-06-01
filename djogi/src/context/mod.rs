@@ -6,10 +6,10 @@
 //! # Context variants
 //! A context is one of:
 //! - **Pool**: backed by a `DjogiPool` — each operation checks out a connection, runs
-//! the query, and returns the connection to the pool.
+//!   the query, and returns the connection to the pool.
 //! - **Transaction**: an active `PgConnection` with an open transaction — all
-//! operations share the same logical transaction until `commit` or `rollback`
-//! is called.
+//!   operations share the same logical transaction until `commit` or `rollback`
+//!   is called.
 //! # Execution dispatch pattern
 //! CRUD methods and QuerySet terminals that today take `&mut DjogiContext` acquire a
 //! `PgConnection` from the pool (Pool path) or reuse the existing connection
@@ -33,23 +33,23 @@
 //! # Drain points
 //! Registered callbacks are consumed by exactly two paths:
 //! - [`DjogiContext::commit`] — the low-level tx-backed commit drains the
-//! queue after the underlying commit succeeds, runs each callback in
-//! FIFO order, and logs any callback error via `tracing::error!` without
-//! unwinding the caller.
+//!   queue after the underlying commit succeeds, runs each callback in
+//!   FIFO order, and logs any callback error via `tracing::error!` without
+//!   unwinding the caller.
 //! - `atomic` — once landed, the canonical entry point
-//! for application code; wraps the same drain-after-commit semantics but
-//! also handles nested savepoints.
-//! Calls to [`DjogiContext::on_commit`] on a **pool-backed** context (no
-//! `atomic` scope, no surrounding transaction) are an audit-warn no-op:
-//! the callback is **not** queued, and a `#[track_caller] tracing::warn!`
-//! event with the grep-able token `djogi::on_commit::pool_backed_drop`
-//! fires once per `on_commit` call so log scrapers catch every silent-drop
-//! site. The recommended fix is to wrap the CRUD chain in
-//! [`djogi::transaction::atomic`](crate::transaction::atomic) (or open a
-//! transaction explicitly via [`DjogiContext::begin`]) so the
-//! [`commit`](DjogiContext::commit) drain step actually fires. The warn
-//! is **single-shot per `on_commit` call** — it does not amplify per row
-//! or per drain step.
+//!   for application code; wraps the same drain-after-commit semantics but
+//!   also handles nested savepoints.
+//!   Calls to [`DjogiContext::on_commit`] on a **pool-backed** context (no
+//!   `atomic` scope, no surrounding transaction) are an audit-warn no-op:
+//!   the callback is **not** queued, and a `#[track_caller] tracing::warn!`
+//!   event with the grep-able token `djogi::on_commit::pool_backed_drop`
+//!   fires once per `on_commit` call so log scrapers catch every silent-drop
+//!   site. The recommended fix is to wrap the CRUD chain in
+//!   [`djogi::transaction::atomic`](crate::transaction::atomic) (or open a
+//!   transaction explicitly via [`DjogiContext::begin`]) so the
+//!   [`commit`](DjogiContext::commit) drain step actually fires. The warn
+//!   is **single-shot per `on_commit` call** — it does not amplify per row
+//!   or per drain step.
 
 use crate::auth::AuthContext;
 use crate::pg::connection::PgConnection;
@@ -327,13 +327,13 @@ impl DjogiContext {
     /// silently swaps the backend between lock acquisition and subsequent
     /// DDL/ledger/unlock operations, the lock provides no mutual exclusion.
     /// - **Pool-backed context**: checks out one connection from the pool
-    /// and wraps it in a new `DjogiContext::from_connection(conn)`. The
-    /// returned [`PinnedCtx`] holds the owned context; dropping it returns
-    /// the connection to the pool, implicitly releasing any advisory lock.
+    ///   and wraps it in a new `DjogiContext::from_connection(conn)`. The
+    ///   returned [`PinnedCtx`] holds the owned context; dropping it returns
+    ///   the connection to the pool, implicitly releasing any advisory lock.
     /// - **Transaction-backed context**: already pinned to one connection;
-    /// returns a borrowed [`PinnedCtx`] referencing `self`.
-    /// Callers MUST hold the returned `PinnedCtx` for the entire operation
-    /// window (lock acquire → DDL/ledger → lock release). See GH #274 / #331.
+    ///   returns a borrowed [`PinnedCtx`] referencing `self`.
+    ///   Callers MUST hold the returned `PinnedCtx` for the entire operation
+    ///   window (lock acquire → DDL/ledger → lock release). See GH #274 / #331.
     #[allow(dead_code)] // GH #331: unused until advisory-lock integration lands
     pub(crate) async fn pin_for_migration(&mut self) -> Result<PinnedCtx<'_>, DjogiError> {
         match &self.inner {
@@ -566,14 +566,14 @@ impl DjogiContext {
     /// Return the registered [`Punnu<T>`](sassi::Punnu) for `T`.
     /// Returns `None` if:
     /// - `T` is a `pk = None` model (no `Cacheable` impl is auto-emitted,
-    /// so no boot hook ran for it), or
+    ///   so no boot hook ran for it), or
     /// - no `#[model]`-derived boot hook registered a pool for `T` (hand-
-    /// rolled `Cacheable` impls without an accompanying boot hook do not
-    /// appear in the registry).
-    /// The same `Arc<Punnu<T>>` is returned on every call for the same `T`
-    /// within one top-level `DjogiContext`. Contexts opened via `begin` or
-    /// `atomic(&mut pool_ctx, ...)` share the parent's `Arc<Sassi>`, so they
-    /// return the same `Arc<Punnu<T>>` as well.
+    ///   rolled `Cacheable` impls without an accompanying boot hook do not
+    ///   appear in the registry).
+    ///   The same `Arc<Punnu<T>>` is returned on every call for the same `T`
+    ///   within one top-level `DjogiContext`. Contexts opened via `begin` or
+    ///   `atomic(&mut pool_ctx, ...)` share the parent's `Arc<Sassi>`, so they
+    ///   return the same `Arc<Punnu<T>>` as well.
     /// # Cross-context contract (4)
     /// Different top-level `DjogiContext` instances each build their own
     /// `Sassi`, so their `Punnu<T>` handles are DISTINCT — `Arc::ptr_eq`
@@ -626,10 +626,10 @@ impl DjogiContext {
     /// surface but no cross-context state contamination is possible.
     /// # Returns
     /// - **Same-context path:** `Arc::clone(p)` — the same `Arc<Punnu<T>>`
-    /// that was registered at boot time for this context.
+    ///   that was registered at boot time for this context.
     /// - **Cross-context path (debug):** panics.
     /// - **Cross-context path (release):** a fresh empty
-    /// `Arc<Punnu<T>>` (reads return `None`; writes do not propagate).
+    ///   `Arc<Punnu<T>>` (reads return `None`; writes do not propagate).
     /// # Example
     /// ```ignore
     /// // Correct: acquire from the same context.
@@ -1012,19 +1012,19 @@ impl DjogiContext {
     /// Register an async callback to fire after a successful commit.
     /// # Behavior by context kind
     /// - **Transaction-backed** context (inside `atomic` or after
-    /// [`begin`](Self::begin)): the callback is queued and fires in FIFO
-    /// order after the underlying transaction commits. Callback errors
-    /// are logged via `tracing::error!` but do not fail the commit (per
-    /// the spec resolution). Subsequent callbacks still fire even if an
-    /// earlier callback fails.
+    ///   [`begin`](Self::begin)): the callback is queued and fires in FIFO
+    ///   order after the underlying transaction commits. Callback errors
+    ///   are logged via `tracing::error!` but do not fail the commit (per
+    ///   the spec resolution). Subsequent callbacks still fire even if an
+    ///   earlier callback fails.
     /// - **Pool-backed** context (no surrounding transaction): the callback
-    /// is **dropped without queuing** and a `#[track_caller]
+    ///   is **dropped without queuing** and a `#[track_caller]
     /// tracing::warn!` event with the grep-able token
-    /// `djogi::on_commit::pool_backed_drop` fires at the caller's source
-    /// location. There is no `commit` to drain the queue against on a
-    /// pool-backed context, so silently queuing the callback would lose
-    /// work; emitting an audit-warn instead makes the silent-drop
-    /// observable for log scrapers.
+    ///   `djogi::on_commit::pool_backed_drop` fires at the caller's source
+    ///   location. There is no `commit` to drain the queue against on a
+    ///   pool-backed context, so silently queuing the callback would lose
+    ///   work; emitting an audit-warn instead makes the silent-drop
+    ///   observable for log scrapers.
     /// # Recommended fix for pool-backed callers
     /// Wrap the CRUD chain (or just the `on_commit` registration) in
     /// [`djogi::transaction::atomic`](crate::transaction::atomic):
@@ -1295,9 +1295,9 @@ impl DjogiContext {
     /// ```
     /// # Arguments
     /// * `tenant_id` — The tenant identifier as a string. For `BIGINT` tenant
-    /// keys the RLS policy casts the GUC value to the appropriate type
-    /// (e.g. `current_setting('app.tenant_id', true)::bigint`), so any
-    /// string that Postgres can cast to the column type is valid here.
+    ///   keys the RLS policy casts the GUC value to the appropriate type
+    ///   (e.g. `current_setting('app.tenant_id', true)::bigint`), so any
+    ///   string that Postgres can cast to the column type is valid here.
     pub async fn set_tenant(&mut self, tenant_id: &str) -> Result<(), DjogiError> {
         // `set_config(name, value, is_local)` is the function-form of
         // `SET LOCAL` when `is_local = true`. Using a parameterised query via
@@ -1395,12 +1395,12 @@ impl DjogiContext {
     /// scope.
     /// # Errors
     /// - [`DjogiError::SetRoleOutsideTransaction`] if `self` is
-    /// pool-backed.
+    ///   pool-backed.
     /// - [`DjogiError::InvalidRoleName`] (carrying the offending
-    /// string) if the role fails byte-level validation.
+    ///   string) if the role fails byte-level validation.
     /// - [`DjogiError::Db`] for any underlying `tokio_postgres` error
-    /// reported by the server (e.g. role does not exist, current
-    /// user is not a member of the target role).
+    ///   reported by the server (e.g. role does not exist, current
+    ///   user is not a member of the target role).
     /// # Example
     /// ```ignore
     /// djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
@@ -1465,31 +1465,31 @@ impl DjogiContext {
     /// validated against the framework's `DeferrabilitySpec`
     /// inventory before any SQL is emitted:
     /// - **Unknown name** → [`DjogiError::UnknownConstraintName`].
-    /// The expected name shape is the conventional
-    /// `<table>_<column>_fkey` (truncated to 63 bytes for long
-    /// names); see `crate::migrate::sql::fk_constraint_name`.
+    ///   The expected name shape is the conventional
+    ///   `<table>_<column>_fkey` (truncated to 63 bytes for long
+    ///   names); see `crate::migrate::sql::fk_constraint_name`.
     /// - **Name found but declared non-deferrable** →
-    /// [`DjogiError::ConstraintNotDeferrable`]. Postgres would
-    /// raise SQLSTATE `0A000` on a non-deferrable constraint at SQL
-    /// time; the framework surfaces the same misuse with the
-    /// model-declaration remediation hint before the round trip.
-    /// `DeferScope::All` skips per-constraint validation — Postgres'
-    /// `SET CONSTRAINTS ALL DEFERRED` is a blanket statement that
-    /// applies to every deferrable constraint in scope; non-
-    /// deferrable constraints are simply ignored by Postgres.
+    ///   [`DjogiError::ConstraintNotDeferrable`]. Postgres would
+    ///   raise SQLSTATE `0A000` on a non-deferrable constraint at SQL
+    ///   time; the framework surfaces the same misuse with the
+    ///   model-declaration remediation hint before the round trip.
+    ///   `DeferScope::All` skips per-constraint validation — Postgres'
+    ///   `SET CONSTRAINTS ALL DEFERRED` is a blanket statement that
+    ///   applies to every deferrable constraint in scope; non-
+    ///   deferrable constraints are simply ignored by Postgres.
     /// # Errors
     /// - [`DjogiError::ConstraintModeOutsideTransaction`] if `self` is
-    /// pool-backed. `SET CONSTRAINTS` is transaction-scoped; calling
-    /// it on a pool-backed context is meaningless and almost
-    /// certainly a caller bug.
+    ///   pool-backed. `SET CONSTRAINTS` is transaction-scoped; calling
+    ///   it on a pool-backed context is meaningless and almost
+    ///   certainly a caller bug.
     /// - [`DjogiError::UnknownConstraintName`] (for `Named` payloads
-    /// carrying a typo / removed FK / never-declared constraint).
+    ///   carrying a typo / removed FK / never-declared constraint).
     /// - [`DjogiError::ConstraintNotDeferrable`] (for `Named` payloads
-    /// pointing at a non-deferrable constraint).
+    ///   pointing at a non-deferrable constraint).
     /// - [`DjogiError::Db`] for any underlying Postgres error
-    /// (e.g. constraint exists in the live DB but not in any
-    /// registered descriptor — unusual; usually means a hand-rolled
-    /// constraint or a stale snapshot).
+    ///   (e.g. constraint exists in the live DB but not in any
+    ///   registered descriptor — unusual; usually means a hand-rolled
+    ///   constraint or a stale snapshot).
     /// # Example
     /// ```ignore
     /// use djogi::transaction::{atomic, DeferScope};
@@ -1520,18 +1520,18 @@ impl DjogiContext {
     /// point in the transaction rather than waiting for COMMIT.
     /// # Behaviour
     /// - Same transaction-scope-only invariant as
-    /// [`Self::defer_constraints`]: returns
-    /// [`DjogiError::ConstraintModeOutsideTransaction`] when called
-    /// on a pool-backed context.
+    ///   [`Self::defer_constraints`]: returns
+    ///   [`DjogiError::ConstraintModeOutsideTransaction`] when called
+    ///   on a pool-backed context.
     /// - Same `Named`-payload validation: unknown names raise
-    /// [`DjogiError::UnknownConstraintName`], non-deferrable
-    /// constraints raise
-    /// [`DjogiError::ConstraintNotDeferrable`]. (A non-deferrable
-    /// constraint is **always** in IMMEDIATE mode; explicitly
-    /// setting it to IMMEDIATE is a no-op SQL-wise, but the
-    /// framework still surfaces the typo as
-    /// `ConstraintNotDeferrable` for symmetric ergonomics with
-    /// `defer_constraints`.)
+    ///   [`DjogiError::UnknownConstraintName`], non-deferrable
+    ///   constraints raise
+    ///   [`DjogiError::ConstraintNotDeferrable`]. (A non-deferrable
+    ///   constraint is **always** in IMMEDIATE mode; explicitly
+    ///   setting it to IMMEDIATE is a no-op SQL-wise, but the
+    ///   framework still surfaces the typo as
+    ///   `ConstraintNotDeferrable` for symmetric ergonomics with
+    ///   `defer_constraints`.)
     /// # Example
     /// ```ignore
     /// use djogi::transaction::{atomic, DeferScope};
@@ -1622,41 +1622,41 @@ fn validate_constraint_names_against_descriptors(names: &[&str]) -> Result<(), D
 /// Contract — fail-closed by design (
 /// ):
 /// 1. **Conflicting [`DeferrabilitySpec`]s** sharing
-/// `(model_type_name, field_name)` but disagreeing on
-/// `(deferrable, initially_deferred)` raise
-/// [`DjogiError::ConflictingDeferrabilitySpec`]. Mirrors the
-/// projection-time gate at
-/// [`crate::migrate::projection::ProjectionError::ConflictingDeferrabilitySpec`]
-/// so runtime and migration-time agree. Idempotent duplicates
-/// (same key, identical values) are accepted.
+///    `(model_type_name, field_name)` but disagreeing on
+///    `(deferrable, initially_deferred)` raise
+///    [`DjogiError::ConflictingDeferrabilitySpec`]. Mirrors the
+///    projection-time gate at
+///    [`crate::migrate::projection::ProjectionError::ConflictingDeferrabilitySpec`]
+///    so runtime and migration-time agree. Idempotent duplicates
+///    (same key, identical values) are accepted.
 /// 2. **Orphan [`DeferrabilitySpec`]s** — `model_type_name` with no
-/// matching [`ModelDescriptor`] — raise
-/// [`DjogiError::OrphanDeferrabilitySpec`]. The previous
-/// implementation silently skipped these, which masked the real
-/// root cause when the adopter then asked about a
-/// `<expected_table>_<field>_fkey` they thought they had declared.
+///    matching [`ModelDescriptor`] — raise
+///    [`DjogiError::OrphanDeferrabilitySpec`]. The previous
+///    implementation silently skipped these, which masked the real
+///    root cause when the adopter then asked about a
+///    `<expected_table>_<field>_fkey` they thought they had declared.
 /// 3. **Duplicate constraint names** — two distinct
-/// `(model_type_name, field_name)` pairs whose conventional
-/// `<table>_<column>_fkey` strings collide (Postgres' 63-byte
-/// identifier limit can truncate-merge long names) — raise
-/// [`DjogiError::DuplicateConstraintName`]. Without this gate the
-/// validator would have to pick one side's `deferrable` answer,
-/// which is non-deterministic against inventory iteration order.
+///    `(model_type_name, field_name)` pairs whose conventional
+///    `<table>_<column>_fkey` strings collide (Postgres' 63-byte
+///    identifier limit can truncate-merge long names) — raise
+///    [`DjogiError::DuplicateConstraintName`]. Without this gate the
+///    validator would have to pick one side's `deferrable` answer,
+///    which is non-deterministic against inventory iteration order.
 /// 4. **Unknown adopter-supplied name** raises
-/// [`DjogiError::UnknownConstraintName`].
+///    [`DjogiError::UnknownConstraintName`].
 /// 5. **Non-deferrable adopter-supplied name** raises
-/// [`DjogiError::ConstraintNotDeferrable`].
+///    [`DjogiError::ConstraintNotDeferrable`].
 /// 6. Otherwise returns `Ok`.
-/// Failures (1)–(3) surface before the per-name validation pass so a
-/// misconfigured inventory cannot mask a misconfigured `Named` payload
-/// with a different error code.
-/// The constraint-name convention follows
-/// [`crate::migrate::sql::fk_constraint_name`]
-/// `<table>_<column>_fkey`, truncated to 63 bytes for long names.
-/// Walking the inventory at every call site is acceptable because
-/// `defer_constraints` is a transaction-control call, not a hot-path
-/// operation — adopters call it once per atomic scope, and the
-/// inventory is fixed at link time.
+///    Failures (1)–(3) surface before the per-name validation pass so a
+///    misconfigured inventory cannot mask a misconfigured `Named` payload
+///    with a different error code.
+///    The constraint-name convention follows
+///    [`crate::migrate::sql::fk_constraint_name`]
+///    `<table>_<column>_fkey`, truncated to 63 bytes for long names.
+///    Walking the inventory at every call site is acceptable because
+///    `defer_constraints` is a transaction-control call, not a hot-path
+///    operation — adopters call it once per atomic scope, and the
+///    inventory is fixed at link time.
 fn validate_constraint_names_against_inventory<'a, M, D>(
     names: &[&str],
     models: M,
@@ -1827,29 +1827,29 @@ impl DjogiContext {
     /// parallelism, no protocol aliasing.
     /// # What the clone carries over
     /// - **Pool** — same `DjogiPool` handle (Arc-cloned). The clone
-    /// draws from the same pool; checkouts are independent.
+    ///   draws from the same pool; checkouts are independent.
     /// - **`Sassi` cache registry** — same `Arc<Sassi>`. Both contexts
-    /// share the cache state, so a write through one clone is
-    /// visible to a subsequent read through the other (provided the
-    /// write committed).
+    ///   share the cache state, so a write through one clone is
+    ///   visible to a subsequent read through the other (provided the
+    ///   write committed).
     /// - **Auth context** — cloned (so RLS still applies). Mutating
-    /// `set_auth` on one clone does NOT propagate to the other
-    /// each clone owns its own auth state.
+    ///   `set_auth` on one clone does NOT propagate to the other
+    ///   each clone owns its own auth state.
     /// - **Tenant-scope-suppression flag** — copied.
     /// # What the clone does NOT carry over
     /// - **`applied_tenant_id`** — transaction-scoped state, set
-    /// only via `set_config(..., true)` inside an open transaction.
-    /// A pool-backed clone has no active transaction, so the
-    /// in-memory tracker resets to `None`.
+    ///   only via `set_config(..., true)` inside an open transaction.
+    ///   A pool-backed clone has no active transaction, so the
+    ///   in-memory tracker resets to `None`.
     /// - **`tenant_set`** — same rationale as `applied_tenant_id`.
     /// - **`on_commit` queue** — each clone owns its own queue.
-    /// Callbacks registered on the parent BEFORE the clone are not
-    /// inherited; callbacks registered on either clone after
-    /// cloning fire only on that clone's `commit` (and only if
-    /// the clone enters its own `atomic`).
+    ///   Callbacks registered on the parent BEFORE the clone are not
+    ///   inherited; callbacks registered on either clone after
+    ///   cloning fire only on that clone's `commit` (and only if
+    ///   the clone enters its own `atomic`).
     /// - **Savepoint depth** — clones start at depth 0 because they
-    /// have no transaction. (This method rejects transaction-
-    /// backed contexts; see Errors.)
+    ///   have no transaction. (This method rejects transaction-
+    ///   backed contexts; see Errors.)
     /// # Errors
     /// Returns
     /// [`DjogiError::ConcurrentReadsRequirePoolContext`](crate::DjogiError::ConcurrentReadsRequirePoolContext)

@@ -10,14 +10,14 @@
 //! }
 //! ```
 //! - Root construction: `UserPublicFields::default` sets `__djogi_path = None`
-//! and defaults `RootModel = User`.
+//!   and defaults `RootModel = User`.
 //! - Traversal construction: `UserPublicFields::with_path("owner")` sets
-//! `__djogi_path = Some("owner")` so the peer's scalar accessors produce
-//! `FieldRef`s whose column path is `"owner.{column}"`.
+//!   `__djogi_path = Some("owner")` so the peer's scalar accessors produce
+//!   `FieldRef`s whose column path is `"owner.{column}"`.
 //! - Traversal typing: `UserPublicFields<Post>` means "the peer visage fields
-//! for `User`, but predicates built from them still target the owning
-//! `Post` root model."
-//! Accessors are `&self` methods so the path state is available inside every call:
+//!   for `User`, but predicates built from them still target the owning
+//!   `Post` root model."
+//!   Accessors are `&self` methods so the path state is available inside every call:
 //! ```ignore
 //! impl UserPublicFields {
 //!     pub fn display_name(&self) -> FieldRef<User, String> {

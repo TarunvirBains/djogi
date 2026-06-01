@@ -7,42 +7,42 @@
 //! (T3) can lower them deterministically. Operations come in three
 //! categories:
 //! - **Table-level**: `AddTable` / `DropTable` / `RenameTable` /
-//! `MoveModelBetweenApps`.
+//!   `MoveModelBetweenApps`.
 //! - **Column-level**: `AddColumn` / `DropColumn` / `RenameColumn` /
-//! `AlterColumn` / `AddForeignKey` / `DropForeignKey`.
+//!   `AlterColumn` / `AddForeignKey` / `DropForeignKey`.
 //! - **Other**: `AddIndex` / `DropIndex` / `AddEnum` / `DropEnum` /
-//! `AddEnumVariant` / `RenameApp` / `PkTypeFlip`.
-//! `RenameTable` and `RenameColumn` are emitted only when the new
-//! schema's `renamed_from` field flags the change as a rename. Without
-//! the annotation the differ emits a destructive `DropTable` +
-//! `AddTable` (or `DropColumn` + `AddColumn`) pair so unannotated
-//! "renames" cannot silently destroy data.
+//!   `AddEnumVariant` / `RenameApp` / `PkTypeFlip`.
+//!   `RenameTable` and `RenameColumn` are emitted only when the new
+//!   schema's `renamed_from` field flags the change as a rename. Without
+//!   the annotation the differ emits a destructive `DropTable` +
+//!   `AddTable` (or `DropColumn` + `AddColumn`) pair so unannotated
+//!   "renames" cannot silently destroy data.
 //! # Classification
 //! Each [`SchemaDelta`] carries a [`Classification`]:
 //! - `NoOp` — schemas are equal (no operations).
 //! - `Additive` — every op is non-destructive: new tables, new
-//! nullable columns, new indexes, new enum variants. Safe to ship.
+//!   nullable columns, new indexes, new enum variants. Safe to ship.
 //! - `Reversible` — contains operations that are destructive in one
-//! direction but have a clean inverse (e.g. a `RenameTable` whose
-//! inverse is the symmetric rename). The runner treats reversible
-//! deltas the same as destructive but the down-migration is
-//! well-defined.
+//!   direction but have a clean inverse (e.g. a `RenameTable` whose
+//!   inverse is the symmetric rename). The runner treats reversible
+//!   deltas the same as destructive but the down-migration is
+//!   well-defined.
 //! - `Destructive` — at least one operation removes data
-//! structurally (`DropTable`, `DropColumn`, `DropEnum`,
-//! `DropIndex`, `DropForeignKey`). The runner gates these behind
-//! `--allow-destructive`; the gate is runner-side state, not
-//! differ output, so the variant carries no payload.
+//!   structurally (`DropTable`, `DropColumn`, `DropEnum`,
+//!   `DropIndex`, `DropForeignKey`). The runner gates these behind
+//!   `--allow-destructive`; the gate is runner-side state, not
+//!   differ output, so the variant carries no payload.
 //! - `Lossy` — a destructive op that would also lose row data with
-//! no recovery path (e.g. dropping a non-nullable column that has
-//! no default). Stricter than `Destructive`.
+//!   no recovery path (e.g. dropping a non-nullable column that has
+//!   no default). Stricter than `Destructive`.
 //! - `Unsupported { reason }` — the differ cannot lower the change
-//! safely (e.g. partition method change). Operator must hand-edit
-//! the migration.
+//!   safely (e.g. partition method change). Operator must hand-edit
+//!   the migration.
 //! - `PkTypeFlip` — at least one table changed its PK type variant
-//! (HeerId ↔ HeerIdRecencyBiased, RanjId ↔ RanjIdRecencyBiased).
-//! This is a **native classification** for PK type flips. It owns the full
-//! expand/contract orchestration including FK cascade composition.
-//! The migration engine handles it directly.
+//!   (HeerId ↔ HeerIdRecencyBiased, RanjId ↔ RanjIdRecencyBiased).
+//!   This is a **native classification** for PK type flips. It owns the full
+//!   expand/contract orchestration including FK cascade composition.
+//!   The migration engine handles it directly.
 //! # No-op detection
 //! [`diff_schemas`] returns a delta with `Classification::NoOp` and an
 //! empty operations vector when the two schemas compare equal. The
@@ -189,37 +189,37 @@ pub enum SchemaOperation {
         /// means "append at the tail" (no positional clause). The
         /// differ chooses, in priority order:
         /// 1. `Some(EnumVariantAnchor { kind: Before, variant: post })`
-        /// when there is a post-anchor variant in the new list
-        /// that already existed in the old list. This places the
-        /// new variant immediately before that anchor.
+        ///    when there is a post-anchor variant in the new list
+        ///    that already existed in the old list. This places the
+        ///    new variant immediately before that anchor.
         /// 2. `Some(EnumVariantAnchor { kind: After, variant: pre })`
-        /// when there is no usable post-anchor but a pre-anchor
-        /// exists in both old and new lists. This is the case for
-        /// a tail-append onto an enum that already has variants
-        /// from the old list — the new variant lands `AFTER` the
-        /// last existing one. (`ALTER TYPE ... ADD VALUE 'x' AFTER
+        ///    when there is no usable post-anchor but a pre-anchor
+        ///    exists in both old and new lists. This is the case for
+        ///    a tail-append onto an enum that already has variants
+        ///    from the old list — the new variant lands `AFTER` the
+        ///    last existing one. (`ALTER TYPE ... ADD VALUE 'x' AFTER
         /// 'y'` is deterministic Postgres DDL, so anchoring beats
-        /// bare append even though both produce the same physical
-        /// ordering.)
+        ///    bare append even though both produce the same physical
+        ///    ordering.)
         /// 3. `None` only on degenerate or malformed inputs where no
-        /// anchor exists in the old list in either direction
-        /// e.g. every old variant has been concurrently dropped
-        /// (`Unsupported` upstream) OR a malformed snapshot where
-        /// the existing enum's variant list is empty (Postgres
-        /// rejects an empty-variant enum at `CREATE TYPE`, so this
-        /// is malformed-snapshot territory only — the runtime
-        /// enum-creation path also rejects it). In practice
-        /// [`pick_enum_variant_anchor`] returns `None` only on
-        /// these inputs; tail-appends with prior real variants
-        /// always land in case (2).
-        /// emitter unconditionally appended (no `BEFORE`/`AFTER`
-        /// clause) regardless of where the differ placed the variant.
-        /// Carrying an anchor variant name (rather than a positional
-        /// integer) makes the emission self-contained — the emitter
-        /// no longer needs the full new-variant list to resolve a
-        /// position.
-        /// description here to match the helper's actual behaviour
-        /// for tail-appends onto a non-empty enum.
+        ///    anchor exists in the old list in either direction
+        ///    e.g. every old variant has been concurrently dropped
+        ///    (`Unsupported` upstream) OR a malformed snapshot where
+        ///    the existing enum's variant list is empty (Postgres
+        ///    rejects an empty-variant enum at `CREATE TYPE`, so this
+        ///    is malformed-snapshot territory only — the runtime
+        ///    enum-creation path also rejects it). In practice
+        ///    [`pick_enum_variant_anchor`] returns `None` only on
+        ///    these inputs; tail-appends with prior real variants
+        ///    always land in case (2).
+        ///    emitter unconditionally appended (no `BEFORE`/`AFTER`
+        ///    clause) regardless of where the differ placed the variant.
+        ///    Carrying an anchor variant name (rather than a positional
+        ///    integer) makes the emission self-contained — the emitter
+        ///    no longer needs the full new-variant list to resolve a
+        ///    position.
+        ///    description here to match the helper's actual behaviour
+        ///    for tail-appends onto a non-empty enum.
         anchor: Option<EnumVariantAnchor>,
     },
 
@@ -415,16 +415,16 @@ pub enum ColumnChange {
     /// Variant semantics — `(from, to)` pair:
     /// - `(None, None)` — never emitted; the differ filters no-op.
     /// - `(Some(b), Some(a))` with `b == a` — never emitted; differ
-    /// filters identical.
+    ///   filters identical.
     /// - `(None, Some(expr))` — ADD CHECK. Up: `ADD CONSTRAINT ...
     /// CHECK (expr)`. Down: `DROP CONSTRAINT ...`.
     /// - `(Some(prior), None)` — DROP CHECK. Up: `DROP CONSTRAINT ...`.
-    /// Down: `ADD CONSTRAINT ... CHECK (prior)` — fully recoverable.
+    ///   Down: `ADD CONSTRAINT ... CHECK (prior)` — fully recoverable.
     /// - `(Some(b), Some(a))` with `b != a` — currently the differ
-    /// splits AMEND into two emissions: `(Some(b), None)` then
-    /// `(None, Some(a))`. The SQL emitter handles the merged form
-    /// too (DROP+ADD in one statement pair) for callers that may
-    /// want it later.
+    ///   splits AMEND into two emissions: `(Some(b), None)` then
+    ///   `(None, Some(a))`. The SQL emitter handles the merged form
+    ///   too (DROP+ADD in one statement pair) for callers that may
+    ///   want it later.
     SetCheck {
         /// Prior CHECK expression (the constraint already on the column).
         /// `None` when no CHECK existed before the operation.
@@ -480,17 +480,17 @@ pub enum ColumnChange {
     /// (`GENERATED BY DEFAULT / ALWAYS AS IDENTITY`).
     /// Transitions:
     /// - `from = None, to = Some(kind)` — add identity to existing
-    /// column. Lowered to
-    /// `ALTER TABLE t ALTER COLUMN c ADD <kind sql_clause>`.
+    ///   column. Lowered to
+    ///   `ALTER TABLE t ALTER COLUMN c ADD <kind sql_clause>`.
     /// - `from = Some(_), to = None` — drop identity. Lowered to
-    /// `ALTER TABLE t ALTER COLUMN c DROP IDENTITY`.
+    ///   `ALTER TABLE t ALTER COLUMN c DROP IDENTITY`.
     /// - `from = Some(a), to = Some(b)` (a ≠ b) — kind change
-    /// (BY DEFAULT ↔ ALWAYS). Lowered to
-    /// `ALTER TABLE t ALTER COLUMN c SET GENERATED <kind>`.
-    /// Identity columns are sequence-backed at the Postgres level;
-    /// the ADD migration triggers Postgres's own sequence allocation
-    /// and starts the sequence after MAX(c) for existing rows. No
-    /// Djogi-side backfill needed.
+    ///   (BY DEFAULT ↔ ALWAYS). Lowered to
+    ///   `ALTER TABLE t ALTER COLUMN c SET GENERATED <kind>`.
+    ///   Identity columns are sequence-backed at the Postgres level;
+    ///   the ADD migration triggers Postgres's own sequence allocation
+    ///   and starts the sequence after MAX(c) for existing rows. No
+    ///   Djogi-side backfill needed.
     SetIdentity {
         from: Option<crate::migrate::schema::IdentityKindSchema>,
         to: Option<crate::migrate::schema::IdentityKindSchema>,
@@ -1998,8 +1998,8 @@ fn diff_tables(
 /// - `table_comment` → [`SchemaOperation::SetTableComment`]
 /// - `storage_params` → [`SchemaOperation::SetStorageParams`]
 /// - `tablespace` → [`SchemaOperation::SetTablespace`]
-/// Each slot emits one `SchemaOperation` when the before / after
-/// values diverge; identical values produce no operation.
+///   Each slot emits one `SchemaOperation` when the before / after
+///   values diverge; identical values produce no operation.
 fn diff_table_metadata_in_table(
     before: &TableSchema,
     after: &TableSchema,
@@ -2362,28 +2362,28 @@ fn emit_alter_column(
 /// surface it cleanly. Non-flip transitions handled here include:
 /// - kind changes outside the flip pairs (e.g. `HeerId → Serial`)
 /// - column-set changes (composite ↔ single, or composite reshape
-/// that survives column-rename normalisation)
+///   that survives column-rename normalisation)
 /// - custom PK shape changes (any transition involving
-/// `PkKindSchema::Custom` on either side; see
-/// [`custom_pk_unsupported_reason`] for the typed diagnostic shape)
-/// **Custom PK transitions.** A model declared with a
-/// `djogi::primary_key!` newtype on either side of the diff is rejected
-/// with a dedicated message that names which side carries the custom
-/// kind, the inner SQL types, and the type names. The stock
-/// `pk_flip` family routes (`PkFlipFamily::Heer` / `Ranj`) only know
-/// how to migrate the four built-in asc↔desc pairs — no playbook
-/// exists for arbitrary `Custom → Custom`, `Custom → built-in`, or
-/// `built-in → Custom` shape changes, and quietly emitting a generic
-/// `ALTER COLUMN TYPE` would risk silent data loss when the inner SQL
-/// types differ. See `docs/spec/migrations.md` §10.10a for the v0.1.0
-/// support matrix.
-/// **PK column rename + supported flip** is recognised as a flip:
-/// the `column_renames` map is applied to `before.primary_key.columns`
-/// before comparing against `after.primary_key.columns`, so a single
-/// `RenameColumn` op + a kind flip together still produce
-/// `SchemaOperation::PkTypeFlip` rather than `Unsupported`. The
-/// `RenameColumn` was already emitted by `diff_columns_in_table`
-/// before this fn runs.
+///   `PkKindSchema::Custom` on either side; see
+///   [`custom_pk_unsupported_reason`] for the typed diagnostic shape)
+///   **Custom PK transitions.** A model declared with a
+///   `djogi::primary_key!` newtype on either side of the diff is rejected
+///   with a dedicated message that names which side carries the custom
+///   kind, the inner SQL types, and the type names. The stock
+///   `pk_flip` family routes (`PkFlipFamily::Heer` / `Ranj`) only know
+///   how to migrate the four built-in asc↔desc pairs — no playbook
+///   exists for arbitrary `Custom → Custom`, `Custom → built-in`, or
+///   `built-in → Custom` shape changes, and quietly emitting a generic
+///   `ALTER COLUMN TYPE` would risk silent data loss when the inner SQL
+///   types differ. See `docs/spec/migrations.md` §10.10a for the v0.1.0
+///   support matrix.
+///   **PK column rename + supported flip** is recognised as a flip:
+///   the `column_renames` map is applied to `before.primary_key.columns`
+///   before comparing against `after.primary_key.columns`, so a single
+///   `RenameColumn` op + a kind flip together still produce
+///   `SchemaOperation::PkTypeFlip` rather than `Unsupported`. The
+///   `RenameColumn` was already emitted by `diff_columns_in_table`
+///   before this fn runs.
 fn diff_pk_in_table(
     before: &TableSchema,
     after: &TableSchema,
@@ -2696,7 +2696,7 @@ fn pick_enum_variant_anchor(
 /// `AddColumn` is classified per the column's actual shape:
 /// - nullable, OR has a default → Additive
 /// - non-nullable + no default → Lossy (existing rows would violate
-/// the constraint immediately on apply)
+///   the constraint immediately on apply)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Severity {
     Additive = 0,
@@ -4812,14 +4812,14 @@ mod tests {
     /// promotion.
     /// Test setup:
     /// * `before`: 70-level FK chain (P → T1 → ... → T70) with
-    /// P's PK kind set to `HeerId`.
+    ///   P's PK kind set to `HeerId`.
     /// * `after`: SAME 70-level chain with P's PK kind flipped
-    /// to `HeerIdRecencyBiased`. The differ emits one
-    /// `PkTypeFlip` op for `p` and the closure walks the
-    /// chain.
+    ///   to `HeerIdRecencyBiased`. The differ emits one
+    ///   `PkTypeFlip` op for `p` and the closure walks the
+    ///   chain.
     /// * Assert `diff_bucket_maps` returns
-    /// `Err(DiffError::PkFlipCascadeDepthExceeded { ... })`
-    /// with the chain populated.
+    ///   `Err(DiffError::PkFlipCascadeDepthExceeded { ... })`
+    ///   with the chain populated.
     #[test]
     fn diff_bucket_maps_emits_pk_flip_cascade_depth_exceeded_on_deep_graph() {
         use crate::migrate::projection::BucketKey;

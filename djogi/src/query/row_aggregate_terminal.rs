@@ -32,11 +32,11 @@
 //! - [`crate::expr::node::ExprNode::RowAggregate`] — untyped IR variant.
 //! - [`crate::expr::sql::emit_row_aggregate`] — SQL emission.
 //! - [`crate::query::annotate::AnnotatedQuerySet::as_mvt`] /
-//! [`crate::query::annotate::AnnotatedQuerySet::as_geobuf`] — terminal
-//! entry points on the annotated path.
+//!   [`crate::query::annotate::AnnotatedQuerySet::as_geobuf`] — terminal
+//!   entry points on the annotated path.
 //! - [`crate::query::queryset::QuerySet::as_mvt`] /
-//! [`crate::query::queryset::QuerySet::as_geobuf`] — terminal entry
-//! points on the plain (un-annotated) path.
+//!   [`crate::query::queryset::QuerySet::as_geobuf`] — terminal entry
+//!   points on the plain (un-annotated) path.
 
 #![cfg(feature = "spatial")]
 #![allow(clippy::manual_async_fn)]
@@ -166,22 +166,22 @@ where
     /// a `WasNull` decode error.
     /// # Errors
     /// - The annotation tuple fails its `check_legality` (e.g. an
-    /// illegal aggregate modifier survived earlier validation).
+    ///   illegal aggregate modifier survived earlier validation).
     /// - A window annotation alias collides with a `T` model column name
-    /// (collision checked case-insensitively, matching PostgreSQL's
-    /// unquoted-identifier fold) — returns
-    /// [`crate::DjogiError::Validation`] with a remediation hint.
-    /// This terminal routes qualify through
-    /// `build_spatial_row_select_with_annotations_for_fetch`
-    /// (`djogi/src/query/sql.rs:1804-1813`) which emits the same
-    /// `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
-    /// as [`AnnotatedQuerySet::fetch_all`]; the collision check fires here
-    /// for the same reason.
+    ///   (collision checked case-insensitively, matching PostgreSQL's
+    ///   unquoted-identifier fold) — returns
+    ///   [`crate::DjogiError::Validation`] with a remediation hint.
+    ///   This terminal routes qualify through
+    ///   `build_spatial_row_select_with_annotations_for_fetch`
+    ///   (`djogi/src/query/sql.rs:1804-1813`) which emits the same
+    ///   `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
+    ///   as [`AnnotatedQuerySet::fetch_all`]; the collision check fires here
+    ///   for the same reason.
     /// - The geometry column named in [`MvtOptions::with_geom_name`] does
-    /// not exist in the model's projection — PostGIS raises this at
-    /// execute time as a `42703 column does not exist` error.
+    ///   not exist in the model's projection — PostGIS raises this at
+    ///   execute time as a `42703 column does not exist` error.
     /// - The inner queryset emits any portable-predicate validation
-    /// error (matching ordinary `fetch_all` semantics).
+    ///   error (matching ordinary `fetch_all` semantics).
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -266,23 +266,23 @@ where
     /// a `WasNull` decode error.
     /// # Errors
     /// - The annotation tuple fails its `check_legality` (e.g. an
-    /// illegal aggregate modifier survived earlier validation).
+    ///   illegal aggregate modifier survived earlier validation).
     /// - A window annotation alias collides with a `T` model column name
-    /// (collision checked case-insensitively, matching PostgreSQL's
-    /// unquoted-identifier fold) — returns
-    /// [`crate::DjogiError::Validation`] with a remediation hint.
-    /// This terminal routes qualify through
-    /// `build_spatial_row_select_with_annotations_for_fetch`
-    /// (`djogi/src/query/sql.rs:1804-1813`) which emits the same
-    /// `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
-    /// as [`AnnotatedQuerySet::fetch_all`]; the collision check fires here
-    /// for the same reason.
+    ///   (collision checked case-insensitively, matching PostgreSQL's
+    ///   unquoted-identifier fold) — returns
+    ///   [`crate::DjogiError::Validation`] with a remediation hint.
+    ///   This terminal routes qualify through
+    ///   `build_spatial_row_select_with_annotations_for_fetch`
+    ///   (`djogi/src/query/sql.rs:1804-1813`) which emits the same
+    ///   `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
+    ///   as [`AnnotatedQuerySet::fetch_all`]; the collision check fires here
+    ///   for the same reason.
     /// - The geometry column named in the `geom_name` argument passed to
-    /// [`AnnotatedQuerySet::as_geobuf`] does not exist in the model's
-    /// projection — PostGIS raises this at execute time as a
-    /// `42703 column does not exist` error.
+    ///   [`AnnotatedQuerySet::as_geobuf`] does not exist in the model's
+    ///   projection — PostGIS raises this at execute time as a
+    ///   `42703 column does not exist` error.
     /// - The inner queryset emits any portable-predicate validation
-    /// error (matching ordinary `fetch_all` semantics).
+    ///   error (matching ordinary `fetch_all` semantics).
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -372,7 +372,7 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     /// ```
     /// # Where
     /// - [`AsMvtTerminal::fetch_one`] — runs the query and decodes the
-    /// `Vec<u8>` payload.
+    ///   `Vec<u8>` payload.
     /// - [`MvtOptions`] — non-default encoder configuration.
     /// - [`Self::as_mvt_with_options`] — explicit-options entry point.
     #[must_use = "row-shape aggregate terminals are lazy — dropping discards the query"]

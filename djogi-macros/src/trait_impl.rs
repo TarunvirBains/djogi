@@ -24,15 +24,15 @@
 //! at the adopter's own code, not at the macro expansion.
 //! # What we accept
 //! - Trait impls only — `impl Trait for Type { ... }`. Inherent
-//! `impl Type { ... }` rejected.
+//!   `impl Type { ... }` rejected.
 //! - Concrete (non-generic) impls only — `impl<T> Trait for Vec<T>`
-//! rejected. Generic impls would require parameter substitution
-//! for the `TypeId::of` lookup at registration time, which is
-//! deferred to a future phase per `feedback_anchored_deferrals`.
+//!   rejected. Generic impls would require parameter substitution
+//!   for the `TypeId::of` lookup at registration time, which is
+//!   deferred to a future phase per `feedback_anchored_deferrals`.
 //! - Single-segment `Self` types — `impl Trait for Vehicle` works,
-//! `impl Trait for crate::module::Vehicle` works (path resolved
-//! verbatim), `impl Trait for some_fn::Vehicle` rejected (not a
-//! nameable type at parse time).
+//!   `impl Trait for crate::module::Vehicle` works (path resolved
+//!   verbatim), `impl Trait for some_fn::Vehicle` rejected (not a
+//!   nameable type at parse time).
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};

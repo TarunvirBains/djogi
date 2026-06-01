@@ -3,12 +3,12 @@
 //! An [`OrderExpr`] is the minimal description of a single `ORDER BY`
 //! clause element. There are two variants:
 //! - [`OrderExpr::Column`] — a column name, sort direction, and optional NULLS
-//! position. Produced by [`FieldRef::asc`] / [`FieldRef::desc`] and the fluent
-//! [`OrderExpr::nulls_first`] / [`OrderExpr::nulls_last`] modifiers.
+//!   position. Produced by [`FieldRef::asc`] / [`FieldRef::desc`] and the fluent
+//!   [`OrderExpr::nulls_first`] / [`OrderExpr::nulls_last`] modifiers.
 //! - [`OrderExpr::SpatialDistance`] — an expression-backed ordering that emits
-//! `ST_Distance(col, ST_Point($lon, $lat)::geography) ASC, <pk> ASC`. Produced
-//! by [`crate::query::field::FieldRef<M, GeoPoint>::order_by_distance`] when
-//! the `spatial` feature flag is enabled.
+//!   `ST_Distance(col, ST_Point($lon, $lat)::geography) ASC, <pk> ASC`. Produced
+//!   by [`crate::query::field::FieldRef<M, GeoPoint>::order_by_distance`] when
+//!   the `spatial` feature flag is enabled.
 //! # Why an enum
 //! The `Column` variant covers ordinary `column ASC|DESC NULLS FIRST|LAST`
 //! ordering. The `SpatialDistance` variant carries the
@@ -29,7 +29,7 @@
 //! # Where
 //! - Accumulated by [`crate::query::queryset::QuerySet::order_by`].
 //! - Emitted to SQL by [`OrderExpr::emit`], called from `query::sql`'s
-//! ordering tail helpers.
+//!   ordering tail helpers.
 
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;

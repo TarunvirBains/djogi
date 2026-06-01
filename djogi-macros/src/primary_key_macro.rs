@@ -1,25 +1,25 @@
 //! `djogi::primary_key!` declarative-style macro.
 //! Adopters declare a custom PK type in ~4 lines. The macro emits:
 //! - the `pub struct <Name>(<Inner>);` newtype with a standard derive set
-//! (`Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
-//! `Hash`, `serde::Serialize`, `serde::Deserialize`). `PartialOrd` /
-//! `Ord` are required by 2's auto-emitted
-//! `Cacheable::Id` bound (`Hash + Eq + Clone + Ord + Send + Sync +
+//!   (`Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
+//!   `Hash`, `serde::Serialize`, `serde::Deserialize`). `PartialOrd` /
+//!   `Ord` are required by 2's auto-emitted
+//!   `Cacheable::Id` bound (`Hash + Eq + Clone + Ord + Send + Sync +
 //! 'static` — `sassi-reference/sassi/src/cacheable.rs:60`); serde
-//! derives keep the newtype usable as a transparent envelope wrapper
-//! in adopter-side JSON I/O without reaching for an explicit
-//! `serde` dep;
+//!   derives keep the newtype usable as a transparent envelope wrapper
+//!   in adopter-side JSON I/O without reaching for an explicit
+//!   `serde` dep;
 //! - `impl ::djogi::primary_key::PrimaryKey for <Name>` with
-//! `KIND = PkType::Custom(CustomPrimaryKeyKind { .. })`, `SQL_TYPE`, and
-//! `DEFAULT_SQL` populated from the declaration attributes;
+//!   `KIND = PkType::Custom(CustomPrimaryKeyKind { .. })`, `SQL_TYPE`, and
+//!   `DEFAULT_SQL` populated from the declaration attributes;
 //! - `ToSql` / `FromSql` delegation to the inner type — the newtype
-//! encodes on the wire exactly as `<Inner>` does;
+//!   encodes on the wire exactly as `<Inner>` does;
 //! - `impl PrimaryKeyDbGen for <Name>` when `bulk_sql = "..."` is present
-//! `generate_many` executes `bulk_sql` with the batch count as `$1`
-//! and decodes each row's first column as the inner type;
+//!   `generate_many` executes `bulk_sql` with the batch count as `$1`
+//!   and decodes each row's first column as the inner type;
 //! - `impl PrimaryKeyClientGen for <Name>` when `generate = |...| expr`
-//! is present — the emitted body calls the closure expression once per
-//! invocation and wraps the result in the newtype.
+//!   is present — the emitted body calls the closure expression once per
+//!   invocation and wraps the result in the newtype.
 //! # Grammar
 //! ```ignore
 //! djogi::primary_key! {

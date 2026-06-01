@@ -816,11 +816,11 @@ impl<T: Model> QuerySet<T> {
     /// - Field-vs-field comparisons (`balance < overdraft_limit`).
     /// - Arithmetic predicates (`balance + pending_credit > 0`).
     /// - Predicates that build on [`crate::expr::Expr`] composition
-    /// future tasks extend this surface with aggregates, subqueries,
-    /// and `CASE` (Tasks 4/5).
-    /// The two methods compose: a queryset may have any mix of
-    /// `filter` and `filter_expr` clauses, and every call is AND-ed
-    /// onto the same tree.
+    ///   future tasks extend this surface with aggregates, subqueries,
+    ///   and `CASE` (Tasks 4/5).
+    ///   The two methods compose: a queryset may have any mix of
+    ///   `filter` and `filter_expr` clauses, and every call is AND-ed
+    ///   onto the same tree.
     /// ```ignore
     /// use djogi::prelude::*;
     ///
@@ -1663,7 +1663,7 @@ impl<T: Model> QuerySet<T> {
     /// - `F` — closure that picks the geography column on `T`.
     /// - `G` — the concrete geography type (e.g. `GeoPoint`, `Polygon`).
     /// - `R` — the region model. Must have at least one `Geography`-typed field
-    /// in its descriptor.
+    ///   in its descriptor.
     /// ## Panics
     /// Panics at call time if `R`'s descriptor contains no
     /// `FieldSqlType::Geography` field. This is a programming error (missing
@@ -2530,14 +2530,14 @@ where
     /// The returned `DeltaRefreshHandle<T>` exposes two adopter-facing knobs
     /// from sassi's native API — no djogi-side wrappers required:
     /// - **`with_eviction_recovery(bool)`** — when enabled, LRU evictions of
-    /// IDs this subscription has observed are passed to the fetcher as
-    /// `DeltaQuery::recover_ids` on a later delta tick. Opt in via
-    /// `handle.with_eviction_recovery(true)`.
+    ///   IDs this subscription has observed are passed to the fetcher as
+    ///   `DeltaQuery::recover_ids` on a later delta tick. Opt in via
+    ///   `handle.with_eviction_recovery(true)`.
     /// - **`with_periodic_full_refresh(Option<NonZeroUsize>)`** — schedule
-    /// full (non-delta) refreshes every N ticks. `Some(n)` makes every nth
-    /// scheduled tick use `since = None`. Opt in via
-    /// `handle.with_periodic_full_refresh(NonZeroUsize::new(10))`.
-    /// Both methods return `Self` for chaining:
+    ///   full (non-delta) refreshes every N ticks. `Some(n)` makes every nth
+    ///   scheduled tick use `since = None`. Opt in via
+    ///   `handle.with_periodic_full_refresh(NonZeroUsize::new(10))`.
+    ///   Both methods return `Self` for chaining:
     /// ```text
     /// let handle = MyModel::objects()
     ///     .refresh_into(&punnu, pool, auth)?

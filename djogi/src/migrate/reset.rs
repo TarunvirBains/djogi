@@ -4,14 +4,14 @@
 //! migration found under `migrations/<database>/<app>/`. The triple
 //! gate per the brief:
 //! 1. `DATABASE_URL` MUST resolve to localhost (reused
-//! [`super::policy::is_localhost_connection`]).
+//!    [`super::policy::is_localhost_connection`]).
 //! 2. `Djogi.toml::profile` MUST NOT equal `"production"`.
 //! 3. The caller MUST supply explicit confirmation (a `--yes` flag in
-//! the CLI; programmatic callers pass [`ResetRequest::confirmed`]
-//! `= true`).
-//! All three gates are enforced before any I/O. A refusal returns a
-//! typed [`ResetError::Refused`] so the operator-facing message is
-//! actionable.
+//!    the CLI; programmatic callers pass [`ResetRequest::confirmed`]
+//!    `= true`).
+//!    All three gates are enforced before any I/O. A refusal returns a
+//!    typed [`ResetError::Refused`] so the operator-facing message is
+//!    actionable.
 //! # Logging-DB isolation
 //! Per CLAUDE.md, the CRUD-log and event-log databases survive every
 //! `db reset` invocation. Today the runner is single-context
@@ -41,18 +41,18 @@
 //! The pre-flight capture step has TWO qualitatively different
 //! failure modes that previously collapsed to the same outcome:
 //! - **Ledger genuinely missing** (the `pg_class` probe returns
-//! `false`): legitimate fresh-DB fallback. Reset proceeds with an
-//! empty historical map, and `build_replay_plan` falls back to
-//! lexical version sort.
+//!   `false`): legitimate fresh-DB fallback. Reset proceeds with an
+//!   empty historical map, and `build_replay_plan` falls back to
+//!   lexical version sort.
 //! - **Anything else** — connection failure, query failure, decode
-//! failure, permission denied: opaque. Reset propagates as
-//! [`ResetError::HistoricalOrderCaptureFailed`] and refuses to
-//! drop / recreate.
-//! Every failure mode swallowed itself via `unwrap_or_default`
-//! at the call site, so a flaky ledger read on a populated DB still
-//! triggered the destructive operation. The fix is the
-//! [`HistoricalCaptureError`] split: `LedgerMissing` is the only
-//! legitimate fall-back signal; `Transient(DjogiError)` propagates.
+//!   failure, permission denied: opaque. Reset propagates as
+//!   [`ResetError::HistoricalOrderCaptureFailed`] and refuses to
+//!   drop / recreate.
+//!   Every failure mode swallowed itself via `unwrap_or_default`
+//!   at the call site, so a flaky ledger read on a populated DB still
+//!   triggered the destructive operation. The fix is the
+//!   [`HistoricalCaptureError`] split: `LedgerMissing` is the only
+//!   legitimate fall-back signal; `Transient(DjogiError)` propagates.
 //! # No regex
 //! URL parsing reuses the byte-level extractor in
 //! [`super::policy::extract_host`] for the localhost gate, plus a
@@ -606,24 +606,24 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
 /// Internal error classifier for [`capture_historical_apply_order`]
 /// The capture step has two qualitatively different failure modes:
 /// - **`LedgerMissing`** — the `pg_class` probe came back `false`.
-/// The connection succeeded, the catalog query succeeded, and the
-/// answer was "no `djogi_schema_migrations` table here". This is
-/// the legitimate fresh-DB / freshly-recreated-DB signal. The
-/// caller falls back to lexical sort and the destructive drop /
-/// recreate proceeds.
+///   The connection succeeded, the catalog query succeeded, and the
+///   answer was "no `djogi_schema_migrations` table here". This is
+///   the legitimate fresh-DB / freshly-recreated-DB signal. The
+///   caller falls back to lexical sort and the destructive drop /
+///   recreate proceeds.
 /// - **`Transient(DjogiError)`** — anything else: tokio_postgres
-/// connect failure (DB unreachable, auth fail, network drop, DB
-/// does not exist), `current_database` query failure, probe
-/// query failure, decode error, generic SELECT failure. None of
-/// these prove the DB is fresh; they prove we cannot CONFIRM the
-/// live state. The caller propagates as
-/// `ResetError::HistoricalOrderCaptureFailed` and refuses to
-/// drop / recreate.
-/// The helper returned `Result<_, >` and `unwrap_or_default`
-/// at the call site collapsed every failure mode to "empty map →
-/// proceed with lexical fallback". That re-opened the
-/// under a transient connection / query failure: the destructive
-/// path runs against a database whose history we never read.
+///   connect failure (DB unreachable, auth fail, network drop, DB
+///   does not exist), `current_database` query failure, probe
+///   query failure, decode error, generic SELECT failure. None of
+///   these prove the DB is fresh; they prove we cannot CONFIRM the
+///   live state. The caller propagates as
+///   `ResetError::HistoricalOrderCaptureFailed` and refuses to
+///   drop / recreate.
+///   The helper returned `Result<_, >` and `unwrap_or_default`
+///   at the call site collapsed every failure mode to "empty map →
+///   proceed with lexical fallback". That re-opened the
+///   under a transient connection / query failure: the destructive
+///   path runs against a database whose history we never read.
 #[derive(Debug)]
 enum HistoricalCaptureError {
     /// `pg_class` probe returned `false` — ledger genuinely absent.
@@ -651,12 +651,12 @@ struct HistoricalReplayEntry {
 /// historically.
 /// The error classification is intentional and load-bearing:
 /// - Probe says ledger absent → `Err(HistoricalCaptureError::LedgerMissing)`
-/// (caller falls back to lexical).
+///   (caller falls back to lexical).
 /// - Anything else → `Err(HistoricalCaptureError::Transient(..))`
-/// (caller propagates and refuses the destructive drop).
-/// Only `Applied` / `Faked` / `Baseline` rows participate — `Pending`,
-/// `Failed`, `RolledBack` do not represent migrations whose effect
-/// the live DB carries forward.
+///   (caller propagates and refuses the destructive drop).
+///   Only `Applied` / `Faked` / `Baseline` rows participate — `Pending`,
+///   `Failed`, `RolledBack` do not represent migrations whose effect
+///   the live DB carries forward.
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 async fn capture_historical_apply_order(
@@ -1529,16 +1529,16 @@ fn hex_digit_value(b: u8) -> Option<u8> {
 /// Validate a string against the strict Postgres-identifier grammar:
 /// > ASCII letter or underscore, followed by zero-or-more ASCII
 /// > alphanumerics or underscores, up to 63 bytes total.
-/// **No regex.** Byte-level checks per `docs/spec/decisions.md`
-/// `u8::is_ascii_alphabetic`, `u8::is_ascii_alphanumeric`, and
-/// explicit byte equality against `b'_'`.
-/// Postgres' own grammar is technically more permissive (it accepts
-/// any byte sequence inside double-quoted identifiers), but the
-/// grammar above is the one every Djogi-emitted identifier obeys.
-/// Refusing anything wider keeps the `DROP DATABASE` /
-/// `CREATE DATABASE` paths free of operator-supplied bytes that the
-/// double-quote escape elsewhere in the codebase wouldn't otherwise
-/// surface.
+/// > **No regex.** Byte-level checks per `docs/spec/decisions.md`
+/// > `u8::is_ascii_alphabetic`, `u8::is_ascii_alphanumeric`, and
+/// > explicit byte equality against `b'_'`.
+/// > Postgres' own grammar is technically more permissive (it accepts
+/// > any byte sequence inside double-quoted identifiers), but the
+/// > grammar above is the one every Djogi-emitted identifier obeys.
+/// > Refusing anything wider keeps the `DROP DATABASE` /
+/// > `CREATE DATABASE` paths free of operator-supplied bytes that the
+/// > double-quote escape elsewhere in the codebase wouldn't otherwise
+/// > surface.
 fn is_valid_pg_identifier(name: &str) -> bool {
     let bytes = name.as_bytes();
     // Length: 1..=63 bytes (the standard Postgres `NAMEDATALEN - 1`).

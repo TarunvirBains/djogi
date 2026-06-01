@@ -19,17 +19,17 @@
 //! Two invocations against the same descriptor inventory MUST produce
 //! byte-identical output. The renderer therefore:
 //! - Iterates the descriptor inventory through a sorted `BTreeMap`
-//! keyed by `(app_directory, type_name)`. The natural
-//! `inventory::iter` order is registration order, which is
-//! inherently non-deterministic across compilation runs — sorting
-//! reproducibly resolves that.
+//!   keyed by `(app_directory, type_name)`. The natural
+//!   `inventory::iter` order is registration order, which is
+//!   inherently non-deterministic across compilation runs — sorting
+//!   reproducibly resolves that.
 //! - Sorts per-model field lists in their declaration order
-//! (preserved by the macro so user-source ordering survives) but
-//! leaves index lists in declaration order too.
+//!   (preserved by the macro so user-source ordering survives) but
+//!   leaves index lists in declaration order too.
 //! - Embeds no timestamps, no version strings (other than the
-//! per-page heading content sourced from descriptors), and no
-//! environment-derived data. The output is purely a function of
-//! the descriptor input.
+//!   per-page heading content sourced from descriptors), and no
+//!   environment-derived data. The output is purely a function of
+//!   the descriptor input.
 //! # No regex
 //! Identifier comparison and filename derivation use byte-level
 //! checks. The accepted filename grammar mirrors the Postgres

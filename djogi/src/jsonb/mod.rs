@@ -3,11 +3,11 @@
 //! [`Jsonb<T>`] wraps a Postgres `JSONB` column with a typed schema `T`. On
 //! every database read the JSON object is split:
 //! - Keys whose names match fields in `T`'s `Deserialize` impl land in
-//! [`Jsonb::data`] as a typed value.
+//!   [`Jsonb::data`] as a typed value.
 //! - Keys that `T` does not know about (unknown/future fields) land in
-//! [`Jsonb::extra`] as raw [`serde_json::Value`]s.
-//! On every `save` the two halves are merged back into a single JSON object
-//! before the value is bound. No unknown key is ever dropped.
+//!   [`Jsonb::extra`] as raw [`serde_json::Value`]s.
+//!   On every `save` the two halves are merged back into a single JSON object
+//!   before the value is bound. No unknown key is ever dropped.
 //! # Why preserve unknown fields?
 //! JSONB columns often evolve: a future service or migration version may add
 //! new keys to an existing column. If a running service deserializes only the
@@ -201,10 +201,10 @@ where
     /// The deserialization strategy:
     /// 1. Deserialize the full raw `serde_json::Value`.
     /// 2. Deserialize `T` from that value — this populates `data` with known
-    /// fields.
+    ///    fields.
     /// 3. Determine the set of keys `T` serializes to (by re-serializing the
-    /// just-decoded `T`). Any key present in the raw object but absent from
-    /// this set is an unknown field and belongs in `extra`.
+    ///    just-decoded `T`). Any key present in the raw object but absent from
+    ///    this set is an unknown field and belongs in `extra`.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Step 1: capture raw JSON object.
         let raw = serde_json::Value::deserialize(deserializer)?;

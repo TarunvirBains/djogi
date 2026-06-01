@@ -27,8 +27,8 @@
 //! - `Vehicle` → `VEHICLE_SCHEMA`
 //! - `OrgUser` → `ORG_USER_SCHEMA`
 //! - `HTTPSProxy` → `HTTPS_PROXY_SCHEMA`
-//! Adopters declaring their own `VEHICLE_SCHEMA` at the same scope
-//! see a Rust "duplicate definition" error — a feature, not a bug.
+//!   Adopters declaring their own `VEHICLE_SCHEMA` at the same scope
+//!   see a Rust "duplicate definition" error — a feature, not a bug.
 
 use crate::case::pascal_to_snake;
 use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, detect_relation};

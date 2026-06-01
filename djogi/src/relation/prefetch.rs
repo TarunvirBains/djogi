@@ -49,20 +49,20 @@
 //! conflict surface entirely; the synthetic alias is the only column
 //! under that name in the result set by construction.
 //! - The `LEFT JOIN` naturally handles nullable FK columns: rows whose
-//! `source_column` is `NULL` appear with every enumerated target
-//! column null-decoded, which surfaces as `None` on the per-parent
-//! result slot.
+//!   `source_column` is `NULL` appear with every enumerated target
+//!   column null-decoded, which surfaces as `None` on the per-parent
+//!   result slot.
 //! - The aliased `__djogi_parent_id` gives the stitcher a way back to the
-//! parent row irrespective of whether target columns were null. The
-//! target columns are emitted first so ordinal-decoding of
-//! `Target` via `FromPgRow::from_pg_row` remains untouched; the
-//! sentinel lands at the last position and is read by name
-//! (`row.try_get("__djogi_parent_id")`).
+//!   parent row irrespective of whether target columns were null. The
+//!   target columns are emitted first so ordinal-decoding of
+//!   `Target` via `FromPgRow::from_pg_row` remains untouched; the
+//!   sentinel lands at the last position and is read by name
+//!   (`row.try_get("__djogi_parent_id")`).
 //! - Target rows are not deduplicated at the SQL layer — two parent rows
-//! pointing at the same target produce two result rows, each carrying
-//! the same target payload under its own parent PK. Stitching preserves
-//! that per-parent association; `row.get(...)` on each `PrefetchedRow`
-//! returns its own `&Target` reference backed by its own `Box<Target>`.
+//!   pointing at the same target produce two result rows, each carrying
+//!   the same target payload under its own parent PK. Stitching preserves
+//!   that per-parent association; `row.get(...)` on each `PrefetchedRow`
+//!   returns its own `&Target` reference backed by its own `Box<Target>`.
 //! # Loader shape
 //! Each prefetch loader returns `Vec<Option<Box<dyn Any + Send + Sync>>>`
 //! aligned 1-to-1 with the input parent-PK list. An entry is `Some(Box<Target>)`
@@ -290,14 +290,14 @@ impl std::fmt::Debug for ErasedPrefetch {
 /// - `Source: Model` — lets us name `Source::Pk` for downcasting.
 /// - `Source::Pk: postgres_types::ToSql + FromSql + Eq + Hash + Clone +
 /// 'static + Send + Sync` — required to bind the per-parent `IN (...)`
-/// arguments, decode the `__djogi_parent_id` column, dedupe the
-/// query-side input, and use the PK as a HashMap key for stitching.
-/// No array-type bound — the emitter uses `IN (...)` rather than
-/// `ANY($1)` precisely so the HeeRanjID PKs slot in unchanged.
+///   arguments, decode the `__djogi_parent_id` column, dedupe the
+///   query-side input, and use the PK as a HashMap key for stitching.
+///   No array-type bound — the emitter uses `IN (...)` rather than
+///   `ANY($1)` precisely so the HeeRanjID PKs slot in unchanged.
 /// - `Target: Model + FromPgRow + Clone + Send + Unpin + 'static`
-/// the LEFT JOIN returns target columns; `FromPgRow::from_pg_row` decodes them
-/// from a `tokio_postgres::Row`, `Any` erases the concrete type for
-/// the return channel.
+///   the LEFT JOIN returns target columns; `FromPgRow::from_pg_row` decodes them
+///   from a `tokio_postgres::Row`, `Any` erases the concrete type for
+///   the return channel.
 pub(crate) fn prefetch_loader<'a, Source, Target>(
     exec: &'a mut ContextInner,
     parent_table: &'static str,

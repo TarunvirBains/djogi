@@ -81,18 +81,18 @@ use std::hash::Hash;
 /// Behavior by case:
 /// - `T::descriptor.tenant_key` is `None` → no-op (model has no RLS column).
 /// - `ctx.auth` is `None` → no-op (no auth context attached; pre-auth
-/// or non-tenant code path).
+///   or non-tenant code path).
 /// - `ctx.auth.tenant_id` is `Some(tid)` → delegates to
-/// `ctx.ensure_tenant_set(tid)` which re-issues `SET LOCAL` when the
-/// requested tid differs from the currently-applied one.
+///   `ctx.ensure_tenant_set(tid)` which re-issues `SET LOCAL` when the
+///   requested tid differs from the currently-applied one.
 /// - `ctx.auth.tenant_id` is `None` AND a previous tid is still applied
-/// → clears the `app.tenant_id` GUC via `ctx.clear_tenant`. Without
-/// this reset, a `set_auth(auth_with_tenant)` followed by
-/// `set_auth(auth_without_tenant)` inside one transaction would leave
-/// the earlier tenant's `SET LOCAL` active silently — a cross-tenant
-/// leak. A `tracing::warn!` is also emitted (unless
-/// `ctx.with_no_tenant_scope` was called) so the caller sees the
-/// transition.
+///   → clears the `app.tenant_id` GUC via `ctx.clear_tenant`. Without
+///   this reset, a `set_auth(auth_with_tenant)` followed by
+///   `set_auth(auth_without_tenant)` inside one transaction would leave
+///   the earlier tenant's `SET LOCAL` active silently — a cross-tenant
+///   leak. A `tracing::warn!` is also emitted (unless
+///   `ctx.with_no_tenant_scope` was called) so the caller sees the
+///   transition.
 pub(crate) async fn auto_set_tenant<T: Model>(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
     if T::descriptor().tenant_key.is_none() {
         return Ok(());
@@ -221,9 +221,9 @@ where
     /// Execute the query and require **exactly one** matching row.
     /// - Zero rows -> [`DjogiError::NotFound`].
     /// - Two or more rows -> [`DjogiError::MultipleObjects`] (via `LIMIT 2`;
-    /// `count_seen = 2`).
-    /// User-supplied `limit` on the queryset is ignored — this terminal
-    /// owns the row-count probe.
+    ///   `count_seen = 2`).
+    ///   User-supplied `limit` on the queryset is ignored — this terminal
+    ///   owns the row-count probe.
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -383,17 +383,17 @@ where
     /// When the queryset carries both select_related and prefetch
     /// registrations, the terminal runs:
     /// 1. The main query with the LEFT JOINs + aliased child columns.
-    /// Each row decodes into a `JoinedRow<T>` carrying the joined
-    /// children under their `source_column` keys.
+    ///    Each row decodes into a `JoinedRow<T>` carrying the joined
+    ///    children under their `source_column` keys.
     /// 2. The prefetch fan-out — one follow-up query per registered
-    /// `prefetch_paths` entry — whose resolved targets are
-    /// stitched into the same `JoinedRow<T>` values. The two
-    /// paths never collide on the same `source_column` in practice
-    /// because `.select_related(path)` and `.prefetch(path)`
-    /// target different relations on any realistic queryset, but
-    /// if they did, the prefetch stitcher would overwrite the
-    /// select_related entry — documented on
-    /// [`crate::relation::select_related::stitch_prefetches_into_joined`].
+    ///    `prefetch_paths` entry — whose resolved targets are
+    ///    stitched into the same `JoinedRow<T>` values. The two
+    ///    paths never collide on the same `source_column` in practice
+    ///    because `.select_related(path)` and `.prefetch(path)`
+    ///    target different relations on any realistic queryset, but
+    ///    if they did, the prefetch stitcher would overwrite the
+    ///    select_related entry — documented on
+    ///    [`crate::relation::select_related::stitch_prefetches_into_joined`].
     /// # Short-circuit contract
     /// Honours the same `is_empty` short-circuit as every other
     /// terminal — a structural-none queryset returns `Ok(Vec::new)`
@@ -523,8 +523,8 @@ where
     /// [`atomic`](crate::transaction::atomic) + one of:
     /// - `select_for_update` on the queryset to serialise lookups
     /// - an `ON CONFLICT` clause on the underlying table
-    /// when the caller needs strict once-only semantics.
-    /// Task 7.5 adds `create_or_find` for the conflict-key path.
+    ///   when the caller needs strict once-only semantics.
+    ///   Task 7.5 adds `create_or_find` for the conflict-key path.
     /// # Short-circuit
     /// A `QuerySet::none`-derived queryset short-circuits the
     /// lookup to `Ok(None)`, so the factory **runs and a row is
@@ -556,14 +556,14 @@ where
     /// row was updated in place.
     /// # Semantics
     /// - Found branch: `updater(&mut row)` runs, then
-    /// [`save`](crate::model::Model::save) rehydrates the row from
-    /// `UPDATE ... RETURNING *` — `updated_at` advances and any
-    /// trigger-mutated column surfaces in the returned `T`.
+    ///   [`save`](crate::model::Model::save) rehydrates the row from
+    ///   `UPDATE ... RETURNING *` — `updated_at` advances and any
+    ///   trigger-mutated column surfaces in the returned `T`.
     /// - Missing branch: `factory` runs and
-    /// [`create`](crate::model::Model::create) inserts the new row;
-    /// the returned `T` is the `RETURNING *` rehydration.
-    /// `updater` takes `&mut T` so callers can mutate multiple fields
-    /// in one pass without needing to rebuild the struct.
+    ///   [`create`](crate::model::Model::create) inserts the new row;
+    ///   the returned `T` is the `RETURNING *` rehydration.
+    ///   `updater` takes `&mut T` so callers can mutate multiple fields
+    ///   in one pass without needing to rebuild the struct.
     /// # Race caveat
     /// Same non-atomic caveat as [`get_or_create`](Self::get_or_create)
     /// the SELECT and the UPDATE/INSERT are distinct statements.

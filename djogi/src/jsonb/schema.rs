@@ -4,11 +4,11 @@
 //! JSONB path API. Implementing it (via `#[derive(JsonbSchema)]`) causes
 //! the proc macro to emit a `{T}Path<M>` struct with one method per field:
 //! - Scalar fields (from the cast-matrix allowlist: `i16`, `i32`, `i64`,
-//! `f32`, `f64`, `bool`, `String`, `time::OffsetDateTime`, etc.) return a
-//! [`JsonbPathRef<M, FieldType>`](crate::jsonb::JsonbPathRef) that carries
-//! the accumulated JSONB path and exposes `eq` / `gt` / `lt` / ... comparisons.
+//!   `f32`, `f64`, `bool`, `String`, `time::OffsetDateTime`, etc.) return a
+//!   [`JsonbPathRef<M, FieldType>`](crate::jsonb::JsonbPathRef) that carries
+//!   the accumulated JSONB path and exposes `eq` / `gt` / `lt` / ... comparisons.
 //! - Nested fields whose types also implement `JsonbSchema` return the nested
-//! type's `Path<M>`, extending the path accumulator by one segment.
+//!   type's `Path<M>`, extending the path accumulator by one segment.
 //! # Why
 //! The flat escape hatch (`FieldRef<M, Jsonb<T>>::path::<V>("a.b.c")`) is
 //! correct but bypasses the type system — a string typo produces a silent

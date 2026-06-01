@@ -56,17 +56,17 @@ pub type CasterFn = fn(&ErasedArc) -> Option<ErasedArc>;
 /// `#[djogi::trait_impl]` attribute macro (T5.2 + T5.3).
 /// # Fields
 /// - `model_type_id` — the `TypeId` of the implementing model
-/// (`Vehicle` for `impl Searchable for Vehicle`). Returned by a
-/// `fn -> TypeId` so the registration is `const`-constructible
-/// at the macro emission site without touching `TypeId::of` (which
-/// is `const`-only on nightly).
+///   (`Vehicle` for `impl Searchable for Vehicle`). Returned by a
+///   `fn -> TypeId` so the registration is `const`-constructible
+///   at the macro emission site without touching `TypeId::of` (which
+///   is `const`-only on nightly).
 /// - `trait_type_id` — the `TypeId` of the registered trait
-/// (`dyn Searchable`). Same `fn -> TypeId` discipline.
+///   (`dyn Searchable`). Same `fn -> TypeId` discipline.
 /// - `model_type_name` / `trait_type_name` — human-readable names
-/// for diagnostic / introspection paths. `&'static str` so the
-/// registration stays `const`-submittable.
+///   for diagnostic / introspection paths. `&'static str` so the
+///   registration stays `const`-submittable.
 /// - `caster` — the type-erased downcast helper. T5.3 fills this in;
-/// T5.1 ships the field shape only.
+///   T5.1 ships the field shape only.
 /// # Layout stability
 /// Same convention as `ModelDescriptor` and the other inventory-
 /// submitted descriptors: every text field is `&'static str`, every

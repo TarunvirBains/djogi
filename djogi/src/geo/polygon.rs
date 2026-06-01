@@ -25,7 +25,7 @@ use crate::geo::{GeoError, GeoPoint, ewkb};
 /// Stored as `GEOGRAPHY(Polygon, 4326)` in Postgres.
 /// # Ring invariants
 /// - Every ring must have at least 4 points (3 distinct vertices + closing
-/// repeat of the first point).
+///   repeat of the first point).
 /// - Every ring must be closed: first point equals last point.
 /// - `rings[0]` is the outer boundary; `rings[1..]` are holes.
 /// # Constructors

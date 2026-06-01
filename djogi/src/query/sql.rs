@@ -1363,11 +1363,11 @@ pub(crate) fn build_select<T: Model + FromPgRow>(
 /// [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the select_related variant.
 /// Mirror of [`build_select`], but:
 /// 1. Replaces `*` in the projection with the aliased column list built
-/// by [`crate::relation::select_related::select_columns`] — parent
-/// columns stay unqualified, each joined child's columns land under
-/// a `"rel_{source_column}.{col}"` alias.
+///    by [`crate::relation::select_related::select_columns`] — parent
+///    columns stay unqualified, each joined child's columns land under
+///    a `"rel_{source_column}.{col}"` alias.
 /// 2. Appends one `LEFT JOIN` clause per registered path, via
-/// [`crate::relation::select_related::push_joins`].
+///    [`crate::relation::select_related::push_joins`].
 /// # Why a separate emitter
 /// Keeping `build_select` unchanged means a queryset with no
 /// registered select_related paths still emits the exact SQL
@@ -1452,11 +1452,11 @@ pub(crate) fn build_select_joined<T: Model>(
 /// `default_window` controls fallback behaviour when the aggregate carries
 /// no `.over(|w| ...)` window spec:
 /// - `None` — emit no window clause at all (scalar terminal + grouped
-/// annotate SELECT, neither of which should silently grow `OVER `).
+///   annotate SELECT, neither of which should silently grow `OVER `).
 /// - `Some(s)` — emit `s` as the default (the ungrouped annotate path
-/// uses `Some(" OVER ")` only after the plain-annotation type-state has
-/// proven the aggregate kind is windowable; non-windowable aggregate kinds
-/// are rejected before reaching this helper).
+///   uses `Some(" OVER ")` only after the plain-annotation type-state has
+///   proven the aggregate kind is windowable; non-windowable aggregate kinds
+///   are rejected before reaching this helper).
 fn emit_aggregate_inner(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
@@ -1613,13 +1613,13 @@ fn emit_aggregate_inner(
 /// Emission profile for spatial aggregates. The two `wrapped` cases
 /// drive the OVER-splice strategy in [`emit_aggregate_inner`].
 /// - `wrapped: true` — bare emission has the form `WRAP(AGG(...))::cast`.
-/// `WRAP` is a scalar function (`ST_Centroid`, `ST_ConvexHull`); the
-/// actual aggregate is `AGG` (`ST_Collect`). OVER must fall inside
-/// the wrapper, between AGG's close paren and the wrapper's close.
+///   `WRAP` is a scalar function (`ST_Centroid`, `ST_ConvexHull`); the
+///   actual aggregate is `AGG` (`ST_Collect`). OVER must fall inside
+///   the wrapper, between AGG's close paren and the wrapper's close.
 /// - `wrapped: false` — bare emission has the form `AGG(...)::cast`.
-/// No scalar wrapper; OVER attaches directly to the aggregate, then
-/// the cast wraps the aggregate-with-OVER unit:
-/// `(AGG(...) OVER (...))::cast`.
+///   No scalar wrapper; OVER attaches directly to the aggregate, then
+///   the cast wraps the aggregate-with-OVER unit:
+///   `(AGG(...) OVER (...))::cast`.
 struct SpatialShape {
     suffix: &'static str,
     wrapped: bool,
@@ -2105,12 +2105,12 @@ where
 /// other query shape in this file.
 /// # Clause placement under the subquery
 /// - `WHERE` stays on the **inner** subquery — it prunes rows *before*
-/// clustering, which is the only semantically meaningful position for a
-/// filter that does not reference `cluster_id`.
+///   clustering, which is the only semantically meaningful position for a
+///   filter that does not reference `cluster_id`.
 /// - `HAVING` stays on the **outer** query — it filters the aggregated
-/// groups.
+///   groups.
 /// - `ORDER BY` / `LIMIT` / `OFFSET` stay on the **outer** query — they
-/// paginate the aggregated result.
+///   paginate the aggregated result.
 /// # Casts and binds
 /// The `::geometry` cast is required because `ST_ClusterDBSCAN` does not
 /// accept the `geography` type directly in PostGIS 3.x.
@@ -2233,13 +2233,13 @@ where
 /// "table" [WHERE ...]) AS sub`
 /// - `DistinctMode::On(cols)` → `SELECT COUNT(*) FROM (SELECT DISTINCT ON
 /// (cols) * FROM "table" [WHERE ...] ORDER BY cols [, user-ordering]) AS sub`
-/// `ORDER BY` / `LIMIT` / `OFFSET` from the queryset are intentionally not
-/// emitted on the **outer** count — they don't affect total cardinality and
-/// including them only slows the query. For `DISTINCT ON` the inner ORDER
-/// BY is required by Postgres (the `ON` column list must be a prefix of
-/// `ORDER BY`); we prepend the distinct columns and then append any
-/// user-supplied ordering so the emitted SQL is syntactically valid and
-/// semantically stable.
+///   `ORDER BY` / `LIMIT` / `OFFSET` from the queryset are intentionally not
+///   emitted on the **outer** count — they don't affect total cardinality and
+///   including them only slows the query. For `DISTINCT ON` the inner ORDER
+///   BY is required by Postgres (the `ON` column list must be a prefix of
+///   `ORDER BY`); we prepend the distinct columns and then append any
+///   user-supplied ordering so the emitted SQL is syntactically valid and
+///   semantically stable.
 pub(crate) fn build_count<T: Model>(
     qs: &QuerySet<T>,
 ) -> Result<SqlAccumulator, PortablePredicateError> {
@@ -2647,16 +2647,16 @@ where
 /// model's table.
 /// # Inputs
 /// - `qs` — source queryset, contributes the source FROM table, the
-/// WHERE clause, ordering, limit, and offset. All other source state
-/// (`prefetch_paths`, `select_related_paths`, `cache_target`,
-/// `lock`, `distinct`) is rejected by
-/// [`crate::query::insert_select::InsertSelectStmt::execute`] before
-/// reaching this emitter, so the emitter itself does not need a
-/// runtime guard.
+///   WHERE clause, ordering, limit, and offset. All other source state
+///   (`prefetch_paths`, `select_related_paths`, `cache_target`,
+///   `lock`, `distinct`) is rejected by
+///   [`crate::query::insert_select::InsertSelectStmt::execute`] before
+///   reaching this emitter, so the emitter itself does not need a
+///   runtime guard.
 /// - `columns` — `(target_column, source_expression)` mappings in
-/// lockstep position. The column list and the SELECT projection are
-/// emitted in the same order; per-column type alignment is enforced
-/// at compile time by [`crate::query::FieldRef::copy_from`].
+///   lockstep position. The column list and the SELECT projection are
+///   emitted in the same order; per-column type alignment is enforced
+///   at compile time by [`crate::query::FieldRef::copy_from`].
 /// # Output shape
 /// ```sql
 /// INSERT INTO target_table (target_col1, target_col2, ...)
@@ -2684,15 +2684,15 @@ where
 /// minimum coherent surface of the public API.
 /// # Invariants
 /// - `columns` is non-empty (the terminal's
-/// [`crate::query::insert_select::InsertSelectStmt::execute`] returns
-/// `DjogiError::Validation` before reaching here on empty input).
+///   [`crate::query::insert_select::InsertSelectStmt::execute`] returns
+///   `DjogiError::Validation` before reaching here on empty input).
 /// - `columns` has no duplicate `target_column` entries (same source
-/// of validation).
+///   of validation).
 /// - Every `column.source` is an [`crate::expr::node::ExprNode`] tree
-/// built through the typed `FieldRef::copy_from` constructor — the
-/// `&'static str` column names baked into `ExprNode::Field` flow
-/// straight to `SqlAccumulator::push_sql`, matching the existing
-/// bind-vs-text discipline.
+///   built through the typed `FieldRef::copy_from` constructor — the
+///   `&'static str` column names baked into `ExprNode::Field` flow
+///   straight to `SqlAccumulator::push_sql`, matching the existing
+///   bind-vs-text discipline.
 /// # Source's `lock` is intentionally NOT emitted
 /// Although [`push_tail`] would normally append `qs.lock`'s `FOR UPDATE`
 /// tail, the terminal rejects non-default `LockMode` upstream so the
@@ -2764,21 +2764,21 @@ pub(crate) fn build_insert_select_returning<S: Model, T: Model + FromPgRow>(
 /// the terminal decoder to read the wrong value for one of the columns.
 /// # Algorithm
 /// 1. Find the substring between `SELECT ` and the next ` FROM ` (case
-/// matters — emitters use uppercase keywords).
+///    matters — emitters use uppercase keywords).
 /// 2. Split on commas at the top parenthesis level into logical columns.
-/// Parens and nested function calls are handled by tracking depth, so
-/// aggregate expressions like `SUM(a, b)` are not split mid-argument.
+///    Parens and nested function calls are handled by tracking depth, so
+///    aggregate expressions like `SUM(a, b)` are not split mid-argument.
 /// 3. For each column, extract the alias — the substring after the last
-/// ` AS ` if present, otherwise the whole column text (trimmed).
+///    ` AS ` if present, otherwise the whole column text (trimmed).
 /// 4. Check uniqueness; return `Err(DjogiError::AliasCollision)` on
-/// duplicate.
+///    duplicate.
 /// # Limitations
 /// This is a best-effort string parse. It does not handle:
 /// - Nested subqueries in the SELECT list (not emitted by).
 /// - Unparenthesised comma-separated arguments at the top level (our
-/// emitter always parenthesises function args).
-/// The check is defensive; failure means something has gone subtly wrong
-/// in the query builder, not that the user did something wrong.
+///   emitter always parenthesises function args).
+///   The check is defensive; failure means something has gone subtly wrong
+///   in the query builder, not that the user did something wrong.
 pub(crate) fn assert_no_alias_collision(sql: &str) -> Result<(), crate::DjogiError> {
     // Locate the SELECT keyword — accept leading text for safety.
     let after_select = if let Some(s) = sql.strip_prefix("SELECT ") {

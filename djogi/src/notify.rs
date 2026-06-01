@@ -14,27 +14,27 @@
 //! the registry watches without prolonging life. Four drop paths fall
 //! out of that:
 //! 1. **Subscriber drop.** The receiver slot is returned to the broadcast
-//! channel. The listener and per-channel `Sender` stay up for other
-//! subscribers.
+//!    channel. The listener and per-channel `Sender` stay up for other
+//!    subscribers.
 //! 2. **Last-subscriber drop.** The listener's strong count hits zero,
-//! its dedicated `tokio_postgres::Client` drops, the spawned
-//! connection-watcher observes `poll_message` ending and exits. The
-//! registry's `Weak` entry becomes dangling and is reaped lazily on
-//! the next `subscribe` against the same `pool_id`.
+//!    its dedicated `tokio_postgres::Client` drops, the spawned
+//!    connection-watcher observes `poll_message` ending and exits. The
+//!    registry's `Weak` entry becomes dangling and is reaped lazily on
+//!    the next `subscribe` against the same `pool_id`.
 //! 3. **Hot reload.** A freshly-built `DjogiPool` gets a fresh `pool_id`,
-//! so `subscribe` against the new pool always misses the registry
-//! and spawns a fresh listener.
+//!    so `subscribe` against the new pool always misses the registry
+//!    and spawns a fresh listener.
 //! 4. **Watcher failure (GH#131).** The watcher task exits while
-//! subscribers are still alive (Postgres terminated our backend, the
-//! socket dropped, the senders mutex was poisoned, or the watcher
-//! panicked). A `WatcherExitGuard` owned by the spawned task fires
-//! on every exit path — clearing the senders map (so live
-//! `TypedReceiver`s wake with `RecvError::Closed` rather than
-//! blocking forever) and publishing a `failed` flag (so the next
-//! `subscribe` reaps the dead registry slot and spawns a fresh
-//! listener). Adopters surface
-//! [`NotifyError::ListenerTerminated`] from `recv` and recover by
-//! re-subscribing.
+//!    subscribers are still alive (Postgres terminated our backend, the
+//!    socket dropped, the senders mutex was poisoned, or the watcher
+//!    panicked). A `WatcherExitGuard` owned by the spawned task fires
+//!    on every exit path — clearing the senders map (so live
+//!    `TypedReceiver`s wake with `RecvError::Closed` rather than
+//!    blocking forever) and publishing a `failed` flag (so the next
+//!    `subscribe` reaps the dead registry slot and spawns a fresh
+//!    listener). Adopters surface
+//!    [`NotifyError::ListenerTerminated`] from `recv` and recover by
+//!    re-subscribing.
 //! # Wire schema
 //! Stable JSON shape on `djogi_<M::TABLE>` channels:
 //! ```json
@@ -225,16 +225,16 @@ fn close_all_senders(senders: &Mutex<HashMap<String, broadcast::Sender<RawEvent>
 /// `break`, or a panic unwinding through the task body. Whichever path
 /// fires, `Drop` runs, which:
 /// 1. Calls [`close_all_senders`] so live broadcast receivers wake
-/// with [`broadcast::error::RecvError::Closed`] instead of blocking
-/// forever on a dead pump.
+///    with [`broadcast::error::RecvError::Closed`] instead of blocking
+///    forever on a dead pump.
 /// 2. Publishes the `failed` flag so subsequent
-/// [`get_or_start_listener`] calls observe the death, reap the
-/// registry slot, and spawn a fresh listener.
-/// The pair closes the GH#131 hazard: previously, a watcher that
-/// `break`-ed on `poll_message` error left every `broadcast::Sender`
-/// alive in the map, so any `TypedReceiver` still keepalived by an
-/// adopter saw "no events" rather than `Closed` and could not
-/// distinguish a healthy-but-quiet channel from a dead listener.
+///    [`get_or_start_listener`] calls observe the death, reap the
+///    registry slot, and spawn a fresh listener.
+///    The pair closes the GH#131 hazard: previously, a watcher that
+///    `break`-ed on `poll_message` error left every `broadcast::Sender`
+///    alive in the map, so any `TypedReceiver` still keepalived by an
+///    adopter saw "no events" rather than `Closed` and could not
+///    distinguish a healthy-but-quiet channel from a dead listener.
 struct WatcherExitGuard {
     senders: Arc<Mutex<HashMap<String, broadcast::Sender<RawEvent>>>>,
     failed: Arc<AtomicBool>,
@@ -369,15 +369,15 @@ where
 /// the background task, later calls upgrade the existing `Weak`. Two
 /// reaping paths converge here:
 /// 1. **Dangling `Weak`** — listener torn down after the last
-/// subscriber dropped. [`upgrade_existing`] reaps the slot on its
-/// failed `upgrade` and we fall through to spawning fresh.
+///    subscriber dropped. [`upgrade_existing`] reaps the slot on its
+///    failed `upgrade` and we fall through to spawning fresh.
 /// 2. **Failed listener (GH#131)** — the `Arc<PgListener>` is still
-/// strong (subscribers alive, keepaliving it) but its watcher task
-/// has exited. We see `is_failed == true`, drop our local strong
-/// ref, remove the registry slot so concurrent subscribers don't
-/// reuse it, and spawn fresh. Old `TypedReceiver`s holding strong
-/// refs keep the failed allocation reachable until they drop, but
-/// the registry no longer routes new subscriptions to it.
+///    strong (subscribers alive, keepaliving it) but its watcher task
+///    has exited. We see `is_failed == true`, drop our local strong
+///    ref, remove the registry slot so concurrent subscribers don't
+///    reuse it, and spawn fresh. Old `TypedReceiver`s holding strong
+///    refs keep the failed allocation reachable until they drop, but
+///    the registry no longer routes new subscriptions to it.
 async fn get_or_start_listener(pool: &DjogiPool) -> Result<Arc<PgListener>, NotifyError> {
     let key = pool_key(pool);
     loop {
@@ -536,24 +536,24 @@ fn parse_raw(payload: &str) -> Result<RawEvent, serde_json::Error> {
 /// derive the same name, no runtime coordination needed.
 /// # Errors
 /// - `NotifyError::ListenerStartFailed` — listener spawn or `LISTEN`
-/// SQL failed.
+///   SQL failed.
 /// - `NotifyError::ListenerTerminated` — the existing pool listener's
-/// watcher task already exited (Postgres terminated our backend,
-/// socket dropped, watcher panicked, or senders mutex poisoned).
-/// `subscribe` reaps the dead listener and tries to spawn fresh; if
-/// the freshly-spawned listener also dies before this call returns
-/// (extremely rare race), the caller sees this variant and a retry
-/// converges on a healthy listener.
+///   watcher task already exited (Postgres terminated our backend,
+///   socket dropped, watcher panicked, or senders mutex poisoned).
+///   `subscribe` reaps the dead listener and tries to spawn fresh; if
+///   the freshly-spawned listener also dies before this call returns
+///   (extremely rare race), the caller sees this variant and a retry
+///   converges on a healthy listener.
 /// - `NotifyError::PayloadDecode` (delivered via `recv.await`)
-/// the wire payload's `kind` was not one of `"create" | "save" |
+///   the wire payload's `kind` was not one of `"create" | "save" |
 /// "delete"`.
 /// - `NotifyError::InvalidId` (also via `recv.await`)
-/// `M::Pk::from_str` rejected the wire id string.
-/// **Note on parse failures.** A wire payload that does not parse as
-/// JSON at all is logged via `tracing::warn!` (target `djogi::notify`)
-/// and dropped at the listener boundary — subscribers do not see
-/// these as `recv` errors. Only payloads that parse but fail
-/// downstream decoding surface as `PayloadDecode` / `InvalidId`.
+///   `M::Pk::from_str` rejected the wire id string.
+///   **Note on parse failures.** A wire payload that does not parse as
+///   JSON at all is logged via `tracing::warn!` (target `djogi::notify`)
+///   and dropped at the listener boundary — subscribers do not see
+///   these as `recv` errors. Only payloads that parse but fail
+///   downstream decoding surface as `PayloadDecode` / `InvalidId`.
 pub async fn subscribe<M>(pool: &DjogiPool) -> Result<TypedReceiver<M>, NotifyError>
 where
     M: crate::model::Model + 'static,
@@ -658,20 +658,20 @@ where
     /// Await the next event.
     /// # Errors
     /// - [`NotifyError::ChannelLagged`] — the broadcast channel buffer
-    /// overflowed since the last `recv` (slow consumer). The integer
-    /// payload is the count of skipped events; adopters decide
-    /// whether to re-fetch full state or ignore the gap.
+    ///   overflowed since the last `recv` (slow consumer). The integer
+    ///   payload is the count of skipped events; adopters decide
+    ///   whether to re-fetch full state or ignore the gap.
     /// - [`NotifyError::ListenerTerminated`] — the watcher task
-    /// driving this listener has exited (Postgres terminated our
-    /// backend, the underlying socket dropped, the watcher's
-    /// senders mutex was poisoned, or the watcher panicked). The
-    /// broadcast channel saw its last `Sender` drop when the exit
-    /// guard cleared the senders map. Adopters recover by calling
-    /// [`subscribe::<M>`] again — it detects the failed listener,
-    /// reaps the registry slot, and spawns a fresh listener.
+    ///   driving this listener has exited (Postgres terminated our
+    ///   backend, the underlying socket dropped, the watcher's
+    ///   senders mutex was poisoned, or the watcher panicked). The
+    ///   broadcast channel saw its last `Sender` drop when the exit
+    ///   guard cleared the senders map. Adopters recover by calling
+    ///   [`subscribe::<M>`] again — it detects the failed listener,
+    ///   reaps the registry slot, and spawns a fresh listener.
     /// - [`NotifyError::PayloadDecode`] /
-    /// [`NotifyError::InvalidId`] — wire payload didn't match the
-    /// `{"kind":"...","id":"..."}` schema. Diagnostic, not fatal.
+    ///   [`NotifyError::InvalidId`] — wire payload didn't match the
+    ///   `{"kind":"...","id":"..."}` schema. Diagnostic, not fatal.
     pub async fn recv(&mut self) -> Result<ModelEvent<M>, NotifyError> {
         let raw = self.raw.recv().await.map_err(|e| match e {
             broadcast::error::RecvError::Lagged(n) => NotifyError::ChannelLagged { skipped: n },

@@ -2,11 +2,11 @@
 //! For each visage `V` produced by [`super::visages::expand`], this
 //! emitter generates:
 //! 1. An `impl V { pub fn filter(...) -> VisageQuerySet<V>; ... }`
-//! block whose entry methods build a [`VisageQuerySet<V>`] over the
-//! source model's table with the visage's *narrowed* column list.
+//!    block whose entry methods build a [`VisageQuerySet<V>`] over the
+//!    source model's table with the visage's *narrowed* column list.
 //! 2. An `impl FromPgRow for V` block that decodes a row positionally
-//! from the same narrowed column list, in the same order — so the
-//! SELECT projection and the row decoder agree by construction.
+//!    from the same narrowed column list, in the same order — so the
+//!    SELECT projection and the row decoder agree by construction.
 //! # Why the entry methods live on the visage type, not on `QuerySet`
 //! `QuerySet<T: Model>` carries a `T: Model` bound that visages cannot
 //! satisfy (visages are projections, not tables). Re-using the model

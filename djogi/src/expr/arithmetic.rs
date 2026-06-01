@@ -10,20 +10,20 @@
 //! # Why sealed?
 //! 1. **Avoid accidental impls.** A user adding a newtype `struct
 //! Percent(f64);` should not be able to `impl Numeric for Percent`
-//! and silently enter an arithmetic composition path the emitter
-//! has no rule for. The sealed pattern blocks the trait at the
-//! crate boundary.
+//!    and silently enter an arithmetic composition path the emitter
+//!    has no rule for. The sealed pattern blocks the trait at the
+//!    crate boundary.
 //! 2. **Framework controls the bind surface.** Adding `Decimal` or
-//! `Interval` to `Numeric` must happen alongside the matching
-//! [`super::node::ExprNode`] bind wiring and the [`FilterValue`
+//!    `Interval` to `Numeric` must happen alongside the matching
+//!    [`super::node::ExprNode`] bind wiring and the [`FilterValue`
 //! ][crate::query::condition::FilterValue] variant. Sealing keeps
-//! those two sides in lockstep.
+//!    those two sides in lockstep.
 //! 3. **Forward-compat for .** The plan explicitly reserves
-//! `Decimal` for and `Interval` for the interval-arithmetic
-//! milestone. ships the integer + float subset only; sealing
-//! means adding the missing types later is additive (one new impl)
-//! rather than breaking (an existing blanket impl would already
-//! admit them).
+//!    `Decimal` for and `Interval` for the interval-arithmetic
+//!    milestone. ships the integer + float subset only; sealing
+//!    means adding the missing types later is additive (one new impl)
+//!    rather than breaking (an existing blanket impl would already
+//!    admit them).
 //! # Why the operator overloads and not named `.add(..)` methods?
 //! The ergonomic target is Django-style:
 //! ```ignore

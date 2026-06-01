@@ -146,18 +146,18 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
 /// [`super::segment::plan_delta`]. When the plan classifies as
 /// `PkTypeFlip`, this fn returns the operator-facing warning lines:
 /// - The exact PoNR sentence for every flip plan — see
-/// [`POINT_OF_NO_RETURN_WARNING`] for the verbatim byte string.
+///   [`POINT_OF_NO_RETURN_WARNING`] for the verbatim byte string.
 /// - `"⚠ Partitioned-table cutover is seconds-to-minutes class
 /// benchmark in staging first"` when any segment in the plan
-/// carries a partitioned-cutover label
-/// (`PkFlipPartitionedCutover`).
-/// Non-flip plans return an empty `Vec`. The warnings are
-/// pre-formatted strings ready to print; the CLI prepends them to
-/// the regular status output for the affected pending plan.
-/// The PoNR sentence wording is contractual — operators cite it in
-/// runbooks. The unit test `point_of_no_return_warning_byte_exact`
-/// asserts the exact bytes so review-driven wording drift produces a
-/// loud test failure rather than silent rephrasing.
+///   carries a partitioned-cutover label
+///   (`PkFlipPartitionedCutover`).
+///   Non-flip plans return an empty `Vec`. The warnings are
+///   pre-formatted strings ready to print; the CLI prepends them to
+///   the regular status output for the affected pending plan.
+///   The PoNR sentence wording is contractual — operators cite it in
+///   runbooks. The unit test `point_of_no_return_warning_byte_exact`
+///   asserts the exact bytes so review-driven wording drift produces a
+///   loud test failure rather than silent rephrasing.
 pub fn render_pending_plan_warnings(plan: &MigrationPlan) -> Vec<String> {
     if !matches!(plan.classification, Classification::PkTypeFlip { .. }) {
         return Vec::new();

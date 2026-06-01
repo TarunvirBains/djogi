@@ -180,14 +180,14 @@ pub fn push_bind_tokens(
 /// **before** the slice literal.
 /// Returns `(pre_decl, entry)` where:
 /// - `pre_decl` — a `let __bind_<slot>: WideType = widen(val);` statement,
-/// or the empty token stream for direct types.
+///   or the empty token stream for direct types.
 /// - `entry` — `&__bind_<slot> as &(dyn ToSql + Sync)` for widened types,
-/// or `&(val_expr) as &(dyn ToSql + Sync)` for direct types.
-/// `slot` is the zero-based index of the field in the user-field list,
-/// used to generate a unique local binding name that does not clash across
-/// fields.
-/// `val_expr` evaluates to an **owned** copy of the field value (e.g.
-/// `value.count` or `value.count.clone`).
+///   or `&(val_expr) as &(dyn ToSql + Sync)` for direct types.
+///   `slot` is the zero-based index of the field in the user-field list,
+///   used to generate a unique local binding name that does not clash across
+///   fields.
+///   `val_expr` evaluates to an **owned** copy of the field value (e.g.
+///   `value.count` or `value.count.clone`).
 pub fn create_param_tokens(
     kind: &BindKind,
     nullable: bool,
@@ -299,8 +299,8 @@ pub fn create_param_tokens(
 /// - `tracked=false, nullable=true` → `Option<T>` (e.g. `Option<u8>`)
 /// - `tracked=true, nullable=false` → `Tracked::new(value)` (e.g. `Tracked<u8>`)
 /// - `tracked=true, nullable=true` → `option.map(Tracked::new)` (e.g. `Option<Tracked<u8>>`)
-/// `col_name` is a `&'static str` literal baked at macro time;
-/// `col_idx` is the ordinal position in the SELECT column list.
+///   `col_name` is a `&'static str` literal baked at macro time;
+///   `col_idx` is the ordinal position in the SELECT column list.
 pub fn decode_field_tokens(
     kind: &BindKind,
     nullable: bool,

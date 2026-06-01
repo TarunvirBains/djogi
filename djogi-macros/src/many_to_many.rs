@@ -4,27 +4,27 @@
 //! A function-like macro that emits, for a single direction of a
 //! many-to-many relationship:
 //! 1. `impl ::djogi::relation::ManyToMany<Target> for Source` with the
-//! associated `Through` type, the `RELATION` const, the `this_fk` /
-//! `that_fk` accessors, and the three async method bodies
-//! (`related` / `add_related` / `remove_related`) matching the
-//! trait contract (see [`djogi::relation::many_to_many`]).
+//!    associated `Through` type, the `RELATION` const, the `this_fk` /
+//!    `that_fk` accessors, and the three async method bodies
+//!    (`related` / `add_related` / `remove_related`) matching the
+//!    trait contract (see [`djogi::relation::many_to_many`]).
 //! 2. A per-relation trait `pub trait {Source}{Method-pascal}ManyToManyRelation`
-//! plus `impl {Trait} for {Source}` carrying
-//! `pub async fn <relation>(&self, ctx) -> Vec<Target>`, so users write
-//! the ergonomic `person.groups(&mut ctx).await` instead of the fully-
-//! qualified trait call. The accessor delegates straight to
-//! `<Self as ManyToMany<Target>>::related` — no independent query logic
-//! keeping the trait body the single source of truth.
-//! Trait-based emission (vs an inherent `impl Source { ... }` block)
-//! is what allows the macro to be invoked in a downstream crate when
-//! the source model lives upstream — see GH issue #39 for the
-//! coherence-rule (E0116) rationale, also documented in
-//! `reverse_relation.rs`.
+//!    plus `impl {Trait} for {Source}` carrying
+//!    `pub async fn <relation>(&self, ctx) -> Vec<Target>`, so users write
+//!    the ergonomic `person.groups(&mut ctx).await` instead of the fully-
+//!    qualified trait call. The accessor delegates straight to
+//!    `<Self as ManyToMany<Target>>::related` — no independent query logic
+//!    keeping the trait body the single source of truth.
+//!    Trait-based emission (vs an inherent `impl Source { ... }` block)
+//!    is what allows the macro to be invoked in a downstream crate when
+//!    the source model lives upstream — see GH issue #39 for the
+//!    coherence-rule (E0116) rationale, also documented in
+//!    `reverse_relation.rs`.
 //! 3. An `inventory::submit!` block registering a
-//! [`djogi::relation::registry::ReverseRelationMarker`] with
-//! `RelationKind::M2M` so 's projection generator can walk
-//! every declared M2M direction in the same pass it walks
-//! reverse-FK / reverse-O2O accessors.
+//!    [`djogi::relation::registry::ReverseRelationMarker`] with
+//!    `RelationKind::M2M` so 's projection generator can walk
+//!    every declared M2M direction in the same pass it walks
+//!    reverse-FK / reverse-O2O accessors.
 //! # Why one direction per invocation
 //! M2M relationships are symmetric at the data layer (the junction row
 //! carries both FK columns) but asymmetric at the type layer: each
@@ -127,39 +127,39 @@
 //! them to valid ident shapes at parse time. They flow into emitted
 //! code in three positions:
 //! - As Rust identifiers on the `{Through}Fields` handle
-//! (e.g. `f.a_id` / `f.b_id`) — validated by rustc at macro
-//! expansion time; a typo produces `no method named ... found`.
+//!   (e.g. `f.a_id` / `f.b_id`) — validated by rustc at macro
+//!   expansion time; a typo produces `no method named ... found`.
 //! - As Rust struct-literal field names inside `add_related`'s
-//! junction construction — same rustc validation.
+//!   junction construction — same rustc validation.
 //! - As `&'static str` values returned by `RELATION` / `this_fk` /
-//! `that_fk`. All three are routed through
-//! [`djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident`]
-//! at const-eval time; `relation` and `this_fk` additionally flow
-//! through the inventory marker constructor. That panic fires before
-//! the marker reaches the inventory slice, so any hostile or
-//! `__djogi_*`-reserved string turns into a compile error pointing at
-//! the macro invocation.
-//! The `relation` string is also validated through the same const
-//! path — it names both a Rust method on `Source` and a registry
-//! `name` field, so the unquoted-identifier rule (letter / underscore
-//! start, alphanumeric-or-underscore continuation, ≤ 63 bytes, not a
-//! reserved Postgres keyword) is required for both positions.
+//!   `that_fk`. All three are routed through
+//!   [`djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident`]
+//!   at const-eval time; `relation` and `this_fk` additionally flow
+//!   through the inventory marker constructor. That panic fires before
+//!   the marker reaches the inventory slice, so any hostile or
+//!   `__djogi_*`-reserved string turns into a compile error pointing at
+//!   the macro invocation.
+//!   The `relation` string is also validated through the same const
+//!   path — it names both a Rust method on `Source` and a registry
+//!   `name` field, so the unquoted-identifier rule (letter / underscore
+//!   start, alphanumeric-or-underscore continuation, ≤ 63 bytes, not a
+//!   reserved Postgres keyword) is required for both positions.
 //! # Where
 //! - [`djogi::relation::many_to_many::ManyToMany`] — the trait this
-//! macro impls.
+//!   macro impls.
 //! - [`djogi::relation::registry::ReverseRelationMarker`] — the
-//! inventory record submitted.
+//!   inventory record submitted.
 //! - `djogi-macros/tests/compile_pass/many_to_many_macro.rs` — the
-//! end-to-end macro fixture that pins the emission shape.
+//!   end-to-end macro fixture that pins the emission shape.
 //! - `djogi-macros/tests/compile_fail/many_to_many_collision.rs`
-//! same-suffix collision fixture; two `many_to_many!` invocations
-//! producing the same `(Source, relation)` pair emit the same
-//! `…ManyToManyRelation` trait twice and trip rustc's E0428 / E0119
-//! duplicate-definition errors. Cross-suffix collisions (M2M vs
-//! reverse-FK / reverse-O2O on the same accessor name) emit
-//! different trait names and slip past rustc; the
-//! [`djogi::relation::registry::validate_relation_accessor_collisions`]
-//! gate covers that case (GH issue #158).
+//!   same-suffix collision fixture; two `many_to_many!` invocations
+//!   producing the same `(Source, relation)` pair emit the same
+//!   `…ManyToManyRelation` trait twice and trip rustc's E0428 / E0119
+//!   duplicate-definition errors. Cross-suffix collisions (M2M vs
+//!   reverse-FK / reverse-O2O on the same accessor name) emit
+//!   different trait names and slip past rustc; the
+//!   [`djogi::relation::registry::validate_relation_accessor_collisions`]
+//!   gate covers that case (GH issue #158).
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};

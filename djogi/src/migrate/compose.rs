@@ -2,16 +2,16 @@
 //! Compose translates the descriptor inventory + the last-applied
 //! snapshot into one new pair of files per drifted bucket:
 //! 1. The committed migration SQL pair under
-//! `migrations/<database>/<app>/<version>.sdjql` (up) +
-//! `<version>.down.sdjql` (down).
+//!    `migrations/<database>/<app>/<version>.sdjql` (up) +
+//!    `<version>.down.sdjql` (down).
 //! 2. The pending JSON at
-//! `target/djogi_pending/<database>/<app>.json` recording the
-//! composed delta + checksum (build.rs reads it as the second leg
-//! of the three-way match).
-//! The two writes are **atomic** — both succeed or neither. We write
-//! to `<final>.tmp.<pid>` siblings, fsync, then rename the SQL pair
-//! into place, then rename the pending JSON. On any rename failure
-//! the partial state is rolled back.
+//!    `target/djogi_pending/<database>/<app>.json` recording the
+//!    composed delta + checksum (build.rs reads it as the second leg
+//!    of the three-way match).
+//!    The two writes are **atomic** — both succeed or neither. We write
+//!    to `<final>.tmp.<pid>` siblings, fsync, then rename the SQL pair
+//!    into place, then rename the pending JSON. On any rename failure
+//!    the partial state is rolled back.
 //! # — overwrite-on-same-slug
 //! Re-running `compose --name <slug>` against the same model state
 //! and snapshot overwrites both files. The same input produces
@@ -21,15 +21,15 @@
 //! because the differ produces an empty operation list.
 //! # / — lifecycle markers
 //! - `#[app(renamed_from = "old")]` → emit
-//! [`SchemaOperation::RenameApp`](super::diff::SchemaOperation::RenameApp)
-//! in addition to whatever the per-bucket diff produces, plus the
-//! folder-rename + ledger-UPDATE pair (per the v3 plan amendment).
+//!   [`SchemaOperation::RenameApp`](super::diff::SchemaOperation::RenameApp)
+//!   in addition to whatever the per-bucket diff produces, plus the
+//!   folder-rename + ledger-UPDATE pair (per the v3 plan amendment).
 //! - `#[app(tombstone)]` → require `--allow-destructive`; otherwise
-//! fail with [`ComposeError::TombstonedAppRequiresAllowDestructive`]
-//! carrying D011-shaped message text.
+//!   fail with [`ComposeError::TombstonedAppRequiresAllowDestructive`]
+//!   carrying D011-shaped message text.
 //! - `#[model(moved_from_app = OldApp)]` → emit
-//! [`SchemaOperation::MoveModelBetweenApps`](super::diff::SchemaOperation::MoveModelBetweenApps)
-//! (already handled by `diff_bucket_maps`).
+//!   [`SchemaOperation::MoveModelBetweenApps`](super::diff::SchemaOperation::MoveModelBetweenApps)
+//!   (already handled by `diff_bucket_maps`).
 //! # No regex
 //! The slug derivation goes through [`super::naming::sanitize_slug`]
 //! which is byte-level only.
@@ -85,22 +85,22 @@ struct RestorePoint {
 /// RAII rollback guard for atomic compose writes.
 /// Tracks three parallel cleanup queues:
 /// 1. `tmps` — staged `<final>.tmp.<pid>` files that have been
-/// written but not yet promoted. These are removed on failure.
+///    written but not yet promoted. These are removed on failure.
 /// 2. `restore_points` — files that have already been renamed into
-/// their final location, possibly OVER an existing file. On failure
-/// we restore the prior bytes (via the backup path) when one was
-/// captured, otherwise we delete the freshly-promoted file. The
-/// previous shape only deleted the final path on rollback, which
-/// silently lost the original content for overwrite cases.
+///    their final location, possibly OVER an existing file. On failure
+///    we restore the prior bytes (via the backup path) when one was
+///    captured, otherwise we delete the freshly-promoted file. The
+///    previous shape only deleted the final path on rollback, which
+///    silently lost the original content for overwrite cases.
 /// 3. `entry_renames` — entries that were moved from one directory to
-/// another by [`rename_old_bucket_folder`]. On failure we move them
-/// back. The merge loop touched many files and a mid-loop failure
-/// left partial state untracked.
-/// On a successful sequence the caller invokes [`commit`](Self::commit)
-/// to drain every queue (and delete the backups) — the [`Drop`] impl
-/// then runs as a no-op. On any failure path the guard goes out of
-/// scope without `commit` being called and every tracked artifact is
-/// rolled back via best-effort filesystem ops.
+///    another by [`rename_old_bucket_folder`]. On failure we move them
+///    back. The merge loop touched many files and a mid-loop failure
+///    left partial state untracked.
+///    On a successful sequence the caller invokes [`commit`](Self::commit)
+///    to drain every queue (and delete the backups) — the [`Drop`] impl
+///    then runs as a no-op. On any failure path the guard goes out of
+///    scope without `commit` being called and every tracked artifact is
+///    rolled back via best-effort filesystem ops.
 struct WriteRollback {
     tmps: Vec<PathBuf>,
     restore_points: Vec<RestorePoint>,
@@ -1162,9 +1162,9 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
 /// - Up only edited → `path = up_path`, side label "up".
 /// - Down only edited → `path = down_path`, side label "down".
 /// - Both edited → `path = up_path`, side label "up and down" (the up
-/// path is reported because the operator typically inspects the up
-/// file first).
-/// Returns `Ok` when:
+///   path is reported because the operator typically inspects the up
+///   file first).
+///   Returns `Ok` when:
 /// - Both files do not exist (first compose for this bucket).
 /// - The existing files' bytes both match the freshly-emitted bytes.
 fn check_no_hand_edit(
@@ -1264,18 +1264,18 @@ fn sql_escape_string(s: &str) -> String {
 /// consistent on disk. Skips silently when:
 /// - The OLD directory does not exist (nothing to rename).
 /// - The OLD and NEW directories are identical (a same-app
-/// "self-rename" is a no-op — should not happen but defensive).
-/// When the NEW directory already exists (the typical case — compose
-/// just wrote artifacts there), we MOVE every entry from OLD to NEW.
-/// Each entry move is tracked through the supplied [`WriteRollback`]
-/// guard so a mid-loop failure rolls back every already-moved entry.
-/// We ALSO refuse fail-fast on a content collision: if any entry under
-/// OLD already exists under NEW with a different name-equivalent
-/// location, we return [`ComposeError::FolderRenameTargetCollision`]
-/// before moving any entry — the prior shape silently skipped
-/// collisions and dropped the OLD entry, which conflated two distinct
-/// files of the same name. The operator must resolve the collision
-/// manually before re-running compose.
+///   "self-rename" is a no-op — should not happen but defensive).
+///   When the NEW directory already exists (the typical case — compose
+///   just wrote artifacts there), we MOVE every entry from OLD to NEW.
+///   Each entry move is tracked through the supplied [`WriteRollback`]
+///   guard so a mid-loop failure rolls back every already-moved entry.
+///   We ALSO refuse fail-fast on a content collision: if any entry under
+///   OLD already exists under NEW with a different name-equivalent
+///   location, we return [`ComposeError::FolderRenameTargetCollision`]
+///   before moving any entry — the prior shape silently skipped
+///   collisions and dropped the OLD entry, which conflated two distinct
+///   files of the same name. The operator must resolve the collision
+///   manually before re-running compose.
 fn rename_old_bucket_folder(
     from_dir: &Path,
     to_dir: &Path,
@@ -1767,16 +1767,16 @@ fn atomic_write(final_path: &Path, bytes: &[u8]) -> Result<PathBuf, ComposeError
 /// and the rollback path could only `remove_file(final_path)`
 /// losing the original bytes entirely. The new shape:
 /// 1. If `final_path` already exists, copy its bytes into a sibling
-/// `<final>.bak.<pid>.<counter>` backup. The counter is per-
-/// process atomic so two simultaneous promotes never collide.
+///    `<final>.bak.<pid>.<counter>` backup. The counter is per-
+///    process atomic so two simultaneous promotes never collide.
 /// 2. Rename `tmp` over `final_path`.
 /// 3. Return the backup path so the caller can hand it to the
-/// [`WriteRollback`] guard for restoration on failure.
-/// Returns `Ok(None)` when no prior file existed at `final_path`
-/// (fresh create — nothing to back up). Returns `Ok(Some(path))` when
-/// a backup was captured. Returns `Err` only if either I/O step
-/// fails; in that case any partial backup is removed before
-/// surfacing the error so the workspace is left clean.
+///    [`WriteRollback`] guard for restoration on failure.
+///    Returns `Ok(None)` when no prior file existed at `final_path`
+///    (fresh create — nothing to back up). Returns `Ok(Some(path))` when
+///    a backup was captured. Returns `Err` only if either I/O step
+///    fails; in that case any partial backup is removed before
+///    surfacing the error so the workspace is left clean.
 fn promote_tmp_with_backup(tmp: &Path, final_path: &Path) -> Result<Option<PathBuf>, ComposeError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static BACKUP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2892,15 +2892,15 @@ mod tests {
     /// 'newname' WHERE app_label = 'oldname';` into the up SQL.
     /// 2. Emit the inverse UPDATE into the down SQL.
     /// 3. Move `migrations/main/oldname/` → `migrations/main/newname/`
-    /// on disk.
+    ///    on disk.
     /// 4. Succeed WITHOUT `--allow-destructive`. The on-disk SQL
-    /// tables don't move when an app renames;
-    /// `remap_snapshots_for_renames` relabels the OLD-bucket
-    /// snapshot under NEW before diffing so no DropTable /
-    /// AddTable pair appears, and the classification stays
-    /// metadata-only.
+    ///    tables don't move when an app renames;
+    ///    `remap_snapshots_for_renames` relabels the OLD-bucket
+    ///    snapshot under NEW before diffing so no DropTable /
+    ///    AddTable pair appears, and the classification stays
+    ///    metadata-only.
     /// 5. The SQL must NOT carry a DROP TABLE for the renamed-from
-    /// bucket's tables — they aren't being dropped.
+    ///    bucket's tables — they aren't being dropped.
     #[test]
     fn b5_rename_app_emits_ledger_update_and_renames_folder() {
         let work = temp_workspace("b5_rename_round_trip");
@@ -3133,17 +3133,17 @@ mod tests {
     /// promoted OVER an existing file. We simulate a mid-sequence
     /// failure by:
     /// 1. Pre-creating the up SQL file with content `"old"` (so the
-    /// up promote is an OVERWRITE, not a fresh create).
+    ///    up promote is an OVERWRITE, not a fresh create).
     /// 2. Pre-creating the down_path as a directory so the down
-    /// promote fails. The up promote has already succeeded by
-    /// that point, so its rollback path runs.
-    /// Asserts:
+    ///    promote fails. The up promote has already succeeded by
+    ///    that point, so its rollback path runs.
+    ///    Asserts:
     /// - tmp files cleaned up (contract still holds).
     /// - The up file's content is still `"old"` (restored from
-    /// backup, NOT the freshly-emitted bytes).
+    ///   backup, NOT the freshly-emitted bytes).
     /// - No `.bak.<pid>.<n>` sibling files remain on disk (the
-    /// rollback's restore step renames the backup back over the
-    /// final path; no backup file is left behind).
+    ///   rollback's restore step renames the backup back over the
+    ///   final path; no backup file is left behind).
     #[test]
     fn b10_rollback_restores_original_bytes_on_overwrite_failure() {
         let work = temp_workspace("b10_overwrite_restore");
@@ -3245,17 +3245,17 @@ mod tests {
     /// 1. Pre-create up SQL with "operator up content".
     /// 2. Pre-create down SQL with "operator down content".
     /// 3. Block the pending JSON promote by creating its target as a
-    /// NON-EMPTY directory (so `fs::rename(<file>, <non-empty-dir>)`
-    /// fails with a kernel-level error). The `pending_path` lives
-    /// under `target/djogi_pending/<db>/<app>.json` — a different
-    /// parent from up/down — so blocking it does not interfere with
-    /// the bucket directory writes.
-    /// Asserts:
+    ///    NON-EMPTY directory (so `fs::rename(<file>, <non-empty-dir>)`
+    ///    fails with a kernel-level error). The `pending_path` lives
+    ///    under `target/djogi_pending/<db>/<app>.json` — a different
+    ///    parent from up/down — so blocking it does not interfere with
+    ///    the bucket directory writes.
+    ///    Asserts:
     /// - The error variant matches `ComposeError::Io { .. }`.
     /// - BOTH up and down files are restored to their original
-    /// operator content (LIFO order: down restored before up; the
-    /// final on-disk state must be identical to the pre-compose
-    /// state).
+    ///   operator content (LIFO order: down restored before up; the
+    ///   final on-disk state must be identical to the pre-compose
+    ///   state).
     /// - No `.tmp.<pid>.<n>` or `.bak.<pid>.<n>` siblings remain.
     #[test]
     fn b10_rollback_restores_multi_promote_lifo_order() {

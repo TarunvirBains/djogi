@@ -156,25 +156,25 @@ const AGGREGATE_KEYWORDS: &[&str] = &[
 /// or other derived attributes — namely:
 /// - Required-key presence ([E_DJG_VDF_001]).
 /// - `name` identifier shape ([E_DJG_VDF_004], [E_DJG_VDF_005],
-/// [E_DJG_VDF_012], [E_DJG_VDF_014]).
+///   [E_DJG_VDF_012], [E_DJG_VDF_014]).
 /// - `scopes` membership + per-list duplicate detection
-/// ([E_DJG_VDF_006], [E_DJG_VDF_013]).
+///   ([E_DJG_VDF_006], [E_DJG_VDF_013]).
 /// - SQL surface: statement separator, leading DDL/DML, `$N`
-/// reservation, aggregate guard ([E_DJG_VDF_007]–[E_DJG_VDF_009]).
-/// Cross-attribute checks (column collisions per scope, derived ↔
-/// derived collisions, model-level structural rules like `pk = None`
-/// incompatibility) run later in `cross_check` once the call site has
-/// the model's full attribute set in scope.
-/// [E_DJG_VDF_001]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_004]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_005]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_006]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_007]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_008]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_009]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_012]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_013]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_014]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   reservation, aggregate guard ([E_DJG_VDF_007]–[E_DJG_VDF_009]).
+///   Cross-attribute checks (column collisions per scope, derived ↔
+///   derived collisions, model-level structural rules like `pk = None`
+///   incompatibility) run later in `cross_check` once the call site has
+///   the model's full attribute set in scope.
+///   [E_DJG_VDF_001]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_004]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_005]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_006]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_007]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_008]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_009]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_012]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_013]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_014]: ../docs/spec/visage-derived-fields.md#error-taxonomy
 pub fn parse_derived_attrs(struct_item: &syn::ItemStruct) -> syn::Result<Vec<DerivedAttr>> {
     let mut out = Vec::new();
     for attr in &struct_item.attrs {
@@ -510,11 +510,11 @@ fn canonical_scope_key(raw: &str) -> Option<&'static str> {
 /// 3. Every remaining byte is ASCII lowercase letter, digit, or `_`.
 /// 4. Not prefixed by `__djogi_` (ASCII case-insensitive).
 /// 5. Not a Postgres fully-reserved keyword (reuses the sorted const
-/// slice in `crate::ident::RESERVED_KEYWORDS` via the existing
-/// `crate::ident::check_one` helper for the keyword-only check).
-/// Uppercase bytes have their own diagnostic (E_DJG_VDF_012) so an
-/// adopter who reaches for `camelCase` sees the precise rule and not
-/// the generic shape rule.
+///    slice in `crate::ident::RESERVED_KEYWORDS` via the existing
+///    `crate::ident::check_one` helper for the keyword-only check).
+///    Uppercase bytes have their own diagnostic (E_DJG_VDF_012) so an
+///    adopter who reaches for `camelCase` sees the precise rule and not
+///    the generic shape rule.
 fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
     let raw = name.to_string();
     // Strip the `r#` raw-identifier prefix when present (syn renders
@@ -985,21 +985,21 @@ fn skip_dollar_body(bytes: &[u8], body_start: usize, tag_bytes: &[u8]) -> usize 
 /// set is known to the caller.
 /// Checks performed:
 /// - **Per-scope column collision (E_DJG_VDF_002)** — for each derived
-/// entry, every scope in `scopes = [...]` must not contain a model
-/// column with the same name. The column set is supplied as a
-/// `(column_name, exposed_scopes)` list since the call site
-/// already has the parsed `FieldAttrs::expose` shape.
+///   entry, every scope in `scopes = [...]` must not contain a model
+///   column with the same name. The column set is supplied as a
+///   `(column_name, exposed_scopes)` list since the call site
+///   already has the parsed `FieldAttrs::expose` shape.
 /// - **Per-scope derived collision (E_DJG_VDF_003)** — two derived
-/// entries with overlapping `scopes` cannot share a `name`.
+///   entries with overlapping `scopes` cannot share a `name`.
 /// - **Relation-form overlap (E_DJG_VDF_010)** — a derived entry
-/// cannot target a scope that also embeds a peer visage via
-/// `expose(scope -> Peer)`.
+///   cannot target a scope that also embeds a peer visage via
+///   `expose(scope -> Peer)`.
 /// - **Model-level pk = None incompatibility (E_DJG_VDF_015)**
-/// the caller supplies the model's PK strategy; `pk = None` rejects
-/// the entire attribute.
-/// Returns `Ok` when every check passes; any failure returns a
-/// span-precise `syn::Error` pointing at the offending derived
-/// attribute.
+///   the caller supplies the model's PK strategy; `pk = None` rejects
+///   the entire attribute.
+///   Returns `Ok` when every check passes; any failure returns a
+///   span-precise `syn::Error` pointing at the offending derived
+///   attribute.
 pub fn cross_check(
     derived: &[DerivedAttr],
     column_exposures: &[(String, Vec<&'static str>)],

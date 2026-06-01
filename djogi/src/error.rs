@@ -7,36 +7,36 @@
 //! The variants correspond 1:1 to the failure modes the generated CRUD impls
 //! can produce:
 //! - `Db` — raw database/driver failures (network, constraints, SQL), wrapped
-//! in [`DbError`] so Djogi does not expose `tokio_postgres` directly in its
-//! public error surface.
+//!   in [`DbError`] so Djogi does not expose `tokio_postgres` directly in its
+//!   public error surface.
 //! - `NotFound` — `.get` / `.fetch_one` saw zero rows; carries the
-//! offending table name for observability.
+//!   offending table name for observability.
 //! - `MultipleObjects` — `.fetch_one` saw more than one row; carries the
-//! table name plus the actual count observed.
+//!   table name plus the actual count observed.
 //! - `IdGeneration` — ID generation DB calls failed.
 //! - `RelationUnloaded` — a relation accessor (`ForeignKeyResolved::expect_resolved`
-//! / `OneToOneFieldResolved::expect_resolved`) was invoked against a cache
-//! that was never populated. Raised from the strict path where the caller
-//! has asserted a `prefetch` / `select_related` happened upstream.
+//!   / `OneToOneFieldResolved::expect_resolved`) was invoked against a cache
+//!   that was never populated. Raised from the strict path where the caller
+//!   has asserted a `prefetch` / `select_related` happened upstream.
 //! # `#[non_exhaustive]` on the enum *and* its struct variants
 //! Both `DjogiError` and its struct-form variants (`NotFound`,
 //! `MultipleObjects`) are marked `#[non_exhaustive]`. This is a deliberate
 //! forward-compatibility choice:
 //! - **Enum-level.** Downstream matches MUST include a wildcard arm, so
-//! introducing a new variant in a future release is not a breaking change.
-//! Djogi is pre-publish today, but + adds filter-layer errors (type
-//! coercion, invalid operator) that will live here.
+//!   introducing a new variant in a future release is not a breaking change.
+//!   Djogi is pre-publish today, but + adds filter-layer errors (type
+//!   coercion, invalid operator) that will live here.
 //! - **Variant-level.** Downstream destructuring patterns MUST use `..`, and
-//! struct-expression *construction* from outside this crate is blocked
-//! that is exactly the desired shape for an error type. The only legitimate
-//! construction sites are inside djogi and inside `#[model]`-expanded code
-//! (which runs in user crates). The expanded code goes through the public
-//! constructors below (`DjogiError::not_found`, `DjogiError::multiple_objects`),
-//! matching the pattern established by `std::io::Error`, `hyper::Error`,
-//! and similar well-designed error types.
-//! The cost is one extra line of implementation (the constructor) and one
-//! extra pair of dots at downstream destructuring sites. The benefit is
-//! that adding a field to either struct variant is also non-breaking.
+//!   struct-expression *construction* from outside this crate is blocked
+//!   that is exactly the desired shape for an error type. The only legitimate
+//!   construction sites are inside djogi and inside `#[model]`-expanded code
+//!   (which runs in user crates). The expanded code goes through the public
+//!   constructors below (`DjogiError::not_found`, `DjogiError::multiple_objects`),
+//!   matching the pattern established by `std::io::Error`, `hyper::Error`,
+//!   and similar well-designed error types.
+//!   The cost is one extra line of implementation (the constructor) and one
+//!   extra pair of dots at downstream destructuring sites. The benefit is
+//!   that adding a field to either struct variant is also non-breaking.
 
 use std::borrow::Cow;
 use thiserror::Error;
@@ -185,46 +185,46 @@ impl IdGenerationError {
 /// `DjogiError` groups failures by where they originate, not by HTTP-style
 /// status code. The most common branches:
 /// - **Database-driver errors** — [`Db`](DjogiError::Db) wraps every
-/// [`tokio_postgres::Error`] (network, constraints, syntax, auth) behind
-/// the [`DbError`] facade so this enum does not leak `tokio_postgres` types.
+///   [`tokio_postgres::Error`] (network, constraints, syntax, auth) behind
+///   the [`DbError`] facade so this enum does not leak `tokio_postgres` types.
 /// - **Expected-row-count violations** — [`NotFound`](DjogiError::NotFound)
-/// for zero rows from `Model::get` / `QuerySet::fetch_one`,
-/// [`MultipleObjects`](DjogiError::MultipleObjects) for >1 row from
-/// `fetch_one`. Both carry the offending table name.
+///   for zero rows from `Model::get` / `QuerySet::fetch_one`,
+///   [`MultipleObjects`](DjogiError::MultipleObjects) for >1 row from
+///   `fetch_one`. Both carry the offending table name.
 /// - **Concurrency / contention** — [`LockConflict`](DjogiError::LockConflict)
-/// for `40001` / `40P01` / `55P03` SQLSTATE classes (serialization
-/// failures, deadlocks, `NOWAIT` rejections),
-/// [`PoolTimeout`](DjogiError::PoolTimeout) for `deadpool` checkout
-/// exhaustion. Both classify as transient — see
-/// [`DjogiError::is_transient`].
+///   for `40001` / `40P01` / `55P03` SQLSTATE classes (serialization
+///   failures, deadlocks, `NOWAIT` rejections),
+///   [`PoolTimeout`](DjogiError::PoolTimeout) for `deadpool` checkout
+///   exhaustion. Both classify as transient — see
+///   [`DjogiError::is_transient`].
 /// - **Auth / RLS** — [`Auth`](DjogiError::Auth) wraps
-/// [`AuthError`](crate::auth::AuthError) for authentication / authorization
-/// failures from the auth substrate;
-/// [`SetRoleOutsideTransaction`](DjogiError::SetRoleOutsideTransaction)
-/// and [`InvalidRoleName`](DjogiError::InvalidRoleName) surface RLS-
-/// overlay misuse.
+///   [`AuthError`](crate::auth::AuthError) for authentication / authorization
+///   failures from the auth substrate;
+///   [`SetRoleOutsideTransaction`](DjogiError::SetRoleOutsideTransaction)
+///   and [`InvalidRoleName`](DjogiError::InvalidRoleName) surface RLS-
+///   overlay misuse.
 /// - **Misuse / runtime invariants**
-/// [`Validation`](DjogiError::Validation) for runtime argument validation
-/// failures,
-/// [`MissingIdempotencyKey`](DjogiError::MissingIdempotencyKey) for
-/// upsert-attribute gaps,
-/// [`StreamOutsideTransaction`](DjogiError::StreamOutsideTransaction) for
-/// cursor / `QuerySet::stream` outside `atomic`,
-/// [`UnsupportedAggregate`](DjogiError::UnsupportedAggregate) for IR /
-/// Postgres aggregate mismatches.
+///   [`Validation`](DjogiError::Validation) for runtime argument validation
+///   failures,
+///   [`MissingIdempotencyKey`](DjogiError::MissingIdempotencyKey) for
+///   upsert-attribute gaps,
+///   [`StreamOutsideTransaction`](DjogiError::StreamOutsideTransaction) for
+///   cursor / `QuerySet::stream` outside `atomic`,
+///   [`UnsupportedAggregate`](DjogiError::UnsupportedAggregate) for IR /
+///   Postgres aggregate mismatches.
 /// - **Decode / serialization** — [`Decode`](DjogiError::Decode) for
-/// `FromPgRow` failures, [`Serde`](DjogiError::Serde) for outbox JSON
-/// serialization, [`Visage`](DjogiError::Visage) for visage-projection
-/// `TryFrom<&Model>` failures.
+///   `FromPgRow` failures, [`Serde`](DjogiError::Serde) for outbox JSON
+///   serialization, [`Visage`](DjogiError::Visage) for visage-projection
+///   `TryFrom<&Model>` failures.
 /// - **ID generation** — [`IdGeneration`](DjogiError::IdGeneration) wraps
-/// HeeRanjID-side codec failures.
+///   HeeRanjID-side codec failures.
 /// - **Aggregate lifecycle** — [`GoneAggregate`](DjogiError::GoneAggregate)
-/// for terminal "already gone" signals on a previously-observed
-/// aggregate;
-/// [`RelationUnloaded`](DjogiError::RelationUnloaded) for prefetch-cache
-/// misses on a strict-mode resolved-relation accessor.
+///   for terminal "already gone" signals on a previously-observed
+///   aggregate;
+///   [`RelationUnloaded`](DjogiError::RelationUnloaded) for prefetch-cache
+///   misses on a strict-mode resolved-relation accessor.
 /// - **Spatial** — [`Geo`](DjogiError::Geo) (gated on the `spatial` feature)
-/// wraps coordinate / EWKB codec errors.
+///   wraps coordinate / EWKB codec errors.
 /// # Retry classification
 /// [`DjogiError::is_transient`] returns `true` for `LockConflict`,
 /// `PoolTimeout`, and the small set of variants whose failures are expected
@@ -430,10 +430,10 @@ pub enum DjogiError {
     /// - `40001` — `serialization_failure`
     /// - `40P01` — `deadlock_detected`
     /// - `55P03` — `lock_not_available` (`NOWAIT` rejection)
-    /// Other database failures — `unique_violation`,
-    /// `foreign_key_violation`, connection drops — still flow through
-    /// [`Db`](DjogiError::Db). The classifier
-    /// [`is_lock_error`] keeps the variant boundary tight.
+    ///   Other database failures — `unique_violation`,
+    ///   `foreign_key_violation`, connection drops — still flow through
+    ///   [`Db`](DjogiError::Db). The classifier
+    ///   [`is_lock_error`] keeps the variant boundary tight.
     #[error("lock conflict: {0}")]
     LockConflict(#[source] DbError),
 
@@ -536,18 +536,18 @@ pub enum DjogiError {
     /// [`crate::expr::sql::check_aggregate_legality`] for three value-aggregate
     /// cases that cannot be represented by the kind-state split alone:
     /// - `COUNT(DISTINCT *)` — `COUNT(DISTINCT *)` is not valid SQL.
-    /// Use `COUNT(DISTINCT col)` via [`crate::query::field::FieldRef::count`]
-    /// instead.
+    ///   Use `COUNT(DISTINCT col)` via [`crate::query::field::FieldRef::count`]
+    ///   instead.
     /// - `STRING_AGG(DISTINCT col, sep)` without per-aggregate `ORDER BY`
-    /// Postgres requires an explicit ordering when DISTINCT is combined
-    /// with `STRING_AGG`. Chain `.order_by(...)` on the aggregate to make
-    /// the shape well-formed.
+    ///   Postgres requires an explicit ordering when DISTINCT is combined
+    ///   with `STRING_AGG`. Chain `.order_by(...)` on the aggregate to make
+    ///   the shape well-formed.
     /// - `COUNT(*) ORDER BY ...` — the `COUNT(*)` emitter has no argument
-    /// slot to attach per-aggregate ordering to, so accepting the modifier
-    /// would silently drop it.
-    /// `op` is the aggregate function keyword (e.g. `"COUNT(*)"`,
-    /// `"STRING_AGG"`). `reason` is a human-readable description of why
-    /// the combination is rejected.
+    ///   slot to attach per-aggregate ordering to, so accepting the modifier
+    ///   would silently drop it.
+    ///   `op` is the aggregate function keyword (e.g. `"COUNT(*)"`,
+    ///   `"STRING_AGG"`). `reason` is a human-readable description of why
+    ///   the combination is rejected.
     #[error("unsupported aggregate: {op} — {reason}")]
     #[non_exhaustive]
     UnsupportedAggregate {
@@ -578,31 +578,31 @@ pub enum DjogiError {
     /// the underlying `deadpool_postgres::PoolError`.
     /// `phase` distinguishes the deadpool timeout type:
     /// - `"wait"` — the pool is at `max_size` and no slot freed within the
-    /// configured wait window. Tune `max_size` upward or stop holding
-    /// connections across awaits unrelated to the database.
+    ///   configured wait window. Tune `max_size` upward or stop holding
+    ///   connections across awaits unrelated to the database.
     /// - `"create"` — `Manager::create` (opening a fresh socket) timed out.
-    /// Network or DB-side problem, not pool sizing.
+    ///   Network or DB-side problem, not pool sizing.
     /// - `"recycle"` — recycling an existing object on the checkout path
-    /// timed out. Same root cause as `"create"` for `Verified`/`Clean`
-    /// recycling methods that issue queries.
-    /// All three are saturation / slow-recovery signals: the right
-    /// response is to back off and retry, not to fail the operation
-    /// permanently. [`DjogiError::is_transient`] returns `true` for
-    /// `PoolTimeout` so generic retry helpers that branch on
-    /// `is_transient` (or its inverse `is_terminal`) treat pool
-    /// timeouts as retryable rather than dead-lettering them as
-    /// permanent business failures.
-    /// Note that djogi exposes two retry helpers with different
-    /// policy: [`crate::transaction::retry_on_conflict`] retries
-    /// immediately, while
-    /// [`crate::transaction::retry_on_conflict_with_backoff`]
-    /// sleeps between transient failures using
-    /// [`crate::transaction::TransactionRetryBackoff`]. Pool
-    /// saturation usually belongs on the backoff path, not the
-    /// immediate-retry path. Callers that need a bespoke policy can
-    /// still match on `PoolTimeout` explicitly, and the backoff policy
-    /// can include/exclude `PoolTimeout` retries via
-    /// `with_retryable_error_classes(...)`.
+    ///   timed out. Same root cause as `"create"` for `Verified`/`Clean`
+    ///   recycling methods that issue queries.
+    ///   All three are saturation / slow-recovery signals: the right
+    ///   response is to back off and retry, not to fail the operation
+    ///   permanently. [`DjogiError::is_transient`] returns `true` for
+    ///   `PoolTimeout` so generic retry helpers that branch on
+    ///   `is_transient` (or its inverse `is_terminal`) treat pool
+    ///   timeouts as retryable rather than dead-lettering them as
+    ///   permanent business failures.
+    ///   Note that djogi exposes two retry helpers with different
+    ///   policy: [`crate::transaction::retry_on_conflict`] retries
+    ///   immediately, while
+    ///   [`crate::transaction::retry_on_conflict_with_backoff`]
+    ///   sleeps between transient failures using
+    ///   [`crate::transaction::TransactionRetryBackoff`]. Pool
+    ///   saturation usually belongs on the backoff path, not the
+    ///   immediate-retry path. Callers that need a bespoke policy can
+    ///   still match on `PoolTimeout` explicitly, and the backoff policy
+    ///   can include/exclude `PoolTimeout` retries via
+    ///   `with_retryable_error_classes(...)`.
     #[error("pool timeout ({phase})")]
     #[non_exhaustive]
     PoolTimeout {
@@ -867,11 +867,11 @@ pub enum DjogiError {
     /// deferred Postgres parse error.
     /// The canonical fix is one of:
     /// - drop the `Named` wrapper and use [`DeferScope::All`](crate::transaction::DeferScope::All)
-    /// if the intent is "every deferrable constraint";
+    ///   if the intent is "every deferrable constraint";
     /// - skip the call entirely when the names slice is empty;
     /// - pass at least one valid constraint name.
-    /// Classified as **terminal** by [`DjogiError::is_transient`]
-    /// retrying with the same empty slice cannot succeed.
+    ///   Classified as **terminal** by [`DjogiError::is_transient`]
+    ///   retrying with the same empty slice cannot succeed.
     #[error(
         "DeferScope::Named requires at least one constraint name; \
          empty slices produce malformed `SET CONSTRAINTS` SQL. Use \
@@ -1256,11 +1256,11 @@ impl DjogiError {
 /// willing to re-run the closure through.
 /// Matches three SQLSTATEs:
 /// - `40001` (`serialization_failure`) — the classic MVCC serialization
-/// error on `SERIALIZABLE`/`REPEATABLE READ` isolation.
+///   error on `SERIALIZABLE`/`REPEATABLE READ` isolation.
 /// - `40P01` (`deadlock_detected`) — Postgres detected a circular wait
-/// and aborted one of the participants.
+///   and aborted one of the participants.
 /// - `55P03` (`lock_not_available`) — a `NOWAIT` lock request could not
-/// acquire its lock immediately.
+///   acquire its lock immediately.
 pub(crate) fn is_lock_error(e: &DbError) -> bool {
     use tokio_postgres::error::SqlState;
     e.code()

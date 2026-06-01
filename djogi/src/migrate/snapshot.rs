@@ -21,12 +21,12 @@
 //! version skew.
 //! # Robustness
 //! - The loader strips a UTF-8 BOM if the file starts with one.
-//! Some editors silently insert a BOM into JSON files; we tolerate
-//! that on read but never emit one ourselves.
+//!   Some editors silently insert a BOM into JSON files; we tolerate
+//!   that on read but never emit one ourselves.
 //! - The loader version-checks before structural deserialize so a
-//! newer snapshot rejected by an older Djogi names the version
-//! mismatch first, rather than failing on a `deny_unknown_fields`
-//! trip on whatever new field landed in `"2"`.
+//!   newer snapshot rejected by an older Djogi names the version
+//!   mismatch first, rather than failing on a `deny_unknown_fields`
+//!   trip on whatever new field landed in `"2"`.
 
 use std::fs;
 use std::io::{self, Write};

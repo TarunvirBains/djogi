@@ -15,14 +15,14 @@
 //! escape rules) un-entangled from the recursive walk.
 //! # Column references vs bind parameters
 //! - [`ExprNode::Field { column }`] — `acc.push_sql(*column)`. The column
-//! name is a `&'static str` validated at
-//! [`crate::query::field::FieldRef::new`] construction time against
-//! [`crate::ident::assert_plain_ident`]; no re-validation here.
+//!   name is a `&'static str` validated at
+//!   [`crate::query::field::FieldRef::new`] construction time against
+//!   [`crate::ident::assert_plain_ident`]; no re-validation here.
 //! - [`ExprNode::Literal(v)`] — delegates to
-//! [`crate::query::sql::push_filter_value`], which calls
-//! `acc.push_bind(v)` for every scalar variant. All user-supplied
-//! values flow through bind parameters; no string interpolation of
-//! user data.
+//!   [`crate::query::sql::push_filter_value`], which calls
+//!   `acc.push_bind(v)` for every scalar variant. All user-supplied
+//!   values flow through bind parameters; no string interpolation of
+//!   user data.
 //! # `parent_table` qualification
 //! [`crate::query::sql::emit_condition`] takes a
 //! `parent_table: Option<&'static str>` argument so `select_related`
@@ -48,15 +48,15 @@ use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 /// # Rejected combinations
 /// - `COUNT(*)` with `distinct = true` — `COUNT(DISTINCT *)` is not valid SQL.
 /// - `STRING_AGG(col, sep)` with `distinct = true` — Postgres requires an
-/// explicit per-aggregate `ORDER BY` clause when DISTINCT is combined with
-/// `STRING_AGG`; the check rejects only the no-`ORDER BY` shape.
+///   explicit per-aggregate `ORDER BY` clause when DISTINCT is combined with
+///   `STRING_AGG`; the check rejects only the no-`ORDER BY` shape.
 /// - `COUNT(*)` with a per-aggregate `ORDER BY` — the emitter's `COUNT(*)`
-/// branch has no column slot to attach that ordering to, so the modifier
-/// would be silently dropped.
-/// The type-state surface prevents non-value aggregate families from exposing
-/// illegal modifiers. Debug builds additionally assert those invariants for
-/// direct-IR construction paths so malformed internal nodes fail early during
-/// tests/development.
+///   branch has no column slot to attach that ordering to, so the modifier
+///   would be silently dropped.
+///   The type-state surface prevents non-value aggregate families from exposing
+///   illegal modifiers. Debug builds additionally assert those invariants for
+///   direct-IR construction paths so malformed internal nodes fail early during
+///   tests/development.
 /// # When to call
 /// Terminal methods (`fetch_one`, `fetch_all`) call this before building the
 /// SQL string so the caller gets a typed `DjogiError::UnsupportedAggregate`
@@ -247,16 +247,16 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
 /// operator tokens and recurse.
 /// # Invariants
 /// - The input tree is always constructed via the typed [`Expr<T>`]
-/// surface — user code cannot fabricate an `ExprNode` directly (the
-/// enum is `pub(crate)`). That means every arm's operand types match
-/// the operator's SQL semantics: `Cmp` operands are always
-/// compatible-typed, `Add`/`Sub`/`Mul`/`Div` operands are always
-/// [`super::arithmetic::Numeric`]. The emitter does not re-check;
-/// the sealed trait + phantom-typed wrapper is the seal.
+///   surface — user code cannot fabricate an `ExprNode` directly (the
+///   enum is `pub(crate)`). That means every arm's operand types match
+///   the operator's SQL semantics: `Cmp` operands are always
+///   compatible-typed, `Add`/`Sub`/`Mul`/`Div` operands are always
+///   [`super::arithmetic::Numeric`]. The emitter does not re-check;
+///   the sealed trait + phantom-typed wrapper is the seal.
 /// - `ExprNode::Field { column }`'s column string is always a
-/// validated identifier (see
-/// [`crate::query::field::FieldRef::new`]); safe to push under
-/// [`SqlEmitContext::push_column`].
+///   validated identifier (see
+///   [`crate::query::field::FieldRef::new`]); safe to push under
+///   [`SqlEmitContext::push_column`].
 /// # `ctx`
 /// Threads the parent-table qualifier through to every
 /// [`ExprNode::Field`] arm. Joined-query call sites (the pair-tuple
@@ -1238,14 +1238,14 @@ fn emit_row_aggregate(acc: &mut SqlAccumulator, op: &crate::expr::node::RowAggOp
 /// Emit a Postgres FTS expression — `<prefix><col><sep>to_tsquery('<dictionary>', $n)<suffix>`.
 /// Three [`ExprNode`] variants share this shape:
 /// - `TsMatch` — `<col> @@ to_tsquery('<dict>', $n)` (`prefix=""`,
-/// `sep=" @@ "`, `suffix=")"`).
+///   `sep=" @@ "`, `suffix=")"`).
 /// - `TsRank` — `ts_rank(<col>, to_tsquery('<dict>', $n))` (`prefix="ts_rank("`,
-/// `sep=", "`, `suffix="))"`).
+///   `sep=", "`, `suffix="))"`).
 /// - `TsRankCd` — same shape with `ts_rank_cd(`.
-/// `column` is a `&'static str` macro-validated via `assert_plain_ident`.
-/// `dictionary` is byte-level validated at attribute parse time; embedded
-/// literally as a single-quoted string. `query_text` is user-supplied
-/// and always rides through `push_bind`.
+///   `column` is a `&'static str` macro-validated via `assert_plain_ident`.
+///   `dictionary` is byte-level validated at attribute parse time; embedded
+///   literally as a single-quoted string. `query_text` is user-supplied
+///   and always rides through `push_bind`.
 fn emit_ts(
     acc: &mut SqlAccumulator,
     prefix: &'static str,
@@ -1373,41 +1373,41 @@ fn emit_within_group_target(acc: &mut SqlAccumulator, targets: &[crate::query::o
 /// double-wrap shapes like `ST_Centroid(ST_Collect(...))`.
 /// # Parameters
 /// - `inner_keyword` — the actual aggregate function call's opening,
-/// e.g. `"ST_Collect("` / `"ST_Union("` / `"ST_Extent("`. The FILTER
-/// clause attaches to this call's close paren, before any outer
-/// wrapper.
+///   e.g. `"ST_Collect("` / `"ST_Union("` / `"ST_Extent("`. The FILTER
+///   clause attaches to this call's close paren, before any outer
+///   wrapper.
 /// - `outer_wrap_open` — empty for single-wrap aggregates;
-/// `"ST_Centroid("` for the double-wrap centroid case where
-/// `ST_Centroid` is a scalar post-aggregate wrapper around
-/// `ST_Collect`. The wrapper's close paren is emitted after FILTER.
+///   `"ST_Centroid("` for the double-wrap centroid case where
+///   `ST_Centroid` is a scalar post-aggregate wrapper around
+///   `ST_Collect`. The wrapper's close paren is emitted after FILTER.
 /// - `outer_close_and_cast` — the cast suffix without leading close
-/// paren, e.g. `"::geography"` / `"::geometry::geography"` /
-/// `"::geography[]"`. The helper inserts the necessary close
-/// parens (for outer_wrap or for the FILTER-paren) before this
-/// suffix.
+///   paren, e.g. `"::geography"` / `"::geometry::geography"` /
+///   `"::geography[]"`. The helper inserts the necessary close
+///   parens (for outer_wrap or for the FILTER-paren) before this
+///   suffix.
 /// - `filter` — FILTER (WHERE ...) clause from the aggregate's typed
-/// surface. Emitted between the inner-aggregate close paren and the
-/// outer-wrapper close paren (or before the outer cast for unary
-/// aggregates).
+///   surface. Emitted between the inner-aggregate close paren and the
+///   outer-wrapper close paren (or before the outer cast for unary
+///   aggregates).
 /// # Emission shapes
 /// - **Unary, no filter:** `ST_Union(arg::geometry)::geography`
 /// - **Unary, with filter:**
-/// `(ST_Union(arg::geometry) FILTER (WHERE ...))::geography`
+///   `(ST_Union(arg::geometry) FILTER (WHERE ...))::geography`
 /// - **Double-wrap (Centroid), no filter:**
-/// `ST_Centroid(ST_Collect(arg::geometry))::geography`
+///   `ST_Centroid(ST_Collect(arg::geometry))::geography`
 /// - **Double-wrap with filter:**
-/// `ST_Centroid(ST_Collect(arg::geometry) FILTER (WHERE ...))`
-/// The outer FILTER block in the `emit_expr` Aggregate arm is gated on
-/// `op_emits_outer_cast(op)` so spatial aggregates handle FILTER inline
-/// here; the post-arm block fires only for non-cast-wrapping aggregates
-/// (the standard SUM/COUNT/etc. family that lives at the bare-emission
-/// boundary).
-/// `outer_close_and_cast` is now always `""` — the outer `::geography`
-/// cast is appended by the post-arm `outer_cast_suffix(op)` push so the
-/// windowed-emission path can splice OVER between the bare aggregate body
-/// and the cast. The parameter is retained as an empty placeholder for caller clarity
-/// (the call sites now read as a uniform `"", "", ""` triple of
-/// inner / outer-wrap / cast slots).
+///   `ST_Centroid(ST_Collect(arg::geometry) FILTER (WHERE ...))`
+///   The outer FILTER block in the `emit_expr` Aggregate arm is gated on
+///   `op_emits_outer_cast(op)` so spatial aggregates handle FILTER inline
+///   here; the post-arm block fires only for non-cast-wrapping aggregates
+///   (the standard SUM/COUNT/etc. family that lives at the bare-emission
+///   boundary).
+///   `outer_close_and_cast` is now always `""` — the outer `::geography`
+///   cast is appended by the post-arm `outer_cast_suffix(op)` push so the
+///   windowed-emission path can splice OVER between the bare aggregate body
+///   and the cast. The parameter is retained as an empty placeholder for caller clarity
+///   (the call sites now read as a uniform `"", "", ""` triple of
+///   inner / outer-wrap / cast slots).
 #[cfg(feature = "spatial")]
 #[allow(clippy::too_many_arguments)]
 fn emit_spatial_unary_agg(

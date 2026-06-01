@@ -69,10 +69,10 @@ pub struct ExecutionContext<'a> {
 /// [`super::state::PlanStatus::Complete`] and `completed_at` is stamped.
 /// # Errors
 /// - [`ExecutorError::DestructiveGateRefused`] when the plan has a
-/// destructive step and the gate was not satisfied.
+///   destructive step and the gate was not satisfied.
 /// - [`ExecutorError::Db`] when a ledger write fails.
 /// - [`ExecutorError::StepFailed`] / [`ExecutorError::Io`] /
-/// [`ExecutorError::PlanFile`] when a step or the plan file fails.
+///   [`ExecutorError::PlanFile`] when a step or the plan file fails.
 pub async fn run_plan(
     ctx: &mut DjogiContext,
     plan_path: std::path::PathBuf,

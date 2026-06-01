@@ -16,12 +16,12 @@
 //! is reviewable. Determinism rules:
 //! - Maps use `BTreeMap` (alphabetical key order on serialize).
 //! - Vectors are sorted by stable identity (table name, index name,
-//! app label) at projection time, before any serde call.
+//!   app label) at projection time, before any serde call.
 //! - Struct fields are declared in alphabetical order so serde
-//! emits them alphabetically.
+//!   emits them alphabetically.
 //! - Enum variants and their inner shapes are stable — adding a new
-//! variant is a snapshot-format change requiring a `format_version`
-//! bump.
+//!   variant is a snapshot-format change requiring a `format_version`
+//!   bump.
 //! # `format_version` policy
 //! Bump only on breaking shape changes; additive fields do not bump.
 //! The current value is `"1"`. The loader rejects any other value
@@ -42,24 +42,24 @@ use std::collections::BTreeMap;
 /// ones. As a result, two distinct change classes have different
 /// bump requirements:
 /// 1. **Additive fields with `#[serde(default)]`** — do NOT bump.
-/// Older snapshots written without the new field deserialize
-/// against the new shape because the default supplies the value;
-/// nothing the loader doesn't recognise appears on the wire.
-/// Examples in this module: `TableSchema::exclusion_constraints`,
-/// `ColumnSchema::generated`, `ColumnSchema::identity`,
-/// `ForeignKeySchema::deferrable`,
-/// `ForeignKeySchema::initially_deferred`.
-/// (#218 / #219) lands
-/// `TableSchema::table_comment`, `TableSchema::storage_params`,
-/// `TableSchema::tablespace`, and `ColumnSchema::comment` under
-/// this same rule.
+///    Older snapshots written without the new field deserialize
+///    against the new shape because the default supplies the value;
+///    nothing the loader doesn't recognise appears on the wire.
+///    Examples in this module: `TableSchema::exclusion_constraints`,
+///    `ColumnSchema::generated`, `ColumnSchema::identity`,
+///    `ForeignKeySchema::deferrable`,
+///    `ForeignKeySchema::initially_deferred`.
+///    (#218 / #219) lands
+///    `TableSchema::table_comment`, `TableSchema::storage_params`,
+///    `TableSchema::tablespace`, and `ColumnSchema::comment` under
+///    this same rule.
 /// 2. **Renames, removals, and variant reshapes** — DO bump. Older
-/// loaders accept different field names / shapes than the new
-/// loader, and there is no defaulting that bridges the gap; the
-/// `format_version` is the explicit incompatibility signal so a
-/// parallel-read compatibility window can be planned.
-/// A future version migration would land via a dedicated phase with
-/// a parallel-read compatibility window.
+///    loaders accept different field names / shapes than the new
+///    loader, and there is no defaulting that bridges the gap; the
+///    `format_version` is the explicit incompatibility signal so a
+///    parallel-read compatibility window can be planned.
+///    A future version migration would land via a dedicated phase with
+///    a parallel-read compatibility window.
 pub const SNAPSHOT_FORMAT_VERSION: &str = "1";
 
 /// Top-level snapshot — the committed source of truth for what the
@@ -376,26 +376,26 @@ pub struct ColumnSchema {
 /// attribute. That false-positive ripples into every comparison
 /// pathway that reaches `ColumnSchema::eq`:
 /// 1. `diff_schemas`'s top-level `if before == after` short-circuit
-/// would skip the NoOp return; the differ would walk every column
-/// even when nothing structural changed.
+///    would skip the NoOp return; the differ would walk every column
+///    even when nothing structural changed.
 /// 2. `diff_columns_in_table`'s `if bc == ac { continue; }` per-column
-/// skip would not fire, dragging every column through
-/// `emit_alter_column` for no structural reason.
+///    skip would not fire, dragging every column through
+///    `emit_alter_column` for no structural reason.
 /// 3. `build_match::schema_equiv`'s `a.models == b.models` recursion
-/// compares `ColumnSchema` directly; a `models == pending` mismatch
-/// here would route the three-way drift classifier to
-/// `Outcome4PendingInvalid` (a spurious "pending JSON is stale"
-/// warning) whenever an adopter had a `type_change_using`
-/// attribute live in source after composing.
-/// All three pathways are user-visible. Excluding the field from
-/// equality at the type level keeps every downstream consumer correct
-/// without each one having to remember to mask the slot.
-/// **Maintenance.** Every other field must remain in the impl. Adding
-/// a new persistent field to `ColumnSchema` requires extending this
-/// impl in the same change so equality stays in sync with the struct.
-/// The impl destructures both sides exhaustively so adding a field to
-/// `ColumnSchema` without threading it here is a compile error rather
-/// than a silent regression in differ behaviour.
+///    compares `ColumnSchema` directly; a `models == pending` mismatch
+///    here would route the three-way drift classifier to
+///    `Outcome4PendingInvalid` (a spurious "pending JSON is stale"
+///    warning) whenever an adopter had a `type_change_using`
+///    attribute live in source after composing.
+///    All three pathways are user-visible. Excluding the field from
+///    equality at the type level keeps every downstream consumer correct
+///    without each one having to remember to mask the slot.
+///    **Maintenance.** Every other field must remain in the impl. Adding
+///    a new persistent field to `ColumnSchema` requires extending this
+///    impl in the same change so equality stays in sync with the struct.
+///    The impl destructures both sides exhaustively so adding a field to
+///    `ColumnSchema` without threading it here is a compile error rather
+///    than a silent regression in differ behaviour.
 impl PartialEq for ColumnSchema {
     fn eq(&self, other: &Self) -> bool {
         // Exhaustive destructure forces a compile error whenever a new
@@ -1008,11 +1008,11 @@ pub struct EnumSchema {
 /// three variants stay inside :
 /// - `OnlineSafe` is applied directly by the runner.
 /// - `FastLockDestructiveGuarded` is gated on `--allow-destructive`
-/// and applied directly; no live plan is generated.
+///   and applied directly; no live plan is generated.
 /// - `OfflineOnly` is refused outright; the operator must
-/// acknowledge downtime or perform manual handling.
-/// `OfflineOnly` and `FastLockDestructiveGuarded` are
-/// operator-acknowledgement branches, **not** live-plan branches.
+///   acknowledge downtime or perform manual handling.
+///   `OfflineOnly` and `FastLockDestructiveGuarded` are
+///   operator-acknowledgement branches, **not** live-plan branches.
 /// # Naming
 /// This enum answers a different question than
 /// [`crate::migrate::diff::Classification`]:
@@ -1060,9 +1060,9 @@ mod column_schema_type_change_using_tests {
     //! 1. Serde drops the slot on serialize (`#[serde(skip)]`).
     //! 2. Serde supplies the default `None` on deserialize.
     //! 3. The manual `PartialEq` impl excludes the slot from equality
-    //! so a freshly-projected `Some(...)` compares equal to a
-    //! loaded snapshot's `None` (zero phantom-diff cost when an
-    //! adopter leaves the attribute on the field after applying).
+    //!    so a freshly-projected `Some(...)` compares equal to a
+    //!    loaded snapshot's `None` (zero phantom-diff cost when an
+    //!    adopter leaves the attribute on the field after applying).
 
     use super::ColumnSchema;
 

@@ -210,19 +210,19 @@ impl AnalyzeFormat {
 /// Rejects three classes of nonsense input that plain `f64::parse`
 /// otherwise lets through:
 /// 1. **Non-finite values** (`NaN`, `inf`, `-inf`). Without this guard,
-/// `ratio > NaN` evaluates to `false` for every ratio, so
-/// `VacuumNeeded` would silently never fire — the worst kind of
-/// silent failure for a recommendation engine.
+///    `ratio > NaN` evaluates to `false` for every ratio, so
+///    `VacuumNeeded` would silently never fire — the worst kind of
+///    silent failure for a recommendation engine.
 /// 2. **Negative values.** A dead-tuple ratio is bounded in `[0.0, 1.0]`
-/// by definition (it's `dead / (live + dead)`), so a negative
-/// threshold is operator error, not a tuning choice.
+///    by definition (it's `dead / (live + dead)`), so a negative
+///    threshold is operator error, not a tuning choice.
 /// 3. **Values above `1.0`.** Same reasoning — no real
-/// `pg_stat_user_tables` row can produce a ratio above `1.0`, so a
-/// threshold above `1.0` would mean "VacuumNeeded never fires," which
-/// is again silent failure rather than legitimate configuration.
-/// Wired via clap's `value_parser` attribute so the rejection happens at
-/// argument-parsing time — operators see a clear error message and a
-/// non-zero exit, never a silently-misbehaving analyze run.
+///    `pg_stat_user_tables` row can produce a ratio above `1.0`, so a
+///    threshold above `1.0` would mean "VacuumNeeded never fires," which
+///    is again silent failure rather than legitimate configuration.
+///    Wired via clap's `value_parser` attribute so the rejection happens at
+///    argument-parsing time — operators see a clear error message and a
+///    non-zero exit, never a silently-misbehaving analyze run.
 fn parse_threshold_vacuum(s: &str) -> Result<f64, String> {
     let v: f64 = s
         .parse()
@@ -966,19 +966,19 @@ fn dispatch_command(
 /// The message is dual-cause because zero descriptors has two distinct
 /// causes the operator must be able to tell apart:
 /// 1. they ran the *standalone published* `djogi`, which links no
-/// application models (build an adopter-linked `djogi` and run from it;
-/// the standalone binary can still `migrations apply`); or
+///    application models (build an adopter-linked `djogi` and run from it;
+///    the standalone binary can still `migrations apply`); or
 /// 2. this *is* their adopter-linked `djogi` but the linker dropped an
-/// unreferenced model crate (ensure every `#[derive(Model)]` crate is
-/// referenced via `link_models` / `djogi_main!`).
-/// The first line is kept verbatim in sync with the troubleshooting
-/// anchor in `docs/guide/adopter-cli.md` ("no djogi models are registered
-/// in this binary") so an operator who searches the message lands on the
-/// guide section that explains it.
-/// `command` is the failing command name (e.g. `"migrations compose"`),
-/// echoed so the operator knows which invocation refused. The single
-/// emitter feeds `compose`, `verify`, `schema`, and `docs`, so one message
-/// covers all four.
+///    unreferenced model crate (ensure every `#[derive(Model)]` crate is
+///    referenced via `link_models` / `djogi_main!`).
+///    The first line is kept verbatim in sync with the troubleshooting
+///    anchor in `docs/guide/adopter-cli.md` ("no djogi models are registered
+///    in this binary") so an operator who searches the message lands on the
+///    guide section that explains it.
+///    `command` is the failing command name (e.g. `"migrations compose"`),
+///    echoed so the operator knows which invocation refused. The single
+///    emitter feeds `compose`, `verify`, `schema`, and `docs`, so one message
+///    covers all four.
 pub(crate) fn print_zero_descriptor_diagnostic(command: &str) {
     eprintln!("error: no djogi models are registered in this binary (djogi {command}).");
     eprintln!();

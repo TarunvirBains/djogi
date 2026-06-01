@@ -2,11 +2,11 @@
 //! Covers two rows of the v3 plan §7 classification table:
 //! 1. "Add unique constraint to populated table" — emit `CREATE
 //! UNIQUE INDEX CONCURRENTLY` then promote it to a constraint via
-//! `ALTER TABLE … ADD CONSTRAINT … UNIQUE USING INDEX`.
+//!    `ALTER TABLE … ADD CONSTRAINT … UNIQUE USING INDEX`.
 //! 2. "Replacing an index (DROP + CREATE on overlapping columns)"
-//! when the live plan owns the rebuild — emit `CREATE INDEX
+//!    when the live plan owns the rebuild — emit `CREATE INDEX
 //! CONCURRENTLY` for the new shape, gate on `indvalid`, then
-//! `DROP INDEX CONCURRENTLY` the legacy index.
+//!    `DROP INDEX CONCURRENTLY` the legacy index.
 //! # Operation shape
 //! Accepts [`AddIndex`](SchemaOperation::AddIndex). The pattern
 //! branches on the input's [`IndexKindSchema`] to choose between the
@@ -15,23 +15,23 @@
 //! 1. [`StepKind::ExpandSchema`] — `CREATE UNIQUE INDEX CONCURRENTLY
 //! <name> ON <table> (...)`.
 //! 2. [`StepKind::ValidateBackfill`] — operator gate on
-//! `pg_index.indvalid`.
+//!    `pg_index.indvalid`.
 //! 3. [`StepKind::FinalizeConstraints`] — `ALTER TABLE <t> ADD
 //! CONSTRAINT <name> UNIQUE USING INDEX <name>` (the constraint
-//! name reuses the index name; Postgres allows the same identifier
-//! for both).
+//!    name reuses the index name; Postgres allows the same identifier
+//!    for both).
 //! # Step graph (plain index rebuild)
 //! 1. [`StepKind::ExpandSchema`] — `CREATE INDEX CONCURRENTLY ...`.
 //! 2. [`StepKind::ValidateBackfill`] — operator gate on
-//! `pg_index.indvalid`.
+//!    `pg_index.indvalid`.
 //! 3. [`StepKind::FinalizeConstraints`] — empty fragment list. The
-//! promotion-only step exists so the plan-file shape matches the
-//! constraint case under introspection — operators see "this step
-//! has nothing to do, advance" rather than "this pattern omitted
-//! finalize".
-//! No backfill is needed in either branch — the index build is the
-//! only data-touching step. [`Pattern::IDEMPOTENT_PREDICATE`] is
-//! `false`.
+//!    promotion-only step exists so the plan-file shape matches the
+//!    constraint case under introspection — operators see "this step
+//!    has nothing to do, advance" rather than "this pattern omitted
+//!    finalize".
+//!    No backfill is needed in either branch — the index build is the
+//!    only data-touching step. [`Pattern::IDEMPOTENT_PREDICATE`] is
+//!    `false`.
 
 use super::index_dependent::render_create_index;
 use super::{Pattern, PatternContext, PatternError};

@@ -7,34 +7,34 @@
 //! extractor. The same forgery threats `PortablePredicate<T>` already
 //! guards against for non-JSON predicates apply here in spades:
 //! 1. **Field-name forgery** — a downstream caller (or a hostile macro
-//! expansion) could construct `sassi::Field::new("payload", |m|
+//!    expansion) could construct `sassi::Field::new("payload", |m|
 //! &m.unrelated_jsahibon_field)` and produce a `BasicPredicate` whose
-//! column name targets the database `payload` column while Punnu-side
-//! evaluation reads `m.unrelated_jsahibon_field`. The two sides drift.
+//!    column name targets the database `payload` column while Punnu-side
+//!    evaluation reads `m.unrelated_jsahibon_field`. The two sides drift.
 //! 2. **Identifier smuggling** — Sassi accepts any `&'static str`. Djogi's
-//! SQL emitter routes through `SqlAccumulator::push_sql`, which
-//! assumes its inputs were already validated against the plain-
-//! identifier gate Djogi applies to every other root column.
+//!    SQL emitter routes through `SqlAccumulator::push_sql`, which
+//!    assumes its inputs were already validated against the plain-
+//!    identifier gate Djogi applies to every other root column.
 //! 3. **Path / key smuggling** — JSON paths in Sassi's contract are
-//! sequences of literal UTF-8 strings. Djogi's SQL emission **binds**
-//! those strings as parameters (not interpolates them); the
-//! Djogi-vs-Sassi contract is that the path string the wrapper
-//! captured is the exact string the SQL emitter binds.
-//! The Djogi wrappers below close every threat by:
+//!    sequences of literal UTF-8 strings. Djogi's SQL emission **binds**
+//!    those strings as parameters (not interpolates them); the
+//!    Djogi-vs-Sassi contract is that the path string the wrapper
+//!    captured is the exact string the SQL emitter binds.
+//!    The Djogi wrappers below close every threat by:
 //! - Refusing to accept a caller-supplied `field_name` — the column name
-//! is captured from the trusted Djogi-private `__sql_field` route on
-//! [`DjogiField<M, MirJzSON>`](crate::query::field::DjogiField) at
-//! construction time, which routes through Djogi's own
-//! identifier-validation gate.
+//!   is captured from the trusted Djogi-private `__sql_field` route on
+//!   [`DjogiField<M, MirJzSON>`](crate::query::field::DjogiField) at
+//!   construction time, which routes through Djogi's own
+//!   identifier-validation gate.
 //! - Stamping each emitted `PortablePredicate` with a
-//! [`DjogiFieldProvenance`] token. The SQL lowering route checks the
-//! provenance at the `LookupOp::Json` arm and refuses to lower a leaf
-//! that lacks it (closes the "downstream code imports Sassi
-//! directly and hands Djogi a forged `LookupOp::Json` predicate"
-//! threat).
+//!   [`DjogiFieldProvenance`] token. The SQL lowering route checks the
+//!   provenance at the `LookupOp::Json` arm and refuses to lower a leaf
+//!   that lacks it (closes the "downstream code imports Sassi
+//!   directly and hands Djogi a forged `LookupOp::Json` predicate"
+//!   threat).
 //! - Routing every Punnu-side closure through Sassi's own
-//! `evaluate_jsahibon_predicate` — the Djogi wrappers never reimplement
-//! the truth rules.
+//!   `evaluate_jsahibon_predicate` — the Djogi wrappers never reimplement
+//!   the truth rules.
 //! # How the extractor lift works
 //! Sassi's `Field<T, V>::new` requires a `fn(&T) -> &V` pointer (not a
 //! closure — closures cannot be coerced to function pointers without

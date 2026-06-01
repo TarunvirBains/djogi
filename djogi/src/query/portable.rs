@@ -539,18 +539,18 @@ use sassi::predicate::{
 /// helper assumes its `fp` originated from a Djogi-trusted
 /// `PortablePredicate<T>`-rooted path. It:
 /// 1. Downcasts `fp.value_as::<JSahibONPredicateBody>`. A `None`
-/// return indicates either a future Sassi schema change that
-/// invalidated the `Arc<JSahibONPredicateBody>` payload contract
-/// or an internal Djogi bug — surfaces as
-/// [`PortablePredicateError::UntrustedJsonPredicate`] rather than a
-/// panic for the same defense-in-depth reason the body trust check
-/// lives upstream.
+///    return indicates either a future Sassi schema change that
+///    invalidated the `Arc<JSahibONPredicateBody>` payload contract
+///    or an internal Djogi bug — surfaces as
+///    [`PortablePredicateError::UntrustedJsonPredicate`] rather than a
+///    panic for the same defense-in-depth reason the body trust check
+///    lives upstream.
 /// 2. Dispatches on the body variant, walking the
-/// [`JSahibONPredicateBody`] tree from `sassi::predicate::jsahibon`.
-/// Each arm emits the guarded two-valued SQL shape documented in
-/// [`docs/spec/mirjzson-jsonb-integration.md`][spec] under the
-/// "SQL Mapping" section.
-/// [spec]: ../../docs/spec/mirjzson-jsonb-integration.md
+///    [`JSahibONPredicateBody`] tree from `sassi::predicate::jsahibon`.
+///    Each arm emits the guarded two-valued SQL shape documented in
+///    [`docs/spec/mirjzson-jsonb-integration.md`][spec] under the
+///    "SQL Mapping" section.
+///    [spec]: ../../docs/spec/mirjzson-jsonb-integration.md
 fn emit_jsahibon_predicate<T: Model>(
     acc: &mut SqlAccumulator,
     fp: &FieldPredicate<T>,
@@ -952,14 +952,14 @@ fn emit_jsahibon_body(
 /// Emit a `ScalarCompare` JSON predicate. Per the spec:
 /// - Numeric kinds emit `CASE WHEN jsonb_typeof = 'number' THEN
 /// (j #>> '{}')::numeric <op> $operand ELSE FALSE END` so the cast
-/// is preflighted and the operand is bound through `Decimal` (never
-/// `as i64`).
+///   is preflighted and the operand is bound through `Decimal` (never
+///   `as i64`).
 /// - String kind emits `COALESCE(jsonb_typeof = 'string' AND
 /// (j #>> '{}')::text <op> $operand, FALSE)`. The op set Sassi
-/// permits for strings is `Eq` / `Neq` — ordering is excluded by
-/// `JOrderedScalar`.
+///   permits for strings is `Eq` / `Neq` — ordering is excluded by
+///   `JOrderedScalar`.
 /// - Boolean kind emits the analogous shape with
-/// `jsonb_typeof = 'boolean'` and a `boolean` bind.
+///   `jsonb_typeof = 'boolean'` and a `boolean` bind.
 fn emit_scalar_compare(
     acc: &mut SqlAccumulator,
     column: &'static str,

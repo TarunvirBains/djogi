@@ -1,19 +1,19 @@
 //! Proc macros for the Djogi framework.
 //! Provides:
 //! - `#[model(table = "...")]` — the attribute macro that does field
-//! injection and derives all `Model` impls.
+//!   injection and derives all `Model` impls.
 //! - `reverse_one_to_many!` / `reverse_one_to_one!` — function-like
-//! macros emitting reverse-relation accessor methods on the target
-//! model plus an `inventory::submit!` registration record.
+//!   macros emitting reverse-relation accessor methods on the target
+//!   model plus an `inventory::submit!` registration record.
 //! - `many_to_many!` — function-like macro emitting one direction of
-//! a many-to-many relation: the `ManyToMany<Target>` trait impl,
-//! a named inherent accessor on the source type, and an
-//! `inventory::submit!` registration record.
+//!   a many-to-many relation: the `ManyToMany<Target>` trait impl,
+//!   a named inherent accessor on the source type, and an
+//!   `inventory::submit!` registration record.
 //! - `djogi_main!(…)` — function-like macro generating `fn main` that
-//! references model types to prevent LTO linker from dropping inventory data.
+//!   references model types to prevent LTO linker from dropping inventory data.
 //! - `link_anchor!` — per-crate fallback emitting a `#[used]` static + callable fn
-//! that forces a model crate into the linkage graph.
-//! `#[derive(Model)]` is a no-op stub kept for potential future use.
+//!   that forces a model crate into the linkage graph.
+//!   `#[derive(Model)]` is a no-op stub kept for potential future use.
 
 mod apps;
 mod case;
@@ -314,16 +314,16 @@ pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
 /// 1. Creates a fresh `djogi_test_<uuid>` Postgres database.
 /// 2. Installs the HeeRanjID schema and seeds the default node.
 /// 3. Sets `heer.node_id = '1'` at the database level so all connections
-/// inherit the node ID without per-connection setup.
+///    inherit the node ID without per-connection setup.
 /// 4. Constructs a `DjogiContext` from a deadpool-postgres pool.
 /// 5. Passes the context to the test body.
 /// 6. Drops the database when the body returns — whether normally or via panic.
-/// The runtime machinery uses `tokio_postgres` directly (no sqlx) and routes
-/// the HeeRanjID + extension install through Djogi's canonical
-/// `djogi::migrate::bootstrap::run_phase_zero` surface — the same code path
-/// `migrations compose` writes to disk and `db reset` replays.
-/// (strategic lockdown) eliminated every parallel install path; there is
-/// exactly ONE bootstrap surface across the whole codebase.
+///    The runtime machinery uses `tokio_postgres` directly (no sqlx) and routes
+///    the HeeRanjID + extension install through Djogi's canonical
+///    `djogi::migrate::bootstrap::run_phase_zero` surface — the same code path
+///    `migrations compose` writes to disk and `db reset` replays.
+///    (strategic lockdown) eliminated every parallel install path; there is
+///    exactly ONE bootstrap surface across the whole codebase.
 /// # Usage
 /// ```rust,ignore
 /// use djogi::DjogiContext;
@@ -337,20 +337,20 @@ pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
 /// ```
 /// # Attribute arguments
 /// - `extensions = [ "postgis", "pg_trgm", ... ]` — optional array of
-/// Postgres extension names to provision on the per-test database via
-/// `CREATE EXTENSION IF NOT EXISTS` before the test body runs. Each
-/// name is validated against a strict ASCII-identifier rule at runtime
-/// (letters / digits / underscores, 1..=63 bytes) before being
-/// interpolated into SQL.
-/// Future versions may accept additional options such as
-/// `migrations = "path/to/sql"` to apply fixtures before the test body.
+///   Postgres extension names to provision on the per-test database via
+///   `CREATE EXTENSION IF NOT EXISTS` before the test body runs. Each
+///   name is validated against a strict ASCII-identifier rule at runtime
+///   (letters / digits / underscores, 1..=63 bytes) before being
+///   interpolated into SQL.
+///   Future versions may accept additional options such as
+///   `migrations = "path/to/sql"` to apply fixtures before the test body.
 /// # Requirements
 /// - `DATABASE_URL` must be set to a Postgres connection URL pointing at a
-/// cluster where the test runner has `CREATE DATABASE` / `DROP DATABASE`
-/// privileges.
+///   cluster where the test runner has `CREATE DATABASE` / `DROP DATABASE`
+///   privileges.
 /// - The annotated function must be `async` and have exactly one parameter
-/// of type `DjogiContext` (or any name — the type check happens at
-/// compile time of the test crate, not in the macro).
+///   of type `DjogiContext` (or any name — the type check happens at
+///   compile time of the test crate, not in the macro).
 #[proc_macro_attribute]
 pub fn djogi_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     testing::expand(attr.into(), item.into()).into()
@@ -377,10 +377,10 @@ pub fn djogi_test(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// For each entry the macro emits:
 /// - the unit struct itself (visibility preserved),
 /// - `impl djogi::apps::App` with const `LABEL`, `DATABASE`, and
-/// `DESCRIPTOR` associated constants,
+///   `DESCRIPTOR` associated constants,
 /// - a sealed-trait impl that enforces "only this macro creates apps",
 /// - an `inventory::submit!` registering the struct's
-/// [`djogi::AppDescriptor`] for the migration differ.
+///   [`djogi::AppDescriptor`] for the migration differ.
 /// # `#[app(...)]` grammar
 /// | Key | Shape | Meaning |
 /// |-----|-------|---------|
@@ -388,19 +388,19 @@ pub fn djogi_test(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// | `label` | `= "fleet_vehicles"` (optional) | Override the default label (struct name lowercased). |
 /// # Constraints
 /// - At most one `djogi::apps!` invocation per crate. A second
-/// invocation produces a duplicate-definition error on the hidden
-/// sentinel module the macro emits.
+///   invocation produces a duplicate-definition error on the hidden
+///   sentinel module the macro emits.
 /// - Every label (whether default-derived or explicit) must satisfy
-/// the Postgres identifier grammar: non-empty, first byte an ASCII
-/// letter or `_`, remaining bytes ASCII alphanumerics or `_`, total
-/// length ≤ 63 bytes. No regex engine — validation uses byte-level
-/// primitives per `CLAUDE.md` + `feedback_no_regex_in_djogi.md`.
+///   the Postgres identifier grammar: non-empty, first byte an ASCII
+///   letter or `_`, remaining bytes ASCII alphanumerics or `_`, total
+///   length ≤ 63 bytes. No regex engine — validation uses byte-level
+///   primitives per `CLAUDE.md` + `feedback_no_regex_in_djogi.md`.
 /// - Structs must be unit form (`pub struct Foo;`). Tuple or named
-/// structs are rejected with a span-precise diagnostic.
-/// Lands this core infrastructure; T8 extends the
-/// `#[app(...)]` grammar with the lifecycle markers (`renamed_from`,
-/// `tombstone`) and wires `#[model(app = …)]` into
-/// `ModelDescriptor`.
+///   structs are rejected with a span-precise diagnostic.
+///   Lands this core infrastructure; T8 extends the
+///   `#[app(...)]` grammar with the lifecycle markers (`renamed_from`,
+///   `tombstone`) and wires `#[model(app = …)]` into
+///   `ModelDescriptor`.
 #[proc_macro]
 pub fn apps(input: TokenStream) -> TokenStream {
     apps::expand(input.into()).into()
@@ -461,13 +461,13 @@ pub fn primary_key(input: TokenStream) -> TokenStream {
 /// to obtain `Arc<dyn Trait>` from `Arc<dyn Any>`.
 /// # Constraints
 /// - Trait impls only — `impl Trait for Type`. Inherent
-/// `impl Type { ... }` rejected.
+///   `impl Type { ... }` rejected.
 /// - Concrete (non-generic) impls only — `impl<T> Trait for Vec<T>`
-/// rejected. Generic impls deferred to a future phase per
-/// `feedback_anchored_deferrals`.
+///   rejected. Generic impls deferred to a future phase per
+///   `feedback_anchored_deferrals`.
 /// - The self type must be a named type (`Type` or
-/// `crate::module::Type`); tuples, references, and function
-/// pointers are not supported.
+///   `crate::module::Type`); tuples, references, and function
+///   pointers are not supported.
 #[proc_macro_attribute]
 pub fn trait_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     trait_impl::expand(attr.into(), item.into()).into()

@@ -12,9 +12,9 @@
 //! All Postgres window-frame variants are reachable:
 //! - Frame kinds: ROWS, RANGE, GROUPS (see [`FrameKind`]).
 //! - Frame bounds: UNBOUNDED PRECEDING, N PRECEDING, CURRENT ROW,
-//! N FOLLOWING, UNBOUNDED FOLLOWING (see [`FrameBound`]).
+//!   N FOLLOWING, UNBOUNDED FOLLOWING (see [`FrameBound`]).
 //! - Frame exclusion: EXCLUDE CURRENT ROW, EXCLUDE GROUP, EXCLUDE TIES,
-//! EXCLUDE NO OTHERS (see [`FrameExclude`]).
+//!   EXCLUDE NO OTHERS (see [`FrameExclude`]).
 //! # Design note
 //! `WindowBuilder::partition_by` and `WindowBuilder::order_by` both take a
 //! [`crate::query::field::FieldRef`], which carries a validated `&'static str`
@@ -54,7 +54,7 @@ pub struct Frame {
 /// - `Rows` — physical row offsets from the current row.
 /// - `Range` — logical value offsets from the current row's sort key.
 /// - `Groups` — peer-group offsets; each peer group is a set of rows that
-/// compare equal under the window's `ORDER BY`.
+///   compare equal under the window's `ORDER BY`.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum FrameKind {

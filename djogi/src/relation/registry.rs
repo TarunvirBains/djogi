@@ -30,45 +30,45 @@
 //! suffix:
 //! - `reverse_one_to_many!` / `reverse_one_to_one!` → `{Receiver}{Method}ReverseRelation`
 //! - `many_to_many!` → `{Source}{Relation}ManyToManyRelation`
-//! That suffix split means rustc only catches **same-suffix**
-//! collisions:
+//!   That suffix split means rustc only catches **same-suffix**
+//!   collisions:
 //! - Two `reverse_one_to_many!`s with the same `(Receiver, method)` (or
-//! one `reverse_one_to_many!` and one `reverse_one_to_one!`) emit the
-//! same `…ReverseRelation` trait twice → E0428 / E0119, build fails.
-//! The compile-fail fixture
-//! `tests/compile_fail/reverse_relation_duplicate_accessor.rs` pins
-//! that surface, as does `many_to_many_collision.rs` for the M2M
-//! same-suffix case.
+//!   one `reverse_one_to_many!` and one `reverse_one_to_one!`) emit the
+//!   same `…ReverseRelation` trait twice → E0428 / E0119, build fails.
+//!   The compile-fail fixture
+//!   `tests/compile_fail/reverse_relation_duplicate_accessor.rs` pins
+//!   that surface, as does `many_to_many_collision.rs` for the M2M
+//!   same-suffix case.
 //! - A `reverse_one_to_many!` (or `reverse_one_to_one!`) and a
-//! `many_to_many!` that all want to expose the same accessor name on
-//! the same source emit DIFFERENT trait names (`…ReverseRelation` vs
-//! `…ManyToManyRelation`). Both compile cleanly. The collision only
-//! manifests downstream as an "ambiguous method call" error at every
-//! call site that has both traits in scope — the diagnostic points at
-//! the call site instead of at the macro invocations, and there is no
-//! guarantee any call site exercises the ambiguity.
-//! [`validate_relation_accessor_collisions`] closes that gap. It walks
-//! a sequence of [`ReverseRelationMarker`]s (typically
-//! `inventory::iter::<ReverseRelationMarker>`), groups them by
-//! `(source, accessor_name)`, and returns
-//! [`RelationRegistryError::AccessorCollisions`] for any group whose
-//! members disagree on `kind`, `target`, or `via`. The cross-suffix
-//! collision then surfaces during Djogi's registry/projection pass with
-//! the offending source, accessor, kind, target, and via metadata,
-//! rather than at an arbitrary downstream method-call site.
-//! The framework's own bootstrap paths invoke the gate automatically:
-//! `djogi::migrate::project_from_inventory` validates the global
-//! registry before producing snapshot output, and the test sync helper
-//! (`djogi::testing::sync_models` via `build_sync_plans`) validates
-//! before composing per-bucket DDL. Adopters with a custom bootstrap
-//! one that does not run through the framework's projection or sync
-//! helpers — can still call
-//! [`validate_global_relation_accessor_registry`] (a zero-arg shortcut
-//! for the canonical `inventory::iter::<ReverseRelationMarker>` walk)
-//! during startup or in a dedicated CI gate test.
-//! [`validate_relation_accessor_collisions`] remains the lower-level
-//! entry point for custom tooling that needs to feed in a synthetic
-//! marker iterator (e.g. registry-merge consumers).
+//!   `many_to_many!` that all want to expose the same accessor name on
+//!   the same source emit DIFFERENT trait names (`…ReverseRelation` vs
+//!   `…ManyToManyRelation`). Both compile cleanly. The collision only
+//!   manifests downstream as an "ambiguous method call" error at every
+//!   call site that has both traits in scope — the diagnostic points at
+//!   the call site instead of at the macro invocations, and there is no
+//!   guarantee any call site exercises the ambiguity.
+//!   [`validate_relation_accessor_collisions`] closes that gap. It walks
+//!   a sequence of [`ReverseRelationMarker`]s (typically
+//!   `inventory::iter::<ReverseRelationMarker>`), groups them by
+//!   `(source, accessor_name)`, and returns
+//!   [`RelationRegistryError::AccessorCollisions`] for any group whose
+//!   members disagree on `kind`, `target`, or `via`. The cross-suffix
+//!   collision then surfaces during Djogi's registry/projection pass with
+//!   the offending source, accessor, kind, target, and via metadata,
+//!   rather than at an arbitrary downstream method-call site.
+//!   The framework's own bootstrap paths invoke the gate automatically:
+//!   `djogi::migrate::project_from_inventory` validates the global
+//!   registry before producing snapshot output, and the test sync helper
+//!   (`djogi::testing::sync_models` via `build_sync_plans`) validates
+//!   before composing per-bucket DDL. Adopters with a custom bootstrap
+//!   one that does not run through the framework's projection or sync
+//!   helpers — can still call
+//!   [`validate_global_relation_accessor_registry`] (a zero-arg shortcut
+//!   for the canonical `inventory::iter::<ReverseRelationMarker>` walk)
+//!   during startup or in a dedicated CI gate test.
+//!   [`validate_relation_accessor_collisions`] remains the lower-level
+//!   entry point for custom tooling that needs to feed in a synthetic
+//!   marker iterator (e.g. registry-merge consumers).
 //! # How
 //! At link time, every `ReverseRelationMarker` submitted via `inventory::
 //! submit!` is appended to a crate-level static slice. User code walks
@@ -82,14 +82,14 @@
 //! # Where
 //! - `ReverseRelationMarker` — this module.
 //! - [`__macro_support::__make_reverse_relation_marker`] — the sole
-//! validated constructor; the only supported caller is macro-emitted
-//! code in `djogi-macros/src/reverse_relation.rs`.
+//!   validated constructor; the only supported caller is macro-emitted
+//!   code in `djogi-macros/src/reverse_relation.rs`.
 //! - `djogi_macros::reverse_one_to_many!` — emits the `inventory::
 //! submit!` block.
 //! - `djogi_macros::reverse_one_to_one!` — same, with
-//! `RelationKind::O2O`.
+//!   `RelationKind::O2O`.
 //! - `djogi_macros::many_to_many!` — emits `RelationKind::M2M`
-//! records using the same marker shape.
+//!   records using the same marker shape.
 
 /// Kind discriminator for registered relation accessors.
 /// `#[non_exhaustive]` so a future phase can add new relation flavors
@@ -299,18 +299,18 @@ const fn kind_order(k: RelationKind) -> u8 {
 /// The reverse / M2M macros emit per-relation traits whose names embed
 /// the macro kind:
 /// - `reverse_one_to_many!` / `reverse_one_to_one!` →
-/// `{Receiver}{Method}ReverseRelation`
+///   `{Receiver}{Method}ReverseRelation`
 /// - `many_to_many!` →
-/// `{Source}{Relation}ManyToManyRelation`
-/// rustc only catches **same-suffix** trait redefinitions (E0428 / E0119);
-/// a `reverse_one_to_many!` and a `many_to_many!` competing for the
-/// same `.cars` accessor on `Owner` produce `OwnerCarsReverseRelation`
-/// and `OwnerCarsManyToManyRelation`, both of which compile, and the
-/// collision only manifests as an "ambiguous method call" at every
-/// downstream call site that has both traits in scope. This validator
-/// closes the gap: callers route the inventory iterator through it once
-/// at startup (or in a CI gate) and the diagnostic names the conflicting
-/// accessor metadata rather than an arbitrary downstream call site.
+///   `{Source}{Relation}ManyToManyRelation`
+///   rustc only catches **same-suffix** trait redefinitions (E0428 / E0119);
+///   a `reverse_one_to_many!` and a `many_to_many!` competing for the
+///   same `.cars` accessor on `Owner` produce `OwnerCarsReverseRelation`
+///   and `OwnerCarsManyToManyRelation`, both of which compile, and the
+///   collision only manifests as an "ambiguous method call" at every
+///   downstream call site that has both traits in scope. This validator
+///   closes the gap: callers route the inventory iterator through it once
+///   at startup (or in a CI gate) and the diagnostic names the conflicting
+///   accessor metadata rather than an arbitrary downstream call site.
 /// # Tolerance for legitimate duplicates
 /// A group whose members all share the same `(kind, target, via)`
 /// triple is treated as an intentional duplicate (e.g. a registry-merge

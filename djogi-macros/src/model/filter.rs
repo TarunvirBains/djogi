@@ -80,29 +80,29 @@
 //! The `IntoFilterValue` bound is emitted on the **method generic
 //! `__V`**, not on the concrete `#field_ty`. Two consequences:
 //! 1. A column whose declared Rust type does not yet implement
-//! `IntoFilterValue` (for example `Decimal` when the
-//! `rust_decimal` feature is off, `Vec<String>`, a user-defined
-//! JSONB payload wrapper) still gets a setter emitted. Rust
-//! checks a concrete-type `where` clause at impl-definition time
-//! (issue #48214), which would whole-model-reject a model
-//! containing such a column. Keeping the bound on `__V` defers
-//! the check to monomorphization, so only the unsupported
-//! setter's call site fails — with a localized
-//! "trait bound `…: IntoFilterValue` is not satisfied" rather
-//! than a whole-model reject.
+//!    `IntoFilterValue` (for example `Decimal` when the
+//!    `rust_decimal` feature is off, `Vec<String>`, a user-defined
+//!    JSONB payload wrapper) still gets a setter emitted. Rust
+//!    checks a concrete-type `where` clause at impl-definition time
+//!    (issue #48214), which would whole-model-reject a model
+//!    containing such a column. Keeping the bound on `__V` defers
+//!    the check to monomorphization, so only the unsupported
+//!    setter's call site fails — with a localized
+//!    "trait bound `…: IntoFilterValue` is not satisfied" rather
+//!    than a whole-model reject.
 //! 2. Explicit NULL checks via `Lookup::IsNull` / `Lookup::IsNotNull`
-//! still go through `IntoFilterValue` (because
-//! `Lookup<V>::into_op_value` is bounded on `V`). For columns
-//! without such an impl, those setters are unusable — the
-//! closure API's `.is_null` remains the escape hatch.
-//! Nullable columns (`Option<T>`) take `Lookup<Option<T>>` directly
-//! the field type is read verbatim, so users write
-//! `Lookup::Eq(Some("hello".to_string))` /
-//! `Lookup::<Option<T>>::IsNull`. The closure API has the same shape
-//! for nullable columns, so the two surfaces stay symmetric. (A later
-//! phase may add a sugar layer that re-emits `Option<T>` setters as
-//! `Lookup<T>` for the `Eq` / `Neq` variants specifically; that is
-//! purely additive and does not need a change to this module.)
+//!    still go through `IntoFilterValue` (because
+//!    `Lookup<V>::into_op_value` is bounded on `V`). For columns
+//!    without such an impl, those setters are unusable — the
+//!    closure API's `.is_null` remains the escape hatch.
+//!    Nullable columns (`Option<T>`) take `Lookup<Option<T>>` directly
+//!    the field type is read verbatim, so users write
+//!    `Lookup::Eq(Some("hello".to_string))` /
+//!    `Lookup::<Option<T>>::IsNull`. The closure API has the same shape
+//!    for nullable columns, so the two surfaces stay symmetric. (A later
+//!    phase may add a sugar layer that re-emits `Option<T>` setters as
+//!    `Lookup<T>` for the `Eq` / `Neq` variants specifically; that is
+//!    purely additive and does not need a change to this module.)
 //! # `pk = None` gate
 //! `crud::expand` does not emit `impl Model` for `pk = None` models
 //! (`Model::Pk: Encode` cannot be satisfied without a real PK — see

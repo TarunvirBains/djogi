@@ -2,46 +2,46 @@
 //! # Scope (— amendment)
 //! `attune` operates on local migration history. Three modes:
 //! 1. **Default (`AttuneMode::DiffOnly`)**: read-only diff between
-//! on-disk SQL files and the ledger. Reports SQL files present on
-//! disk but absent from the ledger ("unrecorded"), and ledger rows
-//! whose corresponding SQL file is missing on disk ("orphaned").
-//! Acquires the workspace file lock to take a consistent snapshot
-//! but never writes.
+//!    on-disk SQL files and the ledger. Reports SQL files present on
+//!    disk but absent from the ledger ("unrecorded"), and ledger rows
+//!    whose corresponding SQL file is missing on disk ("orphaned").
+//!    Acquires the workspace file lock to take a consistent snapshot
+//!    but never writes.
 //! 2. **`AttuneMode::Record`**: walks the same drift report and
-//! INSERTs ledger rows for every unrecorded SQL file, with
-//! `status = 'applied'` and a `partial_apply_note` recording the
-//! operator-supplied reason. **Does NOT execute the SQL** — `Record`
-//! is the operator asserting "these migrations were already applied
-//! out-of-band". Distinct from `fake_apply_plan` because `Record`
-//! walks every unrecorded SQL file in the bucket in one go.
+//!    INSERTs ledger rows for every unrecorded SQL file, with
+//!    `status = 'applied'` and a `partial_apply_note` recording the
+//!    operator-supplied reason. **Does NOT execute the SQL** — `Record`
+//!    is the operator asserting "these migrations were already applied
+//!    out-of-band". Distinct from `fake_apply_plan` because `Record`
+//!    walks every unrecorded SQL file in the bucket in one go.
 //! 3. **`AttuneMode::Squash { from, publish, app }`**: HISTORY REWRITE.
-//! Coalesces every committed SQL file from `from` to HEAD into one
-//! squashed file, deletes the originals, and removes the deleted
-//! versions from the ledger. Per plus the fixup for (single-bucket scope):
+//!    Coalesces every committed SQL file from `from` to HEAD into one
+//!    squashed file, deletes the originals, and removes the deleted
+//!    versions from the ledger. Per plus the fixup for (single-bucket scope):
 //! - **Localhost-only.** Refuses to run when `DATABASE_URL` does
-//! not resolve to the local machine — see
-//! [`crate::migrate::policy::is_localhost_connection`]. A typo in
-//! the URL pointing at staging cannot rewrite history that other
-//! developers also pull from.
+//!   not resolve to the local machine — see
+//!   [`crate::migrate::policy::is_localhost_connection`]. A typo in
+//!   the URL pointing at staging cannot rewrite history that other
+//!   developers also pull from.
 //! - **Dev-profile-only.** Refuses to run when
-//! `Djogi.toml::profile = "production"`. Production environments
-//! have a hard line against destructive history rewrites.
+//!   `Djogi.toml::profile = "production"`. Production environments
+//!   have a hard line against destructive history rewrites.
 //! - **Local-only by default.** The `--publish` flag must be
-//! explicitly passed for the squashed history to be pushed to
-//! the remote `migrations` submodule. Without it, the rewrite
-//! stays local — the operator can inspect the result, run the
-//! test suite, and only then publish.
+//!   explicitly passed for the squashed history to be pushed to
+//!   the remote `migrations` submodule. Without it, the rewrite
+//!   stays local — the operator can inspect the result, run the
+//!   test suite, and only then publish.
 //! - **`--publish` is atomic: commit-then-push.**
-//! When `--publish` is set, attune treats the squash mutation as
-//! one atomic step: it stages every change in the migrations
-//! working tree (`git add -A`), creates a commit
-//! (`djogi attune --squash from <from>`), then pushes the current
-//! branch to `origin`. The operator does NOT need to commit the
-//! mutation themselves — the publisher's contract is "commit the
-//! squash mutation, then push to origin". This matches 's
-//! "destructive history rewrite" framing: the squash mutation +
-//! the publish are one indivisible operation. Without `--publish`
-//! the operator owns the commit cycle as before.
+//!   When `--publish` is set, attune treats the squash mutation as
+//!   one atomic step: it stages every change in the migrations
+//!   working tree (`git add -A`), creates a commit
+//!   (`djogi attune --squash from <from>`), then pushes the current
+//!   branch to `origin`. The operator does NOT need to commit the
+//!   mutation themselves — the publisher's contract is "commit the
+//!   squash mutation, then push to origin". This matches 's
+//!   "destructive history rewrite" framing: the squash mutation +
+//!   the publish are one indivisible operation. Without `--publish`
+//!   the operator owns the commit cycle as before.
 //! # File-lock contract
 //! Every mode acquires the workspace [`super::guard::WorkspaceGuard`]
 //! before touching any path. Concurrent compose / apply / repair
@@ -61,16 +61,16 @@
 //! - `AttuneMode::DiffOnly` (any value of `apply`)
 //! - `AttuneMode::Record { .. }` with `apply == false`
 //! - `AttuneMode::Squash { .. }` with `apply == false`
-//! On a fresh database where the ledger does not exist yet, every
-//! read-only path probes `pg_class` instead of calling
-//! [`super::ledger::bootstrap`]; the returned report carries an
-//! [`AttuneDiagnostic::LedgerTableMissing`] entry and the ledger
-//! stays absent. The operator must run `apply` or `attune --record
+//!   On a fresh database where the ledger does not exist yet, every
+//!   read-only path probes `pg_class` instead of calling
+//!   [`super::ledger::bootstrap`]; the returned report carries an
+//!   [`AttuneDiagnostic::LedgerTableMissing`] entry and the ledger
+//!   stays absent. The operator must run `apply` or `attune --record
 //! --apply` (or `baseline`) to bootstrap. Only Record / Squash with
-//! `--apply` call `ledger::bootstrap`.
-//! , Record / Squash bootstrapped the ledger up-front
-//! regardless of `--apply`, which silently created the table during
-//! a dry-run — an out-of-contract mutation. The fix gates the bootstrap behind `req.apply`.
+//!   `--apply` call `ledger::bootstrap`.
+//!   , Record / Squash bootstrapped the ledger up-front
+//!   regardless of `--apply`, which silently created the table during
+//!   a dry-run — an out-of-contract mutation. The fix gates the bootstrap behind `req.apply`.
 //! # No regex
 //! Per the Djogi-wide no-regex rule, the SQL filename detection uses
 //! byte-level prefix / suffix checks against the [`super::naming`]
@@ -685,9 +685,9 @@ fn djogi_env_is_production() -> Option<String> {
 /// Centralises the routing rule the three dry-run paths (DiffOnly,
 /// Record, Squash) all need:
 /// - explicit `--record` → `DryRunRecordSkipped` (causal prose names
-/// the flag);
+///   the flag);
 /// - `--squash`-implied recording → `DryRunSquashRecordSkipped`
-/// (neutral prose);
+///   (neutral prose);
 /// - any other mode without a resolved target → no-op.
 fn push_record_skipped(
     diagnostics: &mut Vec<AttuneDiagnostic>,
@@ -1242,22 +1242,22 @@ async fn insert_recorded_row(
 /// applied to EXACTLY ONE bucket — the bucket where `from` actually
 /// exists. The squash contract:
 /// - If `app_filter` is `Some(label)`, the squash is scoped to
-/// `(active_db, label)`; if `from` is absent there it errors with
-/// [`AttuneRefusal::SquashFromVersionNotFound`].
+///   `(active_db, label)`; if `from` is absent there it errors with
+///   [`AttuneRefusal::SquashFromVersionNotFound`].
 /// - If `app_filter` is `None` and `from` exists in exactly one bucket,
-/// that bucket is the target.
+///   that bucket is the target.
 /// - If `app_filter` is `None` and `from` exists in multiple buckets,
-/// we refuse with [`AttuneRefusal::SquashFromVersionAmbiguous`] and
-/// require the operator to disambiguate.
+///   we refuse with [`AttuneRefusal::SquashFromVersionAmbiguous`] and
+///   require the operator to disambiguate.
 /// - If `from` exists in zero buckets, we refuse with
-/// [`AttuneRefusal::SquashFromVersionNotFound`].
-/// **Retained-row checksum refresh.** After writing the squashed
-/// SQL file, we recompute its `up` (and best-effort `down`) checksum
-/// and `UPDATE` the retained `from` ledger row's `checksum_up`,
-/// `checksum_down`, and `description` to match. The pre-
-/// implementation left the retained row's checksum describing the
-/// PRE-squash file content — every subsequent verify or apply path
-/// would surface drift authored by squash itself.
+///   [`AttuneRefusal::SquashFromVersionNotFound`].
+///   **Retained-row checksum refresh.** After writing the squashed
+///   SQL file, we recompute its `up` (and best-effort `down`) checksum
+///   and `UPDATE` the retained `from` ledger row's `checksum_up`,
+///   `checksum_down`, and `description` to match. The pre-
+///   implementation left the retained row's checksum describing the
+///   PRE-squash file content — every subsequent verify or apply path
+///   would surface drift authored by squash itself.
 #[allow(clippy::too_many_arguments)]
 async fn run_squash(
     ctx: &mut DjogiContext,

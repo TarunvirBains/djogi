@@ -43,13 +43,13 @@
 //! easiest to document.
 //! # Where
 //! - [`super::node::ExprNode::Aggregate`] / [`super::node::AggOp`] — the
-//! untyped payload.
+//!   untyped payload.
 //! - [`super::sql::emit_expr`] — renders the SQL tokens.
 //! - [`crate::query::aggregate::AggregateQuery`] — scalar terminal.
 //! - [`crate::query::annotate::AnnotatedQuerySet`] — typed-tuple
-//! terminal that embeds value aggregates in the plain ungrouped SELECT list
-//! alongside `T::*`. Grouped annotate and scalar aggregate remain generic
-//! over all aggregate kinds because they do not synthesize `OVER `.
+//!   terminal that embeds value aggregates in the plain ungrouped SELECT list
+//!   alongside `T::*`. Grouped annotate and scalar aggregate remain generic
+//!   over all aggregate kinds because they do not synthesize `OVER `.
 
 use crate::expr::Expr;
 use crate::expr::arithmetic::Numeric;
@@ -275,21 +275,21 @@ impl<Out> AggregateExpr<Out, ValueAgg> {
     /// [`crate::DjogiError::UnsupportedAggregate`] from
     /// [`crate::expr::sql::check_aggregate_legality`]:
     /// - `COUNT(*)` with `DISTINCT`: `COUNT(DISTINCT *)` is not valid SQL.
-    /// `count_star` shares the `ValueAgg` type-state with `count`,
-    /// `sum`, etc., so `.distinct` is callable; the runtime check
-    /// catches the COUNT-specific shape. Use `COUNT(DISTINCT col)`
-    /// via [`FieldRef::count`] instead.
+    ///   `count_star` shares the `ValueAgg` type-state with `count`,
+    ///   `sum`, etc., so `.distinct` is callable; the runtime check
+    ///   catches the COUNT-specific shape. Use `COUNT(DISTINCT col)`
+    ///   via [`FieldRef::count`] instead.
     /// - `STRING_AGG(DISTINCT col, sep)` without a per-aggregate
-    /// `ORDER BY`: Postgres requires `STRING_AGG(DISTINCT col, sep
+    ///   `ORDER BY`: Postgres requires `STRING_AGG(DISTINCT col, sep
     /// ORDER BY ...)` to disambiguate the output tail. Chain
-    /// [`Self::order_by`] with a deterministic key to make the
-    /// combination well-formed.
+    ///   [`Self::order_by`] with a deterministic key to make the
+    ///   combination well-formed.
     /// - `COUNT(*)` with a per-aggregate `ORDER BY`: the `COUNT(*)`
-    /// emitter hard-codes `COUNT(*)` and ignores the `order_by` slot,
-    /// so chaining `.order_by(...)` on `count_star` would silently
-    /// drop the modifier; the legality check rejects this at fetch
-    /// time. Chain ORDER BY at the `QuerySet` level instead, or use
-    /// `COUNT(col ORDER BY ...)` via [`FieldRef::count`].
+    ///   emitter hard-codes `COUNT(*)` and ignores the `order_by` slot,
+    ///   so chaining `.order_by(...)` on `count_star` would silently
+    ///   drop the modifier; the legality check rejects this at fetch
+    ///   time. Chain ORDER BY at the `QuerySet` level instead, or use
+    ///   `COUNT(col ORDER BY ...)` via [`FieldRef::count`].
     #[must_use = "AggregateExpr is a value — dropping discards the DISTINCT flag"]
     pub fn distinct(mut self) -> Self {
         if let ExprNode::Aggregate { distinct, .. } = &mut self.node {
@@ -1188,10 +1188,10 @@ where
     /// # Distinct from the window-form rank
     /// Postgres has two `RANK` functions:
     /// - **Window form** ([`crate::expr::Rank`]) — ranks each row within
-    /// a `PARTITION BY ... ORDER BY ...` window.
+    ///   a `PARTITION BY ... ORDER BY ...` window.
     /// - **Hypothetical-set form** (this method) — answers "what rank
-    /// would this hypothetical value have in the sorted set?" without
-    /// inserting the row. The argument matches the column type.
+    ///   would this hypothetical value have in the sorted set?" without
+    ///   inserting the row. The argument matches the column type.
     /// # Postgres NULL behaviour
     /// Empty groups produce SQL NULL.
     /// # Example

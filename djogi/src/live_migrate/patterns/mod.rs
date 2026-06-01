@@ -11,28 +11,28 @@
 //! Nine patterns ship under T8, paired with one documentation-only
 //! module that records why a tenth never will:
 //! - [`nullable_not_null`] — nullable add followed by backfill plus
-//! `SET NOT NULL` finalize.
+//!   `SET NOT NULL` finalize.
 //! - [`replacement_column`] — shadow column expand/contract for type
-//! changes that require a row rewrite.
+//!   changes that require a row rewrite.
 //! - [`codec_transition`] — protected-field codec rotation under a
-//! compatibility window.
+//!   compatibility window.
 //! - [`backfill_then_tighten`] — backfill before a deferred FK or
-//! uniqueness `VALIDATE`.
+//!   uniqueness `VALIDATE`.
 //! - [`index_dependent`] — `CREATE INDEX CONCURRENTLY` with an
-//! `indvalid` gate.
+//!   `indvalid` gate.
 //! - [`two_phase_validate`] — `ADD CONSTRAINT … NOT VALID` plus a
-//! separate `VALIDATE` for CHECK / NOT NULL / FK above the
-//! validation row threshold.
+//!   separate `VALIDATE` for CHECK / NOT NULL / FK above the
+//!   validation row threshold.
 //! - [`unique_via_index`] — `CREATE UNIQUE INDEX CONCURRENTLY` plus
-//! `ADD CONSTRAINT … USING INDEX`, also covering index replacement
-//! on overlapping columns.
+//!   `ADD CONSTRAINT … USING INDEX`, also covering index replacement
+//!   on overlapping columns.
 //! - [`three_step_default`] — three-step rollout for columns whose
-//! default expression is Postgres-volatile.
+//!   default expression is Postgres-volatile.
 //! - [`multi_fk_staging`] — split four-or-more FK additions on a
-//! single table across paired NOT VALID + VALIDATE steps.
+//!   single table across paired NOT VALID + VALIDATE steps.
 //! - [`generated_column_refusal`] — documentation breadcrumb
-//! explaining why no shadow-column pattern ships for stored
-//! generated column rewrites.
+//!   explaining why no shadow-column pattern ships for stored
+//!   generated column rewrites.
 //! # Why no `generated_column_replacement.rs`
 //! Stored generated column rewrites classify as
 //! [`OnlineSafetyClassification::OfflineOnly`](crate::migrate::OnlineSafetyClassification::OfflineOnly)
@@ -172,27 +172,27 @@ pub trait Pattern {
 /// operation variant. Selection is exhaustive over the variants the
 /// classifier can route here:
 /// - [`SchemaOperation::AlterColumn`] dispatches to
-/// [`replacement_column::ReplacementColumn`] for `ChangeType`,
-/// [`codec_transition::CodecTransition`] for codec rotations, and
-/// [`nullable_not_null::NullableNotNull`] for `SetNullable(false)`.
+///   [`replacement_column::ReplacementColumn`] for `ChangeType`,
+///   [`codec_transition::CodecTransition`] for codec rotations, and
+///   [`nullable_not_null::NullableNotNull`] for `SetNullable(false)`.
 /// - [`SchemaOperation::AddForeignKey`] dispatches to
-/// [`backfill_then_tighten::BackfillThenTighten`] for FK adds whose
-/// classifier picked `ExpandContract` (large table → multi-step
-/// validate path).
+///   [`backfill_then_tighten::BackfillThenTighten`] for FK adds whose
+///   classifier picked `ExpandContract` (large table → multi-step
+///   validate path).
 /// - [`SchemaOperation::AddIndex`] dispatches to
-/// [`unique_via_index::UniqueViaIndex`] for unique indexes and to
-/// [`index_dependent::IndexDependent`] for non-unique indexes.
+///   [`unique_via_index::UniqueViaIndex`] for unique indexes and to
+///   [`index_dependent::IndexDependent`] for non-unique indexes.
 /// - [`SchemaOperation::AddTable`] dispatches to
-/// [`multi_fk_staging::MultiFkStaging`] (only escalated here when the
-/// table carries 4+ outbound FKs; `multi_fk_staging::emit` enforces
-/// the count internally).
+///   [`multi_fk_staging::MultiFkStaging`] (only escalated here when the
+///   table carries 4+ outbound FKs; `multi_fk_staging::emit` enforces
+///   the count internally).
 /// - [`SchemaOperation::AddColumn`] dispatches to
-/// [`three_step_default::ThreeStepDefault`] for columns whose default
-/// expression is Postgres-volatile.
-/// Returns [`PatternError::CannotEmit`] for operation variants the
-/// classifier should never have routed onto this path (rename ops,
-/// drop ops, enum ops). The classifier's `OnlineSafetyClassification`
-/// verdict is the gate; this function is the dispatcher behind it.
+///   [`three_step_default::ThreeStepDefault`] for columns whose default
+///   expression is Postgres-volatile.
+///   Returns [`PatternError::CannotEmit`] for operation variants the
+///   classifier should never have routed onto this path (rename ops,
+///   drop ops, enum ops). The classifier's `OnlineSafetyClassification`
+///   verdict is the gate; this function is the dispatcher behind it.
 pub fn dispatch_pattern(
     op: &SchemaOperation,
     ctx: &PatternContext,

@@ -166,8 +166,8 @@ pub(crate) fn encode_point_into<B: BufMut + ?Sized>(p: &super::GeoPoint, buf: &m
 /// - Byte 0 must be `0x01` (little-endian marker).
 /// - Bytes 1..5 must equal the Point-with-SRID type word `[0x01, 0x00, 0x00, 0x20]`.
 /// - Bytes 5..9 must encode SRID 4326; if the SRID parses but is not 4326,
-/// `GeoError::UnexpectedSrid` carries the actual integer value so callers
-/// can produce a meaningful message.
+///   `GeoError::UnexpectedSrid` carries the actual integer value so callers
+///   can produce a meaningful message.
 /// - Bytes 9..17 are the X (longitude) `f64`.
 /// - Bytes 17..25 are the Y (latitude) `f64`.
 pub(crate) fn decode_point(bytes: &[u8]) -> Result<(f64, f64), GeoError> {

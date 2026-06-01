@@ -32,49 +32,49 @@
 //! No `private::Sealed` supertrait, no `__seal::Sealed` re-export. The
 //! reasons:
 //! 1. The traits are *user-implementable in shape* — adopter macros
-//! (`#[model(auditable)]` T2.4 / `#[model(soft_deletable)]` T2.6)
-//! emit `impl Auditable for UserModel` / `impl SoftDeletable for
+//!    (`#[model(auditable)]` T2.4 / `#[model(soft_deletable)]` T2.6)
+//!    emit `impl Auditable for UserModel` / `impl SoftDeletable for
 //! UserModel` directly. If we sealed them via a supertrait, the
-//! macro emission would need to route through
-//! `::djogi::__private::compose::Sealed` (the [`crate::hooks`]
-//! precedent). T2.1 explicitly defers macro work, and threading a
-//! seal across two follow-up commits adds churn for no protection
-//! benefit at this stage.
+//!    macro emission would need to route through
+//!    `::djogi::__private::compose::Sealed` (the [`crate::hooks`]
+//!    precedent). T2.1 explicitly defers macro work, and threading a
+//!    seal across two follow-up commits adds churn for no protection
+//!    benefit at this stage.
 //! 2. The framework's harder seals (`Model` via [`crate::model::__sealed`],
-//! `HasHooks` via [`crate::hooks`], `App` via the apps-seal token,
-//! `PrimaryKey` via `PkSealToken`) defend an SQL-injection or
-//! correctness boundary — a hand-rolled `impl Model` could smuggle
-//! `table_name` strings into the emitter. `Auditable` and
-//! `SoftDeletable` carry no such boundary: the only methods are
-//! field getters that return `Option<&str>` and `Option<DateTime>`.
-//! A hostile hand-rolled impl can lie about its audit user, but
-//! every other read of the column already routes through the same
-//! `FromPgRow` decode the macros emit, so the lie never leaves the
-//! in-memory copy.
+//!    `HasHooks` via [`crate::hooks`], `App` via the apps-seal token,
+//!    `PrimaryKey` via `PkSealToken`) defend an SQL-injection or
+//!    correctness boundary — a hand-rolled `impl Model` could smuggle
+//!    `table_name` strings into the emitter. `Auditable` and
+//!    `SoftDeletable` carry no such boundary: the only methods are
+//!    field getters that return `Option<&str>` and `Option<DateTime>`.
+//!    A hostile hand-rolled impl can lie about its audit user, but
+//!    every other read of the column already routes through the same
+//!    `FromPgRow` decode the macros emit, so the lie never leaves the
+//!    in-memory copy.
 //! 3. `decisions.md` row "Apps seal enforcement" already documents that
-//! "True hard-sealing of a proc-macro-emitted trait is not achievable
-//! in stable Rust" — every public path the macro emission needs is
-//! downstream-reachable too. The supertrait approach buys a cosmetic
-//! barrier, not a real one. We document the convention here and move
-//! on.
-//! If a future phase decides `Auditable` / `SoftDeletable` need
-//! compile-enforced seals (e.g. because a security review surfaces a
-//! threat the field-getter shape cannot mitigate), the upgrade path is
-//! straightforward: add a `pub(crate) mod private { pub trait Sealed
+//!    "True hard-sealing of a proc-macro-emitted trait is not achievable
+//!    in stable Rust" — every public path the macro emission needs is
+//!    downstream-reachable too. The supertrait approach buys a cosmetic
+//!    barrier, not a real one. We document the convention here and move
+//!    on.
+//!    If a future phase decides `Auditable` / `SoftDeletable` need
+//!    compile-enforced seals (e.g. because a security review surfaces a
+//!    threat the field-getter shape cannot mitigate), the upgrade path is
+//!    straightforward: add a `pub(crate) mod private { pub trait Sealed
 //! {} }` supertrait, re-export through `crate::__private::compose` for
-//! macro emission, and follow the [`crate::hooks::HasHooks`] precedent
-//! at `djogi/src/hooks.rs:171`. Until then, the convention seal is
-//! load-bearing through doc comments alone.
+//!    macro emission, and follow the [`crate::hooks::HasHooks`] precedent
+//!    at `djogi/src/hooks.rs:171`. Until then, the convention seal is
+//!    load-bearing through doc comments alone.
 //! # Phase / spec anchors
 //! - line 221 — "`djogi/src/compose.rs` — runtime helpers
-//! `Auditable` / `SoftDeletable` traits (sealed; convention-sealed per
-//! `decisions.md` row 78 pattern)."
+//!   `Auditable` / `SoftDeletable` traits (sealed; convention-sealed per
+//!   `decisions.md` row 78 pattern)."
 //! - v3 §D6 lines 149–157 — `created_by` nullable, AuthContext-
-//! driven population, no warn on null.
+//!   driven population, no warn on null.
 //! - `feedback_macro_path_routing.md` — runtime trait module routes
-//! directly through `crate::types::DateTime`, **not** via
-//! `crate::__private::time` (the `__private` re-export exists for
-//! macro-emitted code, not for hand-written framework modules).
+//!   directly through `crate::types::DateTime`, **not** via
+//!   `crate::__private::time` (the `__private` re-export exists for
+//!   macro-emitted code, not for hand-written framework modules).
 
 use crate::model::Model;
 use crate::types::DateTime;

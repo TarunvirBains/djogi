@@ -42,17 +42,17 @@
 //! # API surface
 //! - [`bootstrap`] — idempotently create the ledger table.
 //! - [`compute_checksum`] — hash a sequence of SQL fragments into the
-//! `V1:<hex>` form.
+//!   `V1:<hex>` form.
 //! - [`LedgerRow`] / [`LedgerStatus`] / [`ExecutionMode`] — typed row
-//! shape used by the runner T4.
+//!   shape used by the runner T4.
 //! - [`insert_pending`] / [`mark_applied`] / [`mark_failed`] /
-//! [`mark_partial`] — row mutation helpers. Each opens its own
-//! pool connection or runs inside the runner-supplied transaction
-//! per the dispatch rules in T4.
-//! All CRUD helpers take `&mut DjogiContext` so the runner can route
-//! through either an open transaction (for the per-migration
-//! transactional segment) or the pool (for the standalone INSERT
-//! that records the run before the transaction opens).
+//!   [`mark_partial`] — row mutation helpers. Each opens its own
+//!   pool connection or runs inside the runner-supplied transaction
+//!   per the dispatch rules in T4.
+//!   All CRUD helpers take `&mut DjogiContext` so the runner can route
+//!   through either an open transaction (for the per-migration
+//!   transactional segment) or the pool (for the standalone INSERT
+//!   that records the run before the transaction opens).
 
 use sha2::{Digest, Sha256};
 
@@ -503,18 +503,18 @@ impl std::error::Error for ChecksumFormatError {}
 /// `V1:<sha256-hex>` shape.
 /// Rules:
 /// 1. Starts with the literal [`CHECKSUM_PREFIX`] (`V1:`). No other
-/// prefix is accepted; uppercase / lowercase variants are rejected.
+///    prefix is accepted; uppercase / lowercase variants are rejected.
 /// 2. Total byte length equals [`CHECKSUM_LEN`] (67).
 /// 3. The 64 bytes after the prefix are all lowercase ASCII hex
-/// a digit `0`..=`9` or a lowercase letter `a`..=`f`. Uppercase
-/// hex is rejected because [`compute_checksum`] always emits
-/// lowercase, so an uppercase value cannot be a runner-produced
-/// checksum.
-/// Used by [`verify_checksum`] on BOTH operands before string
-/// comparison so a malformed persisted value cannot accidentally
-/// pass a `==` check against another malformed value.
-/// Implementation note: byte-level rules per the Djogi-wide
-/// no-regex policy. No allocation; constant-stack only.
+///    a digit `0`..=`9` or a lowercase letter `a`..=`f`. Uppercase
+///    hex is rejected because [`compute_checksum`] always emits
+///    lowercase, so an uppercase value cannot be a runner-produced
+///    checksum.
+///    Used by [`verify_checksum`] on BOTH operands before string
+///    comparison so a malformed persisted value cannot accidentally
+///    pass a `==` check against another malformed value.
+///    Implementation note: byte-level rules per the Djogi-wide
+///    no-regex policy. No allocation; constant-stack only.
 pub fn validate_checksum_format(s: &str) -> Result<(), ChecksumFormatErrorKind> {
     let bytes = s.as_bytes();
     if !s.starts_with(CHECKSUM_PREFIX) {

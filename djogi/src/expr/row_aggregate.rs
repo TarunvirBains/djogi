@@ -24,10 +24,10 @@
 //! - `ST_AsMVT(t, …) OVER (…)` — row aggregates are not windowable
 //! - `ST_AsMVT(t, … ORDER BY …)` — ORDER BY inside the parens is rejected on row aggregates
 //! - `ST_AsMVT(t, …) WITHIN GROUP (ORDER BY …)` — same
-//! Sharing [`super::aggregate::AggregateExpr`] would force every modifier
-//! method onto a wrapper that semantically rejects them. A sibling type
-//! makes the discipline structural: row aggregates simply have no
-//! modifier methods.
+//!   Sharing [`super::aggregate::AggregateExpr`] would force every modifier
+//!   method onto a wrapper that semantically rejects them. A sibling type
+//!   makes the discipline structural: row aggregates simply have no
+//!   modifier methods.
 //! # Bytes at the Rust boundary
 //! Both shipped row aggregates return `bytea` at the Postgres level — MVT
 //! protobuf bytes / Geobuf bytes. The typed surface decodes that into
@@ -36,15 +36,15 @@
 //! every constructor pins this at the type level.
 //! # Where
 //! - [`super::node::ExprNode::RowAggregate`] / [`super::node::RowAggOp`]
-//! the untyped IR payload.
+//!   the untyped IR payload.
 //! - [`super::sql::emit_expr`] — renders the SQL tokens.
 //! - [`crate::query::annotate::AnnotatedQuerySet::as_mvt`] /
-//! [`crate::query::annotate::AnnotatedQuerySet::as_geobuf`] — annotated
-//! terminal that wraps an annotation tuple's projection in the row
-//! aggregate.
+//!   [`crate::query::annotate::AnnotatedQuerySet::as_geobuf`] — annotated
+//!   terminal that wraps an annotation tuple's projection in the row
+//!   aggregate.
 //! - [`crate::query::queryset::QuerySet::as_mvt`] /
-//! [`crate::query::queryset::QuerySet::as_geobuf`] — bare terminal that
-//! wraps the model's canonical projection.
+//!   [`crate::query::queryset::QuerySet::as_geobuf`] — bare terminal that
+//!   wraps the model's canonical projection.
 
 #![cfg(feature = "spatial")]
 

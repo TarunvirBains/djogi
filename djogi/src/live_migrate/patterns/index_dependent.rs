@@ -14,20 +14,20 @@
 //! # Step graph
 //! 1. [`StepKind::ExpandSchema`] — `CREATE INDEX CONCURRENTLY <name>
 //! ON <table> (...)`. Runs outside any transaction; the runner's
-//! out-of-transaction segment lane handles dispatch.
+//!    out-of-transaction segment lane handles dispatch.
 //! 2. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//! until `SELECT indvalid FROM pg_index WHERE indexrelid =
+//!    until `SELECT indvalid FROM pg_index WHERE indexrelid =
 //! '<name>'::regclass` returns `t`. A `false` result signals the
-//! concurrent build failed midway and the index must be dropped
-//! and re-created (the runner surfaces an actionable refusal in
-//! that case).
-//! No backfill is needed — Postgres builds the index asynchronously
-//! and `indvalid = true` is the canonical "ready for queries" signal.
-//! [`Pattern::IDEMPOTENT_PREDICATE`] is `false` for this pattern
-//! because no [`StepKind::BackfillChunked`] step is emitted; the
-//! constant exists per-pattern so the cross-pattern dispatch witness
-//! in [`super::tests`] can assert "claims chunked backfill" matches
-//! "emits chunked backfill".
+//!    concurrent build failed midway and the index must be dropped
+//!    and re-created (the runner surfaces an actionable refusal in
+//!    that case).
+//!    No backfill is needed — Postgres builds the index asynchronously
+//!    and `indvalid = true` is the canonical "ready for queries" signal.
+//!    [`Pattern::IDEMPOTENT_PREDICATE`] is `false` for this pattern
+//!    because no [`StepKind::BackfillChunked`] step is emitted; the
+//!    constant exists per-pattern so the cross-pattern dispatch witness
+//!    in [`super::tests`] can assert "claims chunked backfill" matches
+//!    "emits chunked backfill".
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};

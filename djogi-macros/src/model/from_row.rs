@@ -2,14 +2,14 @@
 //! # What
 //! Emits one `impl` block per `#[model]`-annotated struct:
 //! - `const COLUMNS: &'static [&'static str]` — column names in the
-//! canonical SELECT order (`id`, `created_at`, `updated_at`, then
-//! user fields in declaration order).
+//!   canonical SELECT order (`id`, `created_at`, `updated_at`, then
+//!   user fields in declaration order).
 //! - `const COLUMN_LIST: &'static str` — the same names joined with
-//! `", "`, ready to interpolate into `SELECT {COLUMN_LIST} FROM t`
-//! and `RETURNING {COLUMN_LIST}` SQL text.
+//!   `", "`, ready to interpolate into `SELECT {COLUMN_LIST} FROM t`
+//!   and `RETURNING {COLUMN_LIST}` SQL text.
 //! - `fn from_pg_row(row: &tokio_postgres::Row) -> Result<Self,
 //! DjogiError>` — positional (ordinal) decode via `row.try_get(0)`,
-//! `row.try_get(1)`, … matching the `COLUMNS` order.
+//!   `row.try_get(1)`, … matching the `COLUMNS` order.
 //! # Why ordinal, not name-based
 //! Ordinal decode is O(N) per row (one `try_get(i)` per column);
 //! name-based decode is O(N^2) (each `try_get(name)` does a linear

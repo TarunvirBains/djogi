@@ -20,17 +20,17 @@
 //! Three named construction routes; **no** `Default` impl. Djogi
 //! intentionally requires every `MirJzSON` to come from one of:
 //! - [`From<sassi::JSahibON>`](MirJzSON#impl-From<JSahibON>-for-MirJzSON)
-//! already-portable value, no validation needed.
+//!   already-portable value, no validation needed.
 //! - [`TryFrom<serde_json::Value>`](MirJzSON#impl-TryFrom<Value>-for-MirJzSON)
-//! fallible bridge through Sassi's `serde-json-bridge`; rejects
-//! non-finite floats and `serde_json::Number` carriers outside Sassi's
-//! supported range.
+//!   fallible bridge through Sassi's `serde-json-bridge`; rejects
+//!   non-finite floats and `serde_json::Number` carriers outside Sassi's
+//!   supported range.
 //! - The Postgres `FromSql` impl — reads JSONB bytes off the wire,
-//! projects to [`sassi::JSahibON`] via `serde_json::Value`.
-//! There is intentionally no [`From<MirJzSON> for JSahibON`] — projection
-//! is named ([`as_jsahibon`](MirJzSON::as_jsahibon) /
-//! [`into_jsahibon`](MirJzSON::into_jsahibon)) so the
-//! database-to-portable boundary is visible at call sites.
+//!   projects to [`sassi::JSahibON`] via `serde_json::Value`.
+//!   There is intentionally no [`From<MirJzSON> for JSahibON`] — projection
+//!   is named ([`as_jsahibon`](MirJzSON::as_jsahibon) /
+//!   [`into_jsahibon`](MirJzSON::into_jsahibon)) so the
+//!   database-to-portable boundary is visible at call sites.
 //! # Trait posture
 //! `MirJzSON` is **not** `PartialEq` / `Eq` / `Hash` / `PartialOrd`. Whole-
 //! value JSON predicates go through the explicit JSON predicate methods
@@ -158,13 +158,13 @@ impl TryFrom<serde_json::Value> for MirJzSON {
     /// `serde-json-bridge`.
     /// Fails when:
     /// - The input contains a non-finite `f64` (Sassi rejects `NaN` /
-    /// `±Infinity` in its `JFiniteF64` carrier).
+    ///   `±Infinity` in its `JFiniteF64` carrier).
     /// - A `serde_json::Number` cannot fit any of Sassi's `i64` / `u64` /
-    /// finite `f64` carriers (arbitrary-precision number outside both
-    /// signed and unsigned 64-bit ranges).
-    /// Both failure modes surface as [`MirJzSONError::UnsupportedJsonValue`]
-    /// with Sassi's own diagnostic message forwarded verbatim — the error
-    /// tracks Sassi's contract rather than translating across two surfaces.
+    ///   finite `f64` carriers (arbitrary-precision number outside both
+    ///   signed and unsigned 64-bit ranges).
+    ///   Both failure modes surface as [`MirJzSONError::UnsupportedJsonValue`]
+    ///   with Sassi's own diagnostic message forwarded verbatim — the error
+    ///   tracks Sassi's contract rather than translating across two surfaces.
     fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
         sassi::JSahibON::try_from(value)
             .map(MirJzSON::from)

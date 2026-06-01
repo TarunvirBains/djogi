@@ -12,14 +12,14 @@
 //! deliberately deterministic — the same inputs always produce the
 //! exact same output bytes. Two consequences fall out:
 //! 1. **Byte-stable JSON.** When T10.2 serialises a sorted
-//! `Vec<(table_name, Recommendation)>` to `serde_json`, the result
-//! is reproducible across runs / hosts / Postgres restarts. CI
-//! dashboards that diff yesterday's `analyze --format json` output
-//! against today's see only real changes, never iteration-order
-//! churn.
+//!    `Vec<(table_name, Recommendation)>` to `serde_json`, the result
+//!    is reproducible across runs / hosts / Postgres restarts. CI
+//!    dashboards that diff yesterday's `analyze --format json` output
+//!    against today's see only real changes, never iteration-order
+//!    churn.
 //! 2. **Trivial unit-testability.** No `tokio` runtime, no fixture DB,
-//! no temp dirs — every recommendation rule is exercised in-process
-//! against hand-built `TableHealth` values.
+//!    no temp dirs — every recommendation rule is exercised in-process
+//!    against hand-built `TableHealth` values.
 //! # Threshold rationale
 //! Both thresholds are runtime arguments rather than constants because
 //! healthy bloat / partition-row ceilings vary per workload. The
@@ -51,15 +51,15 @@ use djogi::pg::pool::DjogiPool;
 /// Field provenance (per T10.2's planned query):
 /// - `table_name` — `pg_stat_user_tables.relname`
 /// - `n_live_tup`, `n_dead_tup` — `pg_stat_user_tables` columns of the
-/// same name; Postgres-maintained per-row visibility counters.
+///   same name; Postgres-maintained per-row visibility counters.
 /// - `last_analyze` — `pg_stat_user_tables.last_analyze`; `None` when
-/// the table has never been analysed (e.g. freshly created).
+///   the table has never been analysed (e.g. freshly created).
 /// - `partition_count` — `0` for plain tables, `>= 1` for partitioned
-/// parents (sourced via `pg_partitioned_table` join, with a
-/// `pg_partman` fallback when the extension is installed).
-/// `last_analyze` is intentionally `time::OffsetDateTime`, not
-/// `chrono::DateTime` — djogi forbids `chrono` workspace-wide
-/// (CLAUDE.md "Dependencies excluded").
+///   parents (sourced via `pg_partitioned_table` join, with a
+///   `pg_partman` fallback when the extension is installed).
+///   `last_analyze` is intentionally `time::OffsetDateTime`, not
+///   `chrono::DateTime` — djogi forbids `chrono` workspace-wide
+///   (CLAUDE.md "Dependencies excluded").
 #[derive(Debug, Clone, Serialize)]
 pub struct TableHealth {
     pub table_name: String,
@@ -74,14 +74,14 @@ pub struct TableHealth {
 /// When multiple rules would fire, [`recommend`] returns the
 /// highest-priority match per this strict ordering (highest first):
 /// 1. [`Recommendation::VacuumNeeded`] — bloat dominates everything;
-/// autovacuum lag is the most operationally urgent signal because
-/// dead tuples block index health and inflate disk usage.
+///    autovacuum lag is the most operationally urgent signal because
+///    dead tuples block index health and inflate disk usage.
 /// 2. [`Recommendation::PartitionRecommended`] — an unpartitioned table
-/// has crossed the row-count threshold; partitioning is structural
-/// work that should land before the table grows further.
+///    has crossed the row-count threshold; partitioning is structural
+///    work that should land before the table grows further.
 /// 3. [`Recommendation::PartitionCountIncrease`] — partitions exist
-/// but average row count per partition exceeds the threshold;
-/// expanding the partition count is incremental tuning.
+///    but average row count per partition exceeds the threshold;
+///    expanding the partition count is incremental tuning.
 /// 4. [`Recommendation::Healthy`] — no rule fires.
 /// # JSON shape
 /// The `#[serde(tag = "kind", rename_all = "snake_case")]` attribute
@@ -135,22 +135,22 @@ pub enum Recommendation {
 /// `recommend_is_deterministic` test asserts this with 100 repetitions.
 /// # Threshold semantics
 /// - `threshold_vacuum`: dead-tuple ratio strictly above which
-/// [`Recommendation::VacuumNeeded`] fires. Typical: `0.2` (20% bloat).
-/// Higher values mean the operator tolerates more bloat before
-/// flagging.
+///   [`Recommendation::VacuumNeeded`] fires. Typical: `0.2` (20% bloat).
+///   Higher values mean the operator tolerates more bloat before
+///   flagging.
 /// - `threshold_partition_rows`: live row count strictly above which
-/// an unpartitioned table triggers [`Recommendation::PartitionRecommended`].
-/// Typical: `10_000_000`. The same threshold is reused for the
-/// per-partition row average that drives
-/// [`Recommendation::PartitionCountIncrease`].
+///   an unpartitioned table triggers [`Recommendation::PartitionRecommended`].
+///   Typical: `10_000_000`. The same threshold is reused for the
+///   per-partition row average that drives
+///   [`Recommendation::PartitionCountIncrease`].
 /// # Edge cases
 /// - Empty table (`n_live_tup == 0 && n_dead_tup == 0`): vacuum check
-/// is short-circuited (division-by-zero guard). Partition checks
-/// still run but neither fires for an empty table.
+///   is short-circuited (division-by-zero guard). Partition checks
+///   still run but neither fires for an empty table.
 /// - `partition_count == 0`: treated as "not partitioned" — only the
-/// `PartitionRecommended` rule can fire.
+///   `PartitionRecommended` rule can fire.
 /// - `partition_count >= 1` but row count below threshold: falls
-/// through to `Healthy`.
+///   through to `Healthy`.
 /// # See also
 /// [`Recommendation`] for the precedence ordering.
 pub fn recommend(
@@ -504,12 +504,12 @@ enum PartmanError {
 /// Returns `Err(PartmanError::Absent)` for the three SQLSTATEs that
 /// indicate "pg_partman not installed":
 /// - `42883` `UNDEFINED_FUNCTION` — `partman` schema present but
-/// `show_partitions` not (e.g. partial install).
+///   `show_partitions` not (e.g. partial install).
 /// - `42P01` `UNDEFINED_TABLE` — `show_partitions` resolves but the
-/// underlying `part_config` lookup fails because no partitioned
-/// parents are registered.
+///   underlying `part_config` lookup fails because no partitioned
+///   parents are registered.
 /// - `3F000` `INVALID_SCHEMA_NAME` — `partman` schema entirely
-/// absent.
+///   absent.
 async fn query_partition_count(
     ctx: &mut DjogiContext,
     table_name: &str,

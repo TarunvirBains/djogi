@@ -7,21 +7,21 @@
 //! shape, but with two sides.
 //! Three flavours of pair-tuple query are supported in v0.1.0:
 //! 1. **Single-model self-join** — pair the same model with itself, e.g.
-//! `(Elephant, Elephant)`. The canonical target: mating-pair
-//! candidate generation where left is "female" and right is "male".
-//! Entered via [`QuerySet::self_pairs`](crate::query::QuerySet::self_pairs);
-//! the default emission excludes the same-PK identity row
-//! (`WHERE l.id <> r.id`).
+//!    `(Elephant, Elephant)`. The canonical target: mating-pair
+//!    candidate generation where left is "female" and right is "male".
+//!    Entered via [`QuerySet::self_pairs`](crate::query::QuerySet::self_pairs);
+//!    the default emission excludes the same-PK identity row
+//!    (`WHERE l.id <> r.id`).
 //! 2. **Two-model cross-join** — pair different models, e.g.
-//! `(Sighting, Herd)`. Entered via
-//! [`QuerySet::cross_join_with`](crate::query::QuerySet::cross_join_with).
+//!    `(Sighting, Herd)`. Entered via
+//!    [`QuerySet::cross_join_with`](crate::query::QuerySet::cross_join_with).
 //! 3. **Closure-self-join** — extends the self-join with one or two
-//! `LEFT JOIN`s against a [`ClosureModel`] table so kinship-style
-//! queries can sum over shared ancestors per pair. Entered via
-//! [`JoinedQuerySet::left_join_closure_pair`]; the
-//! typed [`PairClosureKinshipSum`] aggregate emits the Wright-style
-//! `SUM(la.path_count × ra.path_count × 0.5^(la.depth + ra.depth + 1))`
-//! over the joined pair.
+//!    `LEFT JOIN`s against a [`ClosureModel`] table so kinship-style
+//!    queries can sum over shared ancestors per pair. Entered via
+//!    [`JoinedQuerySet::left_join_closure_pair`]; the
+//!    typed [`PairClosureKinshipSum`] aggregate emits the Wright-style
+//!    `SUM(la.path_count × ra.path_count × 0.5^(la.depth + ra.depth + 1))`
+//!    over the joined pair.
 //! # Why
 //! The pre-Cluster-4A typed surface ([`QuerySet<T>`](crate::query::QuerySet),
 //! plus [`AnnotatedQuerySet<T, A>`](crate::query::AnnotatedQuerySet)) requires
@@ -64,11 +64,11 @@
 //! aim at. Mirrors [`QuerySet<T>`](crate::query::QuerySet)'s variance.
 //! # Where
 //! - Entry: [`QuerySet::self_pairs`](crate::query::QuerySet::self_pairs)
-//! and [`QuerySet::cross_join_with`](crate::query::QuerySet::cross_join_with).
+//!   and [`QuerySet::cross_join_with`](crate::query::QuerySet::cross_join_with).
 //! - Annotated extension: [`JoinedAnnotatedQuerySet`].
 //! - Closure-pair extension: [`JoinedQuerySet::left_join_closure_pair`].
 //! - SQL emitters: `build_joined_select`, `build_joined_count`,
-//! `build_joined_annotated_select_for_fetch` (crate-private).
+//!   `build_joined_annotated_select_for_fetch` (crate-private).
 
 #![allow(clippy::manual_async_fn)]
 
@@ -275,22 +275,22 @@ impl ClosurePairJoin {
 /// Returns [`DjogiError::Validation`] for:
 /// - [`PkType::None`] — the model has no primary key, so `l.<pk> <>
 /// r.<pk>` self-pair anti-equality and `la.<src> = l.<pk>`
-/// closure-pair joins both have no column to reference.
+///   closure-pair joins both have no column to reference.
 /// - [`PkType::Composite`] — multi-column PKs would need multi-column
-/// `(l.c1, l.c2) <> (r.c1, r.c2)` emission, multi-column closure
-/// join keys, and multi-column GROUP BY. The v0.1.0 pair-tuple
-/// substrate does not implement multi-column emission, so composite
-/// PKs are rejected at the terminal-call gate rather than silently
-/// degenerating to a single-column emission (the pre-fix
-/// `unwrap_or("id")` fallback).
-/// Called from the terminals before SQL build:
-/// [`JoinedQuerySet::fetch_all`], [`JoinedQuerySet::count`], and
-/// [`JoinedAnnotatedQuerySet::fetch_all`] each invoke this for both
-/// sides whenever the path requires per-row identity (self-pair
-/// anti-equality, closure-pair joins, or pair-aggregate GROUP BY).
-/// The validated `&'static str` is then threaded through the emitter
-/// helpers as a parameter so no helper carries a silent
-/// `unwrap_or("id")` fallback.
+///   `(l.c1, l.c2) <> (r.c1, r.c2)` emission, multi-column closure
+///   join keys, and multi-column GROUP BY. The v0.1.0 pair-tuple
+///   substrate does not implement multi-column emission, so composite
+///   PKs are rejected at the terminal-call gate rather than silently
+///   degenerating to a single-column emission (the pre-fix
+///   `unwrap_or("id")` fallback).
+///   Called from the terminals before SQL build:
+///   [`JoinedQuerySet::fetch_all`], [`JoinedQuerySet::count`], and
+///   [`JoinedAnnotatedQuerySet::fetch_all`] each invoke this for both
+///   sides whenever the path requires per-row identity (self-pair
+///   anti-equality, closure-pair joins, or pair-aggregate GROUP BY).
+///   The validated `&'static str` is then threaded through the emitter
+///   helpers as a parameter so no helper carries a silent
+///   `unwrap_or("id")` fallback.
 pub(crate) fn validated_pk_column_for_pair_identity<M: Model>() -> Result<&'static str, DjogiError>
 {
     let desc = M::descriptor();
@@ -1944,17 +1944,17 @@ impl<C: ClosureModel> crate::query::annotate::annotation_slot_sealed::Sealed
 /// Before this slot existed, adopters whose per-pair scoring needed
 /// `(left_geometry, right_geometry) → overlap_ratio` had three options:
 /// 1. Pre-fetch one hull-per-`Model`-row into Rust and call the scalar
-/// `Expr::area_of_intersection(&a, &b)` API per pair — N round trips.
+///    `Expr::area_of_intersection(&a, &b)` API per pair — N round trips.
 /// 2. Drop to raw SQL via the bypass attribute — escapes the typed
-/// projection pipeline.
+///    projection pipeline.
 /// 3. Compute the intersection in Rust — djogi does not ship a polygon-
-/// intersection algorithm and pulling in `geo` is outside the
-/// framework's spatial scope (the framework's role is to expose
-/// PostGIS, not to wrap it locally).
-/// `PairAreaOverlapRatio` provides the typed fourth path: one query
-/// emits the full pair-tuple plus overlap ratio per pair, mirroring how
-/// [`PairClosureKinshipSum<C>`] gives the typed kinship sum without the
-/// per-pair-roundtrip workaround.
+///    intersection algorithm and pulling in `geo` is outside the
+///    framework's spatial scope (the framework's role is to expose
+///    PostGIS, not to wrap it locally).
+///    `PairAreaOverlapRatio` provides the typed fourth path: one query
+///    emits the full pair-tuple plus overlap ratio per pair, mirroring how
+///    [`PairClosureKinshipSum<C>`] gives the typed kinship sum without the
+///    per-pair-roundtrip workaround.
 /// # How — SQL shape
 /// In a [`JoinedAnnotatedQuerySet::fetch_all`] terminal the slot
 /// contributes one SELECT-list column:
@@ -1967,29 +1967,29 @@ impl<C: ClosureModel> crate::query::annotate::annotation_slot_sealed::Sealed
 /// denominator `NULLIF(..., 0)::float8`) keeps every NULL / empty /
 /// zero-area edge case decodable:
 /// - Either side's geometry column is `NULL`: `ST_Intersection` returns
-/// `NULL`, `COALESCE(NULL, 0) = 0`. Left area = `NULL`, `NULLIF(NULL,
+///   `NULL`, `COALESCE(NULL, 0) = 0`. Left area = `NULL`, `NULLIF(NULL,
 /// 0) = NULL`. Final = `0 / NULL = NULL` → decodes as `0.0`.
 /// - Disjoint geometries: `ST_Intersection` returns empty,
-/// `ST_Area(empty::geography) = 0`. `COALESCE(0, 0) = 0`. Left area =
-/// nonzero. Final = `0 / nonzero = 0.0`. ✓
+///   `ST_Area(empty::geography) = 0`. `COALESCE(0, 0) = 0`. Left area =
+///   nonzero. Final = `0 / nonzero = 0.0`. ✓
 /// - Coincident geometries: numerator = `ST_Area(l)`, denominator =
-/// `ST_Area(l)`. Final = `1.0`. ✓
+///   `ST_Area(l)`. Final = `1.0`. ✓
 /// - Left has zero area (degenerate point / linestring): `NULLIF(0, 0)
 /// = NULL`. Final = `0.0`. ✓ (Avoids divide-by-zero.)
-/// Decode uses `Option<f64>` and maps `None` to `0.0` so a `NULL`
-/// result never trips an `f64` `FromSql` error.
+///   Decode uses `Option<f64>` and maps `None` to `0.0` so a `NULL`
+///   result never trips an `f64` `FromSql` error.
 /// # Where
 /// - SQL is emitted in [`JoinedAnnotatedQuerySet::fetch_all`] via the
-/// `AnnotationSlot::push_column` trait surface.
+///   `AnnotationSlot::push_column` trait surface.
 /// - The `l` / `r` alias prefixes come from the pair-tuple substrate
-/// ([`LEFT_ALIAS`] / [`RIGHT_ALIAS`]). The column names come from
-/// `IntoSqlField::into_sql_field.column` at construction time,
-/// which is macro-validated against the unquoted-identifier byte
-/// grammar at field-handle construction.
+///   ([`LEFT_ALIAS`] / [`RIGHT_ALIAS`]). The column names come from
+///   `IntoSqlField::into_sql_field.column` at construction time,
+///   which is macro-validated against the unquoted-identifier byte
+///   grammar at field-handle construction.
 /// - `is_joined_safe` returns `true` because both column references
-/// are explicitly alias-qualified in the emitted SQL — there is no
-/// ambiguity between `l.<lcol>` and `r.<rcol>` even on self-joins
-/// (Mating-pairs of `(Herd, Herd)` etc.).
+///   are explicitly alias-qualified in the emitted SQL — there is no
+///   ambiguity between `l.<lcol>` and `r.<rcol>` even on self-joins
+///   (Mating-pairs of `(Herd, Herd)` etc.).
 /// # Constructing
 /// Build a `PairAreaOverlapRatio<L, R>` from two field handles whose
 /// value types implement [`crate::geo::GeographyValue`]:

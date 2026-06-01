@@ -6,9 +6,9 @@
 //! generates:
 //! 1. `ToSql` — encodes `self` as the mapped string label.
 //! 2. `FromSql` — decodes a wire string, matches against known variants, returns
-//! `Err(EnumDecodeError::UnknownVariant { ... })` for unrecognised labels.
+//!    `Err(EnumDecodeError::UnknownVariant { ... })` for unrecognised labels.
 //! 3. `inventory::submit!(EnumDescriptor { ... })` — registers the enum's metadata so
-//! the migration differ can emit `CREATE TYPE ... AS ENUM (...)`.
+//!    the migration differ can emit `CREATE TYPE ... AS ENUM (...)`.
 //! 4. A `variants` convenience fn returning the mapped string slice.
 
 /// Decode failed: the Postgres wire string did not match any known variant.

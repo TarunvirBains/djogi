@@ -416,19 +416,19 @@ pub fn validate_unique_names(decls: &[ExclusionDecl]) -> syn::Result<()> {
 /// The emitter sets the spec's `extension_dependency` slot via
 /// [`derive_extension_dependency`]:
 /// * `using = "gist"` exclusions whose element list contains at least
-/// one btree comparison operator (`=`, `<>`, `<`, `<=`, `>`, `>=`)
-/// resolve to `Some("btree_gist")`. The canonical scheduling shape
-/// `EXCLUDE USING gist (room_id WITH =, period WITH &&)` matches
-/// the `=` element needs the btree_gist operator class for `=` on
-/// btree-only types inside a GiST index.
+///   one btree comparison operator (`=`, `<>`, `<`, `<=`, `>`, `>=`)
+///   resolve to `Some("btree_gist")`. The canonical scheduling shape
+///   `EXCLUDE USING gist (room_id WITH =, period WITH &&)` matches
+///   the `=` element needs the btree_gist operator class for `=` on
+///   btree-only types inside a GiST index.
 /// * Every other shape resolves to `None`. Pure-range exclusions
-/// (`elements = ["period WITH &&"]`) keep `None` because stock GiST
-/// handles range overlap natively. `using = "btree"` exclusions also
-/// resolve to `None` — btree EXCLUDEs are uncommon but never need
-/// btree_gist (the extension only matters for GiST indexes).
-/// Adopters never see this slot in the macro grammar; it is purely
-/// machinery for the bootstrap composer to aggregate the
-/// per-database extension install list.
+///   (`elements = ["period WITH &&"]`) keep `None` because stock GiST
+///   handles range overlap natively. `using = "btree"` exclusions also
+///   resolve to `None` — btree EXCLUDEs are uncommon but never need
+///   btree_gist (the extension only matters for GiST indexes).
+///   Adopters never see this slot in the macro grammar; it is purely
+///   machinery for the bootstrap composer to aggregate the
+///   per-database extension install list.
 pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
     let name = decl.name.as_str();
     let using = decl.using.as_str();

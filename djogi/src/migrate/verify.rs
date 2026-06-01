@@ -4,41 +4,41 @@
 //! # Scope
 //! Verify answers three questions:
 //! 1. **Ledger ↔ catalog.** Every migration the ledger says is
-//! `applied` should show up in the live catalog (its tables,
-//! columns, indexes, foreign keys exist).
+//!    `applied` should show up in the live catalog (its tables,
+//!    columns, indexes, foreign keys exist).
 //! 2. **Snapshot ↔ catalog.** The current `schema_snapshot.json` for
-//! the bucket should match the live catalog. Any drift surfaces as
-//! a `D6xx` diagnostic.
+//!    the bucket should match the live catalog. Any drift surfaces as
+//!    a `D6xx` diagnostic.
 //! 3. **Snapshot ↔ ledger.** The most recent applied ledger row
-//! should carry a checksum that re-validates against the snapshot's
-//! declared format version. Format errors surface as `D6xx`.
-//! Verify never mutates anything — it is strictly read-only against
-//! the live database and the snapshot file. The previous T5 entry
-//! point bootstrapped the ledger table on the way in, which violated
-//! the "verify never writes" contract on a fresh DB; that has been
-//! removed and a missing ledger now surfaces as a typed `D621`
-//! Error diagnostic instead. Mutations belong to [`super::repair`].
+//!    should carry a checksum that re-validates against the snapshot's
+//!    declared format version. Format errors surface as `D6xx`.
+//!    Verify never mutates anything — it is strictly read-only against
+//!    the live database and the snapshot file. The previous T5 entry
+//!    point bootstrapped the ledger table on the way in, which violated
+//!    the "verify never writes" contract on a fresh DB; that has been
+//!    removed and a missing ledger now surfaces as a typed `D621`
+//!    Error diagnostic instead. Mutations belong to [`super::repair`].
 //! # Minimum viable verify (T5)
 //! T5 reads the live catalog into a *partial* [`AppliedSchema`]
 //! containing only what the verify path needs to compare:
 //! - **Tables.** Name + column list (name, rendered SQL type,
-//! nullability, default expression).
+//!   nullability, default expression).
 //! - **Primary keys.** Column list — diffed. Kind detection stays
-//! deferred.
+//!   deferred.
 //! - **Indexes.** Name + table + columns (in order) + uniqueness +
-//! method — diffed. `INCLUDE` and partial-predicate surface as
-//! `Info` diagnostics.
+//!   method — diffed. `INCLUDE` and partial-predicate surface as
+//!   `Info` diagnostics.
 //! - **Foreign keys.** Source `(table, column)` + target
-//! `(table, column)` + cascade + deferrability — diffed as D609.
-//! Other fields ([`crate::migrate::schema::TableSchema::fts`],
-//! [`crate::migrate::schema::TableSchema::partition`],
-//! [`crate::migrate::schema::TableSchema::tenant_key`], enum types)
-//! surface as advisory `Info` diagnostics for T8 can
-//! tighten them to `Error` once the live-DB projection grows. The
-//! deferral is intentional: the v3 plan's stop condition explicitly
-//! says ">500 LOC of catalog SQL is a sign you should narrow scope
-//! and surface it for review". Any tightening lands in T8 alongside
-//! the `migrations status` work.
+//!   `(table, column)` + cascade + deferrability — diffed as D609.
+//!   Other fields ([`crate::migrate::schema::TableSchema::fts`],
+//!   [`crate::migrate::schema::TableSchema::partition`],
+//!   [`crate::migrate::schema::TableSchema::tenant_key`], enum types)
+//!   surface as advisory `Info` diagnostics for T8 can
+//!   tighten them to `Error` once the live-DB projection grows. The
+//!   deferral is intentional: the v3 plan's stop condition explicitly
+//!   says ">500 LOC of catalog SQL is a sign you should narrow scope
+//!   and surface it for review". Any tightening lands in T8 alongside
+//!   the `migrations status` work.
 //! # Diagnostic codes (D6xx range)
 //! Verify's diagnostic codes live in the `D6xx` namespace (D025 is
 //! T4's guard, D004 is build-rs folder drift). Each code has a stable
@@ -420,23 +420,23 @@ pub async fn verify_with_policy(
 /// already routed to the correct database for `bucket.database`.
 /// # Parameters
 /// - `emit_ledger_diagnostics` — the caller passes `true` for the first
-/// bucket of each database target, so the ledger-lifecycle diagnostics
-/// (`D621` ledger-missing, `D622` out-of-order, `D699` schema-dropped)
-/// are emitted once per database rather than once per app bucket. The
-/// `djogi_schema_migrations` ledger is shared per database (every app's
-/// migrations land in the same ledger), so emitting these per app would
-/// duplicate the same finding N times. When `false`, the ledger is still
-/// read to populate the report's summary counts
-/// (`applied_count` / `unfinished_count` / `latest_applied_version`),
-/// but no ledger-lifecycle diagnostic is pushed.
+///   bucket of each database target, so the ledger-lifecycle diagnostics
+///   (`D621` ledger-missing, `D622` out-of-order, `D699` schema-dropped)
+///   are emitted once per database rather than once per app bucket. The
+///   `djogi_schema_migrations` ledger is shared per database (every app's
+///   migrations land in the same ledger), so emitting these per app would
+///   duplicate the same finding N times. When `false`, the ledger is still
+///   read to populate the report's summary counts
+///   (`applied_count` / `unfinished_count` / `latest_applied_version`),
+///   but no ledger-lifecycle diagnostic is pushed.
 /// - `database_has_models` — `true` if any inventory bucket for this
-/// database has non-empty models. Gates `D699`: an orphan-only database
-/// (snapshot on disk but no registered models) has no live tables to
-/// miss, so `D601` ("snapshot table missing") is the actionable signal
-/// instead and `D699` would be redundant noise. This replaces
-/// [`verify_with_policy`]'s `!snapshot.models.is_empty` gate, which is
-/// per-bucket; the database-wide flag is the correct scope because the
-/// ledger and the "zero live tables" condition are both database-wide.
+///   database has non-empty models. Gates `D699`: an orphan-only database
+///   (snapshot on disk but no registered models) has no live tables to
+///   miss, so `D601` ("snapshot table missing") is the actionable signal
+///   instead and `D699` would be redundant noise. This replaces
+///   [`verify_with_policy`]'s `!snapshot.models.is_empty` gate, which is
+///   per-bucket; the database-wide flag is the correct scope because the
+///   ledger and the "zero live tables" condition are both database-wide.
 /// # Errors
 /// Returns [`VerifyRunError`] if any catalog or ledger read fails. A
 /// schema mismatch is *not* an error — it surfaces as an `Error`-severity
@@ -689,8 +689,8 @@ async fn project_live_schema(ctx: &mut DjogiContext) -> Result<AppliedSchema, Ve
 /// columns. Excludes framework-internal bookkeeping tables:
 /// - `djogi_schema_migrations` — the ledger.
 /// - HeeRanjID artifact tables — see [`HEERANJID_ARTIFACT_TABLES`].
-/// Adopter-owned tables that legitimately start with `heer_` are
-/// preserved.
+///   Adopter-owned tables that legitimately start with `heer_` are
+///   preserved.
 async fn read_tables(
     ctx: &mut DjogiContext,
     foreign_keys: &[LiveForeignKey],
@@ -967,12 +967,12 @@ async fn read_all_primary_key_columns(
 /// columns in order, uniqueness, method (btree / gin / ...).
 /// Skips:
 /// - PK indexes (the column list lives on the table's
-/// [`super::schema::PrimaryKeySchema`]).
+///   [`super::schema::PrimaryKeySchema`]).
 /// - HeeRanjID artifact tables — see [`HEERANJID_ARTIFACT_TABLES`].
 /// - The ledger table.
-/// `INCLUDE(...)` columns and partial-predicate `WHERE` clauses are
-/// deliberately NOT projected here — the T5 stop condition keeps
-/// those at advisory `Info` level for now (D693). T8 will tighten.
+///   `INCLUDE(...)` columns and partial-predicate `WHERE` clauses are
+///   deliberately NOT projected here — the T5 stop condition keeps
+///   those at advisory `Info` level for now (D693). T8 will tighten.
 async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, VerifyRunError> {
     // Step 1 — one row per index with name + table + uniqueness +
     // access method. Step 2 (read_all_index_columns, batched per
@@ -1507,7 +1507,7 @@ fn diff_primary_key(
 /// Diagnostics emitted:
 /// - D610 — snapshot index missing in live DB (Error).
 /// - D611 — live index not in snapshot (Warning — may be a
-/// constraint-backed auto-index).
+///   constraint-backed auto-index).
 /// - D612 — index columns differ (Error).
 /// - D613 — index uniqueness differs (Error).
 /// - D614 — index method differs (Warning).
@@ -1686,17 +1686,17 @@ fn index_target_column_names(target: &IndexTargetSchema) -> Vec<&str> {
 /// - `'foo'` vs `'foo'::text` → match
 /// - `now` vs `now::timestamptz` → match
 /// - `'foo'::text::varchar` → `'foo'` (nested casts collapsed in a
-/// loop; Postgres renders nested casts unchanged on `pg_get_expr`,
-/// so the comparator must peel them)
+///   loop; Postgres renders nested casts unchanged on `pg_get_expr`,
+///   so the comparator must peel them)
 /// - `42` vs `43` → mismatch (different value)
 /// - `now` vs `current_timestamp` → mismatch (different func — T8
-/// may add an alias map)
-/// Trim is whitespace-only on both ends; other whitespace inside
-/// the expression is preserved (Postgres preserves it on the way
-/// back to the catalog).
-/// `None` and the empty string are normalised to `None` so a column
-/// declared with `DEFAULT NULL` (which Postgres collapses to "no
-/// default") matches a snapshot that omits the field entirely.
+///   may add an alias map)
+///   Trim is whitespace-only on both ends; other whitespace inside
+///   the expression is preserved (Postgres preserves it on the way
+///   back to the catalog).
+///   `None` and the empty string are normalised to `None` so a column
+///   declared with `DEFAULT NULL` (which Postgres collapses to "no
+///   default") matches a snapshot that omits the field entirely.
 fn normalize_default_expr(expr: Option<&str>) -> Option<String> {
     let raw = expr?.trim();
     if raw.is_empty() {
@@ -1880,49 +1880,49 @@ fn render_type_for_compare(s: &str) -> String {
 /// (every app's tables live in `public`), so the scoping is driven
 /// from the inventory's `ModelDescriptor::app` field:
 /// - **Synthetic global bucket** (`bucket.app == ""`,
-/// [`crate::AppDescriptor::GLOBAL_LABEL`]): every live table is
-/// included EXCEPT those whose `ModelDescriptor` declares a
-/// non-global app. The empty-label bucket is the catch-all for
-/// tables that pre-date Djogi's apps subsystem (legacy / baseline
-/// adoption) plus any model that omitted `#[model(app = ...)]`.
+///   [`crate::AppDescriptor::GLOBAL_LABEL`]): every live table is
+///   included EXCEPT those whose `ModelDescriptor` declares a
+///   non-global app. The empty-label bucket is the catch-all for
+///   tables that pre-date Djogi's apps subsystem (legacy / baseline
+///   adoption) plus any model that omitted `#[model(app = ...)]`.
 /// - **Named bucket** (`bucket.app == "billing"`, etc.): only tables
-/// whose `ModelDescriptor` declares this exact app label are
-/// projected. Live tables that have no inventory descriptor are
-/// excluded — they belong to either the global bucket or another
-/// app's baseline, never to a named app's projection.
-/// **Where the bucket database flows.** The `database` component is
-/// already routed by the caller via `DjogiContext::switch_to(...)`
-/// before calling this function — `ctx` is always pointing at the
-/// right pool. The projection itself only ever queries the
-/// connection it is given; the bucket database is advisory at this
-/// layer (it is checked in the caller against the routed pool).
-/// **Why inventory and not the ledger.** The ledger only records
-/// migration versions, not the tables those migrations touched. A
-/// bucket-scoped projection driven from `app_label` history would
-/// require a per-migration table-touch index that does not exist
-/// today. Inventory-driven scoping is the project-wide convention
-/// the migration substrate already uses (see
-/// [`super::projection::project_from_inventory`]); reusing it keeps
-/// the two projection paths in lockstep.
-/// **Standalone / unlinked named-bucket scoping (#370).** The
-/// published standalone `djogi` binary links no adopter model crates,
-/// so the `ModelDescriptor` inventory is empty. For a NAMED bucket
-/// that leaves `this_bucket_tables` empty, which would filter the live
-/// schema to nothing and make a valid on-disk snapshot report every
-/// table as missing (false drift). When (a) the bucket is named, (b)
-/// no descriptor in this process claims it, and (c) the entire
-/// `ModelDescriptor` inventory is empty (the standalone signal — NOT
-/// merely a linked binary whose app was removed, which must still
-/// surface real drift), the live schema is instead scoped to the
-/// `fallback_table_names` the caller threads in (verify passes the
-/// on-disk snapshot's own table names). A correct snapshot then
-/// validates cleanly against a live DB that has its tables. The GLOBAL
-/// bucket is unaffected: with an empty inventory `all_app_tables` is
-/// empty, so it already retains every live table.
-/// **`fallback_table_names` is verify-only.** The repair and baseline
-/// callers pass `None` — they project the live DB to BUILD a snapshot
-/// and have no on-disk snapshot to scope from — so their behavior is
-/// byte-for-byte unchanged by this parameter.
+///   whose `ModelDescriptor` declares this exact app label are
+///   projected. Live tables that have no inventory descriptor are
+///   excluded — they belong to either the global bucket or another
+///   app's baseline, never to a named app's projection.
+///   **Where the bucket database flows.** The `database` component is
+///   already routed by the caller via `DjogiContext::switch_to(...)`
+///   before calling this function — `ctx` is always pointing at the
+///   right pool. The projection itself only ever queries the
+///   connection it is given; the bucket database is advisory at this
+///   layer (it is checked in the caller against the routed pool).
+///   **Why inventory and not the ledger.** The ledger only records
+///   migration versions, not the tables those migrations touched. A
+///   bucket-scoped projection driven from `app_label` history would
+///   require a per-migration table-touch index that does not exist
+///   today. Inventory-driven scoping is the project-wide convention
+///   the migration substrate already uses (see
+///   [`super::projection::project_from_inventory`]); reusing it keeps
+///   the two projection paths in lockstep.
+///   **Standalone / unlinked named-bucket scoping (#370).** The
+///   published standalone `djogi` binary links no adopter model crates,
+///   so the `ModelDescriptor` inventory is empty. For a NAMED bucket
+///   that leaves `this_bucket_tables` empty, which would filter the live
+///   schema to nothing and make a valid on-disk snapshot report every
+///   table as missing (false drift). When (a) the bucket is named, (b)
+///   no descriptor in this process claims it, and (c) the entire
+///   `ModelDescriptor` inventory is empty (the standalone signal — NOT
+///   merely a linked binary whose app was removed, which must still
+///   surface real drift), the live schema is instead scoped to the
+///   `fallback_table_names` the caller threads in (verify passes the
+///   on-disk snapshot's own table names). A correct snapshot then
+///   validates cleanly against a live DB that has its tables. The GLOBAL
+///   bucket is unaffected: with an empty inventory `all_app_tables` is
+///   empty, so it already retains every live table.
+///   **`fallback_table_names` is verify-only.** The repair and baseline
+///   callers pass `None` — they project the live DB to BUILD a snapshot
+///   and have no on-disk snapshot to scope from — so their behavior is
+///   byte-for-byte unchanged by this parameter.
 pub(super) async fn live_schema_for_repair(
     ctx: &mut DjogiContext,
     bucket: &BucketKey,

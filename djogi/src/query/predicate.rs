@@ -9,21 +9,21 @@
 //! `T`. If raw `BasicPredicate<T>` were accepted at Djogi cache or SQL
 //! boundaries, two threats would land at runtime:
 //! 1. **Field-name forgery** — an attacker (or honest mistake) can pair a
-//! valid column name with a closure that reads a different field of the
-//! struct. SQL emission would target the named column while in-memory
-//! Punnu evaluation would read the unrelated field, silently drifting
-//! cache-side and DB-side answers.
+//!    valid column name with a closure that reads a different field of the
+//!    struct. SQL emission would target the named column while in-memory
+//!    Punnu evaluation would read the unrelated field, silently drifting
+//!    cache-side and DB-side answers.
 //! 2. **Identifier smuggling** — `Field::new` accepts any `&'static str` for
-//! the column name; Djogi's SQL emitter ultimately routes it through
-//! `SqlAccumulator::push_sql`, which assumes its inputs were already
-//! validated against [`crate::ident::assert_plain_ident`] (the same gate
-//! applied to `FieldRef` and `RelationPath`).
-//! `PortablePredicate<T>` is the trusted-Djogi-provenance wrapper. Its
-//! `from_djogi_field` constructor requires a [`crate::query::field::DjogiFieldProvenance`]
-//! token, and that token is constructible only by Djogi-owned root field
-//! methods on `DjogiField` / `DjogiPresentField`. The seal is the same
-//! pattern the rest of the crate uses for `RelationPath`,
-//! `OptionalRelationRef`, and `__SealedIntoQ`.
+//!    the column name; Djogi's SQL emitter ultimately routes it through
+//!    `SqlAccumulator::push_sql`, which assumes its inputs were already
+//!    validated against [`crate::ident::assert_plain_ident`] (the same gate
+//!    applied to `FieldRef` and `RelationPath`).
+//!    `PortablePredicate<T>` is the trusted-Djogi-provenance wrapper. Its
+//!    `from_djogi_field` constructor requires a [`crate::query::field::DjogiFieldProvenance`]
+//!    token, and that token is constructible only by Djogi-owned root field
+//!    methods on `DjogiField` / `DjogiPresentField`. The seal is the same
+//!    pattern the rest of the crate uses for `RelationPath`,
+//!    `OptionalRelationRef`, and `__SealedIntoQ`.
 //! # `Predicate<T>` — a trusted `Q<T>` wrapper
 //! `Predicate<T>` is a thin shell over `Q<T>` carrying the mixed-operator
 //! matrix from the v3 plan. Pure-portable composition (`PortablePredicate<T>
@@ -34,14 +34,14 @@
 //! the cache boundary can audit.
 //! # PR2b scope
 //! - Implement `IntoQ<T>` for `PortablePredicate<T>`, `Predicate<T>`, and
-//! `crate::expr::Expr<bool>` (sealed alongside the existing impls in
-//! `query::q`).
+//!   `crate::expr::Expr<bool>` (sealed alongside the existing impls in
+//!   `query::q`).
 //! - Add the closed mixed-operator matrix between `PortablePredicate<T>`,
-//! `Predicate<T>`, and `Condition` so `&` / `|` / `^` / `!` compose freely
-//! regardless of operand order.
+//!   `Predicate<T>`, and `Condition` so `&` / `|` / `^` / `!` compose freely
+//!   regardless of operand order.
 //! - Manual `Clone` for `Predicate<T>` reaches into the new
-//! `Q<T>: Clone` impl (which itself does not require `T: Clone` after
-//! PR2b).
+//!   `Q<T>: Clone` impl (which itself does not require `T: Clone` after
+//!   PR2b).
 
 use crate::model::Model;
 use crate::query::condition::Condition;

@@ -6,14 +6,14 @@
 //! For each registered path on the queryset, the select_related emitter:
 //! 1. Appends a `LEFT JOIN {target_table} rel_{source_column}
 //! ON {parent_table}.{source_column} = rel_{source_column}.id` clause
-//! to the main query.
+//!    to the main query.
 //! 2. Extends the `SELECT` list with one entry per child column,
-//! aliased as `rel_{source_column}.{col} AS "rel_{source_column}.{col}"`
-//! so the result set carries both sides with no column-name
-//! collisions.
-//! After the query runs, the terminal walks each row and decodes the
-//! parent plus every registered child from the aliased columns,
-//! packaging them into `JoinedRow<T>`.
+//!    aliased as `rel_{source_column}.{col} AS "rel_{source_column}.{col}"`
+//!    so the result set carries both sides with no column-name
+//!    collisions.
+//!    After the query runs, the terminal walks each row and decodes the
+//!    parent plus every registered child from the aliased columns,
+//!    packaging them into `JoinedRow<T>`.
 //! # Why aliased child columns (not `SELECT t.*`)
 //! A prefix-aware decoder looks columns up by the exact alias name — `try_get("id")`
 //! finds the first column named `id`, which would be ambiguous the
@@ -43,13 +43,13 @@
 //! semantics.
 //! # T2 scope
 //! - Single-hop only — no chained `select_related(path_a.path_b)`. Multi-hop
-//! decode lands in T4.
+//!   decode lands in T4.
 //! - Multi-relation-per-queryset **is** supported (multiple
-//! `.select_related(...)` calls accumulate into a `Vec<ErasedSelectRelated>`,
-//! each producing its own aliased `LEFT JOIN`).
+//!   `.select_related(...)` calls accumulate into a `Vec<ErasedSelectRelated>`,
+//!   each producing its own aliased `LEFT JOIN`).
 //! - No join-time filtering — filters still target the parent table.
 //! - `.select_related(...)` + `.prefetch(...)` can coexist on the same
-//! queryset; the terminal honours both.
+//!   queryset; the terminal honours both.
 
 use crate::DjogiError;
 use crate::context::ContextInner;

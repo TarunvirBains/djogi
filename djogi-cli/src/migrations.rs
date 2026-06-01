@@ -608,12 +608,12 @@ async fn run_status(workspace: &Path) -> i32 {
 /// The three arms drive different exit codes at the call site:
 /// - [`ContextOutcome::Ready`] — pool connected and PG ≥ 18; proceed.
 /// - [`ContextOutcome::UnsupportedVersion`] — PG < 18. The caller renders
-/// the support-boundary message via
-/// [`crate::print_support_boundary_error`] and exits `2` (refusal: the
-/// operator must upgrade Postgres; retrying changes nothing).
+///   the support-boundary message via
+///   [`crate::print_support_boundary_error`] and exits `2` (refusal: the
+///   operator must upgrade Postgres; retrying changes nothing).
 /// - [`ContextOutcome::RuntimeError`] — pool connect failed, the preflight
-/// query errored, or any other non-version `DjogiError`. The caller
-/// prints the message and exits `1` (transient: CI may retry).
+///   query errored, or any other non-version `DjogiError`. The caller
+///   prints the message and exits `1` (transient: CI may retry).
 // The `Ready` variant holds a `DjogiContext` (large — it wraps a
 // `DjogiPool`), while the other two variants are small (`DjogiError` /
 // `String`). Boxing `Ready` would add a heap allocation on the success
@@ -661,21 +661,21 @@ async fn connect_and_check(url: &str) -> ContextOutcome {
 /// Verify routes each bucket to the pool for its `database` component.
 /// The mapping mirrors Djogi's three-database architecture:
 /// - `"main"` ([`djogi::apps::AppDescriptor::GLOBAL_DATABASE`]) always uses
-/// the app URL verbatim. We do NOT derive it by splicing `"main"` into
-/// the path, because the operator's app URL may carry a path component
-/// that is not literally named `main` (e.g. `…/myapp_prod`); deriving
-/// would target a database that does not exist.
+///   the app URL verbatim. We do NOT derive it by splicing `"main"` into
+///   the path, because the operator's app URL may carry a path component
+///   that is not literally named `main` (e.g. `…/myapp_prod`); deriving
+///   would target a database that does not exist.
 /// - `"crud_log"` / `"event_log"` prefer the explicit
-/// [`djogi::config::DatabaseConfig::crud_log_url`] /
-/// [`event_log_url`](djogi::config::DatabaseConfig::event_log_url) when
-/// set to a non-empty value, matching how the audit / event pools are
-/// resolved elsewhere.
+///   [`djogi::config::DatabaseConfig::crud_log_url`] /
+///   [`event_log_url`](djogi::config::DatabaseConfig::event_log_url) when
+///   set to a non-empty value, matching how the audit / event pools are
+///   resolved elsewhere.
 /// - Any other database name (and the log databases when their explicit
-/// URL is absent) is derived by splicing the name into the app URL's
-/// path component via [`djogi::migrate::derive_per_database_url`].
-/// Returns `None` when derivation fails (the app URL has no recognisable
-/// path component); the caller surfaces that as a runtime error for the
-/// affected bucket.
+///   URL is absent) is derived by splicing the name into the app URL's
+///   path component via [`djogi::migrate::derive_per_database_url`].
+///   Returns `None` when derivation fails (the app URL has no recognisable
+///   path component); the caller surfaces that as a runtime error for the
+///   affected bucket.
 fn resolve_bucket_url(db_config: &djogi::config::DatabaseConfig, database: &str) -> Option<String> {
     // "main" always uses the app URL verbatim — do NOT derive, as the app
     // URL may not have a path component named "main".
@@ -1156,15 +1156,15 @@ fn reconstruct_snapshot_path(workspace: &Path, bucket: &djogi::migrate::BucketKe
 /// | true | true | rejected by clap (`conflicts_with`) |
 /// Argument semantics:
 /// - `target` is an optional positional Git target (commit / tag /
-/// branch). When supplied, attune resolves it (local first, fetch
-/// on miss) before any DB / disk mutation.
+///   branch). When supplied, attune resolves it (local first, fetch
+///   on miss) before any DB / disk mutation.
 /// - `apply` gates DB / disk mutation. Without it, every mode is a
-/// dry-run.
+///   dry-run.
 /// - `record` controls the parent repo's recorded submodule pointer
-/// (separate from `record_ledger`, which controls the
-/// `djogi_schema_migrations` ledger inserts).
-/// `--squash` requires `--from <ver>`; an absent `from` while
-/// `--squash` is set surfaces as a CLI error before any work happens.
+///   (separate from `record_ledger`, which controls the
+///   `djogi_schema_migrations` ledger inserts).
+///   `--squash` requires `--from <ver>`; an absent `from` while
+///   `--squash` is set surfaces as a CLI error before any work happens.
 // The CLI dispatch carries 11 inputs because the attune surface is
 // the broadest in the migrations CLI — target
 // resolution + dry-run + record-ledger + record-pointer + squash +
@@ -1343,17 +1343,17 @@ async fn run_attune(
 /// Map an [`AttuneError`] variant onto the documented exit-code
 /// matrix (`docs/spec/configuration.md` §14):
 /// - Refusal variants → exit code `2` ("operator must intervene;
-/// nothing happened"). Today every refusal flows through
-/// [`AttuneError::Refused`]; the localhost gate, the dev-profile
-/// gate, the missing-version refusal, and the ambiguous-version
-/// refusal are all reachable through that variant.
+///   nothing happened"). Today every refusal flows through
+///   [`AttuneError::Refused`]; the localhost gate, the dev-profile
+///   gate, the missing-version refusal, and the ambiguous-version
+///   refusal are all reachable through that variant.
 /// - Runtime variants → exit code `1` ("we tried; something broke"
-/// filesystem scan, ledger query, SQL read/write/delete, git
-/// publish). CI may safely retry these.
-/// Pulled out as a free function so unit tests can pin every variant
-/// without spinning a Tokio runtime. Operators rely on the 1-vs-2
-/// distinction to tell "refused before any side effect" from "ran and
-/// failed mid-flight".
+///   filesystem scan, ledger query, SQL read/write/delete, git
+///   publish). CI may safely retry these.
+///   Pulled out as a free function so unit tests can pin every variant
+///   without spinning a Tokio runtime. Operators rely on the 1-vs-2
+///   distinction to tell "refused before any side effect" from "ran and
+///   failed mid-flight".
 fn attune_error_exit_code(err: &AttuneError) -> i32 {
     match err {
         AttuneError::Refused(_) => 2,
@@ -1409,9 +1409,9 @@ pub fn verify_cmd(
 /// Exit codes:
 /// - `0` — every bucket verified with no error-severity diagnostic.
 /// - `1` — at least one runtime failure (pool / snapshot / verify error)
-/// or at least one bucket reported an error-severity diagnostic.
+///   or at least one bucket reported an error-severity diagnostic.
 /// - `2` — the server is below the minimum supported Postgres version
-/// (a server-global refusal: verify returns immediately).
+///   (a server-global refusal: verify returns immediately).
 async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict: bool) -> i32 {
     use djogi::config::DjogiConfig;
 
@@ -1839,11 +1839,11 @@ fn render_repair_report(report: &RepairReport) {
 /// Classification rule — when a new variant is added, classify it the
 /// same way:
 /// - **Exit 1 (retryable):** variants wrapping a transient I/O /
-/// connection / pool / SQL failure (a `source: DjogiError`, snapshot
-/// filesystem I/O, or advisory-lock contention). A retry may succeed.
+///   connection / pool / SQL failure (a `source: DjogiError`, snapshot
+///   filesystem I/O, or advisory-lock contention). A retry may succeed.
 /// - **Exit 2 (refusal):** structural refusals and ledger-logic guards
-/// that require operator intervention. A blind retry hits the same
-/// refusal.
+///   that require operator intervention. A blind retry hits the same
+///   refusal.
 fn repair_error_exit_code(err: &RepairError) -> i32 {
     match err {
         // ── Exit 1: transient I/O / connection / pool / SQL failures.

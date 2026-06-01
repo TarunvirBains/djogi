@@ -9,11 +9,11 @@
 //! Serial`; omitted for `pk = None`.
 //! 2. `created_at`, `updated_at` — always emitted.
 //! 3. User-declared columns in struct source order.
-//! The `OuterRef`'s `V` generic is the user's declared Rust type verbatim
-//! exactly like `{Model}Fields`. The typed `V` makes a correlated
-//! subquery like `outer_ref_on<V1>.as_expr.eq(field_ref_on<V2>.as_expr)`
-//! a compile error unless `V1 == V2`, catching value-type mismatches at
-//! the closure site rather than as a Postgres runtime error.
+//!    The `OuterRef`'s `V` generic is the user's declared Rust type verbatim
+//!    exactly like `{Model}Fields`. The typed `V` makes a correlated
+//!    subquery like `outer_ref_on<V1>.as_expr.eq(field_ref_on<V2>.as_expr)`
+//!    a compile error unless `V1 == V2`, catching value-type mismatches at
+//!    the closure site rather than as a Postgres runtime error.
 //! # Why associated functions (not methods)
 //! `OuterRef` does not carry any per-instance state — it is a typed
 //! handle that erases to a `&'static str` column name at construction.

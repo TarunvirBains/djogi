@@ -5,15 +5,15 @@
 //! ```
 //! # What is in this module
 //! - [`GeoPoint`] — a WGS-84 latitude/longitude coordinate, stored as
-//! `GEOGRAPHY(Point, 4326)` in Postgres.
+//!   `GEOGRAPHY(Point, 4326)` in Postgres.
 //! - [`LineString`] — an ordered sequence of two or more points, stored as
-//! `GEOGRAPHY(LineString, 4326)`.
+//!   `GEOGRAPHY(LineString, 4326)`.
 //! - [`Polygon`] — a closed ring (with optional holes), stored as
-//! `GEOGRAPHY(Polygon, 4326)`.
+//!   `GEOGRAPHY(Polygon, 4326)`.
 //! - [`MultiPoint`] — an unordered collection of one or more points, stored as
-//! `GEOGRAPHY(MultiPoint, 4326)`.
+//!   `GEOGRAPHY(MultiPoint, 4326)`.
 //! - [`MultiPolygon`] — a collection of one or more polygons, stored as
-//! `GEOGRAPHY(MultiPolygon, 4326)`.
+//!   `GEOGRAPHY(MultiPolygon, 4326)`.
 //! - [`GeographyValue`] — sealed trait implemented by all geometry types above.
 //! - [`GeoError`] — errors from coordinate validation and EWKB codec failures.
 
@@ -391,9 +391,9 @@ mod sealed_spatial_column_value {
 /// not yet be materialised for every row.
 /// # Implementations
 /// - Every `G: GeographyValue` (the bare-column case, e.g.
-/// `territory: Polygon`).
+///   `territory: Polygon`).
 /// - `Option<G>` for every `G: GeographyValue` (the nullable-column
-/// case, e.g. `territory: Option<Polygon>`).
+///   case, e.g. `territory: Option<Polygon>`).
 /// # Sealing rationale
 /// `Sealed` lives in [`sealed_spatial_column_value`], a `pub(crate)`
 /// module — downstream crates can name the trait as a bound but cannot

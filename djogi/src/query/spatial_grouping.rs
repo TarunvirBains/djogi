@@ -54,8 +54,8 @@ pub(crate) struct SpatialJoinSpec {
 /// [`QuerySet::count_by_region`].
 /// - `Some(pk)` — the row fell inside region `R` with that primary key.
 /// - `None` — the row matched no region (LEFT JOIN semantics; the
-/// "unassigned" bucket so rows outside all known regions are not silently
-/// dropped).
+///   "unassigned" bucket so rows outside all known regions are not silently
+///   dropped).
 /// # Type parameter
 /// `R` is the region model — any type that implements [`Model`]. The primary
 /// key type is `R::Pk`.
@@ -211,12 +211,12 @@ impl GeohashPrecision {
 
 /// Group key produced by [`QuerySet::cluster_by_proximity`].
 /// - `ClusterId(Some(id))` — the row belongs to cluster `id`. Ids are
-/// assigned by PostGIS `ST_ClusterDBSCAN` and are dense non-negative
-/// integers starting at `0`, but their values should not be interpreted
-/// beyond "same id ⟹ same cluster".
+///   assigned by PostGIS `ST_ClusterDBSCAN` and are dense non-negative
+///   integers starting at `0`, but their values should not be interpreted
+///   beyond "same id ⟹ same cluster".
 /// - `ClusterId(None)` — the row is a *noise point*: isolated, with fewer
-/// than `minpoints` neighbours within `eps`. Only possible when
-/// `ClusterRadius::min_points(n)` is set to `n > 1`.
+///   than `minpoints` neighbours within `eps`. Only possible when
+///   `ClusterRadius::min_points(n)` is set to `n > 1`.
 /// # When `None` appears
 /// With `ClusterRadius::meters(500.0)` (default `min_points = 1`), every
 /// point is always a core point of its own cluster, so `None` is never
@@ -231,11 +231,11 @@ pub struct ClusterId(pub Option<i32>);
 /// Holds the geohash string at the chosen [`GeohashPrecision`], wrapped in
 /// `Option` for symmetry with [`ClusterId`] and to handle the NULL case:
 /// - `GeohashKey(Some(h))` — the row's geography column had a value, and
-/// `ST_GeoHash` produced the geohash string `h`.
+///   `ST_GeoHash` produced the geohash string `h`.
 /// - `GeohashKey(None)` — the row's geography column was SQL `NULL`
-/// (`Option<G>` field). `ST_GeoHash(NULL, _)` returns `NULL`, and these
-/// rows land in a single `None` bucket.
-/// Non-nullable geography columns (no `Option<G>`) never produce `None`.
+///   (`Option<G>` field). `ST_GeoHash(NULL, _)` returns `NULL`, and these
+///   rows land in a single `None` bucket.
+///   Non-nullable geography columns (no `Option<G>`) never produce `None`.
 /// # Interpreting the key
 /// Geohash strings are prefix-ordered: `"dr5r"` falls inside the coarser cell
 /// `"dr5"`, which falls inside `"dr"`, etc. You can therefore perform

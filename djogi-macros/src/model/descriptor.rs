@@ -1174,17 +1174,17 @@ fn try_expand(
 /// The emitted SQL contains two statements:
 /// 1. `ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;`
 /// 2. `CREATE POLICY {table}_tenant_isolation ON {table} USING (col = current_setting(...));`
-/// The cast in the `USING` expression depends on the tenant column's SQL type:
+///    The cast in the `USING` expression depends on the tenant column's SQL type:
 /// - `BigInt` → `::bigint`
 /// - `Uuid` → `::uuid`
 /// - `Text` → no cast
 /// - Any other type → compile error (via `proc_macro_error` note, non-fatal).
-/// The migration differ will consume this file. Until then, the file
-/// serves as documentation and as an integration-test fixture the test can
-/// verify was created.
-/// The function is intentionally non-fatal on I/O errors (uses `eprintln!` not
-/// `panic!`) so a proc macro failure due to a missing `target/` directory does
-/// not break builds in unusual environments.
+///   The migration differ will consume this file. Until then, the file
+///   serves as documentation and as an integration-test fixture the test can
+///   verify was created.
+///   The function is intentionally non-fatal on I/O errors (uses `eprintln!` not
+///   `panic!`) so a proc macro failure due to a missing `target/` directory does
+///   not break builds in unusual environments.
 fn emit_rls_side_channel(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
@@ -1540,7 +1540,7 @@ fn is_geography_type(ty: &syn::Type) -> bool {
 /// present without an explicit method.
 /// - `Jsonb<T>` → `IndexType::Gin`
 /// - Any geography type (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
-/// `MultiPolygon`) or raw `Geography<…>` wrapper → `IndexType::Gist`
+///   `MultiPolygon`) or raw `Geography<…>` wrapper → `IndexType::Gist`
 /// - Everything else → `IndexType::BTree`
 fn default_index_type(ty: &syn::Type) -> TokenStream {
     if is_jsonb_type(ty) {

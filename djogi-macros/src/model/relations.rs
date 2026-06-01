@@ -7,22 +7,22 @@
 //! - the column name on the source table (`"owner_id"`),
 //! - the target table name (via `Target::table_name` at runtime),
 //! - the relation [`RelationKind`](::djogi::relation::RelationKind).
-//! Tasks 4 + 5 consume these handles: `QuerySet::prefetch(path)` and
-//! `QuerySet::select_related(path)` accept `RelationPath<Self, _>` and emit
-//! the appropriate SQL strategy without further reflection on the source
-//! struct.
+//!   Tasks 4 + 5 consume these handles: `QuerySet::prefetch(path)` and
+//!   `QuerySet::select_related(path)` accept `RelationPath<Self, _>` and emit
+//!   the appropriate SQL strategy without further reflection on the source
+//!   struct.
 //! # Why a separate module
 //! The `{Model}Related` surface is disjoint from `{Model}Fields` and
 //! `{Model}Filter`:
 //! - `{Model}Fields` covers every column (framework + user) and drives the
-//! closure filter API;
+//!   closure filter API;
 //! - `{Model}Filter` covers user columns only and drives the erased/
-//! programmatic filter API;
+//!   programmatic filter API;
 //! - `{Model}Related` covers *only* relation-typed fields (FK / O2O) and
-//! drives prefetch / select_related.
-//! Keeping each in its own module isolates the codegen surfaces: a future
-//! change to relation detection or prefetch-path shape only touches this
-//! file; a change to `FieldRef` or `Lookup` never reaches here.
+//!   drives prefetch / select_related.
+//!   Keeping each in its own module isolates the codegen surfaces: a future
+//!   change to relation detection or prefetch-path shape only touches this
+//!   file; a change to `FieldRef` or `Lookup` never reaches here.
 //! # Method-name convention
 //! By convention, users name relation columns `{target}_id` (e.g.
 //! `owner_id: ForeignKey<Owner>`). This module strips one trailing `_id`

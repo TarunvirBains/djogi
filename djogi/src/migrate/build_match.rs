@@ -7,35 +7,35 @@
 //! # The three sources
 //! Per the v3 plan §6 amendment:
 //! 1. **`models`** — the descriptor inventory at compile time.
-//! Source: `target/djogi_models.json` written by `#[derive(Model)]`
-//! on every `cargo build`. In the build.rs caller this is parsed
-//! fresh every build; here we accept it as an `Option<&AppliedSchema>`
-//! keyed per-bucket.
+//!    Source: `target/djogi_models.json` written by `#[derive(Model)]`
+//!    on every `cargo build`. In the build.rs caller this is parsed
+//!    fresh every build; here we accept it as an `Option<&AppliedSchema>`
+//!    keyed per-bucket.
 //! 2. **`pending`** — the most recent composed (but not yet applied)
-//! delta. Source: `target/djogi_pending/<database>/<app>.json`
-//! written by `migrations compose`. `None` when no compose is
-//! pending.
+//!    delta. Source: `target/djogi_pending/<database>/<app>.json`
+//!    written by `migrations compose`. `None` when no compose is
+//!    pending.
 //! 3. **`snapshot`** — the last successfully-applied schema. Source:
-//! `migrations/<database>/<app>/schema_snapshot.json` committed
-//! to the migrations submodule. `None` for a fresh
-//! `(database, app)` pair (zero migrations applied).
+//!    `migrations/<database>/<app>/schema_snapshot.json` committed
+//!    to the migrations submodule. `None` for a fresh
+//!    `(database, app)` pair (zero migrations applied).
 //! # The four outcomes
 //! Per the v3 amendment, the match produces exactly one of these
 //! outcomes for each bucket:
 //! - **Outcome 1 — synced.** `models == pending == snapshot` (or
-//! pending is `None` and `models == snapshot`). No drift, no
-//! warning.
+//!   pending is `None` and `models == snapshot`). No drift, no
+//!   warning.
 //! - **Outcome 2 — composed not applied.** `models == pending`,
-//! `snapshot != models`. Warning: a composed migration is pending
-//! apply.
+//!   `snapshot != models`. Warning: a composed migration is pending
+//!   apply.
 //! - **Outcome 3 — drift.** `models != pending` AND `models !=
 //! snapshot`. Warning: model drift; suggest `compose`.
 //! - **Outcome 4 — pending invalid.** `pending != models` AND
-//! `pending != snapshot` AND `models != snapshot`. The pending
-//! file is stale — warning suggests re-running compose.
-//! The warning *wording* is frozen — see the `format_warning_*`
-//! helpers below — so the expectation-style integration test can
-//! match on exact stderr output.
+//!   `pending != snapshot` AND `models != snapshot`. The pending
+//!   file is stale — warning suggests re-running compose.
+//!   The warning *wording* is frozen — see the `format_warning_*`
+//!   helpers below — so the expectation-style integration test can
+//!   match on exact stderr output.
 //! # No regex
 //! The match is structural — `==` between owned [`AppliedSchema`]
 //! values. No string scanning, no regex.
@@ -144,18 +144,18 @@ pub fn classify_bucket(
 /// 2 warning includes the filename + version (per).
 /// **Caller mapping:**
 /// - `migrations status` (CLI): threads the real `version` from each
-/// pending JSON it loads; the operator sees an actionable filename.
+///   pending JSON it loads; the operator sees an actionable filename.
 /// - `build.rs`: walks pending JSON files itself (build scripts cannot
-/// import the crate they are compiling), reads the `version` field
-/// directly, and emits the same wording. The
-/// `phase7_t6_build_warning_agreement` integration test pins the
-/// agreement byte-for-byte.
+///   import the crate they are compiling), reads the `version` field
+///   directly, and emits the same wording. The
+///   `phase7_t6_build_warning_agreement` integration test pins the
+///   agreement byte-for-byte.
 /// - `build_classify_bucket` re-export (the convenience wrapper): used
-/// by tests and the rare caller that genuinely lacks a version
-/// string. Surfaces the `<unknown>` placeholder so the message is
-/// still well-formed.
-/// Both entry points route through this function so the four-outcome
-/// classification logic lives in one place.
+///   by tests and the rare caller that genuinely lacks a version
+///   string. Surfaces the `<unknown>` placeholder so the message is
+///   still well-formed.
+///   Both entry points route through this function so the four-outcome
+///   classification logic lives in one place.
 pub fn classify_bucket_with_pending(
     bucket: &BucketKey,
     models: Option<&AppliedSchema>,
@@ -243,14 +243,14 @@ pub fn classify_bucket_with_pending(
 /// `(database, app)` pair the snapshot tree knows about. Walks both
 /// directions:
 /// 1. Each filesystem bucket whose `(database, app)` is not in
-/// `snapshots` (under any registered_apps list for that database)
-/// surfaces as `D004FilesystemUnregistered`.
+///    `snapshots` (under any registered_apps list for that database)
+///    surfaces as `D004FilesystemUnregistered`.
 /// 2. Each `registered_apps` entry that has no matching filesystem
-/// directory surfaces as `D004RegisteredMissingFolder`.
-/// The snapshot's `registered_apps` list is the source of truth for
-/// "what apps existed when the snapshot was last saved". Walking it
-/// per-database ensures the diagnostic surfaces the right database
-/// even when one DB has fully-synced apps and another is drifting.
+///    directory surfaces as `D004RegisteredMissingFolder`.
+///    The snapshot's `registered_apps` list is the source of truth for
+///    "what apps existed when the snapshot was last saved". Walking it
+///    per-database ensures the diagnostic surfaces the right database
+///    even when one DB has fully-synced apps and another is drifting.
 pub fn classify_filesystem_drift(
     filesystem: &std::collections::BTreeSet<FilesystemBucket>,
     snapshots: &BTreeMap<BucketKey, AppliedSchema>,

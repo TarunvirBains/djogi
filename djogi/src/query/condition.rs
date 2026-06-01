@@ -390,17 +390,17 @@ impl Leaf {
 /// rows 107 + 108 and `feedback_no_regex_in_djogi.md`.
 /// The partition is locked by:
 /// - The lihaaf compile-fail fixture
-/// `djogi-macros/tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
-/// (10) — verifies `sassi::LookupOp::Regex`
-/// does not exist at the type level, so a future sassi release that
-/// adds a `Regex` variant would silently break the no-regex
-/// invariant; this fixture catches it.
+///   `djogi-macros/tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
+///   (10) — verifies `sassi::LookupOp::Regex`
+///   does not exist at the type level, so a future sassi release that
+///   adds a `Regex` variant would silently break the no-regex
+///   invariant; this fixture catches it.
 /// - The `lookup_op_partitions_cleanly_into_15_lift_2_sql_only` test
-/// in this module — exhaustively walks every `LookupOp` variant and
-/// asserts each lands in the correct class.
-/// Adding a new variant under `#[non_exhaustive]` requires extending
-/// the partition test and explicitly placing the variant in one of
-/// the two classes; the test will fail to compile until that's done.
+///   in this module — exhaustively walks every `LookupOp` variant and
+///   asserts each lands in the correct class.
+///   Adding a new variant under `#[non_exhaustive]` requires extending
+///   the partition test and explicitly placing the variant in one of
+///   the two classes; the test will fail to compile until that's done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LookupOp {
@@ -578,12 +578,12 @@ pub enum FilterValue {
     /// For IN (...) / NOT IN (...) list lookups.
     /// # Invariants (enforced by construction, not the enum itself)
     /// - Elements must be SQL-bindable **scalars** — never nested `List` or
-    /// `Pair`. The typed `FieldRef<M, V>::in_list(impl IntoIterator<Item = V>)`
-    /// API prevents nesting by construction; manual `FilterValue::List`
-    /// construction that violates this invariant is a framework bug that
-    /// Task 6's SQL emitter panics on (not silently miscompiles).
+    ///   `Pair`. The typed `FieldRef<M, V>::in_list(impl IntoIterator<Item = V>)`
+    ///   API prevents nesting by construction; manual `FilterValue::List`
+    ///   construction that violates this invariant is a framework bug that
+    ///   Task 6's SQL emitter panics on (not silently miscompiles).
     /// - All elements should be the same `FilterValue` discriminant (mixed-type
-    /// lists are meaningless for SQL `IN`). The typed API enforces this.
+    ///   lists are meaningless for SQL `IN`). The typed API enforces this.
     List(Vec<FilterValue>),
     /// BETWEEN a AND b payload (two bound values).
     Pair(Box<FilterValue>, Box<FilterValue>),

@@ -57,11 +57,11 @@ pub struct ModelAttrs {
     /// at codegen time, where it acts as a marker that:
     /// - This table is the junction for a specific `impl ManyToMany<Target> for Source`.
     /// - the migration differ may later suppress standalone-model
-    /// admin/routing affordances for through tables (deferred).
-    /// Through models remain ordinary queryable `Model`s — the flag is
-    /// documentation and future differentiation, not a structural
-    /// constraint. Users still `#[derive(Model)]` them as normal and
-    /// query them with the standard `QuerySet` API.
+    ///   admin/routing affordances for through tables (deferred).
+    ///   Through models remain ordinary queryable `Model`s — the flag is
+    ///   documentation and future differentiation, not a structural
+    ///   constraint. Users still `#[derive(Model)]` them as normal and
+    ///   query them with the standard `QuerySet` API.
     pub through: bool,
     /// When `true`, this model emits a transactional outbox row on every
     /// successful `create` / `save` / `delete` performed through a
@@ -83,21 +83,21 @@ pub struct ModelAttrs {
     /// Set via `#[model(table = "...", idempotency_key = "request_id")]`.
     /// When present, the macro emits two inherent methods:
     /// - `create_or_find(ctx, row)` — attempts an
-    /// `INSERT ... ON CONFLICT (<this col>) DO NOTHING RETURNING *`
-    /// and, on conflict, re-SELECTs the existing row. Returns
-    /// `(Self, bool /* created */)`.
+    ///   `INSERT ... ON CONFLICT (<this col>) DO NOTHING RETURNING *`
+    ///   and, on conflict, re-SELECTs the existing row. Returns
+    ///   `(Self, bool /* created */)`.
     /// - `bulk_upsert_by_descriptor(ctx, rows)` — thin wrapper over
-    /// [`bulk_upsert`] that reads this column as the sole ON
-    /// CONFLICT target.
-    /// When not set, both methods are still emitted as thin stubs
-    /// that return [`DjogiError::MissingIdempotencyKey`] at runtime
-    /// simplest-possible pointer at the attribute the caller needs
-    /// to add. This mirrors the approach of populating the
-    /// descriptor slot even for models that don't consume it yet.
-    /// The inner string must be a plain ASCII-identifier column name
-    /// (letter/underscore start, alphanumerics and underscores after).
-    /// The parser rejects anything else so the value can be safely
-    /// embedded into the emitted SQL.
+    ///   [`bulk_upsert`] that reads this column as the sole ON
+    ///   CONFLICT target.
+    ///   When not set, both methods are still emitted as thin stubs
+    ///   that return [`DjogiError::MissingIdempotencyKey`] at runtime
+    ///   simplest-possible pointer at the attribute the caller needs
+    ///   to add. This mirrors the approach of populating the
+    ///   descriptor slot even for models that don't consume it yet.
+    ///   The inner string must be a plain ASCII-identifier column name
+    ///   (letter/underscore start, alphanumerics and underscores after).
+    ///   The parser rejects anything else so the value can be safely
+    ///   embedded into the emitted SQL.
     pub idempotency_key: Option<String>,
 
     /// The user-field name that serves as the tenant discriminator for
@@ -213,20 +213,20 @@ pub struct ModelAttrs {
     /// 4.
     /// Set via `#[model(auditable)]`. The macro emits both:
     /// 1. `impl ::djogi::Auditable for #ident { ... }` — the trait impl
-    /// exposing `created_by(&self) -> Option<&str>`, borrowing from
-    /// the adopter-declared `pub created_by: Option<String>` field.
+    ///    exposing `created_by(&self) -> Option<&str>`, borrowing from
+    ///    the adopter-declared `pub created_by: Option<String>` field.
     /// 2. `impl #ident { #[doc(hidden)] pub(crate) fn
     /// __djogi_auditable_populate(&mut self, ctx: &mut DjogiContext)
     /// { ... } }` — the populator helper invoked from
-    /// `Model::create` between `auto_set_tenant` and the user
-    /// `before_create` hook (§D6).
-    /// Models without the flag pay zero auditable-dispatch overhead
-    /// no impl is emitted, so the populator call collapses to a
-    /// no-op and the `Auditable` bound is unsatisfied at the use site
-    /// (compile-time error if a generic asks for it).
-    /// Standalone keyword only — `auditable = true` / `auditable = false`
-    /// are rejected, mirroring the convention `hooks`, `events`,
-    /// `through`, and `no_default` already follow.
+    ///    `Model::create` between `auto_set_tenant` and the user
+    ///    `before_create` hook (§D6).
+    ///    Models without the flag pay zero auditable-dispatch overhead
+    ///    no impl is emitted, so the populator call collapses to a
+    ///    no-op and the `Auditable` bound is unsatisfied at the use site
+    ///    (compile-time error if a generic asks for it).
+    ///    Standalone keyword only — `auditable = true` / `auditable = false`
+    ///    are rejected, mirroring the convention `hooks`, `events`,
+    ///    `through`, and `no_default` already follow.
     /// # 2026-05-03 design pivot
     /// T2.2 (commit 939b9ab) shipped `#[derive(Auditable)]` as the
     /// opt-in surface; T2.4 supersedes it with this attribute and the
@@ -372,21 +372,21 @@ pub struct ModelAttrs {
     /// name.
     /// Validated at parse time:
     /// - Scope keys must NOT collide with [`ExposeSpec::BUILTIN_SCOPES`]
-    /// (`public` / `self_view` / `admin` / `export`) — shadowing a
-    /// built-in scope would produce two visage structs with the same
-    /// name.
+    ///   (`public` / `self_view` / `admin` / `export`) — shadowing a
+    ///   built-in scope would produce two visage structs with the same
+    ///   name.
     /// - Scope keys must satisfy the standard Djogi identifier grammar
-    /// (ASCII letter or underscore start, alphanumerics / underscores
-    /// after, ≤ 63 bytes) — per [`feedback_no_regex_in_djogi`], spelled
-    /// out byte-level.
+    ///   (ASCII letter or underscore start, alphanumerics / underscores
+    ///   after, ≤ 63 bytes) — per [`feedback_no_regex_in_djogi`], spelled
+    ///   out byte-level.
     /// - Struct suffix idents must start with an uppercase ASCII letter
-    /// (matching the built-in `Public` / `SelfView` casing convention).
+    ///   (matching the built-in `Public` / `SelfView` casing convention).
     /// - Scope keys must be unique within the same `visage_scopes(...)`
-    /// block.
-    /// Empty when no `visage_scopes(...)` block is present. The visage
-    /// emitter chains this Vec onto its built-in `SCOPES` table and
-    /// emits one generated visage struct per resulting `(key, suffix)`
-    /// pair.
+    ///   block.
+    ///   Empty when no `visage_scopes(...)` block is present. The visage
+    ///   emitter chains this Vec onto its built-in `SCOPES` table and
+    ///   emits one generated visage struct per resulting `(key, suffix)`
+    ///   pair.
     pub visage_scopes: Vec<(String, String)>,
 
     /// `#[model(strict_ids)]` — .
@@ -620,24 +620,24 @@ fn render_storage_param_entries(entries: &[StorageParamEntry]) -> String {
 /// - `HeerId` — ascending 64-bit HeerId (historical default).
 /// - `RanjId` — ascending UUIDv8 RanjId.
 /// - `HeerIdRecencyBiased` / `HeerIdDesc` — reverse-chronological
-/// HeerId; both identifiers lower to the same
-/// [`PkStrategy::HeerIdDesc`] internal variant. `HeerIdRecencyBiased`
-/// is the adopter-facing name per `docs/spec/primary-keys.md` §3.5a;
-/// `HeerIdDesc` is kept as a secondary alias for callers who read
-/// migration internals.
+///   HeerId; both identifiers lower to the same
+///   [`PkStrategy::HeerIdDesc`] internal variant. `HeerIdRecencyBiased`
+///   is the adopter-facing name per `docs/spec/primary-keys.md` §3.5a;
+///   `HeerIdDesc` is kept as a secondary alias for callers who read
+///   migration internals.
 /// - `RanjIdRecencyBiased` / `RanjIdDesc` — reverse-chronological
-/// RanjId; same dual-name treatment.
+///   RanjId; same dual-name treatment.
 /// - `Serial` — `SERIAL` / `INTEGER` PK for lookup tables.
 /// - `None` — no framework-injected `id`; adopter manages the PK.
-/// Flipped the attribute's default: omitted `pk` now
-/// resolves to [`PkStrategy::HeerIdDesc`] (recency-biased), not
-/// [`PkStrategy::HeerId`].
-/// Adds [`PkStrategy::Custom`] — the attribute parser's
-/// fall-through bucket for any identifier that is not one of the built-in
-/// aliases. Carries the full `syn::Path` so the descriptor emitter can
-/// reference the user's newtype via `<Path as ::djogi::primary_key::PrimaryKey>::KIND`,
-/// which lowers to `PkType::Custom(CustomPrimaryKeyKind { .. })` at
-/// `inventory::submit!` registration time.
+///   Flipped the attribute's default: omitted `pk` now
+///   resolves to [`PkStrategy::HeerIdDesc`] (recency-biased), not
+///   [`PkStrategy::HeerId`].
+///   Adds [`PkStrategy::Custom`] — the attribute parser's
+///   fall-through bucket for any identifier that is not one of the built-in
+///   aliases. Carries the full `syn::Path` so the descriptor emitter can
+///   reference the user's newtype via `<Path as ::djogi::primary_key::PrimaryKey>::KIND`,
+///   which lowers to `PkType::Custom(CustomPrimaryKeyKind { .. })` at
+///   `inventory::submit!` registration time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PkStrategy {
     HeerId,
@@ -1459,19 +1459,19 @@ impl PkStrategy {
     /// [`PkStrategy`]. The two recency-biased identifiers carry
     /// public-facing and internal-facing spellings:
     /// - `HeerIdRecencyBiased` and `HeerIdDesc` both lower to
-    /// [`PkStrategy::HeerIdDesc`].
+    ///   [`PkStrategy::HeerIdDesc`].
     /// - `RanjIdRecencyBiased` and `RanjIdDesc` both lower to
-    /// [`PkStrategy::RanjIdDesc`].
-    /// Any identifier that is not one of the built-in aliases is treated
-    /// as an adopter-declared custom PK type (`djogi::primary_key!` or
-    /// hand-rolled). Multi-segment paths (e.g. `crate::ids::UserId`) are
-    /// also accepted as Custom — the descriptor emitter routes through
-    /// `<Path as ::djogi::primary_key::PrimaryKey>::KIND` either way, so
-    /// the only constraint is that the path resolves to a type that
-    /// implements `PrimaryKey`. That bound is checked at `#[model]`
-    /// expansion time by the emitted trait impl lookups; a path pointing
-    /// at a non-PK type surfaces a type-error at the const-lookup site,
-    /// not here.
+    ///   [`PkStrategy::RanjIdDesc`].
+    ///   Any identifier that is not one of the built-in aliases is treated
+    ///   as an adopter-declared custom PK type (`djogi::primary_key!` or
+    ///   hand-rolled). Multi-segment paths (e.g. `crate::ids::UserId`) are
+    ///   also accepted as Custom — the descriptor emitter routes through
+    ///   `<Path as ::djogi::primary_key::PrimaryKey>::KIND` either way, so
+    ///   the only constraint is that the path resolves to a type that
+    ///   implements `PrimaryKey`. That bound is checked at `#[model]`
+    ///   expansion time by the emitted trait impl lookups; a path pointing
+    ///   at a non-PK type surfaces a type-error at the const-lookup site,
+    ///   not here.
     fn from_path(path: &syn::Path) -> syn::Result<Self> {
         if let Some(ident) = path.get_ident() {
             return Ok(match ident.to_string().as_str() {
@@ -1792,21 +1792,21 @@ pub struct FieldAttrs {
     /// code (descriptor emission, visage codegen) reads.
     /// Grammar summary:
     /// - Scalar form: `expose(public, self_view, admin, export)` — the
-    /// field appears in each listed scope under its column name.
+    ///   field appears in each listed scope under its column name.
     /// - Relation form (T6+): `expose(public -> UserPublic)`
-    /// narrow peer visage; `expose(public -> User)` — full peer model
-    /// embed; `expose(public -> User { manager_id -> ManagerPublic })`
-    /// nested traversal (structural metadata only at this time).
+    ///   narrow peer visage; `expose(public -> User)` — full peer model
+    ///   embed; `expose(public -> User { manager_id -> ManagerPublic })`
+    ///   nested traversal (structural metadata only at this time).
     /// - Deprecated relation form: `expose(public = "UserSummary", ...)`
-    /// string-literal shape kept for transitional backward compat.
+    ///   string-literal shape kept for transitional backward compat.
     /// - Sentinels: `expose(none)` / `expose(internal)` — accepted no-op
-    /// sentinels, identical to an absent `expose` annotation; mutually
-    /// exclusive with real scopes on the same field.
-    /// `#[darling(skip)]` here is safe because users only ever write
-    /// `#[field(expose(...))]` (which lands in [`Self::expose_raw`] via
-    /// the rename above); nobody writes `#[field(expose = ...)]` as a
-    /// name-value targeting this field, so darling's "unknown field"
-    /// error path is never triggered.
+    ///   sentinels, identical to an absent `expose` annotation; mutually
+    ///   exclusive with real scopes on the same field.
+    ///   `#[darling(skip)]` here is safe because users only ever write
+    ///   `#[field(expose(...))]` (which lands in [`Self::expose_raw`] via
+    ///   the rename above); nobody writes `#[field(expose = ...)]` as a
+    ///   name-value targeting this field, so darling's "unknown field"
+    ///   error path is never triggered.
     #[darling(skip)]
     pub expose: ExposeSpec,
 
@@ -2029,17 +2029,17 @@ pub struct ExposeSpec {
 /// emitter inspects the path's last segment to decide between two embed
 /// shapes:
 /// - **Narrow visage** — last segment looks like `<ModelIdent><Scope>` (e.g.
-/// `DepartmentPublic`). The peer field in the visage is typed `peer` and
-/// constructed via `<peer as TryFrom<&Target>>::try_from(...)`.
+///   `DepartmentPublic`). The peer field in the visage is typed `peer` and
+///   constructed via `<peer as TryFrom<&Target>>::try_from(...)`.
 /// - **Full peer model** — last segment equals the relation's target model
-/// ident (e.g. `Department`). The peer field carries the full `Target`
-/// value cloned out of the resolved relation.
-/// The deprecated `expose(scope = "Peer")` string form lowers to the same
-/// `RelationExposure` with `peer` parsed from the literal and `nested = []`.
-/// `nested` is recursive — each entry carries the same `peer + nested`
-/// shape rooted at a named field of the parent's peer model. Nested
-/// exposures are STRUCTURAL METADATA only at this point; query-surface
-/// machinery that consumes them lands in later T7+ work.
+///   ident (e.g. `Department`). The peer field carries the full `Target`
+///   value cloned out of the resolved relation.
+///   The deprecated `expose(scope = "Peer")` string form lowers to the same
+///   `RelationExposure` with `peer` parsed from the literal and `nested = []`.
+///   `nested` is recursive — each entry carries the same `peer + nested`
+///   shape rooted at a named field of the parent's peer model. Nested
+///   exposures are STRUCTURAL METADATA only at this point; query-surface
+///   machinery that consumes them lands in later T7+ work.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct RelationExposure {
@@ -2128,8 +2128,8 @@ impl ExposeSpec {
     /// - suppressor `none` / `internal` (mutually exclusive with real scopes)
     /// - deprecated `scope = "Peer"` string-literal form
     /// - new `scope -> Peer` arrow form (with optional `{ nested }`)
-    /// Per-attr duplicate detection runs here; cross-attr merge lives in
-    /// [`FieldAttrs::parse`].
+    ///   Per-attr duplicate detection runs here; cross-attr merge lives in
+    ///   [`FieldAttrs::parse`].
     fn parse_entries(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut spec = ExposeSpec::default();
         let mut suppressor_span: Option<syn::Ident> = None;
@@ -2371,13 +2371,13 @@ impl FieldAttrs {
     /// - Unknown attribute keys (e.g. `#[field(nonexistent)]`).
     /// - Type mismatches (e.g. `max_length = "x"` where an integer is required).
     /// - Duplicate keys across multiple `#[field(...)]` attrs.
-    /// `on_delete` is a string with a constrained value set that darling's
-    /// type-level parsing cannot enforce. We post-validate the value below
-    /// and — when rejecting — walk the field's raw `#[field(...)]` attrs
-    /// to recover the literal's `Span`, so the error underlines the bad
-    /// value rather than the entire field declaration. Matches the pre-
-    /// darling hand-rolled behaviour; keeps the surface consistent with
-    /// how `pk = X` span-points at its own path in `ModelAttrs`.
+    ///   `on_delete` is a string with a constrained value set that darling's
+    ///   type-level parsing cannot enforce. We post-validate the value below
+    ///   and — when rejecting — walk the field's raw `#[field(...)]` attrs
+    ///   to recover the literal's `Span`, so the error underlines the bad
+    ///   value rather than the entire field declaration. Matches the pre-
+    ///   darling hand-rolled behaviour; keeps the surface consistent with
+    ///   how `pk = X` span-points at its own path in `ModelAttrs`.
     pub fn parse(field: &syn::Field) -> syn::Result<Self> {
         // `darling::Error` carries source spans from the originating
         // attribute tokens; `From<darling::Error> for syn::Error` preserves
@@ -3227,17 +3227,17 @@ fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
 /// Validation rules (all enforced here so the diagnostic anchors at the
 /// offending ident):
 /// 1. Scope keys must not shadow [`ExposeSpec::BUILTIN_SCOPES`]. Shadowing
-/// a built-in would attempt to emit two visage structs with the same
-/// `{Model}{Suffix}` name (or with different suffixes for the same
-/// scope), which contradicts the single-visage-per-scope invariant.
+///    a built-in would attempt to emit two visage structs with the same
+///    `{Model}{Suffix}` name (or with different suffixes for the same
+///    scope), which contradicts the single-visage-per-scope invariant.
 /// 2. Scope keys follow the standard Djogi identifier grammar (ASCII
-/// letter / underscore start, alphanumerics / underscores after,
-/// ≤ 63 bytes) per `feedback_no_regex_in_djogi`.
+///    letter / underscore start, alphanumerics / underscores after,
+///    ≤ 63 bytes) per `feedback_no_regex_in_djogi`.
 /// 3. Struct suffix idents must start with an uppercase ASCII letter so
-/// `{Model}{Suffix}` mirrors the `{Model}Public` casing convention.
+///    `{Model}{Suffix}` mirrors the `{Model}Public` casing convention.
 /// 4. Scope keys must be unique within the same `visage_scopes(...)`
-/// block — the second occurrence is rejected with a span-precise
-/// diagnostic anchored at the duplicate ident.
+///    block — the second occurrence is rejected with a span-precise
+///    diagnostic anchored at the duplicate ident.
 fn parse_visage_scopes_list(list: &syn::MetaList) -> syn::Result<Vec<(String, String)>> {
     let entries: Punctuated<Meta, Token![,]> =
         list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
@@ -3916,19 +3916,19 @@ pub enum RelationKind {
 /// Returned by [`detect_relation`]. Two facets of the relation target are
 /// carried separately because they have different consumers:
 /// - [`target_name`](Self::target_name) is a short, path-free string used
-/// only for the descriptor field `target_type_name` (the migration
-/// emitter looks models up by this name against the `inventory`-registered
-/// descriptors, so keeping it segmented matches that lookup key).
+///   only for the descriptor field `target_type_name` (the migration
+///   emitter looks models up by this name against the `inventory`-registered
+///   descriptors, so keeping it segmented matches that lookup key).
 /// - [`target_type`](Self::target_type) is the **full `syn::Type`** the user
-/// wrote inside the wrapper (`Owner`, `models::Owner`, `crate::models::Owner`,
-/// or even `inner::Widget`). Emitted verbatim into positions such as
-/// `RelationPath<#source, #target_type>` and `<#target_type as Model>::…`
-/// so fully-qualified paths resolve at the user's macro-call site without
-/// requiring an extra `use …;` import.
-/// Splitting the two lets the emitter use the right form in the right place
-/// collapsing down to just the last-segment ident (as the previous
-/// `(RelationKind, String, bool)` tuple did) silently broke codegen for any
-/// target type the user spelled with a path prefix.
+///   wrote inside the wrapper (`Owner`, `models::Owner`, `crate::models::Owner`,
+///   or even `inner::Widget`). Emitted verbatim into positions such as
+///   `RelationPath<#source, #target_type>` and `<#target_type as Model>::…`
+///   so fully-qualified paths resolve at the user's macro-call site without
+///   requiring an extra `use …;` import.
+///   Splitting the two lets the emitter use the right form in the right place
+///   collapsing down to just the last-segment ident (as the previous
+///   `(RelationKind, String, bool)` tuple did) silently broke codegen for any
+///   target type the user spelled with a path prefix.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RelationInfo {
@@ -4260,13 +4260,13 @@ mod tests {
     /// structural matcher checks `path.segments.last.ident == "Jsonb"`
     /// AND that the last segment carries angle-bracket generics, so:
     /// - `MyJsonb<T>` — last segment ident is `MyJsonb`, not `Jsonb` →
-    /// no match.
+    ///   no match.
     /// - `Vec<Jsonb<T>>` — last segment ident is `Vec` (the inner
-    /// `Jsonb<T>` lives inside `Vec`'s generic args, not on the
-    /// outer path) → no match.
+    ///   `Jsonb<T>` lives inside `Vec`'s generic args, not on the
+    ///   outer path) → no match.
     /// - `Jsonb` (no generics) — fails the `AngleBracketed` arm guard
-    /// so a hypothetical non-generic `Jsonb` type is not coerced to
-    /// JSONB just because the ident matches.
+    ///   so a hypothetical non-generic `Jsonb` type is not coerced to
+    ///   JSONB just because the ident matches.
     #[test]
     fn jsonb_lookalikes_do_not_match() {
         let lookalike: syn::Type = parse_quote!(MyJsonb<P>);

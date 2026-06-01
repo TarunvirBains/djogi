@@ -24,12 +24,12 @@
 //! but using the authoritative DB snapshot rather than the consumed `self`.
 //! # Module layout
 //! - `mod.rs` (this file) — write side: `emit_event`, `OutboxAction`, payload shaping.
-//! All exports are unchanged.
+//!   All exports are unchanged.
 //! - `worker` — claim-pending, mark-published/failed, recover-stale. Feature-gated
-//! on the `outbox` cargo feature.
+//!   on the `outbox` cargo feature.
 //! - `publisher` — `Publisher` trait + `PublishError` enum. Feature-gated on `outbox`.
 //! - `publishers` — concrete publisher implementations. `NotifyPublisher` is always
-//! available under `outbox`; Redis/Kafka/NATS ship behind their own sub-feature flags.
+//!   available under `outbox`; Redis/Kafka/NATS ship behind their own sub-feature flags.
 //! # Why this lives here (not inside the macro body)
 //! The macro emits a **one-line call** into this module after every
 //! successful CRUD:
@@ -41,14 +41,14 @@
 //! Keeping the payload shaping + dispatch out of the macro has three
 //! benefits:
 //! 1. **Easier to audit.** Reviewers read plain Rust rather than a
-//! `quote! { ... }` block to understand payload exclusion, bind
-//! layout, and error flow.
+//!    `quote! { ... }` block to understand payload exclusion, bind
+//!    layout, and error flow.
 //! 2. **One place to evolve.** Later-phase additions (encrypted payload
-//! fields, tenant partitioning, per-action `rationale` columns) land
-//! here without touching the macro.
+//!    fields, tenant partitioning, per-action `rationale` columns) land
+//!    here without touching the macro.
 //! 3. **Unit-testable.** `emit_event` is a plain async function; its
-//! payload-shaping helper is testable without bringing up a proc-macro
-//! harness.
+//!    payload-shaping helper is testable without bringing up a proc-macro
+//!    harness.
 //! # How it composes with `atomic`
 //! The emitter takes `&mut DjogiContext` and dispatches via the same
 //! `__inner_mut_for_macros` pattern the macro CRUD uses. A pool-backed
@@ -155,8 +155,8 @@ impl OutboxAction {
 /// # Error flow
 /// - `serde_json::to_value` failure → `DjogiError::Serde`.
 /// - Database execute failure → `DjogiError::Pg`.
-/// Both are propagated verbatim so the calling CRUD method's `?`
-/// rolls the transaction back on any failure.
+///   Both are propagated verbatim so the calling CRUD method's `?`
+///   rolls the transaction back on any failure.
 /// # Payload shape
 /// `serde_json::to_value(row)` produces a `Value::Object` keyed by
 /// the struct's field names (serde's default `rename_all`). The

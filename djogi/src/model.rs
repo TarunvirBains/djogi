@@ -67,23 +67,23 @@ pub mod __sealed {
 /// `FromPgRow`, the `{Model}Fields` / `{Model}Filter` companions, registration).
 /// # What implementing `Model` gives the adopter
 /// - **Single-row CRUD.** [`Model::create`], [`Model::get`], [`Model::save`],
-/// [`Model::delete`], [`Model::refresh_from_db`] — every method takes
-/// `&mut DjogiContext` so the same call site works against a pool-backed
-/// context or a transaction-backed one (the framework pattern-matches on
-/// the inner variant at each `tokio_postgres` boundary).
+///   [`Model::delete`], [`Model::refresh_from_db`] — every method takes
+///   `&mut DjogiContext` so the same call site works against a pool-backed
+///   context or a transaction-backed one (the framework pattern-matches on
+///   the inner variant at each `tokio_postgres` boundary).
 /// - **The queryset entry point.** [`Model::objects`] returns a lazy
-/// [`QuerySet<Self>`](crate::query::QuerySet) — filters, ordering,
-/// pagination, distinct, bulk update, bulk delete. Nothing hits the database
-/// until a terminal method is called.
+///   [`QuerySet<Self>`](crate::query::QuerySet) — filters, ordering,
+///   pagination, distinct, bulk update, bulk delete. Nothing hits the database
+///   until a terminal method is called.
 /// - **Descriptor emission.** The macro emits a `ModelDescriptor` via
-/// `inventory::submit!`, registering the struct with the workspace's
-/// migration differ, app registry, admin console, and shell bindings — all
-/// without any explicit registration call by the adopter.
+///   `inventory::submit!`, registering the struct with the workspace's
+///   migration differ, app registry, admin console, and shell bindings — all
+///   without any explicit registration call by the adopter.
 /// - **Row decode.** A canonical `impl FromPgRow for Self` is emitted so any
-/// raw-SQL escape hatch (under the bypass attribute — see
-/// [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md))
-/// can decode rows into the model with positional, debug-asserted column
-/// reads.
+///   raw-SQL escape hatch (under the bypass attribute — see
+///   [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md))
+///   can decode rows into the model with positional, debug-asserted column
+///   reads.
 /// # How to implement (and the only way to)
 /// Adopters never write `impl Model for MyType` by hand. The sealed
 /// supertrait blocks it at compile time. Use the `#[model(...)]` attribute
@@ -106,10 +106,10 @@ pub mod __sealed {
 /// `inventory::submit!` for app/migration registration.
 /// # Where to read further
 /// - **Specification** — [`docs/spec/models.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/models.md)
-/// for the formal `Model` contract, framework field semantics, and the
-/// `pk = ...` configuration matrix.
+///   for the formal `Model` contract, framework field semantics, and the
+///   `pk = ...` configuration matrix.
 /// - **Getting started** — [`docs/guide/getting-started.md`](https://github.com/tarunvir/djogi/blob/main/docs/guide/getting-started.md)
-/// for an end-to-end walkthrough.
+///   for an end-to-end walkthrough.
 /// - **Crate root rustdoc** — module table summarising the public surface.
 /// # Why the seal
 /// Every `Model` method composes through emitter sites that trust
@@ -126,11 +126,11 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// - `pk = RanjId` → `RanjId` (heeranjid's UUIDv8 newtype)
     /// - `pk = Serial` → `i32`
     /// - `pk = None` → NO `impl Model`. `` cannot satisfy the
-    /// `postgres_types::ToSql` bound below, and a dummy newtype
-    /// would misrepresent the model's actual key shape. `pk = None` models
-    /// still get struct injection, `FromRow`, and descriptor registration
-    /// they just don't get CRUD methods. A future phase will introduce
-    /// a separate trait for composite/user-managed PKs.
+    ///   `postgres_types::ToSql` bound below, and a dummy newtype
+    ///   would misrepresent the model's actual key shape. `pk = None` models
+    ///   still get struct injection, `FromRow`, and descriptor registration
+    ///   they just don't get CRUD methods. A future phase will introduce
+    ///   a separate trait for composite/user-managed PKs.
     type Pk: Clone
         + Send
         + Sync
@@ -545,23 +545,23 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// when both lead to the same row.
     /// # Edge cases
     /// - `self_fk_count == 0` — the returned `RecursiveQuerySet`
-    /// carries an empty `edges` Vec. Builder methods chain
-    /// normally; the **terminal** fails with
-    /// [`DjogiError::Validation`] naming the model. Errors at
-    /// terminal time (not construction time) keep the return type
-    /// uniform — callers can write `Model::full_ancestors(id)
+    ///   carries an empty `edges` Vec. Builder methods chain
+    ///   normally; the **terminal** fails with
+    ///   [`DjogiError::Validation`] naming the model. Errors at
+    ///   terminal time (not construction time) keep the return type
+    ///   uniform — callers can write `Model::full_ancestors(id)
     /// .with_max_depth(5).fetch_all(ctx).await?` without an extra
-    /// `?` for `self_fk_count == 0`.
+    ///   `?` for `self_fk_count == 0`.
     /// - `self_fk_count == 1` — degenerates to
-    /// [`Model::tree_ancestors`] over the lone edge. Same SQL
-    /// shape, same single bind for the root id.
+    ///   [`Model::tree_ancestors`] over the lone edge. Same SQL
+    ///   shape, same single bind for the root id.
     /// - `self_fk_count >= 2` — every declared self-FK becomes its
-    /// own alternative inside the lateral `UNION ALL` subquery the
-    /// recursive term joins to (Postgres restricts recursive CTEs
-    /// to one self-reference, so the per-edge fan-out lives in a
-    /// non-recursive lateral). No `tree_edge` requirement:
-    /// `full_ancestors` is the disambiguation strategy, not
-    /// single-edge selection.
+    ///   own alternative inside the lateral `UNION ALL` subquery the
+    ///   recursive term joins to (Postgres restricts recursive CTEs
+    ///   to one self-reference, so the per-edge fan-out lives in a
+    ///   non-recursive lateral). No `tree_edge` requirement:
+    ///   `full_ancestors` is the disambiguation strategy, not
+    ///   single-edge selection.
     fn full_ancestors(node_id: Self::Pk) -> crate::query::RecursiveQuerySet<Self>
     where
         Self::Pk: postgres_types::ToSql + Sync + Send + 'static,
@@ -606,29 +606,29 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// source model so wrong-source closure tables fail at compile
     /// time. Reach for this helper when:
     /// - The source table has more than a handful of rows and tree
-    /// queries against it have become hot. Closure-table lookups
-    /// are indexed point-reads; recursive-CTE walks are O(subtree
-    /// size) every time.
+    ///   queries against it have become hot. Closure-table lookups
+    ///   are indexed point-reads; recursive-CTE walks are O(subtree
+    ///   size) every time.
     /// - The application needs Wright-style kinship coefficients.
-    /// The closure table records `path_count` per
-    /// `(source, ancestor, depth)` triple, which is the input to
-    /// coefficient sums.
+    ///   The closure table records `path_count` per
+    ///   `(source, ancestor, depth)` triple, which is the input to
+    ///   coefficient sums.
     /// # Behaviour
     /// - **`opts.roots = None`** — walks every row in the source
-    /// table. Right shape for the initial population.
+    ///   table. Right shape for the initial population.
     /// - **`opts.roots = Some(ids)`** — walks only those source rows.
-    /// Right shape for incremental updates after inserts (call with
-    /// the newly-inserted ids).
+    ///   Right shape for incremental updates after inserts (call with
+    ///   the newly-inserted ids).
     /// - **`opts.max_depth = Some(n)`** — bounds the recursive walk
-    /// at `n` hops. `None` runs to natural exhaustion (the `CYCLE`
-    /// clause prevents infinite recursion regardless).
+    ///   at `n` hops. `None` runs to natural exhaustion (the `CYCLE`
+    ///   clause prevents infinite recursion regardless).
     /// - **`ON CONFLICT … DO UPDATE`** — replaces `path_count` with
-    /// the recomputed recursive-walk total, so re-running the helper
-    /// is genuinely idempotent: each invocation walks the current
-    /// graph from scratch, so EXCLUDED's count is already the
-    /// correct total. `TRUNCATE` the closure table first only when
-    /// stale rows for *deleted* edges must be purged (the helper
-    /// does not garbage-collect rows whose path no longer exists).
+    ///   the recomputed recursive-walk total, so re-running the helper
+    ///   is genuinely idempotent: each invocation walks the current
+    ///   graph from scratch, so EXCLUDED's count is already the
+    ///   correct total. `TRUNCATE` the closure table first only when
+    ///   stale rows for *deleted* edges must be purged (the helper
+    ///   does not garbage-collect rows whose path no longer exists).
     /// # Required closure-table schema
     /// The closure table **must** carry a unique constraint on
     /// `(source_column, ancestor_column, depth_column)` — Postgres
@@ -638,12 +638,12 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// # Errors
     /// Returns [`DjogiError::Validation`] when:
     /// - `Self::descriptor.self_fk_count == 0` — there are no
-    /// self-FK edges to walk.
+    ///   self-FK edges to walk.
     /// - Any [`ClosureModel`] column-name accessor returns an invalid
-    /// identifier (non-ASCII, reserved keyword, > 63 bytes, etc.).
-    /// Returns the underlying database error wrapped in
-    /// [`DjogiError`] for query failures (typically a missing unique
-    /// constraint surfaces as `42P10` here).
+    ///   identifier (non-ASCII, reserved keyword, > 63 bytes, etc.).
+    ///   Returns the underlying database error wrapped in
+    ///   [`DjogiError`] for query failures (typically a missing unique
+    ///   constraint surfaces as `42P10` here).
     /// # Example
     /// ```ignore
     /// // Initial population — walk every row.

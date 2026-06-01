@@ -12,24 +12,24 @@
 //! A set-op result is structurally distinct from a plain
 //! `SELECT ... FROM <table>`:
 //! - Further `.filter(...)` / `.exclude(...)` on the combined result
-//! is NOT the same as filtering each arm — Postgres semantics treat
-//! filters as belonging to whichever arm they appear in, and a
-//! "filter the union" requires wrapping the entire set-op as a
-//! derived table. Forcing that wrap silently into every chained
-//! builder method would surprise adopters who expect their `.filter`
-//! to compose under the same semantics they got from a plain
-//! queryset.
+//!   is NOT the same as filtering each arm — Postgres semantics treat
+//!   filters as belonging to whichever arm they appear in, and a
+//!   "filter the union" requires wrapping the entire set-op as a
+//!   derived table. Forcing that wrap silently into every chained
+//!   builder method would surprise adopters who expect their `.filter`
+//!   to compose under the same semantics they got from a plain
+//!   queryset.
 //! - `select_related` / `prefetch` extend the SELECT projection on the
-//! left arm in incompatible ways with the right arm (which projects
-//! only `T`'s canonical column list). Letting them ride through a
-//! set op would either silently drop the join columns or produce a
-//! row shape that does not decode as `T`.
+//!   left arm in incompatible ways with the right arm (which projects
+//!   only `T`'s canonical column list). Letting them ride through a
+//!   set op would either silently drop the join columns or produce a
+//!   row shape that does not decode as `T`.
 //! - Row-level locks (`FOR UPDATE`) on a set-op subquery are rejected
-//! by Postgres at parse time.
-//! Keeping the surface narrow — a fresh [`SetOpQuerySet<T>`] with an
-//! outer `ORDER BY` / `LIMIT` / `OFFSET` slot and read terminals — is
-//! the minimum viable design that matches both PG semantics and the
-//! adopter's intuition.
+//!   by Postgres at parse time.
+//!   Keeping the surface narrow — a fresh [`SetOpQuerySet<T>`] with an
+//!   outer `ORDER BY` / `LIMIT` / `OFFSET` slot and read terminals — is
+//!   the minimum viable design that matches both PG semantics and the
+//!   adopter's intuition.
 //! # Postgres semantics this layer enforces
 //! Each arm is **always parenthesised** in the emitted SQL so a
 //! per-arm `ORDER BY` / `LIMIT` / `OFFSET` (legal Postgres when
@@ -64,11 +64,11 @@
 //! - `.select_related(...)` registrations,
 //! - `.select_for_update(...)` / `.nowait` / `.skip_locked` locks,
 //! - `.cache(...)` Punnu bindings.
-//! These leak structural shape (extra projections, locks, side
-//! effects) into a context where the type signature pretends the arm
-//! is a plain `SELECT t.* FROM t`. Silently dropping them would be a
-//! correctness bug. The rejection happens at SQL-build time so the
-//! call site reports the error before any database round trip.
+//!   These leak structural shape (extra projections, locks, side
+//!   effects) into a context where the type signature pretends the arm
+//!   is a plain `SELECT t.* FROM t`. Silently dropping them would be a
+//!   correctness bug. The rejection happens at SQL-build time so the
+//!   call site reports the error before any database round trip.
 //! ## Outer ordering expressions
 //! [`SetOpOuterOrderingInvalid`](DjogiError::SetOpOuterOrderingInvalid)
 //! surfaces when the outer
@@ -216,12 +216,12 @@ mod sealed {
 /// # What it accepts
 /// - `QuerySet<T>` — a plain queryset arm.
 /// - `SetOpQuerySet<T>` — a previously-built set-op result, allowing
-/// chained composition (`a.union(b).intersect(c)`).
-/// Adopters never name this trait directly; they pass either a
-/// `QuerySet<T>` or a `SetOpQuerySet<T>` to [`QuerySet::union`] /
-/// [`SetOpQuerySet::union`] and the bound is satisfied automatically.
-/// The trait is sealed (no external impls) so the arm storage stays
-/// closed for SQL emission.
+///   chained composition (`a.union(b).intersect(c)`).
+///   Adopters never name this trait directly; they pass either a
+///   `QuerySet<T>` or a `SetOpQuerySet<T>` to [`QuerySet::union`] /
+///   [`SetOpQuerySet::union`] and the bound is satisfied automatically.
+///   The trait is sealed (no external impls) so the arm storage stays
+///   closed for SQL emission.
 pub trait IntoSetOpArm<T: Model>: sealed::Sealed {
     /// Lift `self` into the internal arm representation. Public only
     /// because the trait itself is — the produced [`SetOpArm`] stays

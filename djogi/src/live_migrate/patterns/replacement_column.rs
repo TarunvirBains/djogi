@@ -9,28 +9,28 @@
 //! # Step graph
 //! 1. [`StepKind::ExpandSchema`] — `ALTER TABLE <t> ADD COLUMN
 //! <c>_new <to> NULL`. Adds the shadow column the rewrite drains
-//! into.
+//!    into.
 //! 2. [`StepKind::BeginCompatibilityWindow`] — register the dual-
-//! read / dual-write hooks that keep `<c>` and `<c>_new` aligned
-//! across in-flight transactions.
+//!    read / dual-write hooks that keep `<c>` and `<c>_new` aligned
+//!    across in-flight transactions.
 //! 3. [`StepKind::BackfillChunked`] — copy `<c>` into `<c>_new`. The
-//! predicate template emits a complete `UPDATE`-tail fragment of
-//! the shape `SET <c>_new = <c>::<to-type> WHERE id IN (SELECT id
+//!    predicate template emits a complete `UPDATE`-tail fragment of
+//!    the shape `SET <c>_new = <c>::<to-type> WHERE id IN (SELECT id
 //! FROM <t> WHERE <c>_new IS NULL LIMIT $1)` — bounded to one
-//! chunk via the `LIMIT $1` placeholder, idempotent because the
-//! inner predicate self-cancels (once a row's shadow column is
-//! populated, the chunk skips it).
+//!    chunk via the `LIMIT $1` placeholder, idempotent because the
+//!    inner predicate self-cancels (once a row's shadow column is
+//!    populated, the chunk skips it).
 //! 4. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//! until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL` returns
-//! zero.
+//!    until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL` returns
+//!    zero.
 //! 5. [`StepKind::CutoverReads`] — visage projection switches reads
-//! to `<c>_new`.
+//!    to `<c>_new`.
 //! 6. [`StepKind::CutoverWrites`] — writes target `<c>_new` only.
-//! Dual-write hook turns off.
+//!    Dual-write hook turns off.
 //! 7. [`StepKind::FinalizeConstraints`] — apply NOT NULL / CHECK on
-//! `<c>_new` if the original column carried them.
+//!    `<c>_new` if the original column carried them.
 //! 8. [`StepKind::CleanupLegacyState`] — `DROP COLUMN <c>` then
-//! `RENAME COLUMN <c>_new TO <c>`.
+//!    `RENAME COLUMN <c>_new TO <c>`.
 //! # Idempotency
 //! The chunk's WHERE predicate `<c>_new IS NULL` self-cancels — once
 //! a row's shadow column has a non-null value, the row falls out of

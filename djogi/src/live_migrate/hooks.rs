@@ -3,20 +3,20 @@
 //! ([§1 D2 ] — narrow runtime hook surface, locked). Two hook
 //! families today:
 //! 1. **Dual-read** — during the [`StepKind::ExpandSchema`] window,
-//! reads consult both the legacy column and the new shadow column.
-//! The runtime returns the legacy value if present (it is the
-//! source of truth during expand) and falls back to the shadow if
-//! the row has not yet been backfilled.
+//!    reads consult both the legacy column and the new shadow column.
+//!    The runtime returns the legacy value if present (it is the
+//!    source of truth during expand) and falls back to the shadow if
+//!    the row has not yet been backfilled.
 //! 2. **Dual-write** — while both legacy and new columns exist,
-//! writes update both columns; [`StepKind::CutoverWrites`] drops
-//! the legacy update.
-//! Both hook families are derived from the live plan's step graph
-//! adopter code does NOT register handlers. The runner activates the
-//! hooks when stepping through [`StepKind::BeginCompatibilityWindow`]
-//! and deactivates them at [`StepKind::CutoverReads`] (drops dual-read)
-//! and [`StepKind::CutoverWrites`] (drops dual-write).
-//! Business-specific branching is explicitly NOT supported — those
-//! hooks live in app code.
+//!    writes update both columns; [`StepKind::CutoverWrites`] drops
+//!    the legacy update.
+//!    Both hook families are derived from the live plan's step graph
+//!    adopter code does NOT register handlers. The runner activates the
+//!    hooks when stepping through [`StepKind::BeginCompatibilityWindow`]
+//!    and deactivates them at [`StepKind::CutoverReads`] (drops dual-read)
+//!    and [`StepKind::CutoverWrites`] (drops dual-write).
+//!    Business-specific branching is explicitly NOT supported — those
+//!    hooks live in app code.
 //! # Hook ID convention
 //! Pattern emitters in [`crate::live_migrate::patterns`] encode hook
 //! identities as strings inside
@@ -42,20 +42,20 @@
 //! business-logic branching.
 //! # What this module does NOT do
 //! - It does **not** wire the consumer side into the model save path
-//! or the visage projection layer. That wiring is a follow-up;
-//! today's surface is the `ActiveHooks` snapshot data structure and
-//! the [`active_hooks_at_step`] walker.
+//!   or the visage projection layer. That wiring is a follow-up;
+//!   today's surface is the `ActiveHooks` snapshot data structure and
+//!   the [`active_hooks_at_step`] walker.
 //! - It does **not** persist hook state. The walker is pure: same
-//! plan + same ordinal always yields the same snapshot.
+//!   plan + same ordinal always yields the same snapshot.
 //! - It does **not** poll the database for hook activation. The only
-//! I/O surface is [`side_effects_suppressed`], which queries the
-//! per-session GUC set by the chunked backfill runner.
-//! [§1 D2 ]: https://github.com/djogi/djogi-spec
-//! [`StepKind::ExpandSchema`]: crate::live_migrate::plan::StepKind::ExpandSchema
-//! [`StepKind::BeginCompatibilityWindow`]: crate::live_migrate::plan::StepKind::BeginCompatibilityWindow
-//! [`StepKind::CutoverReads`]: crate::live_migrate::plan::StepKind::CutoverReads
-//! [`StepKind::CutoverWrites`]: crate::live_migrate::plan::StepKind::CutoverWrites
-//! [`StepParameters::BeginCompatibilityWindow::hooks`]: crate::live_migrate::plan::StepParameters::BeginCompatibilityWindow
+//!   I/O surface is [`side_effects_suppressed`], which queries the
+//!   per-session GUC set by the chunked backfill runner.
+//!   [§1 D2 ]: https://github.com/djogi/djogi-spec
+//!   [`StepKind::ExpandSchema`]: crate::live_migrate::plan::StepKind::ExpandSchema
+//!   [`StepKind::BeginCompatibilityWindow`]: crate::live_migrate::plan::StepKind::BeginCompatibilityWindow
+//!   [`StepKind::CutoverReads`]: crate::live_migrate::plan::StepKind::CutoverReads
+//!   [`StepKind::CutoverWrites`]: crate::live_migrate::plan::StepKind::CutoverWrites
+//!   [`StepParameters::BeginCompatibilityWindow::hooks`]: crate::live_migrate::plan::StepParameters::BeginCompatibilityWindow
 
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
@@ -232,20 +232,20 @@ fn parse_hook_id(id: &str) -> Result<ParsedHook, HookError> {
 /// The walker emulates the runner's state machine without executing
 /// any DDL or DML:
 /// 1. `BeginCompatibilityWindow` registers the dual-read / dual-write
-/// pairs encoded in its `hooks: Vec<String>` field.
+///    pairs encoded in its `hooks: Vec<String>` field.
 /// 2. `CutoverReads` drops every active `DualReadHook`.
 /// 3. `CutoverWrites` drops every active `DualWriteHook`.
 /// 4. `BackfillChunked` toggles `side_effects_suppressed = true` for
-/// the duration of that step; the flag goes back to `false` at the
-/// next step boundary. (Consumers needing transaction-grained
-/// suppression should consult [`side_effects_suppressed`] instead.)
-/// `step_ordinal` is the zero-based position at which the snapshot is
-/// taken. Ordinals beyond the plan's step count saturate at the
-/// terminal state — the snapshot returns the state after the last
-/// step has run.
-/// Returns `Err(HookError::MalformedHookId)` if any
-/// `BeginCompatibilityWindow` step carries a hook ID outside the
-/// canonical pattern-emitter grammar.
+///    the duration of that step; the flag goes back to `false` at the
+///    next step boundary. (Consumers needing transaction-grained
+///    suppression should consult [`side_effects_suppressed`] instead.)
+///    `step_ordinal` is the zero-based position at which the snapshot is
+///    taken. Ordinals beyond the plan's step count saturate at the
+///    terminal state — the snapshot returns the state after the last
+///    step has run.
+///    Returns `Err(HookError::MalformedHookId)` if any
+///    `BeginCompatibilityWindow` step carries a hook ID outside the
+///    canonical pattern-emitter grammar.
 pub fn active_hooks_at_step(plan: &LivePlan, step_ordinal: u32) -> Result<ActiveHooks, HookError> {
     let mut snapshot = ActiveHooks::default();
 

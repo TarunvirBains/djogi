@@ -20,10 +20,10 @@
 //! - **Tuple / unit structs** are rejected with `#[model] requires a struct with
 //! named fields` at the struct's ident.
 //! - **Reserved names.** A user field named `created_at` or `updated_at` is
-//! rejected unconditionally (the macro always injects those). A user field
-//! named `id` is rejected for every `pk` strategy except `"none"` — under
-//! `pk = None` the user is *expected* to declare their own `id` (or other
-//! PK-carrying field) and the filter below preserves it.
+//!   rejected unconditionally (the macro always injects those). A user field
+//!   named `id` is rejected for every `pk` strategy except `"none"` — under
+//!   `pk = None` the user is *expected* to declare their own `id` (or other
+//!   PK-carrying field) and the filter below preserves it.
 //! # Default impl
 //! The generated `Default` impl is designed for struct-update syntax:
 //! ```ignore
@@ -64,13 +64,13 @@ fn is_framework_column(name: &str, model_attrs: &ModelAttrs) -> bool {
 /// Returns `syn::Error` if:
 /// - the struct is not `Fields::Named` (tuple / unit shape), or
 /// - the user declared a reserved field name (`created_at` / `updated_at`
-/// always; `id` except under `pk = None`).
-/// When `model_attrs.no_default` is `true`, the `Default` impl is omitted.
-/// This is required for models that contain field types that do not implement
-/// `Default` (e.g. `time::Date`). Those models cannot use struct-update
-/// syntax (`..Model::default`) — all fields must be initialised explicitly.
-/// Callers must pass a `mut` borrow because the struct's field list is
-/// reordered in-place.
+///   always; `id` except under `pk = None`).
+///   When `model_attrs.no_default` is `true`, the `Default` impl is omitted.
+///   This is required for models that contain field types that do not implement
+///   `Default` (e.g. `time::Date`). Those models cannot use struct-update
+///   syntax (`..Model::default`) — all fields must be initialised explicitly.
+///   Callers must pass a `mut` borrow because the struct's field list is
+///   reordered in-place.
 pub fn expand(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<TokenStream> {
     validate_shape(struct_item)?;
     validate_field_names(struct_item, model_attrs)?;
@@ -159,16 +159,16 @@ fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
 /// Generate `impl Default for <Struct>` with sentinel values for framework fields.
 /// Sentinel values:
 /// - `HeerId` / `HeerIdDesc` / `RanjId` / `RanjIdDesc` →
-/// `<T as ::djogi::primary_key::PrimaryKey>::sentinel` — zero-valued
-/// instance the trait factory produces. Replaces the pre-Phase-7-Zero-2
-/// `::djogi::types::__*_default` hidden helpers.
+///   `<T as ::djogi::primary_key::PrimaryKey>::sentinel` — zero-valued
+///   instance the trait factory produces. Replaces the pre-Phase-7-Zero-2
+///   `::djogi::types::__*_default` hidden helpers.
 /// - `i32` (serial) → `0i32` (matches `<i32 as PrimaryKey>::sentinel`)
 /// - `created_at` / `updated_at` → `::djogi::types::DateTime::UNIX_EPOCH`
 /// - User fields → `Default::default` (user types must implement `Default`)
-/// The `user_field_defaults` filter operates on the struct's field list
-/// *after* `inject_fields` has prepended framework fields. For `pk = None`,
-/// no `id` is injected, so a user's own `id` field (if present) survives the
-/// filter and gets a `Default::default` entry like any other user field.
+///   The `user_field_defaults` filter operates on the struct's field list
+///   *after* `inject_fields` has prepended framework fields. For `pk = None`,
+///   no `id` is injected, so a user's own `id` field (if present) survives the
+///   filter and gets a `Default::default` entry like any other user field.
 fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream {
     let name = &struct_item.ident;
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();

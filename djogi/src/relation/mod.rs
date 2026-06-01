@@ -2,30 +2,30 @@
 //! Lands the runtime wrappers only:
 //! - [`ForeignKey<T>`] / [`ForeignKeyResolved<T>`] — many-to-one.
 //! - [`OneToOneField<T>`] / [`OneToOneFieldResolved<T>`]
-//! unique-constrained singular relation.
+//!   unique-constrained singular relation.
 //! - [`OnDelete`] — cascade enum emitted into DDL by the
-//! migration layer.
-//! Later tasks extend this module with:
+//!   migration layer.
+//!   Later tasks extend this module with:
 //! - `path.rs` / `RelationPath<Source, Target>` — typed ZST relation
-//! handle produced by `{Source}Related::relation_name` for prefetch
-//! / select_related (Task 2).
+//!   handle produced by `{Source}Related::relation_name` for prefetch
+//!   / select_related (Task 2).
 //! - `prefetch.rs` / `PrefetchedRow<T>` — post-prefetch wrapper + its
-//! two-query stitching loader (Task 4).
+//!   two-query stitching loader (Task 4).
 //! - `joined_row.rs` / `JoinedRow<T>` — post-select_related wrapper
-//! returned by `fetch_all_joined` (Task 5).
+//!   returned by `fetch_all_joined` (Task 5).
 //! - `select_related.rs` — single-hop LEFT JOIN SQL emission + joined-
-//! row stitching glue (Task 5).
+//!   row stitching glue (Task 5).
 //! - `many_to_many.rs` / `ManyToMany<Target>` trait + through-model
-//! plumbing (Task 6).
+//!   plumbing (Task 6).
 //! - `registry.rs` — inventory-based registry of reverse / M2M
-//! accessors emitted by `reverse_one_to_many!`,
-//! `reverse_one_to_one!`, and the future `many_to_many!` macro
-//! (Task 7). `registry::RelationKind` is a distinct enum from
-//! `path::RelationKind` — the former discriminates macro-emitted
-//! accessor *kinds* (FK / O2O / M2M), the latter discriminates
-//! field-level relation *shapes* (ForeignKey / OneToOne).
-//! See `docs/guide/relations.md` for the user-facing
-//! guide once later tasks land.
+//!   accessors emitted by `reverse_one_to_many!`,
+//!   `reverse_one_to_one!`, and the future `many_to_many!` macro
+//!   (Task 7). `registry::RelationKind` is a distinct enum from
+//!   `path::RelationKind` — the former discriminates macro-emitted
+//!   accessor *kinds* (FK / O2O / M2M), the latter discriminates
+//!   field-level relation *shapes* (ForeignKey / OneToOne).
+//!   See `docs/guide/relations.md` for the user-facing
+//!   guide once later tasks land.
 
 pub mod foreign_key;
 pub mod joined_row;

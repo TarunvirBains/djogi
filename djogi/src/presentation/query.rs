@@ -8,10 +8,10 @@
 //! - Predicate access is available only when `Codec: PresentationQueryCodec<FieldTy>`.
 //! - Order access is available only when `Codec: PresentationOrderCodec<FieldTy>`.
 //! - The `eq_storage`, `asc_storage`, `desc_storage` methods on
-//! [`PresentationQueryField`] / [`PresentationOrderField`] are public for
-//! codec implementations but are not directly reachable from generated
-//! user-facing visage accessors. Callers obtain them only through
-//! `PresentationFieldRef`'s codec-gated methods.
+//!   [`PresentationQueryField`] / [`PresentationOrderField`] are public for
+//!   codec implementations but are not directly reachable from generated
+//!   user-facing visage accessors. Callers obtain them only through
+//!   `PresentationFieldRef`'s codec-gated methods.
 //! # Two-layer design
 //! Generated field surfaces return `PresentationFieldRef<Source, Codec, FieldTy>`.
 //! That type exposes predicate/order methods only when `Codec` implements the

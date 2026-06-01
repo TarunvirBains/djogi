@@ -302,11 +302,11 @@ pub mod __private {
     /// Additions (consumed by PR2b's direct-`Q<T>` SQL
     /// walker and PR2d's macro override):
     /// - `SqlEmitContext` — the parent-table-threading context PR2d's
-    /// generated `__djogi_emit_field_predicate` arms expect.
+    ///   generated `__djogi_emit_field_predicate` arms expect.
     /// - `PortablePredicateError` — the typed lowering error PR2b's
-    /// walker propagates back to `DjogiError`.
+    ///   walker propagates back to `DjogiError`.
     /// - `__make_djogi_field` — the macro constructor PR3 will route every
-    /// generated `{Model}Fields` accessor through.
+    ///   generated `{Model}Fields` accessor through.
     pub mod query {
         pub use crate::query::condition::{FilterValue, LookupOp};
         pub use crate::query::field::djogi_field_macro_support::__make_djogi_field;
@@ -488,48 +488,48 @@ pub use visage::{DjogiVisage, VisageError};
 /// ```
 /// # What is in scope
 /// - **Framework macros** — `#[model]`, `#[djogi_test]`, `apps!`, `primary_key!`,
-/// `#[derive(DjogiEnum)]`, `#[derive(JsonbSchema)]`, plus the serde derives so
-/// adopter-side typed JSONB schemas can `#[derive(Serialize, Deserialize)]`
-/// without an explicit `serde` import line.
+///   `#[derive(DjogiEnum)]`, `#[derive(JsonbSchema)]`, plus the serde derives so
+///   adopter-side typed JSONB schemas can `#[derive(Serialize, Deserialize)]`
+///   without an explicit `serde` import line.
 /// - **Core data types** — `Model`, `DjogiContext`, `DjogiError`,
-/// `QuerySet`, `Q<T>`, `FieldRef`, `FilterClause`, `Lookup`, `OrderExpr`,
-/// `ForeignKey<T>`, `OneToOneField<T>`, `ManyToMany<T>`, `Jsonb<T>`,
-/// `Tracked<T>`, the canonical PK newtypes (`HeerId`, `HeerIdDesc`,
-/// `RanjId`, `RanjIdDesc`), and `time` types (`Date`, `DateTime`).
+///   `QuerySet`, `Q<T>`, `FieldRef`, `FilterClause`, `Lookup`, `OrderExpr`,
+///   `ForeignKey<T>`, `OneToOneField<T>`, `ManyToMany<T>`, `Jsonb<T>`,
+///   `Tracked<T>`, the canonical PK newtypes (`HeerId`, `HeerIdDesc`,
+///   `RanjId`, `RanjIdDesc`), and `time` types (`Date`, `DateTime`).
 /// - **Composition primitives** — `Auditable`, `SoftDeletable` (the runtime
-/// trait surfaces; `#[model(auditable)]` / `#[model(soft_deletable)]` emit
-/// the impls).
+///   trait surfaces; `#[model(auditable)]` / `#[model(soft_deletable)]` emit
+///   the impls).
 /// - **Transaction helpers** — `atomic` (the canonical scope helper),
-/// `atomic_with` (sibling that opens at an explicit Postgres
-/// isolation level), `retry_on_conflict` (the immediate lock-conflict /
-/// serialization-failure retry loop), `retry_on_conflict_with_backoff`
-/// and `TransactionRetryBackoff` (production retry policy for
-/// contention / `PoolTimeout`), `IsolationLevel` (`READ COMMITTED` /
-/// `REPEATABLE READ` / `SERIALIZABLE` typed surface for `atomic_with`),
-/// and `DeferScope` (the typed scope for
-/// `DjogiContext::defer_constraints` / `set_constraints_immediate`).
+///   `atomic_with` (sibling that opens at an explicit Postgres
+///   isolation level), `retry_on_conflict` (the immediate lock-conflict /
+///   serialization-failure retry loop), `retry_on_conflict_with_backoff`
+///   and `TransactionRetryBackoff` (production retry policy for
+///   contention / `PoolTimeout`), `IsolationLevel` (`READ COMMITTED` /
+///   `REPEATABLE READ` / `SERIALIZABLE` typed surface for `atomic_with`),
+///   and `DeferScope` (the typed scope for
+///   `DjogiContext::defer_constraints` / `set_constraints_immediate`).
 /// - **Spatial primitive** — `GeoPoint` is included when the `spatial`
-/// feature is enabled; otherwise it is absent from the prelude.
+///   feature is enabled; otherwise it is absent from the prelude.
 /// # What is *not* in scope
 /// - **The crate-scoped `Result<T>` alias.** Adopters spell it
-/// `djogi::Result<T>` at function signatures (the same shape used by
-/// `tokio::io::Result`, `sqlx::Result`, etc.). Pulling it through the
-/// prelude would shadow `std::result::Result<T, E>` at every adopter
-/// call site that uses the two-argument form for a non-djogi error.
+///   `djogi::Result<T>` at function signatures (the same shape used by
+///   `tokio::io::Result`, `sqlx::Result`, etc.). Pulling it through the
+///   prelude would shadow `std::result::Result<T, E>` at every adopter
+///   call site that uses the two-argument form for a non-djogi error.
 /// - **The raw SQL escape hatches.** `RawAccessExt` / `RawPoolAccessExt`
-/// live on the sealed `djogi::__bypass` module and are reachable only
-/// through the `#[djogi::deliberately_bypass_convention_with_raw_sql]`
-/// attribute — pulling them through the prelude would lose the
-/// "escape hatch is djogi's `unsafe`" framing. See
-/// [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
+///   live on the sealed `djogi::__bypass` module and are reachable only
+///   through the `#[djogi::deliberately_bypass_convention_with_raw_sql]`
+///   attribute — pulling them through the prelude would lose the
+///   "escape hatch is djogi's `unsafe`" framing. See
+///   [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md).
 /// - **Migration substrate.** Items under `djogi::migrate::*` are reached
-/// explicitly when an adopter wraps the migration runner from app code;
-/// the CLI is the canonical surface for routine use.
+///   explicitly when an adopter wraps the migration runner from app code;
+///   the CLI is the canonical surface for routine use.
 /// - **The `__private` macro-emission re-exports.** Macro-emitted code
-/// routes through `::djogi::__private::*` per the path-routing
-/// convention; adopter code never names those paths.
-/// The prelude is the framework's stability commitment for adopter imports
-/// names land here once they are intended to live for the long haul.
+///   routes through `::djogi::__private::*` per the path-routing
+///   convention; adopter code never names those paths.
+///   The prelude is the framework's stability commitment for adopter imports
+///   names land here once they are intended to live for the long haul.
 pub mod prelude {
     #[doc(hidden)]
     pub use crate::apps::AppDiagnostic;

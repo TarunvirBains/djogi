@@ -19,31 +19,31 @@
 //! # Step graph
 //! 1. [`StepKind::ExpandSchema`] — `ALTER TABLE <t> ADD COLUMN
 //! <c>_new BYTEA NULL`. The shadow column lands as `BYTEA` so
-//! the codec can swap encoding shapes (the `to` codec ID lives in
-//! the descriptor, not in the column type). The `_new` suffix
-//! matches the convention pinned by
-//! [`replacement_column`](super::replacement_column) and the
-//! runtime hook parser at
-//! [`crate::live_migrate::hooks`] — every shadow-column-style
-//! pattern uses the same suffix so the parser can derive
-//! `shadow_column` from a hook ID alone.
+//!    the codec can swap encoding shapes (the `to` codec ID lives in
+//!    the descriptor, not in the column type). The `_new` suffix
+//!    matches the convention pinned by
+//!    [`replacement_column`](super::replacement_column) and the
+//!    runtime hook parser at
+//!    [`crate::live_migrate::hooks`] — every shadow-column-style
+//!    pattern uses the same suffix so the parser can derive
+//!    `shadow_column` from a hook ID alone.
 //! 2. [`StepKind::BeginCompatibilityWindow`] — register the dual-
-//! read / dual-write hooks. The hook IDs include the old + new
-//! codec identifiers so the runtime layer can route encode /
-//! decode calls to the right codec implementation per row.
+//!    read / dual-write hooks. The hook IDs include the old + new
+//!    codec identifiers so the runtime layer can route encode /
+//!    decode calls to the right codec implementation per row.
 //! 3. [`StepKind::BackfillChunked`] — copy `<c>` into `<c>_new`
-//! re-encoded under the new codec. The predicate `WHERE
+//!    re-encoded under the new codec. The predicate `WHERE
 //! <c>_new IS NULL` is structurally idempotent — once a row
-//! is re-encoded the chunk skips it on subsequent passes.
+//!    is re-encoded the chunk skips it on subsequent passes.
 //! 4. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//! until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL`
-//! returns zero.
+//!    until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL`
+//!    returns zero.
 //! 5. [`StepKind::CutoverReads`] — visage projection switches reads
-//! onto the new codec.
+//!    onto the new codec.
 //! 6. [`StepKind::CutoverWrites`] — writes target the new codec
-//! only.
+//!    only.
 //! 7. [`StepKind::CleanupLegacyState`] — `DROP COLUMN <c>` then
-//! `RENAME COLUMN <c>_new TO <c>`.
+//!    `RENAME COLUMN <c>_new TO <c>`.
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};

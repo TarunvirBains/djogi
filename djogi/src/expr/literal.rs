@@ -22,18 +22,18 @@
 //! Expr<T>` or similar.
 //! # Coverage (must match [`FilterValue`] one-for-one)
 //! - `String` / `&'static str` — the `&str` case maps into `Expr<String>`
-//! so literals like `Expr::literal("draft")` don't leave the user
-//! with an unbindable `&'static str` expression (Postgres has no
-//! `&str`, only `TEXT`).
+//!   so literals like `Expr::literal("draft")` don't leave the user
+//!   with an unbindable `&'static str` expression (Postgres has no
+//!   `&str`, only `TEXT`).
 //! - `i16 / i32 / i64 / f32 / f64 / bool` — scalar numerics.
 //! - `time::OffsetDateTime` / `time::Date` — the Djogi canonical
-//! timestamp / date types (re-exported as `DateTime` / `Date`).
+//!   timestamp / date types (re-exported as `DateTime` / `Date`).
 //! - `uuid::Uuid` / `HeerId` / `RanjId` — id types.
-//! The intentionally-omitted `FilterValue::Null / ::List / ::Pair`
-//! variants do not get `From` impls here: null is not a typed value
-//! (there is no `Expr<NULL>`), lists belong in `IN (...)` which is a
-//! separate `FieldRef` lookup, and pairs are the `BETWEEN` payload
-//! shape, not a standalone expression.
+//!   The intentionally-omitted `FilterValue::Null / ::List / ::Pair`
+//!   variants do not get `From` impls here: null is not a typed value
+//!   (there is no `Expr<NULL>`), lists belong in `IN (...)` which is a
+//!   separate `FieldRef` lookup, and pairs are the `BETWEEN` payload
+//!   shape, not a standalone expression.
 
 use crate::expr::Expr;
 use crate::query::condition::FilterValue;

@@ -22,24 +22,24 @@
 //! plain queryset's API stable and cleanly excludes the methods that
 //! cannot soundly compose with a recursive walk:
 //! - `offset` — `OFFSET n` over a recursive walk silently drops ancestors
-//! from the head of the result, which almost never matches caller
-//! intent.
+//!   from the head of the result, which almost never matches caller
+//!   intent.
 //! - `distinct` / `distinct_on` — already handled by the `CYCLE id` clause
-//! the SQL builder always emits; a second DISTINCT on top would be both
-//! redundant and prone to suppressing legitimately-distinct rows.
+//!   the SQL builder always emits; a second DISTINCT on top would be both
+//!   redundant and prone to suppressing legitimately-distinct rows.
 //! - `select_for_update` / `nowait` / `skip_locked` /
-//! `select_for_share` / `for_share_nowait` / `for_share_skip_locked`
-//! row locks on a recursive walk acquire one lock per visited row
-//! in walk order. Pre-1.0 we ban this until we have a clear "lock
-//! the whole subtree atomically" story (out of scope for Phase
-//! 8-Zero). The FOR SHARE family inherits the same
-//! exclusion.
+//!   `select_for_share` / `for_share_nowait` / `for_share_skip_locked`
+//!   row locks on a recursive walk acquire one lock per visited row
+//!   in walk order. Pre-1.0 we ban this until we have a clear "lock
+//!   the whole subtree atomically" story (out of scope for Phase
+//!   8-Zero). The FOR SHARE family inherits the same
+//!   exclusion.
 //! - `prefetch` / `select_related` — fan-out over a tree multiplies the
-//! round trips by the size of the subtree; the right shape is a single
-//! joined recursive CTE the user expresses directly. Banning the wrong
-//! shape avoids accidental N+1 over a tree.
+//!   round trips by the size of the subtree; the right shape is a single
+//!   joined recursive CTE the user expresses directly. Banning the wrong
+//!   shape avoids accidental N+1 over a tree.
 //! - bulk `update` / `delete` — non-trivial cascade semantics; deferred
-//! to a later phase when we can declare the lock and visibility model.
+//!   to a later phase when we can declare the lock and visibility model.
 //! # SQL shape
 //! The emitter produces one of:
 //! ```sql
@@ -77,34 +77,34 @@
 //! rule for multi-edge models.
 //! # SQL invariants
 //! - **`UNION ALL`**, never `UNION` — multiplicity preservation is
-//! load-bearing for `full_ancestors`. Wright-style kinship
-//! coefficients sum independent connecting paths through common
-//! ancestors, so the same ancestor reached by two distinct edge
-//! sequences must appear twice. `UNION` would dedup and silently
-//! drop those rows.
+//!   load-bearing for `full_ancestors`. Wright-style kinship
+//!   coefficients sum independent connecting paths through common
+//!   ancestors, so the same ancestor reached by two distinct edge
+//!   sequences must appear twice. `UNION` would dedup and silently
+//!   drop those rows.
 //! - **`CYCLE id SET is_cycle USING cycle_path`** is mandatory. Postgres
-//! manages both `is_cycle` and the cycle-detection `cycle_path`
-//! array automatically — they do not appear in our manual column
-//! list. The outer `WHERE NOT is_cycle` strips the cycle-detection
-//! sentinel rows from output. The cycle-detection column is named
-//! `cycle_path` (not `path`) so it does not collide with our user-
-//! visible `path: text[]` column that records the edge-name
-//! sequence from root to the current node.
+//!   manages both `is_cycle` and the cycle-detection `cycle_path`
+//!   array automatically — they do not appear in our manual column
+//!   list. The outer `WHERE NOT is_cycle` strips the cycle-detection
+//!   sentinel rows from output. The cycle-detection column is named
+//!   `cycle_path` (not `path`) so it does not collide with our user-
+//!   visible `path: text[]` column that records the edge-name
+//!   sequence from root to the current node.
 //! - **`SEARCH ... BY <col> SET __djogi_search_seq`** emits only when
-//! the caller invoked
-//! [`search_breadth_first_by`](RecursiveQuerySet::search_breadth_first_by) /
-//! [`search_depth_first_by`](RecursiveQuerySet::search_depth_first_by).
-//! The internal sequence column `__djogi_search_seq` is macro-internal
-//! the `__djogi_` prefix is framework-reserved (see
-//! `docs/spec/reserved-identifiers.md`), so it cannot collide with
-//! adopter model fields. It is never projected into the outer SELECT,
-//! but the outer `ORDER BY` references it so callers see BFS / DFS
-//! order without an explicit `order_by` call.
+//!   the caller invoked
+//!   [`search_breadth_first_by`](RecursiveQuerySet::search_breadth_first_by) /
+//!   [`search_depth_first_by`](RecursiveQuerySet::search_depth_first_by).
+//!   The internal sequence column `__djogi_search_seq` is macro-internal
+//!   the `__djogi_` prefix is framework-reserved (see
+//!   `docs/spec/reserved-identifiers.md`), so it cannot collide with
+//!   adopter model fields. It is never projected into the outer SELECT,
+//!   but the outer `ORDER BY` references it so callers see BFS / DFS
+//!   order without an explicit `order_by` call.
 //! - **RLS:** every terminal calls
-//! [`auto_set_tenant`](crate::query::terminal::auto_set_tenant) before
-//! building SQL, exactly like the plain `QuerySet` terminals. Without
-//! this, recursive walks leak across tenants whenever the model carries
-//! a `tenant_key`.
+//!   [`auto_set_tenant`](crate::query::terminal::auto_set_tenant) before
+//!   building SQL, exactly like the plain `QuerySet` terminals. Without
+//!   this, recursive walks leak across tenants whenever the model carries
+//!   a `tenant_key`.
 //! # `clippy::manual_async_fn`
 //! Every terminal returns `impl Future<Output = ...> + Send + 'ctx`
 //! rather than `async fn`. The explicit-bound form matches the

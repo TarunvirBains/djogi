@@ -7,9 +7,9 @@
 //! sites only supply the user-facing `TsQuery` value.
 //! Two operations are available:
 //! - `.matches(q)` — builds a `Condition` leaf that emits
-//! `<col> @@ to_tsquery('<dict>', $n)` in the WHERE clause.
+//!   `<col> @@ to_tsquery('<dict>', $n)` in the WHERE clause.
 //! - `.rank(q)` — builds an `Expr<f32>` that emits
-//! `ts_rank(<col>, to_tsquery('<dict>', $n))` in ORDER BY / SELECT.
+//!   `ts_rank(<col>, to_tsquery('<dict>', $n))` in ORDER BY / SELECT.
 //! - `.rank_cd(q)` — same but uses `ts_rank_cd` (cover-density).
 //! # Path routing
 //! All emitted type paths go through `::djogi::*`. Macro output that

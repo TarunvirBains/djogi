@@ -48,15 +48,15 @@
 //! ```
 //! # What this surface does NOT cover
 //! - **Set operations** (`UNION` / `INTERSECT` / `EXCEPT`) — tracked in
-//! .
+//!   .
 //! - **`LATERAL` joins** — tracked in .
 //! - **`VALUES` inline relations as join sources** — tracked in .
 //! - **PG18 `OLD` / `NEW` in `RETURNING`** — tracked in .
 //! - **`RETURNING` for INSERT...SELECT** — use
-//! [`InsertSelectStmt::execute_returning`] to receive every inserted
-//! row back as a decoded `Vec<T>` (closes ).
-//! [`InsertSelectStmt::execute`] remains the default for bulk operations
-//! where materialising the full result set is unnecessary.
+//!   [`InsertSelectStmt::execute_returning`] to receive every inserted
+//!   row back as a decoded `Vec<T>` (closes ).
+//!   [`InsertSelectStmt::execute`] remains the default for bulk operations
+//!   where materialising the full result set is unnecessary.
 //! # Framework-column semantics
 //! The target's framework columns (`id`, `created_at`, `updated_at`)
 //! are populated by their column-level `DEFAULT` clauses on the target
@@ -76,59 +76,59 @@
 //! are swapped at the mapping site. Concretely:
 //! - `target_field.copy_from(source_field.as_insert_source)` — OK.
 //! - `source_field.copy_from(target_field.as_insert_source)` — fails
-//! to compile (`InsertSelectColumn<T, S>` does not implement
-//! `IntoInsertColumns<S, T>`).
+//!   to compile (`InsertSelectColumn<T, S>` does not implement
+//!   `IntoInsertColumns<S, T>`).
 //! - `target_field.copy_from(target_field.as_insert_source)` — fails
-//! to compile (`InsertSelectColumn<T, T>` does not implement
-//! `IntoInsertColumns<S, T>` when `S != T`).
-//! See `djogi/tests/compile_fail/insert_select_*` for the pinned
-//! compile-fail fixtures.
+//!   to compile (`InsertSelectColumn<T, T>` does not implement
+//!   `IntoInsertColumns<S, T>` when `S != T`).
+//!   See `djogi/tests/compile_fail/insert_select_*` for the pinned
+//!   compile-fail fixtures.
 //! # Rejected source state
 //! [`InsertSelectStmt::execute`] returns [`DjogiError::Validation`] when
 //! the source queryset carries state that cannot be safely represented
 //! in an INSERT...SELECT shape:
 //! - **`prefetch_paths`** — prefetch is a post-fetch row-stitching
-//! pattern; INSERT...SELECT returns no rows, so prefetch has no
-//! meaning.
+//!   pattern; INSERT...SELECT returns no rows, so prefetch has no
+//!   meaning.
 //! - **`select_related_paths`** — select_related expands the SELECT list
-//! with aliased joined columns; the column mapping closure references
-//! single-model columns, so silently dropping the join would surprise
-//! the caller. Rejecting forces the caller to compose the joined
-//! source via an explicit subquery in a future iteration.
+//!   with aliased joined columns; the column mapping closure references
+//!   single-model columns, so silently dropping the join would surprise
+//!   the caller. Rejecting forces the caller to compose the joined
+//!   source via an explicit subquery in a future iteration.
 //! - **`cache_target`** — `.cache(&p)` writes returned rows into a
-//! Punnu; INSERT...SELECT returns row counts, not rows. Rejecting
-//! surfaces the bug rather than silently dropping the cache binding.
+//!   Punnu; INSERT...SELECT returns row counts, not rows. Rejecting
+//!   surfaces the bug rather than silently dropping the cache binding.
 //! - **`lock != LockMode::None`** — `SELECT ... FOR UPDATE` or
-//! `... FOR SHARE` inside an INSERT...SELECT is a legitimate
-//! Postgres pattern (acquire the source rows' locks for the
-//! duration of the archival), but the minimum coherent surface for
-//! ships without lock composition. The FOR SHARE family
-//! added under is rejected by the same validator. A future
-//! issue can lift this restriction with a deliberate
-//! `.with_source_lock` opt-in.
+//!   `... FOR SHARE` inside an INSERT...SELECT is a legitimate
+//!   Postgres pattern (acquire the source rows' locks for the
+//!   duration of the archival), but the minimum coherent surface for
+//!   ships without lock composition. The FOR SHARE family
+//!   added under is rejected by the same validator. A future
+//!   issue can lift this restriction with a deliberate
+//!   `.with_source_lock` opt-in.
 //! - **`distinct != DistinctMode::None`** — `SELECT DISTINCT` inside
-//! INSERT...SELECT is also valid Postgres semantics ("insert distinct
-//! source rows only"), but the safer initial surface rejects it.
-//! `DistinctMode::On(cols)` in particular requires the DISTINCT ON
-//! columns to appear at the start of `ORDER BY` AND in the SELECT
-//! projection — neither of which the closure-built source-expression
-//! list guarantees. Rejecting all non-default distinct modes keeps
-//! the surface obviously correct.
+//!   INSERT...SELECT is also valid Postgres semantics ("insert distinct
+//!   source rows only"), but the safer initial surface rejects it.
+//!   `DistinctMode::On(cols)` in particular requires the DISTINCT ON
+//!   columns to appear at the start of `ORDER BY` AND in the SELECT
+//!   projection — neither of which the closure-built source-expression
+//!   list guarantees. Rejecting all non-default distinct modes keeps
+//!   the surface obviously correct.
 //! # Allowed source state
 //! - **`condition`** (WHERE clause) — the canonical filter surface.
 //! - **`ordering`** (ORDER BY) — composes with LIMIT to deterministically
-//! pick "oldest N" / "newest N" subsets. Postgres preserves the order
-//! into the INSERT.
+//!   pick "oldest N" / "newest N" subsets. Postgres preserves the order
+//!   into the INSERT.
 //! - **`limit`** (LIMIT) — useful for chunked archival.
 //! - **`offset`** (OFFSET) — composes with limit for pagination-style
-//! chunking.
+//!   chunking.
 //! - **`is_empty`** (the `QuerySet::none` short-circuit) — terminals
-//! return `Ok(0)` without touching the database, **but only after**
-//! the column-mapping and source-state validation above has passed.
-//! A `.none` chain with an empty mapping, duplicate columns, or
-//! stale post-`.none` state-adding methods still surfaces a
-//! [`DjogiError::Validation`] so the programming error does not hide
-//! behind a silent zero-row return.
+//!   return `Ok(0)` without touching the database, **but only after**
+//!   the column-mapping and source-state validation above has passed.
+//!   A `.none` chain with an empty mapping, duplicate columns, or
+//!   stale post-`.none` state-adding methods still surfaces a
+//!   [`DjogiError::Validation`] so the programming error does not hide
+//!   behind a silent zero-row return.
 //! # Tenant / RLS auto-set
 //! [`InsertSelectStmt::execute`] calls `auto_set_tenant::<T>(ctx)` for
 //! the target model before issuing the INSERT, then `auto_set_tenant::<S>(ctx)`
@@ -175,16 +175,16 @@ use std::marker::PhantomData;
 /// the matching `V`.
 /// # How to construct
 /// - **From a source field** — call
-/// [`FieldRef::as_insert_source`] / [`crate::query::DjogiField::as_insert_source`].
-/// The receiver's `M` pins the wrapper's `S`, so building an operand
-/// from a target field gives an operand tagged with the target model
-/// which the closure return type then rejects.
+///   [`FieldRef::as_insert_source`] / [`crate::query::DjogiField::as_insert_source`].
+///   The receiver's `M` pins the wrapper's `S`, so building an operand
+///   from a target field gives an operand tagged with the target model
+///   which the closure return type then rejects.
 /// - **From a Rust scalar** — call [`InsertSelectSource::literal`]. `S`
-/// is free at construction and inferred from the closure context (a
-/// constant has no source identity of its own).
+///   is free at construction and inferred from the closure context (a
+///   constant has no source identity of its own).
 /// - **From an arithmetic composition** — use `+` / `-` / `*` / `/` on
-/// `InsertSelectSource<S, V>` where `V: Numeric`. Same-`S` operands
-/// compose; mixing two different source tags fails to compile.
+///   `InsertSelectSource<S, V>` where `V: Numeric`. Same-`S` operands
+///   compose; mixing two different source tags fails to compile.
 /// # Why phantom-only
 /// The IR payload (the crate-private `ExprNode` enum) is type-erased at
 /// the leaf — the SQL emitter walks one monomorphic function regardless
@@ -356,30 +356,30 @@ impl<S: Model, V> FieldRef<S, V> {
 /// `source.col`'s tagged IR tree.
 /// # Type parameters
 /// - `S` — the source model. Pinned by the source operand
-/// ([`InsertSelectSource<S, V>`]). When the closure returns
-/// `Vec<InsertSelectColumn<S, T>>`, `S` must match the
-/// `QuerySet<S>::insert_into` receiver's source model.
+///   ([`InsertSelectSource<S, V>`]). When the closure returns
+///   `Vec<InsertSelectColumn<S, T>>`, `S` must match the
+///   `QuerySet<S>::insert_into` receiver's source model.
 /// - `T` — the target model. Pinned by the target [`FieldRef<T, V>`] the
-/// `copy_from` method is called on. When the closure returns
-/// `Vec<InsertSelectColumn<S, T>>`, `T` must match the
-/// `insert_into::<T, _, _>` generic on the call site.
-/// Mismatch on either side fails to compile at the closure-return
-/// inference step — see the module docs and the compile-fail fixtures
-/// under `djogi/tests/compile_fail/insert_select_*`.
+///   `copy_from` method is called on. When the closure returns
+///   `Vec<InsertSelectColumn<S, T>>`, `T` must match the
+///   `insert_into::<T, _, _>` generic on the call site.
+///   Mismatch on either side fails to compile at the closure-return
+///   inference step — see the module docs and the compile-fail fixtures
+///   under `djogi/tests/compile_fail/insert_select_*`.
 /// # Invariants
 /// - `target_column` is a `&'static str` baked by the `#[model]` macro,
-/// never user input — it flows straight into `SqlAccumulator::push_sql`.
+///   never user input — it flows straight into `SqlAccumulator::push_sql`.
 /// - `source` is the crate-private `ExprNode` tree built through the
-/// typed constructors on [`InsertSelectSource<S, V>`]. The leaf
-/// `Field` variant carries a macro-validated `&'static str` column
-/// name; the `Literal` variant binds through `push_filter_value` →
-/// `push_bind`.
+///   typed constructors on [`InsertSelectSource<S, V>`]. The leaf
+///   `Field` variant carries a macro-validated `&'static str` column
+///   name; the `Literal` variant binds through `push_filter_value` →
+///   `push_bind`.
 /// - The compile-time `V` matching on [`FieldRef::copy_from`] guarantees
-/// the target column's value type matches the source operand's value
-/// type at compile time — there is no runtime type-coercion surface
-/// here.
-/// `Debug` + `Clone` are derived — see the `InsertSelectStmt: Clone`
-/// rationale on [`InsertSelectStmt`].
+///   the target column's value type matches the source operand's value
+///   type at compile time — there is no runtime type-coercion surface
+///   here.
+///   `Debug` + `Clone` are derived — see the `InsertSelectStmt: Clone`
+///   rationale on [`InsertSelectStmt`].
 #[must_use = "column mappings are lazy — drop one and the INSERT silently omits the column"]
 pub struct InsertSelectColumn<S: Model, T: Model> {
     /// Target column name — macro-baked literal, never user input.
@@ -455,13 +455,13 @@ impl<S: Model, T: Model> InsertSelectColumn<S, T> {
 /// [`InsertSelectSource<S, V>`] covers every shape the source operand
 /// can take:
 /// - **Plain column copy** — `source.col.as_insert_source` (the
-/// common case). Emits a bare `col` reference inside the source
-/// `FROM` scope.
+///   common case). Emits a bare `col` reference inside the source
+///   `FROM` scope.
 /// - **Constant** — `InsertSelectSource::literal(42i32)`. Emits a single
-/// bind.
+///   bind.
 /// - **Computed expression** — arithmetic (`+` / `-` / `*` / `/`) on
-/// `InsertSelectSource<S, V: Numeric>` composes same-source operands
-/// into a single source projection.
+///   `InsertSelectSource<S, V: Numeric>` composes same-source operands
+///   into a single source projection.
 /// # Example
 /// ```ignore
 /// CompletedOrder::objects()
@@ -701,15 +701,15 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// would suddenly leak out as a live Postgres syntax error or
     /// SQLSTATE.
     /// - Empty column mapping (`columns.is_empty`). Postgres would
-    /// reject `INSERT INTO t SELECT ...` as syntactically invalid;
-    /// the framework pre-validates so the diagnostic carries the
-    /// target table name rather than the bare SQLSTATE.
+    ///   reject `INSERT INTO t SELECT ...` as syntactically invalid;
+    ///   the framework pre-validates so the diagnostic carries the
+    ///   target table name rather than the bare SQLSTATE.
     /// - Duplicate target column in the mapping (Postgres `42701`
-    /// surfaced before the SQL leaves the framework).
+    ///   surfaced before the SQL leaves the framework).
     /// - Source queryset carries `prefetch_paths`,
-    /// `select_related_paths`, a `cache_target`, a non-default
-    /// `LockMode`, or a non-default `DistinctMode`. See the module
-    /// docs for the rationale on each.
+    ///   `select_related_paths`, a `cache_target`, a non-default
+    ///   `LockMode`, or a non-default `DistinctMode`. See the module
+    ///   docs for the rationale on each.
     /// # Short-circuit case (no SQL issued)
     /// After validation passes, returns `Ok(0)` without touching the
     /// database when the source queryset is [`QuerySet::none`]-derived
@@ -894,9 +894,9 @@ impl<S: Model> QuerySet<S> {
     /// # See also
     /// - — the originating gap analysis.
     /// - [`QuerySet::update`] — the sibling bulk-write terminal for
-    /// in-place row mutation.
+    ///   in-place row mutation.
     /// - [`Model::create`] / `Model::bulk_create` — the row-by-row
-    /// and small-batch INSERT paths.
+    ///   and small-batch INSERT paths.
     #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
     pub fn insert_into<T, F, I>(self, f: F) -> InsertSelectStmt<S, T>
     where

@@ -6,11 +6,11 @@
 //! variant the differ emits, plus the deterministic-naming and
 //! quoting policy for identifiers. T3 does **not** own:
 //! - `PkTypeFlip` orchestration. T9 plugs in later with the full
-//! expand / contract / FK-cascade playbook. T3 surfaces every flip
-//! as [`SqlEmitError::PkTypeFlipMustRouteToT9`] so the differ can
-//! never accidentally feed a flip through the standard path.
+//!   expand / contract / FK-cascade playbook. T3 surfaces every flip
+//!   as [`SqlEmitError::PkTypeFlipMustRouteToT9`] so the differ can
+//!   never accidentally feed a flip through the standard path.
 //! - Migration file naming, checksums, ledger writes — T6 owns the
-//! on-disk shape.
+//!   on-disk shape.
 //! # Determinism
 //! Two runs of [`lower_delta`] on the same input produce
 //! byte-identical output. The emitter walks owned `BTreeMap` /
@@ -2118,18 +2118,18 @@ pub(crate) fn quote_string_literal(value: &str) -> String {
 /// `numeric → integer` truncates but is implicitly accepted).
 /// **Recognised pairs.**
 /// - text family (`TEXT`, `VARCHAR(...)`, `CHARACTER VARYING(...)`,
-/// `CHAR(...)`, `CITEXT`) ↔ UUID
+///   `CHAR(...)`, `CITEXT`) ↔ UUID
 /// - text family ↔ integer family (`SMALLINT`, `INT2`, `INTEGER`,
-/// `INT4`, `BIGINT`, `INT8`)
+///   `INT4`, `BIGINT`, `INT8`)
 /// - UUID ↔ integer family
-/// The comparison is byte-case-insensitive (Postgres treats type
-/// names case-insensitively) but does not normalise type modifiers
-/// like `(N)` length suffixes — `VARCHAR(64) → UUID` and
-/// `VARCHAR → UUID` both match because the text-family check tests
-/// for the `varchar` / `character` / `text` / `citext` / `char` prefix.
-/// No regex per djogi project rule
-/// (`feedback_no_regex_in_djogi.md`) — all checks use ASCII byte
-/// matching against lowercased type strings.
+///   The comparison is byte-case-insensitive (Postgres treats type
+///   names case-insensitively) but does not normalise type modifiers
+///   like `(N)` length suffixes — `VARCHAR(64) → UUID` and
+///   `VARCHAR → UUID` both match because the text-family check tests
+///   for the `varchar` / `character` / `text` / `citext` / `char` prefix.
+///   No regex per djogi project rule
+///   (`feedback_no_regex_in_djogi.md`) — all checks use ASCII byte
+///   matching against lowercased type strings.
 fn type_change_likely_requires_using(from: &str, to: &str) -> bool {
     fn lower_ascii(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
@@ -2304,11 +2304,11 @@ fn truncate_constraint(name: String) -> String {
 /// inconsistent shapes (`{table}_check`, `{table}_check1`, etc.); the
 /// explicit `CONSTRAINT` keyword makes the name deterministic so:
 /// 1. The ALTER TABLE DROP CONSTRAINT path from the differ
-/// ([`ColumnChange::SetCheck`] with `to: None`) reaches the same
-/// constraint slot inline CREATE TABLE produced.
+///    ([`ColumnChange::SetCheck`] with `to: None`) reaches the same
+///    constraint slot inline CREATE TABLE produced.
 /// 2. Adopter-facing error messages reference a predictable
-/// constraint name that mirrors the migration emitter's
-/// ALTER-TABLE path.
+///    constraint name that mirrors the migration emitter's
+///    ALTER-TABLE path.
 fn write_column_definition(out: &mut String, col: &ColumnSchema, table: &str) {
     let qn = quote_ident(&col.name);
     out.push_str(&qn);

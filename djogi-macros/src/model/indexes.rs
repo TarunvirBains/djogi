@@ -8,30 +8,30 @@
 //! (matching the `ModelAttrs` pattern). Three §5 constructs sit
 //! outside darling's derive grammar:
 //! 1. `where = "..."` uses a Rust keyword as a key — darling's derive
-//! reduces to `syn::Path`, which rejects keywords. Only
-//! `syn::ext::IdentExt::parse_any` accepts the keyword.
+//!    reduces to `syn::Path`, which rejects keywords. Only
+//!    `syn::ext::IdentExt::parse_any` accepts the keyword.
 //! 2. The per-column record literal
-//! `(col = ident, opclass = "…", order = desc, nulls = first)` is a
-//! tuple / paren expression, not an attribute meta list. Darling has
-//! no built-in decoder for it.
+//!    `(col = ident, opclass = "…", order = desc, nulls = first)` is a
+//!    tuple / paren expression, not an attribute meta list. Darling has
+//!    no built-in decoder for it.
 //! 3. The mixed `fields = [ident, (col = …)]` list interleaves two
-//! different shapes whose common supertype is `syn::Expr`.
-//! Rather than fight darling's macro machinery — or bolt on three
-//! `FromMeta` impls whose body is a hand-rolled `syn::Expr` walk anyway
-//! the whole parser lives here as a `syn::ParseStream` walk over the
-//! inner token stream. Error spans stay precise; the plan will be
-//! amended in T5's docstring pass to reflect this deviation.
+//!    different shapes whose common supertype is `syn::Expr`.
+//!    Rather than fight darling's macro machinery — or bolt on three
+//!    `FromMeta` impls whose body is a hand-rolled `syn::Expr` walk anyway
+//!    the whole parser lives here as a `syn::ParseStream` walk over the
+//!    inner token stream. Error spans stay precise; the plan will be
+//!    amended in T5's docstring pass to reflect this deviation.
 //! # Pipeline
 //! 1. `ModelAttrs::parse` extracts the `indexes(...)` `Meta::List` and
-//! hands it to [`parse_indexes_meta_list`], which produces
-//! `Vec<ModelIndexDecl>`.
+//!    hands it to [`parse_indexes_meta_list`], which produces
+//!    `Vec<ModelIndexDecl>`.
 //! 2. `descriptor::expand` consumes the Vec, calls
-//! [`emit_index_spec_tokens`] to lower each decl into an `IndexSpec`
-//! struct-literal token stream, and appends the result to the spatial
-//! GiST indexes already emitted by the descriptor module.
+//!    [`emit_index_spec_tokens`] to lower each decl into an `IndexSpec`
+//!    struct-literal token stream, and appends the result to the spatial
+//!    GiST indexes already emitted by the descriptor module.
 //! 3. The final `indexes: &[IndexSpec { … }, …]` slice is emitted in a
-//! deterministic (alphabetised-by-name) order so minor reorderings in
-//! the user's source do not produce spurious migration diffs.
+//!    deterministic (alphabetised-by-name) order so minor reorderings in
+//!    the user's source do not produce spurious migration diffs.
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -967,13 +967,13 @@ fn validate_index_name_shape(s: &str, span: Span) -> syn::Result<()> {
 /// implementations is caught immediately.
 /// Logic kept deliberately identical to §6.4 + D5 in the v3 plan:
 /// - `NonUnique` / `UniqueConstraint` / `UniqueIndex` stems → `_idx` /
-/// `_key` / `_uidx`.
+///   `_key` / `_uidx`.
 /// - Expression targets render with the literal `expr` body; column
-/// lists render as underscore-joined column names in declaration
-/// order.
+///   lists render as underscore-joined column names in declaration
+///   order.
 /// - When the naïve name exceeds 63 bytes, truncate the stem to 55
-/// bytes and append `_<8-char hex digest>` of the pre-truncation
-/// name (SipHash-1-3 low 32 bits).
+///   bytes and append `_<8-char hex digest>` of the pre-truncation
+///   name (SipHash-1-3 low 32 bits).
 fn generate_index_name(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> String {
     let table = ctx.table_name;
     let body = &decl.body;

@@ -123,10 +123,10 @@ fn validate_table_ident(name: &str) -> Result<(), DjogiError> {
 /// `processing` rows.
 /// # Parameters
 /// - `outbox_table` — the bare table name (e.g. `"worker_outbox"`). Validated
-/// before SQL embedding; returns an error if invalid.
+///   before SQL embedding; returns an error if invalid.
 /// - `batch_size` — maximum number of rows to claim in one call.
 /// - `lease_duration` — how long the claimed rows are locked. Pass a value
-/// long enough to cover the publish round-trip plus reasonable retry padding.
+///   long enough to cover the publish round-trip plus reasonable retry padding.
 pub async fn claim_pending(
     ctx: &mut DjogiContext,
     outbox_table: &str,
@@ -231,12 +231,12 @@ pub async fn mark_published(
 
 /// Transition an outbox row from `processing` based on publish outcome.
 /// - **Retryable + below budget**: row moves back to `pending`, `retry_count`
-/// increments by one, and `leased_until` is cleared. The next
-/// [`claim_pending`] call will pick it up again.
+///   increments by one, and `leased_until` is cleared. The next
+///   [`claim_pending`] call will pick it up again.
 /// - **Non-retryable OR budget exhausted** (`retry_count >= MAX_RETRY_COUNT`):
-/// row transitions to `failed` terminally with `failed_reason` set to
-/// `error_message`.
-/// `row_id` is the outbox row's own `id` (from `OutboxRow::id`).
+///   row transitions to `failed` terminally with `failed_reason` set to
+///   `error_message`.
+///   `row_id` is the outbox row's own `id` (from `OutboxRow::id`).
 pub async fn mark_failed(
     ctx: &mut DjogiContext,
     outbox_table: &str,
