@@ -1,7 +1,7 @@
 //! Attribute parsing for `#[model(table = "...", pk = X)]`
 //! and `#[field(unique, index, max_length = N, renamed_from = "...", on_delete = "...")]`.
 //! `pk` takes a bare identifier — `HeerId`,
-//! `HeerIdRecencyBiased`, `RanjId`, etc. The pre-T2 string-literal form
+//! `HeerIdRecencyBiased`, `RanjId`, etc. The old string-literal form
 //! (`pk = "heerid"`) is rejected with a span-carrying diagnostic.
 //! `ModelAttrs` keeps a hand-rolled parser: the surface is three keys, the
 //! error messages from `syn::Error::new_spanned` already carry precise
@@ -170,13 +170,12 @@ pub struct ModelAttrs {
     /// underscores after, ≤63 bytes).
     pub renamed_from: Option<String>,
 
-    /// Default self-FK column for tree-recursive queries
-    /// (T12).
+    /// Default self-FK column for tree-recursive queries.
     /// Set via `#[model(tree_edge = "parent_id")]`. The named column
     /// must exist on the user's struct AND must resolve to a self-FK
     /// (a `ForeignKey<Self>` / `OneToOneField<Self>` field, optionally
     /// `Option<…>`-wrapped). Cross-checks against the user-field list
-    /// and the T8 self-FK detector run at descriptor-emit time
+    /// and the self-FK detector run at descriptor-emit time;
     /// failures surface as span-precise compile errors pointing at the
     /// `"…"` literal.
     /// Stored as `Option<syn::LitStr>` rather than `Option<String>`
@@ -192,11 +191,11 @@ pub struct ModelAttrs {
     /// `RelationPath` explicitly to the recursive-query builder.
     pub tree_edge: Option<syn::LitStr>,
 
-    /// When `true`, this model opts into lifecycle-hook dispatch — 3.
+    /// When `true`, this model opts into lifecycle-hook dispatch.
     /// Set via `#[model(hooks)]`. The macro emits
     /// `impl ::djogi::__private::hooks::Sealed for #ident {}` and
     /// `impl ::djogi::__private::hooks::HasHooks for #ident {}` so the
-    /// CRUD terminals (T1.4–T1.6) can branch monomorphically between the
+    /// CRUD terminals can branch monomorphically between the
     /// no-op fast path and the hook-dispatch path. The adopter must also
     /// `impl ModelHooks for MyModel` — the `HasHooks` supertrait bound
     /// (`HasHooks: ModelHooks + Sealed`) makes that requirement a compile
@@ -228,9 +227,9 @@ pub struct ModelAttrs {
     ///    are rejected, mirroring the convention `hooks`, `events`,
     ///    `through`, and `no_default` already follow.
     /// # 2026-05-03 design pivot
-    /// T2.2 (commit 939b9ab) shipped `#[derive(Auditable)]` as the
-    /// opt-in surface; T2.4 supersedes it with this attribute and the
-    /// derive is removed from the v3 surface. Per spec line 1037
+    /// Commit 939b9ab shipped `#[derive(Auditable)]` as the
+    /// opt-in surface; the current design supersedes it with this attribute and the
+    /// derive is removed from the current surface. Per spec line 1037
     /// (locked 2026-05-03): proc macros cannot observe sibling derives,
     /// so the derive could not deterministically signal to
     /// `#[derive(Model)]` / `#[model(...)]`. Single
@@ -257,14 +256,14 @@ pub struct ModelAttrs {
     /// `auditable`, `hooks`, `events`, `through`, and `no_default` already
     /// follow.
     /// # 2026-05-03 design pivot
-    /// T2.3 (commit 863c4cb) shipped `#[derive(SoftDeletable)]` as the
-    /// opt-in surface; T2.6 supersedes it with this attribute and the
-    /// derive is removed from the v3 surface — same constraint that drove
-    /// the T2.4 Auditable pivot. Proc macros cannot observe sibling
+    /// Commit 863c4cb shipped `#[derive(SoftDeletable)]` as the
+    /// opt-in surface; the current design supersedes it with this attribute and the
+    /// derive is removed from the current surface — same constraint that drove
+    /// the Auditable pivot. Proc macros cannot observe sibling
     /// derives, so a derive could not deterministically signal to
-    /// `#[model(...)]` that 8γ T6's automatic default-filter composition
+    /// `#[model(...)]` that automatic default-filter composition
     /// should be wired. Doing the migration NOW is cheaper than later
-    /// (8γ would have to unwind composition wiring).
+    /// (otherwise composition wiring would need unwinding).
     /// [`SoftDeletable`]: ::djogi::SoftDeletable
     pub soft_deletable: bool,
 
@@ -613,7 +612,7 @@ fn render_storage_param_entries(entries: &[StorageParamEntry]) -> String {
 }
 
 /// Parsed `pk = X` value.
-/// Grammar is a bare identifier . The pre-T2
+/// Grammar is a bare identifier. The old
 /// string-literal grammar (`pk = "heerid"`) is rejected with a
 /// span-carrying diagnostic directing callers at the new form. The
 /// accepted identifier set:
@@ -724,7 +723,7 @@ impl ModelAttrs {
         let mut proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)> = Vec::new();
         let mut seen_proxy_default_order = false;
         let mut proxy_default_filter: Option<syn::ExprClosure> = Option::None;
-        // T3.3 (VERIFY-1 fixup) — capture the span of the `default_order`
+        // Capture the span of the `default_order`
         // / `default_filter` key idents at parse time so the post-loop
         // orphan-attribute guards can surface span-precise diagnostics
         // pointing at the offending key rather than at the model's
@@ -781,8 +780,8 @@ impl ModelAttrs {
                     seen_hooks = true;
                     hooks = true;
                 }
-                // Flag-only attribute: `auditable` — 4.
-                // Standalone keyword only; supersedes the T2.2
+                // Flag-only attribute: `auditable`.
+                // Standalone keyword only; supersedes the
                 // `#[derive(Auditable)]` derive (removed 2026-05-03 per
                 // spec line 1037). The model emitter reads
                 // `model_attrs.auditable` to decide whether to emit:
@@ -800,13 +799,13 @@ impl ModelAttrs {
                     seen_auditable = true;
                     auditable = true;
                 }
-                // Flag-only attribute: `soft_deletable` — 6.
-                // Standalone keyword only; supersedes the T2.3
+                // Flag-only attribute: `soft_deletable`.
+                // Standalone keyword only; supersedes the
                 // `#[derive(SoftDeletable)]` derive. The model emitter
                 // reads `model_attrs.soft_deletable` to decide whether
                 // to emit `impl ::djogi::SoftDeletable for #ident { ... }`
                 // and to gate the `composed_via: Some("SoftDeletable")`
-                // tag on the `deleted_at` column (descriptor T2.5).
+                // tag on the `deleted_at` column (descriptor).
                 Meta::Path(path) if path.is_ident("soft_deletable") => {
                     if seen_soft_deletable {
                         return Err(syn::Error::new_spanned(
@@ -837,11 +836,11 @@ impl ModelAttrs {
                     seen_strict_ids = true;
                     strict_ids = true;
                 }
-                // `pk = X` bare-identifier form . Accepts
+                // `pk = X` bare-identifier form. Accepts
                 // only single-segment paths matching the alias set in
                 // `PkStrategy::from_path`. Multi-segment paths and unknown
-                // identifiers are rejected so that custom PK types (a T3
-                // feature) can't sneak through the T2 parser.
+                // identifiers are rejected so that custom PK types
+                // can't sneak through the parser.
                 Meta::NameValue(MetaNameValue {
                     path,
                     value: Expr::Path(expr_path),
@@ -855,7 +854,7 @@ impl ModelAttrs {
                     }
                     pk = Some(PkStrategy::from_path(&expr_path.path)?);
                 }
-                // `pk = "…"` — the pre-T2 string-literal form. Dedicated
+                // `pk = "…"` — the old string-literal form. Dedicated
                 // diagnostic so callers get a clear migration message; the
                 // span points at the `pk` key so the underline isolates the
                 // offender rather than the whole attribute.
@@ -967,7 +966,6 @@ impl ModelAttrs {
                         crate::ident::check_table_name(&s.value(), s.span())?;
                         renamed_from = Some(s.value());
                     } else if path.is_ident("tree_edge") {
-                        // (T12)
                         // `#[model(tree_edge = "parent_id")]` default
                         // self-FK column for tree-recursive queries.
                         // Field-existence + self-FK validation lives
@@ -1227,9 +1225,9 @@ impl ModelAttrs {
                          by type, not by string label",
                     ));
                 }
-                // `proxy_for = ParentType` — 2 bare-identifier
+                // `proxy_for = ParentType` — bare-identifier
                 // form. Path expression matching the `pk = HeerId`
-                // convention; the descriptor emitter (T3.3) lowers the ident
+                // convention; the descriptor emitter lowers the ident
                 // to a `&'static str` for `ModelDescriptor.proxy_for`.
                 Meta::NameValue(MetaNameValue {
                     path,
@@ -1270,7 +1268,7 @@ impl ModelAttrs {
                         ));
                     }
                     seen_proxy_default_order = true;
-                    // T3.3 (VERIFY-1 fixup) — record the key span so the
+                    // Record the key span so the
                     // post-loop orphan-attribute guard surfaces a precise
                     // diagnostic location.
                     proxy_default_order_span = Some(path.span());
@@ -1285,9 +1283,9 @@ impl ModelAttrs {
                          `default_order = [(name, Asc), (created_at, Desc)]`",
                     ));
                 }
-                // `default_filter = |f| <expr>` — 2.
-                // Closure expression captured verbatim; T3.3 walks the
-                // body and lowers it to a SQL fragment string.
+                // `default_filter = |f| <expr>`.
+                // Closure expression captured verbatim; the body is walked
+                // and lowered to a SQL fragment string.
                 Meta::NameValue(MetaNameValue {
                     path,
                     value: closure_expr @ Expr::Closure(_),
@@ -1299,7 +1297,7 @@ impl ModelAttrs {
                             "duplicate `default_filter = …` key in #[model(...)]",
                         ));
                     }
-                    // T3.3 (VERIFY-1 fixup) — record the key span so the
+                    // Record the key span so the
                     // post-loop orphan-attribute guard surfaces a precise
                     // diagnostic location.
                     proxy_default_filter_span = Some(path.span());
@@ -1338,7 +1336,7 @@ impl ModelAttrs {
         // `proxy_for` is also set; standalone use surfaces as a
         // span-precise diagnostic so the adopter knows to add
         // `proxy_for = …` (or remove the orphan key).
-        // T3.3 (VERIFY-1 fixup) — point the span at the offending key
+        // Point the span at the offending key
         // ident (`default_order` / `default_filter`) rather than at
         // `Span::call_site`. The orphan-key span needs to be re-derived
         // here because the dispatch loop above consumed the original
@@ -1373,7 +1371,7 @@ impl ModelAttrs {
         // which the macro pipeline does not support). Adopters declare
         // the SAME `table` value the parent uses; the macro accepts the
         // declaration as-is and the cross-type "tables match" invariant
-        // is verified at descriptor-lookup time (T3.5 migration-differ
+        // is verified at descriptor-lookup time (migration-differ
         // collision detection). The risk of declaring a different table
         // than the parent is documented in `docs/guide/proxy.md`; the
         // descriptor pipeline catches the mismatch as a duplicate
@@ -1793,7 +1791,7 @@ pub struct FieldAttrs {
     /// Grammar summary:
     /// - Scalar form: `expose(public, self_view, admin, export)` — the
     ///   field appears in each listed scope under its column name.
-    /// - Relation form (T6+): `expose(public -> UserPublic)`
+    /// - Relation form: `expose(public -> UserPublic)`
     ///   narrow peer visage; `expose(public -> User)` — full peer model
     ///   embed; `expose(public -> User { manager_id -> ManagerPublic })`
     ///   nested traversal (structural metadata only at this time).
@@ -1815,9 +1813,9 @@ pub struct FieldAttrs {
     /// Wires the *attribute slot* so [`Self::default_volatility`]
     /// can validate "no default → meaningless override". The compose-side
     /// consumer (DDL emitter that surfaces the expression as a Postgres
-    /// column DEFAULT) lands in T6 / later; T3's job is the parsing
-    /// surface plus the cross-attribute validation. Until T6 ships,
-    /// a `default = "..."` attribute on a field has no other effect
+    /// column DEFAULT) is the parsing
+    /// surface plus the cross-attribute validation.
+    /// A `default = "..."` attribute on a field has no other effect
     /// beyond satisfying the `default_volatility` precondition.
     #[darling(default)]
     pub default: Option<String>,
@@ -1826,7 +1824,7 @@ pub struct FieldAttrs {
     /// adopter-supplied override for the Postgres volatility
     /// classification of this field's default expression.
     /// `None` means "fall through to the static `pg_volatility.rs`
-    /// lookup at compose time" (T5 territory). Validated at parse time
+    /// lookup at compose time". Validated at parse time
     /// against the three documented choices; further cross-attr rules
     /// (must coexist with `default = ...`; redundant override warning)
     /// run in [`FieldAttrs::parse`] post-validation.
@@ -2039,7 +2037,7 @@ pub struct ExposeSpec {
 ///   `nested` is recursive — each entry carries the same `peer + nested`
 ///   shape rooted at a named field of the parent's peer model. Nested
 ///   exposures are STRUCTURAL METADATA only at this point; query-surface
-///   machinery that consumes them lands in later T7+ work.
+///   machinery that consumes them is in later work.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct RelationExposure {
@@ -2065,7 +2063,7 @@ pub struct RelationExposure {
 /// [`RelationExposure`] payload. The field identifier is always a bare
 /// identifier (no path), naming a column / relation on the parent peer
 /// model. The visage emitter does not currently consume `nested`
-/// (T6 freezes the grammar without wiring nested embed); later tasks
+/// (the grammar exists without wiring nested embed); later tasks
 /// will lower it.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -2265,11 +2263,11 @@ impl ExposeSpec {
         _inside_nested_block: bool,
     ) -> syn::Result<RelationExposure> {
         let peer: syn::Path = input.parse()?;
-        // T6 fixup — the nested-brace grammar (`-> Peer { field -> Peer2 }`)
+        // The nested-brace grammar (`-> Peer { field -> Peer2 }`)
         // is parseable in principle and the structural types
         // (`NestedRelationExposure`, `Self::parse_nested_block`) are
-        // ready for a later task to consume, but T6 does not yet lower
-        // it into the visage emitter. Silently parsing and discarding
+        // ready for a later task to consume, but it is not yet lowered
+        // into the visage emitter. Silently parsing and discarding
         // nested traversal would be a partial-feature trap, so reject
         // any brace with an actionable compile error until the emitter
         // consumes it.
@@ -2291,9 +2289,9 @@ impl ExposeSpec {
     /// `field_ident -> Peer` entries, each with an optional further
     /// `{ ... }` recursion.
     /// Kept structurally alongside [`NestedRelationExposure`] even
-    /// though the T6 parser now rejects any brace at the entry site
+    /// though the parser now rejects any brace at the entry site
     /// (the emitter does not yet consume nested traversal — see the
-    /// T6 fixup rejection in `parse_relation_exposure`). The function
+    /// rejection in `parse_relation_exposure`). The function
     /// is unreachable from the current public parser; when a later
     /// task wires nested consumption through the visage emitter, the
     /// rejection falls away and this helper becomes live again.
@@ -4201,7 +4199,7 @@ mod tests {
     use syn::parse_quote;
 
     /// `Jsonb<T>` for any `T: JsonbSchema` must lower to
-    /// `JSONB`. The three substrate fixes T10 made (this one +
+    /// `JSONB`. The three substrate fixes (this one +
     /// framework-col defaults +
     /// FK type substitution) only had indirect coverage through the
     /// live integration suite. Direct lock-in here so a regression
@@ -4484,7 +4482,7 @@ mod tests {
         assert_eq!(rust_type_to_sql(&nested_adopter_module), None);
     }
 
-    // ── (T12) — `#[model(tree_edge = "...")]` ──
+    // ── `#[model(tree_edge = "...")]` ──
     // Parser-side coverage. Field-existence + self-FK validation runs
     // at descriptor-emit time (where the user-field list is in scope)
     // and is exercised by 's lihaaf compile-fail fixtures

@@ -397,7 +397,7 @@ pub fn djogi_test(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///   primitives per `CLAUDE.md` + `feedback_no_regex_in_djogi.md`.
 /// - Structs must be unit form (`pub struct Foo;`). Tuple or named
 ///   structs are rejected with a span-precise diagnostic.
-///   Lands this core infrastructure; T8 extends the
+///   This lands the core infrastructure; future work extends the
 ///   `#[app(...)]` grammar with the lifecycle markers (`renamed_from`,
 ///   `tombstone`) and wires `#[model(app = …)]` into
 ///   `ModelDescriptor`.
@@ -433,7 +433,7 @@ pub fn primary_key(input: TokenStream) -> TokenStream {
 
 /// `#[djogi::trait_impl]` — trait-registry attribute.
 /// Wraps a trait `impl` block so cross-cutting consumers
-/// (`Sassi::all_impl::<dyn T>`, T5.4 + 8δ T7) can iterate every
+/// (`Sassi::all_impl::<dyn T>`) can iterate every
 /// model that implements the trait at runtime without enumerating
 /// each `impl` site by hand.
 /// ```ignore

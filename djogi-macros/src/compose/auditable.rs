@@ -2,8 +2,8 @@
 //! `__djogi_auditable_populate` helper invoked from `Model::create`.
 //! .4.
 //! # 2026-05-03 design pivot
-//! T2.2 (commit 939b9ab) shipped `#[derive(Auditable)]` as the opt-in
-//! surface; T2.4 supersedes it with `#[model(auditable)]` per spec
+//! Commit 939b9ab shipped `#[derive(Auditable)]` as the opt-in
+//! surface; the current design supersedes it with `#[model(auditable)]` per spec
 //! line 1037 (locked 2026-05-03, lens). Proc macros cannot observe
 //! sibling derives — `#[derive(Auditable)]` could not deterministically
 //! signal to `#[derive(Model)]` / `#[model(...)]`. Rather than a
@@ -39,11 +39,11 @@
 //! ```
 //! No fields are added, removed, or renamed. The adopter still
 //! declares `pub created_by: Option<String>` themselves (Path B per
-//! Preserved across the T2.2→T2.4 pivot).
+//! Preserved across the design pivot).
 //! # Path B — adopter declares the `created_by` field
 //! Settled the field-injection question on Path B:
 //! the adopter declares `pub created_by: Option<String>` on the
-//! struct. The macro emits only the trait impl + populator. The T2.4
+//! struct. The macro emits only the trait impl + populator. The
 //! pivot does not change this: the surface flipped from a derive to
 //! an attribute, but field injection still does not happen. When the
 //! field is missing, the emitted `self.created_by.as_deref` /
@@ -58,9 +58,9 @@
 //! ```text
 //! #auto_set_tenant
 //! #create_value_binding
-//! #auditable_populate ← T2.4: composition populator
-//! #before_create_call ← T1.4: user hook
-//! #sequence_upsert_preamble ← T1 fix
+//! #auditable_populate ← composition populator
+//! #before_create_call ← user hook
+//! #sequence_upsert_preamble ← fix
 //! ... INSERT, outbox, after_create ...
 //! ```
 //! # Display vs Debug for `user_id`
@@ -87,7 +87,7 @@
 //! [`djogi::Auditable`] is convention-sealed (doc only — see
 //! `djogi/src/compose.rs` module docs for the full rationale). The
 //! emitted impl therefore routes through the public re-export
-//! `::djogi::Auditable`, not through `::djogi::__private::*`. T1.3's
+//! `::djogi::Auditable`, not through `::djogi::__private::*`. The
 //! `HasHooks` impl uses the `__private` route because `HasHooks` is
 //! supertrait-sealed via `__private::hooks::Sealed`; `Auditable` is
 //! not, so the canonical public path is correct. See

@@ -56,7 +56,7 @@ pub enum OrderDir {
 }
 
 /// Validates a `proxy_for` parent-type identifier.
-/// The plan-side rule (`cluster-8beta-granular.md`.2) and djogi's
+/// The rule and djogi's
 /// no-regex policy both apply here. The byte-level grammar:
 /// 1. Non-empty.
 /// 2. ≤ 63 bytes (Postgres `NAMEDATALEN - 1`).

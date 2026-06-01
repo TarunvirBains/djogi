@@ -1,12 +1,12 @@
 //! Composition macros —.
-//! This module groups the composition surfaces. T2.4 pivoted the
-//! `Auditable` opt-in from a derive macro to the `#[model(auditable)]`
-//! attribute (spec line 1037, locked 2026-05-03); T2.6 (2026-05-04)
-//! followed by pivoting `SoftDeletable` to `#[model(soft_deletable)]`
+//! This module groups the composition surfaces. The
+//! `Auditable` opt-in pivoted from a derive macro to the `#[model(auditable)]`
+//! attribute (spec line 1037, locked 2026-05-03); later
+//! `SoftDeletable` followed by pivoting to `#[model(soft_deletable)]`
 //! for the same proc-macros-cannot-observe-sibling-derives constraint
-//! that drove T2.4 — both opt-ins now route through the model
+//! — both opt-ins now route through the model
 //! attribute. `#[derive(Auditable)]` and `#[derive(SoftDeletable)]`
-//! are removed from the v3 surface.
+//! are removed from the current surface.
 //! Each submodule exposes a single `expand(model_ident, model_attrs)`
 //! entry point called from `model::expand_inner`. Both functions
 //! return an empty `TokenStream` when their respective opt-in flag is
@@ -17,10 +17,10 @@
 //! **not** through `::djogi::__private::*`. The two composition
 //! traits are convention-sealed (doc only — see
 //! [`djogi::compose`] module docs); a sealed-supertrait route would
-//! require `__private::compose::Sealed` plumbing, which T2.1
-//! deliberately did not ship. See `feedback_macro_path_routing.md` for
+//! require `__private::compose::Sealed` plumbing, which
+//! was deliberately not shipped. See `feedback_macro_path_routing.md` for
 //! the full routing rule.
-//! # Composition with `#[model(hooks)]` (T1)
+//! # Composition with `#[model(hooks)]`
 //! `#[model(auditable)]` / `#[model(soft_deletable)]` and
 //! `#[model(hooks)]` compose orthogonally. The composition populator
 //! runs BEFORE any user `ModelHooks::before_create`, so user hooks can

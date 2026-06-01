@@ -1,15 +1,15 @@
 //! `#[model(soft_deletable)]` — emit the `SoftDeletable` trait impl.
-//! .6 (supersedes T2.3's `#[derive(SoftDeletable)]`).
+//! (supersedes `#[derive(SoftDeletable)]`).
 //! # 2026-05-03 design pivot
-//! T2.3 (commit 863c4cb) shipped `#[derive(SoftDeletable)]` as the
-//! opt-in surface; T2.6 supersedes it with `#[model(soft_deletable)]`,
-//! mirroring the T2.4 Auditable pivot. Proc macros cannot observe
+//! Commit 863c4cb shipped `#[derive(SoftDeletable)]` as the
+//! opt-in surface; the current design supersedes it with `#[model(soft_deletable)]`,
+//! mirroring the Auditable pivot. Proc macros cannot observe
 //! sibling derives — `#[derive(SoftDeletable)]` could not
 //! deterministically signal to `#[derive(Model)]` / `#[model(...)]`.
-//! 8γ T6's automatic default-filter composition will need to know the
+//! Automatic default-filter composition will need to know the
 //! model is soft-deletable AT model-macro expansion time, so doing the
-//! migration NOW is cheaper than later (8γ would have to unwind
-//! composition wiring otherwise).
+//! migration NOW is cheaper than later (otherwise composition wiring
+//! would need to be unwound).
 //! # What this module emits
 //! Given a struct `MyModel` with `pub deleted_at: Option<djogi::DateTime>`:
 //! ```rust,ignore
@@ -21,7 +21,7 @@
 //! ```
 //! No fields are added, removed, or renamed. The adopter still
 //! declares `pub deleted_at: Option<DateTime>` themselves (Path B per
-//! Preserved across the T2.3→T2.6 pivot).
+//! Preserved across the design pivot).
 //! The `COLUMN` const on the `SoftDeletable` trait carries the default
 //! `"deleted_at"` value at the trait level; this emission inherits
 //! the default and does not override the const. `QuerySet::not_deleted`
@@ -31,14 +31,14 @@
 //! # Path B — adopter declares the `deleted_at` field
 //! Settled the field-injection question on Path B:
 //! the adopter declares `pub deleted_at: Option<djogi::DateTime>` on
-//! the struct. The macro emits only the trait impl. The T2.6 pivot
-//! does not change this: the surface flipped from a derive to an
+//! the struct. The macro emits only the trait impl. The
+//! pivot does not change this: the surface flipped from a derive to an
 //! attribute, but field injection still does not happen. When the
 //! field is missing, the emitted `self.deleted_at` produces an
 //! actionable rustc diagnostic (`error[E0609]: no field "deleted_at"
 //! on type ...`).
-//! # Default-filter composition deferred to 8γ T6
-//! 6 ships **only** the trait impl. The runtime helper
+//! # Default-filter composition deferred
+//! The current implementation ships **only** the trait impl. The runtime helper
 //! `QuerySet::not_deleted` (in `djogi/src/query/queryset.rs`) is a
 //! manual filter the adopter invokes per `objects` chain, now reading
 //! the column name through `<M as SoftDeletable>::COLUMN`. **Automatic**
@@ -79,7 +79,7 @@ use syn::Ident;
 /// is set.
 /// Returns an empty [`TokenStream`] without invoking `quote!` when
 /// the flag is absent so opt-out models pay zero macro-output
-/// overhead. Mirrors the T2.4 Auditable pattern.
+/// overhead. Mirrors the Auditable pattern.
 /// The emitted impl inherits the trait-level
 /// `const COLUMN: &'static str = "deleted_at"` default — the column
 /// name lives on the trait, not in this macro emission, so
