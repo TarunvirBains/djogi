@@ -294,7 +294,7 @@ pub enum RangeBound<T> {
 /// let from5: Range<i32> = Range::new(RangeBound::Inclusive(5), RangeBound::Unbounded);
 ///
 /// // Empty range.
-/// let nothing: Range<i32> = Range::empty;
+/// let nothing: Range<i32> = Range::empty();
 /// ```
 /// # Equality and ordering
 /// `PartialEq` / `Eq` / `Hash` are structural — two `Range<T>` values

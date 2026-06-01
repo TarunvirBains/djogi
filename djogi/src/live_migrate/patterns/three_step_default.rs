@@ -30,7 +30,7 @@
 //!    WHERE id IN (SELECT id FROM <table>
 //!                 WHERE <col> IS NULL
 //!                 LIMIT $1)
-//! ```
+//!    ```
 //! The default expression evaluates per-row inside the chunk
 //! transaction — the volatility we are staging around is precisely
 //! the reason the column had to be added without an inline

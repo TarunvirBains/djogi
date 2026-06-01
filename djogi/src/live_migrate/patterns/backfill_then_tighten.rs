@@ -23,7 +23,7 @@
 //!                 WHERE <col> IS NOT NULL
 //!                   AND <col> NOT IN (SELECT <ref_col> FROM <ref_table>)
 //!                 LIMIT $1)
-//! ```
+//!    ```
 //! Idempotent — once the offending rows have been nulled (or
 //! remediated by the operator out-of-band), they fall out of the
 //! inner predicate forever. `LIMIT $1` bounds the row count to one
