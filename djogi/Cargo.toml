@@ -846,7 +846,7 @@ required-features = ["testing"]
 # `djogi::migrate::*` re-exports so it never needs a live database; the
 # macro-side parse-time rejection for `#[field(type_change_using = "")]`
 # and the whitespace variant is covered by lihaaf compile_fail fixtures
-# (`djogi-macros/tests/compile_fail/c4_220_*`).
+# (`djogi-macros/tests/compile_fail/type_change_using_*`).
 [[test]]
 name = "ddl_sql_shape"
 path = "../tests/internal/ddl_sql_shape.rs"
@@ -970,7 +970,7 @@ harness = true
 # unbounded-on-one-side shapes, high-precision Decimal endpoints, and a
 # typed-filter SELECT that decodes the Range<T> projection on the
 # returned row. The compile-pass fixture
-# (`djogi-macros/tests/compile_pass/g0_range_field.rs`) covers
+# (`djogi-macros/tests/compile_pass/range_field.rs`) covers
 # descriptor lowering; the in-crate unit tests in `pg_types.rs` cover
 # the wire codec against hand-crafted bytes; this file closes the loop
 # end-to-end through Postgres.

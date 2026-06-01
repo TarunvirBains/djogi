@@ -54,10 +54,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Ubuntu-latest GHA runners ship with ~14GB of free disk. Phase 7-Zero
-      # pushed the workspace test footprint past that ceiling — 22
+      # Ubuntu-latest GHA runners ship with ~14GB of free disk. The growing
+      # workspace test footprint pushed past that ceiling — many
       # `#[djogi_test]`s (each provisioning a per-test Postgres DB) + the
-      # existing Phase 6/6.5 integration tests fill the disk partway into
+      # integration test suite fill the disk partway into
       # `cargo test --workspace`. The runner dies with "No space left on
       # device" before it can finish or emit useful logs. Freeing ~30GB of
       # preinstalled tooling Djogi doesn't need (dotnet, Haskell, hosted
@@ -215,10 +215,10 @@ jobs:
         # above still covers `--workspace`. Tracked in issue #80.
         run: cargo test --workspace --exclude elephant-tracker -- --test-threads=1
 
-      - name: Phase 8 cache modifier
+      - name: Cache modifier
         # This target pins SQL-shape parity through djogi's test-only SQL
         # renderer, so Cargo skips it in the default-feature workspace sweep.
-        run: cargo test -p djogi --features testing --test phase8_t7_3_cache_modifier -- --test-threads=1
+        run: cargo test -p djogi --features testing --test cache_modifier -- --test-threads=1
 
       - name: Raw SQL bypass pin tests
         run: >
