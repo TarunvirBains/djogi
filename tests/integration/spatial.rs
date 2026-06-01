@@ -64,7 +64,7 @@ pub struct NonSpatialItem {
 // ---------------------------------------------------------------------------
 
 /// Collect the names of the columns covered by an [`IndexSpec`]. Returns an
-/// empty `Vec` for expression-target indexes (none of Phase 6's spatial
+/// empty `Vec` for expression-target indexes (none of the spatial
 /// indexes use expressions, so callers can treat the empty result as a
 /// "no match" signal).
 ///
@@ -439,7 +439,7 @@ async fn order_by_distance_is_deterministic(mut ctx: djogi::DjogiContext) {
 
 /// The macro-emitted GiST index for `Place.location` must set
 /// `requires_out_of_transaction = true` and `extension_dependency =
-/// Some("postgis")` so Phase 7's migration emitter can correctly place the
+/// Some("postgis")` so the migration emitter can correctly place the
 /// DDL outside an implicit transaction wrapper and guard with a
 /// `CREATE EXTENSION IF NOT EXISTS postgis` preamble.
 #[cfg(feature = "spatial")]
@@ -455,7 +455,7 @@ fn places_gix_requires_out_of_transaction() {
     assert!(
         gix.requires_out_of_transaction,
         "spatial GiST index must have requires_out_of_transaction = true; \
-         Phase 7 uses this flag to emit CREATE INDEX CONCURRENTLY outside a transaction"
+         the migration emitter uses this flag to emit CREATE INDEX CONCURRENTLY outside a transaction"
     );
     assert_eq!(
         gix.extension_dependency,

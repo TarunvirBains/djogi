@@ -167,7 +167,7 @@ fn descriptor_projection_map_scalar_entries() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Task 5 — relation-nesting visages
+// Relation-nesting visages
 // ─────────────────────────────────────────────────────────────────
 
 #[model(table = "owners_phase4_5_task5", pk = HeerId)]

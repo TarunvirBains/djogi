@@ -34,7 +34,7 @@
 // future test in this file declares a second model, the recorder
 // must be scoped via separate `OnceLock`s or via `task_local!` to
 // avoid cross-test interference; see the file-header note in
-// `phase8_hooks_save.rs` for the established convention.
+// `hooks_save.rs` for the established convention.
 
 use djogi::prelude::*;
 use std::sync::{Mutex, OnceLock};
@@ -142,7 +142,7 @@ async fn canonical_sequence_create_save_delete(mut ctx: djogi::DjogiContext) {
             "before_delete",
             "after_delete",
         ],
-        "canonical hook order must match Phase 8 §D3 lines 118-129 \
+        "canonical hook order must hold \
          across the full create → save → delete lifecycle",
     );
 }

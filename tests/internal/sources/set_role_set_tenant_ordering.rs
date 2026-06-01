@@ -62,10 +62,10 @@
 //
 // - v3 plan §159–166 (D7 documented orderings).
 // - v3 plan §456–462, §710–712, §729 — T9.7 brief.
-// - Plan §T9.7 (`docs/superpowers/plans/granular-phase8/cluster-8epsilon-granular.md`).
+// - The set-role / tenant-ordering design notes.
 
 /// Idempotently create the test role on the cluster. See sibling
-/// integration test `phase8_set_role_transaction_scoped.rs` for the
+/// integration test `set_role_transaction_scoped.rs` for the
 /// rationale on the `DO`-block exception handler — Postgres has no
 /// `CREATE ROLE IF NOT EXISTS`, so the duplicate-object exception is
 /// the canonical ignore-existing pattern.

@@ -15,9 +15,9 @@
 //!    `Arc<TraitImplCarrier<dyn Searchable>>` and recovers a working
 //!    `Arc<dyn Searchable + Send + Sync>` for adopter use.
 //!
-//! Per plan §6 / §7 #13 — the cross-type Sassi-consumer query test
-//! is deferred to 8δ T7's integration suite (it depends on
-//! `DjogiContext::punnu<T>()` from cluster 8δ). 8β ships only the
+//! The cross-type Sassi-consumer query test
+//! is deferred to a later integration suite (it depends on
+//! `DjogiContext::punnu<T>()`). This file ships only the
 //! registration-side coverage here.
 //!
 //! No DB required — this test exercises only the inventory + caster

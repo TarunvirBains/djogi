@@ -1,4 +1,4 @@
-// Task 14 — live-Postgres integration tests for the aggregation
+// Live-Postgres integration tests for the aggregation
 // surface.
 //
 // # Scope
@@ -29,7 +29,7 @@
 //   SQL fixtures.
 // - The `.having(|k, a| a.gt(...))` shape named in the plan is not yet
 //   expressible through the public surface — `AggregateExpr<V>` has no
-//   `Into<Expr<V>>` bridge in Phase 6.5, so the HAVING predicate must close
+//   `Into<Expr<V>>` bridge yet, so the HAVING predicate must close
 //   over the key. The test therefore exercises the HAVING code path (SQL
 //   `HAVING` clause emission + group filtering) via a key-based comparison.
 //   The same constraint applies to scenario #10 — `ORDER BY <aggregate>` is
@@ -50,7 +50,7 @@ use djogi::prelude::*;
 /// Sales-order fixture: one row per transaction, with `org_id` + `status`
 /// suitable for multi-dimensional GROUP BY, `amount` for SUM / AVG, and
 /// `user_id` for COUNT(DISTINCT). The table name is suffixed `_p65` to avoid
-/// colliding with Phase 4's `accounts` fixture if both files ever land in the
+/// colliding with the transactions `accounts` fixture if both files ever land in the
 /// same test binary.
 // T2 default flip — pin HeerId; grouped-aggregation tests
 // rely on HeerId construction via `Order { id: HeerId::..., .. }`.

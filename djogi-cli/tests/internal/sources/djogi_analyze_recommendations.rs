@@ -54,7 +54,7 @@
 // `djogi_binary_path`, `current_database`, `temp_workspace`, and
 // `write_minimal_djogi_toml` live in `djogi::testing::cli` (gated behind
 // the `testing` feature) so this file and its sibling
-// `phase8_djogi_verify_cli.rs` share a single implementation. See
+// `djogi_verify_cli.rs` share a single implementation. See
 // djogi#119.
 //
 // # Spec / memory anchors

@@ -1,4 +1,4 @@
-// Task 1 integration tests: `atomic()` + savepoints + on_commit
+// Integration tests: `atomic()` + savepoints + on_commit
 // drain + transaction-backed prefetch against live Postgres.
 //
 // What this file pins:
@@ -58,12 +58,12 @@ use tokio::sync::oneshot;
 #[derive(Debug, Clone)]
 pub struct Account {
     pub balance: i64,
-    /// Per-account overdraft cap. Task 3a's `field_vs_field_filter`
+    /// Per-account overdraft cap. The `field_vs_field_filter`
     /// test compares `balance` against this column as an
     /// `Expr<bool>` predicate; other tests leave it at the
     /// `Default::default()` value (0) and do not touch it.
     pub overdraft_limit: i64,
-    /// Human-readable status label — the Task 5 CASE-backed UPDATE
+    /// Human-readable status label — the CASE-backed UPDATE
     /// test populates this from a `Case::when(...).otherwise(...)`
     /// expression ("overdrawn" vs "ok"). Defaults to the empty
     /// string so every pre-Task-5 test can keep using
@@ -87,7 +87,7 @@ pub struct Entry {
     pub memo: String,
 }
 
-// Events-enabled model for Task 6. `kind` is the payload-
+// Events-enabled model. `kind` is the payload-
 // visible column; `internal_notes` is excluded from the outbox payload
 // via `#[field(outbox = "ignore")]`. Kept separate from `Account` so
 // Tasks 1-5 assertions that count rows in `accounts_outbox` stay
@@ -230,7 +230,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Task 1 integration tests — atomic() / savepoints / on_commit
+// Integration tests — atomic() / savepoints / on_commit
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
@@ -1016,7 +1016,7 @@ async fn nested_atomic_on_commit_promotes_to_outer(mut ctx: djogi::DjogiContext)
 // ---------------------------------------------------------------------------
 // Retry helpers — immediate-retry and public backoff surface. Actual
 // row-lock conflict semantics need a real concurrent scenario and are
-// exercised in Task 7 (row locks); the backoff helper's public
+// exercised in the row-lock tests; the backoff helper's public
 // PoolTimeout path is covered here with a saturated single-connection
 // fixture.
 // ---------------------------------------------------------------------------
@@ -1179,7 +1179,7 @@ async fn retry_on_conflict_with_backoff_retries_pool_timeout_and_recovers(
 // ---------------------------------------------------------------------------
 // save() rehydration — `UPDATE ... RETURNING *` mutates `self` with
 // DB truth so triggers, server-side defaults, and the advanced
-// `updated_at` all surface on the receiver. Task 2 scope.
+// `updated_at` all surface on the receiver.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
@@ -1234,7 +1234,7 @@ async fn save_reflects_trigger_modified_fields(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 3b: expression-backed UPDATE assignments — `col = col + N`
+// Expression-backed UPDATE assignments — `col = col + N`
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
@@ -1358,7 +1358,7 @@ async fn prefetch_works_inside_atomic(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 3a — Expression IR core
+// Expression IR core
 //
 // Pins the field-vs-field comparison path: `filter_expr` accepts a
 // closure that returns `Expr<bool>`, and `Account::objects()
@@ -1371,9 +1371,9 @@ async fn prefetch_works_inside_atomic(mut ctx: djogi::DjogiContext) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Task 4 — Aggregate terminal (`SELECT <agg> FROM table [WHERE ...]`).
+// Aggregate terminal (`SELECT <agg> FROM table [WHERE ...]`).
 //
-// Three tests pin the observable behaviour of the Task 4 surface:
+// Three tests pin the observable behaviour of the aggregate-terminal surface:
 //
 //   * `aggregate_sum` — seeds three balances and asserts
 //     `.aggregate(|f| f.balance().sum()).fetch_one(ctx)` returns the
@@ -1391,7 +1391,7 @@ async fn prefetch_works_inside_atomic(mut ctx: djogi::DjogiContext) {
 //     annotation terminal returns `Vec<(Account, i64)>` with each
 //     aggregate aligned to its row. Uses a self-column aggregate
 //     (`f.balance().sum()`) rather than a reverse-relation aggregate;
-//     `f.orders.count()` is deferred to Task 5 along with the
+//     `f.orders.count()` is deferred along with the
 //     reverse-relation aggregate primitive.
 //
 // All three tests seed + query inside a single `atomic()` scope. Same
@@ -1474,8 +1474,8 @@ async fn annotate_single_aggregate(mut ctx: djogi::DjogiContext) {
         Box::pin(async move {
             // Two rows — aggregates are per-row when un-grouped, so
             // `SUM(balance)` here rolls up to the full table per row
-            // in the absence of a GROUP BY. Task 4 pins the SQL
-            // shape; Task 5+ adds grouping. The important thing at
+            // in the absence of a GROUP BY. This surface pins the SQL
+            // shape; grouping comes later. The important thing at
             // this layer is that `Vec<(Account, i64)>` decodes
             // end-to-end — every row carries its own agg slot.
             Account::create(
@@ -1499,10 +1499,10 @@ async fn annotate_single_aggregate(mut ctx: djogi::DjogiContext) {
             // annotation. The plan's original pseudocode used a
             // reverse-relation aggregate (`f.orders.count()`), but
             // the reverse-relation aggregate primitive is not wired
-            // yet and is deferred to Task 5. The self-column
-            // form still exercises every layer of the Task 4 surface
+            // yet and is deferred. The self-column
+            // form still exercises every layer of the aggregate-terminal surface
             // (SELECT-list builder, name-based FromRow decode, typed
-            // tuple decode) without pulling Task 5 dependencies into
+            // tuple decode) without pulling reverse-relation dependencies into
             // this test.
             let rows: Vec<(Account, i64)> = Account::objects()
                 .order_by(|f| f.balance().asc())
@@ -1578,13 +1578,13 @@ async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
         })
     })
     .await
-    .expect("atomic scope around the Task 3a fixture must succeed");
+    .expect("atomic scope around the expression-IR fixture must succeed");
 }
 
 // ---------------------------------------------------------------------------
-// Task 5 — Subqueries + EXISTS + typed OuterRef + CASE/WHEN
+// Subqueries + EXISTS + typed OuterRef + CASE/WHEN
 //
-// Three integration tests pin the Task 5 surface against live Postgres:
+// Three integration tests pin the subquery surface against live Postgres:
 //
 //   * `exists_correlated_subquery` — seeds two ledgers with differing
 //     entry counts and asserts that an `Exists::new(Entry::objects()
@@ -1600,7 +1600,7 @@ async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
 //     `Case::when(balance < 0, "overdrawn").otherwise("ok")` expression.
 //     Asserts each row's status matches the correct arm — proves the
 //     CASE builder + the required-`otherwise` type-state transition
-//     compose end-to-end with the Task 3b expression-backed UPDATE
+//     compose end-to-end with the expression-backed UPDATE
 //     path.
 //
 //   * `scalar_subquery_in_filter` — seeds a parent row plus a
@@ -1611,7 +1611,7 @@ async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
 //     EXISTS so a regression in one does not mask the other.
 //
 // All three tests seed + query inside a single `atomic()` scope for
-// the same rationale as the Task 3a / 3b tests above: `heer.node_id`
+// the same rationale as the expression-IR tests above: `heer.node_id`
 // is pinned at the database level, but a fresh transaction grants all
 // seeds + reads the same transactional session with no race window.
 // ---------------------------------------------------------------------------
@@ -1828,7 +1828,7 @@ async fn scalar_subquery_in_filter(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 6 — transactional outbox
+// Transactional outbox
 // ---------------------------------------------------------------------------
 //
 // Every test in this block uses `Notification` (the events-enabled

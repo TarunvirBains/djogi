@@ -200,8 +200,8 @@ async fn softdeletable_default_query_includes_deleted_pre_8gamma(mut ctx: djogi:
     .expect("create trashed row should succeed");
 
     // No `.not_deleted()` on the chain — the default `objects()`
-    // call must still return both rows in Phase 8α. When 8γ T6
-    // lands automatic default-filter composition, this expectation
+    // call must still return both rows today. When automatic
+    // default-filter composition lands, this expectation
     // changes to 1 row (the live one). The failure on this
     // assertion is the tripwire: it forces an explicit acknowledgment
     // that default-query semantics are about to change cluster-wide.

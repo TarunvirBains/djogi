@@ -54,7 +54,7 @@ async fn from_pg_row_deserializes_correctly(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// CRUD tests (Task 7)
+// CRUD tests
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
@@ -205,7 +205,7 @@ async fn refresh_from_db_returns_current_state(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// Serial PK model (Task 8)
+// Serial PK model
 // ---------------------------------------------------------------------------
 
 #[model(table = "tags", pk = Serial)]
@@ -238,7 +238,7 @@ async fn serial_pk_create_and_get(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// RanjId PK model (Task 8)
+// RanjId PK model
 // ---------------------------------------------------------------------------
 
 #[model(table = "events", pk = RanjId)]
@@ -271,7 +271,7 @@ async fn ranjid_pk_create_and_get(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// create_with_id + transaction tests (Task 9)
+// create_with_id + transaction tests
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
@@ -386,7 +386,7 @@ async fn crud_respects_transaction_boundary(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// ModelDescriptor registration test (Task 6)
+// ModelDescriptor registration test
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -407,7 +407,7 @@ fn model_descriptor_registered() {
     assert_eq!(post_desc.table_name, "posts");
     assert!(matches!(post_desc.pk_type, ::djogi::PkType::HeerId));
 
-    // Phase 1.5: fields includes framework columns (id, created_at, updated_at)
+    // fields includes framework columns (id, created_at, updated_at)
     // plus the 4 user fields = 7 total for HeerId-PK models
     // (3 framework + 4 user = 7).
     assert_eq!(
@@ -472,17 +472,17 @@ fn model_descriptor_registered() {
     for f in post_desc.fields {
         assert!(
             f.rationale.is_none(),
-            "field `{}` should have no rationale in Phase 1",
+            "field `{}` should have no rationale",
             f.name
         );
         assert!(
             !f.outbox_exclude,
-            "field `{}` outbox_exclude should be false in Phase 1",
+            "field `{}` outbox_exclude should be false",
             f.name
         );
         assert!(
             f.index_type.is_none(),
-            "field `{}` index_type should be None in Phase 1",
+            "field `{}` index_type should be None",
             f.name
         );
     }

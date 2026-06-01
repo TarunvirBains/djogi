@@ -14,7 +14,7 @@
 //
 // # Tracing log assertions
 //
-// The log-capture pattern follows `phase5_5_auth.rs`: install the
+// The log-capture pattern follows `auth.rs`: install the
 // `tracing_test` global subscriber inline (via `tracing_test::internal`)
 // rather than via the `#[traced_test]` attribute macro, because
 // `#[djogi_test]` rewrites the test body into an inner function and
@@ -26,7 +26,7 @@ use djogi::DjogiError;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-// ── tracing capture helpers (mirrors phase5_5_auth.rs) ──────────────────────
+// ── tracing capture helpers (mirrors auth.rs) ──────────────────────
 
 static LOG_CAPTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

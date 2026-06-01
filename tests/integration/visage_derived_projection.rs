@@ -2,7 +2,7 @@
 //! happy-path coverage + parity helper exercise.
 //!
 //! This is the live integration counterpart to the merged
-//! `phase8_5_visage_derived_decode_errors.rs` file. That file
+//! `visage_derived_decode_errors.rs` file. That file
 //! exercises ERROR paths (`DbComputedNullForNonOptional`,
 //! `DbComputedTypeMismatch`); this file exercises SUCCESS paths plus
 //! the parity-helper workflow.

@@ -21,11 +21,11 @@
 //! Per spec line 1124, the migration differ does **not** key off
 //! `composed_via` — a column flagged `Some("Auditable")` compares
 //! identically to a hand-declared `created_by: Option<String>`. The
-//! field is consumed by `djogi docs` (Phase 7) and admin-UI surfaces
+//! field is consumed by `djogi docs` and admin-UI surfaces
 //! that want to distinguish framework-contributed columns from
 //! adopter-authored ones, not by the schema-derivation pipeline.
 //!
-//! The companion file `phase8_compose_migration.rs` proves the
+//! The companion file `compose_migration.rs` proves the
 //! identity-of-emission claim end-to-end by lowering an
 //! `Auditable + SoftDeletable` model to `CREATE TABLE` SQL and
 //! asserting both composed columns appear with the same shape they

@@ -124,7 +124,7 @@ async fn created_by_returns_none_when_unset(mut ctx: djogi::DjogiContext) {
         row.created_by(),
         None,
         "Auditable::created_by() must return None when the column is NULL — \
-         no warn-on-null per Phase 8 §D6 lines 149-157",
+         no warn-on-null",
     );
 }
 

@@ -1,4 +1,4 @@
-// Task 3 integration tests: `ForeignKey<T>` round-trip and
+// Integration tests: `ForeignKey<T>` round-trip and
 // explicit single-relation access (`.fetch()` / `.resolved()`) validated
 // against live Postgres.
 //
@@ -6,10 +6,10 @@
 //
 // 1. The macro-generated `FromRow` decodes `ForeignKey<T>` and
 //    `Option<ForeignKey<T>>` columns transparently via the
-//    `Decode`/`Type` impls Task 1 shipped — no special-case handling
+//    `Decode`/`Type` impls the framework shipped — no special-case handling
 //    required in the macro's emission.
 // 2. `Vehicle::create` encodes a `ForeignKey<T>` field as the target
-//    model's PK type (BIGINT here), matching Task 1's `Encode` impl.
+//    model's PK type (BIGINT here), matching the `Encode` impl.
 // 3. `.key()` returns the stored PK on both freshly-constructed and
 //    re-fetched rows; `.resolved()` returns `None` unconditionally on
 //    the unresolved wrapper (spec's no-lazy-loading invariant).
@@ -30,7 +30,7 @@
 // into per-test fixtures.
 //
 // The `_p3` table-name suffix keeps these integration tests isolated
-// from the Phase 1/2 fixtures that share the same database.
+// from the core model/queryset fixtures that share the same database.
 
 use djogi::prelude::*;
 use djogi::transaction::{AtomicFuture, atomic};
@@ -41,8 +41,8 @@ use djogi::transaction::{AtomicFuture, atomic};
 
 // `Owner` is the FK target for the non-null relation on `Vehicle`. Default-
 // derived so `Owner::create(ctx, Owner { name, ..Default::default() })`
-// stays ergonomic — matches the Phase 1/2 test-model shape.
-// T2 default flip — pin ascending HeerId; the seed helpers
+// stays ergonomic — matches the core test-model shape.
+// Default flip — pin ascending HeerId; the seed helpers
 // and FK targets below assume `Owner::Pk` / `FuelType::Pk` / `Vehicle::Pk`
 // are all ordinary `HeerId`.
 #[model(table = "owners_p3", pk = HeerId)]
@@ -160,7 +160,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Task 3 integration tests
+// Integration tests
 // ---------------------------------------------------------------------------
 
 /// FK round-trip: create a vehicle pointing at an owner, re-fetch via
@@ -321,7 +321,7 @@ async fn fk_creation_db_error_on_unknown_owner(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 4 integration tests: `QuerySet::prefetch` + `PrefetchedRow<T>`.
+// Integration tests: `QuerySet::prefetch` + `PrefetchedRow<T>`.
 // ---------------------------------------------------------------------------
 //
 // Each test seeds its own fixture via compact `seed_*` builders used above. The prefetch path runs the usual
@@ -540,7 +540,7 @@ async fn prefetch_same_relation_twice_is_idempotent(mut ctx: djogi::DjogiContext
 }
 
 // ---------------------------------------------------------------------------
-// Task 5 integration tests: `QuerySet::select_related` + `JoinedRow<T>`.
+// Integration tests: `QuerySet::select_related` + `JoinedRow<T>`.
 // ---------------------------------------------------------------------------
 //
 // select_related issues a single `LEFT JOIN` per registered relation path
@@ -664,7 +664,7 @@ async fn select_related_multiple_relations_combine(mut ctx: djogi::DjogiContext)
 /// `select_related` composes with `.filter()` and `.order_by()`: the
 /// filter narrows the parent result set, ordering determines row order,
 /// and the join attaches children per surviving parent. Pins the
-/// queryset machinery composes cleanly with Task 5's join
+/// queryset machinery composes cleanly with `select_related`'s join
 /// emission — same `WHERE` / `ORDER BY` tail, just with a LEFT JOIN
 /// prepended.
 ///
@@ -748,7 +748,7 @@ async fn select_related_and_prefetch_compose_disjoint(mut ctx: djogi::DjogiConte
 }
 
 // ---------------------------------------------------------------------------
-// Task 5 fixup: parent-table qualification under `.select_related(...)`.
+// Parent-table qualification under `.select_related(...)`.
 // ---------------------------------------------------------------------------
 //
 // Before the fix, filtering or ordering on a framework column (`id`,
@@ -827,7 +827,7 @@ async fn select_related_compose_with_order_by_created_at(mut ctx: djogi::DjogiCo
 }
 
 // ---------------------------------------------------------------------------
-// Task 1 closure: tx-backed prefetch / select_related now dispatch
+// Tx-backed prefetch / select_related now dispatch
 // through the generalised `PrefetchLoaderFn` and share the outer
 // transaction scope.
 // ---------------------------------------------------------------------------
@@ -836,8 +836,8 @@ async fn select_related_compose_with_order_by_created_at(mut ctx: djogi::DjogiCo
 // fan-out terminals (`fetch_all_prefetched`, `fetch_all_joined`): the
 // loader signature carried `&PgPool`, so both terminals guarded at the
 // entry point and returned a configuration-style database error on a
-// transaction-backed context. Task 1 widened the loader
-// signature to `&mut ContextInner`, so both paths now work inside an
+// transaction-backed context. The loader was widened
+// to `&mut ContextInner`, so both paths now work inside an
 // `atomic()` scope and see the scope's uncommitted writes.
 //
 // The two tests below pin the new behavior — the very writes that

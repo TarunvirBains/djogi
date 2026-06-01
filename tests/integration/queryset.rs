@@ -4,7 +4,7 @@ use djogi::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Separate table name (`posts_p2`) so this integration test can share a DB
-// with `phase1_model.rs` without DDL collisions.
+// with `model.rs` without DDL collisions.
 // T2 default flip — pin ascending HeerId so existing
 // HeerId-typed construction and assertions keep working.
 #[model(table = "posts_p2", pk = HeerId)]
@@ -150,13 +150,13 @@ async fn seed_bulk_hooks_rows(
     Ok(rows)
 }
 
-// ── Task 5: lazy builder compile surface ──────────────────────────────────
+// ── lazy builder compile surface ──────────────────────────────────
 
 #[djogi::djogi_test(sync_models = [Post])]
 async fn objects_returns_empty_queryset(mut ctx: djogi::DjogiContext) {
     // `T::objects()` resolves and returns a lazy builder. No SQL has been
-    // emitted or executed — Task 5 deliberately ships without terminal
-    // methods.
+    // emitted or executed — the lazy builder deliberately ships without
+    // terminal methods.
     let qs = Post::objects();
 
     // Builder methods compose without executing. The clone proves
@@ -165,7 +165,7 @@ async fn objects_returns_empty_queryset(mut ctx: djogi::DjogiContext) {
     let _qs2 = qs.clone().filter(|f| f.published().eq(true)).limit(10);
 
     // `exclude` + chained `order_by` + `offset` — covers the rest of the
-    // Task 5 builder surface at compile time.
+    // lazy builder surface at compile time.
     let _qs3 = qs
         .clone()
         .exclude(|f| f.title().eq("draft".to_string()))
@@ -184,7 +184,7 @@ async fn objects_returns_empty_queryset(mut ctx: djogi::DjogiContext) {
     let _distinct_on = Post::objects().distinct_on(|f| f.title());
 }
 
-// ── Task 6: terminal read methods ─────────────────────────────────────────
+// ── terminal read methods ─────────────────────────────────────────
 //
 // Each test seeds four deterministic rows via `seed_posts` and then
 // exercises exactly one terminal on a filter/composition that surfaces a
@@ -429,7 +429,7 @@ async fn in_list_and_between(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test(sync_models = [Post])]
 async fn filter_struct_matches_closure_results(mut ctx: djogi::DjogiContext) {
-    // Task 8 parity check: `filter_struct` (programmatic) and `filter`
+    // Parity check: `filter_struct` (programmatic) and `filter`
     // (closure) must produce structurally equivalent filters for the
     // same set of lookups.
     use std::collections::BTreeSet;
@@ -506,7 +506,7 @@ async fn filter_struct_single_clause_unwraps_to_leaf(mut ctx: djogi::DjogiContex
     assert_eq!(struct_rows.len(), 3);
 }
 
-// ── Task 9: bulk update / delete ──────────────────────────────────────────
+// ── bulk update / delete ──────────────────────────────────────────
 
 #[djogi::djogi_test(sync_models = [Post])]
 async fn bulk_update_sets_values_and_returns_count(mut ctx: djogi::DjogiContext) {
@@ -738,7 +738,7 @@ async fn distinct_on_and_plain(mut ctx: djogi::DjogiContext) {
     );
 }
 
-// ── Task 10: edge-case sweep ──────────────────────────────────────────────
+// ── edge-case sweep ──────────────────────────────────────────────
 
 /// `in_list(vec![])` must match zero rows.
 #[djogi::djogi_test(sync_models = [Post])]

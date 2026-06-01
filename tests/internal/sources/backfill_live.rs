@@ -207,7 +207,7 @@ async fn resume_picks_up_inserts_and_is_idempotent(mut ctx: DjogiContext) {
     let plan_id = HeerId::from_i64(7_500_002).expect("valid HeerId");
     insert_running_plan(&mut ctx, plan_id).await;
 
-    // Phase 1: run to completion against the original 5 rows.
+    // Step 1: run to completion against the original 5 rows.
     let initial = execute_backfill(
         &mut ctx,
         plan_id,
@@ -232,7 +232,7 @@ async fn resume_picks_up_inserts_and_is_idempotent(mut ctx: DjogiContext) {
         .await
         .expect("re-arm plan to Running for resume");
 
-    // Phase 2: chunk-boundary scenario — INSERT 4 fresh rows AFTER the
+    // Step 2: chunk-boundary scenario — INSERT 4 fresh rows AFTER the
     // initial backfill completed. The predicate is now re-armed (rows
     // exist with email_lower IS NULL) but the ledger still says
     // `backfill_rows_done = 5`. resume_backfill must pick them up.
@@ -268,7 +268,7 @@ async fn resume_picks_up_inserts_and_is_idempotent(mut ctx: DjogiContext) {
         .await
         .expect("re-arm plan to Running for idempotent resume");
 
-    // Phase 3: idempotent no-op resume. Predicate is exhausted; the
+    // Step 3: idempotent no-op resume. Predicate is exhausted; the
     // runner observes a short chunk (rows_affected = 0) and returns.
     let idempotent = resume_backfill(
         &mut ctx,

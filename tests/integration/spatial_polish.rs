@@ -1,4 +1,4 @@
-// Task 14 — live-Postgres integration tests for the spatial-polish
+// Live-Postgres integration tests for the spatial-polish
 // surface (T9 / T10 / T11 / T12).
 //
 // # Scope

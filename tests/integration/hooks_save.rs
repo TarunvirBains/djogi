@@ -379,7 +379,7 @@ async fn before_save_lockconflict_branch_propagates(mut ctx: djogi::DjogiContext
                         SL_BEFORE_COUNT.with(Cell::get),
                         2,
                         "before_save must have fired AGAIN for clone_b's save \
-                         (precedes the UPDATE composition per Phase 8 §D3 line 122)",
+                         (precedes the UPDATE composition)",
                     );
                     assert_eq!(
                         SL_AFTER_COUNT.with(Cell::get),
