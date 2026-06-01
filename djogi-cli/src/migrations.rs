@@ -485,7 +485,7 @@ fn compose_with_inputs(
                     )
                 };
                 println!(
-                    "auto-emitted Phase 0 bootstrap: {database}/_global_ ({ext_summary})",
+                    "auto-emitted bootstrap migration: {database}/_global_ ({ext_summary})",
                     database = emit.database,
                 );
             }
