@@ -2604,8 +2604,7 @@ pub struct FieldDescriptor {
 /// would sanctify invalid descriptor identity — a fixture that forgets
 /// to override `name` would silently produce a bogus column. The
 /// required-args form forces semantic identity at call time and lets
-/// the compiler catch missing fields. (Phase 7.5 PR 7 design decision;
-/// see Codex BLOCK on the `EMPTY` const proposal.)
+/// the compiler catch missing fields.
 ///
 /// # Use site
 ///
@@ -3419,8 +3418,7 @@ impl ModelDescriptor {
 /// an empty table reference, which `MigrationShape::from_descriptor`
 /// would then propagate into bogus DDL. The required-args form
 /// forces semantic identity at call time and lets the compiler catch
-/// missing fields. (Phase 7.5 PR 7 design decision; see Codex BLOCK
-/// on the `EMPTY` const proposal.)
+/// missing fields.
 ///
 /// # Use site
 ///

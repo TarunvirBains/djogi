@@ -2063,7 +2063,7 @@ mod tests {
         );
     }
 
-    // ── Codex round-1 fixup tests ────────────────────────────────────────────
+    // ── Fixup tests ──────────────────────────────────────────────────────
 
     #[test]
     fn count_star_with_order_by_rejected_at_fetch() {

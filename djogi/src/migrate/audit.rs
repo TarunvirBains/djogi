@@ -234,10 +234,9 @@ pub enum AuditUrlError {
     },
     /// The derived audit URL is byte-identical to the application URL
     /// (i.e. `database.url` already ends in `/crud_log`). Returning the
-    /// same URL would silently audit the application DB into itself —
-    /// the exact regression Codex BLOCK-1 (recorded in
-    /// `docs/superpowers/codex-review-phase8-findings.md`) flagged for
-    /// the verify path. The resolver refuses BEFORE any caller can
+    /// same URL would silently audit the application DB into itself — a
+    /// regression to guard against in the verify path. The resolver refuses
+    /// BEFORE any caller can
     /// connect to a self-targeting audit pool.
     SelfAudit {
         /// The application URL whose path component already names the
@@ -631,10 +630,10 @@ mod tests {
     #[test]
     fn resolve_audit_url_rejects_self_audit_via_derive_path() {
         let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
-        // Codex BLOCK-1 regression — when `database.url` already ends
-        // in `/crud_log`, the derived audit URL is identical to the
-        // app DB URL. Returning that silently would auto-audit the app
-        // DB into itself; the resolver MUST refuse on the derive path.
+        // Regression guard: when `database.url` already ends in `/crud_log`,
+        // the derived audit URL is identical to the app DB URL. Returning
+        // that silently would auto-audit the app DB into itself; the resolver
+        // MUST refuse on the derive path.
         clear_audit_url_env_vars();
         let cfg = stub_config_with_url("postgres://localhost/crud_log");
         match resolve_audit_url(&cfg) {

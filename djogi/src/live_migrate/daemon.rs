@@ -995,7 +995,7 @@ mod tests {
         );
     }
 
-    // ── Claim CAS guard (round-3 BLOCK-1) ─────────────────────────────
+    // ── Claim CAS guard ───────────────────────────────────────────────
 
     #[test]
     fn claim_update_re_asserts_status_running() {

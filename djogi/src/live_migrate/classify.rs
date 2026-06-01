@@ -193,8 +193,8 @@ pub fn classify_operation(
         // dispatch through default-expression analysis.
         SchemaOperation::AddColumn { table, column } => classify_add_column(table, column, ctx),
 
-        // §7: "Drop column" → FastLockDestructiveGuarded (corrected
-        // per Codex P1-01 — destroys data + invalidates dependents).
+        // §7: "Drop column" → FastLockDestructiveGuarded (destroys data +
+        // invalidates dependents).
         SchemaOperation::DropColumn { .. } => {
             OnlineSafetyClassification::FastLockDestructiveGuarded
         }
@@ -566,8 +566,8 @@ fn classify_column_change(
         // not reachable for a generated column on a populated table.
         ColumnChange::SetGenerated { .. } => OnlineSafetyClassification::OfflineOnly,
 
-        // Codex T22 BLOCK-3: identity-column transitions.
-        // `ALTER COLUMN ADD GENERATED ... AS IDENTITY` is catalog-only
+        // Identity-column transitions: `ALTER COLUMN ADD GENERATED ... AS IDENTITY`
+        // is catalog-only
         // — Postgres allocates the sequence, no row rewrite. The
         // sequence's start value is set after MAX(c) for existing rows
         // automatically. Same for DROP IDENTITY (catalog-only) and
@@ -1734,9 +1734,8 @@ mod tests {
 
     #[test]
     fn add_non_concurrent_index_on_empty_table_is_online_safe() {
-        // Empty-table fast-path (PR 7 round-2 finding): zero-row
-        // tables hold the AccessExclusiveLock for an instant; the
-        // build is structurally trivial.
+        // Empty-table fast-path: zero-row tables hold the
+        // AccessExclusiveLock for an instant; the build is structurally trivial.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AddIndex(index("ix_a", "users", false));
         assert_eq!(

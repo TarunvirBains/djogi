@@ -472,8 +472,7 @@ impl<T: Model> From<crate::array::ArrayOverlapLeaf> for Q<T> {
 // macro-emitted code in adopter crates) may extend the surface, so a
 // downstream crate cannot reach for a custom impl that bypasses the
 // `Q<T>` algebra invariants — the sealed trait is the type-system
-// enforcement of v3 §T6 Codex review's "no `Into<Condition>` ambiguity"
-// rule.
+// enforcement of the "no `Into<Condition>` ambiguity" invariant.
 //
 // The impl set:
 //
@@ -532,9 +531,8 @@ pub use sealed_into_q::Sealed as __SealedIntoQ;
 /// / [`QuerySet::exclude_struct`](crate::query::QuerySet::exclude_struct).
 ///
 /// Sealed — see `mod sealed_into_q`. The sealing closes the
-/// "downstream `Into<Condition>` ambiguity" attack the v3 §T6 Codex
-/// review explicitly calls out: a hostile downstream impl cannot
-/// smuggle a non-`Q<T>` type through the filter API.
+/// "downstream `Into<Condition>` ambiguity" attack: a hostile downstream
+/// impl cannot smuggle a non-`Q<T>` type through the filter API.
 pub trait IntoQ<T: Model>: sealed_into_q::Sealed {
     /// Lower the implementor into the `Q<T>` algebra.
     fn into_q(self) -> Q<T>;
@@ -1489,7 +1487,7 @@ mod tests {
         }
     }
 
-    // ── Operator-precedence tree-shape assertions (Codex 8γ BLOCK-2/3) ─────
+    // ── Operator-precedence tree-shape assertions ─────────────────────
 
     /// `a & b ^ c | d` must parse as `((a & b) ^ c) | d` under Rust's
     /// operator precedence rules: `&` binds tighter than `^`, which binds

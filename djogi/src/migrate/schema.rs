@@ -319,8 +319,7 @@ pub struct ColumnSchema {
     /// future non-SQL consumers (e.g. `cargo djogi inspect`,
     /// descriptor-level diagnostics) and as a snapshot record of the
     /// per-column declaration. Removing it would be a substrate
-    /// change beyond T3's charter; see Codex T3 review A-1 for the
-    /// dual-source-of-truth rationale.
+    /// change beyond T3's charter (dual-source-of-truth design).
     pub on_delete: Option<OnDeleteSchema>,
 
     /// `#[field(outbox = "ignore")]` — exclude from outbox payload.
@@ -517,7 +516,7 @@ impl Eq for ColumnSchema {}
 /// projection populates both fields from the same descriptor input,
 /// and the differ / SQL emitter read this one when lowering FK ops.
 ///
-/// **Deferrability (Codex round-4 B-16).** `deferrable` /
+/// **Deferrability.** `deferrable` /
 /// `initially_deferred` reproduce Postgres' two-axis FK
 /// deferrability model: a constraint can be `DEFERRABLE` or `NOT
 /// DEFERRABLE`, and a `DEFERRABLE` constraint is either `INITIALLY
@@ -563,9 +562,8 @@ pub struct ForeignKeySchema {
     /// the FK-only operations ([`crate::migrate::diff::SchemaOperation::AddForeignKey`]
     /// / [`crate::migrate::diff::SchemaOperation::DropForeignKey`])
     /// can carry the cascade through to the SQL emitter without
-    /// needing the full `ColumnSchema`. Codex T3 review B-3 fixed an
-    /// earlier bug where the emitter unconditionally lowered `ON
-    /// DELETE RESTRICT` regardless of the declared cascade.
+    /// needing the full `ColumnSchema`. The emitter respects the
+    /// declared cascade (not unconditionally `ON DELETE RESTRICT`).
     pub on_delete: OnDeleteSchema,
 
     /// Target column. Always `"id"` in current Djogi (FKs reference

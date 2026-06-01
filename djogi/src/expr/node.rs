@@ -1053,12 +1053,11 @@ pub(crate) enum AggOp {
     SpatialCentroid,
     /// `ST_ConvexHull(ST_Collect(<col>::geometry))::geography` —
     /// per-group convex-hull aggregate. Migrated from
-    /// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` in Cluster E
-    /// round-5: the old IR shape silently dropped `.distinct()` /
-    /// `.filter()` / `.over()` / `.order_by()` modifiers because
-    /// those mutate `ExprNode::Aggregate` only. As a proper AggOp
-    /// variant ConvexHull now composes uniformly with the rest of
-    /// the aggregate family.
+    /// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})`: the old IR shape
+    /// silently dropped `.distinct()` / `.filter()` / `.over()` /
+    /// `.order_by()` modifiers because those mutate `ExprNode::Aggregate`
+    /// only. As a proper AggOp variant ConvexHull now composes uniformly
+    /// with the rest of the aggregate family.
     ///
     /// Wrapped emission: ST_Collect is the actual aggregate;
     /// ST_ConvexHull is a scalar wrapper applied to the collected

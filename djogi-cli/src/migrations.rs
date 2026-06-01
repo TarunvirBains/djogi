@@ -356,9 +356,8 @@ pub fn compose_cmd(
             tombstone: d.tombstone,
         })
         .collect();
-    // Codex round-2 A-1: the resolved workspace flows into config
-    // loading too. Round-2 / B-12 update: compose now consumes the
-    // [`MigrateConfig::pk_flip_join_table_option`] knob so we no
+    // The resolved workspace flows into config loading. Compose consumes
+    // the [`MigrateConfig::pk_flip_join_table_option`] knob so we no
     // longer drop the parsed config — the join-table layout
     // selected in `Djogi.toml` reaches the differ via this path.
     let djogi_config = match djogi::config::DjogiConfig::load_from_workspace(&workspace) {
@@ -390,7 +389,7 @@ pub fn compose_cmd(
 /// unit test).
 ///
 /// Acquires the workspace lock, walks the on-disk migration tree to
-/// recover orphaned snapshots (Codex B-1 — renamed-from buckets), and
+/// recover orphaned snapshots (renamed-from buckets), and
 /// invokes [`djogi::migrate::compose`].
 // Compose has 8 inputs because it sits at the bridge between
 // CLI flag parsing (workspace / name / flags / clock) and the
@@ -421,9 +420,9 @@ fn compose_with_inputs(
         }
     };
 
-    // Read snapshots from disk. Codex B-1: the bucket set we load is
-    // the UNION of (a) every bucket the current projection knows
-    // about and (b) every on-disk bucket that has a snapshot file.
+    // Read snapshots from disk. The bucket set we load is the UNION of
+    // (a) every bucket the current projection knows about and (b) every
+    // on-disk bucket that has a snapshot file.
     // Without (b) a renamed-from app's old snapshot is missed
     // entirely (the new app's `BucketKey` differs and the differ
     // never sees the old schema, breaking compose's rename + drop +
@@ -557,7 +556,7 @@ pub fn status_cmd(workspace: Option<PathBuf>) -> ExitCode {
 
 /// Async body of [`status_cmd`]. Returns the desired exit code.
 ///
-/// Codex A-1: the resolved `workspace` path now feeds
+/// The resolved `workspace` path feeds
 /// [`djogi::config::DjogiConfig::load_from_workspace`] so a
 /// `--workspace /custom/path` actually reads `/<custom>/Djogi.toml`
 /// instead of always picking up the cwd's config. Production callers
@@ -1190,8 +1189,8 @@ fn reconstruct_snapshot_path(workspace: &Path, bucket: &djogi::migrate::BucketKe
 ///
 /// `--squash` requires `--from <ver>`; an absent `from` while
 /// `--squash` is set surfaces as a CLI error before any work happens.
-// Codex umbrella U-1: the CLI dispatch carries 11 inputs because the
-// attune surface is the broadest in the migrations CLI — target
+// The CLI dispatch carries 11 inputs because the attune surface is
+// the broadest in the migrations CLI — target
 // resolution + dry-run + record-ledger + record-pointer + squash +
 // publish all live on the same command. Folding them into a struct
 // would push the same fields onto the caller; the dispatch above
@@ -1304,12 +1303,12 @@ async fn run_attune(
         workspace_root: workspace,
         database_url: &config.database.url,
         profile: &config.profile,
-        // Codex umbrella U-2: thread `[database].dev_mode` to the
-        // squash gate. Read-only modes (`DiffOnly`, `Record`) ignore
-        // it; `Squash` mode refuses unless this is `true`.
+        // Thread `[database].dev_mode` to the squash gate. Read-only modes
+        // (`DiffOnly`, `Record`) ignore it; `Squash` mode refuses unless
+        // this is `true`.
         dev_mode: config.database.dev_mode,
-        // Codex umbrella U-1: the operator-supplied target + the
-        // `--apply` / `--record` gates flow through to the library
+        // The operator-supplied target + the `--apply` / `--record` gates
+        // flow through to the library
         // entry point. The library owns the resolution + parent-pointer
         // update; the CLI is just plumbing.
         target: target.as_deref(),
@@ -1578,7 +1577,7 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
         // c. Load the snapshot. A missing snapshot for a bucket that HAS
         //    registered models is a hard error (exit 1) — the operator must
         //    record a baseline; a missing snapshot for a model-less bucket
-        //    is informational (BLOCK-4 / Class C).
+        //    is informational.
         let snap_path = snapshot_path(workspace, bucket);
         let snapshot = match load_snapshot(&snap_path) {
             Ok(s) => s,
@@ -2787,9 +2786,9 @@ mod tests {
         p
     }
 
-    /// Codex B-1 — the CLI's bucket-discovery walk must include
-    /// directories that exist on disk but are absent from the current
-    /// model inventory (the renamed-from case).
+    /// The CLI's bucket-discovery walk must include directories that exist
+    /// on disk but are absent from the current model inventory (the
+    /// renamed-from case).
     #[test]
     fn b1_discover_snapshot_buckets_picks_up_renamed_from_app() {
         let work = temp_workspace("b1_discover");
@@ -2829,7 +2828,7 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
-    /// Codex A-1 — the resolved workspace flows into config loading.
+    /// The resolved workspace flows into config loading.
     /// `load_from_workspace` must read `<workspace>/Djogi.toml` not
     /// the cwd's. We assert that by writing a custom config with a
     /// distinctive `database.url` and confirming the loader sees it.
@@ -2859,8 +2858,8 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
-    /// Codex round-2 A-1 — env override precedence. A `DATABASE_URL`
-    /// in the environment must beat any value in
+    /// Env override precedence: A `DATABASE_URL` in the environment
+    /// must beat any value in
     /// `<workspace>/Djogi.toml`, matching the security contract that
     /// secrets only live in env vars.
     #[test]
@@ -2885,8 +2884,8 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
-    /// Codex round-2 B-1 — `compose_with_inputs` must consume the
-    /// disk-discovered buckets, not just the inventory's. We set up a
+    /// `compose_with_inputs` must consume the disk-discovered buckets, not
+    /// just the inventory's. We set up a
     /// `migrations/main/billing/schema_snapshot.json` with a `widgets`
     /// table, pass an EMPTY models map (simulating "billing app was
     /// removed from the workspace"), set `allow_destructive = true`,
@@ -2896,7 +2895,7 @@ mod tests {
     /// would never see billing's snapshot and the compose would exit
     /// `NothingToCompose` (no DROP, no SQL written).
     ///
-    /// This is the end-to-end pinning B-1 round-1 missed.
+    /// End-to-end regression guard.
     #[test]
     fn b1_round2_compose_consumes_discovered_orphan_snapshot() {
         use djogi::migrate::projection::BucketKey;
@@ -3018,7 +3017,7 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
-    /// Codex round-2 A-1 — `status_cmd` invokes its tokio runtime and
+    /// `status_cmd` invokes its tokio runtime and
     /// fails fast on a malformed `Djogi.toml`. We don't need a live
     /// Postgres for this assertion — the test is that the workspace
     /// path is threaded through the loader and TOML errors surface
@@ -3042,14 +3041,13 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
-    // ── Codex umbrella U-3: AttuneError → exit code matrix ───────────────
+    // ── AttuneError → exit code matrix ──────────────────────────────
 
     /// Every `AttuneError::Refused(_)` variant must map to exit code `2`
     /// per `docs/spec/configuration.md` §14. The pre-fix implementation
     /// flattened every error to `1`, so an operator running attune in CI
     /// could not distinguish "policy gate refused before any side effect"
-    /// from "ran half a step and failed mid-flight". Codex umbrella U-3
-    /// flagged this as a blocker.
+    /// from "ran half a step and failed mid-flight".
     #[test]
     fn u3_attune_refusal_variants_map_to_exit_code_two() {
         use djogi::migrate::AttuneRefusal;
@@ -3060,8 +3058,7 @@ mod tests {
             AttuneError::Refused(AttuneRefusal::SquashNotDevProfile {
                 profile: "production".to_string(),
             }),
-            // Codex umbrella U-2 — dev_mode and DJOGI_ENV gates added
-            // in the same fixup chain. Both are `AttuneError::Refused(_)`
+            // Dev_mode and DJOGI_ENV gates both produce `AttuneError::Refused(_)`
             // so they share the exit-code-2 mapping.
             AttuneError::Refused(AttuneRefusal::SquashDevModeOff),
             AttuneError::Refused(AttuneRefusal::SquashEnvIsProduction {

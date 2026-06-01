@@ -172,8 +172,8 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
     // back-to-back 5-segment plans in input order — correct because
     // single-parent groups never reference partner shadow columns.
     //
-    // **Multi-parent groups** (`PkTypeFlipMultiGroup`, Codex round-4
-    // B-15) lower as ONE stage-interleaved 5-segment plan — at each
+    // **Multi-parent groups** (`PkTypeFlipMultiGroup`) lower as ONE
+    // stage-interleaved 5-segment plan — at each
     // stage, every member group's stage-N statements are emitted
     // together. Required because the cross-flipping join-table FKs
     // at stage 3b reference shadow columns on every parent, and
@@ -344,8 +344,8 @@ pub(crate) fn classify_operation(op: &SchemaOperation) -> SegmentKind {
 /// "make existing table available under its new name" op. Once renames
 /// are applied, every subsequent op (including an `AddTable` whose
 /// inline FK targets the post-rename name) can refer to the renamed
-/// table without ordering tricks. Codex T3 round-2 review B-1 flagged
-/// the prior layout (RenameTable in phase 2, AddTable in phase 1):
+/// table without ordering tricks. The prior layout (RenameTable in phase 2,
+/// AddTable in phase 1) had issues:
 /// when a delta carried `RenameTable users → members` together with
 /// `AddTable comments` whose `comments.user_id REFERENCES "members"`,
 /// the toposort treated `"members"` as external (not in the AddTable
@@ -373,9 +373,9 @@ pub(crate) fn classify_operation(op: &SchemaOperation) -> SegmentKind {
 /// with standalone `AddForeignKey` operations after the table batch.
 /// This matches the Phase 7-Zero v3 plan's "fail loudly when we
 /// can't, but never silently produce DDL Postgres rejects" stance.
-/// Codex T3 review B-1 flagged that the prior phase-only sort would
-/// emit cross-referencing tables in alphabetical order (because the
-/// differ feeds them via `BTreeMap`), causing Postgres to reject
+/// The prior phase-only sort would emit cross-referencing tables in
+/// alphabetical order (because the differ feeds them via `BTreeMap`),
+/// causing Postgres to reject
 /// the migration with "relation does not exist".
 ///
 /// Returned ops are owned because the cycle-breaking path needs to
@@ -586,8 +586,7 @@ fn operation_phase(op: &SchemaOperation) -> usize {
         SchemaOperation::AddEnum(_) => 0,
         // RenameTable runs BEFORE AddTable so `CREATE TABLE` payloads
         // that inline `REFERENCES <new_name>` resolve cleanly. See
-        // Codex T3 round-2 B-1 in `order_operations` for the full
-        // rationale.
+        // `order_operations` for the full rationale.
         SchemaOperation::RenameTable { .. } => 1,
         SchemaOperation::AddTable(_) => 2,
         SchemaOperation::AddColumn { .. }
@@ -1291,7 +1290,7 @@ mod tests {
         assert_eq!(plan.segments[1].kind, SegmentKind::MetadataOnly);
     }
 
-    // ── AddTable toposort (Codex T3 review B-1) ─────────────────────
+    // ── AddTable toposort ───────────────────────────────────────────
 
     /// Build a column carrying an inline FK pointing at `target` with
     /// the project-default `Restrict` cascade.
@@ -1549,12 +1548,12 @@ mod tests {
         assert_eq!(labels, vec!["AddTable widgets"]);
     }
 
-    // ── RenameTable hoisted ahead of AddTable (Codex T3 round-2 B-1) ─
+    // ── RenameTable hoisted ahead of AddTable ───────────────────────
 
     #[test]
     fn rename_table_runs_before_add_table_referencing_post_rename_name() {
-        // The classic round-2 B-1 hazard: `RenameTable users → members`
-        // pairs with `AddTable comments` where `comments.user_id`
+        // When `RenameTable users → members` pairs with `AddTable comments`
+        // where `comments.user_id`
         // points at the post-rename name `"members"`. With RenameTable
         // hoisted to phase 1 (ahead of AddTable in phase 2), the
         // rename runs first; the inline `REFERENCES "members"` then

@@ -2070,7 +2070,7 @@ mod tests {
 
     #[test]
     fn classify_raw_ddl_batch_dollar_suffix_begin_not_atomic_opener() {
-        // Codex BLOCK-1: `x$begin atomic` must NOT open an atomic block. If it did,
+        // `x$begin atomic` must NOT open an atomic block. If it did,
         // the trailing COMMIT would be swallowed as internal and reach Postgres
         // inside atomic(). The COMMIT must be detected as transaction control.
         let sql = "CREATE TEMP TABLE t (x integer); SELECT x$begin atomic FROM t; COMMIT;";

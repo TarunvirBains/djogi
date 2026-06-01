@@ -10,7 +10,7 @@
 //! prose with worked-example identifiers (`tbl` / `id` / `id_desc`)
 //! and this module emits SQL parameterised by per-group state, so
 //! the two are NOT byte-identical. The regression net is split
-//! into two layers (B-5r, Codex round-3):
+//! into two layers:
 //!
 //!   * **Emitter-output drift detector** — fixtures under
 //!     `fixtures/pk_flip_emitter_output_section_*.sql` capture the
@@ -276,8 +276,7 @@ pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Result<Vec<Segment>, Pk
     Ok(segments)
 }
 
-/// Build the segment list for a Codex round-4 B-15
-/// [`SchemaOperation::PkTypeFlipMultiGroup`].
+/// Build the segment list for a [`SchemaOperation::PkTypeFlipMultiGroup`].
 ///
 /// **Stage interleaving — playbook §7 line 327.** Where
 /// [`build_segments`] produces a 5-segment plan for ONE parent, this
@@ -322,10 +321,10 @@ pub(crate) fn build_segments_multi(
     if groups.is_empty() {
         return Ok(Vec::new());
     }
-    // Codex round-7 BLOCK 3: validate every group's self-FK metadata
-    // before any lowering work. Without this gate, malformed metadata
-    // would be silently truncated by the inner emitters' `.get(i)`
-    // fallbacks. Single-member fallback uses the same checked path
+    // Validate every group's self-FK metadata before any lowering work.
+    // Without this gate, malformed metadata would be silently truncated
+    // by the inner emitters' `.get(i)` fallbacks. Single-member fallback
+    // uses the same checked path
     // via `build_segments`, but multi-member clusters need explicit
     // validation here too because no member is dispatched through
     // `build_segments` (the multi lowerer composes statements
@@ -1264,8 +1263,8 @@ fn jt_shadow_pairs<'a>(
     out
 }
 
-// `child_in_cycle` removed in Codex round-4 B-16 — segment 3b's
-// FK-deferrability decision now reads from `PkFlipChild::fk_deferrable`
+// `child_in_cycle` removed — segment 3b's FK-deferrability decision
+// now reads from `PkFlipChild::fk_deferrable`
 // / `PkFlipChild::fk_initially_deferred` directly. The differ's cycle
 // path forces `(true, true)` upstream; non-cycle children pass their
 // descriptor flags through unchanged. The previous heuristic looked up
@@ -1419,10 +1418,9 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
         }
     }
 
-    // B-13 (Codex round-3): cycle peers are now first-class children
-    // (`PkFlipChild::cycle_flag = true`); their backfill emits via
-    // the children loop above. The standalone cycle loop that lived
-    // here previously was redundant work and would have produced
+    // Cycle peers are now first-class children (`PkFlipChild::cycle_flag = true`);
+    // their backfill emits via the children loop above. The standalone cycle
+    // loop that lived here previously was redundant work and would have produced
     // duplicate CALL statements per peer.
 
     OperationSql {
@@ -1535,10 +1533,9 @@ fn emit_backfill_statements_with_mode(
         }
     }
 
-    // B-13 (Codex round-3): cycle peers are first-class children with
-    // `cycle_flag = true`. The children loop above already emits the
-    // backfill statement per peer; the cycle-only loop that used to
-    // live here was redundant.
+    // Cycle peers are first-class children with `cycle_flag = true`. The
+    // children loop above already emits the backfill statement per peer;
+    // the cycle-only loop that used to live here was redundant.
 
     out
 }
@@ -1770,8 +1767,8 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
     let parent = group.parent_table.as_str();
     let mut out: Vec<OperationSql> = Vec::new();
 
-    // Self-FK constraints — per-FK deferrability (Codex round-4
-    // B-16). The cycle path forces deferrable + initially_deferred
+    // Self-FK constraints — per-FK deferrability. The cycle path forces
+    // deferrable + initially_deferred
     // upstream in the differ; descriptor-declared deferrable FKs
     // round-trip through the per-FK arrays. Pre-B-16 the gate was
     // `!group.cycles.is_empty()` and silently downgraded
@@ -1827,11 +1824,10 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
 
     for child in &group.children {
         let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
-        // Codex round-4 B-16: per-child deferrability flags. The
-        // differ sets `(true, true)` for cycle children and
-        // descriptor flags for plain children. Pre-B-16 this used
-        // the `child_in_cycle` heuristic and silently downgraded
-        // descriptor-deferrable plain children.
+        // Per-child deferrability flags: the differ sets `(true, true)`
+        // for cycle children and descriptor flags for plain children.
+        // Previously this used the `child_in_cycle` heuristic and silently
+        // downgraded descriptor-deferrable plain children.
         let cycle_clause =
             render_deferrable_clause(child.fk_deferrable, child.fk_initially_deferred);
         out.push(OperationSql {
@@ -2340,8 +2336,8 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
 //      parent / partner `id` columns.
 //
 // Single-parent path composes them in order. Multi-parent path
-// (Codex round-4 B-15) emits phase 1 across all members, then
-// phase 2 across all members, etc. — required because phase 4's
+// emits phase 1 across all members, then phase 2 across all members,
+// etc. — required because phase 4's
 // `ADD CONSTRAINT (... REFERENCES partner(id))` assumes the
 // partner's phase 2 has already run (phase 2 is what renames
 // `id_desc` → `id`). Without interleaving, jt_books's phase 4
@@ -2580,7 +2576,7 @@ fn cutover_phase_finalise_children(group: &PkTypeFlipGroup, up: &mut String) {
 /// concatenate the result onto a `... <cascade>{clause}`
 /// substring without a join helper.
 ///
-/// **Codex round-4 B-16.** This is the single source of truth for
+/// Single source of truth for
 /// the deferrability clause across cutover phase 3 (children),
 /// phase 2 (self-FK re-add), and phase 4 (join-table re-add).
 /// Centralising avoids drift across the three sites.
@@ -3714,11 +3710,10 @@ mod tests {
 
     #[test]
     fn partitioned_prep_emits_self_fk_shadow_columns_and_multi_pair_trigger() {
-        // Cluster-4 review BLOCK DEDUP-1: the partitioned prep
-        // emitter previously emitted ONLY the parent's `id_desc`
-        // shadow column and a single-pair `(id, id_desc)` autofill
-        // trigger, even when the partitioned parent had a self-FK.
-        // Result: cutover later tried to RENAME a `<col>_desc`
+        // Regression guard: the partitioned prep emitter previously emitted
+        // ONLY the parent's `id_desc` shadow column and a single-pair
+        // `(id, id_desc)` autofill trigger, even when the partitioned parent
+        // had a self-FK. Result: cutover later tried to RENAME a `<col>_desc`
         // shadow column that prep never created, and the autofill
         // trigger never populated the self-FK shadow value, so the
         // cutover RENAME produced NULLs in the renamed column.
@@ -3774,12 +3769,10 @@ mod tests {
 
     #[test]
     fn partitioned_self_fk_index_uses_on_only_not_concurrently_on_parent() {
-        // Cluster-4 round-2 review BLOCK DEDUP-2: when the parent is
-        // partitioned and has a self-FK, the self-FK shadow column
-        // index must use the partitioned-parent path
-        // (`CREATE INDEX <idx> ON ONLY <parent> (<col>_desc)` plus
-        // per-leaf `CONCURRENTLY` + `ATTACH PARTITION` at apply
-        // time). Prior round emitted
+        // Regression guard: when the parent is partitioned and has a self-FK,
+        // the self-FK shadow column index must use the partitioned-parent path
+        // (`CREATE INDEX <idx> ON ONLY <parent> (<col>_desc)` plus per-leaf
+        // `CONCURRENTLY` + `ATTACH PARTITION` at apply time). Prior approach
         // `CREATE INDEX CONCURRENTLY idx_<parent>_<col>_desc
         //  ON <parent> (<col>_desc)` directly against the partitioned
         // parent, which Postgres rejects with
@@ -3988,7 +3981,7 @@ mod tests {
     }
 
     /// Forward-direction §3 fixture — **emitter-output drift
-    /// detector** (B-5r, Codex round-3). The fixture is the
+    /// detector**. The fixture is the
     /// whitespace-normalised SQL the planner currently emits for a
     /// single-table HeerId asc → desc flip, NOT a verbatim copy of
     /// the playbook prose at `HeeRanjID-reference/docs/migrations/
@@ -4650,14 +4643,11 @@ mod tests {
         );
     }
 
-    // ── Codex round-4 B-5r PARTIAL — canonical playbook fixtures ─────────
+    // ── Canonical playbook fixtures ──────────────────────────────────
     //
-    // Round-3 picked option (b) and renamed the existing fixtures
-    // to `pk_flip_emitter_output_section_*.sql` (drift detector
-    // for the EMITTER) plus anchor-substring tests vs the
-    // playbook. The SECOND half of option (b) — separate
-    // verbatim-canonical fixtures locking the PLAYBOOK against
-    // silent edits — was deferred to round-4. This test set
+    // Fixtures cover the EMITTER (`pk_flip_emitter_output_section_*.sql`)
+    // plus anchor-substring tests vs the playbook. Separate verbatim-canonical
+    // fixtures lock the PLAYBOOK against silent edits. This test set
     // closes that gap.
     //
     // **Provenance.** Each `playbook_canonical_section_*.sql`
@@ -4751,7 +4741,7 @@ mod tests {
             // enough that printing both sides keeps the operator
             // signal readable.
             panic!(
-                "Codex round-4 B-5r: canonical fixture for {section_label} \
+                "Canonical fixture for {section_label} \
                  drifted from playbook text (lines {start_line}..={end_line}).\n\
                  Either the playbook edited a load-bearing SQL block — update\n\
                  the matching `playbook_canonical_section_*.sql` fixture to\n\

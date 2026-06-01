@@ -1010,9 +1010,8 @@ mod tests {
         // Postgres restricts recursive CTEs to ONE self-reference in
         // the recursive term. Multi-edge models therefore enumerate
         // edges via CROSS JOIN LATERAL VALUES rather than per-edge
-        // UNION ALL branches. (B4 round-3 fixup — the original
-        // per-edge form failed live with "recursive reference must
-        // not appear more than once".)
+        // UNION ALL branches. The per-edge form would fail with "recursive
+        // reference must not appear more than once".
         let opts = MaterializeClosureOptions::<HeerId>::default();
         let acc = build_materialize_closure_sql::<MiniPedigree, MiniPedigreeClosure>(opts);
         let sql = acc.sql();

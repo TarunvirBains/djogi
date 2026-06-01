@@ -274,9 +274,9 @@ pub enum SpatialExpr {
         /// EWKB encoding of the second geometry argument.
         b_ewkb: Vec<u8>,
     },
-    // Cluster E round-5 BLOCK-2 closure: convex-hull was migrated
-    // out of this enum into `AggOp::SpatialConvexHull`. The old
-    // `SpatialExpr::ConvexHull{..}` variant silently dropped
+    // ConvexHull was migrated out of this enum into
+    // `AggOp::SpatialConvexHull`. The old `SpatialExpr::ConvexHull{..}`
+    // variant silently dropped
     // `AggregateExpr` modifiers (.distinct/.filter/.over/.order_by)
     // because those mutate `ExprNode::Aggregate` only. Routing
     // through `AggOp` puts ConvexHull on the same modifier substrate
@@ -1205,11 +1205,10 @@ mod tests {
         assert_eq!(acc.bind_count(), 2);
     }
 
-    // Cluster E round-5 BLOCK-2 closure: ConvexHull was migrated
-    // out of `SpatialExpr` into `AggOp::SpatialConvexHull`. The
-    // bare-emission test moved alongside, see
-    // `djogi/src/query/field.rs::convex_hull_emits_*` (added in
-    // round-4) for the new bare and windowed emission tests.
+    // ConvexHull was migrated out of `SpatialExpr` into
+    // `AggOp::SpatialConvexHull`. The bare-emission test moved alongside,
+    // see `djogi/src/query/field.rs::convex_hull_emits_*` for the new
+    // bare and windowed emission tests.
 
     // ── Phase 8.5 Cluster 4D — Intersection public constructor tests ──────────
 

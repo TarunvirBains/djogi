@@ -1839,7 +1839,7 @@ where
     // Detect duplicate / conflicting `DeferrabilitySpec`s while
     // building the `(type, field) → (deferrable, initially_deferred)`
     // map. Mirrors `migrate::projection::project_from_iters_with_deferrability`'s
-    // round-7 fix; we use a `BTreeMap` (deterministic iteration) but
+    // We use a `BTreeMap` (deterministic iteration) but
     // the determinism here is for diagnostic stability — the actual
     // gate is "no two specs may disagree". Idempotent reinsertion
     // (same key, identical value) is accepted.

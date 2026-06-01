@@ -118,7 +118,7 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                 }
             }
 
-            // ── COUNT(*) + ORDER BY silent-drop guard (Codex round-1) ──
+            // ── COUNT(*) + ORDER BY silent-drop guard ──
             // The COUNT(*) emitter hard-codes `COUNT(*)` and never renders
             // the `order_by` slot — chaining `.order_by(..)` on a
             // `count_star()` aggregate would silently drop the modifier.
@@ -199,8 +199,7 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             // Recurse into arg, arg2, and filter sub-trees in case there
             // are nested aggregates (unusual but structurally possible).
             // arg2 was added by T5; threading it through the walker keeps
-            // future binary-aggregate sub-expressions inside legality
-            // (Codex round-1 counter-signal).
+            // future binary-aggregate sub-expressions inside legality.
             check_aggregate_legality(arg)?;
             if let Some(a2) = arg2 {
                 check_aggregate_legality(a2)?;
@@ -712,10 +711,9 @@ pub(crate) fn emit_expr(
                     filter.as_deref(),
                     ctx,
                 )?,
-                // Cluster E round-5 BLOCK-2 closure: ConvexHull
-                // migrated from SpatialExpr::ConvexHull to a proper
-                // AggOp envelope so `.distinct()` / `.filter()` /
-                // `.over()` / `.order_by()` all compose uniformly.
+                // ConvexHull migrated from SpatialExpr::ConvexHull to a proper
+                // AggOp envelope so `.distinct()` / `.filter()` / `.over()` /
+                // `.order_by()` all compose uniformly.
                 // Same wrapped shape as SpatialCentroid.
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialConvexHull => emit_spatial_unary_agg(
@@ -855,8 +853,8 @@ pub(crate) fn emit_expr(
                     // Hand-rolled — binary signature with bound distance.
                     // The unary helper doesn't fit because the second
                     // arg is a parameter-bound f64, not a column ref or
-                    // a fixed token. Codex T22 BLOCK-1: FILTER attaches
-                    // to the inner ST_ClusterWithin aggregate before
+                    // a fixed token. FILTER attaches to the inner ST_ClusterWithin
+                    // aggregate before
                     // the outer ::geography[] cast (which is appended
                     // by the post-arm `outer_cast_suffix(op)` push).
                     let needs_filter_paren = filter.is_some();
@@ -921,9 +919,9 @@ pub(crate) fn emit_expr(
             // works here because the FILTER clause attaches to the whole
             // aggregate function expression after the closing paren.
             //
-            // Codex T22 BLOCK-1: spatial aggregates that emit an outer
-            // cast (e.g. `::geography`) must place FILTER *before* the
-            // cast. The per-aggregate spatial arms above handle FILTER
+            // Spatial aggregates that emit an outer cast (e.g. `::geography`)
+            // must place FILTER *before* the cast. The per-aggregate spatial
+            // arms above handle FILTER
             // inline via `emit_spatial_unary_agg`; this generic
             // post-arm block fires only for non-spatial aggregates
             // where the FILTER suffix attaches to the bare aggregate.
@@ -935,10 +933,9 @@ pub(crate) fn emit_expr(
                 acc.push_sql(")");
             }
 
-            // Codex T22 round-3 BLOCK-1: append the outer cast suffix
-            // (e.g. `::geography`) for spatial aggregates here, AFTER
-            // FILTER. The per-aggregate spatial arms above pass `""`
-            // for the cast slot so the cast lives in exactly one
+            // Append the outer cast suffix (e.g. `::geography`) for spatial
+            // aggregates here, AFTER FILTER. The per-aggregate spatial arms
+            // above pass `""` for the cast slot so the cast lives in exactly one
             // place. The windowed-emission path
             // (`emit_aggregate_inner`) pops this suffix and re-appends
             // it after OVER so the placement is
@@ -1413,10 +1410,10 @@ fn emit_within_group_target(acc: &mut SqlAccumulator, targets: &[crate::query::o
 /// any outer wrapper (`ST_Centroid`) or outer cast (`::geography`),
 /// matching Postgres syntax for aggregate-with-FILTER expressions.
 ///
-/// Codex T22 BLOCK-1: the previous shape emitted `ST_Collect(arg)::geography
-/// FILTER (WHERE ...)` which is invalid Postgres. Postgres aggregate
-/// syntax requires `(<aggregate-call> FILTER (WHERE <cond>))::cast`
-/// or `<wrapper>(<aggregate-call> FILTER (WHERE <cond>))::cast` for
+/// The previous shape emitted `ST_Collect(arg)::geography FILTER (WHERE ...)`
+/// which is invalid Postgres. Postgres aggregate syntax requires
+/// `(<aggregate-call> FILTER (WHERE <cond>))::cast` or
+/// `<wrapper>(<aggregate-call> FILTER (WHERE <cond>))::cast` for
 /// double-wrap shapes like `ST_Centroid(ST_Collect(...))`.
 ///
 /// # Parameters
@@ -1455,11 +1452,10 @@ fn emit_within_group_target(acc: &mut SqlAccumulator, targets: &[crate::query::o
 /// (the standard SUM/COUNT/etc. family that lives at the bare-emission
 /// boundary).
 ///
-/// Codex T22 round-3 BLOCK-1: `outer_close_and_cast` is now always
-/// `""` — the outer `::geography` cast is appended by the post-arm
-/// `outer_cast_suffix(op)` push so the windowed-emission path can
-/// splice OVER between the bare aggregate body and the cast. The
-/// parameter is retained as an empty placeholder for caller clarity
+/// `outer_close_and_cast` is now always `""` — the outer `::geography`
+/// cast is appended by the post-arm `outer_cast_suffix(op)` push so the
+/// windowed-emission path can splice OVER between the bare aggregate body
+/// and the cast. The parameter is retained as an empty placeholder for caller clarity
 /// (the call sites now read as a uniform `"", "", ""` triple of
 /// inner / outer-wrap / cast slots).
 #[cfg(feature = "spatial")]
@@ -1971,7 +1967,7 @@ mod tests {
 
     // ── Phase 8.5 #147 — trgm joined-context column qualification ─────────
     //
-    // Regression guard for BLOCK-2: both trgm emitter arms used bare
+    // Regression guard: both trgm emitter arms used bare
     // `acc.push_sql(column)` before this fix, which silently dropped the
     // table alias in joined / self-pair query contexts. These tests emit
     // each variant under `SqlEmitContext::joined("u")` and assert the

@@ -4683,8 +4683,7 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// `ST_ConvexHull` scalar wrapper, before the outer cast.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn convex_hull(self) -> crate::expr::AggregateExpr<crate::geo::Polygon> {
-        // Cluster E round-5 BLOCK-2 closure: migrated from
-        // ExprNode::Spatial(SpatialExpr::ConvexHull{..}) to
+        // Migrated from ExprNode::Spatial(SpatialExpr::ConvexHull{..}) to
         // AggOp::SpatialConvexHull so AggregateExpr modifiers
         // (.distinct/.filter/.over/.order_by) compose uniformly.
         // The old IR shape silently dropped these modifiers because
@@ -6810,9 +6809,8 @@ mod distance_tests {
     /// return is a compile-time assertion; the runtime check pins the
     /// stored field column.
     ///
-    /// Cluster E round-5 BLOCK-2 closure: ConvexHull migrated from
-    /// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` to a proper
-    /// `AggOp::SpatialConvexHull` so AggregateExpr modifiers
+    /// ConvexHull migrated from `ExprNode::Spatial(SpatialExpr::ConvexHull{..})`
+    /// to a proper `AggOp::SpatialConvexHull` so AggregateExpr modifiers
     /// (`.distinct()` / `.filter()` / `.over()` / `.order_by()`)
     /// compose uniformly with the rest of the aggregate family.
     #[cfg(feature = "spatial")]
@@ -6865,7 +6863,7 @@ mod distance_tests {
     /// pattern `ST_ConvexHull(ST_Collect(<col>::geometry))::geography`.
     /// Inner `::geometry` cast for ST_Collect's geometry-only signature;
     /// outer `::geography` cast keeps the typed `Polygon` decode sound.
-    /// Replaces the round-3 SpatialExpr-routed test that was removed
+    /// Replaces the prior SpatialExpr-routed test that was removed
     /// when ConvexHull migrated to `AggOp::SpatialConvexHull`.
     #[cfg(feature = "spatial")]
     #[test]
@@ -6883,9 +6881,9 @@ mod distance_tests {
     }
 
     /// `.distinct()` on convex_hull lands inside ST_Collect (the actual
-    /// aggregate). Cluster E round-5 BLOCK-2 closure regression: before
-    /// the AggOp migration this modifier silently no-op'd because
-    /// AggregateExpr modifiers only mutate ExprNode::Aggregate.
+    /// aggregate). Regression guard: before the AggOp migration this
+    /// modifier silently no-op'd because AggregateExpr modifiers only
+    /// mutate ExprNode::Aggregate.
     #[cfg(feature = "spatial")]
     #[test]
     fn convex_hull_distinct_lands_inside_st_collect() {
@@ -7022,10 +7020,9 @@ mod distance_tests {
     #[cfg(feature = "spatial")]
     #[test]
     fn centroid_with_filter_attaches_to_inner_st_collect() {
-        // Codex T22 BLOCK-1: FILTER (WHERE ...) must attach to the
-        // inner ST_Collect aggregate, BEFORE the outer ST_Centroid
-        // wrapper and the ::geography cast. Postgres rejects FILTER
-        // after a cast.
+        // FILTER (WHERE ...) must attach to the inner ST_Collect aggregate,
+        // BEFORE the outer ST_Centroid wrapper and the ::geography cast.
+        // Postgres rejects FILTER after a cast.
         //
         // Correct shape:
         //   ST_Centroid(ST_Collect(<col>::geometry) FILTER (WHERE <cond>))::geography
@@ -7069,11 +7066,10 @@ mod distance_tests {
     #[cfg(feature = "spatial")]
     #[test]
     fn centroid_with_over_in_annotate_path_places_over_on_inner_collect() {
-        // Codex T22 round-3 BLOCK-1 + round-4: when a spatial
-        // aggregate is emitted through the windowed-annotate path
-        // (the default `OVER ()` for ungrouped annotate, or an
-        // explicit `.over(|w| ...)` window spec), the OVER clause
-        // must attach to the *aggregate*, not to a scalar wrapper.
+        // When a spatial aggregate is emitted through the windowed-annotate
+        // path (the default `OVER ()` for ungrouped annotate, or an explicit
+        // `.over(|w| ...)` window spec), the OVER clause must attach to the
+        // *aggregate*, not to a scalar wrapper.
         //
         // For centroid, ST_Collect IS the aggregate; ST_Centroid is
         // a scalar function that wraps the collected geometry set.
@@ -7122,12 +7118,11 @@ mod distance_tests {
     #[cfg(feature = "spatial")]
     #[test]
     fn collect_with_filter_and_over_attaches_modifiers_to_aggregate_call() {
-        // Cluster E round-5 BLOCK-1 closure: the unwrapped + FILTER +
-        // OVER combination must produce
-        // `(AGG(...) FILTER (...) OVER (...))::cast` — both modifiers
-        // attach directly to the aggregate call. Pre-fix the bare
-        // emission's FILTER parens nested inside the windowed
-        // emission's outer parens, giving `((AGG FILTER) OVER)::cast`,
+        // Regression guard: the unwrapped + FILTER + OVER combination
+        // must produce `(AGG(...) FILTER (...) OVER (...))::cast` — both
+        // modifiers attach directly to the aggregate call. Pre-fix the bare
+        // emission's FILTER parens nested inside the windowed emission's
+        // outer parens, giving `((AGG FILTER) OVER)::cast`,
         // which Postgres rejects because OVER attaches to a
         // parenthesized expression rather than the aggregate.
         use crate::expr::Expr;
@@ -7151,8 +7146,7 @@ mod distance_tests {
             "must end with )::geography (cast outside (AGG FILTER OVER)); got: {sql}"
         );
         // Critical anti-regression: NO double parens at the start.
-        // Post-fix the SQL must NOT begin with `((` — that would be
-        // the round-4 broken shape.
+        // The SQL must NOT begin with `((` — that would be incorrect.
         assert!(
             !sql.starts_with("(("),
             "must not start with `((` (round-5 BLOCK-1 anti-regression); got: {sql}"
@@ -7206,12 +7200,10 @@ mod distance_tests {
     #[cfg(feature = "spatial")]
     #[test]
     fn convex_hull_with_over_places_over_on_inner_collect() {
-        // Codex T22 round-4 BLOCK-3 / round-5 BLOCK-2: convex_hull
-        // is a wrapped spatial aggregate (sibling of centroid).
-        // After the round-5 migration it routes through the same
-        // `AggOp::SpatialConvexHull` envelope as centroid, so the
-        // wrapped OVER splice (place OVER inside the wrapper, not
-        // around the whole expression) applies uniformly.
+        // ConvexHull is a wrapped spatial aggregate (sibling of centroid).
+        // It routes through the same `AggOp::SpatialConvexHull` envelope
+        // as centroid, so the wrapped OVER splice (place OVER inside the
+        // wrapper, not around the whole expression) applies uniformly.
         //
         //   correct: ST_ConvexHull(ST_Collect(<col>::geometry) OVER (...))::geography
         //   wrong:   ST_ConvexHull(ST_Collect(<col>::geometry))::geography OVER (...)
@@ -7362,7 +7354,7 @@ mod distance_tests {
     #[cfg(feature = "spatial")]
     #[test]
     fn extent_with_filter_attaches_to_inner_aggregate_before_cast() {
-        // Codex T22 BLOCK-1: FILTER must precede the cast chain.
+        // FILTER must precede the cast chain.
         // Correct shape:
         //   (ST_Extent(<col>::geometry) FILTER (WHERE <cond>))::geometry::geography
         use crate::expr::Expr;
@@ -7746,7 +7738,7 @@ mod distance_tests {
     #[cfg(feature = "spatial")]
     #[test]
     fn line_agg_with_filter_attaches_before_cast() {
-        // Codex T22 BLOCK-1: FILTER must precede the ::geography cast.
+        // FILTER must precede the ::geography cast.
         // Correct shape:
         //   (ST_LineAgg(<col>::geometry) FILTER (WHERE <cond>))::geography
         use crate::expr::Expr;

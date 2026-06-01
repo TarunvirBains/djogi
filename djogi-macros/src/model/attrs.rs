@@ -1248,7 +1248,7 @@ impl ModelAttrs {
                 }
                 // `app = Vehicles` — Phase 7-Zero v3 T8. Value is a
                 // Rust type path (not a string) since apps are
-                // addressed by type per §4B (Codex P0-03). The
+                // addressed by type per §4B. The
                 // descriptor emitter lowers the path to
                 // `<Path as ::djogi::App>::LABEL` at const-eval time.
                 Meta::NameValue(MetaNameValue {
@@ -2399,8 +2399,7 @@ impl ExposeSpec {
         // it into the visage emitter. Silently parsing and discarding
         // nested traversal would be a partial-feature trap, so reject
         // any brace with an actionable compile error until the emitter
-        // consumes it. The T6 Codex review flagged the original
-        // parse-and-discard shape as a P0.
+        // consumes it.
         if input.peek(syn::token::Brace) {
             return Err(input.error(
                 "nested traversal `{ ... }` inside `expose(scope -> Peer { ... })` \
@@ -3729,8 +3728,8 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     // last segment is `Jsonb` AND it carries angle-bracket generic
     // arguments.
     //
-    // Codex T10 round-2 N-1: the previous string-prefix matcher only
-    // recognized three exact prefixes (`Jsonb<`, `djogi::Jsonb<`,
+    // The previous string-prefix matcher only recognized three exact
+    // prefixes (`Jsonb<`, `djogi::Jsonb<`,
     // `djogi::jsonb::Jsonb<`), silently mapping `crate::Jsonb<T>` /
     // `super::Jsonb<T>` to TEXT and producing INSERT failures on the
     // typed Jsonb round-trip. Switching to last-segment ident check
@@ -3854,8 +3853,8 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "f32" => Some("REAL"),
         "f64" => Some("DOUBLE PRECISION"),
         "bool" => Some("BOOLEAN"),
-        // Codex round-1 BLOCK (Cluster A finding 2 from #40 review) —
-        // the original arm matched only the bare `DateTime` and
+        // Regression guard: the original arm matched only the bare `DateTime`
+        // and
         // `time::*` short forms, so user fields spelled
         // `djogi::DateTime` / `djogi::types::DateTime` (the canonical
         // adopter spellings, since `pub use crate::types::DateTime`
@@ -4393,8 +4392,8 @@ mod tests {
     use syn::parse_quote;
 
     /// Phase 7 T10 — `Jsonb<T>` for any `T: JsonbSchema` must lower to
-    /// `JSONB`. Codex round-1 Concern 1 PARTIAL flagged that the three
-    /// substrate fixes T10 made (this one + framework-col defaults +
+    /// `JSONB`. The three substrate fixes T10 made (this one +
+    /// framework-col defaults +
     /// FK type substitution) only had indirect coverage through the
     /// live integration suite. Direct lock-in here so a regression
     /// surfaces without needing Postgres.
@@ -4563,8 +4562,8 @@ mod tests {
         assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::Uuid);
     }
 
-    // Codex round-1 BLOCK (Cluster A finding 2 from #40 review) —
-    // `rust_type_to_sql` must accept the canonical djogi aliases for
+    // Regression guard: `rust_type_to_sql` must accept the canonical
+    // djogi aliases for
     // temporal types so user fields spelled `djogi::DateTime` /
     // `djogi::types::DateTime` (etc.) lower to `TIMESTAMPTZ` instead
     // of falling through to TEXT.

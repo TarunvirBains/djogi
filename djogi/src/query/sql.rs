@@ -40,7 +40,7 @@ use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 use crate::query::q::{ArrayPredicate, CompoundOp, Q};
 use crate::query::queryset::{DistinctMode, QuerySet};
-// Phase 8.5 Issue #178 — typed MERGE types.
+// Typed MERGE types.
 use crate::query::merge::{
     MergeAction, MergeBranch, MergeMatchKind, MergeOnEq, MergeValue, SRC_ALIAS, TGT_ALIAS,
 };
@@ -1503,8 +1503,7 @@ fn emit_aggregate_inner(
     agg: &crate::expr::node::ExprNode,
     default_window: Option<&'static str>,
 ) -> Result<(), PortablePredicateError> {
-    // Codex T22 round-3 BLOCK-1 + round-4 refinement: spatial
-    // aggregates emit an outer scalar cast (e.g. `::geography`).
+    // Spatial aggregates emit an outer scalar cast (e.g. `::geography`).
     // When OVER is present, Postgres grammar places `OVER` on the
     // *aggregate* itself before any post-call scalar wrapper. Two
     // emission profiles cover the surface:
@@ -1525,8 +1524,7 @@ fn emit_aggregate_inner(
     //
     // The shape detector below inspects `ExprNode::Aggregate` only;
     // every spatial aggregate (collect, centroid, convex_hull, …)
-    // routes through the `AggOp` envelope after the round-5 ConvexHull
-    // migration. See [`spatial_emission_shape`] for the wrapped vs
+    // routes through the `AggOp` envelope. See [`spatial_emission_shape`] for the wrapped vs
     // unwrapped distinction.
     let shape = spatial_emission_shape(agg);
     let (cast_to, window) = match agg {
@@ -1578,14 +1576,12 @@ fn emit_aggregate_inner(
         }
         // Spatial unwrapped WITH window — paren-wrap (AGG OVER), then cast.
         //
-        // Cluster E round-5 BLOCK-1 closure: the bare emission of an
-        // unwrapped spatial WITH FILTER produces
-        // `(AGG(...) FILTER (...))::cast` — emit_spatial_unary_agg
-        // adds outer parens for cast attachment when filter is
-        // present. Naively adding another outer paren here gives
-        // `((AGG FILTER) OVER)::cast`, which Postgres rejects
-        // because OVER attaches to a parenthesized expression
-        // rather than the aggregate call itself.
+        // Regression guard: the bare emission of an unwrapped spatial WITH FILTER
+        // produces `(AGG(...) FILTER (...))::cast` — emit_spatial_unary_agg adds
+        // outer parens for cast attachment when filter is present. Naively adding
+        // another outer paren here gives `((AGG FILTER) OVER)::cast`, which Postgres
+        // rejects because OVER attaches to a parenthesized expression rather than
+        // the aggregate call itself.
         //
         // Strategy: when filter is present, splice OVER INSIDE
         // the existing FILTER parens by popping the trailing `)`
@@ -1682,12 +1678,10 @@ struct SpatialShape {
 /// ends with a scalar cast suffix (potentially preceded by a wrapper
 /// close), `None` for non-spatial aggregates.
 ///
-/// Cluster E round-5 BLOCK-2 closure: ConvexHull migrated from
-/// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` to
-/// `AggOp::SpatialConvexHull`, so the entire spatial aggregate
-/// family now routes through a single `ExprNode::Aggregate`
-/// arm — modifiers (.distinct/.filter/.over/.order_by) compose
-/// uniformly.
+/// ConvexHull migrated from `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` to
+/// `AggOp::SpatialConvexHull`, so the entire spatial aggregate family now
+/// routes through a single `ExprNode::Aggregate` arm — modifiers
+/// (.distinct/.filter/.over/.order_by) compose uniformly.
 fn spatial_emission_shape(agg: &crate::expr::node::ExprNode) -> Option<SpatialShape> {
     use crate::expr::node::ExprNode;
     match agg {
