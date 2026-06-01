@@ -1,4 +1,4 @@
-//! `db reset` orchestrator — Phase 7 v3 §8 / T8.
+//! `db reset` orchestrator.
 //!
 //! `db reset` is the destructive triple-gated path: it drops the
 //! application database, recreates it, and replays every committed
@@ -36,8 +36,8 @@
 //!
 //! After recreation the runner re-points at the fresh database via
 //! [`crate::pg::pool::DjogiPool::connect`] and replays each migration
-//! file pair in HISTORICAL apply order (Codex umbrella U-4 per
-//! `docs/spec/configuration.md`). T7's out-of-order policy allows a
+//! file pair in HISTORICAL apply order per the configuration spec.
+//! The out-of-order policy allows a
 //! hotfix migration to apply AFTER a later one, so lexical version
 //! sort is NOT a faithful replay of what the live DB experienced.
 //! `db reset` pre-flight reads `djogi_schema_migrations.applied_at`
@@ -46,7 +46,7 @@
 //! the last apply) sort lexically afterwards. Fresh DBs with no
 //! ledger fall back to lexical sort safely.
 //!
-//! # Historical-order capture error policy (Codex umbrella round-2 U-6)
+//! # Historical-order capture error policy
 //!
 //! The pre-flight capture step has TWO qualitatively different
 //! failure modes that pre-U-6 collapsed to the same outcome:
@@ -304,7 +304,7 @@ pub enum ResetError {
     InvalidDatabaseName { name: String },
     /// Workspace lock acquisition failed before the replay could run.
     WorkspaceLockFailed { source: super::guard::GuardError },
-    /// Codex umbrella round-2 U-6: capturing the live ledger's
+    /// Capturing the live ledger's
     /// historical apply order failed for a reason that is NOT
     /// "ledger table is missing on a fresh DB". Pre-fix every
     /// failure mode of the capture step (connection error, decode
@@ -537,7 +537,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     let _guard = super::guard::acquire(&lock_path, super::guard::DEFAULT_TIMEOUT)
         .map_err(|e| ResetError::WorkspaceLockFailed { source: e })?;
 
-    // 4. Codex umbrella U-4: capture the HISTORICAL apply order from
+    // 4. Capture the HISTORICAL apply order from
     //    the live ledger BEFORE the drop. T7's out-of-order policy
     //    allows a hotfix migration to apply AFTER a later one, e.g.
     //    `applied_at` of `0001 < 0003 < 0002`. Lexical version-string
@@ -555,7 +555,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     //    order (e.g. files added on disk after the last apply) sort
     //    AFTER any historical entry, lexically among themselves.
     //
-    //    Codex umbrella round-2 U-6 — error-policy split:
+    //    Error-policy split:
     //    `HistoricalCaptureError::LedgerMissing` is the ONLY legitimate
     //    fall-back-to-lexical signal (`pg_class` probe returned false:
     //    genuinely fresh DB). Every OTHER failure mode (connection
@@ -596,7 +596,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     let mut ctx = DjogiContext::from_pool(pool);
 
     let buckets = scan_committed_migrations(req.workspace_root, &database)?;
-    // Codex umbrella U-4: replay order = historical apply order
+    // Replay order = historical apply order
     // (`applied_at` ascending) for versions that have a historical
     // entry; lexical-after-historical for versions that do not.
     let replay_plan = build_replay_plan(&buckets, &historical_order);
@@ -626,7 +626,6 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
 }
 
 /// Internal error classifier for [`capture_historical_apply_order`]
-/// per Codex umbrella round-2 U-6.
 ///
 /// The capture step has two qualitatively different failure modes:
 ///
@@ -668,7 +667,7 @@ struct HistoricalReplayEntry {
     checksum_down: Option<String>,
 }
 
-/// Codex umbrella U-4 + round-2 U-6 — capture the historical apply
+/// Capture the historical apply
 /// order from the live ledger before the drop.
 ///
 /// Connects to the application DB at `database_url`, probes for the
@@ -1063,7 +1062,7 @@ fn render_replay_semantics_issue(issue: &ResetReplaySemanticsIssue) -> String {
     }
 }
 
-/// Codex umbrella U-4 — given the on-disk bucket map and the captured
+/// Given the on-disk bucket map and the captured
 /// historical apply order, produce the deterministic replay plan as a
 /// flat `Vec<(BucketKey, String)>` in the order migrations should be
 /// re-applied.
@@ -1447,7 +1446,7 @@ async fn replay_one_migration(
         // means a bug here surfaces as a warning rather than a hard
         // failure during the time-sensitive reset window.
         out_of_order_policy: OutOfOrderPolicy::AllowWithDiagnostic,
-        // Phase 8.5 Cluster 2 issue #118 — production wire-up. When the
+        // Production wire-up. When the
         // caller supplied an audit pool on `ResetRequest::audit_pool`
         // we plumb it through to `RunnerCtx` so each replayed
         // migration writes one `djogi_ddl_audit` row per executed
@@ -1810,7 +1809,7 @@ mod tests {
         assert_eq!(extract_database_from_url("mysql://localhost/main"), None);
     }
 
-    /// Codex round-1 B-2 — percent-decoding has to happen BEFORE the
+    /// Percent-decoding has to happen BEFORE the
     /// runner sees the database name, otherwise the maintenance-DB
     /// drop and the post-recreate reconnect target two different
     /// strings (one literal-percent, one decoded). The extractor MUST
@@ -1836,7 +1835,7 @@ mod tests {
         );
     }
 
-    /// Codex round-1 B-2 — malformed `%XX` escapes must refuse rather
+    /// Malformed `%XX` escapes must refuse rather
     /// than silently fall through to a literal `%`. A `%Z9` is not a
     /// valid escape; we don't pretend it is.
     #[test]
@@ -1858,7 +1857,7 @@ mod tests {
         );
     }
 
-    /// Codex round-1 B-2 — the strict-identifier grammar covers the
+    /// The strict-identifier grammar covers the
     /// happy path (typical names) and refuses anything we won't
     /// emit into DDL.
     #[test]
@@ -1897,7 +1896,7 @@ mod tests {
         assert!(!is_valid_pg_identifier("café"));
     }
 
-    /// Codex round-1 B-2 — `reset_app_database` must surface
+    /// `reset_app_database` must surface
     /// `InvalidDatabaseName` rather than splicing decoded bytes into
     /// DDL. We exercise three failure shapes plus the maintenance-DB
     /// override path through the public entry.
@@ -2855,7 +2854,7 @@ mod tests {
         );
     }
 
-    // ── Codex umbrella U-4: historical-order replay plan ────────────────
+    // ── Historical-order replay plan ──────────────────────────────────
 
     fn bk(database: &str, app: &str) -> BucketKey {
         BucketKey {
@@ -2965,7 +2964,7 @@ mod tests {
         );
     }
 
-    // ── Codex umbrella round-2 U-6: error-policy classification ─────────
+    // ── Error-policy classification ─────────────────────────────────────
 
     /// Connecting to a syntactically valid but unreachable URL must
     /// classify as `Transient`, NOT `LedgerMissing`. Pre-U-6 the

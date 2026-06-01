@@ -2,7 +2,7 @@
 //! `djogi_schema_migrations` ledger, and the live Postgres catalog,
 //! producing a deterministic list of [`VerifyDiagnostic`] entries.
 //!
-//! # Scope (Phase 7 v3 §8 / v2 T5)
+//! # Scope
 //!
 //! Verify answers three questions:
 //!
@@ -30,11 +30,11 @@
 //!
 //! - **Tables.** Name + column list (name, rendered SQL type,
 //!   nullability, default expression).
-//! - **Primary keys.** Column list — diffed (B-6). Kind detection
-//!   stays deferred to T8.
+//! - **Primary keys.** Column list — diffed. Kind detection stays
+//!   deferred.
 //! - **Indexes.** Name + table + columns (in order) + uniqueness +
-//!   method — diffed (B-7). `INCLUDE` and partial-predicate surface
-//!   as `Info` (T5 stop condition).
+//!   method — diffed. `INCLUDE` and partial-predicate surface as
+//!   `Info` diagnostics.
 //! - **Foreign keys.** Source `(table, column)` + target
 //!   `(table, column)` + cascade + deferrability — diffed as D609.
 //!
@@ -805,12 +805,11 @@ async fn read_tables(
             // means "verify did not assert anything about the table's
             // exclusion constraints," not "the table has none."
             exclusion_constraints: Vec::new(),
-            // Phase 8.5 Cluster 4 (djogi#217) — verify does not yet read
-            // `obj_description(c.oid, 'pg_class')` to round-trip the
-            // table comment from `pg_description`. Advisory mode reports
-            // the live catalog as carrying no comment; a future verify
-            // pass that reads `pg_description.description` populates this
-            // slot.
+            // Verify does not yet read `obj_description(c.oid,
+            // 'pg_class')` to round-trip the table comment from
+            // `pg_description`. Advisory mode reports the live catalog as
+            // carrying no comment; a future verify pass that reads
+            // `pg_description.description` populates this slot.
             table_comment: None,
             storage_params: None,
             tablespace: None,
@@ -891,12 +890,12 @@ async fn read_all_columns(
 
         out.entry(table_name).or_default().push(ColumnSchema {
             check: None,
-            // Phase 8.5 Cluster 4 (djogi#217) — verify does not yet
-            // read `col_description(c.oid, attnum)` to round-trip the
-            // column comment from `pg_description`. Advisory mode
-            // reports the live catalog as carrying no comment; a future
-            // verify pass that reads `pg_description.description` for
-            // `attnum`-keyed entries populates this slot.
+            // Verify does not yet read `col_description(c.oid, attnum)`
+            // to round-trip the column comment from `pg_description`.
+            // Advisory mode reports the live catalog as carrying no
+            // comment; a future verify pass that reads
+            // `pg_description.description` for `attnum`-keyed entries
+            // populates this slot.
             comment: None,
             default_sql,
             foreign_key: None,
@@ -920,12 +919,11 @@ async fn read_all_columns(
             sequence_within: None,
             sql_type: render_type_for_compare(&sql_type),
             unique: false,
-            // Phase 8.5 Cluster 4 (djogi#220) — `type_change_using` is
-            // a transient projection-only slot (`#[serde(skip)]` on
-            // `ColumnSchema`); verify reads from the live Postgres
-            // catalog, which has no concept of an adopter's
-            // `#[field(type_change_using = "...")]` directive. The
-            // slot is always `None` for catalog-derived columns.
+            // `type_change_using` is a transient projection-only slot
+            // (`#[serde(skip)]` on `ColumnSchema`); verify reads from
+            // the live Postgres catalog, which has no concept of an
+            // adopter's `#[field(type_change_using = "...")]` directive.
+            // The slot is always `None` for catalog-derived columns.
             type_change_using: None,
         });
     }
@@ -1733,8 +1731,8 @@ fn index_target_column_names(target: &IndexTargetSchema) -> Vec<&str> {
 /// - `'foo'` vs `'foo'::text` → match
 /// - `now()` vs `now()::timestamptz` → match
 /// - `'foo'::text::varchar` → `'foo'` (nested casts collapsed in a
-///   loop — Codex round-2 B-5 fix; Postgres renders nested casts
-///   unchanged on `pg_get_expr`, so the comparator must peel them)
+///   loop; Postgres renders nested casts unchanged on `pg_get_expr`,
+///   so the comparator must peel them)
 /// - `42` vs `43` → mismatch (different value)
 /// - `now()` vs `current_timestamp` → mismatch (different func — T8
 ///   may add an alias map)
@@ -1926,11 +1924,11 @@ fn render_type_for_compare(s: &str) -> String {
 /// [`super::repair::repair_snapshot_rebuild`] (B-12); reserved for
 /// T8's tightened verify diagnostics.
 ///
-/// **Bucket scoping (Codex round-2 B-11).** The projection is scoped
-/// to the supplied [`BucketKey`] so an app's baseline / rebuild does
-/// not pull in another app's tables. Postgres has no per-app schema
-/// concept (every app's tables live in `public`), so the scoping is
-/// driven from the inventory's `ModelDescriptor::app` field:
+/// **Bucket scoping.** The projection is scoped to the supplied
+/// [`BucketKey`] so an app's baseline / rebuild does not pull in
+/// another app's tables. Postgres has no per-app schema concept
+/// (every app's tables live in `public`), so the scoping is driven
+/// from the inventory's `ModelDescriptor::app` field:
 ///
 /// - **Synthetic global bucket** (`bucket.app == ""`,
 ///   [`crate::AppDescriptor::GLOBAL_LABEL`]): every live table is
@@ -2088,9 +2086,8 @@ mod tests {
     fn col(name: &str, sql_type: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
-            // Phase 8.5 Cluster 4 (djogi#217) — column comments default
-            // off in test fixtures; tests asserting comment behaviour
-            // set the slot explicitly.
+            // Column comments default off in test fixtures; tests
+            // asserting comment behaviour set the slot explicitly.
             comment: None,
             default_sql: None,
             foreign_key: None,
@@ -2152,8 +2149,7 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: name.to_string(),
-            // Phase 8.5 Cluster 4 (djogi#217) — table-level comments
-            // default off in test fixtures.
+            // Table-level comments default off in test fixtures.
             table_comment: None,
             storage_params: None,
             tablespace: None,
@@ -2572,13 +2568,13 @@ mod tests {
 
     #[test]
     fn normalize_default_strips_nested_casts() {
-        // Codex round-2 B-5 follow-up: the previous implementation
-        // peeled exactly ONE trailing `::TYPE`. For nested casts —
-        // legitimate when an adopter writes `'foo'::text::varchar`
-        // and Postgres renders it back unchanged — only the outermost
-        // cast was stripped, leaving `'foo'::text` and producing a
-        // spurious D607. The fix loops the strip step until the
-        // expression no longer ends with a cast.
+        // The previous implementation peeled exactly ONE trailing
+        // `::TYPE`. For nested casts — legitimate when an adopter
+        // writes `'foo'::text::varchar` and Postgres renders it back
+        // unchanged — only the outermost cast was stripped, leaving
+        // `'foo'::text` and producing a spurious D607. The fix loops
+        // the strip step until the expression no longer ends with a
+        // cast.
         assert_eq!(
             normalize_default_expr(Some("'foo'::text::varchar")),
             Some("'foo'".to_string())
@@ -2846,9 +2842,9 @@ mod tests {
     fn heeranjid_allowlist_does_not_match_adopter_heer_prefix_tables() {
         // The previous LIKE-based exclusion swallowed adopter-owned
         // tables that legitimately started with `heer_`. Confirm the
-        // allowlist does not. (Codex round-2 A-1: the spec example
-        // names this table `heer_orders` — an adopter's "orders"
-        // table that legitimately carries the `heer_` prefix.)
+        // allowlist does not. (The spec example names this table
+        // `heer_orders` — an adopter's "orders" table that
+        // legitimately carries the `heer_` prefix.)
         assert!(!is_heeranjid_artifact_table("heer_user"));
         assert!(!is_heeranjid_artifact_table("heer_orders"));
         assert!(!is_heeranjid_artifact_table("heer"));
@@ -3066,11 +3062,11 @@ mod tests {
     /// appears here (and that each entry is unique). Adding a new
     /// emit site without updating this table is a hard test failure.
     ///
-    /// Codex round-2 A-2: the previous test inspected this hand-typed
-    /// array directly, which left a hole — a new code emitted in the
-    /// module body but absent from the array escaped the uniqueness
-    /// check. The audit test now closes that hole by cross-checking
-    /// the table against the source file's emit-site literals.
+    /// The previous test inspected this hand-typed array directly,
+    /// which left a hole — a new code emitted in the module body but
+    /// absent from the array escaped the uniqueness check. The audit
+    /// test now closes that hole by cross-checking the table against
+    /// the source file's emit-site literals.
     const D6XX_CODE_REGISTRY: &[(&str, &str)] = &[
         ("D601", "snapshot table missing in live"),
         ("D602", "live table not in snapshot"),
@@ -3114,11 +3110,10 @@ mod tests {
 
     #[test]
     fn d6xx_emit_sites_all_covered_by_registry() {
-        // Codex round-2 A-2: walk the verify.rs source for every
-        // VerifyDiagnostic emit site's code literal and assert each
-        // one appears in the master registry above. A new emit site
-        // that adds a code without listing it in
-        // `D6XX_CODE_REGISTRY` fails this test.
+        // Walk the verify.rs source for every VerifyDiagnostic emit
+        // site's code literal and assert each one appears in the master
+        // registry above. A new emit site that adds a code without
+        // listing it in `D6XX_CODE_REGISTRY` fails this test.
         //
         // Implementation: `include_str!` pulls the source text in at
         // compile time. We forward-scan for the canonical emit-site
