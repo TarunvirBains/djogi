@@ -1,8 +1,7 @@
-//! Online-safety classification engine — .
+//! Online-safety classification engine.
 //! Walks a [`SchemaOperation`] (or a delta-worth of them) and assigns
-//! each one an [`OnlineSafetyClassification`] verdict per the §7
-//! classification table in
-//! `docs/superpowers/plans/2026-04-23-phase7-5-live-migrations-and-protected-data-v3.md`.
+//! each one an [`OnlineSafetyClassification`] verdict per the
+//! classification table in `docs/spec/live-migrations.md`.
 //! # Boundary contract (§6.5)
 //! - **PK-flip routing is exclusive.** When a delta carries
 //!   [`SchemaOperation::PkTypeFlipGroup`] or

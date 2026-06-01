@@ -45,8 +45,7 @@
 //! - `VOLATILE` defaults: `ExpandContract` (3-step pattern — add
 //!   nullable column with no default → SET DEFAULT → chunked
 //!   backfill).
-//!   See `docs/superpowers/plans/2026-04-23-phase7-5-live-migrations-and-protected-data-v3.md`
-//!   §7 (the classification table) for the full routing matrix.
+//!   See `docs/spec/live-migrations.md` for the full routing matrix.
 
 /// Postgres `provolatile` category lifted into Rust.
 /// Mirrors the Pg18 `pg_proc.provolatile` axis; the variant order

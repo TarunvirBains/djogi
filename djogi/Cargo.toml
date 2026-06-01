@@ -619,21 +619,21 @@ name = "db_reset_replays_bootstrap"
 path = "../tests/internal/db_reset_replays_bootstrap.rs"
 harness = true
 
-# Cluster 2 issue #118 — production CLI dispatch wires the
+# Issue #118 — production CLI dispatch wires the
 # audit pool from `crud_log_url` into the `db reset` replay path.
 [[test]]
 name = "reset_writes_audit_rows"
 path = "../tests/internal/reset_writes_audit_rows.rs"
 harness = true
 
-# Cluster 2 issue #123 — pool-backed context atomic scopes
+# Issue #123 — pool-backed context atomic scopes
 # share the parent Sassi registry instead of rebuilding on every transaction.
 [[test]]
 name = "atomic_context_sassi"
 path = "../tests/integration/atomic_context_sassi.rs"
 harness = true
 
-# Cluster 2 issue #129 — non-superuser test pool for
+# Issue #129 — non-superuser test pool for
 # RLS-backed integration tests. Internal because the fixture installs
 # RLS policy DDL through Djogi's raw SQL bypass; ordinary integration
 # tests must stay raw-free.
@@ -642,7 +642,7 @@ name = "non_superuser_rls"
 path = "../tests/internal/non_superuser_rls.rs"
 harness = true
 
-# Cluster 2 issue #162 — pool-path raw SQL escape hatches must
+# Issue #162 — pool-path raw SQL escape hatches must
 # detach the connection on Err / cancellation, mirroring DjogiPool::with_client.
 # Internal because the fixture exercises raw_execute through the bypass
 # attribute to prove the dirty-by-default lifecycle.
@@ -651,7 +651,7 @@ name = "raw_dirty_semantics"
 path = "../tests/internal/raw_dirty_semantics.rs"
 harness = true
 
-# Cluster 2 issue #187 — temporal year-bounds CHECK projection
+# Issue #187 — temporal year-bounds CHECK projection
 # for `time::Date` / `time::OffsetDateTime` columns. Internal because the
 # OOB-rejection assertions construct DATE/TIMESTAMP literals at years
 # outside the `time` crate's default ±9999 range, which the typed Rust
@@ -662,7 +662,7 @@ name = "temporal_year_check"
 path = "../tests/internal/temporal_year_check.rs"
 harness = true
 
-# Cluster 2 — narrow/unsigned integer type-derived CHECK (closes #190, #186).
+# Narrow/unsigned integer type-derived CHECK (closes #190, #186).
 # Round-trips boundary values for i8/u8/u16/u32/u64 through the typed surface and
 # verifies OOB rejection via type-derived CHECK constraints. OOB-rejection assertions
 # use `raw_execute` through the bypass attribute (values unreachable via the typed
@@ -675,7 +675,7 @@ name = "integer_widening"
 path = "../tests/internal/integer_widening.rs"
 harness = true
 
-# Cluster 2 — adopter `#[field(check)]` (#105) and Decimal
+# Adopter `#[field(check)]` (#105) and Decimal
 # structural CHECK projection (#188). Exercises:
 #   - Decimal round-trip across the rust_decimal representable range.
 #   - Raw-NUMERIC OOB rejection for scale > 28 and coefficient > 2^96 - 1.
@@ -691,7 +691,7 @@ name = "check_decimal"
 path = "../tests/internal/check_decimal.rs"
 harness = true
 
-# Cluster 2 — opt-in HeerId / RanjId structural CHECK (#189).
+# Opt-in HeerId / RanjId structural CHECK (#189).
 # Verifies the default-off baseline (no CHECK on a HeerId / RanjId model
 # without opt-in), catalog assertions for the model-wide `#[model(strict_ids)]`
 # opt-in on both HeerId and RanjId PKs, the field-level
@@ -734,10 +734,10 @@ name = "temporal_infinity"
 path = "../tests/internal/temporal_infinity.rs"
 harness = true
 
-# Cluster 3 issue #110 — round-2 dogfood discovery across six
-# typed-surface categories. Each scenario uses `#[djogi_test]` and the
-# typed surface only; gaps surface as compile-fail callsites that are
-# documented inline as `// GAP(...)` markers and routed to GH issues.
+# Issue #110 — dogfood discovery across six typed-surface categories.
+# Each scenario uses `#[djogi_test]` and the typed surface only; gaps
+# surface as compile-fail callsites that are documented inline as
+# `// GAP(...)` markers and routed to GH issues.
 [[test]]
 name = "dogfood"
 path = "../tests/integration/dogfood.rs"
@@ -773,7 +773,7 @@ name = "visage_derived_projection"
 path = "../tests/integration/visage_derived_projection.rs"
 harness = true
 
-# Cluster 4 (#168) — typed isolation-level surface.
+# Issue #168 — typed isolation-level surface.
 # Verifies `atomic_with(IsolationLevel::{ReadCommitted, RepeatableRead,
 # Serializable}, ...)` opens a Postgres transaction at the requested
 # level, mirrors `atomic`'s commit/rollback semantics, rejects nested-
@@ -785,7 +785,7 @@ name = "isolation_level"
 path = "../tests/internal/isolation_level.rs"
 harness = true
 
-# Cluster 4 (#169) — typed deferred-constraints surface.
+# Issue #169 — typed deferred-constraints surface.
 # Verifies `DjogiContext::defer_constraints(DeferScope::All)` and
 # `defer_constraints(DeferScope::Named(&[...]))` against a model
 # carrying a `DEFERRABLE INITIALLY DEFERRED` self-FK, plus the
@@ -797,7 +797,7 @@ name = "defer_constraints"
 path = "../tests/integration/defer_constraints.rs"
 harness = true
 
-# Cluster 3 (#173) — typed concurrent-reads helper.
+# Issue #173 — typed concurrent-reads helper.
 # Verifies `DjogiContext::clone_for_concurrent_reads` allocates an
 # independent pool-backed context that shares the parent's
 # Sassi/Punnu registry + auth state, enabling `tokio::try_join!`
@@ -809,7 +809,7 @@ name = "concurrent_reads"
 path = "../tests/integration/concurrent_reads.rs"
 harness = true
 
-# Cluster 4B (#101) — typed set operations: SQL-shape pins.
+# Issue #101 — typed set operations: SQL-shape pins.
 # Verifies `.union(...)` / `.union_all(...)` / `.intersect(...)` /
 # `.except(...)` emit correct Postgres SQL with parenthesised arms,
 # per-arm modifier preservation, outer ORDER BY / LIMIT / OFFSET
@@ -830,9 +830,9 @@ path = "../tests/internal/lateral_sql_shape.rs"
 harness = true
 required-features = ["testing"]
 
-# Cluster 4 (djogi#220 + djogi#221) — DDL metadata SQL shape pins.
+# DDL metadata SQL shape pins (djogi#220 + djogi#221).
 #
-# Internal test pinning the two DDL gaps closed by Cluster 4:
+# Internal test pinning the two DDL gaps closed by djogi#220 and djogi#221:
 #
 # - djogi#220: `#[field(type_change_using = "<sql expr>")]` USING clause for
 #   non-default-cast column type changes, plus the known-incompatible-pair
@@ -852,7 +852,7 @@ name = "ddl_sql_shape"
 path = "../tests/internal/ddl_sql_shape.rs"
 harness = true
 
-# Cluster 4B (#101) — typed set operations: live Postgres
+# Issue #101 — typed set operations: live Postgres
 # behavior. Pairs with the SQL-shape test by proving each operator
 # (UNION / UNION ALL / INTERSECT / EXCEPT) produces the row sets
 # Postgres semantics promise, outer ORDER BY/LIMIT/OFFSET applies to
@@ -869,7 +869,7 @@ name = "lateral_join_live"
 path = "../tests/integration/lateral_join_live.rs"
 harness = true
 
-# Cluster 4B issue #106 — typed INSERT...SELECT live coverage.
+# Issue #106 — typed INSERT...SELECT live coverage.
 # Pins the row-copy round trip end-to-end against a real database:
 # projection alignment, framework-column defaults, WHERE composition,
 # ORDER BY + LIMIT chunking, the none() short-circuit, and the v0.1
@@ -907,43 +907,40 @@ name = "insert_select_projection_order"
 path = "../tests/internal/insert_select_projection_order.rs"
 harness = true
 
-# Cluster 4A (#85 T27) — Wright F-coefficient correctness
-# fixture for the typed pair-tuple closure self-join surface. Pins five
-# known reference matings (unrelated, parent×child, full siblings, half
-# siblings, first cousins) plus a multi-path-multiplicity case so the
-# pair-tuple terminal + PairClosureKinshipSum aggregate cannot regress
-# the values the demo's retrofitted Step 3 exposes.
+# Issue #85 — Wright F-coefficient correctness fixture for the typed
+# pair-tuple closure self-join surface. Pins five known reference matings
+# (unrelated, parent×child, full siblings, half siblings, first cousins)
+# plus a multi-path-multiplicity case so the pair-tuple terminal +
+# PairClosureKinshipSum aggregate cannot regress the expected values.
 [[test]]
 name = "mating_pairs_correctness"
 path = "../tests/integration/mating_pairs_correctness.rs"
 harness = true
 
-# Cluster 4A follow-up — pair-only annotation rejection on the
-# single-Model + grouped annotate paths. Verifies the
-# `requires_pair_tuple_scope()` signal added in the cluster-A follow-up
-# is consulted by both `QuerySet::annotate(...).fetch_all` and the
-# grouped annotate terminal, producing typed `DjogiError::Validation`
-# instead of a Postgres `42P01 missing FROM-clause` error at execute
-# time. Requires `spatial` for `PairAreaOverlapRatio`.
+# Pair-only annotation rejection on the single-Model + grouped annotate
+# paths. Verifies the `requires_pair_tuple_scope()` signal is consulted
+# by both `QuerySet::annotate(...).fetch_all` and the grouped annotate
+# terminal, producing typed `DjogiError::Validation` instead of a
+# Postgres `42P01 missing FROM-clause` error at execute time.
+# Requires `spatial` for `PairAreaOverlapRatio`.
 [[test]]
 name = "pair_only_annotation_rejection"
 path = "../tests/integration/pair_only_annotation_rejection.rs"
 harness = true
 required-features = ["spatial"]
 
-# Cluster 4A follow-up — live PostGIS validation for
-# `PairAreaOverlapRatio<L, R>`. Closes the loop between the unit-level
-# SQL-shape tests and the end-to-end PostGIS arithmetic by seeding
-# controlled polygon geometries and asserting the decoded `f64` ratios
-# match the documented behaviour: 1.0 on coincident polygons, 0.0 on
-# disjoint, in (0, 1) on partial overlap, 0.0 on NULL geography.
+# Live PostGIS validation for `PairAreaOverlapRatio<L, R>`. Closes the
+# loop between the unit-level SQL-shape tests and the end-to-end PostGIS
+# arithmetic by seeding controlled polygon geometries and asserting the
+# decoded `f64` ratios match the documented behaviour: 1.0 on coincident
+# polygons, 0.0 on disjoint, in (0, 1) on partial overlap, 0.0 on NULL.
 [[test]]
 name = "pair_area_overlap_ratio_live"
 path = "../tests/integration/pair_area_overlap_ratio_live.rs"
 harness = true
 required-features = ["spatial"]
 
-# Cluster F (#92) — row-shape PostGIS aggregate terminals.
+# Issue #92 — row-shape PostGIS aggregate terminals.
 # Exercises `QuerySet::as_mvt`, `AnnotatedQuerySet::as_mvt`, and
 # `QuerySet::as_geobuf` end-to-end against live PostGIS with geography
 # model columns cast to geometry in the row-aggregate inner SELECT.
@@ -953,7 +950,7 @@ path = "../tests/integration/row_aggregate_mvt_live.rs"
 harness = true
 required-features = ["spatial"]
 
-# Cluster 4 (djogi#212) — INTERVAL typed-surface round-trip.
+# djogi#212 — INTERVAL typed-surface round-trip.
 # Pins descriptor projection, wire-format round-trip across mixed,
 # independent (months_only / days_only / microseconds_only), and
 # negative-component values, plus nullable `Option<Interval>` columns,
@@ -982,7 +979,7 @@ name = "range"
 path = "../tests/integration/range.rs"
 harness = true
 
-# Cluster 4 (djogi#213) — typed network surface (INET / CIDR /
+# djogi#213 — typed network surface (INET / CIDR /
 # MACADDR) round-trip. Pins descriptor projection, IPv4/IPv6 wire-format
 # round-trip, nullable composition, construction-time CIDR validation,
 # and runtime filter + bulk-update execution through the typed query
@@ -994,7 +991,7 @@ path = "../tests/integration/network.rs"
 harness = true
 required-features = ["network"]
 
-# Cluster 4 (djogi#216) Piece A — live test for the
+# djogi#216 Piece A — live test for the
 # `#[field(domain = "<name>")]` reference to an adopter-managed Postgres
 # domain. Pins the descriptor projection of `FieldSqlType::Domain { name,
 # base }`, the bare-name Display contract emitted by the migration composer,
@@ -1152,9 +1149,9 @@ required-features = ["trgm"]
 # Issue #83 — macro-path integration coverage for PK
 # no-id-index and field-level index synthesis.
 #
-# Closes the gap identified in the strict-swe BLOCK-1 sweep: the
-# projection-layer unit test constructs `FieldDescriptor` manually and
-# cannot detect drift in `framework_field_descriptor` itself.  These
+# Closes the gap: the projection-layer unit test constructs
+# `FieldDescriptor` manually and cannot detect drift in
+# `framework_field_descriptor` itself.  These
 # two fixtures exercise the full pipeline:
 #
 #   proc-macro → inventory → `project_from_inventory()` → assertion

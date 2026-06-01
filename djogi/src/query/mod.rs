@@ -79,7 +79,7 @@ pub mod q;
 pub mod queryset;
 pub mod recursive;
 pub(crate) mod refresh;
-// Cluster F (#92) — row-shape aggregate terminals
+// Row-shape aggregate terminals (#92)
 // (`as_mvt(...)` / `as_geobuf(...)`). Gated on `feature = "spatial"`
 // because both shipped row aggregates are PostGIS surfaces.
 #[cfg(feature = "spatial")]
@@ -190,7 +190,7 @@ pub use queryset::{
     CachedPortableQuerySet, DistinctMode, IntoDistinctColumns, PortableQuerySet, QuerySet,
 };
 pub use recursive::{RecursiveDirection, RecursiveQuerySet};
-// Cluster F (#92) — row-shape aggregate terminals
+// Row-shape aggregate terminals (#92)
 // (`as_mvt(...)` / `as_geobuf(...)`). The terminals own their typed
 // `Vec<u8>` decode and consume an annotation tuple; the `EmptyAnnotation`
 // sentinel covers the no-annotation case so plain `QuerySet::as_mvt`

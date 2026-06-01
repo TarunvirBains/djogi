@@ -1046,7 +1046,7 @@ mod tests {
         assert!(sql.contains("$2"), "second bind must be $2; got: {sql}");
     }
 
-    // ── Cluster C C1 — T16 + T17 emission tests ─────────────────
+    // ── Spatial expression emission tests ────────────────────────
 
     /// `Area { geom_ewkb }` emits `ST_Area($1::bytea::geography)` — geography
     /// overload yields square meters; the geometry overload yields square

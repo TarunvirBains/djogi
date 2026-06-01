@@ -642,8 +642,7 @@ impl DjogiContext {
     /// let verified = ctx_a.use_punnu(&p_other); // BUG: cross-context
     /// ```
     /// # Spec anchor
-    /// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-    /// §3 commit T7.6 — cross-context guard.
+    /// See `docs/spec/maahi/caching.md` — cross-context guard.
     pub fn use_punnu<T>(&self, p: &Arc<sassi::Punnu<T>>) -> Arc<sassi::Punnu<T>>
     where
         T: crate::types::Cacheable + 'static,
@@ -1004,7 +1003,7 @@ impl DjogiContext {
             }
             ContextInner::Transaction(_) => Err(DjogiError::Db(DbError::other(
                 "DjogiContext::begin called on a transaction-backed context; \
-                 nested transactions require atomic() (Phase 4 Task 1)",
+                 nested transactions require atomic()",
             ))),
         }
     }

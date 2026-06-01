@@ -60,12 +60,11 @@
 //! re-shuffle, so failure messages are reproducible across machines.
 //! Symlinks are not followed (the scanner uses `file_type` which
 //! returns `false` for `is_dir` on symlinks).
-//! # Spec / memory anchors
+//! # Spec anchors
 //! - v3 plan §452 (snapshot signing surface)
 //! - v3 plan §459–460 (audit cross-check contract)
 //! - v3 plan §470 (read-only verify)
 //! - v3 plan §824 (graceful absence of audit table)
-//! - Plan.6 (`docs/superpowers/plans/granular-phase8/cluster-8epsilon-granular.md`)
 
 use std::path::PathBuf;
 use std::process::ExitCode;

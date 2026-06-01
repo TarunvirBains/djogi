@@ -2295,7 +2295,7 @@ fn project_index(idx: &IndexSpec, table: &str) -> IndexSchema {
         ) || matches!(idx.index_type, IndexType::BTree),
         "project_index: PostgreSQL unique indexes are btree-only; \
          IndexSpec {name:?} on table {table:?} carries kind {kind:?} \
-         with non-btree index_type {ty:?} (Phase 8.5 #83).",
+         with non-btree index_type {ty:?} (djogi#83).",
         name = idx.name,
         table = table,
         kind = idx.kind,

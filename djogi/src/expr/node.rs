@@ -554,7 +554,7 @@ pub(crate) enum ExprNode {
     #[cfg(feature = "spatial")]
     Spatial(crate::expr::spatial::SpatialExpr),
 
-    // ── Row-shape aggregate (Cluster F #92) ───────────────────────
+    // ── Row-shape aggregate (#92) ─────────────────────────────────
     /// Row-shape aggregate function — folds a **set of rows** into a single
     /// scalar value (binary `bytea` for v0.1.0 — `ST_AsMVT` / `ST_AsGeobuf`).
     /// # Why a sibling variant, not an extension of [`Self::Aggregate`]

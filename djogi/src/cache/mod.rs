@@ -1,8 +1,6 @@
 //! Re-exports sassi cache primitives so adopters can `use djogi::cache::*;`
 //! without an explicit sassi dep in their Cargo.toml.
-//! Spec: `docs/spec/maahi/caching.md` ("Why sassi") + plan
-//! (`docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-//! commit T7.1).
+//! Spec: `docs/spec/maahi/caching.md` ("Why sassi").
 //! # Why this module exists
 //! Wires sassi's typed in-memory pool (`Punnu<T>`) into djogi
 //! as the canonical L1 cache. Adopter code that constructs a `Punnu`,

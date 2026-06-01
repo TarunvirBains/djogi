@@ -1165,7 +1165,7 @@ pub(crate) fn emit_expr(
             acc.push_sql(")");
         }
 
-        // ── Row-shape aggregate (Cluster F #92) ──────────────────
+        // ── Row-shape aggregate (#92) ────────────────────────────
         // `ST_AsMVT(<row_alias>, $1, $2, $3, $4)` / `ST_AsGeobuf(<row_alias>, $1)`.
         // The row-alias reference is the special `__djogi_row` identifier
         // that the terminal builders splice into the surrounding FROM
@@ -1819,7 +1819,7 @@ mod tests {
         assert_eq!(sql.trim(), "(a + b) + c", "got: {sql}");
     }
 
-    // ── T20: Expr::current_year — Cluster C C2 ──────────────────────────────
+    // ── Expr::current_year ───────────────────────────────────────────────────
 
     /// `Expr::current_year` emits the bare
     /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` token stream with no

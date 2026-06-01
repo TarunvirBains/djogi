@@ -233,7 +233,7 @@ fn parse_computed_args(
                 return Err(syn::Error::new_spanned(
                     other,
                     "unsupported key in `#[computed(...)]`; only `sql = \"...\"` \
-                     is accepted in v0.1.0 (`stored` is deferred to Phase 8.5; \
+                     is accepted (`stored` is not yet supported; \
                      `expose` was reshaped to the struct-level `#[derived(...)]` \
                      attribute per issue #225 / #231 — see \
                      docs/spec/visage-derived-fields.md)",

@@ -308,10 +308,10 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         // HeerIdDesc — descending-order variant; `IntoFilterValue`
         // exists at `djogi/src/query/field.rs:461`. Real `type_name`
         // is `heeranjid::heer_desc::HeerIdDesc`.
-        // (Cluster F finding 1) caught this gap — JSONB comparisons
-        // against a `HeerIdDesc`-typed value were silently falling
-        // back to text. The `HeerIdRecencyBiased` re-export alias
-        // resolves to the same type; one arm covers both.
+        // Issue #92 caught this gap — JSONB comparisons against a
+        // `HeerIdDesc`-typed value were silently falling back to
+        // text. The `HeerIdRecencyBiased` re-export alias resolves
+        // to the same type; one arm covers both.
         "heeranjid::heer_desc::HeerIdDesc"
         | "djogi::types::HeerIdDesc"
         | "heeranjid::HeerIdDesc" => Some(JsonbSqlCast::Int8),

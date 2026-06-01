@@ -1,8 +1,7 @@
 //! `#[model(indexes(...))]` grammar
-//! Parses the model-level index declaration grammar documented in
-//! `docs/superpowers/plans/2026-04-22-phase7-zero-indexing-v3.md` §5 and
-//! lowers it to `IndexSpec` token-stream literals that land in the
-//! `#[model]`-emitted descriptor.
+//! Parses the model-level index declaration grammar (see
+//! `docs/spec/indexing.md`) and lowers it to `IndexSpec` token-stream
+//! literals that land in the `#[model]`-emitted descriptor.
 //! # Parser implementation — hand-rolled, not darling
 //! Plan D4 originally described this parser as a `darling::FromMeta` path
 //! (matching the `ModelAttrs` pattern). Three §5 constructs sit

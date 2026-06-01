@@ -15,10 +15,10 @@
 //! allocated — exactly the invalidation semantics RQ-2 requires.
 //! `Object` implements `Deref<Target = ClientWrapper>`, so calling
 //! `self.obj.prepare_cached(sql)` goes through `ClientWrapper::prepare_cached`.
-//! # TODO(phase 5-one): bound cache size + LRU eviction
-//! The `StatementCache` is currently unbounded. -One should cap it and
-//! apply LRU eviction to prevent memory growth on schemas with very many
-//! distinct query shapes.
+//! # TODO: bound cache size + LRU eviction
+//! The `StatementCache` is currently unbounded. A future change should
+//! cap it and apply LRU eviction to prevent memory growth on schemas
+//! with very many distinct query shapes.
 //! # Transaction handling
 //! A `PgConnection` with an active transaction is represented by a
 //! `ContextInner::Transaction(PgConnection)` in `DjogiContext`. The `BEGIN` /

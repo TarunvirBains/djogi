@@ -150,7 +150,7 @@ fn validate_field_scope_membership(
         }
 
         if let Some(spec) = attrs.protected.as_ref() {
-            // GH #227 Cluster A F2 — `per_scope` codecs are scalar-only.
+            // GH #227 — `per_scope` codecs are scalar-only.
             // Relation fields already project through `expose(scope ->
             // Peer)` and the visage emitter never routes embedded peers
             // through presentation codecs. Reject the entire `per_scope`
@@ -198,7 +198,7 @@ fn validate_field_scope_membership(
                     ));
                 }
 
-                // GH #227 Cluster A F1 — every `per_scope` entry must
+                // GH #227 — every `per_scope` entry must
                 // target a scope the field itself exposes. Without this
                 // cross-check, a codec declaration for a non-exposed
                 // scope compiles but is dead: the visage emitter never
@@ -276,7 +276,7 @@ fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
 }
 
 /// Emit a const-safe codec identity string for inventory submission.
-/// GH #227 Cluster A NC5: the old segment-join strategy lost fidelity
+/// GH #227: the old segment-join strategy lost fidelity
 /// for single-segment imported paths (`MaskString`). The ideal fix is
 /// `type_name::<CodecTy>`, but this toolchain does not yet permit it
 /// in the `inventory::submit!` static initializer. Use the next-best
@@ -1010,11 +1010,11 @@ fn emit_assert_derived_parity(
          and storage columns are NEVER compared — only fields populated \
          from `#[derived(...)]` declarations whose `scopes = [...]` list \
          includes this visage's scope.\n\n\
-         Phase 8.5 issue #231 — see \
-         `docs/spec/visage-derived-fields.md` for the parity-helper \
-         design rationale (the per-visage emission is the macro's \
-         answer to round-trip-lossy timestamp false positives + the \
-         absence of an auto-derived `PartialEq` on visages)."
+         See `docs/spec/visage-derived-fields.md` (#231) for the \
+         parity-helper design rationale (the per-visage emission is \
+         the macro's answer to round-trip-lossy timestamp false \
+         positives + the absence of an auto-derived `PartialEq` on \
+         visages)."
     );
 
     // The seal-only supertrait impl carries no body; the constraint

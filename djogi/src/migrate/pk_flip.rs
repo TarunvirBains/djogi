@@ -3642,7 +3642,7 @@ mod tests {
         );
         assert!(
             !n.contains("BEGIN;"),
-            "partitioned cutover body must not carry BEGIN (B-9); got: {n}"
+            "partitioned cutover body must not carry BEGIN; got: {n}"
         );
         // Verify segment carries the PkFlipVerify label so the runner
         // intercepts via the count-assert short-circuit.

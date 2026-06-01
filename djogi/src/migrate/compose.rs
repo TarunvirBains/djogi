@@ -3677,7 +3677,7 @@ mod tests {
             let drop_text = format!("DROP TABLE \"{name}\"");
             assert!(
                 !up.contains(&drop_text),
-                "rename must not emit {drop_text} (B-9): {up}"
+                "rename must not emit {drop_text}: {up}"
             );
         }
         // The RenameApp ledger UPDATE is still there.

@@ -27,14 +27,6 @@
 //! middle-of-the-road values; OLTP-heavy tables typically tighten the
 //! vacuum threshold, while warehouse-style tables loosen the partition
 //! row count. Adopters override on the command line without recompiling.
-//! # Spec
-//! `docs/superpowers/plans/granular-phase8/cluster-8epsilon-granular.md`
-//! .1.
-
-// T10.2 wires the substrate to the live-DB query path + CLI
-// dispatch. Every type and helper introduced in T10.1 is now
-// referenced from `fetch_table_health` / `run` / the renderers; the
-// file-scoped `#![allow(dead_code)]` from T10.1 is therefore gone.
 
 use std::io::Write;
 

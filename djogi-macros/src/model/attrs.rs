@@ -3066,7 +3066,7 @@ impl FieldAttrs {
                 "`#[field(type_change_using = \"...\")]` is not allowed on a \
                  relation field (`ForeignKey<T>` / `OneToOneField<T>`, optionally \
                  wrapped in `Option<...>`). FK type changes flow through the \
-                 Phase 7 PK-flip orchestration on the parent model — the child \
+                 PK-flip orchestration on the parent model — the child \
                  column's storage type follows the parent's PK, and an adopter \
                  USING on the child cannot drive the typed flip apparatus. Drop \
                  the attribute; if the parent's PK shape is changing, the \

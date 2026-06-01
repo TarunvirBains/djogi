@@ -6262,7 +6262,7 @@ mod distance_tests {
     use crate::pg::accumulator::SqlAccumulator;
     use std::future::Future;
 
-    // Minimal closed Polygon — used by the Cluster C T17 typed-surface tests
+    // Minimal closed Polygon — used by the spatial typed-surface tests
     // below. Mirrors the helper in `bbox_tests`; duplicated locally because
     // each `#[cfg(test)] mod` is its own item scope.
     fn make_polygon() -> Polygon {
@@ -6737,7 +6737,7 @@ mod distance_tests {
         // The SQL must NOT begin with `((` — that would be incorrect.
         assert!(
             !sql.starts_with("(("),
-            "must not start with `((` (round-5 BLOCK-1 anti-regression); got: {sql}"
+            "must not start with `((` (anti-regression); got: {sql}"
         );
     }
 
