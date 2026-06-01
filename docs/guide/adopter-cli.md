@@ -49,7 +49,10 @@ pub fn link_models() {
     // Reference at least one model type per crate to force linkage.
     // The exact symbol referenced does not matter — it only needs to prevent
     // the linker from dropping the crate's inventory statics.
-    let _ = <YourModel as djogi::model::Model>::descriptor;
+    // Call descriptor() (note the parentheses): a bare `::descriptor` fn-item
+    // reference can be optimized away, whereas the call forces the symbol —
+    // the same primitive djogi_main! and sync_models use.
+    let _ = <YourModel as djogi::model::Model>::descriptor();
 }
 ```
 
@@ -63,7 +66,7 @@ djogi_cli::djogi_main!(adopter_models::Elephant, billing::Invoice);
 ```
 
 The `djogi_main!` macro expands to a `main` function that:
-1. References each listed type's `<T as Model>::descriptor` symbol (forcing link-time registration of that type's crate)
+1. References each listed type's `<T as Model>::descriptor()` (calling it forces link-time registration of that type's crate)
 2. Calls `djogi_cli::run_from_env()`
 
 > **You must list at least one model type from every crate that defines `#[model]` structs.** The macro cannot discover your workspace's crate graph — exhaustiveness is your responsibility. If you have models in three crates, list at least one type from each. An empty `djogi_main!()` (no types) is a compile error.
@@ -73,8 +76,10 @@ The `djogi_main!` macro expands to a `main` function that:
 If maintaining the model type list is burdensome, place a `link_anchor!` in each model crate's `lib.rs`. It takes no arguments — it is a per-crate marker that emits one `__djogi_link_anchor()` symbol per crate:
 
 ```rust
-// In each model crate's lib.rs, once:
-djogi_cli::link_anchor!();
+// In each model crate's lib.rs, once.
+// A model crate depends on `djogi` (not `djogi-cli`), and `link_anchor!`
+// is re-exported from `djogi`, so reach it through the `djogi` path here.
+djogi::link_anchor!();
 ```
 
 Then write a hand-written `fn main()` that references each model crate's anchor once and calls `djogi_cli::run_from_env()`:

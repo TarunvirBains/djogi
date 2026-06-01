@@ -2394,7 +2394,10 @@ async fn baseline_inner(
     // Bucket-scoped (Codex round-2 B-11): the projection only includes
     // tables that match this bucket's app boundary, so an app's
     // baseline does not capture another app's tables.
-    let projected = super::verify::live_schema_for_repair(ctx, bucket)
+    // `None` snapshot fallback (#370): baseline projects the live DB to
+    // establish the snapshot, so it has no on-disk snapshot to scope from —
+    // inventory-driven scoping only, behavior unchanged.
+    let projected = super::verify::live_schema_for_repair(ctx, bucket, None)
         .await
         .map_err(|e| RunnerError::BaselineProjectionFailed {
             source: Box::new(e),

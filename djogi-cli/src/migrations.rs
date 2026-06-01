@@ -1446,6 +1446,23 @@ pub fn verify_cmd(
 async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict: bool) -> i32 {
     use djogi::config::DjogiConfig;
 
+    // 0. Zero-descriptor refusal (§5.6 / REQ-370-8). `verify` refuses with
+    //    the dual-cause diagnostic + exit 2 ONLY when there are NEITHER
+    //    descriptors NOR on-disk snapshots — the genuinely unusable state
+    //    (a standalone binary with nothing to verify against). When
+    //    snapshots exist, verify DEGRADES to snapshot-only (the union below
+    //    enumerates the disk buckets), so we must not refuse here.
+    //
+    //    Guard on `provider.models().is_empty()` rather than the projected
+    //    `bucket_set`: projection always seeds the synthetic global bucket
+    //    (`(main, "")`), so the bucket set is never empty and is the wrong
+    //    signal for "no descriptors". This is the same guard the
+    //    compose/schema/docs gates in `lib.rs` use.
+    if provider.models().is_empty() && discover_snapshot_buckets_on_disk(workspace).is_empty() {
+        crate::print_zero_descriptor_diagnostic("migrations verify");
+        return 2;
+    }
+
     // 1. Load config from workspace.
     let config = match DjogiConfig::load_from_workspace(workspace) {
         Ok(c) => c,
@@ -1474,9 +1491,15 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
     for bucket in discover_snapshot_buckets_on_disk(workspace) {
         bucket_set.insert(bucket);
     }
+    // The zero-descriptor refusal (step 0) already returned for the only
+    // state that yields an empty bucket set (no descriptors + no snapshots).
+    // Projection always seeds the synthetic global bucket, so reaching here
+    // with an empty set is impossible; if a future projection change ever
+    // breaks that invariant, fail closed with the dual-cause refusal rather
+    // than silently reporting success on a binary that verified nothing.
     if bucket_set.is_empty() {
-        println!("No registered apps found for verification.");
-        return 0;
+        crate::print_zero_descriptor_diagnostic("migrations verify");
+        return 2;
     }
 
     // 4. Policy configuration for the --strict flag.

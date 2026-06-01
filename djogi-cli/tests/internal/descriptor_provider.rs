@@ -113,3 +113,56 @@ fn schema_with_empty_provider_returns_failure_and_consults_provider() {
         provider.models_call_count()
     );
 }
+
+/// Create a fresh, empty temp directory (no `migrations/` tree) and return
+/// its path. Used to exercise the `verify` zero+zero refusal in-process:
+/// the gate runs before any config load or DB connection, so an empty
+/// workspace with an empty provider is enough to drive the refusal without
+/// Postgres.
+fn fresh_empty_workspace(stub: &str) -> std::path::PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("djogi-370-{stub}-{stamp}"));
+    std::fs::create_dir_all(&dir).expect("create temp workspace");
+    dir
+}
+
+/// `migrations verify` refuses with exit 2 when there are NEITHER
+/// descriptors NOR on-disk snapshots (§5.6 / REQ-370-8).
+///
+/// This is the dual-cause refusal that mirrors the compose/schema/docs
+/// gates: a standalone binary with an empty inventory and no snapshot tree
+/// has nothing to verify against, so it refuses rather than reporting
+/// vacuous success. The gate runs before config load, so an empty provider
+/// against an empty workspace drives it without a database. The observable
+/// counter proves the dispatch consulted the provider.
+#[test]
+fn verify_with_empty_provider_and_no_snapshots_refuses_exit_2() {
+    let provider = ObservableProvider::new();
+    let workspace = fresh_empty_workspace("verify-zero-zero");
+    let result = djogi_cli::run_with_provider(
+        [
+            "djogi",
+            "migrations",
+            "verify",
+            "--workspace",
+            workspace.to_str().expect("utf8 temp path"),
+        ],
+        &provider,
+    );
+
+    assert_eq!(
+        result,
+        ExitCode::from(2),
+        "verify with no descriptors AND no snapshots must refuse (exit 2)"
+    );
+    assert!(
+        provider.models_call_count() > 0,
+        "verify dispatch must consult provider.models(); got {} calls",
+        provider.models_call_count()
+    );
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}

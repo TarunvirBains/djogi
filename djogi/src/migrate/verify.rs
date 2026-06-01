@@ -558,7 +558,18 @@ pub async fn verify_bucket(
 
     // Bucket-scoped live projection — the only structural difference from
     // `verify_with_policy`, which projects the whole `public` catalog.
-    let live = live_schema_for_repair(ctx, bucket).await?;
+    //
+    // Standalone/unlinked named-bucket fallback (#370): pass the on-disk
+    // snapshot's own table names so that a NAMED bucket verified from the
+    // published standalone `djogi` (empty descriptor inventory) scopes the
+    // live tables from the snapshot instead of the empty inventory set —
+    // otherwise a valid snapshot would report every table as missing. The
+    // fallback is consulted only when this process's whole model inventory
+    // is empty (see `live_schema_for_repair`), so the linked-binary path is
+    // unchanged.
+    let snapshot_table_names: std::collections::BTreeSet<String> =
+        snapshot.models.keys().cloned().collect();
+    let live = live_schema_for_repair(ctx, bucket, Some(&snapshot_table_names)).await?;
 
     // Diff tables and indexes against the scoped live schema.
     diff_tables(snapshot, &live, &mut diagnostics);
@@ -1948,9 +1959,31 @@ fn render_type_for_compare(s: &str) -> String {
 /// the migration substrate already uses (see
 /// [`super::projection::project_from_inventory`]); reusing it keeps
 /// the two projection paths in lockstep.
+///
+/// **Standalone / unlinked named-bucket scoping (#370).** The
+/// published standalone `djogi` binary links no adopter model crates,
+/// so the `ModelDescriptor` inventory is empty. For a NAMED bucket
+/// that leaves `this_bucket_tables` empty, which would filter the live
+/// schema to nothing and make a valid on-disk snapshot report every
+/// table as missing (false drift). When (a) the bucket is named, (b)
+/// no descriptor in this process claims it, and (c) the entire
+/// `ModelDescriptor` inventory is empty (the standalone signal — NOT
+/// merely a linked binary whose app was removed, which must still
+/// surface real drift), the live schema is instead scoped to the
+/// `fallback_table_names` the caller threads in (verify passes the
+/// on-disk snapshot's own table names). A correct snapshot then
+/// validates cleanly against a live DB that has its tables. The GLOBAL
+/// bucket is unaffected: with an empty inventory `all_app_tables` is
+/// empty, so it already retains every live table.
+///
+/// **`fallback_table_names` is verify-only.** The repair and baseline
+/// callers pass `None` — they project the live DB to BUILD a snapshot
+/// and have no on-disk snapshot to scope from — so their behavior is
+/// byte-for-byte unchanged by this parameter.
 pub(super) async fn live_schema_for_repair(
     ctx: &mut DjogiContext,
     bucket: &BucketKey,
+    fallback_table_names: Option<&std::collections::BTreeSet<String>>,
 ) -> Result<AppliedSchema, VerifyRunError> {
     let mut full = project_live_schema(ctx).await?;
 
@@ -1962,12 +1995,17 @@ pub(super) async fn live_schema_for_repair(
     //     non-global app label.
     // Both sets compare on Postgres table name (`ModelDescriptor::
     // table_name`) so the live projection's BTreeMap key lines up.
+    // `inventory_is_empty` is the standalone/unlinked signal (#370):
+    // an empty descriptor inventory means no model crate is linked, so
+    // a named bucket cannot be scoped from inventory at all.
     use crate::AppDescriptor;
     use crate::descriptor::ModelDescriptor;
     let mut this_bucket_tables: std::collections::BTreeSet<&str> =
         std::collections::BTreeSet::new();
     let mut all_app_tables: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut inventory_is_empty = true;
     for m in inventory::iter::<ModelDescriptor> {
+        inventory_is_empty = false;
         let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
         if label == bucket.app.as_str() {
             this_bucket_tables.insert(m.table_name);
@@ -1978,8 +2016,30 @@ pub(super) async fn live_schema_for_repair(
     }
 
     let is_global_bucket = bucket.app.as_str() == AppDescriptor::GLOBAL_LABEL;
+
+    // Standalone named-bucket fallback (#370): a named bucket whose app
+    // is unclaimed by any descriptor, in a process with an empty model
+    // inventory, scopes the live tables from the caller-supplied
+    // snapshot table-name set instead of the (empty) inventory set.
+    // Gating on `inventory_is_empty` keeps the linked-binary
+    // orphan-snapshot path unchanged: there, the inventory is non-empty,
+    // so a removed app's bucket still filters to nothing and D601 drift
+    // is reported as before.
+    let snapshot_fallback: Option<&std::collections::BTreeSet<String>> = match (
+        is_global_bucket,
+        this_bucket_tables.is_empty(),
+        inventory_is_empty,
+    ) {
+        (false, true, true) => fallback_table_names,
+        _ => None,
+    };
+
     full.models.retain(|table_name, _| {
-        if is_global_bucket {
+        if let Some(fallback) = snapshot_fallback {
+            // Standalone named bucket: keep tables named by the on-disk
+            // snapshot so a correct snapshot validates cleanly.
+            fallback.contains(table_name.as_str())
+        } else if is_global_bucket {
             // Global bucket: include the table unless an inventory
             // descriptor explicitly assigns it to a different app.
             !all_app_tables.contains(table_name.as_str())

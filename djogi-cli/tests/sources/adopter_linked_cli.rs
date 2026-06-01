@@ -513,22 +513,131 @@ fn t_parity_schema_and_compose_see_same_models() {
 
 // ── T-VERIFY-DEGRADE: zero-descriptor verify degrades to snapshot-only ───────
 
-#[djogi::djogi_test]
+/// The model whose live table the degrade test seeds via the typed
+/// surface. Identical shape to the `billing` fixture crate's `Invoice`
+/// (`tests/fixtures/adopter_app/billing/src/lib.rs`): the synthetic global
+/// bucket (no `#[model(app = …)]`), table `invoices`, one `reference`
+/// field. Declaring it here lets the test process `sync_models` it into the
+/// per-test DB AND project it into the on-disk `billing` snapshot, so the
+/// snapshot-vs-live comparison is a TRUE structural match by construction —
+/// not a hand-built 2-column snapshot that would diverge from a real
+/// model's framework-injected columns.
+///
+/// Wrapped in its own module so the `use djogi::prelude::*` that brings the
+/// `#[derive(Model)]` macro + its `#[model]` helper attribute into scope
+/// does not leak into the rest of this large test file.
+mod degrade_model {
+    use djogi::prelude::*;
+
+    #[derive(Model)]
+    #[model(table = "invoices")]
+    pub struct DegradeInvoice {
+        pub reference: String,
+    }
+}
+use degrade_model::DegradeInvoice;
+
+/// Write a committed `billing`-bucket snapshot whose `invoices` table is
+/// PROJECTED FROM [`DegradeInvoice`] — the same model the test syncs into
+/// the live DB — so the snapshot carries the identical column set
+/// (`id`/`created_at`/`updated_at`/`reference`) Postgres will actually have.
+/// A correct snapshot therefore validates cleanly against the seeded live
+/// table with no spurious missing-table / missing-column drift.
+///
+/// `DegradeInvoice` projects into the synthetic global bucket `(main, "")`;
+/// since Postgres has no per-app schema (every app's tables live in
+/// `public`), the table is re-keyed under the `billing` bucket here and the
+/// table's `app` tag set to `billing`. The verify differ compares table /
+/// column / PK / index shape — never the bucket label — so this re-tag is
+/// transparent to the comparison while exercising the NAMED-bucket
+/// standalone path (the global bucket is unaffected by the #370 bug).
+fn write_billing_snapshot_projected_from_model(work: &Path) {
+    use djogi::migrate::{
+        AppliedSchema, BucketKey, DescriptorProvider, project_from_provider, save_snapshot,
+        snapshot_path,
+    };
+
+    // Focused provider: only DegradeInvoice for models(); inventory for the
+    // rest so apps()/enums()/deferrability resolve normally.
+    struct OnlyDegradeInvoice;
+    impl DescriptorProvider for OnlyDegradeInvoice {
+        fn models(&self) -> Vec<&'static djogi::descriptor::ModelDescriptor> {
+            vec![<DegradeInvoice as djogi::model::Model>::descriptor()]
+        }
+        fn enums(&self) -> Vec<&'static djogi::descriptor::EnumDescriptor> {
+            djogi::migrate::InventoryDescriptorProvider::new().enums()
+        }
+        fn apps(&self) -> &'static [djogi::AppDescriptor] {
+            djogi::migrate::InventoryDescriptorProvider::new().apps()
+        }
+        fn deferrability_specs(&self) -> Vec<&'static djogi::descriptor::DeferrabilitySpec> {
+            djogi::migrate::InventoryDescriptorProvider::new().deferrability_specs()
+        }
+    }
+
+    let projected = project_from_provider(&OnlyDegradeInvoice).expect("project DegradeInvoice");
+    let global = BucketKey {
+        database: "main".to_string(),
+        app: String::new(),
+    };
+    let global_schema = projected
+        .get(&global)
+        .expect("DegradeInvoice projects into the global bucket");
+    let mut invoices = global_schema
+        .models
+        .get("invoices")
+        .expect("global bucket carries the invoices table")
+        .clone();
+    // Re-tag the table to the billing app so the snapshot's bucket and the
+    // table's `app` agree; the differ ignores `app`, so this only documents
+    // intent.
+    invoices.app = Some("billing".to_string());
+
+    let mut models = std::collections::BTreeMap::new();
+    models.insert("invoices".to_string(), invoices);
+
+    let billing_bucket = BucketKey {
+        database: "main".to_string(),
+        app: "billing".to_string(),
+    };
+    let snapshot = AppliedSchema {
+        registered_apps: vec!["billing".to_string()],
+        models,
+        ..global_schema.clone()
+    };
+    let path = snapshot_path(work, &billing_bucket);
+    save_snapshot(&snapshot, &path).expect("write billing schema_snapshot.json");
+}
+
+#[djogi::djogi_test(sync_models = [DegradeInvoice])]
 async fn t_verify_degrade_snapshot_only_against_valid_db(mut ctx: djogi::DjogiContext) {
     // The standalone published `djogi` links zero models. With an on-disk
-    // snapshot present and a reachable DB, verify must (a) NOT emit the
-    // §5.6 dual-cause refusal, and (b) enumerate the bucket FROM the
-    // snapshot and produce concrete per-bucket degrade output — NOT merely
-    // "any non-2 exit" (which would also pass on a config error or a
-    // DB-down failure, making the test hollow).
+    // NAMED-bucket snapshot present and a reachable DB that ACTUALLY HAS the
+    // snapshot's table, verify must:
+    //   (a) NOT emit the §5.6 dual-cause refusal (snapshots exist ⇒ degrade);
+    //   (b) enumerate the `billing` bucket FROM the snapshot;
+    //   (c) report the bucket VERIFIED CLEANLY — NO spurious missing-table
+    //       (D601) / missing-column (D603) drift. Before the #370 fix,
+    //       `live_schema_for_repair` scoped the NAMED bucket from the (empty)
+    //       standalone inventory, filtering the live schema to nothing and
+    //       reporting `invoices` as missing — FALSE drift. This assertion is
+    //       the regression guard: a weak "contains drift OR verified" check
+    //       would pass on that false drift, so we assert NO error/drift.
+    //
+    // `sync_models = [DegradeInvoice]` seeds the live `invoices` table via
+    // the typed surface; the on-disk snapshot is projected from the SAME
+    // model, so snapshot == live structurally.
+    let _ = &mut ctx; // sync_models already ran via the macro; ctx kept for the URL splice below.
+
     let bin = djogi_binary_path();
     let work = temp_workspace("370-verify-degrade");
 
     // Per-test DB URL: splice the provisioned DB NAME into the harness
-    // DATABASE_URL (current_database returns a bare name, not a URL).
+    // DATABASE_URL (current_database returns a bare name, not a URL). This
+    // is the SAME per-test DB the macro seeded `invoices` into.
     let db_url = splice_database_name(&database_url(), &current_database(&mut ctx).await);
     write_minimal_djogi_toml(&work, &db_url);
-    write_billing_snapshot_with_table(&work);
+    write_billing_snapshot_projected_from_model(&work);
 
     let out = Command::new(&bin)
         .args(["migrations", "verify"])
@@ -549,12 +658,33 @@ async fn t_verify_degrade_snapshot_only_against_valid_db(mut ctx: djogi::DjogiCo
         !stderr.contains("no djogi models are registered"),
         "verify must NOT emit the zero-descriptor diagnostic when snapshots exist: {stderr}"
     );
-    // (b)+(c) concrete degrade output: verify enumerated the billing bucket
-    //   from disk and rendered its per-bucket report.
+
+    // (b) verify enumerated the billing bucket from disk: its per-bucket
+    //     header is rendered.
     assert!(
-        stdout.contains("billing") || stdout.contains("drift") || stdout.contains("verified"),
-        "verify must emit concrete per-bucket degrade output for the on-disk snapshot: \
-         stdout={stdout} stderr={stderr}"
+        stdout.contains("billing"),
+        "verify must enumerate the on-disk billing bucket: stdout={stdout} stderr={stderr}"
+    );
+
+    // (c) THE REGRESSION GUARD: the seeded live DB has the snapshot's table,
+    //     so a correct standalone verify reports NO drift. Assert clean exit
+    //     and the absence of the table/column-missing diagnostics that the
+    //     pre-fix false-drift bug produced.
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "snapshot-only verify against a DB that HAS the table must exit 0 (clean), \
+         not report false drift: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("D601") && !stdout.contains("D603"),
+        "no spurious missing-table (D601) / missing-column (D603) drift expected when the \
+         live DB actually has the snapshot's table: stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("missing from the live database"),
+        "the snapshot's `invoices` table exists in the live DB — verify must not report it \
+         missing (the #370 false-drift bug): stdout={stdout}"
     );
 }
 

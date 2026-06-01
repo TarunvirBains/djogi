@@ -1376,7 +1376,10 @@ async fn repair_snapshot_rebuild_pinned(
     // Bucket-scoped (Codex round-2 B-11): the projection only
     // captures tables that belong to this bucket's app, so an app's
     // rebuild does not pick up another app's tables.
-    let projected = super::verify::live_schema_for_repair(ctx, bucket)
+    // `None` snapshot fallback (#370): repair projects the live DB to
+    // rebuild the snapshot, so it has no on-disk snapshot to scope from —
+    // inventory-driven scoping only, behavior unchanged.
+    let projected = super::verify::live_schema_for_repair(ctx, bucket, None)
         .await
         .map_err(|e| RepairError::LedgerIo {
             // Re-using LedgerIo's source channel would conflate two
