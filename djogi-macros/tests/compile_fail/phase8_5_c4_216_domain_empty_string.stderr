@@ -1,7 +1,0 @@
-error: domain name must be a valid unquoted Postgres identifier: ASCII letter or underscore as first character, ASCII alphanumerics or underscores only after, at most 63 bytes
-  --> $DIR/phase8_5_c4_216_domain_empty_string.rs:15:22
-   |
-15 |     #[field(domain = "")]
-   |                      ^^
-
-error: aborting due to 1 previous error

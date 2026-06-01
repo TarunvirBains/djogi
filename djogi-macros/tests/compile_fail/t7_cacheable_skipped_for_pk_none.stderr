@@ -1,0 +1,16 @@
+error[E0599]: no associated function or constant named `cache_type_name` found for struct `Custom` in the current scope
+  --> $DIR/t7_cacheable_skipped_for_pk_none.rs:41:21
+   |
+29 | pub struct Custom {
+   | ----------------- associated function or constant `cache_type_name` not found for this struct
+...
+41 |     let _ = Custom::cache_type_name;
+   |                     ^^^^^^^^^^^^^^^ associated function or constant not found in `Custom`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `cache_type_name`, perhaps you need to implement it:
+           candidate $TYPEID: `Cacheable`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

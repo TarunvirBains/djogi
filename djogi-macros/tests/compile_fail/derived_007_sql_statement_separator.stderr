@@ -1,0 +1,7 @@
+error: derived `sql` contains a `;` statement separator outside string-literal context — derived expressions must be a single per-row scalar (E_DJG_VDF_007)
+  --> $DIR/derived_007_sql_statement_separator.rs:22:14
+   |
+22 |     sql    = "inbound_site; SELECT 1",
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

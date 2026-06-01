@@ -1,0 +1,7 @@
+error: `sensitivity = "none"` cannot be combined with other protected-field metadata (rationale / redaction / codec / retention / per_scope). Either drop the `protected(...)` attribute entirely or set `sensitivity` higher.
+  --> $DIR/protected_explicit_neutral_knob_with_sensitivity_none.rs:20:57
+   |
+20 |     #[field(protected(sensitivity = "none", redaction = "none"))]
+   |                                                         ^^^^^^
+
+error: aborting due to 1 previous error

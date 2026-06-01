@@ -724,9 +724,9 @@ structurally-malformed IDs (negative BIGINT for HeerId; UUIDv4 / UUIDv7
 for FK targets live in
 `tests/internal/phase8_5_c2_189_strict_id_check.rs`. Macro-time type
 validation is exercised by
-`djogi-macros/tests/compile_fail/phase8_5_c2_189_strict_id_check_wrong_type.rs`
+`djogi-macros/tests/compile_fail/c2_189_strict_id_check_wrong_type.rs`
 and
-`djogi-macros/tests/compile_pass/phase8_5_c2_189_strict_id_check.rs`.
+`djogi-macros/tests/compile_pass/c2_189_strict_id_check.rs`.
 
 ### 10.7 Ledger and Locking
 
@@ -1139,7 +1139,7 @@ attribute — the projection assigns
 `id` column on `pk = Serial` models, and that field is not
 user-modifiable, so the combination cannot arise at macro parse time.
 
-See `djogi-macros/tests/compile_fail/phase8_5_c4_220_type_change_using_*`
+See `djogi-macros/tests/compile_fail/c4_220_type_change_using_*`
 for the pinned diagnostic shapes.
 
 #### 10.10b.2 Generated column expression changes (djogi#221)

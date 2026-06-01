@@ -62,7 +62,7 @@ pub struct FuelType {
 // `Vehicle` carries one non-null and one nullable FK. `no_default` is
 // required because `ForeignKey<T>` intentionally does not implement
 // `Default` — a relation with no PK value is meaningless (see the
-// compile-pass fixture in `djogi-macros/tests/compile_pass/phase3_relations.rs`
+// compile-pass fixture in `djogi-macros/tests/compile_pass/relations.rs`
 // for the same rationale). Tests construct `Vehicle` with explicit
 // framework-field sentinels via `vehicle_for_insert` below.
 #[model(table = "vehicles_p3", pk = HeerId, no_default)]

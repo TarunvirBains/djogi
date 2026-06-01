@@ -48,7 +48,7 @@
 // lower_delta) is library-internal. The macro-side parse-time
 // rejection cases (`#[field(type_change_using = "")]` and the
 // whitespace variant) are covered by lihaaf compile_fail fixtures at
-// `djogi-macros/tests/compile_fail/phase8_5_c4_220_*`; this fixture
+// `djogi-macros/tests/compile_fail/c4_220_*`; this fixture
 // pins the SQL output of the projection → diff → emit half. No live
 // database is required.
 //

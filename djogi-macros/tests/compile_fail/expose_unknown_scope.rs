@@ -1,5 +1,5 @@
 //! `expose(notascope)` must be rejected — only built-in scopes plus the
-//! `none` / `internal` sentinels are accepted in Phase 4.5.
+//! `none` / `internal` sentinels are the accepted built-in scopes.
 use djogi::prelude::*;
 
 #[model(table = "users_expose_unknown")]

@@ -42,14 +42,14 @@ error[E0080]: evaluation panicked: djogi::ident: macro-emitted identifier contai
     | |_^ evaluation of `_` failed inside this call
     |
 note: inside `djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident`
-   --> djogi/src/relation/registry.rs:577:9
+   --> djogi/src/relation/registry.rs:523:9
     |
-577 |         const_assert_user_supplied_ident(value, role);
+523 |         const_assert_user_supplied_ident(value, role);
     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: inside `djogi::ident::const_assert_user_supplied_ident`
-   --> djogi/src/ident.rs:275:5
+   --> djogi/src/ident.rs:265:5
     |
-275 |     const_assert_plain_ident(value, role);
+265 |     const_assert_plain_ident(value, role);
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: inside `djogi::ident::const_assert_plain_ident`
    --> $RUST/lib/rustlib/src/rust/library/core/src/panic.rs:62:9
@@ -57,14 +57,14 @@ note: inside `djogi::ident::const_assert_plain_ident`
  62 |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
     |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
     |
-   ::: djogi/src/ident.rs:222:9
+   ::: djogi/src/ident.rs:213:9
     |
-222 | /         assert!(
-223 | |             byte.is_ascii_alphanumeric() || byte == b'_',
-224 | |             "djogi::ident: macro-emitted identifier contains a non-identifier character \
-225 | |              — either the proc-macro emission is broken or downstream code bypassed the \
-226 | |              macro-support seal"
-227 | |         );
+213 | /         assert!(
+214 | |             byte.is_ascii_alphanumeric() || byte == b'_',
+215 | |             "djogi::ident: macro-emitted identifier contains a non-identifier character \
+216 | |              — either the proc-macro emission is broken or downstream code bypassed the \
+217 | |              macro-support seal"
+218 | |         );
     | |_________- in this macro invocation
 
 error: aborting due to 4 previous errors

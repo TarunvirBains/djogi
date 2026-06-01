@@ -345,7 +345,7 @@ fn visage_descriptor_inventory_registers_per_scope() {
 /// associated-type contract from the live integration side.
 ///
 /// The compile_pass fixture
-/// `djogi-macros/tests/compile_pass/phase85_derived_visage_model_assoc.rs`
+/// `djogi-macros/tests/compile_pass/derived_visage_model_assoc.rs`
 /// pins the trait surface against the proc-macro emission; this test
 /// pins the same contract against the framework's runtime side by
 /// exercising `<V::Model as Model>::table_name()` against a live

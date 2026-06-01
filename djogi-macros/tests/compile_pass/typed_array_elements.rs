@@ -1,4 +1,4 @@
-// Phase 8.5 — #171: typed array element support.
+// #171: typed array element support.
 //
 // Verifies that #[model] accepts Vec<V> for every element type in the
 // expanded `IntoArrayFilterValue` sealed set: i16, f32, f64, DateTime,

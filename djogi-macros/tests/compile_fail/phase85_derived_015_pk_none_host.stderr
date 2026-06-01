@@ -1,7 +1,0 @@
-error: `#[derived(...)]` is incompatible with `#[model(pk = None)]` — derived visages hydrate per-row identified by primary key, and a `pk = None` model has no `id` column, no `Model::Pk` associated type, and no visage queryset to filter against (E_DJG_VDF_015)
-  --> $DIR/phase85_derived_015_pk_none_host.rs:16:1
-   |
-16 | #[derived(
-   | ^
-
-error: aborting due to 1 previous error

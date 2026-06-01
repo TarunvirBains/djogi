@@ -2,7 +2,7 @@
 //!
 //! # Why this test exists
 //!
-//! `djogi-macros/tests/compile_pass/phase8_t7_4_punnu_boot_hook_emitted.rs`
+//! `djogi-macros/tests/compile_pass/t7_4_punnu_boot_hook_emitted.rs`
 //! and friends run through lihaaf. Lihaaf compiles each fixture as a
 //! standalone rustc invocation that links against djogi-macros' own
 //! dev-dependency graph. `djogi-macros/Cargo.toml` lists `sassi`,

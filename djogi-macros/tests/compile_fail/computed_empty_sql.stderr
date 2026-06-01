@@ -1,0 +1,7 @@
+error: `sql = ""` is empty — either provide a non-empty SQL expression or remove the `#[computed(...)]` attribute
+  --> $DIR/computed_empty_sql.rs:14:22
+   |
+14 |     #[computed(sql = "")]
+   |                      ^^
+
+error: aborting due to 1 previous error

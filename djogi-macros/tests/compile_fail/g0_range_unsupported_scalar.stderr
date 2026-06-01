@@ -1,0 +1,243 @@
+error[E0277]: the trait bound `std::string::String: RangeSubtype` is not satisfied
+  --> $DIR/g0_range_unsupported_scalar.rs:6:1
+   |
+ 6 | / #[model(
+ 7 | |     table = "phase85_g0_range_unsupported_scalar",
+ 8 | |     pk = HeerId,
+ 9 | |     no_default
+10 | | )]
+   | |__^ the trait `RangeSubtype` is not implemented for `std::string::String`
+   |
+   = help: the following other types implement trait `RangeSubtype`:
+             djogi::__private::rust_decimal::decimal::Decimal
+             i32
+             i64
+             time::date::Date
+             time::offset_date_time::OffsetDateTime
+             time::primitive_date_time::PrimitiveDateTime
+   = note: required for `djogi::Range<std::string::String>` to implement `djogi::__private::postgres_types::ToSql`
+   = note: required for the cast from `&djogi::Range<std::string::String>` to `&dyn djogi::__private::postgres_types::ToSql + Sync`
+   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `bool: RangeSubtype` is not satisfied
+  --> $DIR/g0_range_unsupported_scalar.rs:6:1
+   |
+ 6 | / #[model(
+ 7 | |     table = "phase85_g0_range_unsupported_scalar",
+ 8 | |     pk = HeerId,
+ 9 | |     no_default
+10 | | )]
+   | |__^ the trait `RangeSubtype` is not implemented for `bool`
+   |
+   = help: the following other types implement trait `RangeSubtype`:
+             djogi::__private::rust_decimal::decimal::Decimal
+             i32
+             i64
+             time::date::Date
+             time::offset_date_time::OffsetDateTime
+             time::primitive_date_time::PrimitiveDateTime
+   = note: required for `djogi::Range<bool>` to implement `djogi::__private::postgres_types::ToSql`
+   = note: required for the cast from `&djogi::Range<bool>` to `&dyn djogi::__private::postgres_types::ToSql + Sync`
+   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `std::string::String: RangeSubtype` is not satisfied
+  --> $DIR/g0_range_unsupported_scalar.rs:6:1
+   |
+ 6 | / #[model(
+ 7 | |     table = "phase85_g0_range_unsupported_scalar",
+ 8 | |     pk = HeerId,
+ 9 | |     no_default
+10 | | )]
+   | |__^ the trait `RangeSubtype` is not implemented for `std::string::String`
+   |
+   = help: the following other types implement trait `RangeSubtype`:
+             djogi::__private::rust_decimal::decimal::Decimal
+             i32
+             i64
+             time::date::Date
+             time::offset_date_time::OffsetDateTime
+             time::primitive_date_time::PrimitiveDateTime
+   = note: required for `djogi::Range<std::string::String>` to implement `djogi::__private::postgres_types::ToSql`
+note: required by a bound in `djogi::pg::accumulator::SqlAccumulator::push_bind`
+  --> djogi/src/pg/accumulator.rs:96:12
+   |
+94 |     pub fn push_bind<T>(&mut self, v: T)
+   |            --------- required by a bound in this associated function
+95 |     where
+96 |         T: ToSql + Sync + Send + 'static,
+   |            ^^^^^ required by this bound in `SqlAccumulator::push_bind`
+   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `bool: RangeSubtype` is not satisfied
+  --> $DIR/g0_range_unsupported_scalar.rs:6:1
+   |
+ 6 | / #[model(
+ 7 | |     table = "phase85_g0_range_unsupported_scalar",
+ 8 | |     pk = HeerId,
+ 9 | |     no_default
+10 | | )]
+   | |__^ the trait `RangeSubtype` is not implemented for `bool`
+   |
+   = help: the following other types implement trait `RangeSubtype`:
+             djogi::__private::rust_decimal::decimal::Decimal
+             i32
+             i64
+             time::date::Date
+             time::offset_date_time::OffsetDateTime
+             time::primitive_date_time::PrimitiveDateTime
+   = note: required for `djogi::Range<bool>` to implement `djogi::__private::postgres_types::ToSql`
+note: required by a bound in `djogi::pg::accumulator::SqlAccumulator::push_bind`
+  --> djogi/src/pg/accumulator.rs:96:12
+   |
+94 |     pub fn push_bind<T>(&mut self, v: T)
+   |            --------- required by a bound in this associated function
+95 |     where
+96 |         T: ToSql + Sync + Send + 'static,
+   |            ^^^^^ required by this bound in `SqlAccumulator::push_bind`
+   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `std::string::String: RangeSubtype` is not satisfied
+   --> $DIR/g0_range_unsupported_scalar.rs:6:1
+    |
+  6 | / #[model(
+  7 | |     table = "phase85_g0_range_unsupported_scalar",
+  8 | |     pk = HeerId,
+  9 | |     no_default
+ 10 | | )]
+    | |__^ the trait `RangeSubtype` is not implemented for `std::string::String`
+    |
+    = help: the following other types implement trait `RangeSubtype`:
+              djogi::__private::rust_decimal::decimal::Decimal
+              i32
+              i64
+              time::date::Date
+              time::offset_date_time::OffsetDateTime
+              time::primitive_date_time::PrimitiveDateTime
+    = note: required for `djogi::Range<std::string::String>` to implement `djogi::__private::postgres_types::FromSql<'_>`
+note: required by a bound in `djogi::pg::decode::decode_at`
+   --> djogi/src/pg/decode.rs:151:8
+    |
+149 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
+    |        --------- required by a bound in this function
+150 | where
+151 |     T: FromSql<'a>,
+    |        ^^^^^^^^^^^ required by this bound in `decode_at`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `bool: RangeSubtype` is not satisfied
+   --> $DIR/g0_range_unsupported_scalar.rs:6:1
+    |
+  6 | / #[model(
+  7 | |     table = "phase85_g0_range_unsupported_scalar",
+  8 | |     pk = HeerId,
+  9 | |     no_default
+ 10 | | )]
+    | |__^ the trait `RangeSubtype` is not implemented for `bool`
+    |
+    = help: the following other types implement trait `RangeSubtype`:
+              djogi::__private::rust_decimal::decimal::Decimal
+              i32
+              i64
+              time::date::Date
+              time::offset_date_time::OffsetDateTime
+              time::primitive_date_time::PrimitiveDateTime
+    = note: required for `djogi::Range<bool>` to implement `djogi::__private::postgres_types::FromSql<'_>`
+note: required by a bound in `djogi::pg::decode::decode_at`
+   --> djogi/src/pg/decode.rs:151:8
+    |
+149 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
+    |        --------- required by a bound in this function
+150 | where
+151 |     T: FromSql<'a>,
+    |        ^^^^^^^^^^^ required by this bound in `decode_at`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `std::string::String: RangeSubtype` is not satisfied
+   --> $DIR/g0_range_unsupported_scalar.rs:6:1
+    |
+  6 | / #[model(
+  7 | |     table = "phase85_g0_range_unsupported_scalar",
+  8 | |     pk = HeerId,
+  9 | |     no_default
+ 10 | | )]
+    | |__^ the trait `RangeSubtype` is not implemented for `std::string::String`
+    |
+    = help: the following other types implement trait `RangeSubtype`:
+              djogi::__private::rust_decimal::decimal::Decimal
+              i32
+              i64
+              time::date::Date
+              time::offset_date_time::OffsetDateTime
+              time::primitive_date_time::PrimitiveDateTime
+    = note: required for `djogi::Range<std::string::String>` to implement `djogi::__private::postgres_types::FromSql<'_>`
+note: required by a bound in `djogi::__private::tokio_postgres::row::Row::try_get`
+   --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-postgres-0.7.17/src/row.rs:161:12
+    |
+158 |     pub fn try_get<'a, I, T>(&'a self, idx: I) -> Result<T, Error>
+    |            ------- required by a bound in this associated function
+...
+161 |         T: FromSql<'a>,
+    |            ^^^^^^^^^^^ required by this bound in `Row::try_get`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `bool: RangeSubtype` is not satisfied
+   --> $DIR/g0_range_unsupported_scalar.rs:6:1
+    |
+  6 | / #[model(
+  7 | |     table = "phase85_g0_range_unsupported_scalar",
+  8 | |     pk = HeerId,
+  9 | |     no_default
+ 10 | | )]
+    | |__^ the trait `RangeSubtype` is not implemented for `bool`
+    |
+    = help: the following other types implement trait `RangeSubtype`:
+              djogi::__private::rust_decimal::decimal::Decimal
+              i32
+              i64
+              time::date::Date
+              time::offset_date_time::OffsetDateTime
+              time::primitive_date_time::PrimitiveDateTime
+    = note: required for `djogi::Range<bool>` to implement `djogi::__private::postgres_types::FromSql<'_>`
+note: required by a bound in `djogi::__private::tokio_postgres::row::Row::try_get`
+   --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-postgres-0.7.17/src/row.rs:161:12
+    |
+158 |     pub fn try_get<'a, I, T>(&'a self, idx: I) -> Result<T, Error>
+    |            ------- required by a bound in this associated function
+...
+161 |         T: FromSql<'a>,
+    |            ^^^^^^^^^^^ required by this bound in `Row::try_get`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `std::string::String: RangeSubtype` is not satisfied
+  --> $DIR/g0_range_unsupported_scalar.rs:13:21
+   |
+13 |     pub bad_string: Range<String>,
+   |                     ^^^^^^^^^^^^^ the trait `RangeSubtype` is not implemented for `std::string::String`
+   |
+   = help: the following other types implement trait `RangeSubtype`:
+             djogi::__private::rust_decimal::decimal::Decimal
+             i32
+             i64
+             time::date::Date
+             time::offset_date_time::OffsetDateTime
+             time::primitive_date_time::PrimitiveDateTime
+   = note: required for `djogi::Range<std::string::String>` to implement `DjogiSqlType`
+
+error[E0277]: the trait bound `bool: RangeSubtype` is not satisfied
+  --> $DIR/g0_range_unsupported_scalar.rs:14:19
+   |
+14 |     pub bad_bool: Range<bool>,
+   |                   ^^^^^^^^^^^ the trait `RangeSubtype` is not implemented for `bool`
+   |
+   = help: the following other types implement trait `RangeSubtype`:
+             djogi::__private::rust_decimal::decimal::Decimal
+             i32
+             i64
+             time::date::Date
+             time::offset_date_time::OffsetDateTime
+             time::primitive_date_time::PrimitiveDateTime
+   = note: required for `djogi::Range<bool>` to implement `DjogiSqlType`
+
+error: aborting due to 10 previous errors
+
+For more information about this error, try `rustc --explain E0277`.

@@ -1,7 +1,0 @@
-error: `using = "hash"` is incompatible with multi-column `fields = [..]`. Postgres hash indexes do not support this combination — drop the combination or switch to a btree index.
- --> $DIR/phase7_zero_model_indexes_hash_multicol.rs:5:5
-  |
-5 |     index(fields = [first_name, last_name], using = "hash"),
-  |     ^^^^^
-
-error: aborting due to 1 previous error

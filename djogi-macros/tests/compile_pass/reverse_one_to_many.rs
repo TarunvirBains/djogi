@@ -3,7 +3,7 @@
 //
 //   - `Owner::cars(&mut ctx)` compiles as a future whose Ok output is
 //     `Vec<Vehicle>` (no type-erased escape hatch in the public surface),
-//     where `ctx: &mut DjogiContext` matches the Phase 4 retrofit;
+//     where `ctx: &mut DjogiContext` matches the retrofit;
 //   - the macro accepts a parsed `Receiver, method -> Returned by via_column`
 //     form;
 //   - the emitted method coexists with `{Model}Fields` / `{Model}Filter` /

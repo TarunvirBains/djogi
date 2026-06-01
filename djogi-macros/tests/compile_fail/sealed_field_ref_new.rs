@@ -1,6 +1,6 @@
 // The `FieldRef` constructor is sealed against downstream fabrication.
 //
-// Prior to the Phase 3 de42874 follow-up, `FieldRef::new` was `pub`
+// Prior to the de42874 follow-up, `FieldRef::new` was `pub`
 // (with `#[doc(hidden)]`), which let any downstream crate build a ref
 // whose `column` string carried SQL-injection payloads or malformed
 // identifiers. Those strings then flowed straight into the

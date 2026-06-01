@@ -1,0 +1,17 @@
+error[E0599]: no method named `employees` found for reference `&'a DeptPublic` in the current scope
+  --> $DIR/t9_reverse_fk_no_exposure.rs:34:17
+   |
+34 |     dept_public.employees(ctx)
+   |                 ^^^^^^^^^ method not found in `&'a DeptPublic`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+note: `DeptEmployeesReverseRelation` defines an item `employees`, perhaps you need to implement it
+  --> $DIR/t9_reverse_fk_no_exposure.rs:26:1
+   |
+26 | djogi::reverse_one_to_many!(Dept, employees -> Emp by department);
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the macro `djogi::reverse_one_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

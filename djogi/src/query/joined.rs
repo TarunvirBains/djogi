@@ -2904,7 +2904,7 @@ mod tests {
     // to `impl<L> JoinedQuerySet<L, L>` so a heterogeneous pair
     // (`cross_join_with(other_model)`) cannot reach the method. The
     // companion compile-fail fixture in
-    // `djogi-macros/tests/compile_fail/phase8_5_cluster4a_heterogeneous_closure_pair_rejected.rs`
+    // `djogi-macros/tests/compile_fail/cluster4a_heterogeneous_closure_pair_rejected.rs`
     // exercises this at lihaaf-fixture level — the compiler emits
     // `no method named left_join_closure_pair found for struct
     // JoinedQuerySet<Animal, Widget>`.

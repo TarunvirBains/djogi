@@ -19,7 +19,7 @@
 //     requiring a live Postgres pool at runtime — the probe only has
 //     to typecheck, not execute.
 //   - The inventory marker is submitted with `kind = M2M`, the right
-//     source / target / name / via — Phase 4.5's projection generator
+//     source / target / name / via — the projection generator
 //     will find it in the same walk that finds reverse-relation
 //     markers.
 //   - Two `many_to_many!` invocations for opposite directions
@@ -151,7 +151,7 @@ fn main() {
     // Walk the inventory slice for the macro's M2M markers. Both
     // directions should be present with `kind = M2M`; the `via`
     // carries the `this_fk` column for that direction, matching the
-    // documented convention (Phase 4.5 reads this field as "how do I
+    // documented convention (reads this field as "how do I
     // reach the accessor from the source?").
     use djogi::relation::registry::{RelationKind, ReverseRelationMarker};
 

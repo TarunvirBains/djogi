@@ -1,0 +1,7 @@
+error: `#[mirjzson]` requires `justification = "..."` — e.g. `#[mirjzson(justification = "payload schema is owned by the upstream partner SDK")]`
+  --> $DIR/195_mirjzson_bare_attribute.rs:13:5
+   |
+13 |     #[mirjzson]
+   |     ^^^^^^^^^^^
+
+error: aborting due to 1 previous error

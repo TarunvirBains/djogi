@@ -1,0 +1,7 @@
+error: `payload: MirJzSON` requires `#[mirjzson(justification = "...")]` on the field. `MirJzSON` is Djogi's raw / unschemed JSONB escape hatch; every use site must record why the schema is not represented as a typed `Jsonb<T>` (e.g. "payload is externally owned by partner API"). For typed schemas, switch the field to `Jsonb<YourSchema>`.
+  --> $DIR/195_mirjzson_missing_attribute_optional.rs:14:5
+   |
+14 |     pub payload: Option<MirJzSON>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

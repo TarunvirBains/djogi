@@ -1,7 +1,0 @@
-error: `unique(..., using = "gist")` is rejected: PostgreSQL unique indexes are btree-only. Either use `using = "btree"` (or omit `using`), or drop `unique` if a non-unique `gist` lookup index is what you want.
-  --> $DIR/phase85_model_indexes_gist_unique.rs:14:5
-   |
-14 |     unique(fields = [location], using = "gist"),
-   |     ^^^^^^
-
-error: aborting due to 1 previous error

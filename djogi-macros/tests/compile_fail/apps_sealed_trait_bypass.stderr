@@ -1,0 +1,9 @@
+error[E0433]: cannot find `sealed` in `apps`
+ --> $DIR/apps_sealed_trait_bypass.rs:6:19
+  |
+6 | impl djogi::apps::sealed::Sealed for FakeApp {}
+  |                   ^^^^^^ could not find `sealed` in `apps`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0433`.

@@ -1,6 +1,6 @@
 // The `OrderExpr::Column` variant is sealed against downstream fabrication.
 //
-// `OrderExpr` is a `#[non_exhaustive]` enum (promoted from struct in Phase 6 T3).
+// `OrderExpr` is a `#[non_exhaustive]` enum (promoted from struct in T3).
 // The `Column` variant carries the `#[non_exhaustive]` attribute, so attempting
 // to construct it with a struct expression from outside the crate fails with
 // E0639 ("cannot create non-exhaustive variant using struct expression").

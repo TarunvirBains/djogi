@@ -1,0 +1,7 @@
+error: `#[field(stored = ...)]` on `email_lower`: `stored` is implicit on `#[field(generated = "...")]` (Pg18 supports only STORED generated columns). Drop the explicit `stored = ...` — the macro emits `STORED` automatically.
+  --> $DIR/pr7_generated_with_explicit_stored.rs:16:41
+   |
+16 |     #[field(generated = "LOWER(email)", stored = true)]
+   |                                         ^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

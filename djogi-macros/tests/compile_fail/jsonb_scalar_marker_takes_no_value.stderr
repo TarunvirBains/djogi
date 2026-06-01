@@ -1,0 +1,7 @@
+error: the `#[jsonb(scalar)]` marker takes no value; remove the `= ...` suffix. Postgres cast selection flows through `FieldType: IntoFilterValue`, not through adopter-supplied SQL strings
+  --> $DIR/jsonb_scalar_marker_takes_no_value.rs:14:13
+   |
+14 |     #[jsonb(scalar = "::int8")]
+   |             ^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

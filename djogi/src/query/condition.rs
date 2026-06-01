@@ -390,7 +390,7 @@ impl Leaf {
 /// rows 107 + 108 and `feedback_no_regex_in_djogi.md`.
 /// The partition is locked by:
 /// - The lihaaf compile-fail fixture
-///   `djogi-macros/tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
+///   `djogi-macros/tests/compile_fail/lookup_op_regex_lifted_to_basic_predicate.rs`
 ///   (10) — verifies `sassi::LookupOp::Regex`
 ///   does not exist at the type level, so a future sassi release that
 ///   adds a `Regex` variant would silently break the no-regex
@@ -789,7 +789,7 @@ mod tests {
     // and `feedback_no_regex_in_djogi.md`: lifting `Regex` / `IRegex`
     // to sassi would require a Rust regex engine, which the framework
     // forbids. The lihaaf compile-fail fixture
-    // `djogi-macros/tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
+    // `djogi-macros/tests/compile_fail/lookup_op_regex_lifted_to_basic_predicate.rs`
     // (10) catches the type-level violation;
     // this unit test catches the source-side classification mistake
     // (e.g. a future cluster accidentally re-tagging `Regex` as

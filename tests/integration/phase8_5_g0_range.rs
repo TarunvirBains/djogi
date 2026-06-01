@@ -4,7 +4,7 @@
 // # What this file pins
 //
 // The compile-pass fixture
-// (`djogi-macros/tests/compile_pass/phase85_g0_range_field.rs`) proves
+// (`djogi-macros/tests/compile_pass/g0_range_field.rs`) proves
 // the descriptor surface for `Range<T>` columns lowers to the right
 // `FieldSqlType::Range { subtype: … }`, and the unit tests in
 // `djogi/src/pg_types.rs` exercise the wire codec end-to-end against

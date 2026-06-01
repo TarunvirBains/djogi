@@ -1,0 +1,7 @@
+error: unknown djogi::primary_key! key `flibber`; expected one of sql_type / default_sql / bulk_sql / generate
+ --> $DIR/t3_unknown_key.rs:9:5
+  |
+9 |     flibber = "x";
+  |     ^^^^^^^
+
+error: aborting due to 1 previous error

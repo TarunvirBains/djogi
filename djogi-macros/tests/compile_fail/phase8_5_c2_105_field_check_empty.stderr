@@ -1,7 +1,0 @@
-error: `#[field(check = "")]` is not allowed — expression must be a non-empty SQL fragment. The string is emitted verbatim into the column's CHECK constraint; an empty literal produces invalid SQL.
-  --> $DIR/phase8_5_c2_105_field_check_empty.rs:14:21
-   |
-14 |     #[field(check = "")]
-   |                     ^^
-
-error: aborting due to 1 previous error

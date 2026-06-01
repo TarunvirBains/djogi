@@ -1,0 +1,7 @@
+error: `#[field(type_change_using = "...")]` is not allowed on a relation field (`ForeignKey<T>` / `OneToOneField<T>`, optionally wrapped in `Option<...>`). FK type changes flow through the Phase 7 PK-flip orchestration on the parent model — the child column's storage type follows the parent's PK, and an adopter USING on the child cannot drive the typed flip apparatus. Drop the attribute; if the parent's PK shape is changing, the migration emitter routes it through the PK-flip path automatically.
+  --> $DIR/c4_220_type_change_using_on_foreign_key.rs:21:33
+   |
+21 |     #[field(type_change_using = "owner_id::BIGINT")]
+   |                                 ^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

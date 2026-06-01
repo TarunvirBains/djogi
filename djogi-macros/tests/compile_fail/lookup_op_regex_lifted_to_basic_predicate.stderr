@@ -1,0 +1,9 @@
+error[E0599]: no variant, associated function, or constant named `Regex` found for enum `LookupOp` in the current scope
+  --> $DIR/lookup_op_regex_lifted_to_basic_predicate.rs:29:30
+   |
+29 |     let _ = sassi::LookupOp::Regex;
+   |                              ^^^^^ variant, associated function, or constant not found in `LookupOp`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.
