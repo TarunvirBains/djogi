@@ -22,10 +22,10 @@
 //! (`undefined_table`); the runner CATCHES that and treats the snapshot
 //! as `Skipped` (warn on stderr, exit code unchanged) per risk
 //! row 11. The verify path itself NEVER bootstraps the table — that is
-//! the migration runner's job (T9.5).
+//! the migration runner's job.
 //! # Audit DB URL resolution
 //! The "audit DB" is the same database the runner writes to via
-//! `RunnerCtx::audit_pool` (T9.4). Resolution is delegated to
+//! `RunnerCtx::audit_pool`. Resolution is delegated to
 //! [`djogi::migrate::resolve_audit_url`] — a shared helper used by
 //! both `djogi verify` (here) and `djogi db reset` (issue
 //! #118). Resolution order:
@@ -190,7 +190,7 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
 
     // Step 2 — load the signing key. Unset → no-op sentinel.
     // Malformed → propagate as VerifyError::KeyDecode (do NOT silently
-    // fall back; that's the regression T9.3's fix-up prevented).
+    // fall back; that's the regression a prior fix-up prevented).
     let key = match load_signing_key_from_env() {
         Ok(Some(k)) => k,
         Ok(None) => [0u8; 32],
@@ -479,8 +479,8 @@ mod tests {
     //! (`verify_clean_returns_zero`, `verify_mismatch_returns_one`,
     //! `verify_skips_when_audit_table_absent`,
     //! `verify_no_op_key_passes_zero_signature`) require a real
-    //! audit DB; they are deferred to T9.7's
-    //! `phase8_djogi_verify_cli` integration suite which spins up a
+    //! audit DB; they are deferred to the
+    //! `djogi_verify_cli` integration suite which spins up a
     //! per-test `crud_log_url` database via `#[djogi_test]` and
     //! invokes the compiled `djogi` binary end-to-end. That layer is
     //! the only place the full DB-touching contract can run; this
@@ -561,7 +561,7 @@ mod tests {
     /// We test `read_snapshot_bytes` directly rather than driving
     /// `run(...)` end-to-end so the test does not depend on a live
     /// Postgres for the audit pool. The full end-to-end coverage lives
-    /// in T9.7's `phase8_djogi_verify_cli` integration suite.
+    /// in the `djogi_verify_cli` integration suite.
     #[cfg(unix)]
     #[test]
     fn verify_rejects_symlink_snapshot() {

@@ -1,5 +1,5 @@
 //! Partition / vacuum analysis for adopter Postgres tables.
-//! `djogi analyze` (T10) inspects `pg_stat_user_tables` and (when the
+//! `djogi analyze` inspects `pg_stat_user_tables` and (when the
 //! extension is installed) `pg_partman` metadata to surface vacuum and
 //! partitioning recommendations to operators. The recommendation logic
 //! ([`recommend`]) is pure — no DB, no I/O, no global state — so it
@@ -11,7 +11,7 @@
 //! `&TableHealth` plus scalar threshold args. That shape is
 //! deliberately deterministic — the same inputs always produce the
 //! exact same output bytes. Two consequences fall out:
-//! 1. **Byte-stable JSON.** When T10.2 serialises a sorted
+//! 1. **Byte-stable JSON.** When the serialiser sorts a
 //!    `Vec<(table_name, Recommendation)>` to `serde_json`, the result
 //!    is reproducible across runs / hosts / Postgres restarts. CI
 //!    dashboards that diff yesterday's `analyze --format json` output
@@ -40,7 +40,7 @@ use djogi::context::DjogiContext;
 use djogi::pg::pool::DjogiPool;
 
 /// Snapshot of a single table's vacuum / partition health.
-/// Field provenance (per T10.2's planned query):
+/// Field provenance (per the live-DB query plan):
 /// - `table_name` — `pg_stat_user_tables.relname`
 /// - `n_live_tup`, `n_dead_tup` — `pg_stat_user_tables` columns of the
 ///   same name; Postgres-maintained per-row visibility counters.
@@ -78,7 +78,7 @@ pub struct TableHealth {
 /// # JSON shape
 /// The `#[serde(tag = "kind", rename_all = "snake_case")]` attribute
 /// produces internally-tagged JSON like
-/// `{"kind":"vacuum_needed","dead_tup_ratio":0.42}`. T10.2's
+/// `{"kind":"vacuum_needed","dead_tup_ratio":0.42}`. The
 /// `--format json` path serialises a sorted vector of
 /// `{table, recommendation}` pairs; the snake_case tag keeps the
 /// machine-readable output ergonomic for shell scripts and dashboards.
@@ -575,7 +575,7 @@ fn djogi_err_to_analyze(e: DjogiError) -> AnalyzeError {
 /// Both rendering paths write to a locked `stdout`. Locking once at
 /// the top means we don't pay the `Stdout::lock` cost per row, and
 /// the renderers themselves take a generic `&mut W: Write` so the
-/// pure render-only tests (T10.2's `render_human_*` / `render_json_*`)
+/// pure render-only tests (`render_human_*` / `render_json_*`)
 /// can target a `Vec<u8>` without going through stdout.
 pub async fn run(
     workspace: Option<std::path::PathBuf>,
@@ -694,7 +694,7 @@ fn recommendation_human(r: &Recommendation) -> String {
 }
 
 /// Render the JSON array.
-/// # Determinism contract (, T10.1 review)
+/// # Determinism contract
 /// We project through a named `Row` struct rather than a
 /// `HashMap<String, _>` — `serde`'s default behaviour preserves struct
 /// field declaration order, so the JSON output is byte-stable across

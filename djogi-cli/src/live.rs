@@ -29,14 +29,15 @@
 //! | 3 | Validation checkpoint failed — gate query disagreed. |
 //! | 4 | Plan-file checksum drift — the file was edited after start. |
 //! | 5 | Plan state conflicts with request (e.g. `run` on `complete`). |
-//! # Out of scope for T10
-//! - **Live-DB integration tests.** T12 owns end-to-end coverage; T10
-//!   ships clap parsing, helpers, and exit-code mapping.
-//! - **`djogi_codec_recode(...)`** — still a placeholder per T8.
+//! # Out of scope
+//! - **Live-DB integration tests.** This module ships clap parsing,
+//!   helpers, and exit-code mapping; end-to-end coverage lives in the
+//!   integration suite.
+//! - **`djogi_codec_recode(...)`** — still a placeholder.
 //! - **`djogi_schema_migrations.justification` persistence.** Adding
-//!   the column requires a separate ALTER TABLE migration; T10 accepts
-//!   `--justify` and routes the value through to the runner, but the
-//!   actual column write lands in a follow-up phase.
+//!   the column requires a separate ALTER TABLE migration; this module
+//!   accepts `--justify` and routes the value through to the runner,
+//!   but the actual column write lands in a follow-up phase.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -371,7 +372,7 @@ fn require_justify_for_dangerous(
 /// Reject an `--allow-destructive` invocation that lacks `--justify`.
 /// Operators must record why they're routing through the destructive
 /// path; the reason flows into `djogi_schema_migrations.justification`
-/// when that column lands (T11.x or later).
+/// when that column lands in a follow-up migration.
 fn require_justify_for_destructive(
     allow_destructive: bool,
     justify: Option<&str>,

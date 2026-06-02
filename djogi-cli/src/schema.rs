@@ -229,8 +229,8 @@ fn relation_kind_label(kind: djogi::relation::RelationKind) -> &'static str {
     match kind {
         djogi::relation::RelationKind::ForeignKey => "ForeignKey",
         djogi::relation::RelationKind::OneToOne => "OneToOne",
-        // RelationKind is #[non_exhaustive]; the next variant (
-        // T7's ManyToMany) will surface as "Unknown" until added here.
+        // RelationKind is #[non_exhaustive]; future variants
+        // will surface as "Unknown" until added here.
         _ => "Unknown",
     }
 }
