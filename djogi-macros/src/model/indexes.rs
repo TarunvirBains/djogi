@@ -19,7 +19,7 @@
 //!    `FromMeta` impls whose body is a hand-rolled `syn::Expr` walk anyway
 //!    the whole parser lives here as a `syn::ParseStream` walk over the
 //!    inner token stream. Error spans stay precise; the plan will be
-//!    amended in T5's docstring pass to reflect this deviation.
+//!    amended in a later docstring pass to reflect this deviation.
 //! # Pipeline
 //! 1. `ModelAttrs::parse` extracts the `indexes(...)` `Meta::List` and
 //!    hands it to [`parse_indexes_meta_list`], which produces
@@ -677,7 +677,7 @@ pub fn emit_index_spec_tokens(
         }
     };
 
-    // Generated name (naming, T4 will replace this with
+    // Generated name (naming; will be replaced with
     // the shared `djogi::descriptor::index_name` helper once that lands).
     let generated_name = body
         .name
@@ -1183,7 +1183,7 @@ mod tests {
         assert!(err.to_string().contains("unknown indexes entry `bogus`"));
     }
 
-    /// T4 parity check — the macro-side `generate_index_name` must
+    /// Parity check — the macro-side `generate_index_name` must
     /// produce byte-for-byte identical names to the runtime helper
     /// `djogi::descriptor::index_name` for every shape listed in
     /// §6.4 + D5. Both sides independently duplicate the logic

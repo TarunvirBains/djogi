@@ -280,7 +280,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
             // reason `#[field(...)]` is stripped: rustc does not
             // recognise it as a helper attribute on the `#[model]`
             // attribute macro. The semantics were captured into
-            // `_computed_attrs` above; T4.5's emitter consumes the
+            // `_computed_attrs` above; the emitter consumes the
             // captured state.
             // #195 — `#[mirjzson(...)]` rides the same strip
             // path. The MirJzSON gate captured the justification above;
@@ -315,7 +315,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // `before_create` hook. Returns an empty `TokenStream` when
     // `#[model(auditable)]` is absent so opt-out models pay zero
     // macro-output overhead.
-    // T2.4 supersedes T2.2's `#[derive(Auditable)]` per spec line
+    // `#[model(auditable)]` supersedes the legacy `#[derive(Auditable)]` per spec line
     // 1037 (locked 2026-05-03). Single attribute drives the
     // trait impl + the populator + the create_body wiring in one
     // expansion — proc macros cannot observe sibling derives, so
@@ -328,10 +328,10 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // when `#[model(soft_deletable)]` is set; otherwise returns an
     // empty `TokenStream` so opt-out models pay zero macro-output
     // overhead.
-    // T2.6 supersedes T2.3's `#[derive(SoftDeletable)]` for the
-    // same proc-macros-cannot-observe-sibling-derives constraint
-    // that drove the T2.4 Auditable pivot. Both opt-ins now route
-    // through `#[model(...)]`. 8γ T6's automatic default-filter
+    // `#[model(soft_deletable)]` supersedes the legacy `#[derive(SoftDeletable)]`
+    // for the same proc-macros-cannot-observe-sibling-derives constraint
+    // that drove the auditable pivot. Both opt-ins now route
+    // through `#[model(...)]`. Automatic default-filter
     // composition will need to know the model is soft-deletable AT
     // model-macro expansion time, which a sibling derive cannot
     // signal — doing the migration NOW is cheaper than later.
@@ -373,7 +373,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     );
 
     // 4. ModelDescriptor + inventory::submit! for migration-differ consumption.
-    // T4.5 — `computed_attrs` is threaded through so the emitter can
+    // `computed_attrs` is threaded through so the emitter can
     // populate `ModelDescriptor.computed_fields` with one
     // `ComputedFieldDescriptor` literal per parsed `#[computed]` field.
     let descriptor = descriptor::expand(&struct_item, &model_attrs, &field_attrs, &computed_attrs);

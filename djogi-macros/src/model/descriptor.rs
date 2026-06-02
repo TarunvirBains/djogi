@@ -77,7 +77,6 @@ fn framework_field_descriptor(
             // Framework-injected columns (`id`, `created_at`,
             // `updated_at`) are never relation fields, so the
             // self-FK flag is always `false`.
-            // (T8).
             is_self_fk: false,
             visage_map: &[
                 ("admin", #name),
@@ -133,9 +132,9 @@ pub fn expand(
 }
 
 /// Inner emission entry point — returns `syn::Result` so the new
-/// `#[model(tree_edge = "...")]` validation (T12) can surface a
+/// `#[model(tree_edge = "...")]` validation can surface a
 /// span-precise compile error pointing at the offending literal.
-/// Pre-T12 the descriptor emitter was infallible, but `tree_edge`
+/// Previously the descriptor emitter was infallible, but `tree_edge`
 /// requires cross-checking the named field against the struct's
 /// declared user fields and their detected relation shape — a
 /// validation that can fail when the column does not exist or is
@@ -147,10 +146,10 @@ fn try_expand(
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
     // 5 — `#[computed(sql = "...")]` field metadata.
-    // T4.1 added the descriptor field; T4.5 populates it from the
-    // captured attributes by emitting one ComputedFieldDescriptor
-    // literal per entry into the inventory::submit! body. Empty
-    // slice when no computed fields are declared.
+    // Populated from captured attributes by emitting one
+    // ComputedFieldDescriptor literal per entry into the
+    // inventory::submit! body. Empty slice when no computed fields
+    // are declared.
     computed_attrs: &[(syn::Ident, crate::model::computed::ComputedAttr)],
 ) -> syn::Result<TokenStream> {
     let source_ident = &struct_item.ident;
@@ -189,7 +188,7 @@ fn try_expand(
         .zip(field_attrs.iter())
         .collect();
 
-    // ── Self-FK metadata (— T8) ─────────────────────
+    // ── Self-FK metadata ─────────────────────
     // For each user field that resolves to a `ForeignKey<T>` /
     // `OneToOneField<T>` (or its nullable form), compare the detected
     // target's last-segment ident to the source struct's short name.
@@ -202,8 +201,8 @@ fn try_expand(
     // migration differ already matches relations through that string.
     // Re-using the same heuristic keeps every descriptor consumer on
     // the same lookup key.
-    // T12 (`#[model(tree_edge = "...")]`) reads this set to validate
-    // that the named column is a self-FK before emitting the
+    // `#[model(tree_edge = "...")]` validation reads this set to confirm
+    // the named column is a self-FK before emitting the
     // descriptor's `tree_edge` slot.
     let self_fk_field_names: std::collections::BTreeSet<String> = user_fields
         .iter()
@@ -214,7 +213,7 @@ fn try_expand(
         })
         .collect();
 
-    // ── #[model(tree_edge = "...")] validation (T12) ────────────────────────
+    // ── #[model(tree_edge = "...")] validation ────────────────────────
     // The named column must exist on the user's struct AND must be a
     // self-FK per the set computed above. Any mismatch surfaces a
     // span-precise compile error pointing at the literal so the
@@ -507,7 +506,7 @@ fn try_expand(
                             None => quote! { None },
                         };
                         let target_lit = info.target_name.as_str();
-                        // (T8): name-based self-FK
+                        // Name-based self-FK
                         // detection. Matches the detector's `target_name`
                         // (last-segment ident of the inner type) against the
                         // source struct's short name. Same heuristic the
@@ -571,14 +570,14 @@ fn try_expand(
 
             // 5 — composition-derive provenance.
             // Both composition surfaces are now driven by `#[model(...)]`
-            // attributes (T2.4 + T2.6 pivots, 2026-05-03 / 2026-05-04):
-            // - `#[model(auditable)]` (T2.4): `model_attrs.auditable
+            // attributes (pivoted 2026-05-03 / 2026-05-04):
+            // - `#[model(auditable)]`: `model_attrs.auditable
             // == true` flips the `created_by` column to
             // `composed_via: Some("Auditable")`.
-            // - `#[model(soft_deletable)]` (T2.6 — supersedes T2.3's
+            // - `#[model(soft_deletable)]` (supersedes the legacy
             // `#[derive(SoftDeletable)]`): `model_attrs.soft_deletable
             // == true` flips the `deleted_at` column to
-            // `composed_via: Some("SoftDeletable")`. T2.6 tightens the
+            // `composed_via: Some("SoftDeletable")`. Tightens the
             // detection from field-name-only to field-name-plus-flag,
             // eliminating the false-positive risk that an adopter who
             // declares a `deleted_at` column without opting into the
@@ -707,10 +706,9 @@ fn try_expand(
                     relation_kind: #relation_kind_tokens,
                     on_delete: #on_delete_tokens,
                     target_type_name: #target_type_name_tokens,
-                    // (T8) — true when the
-                    // FK / O2O target is the same model the field
-                    // belongs to. Always `false` for scalar columns
-                    // and for relation fields whose target is a
+                    // True when the FK / O2O target is the same model
+                    // the field belongs to. Always `false` for scalar
+                    // columns and for relation fields whose target is a
                     // different model.
                     is_self_fk: #is_self_fk_lit,
                     visage_map: #projection_map_tokens,
@@ -721,12 +719,12 @@ fn try_expand(
                     // `stored: true` is implicit (Pg18 supports only
                     // STORED). `None` for non-generated columns.
                     generated: #generated_tokens,
-                    // 5 + T2.6 — composition-derive provenance.
+                    // Composition-derive provenance.
                     // `Some("Auditable")` for the `created_by` column on
                     // a `#[model(auditable)]` model; `Some("SoftDeletable")`
                     // for the `deleted_at` column on a
-                    // `#[model(soft_deletable)]` model (T2.6 tightened
-                    // the detection from field-name-only to
+                    // `#[model(soft_deletable)]` model (detection
+                    // tightened from field-name-only to
                     // field-name + attribute opt-in to eliminate the
                     // adopter false-positive risk); `None` otherwise.
                     composed_via: #composed_via_tokens,
@@ -855,7 +853,7 @@ fn try_expand(
         );
     }
 
-    // ── + T8: implicit GiST indexes for geography fields ────────
+    // ── Implicit GiST indexes for geography fields ────────
     // For every user field whose Rust type is any `GeographyValue`-implementing
     // geometry (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
     // `MultiPolygon`), emit one `IndexSpec` entry. widened the
@@ -926,7 +924,7 @@ fn try_expand(
         reserved_generated_names: &reserved_generated_names,
     };
     for decl in &model_attrs.indexes {
-        // Pre-T12 the descriptor emitter was infallible and lowered
+        // Previously the descriptor emitter was infallible and lowered
         // index-emission errors to inline `compile_error!` tokens; now
         // that `try_expand` returns `syn::Result`, propagate the error
         // through the existing failure channel for a single error path.
@@ -1008,7 +1006,7 @@ fn try_expand(
         quote! { &[ #(#entries,)* ] }
     };
 
-    // (T12) — `#[model(tree_edge = "col")]`.
+    // `#[model(tree_edge = "col")]`.
     // The string was validated above (field-existence + self-FK
     // resolution) before reaching here, so emission is unconditional.
     let tree_edge_tokens = match &model_attrs.tree_edge {
@@ -1022,7 +1020,7 @@ fn try_expand(
     // 3 — `#[model(proxy_for = ParentType)]` lowers the bare
     // identifier to a `&'static str` carrying the parent's Rust type
     // name. The migration differ uses this discriminator to skip DDL
-    // emission for proxies; the runtime composer (T3.4) uses it to
+    // emission for proxies; the runtime composer uses it to
     // identify proxy querysets that need default-filter / default-order
     // composition.
     let proxy_for_tokens = match &model_attrs.proxy_for {
@@ -1039,8 +1037,9 @@ fn try_expand(
     // anything outside that grammar surfaces a span-precise compile
     // error here, before any descriptor emission runs.
     // Empty / `None` for non-proxy models and for proxies without a
-    // `default_filter` clause. T3.4 reads this at QuerySet construction
-    // time and AND-composes it into the seeded `Condition` tree.
+    // `default_filter` clause. The runtime composer reads this at
+    // QuerySet construction time and AND-composes it into the seeded
+    // `Condition` tree.
     let default_filter_sql_tokens = match &model_attrs.proxy_default_filter {
         Some(closure) => {
             let sql = crate::model::proxy::lower_default_filter_to_sql(closure)?;
@@ -1134,24 +1133,24 @@ fn try_expand(
                 // entries on `model_attrs.exclusions`. Empty slice when
                 // no `exclusion(...)` group is present.
                 exclusion_constraints: #exclusion_constraints_tokens,
-                // (T12) — `#[model(tree_edge = "col")]`
-                // default self-FK column for tree-recursive queries. Validated
-                // at the top of `try_expand` against the user-field list and
-                // the self-FK detector (T8); reaches here only when the named
+                // `#[model(tree_edge = "col")]` — default self-FK column
+                // for tree-recursive queries. Validated at the top of
+                // `try_expand` against the user-field list and the
+                // self-FK detector; reaches here only when the named
                 // column resolves to a self-FK on this model.
                 tree_edge: #tree_edge_tokens,
                 // Proxy-model schema-passthrough surface.
-                // T3.3 populates these from `#[model(proxy_for = ParentType,
+                // Populated from `#[model(proxy_for = ParentType,
                 // default_filter = |f| ...)]`. The migration differ keys
                 // off `proxy_for.is_some` to skip DDL emission for proxy
                 // descriptors; the runtime composer keys off
                 // `default_filter_sql` to AND-compose the lowered fragment
-                // into every `QuerySet<Self>::new` (T3.4).
+                // into every `QuerySet<Self>::new`.
                 proxy_for: #proxy_for_tokens,
                 default_filter_sql: #default_filter_sql_tokens,
-                // Computed-field descriptors. T4.5
-                // populates this from parsed `#[computed(sql = "...")]`
-                // field attributes; empty slice for non-computed models.
+                // Computed-field descriptors populated from
+                // `#[computed(sql = "...")]` field attributes;
+                // empty slice for non-computed models.
                 computed_fields: #computed_fields_tokens,
                 // Djogi#217) — adopter
                 // `#[model(table_comment = "<text>")]` free-text
@@ -1362,7 +1361,7 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         // Spatial — all GeographyValue types map to the typed Geography variant
         // with the matching GeographySubtype discriminant so the
         // migration differ can compare subtypes by discriminant rather than
-        // Display text. T8 extends this match to cover all five geometry types.
+        // Display text. This match covers all five geometry types.
         "GEOGRAPHY(Point, 4326)" => {
             quote! {
                 ::djogi::FieldSqlType::Geography {
