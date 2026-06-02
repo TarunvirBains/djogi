@@ -113,7 +113,7 @@ pub fn generate_docs(
 /// (#370).
 /// # What
 /// The injectable sibling of [`generate_docs`]: it renders the models
-/// from `p.models` instead of walking the global
+/// from `p.models()` instead of walking the global
 /// `inventory::iter::<ModelDescriptor>`.
 /// # Why
 /// `djogi docs` (the CLI command) calls this with the provider threaded
@@ -122,7 +122,7 @@ pub fn generate_docs(
 /// and reproduces today's behavior.
 /// # How
 /// Delegates to [`render_inventory`] — the same slice renderer
-/// [`generate_docs`] uses — after snapshotting `p.models` into an
+/// [`generate_docs`] uses — after snapshotting `p.models()` into an
 /// owned slice. `intent` follows the same "macro attr wins,
 /// intent.json fallback" merge rule as [`generate_docs`].
 /// # Errors
@@ -292,7 +292,7 @@ pub fn render_model_page(
 
     // Field table — the `Default` column reflects projection-side
     // policy: only the PK row carries a default expression (the
-    // `heerid_next` / `heerid_next_desc` / etc. supplied by
+    // `heerid_next()` / `heerid_next_desc()` / etc. supplied by
     // `migrate::projection`); every other column renders an em-dash
     // because `FieldDescriptor` doesn't carry adopter-declared defaults.
     s.push_str("\n## Fields\n\n");
@@ -468,7 +468,7 @@ fn display_index_target(target: &IndexTarget) -> String {
 /// Compose the per-field "Default" cell.
 /// The descriptor surface intentionally does NOT carry a per-column
 /// default-SQL string — / chose to push the
-/// PK-default expansion (`heerid_next`, `heerid_next_desc`, …)
+/// PK-default expansion (`heerid_next()`, `heerid_next_desc()`, …)
 /// down into the projection layer instead so the snapshot stays the
 /// single source of truth for `default_sql`. The renderer mirrors
 /// that policy here: the `id` column's default is derived from the
@@ -685,7 +685,7 @@ mod tests {
     }
 
     /// The `Default` column surfaces the PK column's
-    /// `heerid_next_desc` (or whichever PK kind the model declares)
+    /// `heerid_next_desc()` (or whichever PK kind the model declares)
     /// and an em-dash for every other field.
     #[test]
     fn render_model_page_default_column_renders_pk_default_and_em_dash() {
@@ -707,7 +707,7 @@ mod tests {
             "non-PK rows must render Default as em-dash; got:\n{email_row}",
         );
 
-        // A `PkType::HeerId` model emits `heerid_next` (ascending
+        // A `PkType::HeerId` model emits `heerid_next()` (ascending
         // variant — projection-side parity).
         let post = fixture_global_post();
         let body = render_model_page(&post, None);

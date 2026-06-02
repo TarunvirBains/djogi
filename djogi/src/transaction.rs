@@ -1,5 +1,5 @@
 //! `atomic(...)` — the canonical transaction scope + retry helper.
-//! # `atomic` at a glance
+//! # `atomic()` at a glance
 //! `atomic(&mut ctx, |tx| Box::pin(async move { ... }))` is the preferred
 //! outermost entry point when the caller already has a pool-backed
 //! [`DjogiContext`](crate::DjogiContext): it acquires a connection from the
@@ -34,7 +34,7 @@
 //! `UnwindSafe`, and the context state touched inside the closure is
 //! owned for the closure's lifetime alone.
 //! # Retry helper
-//! [`retry_on_conflict`] composes with `atomic` (and `atomic_with`)
+//! [`retry_on_conflict`] composes with `atomic()` (and `atomic_with()`)
 //! to re-run a closure on serialization / deadlock / `NOWAIT` failures.
 //! `IsolationLevel::Serializable` / `IsolationLevel::RepeatableRead` raise
 //! SQLSTATE `40001` (serialization failure) on commit-time conflict;
@@ -60,11 +60,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 static JITTER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Boxed future tied to the caller's context-reborrow lifetime.
-/// Every `atomic` closure returns one of these. The `'a` lifetime
+/// Every `atomic()` closure returns one of these. The `'a` lifetime
 /// ties the future's body to the `&'a mut DjogiContext` the closure
 /// receives, so the closure can freely `.await` framework calls that
 /// also borrow from the context. The `Pin<Box<..>>` erasure is what
-/// lets the outer `atomic` signature use a `for<'a>` higher-ranked
+/// lets the outer `atomic()` signature use a `for<'a>` higher-ranked
 /// bound without falling into the "async closure implementation not
 /// general enough" inference hole that bare `AsyncFnOnce` hits today.
 pub type AtomicFuture<'a, R> = Pin<Box<dyn Future<Output = Result<R, DjogiError>> + Send + 'a>>;
@@ -286,7 +286,7 @@ impl Drop for PoolContextAtomicGuard<'_> {
 /// retry_on_conflict(&mut ctx, 3, async |ctx| {
 /// atomic_with(IsolationLevel::Serializable, ctx, |tx| Box::pin(async move {
 /// // ... reads + writes ...
-/// Ok::<_, DjogiError>()
+/// Ok::<_, DjogiError>(())
 /// })).await
 /// }).await?;
 /// ```
@@ -578,7 +578,7 @@ fn nanos_to_duration(nanos: u128) -> Duration {
 /// [`DjogiContext::set_constraints_immediate`].
 /// Mirrors the Postgres `SET CONSTRAINTS { ALL | <name> [, ...] } { DEFERRED |
 /// IMMEDIATE }` grammar. Both helpers are transaction-scoped: outside an
-/// open `atomic` they raise
+/// open `atomic()` they raise
 /// [`DjogiError::ConstraintModeOutsideTransaction`].
 /// # Variants
 /// - [`DeferScope::All`] — apply the new mode to every deferrable
@@ -652,14 +652,14 @@ mod sealed {
     impl Sealed for &mut crate::DjogiContext {}
 }
 
-/// Entry point for [`atomic`] / [`atomic_with`].
-/// Sealed: the only scopes that can open an `atomic` block are a
+/// Entry point for [`atomic()`] / [`atomic_with()`].
+/// Sealed: the only scopes that can open an `atomic()` block are a
 /// pool reference (fresh outermost context) and a mutable [`DjogiContext`]
 /// reference. A pool-backed `DjogiContext` opens an outermost transaction that
 /// shares the context's `Arc<Sassi>`; a transaction-backed context opens a
 /// nested savepoint.
 /// The trait carries the dispatch logic through an associated
-/// [`run_atomic`](IntoAtomicScope::run_atomic) method so `atomic`
+/// [`run_atomic`](IntoAtomicScope::run_atomic) method so `atomic()`
 /// itself stays as a thin forwarder over the two impls. Each impl
 /// owns its own commit / rollback / callback-promotion semantics.
 /// The companion [`run_atomic_with`](IntoAtomicScope::run_atomic_with)
@@ -854,7 +854,7 @@ struct NestedAtomicCancellationGuard {
     armed: bool,
 }
 
-// SAFETY: the guard is stored inside the same `atomic` future that owns the
+// SAFETY: the guard is stored inside the same `atomic()` future that owns the
 // exclusive `&mut DjogiContext` borrow. Moving that future between executor
 // threads moves the raw pointer and the borrow together; the guard only
 // dereferences during drop after later-declared futures have released `ctx`.
@@ -1112,16 +1112,16 @@ where
 ///   a nested scope are promoted to the outer queue on success, discarded on
 ///   `Err`.
 /// # Panic semantics
-/// If the closure panics, `atomic` rolls back (or rolls back to the
+/// If the closure panics, `atomic()` rolls back (or rolls back to the
 /// savepoint, in the nested case) **before** the panic resumes. The
 /// transaction never leaks. See the module-level docs for rationale.
 /// # Examples
 /// ```ignore
-/// let mut ctx = DjogiContext::from_pool(pool.clone);
+/// let mut ctx = DjogiContext::from_pool(pool.clone());
 ///
 /// djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
-/// Account::create(ctx, Account { balance: 100, ..Default::default }).await?;
-/// Ok::<_, DjogiError>()
+/// Account::create(ctx, Account { balance: 100, ..Default::default() }).await?;
+/// Ok::<_, DjogiError>(())
 /// }))
 /// .await?;
 /// ```
@@ -1167,7 +1167,7 @@ where
 /// retry_on_conflict(&mut ctx, 3, async |ctx| {
 /// atomic_with(IsolationLevel::Serializable, ctx, |tx| Box::pin(async move {
 /// // ... reads + writes that must observe a serial schedule ...
-/// Ok::<_, DjogiError>()
+/// Ok::<_, DjogiError>(())
 /// })).await
 /// }).await?;
 /// ```
@@ -1187,15 +1187,15 @@ where
 /// use djogi::DjogiContext;
 /// use djogi::transaction::{atomic_with, IsolationLevel};
 ///
-/// let mut ctx = DjogiContext::from_pool(pool.clone);
+/// let mut ctx = DjogiContext::from_pool(pool.clone());
 ///
 /// atomic_with(IsolationLevel::Serializable, &mut ctx, |ctx| Box::pin(async move {
 /// // SSI snapshot is fixed at the first statement. Concurrent
 /// // writes that violate a multi-row invariant raise 40001 at
 /// // commit time; wrap in retry_on_conflict to retry.
-/// let total = Account::objects.sum(ctx, |f| f.balance).await?;
+/// let total = Account::objects().sum(ctx, |f| f.balance()).await?;
 /// // ... act on `total` ...
-/// Ok::<_, DjogiError>()
+/// Ok::<_, DjogiError>(())
 /// })).await?;
 /// ```
 pub async fn atomic_with<S, F, R>(
@@ -1265,11 +1265,11 @@ where
 /// retry_on_conflict_with_backoff(
 /// &mut ctx,
 /// 5,
-/// TransactionRetryBackoff::default,
+/// TransactionRetryBackoff::default(),
 /// async |ctx| {
 /// atomic_with(IsolationLevel::Serializable, ctx, |tx| Box::pin(async move {
 /// // ... reads + writes ...
-/// Ok::<_, DjogiError>()
+/// Ok::<_, DjogiError>(())
 /// })).await
 /// },
 /// ).await?;

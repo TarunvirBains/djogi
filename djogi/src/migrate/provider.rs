@@ -110,7 +110,7 @@ impl DescriptorProvider for InventoryDescriptorProvider {
     }
 
     fn apps(&self) -> &'static [AppDescriptor] {
-        // AppRegistry::all = global bucket + sort + identity-uniqueness
+        // AppRegistry::all() = global bucket + sort + identity-uniqueness
         // validation (apps.rs:301), NOT a bare inventory::iter.
         AppRegistry::all()
     }
@@ -127,8 +127,8 @@ mod tests {
     #[test]
     fn inventory_provider_apps_include_global_bucket() {
         let p = InventoryDescriptorProvider::new();
-        // AppRegistry::all always prepends the synthetic global bucket
-        // (label ""), so apps is never empty even with no #[app] decls.
+        // AppRegistry::all() always prepends the synthetic global bucket
+        // (label ""), so apps() is never empty even with no #[app] decls.
         let apps = p.apps();
         assert!(
             apps.iter()

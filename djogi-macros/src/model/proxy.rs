@@ -17,7 +17,7 @@
 //!   (eq/neq/null/range/literal and/or chains) to a SQL fragment string.
 //!   Unrecognised patterns surface a span-precise compile error.
 //!   QuerySet wiring: the lowered SQL fragment feeds into
-//!   `Model::default_filter_condition` which `QuerySet::new` AND-composes
+//!   `Model::default_filter_condition` which `QuerySet::new()` AND-composes
 //!   with any user-supplied filter at queryset construction time.
 //! # Identifier validation
 //! Per `feedback_no_regex_in_djogi` — no regex engine, no regex notation
@@ -409,7 +409,7 @@ mod tests {
 // ```text
 // pred := <field>.<op>(<lit>)
 // | <field>.<op>(<lit>, <lit>) // for `between`
-// | <field>.<unary_op> // for `is_null`/`is_not_null`
+// | <field>.<unary_op>()                     // for `is_null`/`is_not_null`
 // | <pred>.and_with(<pred>) // explicit AND
 // | <pred>.or_with(<pred>) // explicit OR
 // | (<pred>)
@@ -686,7 +686,7 @@ fn lower_field_accessor(expr: &Expr, f_binding: &syn::Ident) -> syn::Result<Stri
 /// byte-level scan rather than a fancy escaping helper. ASCII-only
 /// strings are accepted; non-ASCII bytes (which would still be valid
 /// UTF-8 in Postgres but require careful encoding) emit an error
-/// pointing the adopter at a manual `default_filter_condition` impl.
+/// pointing the adopter at a manual `default_filter_condition()` impl.
 /// Conservative for v0.1.0 — broaden if production use cases warrant.
 fn lower_literal_arg(expr: &Expr) -> syn::Result<String> {
     match expr {

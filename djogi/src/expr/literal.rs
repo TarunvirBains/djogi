@@ -50,7 +50,7 @@ impl From<String> for Expr<String> {
 // tag type is `String`, matching how [`FilterValue::String`] carries
 // an owned `String` after binding. Non-`'static` references would not
 // round-trip through `ExprNode` cleanly (the node tree is `'static`);
-// callers with borrowed strings should `.to_owned` first.
+// callers with borrowed strings should `.to_owned()` first.
 impl From<&'static str> for Expr<String> {
     fn from(v: &'static str) -> Self {
         Self::from_literal(FilterValue::String(v.to_owned()))
@@ -162,7 +162,7 @@ impl From<crate::Interval> for crate::expr::Expr<crate::Interval> {
 
 /// Convert a `time::Duration` to microseconds as `i64`, saturating at the
 /// boundaries of `i64` range rather than wrapping.
-/// `time::Duration::whole_microseconds` returns `i128`. For Durations within
+/// `time::Duration::whole_microseconds()` returns `i128`. For Durations within
 /// `i64`'s microsecond range (roughly ±292,277 years) the result is exact.
 /// For larger Durations (e.g. `time::Duration::MAX`), the value saturates to
 /// `i64::MAX` or `i64::MIN` rather than wrapping silently via an `as i64` cast.

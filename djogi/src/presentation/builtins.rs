@@ -155,7 +155,7 @@ fn validate_startup_for_hmac_key() -> Result<(), PresentationStartupError> {
 
     let key_bytes = parse_hmac_key(&raw, HMAC_KEY_ENV)?;
 
-    // Use `set(...).ok` — if another call already set the key, ignore the
+    // Use `set(...).ok()` — if another call already set the key, ignore the
     // duplicate; the first successful write wins and is stable.
     let _ = HMAC_KEY.set(key_bytes);
     Ok(())
@@ -188,7 +188,7 @@ fn hmac_sha256_hex_string_present_with_cached_key(
 /// this codec. Predicate calls delegate to storage-value equality through
 /// [`PresentationQueryField::eq_storage`], which is an SQL-only predicate.
 /// # Reversibility
-/// `Identity`'s output is the input — `try_reverse(&Identity::present(v)) == Ok(v.clone)`.
+/// `Identity`'s output is the input — `try_reverse(&Identity::present(v)) == Ok(v.clone())`.
 pub struct Identity;
 
 impl<T> PresentationCodecInfo<T> for Identity
@@ -307,7 +307,7 @@ impl PresentationCodec<String> for MaskString {
     /// Replace the storage value with the fixed mask `"[REDACTED]"`.
     /// The original value is not retained in the output. Callers who need
     /// the original value must access the source model through
-    /// `Model::objects` (which remains privileged).
+    /// `Model::objects()` (which remains privileged).
     fn present(_value: &String) -> String {
         MASK_LITERAL.to_string()
     }
@@ -575,7 +575,7 @@ impl TryPresentationCodec<Option<String>> for HmacSha256HexOptionString {
 
 /// Encode `bytes` as a lowercase hex string.
 /// Uses byte-level stdlib primitives — no regex engine, no external hex crate.
-/// Always produces a string of exactly `bytes.len * 2` lowercase hex chars.
+/// Always produces a string of exactly `bytes.len() * 2` lowercase hex chars.
 #[cfg(feature = "hmac-codec")]
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";

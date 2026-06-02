@@ -13,7 +13,7 @@
 //! it is not an independent attribute macro. `derive_model` registers
 //! the helper (`attributes(field, derived)`) so rustc accepts the
 //! token at parse time; `#[model(...)]` walks `item_struct.attrs` for
-//! every outer attribute whose `path` is `derived`, parses the
+//! every outer attribute whose `path()` is `derived`, parses the
 //! payload through this module, validates the captured state, and
 //! strips the attribute before re-emitting the struct.
 //! # No regex
@@ -517,7 +517,7 @@ fn canonical_scope_key(raw: &str) -> Option<&'static str> {
 fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
     let raw = name.to_string();
     // Strip the `r#` raw-identifier prefix when present (syn renders
-    // raw idents as `r#name` in `.to_string`). The downstream
+    // raw idents as `r#name` in `.to_string()`). The downstream
     // emitter writes the bare identifier into SQL aliases and Rust
     // field names; the raw escape is a Rust-side concern only.
     let stripped = raw.strip_prefix("r#").unwrap_or(raw.as_str());
@@ -996,7 +996,7 @@ fn skip_dollar_body(bytes: &[u8], body_start: usize, tag_bytes: &[u8]) -> usize 
 /// - **Model-level pk = None incompatibility (E_DJG_VDF_015)**
 ///   the caller supplies the model's PK strategy; `pk = None` rejects
 ///   the entire attribute.
-///   Returns `Ok` when every check passes; any failure returns a
+///   Returns `Ok(())` when every check passes; any failure returns a
 ///   span-precise `syn::Error` pointing at the offending derived
 ///   attribute.
 pub fn cross_check(
@@ -1205,7 +1205,7 @@ fn classify_if(if_expr: &syn::ExprIf) -> FallibilityShape {
     if !then_tail.is_fallible() {
         return FallibilityShape::Infallible;
     }
-    // Else-branch tail. Missing else => `` => infallible.
+    // Else-branch tail. Missing else => `()` => infallible.
     let else_tail = match &if_expr.else_branch {
         Some((_, expr)) => classify_expr(expr),
         None => FallibilityShape::Infallible,

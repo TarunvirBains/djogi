@@ -58,8 +58,8 @@
 //! which returns a `BTreeSet<FilesystemBucket>` — already sorted by
 //! `(database, app)`. Verify converts that to a `Vec` and does NOT
 //! re-shuffle, so failure messages are reproducible across machines.
-//! Symlinks are not followed (the scanner uses `file_type` which
-//! returns `false` for `is_dir` on symlinks).
+//! Symlinks are not followed (the scanner uses `file_type()` which
+//! returns `false` for `is_dir()` on symlinks).
 //! # Spec anchors
 //! - v3 plan §452 (snapshot signing surface)
 //! - v3 plan §459–460 (audit cross-check contract)
@@ -118,7 +118,7 @@ pub enum VerifyError {
     /// hash an attacker-controlled file (e.g. `/etc/passwd`) before
     /// reporting a confusing MISMATCH against the audit ledger. The
     /// scanner already skips symlinked directories via
-    /// `entry.file_type.is_dir` returning `false` for symlinks; this
+    /// `entry.file_type().is_dir()` returning `false` for symlinks; this
     /// variant closes the file-side gap on the same defense.
     /// Residual TOCTOU window: between this `symlink_metadata` check
     /// and the subsequent `std::fs::read`, an attacker with write
@@ -173,7 +173,7 @@ impl std::error::Error for VerifyError {
 
 /// `djogi verify` entry point — consumed by `main.rs::TopCommand::Verify`.
 /// `workspace`: optional workspace-root override. Defaults to
-/// `std::env::current_dir`.
+/// `std::env::current_dir()`.
 /// Returns:
 /// - `ExitCode::SUCCESS` when every entry is `Ok` or `Skipped`.
 /// - `ExitCode::from(1)` when at least one entry is `Mismatch` OR a
@@ -338,8 +338,8 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
 // and the self-audit guard.
 
 /// Read a snapshot file's bytes, refusing to follow symlinks.
-/// DIRECTORIES via `entry.file_type?.is_dir`, but the verify path's
-/// per-bucket file lookup previously used `path.is_file` (which
+/// DIRECTORIES via `entry.file_type()?.is_dir()`, but the verify path's
+/// per-bucket file lookup previously used `path.is_file()` (which
 /// follows symlinks) followed by `std::fs::read`. A symlinked
 /// `schema_snapshot.json` pointing at `/etc/passwd` (or any
 /// attacker-controlled file) would have its bytes hashed and
@@ -359,7 +359,7 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
 ///   **Residual TOCTOU.** Between `symlink_metadata` and `std::fs::read`
 ///   an attacker with write access to the migrations tree could swap the
 ///   regular file for a symlink. Closing that window properly requires
-///   `openat`-style fd re-checking (open the file, then `metadata`
+///   `openat`-style fd re-checking (open the file, then `metadata()`
 ///   the open handle); for v0.1.0 the symlink-reject is the main exploit
 ///   vector and the residual window is documented on
 ///   [`VerifyError::SymlinkSnapshot`]. may revisit.
@@ -522,10 +522,10 @@ mod tests {
         // #118 — verify.rs now delegates to
         // `djogi::migrate::resolve_audit_url`. The resolver's typed
         // `AuditUrlError::SelfAudit` is mapped to `VerifyError::Config`
-        // via `map_err(|e| VerifyError::Config(e.to_string))`. We
+        // via `map_err(|e| VerifyError::Config(e.to_string()))`. We
         // assert the mapping preserves the operator-actionable
         // substrings the original tests pinned, so a future refactor
-        // that drops `to_string` (or wraps the error differently)
+        // that drops `to_string()` (or wraps the error differently)
         // trips the assertion before reaching production.
         // Resolver-internal coverage (env-var priority, empty-env
         // fallback, unresolvable path, self-audit refusal) lives in
@@ -580,7 +580,7 @@ mod tests {
 
         // Create a target file OUTSIDE the workspace — the canonical
         // attack shape is a symlink pointing at /etc/passwd, but a
-        // plain file under temp_dir exercises the same codepath
+        // plain file under temp_dir() exercises the same codepath
         // without depending on a system file the test runner may not
         // be permitted to read.
         let outside_target =

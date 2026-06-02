@@ -1,5 +1,5 @@
 //! Injects `id`, `created_at`, `updated_at` as the first fields of the struct.
-//! Also generates a `Default` impl for struct-update syntax (`..Post::default`).
+//! Also generates a `Default` impl for struct-update syntax (`..Post::default()`).
 //! # Field injection
 //! The `#[model]` attribute macro calls `inject::expand`, which prepends the
 //! framework-managed fields to the user's named field list. The `id` field is
@@ -34,7 +34,7 @@
 //! Post::create(&pool, draft).await?;
 //! ```
 //! The sentinel values (`HeerId(0)`, `UNIX_EPOCH`) are *never* written to the
-//! database — `create` uses `RETURNING *` to populate them from DB defaults.
+//! database — `create()` uses `RETURNING *` to populate them from DB defaults.
 //! They exist purely to satisfy Rust's requirement that every field in a struct
 //! literal is initialised.
 
@@ -68,7 +68,7 @@ fn is_framework_column(name: &str, model_attrs: &ModelAttrs) -> bool {
 ///   When `model_attrs.no_default` is `true`, the `Default` impl is omitted.
 ///   This is required for models that contain field types that do not implement
 ///   `Default` (e.g. `time::Date`). Those models cannot use struct-update
-///   syntax (`..Model::default`) — all fields must be initialised explicitly.
+///   syntax (`..Model::default()`) — all fields must be initialised explicitly.
 ///   Callers must pass a `mut` borrow because the struct's field list is
 ///   reordered in-place.
 pub fn expand(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<TokenStream> {
@@ -159,16 +159,16 @@ fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
 /// Generate `impl Default for <Struct>` with sentinel values for framework fields.
 /// Sentinel values:
 /// - `HeerId` / `HeerIdDesc` / `RanjId` / `RanjIdDesc` →
-///   `<T as ::djogi::primary_key::PrimaryKey>::sentinel` — zero-valued
+///   `<T as ::djogi::primary_key::PrimaryKey>::sentinel()` — zero-valued
 ///   instance the trait factory produces. Replaces the legacy
-///   `::djogi::types::__*_default` hidden helpers.
-/// - `i32` (serial) → `0i32` (matches `<i32 as PrimaryKey>::sentinel`)
+///   `::djogi::types::__*_default()` hidden helpers.
+/// - `i32` (serial) → `0i32` (matches `<i32 as PrimaryKey>::sentinel()`)
 /// - `created_at` / `updated_at` → `::djogi::types::DateTime::UNIX_EPOCH`
-/// - User fields → `Default::default` (user types must implement `Default`)
+/// - User fields → `Default::default()` (user types must implement `Default`)
 ///   The `user_field_defaults` filter operates on the struct's field list
 ///   *after* `inject_fields` has prepended framework fields. For `pk = None`,
 ///   no `id` is injected, so a user's own `id` field (if present) survives the
-///   filter and gets a `Default::default` entry like any other user field.
+///   filter and gets a `Default::default()` entry like any other user field.
 fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream {
     let name = &struct_item.ident;
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
@@ -187,11 +187,11 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
             // Built-in PK-shaped types (HeerId/RanjId families and their
             // recency-biased aliases) come from the upstream `heeranjid`
             // crate and cannot carry `impl Default` here (orphan rule).
-            // Route their defaults through `<T as PrimaryKey>::sentinel`
+            // Route their defaults through `<T as PrimaryKey>::sentinel()`
             // so an ambient (non-`id`) field of such a type still
             // initialises in the generated `Default` impl. Custom PK types
             // emitted by `djogi::primary_key!` ship their own `impl Default`
-            // delegating to `sentinel`, so they fall through to the
+            // delegating to `sentinel()`, so they fall through to the
             // default branch without needing a name match.
             if is_builtin_pk_type(&f.ty) {
                 let ty = &f.ty;
@@ -229,7 +229,7 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
 /// Tokens for the `id` field's type under each PK strategy, or `None` when
 /// the macro should not inject an `id` field at all (`pk = None`).
 /// Used by both `inject_fields` (to build the field declaration) and
-/// `generate_default_impl` (to build the `<T as PrimaryKey>::sentinel`
+/// `generate_default_impl` (to build the `<T as PrimaryKey>::sentinel()`
 /// expression). Custom PK paths are interpolated verbatim — the macro
 /// `djogi::primary_key!` ships the matching trait impls at the path's
 /// definition site.
@@ -251,7 +251,7 @@ fn pk_type_tokens(pk: &PkStrategy) -> Option<TokenStream> {
 /// These types come from the upstream `heeranjid` crate (re-exported via
 /// `djogi::types`) and Djogi cannot carry `impl Default` for them (orphan
 /// rule). The generated `Default` impl routes ambient fields of such a type
-/// through `<T as PrimaryKey>::sentinel` so the impl still compiles.
+/// through `<T as PrimaryKey>::sentinel()` so the impl still compiles.
 /// Path forms accepted: bare ident, `djogi::T`, and `djogi::types::T`
 /// each with or without a leading `::`. Generic arguments anywhere in the
 /// path disqualify the match (PK types are nullary).

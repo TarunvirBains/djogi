@@ -20,7 +20,7 @@
 //! transaction connection transparently. The same call site works against
 //! a pool-backed context or a transaction-backed one.
 //! # `is_empty` short-circuit contract
-//! Every terminal honours the `QuerySet::none` contract — a queryset
+//! Every terminal honours the `QuerySet::none()` contract — a queryset
 //! marked `is_empty = true` returns the empty result **without issuing any
 //! SQL**:
 //! | Method | Empty result |
@@ -71,27 +71,27 @@ use std::hash::Hash;
 
 // ── Auto-tenant helper ────────────────────────────────────────────────────
 
-/// If `T` has a `tenant_key` and `ctx.auth` carries a `tenant_id`, call
+/// If `T` has a `tenant_key` and `ctx.auth()` carries a `tenant_id`, call
 /// `ctx.ensure_tenant_set(tenant_id)` so the `app.tenant_id` GUC is active
 /// before any SQL is issued.
 /// This helper is shared by all QuerySet terminals. The borrow is structured
-/// to avoid overlapping borrows: `ctx.auth` borrows `ctx` immutably;
+/// to avoid overlapping borrows: `ctx.auth()` borrows `ctx` immutably;
 /// cloning the `String` drops that borrow before `ctx.ensure_tenant_set`
 /// takes `&mut ctx`.
 /// Behavior by case:
-/// - `T::descriptor.tenant_key` is `None` → no-op (model has no RLS column).
-/// - `ctx.auth` is `None` → no-op (no auth context attached; pre-auth
+/// - `T::descriptor().tenant_key` is `None` → no-op (model has no RLS column).
+/// - `ctx.auth()` is `None` → no-op (no auth context attached; pre-auth
 ///   or non-tenant code path).
-/// - `ctx.auth.tenant_id` is `Some(tid)` → delegates to
+/// - `ctx.auth().tenant_id` is `Some(tid)` → delegates to
 ///   `ctx.ensure_tenant_set(tid)` which re-issues `SET LOCAL` when the
 ///   requested tid differs from the currently-applied one.
-/// - `ctx.auth.tenant_id` is `None` AND a previous tid is still applied
-///   → clears the `app.tenant_id` GUC via `ctx.clear_tenant`. Without
+/// - `ctx.auth().tenant_id` is `None` AND a previous tid is still applied
+///   → clears the `app.tenant_id` GUC via `ctx.clear_tenant()`. Without
 ///   this reset, a `set_auth(auth_with_tenant)` followed by
 ///   `set_auth(auth_without_tenant)` inside one transaction would leave
 ///   the earlier tenant's `SET LOCAL` active silently — a cross-tenant
 ///   leak. A `tracing::warn!` is also emitted (unless
-///   `ctx.with_no_tenant_scope` was called) so the caller sees the
+///   `ctx.with_no_tenant_scope()` was called) so the caller sees the
 ///   transition.
 pub(crate) async fn auto_set_tenant<T: Model>(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
     if T::descriptor().tenant_key.is_none() {
@@ -166,7 +166,7 @@ where
     T: FromPgRow + Send + Unpin,
 {
     /// Execute the query and collect every matching row into a `Vec<T>`.
-    /// A `QuerySet::none`-derived queryset returns `Ok(Vec::new)` without
+    /// A `QuerySet::none()`-derived queryset returns `Ok(Vec::new())` without
     /// touching the database — see the module docs for the full short-
     /// circuit contract.
     pub fn fetch_all<'ctx>(
@@ -260,8 +260,8 @@ where
             match rows.len() {
                 0 => Err(DjogiError::not_found(T::table_name())),
                 1 => {
-                    // `into_iter.next.unwrap` is safe — we just
-                    // matched `len == 1`. `expect` instead of `unwrap`
+                    // `into_iter().next().unwrap()` is safe — we just
+                    // matched `len() == 1`. `expect` instead of `unwrap`
                     // keeps the message actionable in the unlikely event a
                     // future refactor reshapes the branch.
                     let row = rows
@@ -281,7 +281,7 @@ where
                 // above, `n` is always exactly 2 on this branch — not the
                 // true matching-row count. The cap is intentional (one
                 // round trip instead of a `COUNT(*)` probe); callers who
-                // need the precise count follow up with `.count`. Ship
+                // need the precise count follow up with `.count()`. Ship
                 // the sentinel through to `MultipleObjects.count_seen`; the
                 // error message renders "at least 2".
                 n => Err(DjogiError::multiple_objects(T::table_name(), n)),
@@ -307,7 +307,7 @@ where
     /// which is documented on the field itself.
     /// # Short-circuit contract
     /// Honours the same `is_empty` short-circuit as the other terminals:
-    /// a structural-none queryset returns `Ok(Vec::new)` without
+    /// a structural-none queryset returns `Ok(Vec::new())` without
     /// touching the database. An empty main result also short-circuits
     /// the prefetch pass — no prefetch loader runs when there are no
     /// parent rows to stitch against.
@@ -332,7 +332,7 @@ where
     {
         async move {
             // TASK6:empty_contract — structural-none queryset returns
-            // `Vec::new` without touching the DB. Mirrors the
+            // `Vec::new()` without touching the DB. Mirrors the
             // `fetch_all` short-circuit.
             if self.is_empty() {
                 return Ok(Vec::new());
@@ -395,7 +395,7 @@ where
     ///    [`crate::relation::select_related::stitch_prefetches_into_joined`].
     /// # Short-circuit contract
     /// Honours the same `is_empty` short-circuit as every other
-    /// terminal — a structural-none queryset returns `Ok(Vec::new)`
+    /// terminal — a structural-none queryset returns `Ok(Vec::new())`
     /// without touching the database. An empty main result also
     /// short-circuits the prefetch pass — no prefetch loader runs
     /// when there are no parent rows to stitch against.
@@ -405,7 +405,7 @@ where
     /// and transaction-backed contexts are both supported — the main
     /// query and prefetch fan-out both dispatch through the context
     /// helpers, so `select_related` works inside an
-    /// `atomic` scope and sees the scope's uncommitted writes.
+    /// `atomic()` scope and sees the scope's uncommitted writes.
     // TODO: does NOT yet honour `cache_target` — see the
     // remote anchor at the bottom of this impl block (above `stream`)
     // for the deferral rationale.
@@ -419,7 +419,7 @@ where
     {
         async move {
             // TASK6:empty_contract — structural-none queryset returns
-            // `Vec::new` without touching the DB. Mirrors every other
+            // `Vec::new()` without touching the DB. Mirrors every other
             // terminal.
             if self.is_empty() {
                 return Ok(Vec::new());
@@ -500,7 +500,7 @@ where
     }
 
     /// Find-or-create: return the first row matching the queryset, or
-    /// create a new row from `factory` when none matches.
+    /// create a new row from `factory()` when none matches.
     /// The tuple's second element reports which branch ran
     /// `true` when a new row was inserted, `false` when an existing row
     /// was found. This mirrors the Django ORM's `get_or_create` shape
@@ -520,12 +520,12 @@ where
     /// probe and the create — the INSERT then collides with whatever
     /// uniqueness constraint covers the filter. Wrap the call in
     /// [`atomic`](crate::transaction::atomic) + one of:
-    /// - `select_for_update` on the queryset to serialise lookups
+    /// - `select_for_update()` on the queryset to serialise lookups
     /// - an `ON CONFLICT` clause on the underlying table
     ///   when the caller needs strict once-only semantics.
     ///   Task 7.5 adds `create_or_find` for the conflict-key path.
     /// # Short-circuit
-    /// A `QuerySet::none`-derived queryset short-circuits the
+    /// A `QuerySet::none()`-derived queryset short-circuits the
     /// lookup to `Ok(None)`, so the factory **runs and a row is
     /// inserted**. Callers who want "no insert on structural-none"
     /// must guard before calling.
@@ -548,7 +548,7 @@ where
     }
 
     /// Update-or-create: find the first matching row and mutate it via
-    /// `updater`, or create a fresh row from `factory` when none
+    /// `updater`, or create a fresh row from `factory()` when none
     /// matches.
     /// The tuple's second element reports which branch ran
     /// `true` when a new row was inserted, `false` when an existing
@@ -558,7 +558,7 @@ where
     ///   [`save`](crate::model::Model::save) rehydrates the row from
     ///   `UPDATE ... RETURNING *` — `updated_at` advances and any
     ///   trigger-mutated column surfaces in the returned `T`.
-    /// - Missing branch: `factory` runs and
+    /// - Missing branch: `factory()` runs and
     ///   [`create`](crate::model::Model::create) inserts the new row;
     ///   the returned `T` is the `RETURNING *` rehydration.
     ///   `updater` takes `&mut T` so callers can mutate multiple fields
@@ -606,14 +606,14 @@ where
     ///     .await?;
     /// ```
     /// A bare `Account::in_bulk(ctx, ids)` is still reachable as
-    /// `Account::objects.in_bulk(ctx, ids)`.
+    /// `Account::objects().in_bulk(ctx, ids)`.
     /// # Empty input
-    /// `ids.is_empty` returns `Ok(HashMap::new)` without a round
-    /// trip — `id IN ` is invalid SQL, and an empty probe always
+    /// `ids.is_empty()` returns `Ok(HashMap::new())` without a round
+    /// trip — `id IN ()` is invalid SQL, and an empty probe always
     /// yields an empty map anyway.
     /// # Short-circuit
     /// Honours the `is_empty` structural-none contract — a
-    /// `QuerySet::none`-derived queryset returns `Ok(HashMap::new)`
+    /// `QuerySet::none()`-derived queryset returns `Ok(HashMap::new())`
     /// without SQL emission, matching every other terminal.
     // TODO: does NOT yet honour `cache_target` — see the
     // remote anchor at the bottom of this impl block (above `stream`)
@@ -734,7 +734,7 @@ where
     /// # Transaction requirement
     /// Named Postgres cursors are transaction-local. This terminal requires
     /// `ctx` to be backed by an active transaction (i.e. called inside an
-    /// [`atomic`](crate::transaction::atomic) scope). Calling `stream` on a
+    /// [`atomic()`](crate::transaction::atomic) scope). Calling `stream` on a
     /// pool-backed context returns
     /// `Err(DjogiError::StreamOutsideTransaction)` immediately — the error
     /// surfaces at construction time, not on the first `poll_next`.

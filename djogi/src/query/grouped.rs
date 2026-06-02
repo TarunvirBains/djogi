@@ -148,7 +148,7 @@ where
 
 // ── Arity 2..=4: tuples of DjogiField<M, V_i> ───────────────────────────────
 // Mirrors the `FieldRef` tuple impl set so post-PR3 root closures returning
-// `(f.col_a, f.col_b, ...)` compose directly without unwrapping each
+// `(f.col_a(), f.col_b(), ...)` compose directly without unwrapping each
 // accessor.
 
 macro_rules! impl_into_group_key_tuple_djogi {
@@ -209,7 +209,7 @@ impl_into_group_key_tuple_djogi!(
 
 /// Discriminated union of the three spatial group-source strategies.
 /// - `Join` — region path: LEFT JOIN + `ST_Contains` + GROUP BY region PK.
-/// - `Cluster` — DBSCAN path: `ST_ClusterDBSCAN(...) OVER ` window aggregate.
+/// - `Cluster` — DBSCAN path: `ST_ClusterDBSCAN(...) OVER ()` window aggregate.
 /// - `Geohash` — geohash path: `ST_GeoHash(..., precision)` scalar function.
 ///   Stored as `Option<SpatialGroupSource>` on `GroupedQuerySet` and
 ///   `GroupedAnnotatedQuerySet`; `None` means a plain non-spatial GROUP BY.
@@ -229,10 +229,10 @@ pub(crate) enum SpatialGroupSource {
 // `spatial_grouping.rs`. The seal module above is `pub(crate)` so spatial
 // impls can name `sealed::Sealed` directly without weakening the public seal.
 
-// ── Arity 0: unit key — used exclusively by group_by_sets ─────────────
+// ── Arity 0: unit key () — used exclusively by group_by_sets ─────────────
 // GROUPING SETS emits its own column list directly from the `Sets` payload;
-// the key tuple plays no role in SQL emission for that mode. The `` impl
-// exists only so `GroupedQuerySet<T, >` satisfies the `IntoGroupKeyTuple`
+// the key tuple plays no role in SQL emission for that mode. The `()` impl
+// exists only so `GroupedQuerySet<T, ()>` satisfies the `IntoGroupKeyTuple`
 // bound — it is a structural marker, not a real decoder.
 
 impl sealed::Sealed for () {}
@@ -251,7 +251,7 @@ impl IntoGroupKeyTuple for () {
     }
 
     fn decode_tuple(_row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
-        // The unit key decodes as `` — callers access grouped-set column
+        // The unit key decodes as `()` — callers access grouped-set column
         // values via raw row access on the returned `tokio_postgres::Row`,
         // not through this typed decode path.
         Ok(())
@@ -372,7 +372,7 @@ impl<T: Model, K: IntoGroupKeyTuple> GroupedQuerySet<T, K> {
 
 // `.having` and `.order_by` consume clones of `K` and `A` so the closure
 // receives them by value — the caller can call consuming methods like
-// `AggregateExpr::gt(100)` directly without extra `.clone` noise.
+// `AggregateExpr::gt(100)` directly without extra `.clone()` noise.
 // `Clone` bounds are intentional here and limited to these two methods.
 impl<T: Model, K: IntoGroupKeyTuple + Clone, A: crate::query::annotate::IntoAggregateTuple + Clone>
     GroupedAnnotatedQuerySet<T, K, A>
@@ -460,9 +460,9 @@ where
 
             // Reject pair-only aggregates on the single-Model grouped
             // path. Two signals together cover the rejection set: the
-            // narrower `requires_closure_pair_join` (today:
+            // narrower `requires_closure_pair_join()` (today:
             // `PairClosureKinshipSum<C>`) and the broader
-            // `requires_pair_tuple_scope` (today: also
+            // `requires_pair_tuple_scope()` (today: also
             // `PairAreaOverlapRatio<L, R>` — see the matching gate on
             // `AnnotatedQuerySet::fetch_all` for the design rationale).
             // The grouped path emits a single-table FROM with no
@@ -819,7 +819,7 @@ mod tests {
 
     #[test]
     fn queryset_group_by_sets_returns_grouped_queryset_unit_key() {
-        // Type-level check: group_by_sets returns GroupedQuerySet<T, >.
+        // Type-level check: group_by_sets returns GroupedQuerySet<T, ()>.
         // Also verifies the GROUPING SETS clause is emitted correctly via
         // the SQL emitter.
         use crate::query::sql::build_grouped_annotated_select;
@@ -858,7 +858,7 @@ mod tests {
     #[test]
     fn queryset_grouping_sets_extracts_columns_from_field_refs() {
         // Verify the closure receives `T::Fields` and adopters can call
-        // `.column` on each FieldRef to extract column names.
+        // `.column()` on each FieldRef to extract column names.
         use crate::query::sql::build_grouped_annotated_select;
         let qs: QuerySet<Fake> = QuerySet::new();
         let vals: FieldRef<Fake, i64> = FieldRef::new("amount");

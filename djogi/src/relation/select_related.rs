@@ -78,7 +78,7 @@ pub(crate) type JoinDecoderFn =
 /// `Child` and stored as a plain `fn` pointer on
 /// [`ErasedSelectRelated`] so the emitter can read the child's
 /// declared column list without naming the concrete type.
-/// Delegates to `<Child as Model>::descriptor` via [`child_descriptor`].
+/// Delegates to `<Child as Model>::descriptor()` via [`child_descriptor`].
 pub(crate) type ChildDescriptorFn = fn() -> &'static crate::descriptor::ModelDescriptor;
 
 /// A single registered select_related path on a
@@ -118,7 +118,7 @@ pub(crate) struct ErasedSelectRelated {
     pub child_descriptor: ChildDescriptorFn,
 }
 
-/// Monomorphised accessor for `<Child as Model>::descriptor`. Stored
+/// Monomorphised accessor for `<Child as Model>::descriptor()`. Stored
 /// as a plain `fn` pointer on [`ErasedSelectRelated`] so the emitter
 /// can read the child's declared column list without naming the
 /// concrete type.
@@ -342,7 +342,7 @@ where
     // Fan out each prefetch loader, same shape as
     // `relation::prefetch::apply_prefetches` — we duplicate the
     // orchestration here (rather than reusing that function) because
-    // the stitcher writes into `JoinedRow::relations_mut`, not the
+    // the stitcher writes into `JoinedRow::relations_mut()`, not the
     // `PrefetchedRow::relations` field, and `PrefetchedRow` is a
     // distinct wrapper type whose conversion into `JoinedRow` would
     // cost more than the 20-line fan-out.

@@ -29,7 +29,7 @@ use std::marker::PhantomData;
 /// Parameters captured at `group_by_region` call time. The SQL builder reads
 /// these to emit the LEFT JOIN clause and the GROUP BY target.
 /// All fields are `&'static str` — they come from macro-baked
-/// `Model::table_name` and `FieldDescriptor::name`, so they are always
+/// `Model::table_name()` and `FieldDescriptor::name`, so they are always
 /// `'static`. No user input flows through this struct.
 /// This type is internal to `djogi` — it is not constructed or inspected by
 /// user code. Only `group_by_region` produces it; only the SQL builder reads it.
@@ -348,7 +348,7 @@ impl IntoGroupKeyTuple for ClusterId {
     fn push_select_columns(&self, _acc: &mut SqlAccumulator) {
         // `cluster_by_proximity` always routes through
         // `build_cluster_grouped_select`, which emits its own
-        // `ST_ClusterDBSCAN(...) OVER AS cluster_id` expression and never
+        // `ST_ClusterDBSCAN(...) OVER () AS cluster_id` expression and never
         // calls this method. Panic loudly so a future refactor that
         // accidentally routes ClusterId through the plain
         // `build_grouped_annotated_select` path fails fast instead of

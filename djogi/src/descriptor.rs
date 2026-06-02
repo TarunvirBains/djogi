@@ -101,7 +101,7 @@ pub enum FieldSqlType {
     ///   integrality CHECK (`col >= 0 AND col <= u64::MAX AND col = trunc(col)`).
     /// * `Some(RustSourceType::Decimal)` — `rust_decimal::Decimal` columns,
     ///   with a structural CHECK enforcing the 96-bit mantissa / scale ≤ 28
-    ///   representable range (``).
+    ///   representable range (`djogi#188`).
     /// * `None` — adopter custom types whose `DjogiSqlType::SQL_TYPE`
     ///   resolves to `"NUMERIC"`; no Rust-derived CHECK is projected because
     ///   the framework cannot know an adopter scalar type's representable
@@ -947,7 +947,7 @@ mod tests {
 
     // ── — network family Display projection ─────────────────────
     // The migration composer projects column types by calling
-    // `FieldSqlType::to_string` (see `migrate/projection.rs` and
+    // `FieldSqlType::to_string()` (see `migrate/projection.rs` and
     // `migrate/sql.rs`). These tests pin the Display surface so a future
     // refactor that drops or renames a variant fails at descriptor-level
     // before reaching the live-DB integration gate.
@@ -986,7 +986,7 @@ mod tests {
     // `field_descriptor` constructor still compiles for non-domain
     // fields. The Display surface is the load-bearing path: the
     // migration composer / differ / docs / snapshot all consume
-    // `to_string` output and never destructure the variant — keeping
+    // `to_string()` output and never destructure the variant — keeping
     // the rendered form pinned closes the silent-rename failure mode
     // before reaching the live-DB integration gate.
     // The variant carries `name: &'static str` + `base: &'static FieldSqlType`.
@@ -1332,7 +1332,7 @@ mod tests {
             IndexTarget::Expression(_) => panic!("expected Columns target"),
         }
 
-        // Also round-trip the legacy `simple` path.
+        // Also round-trip the legacy `simple()` path.
         let c = IndexSpec::simple("idx", &["col"], false, IndexType::BTree);
         let d = c.clone();
         assert_eq!(c, d);
@@ -2056,7 +2056,7 @@ mod protected_field_metadata_tests {
 /// | `U8` | SMALLINT (INT2) | `i16::from(v)` | `u8::try_from(i16)` | range `0..=255` |
 /// | `U16` | INTEGER (INT4) | `i32::from(v)` | `u16::try_from(i32)` | range `0..=65535` |
 /// | `U32` | BIGINT (INT8) | `i64::from(v)` | `u32::try_from(i64)` | range `0..=4294967295` |
-/// | `U64` | NUMERIC | `Decimal::from(v)` | `Decimal::to_u64` | range + integrality (`col = trunc`) |
+/// | `U64`            | NUMERIC            | `Decimal::from(v)` | `Decimal::to_u64()`  | range + integrality (`col = trunc`)   |
 /// | `Decimal` | NUMERIC | none (native impl) | none (native impl) | structural `mantissa ≤ 2^96 − 1` |
 /// # Why not `i8` in a native `ToSql` impl?
 /// `postgres-types` does implement `ToSql` for `i8`, but it maps to the
@@ -2161,7 +2161,7 @@ pub struct FieldDescriptor {
     pub relation_kind: Option<RelationKind>,
 
     /// `#[field(on_delete = "...")]` value, meaningful only when
-    /// `relation_kind.is_some`. A `None` here with `relation_kind = Some`
+    /// `relation_kind.is_some()`. A `None` here with `relation_kind = Some`
     /// falls back to `OnDelete::Restrict` at DDL-emission time
     /// matching the framework's cascade-off-by-default stance. The
     /// descriptor stores the parsed value (not the raw string) so every
@@ -2446,9 +2446,9 @@ pub struct FieldDescriptor {
 ///   once and cache.
 /// - [`Self::Stable`] — the expression returns the same value within a
 ///   single query / statement but can vary across statements (e.g.
-///   `now` is STABLE, not VOLATILE).
+///   `now()` is STABLE, not VOLATILE).
 /// - [`Self::Volatile`] — the expression can return different values on
-///   each call (e.g. `clock_timestamp`, `random`). Triggers the
+///   each call (e.g. `clock_timestamp()`, `random()`). Triggers the
 ///   3-step ExpandContract pattern at compose time.
 ///   Narrow constructor for [`FieldDescriptor`] — required identity
 ///   fields at call site, every optional field defaulted.
@@ -2685,7 +2685,7 @@ pub struct ProtectedFieldMetadata {
 
 impl Default for ProtectedFieldMetadata {
     /// Neutral defaults: no sensitivity, no rationale, no redaction,
-    /// no codec, standard retention. Constructed via `..Default::default`
+    /// no codec, standard retention. Constructed via `..Default::default()`
     /// when the macro elides unset attribute knobs.
     fn default() -> Self {
         Self {
@@ -2753,7 +2753,7 @@ pub struct CustomPrimaryKeyKind {
     pub type_name: &'static str,
     /// Postgres column type emitted into DDL — e.g. `"UUID"` / `"BIGINT"`.
     pub sql_type: &'static str,
-    /// Column `DEFAULT` SQL — e.g. `"gen_random_uuid"`. Empty string
+    /// Column `DEFAULT` SQL — e.g. `"gen_random_uuid()"`. Empty string
     /// denotes no default (client-generated).
     pub default_sql: &'static str,
 }
@@ -2808,7 +2808,7 @@ pub enum PkType {
 /// injection order. See [`FieldDescriptor`] for the exact ordering contract.
 /// `Clone` was added in because the migrate module's
 /// differ-test fixtures need to construct multiple variants of a
-/// descriptor via struct-update syntax (`..base.clone`); the
+/// descriptor via struct-update syntax (`..base.clone()`); the
 /// derived implementation does a deep copy of the `Option<PartitionSpec>`
 /// and `Option<FtsDescriptor>` fields and a shallow copy of the
 /// `&'static` references.
@@ -2830,14 +2830,14 @@ pub struct ModelDescriptor {
     pub has_outbox: bool,
 
     // ── Idempotency (item 28, realtime-tenancy-outbox plan) ─────────────────
-    /// Column name used as the idempotency key for `create_or_find`.
+    /// Column name used as the idempotency key for `create_or_find()`.
     /// Set via `#[model(idempotency_key = "request_id")]`.
     pub idempotency_key: Option<&'static str>,
 
     // ── Multi-Tenancy / RLS (item 25, realtime-tenancy-outbox plan) ─────────
     /// Column name used as the Row Level Security tenant isolation key.
     /// Set via `#[model(tenant_key = "org_id")]`.
-    /// When set, `query` warns if `set_tenant` has not been called.
+    /// When set, `query()` warns if `set_tenant()` has not been called.
     /// `query_insecurely` bypasses the check .
     pub tenant_key: Option<&'static str>,
 
@@ -3024,7 +3024,7 @@ pub struct ModelDescriptor {
 /// evaluated at query time (filter, order_by, annotate via the
 /// `{Model}Computed` ZST emitted alongside the model), and the Rust-
 /// side getter evaluates the equivalent expression in-memory for
-/// adopters who need to call `vehicle.total_price` after `fetch_one`
+/// adopters who need to call `vehicle.total_price()` after `fetch_one()`
 /// without a re-query. The stored variant (`#[computed(sql, stored)]`)
 /// is deferred to — the macro emits a span-precise deferral
 /// error when the `stored` keyword appears.
@@ -3038,7 +3038,7 @@ pub struct ModelDescriptor {
 pub struct ComputedFieldDescriptor {
     /// Rust identifier for the computed field — also the suggested
     /// `SELECT`-list alias when the expression is used in
-    /// `.annotate`. Validated at parse time against the same
+    /// `.annotate()`. Validated at parse time against the same
     /// byte-level grammar as regular column names: ASCII letter or
     /// underscore start, alphanumerics or underscores after, ≤ 63
     /// bytes (Postgres unquoted-identifier cap).
@@ -3144,7 +3144,7 @@ impl ModelDescriptor {
     /// returned column name becomes the source-column of a synthesised
     /// `RelationPath<T, T>` and an alternative inside the lateral
     /// `UNION ALL` subquery the recursive term joins to.
-    /// Returns an empty iterator when `self_fk_count == 0`. Order
+    /// Returns an empty iterator when `self_fk_count() == 0`. Order
     /// matches descriptor field-injection order, which equals struct
     /// declaration order for user-defined columns — so emitted SQL is
     /// stable across builds for a fixed source.
@@ -3595,8 +3595,8 @@ inventory::collect!(EnumPredicateCodec);
 // Separate from `ModelDescriptor` (the storage-side inventory consumed by
 // the migration differ). `inventory::collect!(VisageDescriptor)` registers
 // its OWN collection, so the migration / snapshot / `build.rs` paths
-// which iterate `inventory::iter::<ModelDescriptor>` and
-// `inventory::iter::<EnumDescriptor>` exclusively — never observe
+// which iterate `inventory::iter::<ModelDescriptor>()` and
+// `inventory::iter::<EnumDescriptor>()` exclusively — never observe
 // derived projections. The boundary mirrors the storage-vs-projection
 // split the rest of the visage-derived-fields surface establishes.
 // ───────────────────────────────────────────────────────────────────────────
@@ -3707,9 +3707,9 @@ pub struct DerivedProjection {
 /// path strictly storage-shaped.
 /// # Emission contract
 /// The `#[model]` macro emits one `inventory::submit!(VisageDescriptor
-/// { ... })` block per `(Model, scope)` pair for which `scope_derived`
+/// { ... })` block per `(Model, scope)` pair for which `scope_derived()`
 /// returns at least one entry. `pk = None` source models are skipped
-/// (they have no `Model::table_name`, hence no SELECT projection,
+/// (they have no `Model::table_name()`, hence no SELECT projection,
 /// hence nothing meaningful for a descriptor to describe).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisageDescriptor {
@@ -3729,7 +3729,7 @@ pub struct VisageDescriptor {
     /// order the macro emits the visage struct fields, the SELECT
     /// alias positions, and the in-memory init expressions. Empty
     /// slices are not emitted (the macro skips
-    /// `inventory::submit!` when `scope_derived` is empty).
+    /// `inventory::submit!` when `scope_derived()` is empty).
     pub derived: &'static [DerivedProjection],
 }
 

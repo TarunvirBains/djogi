@@ -88,7 +88,7 @@ pub enum FieldColSpec {
     Simple(String),
     /// Record form `(col = ident, opclass = "…", order = asc|desc,
     /// nulls = first|last|default)`. Every record field after `col` is
-    /// optional and defaults to the corresponding `simple` value.
+    /// optional and defaults to the corresponding `simple()` value.
     Record {
         col: String,
         opclass: Option<String>,
@@ -340,7 +340,7 @@ fn parse_fields_array(value: &Expr) -> syn::Result<Vec<FieldColSpec>> {
 fn parse_field_col_spec(elem: &Expr) -> syn::Result<FieldColSpec> {
     match elem {
         // `ident` — bare column reference, shorthand for
-        // IndexColumnSpec::simple(ident). `unraw` normalises raw idents
+        // IndexColumnSpec::simple(ident). `unraw()` normalises raw idents
         // (`r#where`, `r#type`) into their keyword spelling so the
         // downstream comparison against `declared_columns` — which also
         // strips `r#` — succeeds.

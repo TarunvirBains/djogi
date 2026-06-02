@@ -130,10 +130,10 @@ pub trait DjogiAuth: Send + Sync + 'static {
 
     /// Authorize a specific action against a resolved [`AuthContext`].
     /// Required — there is no default. A provider that wants
-    /// authenticate-only semantics must explicitly return `Ok` from this
+    /// authenticate-only semantics must explicitly return `Ok(())` from this
     /// method, making the choice visible at the implementation site.
     /// `action: &dyn Any` accepts typed `Action` enums from the app. The
-    /// implementation downcasts via `action.downcast_ref::<MyAction>` to
+    /// implementation downcasts via `action.downcast_ref::<MyAction>()` to
     /// recover the concrete type. Using `Any` here avoids a generic type
     /// parameter on the trait, which would break object safety.
     /// # Errors

@@ -6,13 +6,13 @@
 //!   [`Jsonb::data`] as a typed value.
 //! - Keys that `T` does not know about (unknown/future fields) land in
 //!   [`Jsonb::extra`] as raw [`serde_json::Value`]s.
-//!   On every `save` the two halves are merged back into a single JSON object
+//!   On every `save()` the two halves are merged back into a single JSON object
 //!   before the value is bound. No unknown key is ever dropped.
 //! # Why preserve unknown fields?
 //! JSONB columns often evolve: a future service or migration version may add
 //! new keys to an existing column. If a running service deserializes only the
 //! keys it knows about and then re-serializes the full object on the next
-//! `save`, those new keys would be silently erased. Djogi prevents this by
+//! `save()`, those new keys would be silently erased. Djogi prevents this by
 //! carrying the unknown portion in [`Jsonb::extra`] and merging it back on
 //! write.
 //! # Postgres codec
@@ -70,15 +70,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone)]
 pub struct Jsonb<T> {
     /// The typed portion of the JSONB object. Fields from `T` are deserialized
-    /// here; mutations here are included on the next `save`.
+    /// here; mutations here are included on the next `save()`.
     pub data: T,
     /// Unknown keys — keys present in the database object but absent from
-    /// `T`'s schema. Preserved verbatim across every `save`.
+    /// `T`'s schema. Preserved verbatim across every `save()`.
     pub(crate) extra: IndexMap<String, UnknownField>,
 }
 
 impl<T: Default> Default for Jsonb<T> {
-    /// Construct a `Jsonb<T>` with `T::default` and an empty `extra` map.
+    /// Construct a `Jsonb<T>` with `T::default()` and an empty `extra` map.
     /// Required so that model structs containing `Jsonb<T>` can derive
     /// `Default` (the `#[model]` macro emits a `Default` impl for the
     /// whole struct, which propagates to every field).
@@ -93,7 +93,7 @@ impl<T: Default> Default for Jsonb<T> {
 impl<T> Jsonb<T> {
     /// Construct a new `Jsonb<T>` from a typed value with an empty `extra` map.
     /// This is the correct constructor for values being inserted for the first
-    /// time. `save` will serialize `data` + the (empty) `extra` to the
+    /// time. `save()` will serialize `data` + the (empty) `extra` to the
     /// column.
     pub fn new(data: T) -> Self {
         Jsonb {
@@ -372,7 +372,7 @@ mod tests {
     }
 
     // ── Cache-boundary projection: Jsonb<T>::to_jsahibon ──────────────────
-    // Per the MirJzSON spec, `Jsonb<T>::to_jsahibon` is the explicit
+    // Per the MirJzSON spec, `Jsonb<T>::to_jsahibon()` is the explicit
     // cache-boundary helper: callers that need to ship `Jsonb<T>` through
     // a Sassi/Punnu cache (where the wire-side downcast goes through
     // `sassi::JSahibON`, not `serde_json::Value`) reach for this method

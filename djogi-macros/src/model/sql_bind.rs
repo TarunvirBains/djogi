@@ -92,10 +92,10 @@ pub fn is_tracked_inner(ty: &Type) -> bool {
 /// Emit `push_bind(...)` tokens for a `SqlAccumulator` bind site.
 /// `field_expr` is the token stream that evaluates to the field's Rust value
 /// an **owned** value of the field's declared Rust type (e.g. `row.count`
-/// in bulk paths, `self.count.clone` in the save path, etc.).
+/// in bulk paths, `self.count.clone()` in the save path, etc.).
 /// `tracked` indicates whether the field type is `Tracked<T>` (or
 /// `Option<Tracked<T>>`). For widened types inside `Tracked`, the emitted
-/// code extracts the inner value via `(*field_expr).clone` before widening.
+/// code extracts the inner value via `(*field_expr).clone()` before widening.
 /// For direct types, `Tracked<T>` implements `ToSql where T: ToSql`, so no
 /// extraction is needed.
 /// For widened types the emitted tokens perform the widening conversion before
@@ -114,18 +114,18 @@ pub fn push_bind_tokens(
 
     // For widened types, extract the inner value from Tracked first.
     let effective = if tracked && !nullable {
-        // Tracked<T>: `(*field_expr).clone` applies `Tracked`'s Deref impl
+        // Tracked<T>: `(*field_expr).clone()` applies `Tracked`'s Deref impl
         // (`Tracked<T>: Deref<Target=T>`) to reach the inner `T`, then clones it.
         // `field_expr` is an owned `Tracked<T>`, so one deref suffices.
         quote! { (*#field_expr).clone() }
     } else if tracked && nullable {
         // Option<Tracked<T>>: extract `Option<T>` by mapping through two derefs.
-        // `field_expr.as_ref` → `Option<&Tracked<T>>`.
+        // `field_expr.as_ref()` → `Option<&Tracked<T>>`.
         // In the closure `__t: &Tracked<T>`:
         // - `*__t` → `Tracked<T>` (deref the `&` reference)
         // - `**__t` → `T` (deref via `Tracked<T>: Deref<Target=T>`)
-        // Using `(*__t).clone` would clone `Tracked<T>` (wrong);
-        // `(**__t).clone` clones the inner `T` (correct).
+        // Using `(*__t).clone()` would clone `Tracked<T>` (wrong);
+        // `(**__t).clone()` clones the inner `T` (correct).
         quote! { #field_expr.as_ref().map(|__t| (**__t).clone()) }
     } else {
         field_expr
@@ -187,7 +187,7 @@ pub fn push_bind_tokens(
 ///   used to generate a unique local binding name that does not clash across
 ///   fields.
 ///   `val_expr` evaluates to an **owned** copy of the field value (e.g.
-///   `value.count` or `value.count.clone`).
+///   `value.count` or `value.count.clone()`).
 pub fn create_param_tokens(
     kind: &BindKind,
     nullable: bool,
@@ -200,17 +200,17 @@ pub fn create_param_tokens(
 
     // Expr to extract the field value, unwrapping Tracked<T> if needed.
     // `tracked=true, nullable=false` — `Tracked<T>`: one deref via Tracked's
-    // `Deref<Target=T>` impl gives the inner `T`. `(*val_expr).clone` works
+    // `Deref<Target=T>` impl gives the inner `T`. `(*val_expr).clone()` works
     // because `val_expr` is an owned `Tracked<T>` value, not a reference.
     // `tracked=true, nullable=true` — `Option<Tracked<T>>`: two derefs are needed.
-    // `.as_ref` gives `Option<&Tracked<T>>`; in the closure `__t: &Tracked<T>`:
+    // `.as_ref()` gives `Option<&Tracked<T>>`; in the closure `__t: &Tracked<T>`:
     // - `*__t` = `Tracked<T>` (deref the `&` reference — first deref)
     // - `**__t` = `T` (via `Tracked<T>: Deref<Target=T>` — second deref)
-    // `(*__t).clone` would clone `Tracked<T>` (wrong — the widening
+    // `(*__t).clone()` would clone `Tracked<T>` (wrong — the widening
     // conversion then fails: e.g. `i32::from(Tracked<u16>)` is not implemented);
-    // `(**__t).clone` clones the inner `T` (correct).
+    // `(**__t).clone()` clones the inner `T` (correct).
     let extract = if tracked && !nullable {
-        // Tracked<T>: (*value.field).clone → T
+        // Tracked<T>: (*value.field).clone() → T
         quote! { (*#val_expr).clone() }
     } else if tracked && nullable {
         // Option<Tracked<T>>: map through to get Option<T>.

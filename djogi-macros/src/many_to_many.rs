@@ -119,7 +119,7 @@
 //! ```
 //! The body shape mirrors `many_to_many_hand_impl.rs` exactly — that
 //! compile-pass fixture pins the hand-written reference impl, and the
-//! macro output matches it byte-for-byte (modulo `pk_value` vs `id`
+//! macro output matches it byte-for-byte (modulo `pk_value()` vs `id`
 //! to stay PK-kind agnostic).
 //! # Seal
 //! The identifier inputs (`this_fk`, `that_fk`, `relation`) are parsed
@@ -127,12 +127,12 @@
 //! them to valid ident shapes at parse time. They flow into emitted
 //! code in three positions:
 //! - As Rust identifiers on the `{Through}Fields` handle
-//!   (e.g. `f.a_id` / `f.b_id`) — validated by rustc at macro
+//!   (e.g. `f.a_id()` / `f.b_id()`) — validated by rustc at macro
 //!   expansion time; a typo produces `no method named ... found`.
 //! - As Rust struct-literal field names inside `add_related`'s
 //!   junction construction — same rustc validation.
-//! - As `&'static str` values returned by `RELATION` / `this_fk` /
-//!   `that_fk`. All three are routed through
+//! - As `&'static str` values returned by `RELATION` / `this_fk()` /
+//!   `that_fk()`. All three are routed through
 //!   [`djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident`]
 //!   at const-eval time; `relation` and `this_fk` additionally flow
 //!   through the inventory marker constructor. That panic fires before
@@ -433,7 +433,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // Const-time guard for every user-supplied identifier string the
     // macro bakes into SQL-facing associated items. `relation` and
     // `this_fk` already flow through the inventory marker constructor,
-    // but `that_fk` only appears in `ManyToMany::that_fk`. Emitting
+    // but `that_fk` only appears in `ManyToMany::that_fk()`. Emitting
     // one explicit const guard here keeps the three inputs under the
     // same stricter Postgres-identifier seal.
     let identifier_guard = quote! {
@@ -474,13 +474,13 @@ pub fn expand(input: TokenStream) -> TokenStream {
     );
 
     // Trait impl body: mirrors `many_to_many_hand_impl.rs` down to the
-    // fetch-then-get projection in `related`. Using `pk_value` rather
+    // fetch-then-get projection in `related`. Using `pk_value()` rather
     // than reaching into `self.id` keeps the macro PK-kind agnostic
     // a model with `pk = RanjId` or `pk = Serial` feeds through
     // the same expansion without a per-PK branch here.
     // Each method takes `&'ctx mut DjogiContext`. The `related` body threads
     // the same `&mut ctx` through two sequential calls (one to
-    // `Through::objects.fetch_all(ctx)`, then a loop of `Target::get(ctx,
+    // `Through::objects().fetch_all(ctx)`, then a loop of `Target::get(ctx,
     // ...)`); `ctx` re-borrow is automatic because each inner call takes
     // `&mut DjogiContext`. Under the hood every call pattern-matches on the
     // context's inner variant at the query dispatch boundary (see `djogi::context`).
@@ -843,7 +843,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
                         // than `as_expr`) because the inner through
                         // table also has an `id` column — bare `id`
                         // would raise `42702 column reference is
-                        // ambiguous`. The qualifier is `M::table_name`,
+                        // ambiguous`. The qualifier is `M::table_name()`,
                         // which Djogi validates at `#[model]` expansion.
                         let __djogi_inner = <#through_type as ::djogi::model::Model>::objects()
                             .filter(move |f| {

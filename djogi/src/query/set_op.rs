@@ -62,7 +62,7 @@
 //! terminal level when an arm carries any of:
 //! - `.prefetch(...)` registrations,
 //! - `.select_related(...)` registrations,
-//! - `.select_for_update(...)` / `.nowait` / `.skip_locked` locks,
+//! - `.select_for_update(...)` / `.nowait()` / `.skip_locked()` locks,
 //! - `.cache(...)` Punnu bindings.
 //!   These leak structural shape (extra projections, locks, side
 //!   effects) into a context where the type signature pretends the arm
@@ -87,9 +87,9 @@
 //! Both validation failures fire *before* any GUC `SET LOCAL` from
 //! tenant auto-wiring — the SQL emitter runs first, tenant scope
 //! propagation runs second on the already-validated query.
-//! # Why no `.fetch_one` / `.exists` on the set-op surface
+//! # Why no `.fetch_one()` / `.exists()` on the set-op surface
 //! Both are reachable through the equivalent shape (`.limit(2)` +
-//! `.fetch_all` for fetch_one semantics; `.first`-then-Boolean for
+//! `.fetch_all()` for fetch_one semantics; `.first()`-then-Boolean for
 //! `exists`). Phase-1 surface keeps the public API tight; adding these
 //! later is additive.
 //! # Why RPITIT (not `async fn`)
@@ -277,7 +277,7 @@ pub struct SetOpQuerySet<T: Model> {
     /// no offset. `i64` to match Postgres `BIGINT`.
     pub(crate) offset: Option<i64>,
     /// Covariant `T` tag — see [`QuerySet`]'s `_model` field for the
-    /// rationale (`fn -> T` makes the wrapper covariant in `T` and
+    /// rationale (`fn() -> T` makes the wrapper covariant in `T` and
     /// `Send + Sync` regardless of `T`'s own markers).
     _model: PhantomData<fn() -> T>,
 }
@@ -329,12 +329,12 @@ impl<T: Model> Clone for SetOpQuerySet<T> {
 /// actionable.
 /// # Workaround for adopters
 /// Spatial distance ordering still works on a single arm (per-arm
-/// `.order_by(|f| f.location.order_by_distance(center))` is legal,
+/// `.order_by(|f| f.location().order_by_distance(center))` is legal,
 /// because the arm is parenthesised and Postgres allows expression
 /// `ORDER BY` inside the parens). For combined-result spatial ordering,
 /// wrap the entire set-op in a subquery and apply the spatial order
 /// there — not supported by this surface today.
-// `T` is consumed by the spatial-error path (`T::table_name`) when
+// `T` is consumed by the spatial-error path (`T::table_name()`) when
 // the `spatial` feature is enabled. Without that feature, the only
 // reachable arm is `OrderExpr::Column { .. }` (which does not need
 // `T`), so clippy correctly flags the parameter as unused. We keep
@@ -859,7 +859,7 @@ impl<T: Model> SetOpQuerySet<T> {
     }
 
     /// Build the `SELECT COUNT(*) FROM (set-op) AS sub` SQL this
-    /// queryset would emit for its `.count` terminal, without
+    /// queryset would emit for its `.count()` terminal, without
     /// touching a database. **Internal-test plumbing — never call
     /// this from adopter code.**
     /// Returns `(sql, bind_count)` so tests can assert both the SQL

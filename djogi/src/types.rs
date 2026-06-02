@@ -91,9 +91,9 @@ pub use sassi::{BasicPredicate, DeltaSyncCacheable, MonotonicWatermark};
 // `sassi::Field` (re-exported from `sassi::cacheable::Field`).
 // - `FieldPredicate<T>` — the per-field predicate payload Sassi attaches to
 // `BasicPredicate::Field(_)` leaves; the SQL walker downcasts its
-// `value_as::<V>` payload to dispatch on concrete Rust types.
+// `value_as::<V>()` payload to dispatch on concrete Rust types.
 // - `LookupOp` — the predicate operator marker; PR2d's match arms key off
-// `(field.field_name, field.op)`.
+// `(field.field_name(), field.op())`.
 // - `IntoBasicPredicate<T>` — the Sassi-side conversion trait that
 // `PortablePredicate<T>` implements so adopters can pass the wrapper
 // straight into `PunnuScope::filter_basic`.

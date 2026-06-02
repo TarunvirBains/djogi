@@ -1,7 +1,7 @@
-//! FTS query builder types — `FtsFieldRef` with `.matches` and `.rank`.
+//! FTS query builder types — `FtsFieldRef` with `.matches()` and `.rank()`.
 //! # What
 //! `FtsFieldRef` is the typed handle returned by a macro-generated
-//! `{Model}Fields::search` accessor on models that declare
+//! `{Model}Fields::search()` accessor on models that declare
 //! `#[model(fts = { ... })]`. It carries the tsvector column name and the
 //! Postgres text-search dictionary name baked in at codegen time, so call
 //! sites only supply the user-facing `TsQuery` value.
@@ -46,7 +46,7 @@ use crate::query::condition::Condition;
 use std::marker::PhantomData;
 
 /// Typed handle for a model's FTS column.
-/// Returned by `{Model}Fields::search` on models that declare
+/// Returned by `{Model}Fields::search()` on models that declare
 /// `#[model(fts = { source = "...", dictionary = "..." })]`. Carry the
 /// validated tsvector column name and dictionary name as `&'static str`s
 /// baked in by the macro.
@@ -76,7 +76,7 @@ impl<M: Model> std::fmt::Debug for FtsFieldRef<M> {
 
 impl<M: Model> FtsFieldRef<M> {
     /// Construct an `FtsFieldRef`. This is the crate-private constructor
-    /// called by macro-generated code; user code uses `{Model}Fields::search`.
+    /// called by macro-generated code; user code uses `{Model}Fields::search()`.
     /// The column and dictionary strings must have been validated at macro
     /// parse time via byte-level identifier checks (see
     /// `djogi_macros::model::attrs::FtsSpec::parse_from_list`). They are
@@ -105,7 +105,7 @@ impl<M: Model> FtsFieldRef<M> {
 
     /// Build an `Expr<f32>` that emits
     /// `ts_rank(<column>, to_tsquery('<dictionary>', $n))`.
-    /// Use it in `.order_by(|b| b.search.rank(q).desc)` to sort by
+    /// Use it in `.order_by(|b| b.search().rank(q).desc())` to sort by
     /// relevance. Higher scores mean higher relevance.
     /// Returns `Expr<f32>` — Postgres's `ts_rank` function returns a
     /// `float4` (which maps to Rust `f32`).

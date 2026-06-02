@@ -117,7 +117,7 @@ mod tests {
     use crate::pg::pool::DjogiPool;
 
     /// When a pool-backed `PinnedCtx::Owned` is dropped without calling
-    /// `mark_clean`, the underlying connection must be **detached from
+    /// `mark_clean()`, the underlying connection must be **detached from
     /// the pool** (closing the socket) rather than returned to it.
     /// Without this guarantee, async cancellation that drops a pinned
     /// context after acquiring an advisory lock returns the poisoned
@@ -181,7 +181,7 @@ mod tests {
             .await
             .expect("advisory lock acquisition should succeed");
 
-        // 7. Drop the pinned context WITHOUT mark_clean.
+        // 7. Drop the pinned context WITHOUT mark_clean().
         // This simulates async cancellation dropping the future mid-flight.
         drop(pinned);
 

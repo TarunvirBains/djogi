@@ -1,6 +1,6 @@
 //! Trusted-provenance JSON predicate builders over Djogi `MirJzSON` fields.
 //! # Why a Djogi wrapper over Sassi's `JSahibONFieldRef`?
-//! Sassi's `Field<T, JSahibON>::jsahibon` returns a `JSahibONFieldRef<T>`
+//! Sassi's `Field<T, JSahibON>::jsahibon()` returns a `JSahibONFieldRef<T>`
 //! that builds `BasicPredicate<T>` leaves carrying [`sassi::LookupOp::Json`].
 //! Those raw Sassi builders accept any `&'static str` for the column name
 //! (Sassi has no Djogi-side identifier validator) and any closure for the
@@ -40,7 +40,7 @@
 //! closure — closures cannot be coerced to function pointers without
 //! capturing nothing). The Djogi macro stamps each `MirJzSON` column as
 //! a `fn(&M) -> &MirJzSON`. To plug into Sassi's
-//! `Field<M, sassi::JSahibON>::jsahibon` builder we need a
+//! `Field<M, sassi::JSahibON>::jsahibon()` builder we need a
 //! `fn(&M) -> &sassi::JSahibON`.
 //! The lift relies on the `#[repr(transparent)]` annotation on
 //! [`MirJzSON`]: under that annotation, `&MirJzSON` has identical
@@ -586,7 +586,7 @@ impl<M: Model, V: JOrderedScalar> DjogiJSahibONValueRef<M, V> {
 /// Stamp a Sassi `BasicPredicate<M>` with Djogi trusted-provenance.
 /// Every predicate construction routes through here, so the
 /// [`DjogiFieldProvenance`] mint call lives in exactly one place. The
-/// `DjogiField<M, MirJzSON>::jsahibon` accessor is the only public
+/// `DjogiField<M, MirJzSON>::jsahibon()` accessor is the only public
 /// entry point that can reach this helper (transitively, through the
 /// typed wrappers above) — adopter code cannot stamp arbitrary Sassi
 /// predicates with trusted provenance.
@@ -595,12 +595,12 @@ fn wrap_predicate<M: Model>(bp: BasicPredicate<M>) -> PortablePredicate<M> {
 }
 
 // ── DjogiField root-field accessors ───────────────────────────────────────
-// Adds `.jsahibon` on the public `DjogiField<M, MirJzSON>` and
+// Adds `.jsahibon()` on the public `DjogiField<M, MirJzSON>` and
 // `DjogiField<M, Option<MirJzSON>>` surfaces. The body constructs a
 // Sassi `Field<M, JSahibON>` / `Field<M, Option<JSahibON>>` by
 // transmuting the Djogi-trusted extractor through the
 // `#[repr(transparent)]` layout-equivalence of `MirJzSON` and
-// `sassi::JSahibON`, then calls `jsahibon` on the resulting Sassi
+// `sassi::JSahibON`, then calls `jsahibon()` on the resulting Sassi
 // builder to enter the predicate-construction surface.
 
 impl<M: Model> DjogiField<M, MirJzSON> {
@@ -608,7 +608,7 @@ impl<M: Model> DjogiField<M, MirJzSON> {
     /// Returns a [`DjogiJSahibONFieldRef<M>`] whose predicate methods
     /// produce trusted [`PortablePredicate<M>`] values. SQL lowering
     /// accepts `LookupOp::Json` leaves only through this trusted path
-    /// raw `sassi::Field::new(...).jsahibon` predicates are rejected
+    /// raw `sassi::Field::new(...).jsahibon()` predicates are rejected
     /// with [`PortablePredicateError::UntrustedJsonPredicate`].
     /// # Why this method?
     /// [`MirJzSON`] deliberately does **not** implement `PartialEq` /
@@ -659,8 +659,8 @@ impl<M: Model> DjogiField<M, MirJzSON> {
 impl<M: Model> DjogiField<M, Option<MirJzSON>> {
     /// Enter the trusted-provenance JSON predicate builder for an
     /// optional `MirJzSON` column.
-    /// Returns a [`DjogiJSahibONOptionFieldRef<M>`]. `exists` is true
-    /// only for `Some(_)`; `missing` is true only for `None`.
+    /// Returns a [`DjogiJSahibONOptionFieldRef<M>`]. `exists()` is true
+    /// only for `Some(_)`; `missing()` is true only for `None`.
     /// `Some(MirJzSON(JSahibON::Null))` exists and is JSON `null`.
     /// See [`DjogiField<M, MirJzSON>::jsahibon`] for the design
     /// rationale.
@@ -684,11 +684,11 @@ impl<M: Model> DjogiField<M, Option<MirJzSON>> {
 }
 
 // ── ExplicitPgPredicateField — SQL-only route stub ────────────────────────
-// Per the spec: `.explicit_pg_predicate.mirjzson` is reserved for
+// Per the spec: `.explicit_pg_predicate().mirjzson()` is reserved for
 // future PostgreSQL-only operators (`@?` / `@@`, GIN-specific shapes).
 // V1 exposes the entry point so the API shape is committed, but the
 // returned wrapper carries NO v1 portable-shape predicate methods
-// every JSON query in v1 flows through `.jsahibon`.
+// every JSON query in v1 flows through `.jsahibon()`.
 
 /// PostgreSQL-only predicate view of a `MirJzSON` column.
 /// Produced by `ExplicitPgPredicateField::<M, MirJzSON>::mirjzson`
@@ -743,7 +743,7 @@ impl<M: Model> crate::query::field::ExplicitPgPredicateField<M, MirJzSON> {
     /// PostgreSQL-only operators (`@?` / `@@` JSONPath, GIN-specific
     /// shapes) can land without reshaping the API.
     /// If you reached for this method expecting v1 predicate methods,
-    /// route through `.jsahibon` instead — that is the v1 contract.
+    /// route through `.jsahibon()` instead — that is the v1 contract.
     #[must_use = "the PG predicate view is lazy — call a method to produce a filter"]
     pub fn mirjzson(self) -> MirJzSONFieldRef<M> {
         MirJzSONFieldRef {
@@ -755,7 +755,7 @@ impl<M: Model> crate::query::field::ExplicitPgPredicateField<M, MirJzSON> {
 
 impl<M: Model> crate::query::field::ExplicitPgPredicateField<M, Option<MirJzSON>> {
     /// Enter the PostgreSQL-only `Option<MirJzSON>` predicate surface.
-    /// See the `mirjzson` method on the
+    /// See the `mirjzson()` method on the
     /// [`ExplicitPgPredicateField`](crate::query::field::ExplicitPgPredicateField)
     /// impl block for `V = MirJzSON` (the required-field sibling) for
     /// the v1 contract — no portable-shape predicate methods in v1.
@@ -844,7 +844,7 @@ mod tests {
         )
     }
 
-    /// `.jsahibon.exists` builds a `PortablePredicate<M>` carrying
+    /// `.jsahibon().exists()` builds a `PortablePredicate<M>` carrying
     /// Djogi trusted provenance.
     #[test]
     fn exists_stamps_djogi_provenance() {
@@ -859,7 +859,7 @@ mod tests {
         }
     }
 
-    /// `.jsahibon.path("a.b").value::<i64>.gte(4)` builds a typed
+    /// `.jsahibon().path("a.b").value::<i64>().gte(4)` builds a typed
     /// scalar comparison.
     #[test]
     fn path_value_gte_builds_scalar_compare() {
@@ -871,7 +871,7 @@ mod tests {
         assert!(predicate.has_field_provenance());
     }
 
-    /// `.jsahibon.key("content-type").eq(...)` accepts non-identifier
+    /// `.jsahibon().key("content-type").eq(...)` accepts non-identifier
     /// keys via the `key(...)` route.
     #[test]
     fn key_accepts_arbitrary_string() {
@@ -883,7 +883,7 @@ mod tests {
         assert!(predicate.has_field_provenance());
     }
 
-    /// `.jsahibon.path_segments([...]).exists` accepts arbitrary
+    /// `.jsahibon().path_segments([...]).exists()` accepts arbitrary
     /// literal segments — non-identifier strings, digits, dots-in-keys.
     #[test]
     fn path_segments_accepts_arbitrary_segments() {
@@ -937,7 +937,7 @@ mod tests {
         sql
     }
 
-    /// `exists` at root emits `(column #> $path_text_array) IS NOT NULL`
+    /// `exists()` at root emits `(column #> $path_text_array) IS NOT NULL`
     /// per the spec's "Predicate mapping requirements" table.
     #[test]
     fn sql_exists_at_root_emits_path_extraction_is_not_null() {
@@ -946,7 +946,7 @@ mod tests {
         assert_eq!(sql, "(payload #> $1) IS NOT NULL");
     }
 
-    /// `missing` at root emits the dual.
+    /// `missing()` at root emits the dual.
     #[test]
     fn sql_missing_at_root_emits_path_extraction_is_null() {
         let predicate = payload_field().jsahibon().missing();
@@ -1046,7 +1046,7 @@ mod tests {
     }
 
     /// `Option<MirJzSON>` predicates emit the same SQL shape as
-    /// required-field predicates — `missing` at root tests the
+    /// required-field predicates — `missing()` at root tests the
     /// optional field for NULL.
     #[test]
     fn sql_option_missing_emits_is_null() {
@@ -1055,7 +1055,7 @@ mod tests {
         assert_eq!(sql, "(maybe #> $1) IS NULL");
     }
 
-    /// Bind count parity — `exists` has one bind (the path array),
+    /// Bind count parity — `exists()` has one bind (the path array),
     /// `eq_json` has two (path + JSON value), `has_key` has three
     /// (path-guard + path-target + key). The accumulator's bind count
     /// is the canonical signal for parameter alignment.
@@ -1092,7 +1092,7 @@ mod tests {
         );
     }
 
-    /// `is_not_json_null` emits `COALESCE((j) <> 'null'::jsonb, FALSE)`
+    /// `is_not_json_null()` emits `COALESCE((j) <> 'null'::jsonb, FALSE)`
     /// the dual of `is_json_null` per the spec. Missing path / SQL
     /// NULL on the `<>` arm coalesces to `FALSE`, so the predicate stays
     /// two-valued under composition.

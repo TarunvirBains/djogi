@@ -274,7 +274,7 @@ pub mod __private {
         pub use crate::hooks::ModelHooks;
     }
 
-    /// `tracing` re-export for macro-generated `_insecurely` warn! calls.
+    /// `tracing` re-export for macro-generated `_insecurely()` warn! calls.
     /// Routing through `::djogi::__private::tracing` keeps user crates from
     /// needing `tracing` as a direct dependency — the same path-routing
     /// convention used for `inventory`, `postgres_types`, and `futures`.
@@ -713,8 +713,8 @@ pub mod prelude {
     // `GeoPoint` covers per-row point geometries (lat/lon); `Polygon`
     // covers per-row polygonal geometries (convex hulls, territories,
     // service areas) used by the spatial aggregate surface
-    // (`AggregateExpr<Polygon>` from `.convex_hull`,
-    // `.union`/`.mem_union`) and consumed by pair-tuple spatial
+    // (`AggregateExpr<Polygon>` from `.convex_hull()`,
+    // `.union()`/`.mem_union()`) and consumed by pair-tuple spatial
     // annotations (`PairAreaOverlapRatio<L, R>` over two
     // per-row polygon columns).
     #[cfg(feature = "spatial")]

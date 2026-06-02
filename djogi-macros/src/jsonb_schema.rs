@@ -174,7 +174,7 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
             // exactly like the bare inner type. Postgres JSONB `->>`
             // returns NULL for missing-key, JSON-null, and
             // non-stringifiable values identically — users wanting the
-            // explicit absence check call `.is_null` / `.is_not_null`
+            // explicit absence check call `.is_null()` / `.is_not_null()`
             // on the resulting `JsonbPathRef` (already in the typed
             // surface). Without this peeling, `#[derive(JsonbSchema)]`
             // on a struct with `Option<T>` fields fails to compile
@@ -197,8 +197,8 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
                     /// Postgres cast for the field's type. `Option<T>` fields use
                     /// the inner type as the cast target — Postgres JSONB returns
                     /// NULL identically for missing keys, JSON `null`, and
-                    /// non-stringifiable values, so use `.is_null` /
-                    /// `.is_not_null` for the explicit absence check.
+                    /// non-stringifiable values, so use `.is_null()` /
+                    /// `.is_not_null()` for the explicit absence check.
                     #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
                     pub fn #field_ident(self) -> ::djogi::jsonb::JsonbPathRef<M, #effective_ty> {
                         // Build the full segment list: base segments + JSON key.
@@ -271,7 +271,7 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
         /// [`JsonbPathRef`](::djogi::jsonb::JsonbPathRef) for comparisons;
         /// nested fields return the nested type's `Path<M>`.
         /// Constructed via [`JsonbSchema::root_path`] by calling
-        /// `.typed` on a `FieldRef<M, Jsonb<T>>`.
+        /// `.typed()` on a `FieldRef<M, Jsonb<T>>`.
         #vis struct #path_name<M: ::djogi::model::Model> {
             base_column: &'static str,
             base_path: &'static [&'static str],
@@ -280,7 +280,7 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
 
         impl<M: ::djogi::model::Model> #path_name<M> {
             /// Internal constructor — called by `JsonbSchema::root_path` (root)
-            /// and by parent `{T}Path::field_name` (nested).
+            /// and by parent `{T}Path::field_name()` (nested).
             #[doc(hidden)]
             #[inline]
             pub fn __new(base_column: &'static str, base_path: &'static [&'static str]) -> Self {
@@ -298,7 +298,7 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
             type Path<M: ::djogi::model::Model> = #path_name<M>;
 
             /// Construct the root of the typed path tree for the JSONB column
-            /// `base_column`. Called by `FieldRef<M, Jsonb<Self>>::typed`.
+            /// `base_column`. Called by `FieldRef<M, Jsonb<Self>>::typed()`.
             fn root_path<M: ::djogi::model::Model>(base_column: &'static str) -> #path_name<M> {
                 #path_name::__new(base_column, &[])
             }
@@ -406,7 +406,7 @@ fn extract_serde_rename_all(attr: &syn::Attribute) -> Option<RenameAll> {
             && let syn::Expr::Lit(expr_lit) = &nv.value
             && let Lit::Str(s) = &expr_lit.lit
         {
-            // Use span from the string literal so errors point at the value.
+            // Use span() from the string literal so errors point at the value.
             return RenameAll::from_str(&s.value(), s.span()).ok();
         }
     }
@@ -603,7 +603,7 @@ fn is_scalar_type(ty: &Type) -> bool {
 /// the field's effective type. This matches Postgres JSONB semantics:
 /// `(col->>'key')` returns NULL whether the key is missing, the JSON
 /// value is `null`, or the value is non-stringifiable. Users who need
-/// to distinguish those cases call `.is_null` / `.is_not_null` on
+/// to distinguish those cases call `.is_null()` / `.is_not_null()` on
 /// the resulting `JsonbPathRef`.
 /// Recognised forms (matched by rendered token-string equality
 /// matches the same byte-level discipline `is_scalar_type` uses):
@@ -660,7 +660,7 @@ fn unwrap_option(ty: &Type) -> Option<Type> {
 /// forms (`time::OffsetDateTime`) and short forms (`OffsetDateTime`) are both
 /// listed because users may import with a `use` statement or not.
 /// Kept alphabetical for readability when scanning the matrix; the
-/// runtime lookup uses `iter.any(...)` (in `is_scalar_type`), not
+/// runtime lookup uses `iter().any(...)` (in `is_scalar_type`), not
 /// `binary_search`, so the ordering is convention-only.
 // Polish (GH issue #29): added narrow-integer entries
 // (`u8`, `u16`, `u32`, `i8`) so `#[derive(JsonbSchema)]` accepts these

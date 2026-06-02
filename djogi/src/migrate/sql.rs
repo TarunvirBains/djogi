@@ -4569,7 +4569,7 @@ mod tests {
     #[test]
     fn field_level_btree_index_emits_create_index_using_btree() {
         let i = idx("elephants_herd_id_idx", "elephants", &["herd_id"]);
-        // kind = NonUnique, index_type = BTree (both are idx defaults)
+        // kind = NonUnique, index_type = BTree (both are idx() defaults)
         let sql = emit_add_index(&i);
         assert_eq!(
             sql.up,

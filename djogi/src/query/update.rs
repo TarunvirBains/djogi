@@ -22,7 +22,7 @@
 //! - **Branch on short-circuit**: callers that already know a mutation is
 //!   inert can avoid constructing it; otherwise mutation terminals run
 //!   `validate_mutation_read_tail(...)` first (mirroring `insert_select.rs`),
-//!   then short-circuit on pure `none` / empty assignments.
+//!   then short-circuit on pure `none()` / empty assignments.
 //! # Constructor-only invariant on `UpdateAssignment`
 //! `UpdateAssignment`'s fields are `pub(crate)`; the only way to build one
 //! from outside this crate is [`FieldRef::set`], which funnels through
@@ -35,11 +35,11 @@
 //! field-vs-field / arithmetic assignments reach for the expression
 //! builder [`FieldRef::set_expr`]: it wraps an [`crate::expr::Expr<V>`]
 //! IR tree into the same [`UpdateAssignment`] shape the literal `.set(v)`
-//! produces. For richer SQL the emitter cannot express (`NOW - interval
+//! produces. For richer SQL the emitter cannot express (`NOW() - interval
 //! '1 day'`, `CASE WHEN ...` before Task 5 lands), the raw
 //! `SqlAccumulator` escape hatch in [`crate::raw`] is still there.
-//! # `updated_at = now` stamping
-//! The SQL emitter ([`build_update`]) always appends `updated_at = now`
+//! # `updated_at = now()` stamping
+//! The SQL emitter ([`build_update`]) always appends `updated_at = now()`
 //! to the SET list, even when the caller's closure omits it. Parity with
 //! the single-row [`crate::model::Model::save`] path, which also bumps
 //! `updated_at` on every write. Users who need to preserve `updated_at`
@@ -200,7 +200,7 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
     }
 
     /// Build a column-to-column copy assignment: `SET self = other`.
-    /// Sugar for `self.set_expr(other.as_expr)`. Both sides must be
+    /// Sugar for `self.set_expr(other.as_expr())`. Both sides must be
     /// refs on the same model `M` with matching value type `V` — the
     /// type system enforces this at compile time. Both `self` and
     /// `other` are taken by value because [`FieldRef`] is `Copy`.
@@ -319,7 +319,7 @@ impl IntoAssignments for Vec<UpdateAssignment> {
 /// operation that does not re-run the user's builder closure.
 /// `Clone` / `Debug` are hand-rolled (not derived) so they do not
 /// require `T: Clone` / `T: Debug` — `UpdateStmt` never owns or borrows
-/// a `T`, it only carries a `PhantomData<fn -> T>` tag, mirroring the
+/// a `T`, it only carries a `PhantomData<fn() -> T>` tag, mirroring the
 /// pattern on [`QuerySet<T>`].
 #[must_use = "UpdateStmt is inert — call .execute(ctx) to run the UPDATE"]
 pub struct UpdateStmt<T: Model> {
@@ -359,8 +359,8 @@ impl<T: Model> UpdateStmt<T> {
     /// Validation for unsupported queryset read-tail state runs first, then
     /// inert paths short-circuit.
     /// Short-circuits to `Ok(0)` when either:
-    /// - The underlying queryset is `QuerySet::none`-derived
-    ///   (`is_empty` is `true`), or
+    /// - The underlying queryset is `QuerySet::none()`-derived
+    ///   (`is_empty()` is `true`), or
     /// - The closure produced zero assignments — `UPDATE ... SET ...`
     ///   with an empty SET list is a Postgres syntax error, so the
     ///   short-circuit here is both a contract shortcut and a safety
@@ -369,7 +369,7 @@ impl<T: Model> UpdateStmt<T> {
     ///   [`QuerySet::count`] — the same call site works against a pool-
     ///   backed context or a transaction-backed one post-Phase-4 retrofit.
     ///   Returns `u64` — the row-count from `tokio_postgres`'s
-    ///   `CommandTag::rows_affected`. Postgres' UPDATE rowcount is
+    ///   `CommandTag::rows_affected()`. Postgres' UPDATE rowcount is
     ///   non-negative by definition, so there is no sign conversion at
     ///   the call site.
     /// # Cache invalidation
@@ -398,7 +398,7 @@ impl<T: Model> UpdateStmt<T> {
             // `UPDATE <table> SET, updated_at = now WHERE ...`, which
             // Postgres rejects with a syntax error. Short-circuiting here
             // keeps the user's call site free of "why did this panic?"
-            // and matches the structural-empty contract on `QuerySet::none`.
+            // and matches the structural-empty contract on `QuerySet::none()`.
             if self.qs.is_empty() || self.assignments.is_empty() {
                 return Ok(0);
             }
@@ -446,8 +446,8 @@ impl<T: Model> UpdateStmt<T> {
     /// # Short-circuits
     /// Validation for unsupported queryset read-tail state runs first, then
     /// inert paths short-circuit.
-    /// Returns `Ok(Vec::new)` without issuing any SQL when:
-    /// - The underlying queryset is `QuerySet::none`-derived.
+    /// Returns `Ok(Vec::new())` without issuing any SQL when:
+    /// - The underlying queryset is `QuerySet::none()`-derived.
     /// - The assignment list is empty (an UPDATE with an empty SET list is a
     ///   Postgres syntax error).
     /// # Warning — unbounded materialization
@@ -519,9 +519,9 @@ impl<T: Model> QuerySet<T> {
     /// `Fields` handle and returns one or more typed
     /// [`UpdateAssignment`]s (either a single assignment or a `Vec`).
     /// Two assignment forms are accepted in the closure:
-    /// - Literal: `f.col.set(value)` where `value: V: IntoFilterValue`.
-    /// - Expression IR: `f.col.set_expr(expr)` for `col = col + 1`,
-    ///   `col = NOW`, `col = other_col`, and similar shapes the
+    /// - Literal: `f.col().set(value)` where `value: V: IntoFilterValue`.
+    /// - Expression IR: `f.col().set_expr(expr)` for `col = col + 1`,
+    ///   `col = NOW()`, `col = other_col`, and similar shapes the
     ///   [`crate::expr`] builder supports.
     ///   For SQL the expression builder cannot express, reach for
     ///   [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute).
@@ -559,7 +559,7 @@ impl<T: Model> QuerySet<T> {
     /// same shape as [`QuerySet::fetch_all`] / [`QuerySet::count`].
     /// Validation for unsupported queryset read-tail state runs first, then
     /// inert paths short-circuit.
-    /// Short-circuits to `Ok(0)` for `QuerySet::none`-derived
+    /// Short-circuits to `Ok(0)` for `QuerySet::none()`-derived
     /// querysets (the `TASK6:empty_contract`). A DELETE with no WHERE
     /// clause (an unfiltered queryset) is still a real DELETE — it
     /// removes every row in the table. Callers who want "wipe this
@@ -607,7 +607,7 @@ impl<T: Model> QuerySet<T> {
     /// # Short-circuit
     /// Validation for unsupported queryset read-tail state runs first, then
     /// inert paths short-circuit.
-    /// Returns `Ok(Vec::new)` for `QuerySet::none`-derived querysets
+    /// Returns `Ok(Vec::new())` for `QuerySet::none()`-derived querysets
     /// without issuing any SQL.
     /// # Warning — unbounded materialization
     /// This method loads **one `T` per deleted row** into memory. On large
@@ -774,7 +774,7 @@ mod tests {
 
     #[test]
     fn set_field_builds_expr_assignment() {
-        // set_field(other) — wraps `other.as_expr.node` so the
+        // set_field(other) — wraps `other.as_expr().node` so the
         // variant is Expr, not Literal. The SQL emitter renders
         // `target_col = source_col` (no bind slot for a column ref).
         let target: FieldRef<Fake, i64> = FieldRef::new("balance");

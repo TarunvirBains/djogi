@@ -13,21 +13,21 @@
 //! The flat escape hatch (`FieldRef<M, Jsonb<T>>::path::<V>("a.b.c")`) is
 //! correct but bypasses the type system — a string typo produces a silent
 //! runtime miss. `JsonbSchema` brings the path into the type system so
-//! `f.specs.typed.engine.cylinders.gt(4)` compiles only when `VehicleSpecs`
+//! `f.specs.typed().engine.cylinders.gt(4)` compiles only when `VehicleSpecs`
 //! has an `engine: EngineSpecs` field and `EngineSpecs` has a `cylinders: i32`
 //! field.
-//! # Deref vs `.typed` — decision
+//! # Deref vs `.typed()` — decision
 //! The plan considered a `Deref<Target = T::Path<M>>` impl on
 //! `FieldRef<M, Jsonb<T>>`. Deref requires returning `&T::Path<M>`, which
 //! means storing the path tree inside `FieldRef` or using a thread-local. Both
 //! approaches add runtime storage to a `Copy` ZST, harming the zero-overhead
 //! design goal.
-//! The explicit `.typed` method avoids any storage:
+//! The explicit `.typed()` method avoids any storage:
 //! ```ignore
 //! f.specs.typed().engine.cylinders.gt(4)
 //! ```
-//! The extra `.typed` call also makes the schema boundary visible to readers,
-//! and the flat escape hatch (`f.specs.path::<i32>("engine.cylinders")`) is
+//! The extra `.typed()` call also makes the schema boundary visible to readers,
+//! and the flat escape hatch (`f.specs().path::<i32>("engine.cylinders")`) is
 //! still available for dynamic paths or types not covered by the allowlist.
 //! # How to opt in
 //! ```rust
@@ -175,14 +175,14 @@ pub fn intern_path_slice(segments: &[&'static str]) -> &'static [&'static str] {
 /// observed for the first time.
 pub trait JsonbSchema {
     /// The typed path tree emitted by `#[derive(JsonbSchema)]`.
-    /// Carry `M` in a `PhantomData<fn -> M>` field so the path tree is
+    /// Carry `M` in a `PhantomData<fn() -> M>` field so the path tree is
     /// always `Send + Sync`, even when `M` is not — the tree never owns or
     /// borrows a value of type `M`, it only tags the path.
     type Path<M: Model>: Sized;
 
     /// Construct the root of the typed path tree for column `base_column`
     /// with no accumulated path segments.
-    /// Called by the `FieldRef<M, Jsonb<T>>::typed` bridge to build
+    /// Called by the `FieldRef<M, Jsonb<T>>::typed()` bridge to build
     /// the tree starting at the column root. Nested calls pass the extended
     /// base path down.
     fn root_path<M: Model>(base_column: &'static str) -> Self::Path<M>;

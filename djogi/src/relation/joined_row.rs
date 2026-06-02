@@ -42,7 +42,7 @@
 //! The quoted alias `"rel_owner_id.id"` embeds a literal dot, matching
 //! the table-qualified shape Postgres would emit for a `.select(t.*)`
 //! cross-table projection. `row.try_get("rel_owner_id.id")` returns
-//! the child's `id` — and `try_get_raw("rel_owner_id.id").is_null`
+//! the child's `id` — and `try_get_raw("rel_owner_id.id").is_null()`
 //! distinguishes LEFT JOIN misses (all child columns NULL) from live
 //! child rows, matching the probe Task 4's prefetch loader established.
 //! # Where

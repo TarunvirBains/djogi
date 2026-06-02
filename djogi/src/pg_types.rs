@@ -111,7 +111,7 @@ use std::error::Error;
 /// `INTERVAL '1 month' = INTERVAL '30 days'` is `true` in Postgres
 /// SQL.
 /// **The practical implication for `QuerySet::filter`.** Calling
-/// `QuerySet::filter(|f| f.duration.eq(Interval::months_only(1)))`
+/// `QuerySet::filter(|f| f.duration().eq(Interval::months_only(1)))`
 /// forwards to a Postgres `=` predicate, not to Rust `PartialEq`.
 /// Rows whose stored duration is `Interval::days_only(30)` (or any
 /// other combination that linearizes to 30 days × 86,400 s) will
@@ -351,7 +351,7 @@ impl<T> Range<T> {
     /// The empty range has no bounds; both `lower` and `upper` are set
     /// to [`RangeBound::Unbounded`] for consistency, and the `empty`
     /// flag suppresses any bound serialization in the wire codec.
-    /// `Range::empty` is the default value for `Range<T>` regardless
+    /// `Range::empty()` is the default value for `Range<T>` regardless
     /// of `T` — see the [`Default`] impl below.
     pub const fn empty() -> Self {
         Self {
@@ -856,7 +856,7 @@ const PGSQL_AF_INET6: u8 = 3;
 /// let mac = MacAddr::new([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
 ///
 /// // Parse from the canonical colon-separated form.
-/// let mac = "aa:bb:cc:dd:ee:ff".parse::<MacAddr>.unwrap;
+/// let mac = "aa:bb:cc:dd:ee:ff".parse::<MacAddr>().unwrap();
 /// ```
 /// # Equality and ordering
 /// `MacAddr` derives `PartialEq` / `Eq` / `Hash` / `PartialOrd` /
@@ -1046,10 +1046,10 @@ impl crate::descriptor::DjogiSqlType for MacAddr {
 /// use std::net::{IpAddr, Ipv4Addr};
 ///
 /// // 192.168.1.0/24 — a /24 network.
-/// let net = CidrAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24).unwrap;
+/// let net = CidrAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24).unwrap();
 ///
 /// // 192.168.1.5/24 — rejected: host bits past the prefix are non-zero.
-/// assert!(CidrAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24).is_err);
+/// assert!(CidrAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24).is_err());
 /// ```
 /// # Equality and ordering
 /// `CidrAddr` derives `PartialEq` / `Eq` / `Hash` over both the address

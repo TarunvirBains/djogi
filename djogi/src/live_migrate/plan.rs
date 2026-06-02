@@ -112,7 +112,7 @@ const STEP_KIND_LABELS: &[(StepKind, &str)] = &[
 
 /// Compile-time exhaustiveness witness for `StepKind`. Adding a
 /// variant without extending the inner `match` fails to compile here.
-/// The block has no runtime effect — the value is `` — but the
+/// The block has no runtime effect — the value is `()` — but the
 /// exhaustive match enforces "every variant is named in source" so
 /// [`STEP_KIND_LABELS`] is forced to grow alongside.
 const _STEP_KIND_DRIFT_GUARD: () = {
@@ -208,7 +208,7 @@ const PLAN_CLASSIFICATION_LABELS: &[(PlanClassification, &str)] = &[
 
 /// Compile-time exhaustiveness witness. Adding a variant without
 /// extending the inner `match` fails to compile here. The block has
-/// no runtime effect — the value is `` — but the exhaustive match
+/// no runtime effect — the value is `()` — but the exhaustive match
 /// enforces "every variant is named in source" so
 /// [`PLAN_CLASSIFICATION_LABELS`] is forced to grow alongside.
 const _PLAN_CLASSIFICATION_DRIFT_GUARD: () = {
@@ -441,7 +441,7 @@ fn sql_contains_destructive_token(sql: &str) -> bool {
 }
 
 /// ASCII case-insensitive prefix match. Returns `true` if the first
-/// `kw.len` bytes of `input` equal `kw` ignoring ASCII case. `kw` must
+/// `kw.len()` bytes of `input` equal `kw` ignoring ASCII case. `kw` must
 /// be ASCII; `input` may be any byte slice.
 fn bytes_match_kw(input: &[u8], kw: &[u8]) -> bool {
     if input.len() < kw.len() {
@@ -502,7 +502,7 @@ impl LivePlan {
     /// any of:
     /// - any step's `kind` disagrees with its `parameters` variant tag,
     /// - the step list is empty,
-    /// - ordinals don't form `0..steps.len` exactly (gap or duplicate),
+    /// - ordinals don't form `0..steps.len()` exactly (gap or duplicate),
     /// - the slug contains a byte that is not ASCII-alphanumeric or
     ///   underscore (the on-disk filename derives directly from the
     ///   slug, so non-portable bytes would corrupt the path).
@@ -569,7 +569,7 @@ pub enum PlanValidationError {
         parameters_kind: StepKind,
     },
     /// The step list's `ordinal` field skipped a number or duplicated
-    /// one — ordinals must form `0..steps.len` exactly.
+    /// one — ordinals must form `0..steps.len()` exactly.
     #[error("step at position {position}: expected ordinal {expected}, observed {observed}")]
     OrdinalGap {
         position: usize,

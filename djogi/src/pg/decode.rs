@@ -22,7 +22,7 @@
 //! (baked at macro time) so the wire column order is always the
 //! struct-field order, and positional decode is sound.
 //! # Drift safeguard — debug-build name guard
-//! The macro emits `debug_assert_eq!(row.columns[i].name,
+//! The macro emits `debug_assert_eq!(row.columns()[i].name(),
 //! Self::COLUMNS[i])` per column. Column-order drift (caller sends a
 //! SELECT that doesn't match `COLUMN_LIST`; a future refactor
 //! reshapes the builder; a test fixture hand-rolls the wrong SELECT)
@@ -88,7 +88,7 @@ pub trait FromPgRow: Sized {
     /// Returns [`DjogiError::Decode`](crate::DjogiError::Decode) with
     /// the offending column name on wire-type mismatch.
     /// In debug builds, a `debug_assert_eq!` on each
-    /// `row.columns[i].name` panics if the wire shape drifts
+    /// `row.columns()[i].name()` panics if the wire shape drifts
     /// from [`COLUMNS`](Self::COLUMNS). Release builds skip the
     /// guard.
     fn from_pg_row(row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError>;
@@ -337,7 +337,7 @@ where
 /// which means Postgres stores values exactly as given without rounding. A
 /// direct `INSERT … NUMERIC '1.5'` can land a fractional value even if the
 /// column carries a CHECK constraint (e.g. applied only after schema migration,
-/// or bypassed via `COPY`). `Decimal::to_u64` via `ToPrimitive` silently
+/// or bypassed via `COPY`). `Decimal::to_u64()` via `ToPrimitive` silently
 /// truncates fractional parts (e.g. `1.5 → 1`), so we must explicitly reject
 /// fractional values before conversion.
 /// Returns `DjogiError::Decode` for:
@@ -351,7 +351,7 @@ fn decimal_to_u64(
     col: impl std::fmt::Display,
 ) -> Result<u64, DjogiError> {
     use rust_decimal::prelude::ToPrimitive as _;
-    // fract returns the fractional part; for integer values it is zero.
+    // fract() returns the fractional part; for integer values it is zero.
     if !dec.fract().is_zero() {
         return Err(DjogiError::Decode(format!(
             "column `{col}`: Decimal value {dec} has a fractional part and cannot be decoded as u64",

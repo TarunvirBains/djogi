@@ -2,7 +2,7 @@
 //! Covers the "Codec transition (same decoded type)" row of the v3
 //! plan §7 classification table. Triggered when a protected field's
 //! `FieldCodec` rotates (e.g. AES-256-GCM key rotation, encoding
-//! change) and `FieldCodec::classify_transition::<Other>` reports
+//! change) and `FieldCodec::classify_transition::<Other>()` reports
 //! the transition rewrites ciphertext.
 //! # Operation shape
 //! Until a dedicated `CodecChange` variant lands on
@@ -62,7 +62,7 @@ impl Pattern for CodecTransition {
         // a `#[field(type_change_using = "<expr>")]` clause. The
         // classifier
         // ([`crate::live_migrate::classify::classify_column_change`])
-        // routes `using.is_some` to `OfflineOnly`, so this pattern
+        // routes `using.is_some()` to `OfflineOnly`, so this pattern
         // should never be dispatched in that case. Like
         // [`super::replacement_column`], the codec_transition backfill
         // cannot replicate a custom USING body — the conversion is
@@ -92,8 +92,8 @@ impl Pattern for CodecTransition {
                 // codec transitions key off (from, to)
                 // only; the adopter USING expression does not
                 // influence shadow-column staging. The
-                // `using.is_some` arm is refused above, so binding
-                // with `..` here is correct for the `using.is_none`
+                // `using.is_some()` arm is refused above, so binding
+                // with `..` here is correct for the `using.is_none()`
                 // remainder.
                 change: ColumnChange::ChangeType { from, to, .. },
             } => (table, column, from, to),

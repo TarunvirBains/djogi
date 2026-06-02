@@ -49,7 +49,7 @@ fn resolve_workspace(workspace: Option<PathBuf>) -> PathBuf {
 
 /// Build a Tokio current-thread runtime for the synchronous CLI
 /// surface. Reused by `db reset` and `db seed` — both need to drive
-/// async library calls from a sync `fn main` shape.
+/// async library calls from a sync `fn main()` shape.
 fn build_runtime(label: &str) -> Result<tokio::runtime::Runtime, ExitCode> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

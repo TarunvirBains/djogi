@@ -4,10 +4,10 @@
 //! `djogi migrations apply` and `djogi db reset` both need a virgin
 //! Postgres database to be brought to a state where any descriptor-driven
 //! migration can apply. That state is two pieces:
-//! 1. **HeeRanjID schema** — `heerid_next` / `ranjid_next` /
+//! 1. **HeeRanjID schema** — `heerid_next()` / `ranjid_next()` /
 //!    the `heer_*` tables / the `current_heer_node_id` GUC reader.
 //!    Every model that uses `HeerId` or `RanjId` as primary key
-//!    references `DEFAULT heerid_next` in its `CREATE TABLE` DDL,
+//!    references `DEFAULT heerid_next()` in its `CREATE TABLE` DDL,
 //!    so the function must exist before the first descriptor-driven
 //!    migration runs.
 //! 2. **Postgres extensions declared by descriptors** — `postgis`,
@@ -29,7 +29,7 @@
 //!   Pre-Track-0, only the test harness `setup_test_db_with_extensions`
 //!   installed these — the CLI / production / example paths hit a virgin
 //!   DB and failed on the very first migration that referenced
-//!   `DEFAULT heerid_next`. The example papered over the gap with
+//!   `DEFAULT heerid_next()`. The example papered over the gap with
 //!   hand-rolled `ctx.raw_ddl(...)` for HeeRanjID + PostGIS install.
 //!   Lifts that bootstrap into this module:
 //! - SQL composition lives in `compose_*` functions that return owned
@@ -284,15 +284,15 @@ pub(crate) fn compose_extension_installs(
 /// GUC for new connections) and a session-level `SET` (so the running
 /// connection that just executed sees the value immediately,
 /// without needing to drop and re-establish).
-/// Seeds **both** `heer.node_id` (consumed by `heerid_next` via
-/// `current_heer_node_id`) and `heer.ranj_node_id` (consumed by
-/// `ranjid_next` via `current_heer_ranj_node_id`). HeeRanjID
+/// Seeds **both** `heer.node_id` (consumed by `heerid_next()` via
+/// `current_heer_node_id()`) and `heer.ranj_node_id` (consumed by
+/// `ranjid_next()` via `current_heer_ranj_node_id()`). HeeRanjID
 /// stores these as two separate session GUCs because the underlying
 /// node-id ranges differ (HeerId: 0..=511, RanjId: 0..=32767), but a
 /// single-node deployment uses the same logical node id for both
 /// the `seed.sql` from heeranjid pre-populates rows in both
 /// `heer_node_state` and `heer_ranj_node_state` for that node id, so
-/// pointing both GUCs at it is the only way `ranjid_next` works out
+/// pointing both GUCs at it is the only way `ranjid_next()` works out
 /// of the box. Multi-node operators that want different ids per
 /// generator must override the SQL.
 /// All four statements are idempotent: re-running with the same value
@@ -307,8 +307,8 @@ pub(crate) fn compose_extension_installs(
 /// the post-connect hook (belt-and-braces). The session-level SET
 /// covers the running connection itself — without it, an additive
 /// migration applied immediately after in the same `apply`
-/// run would lack the GUC and `current_heer_node_id` /
-/// `current_heer_ranj_node_id` would raise.
+/// run would lack the GUC and `current_heer_node_id()` /
+/// `current_heer_ranj_node_id()` would raise.
 /// `node_id` must be a non-negative `i32`; the SQL uses the raw
 /// integer (no quoting) which is safe because the type is integer-
 /// only. HeeRanjID's `set_heer_node_id` / `set_heer_ranj_node_id`
@@ -586,7 +586,7 @@ impl From<BootstrapError> for AutoEmitError {
 /// **Idempotency contract.**
 /// - Running compose against a workspace that already has
 ///   on disk is a no-op for the path. Returns
-///   `Ok(Vec::new)`.
+///   `Ok(Vec::new())`.
 /// - Running compose against a workspace with NO yet emits
 ///   exactly one per database in the inputs.
 ///   **Witness-typed lock.** The `_guard: &WorkspaceGuard` parameter

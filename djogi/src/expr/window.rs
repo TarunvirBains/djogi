@@ -3,10 +3,10 @@
 //! [`WindowSpec`] describes a SQL window clause. [`WindowBuilder`] is the fluent
 //! builder handed to the user's `.over(|w| ...)` closure on
 //! [`super::aggregate::AggregateExpr`]. An empty builder (`.over(|w| w)`) emits
-//! `OVER ` — identical to the default wrapping used by ungrouped `.annotate`
+//! `OVER ()` — identical to the default wrapping used by ungrouped `.annotate`
 //! for value-aggregate annotations. Non-windowable aggregate kinds do not
 //! expose `.over(...)` and are also rejected from the plain ungrouped annotate
-//! path that would otherwise synthesize `OVER `.
+//! path that would otherwise synthesize `OVER ()`.
 //! Partition, order, and frame clauses are opt-in.
 //! # Full surface
 //! All Postgres window-frame variants are reachable:
@@ -29,7 +29,7 @@ use crate::query::order::Direction;
 /// Constructed via [`WindowBuilder`] and stored inside
 /// [`crate::expr::node::ExprNode::Aggregate`] when the user calls
 /// `.over(|w| ...)` on an [`super::aggregate::AggregateExpr`].
-/// The `Default` impl produces an empty spec that emits `OVER `.
+/// The `Default` impl produces an empty spec that emits `OVER ()`.
 #[derive(Debug, Clone, Default)]
 pub struct WindowSpec {
     pub(crate) partition_by: Vec<&'static str>,
@@ -111,9 +111,9 @@ pub enum FrameExclude {
 
 /// Fluent builder for a [`WindowSpec`], handed to the `.over(|w| ...)` closure.
 /// Every method consumes `self` and returns a new `WindowBuilder` so the
-/// closures chain naturally: `.over(|w| w.partition_by(f.org_id).order_by(f.created_at))`.
+/// closures chain naturally: `.over(|w| w.partition_by(f.org_id()).order_by(f.created_at()))`.
 /// An empty builder (`.over(|w| w)`) produces an empty [`WindowSpec`] that
-/// emits `OVER `.
+/// emits `OVER ()`.
 pub struct WindowBuilder(WindowSpec);
 
 impl Default for WindowBuilder {
@@ -123,7 +123,7 @@ impl Default for WindowBuilder {
 }
 
 impl WindowBuilder {
-    /// Construct an empty builder — corresponds to `OVER `.
+    /// Construct an empty builder — corresponds to `OVER ()`.
     pub fn new() -> Self {
         Self(WindowSpec::default())
     }
@@ -248,7 +248,7 @@ impl WindowSpec {
     /// and
     /// [`PairWindowExt::order_by_pair_desc`](crate::query::joined::PairWindowExt::order_by_pair_desc)
     /// produce. A vacuous window (no partition, no order) returns `true`
-    /// `OVER ` references no columns and is unambiguous.
+    /// `OVER ()` references no columns and is unambiguous.
     /// # Why
     /// The joined-annotation safety gate in
     /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn is_pair_qualified_true_for_empty_spec() {
-        // A vacuous `OVER ` window references no columns — trivially
+        // A vacuous `OVER ()` window references no columns — trivially
         // unambiguous in joined contexts.
         let spec = WindowSpec::default();
         assert!(
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn is_pair_qualified_false_for_bare_partition() {
-        // The exact emission the blocker calls out: `partition_by(l.id)`
+        // The exact emission the blocker calls out: `partition_by(l.id())`
         // through the non-pair-aware path stores a bare `"id"`.
         let spec = WindowSpec {
             partition_by: vec!["id"],

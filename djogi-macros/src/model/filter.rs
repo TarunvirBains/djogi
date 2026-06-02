@@ -75,7 +75,7 @@
 //! type-equality witness that pins it. That puts `{Model}Filter` on
 //! the same compile-time footing as the closure API — passing the
 //! wrong value type to a setter (for example
-//! `PostFilter::new.view_count(Lookup::Eq("42"))` for an `i32`
+//! `PostFilter::new().view_count(Lookup::Eq("42"))` for an `i32`
 //! column) fails at the call site, not later at bind time.
 //! The `IntoFilterValue` bound is emitted on the **method generic
 //! `__V`**, not on the concrete `#field_ty`. Two consequences:
@@ -94,10 +94,10 @@
 //!    still go through `IntoFilterValue` (because
 //!    `Lookup<V>::into_op_value` is bounded on `V`). For columns
 //!    without such an impl, those setters are unusable — the
-//!    closure API's `.is_null` remains the escape hatch.
+//!    closure API's `.is_null()` remains the escape hatch.
 //!    Nullable columns (`Option<T>`) take `Lookup<Option<T>>` directly
 //!    the field type is read verbatim, so users write
-//!    `Lookup::Eq(Some("hello".to_string))` /
+//!    `Lookup::Eq(Some("hello".to_string()))` /
 //!    `Lookup::<Option<T>>::IsNull`. The closure API has the same shape
 //!    for nullable columns, so the two surfaces stay symmetric. (A later
 //!    phase may add a sugar layer that re-emits `Option<T>` setters as
@@ -168,7 +168,7 @@ pub fn expand(
     // Typed setters: the value's generic `__V` is pinned to the
     // column's declared Rust type through a reflexive `SameAs<#ty>`
     // bound. A user passing the wrong value type
-    // `PostFilter::new.view_count(Lookup::Eq("42"))` for an `i32`
+    // `PostFilter::new().view_count(Lookup::Eq("42"))` for an `i32`
     // column — infers `__V = &str`, which then fails the
     // `i32: SameAs<__V>` bound with a clear "expected `i32`" error at
     // the call site. Matches the closure API's compile-time discipline.
@@ -205,7 +205,7 @@ pub fn expand(
     // Once `__V = #ty` is pinned, the `__V: IntoFilterValue` bound
     // applies; columns whose type doesn't implement that trait cannot
     // use `IsNull` through the clause path and fall back to the
-    // closure API's `.is_null` (which has its own set of impls to
+    // closure API's `.is_null()` (which has its own set of impls to
     // consult).
     let setters: Vec<TokenStream> = struct_item
         .fields
@@ -306,7 +306,7 @@ pub fn expand(
         }
 
         impl #filter_name {
-            /// Construct an empty filter. Equivalent to `Self::default`.
+            /// Construct an empty filter. Equivalent to `Self::default()`.
             #[must_use]
             #[inline]
             pub fn new() -> Self {

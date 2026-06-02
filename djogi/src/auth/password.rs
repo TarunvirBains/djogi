@@ -31,15 +31,15 @@ use crate::auth::AuthError;
 /// PHC string via [`PasswordHash::from_phc`] when reading from a row
 /// manually (normal ORM reads go through `FromSql` automatically).
 /// # `Default`
-/// `PasswordHash::default` returns `PasswordHash("")` — an empty PHC
+/// `PasswordHash::default()` returns `PasswordHash("")` — an empty PHC
 /// string that [`Self::verify`] always rejects. The empty value exists
 /// so models that carry a `password_hash` field can derive `Default`
-/// (required by the `#[model]` pattern's `..Default::default` struct-
+/// (required by the `#[model]` pattern's `..Default::default()` struct-
 /// literal ergonomics). The empty hash is **not a usable credential**:
 /// a row whose `password_hash` stayed at the default cannot be logged
 /// into by any input. Always set a real hash via [`Self::hash`] before
 /// persisting a user row, and prefer explicit `save`/`create` shapes
-/// over blanket `..Default::default` in production code paths.
+/// over blanket `..Default::default()` in production code paths.
 #[derive(Debug, Clone, Default)]
 pub struct PasswordHash(String);
 

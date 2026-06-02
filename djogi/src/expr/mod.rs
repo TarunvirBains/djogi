@@ -1,7 +1,7 @@
 //! Typed expression IR — the substrate for field-vs-field filters,
 //! arithmetic assignments, aggregates, and subqueries.
 //! # What
-//! [`Expr<T>`] is a `PhantomData<fn -> T>`-tagged wrapper around an
+//! [`Expr<T>`] is a `PhantomData<fn() -> T>`-tagged wrapper around an
 //! untyped [`node::ExprNode`] tree. Typed constructors (`Expr::literal`,
 //! [`crate::query::field::FieldRef::as_expr`]) promote primitives and
 //! columns into `Expr<T>`, and typed methods on `Expr<T>` compose them:
@@ -47,8 +47,8 @@
 //! // Field-vs-field comparison — not expressible with the
 //! // `filter(|f| f.col.eq(value))` API because the RHS is a literal
 //! // there. `filter_expr` closes the gap.
-//! let overdrawn = Account::objects
-//! .filter_expr(|f| f.balance.as_expr.lt(f.overdraft_limit.as_expr))
+//! let overdrawn = Account::objects()
+//! .filter_expr(|f| f.balance().as_expr().lt(f.overdraft_limit().as_expr()))
 //! .fetch_all(&mut ctx).await?;
 //! ```
 
@@ -85,7 +85,7 @@ pub use window_fn::{
 };
 
 /// Typed expression handle — the public entry point for the IR.
-/// Carries a `PhantomData<fn -> T>` tag so the type parameter is
+/// Carries a `PhantomData<fn() -> T>` tag so the type parameter is
 /// covariant and the struct is `Send + Sync` regardless of `T`'s own
 /// markers. `T` never appears as an owned field — it only tags the
 /// Rust-level type the underlying SQL expression evaluates to, which
@@ -116,7 +116,7 @@ where
     /// `V: Into<Expr<V>>`. This wrapper lets call sites read
     /// `Expr::literal(100i32)` instead of `Expr::<i32>::from(100i32)`
     /// the inference direction matches the plan's pseudo-code and
-    /// reads naturally alongside `field.as_expr`.
+    /// reads naturally alongside `field.as_expr()`.
     /// The `T: Into<Expr<T>>` bound on the impl block (rather than on
     /// the method's own generic parameter) means Rust infers `T`
     /// directly from the argument type at the call site. Turbofish
@@ -133,13 +133,13 @@ impl Expr<i32> {
     /// use is age-from-birth-year:
     /// ```ignore
     /// // SQL: (EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER - estimated_birth_year)
-    /// let age_years = Expr::current_year - f.estimated_birth_year.as_expr;
-    /// Elephant::objects
+    /// let age_years = Expr::current_year() - f.estimated_birth_year().as_expr();
+    /// Elephant::objects()
     /// .filter_expr(|f| age_years.gte(Expr::literal(15i32)))
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Why an associated `Expr<i32>` constructor?
-    /// `current_year` takes no arguments and is conceptually a constant for
+    /// `current_year()` takes no arguments and is conceptually a constant for
     /// the duration of a single query. Routing it through the typed `Expr`
     /// surface — rather than a `FieldRef` method — keeps the call site
     /// independent of any specific column, the same way `Expr::literal(...)`

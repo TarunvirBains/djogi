@@ -10,7 +10,7 @@
 //!   framework-internal code (lints, debug formatters, future
 //!   Tier-2 predicate rendering) can read the projection shape
 //!   and reach the source-model table via
-//!   `<V::Model as Model>::table_name` — through a single bound.
+//!   `<V::Model as Model>::table_name()` — through a single bound.
 //!   Sealed against arbitrary downstream impls via the metadata
 //!   seal `private::Sealed` (re-exported as
 //!   `::djogi::__private::DjogiVisageSealed` for macro emission);
@@ -46,7 +46,7 @@ use std::convert::Infallible;
 /// - [`Model`](Self::Model) — the source model `M` the visage is a
 ///   projection of. The bound is `M: Model`, so generic consumers
 ///   reach the source table at compile time via
-///   `<V::Model as crate::model::Model>::table_name` — no parallel
+///   `<V::Model as crate::model::Model>::table_name()` — no parallel
 ///   `TABLE` constant on this trait.
 /// - [`SCOPE`](Self::SCOPE) — stable scope key matching the visage's
 ///   audience.
@@ -189,7 +189,7 @@ use std::convert::Infallible;
 /// # Note on the absence of `TABLE`
 /// There is intentionally no `TABLE` constant on this trait. Generic
 /// callers reach the source-model table through
-/// `<V::Model as crate::model::Model>::table_name`, which is the
+/// `<V::Model as crate::model::Model>::table_name()`, which is the
 /// canonical entry point that already factors in compile-time table
 /// validation, identifier checks, and the rest of the `Model`
 /// contract. Adding a parallel `TABLE` const would duplicate state
@@ -248,7 +248,7 @@ pub trait DjogiVisage:
     /// `impl DjogiVisage for {Visage}` sets `type Model = {Source}`
     /// where `{Source}` is the host `#[model]` struct. Generic code
     /// reaches the source table via
-    /// `<V::Model as crate::model::Model>::table_name`, which is the
+    /// `<V::Model as crate::model::Model>::table_name()`, which is the
     /// motivating reason the associated type exists at all — without
     /// it, generic visage consumers would have to thread the source
     /// model in as a separate type parameter at every call site.
@@ -261,7 +261,7 @@ pub trait DjogiVisage:
     /// `#[allow(private_interfaces)]` on the source if the model
     /// must stay private. Rust does not provide a way to hide an
     /// associated type's binding while leaving the trait public,
-    /// and the `<V::Model as Model>::table_name` access pattern
+    /// and the `<V::Model as Model>::table_name()` access pattern
     /// that the original spec requires depends on the binding
     /// being nameable.
     type Model: crate::model::Model;
@@ -418,7 +418,7 @@ pub mod projection {
 #[derive(Debug, thiserror::Error)]
 pub enum VisageError {
     /// A relation field was projected before the relation was loaded.
-    /// Fix: call `.prefetch(|r| r.<field>)` (or `.select_related(...)` for
+    /// Fix: call `.prefetch(|r| r.<field>())` (or `.select_related(...)` for
     /// SQL-JOIN eager loading) on the queryset before invoking
     /// `TryFrom::try_from(&model)`.
     #[error(
@@ -496,7 +496,7 @@ pub enum VisageError {
     /// # Note on `source`
     /// The inner error is boxed as `dyn Error + Send + Sync` because codec
     /// error types vary. The original error type is preserved via
-    /// `#[source]` for `.source` chaining and for `std::error::Error`
+    /// `#[source]` for `.source()` chaining and for `std::error::Error`
     /// downcast.
     #[error(
         "visage of {model}.{field} for scope `{scope}` failed: \

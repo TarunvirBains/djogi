@@ -387,8 +387,8 @@ fn classifier_applies(ctx: &ClassifyContext<'_>) -> bool {
 
 /// §7: "Add nullable column" → OnlineSafe iff there is no default;
 /// nullability is orthogonal to the volatility classification.
-/// A nullable add with a volatile default (`gen_random_uuid` /
-/// `random` / `clock_timestamp`) still requires the 3-step
+/// A nullable add with a volatile default (`gen_random_uuid()` /
+/// `random()` / `clock_timestamp()`) still requires the 3-step
 /// ExpandContract pattern: Pg18's catalog-only fast-path is gated on
 /// the default being non-volatile, and Postgres evaluates the default
 /// once-per-row at backfill time regardless of the column's NULL
@@ -485,7 +485,7 @@ fn classify_column_change(
         // belt-and-braces refusal as a defense-in-depth check (see
         // `dispatch_pattern` and the `replacement_column` /
         // `codec_transition` emitters).
-        // When `using.is_none` the lock window is governed by the
+        // When `using.is_none()` the lock window is governed by the
         // cast pair alone and the existing pair-based dispatch
         // applies.
         ColumnChange::ChangeType { using: Some(_), .. } => OnlineSafetyClassification::OfflineOnly,
@@ -1129,7 +1129,7 @@ mod tests {
             table: "users".to_string(),
             column: non_null_column("created_at", Some("now()")),
         };
-        // `now` is STABLE — Pg18 catalog-only fast-path applies.
+        // `now()` is STABLE — Pg18 catalog-only fast-path applies.
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::OnlineSafe
@@ -1143,7 +1143,7 @@ mod tests {
             table: "users".to_string(),
             column: non_null_column("token", Some("gen_random_uuid()")),
         };
-        // `gen_random_uuid` is VOLATILE — 3-step pattern required.
+        // `gen_random_uuid()` is VOLATILE — 3-step pattern required.
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::ExpandContract
@@ -1152,7 +1152,7 @@ mod tests {
 
     #[test]
     fn add_nullable_column_with_random_default_is_expand_contract() {
-        // Spec-correctness: `ADD COLUMN <nullable> DEFAULT random`
+        // Spec-correctness: `ADD COLUMN <nullable> DEFAULT random()`
         // STILL requires the 3-step ExpandContract pattern. Pg18's
         // catalog-only fast-path is gated on the default being
         // non-volatile; the column's NULL permission does not change
@@ -1199,7 +1199,7 @@ mod tests {
     #[test]
     fn add_nullable_column_with_stable_default_is_online_safe() {
         // Confirms the pipeline handles the non-volatile case for
-        // nullable columns too — `now` is STABLE, catalog-only
+        // nullable columns too — `now()` is STABLE, catalog-only
         // fast-path still applies.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AddColumn {
@@ -1438,7 +1438,7 @@ mod tests {
         // replicate an adopter expression. Route to OfflineOnly
         // regardless of the cast pair.
         // INTEGER → BIGINT without `using` would classify OnlineSafe
-        // (benign widening), so the `using.is_some` arm is the only
+        // (benign widening), so the `using.is_some()` arm is the only
         // thing producing OfflineOnly here.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AlterColumn {
@@ -2095,7 +2095,7 @@ mod tests {
     fn default_volatility_override_stable_routes_to_online_safe() {
         // Build a context whose override map asserts the default is
         // STABLE. Without the override the static table classifies
-        // `gen_random_uuid` as VOLATILE → ExpandContract.
+        // `gen_random_uuid()` as VOLATILE → ExpandContract.
         let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
         let mut overrides_map: BTreeMap<(String, String), DefaultVolatility> = BTreeMap::new();
         overrides_map.insert(
@@ -2155,7 +2155,7 @@ mod tests {
     #[test]
     fn default_volatility_override_absent_falls_through_to_static_table() {
         // No entry in the override map → static `pg_volatility.rs`
-        // table classifies `gen_random_uuid` as VOLATILE →
+        // table classifies `gen_random_uuid()` as VOLATILE →
         // ExpandContract.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AddColumn {

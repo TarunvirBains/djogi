@@ -8,7 +8,7 @@
 //! - **Pool**: backed by a `DjogiPool` — each operation checks out a connection, runs
 //!   the query, and returns the connection to the pool.
 //! - **Transaction**: an active `PgConnection` with an open transaction — all
-//!   operations share the same logical transaction until `commit` or `rollback`
+//!   operations share the same logical transaction until `commit()` or `rollback()`
 //!   is called.
 //! # Execution dispatch pattern
 //! CRUD methods and QuerySet terminals that today take `&mut DjogiContext` acquire a
@@ -22,11 +22,11 @@
 //! # Savepoint depth and nesting
 //! When `atomic` opens a transaction inside another transaction,
 //! Postgres transparently converts it to a savepoint. The `savepoint_depth` field
-//! tracks how many nested `atomic` calls have been made (0 = root transaction or
+//! tracks how many nested `atomic()` calls have been made (0 = root transaction or
 //! pool, N = N savepoints). The framework uses this to auto-name savepoints as
 //! `sp_<depth>` without user involvement.
 //! # On-commit callbacks
-//! Callbacks registered via `.on_commit` fire after a successful `commit`.
+//! Callbacks registered via `.on_commit()` fire after a successful `commit()`.
 //! They are useful for post-transaction side effects (cache invalidation,
 //! outbox polling, audit logging). Callback errors are logged but do not fail
 //! the commit itself (per the spec resolution). Callbacks are FIFO.
@@ -40,7 +40,7 @@
 //!   for application code; wraps the same drain-after-commit semantics but
 //!   also handles nested savepoints.
 //!   Calls to [`DjogiContext::on_commit`] on a **pool-backed** context (no
-//!   `atomic` scope, no surrounding transaction) are an audit-warn no-op:
+//!   `atomic()` scope, no surrounding transaction) are an audit-warn no-op:
 //!   the callback is **not** queued, and a `#[track_caller] tracing::warn!`
 //!   event with the grep-able token `djogi::on_commit::pool_backed_drop`
 //!   fires once per `on_commit` call so log scrapers catch every silent-drop
@@ -104,17 +104,17 @@ pub struct DjogiContext {
     /// Internal variant: either a pool or a transaction.
     inner: ContextInner,
 
-    /// Savepoint depth: 0 = root transaction or pool, N = N nested `atomic` calls.
+    /// Savepoint depth: 0 = root transaction or pool, N = N nested `atomic()` calls.
     /// Used by the framework to auto-generate savepoint names.
     savepoint_depth: u32,
 
     /// FIFO stack of callbacks to fire after a successful commit.
-    /// Each callback is a boxed async closure that returns `Result<, DjogiError>`.
+    /// Each callback is a boxed async closure that returns `Result<(), DjogiError>`.
     /// Errors are logged but do not fail the commit (Q9 resolution).
     on_commit: Vec<OnCommitCallback>,
 
     /// Private fail-closed state for transaction-backed contexts whose nested
-    /// savepoint cleanup could not be awaited because the nested `atomic`
+    /// savepoint cleanup could not be awaited because the nested `atomic()`
     /// future was dropped.
     transaction_poisoned: Option<TransactionPoison>,
 
@@ -122,7 +122,7 @@ pub struct DjogiContext {
     /// Set to `true` by `set_tenant`. Framework code can inspect this flag to
     /// detect missing tenant setup before performing tenant-scoped queries. Note
     /// that `SET LOCAL` (via `set_config`) is only meaningful inside an open
-    /// transaction — callers must wrap tenant-scoped operations in `atomic` for
+    /// transaction — callers must wrap tenant-scoped operations in `atomic()` for
     /// the GUC value to persist through the full query sequence.
     pub tenant_set: bool,
 
@@ -133,7 +133,7 @@ pub struct DjogiContext {
     pub(crate) auth: Option<AuthContext>,
 
     /// When `true`, suppresses the "cross-tenant context" warn that fires
-    /// when `auth.tenant_id.is_none` on a tenant-keyed model. Set via
+    /// when `auth.tenant_id.is_none()` on a tenant-keyed model. Set via
     /// [`DjogiContext::with_no_tenant_scope`] / [`Self::set_no_tenant_scope`].
     /// Task 11 addition.
     pub(crate) tenant_scope_suppressed: bool,
@@ -142,7 +142,7 @@ pub struct DjogiContext {
     /// `ensure_tenant_set`, or `None` if no `SET LOCAL app.tenant_id = ...`
     /// has been issued on the current transaction. Used by
     /// [`Self::ensure_tenant_set`] to detect stale tenant scope: when auth
-    /// changes inside an `atomic` scope from `org_a` to `org_b`, the
+    /// changes inside an `atomic()` scope from `org_a` to `org_b`, the
     /// transaction-scoped GUC from the earlier `set_tenant("org_a")` is
     /// still in effect, so we re-issue `SET LOCAL` whenever the requested
     /// tid differs from the applied one. A plain `tenant_set: bool` short-
@@ -152,19 +152,19 @@ pub struct DjogiContext {
     pub(crate) applied_tenant_id: Option<String>,
 
     /// 4 — typed `Punnu<T>` pool registry for this context.
-    /// Built once at construction time by walking `inventory::iter::<SassiBootHook>`.
+    /// Built once at construction time by walking `inventory::iter::<SassiBootHook>()`.
     /// Top-level contexts (`from_pool`, `from_connection`) each own a fresh
-    /// `Arc<Sassi>`. `begin` and `atomic(&mut pool_ctx, ...)` SHARE the
+    /// `Arc<Sassi>`. `begin()` and `atomic(&mut pool_ctx, ...)` SHARE the
     /// parent's `Arc<Sassi>` (cache state is transaction-scope-agnostic — the
     /// registry does not track in-flight mutations, only provides access to the
     /// pools). `atomic(&pool, ...)` intentionally creates a fresh top-level
     /// transaction context because no parent `DjogiContext` was supplied.
-    /// Access via [`Self::punnu::<T>`]; the raw `Arc<Sassi>` is crate-private.
+    /// Access via [`Self::punnu::<T>()`]; the raw `Arc<Sassi>` is crate-private.
     pub(crate) sassi: Arc<sassi::Sassi>,
 }
 
 /// Snapshot of the auth-related mutable state on a [`DjogiContext`],
-/// taken before entering a nested `atomic` savepoint and restored on
+/// taken before entering a nested `atomic()` savepoint and restored on
 /// rollback so the in-memory trackers stay in sync with Postgres's
 /// actual GUC state after a savepoint rollback reverts the inner
 /// `SET LOCAL`. phase-boundary fixup (
@@ -240,7 +240,7 @@ impl DjogiContext {
     /// Create a context backed by an active `PgConnection` (transaction).
     /// Typically called by `atomic` or by test / integration
     /// code that manages its own transaction boundaries. Production code
-    /// should prefer [`atomic`](crate::transaction::atomic) so on-commit
+    /// should prefer [`atomic()`](crate::transaction::atomic) so on-commit
     /// callbacks dispatch correctly; this constructor is the low-level escape
     /// hatch for callers who really do need to hand-manage a transaction.
     pub fn from_connection(conn: PgConnection) -> Self {
@@ -250,7 +250,7 @@ impl DjogiContext {
     /// Create a transaction-backed context that shares an existing
     /// `Arc<Sassi>`.
     /// This is the internal constructor for transaction scopes opened from an
-    /// existing request context (`begin` and `atomic(&mut pool_ctx, ...)`).
+    /// existing request context (`begin()` and `atomic(&mut pool_ctx, ...)`).
     /// It preserves the "DjogiContext is the cache/tenant boundary" contract:
     /// callers must already have chosen the parent context whose Sassi registry
     /// should flow into the transaction.
@@ -261,19 +261,19 @@ impl DjogiContext {
         Self::new(ContextInner::Transaction(conn), sassi)
     }
 
-    /// Return the current savepoint depth (0 = root, N = N nested `atomic` calls).
+    /// Return the current savepoint depth (0 = root, N = N nested `atomic()` calls).
     pub fn savepoint_depth(&self) -> u32 {
         self.savepoint_depth
     }
 
-    /// Increment savepoint depth by 1 (called when entering a nested `atomic`).
+    /// Increment savepoint depth by 1 (called when entering a nested `atomic()`).
     /// **Internal use only.** Used by the framework to manage savepoint nesting.
     #[allow(dead_code)]
     pub(crate) fn increment_savepoint_depth(&mut self) {
         self.savepoint_depth = self.savepoint_depth.saturating_add(1);
     }
 
-    /// Decrement savepoint depth by 1 (called when exiting a nested `atomic`).
+    /// Decrement savepoint depth by 1 (called when exiting a nested `atomic()`).
     /// **Internal use only.** Used by the framework to manage savepoint nesting.
     #[allow(dead_code)]
     pub(crate) fn decrement_savepoint_depth(&mut self) {
@@ -281,7 +281,7 @@ impl DjogiContext {
     }
 
     /// Get a reference to the inner pool if this context is pool-backed.
-    /// Returns `Some(&pool)` iff the context was created via `from_pool`.
+    /// Returns `Some(&pool)` iff the context was created via `from_pool()`.
     /// Returns `None` if this is a transaction context.
     pub(crate) fn pool(&self) -> Option<&DjogiPool> {
         match &self.inner {
@@ -301,7 +301,7 @@ impl DjogiContext {
     }
 
     /// Get a mutable reference to the inner connection if this context is transaction-backed.
-    /// Returns `Some(&mut conn)` iff the context was created via `from_connection`.
+    /// Returns `Some(&mut conn)` iff the context was created via `from_connection()`.
     /// Returns `None` if this is a pool context.
     pub(crate) fn conn(&mut self) -> Option<&mut PgConnection> {
         match &mut self.inner {
@@ -371,7 +371,7 @@ impl DjogiContext {
     }
 
     /// Return true when this context owns an active transaction connection.
-    /// Currently unused by the bypass harness (which uses `conn.is_some`),
+    /// Currently unused by the bypass harness (which uses `conn().is_some()`),
     /// but available for future integration layers that need a cheap check
     /// without taking a mutable reference.
     #[allow(dead_code)] // Available for future use; bypass harness uses conn().is_some()
@@ -480,7 +480,7 @@ impl DjogiContext {
     }
 
     /// Snapshot the auth-related mutable state (`auth`, `applied_tenant_id`,
-    /// `tenant_set`, `tenant_scope_suppressed`) so a nested `atomic`
+    /// `tenant_set`, `tenant_scope_suppressed`) so a nested `atomic()`
     /// savepoint can restore these fields on rollback to stay in sync
     /// with Postgres after the inner `SET LOCAL` is reverted.
     pub(crate) fn snapshot_auth_state(&self) -> AuthStateSnapshot {
@@ -495,14 +495,14 @@ impl DjogiContext {
     /// Macro-safe auth snapshot shim.
     /// Macro-emitted code in downstream crates cannot call
     /// crate-private methods, so this hidden public wrapper exposes the
-    /// same snapshot used by nested `atomic` rollback.
+    /// same snapshot used by nested `atomic()` rollback.
     #[doc(hidden)]
     pub fn __snapshot_auth_state_for_macros(&self) -> AuthStateSnapshot {
         self.snapshot_auth_state()
     }
 
     /// Restore auth-related state captured by
-    /// [`Self::snapshot_auth_state`]. Called by the nested `atomic`
+    /// [`Self::snapshot_auth_state`]. Called by the nested `atomic()`
     /// path on rollback paths (closure returned Err, or panicked) so
     /// the in-memory trackers reflect the post-rollback GUC state that
     /// Postgres presents.
@@ -547,7 +547,7 @@ impl DjogiContext {
     /// function iterates that inventory, calls each hook's `fn(&mut Sassi)`,
     /// and freezes the result into a shared `Arc`. Top-level `DjogiContext`
     /// constructors (`from_pool`, `from_connection`) call this once; inner
-    /// contexts (`begin`, `atomic(&mut pool_ctx, ...)`, and nested
+    /// contexts (`begin()`, `atomic(&mut pool_ctx, ...)`, and nested
     /// `atomic(&mut tx_ctx, ...)`) clone the parent's `Arc` instead of
     /// rebuilding. The compatibility `atomic(&pool, ...)` path remains a fresh
     /// top-level context by design, preserving the explicit context boundary.
@@ -571,7 +571,7 @@ impl DjogiContext {
     ///   rolled `Cacheable` impls without an accompanying boot hook do not
     ///   appear in the registry).
     ///   The same `Arc<Punnu<T>>` is returned on every call for the same `T`
-    ///   within one top-level `DjogiContext`. Contexts opened via `begin` or
+    ///   within one top-level `DjogiContext`. Contexts opened via `begin()` or
     ///   `atomic(&mut pool_ctx, ...)` share the parent's `Arc<Sassi>`, so they
     ///   return the same `Arc<Punnu<T>>` as well.
     /// # Cross-context contract (4)
@@ -633,12 +633,12 @@ impl DjogiContext {
     /// # Example
     /// ```ignore
     /// // Correct: acquire from the same context.
-    /// let p = ctx.punnu::<MyModel>.unwrap;
+    /// let p = ctx.punnu::<MyModel>().unwrap();
     /// let verified = ctx.use_punnu(&p); // returns Arc::clone(&p)
     ///
     /// // Misuse: acquire from a different context — debug build panics,
     /// // release build returns an empty Punnu.
-    /// let p_other = ctx_b.punnu::<MyModel>.unwrap;
+    /// let p_other = ctx_b.punnu::<MyModel>().unwrap();
     /// let verified = ctx_a.use_punnu(&p_other); // BUG: cross-context
     /// ```
     /// # Spec anchor
@@ -798,9 +798,9 @@ impl DjogiContext {
     /// checkout a session whose state may have been mutated by the
     /// original SQL.
     /// The transaction path runs `finalize` without a guard — the
-    /// surrounding `atomic` bounds TRANSACTION-SCOPED state via its
+    /// surrounding `atomic()` bounds TRANSACTION-SCOPED state via its
     /// rollback path on `Err`/panic. The full adopter contract for
-    /// `atomic` + session-scoped state (and `atomic`'s cancellation
+    /// `atomic()` + session-scoped state (and `atomic()`'s cancellation
     /// caveat) lives in the [`crate::__bypass`] module docs.
     pub(crate) async fn query_all_with<T, F>(
         &mut self,
@@ -862,12 +862,12 @@ impl DjogiContext {
     // -------------------------------------------------------------------------
 
     /// Commit the underlying transaction, consuming the context.
-    /// Returns `Ok` if the context was transaction-backed and the commit
+    /// Returns `Ok(())` if the context was transaction-backed and the commit
     /// succeeded. Returns `Err(DjogiError::Db(..))` if the commit failed or
     /// the context was pool-backed (pool contexts have no transaction to
-    /// commit — calling `.commit` on one is a caller error).
+    /// commit — calling `.commit()` on one is a caller error).
     /// # On-commit callbacks
-    /// After the commit returns `Ok`, every callback registered via
+    /// After the commit returns `Ok(())`, every callback registered via
     /// [`on_commit`](Self::on_commit) fires in FIFO order.,
     /// callback errors are logged via `tracing::error!` but do NOT unwind the
     /// caller — a failing callback must not fail the commit, and subsequent
@@ -918,7 +918,7 @@ impl DjogiContext {
     }
 
     /// Roll back the underlying transaction, consuming the context.
-    /// Returns `Ok` if the context was transaction-backed and the
+    /// Returns `Ok(())` if the context was transaction-backed and the
     /// rollback succeeded. Returns `Err(DjogiError::Db(..))` if the rollback
     /// failed or the context was pool-backed.
     /// # On-commit callbacks
@@ -983,8 +983,8 @@ impl DjogiContext {
     /// Only valid on pool-backed contexts — returns an error if called on an
     /// already-transaction-backed context (nested transactions will be
     /// modelled via savepoints in 's `atomic` wrapper).
-    /// This is a low-level helper used by tests and by the `atomic`
-    /// implementation; production code should reach for `atomic`.
+    /// This is a low-level helper used by tests and by the `atomic()`
+    /// implementation; production code should reach for `atomic()`.
     pub async fn begin(&self) -> Result<DjogiContext, DjogiError> {
         match &self.inner {
             ContextInner::Pool(pool) => {
@@ -992,7 +992,7 @@ impl DjogiContext {
                 conn.batch_execute("BEGIN").await?;
                 // Share the parent's Sassi handle — the registry is read-only
                 // after construction and transaction scope does not change the
-                // set of registered pools. `begin` / `atomic` are inner
+                // set of registered pools. `begin()` / `atomic()` are inner
                 // contexts that share the outer's cache state.
                 // SYNC: the field list below must stay in lockstep with
                 // `from_pool` and `from_connection`.
@@ -1010,7 +1010,7 @@ impl DjogiContext {
 
     /// Register an async callback to fire after a successful commit.
     /// # Behavior by context kind
-    /// - **Transaction-backed** context (inside `atomic` or after
+    /// - **Transaction-backed** context (inside `atomic()` or after
     ///   [`begin`](Self::begin)): the callback is queued and fires in FIFO
     ///   order after the underlying transaction commits. Callback errors
     ///   are logged via `tracing::error!` but do not fail the commit (per
@@ -1020,7 +1020,7 @@ impl DjogiContext {
     ///   is **dropped without queuing** and a `#[track_caller]
     /// tracing::warn!` event with the grep-able token
     ///   `djogi::on_commit::pool_backed_drop` fires at the caller's source
-    ///   location. There is no `commit` to drain the queue against on a
+    ///   location. There is no `commit()` to drain the queue against on a
     ///   pool-backed context, so silently queuing the callback would lose
     ///   work; emitting an audit-warn instead makes the silent-drop
     ///   observable for log scrapers.
@@ -1030,8 +1030,8 @@ impl DjogiContext {
     /// ```ignore
     /// djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
     /// Foo::create(ctx, foo).await?;
-    /// ctx.on_commit(move || async move { /* fires after commit */ Ok() });
-    /// Ok::<_, djogi::DjogiError>()
+    /// ctx.on_commit(move || async move { /* fires after commit */ Ok(()) });
+    /// Ok::<_, djogi::DjogiError>(())
     /// })).await?;
     /// ```
     /// `atomic` performs the canonical §D3 drain sequence
@@ -1041,7 +1041,7 @@ impl DjogiContext {
     /// The warn is **single-shot per `on_commit` call** — it does not
     /// amplify per row or per drain step. The `#[track_caller]` attribute
     /// surfaces the adopter's call site rather than this method, so log
-    /// scrapers can pinpoint which application code needs the `atomic`
+    /// scrapers can pinpoint which application code needs the `atomic()`
     /// wrap. The grep-able token `djogi::on_commit::pool_backed_drop` is
     /// stable; treat it as part of the audit invariant.
     #[track_caller]
@@ -1073,7 +1073,7 @@ impl DjogiContext {
     }
 
     /// Length of the on-commit callback queue. Used by `transaction.rs`
-    /// to snapshot the queue before entering a nested `atomic` scope
+    /// to snapshot the queue before entering a nested `atomic()` scope
     /// so inner-registered callbacks can be dropped on rollback.
     pub(crate) fn on_commit_len(&self) -> usize {
         self.on_commit.len()
@@ -1081,7 +1081,7 @@ impl DjogiContext {
 
     /// Truncate the on-commit callback queue to `new_len`. Used by
     /// `transaction.rs` to discard callbacks registered inside a
-    /// nested `atomic` scope that rolled back.
+    /// nested `atomic()` scope that rolled back.
     pub(crate) fn on_commit_truncate(&mut self, new_len: usize) {
         self.on_commit.truncate(new_len);
     }
@@ -1107,7 +1107,7 @@ impl DjogiContext {
 /// This is the same lifecycle [`crate::pg::pool::DjogiPool::with_client`]
 /// enforces via `WithClientGuard` — see that struct for the underlying
 /// rationale (Djogi runs `deadpool_postgres::RecyclingMethod::Fast`, which
-/// only checks `is_closed` and does not issue `ROLLBACK` / `RESET ALL` /
+/// only checks `is_closed()` and does not issue `ROLLBACK` / `RESET ALL` /
 /// `DISCARD ALL`, so a poisoned session would otherwise leak to the next
 /// checkout). Tracking issue: .
 struct PoolConnGuard {
@@ -1275,7 +1275,7 @@ impl DjogiContext {
     /// `current_setting('app.tenant_id')` as the tenant discriminator. After
     /// this call returns `Ok`, `self.tenant_set` is `true` so caller code can
     /// assert the precondition before performing tenant-scoped queries.
-    /// # Important: use inside `atomic`
+    /// # Important: use inside `atomic()`
     /// `set_config(…, true)` is the transactional form of `SET LOCAL` — the
     /// GUC is scoped to the **current transaction** and resets when the
     /// transaction commits or rolls back. On a pool-backed context without an
@@ -1284,11 +1284,11 @@ impl DjogiContext {
     /// returns to the pool with the GUC cleared.
     /// The correct production pattern is:
     /// ```ignore
-    /// let mut ctx = DjogiContext::from_pool(pool.clone);
+    /// let mut ctx = DjogiContext::from_pool(pool.clone());
     /// atomic(&mut ctx, |ctx| Box::pin(async move {
     /// ctx.set_tenant("42").await?;
-    /// // All queries inside atomic now see the tenant-scoped rows.
-    /// let posts = TenantPost::objects.fetch_all(ctx).await?;
+    /// // All queries inside atomic() now see the tenant-scoped rows.
+    /// let posts = TenantPost::objects().fetch_all(ctx).await?;
     /// Ok(posts)
     /// })).await?
     /// ```
@@ -1340,7 +1340,7 @@ impl DjogiContext {
     /// transaction.
     /// Primarily useful for introspection and regression tests. Production
     /// code typically relies on the auto-wiring (Task 10) to keep
-    /// `app.tenant_id` aligned with `ctx.auth.tenant_id` automatically.
+    /// `app.tenant_id` aligned with `ctx.auth().tenant_id` automatically.
     pub fn applied_tenant_id(&self) -> Option<&str> {
         self.applied_tenant_id.as_deref()
     }
@@ -1405,8 +1405,8 @@ impl DjogiContext {
     /// djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
     /// ctx.set_role("app_readonly").await?;
     /// // Subsequent statements run under the app_readonly role
-    /// // until this atomic exits.
-    /// let posts = Post::objects.fetch_all(ctx).await?;
+    /// // until this atomic() exits.
+    /// let posts = Post::objects().fetch_all(ctx).await?;
     /// Ok(posts)
     /// })).await?;
     /// ```
@@ -1500,7 +1500,7 @@ impl DjogiContext {
     /// // commit time.
     /// let a = NodeA::create(ctx, NodeA { b_id: peer_b, .. }).await?;
     /// let b = NodeB::create(ctx, NodeB { a_id: a.id, .. }).await?;
-    /// Ok::<_, DjogiError>()
+    /// Ok::<_, DjogiError>(())
     /// })).await?;
     /// ```
     pub async fn defer_constraints(
@@ -1540,7 +1540,7 @@ impl DjogiContext {
     /// // ... mid-transaction work that benefits from deferred checks ...
     /// ctx.set_constraints_immediate(DeferScope::All).await?;
     /// // ... remaining statements run with checks at every statement ...
-    /// Ok::<_, DjogiError>()
+    /// Ok::<_, DjogiError>(())
     /// })).await?;
     /// ```
     pub async fn set_constraints_immediate(
@@ -1601,7 +1601,7 @@ impl DjogiContext {
 
 /// Validate every constraint name in `names` against the
 /// `DeferrabilitySpec` inventory.
-/// Thin wrapper that threads the live `inventory::iter::<...>`
+/// Thin wrapper that threads the live `inventory::iter::<...>()`
 /// streams into [`validate_constraint_names_against_inventory`] so
 /// the validator is unit-testable with synthetic inventories. See
 /// that function for the full contract.
@@ -1645,7 +1645,7 @@ fn validate_constraint_names_against_descriptors(names: &[&str]) -> Result<(), D
 ///    [`DjogiError::UnknownConstraintName`].
 /// 5. **Non-deferrable adopter-supplied name** raises
 ///    [`DjogiError::ConstraintNotDeferrable`].
-/// 6. Otherwise returns `Ok`.
+/// 6. Otherwise returns `Ok(())`.
 ///    Failures (1)–(3) surface before the per-name validation pass so a
 ///    misconfigured inventory cannot mask a misconfigured `Named` payload
 ///    with a different error code.
@@ -1807,18 +1807,18 @@ impl DjogiContext {
     /// The natural shape:
     /// ```ignore
     /// let (alpha, beta) = tokio::try_join!(
-    /// Post::objects.filter(|f| f.kind.eq("alpha")).fetch_all(&mut ctx),
-    /// Post::objects.filter(|f| f.kind.eq("beta")).fetch_all(&mut ctx),
+    /// Post::objects().filter(|f| f.kind().eq("alpha")).fetch_all(&mut ctx),
+    /// Post::objects().filter(|f| f.kind().eq("beta")).fetch_all(&mut ctx),
     /// )?;
     /// ```
     /// does not compile because both branches need `&mut ctx` at the
     /// same time (`E0499`). Clone the context first:
     /// ```ignore
-    /// let mut ctx_a = ctx.clone_for_concurrent_reads?;
-    /// let mut ctx_b = ctx.clone_for_concurrent_reads?;
+    /// let mut ctx_a = ctx.clone_for_concurrent_reads()?;
+    /// let mut ctx_b = ctx.clone_for_concurrent_reads()?;
     /// let (alpha, beta) = tokio::try_join!(
-    /// Post::objects.filter(|f| f.kind.eq("alpha")).fetch_all(&mut ctx_a),
-    /// Post::objects.filter(|f| f.kind.eq("beta")).fetch_all(&mut ctx_b),
+    /// Post::objects().filter(|f| f.kind().eq("alpha")).fetch_all(&mut ctx_a),
+    /// Post::objects().filter(|f| f.kind().eq("beta")).fetch_all(&mut ctx_b),
     /// )?;
     /// ```
     /// Each `fetch_all` checks out its own connection. The two
@@ -1844,8 +1844,8 @@ impl DjogiContext {
     /// - **`on_commit` queue** — each clone owns its own queue.
     ///   Callbacks registered on the parent BEFORE the clone are not
     ///   inherited; callbacks registered on either clone after
-    ///   cloning fire only on that clone's `commit` (and only if
-    ///   the clone enters its own `atomic`).
+    ///   cloning fire only on that clone's `commit()` (and only if
+    ///   the clone enters its own `atomic()`).
     /// - **Savepoint depth** — clones start at depth 0 because they
     ///   have no transaction. (This method rejects transaction-
     ///   backed contexts; see Errors.)
@@ -1856,7 +1856,7 @@ impl DjogiContext {
     /// owns one Postgres connection; cloning would either alias that
     /// connection across futures (Postgres protocol violation) or
     /// silently break the transaction boundary. Move the
-    /// concurrent-reads block outside the surrounding `atomic`
+    /// concurrent-reads block outside the surrounding `atomic()`
     /// scope, or fetch sequentially within the transaction.
     /// # Why sync (no `await`)
     /// The clone allocates no new database resources — it copies the
@@ -1872,11 +1872,11 @@ impl DjogiContext {
     /// use djogi::DjogiContext;
     ///
     /// async fn dashboard(ctx: &mut DjogiContext) -> Result<(Vec<Post>, Vec<User>), DjogiError> {
-    /// let mut ctx_posts = ctx.clone_for_concurrent_reads?;
-    /// let mut ctx_users = ctx.clone_for_concurrent_reads?;
+    /// let mut ctx_posts = ctx.clone_for_concurrent_reads()?;
+    /// let mut ctx_users = ctx.clone_for_concurrent_reads()?;
     /// tokio::try_join!(
-    /// Post::objects.fetch_all(&mut ctx_posts),
-    /// User::objects.fetch_all(&mut ctx_users),
+    /// Post::objects().fetch_all(&mut ctx_posts),
+    /// User::objects().fetch_all(&mut ctx_users),
     /// )
     /// }
     /// ```
@@ -1983,7 +1983,7 @@ fn validate_runtime_plain_ident(value: &str, role: &str) -> Result<(), DjogiErro
 }
 
 /// Drain a batch of on-commit callbacks panic-safely.
-/// Wraps each callback future in `AssertUnwindSafe(..).catch_unwind`
+/// Wraps each callback future in `AssertUnwindSafe(..).catch_unwind()`
 /// so a panicking callback is logged via `tracing::error!` without
 /// aborting the drain loop. Callback `Err` returns are likewise logged
 /// and ignored — per the spec a callback failure must not fail the

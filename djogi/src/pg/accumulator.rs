@@ -4,7 +4,7 @@
 //! 1. An SQL string with `$1`, `$2`, ... placeholders for every bound value.
 //! 2. A `Vec<Box<dyn postgres_types::ToSql + Sync + Send>>` carrying the bound
 //!    values in positional order.
-//!    The caller calls `into_parts` to get `(String, Vec<Box<dyn ToSql...>>)`,
+//!    The caller calls `into_parts()` to get `(String, Vec<Box<dyn ToSql...>>)`,
 //!    then executes the query via `tokio_postgres::Client::query` or similar.
 //! # Design rationale
 //! `postgres_types::ToSql` is the bind trait for tokio-postgres. `SqlAccumulator`
@@ -125,8 +125,8 @@ impl SqlAccumulator {
     /// Each element gets its own `$n` slot. The caller is responsible for emitting
     /// the opening `(` before calling this and `)` after — this method emits only
     /// the comma-separated `$n, $m, ...` list, not the surrounding parentheses.
-    /// Empty iterators are a no-op. Callers that need `IN ` short-circuit
-    /// behaviour (which is a Postgres syntax error) should check `is_empty` and
+    /// Empty iterators are a no-op. Callers that need `IN ()` short-circuit
+    /// behaviour (which is a Postgres syntax error) should check `is_empty()` and
     /// emit `FALSE` or `TRUE` before calling this.
     pub fn push_list_binds<T, I>(&mut self, iter: I)
     where
@@ -148,7 +148,7 @@ impl SqlAccumulator {
     /// of identifiers under a parenthesized comma-separated shape.
     /// Each item is `push_sql`'d directly; the caller is responsible for
     /// ensuring items contain only trusted SQL text (column names baked by
-    /// `#[model]` / `FieldRef::column` — `&'static str` either way).
+    /// `#[model]` / `FieldRef::column()` — `&'static str` either way).
     /// Empty iterators are a no-op.
     pub fn push_csv<'a, I: IntoIterator<Item = &'a str>>(&mut self, items: I) {
         let mut first = true;
@@ -191,8 +191,8 @@ impl SqlAccumulator {
     /// - parsing an inner placeholder digit run yields a value greater than
     ///   `u32::MAX` (e.g. `$9999999999`);
     /// - a renumbered placeholder `n + offset` exceeds `u32::MAX`;
-    /// - the post-splice `next_param` increment by `other_binds.len`
-    ///   exceeds `u32::MAX` (this also catches the case where `other_binds.len`
+    /// - the post-splice `next_param` increment by `other_binds.len()`
+    ///   exceeds `u32::MAX` (this also catches the case where `other_binds.len()`
     ///   itself does not fit in `u32`).
     pub fn extend_with(&mut self, other: SqlAccumulator) {
         let SqlAccumulator {
@@ -208,7 +208,7 @@ impl SqlAccumulator {
             // for long inner SQL. Strict upper bound: renumbering grows each
             // placeholder by up to 9 bytes (when offset spans many digit-count
             // brackets — e.g. `$1` becoming `$4294967295` at the u32::MAX
-            // worst case); `+ 9 * other_binds.len` covers it. In typical
+            // worst case); `+ 9 * other_binds.len()` covers it. In typical
             // qualify-lowering cases the offset is small (offset < 1000) so
             // growth is at most 3 bytes per placeholder; the looser reserve
             // is the cost of an honest upper bound.
@@ -260,7 +260,7 @@ impl SqlAccumulator {
                 self.sql.push_str(&other_sql[start..]);
             }
         }
-        // `other_binds.len` is `usize`; on 64-bit hosts that exceeds `u32`,
+        // `other_binds.len()` is `usize`; on 64-bit hosts that exceeds `u32`,
         // so an unchecked `as u32` would silently truncate. `try_from` makes
         // truncation an explicit panic site, and `checked_add` then guards
         // the post-splice counter increment itself.

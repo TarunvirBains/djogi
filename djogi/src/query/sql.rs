@@ -9,7 +9,7 @@
 //! string interpolation of user-controlled data. Table names and column
 //! names are the only items inserted as raw text, and both are
 //! `&'static str` literals baked in by the `#[model]` macro (table name via
-//! `Model::table_name`, column name via `FieldRef::column`), so they are
+//! `Model::table_name()`, column name via `FieldRef::column()`), so they are
 //! not user input. The emitter's job is therefore a straight enum-tree walk:
 //! one variant -> one operator token + zero-or-more `push_bind` calls.
 //! Pattern lookups (`ILIKE`) escape `%`, `_`, and `\\` in user input before
@@ -18,7 +18,7 @@
 //! parameter placement.
 //! `IN (...)` expands to exactly as many bind slots as the list has;
 //! empty lists short-circuit to `FALSE` (IN) / `TRUE` (NOT IN) rather than
-//! emitting the syntactically invalid `col IN `. This matches the contract
+//! emitting the syntactically invalid `col IN ()`. This matches the contract
 //! documented on `FieldRef::in_list` / `not_in_list`.
 //! # Where
 //! Consumed by [`crate::query::terminal`], which wraps each accumulator in the
@@ -374,7 +374,7 @@ fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
 }
 
 /// Emit a single [`Leaf`] — `column op value`. The column name is a
-/// `&'static str` from the macro-baked `FieldRef::column`, so it is safe
+/// `&'static str` from the macro-baked `FieldRef::column()`, so it is safe
 /// to `acc.push_sql(col)` without quoting. The value always goes through
 /// `push_bind`.
 /// When `parent_table` is `Some(table)`, the emitted column reference is
@@ -388,8 +388,8 @@ fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
 /// Emit `{table}.{col}` if `parent_table` is `Some`, otherwise just `{col}`.
 /// Used by every leaf-emitter and array-op arm in this file to handle the
 /// join-aware qualifier prefix uniformly. `col` is always macro-baked
-/// (`&'static str` from `FieldRef::column`); `parent_table` is `&'static str`
-/// from `Model::table_name`. Neither is user input, so direct `push_sql` is
+/// (`&'static str` from `FieldRef::column()`); `parent_table` is `&'static str`
+/// from `Model::table_name()`. Neither is user input, so direct `push_sql` is
 /// safe.
 fn push_qualified_col(
     acc: &mut SqlAccumulator,
@@ -478,7 +478,7 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
                 _ => unreachable!("In/NotIn requires FilterValue::List"),
             };
             // Empty IN is FALSE (no rows match); empty NOT IN is TRUE (every
-            // row matches). Avoids the `col IN ` Postgres syntax error and
+            // row matches). Avoids the `col IN ()` Postgres syntax error and
             // matches the documented contract on `FieldRef::in_list` /
             // `not_in_list`.
             if list.is_empty() {
@@ -652,7 +652,7 @@ mod phase85_array_in_regression_tests {
 
 /// Walk a [`Condition`] borrow and emit the corresponding SQL fragment.
 /// Converted from by-value to by-reference (`&Condition`)
-/// and made fallible (`Result<, PortablePredicateError>`). The
+/// and made fallible (`Result<(), PortablePredicateError>`). The
 /// expression-IR bridge calls into `expr::sql::emit_expr`, which itself
 /// returns `Result` after PR2b so portable predicates inside a subquery
 /// surface their lowering errors through the outer query builder. Owned
@@ -690,7 +690,7 @@ pub(crate) fn emit_condition(
         }
         Condition::And(parts) => {
             // Empty `And(vec![])` is the vacuous-truth identity — documented
-            // on the `Condition::And` variant. `Condition::and` never
+            // on the `Condition::And` variant. `Condition::and()` never
             // constructs one, but external callers technically can.
             if parts.is_empty() {
                 acc.push_sql("TRUE");
@@ -1012,10 +1012,10 @@ fn emit_jsonb_path_leaf(
 /// this file.
 /// `ctx` carries the parent-table qualifier so portable root-field
 /// predicates emitted under `build_select_joined` qualify as
-/// `<table>.<column>`. Non-joined builders pass `SqlEmitContext::root`
+/// `<table>.<column>`. Non-joined builders pass `SqlEmitContext::root()`
 /// and the legacy parent-table-threading channel propagates through to
 /// `emit_condition` for the `Q::Condition(_)` arm via
-/// `ctx.parent_table`.
+/// `ctx.parent_table()`.
 pub(crate) fn emit_q<T: Model>(
     acc: &mut SqlAccumulator,
     q: &Q<T>,
@@ -1193,7 +1193,7 @@ pub(crate) fn push_where_with_ctx<T: Model>(
 /// `updated_at`). `None` preserves the bare-name emission.
 /// Direct-`Q<T>` emission via [`emit_q`]. The
 /// `q_is_vacuously_true` short-circuit replaces the legacy
-/// `q_to_condition_ref(...).is_vacuously_true` round-trip; the SQL
+/// `q_to_condition_ref(...).is_vacuously_true()` round-trip; the SQL
 /// emit path no longer builds a throw-away `Condition` shadow tree.
 fn push_where_qualified<T: Model>(
     acc: &mut SqlAccumulator,
@@ -1379,7 +1379,7 @@ pub(crate) fn build_select<T: Model + FromPgRow>(
 /// Whether the joined columns should participate in the distinct tuple
 /// is left to the caller. If the queryset has a non-`None`
 /// `DistinctMode`, the emitter preserves it exactly: `SELECT DISTINCT
-/// {parent_cols}...`. Callers who combine `.distinct` with
+/// {parent_cols}...`. Callers who combine `.distinct()` with
 /// `.select_related(...)` get consistent shape — distinct is applied
 /// to the full projection (parent + aliased children) — but they
 /// should verify the emitted SQL matches their intent.
@@ -1445,16 +1445,16 @@ pub(crate) fn build_select_joined<T: Model>(
 /// When the aggregate carries a user-set `window: Some(spec)` (from
 /// `.over(|w| ...)`), the `OVER (...)` clause is appended immediately
 /// after `emit_expr` returns — in the right position for Postgres
-/// window-function syntax (`AGG(...) OVER (...)`). No default `OVER `
+/// window-function syntax (`AGG(...) OVER (...)`). No default `OVER ()`
 /// is added when `window` is `None`: this path is used for both the
 /// scalar terminal and the grouped annotate SELECT list, neither of which
 /// should silently grow a window clause.
 /// `default_window` controls fallback behaviour when the aggregate carries
 /// no `.over(|w| ...)` window spec:
 /// - `None` — emit no window clause at all (scalar terminal + grouped
-///   annotate SELECT, neither of which should silently grow `OVER `).
+///   annotate SELECT, neither of which should silently grow `OVER ()`).
 /// - `Some(s)` — emit `s` as the default (the ungrouped annotate path
-///   uses `Some(" OVER ")` only after the plain-annotation type-state has
+///   uses `Some(" OVER ()")` only after the plain-annotation type-state has
 ///   proven the aggregate kind is windowable; non-windowable aggregate kinds
 ///   are rejected before reaching this helper).
 fn emit_aggregate_inner(
@@ -1667,15 +1667,15 @@ pub(crate) fn emit_aggregate_with_cast(
     emit_aggregate_inner(acc, agg, None)
 }
 
-/// Emit `(AGG(..) OVER )::CAST` for the plain ungrouped
+/// Emit `(AGG(..) OVER ())::CAST` for the plain ungrouped
 /// annotate-SELECT-list path — wraps a windowable aggregate in a window
 /// function so the SELECT list is valid without a `GROUP BY` clause, then
 /// applies the optional narrowing cast.
-/// # Why `OVER ` rather than explicit `GROUP BY`
-/// `annotate(|f| f.col.sum)` on an ungrouped queryset has no natural
+/// # Why `OVER ()` rather than explicit `GROUP BY`
+/// `annotate(|f| f.col().sum())` on an ungrouped queryset has no natural
 /// grouping key — the main row's PK would give a one-row-per-group
 /// partition (every aggregate collapses to the per-row column value).
-/// An unbounded window function (`OVER `) produces the table-wide
+/// An unbounded window function (`OVER ()`) produces the table-wide
 /// aggregate value on every returned row, which is the useful
 /// per-row-with-table-aggregate semantics annotate users expect.
 /// This synthesized-window path is only legal for value aggregates. The
@@ -1683,7 +1683,7 @@ pub(crate) fn emit_aggregate_with_cast(
 /// ordered-set, hypothetical-set, and metadata aggregate kinds cannot reach
 /// this helper through plain annotate; scalar `QuerySet::aggregate` and
 /// grouped annotate use the non-default-window emitter instead.
-/// Reverse-relation aggregates (`f.orders.count`) may need `OVER
+/// Reverse-relation aggregates (`f.orders.count()`) may need `OVER
 /// (PARTITION BY parent.id)` after a LATERAL join; that is a deliberate
 /// scope boundary handled by the user-supplied `.over(|w| ...)` spec.
 pub(crate) fn emit_aggregate_with_window_and_cast(
@@ -1879,7 +1879,7 @@ where
 /// wrong columns.
 /// # Why `push_columns_bare` not plain-annotate column emission
 /// Plain ungrouped annotate emits value aggregate slots with a synthesized
-/// `OVER ` through the `PlainAnnotationTuple` path. A `GROUP BY` query must
+/// `OVER ()` through the `PlainAnnotationTuple` path. A `GROUP BY` query must
 /// not use those synthesized windows in the SELECT list for its aggregate
 /// columns — Postgres would reject the combination. `push_columns_bare` emits
 /// the aggregate with only the narrowing cast and no default window, which is
@@ -2090,7 +2090,7 @@ where
 /// [LIMIT $n] [OFFSET $n]
 /// ```
 /// # Why the subquery
-/// A flat `SELECT ST_ClusterDBSCAN(...) OVER AS cluster_id ... GROUP BY
+/// A flat `SELECT ST_ClusterDBSCAN(...) OVER () AS cluster_id ... GROUP BY
 /// cluster_id` query is rejected by Postgres with
 /// ```text
 /// ERROR: window functions are not allowed in GROUP BY
@@ -2304,25 +2304,25 @@ pub(crate) fn build_exists<T: Model>(
     Ok(acc)
 }
 
-/// Build `UPDATE <table> SET col = $1, col = $2, updated_at = now
+/// Build `UPDATE <table> SET col = $1, col = $2, updated_at = now()
 /// [WHERE ...]`.
 /// Every assignment's value flows through [`push_filter_value`] — i.e.
 /// `push_bind` — so the emitted SQL has one positional parameter per
-/// user-supplied value. The `updated_at = now` tail is always appended,
+/// user-supplied value. The `updated_at = now()` tail is always appended,
 /// even when the caller's closure omitted it: parity with the single-row
-/// `save` path, which also bumps `updated_at` on every write. Users who
+/// `save()` path, which also bumps `updated_at` on every write. Users who
 /// need to preserve `updated_at` across a bulk update reach for raw SQL
 /// via `ctx.raw_execute` — same as any other ORM layer that
 /// treats the audit column as non-optional.
 /// `WHERE` is emitted via the shared [`push_where`] helper, so
-/// `QuerySet::none`-derived querysets (caught earlier in
+/// `QuerySet::none()`-derived querysets (caught earlier in
 /// [`crate::query::update::UpdateStmt::execute`]) and vacuously-true
 /// condition trees are handled identically to the read terminals.
 /// # Assignment list invariants
 /// Callers must ensure `assignments` is non-empty — `UPDATE ... SET ` with
 /// an empty list is a Postgres syntax error. The public entry point
 /// ([`crate::query::update::UpdateStmt::execute`]) short-circuits on
-/// `assignments.is_empty` before reaching this emitter, so the emitter
+/// `assignments.is_empty()` before reaching this emitter, so the emitter
 /// itself does not need a runtime guard. Panicking here would be
 /// defensive-programming noise; the short-circuit is the real safety rail.
 pub(crate) fn build_update<T: Model>(
@@ -2346,7 +2346,7 @@ pub(crate) fn build_update<T: Model>(
         // Dispatch literal vs expression-IR payload. Literals go through
         // `push_filter_value` (a single `$n` bind); expression trees
         // recurse through `emit_expr`, which emits arithmetic, field
-        // refs, and nested binds. `clone` on the literal path retains
+        // refs, and nested binds. `clone()` on the literal path retains
         // the `UpdateStmt`'s payload for retry; the Expr arm borrows
         // the inner `ExprNode` by reference.
         match a.value() {
@@ -2358,8 +2358,8 @@ pub(crate) fn build_update<T: Model>(
             }
         }
     }
-    // Always stamp `updated_at = now` on bulk updates — matches
-    // single-row save. `now` is a SQL literal, not a user value, so
+    // Always stamp `updated_at = now()` on bulk updates — matches
+    // single-row save(). `now()` is a SQL literal, not a user value, so
     // `push_sql` is correct (no bind slot needed). Position-wise this is a
     // trailing clause after the user's SET list; the leading ", " handles
     // the separator even when the user supplied only one assignment.
@@ -2373,10 +2373,10 @@ pub(crate) fn build_update<T: Model>(
 /// the shared [`push_where`] helper so vacuously-true condition trees
 /// (e.g. `Condition::And(vec![])`) are omitted entirely rather than
 /// emitted as `WHERE TRUE`. A queryset with no filters at all (just
-/// `T::objects`) deletes every row in the table — same semantics as
+/// `T::objects()`) deletes every row in the table — same semantics as
 /// raw SQL; callers who want extra safety wrap the call in a
 /// transaction and `ROLLBACK` if the row count looks wrong.
-/// `updated_at = now` stamping does **not** apply here — the row is
+/// `updated_at = now()` stamping does **not** apply here — the row is
 /// being removed, so auditing the timestamp has no meaning. Audit of
 /// deletions lives in the `_logs` mirror tables (populated by
 /// the `crud_log_url` pool).
@@ -2417,7 +2417,7 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
     // Wait, build_select implementation:
     // let mut acc = build_select_list(qs)?;
     // acc.push_sql(" FROM ");
-    // acc.push_sql(T::table_name);
+    // acc.push_sql(T::table_name());
     // push_tail(&mut acc, qs)?;
     // So build_select is correct.
     acc.extend_with(source_acc);
@@ -2459,7 +2459,7 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
         match &branch.action {
             MergeAction::Update(updates) => {
                 acc.push_sql("UPDATE SET ");
-                // updated_at = now
+                // updated_at = now()
                 acc.push_sql("updated_at = now()");
                 for update in updates {
                     acc.push_sql(", ");
@@ -2603,7 +2603,7 @@ where
 /// Emits the same UPDATE statement as [`build_update`] but appends a
 /// `RETURNING <pk_column>` clause so the caller can collect the primary-
 /// key IDs of every affected row for targeted cache eviction.
-/// The PK column name comes from `T::descriptor.pk_column`, which is
+/// The PK column name comes from `T::descriptor().pk_column()`, which is
 /// a macro-baked `&'static str` — safe for direct `push_sql` insertion.
 /// All value binding follows the same [`build_update`] path, so assignment
 /// binds fill slots before WHERE filter binds in the positional parameter
@@ -2627,7 +2627,7 @@ pub(crate) fn build_update_returning_ids<T: Model>(
 /// deleted rows. The projection aliases use the same short `o{idx}` pattern as
 /// the UPDATE variant so the `FromJoinedPgRow` path is identical
 /// (`from_joined_pg_row(row, "__djogi_old__")`).
-/// Callers must guarantee the queryset is not `QuerySet::none`-derived before
+/// Callers must guarantee the queryset is not `QuerySet::none()`-derived before
 /// reaching this emitter — same contract as [`build_delete`].
 pub(crate) fn build_delete_returning<T>(
     qs: &QuerySet<T>,
@@ -2856,7 +2856,7 @@ mod tests {
     use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
     use crate::query::queryset::QuerySet;
 
-    // REQ-304: minimal descriptor for Fake model — provides pk_column = Some("id")
+    // REQ-304: minimal descriptor for Fake model — provides pk_column() = Some("id")
     // so that build_update_returning_ids can resolve the primary key column name.
     static FAKE_DESCRIPTOR: ModelDescriptor = ModelDescriptor {
         type_name: "Fake",
@@ -2997,8 +2997,8 @@ mod tests {
             .expect("test predicate should lower to grouped annotated SQL")
     }
 
-    // `SqlAccumulator::sql` exposes the emitted SQL text — that is what we
-    // assert on. Bind values don't appear in `.sql`, they are tracked
+    // `SqlAccumulator::sql()` exposes the emitted SQL text — that is what we
+    // assert on. Bind values don't appear in `.sql()`, they are tracked
     // separately and substituted as `$1`, `$2`, …; counting placeholders is
     // the unit-test-level proxy for "the right number of binds were made".
 
@@ -3197,7 +3197,7 @@ mod tests {
         // `\\` before the wildcard wrap. Assert on the escaped string shape
         // via the emitter's observable SQL-with-$n output by constructing
         // an `IContains` leaf manually — we cannot assert on the bind value
-        // from `sql` alone, but we CAN observe that it was a single bind
+        // from `sql()` alone, but we CAN observe that it was a single bind
         // (not multiple).
         let leaf = Leaf::new(
             "title",
@@ -3222,7 +3222,7 @@ mod tests {
 
     #[test]
     fn count_with_distinct_plain_wraps_subquery() {
-        // `.distinct.count` must wrap the query in a subquery so
+        // `.distinct().count()` must wrap the query in a subquery so
         // `COUNT(*)` counts distinct tuples, not raw rows. Previously this
         // silently returned the base row count — a correctness bug on a
         // public terminal.
@@ -3329,7 +3329,7 @@ mod tests {
     /// AND-composition + `RawSql` emission) lines up.
     #[test]
     fn raw_sql_condition_ands_with_user_filter() {
-        // Construct an And node mirroring what `QuerySet::filter`
+        // Construct an And node mirroring what `QuerySet::filter()`
         // produces against a queryset whose seed is RawSql.
         let raw = Condition::__from_raw_sql_fragment("active = TRUE");
         let user = Condition::Leaf(Leaf::eq_raw("price", FilterValue::I64(100)));
@@ -3382,7 +3382,7 @@ mod tests {
     #[test]
     fn update_single_assignment_emits_set_and_updated_at() {
         // Single assignment + no filter: one bind for the user value,
-        // `updated_at = now` stamped by the emitter, no `WHERE`.
+        // `updated_at = now()` stamped by the emitter, no `WHERE`.
         use crate::query::update::{AssignmentValue, UpdateAssignment};
         let a = UpdateAssignment {
             column: "view_count",
@@ -3400,8 +3400,8 @@ mod tests {
 
     #[test]
     fn update_multiple_assignments_comma_separate_binds() {
-        // Two assignments: `SET col = $1, col = $2, updated_at = now`.
-        // Only the user's values consume bind slots; `now` is raw SQL.
+        // Two assignments: `SET col = $1, col = $2, updated_at = now()`.
+        // Only the user's values consume bind slots; `now()` is raw SQL.
         use crate::query::update::{AssignmentValue, UpdateAssignment};
         let a = UpdateAssignment {
             column: "view_count",
@@ -3736,7 +3736,7 @@ mod tests {
 
     #[test]
     fn joined_select_qualifies_order_by_column_refs() {
-        // `.order_by(|f| f.created_at.asc)` on a joined queryset must
+        // `.order_by(|f| f.created_at.asc())` on a joined queryset must
         // emit `ORDER BY fakes.created_at ASC` so Postgres does not
         // raise 42702 when the child also contributes `created_at`.
         let mut qs: QuerySet<Fake> =
@@ -3800,7 +3800,7 @@ mod tests {
 
     #[test]
     fn nowait_appends_for_update_nowait_tail() {
-        // `.nowait` alone — implies the base `FOR UPDATE` per the
+        // `.nowait()` alone — implies the base `FOR UPDATE` per the
         // rustdoc contract.
         let qs: QuerySet<Fake> = QuerySet::new().nowait();
         let acc = build_select(&qs);
@@ -3841,7 +3841,7 @@ mod tests {
 
     #[test]
     fn lock_builder_last_call_wins_across_nowait_skip_locked() {
-        // Chaining `.nowait.skip_locked` — the skip_locked call
+        // Chaining `.nowait().skip_locked()` — the skip_locked call
         // overwrites the nowait variant. Mirrors the rustdoc contract.
         let qs: QuerySet<Fake> = QuerySet::new().nowait().skip_locked();
         let acc = build_select(&qs);
@@ -3924,7 +3924,7 @@ mod tests {
 
     #[test]
     fn for_share_builders_last_call_wins() {
-        // `.for_share_nowait.for_share_skip_locked` — last call
+        // `.for_share_nowait().for_share_skip_locked()` — last call
         // wins. Same contract as the FOR UPDATE family.
         let qs: QuerySet<Fake> = QuerySet::new().for_share_nowait().for_share_skip_locked();
         let acc = build_select(&qs);
@@ -3956,9 +3956,9 @@ mod tests {
     #[test]
     fn nowait_after_select_for_share_promotes_to_for_update_nowait() {
         // Documented chaining footgun: the historical
-        // `.nowait` and `.skip_locked` modifiers unconditionally
+        // `.nowait()` and `.skip_locked()` modifiers unconditionally
         // set the FOR UPDATE family. Calling them after
-        // `.select_for_share` silently swaps the base lock back to
+        // `.select_for_share()` silently swaps the base lock back to
         // FOR UPDATE. The rustdoc on `select_for_share` calls this
         // out as a footgun; this test pins the documented behaviour.
         // If a future change makes the contention modifiers
@@ -3979,9 +3979,9 @@ mod tests {
 
     #[test]
     fn skip_locked_after_select_for_share_promotes_to_for_update_skip_locked() {
-        // Parallel to the `.nowait` footgun. `.skip_locked` also
+        // Parallel to the `.nowait()` footgun. `.skip_locked()` also
         // unconditionally sets the FOR UPDATE family — chaining it
-        // after `.select_for_share` produces FOR UPDATE SKIP LOCKED,
+        // after `.select_for_share()` produces FOR UPDATE SKIP LOCKED,
         // not FOR SHARE SKIP LOCKED. Adopters who want the FOR SHARE
         // contention shape must use `for_share_skip_locked` directly.
         let qs: QuerySet<Fake> = QuerySet::new().select_for_share().skip_locked();
@@ -4384,7 +4384,7 @@ mod tests {
     }
 
     /// The emitted SQL must contain `ST_ClusterDBSCAN(t.<col>::geometry, ...)
-    /// OVER AS cluster_id` and `GROUP BY cluster_id`.
+    /// OVER () AS cluster_id` and `GROUP BY cluster_id`.
     #[cfg(feature = "spatial")]
     #[test]
     fn cluster_grouped_select_emits_st_cluster_dbscan_with_geometry_cast() {
@@ -4440,7 +4440,7 @@ mod tests {
     }
 
     /// Regression test for the prior shape `SELECT ST_ClusterDBSCAN(...)
-    /// OVER AS cluster_id ... GROUP BY cluster_id`, which Postgres rejects
+    /// OVER () AS cluster_id ... GROUP BY cluster_id`, which Postgres rejects
     /// with `ERROR: window functions are not allowed in GROUP BY`. The
     /// emitter must wrap the window call in an inner subquery so the outer
     /// `GROUP BY cluster_id` references a materialised column.
@@ -4475,7 +4475,7 @@ mod tests {
             "subquery must be aliased 'AS t' and outer must GROUP BY cluster_id; got: {sql}"
         );
         // The inline window-function-in-GROUP-BY anti-pattern must not leak.
-        // (The string `OVER AS cluster_id` is still present inside the
+        // (The string `OVER () AS cluster_id` is still present inside the
         // subquery — we assert on the *outer SELECT head* instead.)
         assert!(
             !sql.starts_with("SELECT ST_ClusterDBSCAN"),

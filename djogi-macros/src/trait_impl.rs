@@ -31,7 +31,7 @@
 //!   deferred to a future phase per `feedback_anchored_deferrals`.
 //! - Single-segment `Self` types — `impl Trait for Vehicle` works,
 //!   `impl Trait for crate::module::Vehicle` works (path resolved
-//!   verbatim), `impl Trait for some_fn::Vehicle` rejected (not a
+//!   verbatim), `impl Trait for some_fn()::Vehicle` rejected (not a
 //!   nameable type at parse time).
 
 use proc_macro2::TokenStream;
@@ -181,7 +181,7 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
             // Step 1 — downcast the erased Arc to `Arc<Self>`.
             // `Arc::downcast` on `Arc<dyn Any + Send + Sync>` returns
             // `Result<Arc<T>, Arc<dyn Any + Send + Sync>>` when `T:
-            // Any + Send + Sync` — we discard the `Err` arm via `.ok`.
+            // Any + Send + Sync` — we discard the `Err` arm via `.ok()`.
             let arc_model: ::std::sync::Arc<#self_ty> =
                 match ::std::sync::Arc::clone(any).downcast::<#self_ty>() {
                     ::core::result::Result::Ok(arc) => arc,

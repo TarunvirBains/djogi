@@ -180,7 +180,7 @@ pub const SHA256_HEX_LEN: usize = 64;
 pub const CHECKSUM_PREFIX: &str = "V1:";
 
 /// Total byte length of a `V1:<sha256-hex>` checksum string. Equals
-/// `CHECKSUM_PREFIX.len + SHA256_HEX_LEN`.
+/// `CHECKSUM_PREFIX.len() + SHA256_HEX_LEN`.
 pub const CHECKSUM_LEN: usize = 3 + SHA256_HEX_LEN;
 
 /// Prefix for a structured `partial_apply_note` that records an
@@ -540,7 +540,7 @@ pub fn validate_checksum_format(s: &str) -> Result<(), ChecksumFormatErrorKind> 
 }
 
 /// Verify that a stored checksum matches a freshly-computed one.
-/// Returns `Ok` on match; on mismatch returns the structured
+/// Returns `Ok(())` on match; on mismatch returns the structured
 /// error variant the runner surfaces verbatim.
 /// **Format validation runs first.** Both operands are passed
 /// through [`validate_checksum_format`] BEFORE the string compare so

@@ -134,7 +134,7 @@ use crate::context::DjogiContext;
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::{FromPgRow, try_get_scalar};
-// : `FieldRef` is no longer the parameter type for
+// `FieldRef` is no longer the parameter type for
 // `search_breadth_first_by` / `search_depth_first_by` — both methods now
 // accept any `IntoSqlField<T, V>`. The unit tests in `mod tests` below
 // continue to construct `FieldRef::<_, _>::new(...)` values directly
@@ -235,9 +235,9 @@ pub struct RecursiveQuerySet<T: Model> {
     /// degenerate to one alternative (no inner `UNION ALL` inside the
     /// lateral) and behave exactly as the B2 single-edge form.
     /// An empty `edges` Vec is invalid — every constructor enforces
-    /// `!edges.is_empty` either at debug-assert time (the typed
+    /// `!edges.is_empty()` either at debug-assert time (the typed
     /// `from_path` / `from_paths` callers) or at terminal time
-    /// (`Model::full_ancestors` on a model with `self_fk_count == 0`).
+    /// (`Model::full_ancestors` on a model with `self_fk_count() == 0`).
     /// Each `RelationPath`'s identifier strings are validated at
     /// macro-emission via `__make_relation_path`, so pushing the
     /// `source_column` directly into emitted SQL is safe.
@@ -339,7 +339,7 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// `JOIN LATERAL (... UNION ALL ...) child ON TRUE` subquery
     /// satisfying Postgres's "exactly one self-reference in the
     /// recursive term" rule while still walking every declared parent
-    /// edge in a single CTE pass. `edges.len == 1` degenerates to
+    /// edge in a single CTE pass. `edges.len() == 1` degenerates to
     /// the same SQL the single-edge constructor produces.
     /// Accepts an empty `edges` Vec — terminals fail with a
     /// descriptive [`DjogiError::Query`] at execution time. Carrying
@@ -347,7 +347,7 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// `Model::full_ancestors` return type uniform (always
     /// `RecursiveQuerySet<T>`, never `Result<RecursiveQuerySet<T>, _>`)
     /// so callers can compose `.with_max_depth(...)` /
-    /// `.fetch_all(...)` chains uniformly across `self_fk_count`
+    /// `.fetch_all(...)` chains uniformly across `self_fk_count()`
     /// values 0 / 1 / 2+.
     pub(crate) fn from_paths(
         paths: Vec<RelationPath<T, T>>,
@@ -388,7 +388,7 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// in it match.
     /// PR3: the closure return type generalised from `Condition` to
     /// `IntoQ<T>` so post-flip root closures returning portable
-    /// predicates (`f.col.eq(value)` -> `PortablePredicate<T>`)
+    /// predicates (`f.col().eq(value)` -> `PortablePredicate<T>`)
     /// continue to compile. Recursive SQL emission walks `Q<T>`
     /// directly through the same portable-predicate emitter as
     /// `QuerySet::filter`; it must not round-trip through the legacy
@@ -547,7 +547,7 @@ fn push_qualified_columns<T: FromPgRow>(acc: &mut SqlAccumulator, alias: &'stati
 /// allocated by [`emit_q`] for the user filter and by
 /// [`with_max_depth`](RecursiveQuerySet::with_max_depth) for the depth
 /// cap. `tokio_postgres::Row` gets the values back in the order
-/// `acc.into_parts.1` returns them.
+/// `acc.into_parts().1` returns them.
 pub(crate) fn build_recursive_select<T: Model + FromPgRow>(
     qs: RecursiveQuerySet<T>,
 ) -> Result<SqlAccumulator, DjogiError> {
@@ -1030,7 +1030,7 @@ where
 
 /// Guard every terminal against an empty `edges` Vec — the
 /// [`Model::full_ancestors`](crate::model::Model::full_ancestors)
-/// constructor on a model with `self_fk_count == 0` carries
+/// constructor on a model with `self_fk_count() == 0` carries
 /// `edges: vec![]` through the builder so the caller's
 /// `.with_max_depth(...)` / `.fetch_all(...)` chain still type-checks.
 /// At terminal time we surface the misuse as a descriptive
@@ -1634,7 +1634,7 @@ mod tests {
 
     #[test]
     fn empty_edges_errors_at_terminal_time() {
-        // `Model::full_ancestors` on a model with `self_fk_count == 0`
+        // `Model::full_ancestors` on a model with `self_fk_count() == 0`
         // returns a `RecursiveQuerySet` with empty edges. Builder
         // chains type-check, but the terminal returns
         // `DjogiError::Validation` before any SQL is emitted.

@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn on_delete_set_null_renders_with_space() {
-        // Regression: format!("{:?}", OnDelete::SetNull).to_uppercase
+        // Regression: format!("{:?}", OnDelete::SetNull).to_uppercase()
         // would have emitted "SETNULL". Routing through OnDelete::as_sql
         // surfaces the proper DDL spelling.
         assert_eq!(OnDelete::SetNull.as_sql(), "SET NULL");

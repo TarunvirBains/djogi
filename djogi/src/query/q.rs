@@ -244,7 +244,7 @@ pub enum Q<T: Model> {
 // `ExprNode` is `Clone` via shallow `Box`/`Vec` clones. `SubqueryNode`
 // payloads carry an `Arc<dyn SubqueryPredicateEmitter>`, so the
 // model parameter never reaches a clone bound.
-// - `Q::Array(ArrayPredicate<T>)` — `Clone` via `PhantomData<fn -> T>`
+// - `Q::Array(ArrayPredicate<T>)` — `Clone` via `PhantomData<fn() -> T>`
 // plus owned leaf values; no `T: Clone` propagation.
 // - `Q::Condition(Condition)` — `Condition: Clone` unconditionally.
 // - `Q::Compound { op, parts }` — recurses through this manual impl.
@@ -448,7 +448,7 @@ impl<T: Model> From<crate::array::ArrayOverlapLeaf> for Q<T> {
 // 4. `Predicate<T>` — operator-matrix shell wrapping a `Q<T>`. Mixed
 // `PortablePredicate` ↔ `Condition` compositions surface here.
 // 5. `crate::expr::Expr<bool>` — typed expression boolean. Lifts to
-// `Q::Expression(_)` so `f.location.explicit_pg_predicate.bounded_by(...)`
+// `Q::Expression(_)` so `f.location().explicit_pg_predicate().bounded_by(...)`
 // composes through `QuerySet::filter` without a separate
 // `filter_expr` call.
 // 6. The `{Model}Filter` programmatic builder — emitted by the
@@ -524,11 +524,11 @@ impl<T: Model> IntoQ<T> for Condition {
 
 // Sealed `IntoQ<T> for Expr<bool>`.
 // Keeps explicit-PG spatial expression predicates such as
-// `f.location.explicit_pg_predicate.bounded_by(...)` and
-// `f.location.explicit_pg_predicate.distance_to(&center).lt(5000.0)`
+// `f.location().explicit_pg_predicate().bounded_by(...)` and
+// `f.location().explicit_pg_predicate().distance_to(&center).lt(5000.0)`
 // on the ordinary `QuerySet::filter` path: the typed `Expr<bool>` lifts
 // into `Q::Expression(_)`, the SQL emitter renders it through
-// `expr::sql::emit_expr`, and `.try_portable` / `.cache(...)` /
+// `expr::sql::emit_expr`, and `.try_portable()` / `.cache(...)` /
 // `.refresh_into(...)` reject `Q::Expression(_)` as cache-invalid.
 // Sealed: `Expr<bool>` is local to Djogi (`crate::expr::Expr`), so the
 // impl satisfies orphan rules without exposing the seal trait.
@@ -562,8 +562,8 @@ impl<T: Model> Q<T> {
         Q::Portable(PortablePredicate::always_true())
     }
 
-    /// Vacuous-falsehood identity — `Q::Portable(PortablePredicate::always_false)`.
-    /// Used by `QuerySet::none`.
+    /// Vacuous-falsehood identity — `Q::Portable(PortablePredicate::always_false())`.
+    /// Used by `QuerySet::none()`.
     pub fn always_false() -> Self {
         Q::Portable(PortablePredicate::always_false())
     }
@@ -802,7 +802,7 @@ pub(crate) fn q_to_condition<T: Model>(q: Q<T>) -> Condition {
 ///    from any djogi FieldRef API. A future
 ///    integration that lifts FieldRef methods to `BasicPredicate` (per
 ///    the §660 split's forward-looking direction) would extend this arm with the
-///    `(field_name, op, value_as<V>)` reconstruction.
+///    `(field_name, op, value_as<V>())` reconstruction.
 ///    Today the arm logs a debug-only warning and lowers to
 ///    `Condition::True` (vacuous-truth identity). The SQL-parity
 ///    SQL-parity guarantee is unaffected because no shipped code path
@@ -1020,9 +1020,9 @@ mod tests {
     use crate::descriptor::ModelDescriptor;
 
     // Minimal test-model. Same shape as the in-crate test models used
-    // by `query::field::tests` — every async hook is `unreachable!`
+    // by `query::field::tests` — every async hook is `unreachable!()`
     // because the algebra-level tests never invoke them. The empty
-    // `Fields = ` tuple is enough; `Q::Portable` / `Q::Ilike` etc.
+    // `Fields = ()` tuple is enough; `Q::Portable` / `Q::Ilike` etc.
     // only need `M: Model`, not a populated field accessor surface.
     // The manual `Q<T>: Clone` and `PortablePredicate<T>: Clone` impls do
     // NOT propagate `T: Clone`, so `TestModel` derives `Clone` and `Debug`
@@ -1096,7 +1096,7 @@ mod tests {
         assert!(matches!(q, Q::Portable(_)));
     }
 
-    /// `Q::Portable(PortablePredicate::always_false)` is the vacuous-falsehood
+    /// `Q::Portable(PortablePredicate::always_false())` is the vacuous-falsehood
     /// identity. Locks the contract that `Q<T>` does not duplicate
     /// True/False as separate top-level variants.
     #[test]
@@ -1114,7 +1114,7 @@ mod tests {
         let _ = format!("{:?}", q.clone());
     }
 
-    /// Convenience constructor — `Q::always_true` produces a trusted
+    /// Convenience constructor — `Q::always_true()` produces a trusted
     /// portable-true wrapper.
     #[test]
     fn q_always_true_is_portable_true() {
@@ -1122,7 +1122,7 @@ mod tests {
         assert!(matches!(q, Q::Portable(_)));
     }
 
-    /// Dual: `always_false` is `Q::Portable(PortablePredicate::always_false)`.
+    /// Dual: `always_false` is `Q::Portable(PortablePredicate::always_false())`.
     #[test]
     fn q_always_false_is_portable_false() {
         let q: Q<TestModel> = Q::always_false();

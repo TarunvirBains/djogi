@@ -49,7 +49,7 @@ pub struct ModelAttrs {
     /// field types that do not implement `Default` (e.g. `time::Date`).
     /// Without this flag the generated `Default` impl would fail to compile.
     /// Users must then initialise all fields explicitly instead of relying
-    /// on struct-update syntax (`..Model::default`).
+    /// on struct-update syntax (`..Model::default()`).
     pub no_default: bool,
     /// When `true`, this model is a many-to-many through / junction model.
     /// Set via `#[model(table = "...", through)]`. The flag flows through
@@ -111,14 +111,14 @@ pub struct ModelAttrs {
     /// The column referenced by `tenant_key` must be one of: `BigInt`
     /// (HeerId), `Uuid` (RanjId), `Text`, or `Citext`. Any other SQL type
     /// triggers a span-precise compile error at the `tenant_key` attribute.
-    /// At runtime, call [`DjogiContext::set_tenant`] inside an `atomic`
+    /// At runtime, call [`DjogiContext::set_tenant`] inside an `atomic()`
     /// block to activate the RLS policy for a request.
     pub tenant_key: Option<String>,
 
     /// Full-text search specification — .
     /// Set via `#[model(fts(source = "col1, col2", dictionary = "english"))]`.
     /// When present, the macro emits an `FtsDescriptor` into the
-    /// `ModelDescriptor` and the `{Model}Fields` struct gains a `search`
+    /// `ModelDescriptor` and the `{Model}Fields` struct gains a `search()`
     /// accessor that returns a typed `FtsFieldRef` for building
     /// `@@` / `ts_rank` predicates.
     /// Both `source` and `dictionary` are required; omitting either is a
@@ -180,7 +180,7 @@ pub struct ModelAttrs {
     /// `"…"` literal.
     /// Stored as `Option<syn::LitStr>` rather than `Option<String>`
     /// so the descriptor-side validator can attach the original literal's
-    /// span to its diagnostic — same `.value -> String` accessor as
+    /// span to its diagnostic — same `.value() -> String` accessor as
     /// every other span-bearing string attr in this file (e.g.
     /// `FieldAttrs::generated`). The grammar enforced at parse time is
     /// the standard Djogi identifier rule (ASCII letter or underscore
@@ -246,7 +246,7 @@ pub struct ModelAttrs {
     /// adopter-declared `pub deleted_at: Option<DateTime>` field. The
     /// trait-level `const COLUMN: &'static str = "deleted_at"` provides
     /// the canonical column name without re-emitting it per model; the
-    /// emitted `impl` inherits the default and `QuerySet::not_deleted`
+    /// emitted `impl` inherits the default and `QuerySet::not_deleted()`
     /// reads it through `<M as SoftDeletable>::COLUMN`.
     /// Models without the flag pay zero soft-deletable-dispatch overhead
     /// no impl is emitted, so the `SoftDeletable` bound is unsatisfied at
@@ -727,7 +727,7 @@ impl ModelAttrs {
         // / `default_filter` key idents at parse time so the post-loop
         // orphan-attribute guards can surface span-precise diagnostics
         // pointing at the offending key rather than at the model's
-        // `#[model(...)]` blob via `Span::call_site`.
+        // `#[model(...)]` blob via `Span::call_site()`.
         let mut proxy_default_order_span: Option<proc_macro2::Span> = Option::None;
         let mut proxy_default_filter_span: Option<proc_macro2::Span> = Option::None;
 
@@ -888,7 +888,7 @@ impl ModelAttrs {
                             ));
                         }
                         // Safety: the table name flows
-                        // into `Model::table_name` which is pushed as a
+                        // into `Model::table_name()` which is pushed as a
                         // raw SQL token by the SQL emitter (e.g.
                         // `OuterRef::as_qualified_expr` → `<table>.<col>`,
                         // and historically by every `FROM <table>`
@@ -1338,7 +1338,7 @@ impl ModelAttrs {
         // `proxy_for = …` (or remove the orphan key).
         // Point the span at the offending key
         // ident (`default_order` / `default_filter`) rather than at
-        // `Span::call_site`. The orphan-key span needs to be re-derived
+        // `Span::call_site()`. The orphan-key span needs to be re-derived
         // here because the dispatch loop above consumed the original
         // `path` reference; we capture the orphan span by keeping a
         // parallel `Option<proc_macro2::Span>` alongside the value
@@ -1670,7 +1670,7 @@ pub struct FieldAttrs {
     /// Darling's `FromField` derive auto-populates this from
     /// `syn::Field::ty` by magic field name. The type must be `syn::Type`
     /// (not `Option<syn::Type>`) because the derive emits
-    /// `ty: field.ty.clone` verbatim.
+    /// `ty: field.ty.clone()` verbatim.
     pub ty: syn::Type,
 
     /// `#[field(unique)]` — emits a `UNIQUE` constraint in migrations.
@@ -1722,10 +1722,10 @@ pub struct FieldAttrs {
     /// `#[field(version)]` — marks this field as the optimistic-lock
     /// version counter. Exactly one field per model may carry this
     /// attribute, and its type must be `i32` or `i64`. On every
-    /// `save` call the macro emits `{col} = {col} + 1` in the SET
+    /// `save()` call the macro emits `{col} = {col} + 1` in the SET
     /// list and `AND {col} = $n` in the WHERE clause, binding the
     /// current in-memory value. When Postgres returns zero rows
-    /// (another writer already bumped the version) `save` returns
+    /// (another writer already bumped the version) `save()` returns
     /// `Err(DjogiError::LockConflict(_))` rather than silently
     /// succeeding with a no-op.
     /// Only bare `i32` / `i64` are accepted — `Option<i32>` and all
@@ -1741,7 +1741,7 @@ pub struct FieldAttrs {
     /// At `create` time the macro wraps the INSERT in a counter
     /// upsert against `<table>_seq_<parent_fk_column>`, captures the
     /// returned `last_seq`, and assigns it to this field before the
-    /// main INSERT emits. Rollback of the outer `atomic` cleans
+    /// main INSERT emits. Rollback of the outer `atomic()` cleans
     /// both the counter increment and the main row.
     /// Only one field per model may carry `sequence_within` today.
     /// Multiple-scope sequencing (two scoped counters on the same
@@ -1870,7 +1870,7 @@ pub struct FieldAttrs {
     /// whitespace-only strings at parse time. Adopters are responsible
     /// for the expression's correctness against their column type and
     /// for ensuring it is idempotent (no side effects, no dependence on
-    /// `now` etc.). The same `unsafe`-style cultural posture from
+    /// `now()` etc.). The same `unsafe`-style cultural posture from
     /// `docs/spec/raw-sql-escape-hatches.md` applies: every callsite
     /// should be reviewable as raw SQL.
     /// **Combination with type-derived CHECKs.** When a column also
@@ -1935,7 +1935,7 @@ pub struct FieldAttrs {
     /// flips) that Postgres refuses to convert automatically.
     /// Set via darling; `FieldAttrs::parse` post-validates non-empty /
     /// non-whitespace-only — an empty literal would emit
-    /// `USING ` which is invalid SQL and would surface only at apply
+    /// `USING ()` which is invalid SQL and would surface only at apply
     /// time. The expression is otherwise emitted verbatim with no
     /// parsing or sanitisation — the same raw-SQL escape posture the
     /// adjacent `check` attribute uses.
@@ -2950,7 +2950,7 @@ impl FieldAttrs {
         // and emitted verbatim into migration DDL; djogi does NOT parse or
         // sanitize the SQL. The only parse-time guard is that the expression
         // must be non-empty / non-whitespace-only — an empty CHECK would
-        // produce `CHECK ` which is invalid SQL and would only surface as
+        // produce `CHECK ()` which is invalid SQL and would only surface as
         // an obscure failure at `cargo build` / migration apply time.
         // The span is recovered from the field's raw attribute tokens so the
         // diagnostic points at the offending literal rather than the whole
@@ -3000,7 +3000,7 @@ impl FieldAttrs {
         // `USING (<expr>)` clause; the adopter owns correctness. The
         // only parse-time guards are:
         // 1. Non-empty / non-whitespace-only literal — an empty
-        // literal would lower to `USING ` which is invalid SQL
+        // literal would lower to `USING ()` which is invalid SQL
         // and surfaces only at apply time.
         // 2. Not paired with `#[field(generated = "...")]` — a stored
         // generated column derives its storage type from the
@@ -3207,7 +3207,7 @@ impl FieldAttrs {
 /// Valid methods: `btree`, `gin`, `gist`, `brin`, `hash`, `spgist`.
 /// Returns an error with a clean message listing all valid methods if the
 /// string does not match. The returned error's span points to the offending
-/// literal, not the whole field. Returns `Ok` if the method is valid.
+/// literal, not the whole field. Returns `Ok(())` if the method is valid.
 fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
     match s {
         "btree" | "gin" | "gist" | "brin" | "hash" | "spgist" => Ok(()),
@@ -4255,7 +4255,7 @@ mod tests {
 
     /// Negative case — types that just *contain* `Jsonb` somewhere but
     /// aren't the wrapper must NOT fall into the JSONB arm. The
-    /// structural matcher checks `path.segments.last.ident == "Jsonb"`
+    /// structural matcher checks `path.segments.last().ident == "Jsonb"`
     /// AND that the last segment carries angle-bracket generics, so:
     /// - `MyJsonb<T>` — last segment ident is `MyJsonb`, not `Jsonb` →
     ///   no match.

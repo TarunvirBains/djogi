@@ -268,7 +268,7 @@ fn unknown_scope_error(
     )
 }
 
-/// Emit `::std::any::type_name::<CodecTy>` for a codec type path.
+/// Emit `::std::any::type_name::<CodecTy>()` for a codec type path.
 /// Used in non-const runtime code paths (e.g. `VisageError`) where the
 /// compiler can evaluate the fully resolved type identity at runtime.
 fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
@@ -278,12 +278,12 @@ fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
 /// Emit a const-safe codec identity string for inventory submission.
 /// GH #227: the old segment-join strategy lost fidelity
 /// for single-segment imported paths (`MaskString`). The ideal fix is
-/// `type_name::<CodecTy>`, but this toolchain does not yet permit it
+/// `type_name::<CodecTy>()`, but this toolchain does not yet permit it
 /// in the `inventory::submit!` static initializer. Use the next-best
 /// const-safe identity:
 /// - multi-segment paths keep their canonical `a::b::c` spelling;
 /// - single-segment paths are prefixed with the model module's
-///   `module_path!` so the resulting string identifies the resolved
+///   `module_path!()` so the resulting string identifies the resolved
 ///   local binding unambiguously within the adopter crate.
 fn codec_inventory_identity_tokens(path: &syn::Path) -> TokenStream {
     if path.segments.len() == 1 {
@@ -486,7 +486,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
 
             // Relation form on relation field — optional relations emit
             // `pub field: Option<PeerVisage>`, with the init match-folding
-            // `src.field.resolved` through the peer's fallible
+            // `src.field.resolved()` through the peer's fallible
             // `TryFrom<&Target>` impl.
             // Full-peer vs narrow embed:
             // - If the user wrote `expose(scope -> Department)` and the
@@ -709,7 +709,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     // narrow `FromPgRow` impl. The emitter bails out for relation-embed
     // visages (the SELECT projection can't represent an embedded peer as a
     // single column) and for `pk = None` source models (no
-    // `Model::table_name` to reach).
+    // `Model::table_name()` to reach).
     let queryset_entry = crate::model::visage_query::expand(ctx);
 
     // #231 — emit the `DjogiVisage` trait impl + the
@@ -898,7 +898,7 @@ fn emit_djogi_visage_impl(
         // #231 reconciliation — emit `type Model = #source`
         // so generic `V: DjogiVisage` consumers reach the source model
         // (and the source table via `<V::Model as
-        // ::djogi::prelude::Model>::table_name`) without threading
+        // ::djogi::prelude::Model>::table_name()`) without threading
         // the model in as a separate type parameter.
         // GPT seal blocker fix — emit `DjogiVisageSealed` alongside
         // the trait impl. The `DjogiVisageOf<Self::Model>` supertrait
@@ -950,7 +950,7 @@ fn emit_djogi_visage_impl(
 ///   [`::djogi::testing::assert_derived_parity_fetched`] free helper
 ///   (#231 reconciliation: CTO-required async convenience).
 ///   Method resolution in Rust prefers inherent methods over trait
-///   methods for unqualified calls (`v.foo`); the trait method is
+///   methods for unqualified calls (`v.foo()`); the trait method is
 ///   reachable through generic bounds. Both surfaces share the same
 ///   comparison body, so adopters never see different behaviour
 ///   depending on which surface they reach.
@@ -1069,7 +1069,7 @@ fn emit_assert_derived_parity(
 /// # Per-entry contents
 /// - `name` — derived field name (the `name = ...` key).
 /// - `ty_path` — token-string rendering of the entry's `ty = ...`,
-///   captured via `quote! { #ty }.to_string`. The exact text
+///   captured via `quote! { #ty }.to_string()`. The exact text
 ///   includes token-level whitespace (`"Option < String >"`) — that
 ///   is the source spelling documentation generators want.
 /// - `sql` — adopter's SQL expression, verbatim.

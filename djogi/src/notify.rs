@@ -1,6 +1,6 @@
 //! In-process model-event NOTIFY subscription surface.
 //! `subscribe::<M>(pool)` returns a `TypedReceiver<M>` that fires whenever
-//! a row in `M::table_name` is created, saved, or deleted by any
+//! a row in `M::table_name()` is created, saved, or deleted by any
 //! `DjogiContext` configured against the same Postgres database.
 //! Behind `feature = "notify"`. Companion to the publisher hook in
 //! `crate::outbox::emit_event`: every `#[model(events)]` write fires
@@ -40,7 +40,7 @@
 //! ```json
 //! { "kind": "create" | "save" | "delete", "id": "<M::Pk Display>" }
 //! ```
-//! `kind` strings exactly match `OutboxAction::as_sql_str` — any
+//! `kind` strings exactly match `OutboxAction::as_sql_str()` — any
 //! schema bump goes through that const for forward-compat.
 
 use crate::pg::pool::DjogiPool;
@@ -112,7 +112,7 @@ pub enum NotifyError {
     InvalidId { id: String, reason: String },
 
     /// The watcher task that drives this listener has exited. Live
-    /// `TypedReceiver::recv` calls surface this when the dedicated
+    /// `TypedReceiver::recv()` calls surface this when the dedicated
     /// LISTEN connection died abnormally — Postgres terminated our
     /// backend, the underlying socket dropped, the watcher's senders
     /// mutex was poisoned, or the watcher panicked. `subscribe::<M>`
@@ -164,7 +164,7 @@ struct PgListener {
 impl PgListener {
     /// Returns `true` once the spawned watcher task has exited (for
     /// any reason). Live `TypedReceiver`s on a failed listener see
-    /// `Closed` on `recv` because the watcher's exit guard cleared
+    /// `Closed` on `recv()` because the watcher's exit guard cleared
     /// the senders map; `subscribe::<M>` against a failed listener
     /// surfaces [`NotifyError::ListenerTerminated`] after reaping the
     /// registry slot.
@@ -195,10 +195,10 @@ impl Drop for PgListener {
 /// dropped `Sender` ticks its broadcast channel's sender count toward
 /// zero; once the last `Sender` for a channel is gone, every
 /// `broadcast::Receiver` cloned off it surfaces
-/// [`broadcast::error::RecvError::Closed`] on the next `recv` (or
+/// [`broadcast::error::RecvError::Closed`] on the next `recv()` (or
 /// `try_recv`).
 /// Tolerates a poisoned lock by recovering the inner data via
-/// `into_inner`. The map's invariant is just "valid `String` keys
+/// `into_inner()`. The map's invariant is just "valid `String` keys
 /// and live `Sender` values"; we never partially mutate inside a lock
 /// scope that could panic, so the map's structural integrity survives
 /// a poison. Treat the abnormal lock state as one more reason to
@@ -319,7 +319,7 @@ fn install_or_lose<T>(map: &Mutex<HashMap<u64, Weak<T>>>, key: u64, candidate: A
 
 /// Decode a `RawEvent` (already split into `kind_str`/`id_str`) into a
 /// typed `ModelEvent<M>`. Used by both the unit-test JSON path
-/// (`decode_payload`) and the hot-path `recv` so receivers don't
+/// (`decode_payload`) and the hot-path `recv()` so receivers don't
 /// re-encode through JSON just to re-parse.
 fn decode_event<M: crate::model::Model>(raw: &RawEvent) -> Result<ModelEvent<M>, NotifyError>
 where
@@ -370,10 +370,10 @@ where
 /// reaping paths converge here:
 /// 1. **Dangling `Weak`** — listener torn down after the last
 ///    subscriber dropped. [`upgrade_existing`] reaps the slot on its
-///    failed `upgrade` and we fall through to spawning fresh.
+///    failed `upgrade()` and we fall through to spawning fresh.
 /// 2. **Failed listener (GH#131)** — the `Arc<PgListener>` is still
 ///    strong (subscribers alive, keepaliving it) but its watcher task
-///    has exited. We see `is_failed == true`, drop our local strong
+///    has exited. We see `is_failed() == true`, drop our local strong
 ///    ref, remove the registry slot so concurrent subscribers don't
 ///    reuse it, and spawn fresh. Old `TypedReceiver`s holding strong
 ///    refs keep the failed allocation reachable until they drop, but
@@ -528,11 +528,11 @@ fn parse_raw(payload: &str) -> Result<RawEvent, serde_json::Error> {
 // ── Public subscribe API ─────────────────────────────────────────────────────
 
 /// Subscribe to `ModelEvent<M>` notifications fired by `emit_event`'s
-/// publisher hook for `M::table_name`. First call against a pool
+/// publisher hook for `M::table_name()`. First call against a pool
 /// spawns the listener task; later calls reuse it. Subscribers against
 /// the same model + pool share one broadcast channel.
 /// # Channel naming
-/// `format!("djogi_{}", M::table_name)` — publisher and subscriber
+/// `format!("djogi_{}", M::table_name())` — publisher and subscriber
 /// derive the same name, no runtime coordination needed.
 /// # Errors
 /// - `NotifyError::ListenerStartFailed` — listener spawn or `LISTEN`
@@ -552,7 +552,7 @@ fn parse_raw(payload: &str) -> Result<RawEvent, serde_json::Error> {
 ///   **Note on parse failures.** A wire payload that does not parse as
 ///   JSON at all is logged via `tracing::warn!` (target `djogi::notify`)
 ///   and dropped at the listener boundary — subscribers do not see
-///   these as `recv` errors. Only payloads that parse but fail
+///   these as `recv()` errors. Only payloads that parse but fail
 ///   downstream decoding surface as `PayloadDecode` / `InvalidId`.
 pub async fn subscribe<M>(pool: &DjogiPool) -> Result<TypedReceiver<M>, NotifyError>
 where
@@ -567,7 +567,7 @@ where
     // ident never leaves an orphan `broadcast::Sender` stranded in the
     // map. `LISTEN` doesn't accept bind parameters, so the name
     // interpolates directly into SQL — defense-in-depth even though
-    // `M::table_name` is proc-macro-validated upstream.
+    // `M::table_name()` is proc-macro-validated upstream.
     crate::ident::check_plain_ident(&channel, false).map_err(|e| {
         NotifyError::ListenerStartFailed(format!("subscribe: invalid channel {channel:?}: {e:?}"))
     })?;
@@ -582,7 +582,7 @@ where
 
     let raw_rx = {
         // Tolerate a poisoned lock by recovering the inner data via
-        // `into_inner`. A poison means a prior holder panicked, but
+        // `into_inner()`. A poison means a prior holder panicked, but
         // the map's structural integrity is preserved (we never
         // partially mutate inside a poisonable scope). Returning the
         // `PoisonError` directly would force callers to handle a
@@ -608,11 +608,11 @@ where
     // `ListenerTerminated`.
     // (b) guard ran AFTER our lock — guard cleared the map (and
     // our Sender with it); the broadcast::Receiver we already
-    // hold sees the channel close on first `recv`. We still
+    // hold sees the channel close on first `recv()`. We still
     // want subscribe to fail synchronously here so the adopter
     // reaches the retry/respawn path immediately.
     // (c) guard ran INTERLEAVED — same outcome as (a) or (b).
-    // In all three, `is_failed` is true and we return Err.
+    // In all three, `is_failed()` is true and we return Err.
     if listener.is_failed() {
         let mut senders = listener
             .senders
@@ -639,7 +639,7 @@ where
 }
 
 /// Typed wrapper around the underlying raw broadcast receiver. Each
-/// `recv.await` decodes the next raw event into a `ModelEvent<M>`.
+/// `recv().await` decodes the next raw event into a `ModelEvent<M>`.
 /// Holds an `Arc<PgListener>` keepalive — the listener task stays up
 /// for at least as long as this receiver is alive.
 pub struct TypedReceiver<M: crate::model::Model> {
@@ -1152,7 +1152,7 @@ mod tests {
         // tokio_postgres::Client, but is_failed only reads the flag.
         let failed = Arc::new(AtomicBool::new(false));
 
-        // Mirrors PgListener::is_failed — Acquire load.
+        // Mirrors PgListener::is_failed() — Acquire load.
         let read_is_failed = || failed.load(Ordering::Acquire);
 
         assert!(!read_is_failed(), "fresh listener starts unfailed");

@@ -182,7 +182,7 @@ pub struct TableSchema {
 
     /// Postgres table name. Redundant with the `models` map key
     /// but stored explicitly so a `TableSchema` value is
-    /// self-contained (e.g. when iterating `applied.models.values`).
+    /// self-contained (e.g. when iterating `applied.models.values()`).
     pub table: String,
 
     /// `#[model(table_comment = "…")]` value when set
@@ -236,7 +236,7 @@ pub struct ColumnSchema {
 
     /// `DEFAULT` expression — raw SQL. Empty `None` denotes no
     /// default. For PK columns with a server-generated default
-    /// (`heerid_next`, `gen_random_uuid`, ...), this is set
+    /// (`heerid_next()`, `gen_random_uuid()`, ...), this is set
     /// from the descriptor's PK kind via the projection.
     pub default_sql: Option<String>,
 
@@ -291,7 +291,7 @@ pub struct ColumnSchema {
     pub nullable: bool,
 
     /// Cascade discipline when the column carries an FK relation.
-    /// Always `Some(_)` when `foreign_key.is_some`. The
+    /// Always `Some(_)` when `foreign_key.is_some()`. The
     /// projection fills the `Restrict` default when the descriptor
     /// declares no explicit cascade.
     /// **Substrate-mirror field — not consumed by the SQL emitter.**
@@ -933,16 +933,16 @@ pub struct PrimaryKeySchema {
 /// Concrete PK strategy. Mirrors [`crate::descriptor::PkType`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PkKindSchema {
-    /// 64-bit time-ordered, ascending — `BIGINT DEFAULT heerid_next`.
+    /// 64-bit time-ordered, ascending — `BIGINT DEFAULT heerid_next()`.
     HeerId,
     /// 64-bit recency-biased — most-recent-first BTree scans without
     /// a secondary descending index. `BIGINT DEFAULT
-    /// heerid_next_desc`.
+    /// heerid_next_desc()`.
     HeerIdRecencyBiased,
-    /// 128-bit UUIDv8 ascending — `UUID DEFAULT ranjid_next`.
+    /// 128-bit UUIDv8 ascending — `UUID DEFAULT ranjid_next()`.
     RanjId,
     /// 128-bit UUIDv8 recency-biased — `UUID DEFAULT
-    /// ranjid_next_desc`.
+    /// ranjid_next_desc()`.
     RanjIdRecencyBiased,
     /// Postgres `IDENTITY` integer — for lookup / reference tables.
     Serial,
@@ -1159,7 +1159,7 @@ mod column_schema_type_change_using_tests {
         // Snapshots predating this field (or written after it landed)
         // never carry the key. Loading them must yield `None`
         // structurally — confirms the `#[serde(default)]` slot has a
-        // working Default::default and the loader does not reject
+        // working Default::default() and the loader does not reject
         // the absence under `deny_unknown_fields`.
         let json = serde_json::to_string(&base_column("kind")).expect("serialize");
         let loaded: ColumnSchema = serde_json::from_str(&json).expect("deserialize");

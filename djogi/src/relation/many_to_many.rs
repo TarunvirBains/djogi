@@ -8,14 +8,14 @@
 //! reports its own [`this_fk`] / [`that_fk`] column pair, so the two sides
 //! stay symmetrical without having to name the pair in a shared location.
 //! The [`Through`] associated type names the junction model — itself an
-//! ordinary [`Model`] queryable via `Through::objects`, just marked as a
+//! ordinary [`Model`] queryable via `Through::objects()`, just marked as a
 //! through model in its [`ModelDescriptor`](crate::descriptor::ModelDescriptor)
 //! (the `is_through = true` flag set by `#[model(..., through)]`). Keeping
 //! `Through` queryable is deliberate: a junction row frequently carries
 //! relation-specific data (a `role`, a `joined_at` timestamp, a JSONB
 //! `policy` blob), and hiding those behind a generated association type
 //! would force callers back into raw SQL to read them.
-//! # Why no default `related` impl
+//! # Why no default `related()` impl
 //! The shape of a typed M2M query — "select `Target` rows whose PK appears
 //! in `Through.{that_fk}` for rows where `Through.{this_fk} == self.pk`"
 //! is trivially expressible in the framework's typed closure filter:
@@ -55,11 +55,11 @@
 //! [`this_fk`](ManyToMany::this_fk) / [`that_fk`](ManyToMany::that_fk) on a
 //! legitimate `#[derive(Model)]`-derived implementor. Nothing stops a
 //! downstream crate from writing
-//! `impl ManyToMany<Group> for Person { fn this_fk -> &'static str { "id; DROP TABLE users --" } … }`
+//! `impl ManyToMany<Group> for Person { fn this_fk() -> &'static str { "id; DROP TABLE users --" } … }`
 //! with a real `Person` model. The seal only refuses fake `Model`s, not
 //! hostile string returns from trait methods on legitimate models.
-//! **Mitigation:** any consumer that pushes `Self::this_fk` /
-//! `Self::that_fk` into a SQL accumulator MUST first run the value
+//! **Mitigation:** any consumer that pushes `Self::this_fk()` /
+//! `Self::that_fk()` into a SQL accumulator MUST first run the value
 //! through [`crate::ident::assert_plain_ident`] (or the
 //! `crate::ident::debug_assert_ident!` macro for debug-only checks). This
 //! commit ships no SQL-emitting consumer of either method, so the contract
@@ -73,7 +73,7 @@
 //!   `ForeignKey<Source>` / `ForeignKey<Target>` and decode the target PK
 //!   via `postgres_types::FromSql`.
 //! - [`QuerySet::filter`](crate::query::QuerySet::filter) — the typed
-//!   closure API hand-written / macro-generated `related` bodies call
+//!   closure API hand-written / macro-generated `related()` bodies call
 //!   into.
 //! - `docs/guide/relations.md` (landing in) — user-facing
 //!   guide once the macro side lands.
@@ -154,7 +154,7 @@ where
     /// The junction model linking `Self` and `Target`. Must itself be a
     /// `#[model(..., through)]` carrying `ForeignKey<Self>` +
     /// `ForeignKey<Target>` columns (plus any relation-specific extras).
-    /// `Through` is an ordinary [`Model`] — `Through::objects` returns a
+    /// `Through` is an ordinary [`Model`] — `Through::objects()` returns a
     /// fully-featured [`QuerySet<Through>`](crate::query::QuerySet) so
     /// junction-specific queries (e.g. "all admins in group X") stay in the
     /// typed layer without detouring through raw SQL.
@@ -165,7 +165,7 @@ where
     /// Used by admin / shell tooling and by the migration-differ's audit
     /// output. Following the framework's
     /// explicit-over-implicit stance, the name is not auto-pluralised from
-    /// `Target::table_name`: you pick the accessor verb.
+    /// `Target::table_name()`: you pick the accessor verb.
     const RELATION: &'static str;
 
     /// Name of the column on [`Through`] that references `Self`'s primary
@@ -181,7 +181,7 @@ where
     /// Return every `Target` row associated with `self` via [`Through`].
     /// The canonical hand-written body issues two queries — one against the
     /// through table collecting target PKs for rows whose `this_fk` matches
-    /// `self.pk_value`, then one against `Target` with a `WHERE id IN
+    /// `self.pk_value()`, then one against `Target` with a `WHERE id IN
     /// (...)` filter. The `many_to_many!` macro emits
     /// exactly this shape on behalf of the user.
     /// # Context
@@ -198,7 +198,7 @@ where
     /// `role: String` or a `joined_at: DateTime`). The canonical hand-written
     /// body overwrites `extras.{this_fk}` and `extras.{that_fk}` with
     /// freshly-constructed [`ForeignKey`](crate::relation::ForeignKey)
-    /// values built from `self.pk_value` and `target.pk_value`, then
+    /// values built from `self.pk_value()` and `target.pk_value()`, then
     /// calls `Through::create(ctx, extras)`. That the caller supplies
     /// the whole junction row by value keeps the junction-specific fields
     /// under the user's control — the framework does not invent values for
@@ -214,7 +214,7 @@ where
 
     /// Detach `self` from `target` by deleting the matching junction row.
     /// The canonical hand-written body filters
-    /// `Through::objects` on both `this_fk == self.pk` and
+    /// `Through::objects()` on both `this_fk == self.pk` and
     /// `that_fk == target.pk`, then calls `.delete(ctx)` — yielding
     /// the number of rows deleted (typically `0` or `1`, depending on
     /// whether the junction had a `UNIQUE (this_fk, that_fk)` constraint).

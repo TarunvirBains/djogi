@@ -23,7 +23,7 @@
 //! RepairConfirmation::OperatorAcknowledged,
 //! ).await?;
 //! ```
-//! No `Default::default` lands here, no `bool` flips, no implicit
+//! No `Default::default()` lands here, no `bool` flips, no implicit
 //! coercion. The operator has to *type out* the variant name.
 //! # Why a witness instead of an `unsafe fn`?
 //! `unsafe` in Rust signals memory-safety obligations. Repair's
@@ -87,7 +87,7 @@ use super::snapshot::{SnapshotError, save_snapshot};
 /// # Why a single-variant enum
 /// A struct-with-private-fields would also work, but an enum reads
 /// more naturally at the call site (`RepairConfirmation::OperatorAcknowledged`
-/// vs. `RepairConfirmation::operator_acknowledged`) and gives us
+/// vs. `RepairConfirmation::operator_acknowledged()`) and gives us
 /// room to add an explicit `OperatorAcknowledgedWithReason { reason
 /// String }` variant later without breaking callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -625,7 +625,7 @@ fn handle_repair_release<T>(
 /// **Caller supplies the bucket.** The advisory-lock key is derived
 /// from `bucket` — the same `(database, app)` pair the runner used
 /// when it applied the migration. Deriving the bucket from
-/// `SELECT current_database` inside repair was wrong: the runner
+/// `SELECT current_database()` inside repair was wrong: the runner
 /// stores the logical database name from `plan.bucket.database`, not
 /// the physical database name from the connected session (GH #274).
 pub async fn repair_checksum_drift(
@@ -1664,7 +1664,7 @@ mod tests {
         );
     }
 
-    /// `ensure_row_matches_bucket_app` returns `Ok` when `row.app_label`
+    /// `ensure_row_matches_bucket_app` returns `Ok(())` when `row.app_label`
     /// and `bucket.app` are equal.
     #[test]
     fn ensure_row_matches_bucket_app_ok_when_apps_agree() {

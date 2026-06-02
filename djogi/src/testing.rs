@@ -107,8 +107,8 @@ pub enum DerivedParityError {
     /// [`crate::visage::VisageError::DbComputedNullForNonOptional`] or
     /// [`crate::visage::VisageError::DbComputedTypeMismatch`]). The
     /// `#[source]` annotation surfaces the inner error in
-    /// `std::error::Error::source` so test runners that walk
-    /// `Error::source` get the full cause chain.
+    /// `std::error::Error::source()` so test runners that walk
+    /// `Error::source()` get the full cause chain.
     /// Only produced by the async helper; the sync per-visage
     /// `assert_derived_parity` inherent method (and the
     /// [`DerivedParity`] trait impl backing it) never returns this
@@ -196,7 +196,7 @@ pub mod private {
 /// either side surface as [`DerivedParityError`].
 /// # Why a closure for the fetch
 /// `VisageQuerySet` is the canonical fetch path, but its entry
-/// methods (`V::filter(|f| f.id.eq(pk))`) are emitted as **inherent
+/// methods (`V::filter(|f| f.id().eq(pk))`) are emitted as **inherent
 /// methods on each visage type** — they are not part of the
 /// [`crate::DjogiVisage`] trait. A generic free helper cannot name
 /// those entry points directly without lifting them into a trait,
@@ -210,7 +210,7 @@ pub mod private {
 /// - `V: DerivedParity` — the visage carries the trait impl
 ///   (macro-emitted automatically when the visage has at least one
 ///   derived field in scope).
-/// - `Fetch: FnOnce -> Fut` — the fetch closure produces the
+/// - `Fetch: FnOnce() -> Fut` — the fetch closure produces the
 ///   `Future` lazily; the helper drives the await internally.
 /// - `Fut: Future<Output = crate::Result<V>>` — `crate::Result<V>`
 ///   is the canonical `Result<V, DjogiError>` alias; the closure
@@ -415,7 +415,7 @@ pub async fn setup_test_db_with_extensions(
         }
     });
 
-    // : route through `bootstrap::run_phase_zero` — the SAME
+    // Route through `bootstrap::run_phase_zero` — the SAME
     // bootstrap surface adopters hit via `migrations compose` +
     // `migrations apply` + `db reset`. This is the strategic lockdown
     // no parallel install path lives in `testing` anymore.
@@ -520,7 +520,7 @@ pub const TEST_NON_SUPERUSER_PASSWORD: &str = "djogi_test_user";
 ///    so attributes always match the intended shape, even if a previous
 ///    process drifted them.
 /// 3. Reconnect to the per-test database (same admin URL with the path
-///    component swapped to `cleanup.db_name`) and grant the role
+///    component swapped to `cleanup.db_name()`) and grant the role
 ///    access to every existing object in `public`:
 /// - `GRANT CONNECT ON DATABASE …`
 /// - `GRANT USAGE ON SCHEMA public`
@@ -544,7 +544,7 @@ pub const TEST_NON_SUPERUSER_PASSWORD: &str = "djogi_test_user";
 /// The returned [`DjogiContext`] has its **own** `Arc<sassi::Sassi>`
 /// registry (built from the global `inventory` walk in
 /// [`DjogiContext::from_pool`]). Cache and refresh tests should use
-/// `non_super_ctx.punnu::<T>` and `non_super_ctx.share_pool` so the
+/// `non_super_ctx.punnu::<T>()` and `non_super_ctx.share_pool()` so the
 /// cache target and the fetcher pool share a consistent ancestry
 /// crossing punnus between the admin and non-superuser contexts is
 /// allowed at the type level but loses the lifecycle invariants the
@@ -878,7 +878,7 @@ pub async fn list_orphaned_test_databases(admin_url: &str) -> Result<Vec<String>
 /// Returns the **lexicographically sorted names** of databases that were
 /// successfully dropped. A failure to drop an individual database is logged
 /// via `eprintln!` and that name is omitted from the returned vector
-/// (best-effort, non-fatal). Callers wanting the count call `.len`.
+/// (best-effort, non-fatal). Callers wanting the count call `.len()`.
 /// # Errors
 /// Returns `DjogiError::Db` when the admin connection itself fails or the
 /// `pg_database` query fails. Per-database DROP failures are not propagated
@@ -1036,7 +1036,7 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
 /// Called by macro-generated code from
 /// `#[djogi_test(sync_models = [Type1, Type2, ...])]` after
 /// [`setup_test_db_with_extensions`] returns. The macro lowers each
-/// `Type` to `<Type as ::djogi::Model>::descriptor`, so the
+/// `Type` to `<Type as ::djogi::Model>::descriptor()`, so the
 /// descriptors arrive here with full `&'static` lifetimes from the
 /// `inventory` collectors.
 /// # What this does
@@ -1106,7 +1106,7 @@ pub async fn sync_models(
     Ok(())
 }
 
-/// Install the narrow trigger fixture used by the phase4 `save` integration
+/// Install the narrow trigger fixture used by the phase4 `save()` integration
 /// test.
 /// This is intentionally not a general-purpose SQL fixture loader. The test
 /// body needs to prove that `Model::save` rehydrates trigger-mutated fields
@@ -1999,7 +1999,7 @@ mod tests {
     #[test]
     fn wrap_relation_registry_for_sync_models_passes_ok_through() {
         // The clean-registry path must not perturb the existing
-        // `Result<, DjogiError>` flow — `Ok` in, `Ok` out,
+        // `Result<(), DjogiError>` flow — `Ok(())` in, `Ok(())` out,
         // no string formatting, no allocation.
         super::wrap_relation_registry_for_sync_models(Ok(()))
             .expect("Ok input must propagate unchanged");

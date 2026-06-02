@@ -54,7 +54,7 @@ pub enum OutOfOrderPolicy {
     AllowExplicit {
         /// Operator-supplied rationale; non-empty by convention. The
         /// runner does not enforce non-emptiness so dev iterations
-        /// can pass `String::new`, but production callers should
+        /// can pass `String::new()`, but production callers should
         /// always set a real string.
         override_reason: String,
     },
@@ -65,7 +65,7 @@ impl OutOfOrderPolicy {
     /// profile and CI environments default to `Reject`; everything
     /// else defaults to `AllowWithDiagnostic`.
     /// **Detection rules:**
-    /// - `config.is_production` is the highest-precedence signal. A
+    /// - `config.is_production()` is the highest-precedence signal. A
     ///   `Djogi.toml` with `profile = "production"` always picks
     ///   `Reject`.
     /// - Otherwise, `CI` env var equal to `"true"` (case-insensitive

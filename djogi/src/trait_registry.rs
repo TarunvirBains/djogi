@@ -13,7 +13,7 @@
 //! Mirrors the established `inventory`-based registry pattern from
 //! `djogi::apps::AppRegistry` — compile-time submission, one-shot
 //! at first read, downstream consumers iterate.
-//! # Relationship to sassi's `Sassi::all_impl::<dyn T>`
+//! # Relationship to sassi's `Sassi::all_impl::<dyn T>()`
 //! Sassi ships its own `#[sassi::trait_impl]` attribute macro and
 //! `inventory` registry (`sassi::trait_registry`). Sassi's registry
 //! is keyed off `Punnu<T>`-scoped models — Sassi knows about
@@ -22,10 +22,10 @@
 //! Djogi's registry here is a sibling surface for cross-type queries
 //! that do **not** require the Punnu pool boundary. Adopters with
 //! sassi enabled and Punnu-pooled models use `#[sassi::trait_impl]`
-//! and `Sassi::all_impl::<dyn T>` for the full sassi-integrated
+//! and `Sassi::all_impl::<dyn T>()` for the full sassi-integrated
 //! cross-type query path; adopters who only need the descriptor-
 //! level enumeration use `#[djogi::trait_impl]` and
-//! [`iter_for_trait::<dyn T>`] directly.
+//! [`iter_for_trait::<dyn T>()`] directly.
 //! Plan §7 #12 (resolved 2026-05-03): this module owns
 //! `djogi::trait_registry::*` surface only; the sassi-bridging
 //! consumer surface is sassi's own responsibility. `djogi::cache::*`
@@ -57,11 +57,11 @@ pub type CasterFn = fn(&ErasedArc) -> Option<ErasedArc>;
 /// # Fields
 /// - `model_type_id` — the `TypeId` of the implementing model
 ///   (`Vehicle` for `impl Searchable for Vehicle`). Returned by a
-///   `fn -> TypeId` so the registration is `const`-constructible
+///   `fn() -> TypeId` so the registration is `const`-constructible
 ///   at the macro emission site without touching `TypeId::of` (which
 ///   is `const`-only on nightly).
 /// - `trait_type_id` — the `TypeId` of the registered trait
-///   (`dyn Searchable`). Same `fn -> TypeId` discipline.
+///   (`dyn Searchable`). Same `fn() -> TypeId` discipline.
 /// - `model_type_name` / `trait_type_name` — human-readable names
 ///   for diagnostic / introspection paths. `&'static str` so the
 ///   registration stays `const`-submittable.
@@ -82,15 +82,15 @@ pub type CasterFn = fn(&ErasedArc) -> Option<ErasedArc>;
 #[derive(Debug)]
 pub struct TraitRegistration {
     /// Returns the implementing model's `TypeId`. The macro emits
-    /// `|| ::std::any::TypeId::of::<Vehicle>` here.
+    /// `|| ::std::any::TypeId::of::<Vehicle>()` here.
     pub model_type_id: fn() -> std::any::TypeId,
     /// Returns the registered trait's `TypeId` — typically obtained
-    /// via `TypeId::of::<dyn Trait>` on a sized newtype that the
+    /// via `TypeId::of::<dyn Trait>()` on a sized newtype that the
     /// macro emits alongside the registration.
     pub trait_type_id: fn() -> std::any::TypeId,
     /// Human-readable model type name. The `Vehicle` in
     /// `impl Trait for Vehicle`. Used for diagnostics and for the
-    /// `Sassi::all_impl::<dyn T>` consumer's debug logging.
+    /// `Sassi::all_impl::<dyn T>()` consumer's debug logging.
     pub model_type_name: &'static str,
     /// Human-readable trait type name. The `Searchable` in
     /// `impl Searchable for Vehicle`.
@@ -122,7 +122,7 @@ pub fn iter_registrations() -> impl Iterator<Item = &'static TraitRegistration> 
 /// invoking each registration's `trait_type_id` fn-ptr exactly once;
 /// every subsequent lookup is a single `HashMap::get`.
 /// The pre-cache shape walked the full registration list and called
-/// `(r.trait_type_id)` on every entry per call — O(n) fn-ptr calls
+/// `(r.trait_type_id)()` on every entry per call — O(n) fn-ptr calls
 /// per `iter_for_trait` invocation. The cache flips that to O(1) for
 /// hot paths (e.g. cross-type queries that re-enumerate trait impls
 /// frequently) at the cost of one map allocation per process.
@@ -144,10 +144,10 @@ fn registry_cache()
 
 /// Iterate every `TraitRegistration` whose `trait_type_id` matches
 /// `T`'s `TypeId`. 4 — the consumer-side filter for
-/// `Sassi::all_impl::<dyn T>` and equivalent cross-type queries.
+/// `Sassi::all_impl::<dyn T>()` and equivalent cross-type queries.
 /// The `T: ?Sized + 'static` bound covers `dyn Trait` types — the
 /// canonical caller-side spelling is
-/// `iter_for_trait::<dyn Searchable>`.
+/// `iter_for_trait::<dyn Searchable>()`.
 /// First call builds the keyed cache (O(n) fn-ptr calls); subsequent
 /// calls are O(1) `HashMap` lookups. Returns `Vec<&'static …>`
 /// `inventory::collect!` already yields `'static` references, and the

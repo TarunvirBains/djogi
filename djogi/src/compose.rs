@@ -13,14 +13,14 @@
 //! # Why two traits, no methods beyond the field accessors?
 //! §D6 (lines 149–157 of the v3 plan) settles the audit-field
 //! shape: `created_by: Option<String>` populated from
-//! `AuthContext.user_id` at create time when `ctx.auth.is_some`, and
+//! `AuthContext.user_id` at create time when `ctx.auth().is_some()`, and
 //! left as `None` otherwise (no warn-on-null). The trait exposes the
 //! getter as `Option<&str>` so callers do not pay a `String` clone to
 //! observe the audit user.
 //! `SoftDeletable` mirrors the same pattern for `deleted_at:
 //! Option<DateTime>`. Models implementing the trait acquire a default
 //! filter that excludes rows where `deleted_at IS NOT NULL`; adopter-side
-//! bypass goes through the `_insecurely` audit-warning shape — same
+//! bypass goes through the `_insecurely()` audit-warning shape — same
 //! `set_tenant` precedent already in [`crate::DjogiContext`].
 //! That filter and bypass live in the query layer;
 //! this module is intentionally bound surface only.
@@ -44,7 +44,7 @@
 //!    `HasHooks` via [`crate::hooks`], `App` via the apps-seal token,
 //!    `PrimaryKey` via `PkSealToken`) defend an SQL-injection or
 //!    correctness boundary — a hand-rolled `impl Model` could smuggle
-//!    `table_name` strings into the emitter. `Auditable` and
+//!    `table_name()` strings into the emitter. `Auditable` and
 //!    `SoftDeletable` carry no such boundary: the only methods are
 //!    field getters that return `Option<&str>` and `Option<DateTime>`.
 //!    A hostile hand-rolled impl can lie about its audit user, but
@@ -86,7 +86,7 @@ use crate::types::DateTime;
 /// `#[model(auditable)]` attribute emits the trait impl plus an
 /// inherent `__djogi_auditable_populate` helper invoked from
 /// [`Model::create`](crate::model::Model::create) before the user
-/// `before_create` hook. When [`ctx.auth`](crate::context::DjogiContext::auth)
+/// `before_create` hook. When [`ctx.auth()`](crate::context::DjogiContext::auth)
 /// is `Some`, the helper captures `format!("{}", auth.user_id)`
 /// (Display, not Debug — Debug shape is unstable per spec line 1064)
 /// into the field unless the user already set a value; otherwise the
@@ -97,9 +97,9 @@ use crate::types::DateTime;
 /// # Example bound
 /// ```ignore
 /// fn render_audit_line<M: djogi::Auditable>(m: &M) -> String {
-/// match m.created_by {
+/// match m.created_by() {
 /// Some(user) => format!("created by {user}"),
-/// None => "created by system".to_string,
+/// None       => "created by system".to_string(),
 /// }
 /// }
 /// ```
@@ -120,7 +120,7 @@ pub trait Auditable: Model {
 /// Automatic default-filter composition uses the `Q<T>`
 /// substrate (spec line 971, RESOLVED 2026-05-03, lens,
 /// locked); this trait ships the surface plus the manual
-/// [`QuerySet::not_deleted`](crate::query::QuerySet::not_deleted)
+/// [`QuerySet::not_deleted()`](crate::query::QuerySet::not_deleted)
 /// helper that reads the column name through `<M as
 /// SoftDeletable>::COLUMN` rather than a hard-coded string.
 /// This trait is the bound surface used by code that needs to talk
@@ -129,15 +129,15 @@ pub trait Auditable: Model {
 /// # Example bound
 /// ```ignore
 /// fn purge_window<M: djogi::SoftDeletable>(m: &M) -> Option<i64> {
-/// m.deleted_at
-/// .map(|dt| (djogi::DateTime::now_utc - dt).whole_seconds)
+/// m.deleted_at()
+/// .map(|dt| (djogi::DateTime::now_utc() - dt).whole_seconds())
 /// }
 /// ```
 pub trait SoftDeletable: Model {
     /// SQL column name for the soft-delete timestamp. Defaults to
     /// `"deleted_at"`.
     /// Reading via `<M as SoftDeletable>::COLUMN` from generic code
-    /// lets [`QuerySet::not_deleted`](crate::query::QuerySet::not_deleted)
+    /// lets [`QuerySet::not_deleted()`](crate::query::QuerySet::not_deleted)
     /// and any future `SoftDeletable` consumer key off the trait
     /// surface instead of a hard-coded string. 6 keeps the
     /// canonical `"deleted_at"` value as the trait default so today's

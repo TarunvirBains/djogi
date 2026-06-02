@@ -9,15 +9,15 @@
 //! - `Db` — raw database/driver failures (network, constraints, SQL), wrapped
 //!   in [`DbError`] so Djogi does not expose `tokio_postgres` directly in its
 //!   public error surface.
-//! - `NotFound` — `.get` / `.fetch_one` saw zero rows; carries the
+//! - `NotFound` — `.get()` / `.fetch_one()` saw zero rows; carries the
 //!   offending table name for observability.
-//! - `MultipleObjects` — `.fetch_one` saw more than one row; carries the
+//! - `MultipleObjects` — `.fetch_one()` saw more than one row; carries the
 //!   table name plus the actual count observed.
 //! - `IdGeneration` — ID generation DB calls failed.
 //! - `RelationUnloaded` — a relation accessor (`ForeignKeyResolved::expect_resolved`
 //!   / `OneToOneFieldResolved::expect_resolved`) was invoked against a cache
 //!   that was never populated. Raised from the strict path where the caller
-//!   has asserted a `prefetch` / `select_related` happened upstream.
+//!   has asserted a `prefetch()` / `select_related()` happened upstream.
 //! # `#[non_exhaustive]` on the enum *and* its struct variants
 //! Both `DjogiError` and its struct-form variants (`NotFound`,
 //! `MultipleObjects`) are marked `#[non_exhaustive]`. This is a deliberate
@@ -262,7 +262,7 @@ pub enum DjogiError {
     /// substrate. Wraps [`AuthError`](crate::auth::AuthError) so
     /// [`DjogiAuth::authenticate`](crate::auth::DjogiAuth::authenticate) and
     /// [`DjogiAuth::verify`](crate::auth::DjogiAuth::verify) failures flow
-    /// through `?` inside `atomic`-managed operations without explicit
+    /// through `?` inside `atomic()`-managed operations without explicit
     /// mapping.
     /// # Transitivity
     /// Because `AuthError` is `#[non_exhaustive]`, this variant also inherits
@@ -274,7 +274,7 @@ pub enum DjogiError {
 
     /// Geo/spatial error from the `spatial` feature — coordinate validation
     /// or EWKB codec failure. Wraps [`GeoError`](crate::geo::GeoError) so
-    /// spatial operations compose with `?` inside `atomic`-managed
+    /// spatial operations compose with `?` inside `atomic()`-managed
     /// operations without explicit mapping.
     #[cfg(feature = "spatial")]
     #[error("geo error: {0}")]
@@ -310,7 +310,7 @@ pub enum DjogiError {
     /// A relation accessor that requires an eagerly-loaded cache
     /// (`ForeignKeyResolved::expect_resolved` / `OneToOneFieldResolved::expect_resolved`)
     /// was invoked against a wrapper whose cache is empty. The caller
-    /// asserted a `prefetch` / `select_related` ran earlier but none
+    /// asserted a `prefetch()` / `select_related()` ran earlier but none
     /// did — this is a strict-mode user error, not a query failure.
     /// `model` is the source model name (e.g. `"Vehicle"`), `field` is the
     /// relation field on that model (e.g. `"owner_id"`). Both are compile-time
@@ -340,7 +340,7 @@ pub enum DjogiError {
     /// Known triggers include
     /// [`VisageError::UnresolvedRelation`](crate::visage::VisageError), raised
     /// when a relation-nesting visage is projected from a model whose
-    /// relation fields were not `prefetch`-ed or `select_related`-ed,
+    /// relation fields were not `prefetch()`-ed or `select_related()`-ed,
     /// and [`VisageError::PresentationCodec`](crate::visage::VisageError)
     /// from fallible protected-field presentation codecs.
     /// Introduces this variant so the visage-scoped
@@ -438,7 +438,7 @@ pub enum DjogiError {
     LockConflict(#[source] DbError),
 
     /// `QuerySet::stream` or `DjogiContext::raw_stream` was called on a
-    /// pool-backed context (i.e. outside an `atomic` scope).
+    /// pool-backed context (i.e. outside an `atomic()` scope).
     /// Postgres named cursors are transaction-local — they require an open
     /// transaction to exist. Calling `stream` on a pool-backed context is a
     /// caller error that is detected at stream construction time, not at the
@@ -451,7 +451,7 @@ pub enum DjogiError {
     StreamOutsideTransaction,
 
     /// A transaction-backed [`crate::DjogiContext`] was marked unsafe to
-    /// continue after a nested `atomic` future was dropped before the
+    /// continue after a nested `atomic()` future was dropped before the
     /// framework could run savepoint cleanup.
     /// Rust `Drop` cannot await `ROLLBACK TO SAVEPOINT` / `RELEASE
     /// SAVEPOINT`, so the safe contract is fail-closed: framework-owned
@@ -473,11 +473,11 @@ pub enum DjogiError {
     },
 
     /// A transaction-backed raw SQL call attempted a session-scoped statement
-    /// that `atomic` cannot safely scrub on commit/rollback.
+    /// that `atomic()` cannot safely scrub on commit/rollback.
     /// This variant is used by the raw SQL bypass harness to reject
     /// session-level control statements such as plain `SET`, `RESET`,
     /// `LISTEN`, `UNLISTEN`, `PREPARE`, `DEALLOCATE`, and `DISCARD` when the
-    /// context is already inside an `atomic` transaction. Those statements
+    /// context is already inside an `atomic()` transaction. Those statements
     /// either outlive the surrounding transaction entirely or invite callers
     /// to assume rollback will clean them up when Postgres semantics say
     /// otherwise.
@@ -506,15 +506,15 @@ pub enum DjogiError {
     /// transaction-control statements such as `BEGIN`, `START TRANSACTION`,
     /// `COMMIT`, `ROLLBACK`, `END`, `ABORT`, `SAVEPOINT`, `RELEASE [SAVEPOINT]`,
     /// and `ROLLBACK [WORK|TRANSACTION] TO [SAVEPOINT]` when the context is
-    /// already inside an `atomic` transaction. Those statements bypass
+    /// already inside an `atomic()` transaction. Those statements bypass
     /// framework bookkeeping: raw COMMIT skips `on_commit` callback drain,
     /// raw ROLLBACK skips rollback cleanup and callback discard, and raw
     /// savepoint control desynchronizes `savepoint_depth`.
     /// `statement` is the canonical top-level transaction-control keyword
     /// (`"BEGIN"`, `"COMMIT"`, etc.) that triggered the refusal. The fix is
-    /// structural: use Djogi's `atomic` / `commit` / `rollback` API, or
+    /// structural: use Djogi's `atomic()` / `commit()` / `rollback()` API, or
     /// run the transaction-control SQL on a pool-backed context outside any
-    /// `atomic` scope.
+    /// `atomic()` scope.
     /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// retrying the same closure against the same SQL will fail the same way.
     #[error(
@@ -1010,7 +1010,7 @@ pub enum DjogiError {
     /// Classified as **terminal** by [`DjogiError::is_transient`]
     /// retrying cannot turn a transaction-backed context into a
     /// pool-backed one. Move the concurrent-reads block outside the
-    /// surrounding `atomic`.
+    /// surrounding `atomic()`.
     #[error(
         "clone_for_concurrent_reads requires a pool-backed DjogiContext; \
          transaction-backed contexts own a single connection that cannot \
@@ -1244,7 +1244,7 @@ impl DjogiError {
     /// Inverse of [`is_transient`](Self::is_transient) — returns
     /// `true` when retrying will not help.
     /// Provided as a convenience for call sites that read more
-    /// naturally as `err.is_terminal` than `!err.is_transient`.
+    /// naturally as `err.is_terminal()` than `!err.is_transient()`.
     /// Same contract, inverted.
     pub fn is_terminal(&self) -> bool {
         !self.is_transient()
@@ -1252,7 +1252,7 @@ impl DjogiError {
 }
 
 /// Return `true` if the database error wraps a Postgres lock/serialization
-/// conflict — the class of failures that `retry_on_conflict` is
+/// conflict — the class of failures that `retry_on_conflict()` is
 /// willing to re-run the closure through.
 /// Matches three SQLSTATEs:
 /// - `40001` (`serialization_failure`) — the classic MVCC serialization
@@ -1513,7 +1513,7 @@ mod tests {
     /// 1 — `SetRoleOutsideTransaction` is a misuse signal,
     /// never retryable. Mirrors the `StreamOutsideTransaction`
     /// classification: the caller must restructure their code to wrap
-    /// the call in `atomic`, not back off and retry.
+    /// the call in `atomic()`, not back off and retry.
     #[test]
     fn set_role_outside_transaction_is_terminal() {
         let err = DjogiError::SetRoleOutsideTransaction;
@@ -1653,7 +1653,7 @@ mod tests {
     /// #169 — `ConstraintModeOutsideTransaction` mirrors the
     /// `SetRoleOutsideTransaction` classification: a caller invoking a
     /// transaction-scoped helper on a pool-backed context must
-    /// restructure their code to wrap the call in `atomic`, not back
+    /// restructure their code to wrap the call in `atomic()`, not back
     /// off and retry.
     #[test]
     fn constraint_mode_outside_transaction_is_terminal() {
@@ -1706,7 +1706,7 @@ mod tests {
 
     /// #173 — `ConcurrentReadsRequirePoolContext` is
     /// terminal because the fix is structural (move outside
-    /// `atomic`), not transient. Mirrors the
+    /// `atomic()`), not transient. Mirrors the
     /// `SetRoleOutsideTransaction` shape.
     #[test]
     fn concurrent_reads_require_pool_context_is_terminal() {

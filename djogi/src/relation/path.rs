@@ -2,7 +2,7 @@
 //! names a relation from one model to another at the type level.
 //! Produced exclusively by the macro-emitted `{Source}Related` accessor
 //! struct. User code receives a `RelationPath<Vehicle, Owner>` from
-//! `VehicleRelated::owner` and hands it to a future
+//! `VehicleRelated::owner()` and hands it to a future
 //! `QuerySet::prefetch(...)` / `QuerySet::select_related(...)` call
 //! (Tasks 4 + 5). The path is a ZST — all information is carried
 //! at the type level plus three `&'static str` / discriminant fields for
@@ -69,7 +69,7 @@ pub enum RelationKind {
 /// constructed by user code. A `RelationPath<Vehicle, Owner>` carries:
 /// - `source_column` — the column on `Source`'s table that stores the
 ///   target's primary key (e.g. `"owner_id"`);
-/// - `target_table` — `Target::table_name` at macro-expansion time;
+/// - `target_table` — `Target::table_name()` at macro-expansion time;
 /// - `kind` — whether the relation is a `ForeignKey` or `OneToOne`.
 ///   The struct is a ZST plus three `&'static` members and one enum
 ///   discriminant; it costs a handful of bytes to pass around and a free
@@ -85,7 +85,7 @@ pub struct RelationPath<Source: Model, Target: Model> {
     pub(crate) source_column: &'static str,
     pub(crate) target_table: &'static str,
     pub(crate) kind: RelationKind,
-    // `PhantomData<fn -> (Source, Target)>` — covariant in both generics
+    // `PhantomData<fn() -> (Source, Target)>` — covariant in both generics
     // without implying ownership of a Source or Target value. Matches the
     // variance choice in `ForeignKey<T>` / `OneToOneField<T>` and keeps
     // `RelationPath` `Send`/`Sync` regardless of the model types' own
@@ -95,7 +95,7 @@ pub struct RelationPath<Source: Model, Target: Model> {
 
 impl<Source: Model, Target: Model> RelationPath<Source, Target> {
     /// Construct a relation path. Crate-private — downstream code goes through
-    /// the macro-emitted `{Source}Related::relation_name` accessor, which
+    /// the macro-emitted `{Source}Related::relation_name()` accessor, which
     /// reaches this constructor via
     /// [`__private::__make_relation_path`](super::__private::__make_relation_path)
     /// after validating the identifier strings.
@@ -126,7 +126,7 @@ impl<Source: Model, Target: Model> RelationPath<Source, Target> {
         self.source_column
     }
 
-    /// `Target::table_name`, snapshotted at macro expansion time.
+    /// `Target::table_name()`, snapshotted at macro expansion time.
     /// The SQL emitters use this as the join condition's right-hand-side
     /// table.
     #[inline]

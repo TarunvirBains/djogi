@@ -53,13 +53,13 @@
 //! [LIMIT $n] [OFFSET $n];
 //! ```
 //! Filters on either side are emitted with the side alias prepended so a
-//! `WHERE` reference like `f.estimated_birth_year <= cutoff` becomes
+//! `WHERE` reference like `f.estimated_birth_year() <= cutoff` becomes
 //! `l.estimated_birth_year <= $1` for the left side. Re-using
 //! [`SqlEmitContext::joined`](crate::query::SqlEmitContext::joined) keeps
 //! qualification consistent with the existing `select_related` emitter.
 //! # Variance
 //! `JoinedQuerySet<L, R>` is covariant in both `L` and `R` via
-//! `PhantomData<fn -> (L, R)>` — the queryset never owns or borrows a
+//! `PhantomData<fn() -> (L, R)>` — the queryset never owns or borrows a
 //! value of either model, it merely tags which two models the filters
 //! aim at. Mirrors [`QuerySet<T>`](crate::query::QuerySet)'s variance.
 //! # Where
@@ -330,11 +330,11 @@ pub(crate) fn validated_pk_column_for_pair_identity<M: Model>() -> Result<&'stat
 /// is unsupported. The terminal threads the resolved pair into
 /// `build_joined_select` / `build_joined_count` /
 /// `build_joined_annotated_select_for_fetch` as parameters so the
-/// emitter helpers never re-look-up via `pk_column.unwrap_or("id")`.
+/// emitter helpers never re-look-up via `pk_column().unwrap_or("id")`.
 /// `needs_identity` is the conjunction of the per-row-identity
-/// triggers: `exclude_equal_pk` (self-pair WHERE), `closure_pair.is_some`
+/// triggers: `exclude_equal_pk` (self-pair WHERE), `closure_pair.is_some()`
 /// (closure-pair LEFT JOIN ON-clauses), and any
-/// `requires_closure_pair_join` aggregate slot in the tuple (pair-
+/// `requires_closure_pair_join()` aggregate slot in the tuple (pair-
 /// aggregate GROUP BY). The function short-circuits to `Ok((None, None))`
 /// when none of these apply; the emitters then know per-row identity is
 /// not needed and skip the per-side PK reference paths entirely.
@@ -354,7 +354,7 @@ pub(crate) fn validate_pair_identity_pk<L: Model, R: Model>(
 /// pagination (`limit`/`offset`), ordering, and an optional closure-pair
 /// join. Single-side filters / ordering accumulated on either underlying
 /// queryset are re-emitted with the side's alias qualified during SQL
-/// emission, so users can still call `.filter(...)` on `Elephant::objects`
+/// emission, so users can still call `.filter(...)` on `Elephant::objects()`
 /// before crossing it with another queryset and the filters apply to the
 /// left side post-join.
 /// See the [module docs](self) for the SQL shape, the alias scheme, and
@@ -417,7 +417,7 @@ impl<L: Model, R: Model> Clone for JoinedQuerySet<L, R> {
 impl<L: Model, R: Model> JoinedQuerySet<L, R> {
     /// Replace the left side's QuerySet, AND-ing whatever filter the
     /// caller supplied onto the existing left-side condition.
-    /// The closure receives `L::Fields::default` and returns any
+    /// The closure receives `L::Fields::default()` and returns any
     /// [`IntoQ<L>`](crate::query::IntoQ) predicate. Mirrors
     /// [`QuerySet::filter`] — the underlying left QuerySet is mutated
     /// through its own typed builder, so callers compose left-side
@@ -504,7 +504,7 @@ impl<L: Model, R: Model> JoinedQuerySet<L, R> {
     /// annotation expressions referencing either alias. Pair-aware
     /// window-function helpers (see [`PairWindowExt`]) prefix column
     /// references with the appropriate alias when generating
-    /// `PARTITION BY` / `ORDER BY` slices of the `OVER ` clause.
+    /// `PARTITION BY` / `ORDER BY` slices of the `OVER ()` clause.
     /// Mirrors [`QuerySet::annotate`](crate::query::QuerySet::annotate)'s
     /// shape — the produced [`JoinedAnnotatedQuerySet`] has terminals
     /// (`fetch_all`); the bare [`JoinedQuerySet`] only has
@@ -545,7 +545,7 @@ impl<L: Model, R: Model> JoinedQuerySet<L, R> {
 /// allowed this method on heterogeneous pair querysets and produced
 /// bogus SQL that referenced `<L's closure>.<L's source> = <R's pk>`;
 /// the type-level fix moves enforcement to compile time, so
-/// `Animal::objects.cross_join_with(Widget::objects).left_join_closure_pair::<AnimalAncestry>`
+/// `Animal::objects().cross_join_with(Widget::objects()).left_join_closure_pair::<AnimalAncestry>()`
 /// fails to compile with `no method named left_join_closure_pair found
 /// for struct JoinedQuerySet<Animal, Widget>`.
 impl<L: Model> JoinedQuerySet<L, L> {
@@ -730,9 +730,9 @@ impl<L: Model> QuerySet<L> {
     /// use djogi::prelude::*;
     ///
     /// // Pair every Elephant with every Herd the Sighting records cover.
-    /// let pairs: Vec<(Sighting, Herd)> = Sighting::objects
-    /// .filter(|s| s.observed_at.gte(season_start))
-    /// .cross_join_with(Herd::objects.filter(|h| h.estimated_population.gte(50)))
+    /// let pairs: Vec<(Sighting, Herd)> = Sighting::objects()
+    /// .filter(|s| s.observed_at().gte(season_start))
+    /// .cross_join_with(Herd::objects().filter(|h| h.estimated_population().gte(50)))
     /// .fetch_all(&mut ctx)
     /// .await?;
     /// ```
@@ -761,7 +761,7 @@ impl<L: Model> QuerySet<L> {
     /// identity row (pairing a source row with itself) is excluded.
     /// Call [`JoinedQuerySet::include_equal_pk`] to opt back into the
     /// identity row when unordered-pair semantics are required.
-    /// The right side is constructed from `L::objects` (a fresh
+    /// The right side is constructed from `L::objects()` (a fresh
     /// queryset with `L`'s default filter / ordering applied) so any
     /// proxy-model default filter still applies to both sides. Filters
     /// already accumulated on `self` carry through as the left side's
@@ -771,9 +771,9 @@ impl<L: Model> QuerySet<L> {
     ///
     /// // Mating-pairs candidate generation: every mature Elephant paired
     /// // with every other mature Elephant.
-    /// let pairs: Vec<(Elephant, Elephant)> = Elephant::objects
-    /// .filter(|e| e.estimated_birth_year.lte(mature_cutoff))
-    /// .self_pairs
+    /// let pairs: Vec<(Elephant, Elephant)> = Elephant::objects()
+    /// .filter(|e| e.estimated_birth_year().lte(mature_cutoff))
+    /// .self_pairs()
     /// .fetch_all(&mut ctx)
     /// .await?;
     /// ```
@@ -784,7 +784,7 @@ impl<L: Model> QuerySet<L> {
         // the standard expectation for a "self-join with these criteria"
         // both sides start from the same pool. Callers who want
         // asymmetric filters (`filter_left` only or `filter_right` only)
-        // call those builder methods after `.self_pairs` to add a
+        // call those builder methods after `.self_pairs()` to add a
         // side-specific AND.
         let right = self.clone();
         JoinedQuerySet {
@@ -835,12 +835,12 @@ impl<L: Model, R: Model, A: IntoAggregateTuple> JoinedAnnotatedQuerySet<L, R, A>
     /// use djogi::prelude::*;
     ///
     /// // Top-3 male per female by combined score.
-    /// let scored: Vec<((Elephant, Elephant), i64)> = Elephant::objects
-    /// .self_pairs
+    /// let scored: Vec<((Elephant, Elephant), i64)> = Elephant::objects()
+    /// .self_pairs()
     /// .annotate(|female, male| {
-    /// RowNumber::new
-    /// .partition_by_pair(PairSide::Left, female.id)
-    /// .order_by_pair_asc(PairSide::Right, male.name)
+    /// RowNumber::new()
+    /// .partition_by_pair(PairSide::Left, female.id())
+    /// .order_by_pair_asc(PairSide::Right, male.name())
     /// .alias("rank")
     /// })
     /// .qualify(|w| w.lte(3))
@@ -972,8 +972,8 @@ where
             // (1) hostile `impl ClosureModel` returning bad
             // identifier strings from `PairClosureKinshipSum<C>`'s
             // column accessors (closure metadata smuggling).
-            // (2) mismatch between `left_join_closure_pair::<C1>`
-            // and `PairClosureKinshipSum::<C2>::new` where C1
+            // (2) mismatch between `left_join_closure_pair::<C1>()`
+            // and `PairClosureKinshipSum::<C2>::new()` where C1
             // ≠ C2 — the aggregate would reference closure
             // column names the join clauses do not provide.
             // The default impl is a no-op for slots that don't carry
@@ -987,7 +987,7 @@ where
             // `AnnotationSlot::is_joined_safe`; tuple impls AND
             // across slots. `AggregateExpr<V>` keeps the default
             // `false` because its emitted SQL is a bare-column
-            // expression (`SUM(age) OVER `) that's ambiguous in
+            // expression (`SUM(age) OVER ()`) that's ambiguous in
             // joined contexts where both sides may share columns.
             // See the doc comment on `is_joined_safe`.
             if !aggregates.is_joined_safe() {
@@ -1007,8 +1007,8 @@ where
 
             // Validate PK shape for any identity-required path:
             // `exclude_equal_pk` (self-pair anti-equality),
-            // `closure_pair.is_some` (closure-pair LEFT JOINs),
-            // or `requires_closure_pair_join` (pair-aggregate
+            // `closure_pair.is_some()` (closure-pair LEFT JOINs),
+            // or `requires_closure_pair_join()` (pair-aggregate
             // GROUP BY). Rejects `PkType::None` / `PkType::Composite`
             // at the gate so the emitters never silently fall back.
             let needs_identity = inner.exclude_equal_pk
@@ -1462,9 +1462,9 @@ fn push_joined_order_by(acc: &mut SqlAccumulator, ordering: &[PairOrderExpr]) {
 /// `PairWindowExt` is implemented for the existing window types so
 /// adopters write:
 /// ```ignore
-/// RowNumber::new
-/// .partition_by_pair(PairSide::Left, l_fields.female_id)
-/// .order_by_pair_desc(PairSide::Left, l_fields.score)
+/// RowNumber::new()
+/// .partition_by_pair(PairSide::Left, l_fields.female_id())
+/// .order_by_pair_desc(PairSide::Left, l_fields.score())
 /// .alias("rank")
 /// ```
 /// alongside the single-Model `partition_by` they already know.
@@ -1475,7 +1475,7 @@ fn push_joined_order_by(acc: &mut SqlAccumulator, ordering: &[PairOrderExpr]) {
 /// legacy SQL handle is `FieldRef<M, V>`, and both satisfy the
 /// bound. This mirrors [`RowNumber::partition_by`](crate::expr::RowNumber::partition_by) /
 /// `.order_by`'s single-Model surface so adopters use the same
-/// `{model}_fields.col` expression on both paths.
+/// `{model}_fields.col()` expression on both paths.
 pub trait PairWindowExt: Sized {
     /// Add a `PARTITION BY l.<col>` (or `r.<col>`) entry to the
     /// underlying window spec, using the side's alias as the
@@ -1608,7 +1608,7 @@ impl_pair_window_ext!(DenseRank);
 /// scalar surfaces also used in pair-tuple scoring (see the
 /// mating-pairs demo).
 /// # Constructing
-/// `PairClosureKinshipSum::<ElephantAncestry>::new` mints an instance;
+/// `PairClosureKinshipSum::<ElephantAncestry>::new()` mints an instance;
 /// the `C: ClosureModel` bound is the type-level proof that the column
 /// names in the emitted SQL come from a trusted descriptor surface
 /// (validated at [`Model::materialize_closure`] call time).
@@ -1765,7 +1765,7 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
     /// those aliases the query fails with a Postgres
     /// `42P01 missing FROM-clause` error. Reporting `true` here lets
     /// [`JoinedAnnotatedQuerySet::fetch_all`] catch the missing
-    /// `left_join_closure_pair::<C>` call before SQL build and return
+    /// `left_join_closure_pair::<C>()` call before SQL build and return
     /// a typed [`DjogiError::Validation`] with a remediation hint.
     fn requires_closure_pair_join(&self) -> bool {
         true
@@ -1782,13 +1782,13 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
     /// `PairClosureKinshipSum`'s emitted SQL references the closure-pair
     /// `la.` / `ra.` aliases that exist only inside a pair-tuple
     /// `JoinedQuerySet::annotate(...)` terminal with a
-    /// `left_join_closure_pair::<C>` join. Without this signal, a
+    /// `left_join_closure_pair::<C>()` join. Without this signal, a
     /// `QuerySet::annotate(...)` on a single Model would compile and
     /// surface as a Postgres `42P01 missing FROM-clause` error at
     /// execute time. Reporting `true` here makes the single-Model and
     /// grouped annotate gates surface that as a typed validation error
     /// before SQL build.
-    /// Note: `requires_closure_pair_join` (above) also returns `true`
+    /// Note: `requires_closure_pair_join()` (above) also returns `true`
     /// for this slot, so the narrower closure-pair-specific gate would
     /// reject it independently. The pair-tuple-scope signal is the
     /// broader invariant — any slot needing `l.` / `r.` aliases sets
@@ -1808,7 +1808,7 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
     /// aggregate's `C` matches the join's `C` by comparing every
     /// captured identifier on `cp` against `C`'s same-named accessor.
     /// This catches the
-    /// `left_join_closure_pair::<C1> ... PairClosureKinshipSum::<C2>::new`
+    /// `left_join_closure_pair::<C1>() ... PairClosureKinshipSum::<C2>::new()`
     /// (C1 ≠ C2) mismatch case before SQL build — the aggregate
     /// would otherwise reference closure columns the join clauses do
     /// not provide and surface as a Postgres `42703 column does not
@@ -1822,7 +1822,7 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
         // `requires_closure_pair_join` gate would already reject the
         // missing-join case before reaching SQL emission, but a hostile
         // `C` could still corrupt diagnostic strings; better to gate
-        // before any `push_sql` of `C::*_column` returns.
+        // before any `push_sql` of `C::*_column()` returns.
         crate::query::closure::validate_closure_metadata_idents::<C>()?;
 
         // (2) Aggregate-C vs join-C metadata mismatch — only meaningful
@@ -1983,10 +1983,10 @@ impl<C: ClosureModel> crate::query::annotate::annotation_slot_sealed::Sealed
 ///   `AnnotationSlot::push_column` trait surface.
 /// - The `l` / `r` alias prefixes come from the pair-tuple substrate
 ///   ([`LEFT_ALIAS`] / [`RIGHT_ALIAS`]). The column names come from
-///   `IntoSqlField::into_sql_field.column` at construction time,
+///   `IntoSqlField::into_sql_field().column()` at construction time,
 ///   which is macro-validated against the unquoted-identifier byte
 ///   grammar at field-handle construction.
-/// - `is_joined_safe` returns `true` because both column references
+/// - `is_joined_safe()` returns `true` because both column references
 ///   are explicitly alias-qualified in the emitted SQL — there is no
 ///   ambiguity between `l.<lcol>` and `r.<rcol>` even on self-joins
 ///   (Mating-pairs of `(Herd, Herd)` etc.).
@@ -1998,10 +1998,10 @@ impl<C: ClosureModel> crate::query::annotate::annotation_slot_sealed::Sealed
 /// use djogi::query::PairAreaOverlapRatio;
 ///
 /// // Per-pair territory overlap ratio in [0, 1].
-/// let overlaps: Vec<((Herd, Herd), f64)> = Herd::objects
-/// .self_pairs
-/// .include_equal_pk // same-herd pairs yield 1.0; left in by default
-/// .annotate(|l, r| PairAreaOverlapRatio::new(l.territory, r.territory))
+/// let overlaps: Vec<((Herd, Herd), f64)> = Herd::objects()
+/// .self_pairs()
+/// .include_equal_pk() // same-herd pairs yield 1.0; left in by default
+/// .annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
 /// .fetch_all(&mut ctx)
 /// .await?;
 /// ```
@@ -2075,7 +2075,7 @@ impl<L: Model, R: Model> PairAreaOverlapRatio<L, R> {
     /// The value-type bound
     /// `V: `[`SpatialColumnValue`](crate::geo::SpatialColumnValue)
     /// rejects non-spatial columns at compile time so an accidental
-    /// `PairAreaOverlapRatio::new(l.name, r.name)` fails to compile
+    /// `PairAreaOverlapRatio::new(l.name(), r.name())` fails to compile
     /// with a clear "trait bound not satisfied" diagnostic. Both bare
     /// (`territory: Polygon`) and nullable (`territory:
     /// Option<Polygon>`) column types are admitted by the trait — see
@@ -2404,7 +2404,7 @@ mod tests {
         // Hand-build FieldRef instances through the field module's
         // pub(crate) constructor. Production code routes through the
         // macro-generated {Model}Fields default impl; this test bypasses
-        // that since `Mini::Fields = `.
+        // that since `Mini::Fields = ()`.
         let name_ref: FieldRef<Mini, String> = FieldRef::new("name");
         let id_ref: FieldRef<Mini, HeerId> = FieldRef::new("id");
         let jqs: JoinedQuerySet<Mini, Mini> = QuerySet::<Mini>::new()
@@ -2660,7 +2660,7 @@ mod tests {
     fn build_joined_annotated_inner_omits_group_by_when_no_pair_aggregate() {
         // Plain self-join + window annotate (no closure-pair aggregate)
         // does NOT emit GROUP BY. The GROUP BY emission is gated on
-        // `requires_closure_pair_join`, so ordinary annotated joined
+        // `requires_closure_pair_join()`, so ordinary annotated joined
         // queries keep their per-row SELECT shape.
         let jqs: JoinedQuerySet<Mini, Mini> = QuerySet::<Mini>::new().self_pairs();
         let annotated = jqs.annotate(|_l, _r| {
@@ -3004,7 +3004,7 @@ mod tests {
     // Round 2 surfaced four merge blockers in the substrate:
     // 1. PairClosureKinshipSum<C> emitted C's metadata without
     // validation, and no gate tied the aggregate's C to the join's C.
-    // 2. The emitters fell back to `pk_column.unwrap_or("id")` for
+    // 2. The emitters fell back to `pk_column().unwrap_or("id")` for
     // `PkType::None` / `PkType::Composite` models — silent
     // degradation rather than a typed error.
     // 3. Joined annotations accepted ordinary `AggregateExpr<V>` which
@@ -3147,8 +3147,8 @@ mod tests {
         // before SQL build.
         // We construct the join descriptor by hand with different column
         // names than `MiniClosure` exposes; `PairClosureKinshipSum<MiniClosure>`
-        // would emit references to `MiniClosure::path_count_column` =
-        // `"path_count"` and `MiniClosure::depth_column` = `"depth"`,
+        // would emit references to `MiniClosure::path_count_column()` =
+        // `"path_count"` and `MiniClosure::depth_column()` = `"depth"`,
         // but the join's ancestor_column / depth_column / etc. do not
         // match — so the gate fires.
         let mismatched_cp = ClosurePairJoin {
@@ -3388,7 +3388,7 @@ mod tests {
     #[test]
     fn aggregate_expr_is_not_joined_safe_by_default() {
         // Build a plain SUM(age) AggregateExpr<i64>. In joined
-        // contexts it would emit `, SUM(age) OVER ` referencing a
+        // contexts it would emit `, SUM(age) OVER ()` referencing a
         // bare `age` column — ambiguous when both pair sides have
         // an `age` column (always true for self-joins).
         let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
@@ -3413,7 +3413,7 @@ mod tests {
 
     #[test]
     fn empty_window_function_slot_is_vacuously_joined_safe() {
-        // `ROW_NUMBER OVER ` references no columns, so it is
+        // `ROW_NUMBER() OVER ()` references no columns, so it is
         // unambiguous in joined contexts regardless of pair shape.
         // The instance-level safety check (`WindowSpec::is_pair_qualified`)
         // returns `true` for the empty spec.
@@ -3427,7 +3427,7 @@ mod tests {
     #[test]
     fn rank_window_with_bare_partition_by_is_not_joined_safe() {
         // The exact case from the xhigh blocker:
-        // `RowNumber::new.partition_by(l.id).alias("rank")`
+        // `RowNumber::new().partition_by(l.id()).alias("rank")`
         // The non-pair-aware `partition_by` stores a bare `"id"`, which
         // would emit `PARTITION BY id` against
         // `FROM animals AS l CROSS JOIN animals AS r` — `id` is
@@ -3548,7 +3548,7 @@ mod tests {
     #[test]
     fn first_value_window_is_never_joined_safe() {
         // The exact case from the xhigh blocker:
-        // `FirstValueWindow::new(l.name).alias("first_name")`
+        // `FirstValueWindow::new(l.name()).alias("first_name")`
         // emits `FIRST_VALUE(name) OVER (...)` — `name` is bare and
         // ambiguous in self-joins. Column-arg windows have no
         // pair-aware constructor, so the slot returns hard `false`
@@ -3607,7 +3607,7 @@ mod tests {
         // `PercentRankWindow` has no `PairWindowExt` impl, so its
         // `partition_by` stores a bare column. The joined-annotation
         // gate rejects every non-vacuous instance. The vacuous
-        // `PERCENT_RANK OVER ` is accepted (no column refs) but is
+        // `PERCENT_RANK() OVER ()` is accepted (no column refs) but is
         // semantically degenerate.
         let id_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("id");
         let win = crate::expr::PercentRankWindow::new()
@@ -3693,7 +3693,7 @@ mod tests {
 
     #[test]
     fn empty_tuple_is_joined_safe() {
-        // `` annotation is vacuously safe — no slots to emit.
+        // `()` annotation is vacuously safe — no slots to emit.
         assert!(
             crate::query::IntoAggregateTuple::is_joined_safe(&()),
             "() annotation must be joined-safe"
@@ -3705,9 +3705,9 @@ mod tests {
     /// `requires_closure_pair_join` → `validate_against_closure_pair`
     /// → `is_joined_safe` → `validate_pair_identity_pk` — for an
     /// ordinary `AggregateExpr` aggregate on a self-join queryset.
-    /// Pins that `Animal::objects.self_pairs.annotate(|l, _|
-    /// l.age.sum)` (or `Mini` in this fixture's case) reaches the
-    /// `!is_joined_safe` reject arm before any SQL is built.
+    /// Pins that `Animal::objects().self_pairs().annotate(|l, _|
+    /// l.age().sum())` (or `Mini` in this fixture's case) reaches the
+    /// `!is_joined_safe()` reject arm before any SQL is built.
     /// `JoinedAnnotatedQuerySet::fetch_all` is async-only, so the
     /// terminal itself is exercised by integration tests; this unit
     /// test pins the gate's specific decision against the same
@@ -3715,8 +3715,8 @@ mod tests {
     #[test]
     fn joined_annotate_rejects_ordinary_aggregate_expr_via_gate() {
         // Construct the same shape the user would build:
-        // Mini::objects.self_pairs.annotate(|l, _| l.age.sum)
-        // (Mini's `Fields = ` so we route through FieldRef directly.)
+        // Mini::objects().self_pairs().annotate(|l, _| l.age().sum())
+        // (Mini's `Fields = ()` so we route through FieldRef directly.)
         let age_ref: crate::query::FieldRef<Mini, i64> = crate::query::FieldRef::new("age");
         let jqs: JoinedQuerySet<Mini, Mini> = QuerySet::<Mini>::new().self_pairs();
         let annotated = jqs.annotate(|_l, _r| age_ref.sum());
@@ -3834,7 +3834,7 @@ mod tests {
         );
     }
 
-    /// `PairAreaOverlapRatio` reports `is_joined_safe` true — the
+    /// `PairAreaOverlapRatio` reports `is_joined_safe()` true — the
     /// emitted SQL alias-qualifies both column references explicitly,
     /// so there is no bare-column ambiguity even on self-joins.
     #[cfg(feature = "spatial")]
@@ -3862,7 +3862,7 @@ mod tests {
     /// base sides (`l.<col>`, `r.<col>`), never the `la` / `ra`
     /// closure aliases. The gate must report `false` so a non-closure
     /// joined-annotate terminal accepts the slot without demanding
-    /// `.left_join_closure_pair::<C>`.
+    /// `.left_join_closure_pair::<C>()`.
     #[cfg(feature = "spatial")]
     #[test]
     fn pair_area_overlap_ratio_does_not_require_closure_pair_join() {
@@ -3909,8 +3909,8 @@ mod tests {
     }
 
     /// `PairClosureKinshipSum` also reports
-    /// `requires_pair_tuple_scope = true`. The narrower
-    /// `requires_closure_pair_join` signal already covered this slot
+    /// `requires_pair_tuple_scope() = true`. The narrower
+    /// `requires_closure_pair_join()` signal already covered this slot
     /// independently, but the broader pair-tuple-scope invariant must
     /// apply for consistency with `PairAreaOverlapRatio` and any
     /// future pair-tuple-only slot.
@@ -3980,7 +3980,7 @@ mod tests {
         // (the alternative `IntoSqlField` admittee) and verifies the
         // compile path through the same constructor. The DjogiField
         // path is exercised by the elephant-tracker integration tests
-        // where macro-emitted `{Herd}Fields::territory` returns a
+        // where macro-emitted `{Herd}Fields::territory()` returns a
         // real `DjogiField<Herd, Option<Polygon>>`.
         let l_col: crate::query::FieldRef<Mini, crate::geo::Polygon> =
             crate::query::FieldRef::new("territory");

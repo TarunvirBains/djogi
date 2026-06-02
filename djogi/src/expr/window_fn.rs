@@ -279,15 +279,15 @@ macro_rules! define_window_rank_fn {
 
             /// Add an `ORDER BY` term to this window function.
             /// # What
-            /// Accepts the [`OrderExpr`] produced by `FieldRef::asc` or
-            /// `FieldRef::desc` and stores its column and direction in the
+            /// Accepts the [`OrderExpr`] produced by `FieldRef::asc()` or
+            /// `FieldRef::desc()` and stores its column and direction in the
             /// window spec.
             /// # Why
             /// Ranking functions are only deterministic when the partition has
             /// an explicit order. Djogi keeps the order typed by reusing the
             /// same `OrderExpr` surface as `QuerySet::order_by`.
             /// # How
-            /// Pass `field.asc` or `field.desc`:
+            /// Pass `field.asc()` or `field.desc()`:
             /// ```ignore
             /// Rank::new()
             ///     .partition_by(fields.herd_id())
@@ -403,7 +403,7 @@ define_window_rank_fn!(RowNumber, "ROW_NUMBER", "rank");
 define_window_rank_fn!(Rank, "RANK", "rank");
 define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 
-/// `PERCENT_RANK OVER (...)` window-only annotation returning `f64`.
+/// `PERCENT_RANK() OVER (...)` window-only annotation returning `f64`.
 /// Zero-arg window function — the position of the
 /// current row as a fraction in `[0.0, 1.0]` within its partition,
 /// computed as `(rank - 1) / (total_rows - 1)`. First row is `0.0`;
@@ -412,7 +412,7 @@ define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 /// The hypothetical-set form (`f.col.percent_rank_of(value)`)
 /// takes a literal value and answers "what fraction
 /// would this hypothetical value have if inserted?". This window form
-/// (`PercentRankWindow::new` annotated on each row) gives every
+/// (`PercentRankWindow::new()` annotated on each row) gives every
 /// returned row its actual fraction in the partition.
 /// # Comparison helpers
 /// `PERCENT_RANK` returns `f64`. Use `.lt(0.5)`, `.lte(0.9)`,
@@ -456,7 +456,7 @@ pub struct PercentRankWindow {
     pub(crate) alias: Option<&'static str>,
 }
 
-/// `CUME_DIST OVER (...)` window-only annotation returning `f64`.
+/// `CUME_DIST() OVER (...)` window-only annotation returning `f64`.
 /// Zero-arg window function — the cumulative
 /// distribution: `(rows preceding or peer with current) / total_rows`
 /// in the partition. Result is in `(0.0, 1.0]`. First-position rows
@@ -524,7 +524,7 @@ macro_rules! impl_zero_arg_f64_window {
             }
 
             /// Add an `ORDER BY` term. Spatial-distance orderings
-            /// panic — pass a column `asc` or `desc`.
+            /// panic — pass a column `asc()` or `desc()`.
             #[must_use = "window functions are immutable builders - use the returned value"]
             pub fn order_by(mut self, order: OrderExpr) -> Self {
                 push_order_expr(&mut self.window, order);

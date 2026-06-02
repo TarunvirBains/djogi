@@ -78,7 +78,7 @@ mod sealed {
 /// # Construction
 /// Downstream code constructs values through the root-field methods on
 /// [`crate::query::field::DjogiField`] (e.g.
-/// `f.title.eq("rust") -> PortablePredicate<Post>`). The
+/// `f.title().eq("rust") -> PortablePredicate<Post>`). The
 /// [`from_djogi_field`](Self::from_djogi_field) helper is `pub(crate)` so the
 /// only way for downstream Sassi predicates to enter Djogi cache paths is
 /// through the trusted Djogi field surface.
@@ -122,7 +122,7 @@ impl<T: Model> PortablePredicate<T> {
 
     /// Vacuous-falsehood predicate.
     /// Used by PR2b's `Q::Portable` migration as the canonical identity for
-    /// `QuerySet::none`-style impossible queries. `field_provenance` is
+    /// `QuerySet::none()`-style impossible queries. `field_provenance` is
     /// `None` because `False` carries no field leaves.
     #[doc(hidden)]
     #[allow(dead_code)] // PR2b consumes this in the Q::always_false migration
@@ -208,7 +208,7 @@ impl<T: Model> std::fmt::Debug for PortablePredicate<T> {
 /// Sassi-side bridge: a `PortablePredicate<T>` is convertible into the
 /// underlying `BasicPredicate<T>` so it can pass through
 /// `PunnuScope::filter_basic` (Sassi PR1's `IntoBasicPredicate`-bound
-/// surface) without forcing adopters to spell `into_inner` by hand.
+/// surface) without forcing adopters to spell `into_inner()` by hand.
 impl<T: Model> IntoBasicPredicate<T> for PortablePredicate<T> {
     fn into_basic_predicate(self) -> BasicPredicate<T> {
         self.inner
@@ -379,7 +379,7 @@ impl<T: Model> IntoQ<T> for PortablePredicate<T> {
     /// Lift a Djogi-trusted [`PortablePredicate<T>`] into `Q<T>` by
     /// wrapping in the trusted-provenance `Q::Portable(_)` variant. Used
     /// by `QuerySet::filter` / `filter_struct` so root-field predicates
-    /// like `f.title.eq("rust")` flow through the generalised
+    /// like `f.title().eq("rust")` flow through the generalised
     /// `P: IntoQ<T>` builder signatures without requiring the caller to
     /// spell `Q::Portable(...)`.
     #[inline]
@@ -907,7 +907,7 @@ mod tests {
 
     /// `Expr<bool>` lifts to `Q::Expression(_)` via the PR2b `IntoQ` impl
     /// (defined in `query::q`). Locks the route used by
-    /// `f.location.explicit_pg_predicate.bounded_by(...)` after PR2b's
+    /// `f.location().explicit_pg_predicate().bounded_by(...)` after PR2b's
     /// generalised filter signature accepts it directly.
     #[test]
     fn expr_bool_into_q_yields_q_expression() {

@@ -12,7 +12,7 @@
 //! expose both the pre- and post-update row snapshots to the **caller**, but
 //! the outbox **still emits a single `Save` row** with the DB-returned
 //! post-image (`pair.new`) as the payload, after `outbox_exclude` filtering.
-//! This matches the `save` outbox contract — no diff-shaped `{ old, new }`
+//! This matches the `save()` outbox contract — no diff-shaped `{ old, new }`
 //! payload is emitted in v1.
 //! Rationale: the existing outbox schema (`action` + single `payload` column)
 //! cannot represent a diff without a breaking schema change. Downstream
@@ -20,7 +20,7 @@
 //! shape changed silently. A diff-outbox schema requires a separate plan
 //! (migration, new action type, worker shape change, and publisher review).
 //! `Model::delete_returning` similarly emits a single `Delete` row with the
-//! DB-returned pre-delete snapshot as the payload — identical to `delete`
+//! DB-returned pre-delete snapshot as the payload — identical to `delete()`
 //! but using the authoritative DB snapshot rather than the consumed `self`.
 //! # Module layout
 //! - `mod.rs` (this file) — write side: `emit_event`, `OutboxAction`, payload shaping.
@@ -49,7 +49,7 @@
 //! 3. **Unit-testable.** `emit_event` is a plain async function; its
 //!    payload-shaping helper is testable without bringing up a proc-macro
 //!    harness.
-//! # How it composes with `atomic`
+//! # How it composes with `atomic()`
 //! The emitter takes `&mut DjogiContext` and dispatches via the same
 //! `__inner_mut_for_macros` pattern the macro CRUD uses. A pool-backed
 //! context writes outside any transaction; a transaction-backed context
@@ -59,7 +59,7 @@
 //! guarantee, not a framework-level two-phase dance.
 //! # Payload filtering
 //! `emit_event` serializes the row via `serde_json::to_value` and then
-//! walks `T::descriptor.fields` to strip keys whose
+//! walks `T::descriptor().fields` to strip keys whose
 //! [`FieldDescriptor::outbox_exclude`] flag is set. The exclusion is
 //! key-based (not index-based) so that even if serde's field order
 //! drifts, the filter stays correct.
@@ -148,7 +148,7 @@ impl OutboxAction {
 
 /// Emit a transactional outbox row for `row` through `ctx`.
 /// Called from macro-generated CRUD bodies exactly when
-/// `T::descriptor.has_outbox` is `true` — i.e. the model opted into
+/// `T::descriptor().has_outbox` is `true` — i.e. the model opted into
 /// `#[model(events)]`. The caller holds the responsibility of gating
 /// the call: `emit_event` itself always writes, so it must not be
 /// invoked for non-events models.
@@ -160,7 +160,7 @@ impl OutboxAction {
 /// # Payload shape
 /// `serde_json::to_value(row)` produces a `Value::Object` keyed by
 /// the struct's field names (serde's default `rename_all`). The
-/// filter walks `T::descriptor.fields` and removes any key whose
+/// filter walks `T::descriptor().fields` and removes any key whose
 /// `outbox_exclude` flag is set, so the emitted JSONB carries only
 /// the columns the model author deemed safe to share. Non-object
 /// outputs (e.g. a user who derived `Serialize` for a tuple struct)
@@ -321,7 +321,7 @@ fn insert_sql(outbox_table: &str) -> String {
 /// descriptor marks `outbox_exclude`.
 /// Separated from `emit_event` so the filter semantics are unit-
 /// testable without a database. Accepts `&ModelDescriptor` rather
-/// than re-fetching via `T::descriptor` so the test callers can
+/// than re-fetching via `T::descriptor()` so the test callers can
 /// pass a minimal fixture descriptor.
 fn build_payload<T: Serialize>(
     row: &T,

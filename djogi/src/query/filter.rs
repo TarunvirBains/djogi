@@ -133,7 +133,7 @@ impl<V: IntoFilterValue> Lookup<V> {
     /// - every other variant pairs with a scalar [`FilterValue`].
     ///   Downstream code ([`FilterClause::from_lookup`] in the clause path,
     ///   the closure API through [`crate::query::field`]) funnels every
-    ///   lookup through this method, so the `unreachable!` branches in
+    ///   lookup through this method, so the `unreachable!()` branches in
     ///   [`crate::query::sql::emit_leaf`] that guard mismatched op/value
     ///   shapes are genuinely unreachable from safe code. If a new
     ///   [`Lookup`] variant is added, this method is the only place the
@@ -201,7 +201,7 @@ impl<V: IntoFilterValue> Lookup<V> {
 /// every value through [`Lookup::into_op_value`], which pairs each
 /// [`LookupOp`] with the structurally correct [`FilterValue`] shape
 /// (`Between`↔`Pair`, `In`/`NotIn`↔`List`, `IsNull`/`IsNotNull`↔`Null`,
-/// …). Consequently, the `unreachable!` branches in the SQL emitter
+/// …). Consequently, the `unreachable!()` branches in the SQL emitter
 /// (`sql::emit_leaf`) that guard against mismatched op/value pairings
 /// are genuinely unreachable from safe code — downstream crates cannot
 /// hand-craft an invalid clause by poking at fields directly.
@@ -245,7 +245,7 @@ impl FilterClause {
     /// macro-emitted setter funnels through it, and the `FilterClause`
     /// fields are `pub(crate)` so downstream crates cannot sidestep it.
     /// Pairing operator and value happens in a single place
-    /// ([`Lookup::into_op_value`]), so the `unreachable!` branches in
+    /// ([`Lookup::into_op_value`]), so the `unreachable!()` branches in
     /// [`crate::query::sql::emit_leaf`] that guard shape mismatches are
     /// genuinely unreachable from safe code.
     /// The `V: IntoFilterValue` bound is the same one the typed
@@ -332,8 +332,8 @@ pub fn clauses_into_condition(clauses: Vec<FilterClause>) -> Condition {
     match clauses.len() {
         0 => Condition::True,
         1 => {
-            // `into_iter.next.unwrap` is safe — we just checked len == 1.
-            // Using `next` rather than indexing avoids a pointless clone.
+            // `into_iter().next().unwrap()` is safe — we just checked len == 1.
+            // Using `next()` rather than indexing avoids a pointless clone.
             clauses
                 .into_iter()
                 .next()
@@ -399,7 +399,7 @@ mod tests {
         // shape family so a regression to hand-built clauses (or a
         // reshuffled `into_op_value` match arm) is caught by the unit
         // tier rather than by the SQL emitter's downstream
-        // `unreachable!` branches.
+        // `unreachable!()` branches.
         // The column string is preserved verbatim in every case — the
         // macro bakes a `&'static str` literal per setter and this
         // funnel never rewrites it.

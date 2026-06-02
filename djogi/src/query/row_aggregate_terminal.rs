@@ -111,7 +111,7 @@ where
     A: IntoAggregateTuple + crate::query::annotate::PlainAnnotationTuple,
 {
     // Inner SELECT — row-aggregate-specific variant of the annotated
-    // select. `aggregates.check_legality` and
+    // select. `aggregates.check_legality()` and
     // `aggregates.check_no_column_collision(T::COLUMNS)` are intentionally
     // NOT called here — each terminal's `fetch_one` runs both checks before
     // calling this builder so that validation errors surface before SQL
@@ -158,14 +158,14 @@ where
     /// inner SELECT into one protobuf, so the return is always one
     /// `bytea`, never an array.
     /// # Empty input rows
-    /// `QuerySet::none` short-circuits to `Ok(Vec::new)` without
+    /// `QuerySet::none()` short-circuits to `Ok(Vec::new())` without
     /// emitting SQL.
-    /// For non-`.none` queries, a SQL filter that matches zero rows
+    /// For non-`.none()` queries, a SQL filter that matches zero rows
     /// yields `NULL` for `ST_AsMVT` from PostGIS. We map that to
-    /// `Ok(Vec::new)` to keep terminal behavior ergonomic and avoid
+    /// `Ok(Vec::new())` to keep terminal behavior ergonomic and avoid
     /// a `WasNull` decode error.
     /// # Errors
-    /// - The annotation tuple fails its `check_legality` (e.g. an
+    /// - The annotation tuple fails its `check_legality()` (e.g. an
     ///   illegal aggregate modifier survived earlier validation).
     /// - A window annotation alias collides with a `T` model column name
     ///   (collision checked case-insensitively, matching PostgreSQL's
@@ -258,14 +258,14 @@ where
     /// in the inner SELECT into one `bytea`, returns the single row's
     /// scalar value.
     /// # Empty input rows
-    /// `QuerySet::none` short-circuits to `Ok(Vec::new)` without
+    /// `QuerySet::none()` short-circuits to `Ok(Vec::new())` without
     /// emitting SQL.
-    /// For non-`.none` queries, a SQL filter that matches zero rows
+    /// For non-`.none()` queries, a SQL filter that matches zero rows
     /// yields `NULL` for `ST_AsGeobuf` from PostGIS. We map that to
-    /// `Ok(Vec::new)` to keep terminal behavior ergonomic and avoid
+    /// `Ok(Vec::new())` to keep terminal behavior ergonomic and avoid
     /// a `WasNull` decode error.
     /// # Errors
-    /// - The annotation tuple fails its `check_legality` (e.g. an
+    /// - The annotation tuple fails its `check_legality()` (e.g. an
     ///   illegal aggregate modifier survived earlier validation).
     /// - A window annotation alias collides with a `T` model column name
     ///   (collision checked case-insensitively, matching PostgreSQL's
@@ -346,8 +346,8 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     /// property. The typed surface routes through
     /// [`RowAggregate`](crate::expr::row_aggregate::RowAggregate)
     /// rather than [`AggregateExpr`](crate::expr::AggregateExpr) so the
-    /// column-aggregate modifier set (`.distinct`, `.filter`,
-    /// `.over`, …) cannot accidentally compose with a row aggregate
+    /// column-aggregate modifier set (`.distinct()`, `.filter()`,
+    /// `.over()`, …) cannot accidentally compose with a row aggregate
     /// Postgres rejects every such combination, so the type-level
     /// gate keeps the call sites well-formed.
     /// # Example
@@ -434,7 +434,7 @@ impl<T: Model + FromPgRow> QuerySet<T> {
     /// Encode every matching row as Mapbox Vector Tile bytes — terminal
     /// equivalent of PostGIS's `ST_AsMVT(record, …)` row aggregate.
     /// Bare-queryset entry point — equivalent to chaining
-    /// `.annotate(|_| )` + `.as_mvt(layer_name)` but lighter on the
+    /// `.annotate(|_| ())` + `.as_mvt(layer_name)` but lighter on the
     /// call site for the common case where no annotations are needed.
     /// The inner SELECT projects every model column from `T::COLUMNS`;
     /// PostGIS resolves the geometry column at runtime by the name in
@@ -488,10 +488,10 @@ impl<T: Model + FromPgRow> QuerySet<T> {
 /// Sentinel annotation tuple representing "no aggregate annotations"
 /// used by [`QuerySet::as_mvt`] / [`QuerySet::as_geobuf`] to satisfy
 /// [`AsMvtTerminal`] / [`AsGeobufTerminal`]'s `A: IntoAggregateTuple`
-/// bound without forcing adopters to chain `.annotate(|_| )`.
+/// bound without forcing adopters to chain `.annotate(|_| ())`.
 /// Implements both [`IntoAggregateTuple`] and the narrower
 /// [`crate::query::annotate::PlainAnnotationTuple`] — emitting no
-/// columns and decoding to ``. The row aggregate emitter never reads
+/// columns and decoding to `()`. The row aggregate emitter never reads
 /// the annotation columns (it folds the entire inner row regardless of
 /// SELECT-list shape), so an empty tuple is the natural sentinel.
 /// `#[doc(hidden)]` because adopter code never names this type
@@ -528,7 +528,7 @@ impl IntoAggregateTuple for EmptyAnnotation {
         // This impl is reachable from the standard `AnnotatedQuerySet::fetch_all`
         // path only if an adopter manually constructed an
         // `AnnotatedQuerySet<T, EmptyAnnotation>`, which the
-        // public surface does not expose. The `` return matches the
+        // public surface does not expose. The `()` return matches the
         // documented contract.
         Ok(())
     }
@@ -815,7 +815,7 @@ mod tests {
     // as the analogous annotate.rs tests — to pin the validator logic against
     // `TileFeature::COLUMNS`. Fast, runnable without DATABASE_URL.
     // 2. Terminal-level (DATABASE_URL-gated): `*_fetch_one_rejects_colliding_alias`
-    // tests call the actual `fetch_one` methods with a non-empty (non-`.none`)
+    // tests call the actual `fetch_one` methods with a non-empty (non-`.none()`)
     // queryset and a colliding alias. The collision check fires before any DB
     // access so the DB is never queried, but the test verifies that removing
     // `check_no_column_collision` from `fetch_one` would cause the assertion to
@@ -928,7 +928,7 @@ mod tests {
             .await
             .expect("DATABASE_URL must be set for row-aggregate terminal collision tests");
 
-        // `QuerySet::new` is non-empty (no `.none`), so `fetch_one`
+        // `QuerySet::new()` is non-empty (no `.none()`), so `fetch_one`
         // reaches the `check_no_column_collision` guard. Alias "id" collides
         // with `TileFeature::COLUMNS = &["id", "geom", "name"]`.
         let result = QuerySet::<TileFeature>::new()

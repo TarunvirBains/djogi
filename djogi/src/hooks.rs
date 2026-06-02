@@ -1,11 +1,11 @@
 //! Lifecycle hooks for `Model` CRUD operations.
-//! Six methods, each defaulted to a no-op that returns `Ok`. Adopters
+//! Six methods, each defaulted to a no-op that returns `Ok(())`. Adopters
 //! `impl ModelHooks for MyModel` selectively — methods they don't override
 //! stay no-op.
 //! The [`HasHooks`] marker trait is sealed and emitted by the macro layer
 //! (`#[model(hooks)]`) to gate monomorphic dispatch in the CRUD terminals.
 //! # Async-fn-in-trait via `impl Future + Send`
-//! Each method returns `impl Future<Output = Result<, DjogiError>> + Send`
+//! Each method returns `impl Future<Output = Result<(), DjogiError>> + Send`
 //! rather than going through `BoxFuture` / `Pin<Box<...>>` / the
 //! `async-trait` macro. The default body desugars to a state machine the
 //! compiler elides at call sites that keep the no-op default — there is no
@@ -31,7 +31,7 @@ use std::future::Future;
 
 /// Lifecycle hooks an adopter implements for a `Model` to participate in
 /// CRUD-time side effects.
-/// All six methods default to a no-op that returns `Ok`. Adopters
+/// All six methods default to a no-op that returns `Ok(())`. Adopters
 /// override only the methods they care about — the rest stay no-op and
 /// remain zero-cost at the call site. See the module-level docs for the
 /// `before → DB → outbox → after → on_commit drain` sequence and the
@@ -68,7 +68,7 @@ pub trait ModelHooks: Sized {
         async { Ok(()) }
     }
 
-    /// Fired before a row is updated by `save`.
+    /// Fired before a row is updated by `save()`.
     /// Mirrors [`before_create`](Self::before_create) for the update path.
     /// Typical uses bump `updated_by`, refresh derived columns, or run a
     /// validation pass that depends on the in-memory state of `self`.
@@ -164,7 +164,7 @@ mod private {
 /// any symbol in this module.
 #[doc(hidden)]
 pub mod __seal {
-    /// Const-witness seal. The macro evaluates `< as MarkerSeal>::SEAL`
+    /// Const-witness seal. The macro evaluates `<() as MarkerSeal>::SEAL`
     /// (a const, not a value-construction) inside the generated impl
     /// block as a compile-time assertion that `djogi` is reachable
     /// the trait is implemented for every `T`, so the const always
@@ -195,7 +195,7 @@ mod tests {
     //! `#[djogi_test]`. The `DjogiContext` is the real one CRUD terminals
     //! receive, so a passing test here proves both that the trait compiles
     //! and that the awaited futures behave: the default body returns
-    //! `Ok`, an override can mutate `self` through `before_create`, and
+    //! `Ok(())`, an override can mutate `self` through `before_create`, and
     //! an override returning `Err(DjogiError::Validation(_))` round-trips
     //! the variant without coercion.
     //! Behavioural integration with the CRUD terminals (the
@@ -211,7 +211,7 @@ mod tests {
     use djogi_macros::djogi_test;
 
     /// Test 1: every defaulted method on an empty `impl ModelHooks for T`
-    /// awaits to `Ok`.
+    /// awaits to `Ok(())`.
     #[djogi_test]
     async fn default_impl_is_no_op(mut ctx: DjogiContext) {
         struct Empty;

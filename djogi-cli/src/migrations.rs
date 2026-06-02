@@ -468,7 +468,7 @@ fn compose_with_inputs(
     };
     match compose(req) {
         Ok(report) => {
-            // : surface auto-emitted bootstraps before
+            // Surface auto-emitted bootstraps before
             // the regular composed buckets so the operator sees the
             // bootstrap context before the per-bucket changes.
             for emit in &report.emitted_phase_zero {
@@ -1421,7 +1421,7 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
     // (a standalone binary with nothing to verify against). When
     // snapshots exist, verify DEGRADES to snapshot-only (the union below
     // enumerates the disk buckets), so we must not refuse here.
-    // Guard on `provider.models.is_empty` rather than the projected
+    // Guard on `provider.models().is_empty()` rather than the projected
     // `bucket_set`: projection always seeds the synthetic global bucket
     // (`(main, "")`), so the bucket set is never empty and is the wrong
     // signal for "no descriptors". This is the same guard the

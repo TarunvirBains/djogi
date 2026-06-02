@@ -147,7 +147,7 @@ use std::future::Future;
 /// [`Model::materialize_closure`](crate::model::Model::materialize_closure)
 /// call.
 /// Constructed via [`Default::default`] and tuned with the four setter
-/// methods. A `Default::default`-bag walks every source row to its
+/// methods. A `Default::default()`-bag walks every source row to its
 /// natural depth — the right baseline for the initial population of a
 /// closure table.
 /// `Pk` is the source-model's primary-key Rust type; the parametric
@@ -185,7 +185,7 @@ pub struct MaterializeClosureOptions<Pk: ToSql + Sync + Send + 'static> {
 /// (`Option<u32>` and `Option<Vec<Pk>>`) both default to `None`
 /// without ever needing a `Pk` value, so a hand-written impl side-
 /// steps the unnecessary bound and lets adopters use
-/// `MaterializeClosureOptions::<HeerId>::default` directly.
+/// `MaterializeClosureOptions::<HeerId>::default()` directly.
 impl<Pk: ToSql + Sync + Send + 'static> Default for MaterializeClosureOptions<Pk> {
     fn default() -> Self {
         Self {
@@ -226,7 +226,7 @@ pub struct MaterializeClosureReport {
     /// Number of distinct source rows whose ancestor chain was walked
     /// equivalent to the size of the anchor's row set after the
     /// `roots` predicate filter. Useful as a sanity check when
-    /// `roots: Some(ids)` was passed: the count should equal `ids.len`
+    /// `roots: Some(ids)` was passed: the count should equal `ids.len()`
     /// minus any ids that did not exist in the source table.
     pub sources_visited: usize,
 }
@@ -307,7 +307,7 @@ where
         // Empty-roots short-circuit. `roots: Some(vec![])` means
         // "walk closure for no source rows" — we honour that by
         // returning a zeroed report rather than emitting `WHERE id
-        // IN ` which Postgres rejects as a syntax error. Doing
+        // IN ()` which Postgres rejects as a syntax error. Doing
         // this before identifier validation is intentional: even a
         // mis-configured closure model with bad column names
         // shouldn't fail when the caller asked for no work.
@@ -345,7 +345,7 @@ where
         // `BIGINT` (`i64`); the helper widens `rows_written` to `u64`
         // (always non-negative — `COUNT` cannot return negative
         // values) and narrows `sources_visited` to `usize` for ease
-        // of comparison with the caller's `roots.len`.
+        // of comparison with the caller's `roots.len()`.
         let row = ctx.query_one(&sql, &params).await?;
         let rows_written: i64 = try_get_scalar::<i64>(&row, 0)?;
         let sources_visited: i64 = try_get_scalar::<i64>(&row, 1)?;
@@ -522,7 +522,7 @@ where
             acc.push_sql(", ");
         }
         acc.push_sql("(a.");
-        // `edge` came from `descriptor.self_fk_columns` which
+        // `edge` came from `descriptor.self_fk_columns()` which
         // surfaces the field name verbatim — already
         // identifier-validated at macro emission.
         acc.push_sql(edge);
@@ -1188,7 +1188,7 @@ mod tests {
     #[test]
     fn empty_edges_descriptor_reports_zero_count() {
         // Sanity: a descriptor with no self-FK fields reports
-        // `self_fk_count == 0`. Exercised in the impl path via
+        // `self_fk_count() == 0`. Exercised in the impl path via
         // `materialize_closure_impl` (which errors on this case);
         // here we pin the descriptor-level invariant the impl
         // relies on.

@@ -139,7 +139,7 @@ impl<Out, K: RowKindEvidence> RowAggregate<Out, K> {
 }
 
 // NOTE: No modifier impl block exists for any kind. `RowAggregate<Vec<u8>,
-// BinaryRowAgg>` deliberately has no `.distinct` / `.filter(...)` /
+// BinaryRowAgg>` deliberately has no `.distinct()` / `.filter(...)` /
 // `.over(...)` / `.order_by(...)` / `.within_group_order_by(...)` methods
 // because Postgres rejects every column-aggregate modifier on a row-shape
 // aggregate. The compile-fail fixtures under `djogi/tests/compile_fail/`

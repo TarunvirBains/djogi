@@ -16,7 +16,7 @@
 //! ```rust,ignore
 //! impl ::djogi::Auditable for MyModel {
 //! fn created_by(&self) -> ::std::option::Option<&str> {
-//! self.created_by.as_deref
+//! self.created_by.as_deref()
 //! }
 //! }
 //!
@@ -30,8 +30,8 @@
 //! &mut self,
 //! ctx: &mut ::djogi::DjogiContext,
 //! ) {
-//! if self.created_by.is_none {
-//! self.created_by = ctx.auth
+//! if self.created_by.is_none() {
+//! self.created_by = ctx.auth()
 //! .map(|a| ::std::format!("{}", a.user_id));
 //! }
 //! }
@@ -46,8 +46,8 @@
 //! struct. The macro emits only the trait impl + populator. The
 //! pivot does not change this: the surface flipped from a derive to
 //! an attribute, but field injection still does not happen. When the
-//! field is missing, the emitted `self.created_by.as_deref` /
-//! `self.created_by.is_none` produces an actionable rustc
+//! field is missing, the emitted `self.created_by.as_deref()` /
+//! `self.created_by.is_none()` produces an actionable rustc
 //! diagnostic (`error[E0609]: no field "created_by" on type ...`).
 //! # Composition with `#[model(hooks)]`
 //! `#[model(auditable)]` and `#[model(hooks)]` compose orthogonally.
@@ -70,15 +70,15 @@
 //! cols established in ; `RanjId` likewise. The Display
 //! shape is the canonical string representation.
 //! # No warn-on-null
-//! When `ctx.auth` returns `None` (framework-internal contexts:
+//! When `ctx.auth()` returns `None` (framework-internal contexts:
 //! seeds, migrations), `created_by` stays `None`. NO `tracing::warn!`
 //! per spec line 1049 — production stability axis: framework-internal
 //! contexts are expected to run without auth, and warning would be
 //! operational noise. Adopters who want stricter behaviour write a
-//! `before_create` hook that errors when `created_by.is_none`
+//! `before_create` hook that errors when `created_by.is_none()`
 //! (criterion-4 escape hatch on top of a criterion-2 default).
 //! # User-set value preserved
-//! The `if self.created_by.is_none` guard inside
+//! The `if self.created_by.is_none()` guard inside
 //! `__djogi_auditable_populate` is load-bearing (spec line 1062): a
 //! user-set `created_by` is never clobbered. The composition
 //! populator runs before user `before_create`, so the user's hook
@@ -126,7 +126,7 @@ pub fn expand(model_ident: &Ident, model_attrs: &ModelAttrs) -> TokenStream {
 
         // Populator helper — invoked from `Model::create` between
         // `auto_set_tenant` and the user `before_create` hook (
-        // §D6). The `is_none` guard is load-bearing: a user-set
+        // §D6). The `is_none()` guard is load-bearing: a user-set
         // `created_by` is never clobbered. Spec line 1062.
         // `#[doc(hidden)] pub(crate)` per spec line 1003: the helper
         // is a macro-call surface, not adopter API. Both this `impl`

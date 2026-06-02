@@ -14,7 +14,7 @@
 //!   The context dispatches to the pool or the active transaction without
 //!   the caller caring which.
 //! # Const-position sentinels via heeranjid 0.3.5+
-//! The trait function `<T as PrimaryKey>::sentinel` is the
+//! The trait function `<T as PrimaryKey>::sentinel()` is the
 //! polymorphic-context entry point. When the caller knows the concrete
 //! PK type, **prefer the upstream `T::ZERO` const** (added in heeranjid
 //! 0.3.5):
@@ -28,7 +28,7 @@
 //! ```
 //! `T::ZERO` is the wire-zero bit pattern, declared `pub const` on each
 //! of HeerId / HeerIdDesc / RanjId / RanjIdDesc upstream. The
-//! `PrimaryKey::sentinel` impls in this crate delegate to that const,
+//! `PrimaryKey::sentinel()` impls in this crate delegate to that const,
 //! so the trait fn returns the same wire bytes the const exposes.
 //! Use the trait fn when writing code polymorphic over PK type
 //! (e.g. inside macro expansions or generic helpers); reach for the
@@ -38,7 +38,7 @@
 //! const-position sentinel values.
 //! # Historical note
 //! Earlier heeranjid releases did not expose a const sentinel; 0.3.5
-//! shipped `T::ZERO`, while `sentinel` remains the polymorphic entry point.
+//! shipped `T::ZERO`, while `sentinel()` remains the polymorphic entry point.
 
 use crate::context::DjogiContext;
 use crate::descriptor::PkType;
@@ -123,14 +123,14 @@ pub trait PrimaryKey: Sized + 'static {
     /// Postgres column type, e.g. `"BIGINT"` / `"UUID"` / `"INTEGER"`.
     const SQL_TYPE: &'static str;
 
-    /// Column `DEFAULT` clause, e.g. `"heerid_next"` / `"heerid_next_desc"`.
+    /// Column `DEFAULT` clause, e.g. `"heerid_next()"` / `"heerid_next_desc()"`.
     /// `None` when no server-side default is installed — for example
     /// `Serial`, where the column is a plain `INTEGER`.
     const DEFAULT_SQL: Option<&'static str>;
 
     /// Zero-valued instance used by the macro-emitted `Default` impl's
     /// `id` initialiser. The value is never written to the database:
-    /// `create` replaces it via `RETURNING *` before the row lands.
+    /// `create()` replaces it via `RETURNING *` before the row lands.
     fn sentinel() -> Self;
 }
 

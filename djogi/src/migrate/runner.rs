@@ -155,7 +155,7 @@ pub enum RunnerError {
         source: DjogiError,
     },
 
-    /// `SELECT heerid_next` failed during runner startup, before
+    /// `SELECT heerid_next()` failed during runner startup, before
     /// the migration could touch the ledger. The run_id is a
     /// per-invocation HeerId stamped into every ledger row written
     /// by this run; failure here means we cannot tag rows for crash
@@ -271,7 +271,7 @@ pub enum RunnerError {
         source: SnapshotError,
     },
 
-    /// `baseline_plan` was called with `runner_ctx.snapshot.is_some`.
+    /// `baseline_plan` was called with `runner_ctx.snapshot.is_some()`.
     /// Baseline derives the canonical snapshot from a fresh live-DB
     /// projection so the operator-supplied channel is rejected
     /// up-front to prevent stale-snapshot baselines from poisoning
@@ -784,7 +784,7 @@ pub struct RunnerCtx {
     /// Snapshot to persist on success. `None` skips the persist step
     /// (used by tests that only care about ledger writes).
     pub snapshot: Option<super::schema::AppliedSchema>,
-    /// Where to write the snapshot. Required iff `snapshot.is_some`.
+    /// Where to write the snapshot. Required iff `snapshot.is_some()`.
     pub snapshot_path: Option<PathBuf>,
     /// Migrate-engine config (relpages threshold + strict mode).
     pub config: MigrateConfig,
@@ -819,7 +819,7 @@ pub struct RunnerCtx {
     ///   **Why `deadpool_postgres::Pool` and not `DjogiPool`:** the
     ///   audit pool is not user-facing — adopters never see it, and
     ///   the runner constructs the audit-side `DjogiContext` itself
-    ///   via `DjogiPool { inner: pool.clone }` at the call site.
+    ///   via `DjogiPool { inner: pool.clone() }` at the call site.
     ///   Holding the raw pool here keeps the dependency on
     ///   `DjogiPool`'s wider invariants (post-connect callbacks,
     ///   status reporting) out of `RunnerCtx`'s shape — those are
@@ -1204,7 +1204,7 @@ async fn apply_plan_inner(
     // `record_ddl_audit_for_plan` for the full failure-mode
     // rationale.
     // **Snapshot decoupling (issue #118).** The audit-write loop runs
-    // whenever `audit_pool.is_some`, regardless of whether a
+    // whenever `audit_pool.is_some()`, regardless of whether a
     // snapshot was persisted on this apply. The snapshot signature
     // becomes part of the audit row only when a snapshot was just
     // written; the `db reset` replay path deliberately passes
@@ -1333,7 +1333,7 @@ async fn record_ddl_audit_for_plan(
     // them as `VerifyError::KeyDecode`); the runner is the audit-side
     // consumer, not the configuration owner.
     // **Snapshot decoupling (#118).** Audit rows now
-    // fire whenever `audit_pool.is_some` regardless of whether a
+    // fire whenever `audit_pool.is_some()` regardless of whether a
     // snapshot was persisted on this apply (the runner's `db reset`
     // replay path deliberately passes `snapshot: None`). When no
     // snapshot is supplied the audit row's `snapshot_signature_hex`
@@ -1466,7 +1466,7 @@ pub enum LossyRollbackPolicy {
     Allow {
         /// Operator-supplied rationale; non-empty by convention. The
         /// rollback path does not enforce non-emptiness so dev
-        /// iterations can pass `String::new`, but production
+        /// iterations can pass `String::new()`, but production
         /// callers should always set a real string.
         reason: String,
     },
@@ -1633,7 +1633,7 @@ impl std::error::Error for RollbackError {
 /// 2. Transactional segments run last, all wrapped in one Postgres
 ///    transaction so a partial-rollback failure rolls back cleanly.
 ///    **Lossy down handling.** Pre-walks the plan and collects every
-///    operation whose `lossy.is_some`. With
+///    operation whose `lossy.is_some()`. With
 ///    [`LossyRollbackPolicy::Refuse`] (the default), surfaces the list
 ///    as [`RollbackError::LossyRollbackRefused`] before any SQL runs.
 ///    With [`LossyRollbackPolicy::Allow { reason }`], the rollback
@@ -1987,7 +1987,7 @@ async fn rollback_inner(
 
     // 7. Persist the prior snapshot, if supplied. The caller maintains
     // snapshot history; the rollback path only writes whatever was handed in.
-    // The `prior_snapshot.is_none && snapshot_path.is_some` case
+    // The `prior_snapshot.is_none() && snapshot_path.is_some()` case
     // is rejected at the TOP of `rollback_plan` — by the time
     // we reach this branch the invariant is "either both are present
     // or `prior_snapshot` is None and `snapshot_path` is also None".
@@ -2176,7 +2176,7 @@ async fn fake_apply_inner(
         None => fake_note,
     };
     let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
-    // `insert_pending` binds `row.status.as_db_str` directly, so
+    // `insert_pending` binds `row.status.as_db_str()` directly, so
     // constructing the row with `LedgerStatus::Faked` writes the
     // correct terminal status in a single INSERT — no post-insert
     // UPDATE needed (cluster-2 simplify Finding 1). The concern
@@ -2365,7 +2365,7 @@ async fn baseline_inner(
         app_label: bucket.app.clone(),
         leaf_identity: None,
     };
-    // `insert_pending` binds `row.status.as_db_str` directly, so
+    // `insert_pending` binds `row.status.as_db_str()` directly, so
     // constructing the row with `LedgerStatus::Baseline` writes the
     // correct terminal status in a single INSERT — no post-insert
     // UPDATE needed (cluster-2 simplify Finding 1).
@@ -3477,19 +3477,19 @@ fn note_for_failed_transactional_segment(seg_idx: usize, e: &RunnerError) -> Str
 /// **carve-out .** When `version` is the canonical
 /// Bootstrap label (`super::bootstrap::PHASE_ZERO_VERSION`),
 /// HeeRanjID is by definition not yet installed — is what
-/// installs it. Calling `heerid_next` would fail with "function
+/// installs it. Calling `heerid_next()` would fail with "function
 /// does not exist". For only, we fall back to a wall-clock
 /// nanosecond-precision id derived from
-/// `clock_timestamp - epoch '2026-01-01'`, which fits in `i64`
+/// `clock_timestamp() - epoch '2026-01-01'`, which fits in `i64`
 /// for the next ~140 years and is unique-enough across the one-time
 /// Emission per database. Subsequent migrations route
 /// through the standard HeerId path because has by then
-/// installed `heerid_next`.
+/// installed `heerid_next()`.
 async fn generate_run_id(ctx: &mut DjogiContext, version: &str) -> Result<i64, RunnerError> {
     if version == super::bootstrap::PHASE_ZERO_VERSION {
         // Carve-out — HeerRanjID not yet installed at this
         // point. Fall back to a wall-clock nanosecond id. We use
-        // `EXTRACT(EPOCH FROM clock_timestamp) * 1e9` for nanosecond
+        // `EXTRACT(EPOCH FROM clock_timestamp()) * 1e9` for nanosecond
         // resolution; the cast to BIGINT fits comfortably in i64
         // for the foreseeable future. Two concurrent applies
         // against the same workspace are impossible (the workspace
@@ -3512,7 +3512,7 @@ async fn generate_run_id(ctx: &mut DjogiContext, version: &str) -> Result<i64, R
     let id = HeerId::generate(ctx)
         .await
         .map_err(|e| RunnerError::RunIdGenerationFailed { source: e })?;
-    // HeerId exposes a direct `as_i64` accessor (and an equivalent
+    // HeerId exposes a direct `as_i64()` accessor (and an equivalent
     // `From<HeerId> for i64` impl). Use the typed conversion rather
     // than routing through `Display + parse + unwrap_or(0)` so a
     // misbehaving Display impl cannot collapse a real ID to `0`.

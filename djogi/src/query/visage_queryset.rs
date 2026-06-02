@@ -18,7 +18,7 @@
 //! # Why a sibling type instead of relaxing `QuerySet<T>`'s bound
 //! `QuerySet<T: Model>` participates in dozens of code paths (`prefetch`,
 //! `select_related`, `for_update`, `annotate`, JSONB / spatial / FTS
-//! emitters) that all assume `T::table_name`, `T::Pk`, and `T::Fields`
+//! emitters) that all assume `T::table_name()`, `T::Pk`, and `T::Fields`
 //! are available. Generalising the struct over both shapes would either
 //! force every helper to dispatch on whether `T` is a model or a visage
 //! (an open-ended split that grows every time a new visage-only feature
@@ -84,7 +84,7 @@ use std::marker::PhantomData;
 /// table name and column list are already baked into the queryset
 /// state at construction time.
 /// [`QuerySet`]: crate::query::QuerySet
-// : visages do not implement tree-query traits.
+// Visages do not implement tree-query traits.
 // `VisageQuerySet<V>` intentionally has no `tree_descendants` /
 // `tree_ancestors` / `full_ancestors` methods — recursive walks need
 // the full row materialised at every step, which is the column set
@@ -145,7 +145,7 @@ impl<V: DjogiVisage> VisageQuerySet<V> {
     /// projection list.
     /// Called by the `#[model]`-emitted `V::filter(...)` / `V::order_by(...)`
     /// / `V::limit(...)` entry points; not part of the user-visible API.
-    /// The queryset starts with a vacuous root predicate (`Q::always_true`).
+    /// The queryset starts with a vacuous root predicate (`Q::always_true()`).
     /// The `projection_list` is the visage's pre-rendered SELECT
     /// projection — column entries pass through verbatim; derived
     /// entries render as `(<sql>) AS <alias>` and the list is joined
@@ -297,8 +297,8 @@ pub(crate) fn build_visage_exists<V: DjogiVisage>(
 }
 
 /// Emit the `WHERE ...` clause for a visage queryset, if non-vacuous.
-/// : `emit_condition` borrow-walks and returns
-/// `Result<, PortablePredicateError>`; visage querysets carry pure
+/// `emit_condition` borrow-walks and returns
+/// `Result<(), PortablePredicateError>`; visage querysets carry pure
 /// `Condition` payloads (no portable predicates yet), so the only
 /// failure path is an inner expression-IR emit error inside a
 /// `Condition::Expr`. Propagate via `Result` so the surrounding

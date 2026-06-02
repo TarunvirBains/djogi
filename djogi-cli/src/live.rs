@@ -625,7 +625,7 @@ async fn plan_cmd(version: Option<&str>, workspace: Option<PathBuf>) -> Result<i
 /// `OfflineOnly` operation. Hoisted into a free function so the future
 /// `live plan` engine wires it in by importing this helper rather than
 /// re-deriving the message shape; the wider call surface here surfaces
-/// the variant in the public API for the `LiveCmdError::exit_code`
+/// the variant in the public API for the `LiveCmdError::exit_code()`
 /// contract (exit 2).
 /// Returns [`LiveCmdError::ClassificationRefused`] which maps to exit
 /// code 2 per of the plan.
@@ -706,7 +706,7 @@ async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, 
 
 /// `djogi live run` body. Executes all steps in the plan starting
 /// from step 0. Pauses at the first OperatorGate step and records
-/// progress via checkpoint. Refuses destructive steps without
+/// progress via checkpoint(). Refuses destructive steps without
 /// `--allow-destructive --justify "<reason>"`.
 async fn run_cmd(
     plan_id_raw: &str,

@@ -10,7 +10,7 @@
 //! # Operation shape
 //! Accepts [`AddTable`](SchemaOperation::AddTable). The pattern walks
 //! [`TableSchema::columns`](crate::migrate::schema::TableSchema::columns)
-//! for entries with `foreign_key.is_some` and emits two steps per
+//! for entries with `foreign_key.is_some()` and emits two steps per
 //! FK: an `ADD CONSTRAINT … NOT VALID` expand step and a `VALIDATE
 //! CONSTRAINT` validate step. Tables with fewer FKs than
 //! [`PatternContext::multi_fk_threshold`] are routed elsewhere by
@@ -69,7 +69,7 @@ impl Pattern for MultiFkStaging {
         let mut steps = Vec::with_capacity(fk_columns.len() * 2);
         let mut ordinal: u32 = 0;
         for col in &fk_columns {
-            // Safe: we filtered on `foreign_key.is_some` above, so the
+            // Safe: we filtered on `foreign_key.is_some()` above, so the
             // unwrap-via-match cannot reach the None arm.
             let fk = match col.foreign_key.as_ref() {
                 Some(fk) => fk,

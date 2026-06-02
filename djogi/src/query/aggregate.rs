@@ -1,7 +1,7 @@
 //! Scalar-aggregate terminal — `QuerySet::aggregate(...)` + its
 //! [`AggregateQuery<T, Out, K>`] pending handle.
 //! # What
-//! `QuerySet<T>::aggregate(|f| f.col.sum)` returns an
+//! `QuerySet<T>::aggregate(|f| f.col().sum())` returns an
 //! [`AggregateQuery<T, Out, K>`] whose terminal
 //! [`AggregateQuery::fetch_one`] issues
 //! ```sql
@@ -27,10 +27,10 @@
 //! `LIMIT`, no `OFFSET`, no `GROUP BY`. Ungrouped aggregates always
 //! collapse to exactly one result row regardless of cardinality, so
 //! those clauses would be meaningless / syntax errors. Grouped
-//! aggregates (`annotate(|f| f.col.count).group_by(...)`) ship in a
+//! aggregates (`annotate(|f| f.col.count()).group_by(...)`) ship in a
 //! later phase; Task 4's scalar path stays single-row by design.
 //! # Empty short-circuit
-//! `QuerySet::none` on the upstream queryset is honoured — the
+//! `QuerySet::none()` on the upstream queryset is honoured — the
 //! terminal short-circuits to a sentinel value without issuing any
 //! SQL. For `COUNT`-shaped aggregates the sentinel is `0`; for
 //! `MIN`/`MAX` it would be `NULL` in SQL (the queryset matched no
@@ -62,10 +62,10 @@ use std::marker::PhantomData;
 /// [`crate::expr::OrderedSetAgg`] / [`crate::expr::HypotheticalSetAgg`]),
 /// threaded from the wrapped [`AggregateExpr<Out, K>`].
 /// `K` defaults to [`crate::expr::ValueAgg`] so pre-#89 call sites that
-/// passed a value aggregate (`f.col.sum`, `f.col.count`, etc.)
+/// passed a value aggregate (`f.col().sum()`, `f.col().count()`, etc.)
 /// keep working without explicit annotation. Non-value families
-/// (`f.col.percentile_cont(0.5)`, `f.col.rank_of(7_500)`,
-/// `f.col.grouping`) infer `K` from the returned aggregate's kind
+/// (`f.col().percentile_cont(0.5)`, `f.col().rank_of(7_500)`,
+/// `f.col().grouping()`) infer `K` from the returned aggregate's kind
 /// marker.
 /// `#[must_use]` because an unawaited pending query is always a
 /// mistake; the `.fetch_one(ctx)` call is what actually runs the SQL.
@@ -83,10 +83,10 @@ where
 {
     /// Execute the aggregate query and decode the single scalar result.
     /// Dispatches through the context's execution helpers — aggregate
-    /// queries work inside an `atomic` scope and see the scope's
+    /// queries work inside an `atomic()` scope and see the scope's
     /// uncommitted writes.
     /// # Short-circuit
-    /// Does **not** short-circuit on `QuerySet::none`. Aggregate
+    /// Does **not** short-circuit on `QuerySet::none()`. Aggregate
     /// semantics differ per op (COUNT on empty → 0; SUM on empty →
     /// NULL; AVG on empty → NULL) and the typed surface cannot
     /// synthesise a `NULL` value at the Rust level without an

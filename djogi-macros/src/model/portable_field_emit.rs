@@ -61,7 +61,7 @@ use crate::model::attrs::{
 ///    [`OptionBool`]. Same as above plus null-test arms and option-aware
 ///    eq/neq/in/not_in arm bodies that try `Option<U>` first and fall
 ///    back to the inner `U` (matching `DjogiField::eq(None|Some(_))`
-///    versus `DjogiField::some.eq(_)`).
+///    versus `DjogiField::some().eq(_)`).
 /// 3. **Portable root relation leaves** — [`RelationOrVisage`] and
 ///    [`OptionRelationOrVisage`]. These cover FK/O2O physical columns
 ///    only; dotted relation traversal stays on the SQL-only field view.
@@ -114,7 +114,7 @@ pub enum PortableFieldKind {
     /// `Vec<T>` for Djogi-supported one-dimensional Postgres array columns
     /// whose element type has Rust/Punnu/PostgreSQL equality parity.
     /// Equality and membership are portable; array-specific operators remain
-    /// SQL-only through `explicit_pg_predicate`. Float and `Interval`
+    /// SQL-only through `explicit_pg_predicate()`. Float and `Interval`
     /// arrays do not classify here.
     Array,
     /// `Option<Vec<T>>` for Djogi-supported one-dimensional Postgres array
@@ -122,7 +122,7 @@ pub enum PortableFieldKind {
     /// tests, equality, and membership are portable.
     OptionArray,
     /// `Jsonb<T>` / `Option<Jsonb<T>>` — SQL-only in 8eta. Routes
-    /// through `explicit_pg_predicate` for database-specific
+    /// through `explicit_pg_predicate()` for database-specific
     /// predicates; portable arms emit
     /// `UnsupportedFieldType { field }`.
     Jsonb,
@@ -234,7 +234,7 @@ pub struct PortableFieldEmitInfo {
     /// when `field_kind` is an `Option*` variant.
     pub rust_type: Type,
     /// `Some(U)` for `Option<U>` fields where `U` is portable. The
-    /// macro uses this for the `.some` payload arm — the
+    /// macro uses this for the `.some()` payload arm — the
     /// `PresentField<T, U>` surface returns `BasicPredicate`s carrying
     /// `U`, not `Option<U>`, so the macro arm tries `Option<U>` first
     /// (direct Option access) and falls back to `U` (PresentField
@@ -270,7 +270,7 @@ pub struct PortableFieldEmitInfo {
 /// fields prepended). `field_attrs` aligns positionally with the
 /// user-declared portion of `struct_item.fields[3..]` for
 /// non-`pk = None` models — i.e. there are exactly
-/// `struct_item.fields.len - 3` user fields and they line up with
+/// `struct_item.fields.len() - 3` user fields and they line up with
 /// `field_attrs`. For `pk = None` models the metadata is empty
 /// (matches `crud::expand`'s gate — no `Model` impl, no portable
 /// arms).

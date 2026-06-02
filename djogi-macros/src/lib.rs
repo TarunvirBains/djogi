@@ -9,9 +9,9 @@
 //!   a many-to-many relation: the `ManyToMany<Target>` trait impl,
 //!   a named inherent accessor on the source type, and an
 //!   `inventory::submit!` registration record.
-//! - `djogi_main!(…)` — function-like macro generating `fn main` that
+//! - `djogi_main!(…)` — function-like macro generating `fn main()` that
 //!   references model types to prevent LTO linker from dropping inventory data.
-//! - `link_anchor!` — per-crate fallback emitting a `#[used]` static + callable fn
+//! - `link_anchor!()` — per-crate fallback emitting a `#[used]` static + callable fn
 //!   that forces a model crate into the linkage graph.
 //!   `#[derive(Model)]` is a no-op stub kept for potential future use.
 
@@ -186,7 +186,7 @@ pub fn reverse_one_to_many(input: TokenStream) -> TokenStream {
 /// ```
 /// Intended for reverses of `OneToOneField<Receiver>` (or a
 /// `ForeignKey<Receiver>` + `UNIQUE` pair on the foreign side) — the
-/// `.first` terminal is correct when the schema guarantees at most
+/// `.first()` terminal is correct when the schema guarantees at most
 /// one matching row. If the schema does not enforce uniqueness, prefer
 /// `reverse_one_to_many!` to surface the fact that multiple rows are
 /// possible.
@@ -473,9 +473,9 @@ pub fn trait_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     trait_impl::expand(attr.into(), item.into()).into()
 }
 
-/// Generate a `fn main` that references model types to prevent the
+/// Generate a `fn main()` that references model types to prevent the
 /// LTO linker from dropping inventory data, then delegates to
-/// `djogi_cli::run_from_env`.
+/// `djogi_cli::run_from_env()`.
 /// Referencing a single descriptor per crate forces ALL inventory from
 /// that crate into the final binary. This macro makes that reference
 /// explicit and auditable at the adopter's binary entry point.
@@ -492,10 +492,10 @@ pub fn djogi_main(input: TokenStream) -> TokenStream {
 /// link-time retention of THIS crate's `#[derive(Model)]` registrations
 /// without listing every model type (#370, branch b).
 /// # What
-/// Invoke `djogi::link_anchor!;` exactly once in a model crate's
+/// Invoke `djogi::link_anchor!();` exactly once in a model crate's
 /// `lib.rs`. It emits a `#[used]` static (`<crate>::__DJOGI_LINK_ANCHOR`)
-/// the dead-strip defense — plus a callable `<crate>::__djogi_link_anchor`
-/// fn (returning `&'static `) that the adopter glue references once per
+/// the dead-strip defense — plus a callable `<crate>::__djogi_link_anchor()`
+/// fn (returning `&'static ()`) that the adopter glue references once per
 /// crate. Referencing that fn pulls the crate's rlib member into the binary,
 /// and the crate's `inventory` statics are collected.
 /// # Usage

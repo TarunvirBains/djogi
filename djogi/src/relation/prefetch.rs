@@ -8,7 +8,7 @@
 //! `RelationPath<Source, Target>` that was passed to `.prefetch(...)`.
 //! # Why a wrapper and not a mutated row
 //! Locked in [`ForeignKey<T>`](crate::relation::ForeignKey) as a
-//! PK-only wrapper whose `.resolved` **always returns `None`** — the type's
+//! PK-only wrapper whose `.resolved()` **always returns `None`** — the type's
 //! whole purpose is to carry a foreign-key reference and nothing else, with
 //! `Copy` / `Eq` / `Hash` semantics derived from the inner PK. Mutating the
 //! row post-fetch to attach cached children would either break that contract
@@ -40,7 +40,7 @@
 //! the per-distinct-arity prepared plan cost is an accepted trade-off
 //! for keeping the framework's type bounds minimal.
 //! The target columns are enumerated explicitly (via
-//! `<Target as Model>::descriptor.fields`) rather than using `t.*`:
+//! `<Target as Model>::descriptor().fields`) rather than using `t.*`:
 //! that way the `__djogi_parent_id` synthetic alias cannot collide with
 //! any real column on the target — if a user declared a column literally
 //! named `__djogi_parent_id`, `t.*` would return two `__djogi_parent_id`
@@ -74,7 +74,7 @@
 //! [`PrefetchedRow::get`], driven by the typed `RelationPath<Source, Target>`.
 //! # Type erasure choice
 //! `QuerySet<T>` accumulates prefetch paths for arbitrary, heterogeneous
-//! target types (`.prefetch(VehicleRelated::owner).prefetch(VehicleRelated::fuel_type)`
+//! target types (`.prefetch(VehicleRelated::owner()).prefetch(VehicleRelated::fuel_type())`
 //! stores loaders for `Owner` and `FuelType` side by side). The
 //! [`ErasedPrefetch`] handle therefore carries an `fn` pointer whose concrete
 //! signature is monomorphised per call-site at `.prefetch(...)` time
@@ -85,7 +85,7 @@
 //! The per-parent `Option<Target>` is boxed as `Box<dyn Any + Send + Sync>`
 //! so the stitcher can carry heterogeneous target types through a single
 //! `HashMap`; the downcast at `PrefetchedRow::get` time is infallible by
-//! construction (`path.source_column` plus the `RelationPath` type
+//! construction (`path.source_column()` plus the `RelationPath` type
 //! parameters together pin the concrete `Target`).
 //! # Where
 //! Consumed by [`crate::query::terminal::QuerySet::fetch_all_prefetched`]
@@ -226,7 +226,7 @@ impl<T: Model> PrefetchedRow<T> {
 /// variants. Inside the loader body, each query dispatch site matches on the
 /// context variant to reach either the pool connection or the open transaction.
 /// Without this generalisation, `.prefetch(...)`
-/// inside an `atomic` scope would fail with a
+/// inside an `atomic()` scope would fail with a
 /// `DjogiError::Db` configuration-style error — see for
 /// the closure.
 pub(crate) type PrefetchLoaderFn = for<'a> fn(
@@ -375,7 +375,7 @@ where
         // deleted target emit target columns as NULL, which the null
         // probe below surfaces as `None`.
         // Target columns are enumerated explicitly via
-        // `Target::descriptor.fields` rather than using `t.*` to keep
+        // `Target::descriptor().fields` rather than using `t.*` to keep
         // the wire shape stable across migrations that might list user
         // columns before framework columns (the `accounts` case).
         let target_table = <Target as Model>::table_name();
@@ -470,7 +470,7 @@ where
         // The `Target: Clone` bound on this fn is what lets us mint a
         // per-parent owned copy from the single HashMap entry; `Model`
         // itself does not require `Clone`, but every `#[model]`-derived
-        // struct carries `#[derive(Clone)]` because `create` returns
+        // struct carries `#[derive(Clone)]` because `create()` returns
         // the inserted row by value and user code routinely needs to
         // pass it around. Pushing the bound onto the loader — rather
         // than onto `Model` — keeps the framework's baseline trait

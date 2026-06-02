@@ -175,7 +175,7 @@ const PLAN_STATUS_LABELS: &[(PlanStatus, &str)] = &[
 
 /// Compile-time exhaustiveness witness. Adding a `PlanStatus` variant
 /// without extending the inner `match` fails to compile here. The
-/// block has no runtime effect — the value is `` — but the
+/// block has no runtime effect — the value is `()` — but the
 /// exhaustive match enforces "every variant is named in source" so
 /// [`PLAN_STATUS_LABELS`] is forced to grow alongside (the test in
 /// the `tests` module asserts the slice covers every variant).
@@ -399,7 +399,7 @@ fn row_to_live_plan_row(row: &tokio_postgres::Row) -> Result<LivePlanRow, DjogiE
 }
 
 /// Update a row's backfill progress. Sets `backfill_rows_done` and
-/// stamps `last_progress_at = now`. Called by the chunked-backfill
+/// stamps `last_progress_at = now()`. Called by the chunked-backfill
 /// executor after each chunk commits — see line 413-419 for the
 /// "checkpoint write in same transaction as chunk" contract.
 pub async fn update_progress(
@@ -454,7 +454,7 @@ pub async fn update_step_index(
     Ok(())
 }
 
-/// Stamp the row's `completed_at` to `now`. Called by `live finalize`
+/// Stamp the row's `completed_at` to `now()`. Called by `live finalize`
 /// when the runner has executed every cleanup step and is about to
 /// promote the plan into [`PlanStatus::Complete`]. Status promotion
 /// itself flows through [`update_status`]; the two writes are not

@@ -10,7 +10,7 @@ use crate::RanjId;
 use std::ops::{BitAnd, BitOr, Not};
 
 /// A filter condition. Built by `FieldRef` lookup methods; composed via
-/// `.and` / `.or` / `Condition::not`.
+/// `.and()` / `.or()` / `Condition::not`.
 #[derive(Debug, Clone)]
 pub enum Condition {
     /// Vacuous — the root state before any filter applies. `ConditionBuilder`
@@ -21,13 +21,13 @@ pub enum Condition {
     Leaf(Leaf),
 
     /// SQL `(a AND b AND c)`. An empty `And(vec![])` is the vacuous-truth
-    /// identity — Task 6's emitter renders it as `TRUE`. `and` never
+    /// identity — Task 6's emitter renders it as `TRUE`. `and()` never
     /// constructs an empty vector from its own inputs, but public API
     /// consumers technically can; the invariant is "empty = TRUE".
     And(Vec<Condition>),
 
     /// SQL `(a OR b OR c)`. An empty `Or(vec![])` is the vacuous-falsehood
-    /// identity — Task 6's emitter renders it as `FALSE`. `or` never
+    /// identity — Task 6's emitter renders it as `FALSE`. `or()` never
     /// constructs an empty vector from its own inputs.
     Or(Vec<Condition>),
 
@@ -262,7 +262,7 @@ impl Condition {
 /// Condition` here would alias the inherent `std::ops::Not::not(self) ->
 /// Self::Output` impl below, and any caller importing the prelude
 /// (`use djogi::prelude::*;`) plus `std::ops::Not` would see two
-/// reachable `.not` methods on `Condition` and trigger an
+/// reachable `.not()` methods on `Condition` and trigger an
 /// "ambiguous method call" error. The two existing spellings — the
 /// associated function [`Condition::not`] and the unary `!cond`
 /// operator — already cover both styles; method chaining for negation
@@ -426,7 +426,7 @@ pub enum LookupOp {
     /// `field IS NOT NULL`. Rust-evaluable.
     IsNotNull,
     /// ILIKE '%s%' — spec §5.4 `contains`. Rust-evaluable
-    /// (case-insensitive substring match via `str::to_lowercase` on
+    /// (case-insensitive substring match via `str::to_lowercase()` on
     /// the sassi side; locale parity with Postgres `ILIKE` documented
     /// in spec §660).
     IContains,
@@ -776,7 +776,7 @@ mod tests {
     #[test]
     fn or_empty_vec_is_not_auto_replaced() {
         // Invariant check: Or(vec![]) stays Or(vec![]) — it is emitter's job
-        // to render FALSE. Construct directly (not via `or` — that flattens).
+        // to render FALSE. Construct directly (not via `or()` — that flattens).
         let empty = Condition::Or(Vec::new());
         assert!(matches!(empty, Condition::Or(ref v) if v.is_empty()));
     }
@@ -784,7 +784,7 @@ mod tests {
     // ── §660 partition test ────────────────────────────────────────
     // Locks the Rust-evaluable vs SQL-only split documented on
     // [`LookupOp`]. Every shipped variant is tagged via
-    // `source_class` and the test verifies the exact 15-vs-2 partition.
+    // `source_class()` and the test verifies the exact 15-vs-2 partition.
     // The partition is load-bearing per `decisions.md` rows 107 + 108
     // and `feedback_no_regex_in_djogi.md`: lifting `Regex` / `IRegex`
     // to sassi would require a Rust regex engine, which the framework

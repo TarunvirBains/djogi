@@ -149,7 +149,7 @@ impl ProtectedPresentationFieldMetadata {
 /// its key here before any request traffic is served.
 /// ## Type-name functions
 /// `input_type_name` and `output_type_name` are function pointers (not
-/// `&'static str` directly) so `std::any::type_name::<T>` can be called
+/// `&'static str` directly) so `std::any::type_name::<T>()` can be called
 /// lazily without materializing the string at construction time. This
 /// avoids needing const-eval for type-name strings at macro expansion time.
 /// ## Security note
@@ -171,13 +171,13 @@ pub struct PresentationCodecUsage {
     /// Whether this usage involves a fallible codec (`TryPresentationCodec`).
     pub fallible: bool,
     /// Returns the Rust type name of the codec's input type. Evaluated
-    /// lazily via `std::any::type_name::<Input>`.
+    /// lazily via `std::any::type_name::<Input>()`.
     pub input_type_name: fn() -> &'static str,
     /// Returns the Rust type name of the codec's output type. Evaluated
-    /// lazily via `std::any::type_name::<Output>`.
+    /// lazily via `std::any::type_name::<Output>()`.
     pub output_type_name: fn() -> &'static str,
-    /// Calls `<Codec as PresentationCodecInfo<Input>>::validate_startup`.
-    /// Returns `Ok` when the codec is ready, or a
+    /// Calls `<Codec as PresentationCodecInfo<Input>>::validate_startup()`.
+    /// Returns `Ok(())` when the codec is ready, or a
     /// [`PresentationStartupError`] variant describing the failure.
     pub validate_startup: fn() -> Result<(), PresentationStartupError>,
 }

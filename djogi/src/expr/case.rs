@@ -100,7 +100,7 @@ pub struct CaseBuilder<V> {
     arms: Vec<(ExprNode, ExprNode)>,
     /// Covariant `V` tag — every appended arm and the final
     /// `otherwise` default must be `Expr<V>` for the same `V`. The
-    /// `fn -> V` shape keeps the builder `Send + Sync` regardless of
+    /// `fn() -> V` shape keeps the builder `Send + Sync` regardless of
     /// `V`'s own markers, mirroring [`Expr<V>`]'s variance.
     _v: PhantomData<fn() -> V>,
 }

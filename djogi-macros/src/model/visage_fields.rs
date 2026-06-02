@@ -9,7 +9,7 @@
 //!     pub __djogi_root: PhantomData<fn() -> RootModel>,
 //! }
 //! ```
-//! - Root construction: `UserPublicFields::default` sets `__djogi_path = None`
+//! - Root construction: `UserPublicFields::default()` sets `__djogi_path = None`
 //!   and defaults `RootModel = User`.
 //! - Traversal construction: `UserPublicFields::with_path("owner")` sets
 //!   `__djogi_path = Some("owner")` so the peer's scalar accessors produce
@@ -41,7 +41,7 @@
 //! Required FKs (non-`Option`) keep the plain `PeerFields` return type.
 //! # `FieldRef<RootModel, V>` over `FieldRef<Visage, V>`
 //! Visages do not impl `Model` (they are projections, not tables). Accessors
-//! are typed on the **owning root model** — e.g. `UserPublicFields<Post>::name`
+//! are typed on the **owning root model** — e.g. `UserPublicFields<Post>::name()`
 //! yields `FieldRef<Post, String>` — and the visage ↔ source-model pairing
 //! is tracked separately via `DjogiVisageOf<M>`.
 //! # Non-exposed fields are absent by construction
@@ -315,7 +315,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             /// Construct a root-scope `Fields` handle targeting the source
             /// model directly.
             /// This inherent method preserves the pre-generic
-            /// `{Visage}Fields::default` call shape for root-scope code.
+            /// `{Visage}Fields::default()` call shape for root-scope code.
             #[inline]
             pub fn default() -> Self {
                 Self::new()

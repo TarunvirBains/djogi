@@ -207,7 +207,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
         }
     } else if generate.is_some() {
         quote! {
-            // Client-gen loop: `generate_client` wraps the `generate = |...|`
+            // Client-gen loop: `generate_client()` wraps the `generate = |...|`
             // expression and produces a single value per call. No DB traffic
             // from the helper macro's side.
             let mut out: ::std::vec::Vec<Self> = ::std::vec::Vec::with_capacity(n);
@@ -283,7 +283,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
 
     // Client-backed generator. The `generate = |…| expr` attribute carries
     // a callable expression — typically a closure or a fn item. We call it
-    // once per `generate_client` invocation and wrap the result.
+    // once per `generate_client()` invocation and wrap the result.
     let client_gen_impl = generate.as_ref().map(|expr| {
         quote! {
             impl ::djogi::primary_key::PrimaryKeyClientGen for #name {
@@ -348,8 +348,8 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 ::std::option::Option::Some(#default_sql);
 
             fn sentinel() -> Self {
-                // Defer to the inner type's `Default` — `i64::default == 0`,
-                // `uuid::Uuid::default == nil`. Matches the "zero value"
+                // Defer to the inner type's `Default` — `i64::default() == 0`,
+                // `uuid::Uuid::default() == nil`. Matches the "zero value"
                 // contract the built-in `PrimaryKey::sentinel` impls uphold.
                 Self(<#inner as ::std::default::Default>::default())
             }
@@ -361,7 +361,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
 
         // `impl Default` lets adopter code use the custom PK type as an
         // ambient field on a `#[model]` struct. The macro-emitted model
-        // `Default` impl assigns `Default::default` to every user field;
+        // `Default` impl assigns `Default::default()` to every user field;
         // custom PKs must honour that contract.
         impl ::std::default::Default for #name {
             fn default() -> Self {
@@ -398,7 +398,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
         // `jsonb_sql_cast` ALSO delegates to the inner type so
         // `JsonbPathRef<_, Self>` emits the same typed Postgres cast the
         // inner SQL value type would emit. Pre-fix the custom PK wrapper
-        // inherited the default body, which walks `type_name::<Self>`
+        // inherited the default body, which walks `type_name::<Self>()`
         // through the cast table. The adopter's PK type name is never in
         // the table, so JSONB path comparisons silently fell back to text
         // (`'10' < '9'` because text ordering is lexicographic). Adopter-

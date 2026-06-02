@@ -56,7 +56,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let source_name_str = source.to_string();
 
     // `pk = None` models do not impl `Model`; their visages have no
-    // queryset entry to wire because `Model::table_name` is the
+    // queryset entry to wire because `Model::table_name()` is the
     // source of truth for the SQL table and is not available. The
     // visage struct + conversion impls still emit through the other
     // pipeline; this emitter just elides its block.
@@ -408,7 +408,7 @@ fn lookup_per_scope_codec<'a>(
         .and_then(|spec| spec.per_scope.iter().find(|entry| entry.scope == scope))
 }
 
-/// Emit `::std::any::type_name::<CodecTy>` for a codec type path.
+/// Emit `::std::any::type_name::<CodecTy>()` for a codec type path.
 fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
     quote! { ::std::any::type_name::<#path>() }
 }

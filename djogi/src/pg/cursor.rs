@@ -16,8 +16,8 @@
 //! machinery and the glue between cursors and `FromPgRow` decoding.
 //! # Cursor-name format
 //! Every cursor gets a unique name of the form `djogi_cur_<32 hex chars>`.
-//! The name is generated from a fresh `Uuid::new_v4` using the
-//! `simple` formatter (no hyphens), prefixed by `djogi_cur_`. The result
+//! The name is generated from a fresh `Uuid::new_v4()` using the
+//! `simple()` formatter (no hyphens), prefixed by `djogi_cur_`. The result
 //! is always an ASCII identifier containing only lowercase letters, digits,
 //! and underscores — safe as an unquoted Postgres identifier. Validation
 //! follows the rule: every byte after the prefix must be ASCII alphanumeric
@@ -62,13 +62,13 @@ pub struct PgCursor {
 /// within Postgres's 63-byte identifier limit.
 /// Validation proof (no regex): The UUID simple form is always exactly
 /// 32 lowercase hex digits (ASCII bytes in `[0-9a-f]`). Each byte satisfies
-/// `b.is_ascii_alphanumeric`. The prefix `djogi_cur_` contains only ASCII
+/// `b.is_ascii_alphanumeric()`. The prefix `djogi_cur_` contains only ASCII
 /// letters and underscores. Therefore the whole name is a valid unquoted
 /// Postgres identifier.
 pub fn generate_cursor_name() -> String {
     let suffix = Uuid::new_v4().simple().to_string();
     // Verify every byte of the generated suffix is ASCII alphanumeric.
-    // `Uuid::simple.to_string` always produces 32 lowercase hex chars,
+    // `Uuid::simple().to_string()` always produces 32 lowercase hex chars,
     // so this assertion fires only on a broken UUID implementation — it is
     // a debug guard, not a performance-sensitive path.
     debug_assert!(
@@ -141,7 +141,7 @@ impl PgCursor {
 
 /// Issue `FETCH <fetch_size> FROM <cursor_name>` on `conn`.
 /// Free function so stream types can call it with split borrows:
-/// `cursor_fetch(self.cursor.name, self.conn, self.fetch_size)` avoids
+/// `cursor_fetch(self.cursor.name(), self.conn, self.fetch_size)` avoids
 /// the borrow-checker conflict that arises when `fetch` is a method on
 /// `PgCursor` taking `&mut PgConnection` while both `cursor` and `conn` are
 /// fields of the same struct (the borrow checker cannot see they don't alias

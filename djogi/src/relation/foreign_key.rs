@@ -1,5 +1,5 @@
 //! `ForeignKey<T>` — the many-to-one relation primitive.
-//! Stores only the target's PK until `.fetch` (or a future
+//! Stores only the target's PK until `.fetch()` (or a future
 //! `prefetch`/`select_related` call) populates a cached `T`. The
 //! wrapper round-trips through postgres_types as the target's PK type — the
 //! DB column is nothing but a PK-typed foreign key, and the runtime
@@ -18,8 +18,8 @@
 //! single relation type that *sometimes* carries a child leads to
 //! ambiguous code ("did this `.fk.owner` hit the DB or not?"). Here
 //! the type tells you: if it's `ForeignKey<T>`, it definitely hasn't;
-//! if it's `ForeignKeyResolved<T>`, a prefetch ran and `resolved` /
-//! `expect_resolved` are the API.
+//! if it's `ForeignKeyResolved<T>`, a prefetch ran and `resolved()` /
+//! `expect_resolved()` are the API.
 //! # postgres_types wiring
 //! Both `ForeignKey<T>` and `ForeignKeyResolved<T>` encode/decode as
 //! `T::Pk`. `ForeignKey<T>` additionally implements `ToSql`/`FromSql`
@@ -40,7 +40,7 @@ use std::marker::PhantomData;
 /// Strongly-typed PK-only reference to a related model.
 /// Transport-shaped: wraps just the target's PK. Holds no cached row
 /// data — eager loading produces a [`ForeignKeyResolved<T>`] instead.
-/// The `PhantomData<fn -> T>` marker makes `ForeignKey<T>` covariant
+/// The `PhantomData<fn() -> T>` marker makes `ForeignKey<T>` covariant
 /// in `T` without implying ownership of a `T` value. That shape is the
 /// right variance for a "logical reference to a T" — it matches the
 /// relationship between `&T` and its lifetime, not the relationship
@@ -51,7 +51,7 @@ pub struct ForeignKey<T: Model> {
 }
 
 // Manual `Clone` — `#[derive(Clone)]` would add a `T: Clone` bound
-// because of `PhantomData<fn -> T>`. The wrapper only ever needs
+// because of `PhantomData<fn() -> T>`. The wrapper only ever needs
 // `T::Pk: Clone` to copy the key, and `T` is only used as a type-level
 // tag, so we write the impl by hand.
 impl<T: Model> Clone for ForeignKey<T> {
@@ -91,7 +91,7 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Print `ForeignKey<Owner>(42)`-style. Using the target's
-        // `table_name` rather than any `std::any::type_name` string
+        // `table_name()` rather than any `std::any::type_name` string
         // keeps the output stable across rustc versions and readable
         // in logs.
         write!(f, "ForeignKey<{}>({:?})", T::table_name(), self.key)
@@ -128,9 +128,9 @@ impl<T: Model> ForeignKey<T> {
 
     /// Always `None` on the unresolved wrapper.
     /// Present as a method on both `ForeignKey` and `ForeignKeyResolved`
-    /// so generic code that handles either shape can call `.resolved`
+    /// so generic code that handles either shape can call `.resolved()`
     /// uniformly. Callers who need a cached child must go through
-    /// `prefetch` / `select_related` and receive a
+    /// `prefetch()` / `select_related()` and receive a
     /// [`ForeignKeyResolved<T>`].
     #[inline]
     pub fn resolved(&self) -> Option<&T> {
@@ -203,7 +203,7 @@ where
 // Filter-API integration — `ForeignKey<T>` projects through the target PK.
 // ---------------------------------------------------------------------------
 // A reverse-FK accessor filters the source table by its
-// FK column: `Vehicle::objects.filter(|f| f.owner_id.eq(
+// FK column: `Vehicle::objects().filter(|f| f.owner_id().eq(
 // ForeignKey::new(owner.id)))`. The closure `.eq` call infers `V =
 // ForeignKey<Owner>` from the field-handle's declared type; to satisfy the
 // `V: IntoFilterValue` bound on `FieldRef::eq` we forward into the
@@ -258,7 +258,7 @@ where
 
     /// Delegate JSONB path LHS cast metadata to the target PK type
     /// . Without this override the default body would walk
-    /// `type_name::<ForeignKey<T>>` (e.g.
+    /// `type_name::<ForeignKey<T>>()` (e.g.
     /// `djogi::relation::foreign_key::ForeignKey<adopter::Owner>`),
     /// which is not in the built-in cast table, so JSONB path
     /// comparisons against a `ForeignKey<T>`-typed payload would
@@ -296,7 +296,7 @@ impl<M: Model, T: Model> crate::query::field::FieldRef<M, ForeignKey<T>> {
 // `correlated_subquery::*`), so it forwards to the wrapper's stored
 // SQL handle without entering the portable predicate boundary. The
 // macro-generated `m2m` / FK navigation emitters call this method
-// inside `.filter_expr(|f| Expr::eq(f.fk.as_pk_expr, …))`; routing
+// inside `.filter_expr(|f| Expr::eq(f.fk().as_pk_expr(), …))`; routing
 // through the wrapper keeps the same call site working post-PR3.
 impl<M: Model, T: Model> crate::query::field::DjogiField<M, ForeignKey<T>> {
     /// Promote this foreign-key column handle into an
@@ -507,8 +507,8 @@ mod tests {
 
     #[test]
     fn foreign_key_field_as_pk_expr_emits_bare_column() {
-        // `FieldRef<M, ForeignKey<T>>::as_pk_expr` must emit the same
-        // bare column name that the default `as_expr` does.
+        // `FieldRef<M, ForeignKey<T>>::as_pk_expr()` must emit the same
+        // bare column name that the default `as_expr()` does.
         use crate::expr::sql::emit_expr;
         use crate::pg::accumulator::SqlAccumulator;
         use crate::query::field::FieldRef;

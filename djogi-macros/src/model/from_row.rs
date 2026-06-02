@@ -13,7 +13,7 @@
 //! # Why ordinal, not name-based
 //! Ordinal decode is O(N) per row (one `try_get(i)` per column);
 //! name-based decode is O(N^2) (each `try_get(name)` does a linear
-//! scan through `row.columns`). For the typical `#[model]`
+//! scan through `row.columns()`). For the typical `#[model]`
 //! deriver — three framework fields plus a handful of user fields
 //! the quadratic term is small but real, and CRUD call paths are
 //! hot. The CRUD and QuerySet terminals now bake
@@ -22,7 +22,7 @@
 //! sound.
 //! # Debug-build drift guard
 //! Every `try_get(i)` is preceded by
-//! `debug_assert_eq!(row.columns[i].name, Self::COLUMNS[i])`. If
+//! `debug_assert_eq!(row.columns()[i].name(), Self::COLUMNS[i])`. If
 //! a caller hand-rolls a SELECT that doesn't match `COLUMN_LIST`, or
 //! if a future refactor reshapes the builder, the assert fires in
 //! `cargo test` (which runs in debug mode by default). Release builds
@@ -114,7 +114,7 @@ pub fn expand(
             ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
                 // Row must have at least `N_COLS` columns in canonical
                 // order at positions 0..N_COLS. Callers that add extra
-                // trailing columns (e.g. `annotate` appending aggregate
+                // trailing columns (e.g. `annotate()` appending aggregate
                 // aliases, or `select_related` appending aliased joined
                 // columns) are allowed — the trailing columns are simply
                 // ignored by this decoder and fielded by their own decode

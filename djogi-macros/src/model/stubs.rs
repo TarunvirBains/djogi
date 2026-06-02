@@ -81,7 +81,7 @@ pub fn expand(
     // methods cover the portable predicate surface (eq/neq/in/not_in/null
     // tests, ordering for `V: DjogiPortableOrd`, ASCII-stable string
     // patterns) and route PostgreSQL-specific predicates through
-    // `.explicit_pg_predicate`.
+    // `.explicit_pg_predicate()`.
     // `crud::expand` does NOT emit `impl Model` for `pk = None` models (the
     // trait's `Pk: Encode` bound can't be honestly satisfied without a real
     // PK), so emitting accessor methods here for those models would fail
@@ -110,7 +110,7 @@ pub fn expand(
         // expansion. The closure stamped into each accessor is a function
         // pointer (`fn(&Self) -> &V`), which keeps the resulting
         // `DjogiField` `Copy + Clone` without captured state — the
-        // closure-API filter path needs to call `f.col` multiple times
+        // closure-API filter path needs to call `f.col()` multiple times
         // inside one closure invocation, so non-`Copy` would cripple
         // composition.
         let accessors: Vec<TokenStream> = portable_field_info
@@ -226,13 +226,13 @@ pub fn expand(
         }
     };
 
-    // Emit `search` accessor when the model has an FTS spec.
+    // Emit `search()` accessor when the model has an FTS spec.
     // The accessor returns `::djogi::fts_query::FtsFieldRef<#name>` with the
     // tsvector column name ("search") and dictionary baked in as `&'static str`s.
     // FTS is SQL-only by construction (the tsvector column is a `GENERATED
     // ALWAYS AS` projection and `@@` / `ts_rank` have no portable Punnu
     // evaluator in 8eta); the FTS accessor stays on `{Model}Fields` directly
-    // because adopters reach it through `f.search` and never need to thread
+    // because adopters reach it through `f.search()` and never need to thread
     // a `with_path` prefix through this column.
     let fts_accessor_impl: TokenStream = if let Some(fts) = &model_attrs.fts {
         let dictionary = &fts.dictionary;
@@ -262,7 +262,7 @@ pub fn expand(
     // The two structs differ in shape after PR3:
     // - `{Model}Fields` — ZST. No `__djogi_path` slot; root portable fields
     // target physical root columns only. Adopters compose root closures
-    // against this handle via `QuerySet::filter(|f| f.col.eq(...))`.
+    // against this handle via `QuerySet::filter(|f| f.col().eq(...))`.
     // - `{Model}SqlFields` — path-aware. Carries `__djogi_path:
     // Option<&'static str>` so visage/relation accessors can compose
     // dotted column paths.
@@ -298,7 +298,7 @@ pub fn expand(
                 /// SQL-only typed field accessors — the path-aware sibling
                 /// of `{Model}Fields`.
                 /// Carries an optional SQL-alias path so visage-scoped
-                /// traversal chains (`a.department.name`) compose into
+                /// traversal chains (`a.department().name()`) compose into
                 /// dot-qualified column names at emission time. Default
                 /// (`None`) means the handle works as a plain-column
                 /// accessor; the root portable surface lives on

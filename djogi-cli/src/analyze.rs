@@ -7,7 +7,7 @@
 //! a live database. The live-DB query path lives in
 //! [`fetch_table_health`]; the CLI dispatch entry point is [`run`].
 //! # Why a pure substrate
-//! `recommend` is exposed as a free function taking only
+//! `recommend()` is exposed as a free function taking only
 //! `&TableHealth` plus scalar threshold args. That shape is
 //! deliberately deterministic — the same inputs always produce the
 //! exact same output bytes. Two consequences fall out:
@@ -231,7 +231,7 @@ pub enum AnalyzeError {
     /// `serde_json` encoding failed. Should be unreachable because the
     /// `Row` projection only contains primitive / `OffsetDateTime` /
     /// known-`Serialize` types, but we surface it as a structured
-    /// variant rather than `unwrap` so a future schema extension
+    /// variant rather than `unwrap()` so a future schema extension
     /// that introduces a non-serialisable field fails loudly.
     Json(serde_json::Error),
 }
@@ -355,7 +355,7 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
     // tokio-postgres errors via `DbError::other(e.to_string)`
     // which DROPS the SQLSTATE because the prepare-error path
     // collapses the `tokio_postgres::Error` into a message-only
-    // `DbError` whose `code` returns `None`. The original
+    // `DbError` whose `code()` returns `None`. The original
     // `is_partman_absent_code` SQLSTATE classifier therefore never
     // matches against a cluster without pg_partman, and every
     // analyze run on such a cluster fails with `AnalyzeError::Db`
@@ -487,7 +487,7 @@ enum PartmanError {
 /// Query the partition count for `table_name` via
 /// `partman.show_partitions($1)`.
 /// **Parameter binding.** `$1` carries `table_name`; we never
-/// `format!`-interpolate. The table name comes from
+/// `format!()`-interpolate. The table name comes from
 /// `pg_stat_user_tables` (a system catalogue, so trusted), but the
 /// codebase rule is "always parameterise" — there is no scenario in
 /// which the cost of a parameter bind matters, and a stray code path
@@ -551,7 +551,7 @@ fn is_partman_absent_code(code: &SqlState) -> bool {
 }
 
 /// Convert a `DjogiError` from the live-DB path into an
-/// `AnalyzeError::Db`. Rendered eagerly (`to_string`) so the
+/// `AnalyzeError::Db`. Rendered eagerly (`to_string()`) so the
 /// `AnalyzeError` does not need to carry the heterogeneous inner type.
 fn djogi_err_to_analyze(e: DjogiError) -> AnalyzeError {
     AnalyzeError::Db(e.to_string())
@@ -564,7 +564,7 @@ fn djogi_err_to_analyze(e: DjogiError) -> AnalyzeError {
 /// layer that interests it without dragging in the others.
 /// # Workspace + config resolution
 /// `workspace` is `None` by default — we resolve to
-/// `std::env::current_dir` and then load `Djogi.toml` via
+/// `std::env::current_dir()` and then load `Djogi.toml` via
 /// `DjogiConfig::load_from_workspace`. Mirrors `verify::run`'s pattern.
 /// # Pool lifecycle
 /// One pool, one context, every per-table query runs through it.
@@ -573,7 +573,7 @@ fn djogi_err_to_analyze(e: DjogiError) -> AnalyzeError {
 /// goal.
 /// # Output destination
 /// Both rendering paths write to a locked `stdout`. Locking once at
-/// the top means we don't pay the `Stdout::lock` cost per row, and
+/// the top means we don't pay the `Stdout::lock()` cost per row, and
 /// the renderers themselves take a generic `&mut W: Write` so the
 /// pure render-only tests (`render_human_*` / `render_json_*`)
 /// can target a `Vec<u8>` without going through stdout.
@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn recommend_is_deterministic() {
-        // Build a single TableHealth and run recommend 100 times;
+        // Build a single TableHealth and run recommend() 100 times;
         // every result must equal the first. Covers the
         // concern about HashMap-iteration nondeterminism — there is no
         // HashMap in `recommend`, but the test cements the contract so

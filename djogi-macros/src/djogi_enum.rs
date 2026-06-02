@@ -1,13 +1,13 @@
 //! `#[derive(DjogiEnum)]` proc macro — typed Postgres enum support.
 //! Emits four things per enum:
 //! 1. `impl postgres_types::ToSql for MyEnum` — encodes the Rust variant as its mapped
-//!    Postgres wire string. Uses `to_sql_checked!` for the forwarded type-check path.
+//!    Postgres wire string. Uses `to_sql_checked!()` for the forwarded type-check path.
 //! 2. `impl<'a> postgres_types::FromSql<'a> for MyEnum` — decodes the wire bytes as a
 //!    string, matches against known variants, returns `Err(EnumDecodeError { ... })` for
 //!    unknown labels.
 //! 3. `inventory::submit!(::djogi::descriptor::EnumDescriptor { ... })` — registers the
 //!    enum's metadata for the migration differ.
-//! 4. `impl MyEnum { pub fn variants -> &'static [&'static str] }` — convenience fn.
+//! 4. `impl MyEnum { pub fn variants() -> &'static [&'static str] }` — convenience fn.
 //! # Attribute grammar
 //! ```rust,ignore
 //! #[derive(DjogiEnum, Clone, Copy, PartialEq, Eq, Debug)]
@@ -282,11 +282,11 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     // A `DjogiEnum` round-trips as a Postgres enum column (backed by a
     // wire string), so for filter-closure use it converts into
     // `FilterValue::String(<wire>)`. This lets users write
-    // `f.status.eq(VehicleStatus::Active)` in a filter closure and have
+    // `f.status().eq(VehicleStatus::Active)` in a filter closure and have
     // the clause encode the enum variant as its wire label.
     // The match mirrors the `ToSql` arms — same `(variant, wire)` pairs,
     // re-emitted as an owned `String`. Keeping a dedicated match (rather
-    // than delegating to `variants[self as usize]`) avoids taking a
+    // than delegating to `variants()[self as usize]`) avoids taking a
     // dependency on discriminant ordering and keeps the encoding
     // branch-free at the call site.
     let into_filter_value_arms = variant_pairs.iter().map(|(ident, wire)| {

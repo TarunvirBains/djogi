@@ -221,7 +221,7 @@ impl<'a> FromSql<'a> for TsQuery {
 /// underscores, and is at most 63 bytes long (Postgres's `NAMEDATALEN - 1`
 /// cap). No regex engine is used — the rule is spelled out byte-by-byte per
 /// `feedback_no_regex_in_djogi`.
-/// Returns `Ok` when the name is valid, `Err(description)` otherwise.
+/// Returns `Ok(())` when the name is valid, `Err(description)` otherwise.
 /// The error string is embedded directly into proc-macro diagnostic messages.
 /// Dictionary names are embedded into SQL as `to_tsquery('<name>', $n)` with
 /// single-quote delimiters; the identifier constraint (letters, digits,

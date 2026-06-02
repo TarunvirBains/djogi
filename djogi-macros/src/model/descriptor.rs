@@ -1,6 +1,6 @@
 //! Generates `inventory::submit!(ModelDescriptor {...})` from the `#[model]`
 //! struct definition. Runs AFTER `inject::expand` has mutated `struct_item`.
-//! : `ModelDescriptor::fields` is the **complete** schema contract.
+//! `ModelDescriptor::fields` is the **complete** schema contract.
 //! Framework-injected columns (`id`, `created_at`, `updated_at`) are emitted
 //! first (in injection order), followed by user-declared fields in source
 //! order. Downstream consumers (migration differ, admin UI, `djogi docs`, RLS
@@ -176,7 +176,7 @@ fn try_expand(
 
     // field_attrs was collected BEFORE injection (user fields only, 0-indexed).
     // struct_item.fields now has framework fields at the front — skip them so
-    // zip aligns field_attrs[0] with the first USER field, not id.
+    // zip() aligns field_attrs[0] with the first USER field, not id.
     let n_framework = match &model_attrs.pk {
         PkStrategy::None => 2, // created_at, updated_at only
         _ => 3,                // id, created_at, updated_at
@@ -249,7 +249,7 @@ fn try_expand(
     }
 
     // ── Framework-field FieldDescriptors ─────────────────────────────────────
-    // : framework columns are emitted FIRST so `descriptor.fields` is
+    // Framework columns are emitted FIRST so `descriptor.fields` is
     // the complete schema contract. `id` varies by pk strategy; `created_at`
     // and `updated_at` are always Timestamptz, non-null, not unique/indexed.
     // For `pk = None`, skip `id` entirely — the user's own PK appears as a
@@ -395,7 +395,7 @@ fn try_expand(
             // already rejects `domain` on relation fields, so the
             // ordering here is defense-in-depth: an FK field with
             // `domain` set could not reach this point, but the
-            // explicit `relation.is_some` branch keeps the FK SQL
+            // explicit `relation.is_some()` branch keeps the FK SQL
             // type stable even if the parse-time guard ever regresses.
             // `base: &<base_tokens>` relies on Rust's constant-promotion
             // rule: a `&EXPR` where EXPR is const-evaluable promotes to
@@ -951,7 +951,7 @@ fn try_expand(
     // ::djogi::App>::LABEL)` in the descriptor. Resolution happens at
     // const-eval time; `None` maps to the synthetic global bucket.
     // When `app = X` is set we also emit a compile-time assertion
-    // `const _: = assert!(!<X as ::djogi::App>::TOMBSTONE)` — an
+    // `const _: () = assert!(!<X as ::djogi::App>::TOMBSTONE)` — an
     // active model cannot point at a tombstoned (retired) app.
     // `moved_from_app = OldBilling` does *not* get this assertion;
     // pointing historical metadata at a tombstoned app is the whole
@@ -1142,7 +1142,7 @@ fn try_expand(
                 // Proxy-model schema-passthrough surface.
                 // Populated from `#[model(proxy_for = ParentType,
                 // default_filter = |f| ...)]`. The migration differ keys
-                // off `proxy_for.is_some` to skip DDL emission for proxy
+                // off `proxy_for.is_some()` to skip DDL emission for proxy
                 // descriptors; the runtime composer keys off
                 // `default_filter_sql` to AND-compose the lowered fragment
                 // into every `QuerySet<Self>::new`.
@@ -1297,7 +1297,7 @@ fn build_projection_map_tokens(
         // Render the peer path as a string for descriptor consumers.
         // `quote!` preserves the user-written path verbatim (including
         // module prefixes); the surrounding whitespace is collapsed by
-        // `to_string` into a stable canonical form (e.g. `crate :: visages :: DepartmentPublic`
+        // `to_string()` into a stable canonical form (e.g. `crate :: visages :: DepartmentPublic`
         // → trim_runs handled by callers / migration differ if needed).
         let peer_path = &exposure.peer;
         let rendered = quote::quote! { #peer_path }.to_string();

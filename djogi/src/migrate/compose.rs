@@ -393,7 +393,7 @@ pub struct ComposeRequest<'a> {
     pub workspace_root: &'a Path,
     /// The model state from the descriptor inventory, projected to
     /// per-bucket schemas. In production this is
-    /// `project_from_inventory`; tests pass a hand-rolled map.
+    /// `project_from_inventory()`; tests pass a hand-rolled map.
     pub models: &'a std::collections::BTreeMap<BucketKey, AppliedSchema>,
     /// Per-bucket last-applied snapshots from disk. Buckets absent
     /// from this map are treated as having no prior schema (fresh
@@ -401,7 +401,7 @@ pub struct ComposeRequest<'a> {
     pub snapshots: &'a std::collections::BTreeMap<BucketKey, AppliedSchema>,
     /// App-level lifecycle metadata — `renamed_from` / `tombstone` /
     /// `database` per registered app. Sourced from
-    /// `AppRegistry::all` in production.
+    /// `AppRegistry::all()` in production.
     pub apps: &'a [AppLifecycle],
     /// Operator-supplied migration name (sanitised through
     /// [`sanitize_slug`]). Empty / missing produces the literal
@@ -426,7 +426,7 @@ pub struct ComposeRequest<'a> {
     /// both the up side and the down side.
     pub force_overwrite: bool,
     /// Compose-time clock, used as the version-prefix instant.
-    /// Production callers pass `OffsetDateTime::now_utc`; tests
+    /// Production callers pass `OffsetDateTime::now_utc()`; tests
     /// pin a deterministic value so the version ID is byte-stable.
     pub now: OffsetDateTime,
     /// Witness-typed file lock — compose mutates `<workspace>/migrations/`
@@ -497,7 +497,7 @@ pub struct ComposedBucket {
     pub classification: Classification,
 }
 
-/// App-level lifecycle metadata — flat shape of the `AppRegistry::all`
+/// App-level lifecycle metadata — flat shape of the `AppRegistry::all()`
 /// fields that compose actually consumes. Decoupled so test fixtures
 /// don't need to register a real app via the `djogi::apps!` macro.
 #[derive(Debug, Clone)]
@@ -670,7 +670,7 @@ pub fn load_pending(path: &Path) -> Result<PendingPlan, PendingLoadError> {
 /// **Determinism.** Two invocations with the same `models`,
 /// `snapshots`, `apps`, `name`, `allow_destructive` AND the same
 /// `now` produce byte-identical output. Production callers pass
-/// `OffsetDateTime::now_utc`; tests pin a fixed instant.
+/// `OffsetDateTime::now_utc()`; tests pin a fixed instant.
 pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     // 0. Bootstrap auto-emit — for any database referenced in the
     // inputs that doesn't already have a bootstrap migration on disk,
@@ -1157,14 +1157,14 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
 /// reverse-engineering pass over the formatted SQL file. This is the
 /// canonical D013 check; the doc comment on
 /// `ComposeError::HandEditedMigrationWouldBeOverwritten` describes
-/// the byte-equality semantics directly.
+/// the byte-equality semantics directly.)
 /// The reported `path` and `side` describe which side was edited:
 /// - Up only edited → `path = up_path`, side label "up".
 /// - Down only edited → `path = down_path`, side label "down".
 /// - Both edited → `path = up_path`, side label "up and down" (the up
 ///   path is reported because the operator typically inspects the up
 ///   file first).
-///   Returns `Ok` when:
+///   Returns `Ok(())` when:
 /// - Both files do not exist (first compose for this bucket).
 /// - The existing files' bytes both match the freshly-emitted bytes.
 fn check_no_hand_edit(
@@ -1554,7 +1554,7 @@ const NUMERIC_ARRAY_HELPER_MARKER: &str = "djogi.__djogi_numeric_array_is_rust_d
 /// NUMERIC representable by `rust_decimal::Decimal`. The leading
 /// `pg_catalog.scale(value) IS NOT NULL` clause rejects the three
 /// PostgreSQL NUMERIC special values (`NaN`, `Infinity`, `-Infinity`)
-/// that `pg_catalog.scale` is defined to map to NULL — without that
+/// that `pg_catalog.scale()` is defined to map to NULL — without that
 /// guard the later `scale <= 28` / coefficient clauses would
 /// NULL-propagate and `bool_and` would treat the special-value
 /// element as satisfied, silently admitting an array element that
@@ -3908,7 +3908,7 @@ mod tests {
 
         // Shape 2 — file-vs-directory collision. The OLD entry is a
         // file; the NEW side has a DIRECTORY at the same name. The
-        // pre-flight uses `Path::exists` which returns true for
+        // pre-flight uses `Path::exists()` which returns true for
         // both files and directories, so the collision is caught
         // before any rename attempt.
         {

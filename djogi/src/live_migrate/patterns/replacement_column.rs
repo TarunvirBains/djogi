@@ -57,7 +57,7 @@ impl Pattern for ReplacementColumn {
         // a `#[field(type_change_using = "<expr>")]` clause. The
         // classifier
         // ([`crate::live_migrate::classify::classify_column_change`])
-        // routes `using.is_some` to `OfflineOnly` so this pattern
+        // routes `using.is_some()` to `OfflineOnly` so this pattern
         // should never be dispatched in that case; the explicit refusal
         // below is a defense-in-depth guard. The shadow-column backfill
         // can only emit a plain SQL cast (`SET <shadow> = <col>::<to>`)

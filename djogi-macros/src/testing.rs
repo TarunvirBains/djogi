@@ -53,7 +53,7 @@
 //!   digits / underscores, 1..=63 bytes).
 //! - `sync_models = [ Type1, Type2, ... ]` — array of bare type paths,
 //!   each implementing the `djogi::Model` trait. Resolved at runtime
-//!   via `<Type as ::djogi::model::Model>::descriptor` (the canonical
+//!   via `<Type as ::djogi::model::Model>::descriptor()` (the canonical
 //!   absolute path used by the rest of the macro substrate). Empty
 //!   array `[]` is accepted as a zero-DDL no-op. Module-qualified
 //!   paths (`crate::models::Widget`, `super::Other`) are accepted.
@@ -258,7 +258,7 @@ struct Args {
 }
 
 /// Parse the `TokenStream` inside the `#[djogi_test(...)]` parentheses.
-/// Empty input returns [`Args::default`] (preserves the v1 "no arguments"
+/// Empty input returns [`Args::default()`] (preserves the v1 "no arguments"
 /// behavior). Otherwise parses as a comma-separated list of `Meta` entries
 /// and dispatches on the entry's path.
 fn parse_args(attr: TokenStream) -> Result<Args, syn::Error> {
@@ -530,7 +530,7 @@ mod tests {
     fn sync_models_accepts_module_qualified_paths() {
         // Both `crate::module::Type` and `super::Other` should parse
         // the runtime helper resolves them in the user's call-site
-        // namespace via `<Type as ::djogi::Model>::descriptor`.
+        // namespace via `<Type as ::djogi::Model>::descriptor()`.
         let args = parse("sync_models = [crate::models::Widget, super::Other]").unwrap();
         let paths = args.sync_models.unwrap();
         assert_eq!(paths.len(), 2);
@@ -687,12 +687,12 @@ mod tests {
     #[test]
     fn sync_models_emits_descriptor_call_per_path() {
         // Each entry in `sync_models = [A, B, C]` becomes one
-        // `<Path as ::djogi::Model>::descriptor` expression in the
+        // `<Path as ::djogi::Model>::descriptor()` expression in the
         // generated slice. The `descriptor` literal repeating once
         // per path is the simplest stable signal we can assert on.
         let expanded = render_expansion("sync_models = [Widget, Category, Tag]");
         let count = expanded.matches("descriptor").count();
-        // Each path emits exactly one `descriptor` call.
+        // Each path emits exactly one `descriptor()` call.
         assert!(
             count >= 3,
             "expected at least 3 `descriptor()` calls (one per path), got {count}: {expanded}"

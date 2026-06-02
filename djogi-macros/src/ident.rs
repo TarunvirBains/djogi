@@ -44,7 +44,7 @@
 //! const-slice `binary_search` for the reserved-keyword lookup.
 //! # Keyword list scope
 //! The list tracks Postgres 18 **fully-reserved** keywords (catcode `R`
-//! in `pg_get_keywords`). Non-reserved and "reserved (can be function
+//! in `pg_get_keywords()`). Non-reserved and "reserved (can be function
 //! or type)" keywords are accepted unquoted by the server and therefore
 //! accepted here. The sorting invariant is pinned by
 //! [`reserved_keywords_is_sorted_and_lowercase`] in the unit tests.
@@ -201,7 +201,7 @@ pub fn check_one(column: &str, span: proc_macro2::Span) -> syn::Result<()> {
 
 /// Run the same four-rule validator on a `#[model(table = "...")]`
 /// value. 's `OuterRef::as_qualified_expr` pushes
-/// `Model::table_name` directly into emitted SQL as `<table>.<col>`;
+/// `Model::table_name()` directly into emitted SQL as `<table>.<col>`;
 /// every historical `FROM <table>` emission does the same. Without
 /// parse-time validation, a hostile `table = "foo; DROP TABLE x; --"`
 /// would smuggle arbitrary SQL into rendered output. Reusing the

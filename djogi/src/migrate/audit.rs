@@ -15,15 +15,15 @@
 //! ```sql
 //! CREATE TABLE IF NOT EXISTS djogi_ddl_audit (
 //! id BIGSERIAL PRIMARY KEY,
-//! applied_at TIMESTAMPTZ NOT NULL DEFAULT now,
+//! applied_at               TIMESTAMPTZ  NOT NULL DEFAULT now(),
 //! target_database TEXT NOT NULL,
 //! app_label TEXT NOT NULL,
 //! ddl_sql TEXT NOT NULL,
 //! snapshot_signature_hex TEXT
 //! );
 //! ```
-//! # Why `BIGSERIAL`, not `BIGINT DEFAULT heerid_next`
-//! 1. The audit DB may not have HeeRanjId's `heerid_next` extension
+//! # Why `BIGSERIAL`, not `BIGINT DEFAULT heerid_next()`
+//! 1. The audit DB may not have HeeRanjId's `heerid_next()` extension
 //!    installed — the audit DB is operationally separate and we do
 //!    not want to require the operator to install a sibling extension
 //!    in two databases.

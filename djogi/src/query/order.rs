@@ -73,7 +73,7 @@ pub enum NullsOrder {
 /// # Note on `Copy`
 /// `OrderExpr` was `Copy` before . The `SpatialDistance` variant stores a
 /// `GeoPoint`, which is `Clone` but not `Copy`. `Copy` is therefore not derived
-/// on the enum — callers that need a second handle should `.clone` explicitly.
+/// on the enum — callers that need a second handle should `.clone()` explicitly.
 #[derive(Debug, Clone)]
 pub enum OrderExpr {
     /// Standard column ordering: `<column> [ASC|DESC] [NULLS FIRST|LAST]`.
@@ -111,7 +111,7 @@ pub enum OrderExpr {
         /// The reference point.
         center: crate::geo::GeoPoint,
         /// The model's primary key column name — used for the tiebreak.
-        /// Captured at construction time from `Model::pk_column`.
+        /// Captured at construction time from `Model::pk_column()`.
         pk_column: &'static str,
     },
 }
@@ -119,7 +119,7 @@ pub enum OrderExpr {
 impl OrderExpr {
     /// Force `NULLS FIRST` on a `Column` ordering expression.
     /// Consumes and returns `Self` for fluent chaining:
-    /// `f.title.asc.nulls_first`.
+    /// `f.title.asc().nulls_first()`.
     /// When the `spatial` feature is on, this is a no-op on `SpatialDistance`
     /// that variant carries no NULL position.
     #[must_use = "order expressions are inert until passed to `order_by`"]
@@ -136,7 +136,7 @@ impl OrderExpr {
 
     /// Force `NULLS LAST` on a `Column` ordering expression.
     /// Consumes and returns `Self` for fluent chaining:
-    /// `f.title.desc.nulls_last`.
+    /// `f.title.desc().nulls_last()`.
     /// When the `spatial` feature is on, this is a no-op on `SpatialDistance`
     /// that variant carries no NULL position.
     #[must_use = "order expressions are inert until passed to `order_by`"]
@@ -222,7 +222,7 @@ impl OrderExpr {
     /// center point.
     /// The `pk_column` is appended as a deterministic tiebreaker — same
     /// distance buckets must yield the same row order across pages. Pass
-    /// `M::pk_column` here; for models with the default primary key this
+    /// `M::pk_column()` here; for models with the default primary key this
     /// is `"id"`.
     /// Emits:
     /// ```sql
@@ -243,8 +243,8 @@ impl OrderExpr {
 
 impl<M: Model, V> FieldRef<M, V> {
     /// Ascending ordering for this column. `NULLS` position is left at the
-    /// Postgres default (NULLS LAST for ASC); call `.nulls_first` /
-    /// `.nulls_last` on the result to override.
+    /// Postgres default (NULLS LAST for ASC); call `.nulls_first()` /
+    /// `.nulls_last()` on the result to override.
     #[must_use = "order expressions are inert until passed to `order_by`"]
     pub fn asc(self) -> OrderExpr {
         OrderExpr::Column {
@@ -255,7 +255,7 @@ impl<M: Model, V> FieldRef<M, V> {
     }
 
     /// Descending ordering for this column. `NULLS` position defaults to the
-    /// Postgres default (NULLS FIRST for DESC); call `.nulls_last` to
+    /// Postgres default (NULLS FIRST for DESC); call `.nulls_last()` to
     /// override.
     #[must_use = "order expressions are inert until passed to `order_by`"]
     pub fn desc(self) -> OrderExpr {
@@ -268,7 +268,7 @@ impl<M: Model, V> FieldRef<M, V> {
 }
 
 /// Accept a single `OrderExpr` where a `Vec<OrderExpr>` is expected
-/// `QuerySet::order_by(|f| f.title.asc)` closes over a single expression
+/// `QuerySet::order_by(|f| f.title.asc())` closes over a single expression
 /// and this `From` impl lifts it into the one-element vec the builder stores.
 impl From<OrderExpr> for Vec<OrderExpr> {
     fn from(o: OrderExpr) -> Self {

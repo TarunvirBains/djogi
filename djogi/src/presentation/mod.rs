@@ -26,7 +26,7 @@
 //! - Query and order accessors on generated visage fields are only available
 //!   when the codec implements [`PresentationQueryCodec`] /
 //!   [`PresentationOrderCodec`].
-//! - Source-model `Model::objects` accessors remain privileged; the
+//! - Source-model `Model::objects()` accessors remain privileged; the
 //!   presentation codec does not restrict storage-truth queries.
 //! # Startup validation
 //! Call [`validate_startup_inventory`] before serving traffic.
@@ -105,7 +105,7 @@ pub enum Reversibility {
 /// Enabling predicate or order access grants adopter callers the ability to
 /// probe field values through the generated accessor. Ensure the codec
 /// provides appropriate transform-level protection before enabling
-/// queryability. Source-model `Model::objects` always retains storage-level
+/// queryability. Source-model `Model::objects()` always retains storage-level
 /// query access regardless of this setting.
 /// # Relation to reversibility
 /// Queryability and reversibility are independent axes. A reversible codec
@@ -364,9 +364,9 @@ pub trait PresentationCodecInfo<Input>: Send + Sync + 'static {
 
     /// Validate that the codec is properly configured for request-time use.
     /// Called during [`validate_startup_inventory`] (which is invoked by
-    /// `DjogiPool::connect` / `DjogiPoolBuilder::build`). Return `Ok`
+    /// `DjogiPool::connect` / `DjogiPoolBuilder::build`). Return `Ok(())`
     /// if the codec is ready, or a [`PresentationStartupError`] if not.
-    /// The default implementation returns `Ok` — override for codecs
+    /// The default implementation returns `Ok(())` — override for codecs
     /// that require environment-variable keys or other external resources.
     /// # Retry semantics
     /// This function must be retryable: a failed validation attempt must not
@@ -452,7 +452,7 @@ pub trait ReversibleTryPresentationCodec<Input>: TryPresentationCodec<Input> {
 
 /// Walk the linked-at-call-time [`PresentationCodecUsage`](inventory::PresentationCodecUsage)
 /// inventory and invoke each usage's `validate_startup` function.
-/// Returns `Ok` if all usages validate successfully. Returns
+/// Returns `Ok(())` if all usages validate successfully. Returns
 /// `Err(errors)` containing **all** failures collected (not short-circuiting)
 /// so the caller can report every broken codec configuration in a single
 /// startup message.
@@ -474,7 +474,7 @@ pub trait ReversibleTryPresentationCodec<Input>: TryPresentationCodec<Input> {
 /// linked binary, so if a model crate is not linked its usages will be missing.
 /// For harnesses that assert validation failures, define or link a model with at
 /// least one keyed `PresentationCodecUsage` before calling
-/// `validate_startup_inventory`.
+/// `validate_startup_inventory()`.
 pub fn validate_startup_inventory() -> Result<(), Vec<PresentationStartupError>> {
     let errors: Vec<PresentationStartupError> =
         ::inventory::iter::<inventory::PresentationCodecUsage>
@@ -505,7 +505,7 @@ mod tests {
 
     /// `validate_startup_inventory` with an empty inventory (no `#[model]`
     /// structs with `per_scope` blocks are linked into the test binary)
-    /// must return `Ok`.
+    /// must return `Ok(())`.
     #[test]
     fn validate_startup_inventory_empty_inventory_returns_ok() {
         // The test binary does not link any model crates with per_scope blocks,
@@ -622,7 +622,7 @@ mod tests {
         let e = BuiltInPresentationError::KeyNotValidated {
             env: "DJOGI_PRESENTATION_HMAC_KEY",
         };
-        // Exercise the Error trait — source must return None for this variant.
+        // Exercise the Error trait — source() must return None for this variant.
         let dyn_err: &dyn std::error::Error = &e;
         assert!(dyn_err.source().is_none());
     }

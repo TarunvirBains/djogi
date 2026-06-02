@@ -59,7 +59,7 @@ fn validate_ring(ring: &[GeoPoint], label: &'static str) -> Result<(), GeoError>
 
 impl Polygon {
     /// Construct from an outer ring, auto-closing it if needed.
-    /// If `points.len < 3` the constructor returns
+    /// If `points.len() < 3` the constructor returns
     /// `GeoError::InvalidPolygon`. If the first and last points differ the
     /// first point is appended to close the ring. After auto-closing, if the
     /// ring still has fewer than 4 points (i.e., the input had exactly 2
@@ -218,12 +218,12 @@ mod tests {
         vec![p(0.0, 0.0), p(0.0, 1.0), p(1.0, 1.0), p(0.0, 0.0)]
     }
 
-    /// A 3-point ring that is NOT yet closed (for use with `closed`).
+    /// A 3-point ring that is NOT yet closed (for use with `closed()`).
     fn open_triangle() -> Vec<GeoPoint> {
         vec![p(0.0, 0.0), p(0.0, 1.0), p(1.0, 0.5)]
     }
 
-    // ── closed ──────────────────────────────────────────────────────────────
+    // ── closed() ──────────────────────────────────────────────────────────────
 
     #[test]
     fn closed_auto_closes_open_ring() {
@@ -247,7 +247,7 @@ mod tests {
         ));
     }
 
-    // ── with_ring ───────────────────────────────────────────────────────────
+    // ── with_ring() ───────────────────────────────────────────────────────────
 
     #[test]
     fn with_ring_accepts_valid_closed_ring() {
@@ -274,7 +274,7 @@ mod tests {
         ));
     }
 
-    // ── with_holes ──────────────────────────────────────────────────────────
+    // ── with_holes() ──────────────────────────────────────────────────────────
 
     #[test]
     fn with_holes_accepts_outer_no_holes() {

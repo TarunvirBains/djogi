@@ -18,7 +18,7 @@
 //!    (Implementation is pure `u8::is_ascii_alphabetic` /
 //!    `u8::is_ascii_alphanumeric` — no regex engine, no dependency.)
 //! 4. Not a reserved Postgres keyword (case-insensitive; catcode `R`
-//!    in `pg_get_keywords` as of Postgres 18).
+//!    in `pg_get_keywords()` as of Postgres 18).
 //!    Callers that emit literals from `#[derive(Model)]` are the intended
 //!    audience; the panic messages read as framework bugs or bypass attempts.
 
@@ -75,7 +75,7 @@ pub(crate) const fn starts_with_reserved_djogi_prefix(bytes: &[u8]) -> bool {
     true
 }
 
-/// Postgres fully-reserved keywords (catcode `R` in `pg_get_keywords`
+/// Postgres fully-reserved keywords (catcode `R` in `pg_get_keywords()`
 /// as of Postgres 18). These cannot be used as identifiers unless
 /// quoted, so emitting them unquoted into `SELECT`, `FROM`, or
 /// `LEFT JOIN` produces a parse error — turning a hostile downstream
@@ -206,7 +206,7 @@ pub(crate) const fn const_assert_plain_ident(value: &'static str, role: &'static
     );
     // Const-friendly indexed byte scan — `for` over a slice works in
     // const fn on current stable but requires indexing, not iteration
-    // adapters like `all` / `iter.skip(1)`.
+    // adapters like `all` / `iter().skip(1)`.
     let mut i = 1;
     while i < bytes.len() {
         let byte = bytes[i];
@@ -416,7 +416,7 @@ pub(crate) fn assert_plain_ident(value: &'static str, role: &'static str) {
         );
     }
     // Stack-allocated lowercase for the reserved-keyword lookup. The length
-    // check above bounded `value.len` ≤ 63, so a 64-byte buffer is always
+    // check above bounded `value.len()` ≤ 63, so a 64-byte buffer is always
     // sufficient and this path allocates nothing on the heap. Every byte is
     // ASCII alnum or `_` at this point, so `std::str::from_utf8` on the
     // lowercased slice is infallible.
@@ -497,7 +497,7 @@ pub(crate) fn assert_user_supplied_ident(value: &'static str, role: &'static str
 /// Intended for hot paths that accept a `&'static str` from a source
 /// the compiler cannot structurally seal — notably the per-row loops
 /// in `relation::prefetch` and `relation::select_related` that read
-/// `descriptor.fields[].name`. Sealing the `Model` trait stops a
+/// `descriptor().fields[].name`. Sealing the `Model` trait stops a
 /// hand-rolled `impl Model` from reaching that code, but a hostile
 /// `#[derive(Model)]`-equivalent macro in a downstream crate could
 /// still feed the framework a malformed field name; the debug assert

@@ -9,7 +9,7 @@
 //! [`PrimaryKeyDbGen::generate_many`] issues exactly one query against
 //! the HeeRanjId `generate_ids` / `generate_ranjids` SQL functions the
 //! schema installs. The node_id is resolved by
-//! `current_heer_node_id` / `current_heer_ranj_node_id` inside
+//! `current_heer_node_id()` / `current_heer_ranj_node_id()` inside
 //! Postgres, so callers need no per-request session setup beyond the
 //! standard `djogi_test` fixtures which route bootstrap through
 //! `djogi::migrate::bootstrap::run_phase_zero` (strategic lockdown).
@@ -132,7 +132,7 @@ impl PrimaryKey for i32 {
 
 // Live-database coverage for `PrimaryKeyDbGen::generate_many` follows
 // the existing project convention: every test that calls
-// `setup_test_db` is a named integration target in `djogi/Cargo.toml`
+// `setup_test_db()` is a named integration target in `djogi/Cargo.toml`
 // rather than a `cfg(test)` unit test inside the library source.
 // Unit-level coverage for the non-DB parts of `PrimaryKey` lives in the
 // `tests` module of `djogi/src/primary_key/mod.rs`.

@@ -1,7 +1,7 @@
 //! Array column operator helpers — `contains`, `contained_by`, `overlap`, `len`.
 //! # What
 //! This module defines the condition variants for Postgres array operators and
-//! the `len` expression. The actual `FieldRef<M, Vec<V>>` methods are in
+//! the `len()` expression. The actual `FieldRef<M, Vec<V>>` methods are in
 //! [`crate::query::field`]; this module provides the condition payload types
 //! that those methods construct.
 //! # SQL operators

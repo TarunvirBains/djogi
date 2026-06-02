@@ -48,8 +48,8 @@
 //! occurrence of `_desc` shadow naming with `_asc`, every flip-fn
 //! invocation (`heerid_to_desc` / `ranjid_to_desc`) with its
 //! symmetric (`heerid_to_asc` / `ranjid_to_asc`), and every
-//! generator default (`heerid_next_desc` / `ranjid_next_desc`)
-//! with the ascending variant (`heerid_next` / `ranjid_next`).
+//! generator default (`heerid_next_desc()` / `ranjid_next_desc()`)
+//! with the ascending variant (`heerid_next()` / `ranjid_next()`).
 //! The structural transactions and segment ordering remain identical
 //! so the reverse path is reviewable side-by-side with the forward
 //! path. We document the mirroring decision here in plain English
@@ -1410,7 +1410,7 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
 /// protocol wraps multiple statements in an implicit transaction;
 /// the procedure's internal `COMMIT` then fires `2D000 invalid
 /// transaction termination` per the playbook's "must not be wrapped
-/// in pool.begin" warning.
+/// in pool.begin()" warning.
 /// **Forward direction (Asc → Desc).** The HeeRanjID procedure
 /// `heeranjid_bulk_backfill` ships with a `'heer'` / `'ranj'`
 /// `kind` parameter that dispatches to `heerid_to_desc` /
@@ -1735,7 +1735,7 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
     // deferrable + initially_deferred
     // upstream in the differ; descriptor-declared deferrable FKs
     // round-trip through the per-FK arrays. Pre-the gate was
-    // `!group.cycles.is_empty` and silently downgraded
+    // `!group.cycles.is_empty()` and silently downgraded
     // descriptor-deferrable self-FKs to non-deferrable.
     if let Some(self_fk) = &group.self_fk {
         for (i, col) in self_fk.fk_columns.iter().enumerate() {
@@ -2325,7 +2325,7 @@ fn cutover_add_fk_constraint(
     );
 }
 
-/// : drop every old FK pointing at the parent.
+/// Phase 1: drop every old FK pointing at the parent.
 fn cutover_phase_drop_old_fks(group: &PkTypeFlipGroup, up: &mut String) {
     let parent = group.parent_table.as_str();
     for child in &group.children {
@@ -2350,7 +2350,7 @@ fn cutover_phase_drop_old_fks(group: &PkTypeFlipGroup, up: &mut String) {
     }
 }
 
-/// : promote the parent — swap shadow PK to live PK.
+/// Phase 2: promote the parent — swap shadow PK to live PK.
 fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
     let parent = group.parent_table.as_str();
     let p_family = parent_family(group);
@@ -2450,7 +2450,7 @@ fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
     }
 }
 
-/// : finalise every child — drop old FK column, drop the
+/// Phase 3: finalise every child — drop old FK column, drop the
 /// `_desc_fkey` shadow constraint that segment 3b VALIDATEd, rename
 /// shadow → live, ADD CONSTRAINT pointing at the parent's new `id`.
 /// **Why drop the `_desc_fkey` constraint before re-adding the
@@ -2545,7 +2545,7 @@ fn render_deferrable_clause(deferrable: bool, initially_deferred: bool) -> &'sta
     }
 }
 
-/// : finalise every join table this group owns. Under
+/// Phase 4: finalise every join table this group owns. Under
 /// Option A + cross-flipping in a multi-parent cluster this fires
 /// only on the winner; the loser's `join_tables` list is empty
 /// after the merger transferred ownership, so this no-ops there.
@@ -4413,7 +4413,7 @@ mod tests {
             fx.contains("heerid_to_asc(NEW.id)"),
             "reverse fixture must call heerid_to_asc in trigger body",
         );
-        // The new column DEFAULT after cutover must be `heerid_next`
+        // The new column DEFAULT after cutover must be `heerid_next()`
         // the asc generator. The fixture must NOT contain
         // `heerid_next_desc` outside an inline-comment block.
         assert!(

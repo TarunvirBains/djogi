@@ -49,7 +49,7 @@
 //!   guarantee any call site exercises the ambiguity.
 //!   [`validate_relation_accessor_collisions`] closes that gap. It walks
 //!   a sequence of [`ReverseRelationMarker`]s (typically
-//!   `inventory::iter::<ReverseRelationMarker>`), groups them by
+//!   `inventory::iter::<ReverseRelationMarker>()`), groups them by
 //!   `(source, accessor_name)`, and returns
 //!   [`RelationRegistryError::AccessorCollisions`] for any group whose
 //!   members disagree on `kind`, `target`, or `via`. The cross-suffix
@@ -72,7 +72,7 @@
 //! # How
 //! At link time, every `ReverseRelationMarker` submitted via `inventory::
 //! submit!` is appended to a crate-level static slice. User code walks
-//! them with `inventory::iter::<ReverseRelationMarker>`:
+//! them with `inventory::iter::<ReverseRelationMarker>()`:
 //! ```ignore
 //! for marker in inventory::iter::<ReverseRelationMarker> {
 //!     println!("{} has {} accessor pointing at {}",
@@ -176,7 +176,7 @@ impl ReverseRelationMarker {
         self.source
     }
 
-    /// Method name the macro emitted on `source`. Example: `"cars"`.
+    /// Method name the macro emitted on `source()`. Example: `"cars"`.
     #[inline]
     pub fn name(&self) -> &'static str {
         self.name
@@ -189,10 +189,10 @@ impl ReverseRelationMarker {
         self.target
     }
 
-    /// Column name on the `target` table that carries the FK
-    /// pointing back at `source`. Example: `"owner_id"`. For M2M
+    /// Column name on the `target()` table that carries the FK
+    /// pointing back at `source()`. Example: `"owner_id"`. For M2M
     /// markers, this is the through-model's FK column pointing at
-    /// `source`.
+    /// `source()`.
     #[inline]
     pub fn via(&self) -> &'static str {
         self.via
@@ -304,7 +304,7 @@ const fn kind_order(k: RelationKind) -> u8 {
 ///   `{Source}{Relation}ManyToManyRelation`
 ///   rustc only catches **same-suffix** trait redefinitions (E0428 / E0119);
 ///   a `reverse_one_to_many!` and a `many_to_many!` competing for the
-///   same `.cars` accessor on `Owner` produce `OwnerCarsReverseRelation`
+///   same `.cars()` accessor on `Owner` produce `OwnerCarsReverseRelation`
 ///   and `OwnerCarsManyToManyRelation`, both of which compile, and the
 ///   collision only manifests as an "ambiguous method call" at every
 ///   downstream call site that has both traits in scope. This validator
@@ -405,7 +405,7 @@ where
 /// Convenience companion to [`validate_relation_accessor_collisions`]
 /// for adopters whose bootstrap does not already feed an explicit
 /// marker iterator. The body is exactly
-/// `validate_relation_accessor_collisions(::inventory::iter::<ReverseRelationMarker>)`;
+/// `validate_relation_accessor_collisions(::inventory::iter::<ReverseRelationMarker>())`;
 /// keeping it as a named function gives the production projection /
 /// sync-helper paths a single call site to gate on, and gives custom
 /// bootstraps a stable entry point that does not require spelling out
@@ -517,7 +517,7 @@ pub mod __macro_support {
     /// `many_to_many!` needs this for `that_fk`: unlike `relation` and
     /// `this_fk`, it does not flow through the stored
     /// [`ReverseRelationMarker`] fields, but it still becomes a
-    /// SQL-facing `&'static str` through `ManyToMany::that_fk`.
+    /// SQL-facing `&'static str` through `ManyToMany::that_fk()`.
     #[doc(hidden)]
     pub const fn __const_assert_user_supplied_ident(value: &'static str, role: &'static str) {
         const_assert_user_supplied_ident(value, role);
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn validator_flags_cross_kind_fk_vs_m2m() {
         // The headline case from GH issue #158: a `reverse_one_to_many!`
-        // and a `many_to_many!` both expose `.cars` on `Owner`. The
+        // and a `many_to_many!` both expose `.cars()` on `Owner`. The
         // emitted trait names — `OwnerCarsReverseRelation` and
         // `OwnerCarsManyToManyRelation` — differ, so rustc compiles
         // both. Without this validator the collision only surfaces as
@@ -869,7 +869,7 @@ mod tests {
     #[test]
     fn validator_inventory_walk_compiles() {
         // Pin that the validator's signature accepts the canonical
-        // adopter call shape — passing `inventory::iter::<T>`
+        // adopter call shape — passing `inventory::iter::<T>()`
         // directly — and that the iterator's `&'static T` items satisfy
         // the `&'a T` bound. The result itself is whatever the live
         // inventory contains; the test is purely a type-check.

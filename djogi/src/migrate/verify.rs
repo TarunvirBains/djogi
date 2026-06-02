@@ -190,7 +190,7 @@ impl VerifyDiagnostic {
 
 /// Result of a verify run.
 /// `diagnostics` is sorted by `(code, location)` for determinism.
-/// `has_errors` returns true when at least one diagnostic carries
+/// `has_errors()` returns true when at least one diagnostic carries
 /// [`VerifySeverity::Error`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyReport {
@@ -431,7 +431,7 @@ pub async fn verify_with_policy(
 ///   (snapshot on disk but no registered models) has no live tables to
 ///   miss, so `D601` ("snapshot table missing") is the actionable signal
 ///   instead and `D699` would be redundant noise. This replaces
-///   [`verify_with_policy`]'s `!snapshot.models.is_empty` gate, which is
+///   [`verify_with_policy`]'s `!snapshot.models.is_empty()` gate, which is
 ///   per-bucket; the database-wide flag is the correct scope because the
 ///   ledger and the "zero live tables" condition are both database-wide.
 /// # Errors
@@ -480,7 +480,7 @@ pub async fn verify_bucket(
             // D699: ledger reports applied migrations but the live DB has
             // zero user tables — the schema was likely dropped out-of-band.
             // Gated by `database_has_models` (not the per-bucket
-            // `!snapshot.models.is_empty`): an orphan-only database has no
+            // `!snapshot.models.is_empty()`): an orphan-only database has no
             // registered models, so D601 is the actionable signal and D699
             // would be redundant.
             let live_for_ledger_check = project_live_schema(ctx).await?;
@@ -1675,12 +1675,12 @@ fn index_target_column_names(target: &IndexTargetSchema) -> Vec<&str> {
 
 /// Canonicalise a column DEFAULT expression for comparison.
 /// **Strategy.** Postgres typically renders defaults with explicit
-/// type casts (`'foo'::text`, `now::timestamp with time zone`).
+/// type casts (`'foo'::text`, `now()::timestamp with time zone`).
 /// Operators authoring snapshots often write the bare form
-/// (`'foo'`, `now`). We strip ALL trailing `::<type>` casts on
+/// (`'foo'`, `now()`). We strip ALL trailing `::<type>` casts on
 /// both sides so equivalent expressions compare equal:
 /// - `'foo'` vs `'foo'::text` → match
-/// - `now` vs `now::timestamptz` → match
+/// - `now()` vs `now()::timestamptz` → match
 /// - `'foo'::text::varchar` → `'foo'` (nested casts collapsed in a
 ///   loop; Postgres renders nested casts unchanged on `pg_get_expr`,
 ///   so the comparator must peel them)
@@ -1706,7 +1706,7 @@ fn normalize_default_expr(expr: Option<&str>) -> Option<String> {
     // toggle skips over `::` sequences inside quoted strings; no
     // pattern-matching engine is involved.
     // Loop termination: each iteration either strips at least one
-    // byte (`raw[..idx]` where `idx < raw.len`) or breaks. The
+    // byte (`raw[..idx]` where `idx < raw.len()`) or breaks. The
     // length monotonically decreases, so the loop terminates.
     let mut current = raw.to_string();
     loop {
@@ -1739,7 +1739,7 @@ fn normalize_default_expr(expr: Option<&str>) -> Option<String> {
                 let next = trimmed.to_string();
                 if next == current {
                     // Defensive: zero-length strip should be impossible
-                    // here (`idx < bytes.len` and `trim_end` only
+                    // here (`idx < bytes.len()` and `trim_end` only
                     // shrinks), but break rather than spin.
                     break;
                 }

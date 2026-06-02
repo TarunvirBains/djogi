@@ -11,7 +11,7 @@
 //! could not distinguish `OneToOneField<T>` from `ForeignKey<T>` when
 //! scanning struct fields, and the public API could not evolve the
 //! two shapes independently (e.g. if we later give `OneToOneField`
-//! a distinct `reverse` singular accessor). The newtype keeps the
+//! a distinct `reverse()` singular accessor). The newtype keeps the
 //! identities separate at compile time with a single field of
 //! overhead (the inner `ForeignKey<T>` is the only runtime state).
 
@@ -171,7 +171,7 @@ where
     /// Delegate JSONB path LHS cast metadata to the target PK type
     /// . Same rationale as the `ForeignKey<T>` override
     /// without this, `JsonbPathRef::<M, OneToOneField<T>>` falls back
-    /// to text comparison because `type_name::<OneToOneField<T>>`
+    /// to text comparison because `type_name::<OneToOneField<T>>()`
     /// is not in the built-in cast table.
     fn jsonb_sql_cast() -> Option<crate::jsonb::JsonbSqlCast> {
         <T::Pk as crate::query::field::IntoFilterValue>::jsonb_sql_cast()
@@ -215,7 +215,7 @@ where
 // ---------------------------------------------------------------------------
 
 /// Post-eager-load variant of [`OneToOneField<T>`].
-/// Produced by `prefetch` / `select_related`, never constructed by
+/// Produced by `prefetch()` / `select_related()`, never constructed by
 /// user code. The `Option<Box<T>>` lives inside the wrapped
 /// [`ForeignKeyResolved<T>`]; `expect_resolved` forwards through with
 /// the same "strict mode" semantics.
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn one_to_one_field_resolved_key_borrow() {
-        // `key` returns `&T::Pk` — a borrow, not an owned clone.
+        // `key()` returns `&T::Pk` — a borrow, not an owned clone.
         // Confirm the borrow matches the stored value.
         let pk = HeerId::from_i64(123).unwrap();
         let r: OneToOneFieldResolved<Dummy> = OneToOneFieldResolved::new(pk, None);

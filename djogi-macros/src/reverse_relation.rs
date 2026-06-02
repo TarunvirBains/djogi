@@ -79,7 +79,7 @@
 //! invoked at module scope (the canonical form), the trait is visible
 //! to call sites in the same module without an explicit `use`. Cross-
 //! module / cross-crate consumers add `use ...::TargetMethodReverseRelation;`
-//! at the top of files that call `.method` on the receiver.
+//! at the top of files that call `.method()` on the receiver.
 //! # Terminology note (source vs target)
 //! The macro invocation reads `ReceivingType, method -> ReturnedType by
 //! via_column`. In this module:
@@ -229,10 +229,10 @@ impl Parse for ReverseRelationInput {
 /// `RelationKind` marker discriminator.
 #[derive(Clone, Copy)]
 enum AccessorKind {
-    /// `reverse_one_to_many!` — `.fetch_all` → `Vec<Returned>`, marker
+    /// `reverse_one_to_many!` — `.fetch_all()` → `Vec<Returned>`, marker
     /// kind `FK`.
     OneToMany,
-    /// `reverse_one_to_one!` — `.first` → `Option<Returned>`, marker
+    /// `reverse_one_to_one!` — `.first()` → `Option<Returned>`, marker
     /// kind `O2O`.
     OneToOne,
 }
@@ -283,7 +283,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     let returned_lit = returned_type.to_string();
     let via_lit = via_column.to_string();
 
-    // `{Returned}Fields::{via_column}` is the typed field handle the
+    // `{Returned}Fields::{via_column}()` is the typed field handle the
     // emitted closure invokes. `format_ident!` with the raw string
     // preserves raw-ident (`r#type`) prefixes if present; the user's
     // macro invocation sees the exact identifier they wrote.
@@ -522,7 +522,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
             // `.exists(ctx)`, or `.stream(ctx)` on top of the reverse
             // accessor instead of materialising every reverse row.
             // The FK predicate is built via the source model's typed
-            // `Model::Fields` accessor (`{Returned}Fields::{filter_method}`)
+            // `Model::Fields` accessor (`{Returned}Fields::{filter_method}()`)
             // so column-name typos are compile errors at macro-emission
             // time, not runtime SQL bugs. The resulting `Condition`
             // hands off to the visage's hidden
@@ -630,7 +630,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
                         // FK column name would surface as a compile
                         // error here (`no method named 'foo' on type ...
                         // {Returned}Fields`), not a runtime SQL bug.
-                        // : `Model::Fields` accessors return
+                        // `Model::Fields` accessors return
                         // `DjogiField<M, V>` after the macro flip, so the
                         // FK predicate routes the wrapper through
                         // `IntoSqlField::into_sql_field` to recover the

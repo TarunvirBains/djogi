@@ -643,7 +643,7 @@ pub struct ValuesOn<T: Model>(ValuesOnKind<T>);
 enum ValuesOnKind<T: Model> {
     /// `__djogi_m.<model_col> = <alias>.<values_col_name>`
     Eq {
-        /// Model column (from `FieldRef::column` — a `&'static str`).
+        /// Model column (from `FieldRef::column()` — a `&'static str`).
         model_col: &'static str,
         /// Zero-based position of the values column in the row tuple.
         values_col_idx: usize,
@@ -709,7 +709,7 @@ impl<M: Model, V: ValuesScalar> crate::query::field::FieldRef<M, V> {
     /// Both sides must share the same Rust type `V`; comparing a
     /// `FieldRef<T, i64>` to a `ValuesFieldRef<f64>` is a compile error.
     /// The model field must resolve to a root-table column. Relation-path
-    /// fields such as `animal.department.name` are rejected when the
+    /// fields such as `animal.department().name()` are rejected when the
     /// terminal executes because VALUES joins do not synthesize the extra
     /// relation aliases that such paths require.
     pub fn eq_values(self, rhs: ValuesFieldRef<V>) -> ValuesOn<M> {
@@ -792,7 +792,7 @@ impl<Row: ValuesRow> InlineValues<Row> {
     /// - `alias` or any column name fails identifier validation.
     /// - Column names contain duplicates, including mixed-case spellings that
     ///   fold to the same unquoted Postgres identifier.
-    /// - `rows.len × Row::ARITY` exceeds the Postgres parameter ceiling
+    /// - `rows.len() × Row::ARITY` exceeds the Postgres parameter ceiling
     ///   (65 535). Chunk the list or use a staging table instead.
     /// # Example
     /// ```ignore
@@ -923,7 +923,7 @@ impl<T: Model, Row: ValuesRow> std::fmt::Debug for LeftValuesJoinedQuerySet<T, R
 /// pairs — one pair for every combination of model row and VALUES row
 /// (Cartesian product, no `ON` predicate).
 /// # Empty behaviour
-/// If either the model queryset is `none`-derived or [`InlineValues`] has
+/// If either the model queryset is `none()`-derived or [`InlineValues`] has
 /// zero rows, terminals short-circuit and return the empty result without a
 /// database round-trip. A Cartesian product with an empty set is always empty.
 pub struct CrossValuesJoinedQuerySet<T: Model, Row: ValuesRow> {
@@ -951,7 +951,7 @@ impl<T: Model> QuerySet<T> {
     /// [`DjogiError::Validation`]. Filters, ordering, limit, and offset are
     /// supported.
     /// # Short-circuit
-    /// If the left queryset is `none`-derived or `InlineValues` has zero
+    /// If the left queryset is `none()`-derived or `InlineValues` has zero
     /// rows, terminals return the empty result without a database round-trip.
     pub fn join_values<Row, F>(
         self,
@@ -1005,7 +1005,7 @@ impl<T: Model> QuerySet<T> {
     /// [`DjogiError::Validation`]. Filters, ordering, limit, and offset are
     /// supported.
     /// # Short-circuit
-    /// If the left queryset is `none`-derived or [`InlineValues`] has zero
+    /// If the left queryset is `none()`-derived or [`InlineValues`] has zero
     /// rows, terminals return the empty result without a database round-trip.
     /// A Cartesian product with an empty set is always empty.
     pub fn cross_join_values<Row>(
@@ -1877,7 +1877,7 @@ where
 
     /// Count joined pairs.
     /// Empty values is the one special case: the typed zero-row relation path
-    /// yields one `None` pair per left row, so `count` there equals the
+    /// yields one `None` pair per left row, so `count()` there equals the
     /// filtered left-row count.
     pub fn count<'ctx>(
         self,
@@ -1947,7 +1947,7 @@ where
 {
     /// Execute and collect all `(T, Row)` pairs (Cartesian product).
     /// Short-circuits to `Ok(vec![])` when the model queryset is
-    /// `none`-derived or `InlineValues` has zero rows.
+    /// `none()`-derived or `InlineValues` has zero rows.
     pub fn fetch_all<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -1978,7 +1978,7 @@ where
 
     /// Return the first `(T, Row)` pair from the Cartesian product, or `None`.
     /// Short-circuits to `Ok(None)` when the model queryset is
-    /// `none`-derived or `InlineValues` has zero rows.
+    /// `none()`-derived or `InlineValues` has zero rows.
     pub fn first<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -2011,7 +2011,7 @@ where
 
     /// Expect exactly one pair in the Cartesian product; error on zero or multiple.
     /// Short-circuits to `Err(DjogiError::NotFound)` when the model queryset
-    /// is `none`-derived or `InlineValues` has zero rows.
+    /// is `none()`-derived or `InlineValues` has zero rows.
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -2044,7 +2044,7 @@ where
     }
 
     /// Count pairs in the Cartesian product.
-    /// Short-circuits to `Ok(0)` when the model queryset is `none`-derived
+    /// Short-circuits to `Ok(0)` when the model queryset is `none()`-derived
     /// or `InlineValues` has zero rows.
     pub fn count<'ctx>(
         self,
@@ -2074,7 +2074,7 @@ where
 
     /// Return `true` if the Cartesian product is non-empty (both sides have rows).
     /// Short-circuits to `Ok(false)` when the model queryset is
-    /// `none`-derived or `InlineValues` has zero rows.
+    /// `none()`-derived or `InlineValues` has zero rows.
     pub fn exists<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,

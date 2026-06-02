@@ -32,7 +32,7 @@
 //! identifier routed through the 3-step ExpandContract path is
 //! slower than necessary; the inverse mistake (assuming `IMMUTABLE`
 //! when the function is in fact `VOLATILE`) would silently emit a
-//! catalog-only `ADD COLUMN ... DEFAULT <volatile>` that Postgres
+//! catalog-only `ADD COLUMN ... DEFAULT <volatile>()` that Postgres
 //! accepts but the classifier promised would not require backfill,
 //! producing the wrong runtime behaviour.
 //! Adopters with a known-safe UDF override per-field via
@@ -72,13 +72,13 @@ pub enum Volatility {
 /// identifier. `binary_search_by_key` depends on this — a unit test
 /// asserts the invariant and any future addition must preserve it.
 /// **Identifier shape.** Built-ins that take no arguments are stored
-/// with their parenthesised call form (`now`, `clock_timestamp`)
+/// with their parenthesised call form (`now()`, `clock_timestamp()`)
 /// because that is the literal text the classifier sees inside a
 /// `DEFAULT` expression. SQL keywords that work without parentheses
 /// (`CURRENT_TIMESTAMP`, `current_date`, `current_time`,
 /// `current_timestamp`) appear in their bare form. The classifier
 /// normalises whitespace before lookup but does NOT transform between
-/// the two shapes — Postgres treats `now` and `now` differently
+/// the two shapes — Postgres treats `now()` and `now` differently
 /// (the first is a function call, the second is an identifier
 /// reference) and the classifier preserves that distinction.
 /// **Why both `current_timestamp` cases.** Postgres accepts SQL
@@ -92,7 +92,7 @@ pub enum Volatility {
 /// sorted-slice + `binary_search` shape costs O(log n) per lookup
 /// where a case-folding walk is O(n) — and the few SQL keywords that
 /// matter here are short enough that listing both casings keeps the
-/// table readable. Function-call forms (`now`, `random`) are
+/// table readable. Function-call forms (`now()`, `random()`) are
 /// always lowercase per Postgres' identifier rules, so no parallel
 /// uppercase entry is required.
 const BUILTIN_VOLATILITY: &[(&str, Volatility)] = &[
@@ -153,7 +153,7 @@ pub fn classify_default_expression(expr: &str) -> Volatility {
 /// Recognise the four literal shapes Postgres accepts in a `DEFAULT`
 /// expression: string, numeric, boolean, and `NULL`.
 /// **The entire trimmed expression must be a single literal token.**
-/// Compound expressions like `1 + random` are NOT literals — the
+/// Compound expressions like `1 + random()` are NOT literals — the
 /// presence of operators, function-call parentheses, or whitespace
 /// separators between tokens means the expression evaluates at write
 /// time and the volatility of any sub-call dominates. Returning `true`
@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn classify_compound_with_volatile_call_returns_volatile() {
-        // Spec-correctness: `1 + random` MUST classify as Volatile so
+        // Spec-correctness: `1 + random()` MUST classify as Volatile so
         // the live-migrate classifier routes it through ExpandContract.
         // Pre-fix the literal-shape check accepted any byte-slice
         // starting with a digit and silently returned Immutable.

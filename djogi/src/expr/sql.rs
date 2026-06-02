@@ -35,7 +35,7 @@
 //! when the WHERE clause is qualified for either pair side.
 //! Non-joined callers (the vast majority — single-Model `filter`,
 //! aggregate scalar terminals, `update`, `delete`, etc.) pass
-//! [`SqlEmitContext::root`] which qualifies nothing, preserving
+//! [`SqlEmitContext::root()`] which qualifies nothing, preserving
 //! the bare-column emission shipped.
 
 use crate::expr::node::{AggOp, CmpOp, ExprNode, SubqueryNode};
@@ -91,7 +91,7 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                         // `STRING_AGG(DISTINCT col, sep)` requires a per-
                         // aggregate `ORDER BY` to disambiguate the output
                         // tail. Callers can chain
-                        // `.order_by(f.other.asc)`; until they do, the
+                        // `.order_by(f.other.asc())`; until they do, the
                         // combination is still ill-formed Postgres.
                         return Err(crate::DjogiError::UnsupportedAggregate {
                             op: "STRING_AGG",
@@ -107,10 +107,10 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             // ── COUNT(*) + ORDER BY silent-drop guard ──
             // The COUNT(*) emitter hard-codes `COUNT(*)` and never renders
             // the `order_by` slot — chaining `.order_by(..)` on a
-            // `count_star` aggregate would silently drop the modifier.
+            // `count_star()` aggregate would silently drop the modifier.
             // Reject at fetch time so adopters see a typed error rather
             // than mysteriously-missing ordering. `COUNT(col ORDER BY ..)`
-            // remains valid via `FieldRef::count` which routes through
+            // remains valid via `FieldRef::count()` which routes through
             // the unary-emit path.
             if matches!(op, AggOp::CountStar) && !order_by.is_empty() {
                 return Err(crate::DjogiError::UnsupportedAggregate {
@@ -158,7 +158,7 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             // invalid Postgres at fetch time.
             // Kept distinct from the typed kind-state guard at the
             // `AggregateExpr` level (#89): the kind-state enforces "you
-            // cannot build `f.col.sum.within_group_order_by(...)`";
+            // cannot build `f.col().sum().within_group_order_by(...)`";
             // this assertion enforces "if you somehow built an ordered-set
             // node, its WITHIN GROUP target must be populated."
             debug_assert!(
@@ -229,9 +229,9 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             Ok(())
         }
         // Row aggregates (#92) carry no modifier slots at all — the typed
-        // `RowAggregate<Out, K>` wrapper exposes no `.distinct` /
-        // `.filter` / `.over` / `.order_by` /
-        // `.within_group_order_by` methods, so there is nothing for
+        // `RowAggregate<Out, K>` wrapper exposes no `.distinct()` /
+        // `.filter()` / `.over()` / `.order_by()` /
+        // `.within_group_order_by()` methods, so there is nothing for
         // this checker to reject. The arm exists for completeness and to
         // make the variant explicit on this walker's match.
         #[cfg(feature = "spatial")]
@@ -263,7 +263,7 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
 /// emitter's `filter_expr` on either side, single-Model
 /// `select_related`'s filter path) pass [`SqlEmitContext::joined(alias)`]
 /// so a bare column reference renders as `<alias>.<column>`. Non-joined
-/// call sites pass [`SqlEmitContext::root`] for the historical
+/// call sites pass [`SqlEmitContext::root()`] for the historical
 /// bare-column emission.
 pub(crate) fn emit_expr(
     acc: &mut SqlAccumulator,
@@ -357,7 +357,7 @@ pub(crate) fn emit_expr(
             // because its placement depends on whether the aggregate
             // is used as a SELECT scalar (`(AGG(..))::TY`) or inside
             // the annotate SELECT list with a window function
-            // (`(AGG(..) OVER )::TY`). Keeping this arm bare means
+            // (`(AGG(..) OVER ())::TY`). Keeping this arm bare means
             // nested aggregates don't accidentally pick up a cast
             // they never asked for.
             // `CountStar` is the only branch that emits a bare `*`
@@ -386,7 +386,7 @@ pub(crate) fn emit_expr(
                     // ORDER BY, enforced by `check_aggregate_legality` at
                     // fetch time. Callers chain `.order_by(...)` and
                     // the `order_by` slot below emits well-formed Postgres.
-                    // `sep.clone` is required because `sep` is
+                    // `sep.clone()` is required because `sep` is
                     // `&String` here and `push_bind` takes owned values.
                     acc.push_sql("STRING_AGG(");
                     if *distinct {
@@ -416,7 +416,7 @@ pub(crate) fn emit_expr(
                 // EVERY is the SQL-standard alias for BOOL_AND. Both produce
                 // identical results in Postgres; the IR carries the alias
                 // separately so the emitter renders the keyword the user
-                // wrote (call to `.every` → `EVERY(col)`, never silently
+                // wrote (call to `.every()` → `EVERY(col)`, never silently
                 // rewritten to `BOOL_AND(col)`).
                 AggOp::Every => emit_unary_agg(acc, "EVERY(", *distinct, arg, order_by, ctx)?,
                 // Bitwise integer aggregates — Postgres returns the
@@ -626,7 +626,7 @@ pub(crate) fn emit_expr(
                     acc.push_sql(")");
                 }
                 AggOp::Mode => {
-                    // MODE takes no function arguments — the arg slot
+                    // MODE() takes no function arguments — the arg slot
                     // is a sentinel placeholder that the emitter ignores
                     // on this branch (parallel to CountStar).
                     acc.push_sql("MODE() WITHIN GROUP (ORDER BY ");
@@ -1006,7 +1006,7 @@ pub(crate) fn emit_expr(
             // carries `id` / `created_at` / `updated_at`, so framework
             // columns collide on every M2M correlation).
             // Both strings come from [`crate::ident::assert_plain_ident`]-
-            // validated identifiers (table from `Model::table_name`
+            // validated identifiers (table from `Model::table_name()`
             // declarations, column from sealed macro entry points).
             // Safe to push as raw SQL tokens.
             acc.push_sql(table);
@@ -1500,7 +1500,7 @@ pub(crate) fn outer_cast_suffix(_op: &AggOp) -> Option<&'static str> {
 }
 
 /// Returns true when [`outer_cast_suffix`] is `Some` for this op.
-/// Equivalent to `outer_cast_suffix(op).is_some`; kept as a named
+/// Equivalent to `outer_cast_suffix(op).is_some()`; kept as a named
 /// predicate because the post-arm FILTER block reads more naturally
 /// with a boolean.
 fn op_emits_outer_cast(op: &AggOp) -> bool {
@@ -1550,7 +1550,7 @@ fn emit_subquery(
         }
     }
     acc.push_sql(" FROM ");
-    // Table name is always `<T as Model>::table_name` from the typed
+    // Table name is always `<T as Model>::table_name()` from the typed
     // surface — macro-baked, never user input.
     acc.push_sql(node.table);
     if let Some(predicate) = &node.where_clause {
@@ -1617,7 +1617,7 @@ fn emit_wrapped_if_compound(
 mod tests {
     //! Emitter unit tests — assert the generated SQL text for each
     //! `ExprNode` variant combination the public API can produce.
-    //! `SqlAccumulator::sql` exposes the text with bind placeholders as
+    //! `SqlAccumulator::sql()` exposes the text with bind placeholders as
     //! `$1`, `$2`, … so we can count the bind slots without actually
     //! running the query.
     //! The tests reach `FieldRef::new` via its `pub(crate)` constructor
@@ -1686,7 +1686,7 @@ mod tests {
 
     #[test]
     fn emit_field_vs_literal_eq() {
-        // `view_count.as_expr.eq(Expr::literal(100))` must emit
+        // `view_count.as_expr().eq(Expr::literal(100))` must emit
         // `view_count = $1` — one bind slot for the literal, bare
         // column reference for the field side.
         let f: FieldRef<Post, i32> = FieldRef::new("view_count");
@@ -1700,7 +1700,7 @@ mod tests {
 
     #[test]
     fn emit_field_vs_field_eq() {
-        // `author_id.as_expr.eq(editor_id.as_expr)` must emit
+        // `author_id.as_expr().eq(editor_id.as_expr())` must emit
         // `author_id = editor_id` with zero bind slots — both sides
         // are column references.
         let a: FieldRef<Post, i64> = FieldRef::new("author_id");
@@ -1716,7 +1716,7 @@ mod tests {
 
     #[test]
     fn emit_arithmetic_add_literal() {
-        // `view_count.as_expr + Expr::literal(1)` must emit
+        // `view_count.as_expr() + Expr::literal(1)` must emit
         // `view_count + $1` — one bind slot for the literal RHS,
         // bare `+` operator token between the two operands.
         let f: FieldRef<Post, i32> = FieldRef::new("view_count");
@@ -1820,7 +1820,7 @@ mod tests {
 
     // ── Expr::current_year ───────────────────────────────────────────────────
 
-    /// `Expr::current_year` emits the bare
+    /// `Expr::current_year()` emits the bare
     /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` token stream with no
     /// bind parameters — the year is read from the server clock, never
     /// supplied by the caller.
@@ -1844,7 +1844,7 @@ mod tests {
         );
     }
 
-    /// `Expr::current_year - field.as_expr` — the canonical age
+    /// `Expr::current_year() - field.as_expr()` — the canonical age
     /// expression — must lower to
     /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER - <col>` via the existing
     /// `Expr<i32>` arithmetic IR. The arithmetic emitter wraps each side
@@ -1945,7 +1945,7 @@ mod tests {
 
     /// `TrgmSimilarityScore` under a joined context must emit
     /// `similarity(<alias>.<col>, $1)`.
-    /// Without the `ctx.push_column` fix the column inside `similarity`
+    /// Without the `ctx.push_column` fix the column inside `similarity()`
     /// would be bare, ambiguous in joined contexts.
     #[cfg(feature = "trgm")]
     #[test]

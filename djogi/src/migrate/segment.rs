@@ -55,7 +55,7 @@ use super::sql::{OperationSql, SqlEmitError, lower_operation};
 
 /// Top-level migration plan for one bucket.
 /// Holds the bucket identity, the differ's classification, and the
-/// ordered segment sequence. Empty plans (`segments.is_empty`) are
+/// ordered segment sequence. Empty plans (`segments.is_empty()`) are
 /// the common case for `Classification::NoOp` deltas; callers should
 /// treat an empty plan as "nothing to do".
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -217,8 +217,8 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
         // 2. Short-circuit: structural-empty source.
         // If there are BY SOURCE branches, we cannot short-circuit because an empty
         // source means all target rows are NOT MATCHED BY SOURCE.
-        // However, structural-empty source (`.none`) with BY SOURCE branches is
-        // rejected in validate to prevent unintentional broad updates.
+        // However, structural-empty source (`.none()`) with BY SOURCE branches is
+        // rejected in validate() to prevent unintentional broad updates.
         if self.source.is_empty() {
             return Ok(MergeCounts::zero());
         }

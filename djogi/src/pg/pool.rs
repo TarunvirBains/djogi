@@ -33,7 +33,7 @@
 //!    the first two; the raw-driver bypass is reached via
 //!    [`RawPoolAccessExt::raw_with_client`](crate::__bypass::RawPoolAccessExt).
 //!    `connect(url)` is preserved as sugar for
-//!    `DjogiPool::builder(url).build.await`. COPY, server-side cursors,
+//!    `DjogiPool::builder(url).build().await`. COPY, server-side cursors,
 //!    and other direct-driver protocol operations intentionally remain behind
 //!    the explicit [`RawPoolAccessExt::raw_with_client`](crate::__bypass::RawPoolAccessExt)
 //!    bypass rather than a separate typed wrapper.
@@ -123,7 +123,7 @@ pub const ENV_DATABASE_MAX_CONNECTIONS: &str = "DJOGI_DATABASE_MAX_CONNECTIONS";
 pub type ClientFuture<'a, R> = Pin<Box<dyn Future<Output = Result<R, DjogiError>> + Send + 'a>>;
 
 /// Public alias for a `post_connect` closure's returned future.
-/// Mirrors [`ClientFuture`] but pins the result type to ``, since
+/// Mirrors [`ClientFuture`] but pins the result type to `()`, since
 /// `post_connect` runs setup-only SQL and has no return value beyond
 /// "succeeded" or "failed".
 pub type PostConnectFuture<'a> = ClientFuture<'a, ()>;
@@ -210,7 +210,7 @@ impl DjogiPoolStatus {
 impl DjogiPool {
     /// Build a `DjogiPool` from a Postgres connection URL using framework
     /// defaults.
-    /// Equivalent to `DjogiPool::builder(url).build.await`. Defaults:
+    /// Equivalent to `DjogiPool::builder(url).build().await`. Defaults:
     /// - `max_size` = [`DEFAULT_MAX_SIZE`] (5)
     /// - no wait timeout (callers block until a slot is available)
     /// - no `post_connect` hook
@@ -228,7 +228,7 @@ impl DjogiPool {
     /// The URL format is the standard Postgres connection string, e.g.
     /// `postgres://user:pass@localhost:5432/dbname`.
     /// The returned [`DjogiPoolBuilder`] exposes `.max_size`, `.timeout`,
-    /// and `.post_connect`, finalised by `.build.await`.
+    /// and `.post_connect`, finalised by `.build().await`.
     /// ```ignore
     /// let pool = DjogiPool::builder("postgres://localhost/app")
     ///     .max_size(20)
@@ -368,7 +368,7 @@ impl DjogiPool {
     ///   protocol stream) into the next checkout.
     ///   The dirty-exit detach is important because Djogi's pool runs
     ///   `deadpool_postgres::RecyclingMethod::Fast`, which only checks
-    ///   `is_closed` on return — it does NOT run `ROLLBACK`,
+    ///   `is_closed()` on return — it does NOT run `ROLLBACK`,
     ///   `RESET ALL`, or `DISCARD ALL`. Without the dirty-exit detach
     ///   here, an `Err`/panic during a `BEGIN` block or a `SET ROLE`
     ///   would silently hand the next request a backend with the wrong
@@ -447,7 +447,7 @@ impl DjogiPool {
 /// detaches the `Object` from the pool, dropping the underlying client
 /// and forcing a fresh physical connection on the next demand.
 /// This is the only way to make `with_client` safe given Djogi's
-/// `RecyclingMethod::Fast` recycler, which only checks `is_closed` and
+/// `RecyclingMethod::Fast` recycler, which only checks `is_closed()` and
 /// does NOT issue `ROLLBACK` / `RESET ALL` / `DISCARD ALL`. Without the
 /// dirty-exit detach a closure that starts a transaction or runs `SET
 /// ROLE` / `SET search_path` / an advisory lock and then errors or
@@ -494,7 +494,7 @@ impl Drop for WithClientGuard {
 
 /// Builder for [`DjogiPool`].
 /// Construct via [`DjogiPool::builder`]. Every field has a sensible default;
-/// `.build.await` finalises into a usable pool.
+/// `.build().await` finalises into a usable pool.
 pub struct DjogiPoolBuilder {
     url: String,
     max_size: usize,
@@ -521,7 +521,7 @@ impl DjogiPoolBuilder {
     /// configured via [`Self::timeout`]).
     /// Default: [`DEFAULT_MAX_SIZE`].
     /// `value` must be `>= 1`. Passing `0` would build a pool whose
-    /// internal semaphore has zero permits, so every `pool.get` would
+    /// internal semaphore has zero permits, so every `pool.get()` would
     /// block forever (or until the wait timeout fires). The check runs
     /// in [`Self::build`] so the failure surfaces at construction time
     /// with a clear error rather than as a mysterious hang at first
@@ -601,7 +601,7 @@ impl DjogiPoolBuilder {
     /// # Errors
     /// If the closure returns `Err`, the underlying `Manager::create` is
     /// considered failed: deadpool discards the connection and the
-    /// originating `pool.get` (or terminal query) returns the error
+    /// originating `pool.get()` (or terminal query) returns the error
     /// wrapped in [`DjogiError`]. The hook can return `Err` to abort
     /// startup when a required GUC fails to apply. The implementation
     /// prefixes hook failures with `post_connect:` so caller logs can
@@ -666,7 +666,7 @@ impl DjogiPoolBuilder {
         });
         cfg.pool = Some(PoolConfig::new(self.max_size));
 
-        // `cfg.builder` returns the deadpool `PoolBuilder`. We finish it
+        // `cfg.builder()` returns the deadpool `PoolBuilder`. We finish it
         // off ourselves so we can attach `wait_timeout` — the high-level
         // `cfg.create_pool` does not expose it.
         let mut pool_builder = cfg.builder(NoTls).map_err(|e| {
@@ -827,7 +827,7 @@ mod tests {
             .await
             .expect("builder should accept max_size and timeout");
         let dbg = format!("{pool:?}");
-        // `Pool::status` exposes `max_size` — the Debug impl includes it.
+        // `Pool::status()` exposes `max_size` — the Debug impl includes it.
         assert!(
             dbg.contains("max_size: 7"),
             "Debug output should reflect max_size, got: {dbg}"

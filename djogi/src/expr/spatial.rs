@@ -76,7 +76,7 @@ pub enum SpatialExpr {
     /// The ordering path embeds `ST_Distance` SQL inline in
     /// `OrderExpr::SpatialDistance::emit` for performance, but this variant
     /// powers the expression-IR path that lets callers compose:
-    /// `filter_expr(|f| f.loc.distance_to(&center).lt(1000.0))`.
+    /// `filter_expr(|f| f.loc().distance_to(&center).lt(1000.0))`.
     Distance {
         /// Column name — a `&'static str` from the macro descriptor.
         /// Validated by `assert_plain_ident`; safe to push as raw SQL.

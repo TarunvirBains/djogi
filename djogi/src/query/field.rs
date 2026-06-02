@@ -8,7 +8,7 @@
 //! `Condition::Leaf` that slots into the `QuerySet<T>` filter tree.
 //! # Why
 //! - **Type safety.** `M` binds a ref to one model, so mixing
-//!   `UserFields.id` with a `Post`-targeted QuerySet is a compile error,
+//!   `UserFields.id()` with a `Post`-targeted QuerySet is a compile error,
 //!   not a runtime SQL error. `V` binds the lookup's RHS to the column's
 //!   Rust type, so `view_count.eq("hello")` fails at the field-argument
 //!   conversion bound — again at compile time.
@@ -24,8 +24,8 @@
 //! ```ignore
 //! use djogi::prelude::*;
 //!
-//! let qs = Post::objects.filter(|f| {
-//! f.published.eq(true) & f.view_count.gte(100)
+//! let qs = Post::objects().filter(|f| {
+//! f.published().eq(true) & f.view_count().gte(100)
 //! });
 //! ```
 //! Use `&` / `|` / `!` for composition — both portable
@@ -57,7 +57,7 @@ use std::marker::PhantomData;
 /// lookup methods (`eq`, `gte`, `contains`, …) to build `Condition::Leaf`
 /// nodes. `Copy + 'static` because closures move it freely and the column
 /// name is always a literal baked into the macro output.
-/// The `PhantomData<fn -> M>` / `PhantomData<fn -> V>` markers ensure
+/// The `PhantomData<fn() -> M>` / `PhantomData<fn() -> V>` markers ensure
 /// `FieldRef` is `Send + Sync` even when `M` or `V` are not — the ref never
 /// owns or borrows a value of either type, it merely tags the column.
 pub struct FieldRef<M: Model, V> {
@@ -355,7 +355,7 @@ pub mod __macro_support {
 // Exposing Sassi fields directly would silently flip those semantics on
 // adopters porting between in-memory and SQL filters. `DjogiField` keeps
 // the existing Djogi spelling and routes case-sensitive matching through
-// explicit `contains_case_sensitive` / `explicit_pg_predicate` opt-ins.
+// explicit `contains_case_sensitive` / `explicit_pg_predicate()` opt-ins.
 
 /// Trusted-construction marker for portable predicates.
 /// Constructed only by `DjogiField` / `DjogiPresentField` predicate methods
@@ -370,7 +370,7 @@ pub mod __macro_support {
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct DjogiFieldProvenance {
-    // Private field — only `mint_provenance` can populate it.
+    // Private field — only `mint_provenance()` can populate it.
     _seal: (),
 }
 
@@ -386,7 +386,7 @@ impl DjogiFieldProvenance {
     }
 
     /// Mint a provenance marker for the MirJzSON JSON predicate builder
-    /// (`query::mirjzson::DjogiField<M, MirJzSON>::jsahibon`).
+    /// (`query::mirjzson::DjogiField<M, MirJzSON>::jsahibon()`).
     /// `pub(crate)` so the sibling `query::mirjzson` module can reach
     /// it; crate-internal code outside `query::*` cannot reach the
     /// constructor because `DjogiFieldProvenance`'s only field is
@@ -412,13 +412,13 @@ impl DjogiFieldProvenance {
 /// - **`String`**: Postgres text ordering depends on the database's
 ///   collation, which doesn't match Rust's byte-lexicographic `Ord`.
 ///   Adopters who want database-locale text ordering reach for
-///   `explicit_pg_predicate.gt(...)` until a future phase pins
+///   `explicit_pg_predicate().gt(...)` until a future phase pins
 ///   collation-aware portable ordering.
 /// - **`f32` / `f64`**: SQL `NULLS FIRST/LAST` and IEEE-754 NaN ordering
 ///   diverge from Rust's `PartialOrd` semantics. A future phase may add a
 ///   collation-pinned float ordering with explicit NaN handling.
 /// - **`Option<U>`**: Rust's `Option` ordering (`None < Some(_)`) doesn't
-///   match SQL three-valued NULL semantics. Callers use `.some.gt(v)`
+///   match SQL three-valued NULL semantics. Callers use `.some().gt(v)`
 ///   instead.
 /// - **No blanket impl**: a `impl<T: PartialOrd + ToSql + …>` would
 ///   silently include `Option<U>` and any future foreign type.
@@ -591,12 +591,12 @@ where
 /// | `between` | `DjogiField<M, V>` where `V: DjogiPortableOrd` | `PortablePredicate<M>` |
 /// | `in_`/`not_in` | `DjogiField<M, V>` where `V: DjogiPortableEq` | `PortablePredicate<M>` |
 /// | `is_null`/`is_not_null` | `DjogiField<M, Option<U>>` | `PortablePredicate<M>` |
-/// | `some` | `DjogiField<M, Option<U>>` | `DjogiPresentField<M, U>` |
+/// | `some()`                 | `DjogiField<M, Option<U>>`     | `DjogiPresentField<M, U>`    |
 /// | `contains`/`icontains` | `DjogiField<M, String>` | `PortablePredicate<M>` (ASCII-stable case-insensitive) |
 /// | `starts_with`/`ends_with`| `DjogiField<M, String>` | `PortablePredicate<M>` (ASCII-stable case-insensitive) |
 /// | `*_case_sensitive` family| `DjogiField<M, String>` | `PortablePredicate<M>` |
 /// | `iexact` | `DjogiField<M, String>` | `PortablePredicate<M>` |
-/// | `explicit_pg_predicate`| `DjogiField<M, V>` | `ExplicitPgPredicateField<M, V>` |
+/// | `explicit_pg_predicate()`| `DjogiField<M, V>`             | `ExplicitPgPredicateField<M, V>` |
 /// | non-predicate SQL helpers| `DjogiField<M, V>` | forwarded to `FieldRef` |
 /// PostgreSQL-specific predicates (regex, JSONB path, FTS, spatial, array
 /// operators, expression-producing predicates) are reached through
@@ -611,7 +611,7 @@ pub struct DjogiField<M: Model, V> {
     /// the model macro at `#[model]` expansion time. Duplicates the same
     /// pointer that lives inside `portable` (Sassi keeps that field
     /// `pub(crate)` in its own crate, so we cannot read it from here).
-    /// Needed by the MirJzSON `.jsahibon` lift path
+    /// Needed by the MirJzSON `.jsahibon()` lift path
     /// (`crate::query::mirjzson::DjogiField<M, MirJzSON>::jsahibon`): the
     /// lift transmutes this pointer to `fn(&M) -> &sassi::JSahibON` under
     /// `MirJzSON`'s `#[repr(transparent)]` invariant, then constructs a
@@ -644,8 +644,8 @@ pub struct DjogiPresentField<M: Model, V> {
 /// returns ordinary `Condition` / `Expr<bool>` values (not
 /// `PortablePredicate<M>`) so cache and refresh boundaries reject them
 /// through PR4's portability gate.
-/// The `explicit_pg_predicate` name was chosen over `.sql` / `.db` /
-/// `.pg` because adopters reading `f.title.contains("rust")` should not
+/// The `explicit_pg_predicate()` name was chosen over `.sql()` / `.db()` /
+/// `.pg()` because adopters reading `f.title().contains("rust")` should not
 /// infer that ordinary database queries require a route — only PostgreSQL-
 /// specific semantics do.
 /// PR2a forwards the existing `FieldRef` predicate surface. PR3 widens the
@@ -747,9 +747,9 @@ impl<M: Model, V> DjogiField<M, V> {
     /// This is the **only** root-field route to PostgreSQL-specific
     /// predicate methods — direct names like `regex` / JSONB path / etc.
     /// are not exposed on `DjogiField` itself. Adopters reading
-    /// `f.title.contains("rust")` get the portable ASCII-stable case-
+    /// `f.title().contains("rust")` get the portable ASCII-stable case-
     /// insensitive contains; database-locale `ILIKE` lives on
-    /// `f.title.explicit_pg_predicate.contains("é")`.
+    /// `f.title().explicit_pg_predicate().contains("é")`.
     #[must_use = "ExplicitPgPredicateField is lazy — drop it and the predicate is omitted"]
     pub fn explicit_pg_predicate(self) -> ExplicitPgPredicateField<M, V> {
         ExplicitPgPredicateField { sql: self.sql }
@@ -799,7 +799,7 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
     }
 
     /// Copy from another field in the same query scope — sugar for
-    /// `self.set_field(other.into_sql_field)`.
+    /// `self.set_field(other.into_sql_field())`.
     /// `other` follows Djogi's sealed SQL-field conversion path so
     /// callers can pass any supported SQL-handle type (`FieldRef`
     /// or `DjogiField`) without manually extracting raw handles.
@@ -855,13 +855,13 @@ impl<M: Model, V> DjogiField<M, V> {
     /// ```ignore
     /// use djogi::prelude::*;
     ///
-    /// CompletedOrder::objects
-    /// .filter(|f| f.completed_at.lt(cutoff))
+    /// CompletedOrder::objects()
+    /// .filter(|f| f.completed_at().lt(cutoff))
     /// .insert_into::<OrderArchive, _, _>(|target, source| vec![
-    /// target.original_id.copy_from(source.id.as_insert_source),
-    /// target.title.copy_from(source.title.as_insert_source),
-    /// target.completed_at.copy_from(source.completed_at.as_insert_source),
-    /// target.status.copy_from(InsertSelectSource::literal("ARCHIVED".to_string)),
+    /// target.original_id().copy_from(source.id().as_insert_source()),
+    /// target.title().copy_from(source.title().as_insert_source()),
+    /// target.completed_at().copy_from(source.completed_at().as_insert_source()),
+    /// target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
     /// ])
     /// .execute(&mut ctx)
     /// .await?;
@@ -883,7 +883,7 @@ impl<M: Model, V> DjogiField<M, V> {
     /// # Example
     /// ```ignore
     /// .insert_into::<OrderArchive, _, _>(|target, source| vec![
-    /// target.original_id.copy_from(source.id.as_insert_source),
+    /// target.original_id().copy_from(source.id().as_insert_source()),
     /// ])
     /// ```
     #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
@@ -940,7 +940,7 @@ impl<M: Model, V> DjogiField<M, V> {
     /// `GROUPING(column)` — see
     /// [`FieldRef::grouping`](crate::query::FieldRef::grouping).
     /// Returns a metadata-kind aggregate: chaining modifier methods
-    /// (`.distinct` / `.filter(...)` / `.order_by(...)` / `.over(...)`)
+    /// (`.distinct()` / `.filter(...)` / `.order_by(...)` / `.over(...)`)
     /// is a compile error because `AggregateExpr<i32, MetadataAgg>` does
     /// not implement those modifiers.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -1109,7 +1109,7 @@ impl<M: Model, V: crate::expr::arithmetic::Numeric> DjogiField<M, V> {
 
     /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY column)` — continuous
     /// percentile. Returns an ordered-set-kind aggregate; chaining
-    /// `.distinct` / `.over(...)` / `.order_by(...)` is a compile
+    /// `.distinct()` / `.over(...)` / `.order_by(...)` is a compile
     /// error because only [`OrderedSetAgg`](crate::expr::OrderedSetAgg)
     /// modifiers (`.filter(...)`, `.within_group_order_by(...)`) are
     /// legal.
@@ -1148,7 +1148,7 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
         self.sql.percentile_disc(p)
     }
 
-    /// `MODE WITHIN GROUP (ORDER BY column)` — most common value.
+    /// `MODE() WITHIN GROUP (ORDER BY column)` — most common value.
     /// Returns an ordered-set-kind aggregate.
     /// See [`FieldRef::mode`](crate::query::FieldRef::mode).
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -1158,7 +1158,7 @@ impl<M: Model, V: IntoFilterValue> DjogiField<M, V> {
 
     /// `RANK(value) WITHIN GROUP (ORDER BY column)` — hypothetical-set
     /// rank. Returns a hypothetical-set-kind aggregate; chaining
-    /// `.distinct` / `.over(...)` / `.order_by(...)` is a compile
+    /// `.distinct()` / `.over(...)` / `.order_by(...)` is a compile
     /// error because only [`HypotheticalSetAgg`](crate::expr::HypotheticalSetAgg)
     /// modifiers (`.filter(...)`, `.within_group_order_by(...)`) are
     /// legal.
@@ -1255,7 +1255,7 @@ where
     /// `column IN (v1, …)`. Portable.
     /// An empty list lowers to SQL `FALSE` and Punnu `false`. Generic over
     /// any `IntoIterator<Item = V>` so callers can pass `Vec<V>`,
-    /// `&[V]::iter.copied`, or a custom range without preallocating.
+    /// `&[V]::iter().copied()`, or a custom range without preallocating.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
     pub fn in_<I, P>(self, values: I) -> PortablePredicate<M>
     where
@@ -1343,7 +1343,7 @@ impl<M: Model> DjogiField<M, crate::Interval> {
 
 impl<M: Model> DjogiField<M, Option<crate::Interval>> {
     /// Nullable `INTERVAL` equality using PostgreSQL `INTERVAL` equality.
-    /// `NULL` rows follow SQL three-valued logic. Use `is_null` for an
+    /// `NULL` rows follow SQL three-valued logic. Use `is_null()` for an
     /// explicit NULL predicate.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn eq(self, value: crate::Interval) -> Condition {
@@ -1708,7 +1708,7 @@ impl<M: Model> DjogiPresentField<M, crate::MacAddr> {
 // trait is sealed by absence of a blanket impl + the explicit per-type list
 // above, which is what keeps `Option<U>` and unsupported foreign scalars
 // out. Adopters that need `String` / `f32` / `f64` ordering reach for
-// `explicit_pg_predicate.gt(...)` until a future phase pins
+// `explicit_pg_predicate().gt(...)` until a future phase pins
 // collation/NaN parity.
 
 impl<M: Model, V> DjogiField<M, V>
@@ -1772,7 +1772,7 @@ where
 
 // ── DjogiField — Option<U> predicates ──────────────────────────────────────
 // Null tests apply on every `Option<U>` regardless of `U`'s bind/clone
-// surface. `some` returns the present-only view that exposes ordinary
+// surface. `some()` returns the present-only view that exposes ordinary
 // value comparisons. Direct ordering on `Option<U>` is **not** exposed
 // Rust `Option` ordering doesn't match SQL three-valued NULL semantics.
 
@@ -1818,11 +1818,11 @@ impl<M: Model, U: Send + Sync + 'static> DjogiField<M, Option<U>> {
 // sassi PR1's `icontains`/`istarts_with`/`iends_with`/`iexact` evaluators),
 // portable case-sensitive predicates spell their case-sensitivity
 // explicitly. Database-locale Unicode folding (existing `FieldRef::contains`
-// behaviour) lives only on `explicit_pg_predicate`.
+// behaviour) lives only on `explicit_pg_predicate()`.
 
 impl<M: Model> DjogiField<M, String> {
     /// Case-insensitive substring match (ASCII-stable). Portable.
-    /// Use [`explicit_pg_predicate.contains`](ExplicitPgPredicateField::contains)
+    /// Use [`explicit_pg_predicate().contains`](ExplicitPgPredicateField::contains)
     /// for database-locale `ILIKE` semantics.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
     pub fn contains(self, needle: &str) -> PortablePredicate<M> {
@@ -1891,7 +1891,7 @@ impl<M: Model> DjogiField<M, String> {
     /// Maps to the Sassi `iexact` operator and lowers to a no-wildcard
     /// `COLLATE "C" ILIKE` comparison in SQL. Database-locale equality
     /// remains available through
-    /// [`explicit_pg_predicate.iexact`](ExplicitPgPredicateField::iexact)
+    /// [`explicit_pg_predicate().iexact`](ExplicitPgPredicateField::iexact)
     /// once PR3 widens the explicit-PG surface.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
     pub fn iexact(self, value: &str) -> PortablePredicate<M> {
@@ -1906,12 +1906,12 @@ impl<M: Model> DjogiField<M, String> {
     }
 
     /// Trigram similarity score expression — `similarity(col, $pattern)`.
-    /// Returns an `Expr<f64>` that evaluates the `pg_trgm` `similarity`
+    /// Returns an `Expr<f64>` that evaluates the `pg_trgm` `similarity()`
     /// function per row. Compose with the `Expr<T>` comparison API inside
     /// `filter_expr` to apply a per-query numeric threshold:
     /// ```ignore
     /// qs.filter_expr(|f| {
-    /// f.bio.trgm_similarity("query").gte(Expr::literal(0.3_f64))
+    /// f.bio().trgm_similarity("query").gte(Expr::literal(0.3_f64))
     /// })
     /// ```
     /// **Index acceleration:** the function-form predicate emitted by
@@ -1920,7 +1920,7 @@ impl<M: Model> DjogiField<M, String> {
     /// operator family, not arbitrary `similarity(...)` >= comparisons.
     /// For index-accelerated trgm scans, use
     /// [`ExplicitPgPredicateField::trgm_similar_to`] via
-    /// `f.col.explicit_pg_predicate.trgm_similar_to(pattern)` (the
+    /// `f.col().explicit_pg_predicate().trgm_similar_to(pattern)` (the
     /// threshold for that path is the session GUC
     /// `pg_trgm.similarity_threshold`, default `0.3`).
     /// **Future work:** using `Expr<f64>` as an `order_by` target or as
@@ -2806,8 +2806,8 @@ mod sql_field_seal {
 ///   metadata it always has.
 ///   Use this trait as a bound on SQL helper signatures (spatial group/cluster
 ///   keys, single-column probes for aggregate emission helpers, etc.) so root
-///   accessors can flow through without an explicit `.explicit_pg_predicate`
-///   / `__sql_field` step. The bound is sealed, so downstream crates cannot
+///   accessors can flow through without an explicit `.explicit_pg_predicate()`
+///   /  `__sql_field()` step. The bound is sealed, so downstream crates cannot
 ///   add hostile impls that would smuggle arbitrary column strings into
 ///   SQL emission sites — the only way to reach a `FieldRef<M, V>` here is
 ///   through a value already produced by the validated `__make_field_ref` /
@@ -2874,7 +2874,7 @@ pub mod djogi_field_macro_support {
     /// **Function pointer, not closure.** `extract: fn(&M) -> &V` keeps
     /// `DjogiField` `Copy` without captured state; computed/projected
     /// values that need captured state are non-portable in 8eta and reach
-    /// the database through `explicit_pg_predicate` or a generated
+    /// the database through `explicit_pg_predicate()` or a generated
     /// SQL-only handle.
     #[doc(hidden)]
     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
@@ -2909,7 +2909,7 @@ pub mod djogi_field_macro_support {
 ///    [`JsonbPathRef<M, Self>`](crate::jsonb::JsonbPathRef) applies to
 ///    the text-extracted LHS before comparing against the bind. The
 ///    default body walks a built-in lookup table keyed by
-///    `std::any::type_name::<Self>`; that covers every primitive Rust
+///    `std::any::type_name::<Self>()`; that covers every primitive Rust
 ///    type djogi ships an impl for. **Wrapper implementors (custom PK
 ///    newtypes from `primary_key!`, `ForeignKey<T>`, `OneToOneField<T>`,
 ///    and any other inner-type-delegating shape) MUST override
@@ -3444,7 +3444,7 @@ impl<M: Model, V> FieldRef<M, V> {
 // ── String-only lookups ───────────────────────────────────────────────────
 // Gated on `V = String` via a separate impl block. The methods accept
 // `impl Into<String>` so callers can pass `&str`, `String`, or `Cow<str>`
-// without an extra `.to_string`. Non-string columns do not resolve these
+// without an extra `.to_string()`. Non-string columns do not resolve these
 // methods — the compiler reports "no method named `contains` on
 // `FieldRef<M, i64>`", which is exactly the desired user experience.
 impl<M: Model> FieldRef<M, String> {
@@ -3540,11 +3540,11 @@ impl<M: Model> FieldRef<M, String> {
 // surface is forwarded from:
 // - `ExplicitPgPredicateField<M, String>::trgm_similar_to` — predicate
 // compiling to the `%` operator (`WHERE <col> % $n`). Reached via
-// `f.col.explicit_pg_predicate.trgm_similar_to(pattern)`. Index-
+// `f.col().explicit_pg_predicate().trgm_similar_to(pattern)`. Index-
 // accelerated by `gin_trgm_ops` / `gist_trgm_ops`. Threshold is the
 // session GUC `pg_trgm.similarity_threshold`.
 // - `DjogiField<M, String>::trgm_similarity` — score expression
-// (`similarity(col, $n)`). Reached via `f.col.trgm_similarity(pattern)`
+// (`similarity(col, $n)`). Reached via `f.col().trgm_similarity(pattern)`
 // in `filter_expr` closures for per-query numeric thresholds. NOT
 // accelerated by the trgm opclasses (function-form predicate, not
 // operator).
@@ -3554,7 +3554,7 @@ impl<M: Model> FieldRef<M, String> {
 impl<M: Model> FieldRef<M, String> {
     /// Trigram similarity predicate — `<col> % $pattern`.
     /// **Adopters:** reach this via
-    /// `f.col.explicit_pg_predicate.trgm_similar_to(pattern)` (the same
+    /// `f.col().explicit_pg_predicate().trgm_similar_to(pattern)` (the same
     /// path as `regex`/`iregex`). This `FieldRef` method is the
     /// implementation target; `ExplicitPgPredicateField` forwards to it.
     /// Returns a `Condition` that filters rows where the column value is
@@ -3604,17 +3604,17 @@ impl<M: Model> FieldRef<M, String> {
 
     /// Trigram similarity score expression
     /// `similarity(col, $pattern)`.
-    /// **Adopters:** reach this via `f.col.trgm_similarity(pattern)` directly
+    /// **Adopters:** reach this via `f.col().trgm_similarity(pattern)` directly
     /// on the `DjogiField` returned by generated `{Model}Fields` accessors.
     /// This `FieldRef` method is the implementation target that both
     /// `DjogiField::trgm_similarity` and direct `FieldRef` callsites forward to.
     /// Returns an `Expr<f64>` that Postgres evaluates per row as the
-    /// `similarity` value (`[0.0, 1.0]`) between the column and the
+    /// `similarity()` value (`[0.0, 1.0]`) between the column and the
     /// supplied pattern. Compose with the `Expr<T>` comparison API
     /// inside `filter_expr` to apply a per-query numeric threshold:
     /// ```ignore
     /// qs.filter_expr(|f| {
-    /// f.bio.trgm_similarity("query").gte(Expr::literal(0.3_f64))
+    /// f.bio().trgm_similarity("query").gte(Expr::literal(0.3_f64))
     /// })
     /// ```
     /// # Index acceleration
@@ -3857,7 +3857,7 @@ impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> FieldRef<M, Vec<V>> {
 
     /// `array_length(column, 1)` — number of elements in the 1-dimensional array.
     /// Returns an [`Expr<i32>`](crate::expr::Expr) that slots into the
-    /// expression IR so `.len.gt(3)` composes with the existing `Cmp`
+    /// expression IR so `.len().gt(3)` composes with the existing `Cmp`
     /// machinery (expression IR).
     /// The dimension argument is hardcoded to `1`. Djogi arrays are always
     /// 1-dimensional; multi-dimensional arrays are not a supported field type.
@@ -3974,8 +3974,8 @@ impl<M: Model, T> FieldRef<M, Jsonb<T>> {
     /// `(specs->'engine'->>'cylinders')::int` on the LHS of the comparison.
     /// # Example
     /// ```ignore
-    /// Post::objects
-    /// .filter(|f| f.specs.path::<i32>("engine.cylinders").gt(4))
+    /// Post::objects()
+    /// .filter(|f| f.specs().path::<i32>("engine.cylinders").gt(4))
     /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
@@ -3996,8 +3996,8 @@ impl<M: Model, T> FieldRef<M, Jsonb<T>> {
     /// need dynamic paths or types outside the cast-matrix allowlist.
     /// # Example
     /// ```ignore
-    /// Vehicle::objects
-    /// .filter(|f| f.specs.typed.engine.cylinders.gt(4))
+    /// Vehicle::objects()
+    /// .filter(|f| f.specs().typed().engine.cylinders.gt(4))
     /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "typed path handles are lazy — dropping one silently omits the filter"]
@@ -4009,7 +4009,7 @@ impl<M: Model, T> FieldRef<M, Jsonb<T>> {
     }
 }
 
-/// `path` is also available on nullable JSONB columns (`Option<Jsonb<T>>`).
+/// `path()` is also available on nullable JSONB columns (`Option<Jsonb<T>>`).
 /// The SQL expression navigates into the column as if it were non-null; when
 /// the column IS NULL the Postgres JSONB path operators themselves return NULL,
 /// so comparisons naturally exclude NULL rows — consistent with SQL's
@@ -4059,9 +4059,9 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     ///   user-supplied data.
     /// # Example
     /// ```ignore
-    /// Place::objects
-    /// .filter(|p| p.location.within_km(
-    /// GeoPoint::new(37.7749, -122.4194).unwrap,
+    /// Place::objects()
+    /// .filter(|p| p.location().within_km(
+    /// GeoPoint::new(37.7749, -122.4194).unwrap(),
     /// 50.0, // km
     /// ))
     /// .fetch_all(&mut ctx).await?
@@ -4092,13 +4092,13 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     /// ST_Distance(<col>, ST_Point($lon, $lat)::geography) ASC, id ASC
     /// ```
     /// `$lon` and `$lat` are bound as parameters. The `id` column name is
-    /// the model's primary key — captured from `M::descriptor.pk_column`
+    /// the model's primary key — captured from `M::descriptor().pk_column()`
     /// at call time.
     /// # Example
     /// ```ignore
-    /// Place::objects
-    /// .order_by(|p| p.location.order_by_distance(
-    /// GeoPoint::new(37.7749, -122.4194).unwrap
+    /// Place::objects()
+    /// .order_by(|p| p.location().order_by_distance(
+    /// GeoPoint::new(37.7749, -122.4194).unwrap()
     /// ))
     /// .fetch_all(&mut ctx).await?
     /// ```
@@ -4106,7 +4106,7 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     pub fn order_by_distance(self, center: crate::geo::GeoPoint) -> crate::query::order::OrderExpr {
         // Get the PK column from the descriptor. For all standard PK types
         // (HeerId, RanjId, Serial) this is "id".
-        // The `unwrap_or(self.column)` fallback path is defensive-only and
+        // The `unwrap_or(self.column())` fallback path is defensive-only and
         // unreachable from the public API: `FieldRef<M, GeoPoint>` requires
         // `M: Model`, and `#[model(pk = None)]` models do not receive a
         // `Model` impl from the macro (only `pk = None` with no ordering
@@ -4204,8 +4204,8 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// # Example
     /// ```ignore
     /// // Find delivery zones that fully contain the customer's neighbourhood.
-    /// DeliveryZone::objects
-    /// .filter(|z| z.area.contains(&neighbourhood_polygon))
+    /// DeliveryZone::objects()
+    /// .filter(|z| z.area().contains(&neighbourhood_polygon))
     /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -4231,8 +4231,8 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// # Example
     /// ```ignore
     /// // Find routes that cross the construction zone.
-    /// Route::objects
-    /// .filter(|r| r.path.intersects(&construction_zone))
+    /// Route::objects()
+    /// .filter(|r| r.path().intersects(&construction_zone))
     /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -4258,8 +4258,8 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// # Example
     /// ```ignore
     /// // Find parcels adjacent to (touching) the road boundary.
-    /// Parcel::objects
-    /// .filter(|p| p.boundary.touches(&road_line))
+    /// Parcel::objects()
+    /// .filter(|p| p.boundary().touches(&road_line))
     /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -4288,8 +4288,8 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// # Example
     /// ```ignore
     /// // Find deliveries whose drop-off point falls inside a coverage polygon.
-    /// Delivery::objects
-    /// .filter(|d| d.drop_off.within(&coverage_polygon))
+    /// Delivery::objects()
+    /// .filter(|d| d.drop_off().within(&coverage_polygon))
     /// .fetch_all(&mut ctx).await?
     /// ```
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -4328,9 +4328,9 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// predicate for best performance:
     /// ```ignore
     /// // Fast bbox prefilter, then exact intersection.
-    /// Delivery::objects
-    /// .filter(|f| f.area.bounded_by(37.0, -123.0, 38.0, -122.0))
-    /// .filter(|f| f.area.intersects(&zone))
+    /// Delivery::objects()
+    /// .filter(|f| f.area().bounded_by(37.0, -123.0, 38.0, -122.0))
+    /// .filter(|f| f.area().intersects(&zone))
     /// .fetch_all(&mut ctx).await?
     /// ```
     /// Argument order matches the `GeoPoint` (lat, lon) convention:
@@ -4385,13 +4385,13 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// # Composition
     /// Use it inside `GroupedQuerySet::annotate(...)` like any other
     /// aggregate — typically alongside a per-group key from
-    /// `QuerySet::group_by(|f| f.herd_id)`:
+    /// `QuerySet::group_by(|f| f.herd_id())`:
     /// ```ignore
     /// // Per-herd territory hulls — feeds the mating-pairs territory-overlap
     /// // scoring in the elephant-tracker demo.
-    /// let hulls: Vec<(i64, Polygon)> = Elephant::objects
-    /// .group_by(|f| f.herd_id)
-    /// .annotate(|f| f.location.convex_hull)
+    /// let hulls: Vec<(i64, Polygon)> = Elephant::objects()
+    /// .group_by(|f| f.herd_id())
+    /// .annotate(|f| f.location().convex_hull())
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Return type
@@ -4408,7 +4408,7 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     ///   `GroupedQuerySet` that consumes this aggregate via `.annotate(...)`.
     /// # Modifier composition
     /// Routes through the `Aggregate` envelope so all modifiers
-    /// (`.distinct` / `.filter` / `.over` / `.order_by`)
+    /// (`.distinct()` / `.filter()` / `.over()` / `.order_by()`)
     /// compose uniformly with the rest of the spatial aggregate
     /// family. The wrapped emission shape
     /// `ST_ConvexHull(ST_Collect(...) FILTER (...) OVER (...))::geography`
@@ -4446,12 +4446,12 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// ```ignore
     /// // Per-cluster centroid + count over a DBSCAN clustering — the
     /// // shape that backs the cluster_sightings demo's typed retrofit.
-    /// let clusters: Vec<(ClusterId, GeoPoint, i64)> = Sighting::objects
+    /// let clusters: Vec<(ClusterId, GeoPoint, i64)> = Sighting::objects()
     /// .cluster_by_proximity(
-    /// |f| f.location,
+    /// |f| f.location(),
     /// ClusterRadius::meters(50_000.0).min_points(3),
     /// )
-    /// .annotate(|f| (f.location.centroid, f.id.count_star))
+    /// .annotate(|f| (f.location().centroid(), f.id().count_star()))
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4493,12 +4493,12 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// contributing point of a group as a single multi-geometry value.
     /// For density-based clustering plus per-cluster point dump:
     /// ```ignore
-    /// let clusters: Vec<(ClusterId, MultiPoint)> = Sighting::objects
+    /// let clusters: Vec<(ClusterId, MultiPoint)> = Sighting::objects()
     /// .cluster_by_proximity(
-    /// |f| f.location,
+    /// |f| f.location(),
     /// ClusterRadius::meters(50_000.0).min_points(3),
     /// )
-    /// .annotate(|f| f.location.collect)
+    /// .annotate(|f| f.location().collect())
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4528,9 +4528,9 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// # Composition
     /// Use as the bounding-box per group:
     /// ```ignore
-    /// let bboxes: Vec<(i64, Polygon)> = Sighting::objects
-    /// .group_by(|f| f.cluster_id)
-    /// .annotate(|f| f.location.extent)
+    /// let bboxes: Vec<(i64, Polygon)> = Sighting::objects()
+    /// .group_by(|f| f.cluster_id())
+    /// .annotate(|f| f.location().extent())
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4578,7 +4578,7 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     }
 }
 
-// ── union — region-merging aggregate, polygon-shaped fields only ──────────
+// ── union() — region-merging aggregate, polygon-shaped fields only ──────────
 // `ST_Union` produces a MultiPolygon for polygonal inputs; for point
 // inputs it would yield a MultiPoint instead, breaking the typed
 // `AggregateExpr<MultiPolygon>` decode. Restricting the receiver to
@@ -4608,9 +4608,9 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// # Composition
     /// ```ignore
     /// // Merge per-region polygons into a single MultiPolygon per herd.
-    /// let territories: Vec<(HerdId, MultiPolygon)> = Range::objects
-    /// .group_by(|f| f.herd_id)
-    /// .annotate(|f| f.boundary.union)
+    /// let territories: Vec<(HerdId, MultiPolygon)> = Range::objects()
+    /// .group_by(|f| f.herd_id())
+    /// .annotate(|f| f.boundary().union())
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4647,15 +4647,15 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// the floor, only the emitter arm changes — the typed surface
     /// stays identical.
     /// # vs. [`Self::union`]
-    /// - `polygon_agg` collects polygons into a MultiPolygon
+    /// - `polygon_agg()` collects polygons into a MultiPolygon
     ///   without merging — output is the bag of inputs.
-    /// - `union` merges overlapping/touching polygons — output is
+    /// - `union()` merges overlapping/touching polygons — output is
     ///   the geometric union.
     /// # Composition
     /// ```ignore
-    /// let regions: Vec<(HerdId, MultiPolygon)> = Range::objects
-    /// .group_by(|f| f.herd_id)
-    /// .annotate(|f| f.boundary.polygon_agg)
+    /// let regions: Vec<(HerdId, MultiPolygon)> = Range::objects()
+    /// .group_by(|f| f.herd_id())
+    /// .annotate(|f| f.boundary().polygon_agg())
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4685,7 +4685,7 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// land in their own single-element clusters.
     /// # Aggregate vs window-function clustering
     /// Unlike the existing `cluster_by_proximity` (a window function
-    /// that adds a per-row cluster id), `cluster_intersecting` is a
+    /// that adds a per-row cluster id), `cluster_intersecting()` is a
     /// true aggregate — one row out per (group, cluster) pair after
     /// the array is `unnest`ed at the call site. The aggregate form
     /// suits per-group folding (e.g. \"all overlapping ranges per
@@ -4693,9 +4693,9 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// # Composition
     /// ```ignore
     /// // Per-herd intersecting territory clusters.
-    /// let clusters: Vec<(HerdId, Vec<MultiPolygon>)> = Range::objects
-    /// .group_by(|f| f.herd_id)
-    /// .annotate(|f| f.boundary.cluster_intersecting)
+    /// let clusters: Vec<(HerdId, Vec<MultiPolygon>)> = Range::objects()
+    /// .group_by(|f| f.herd_id())
+    /// .annotate(|f| f.boundary().cluster_intersecting())
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4720,7 +4720,7 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// `distance` is bound as a positional parameter — no string
     /// interpolation of user-supplied data.
     /// # vs. [`Self::cluster_intersecting`]
-    /// - `cluster_intersecting` clusters geometries that *touch
+    /// - `cluster_intersecting()` clusters geometries that *touch
     ///   or overlap*.
     /// - `cluster_within(d)` clusters geometries within `d` meters
     ///   of each other — the threshold is configurable, so adopters
@@ -4728,9 +4728,9 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// # Composition
     /// ```ignore
     /// // Cluster nearby territories within 10 km.
-    /// let clusters: Vec<(HerdId, Vec<MultiPolygon>)> = Range::objects
-    /// .group_by(|f| f.herd_id)
-    /// .annotate(|f| f.boundary.cluster_within(10_000.0))
+    /// let clusters: Vec<(HerdId, Vec<MultiPolygon>)> = Range::objects()
+    /// .group_by(|f| f.herd_id())
+    /// .annotate(|f| f.boundary().cluster_within(10_000.0))
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4758,21 +4758,21 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// Both fold polygonal inputs into a single MultiPolygon by
     /// merging shared edges — same input / output shape, different
     /// algorithm:
-    /// - `union` (`ST_Union`) sorts inputs and merges along a
+    /// - `union()` (`ST_Union`) sorts inputs and merges along a
     ///   shared edge tree. Faster for moderate group sizes; memory-
     ///   intensive for very large input sets because the entire input
     ///   must fit in working memory.
-    /// - `mem_union` (`ST_MemUnion`) runs a pairwise merge with
+    /// - `mem_union()` (`ST_MemUnion`) runs a pairwise merge with
     ///   bounded working memory. Slower per-row but handles
     ///   terabyte-scale inputs without spilling.
-    ///   Pick `mem_union` when input size exceeds working memory; pick
-    ///   `union` for the common case.
+    ///   Pick `mem_union()` when input size exceeds working memory; pick
+    ///   `union()` for the common case.
     /// # Composition
     /// ```ignore
     /// // Memory-friendly union over a very large input set.
-    /// let merged: Vec<(HerdId, MultiPolygon)> = Range::objects
-    /// .group_by(|f| f.herd_id)
-    /// .annotate(|f| f.boundary.mem_union)
+    /// let merged: Vec<(HerdId, MultiPolygon)> = Range::objects()
+    /// .group_by(|f| f.herd_id())
+    /// .annotate(|f| f.boundary().mem_union())
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4805,7 +4805,7 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::LineString> {
     /// rings) yield a degenerate output that may fail the typed EWKB
     /// decode at the call site.
     /// # LineString-only receiver
-    /// `polygonize` only makes sense for input LineStrings — the
+    /// `polygonize()` only makes sense for input LineStrings — the
     /// algorithm walks edge endpoints to find closed rings. Other
     /// geography shapes (Point, Polygon, MultiPolygon) would produce
     /// undefined output. The receiver-type gate enforces this at the
@@ -4813,9 +4813,9 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::LineString> {
     /// # Composition
     /// ```ignore
     /// // Per-region polygons assembled from per-edge LineString rows.
-    /// let regions: Vec<(RegionId, MultiPolygon)> = Edge::objects
-    /// .group_by(|f| f.region_id)
-    /// .annotate(|f| f.geometry.polygonize)
+    /// let regions: Vec<(RegionId, MultiPolygon)> = Edge::objects()
+    /// .group_by(|f| f.region_id())
+    /// .annotate(|f| f.geometry().polygonize())
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4840,7 +4840,7 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::LineString> {
     /// `ST_LineAgg`; outer `::geography` cast moves the result back to
     /// the geography substrate so the typed `MultiLineString` decode
     /// works.
-    /// # Sibling: `make_line` vs `line_agg`
+    /// # Sibling: `make_line()` vs `line_agg()`
     /// - [`FieldRef<M, GeoPoint>::make_line`] takes per-row **points**
     ///   and joins them into a single `LineString`. Use when each row
     ///   contributes one vertex.
@@ -4851,9 +4851,9 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::LineString> {
     /// # Composition
     /// ```ignore
     /// // Per-route MultiLineString of all logged sub-tracks
-    /// let multi_tracks: Vec<(RouteId, MultiLineString)> = SubTrack::objects
-    /// .group_by(|f| f.route_id)
-    /// .annotate(|f| f.path.line_agg)
+    /// let multi_tracks: Vec<(RouteId, MultiLineString)> = SubTrack::objects()
+    /// .group_by(|f| f.route_id())
+    /// .annotate(|f| f.path().line_agg())
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4949,9 +4949,9 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     /// # Composition — GPS track example
     /// ```ignore
     /// // Per-trip GPS track ordered by timestamp.
-    /// let tracks: Vec<(TripId, LineString)> = Sample::objects
-    /// .group_by(|f| f.trip_id)
-    /// .annotate(|f| f.position.make_line.order_by(f.recorded_at))
+    /// let tracks: Vec<(TripId, LineString)> = Sample::objects()
+    /// .group_by(|f| f.trip_id())
+    /// .annotate(|f| f.position().make_line().order_by(f.recorded_at()))
     /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Postgres NULL behaviour
@@ -4973,11 +4973,11 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     /// great-circle distance in meters from `<col>` to `center`.
     /// Composes with `.filter`, `.annotate`, and `.order_by`:
     /// ```ignore
-    /// let center = GeoPoint::new(37.7749, -122.4194).unwrap;
+    /// let center = GeoPoint::new(37.7749, -122.4194).unwrap();
     ///
     /// // Filter by distance threshold.
-    /// Store::objects
-    /// .filter(|f| f.location.distance_to(&center).lt(5000.0))
+    /// Store::objects()
+    /// .filter(|f| f.location().distance_to(&center).lt(5000.0))
     /// .fetch_all(&mut ctx).await?
     /// ```
     /// This wraps the existing `SpatialExpr::Distance` IR variant that was
@@ -5001,7 +5001,7 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
 // `query::condition`. `.and_with` / `.or_with` are the method-chain forms
 // that read left-to-right in a filter closure:
 // ```ignore
-// f.title.eq("x").and_with(f.view_count.gte(100))
+// f.title().eq("x").and_with(f.view_count().gte(100))
 // ```
 // Named `*_with` (rather than `.and` / `.or`) to avoid colliding with
 // `bool::and` / `bool::or` if a future Condition impl adopts those names
@@ -5031,7 +5031,7 @@ impl Condition {
 // IS-NOT-NULL guard through [`OptionalRelationRef::map_filter`].
 // # Design rationale — why a wrapper type (not `Option<Fields>`)?
 // Returning `Option<PeerFields>` would force the macro to embed a runtime
-// branch in emitted code (`if self.path.is_some { Some(PeerFields { … }) }
+// branch in emitted code (`if self.path.is_some() { Some(PeerFields { … }) }
 // else { None }`). But at filter-build time the FK column may be NULL
 // on zero rows, some rows, or every row — the `Option` lens lives in the
 // result set, not in the filter tree. The correct shape is "compose a
@@ -5051,7 +5051,7 @@ impl Condition {
 /// inner closure's output. The caller never sees `None` — the SQL guard
 /// is automatic.
 /// # SQL shape
-/// `map_filter(|a| a.name.eq("Ada"))` on a wrapper over the `author_id`
+/// `map_filter(|a| a.name().eq("Ada"))` on a wrapper over the `author_id`
 /// FK emits:
 /// ```sql
 /// author_id IS NOT NULL AND author.name = $1
@@ -5114,7 +5114,7 @@ impl<V> OptionalRelationRef<V> {
     /// compose a mixed [`Predicate`](crate::query::Predicate) tree in the
     /// closure.
     /// The returned `Q<M>` is equivalent to
-    /// `Q::Condition(fk IS NOT NULL) & f(peer_fields).into_q`.
+    /// `Q::Condition(fk IS NOT NULL) & f(peer_fields).into_q()`.
     #[must_use = "predicates are lazy — dropping one silently omits the filter"]
     pub fn map_predicate<M, F, P>(self, f: F) -> crate::query::Q<M>
     where
@@ -5520,9 +5520,9 @@ mod tests {
     /// FIX_BEFORE_BETA-4: the new
     /// `impl<M, U> DjogiField<M, Option<U>> where U: DjogiPortableOrd`
     /// block routes `gt` / `gte` / `lt` / `lte` / `between` through the
-    /// present-field surface (`self.some.gt(value)` and friends).
+    /// present-field surface (`self.some().gt(value)` and friends).
     /// The resulting `PortablePredicate` must carry the inner-`U` payload
-    /// (matching `DjogiField<M, Option<U>>::some.gt(value)`) and the
+    /// (matching `DjogiField<M, Option<U>>::some().gt(value)`) and the
     /// underlying Sassi op — anything else means the routing is wrong
     /// and the runtime emit will fail with `ValueTypeMismatch` because
     /// `option_arms`'s ordering arms downcast to `U`, not `Option<U>`.
@@ -5609,7 +5609,7 @@ mod tests {
                 assert_eq!(field.field_name(), "tagline");
                 assert_eq!(field.op(), sassi::LookupOp::Eq);
                 // `IntoPortableFieldValue<Option<String>> for &str` (issue
-                // #167) wraps `"hello"` as `Some("hello".to_owned)` for
+                // #167) wraps `"hello"` as `Some("hello".to_owned())` for
                 // the Sassi payload, so the direct Option<String> downcast
                 // matches.
                 assert_eq!(
@@ -6397,14 +6397,14 @@ mod distance_tests {
 
     // Convex_hull typed surface tests
 
-    /// `FieldRef<M, GeoPoint>::convex_hull` must produce an
+    /// `FieldRef<M, GeoPoint>::convex_hull()` must produce an
     /// `AggregateExpr<Polygon>` whose underlying node is the
     /// `AggOp::SpatialConvexHull` aggregate IR variant. The typed
     /// return is a compile-time assertion; the runtime check pins the
     /// stored field column.
     /// ConvexHull migrated from `ExprNode::Spatial(SpatialExpr::ConvexHull{..})`
     /// to a proper `AggOp::SpatialConvexHull` so AggregateExpr modifiers
-    /// (`.distinct` / `.filter` / `.over` / `.order_by`)
+    /// (`.distinct()` / `.filter()` / `.over()` / `.order_by()`)
     /// compose uniformly with the rest of the aggregate family.
     #[cfg(feature = "spatial")]
     #[test]
@@ -6473,7 +6473,7 @@ mod distance_tests {
         );
     }
 
-    /// `.distinct` on convex_hull lands inside ST_Collect (the actual
+    /// `.distinct()` on convex_hull lands inside ST_Collect (the actual
     /// aggregate). Regression guard: before the AggOp migration this
     /// modifier silently no-op'd because AggregateExpr modifiers only
     /// mutate ExprNode::Aggregate.
@@ -6658,7 +6658,7 @@ mod distance_tests {
     #[test]
     fn centroid_with_over_in_annotate_path_places_over_on_inner_collect() {
         // When a spatial aggregate is emitted through the windowed-annotate
-        // path (the default `OVER ` for ungrouped annotate, or an explicit
+        // path (the default `OVER ()` for ungrouped annotate, or an explicit
         // `.over(|w| ...)` window spec), the OVER clause must attach to the
         // *aggregate*, not to a scalar wrapper.
         // For centroid, ST_Collect IS the aggregate; ST_Centroid is
@@ -6687,9 +6687,9 @@ mod distance_tests {
     #[cfg(feature = "spatial")]
     #[test]
     fn collect_with_over_in_annotate_path_places_over_inside_geography_cast() {
-        // Unwrapped spatial — `loc.collect` has no scalar wrapper,
+        // Unwrapped spatial — `loc.collect()` has no scalar wrapper,
         // so OVER and cast attach the canonical aggregate-with-OVER
-        // way: `(AGG(...) OVER )::cast`.
+        // way: `(AGG(...) OVER ())::cast`.
         use crate::pg::accumulator::SqlAccumulator;
         let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         let agg = loc.collect();

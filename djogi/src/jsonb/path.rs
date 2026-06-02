@@ -19,7 +19,7 @@
 //! 63 bytes long. This rule is enforced in plain English — no regex engine is
 //! used or allowed anywhere in Djogi (see `decisions.md`).
 //! # Why flat only?
-//! `path` is intentionally shallow: it accepts a dotted string (evaluated at
+//! `path()` is intentionally shallow: it accepts a dotted string (evaluated at
 //! runtime) and emits a direct `->` chain. Typed deep paths (a full
 //! `#[derive(JsonbSchema)]` with compile-time field access) are deferred to
 //! Task 6. The flat API already covers the overwhelmingly common case — most
@@ -234,7 +234,7 @@ impl JsonbSqlCast {
     }
 }
 
-/// Resolve the typed [`JsonbSqlCast`] for a `std::any::type_name::<V>`
+/// Resolve the typed [`JsonbSqlCast`] for a `std::any::type_name::<V>()`
 /// string, or `None` for `String` / `&str` (text extraction already
 /// produces text — no cast needed) and for any type not in the table.
 /// This is the canonical lookup behind [`IntoFilterValue::jsonb_sql_cast`]'s
@@ -278,7 +278,7 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         "f64" => Some(JsonbSqlCast::Float8),
         // Boolean.
         "bool" => Some(JsonbSqlCast::Boolean),
-        // Temporal types — `std::any::type_name::<T>` returns the FULL
+        // Temporal types — `std::any::type_name::<T>()` returns the FULL
         // path including private modules, so the canonical match strings
         // are `time::offset_date_time::OffsetDateTime` and `time::date::Date`,
         // not the public re-export paths. The short-form arms
@@ -287,7 +287,7 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         // (test fixtures do this) or a future rustc release simplifies
         // the format.
         // that the table mapped only the public-path forms while
-        // `type_name<>` produced the full forms — every temporal jsonb
+        // `type_name<>()` produced the full forms — every temporal jsonb
         // path comparison was silently falling back to text.
         "time::offset_date_time::OffsetDateTime" | "time::OffsetDateTime" | "OffsetDateTime" => {
             Some(JsonbSqlCast::Timestamptz)
@@ -296,7 +296,7 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         // UUID — applies to both uuid::Uuid directly and djogi's RanjId,
         // which is a newtype over uuid::Uuid with the same wire format.
         "uuid::Uuid" | "Uuid" => Some(JsonbSqlCast::Uuid),
-        // HeerId — `type_name<heeranjid::HeerId>` is
+        // HeerId — `type_name<heeranjid::HeerId>()` is
         // `heeranjid::heer::HeerId`. The short re-export form
         // `heeranjid::HeerId` and djogi's `djogi::types::HeerId` alias
         // (which `type_name` would never produce — aliases resolve at
@@ -331,7 +331,7 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         }
         // Interval — djogi's own newtype wrapping the Postgres
         // `INTERVAL` wire format. The struct is defined in `djogi::pg_types`
-        // (not a private sub-module), so `type_name::<djogi::Interval>`
+        // (not a private sub-module), so `type_name::<djogi::Interval>()`
         // produces `djogi::pg_types::Interval` at runtime. The public
         // re-export alias `djogi::types::Interval` and the bare name
         // `Interval` are kept defensively; re-export aliases are never
@@ -660,7 +660,7 @@ mod tests {
     // ── sql_cast_for_type — full matrix coverage ─────────────────────────
     // Every IntoFilterValue implementor must appear in this table with the
     // correct Postgres cast. These tests prove the table is complete and the
-    // cast strings are correct. type_name::<V> returns the form used by the
+    // cast strings are correct. type_name::<V>() returns the form used by the
     // real call site; tests use the same string forms to be faithful.
 
     #[test]
@@ -765,7 +765,7 @@ mod tests {
 
     #[test]
     fn sql_cast_for_string_is_none() {
-        // alloc::string::String is what type_name::<String> returns in Rust.
+        // alloc::string::String is what type_name::<String>() returns in Rust.
         assert_eq!(sql_cast_for_type("alloc::string::String"), None);
         // Bare "String" also covered for robustness.
         assert_eq!(sql_cast_for_type("String"), None);
@@ -782,7 +782,7 @@ mod tests {
         assert_eq!(sql_cast_for_type("some::unknown::Type"), None);
     }
 
-    // against `std::any::type_name::<V>` output directly, not against
+    // against `std::any::type_name::<V>()` output directly, not against
     // hand-written strings. The hand-written `"time::OffsetDateTime"`
     // form is what we *thought* `type_name` produced; the real output
     // is `time::offset_date_time::OffsetDateTime` (the full private-
@@ -869,7 +869,7 @@ mod tests {
         assert_eq!(sql_cast_for_type("Interval"), Some("::interval"));
     }
 
-    // Lock the actual `type_name::<crate::Interval>` output against the
+    // Lock the actual `type_name::<crate::Interval>()` output against the
     // cast table so any future rustc `type_name` format change surfaces as
     // a test failure here rather than as silent text-fallback in production
     // JSONB interval queries (same pattern as the
@@ -971,7 +971,7 @@ mod tests {
     // generics. They were missing from the cast table — every JSONB
     // comparison against a `HeerIdDesc`-typed payload was silently
     // falling back to text comparison. Lock them in here against the
-    // real `type_name<>` output so a future change surfaces here
+    // real `type_name<>()` output so a future change surfaces here
     // first.
     #[test]
     fn sql_cast_uses_actual_type_name_for_heer_id_desc() {
@@ -1092,7 +1092,7 @@ mod tests {
 
     // ── — `IntoFilterValue::jsonb_sql_cast` trait dispatch ────
     // The trait method is the canonical adopter-facing entry point. The
-    // default impl on `IntoFilterValue` walks `type_name::<Self>`
+    // default impl on `IntoFilterValue` walks `type_name::<Self>()`
     // through `jsonb_sql_cast_for_type`. Wrapper newtypes override the
     // method to delegate to the inner SQL value type. These tests cover
     // the dispatch for built-in primitives and a wrapper that delegates
@@ -1124,7 +1124,7 @@ mod tests {
     /// Local newtype wrapper. Delegates `IntoFilterValue` and
     /// `jsonb_sql_cast` to `i64`. Mirrors the shape `primary_key!`
     /// emits: the inner type is the SQL value type. Pre-#161 the
-    /// wrapper inherited the default (`type_name::<LocalI64Id>`
+    /// wrapper inherited the default (`type_name::<LocalI64Id>()`
     /// returns `djogi::jsonb::path::tests::LocalI64Id` which is not
     /// in the cast table) and silently fell back to text — the
     /// regression this test pins.

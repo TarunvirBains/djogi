@@ -48,7 +48,7 @@
 //! invocations cannot interleave with attune.
 //! # Database scope
 //! Each attune invocation is bound to ONE database — the active
-//! `DjogiContext`'s `current_database`. The disk scan is filtered
+//! `DjogiContext`'s `current_database()`. The disk scan is filtered
 //! to `migrations/<active_db>/...` and ledger queries run against the
 //! connected pool. Multi-database workspaces require running attune
 //! once per database; this is intentional and matches the existing
@@ -240,7 +240,7 @@ pub enum AttuneDiagnostic {
     /// operator must run `apply` or
     /// `attune --record --apply` first.
     /// The `database` field is the active connection's
-    /// `current_database` so a multi-database workspace's diagnostic
+    /// `current_database()` so a multi-database workspace's diagnostic
     /// is unambiguous.
     LedgerTableMissing { database: String },
     /// A Record or Squash mode was invoked without `--apply`. The
@@ -763,7 +763,7 @@ pub async fn attune(
     // attune once per database; this guarantees an attune invocation
     // never inserts ledger rows for a database it isn't actually
     // connected to.
-    // Reading `current_database` does not require the ledger table,
+    // Reading `current_database()` does not require the ledger table,
     // so we issue it BEFORE the bootstrap dispatch below — DiffOnly's
     // read-only contract hinges on us not creating the ledger
     // table when the operator only asked for a diff.
@@ -1131,7 +1131,7 @@ async fn scan_ledger(
     Ok(out)
 }
 
-/// Read the active database's name from `current_database`. Used to
+/// Read the active database's name from `current_database()`. Used to
 /// stamp the bucket identity on ledger rows when reading them back.
 /// The active database IS the bucket database in the current single-pool
 /// arrangement; the helper exists so a future multi-pool shape can

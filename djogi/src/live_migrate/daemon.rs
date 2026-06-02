@@ -82,7 +82,7 @@ pub struct DaemonConfig {
     /// plan §8 amendment.
     pub poll_interval: Duration,
     /// A row is treated as a daemon candidate when its
-    /// `last_progress_at` is older than `now - claim_stale_after`,
+    /// `last_progress_at` is older than `now() - claim_stale_after`,
     /// OR `claimed_by_pid IS NULL`. Default 10 minutes.
     pub claim_stale_after: Duration,
     /// Refuse non-localhost connections unless this flag is set. The
@@ -172,7 +172,7 @@ pub enum DaemonError {
     #[error(transparent)]
     Database(#[from] DjogiError),
     /// SIGTERM / SIGINT received; the loop exited cleanly. Surfaced as
-    /// an `Err` rather than `Ok` so callers can distinguish
+    /// an `Err` rather than `Ok(())` so callers can distinguish
     /// "completed naturally" from "terminated by signal" — the daemon
     /// never completes naturally; the only successful exit is via
     /// signal.
@@ -203,7 +203,7 @@ impl From<DbError> for DaemonError {
 ///    plans are explicit operator checkpoints; terminal states
 ///    (Complete / Abandoned / Failed) are never auto-resumed.
 /// 2. **Stale (or never-progressed) AND free-to-claim.** The row must
-///    be stale — `last_progress_at < now - $1::interval OR
+///    be stale — `last_progress_at < now() - $1::interval OR
 /// last_progress_at IS NULL` (a row that has never recorded
 ///    progress is treated as stale by definition). The row must also
 ///    be free to claim — `claimed_by_pid IS NULL OR claimed_by_pid =
@@ -228,7 +228,7 @@ WHERE status = 'running' \
   )";
 
 /// Update statement that records a successful claim. Sets `claimed_by_pid`,
-/// `claimed_by_host`, and `claimed_at = now` for the row identified by
+/// `claimed_by_host`, and `claimed_at = now()` for the row identified by
 /// the bucket key. Issued only after the corresponding advisory lock
 /// has been acquired.
 /// The `WHERE` clause re-asserts the same status / step filter the

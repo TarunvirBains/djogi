@@ -19,7 +19,7 @@
 //!   [`super::ledger`] so future tooling can reason about checksums
 //!   uniformly.
 //! # No regex
-//! File-name discovery uses byte-level checks against `OsStr::to_str`.
+//! File-name discovery uses byte-level checks against `OsStr::to_str()`.
 //! No regex engine, no regex notation. Files are accepted iff the
 //! filename ends in `".sql"` and the rest is non-empty after the
 //! `.sql` suffix is stripped.
@@ -519,7 +519,7 @@ pub async fn fetch_recorded_checksum(
 }
 
 /// Insert a successfully-applied seed into `djogi_seed_runs`. The
-/// `applied_at` and `applied_by` columns default to `now` and
+/// `applied_at` and `applied_by` columns default to `now()` and
 /// `current_user` server-side; we only supply the name and checksum.
 pub async fn insert_recorded(
     ctx: &mut DjogiContext,

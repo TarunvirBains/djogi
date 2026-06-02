@@ -221,10 +221,10 @@ fn validate_app_identity_uniqueness(sorted: &[AppDescriptor]) {
 /// concerns:
 /// 1. **Alphabetisation.** Inventory returns descriptors in link
 ///    order, which is non-deterministic across rebuilds and
-///    toolchains. `all` returns them sorted by `label` so
+///    toolchains. `all()` returns them sorted by `label` so
 ///    downstream artifacts (snapshot JSON, migration filenames,
 ///    ledger seed rows) are byte-stable.
-/// 2. **The synthetic global bucket.** `all` always prepends an
+/// 2. **The synthetic global bucket.** `all()` always prepends an
 ///    entry for `LABEL = ""` / `DATABASE = "main"` so apps-unaware
 ///    projects and mixed projects see the same shape from the
 ///    registry — `main/<empty-label>/` is always a valid target in
@@ -255,7 +255,7 @@ impl AppRegistry {
     /// its call site, so crate-global compile-time enforcement would
     /// require fragile link-time symbol tricks or impossible
     /// orphan-rule dances. Runtime panic at startup
-    /// (`AppRegistry::all` runs before any migration work) is
+    /// (`AppRegistry::all()` runs before any migration work) is
     /// loud, early, and informative.
     /// ## Why label uniqueness, not the looser `(database, label)`?
     /// `ModelDescriptor` carries only the app **label**, not its
@@ -323,12 +323,12 @@ impl AppRegistry {
 
             // Resolve label → database once via a HashMap built from
             // the registry. The synthetic global bucket is in
-            // `AppRegistry::all` so unapp'd models ("") resolve
+            // `AppRegistry::all()` so unapp'd models ("") resolve
             // through the same map without a special case.
             // Same-label / different-database collisions would
-            // silently collapse this `.collect` and route a model
+            // silently collapse this `.collect()` and route a model
             // to the wrong database — `validate_app_identity_uniqueness`
-            // (called by `AppRegistry::all` itself) panics on that
+            // (called by `AppRegistry::all()` itself) panics on that
             // case before we get here, so the resulting map is
             // unambiguous.
             let label_to_database: HashMap<&'static str, &'static str> = AppRegistry::all()
@@ -672,7 +672,7 @@ mod tests {
     fn cross_app_edge_equality_and_ordering() {
         // Two identical edges compare equal; edges sort by
         // `(source_database, source_app, source_type, source_field)`
-        // so the stable ordering in `cross_app_edges` is
+        // so the stable ordering in `cross_app_edges()` is
         // load-bearing.
         let a = CrossAppEdge {
             source_database: "main",

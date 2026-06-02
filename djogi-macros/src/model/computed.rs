@@ -253,7 +253,7 @@ fn parse_computed_args(
 
 // ── Rust-side getter emission (intentionally a no-op) ─────────────
 // Earlier shapes of this task emitted one inherent method per
-// `#[computed(sql = "...")]` field with an `unimplemented!` body so
+// `#[computed(sql = "...")]` field with an `unimplemented!()` body so
 // adopters could "override the stub" with a hand-written
 // `pub fn total_price(&self) -> f64 { ... }`. That design rests on a
 // false premise: Rust does not allow two inherent methods with the
@@ -262,8 +262,8 @@ fn parse_computed_args(
 // would be E0201 (duplicate definition), not a silent override.
 // The Rust-side getter emission is removed entirely.
 // The SQL-side path stays the canonical surface: adopters call
-// `Vehicle::computed.total_price` for an `Expr<f64>` that composes
-// in `.annotate` / `.filter_expr` / `.order_by`. For a Rust-side
+// `Vehicle::computed().total_price()` for an `Expr<f64>` that composes
+// in `.annotate()` / `.filter_expr()` / `.order_by()`. For a Rust-side
 // computation, adopters write a plain inherent method with any name
 // of their choosing — no macro-emitted boilerplate to override.
 // Per the lens (`feedback_decision_priorities.md`, plan §7 #8 resolved
@@ -279,7 +279,7 @@ fn parse_computed_args(
 /// No-op (kept as a stable call point for the
 /// orchestrator in `model::mod`). Returns an empty token stream
 /// regardless of input. The previous shape emitted one
-/// `pub fn <field>(&self) -> <T> { unimplemented! }` per computed
+/// `pub fn <field>(&self) -> <T> { unimplemented!() }` per computed
 /// field, but that surface conflicted with hand-written getters under
 /// E0201 — Rust does not allow two inherent methods with the same
 /// name on the same type. The accompanying guide
@@ -294,29 +294,29 @@ pub fn emit_rust_getters(
 // ── `{Model}Computed` ZST emission for SQL projection ─────────────
 // Emits a ZST `{Model}Computed` whose accessors return
 // `Expr<V>` (where `V` is the computed field's Rust return type) so
-// adopters can use computed fields in `.annotate`, `.filter_expr`,
+// adopters can use computed fields in `.annotate()`, `.filter_expr()`,
 // and `.order_by`. The ZST is
-// constructed via `Vehicle::computed` (an inherent method we also
+// constructed via `Vehicle::computed()` (an inherent method we also
 // emit on `#name`), giving adopters the call-site pattern:
 // ```rust
-// Vehicle::objects
-// .filter_expr(|_| Vehicle::computed.total_price.gte(Expr::literal(100.0)))
+// Vehicle::objects()
+// .filter_expr(|_| Vehicle::computed().total_price().gte(Expr::literal(100.0)))
 // .fetch_all(ctx).await?;
 // ```
 // # Why a separate ZST rather than bundling into `T::Fields`
 // Plan §7 #10 (resolved 2026-05-03) recommended bundling computed
 // accessors directly into `T::Fields` so the call site is
-// `f.total_price` symmetrically with regular fields. That decision
+// `f.total_price()` symmetrically with regular fields. That decision
 // requires extending `FieldRef` with an internal `Source` enum
 // (Column | RawSql), which is a substantial surface-area change
 // touching every method. This ships the simpler ZST split for
-// v0.1.0 — the call-site difference is `Vehicle::computed
-// .total_price` vs `f.total_price`. Adopter ergonomics drift
+// v0.1.0 — the call-site difference is `Vehicle::computed()
+// .total_price()` vs `f.total_price()`. Adopter ergonomics drift
 // slightly but the API surface stays narrow. The Q-Algebra refactor
 // is the natural place to bundle if real adopter feedback warrants.
 
 /// Emit the `{Model}Computed` ZST + its accessor methods + the
-/// `Vehicle::computed` inherent constructor.
+/// `Vehicle::computed()` inherent constructor.
 /// Empty token stream when no computed fields are declared. Non-
 /// computed models pay zero emission cost.
 pub fn emit_computed_zst(
@@ -361,7 +361,7 @@ pub fn emit_computed_zst(
         impl #struct_name {
             // Adopter-facing constructor for the computed accessor ZST.
             // Returns the freshly-constructed ZST; the call site is
-            // `Vehicle::computed.total_price` returning `Expr<f64>`.
+            // `Vehicle::computed().total_price()` returning `Expr<f64>`.
             #[doc = " Accessor for the model's computed fields."]
             #[doc = ""]
             #[doc = " Returns a `{Model}Computed` ZST whose methods return `Expr<V>`"]
@@ -531,7 +531,7 @@ mod tests {
     }
 
     /// `emit_rust_getters` is now a no-op. Earlier
-    /// shapes emitted `pub fn <field>(&self) -> <T> { unimplemented! }`
+    /// shapes emitted `pub fn <field>(&self) -> <T> { unimplemented!() }`
     /// stubs that conflicted with hand-written getters under E0201
     /// (Rust forbids duplicate inherent methods). The canonical
     /// Rust-side path is a plain inherent method written by the
@@ -565,7 +565,7 @@ mod tests {
     }
 
     /// `emit_computed_zst` emits the `{Model}Computed` ZST
-    /// plus accessor methods plus `Vehicle::computed` constructor.
+    /// plus accessor methods plus `Vehicle::computed()` constructor.
     /// Each accessor returns `Expr<V>` typed for the field's declared
     /// return type and routes through `Expr::__raw_sql_fragment`.
     #[test]

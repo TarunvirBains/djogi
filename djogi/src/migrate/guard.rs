@@ -152,7 +152,7 @@ impl std::error::Error for GuardError {
 }
 
 /// RAII guard returned by [`acquire`]. The `flock` is released when
-/// this value is dropped — either via the explicit `drop` call or
+/// this value is dropped — either via the explicit `drop()` call or
 /// when the holding scope exits (including the panic-unwind path).
 /// The guard intentionally does NOT delete the lock file on drop:
 /// keeping the file around keeps its inode stable across invocations,
@@ -182,7 +182,7 @@ impl Drop for WorkspaceGuard {
         // automatically released by the kernel on close. We do NOT
         // truncate the PID file here — leaving the last-holder PID in
         // the file is informational; the next acquirer overwrites it.
-        // The `take` pattern ensures we always release even if a
+        // The `take()` pattern ensures we always release even if a
         // future revision adds a fallible step before `drop_file`.
         if let Some(f) = self.file.take() {
             drop(f);

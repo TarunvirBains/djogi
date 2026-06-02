@@ -41,7 +41,7 @@ use super::PresentationCodecInfo;
 /// # Security note
 /// `PresentationFieldRef` never exposes the underlying `FieldRef<Source,
 /// FieldTy>` getter. Storage-level predicates on this field are only
-/// available through `Model::objects` on the source model, which remains
+/// available through `Model::objects()` on the source model, which remains
 /// privileged and is not narrowed by presentation rules.
 pub struct PresentationFieldRef<Source: Model, Codec, FieldTy> {
     /// The crate-internal storage-level field reference.
@@ -96,7 +96,7 @@ where
     /// Available only when `Codec: PresentationOrderCodec<FieldTy>`.
     pub fn asc(&self) -> OrderExpr {
         // `FieldRef` is unconditionally `Copy`; the compiler copies `self.inner`
-        // when calling the by-value `asc` through `&self`.
+        // when calling the by-value `asc()` through `&self`.
         self.inner.asc()
     }
 
@@ -104,7 +104,7 @@ where
     /// Available only when `Codec: PresentationOrderCodec<FieldTy>`.
     pub fn desc(&self) -> OrderExpr {
         // `FieldRef` is unconditionally `Copy`; the compiler copies `self.inner`
-        // when calling the by-value `desc` through `&self`.
+        // when calling the by-value `desc()` through `&self`.
         self.inner.desc()
     }
 }

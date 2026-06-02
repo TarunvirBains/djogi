@@ -74,7 +74,7 @@ use super::schema::{
 
 /// Identity of a snapshot bucket — `(database_target, app_label)`.
 /// The synthetic global bucket is `BucketKey { database:
-/// "main".into, app: "".into }` and is always present in any
+/// "main".into(), app: "".into() }` and is always present in any
 /// projection result, even if no models live in it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BucketKey {
@@ -386,7 +386,7 @@ pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, Pr
 /// validator extracted to a closure parameter.
 /// The production entry point passes
 /// [`crate::relation::registry::validate_global_relation_accessor_registry`]
-/// directly. Tests inject `|| Ok` (clean-registry path) or
+/// directly. Tests inject `|| Ok(())` (clean-registry path) or
 /// `|| Err(synthetic_err)` (collision path) to exercise the wrapping
 /// without polluting the link-time-collected inventory — submitting a
 /// colliding marker via `inventory::submit!` from a test would persist
@@ -582,7 +582,7 @@ where
                 continue;
             };
             // Walk proxy_for chain to the concrete parent. Bounded by
-            // a cycle guard at `models.len` steps — a chain longer
+            // a cycle guard at `models.len()` steps — a chain longer
             // than the inventory size must contain a cycle.
             let mut resolved_target: &str = target_type;
             let mut steps = 0usize;
@@ -777,7 +777,7 @@ where
             // Proxy models skip index ownership: the parent already projects
             // its own field indexes; projecting them again from the proxy
             // would produce duplicate `IndexSchema` names and spurious
-            // `AddIndex` ops. The `proxy_for.is_some` guard above already
+            // `AddIndex` ops. The `proxy_for.is_some()` guard above already
             // `continue`s before reaching this block.
             // Explicit-wins precedence: if an explicit `#[model(indexes(...))]`
             // entry (pushed above from `m.indexes`) already occupies the same
@@ -1302,7 +1302,7 @@ fn field_type_check(
         // The integrality clause (`col = trunc(col)`) is the critical
         // addition over the old NUMERIC(20, 0) design: bare NUMERIC
         // preserves fractional inputs unchanged, so the CHECK must
-        // explicitly reject them. `trunc` is the standard Postgres
+        // explicitly reject them. `trunc()` is the standard Postgres
         // function for truncating a NUMERIC toward zero.
         // **Decimal** — bare NUMERIC with a structural CHECK
         // bounding the value to `rust_decimal::Decimal`'s **exact
@@ -1312,7 +1312,7 @@ fn field_type_check(
         // * `scale(col) IS NOT NULL` — Postgres NUMERIC admits three
         // non-finite special values (`NaN`, `Infinity`, `-Infinity`)
         // that `rust_decimal::Decimal` cannot represent at all. The
-        // `pg_catalog.scale` function returns NULL for every
+        // `pg_catalog.scale()` function returns NULL for every
         // non-finite NUMERIC (NaN since PG 12, ±Infinity since
         // PG 14, both covered by Djogi's PG 18+ baseline), and
         // `IS NOT NULL` collapses that to a concrete FALSE so the
@@ -1353,14 +1353,14 @@ fn field_type_check(
         // - A 100-digit integer at scale 0 → coefficient > 2^96-1 → rejected.
         // - A value with scale 50 → scale check fails → rejected
         // (preventing the silent rescale-and-round path).
-        // - A `NaN` / `Infinity` / `-Infinity` literal → `scale` returns
+        // - A `NaN` / `Infinity` / `-Infinity` literal → `scale()` returns
         // NULL → `scale(col) IS NOT NULL` evaluates to FALSE → rejected
         // (preventing the special-value-poisons-decode path).
         // For valid rust_decimal values (e.g. `49.99` with scale 2,
         // coefficient `4999`), all three clauses pass.
         // Postgres semantics: CHECK constraints treat NULL as satisfied,
         // so nullable Decimal columns work without modification. The
-        // `power` and `scale` calls are stable Postgres functions
+        // `power()` and `scale()` calls are stable Postgres functions
         // (no extensions required); per-row overhead is one NUMERIC
         // arithmetic operation plus one function call. Issue #185
         // records a per-write budget target for the family
@@ -1392,7 +1392,7 @@ fn field_type_check(
             // Wrap the scalar Decimal representability check with an explicit
             // NULL pass-through. The inner `decimal_repr_expr` carries a
             // `scale(<col>) IS NOT NULL` guard that rejects PostgreSQL NUMERIC
-            // special values (`NaN`, `Infinity`, `-Infinity`) — `scale` is
+            // special values (`NaN`, `Infinity`, `-Infinity`) — `scale()` is
             // defined to return NULL for those, and `IS NOT NULL` evaluates to
             // FALSE for a NULL input (never NULL itself), so a bare guard would
             // also reject SQL NULL on nullable columns. The `(<col>) IS NULL OR`
@@ -1508,7 +1508,7 @@ fn timestamp_range_expr(column_expr: &str) -> String {
 /// resolves to a `rust_decimal::Decimal`-storable value.
 /// The leading `scale({column_expr}) IS NOT NULL` clause rejects the
 /// PostgreSQL NUMERIC special values `NaN`, `Infinity`, and
-/// `-Infinity` — `pg_catalog.scale` is defined to return NULL for
+/// `-Infinity` — `pg_catalog.scale()` is defined to return NULL for
 /// non-finite NUMERICs (NaN since PG 12, ±Infinity since PG 14, both
 /// covered by Djogi's PG 18+ baseline), and `IS NOT NULL` collapses
 /// that to a concrete FALSE so the CHECK fails on those inputs rather
@@ -1599,7 +1599,7 @@ fn numeric_array_is_rust_decimal_check(array_column: &str) -> String {
 ///   pinpointing which clause failed), but Postgres includes the full
 ///   expression text in the error message so adopters can still tell the
 ///   type bound from the adopter bound on inspection.
-///   Defensive normalisation: both inputs are `trim`'d to avoid
+///   Defensive normalisation: both inputs are `trim()`'d to avoid
 ///   `"(expr1) AND (expr2)"` whitespace artefacts in snapshot output.
 ///   The differ compares CHECK expressions by string equality, so any
 ///   drift in whitespace would emit a spurious AMEND on every compose.
@@ -1858,7 +1858,7 @@ fn project_column(
     } else if (f.name == "created_at" || f.name == "updated_at")
         && matches!(f.sql_type, crate::descriptor::FieldSqlType::Timestamptz)
     {
-        // Framework-injected timestamp columns get `DEFAULT now` so
+        // Framework-injected timestamp columns get `DEFAULT now()` so
         // INSERTs without explicit values pick up server time. The
         // descriptor layer does not carry per-field default expressions
         // (every field shares one nullable shape), so the projection
@@ -2155,9 +2155,9 @@ fn project_primary_key(pk: &PkType) -> PrimaryKeySchema {
 
 pub(crate) fn pk_default_sql(pk: &PkType) -> Option<String> {
     // Function names match HeerRanjId 0.3.x's installed schema:
-    // `heerid_next` (asc HeerId) and `ranjid_next` (asc RanjId)
+    // `heerid_next()` (asc HeerId) and `ranjid_next()` (asc RanjId)
     // ship from `generate_heerid.sql` / `generate_ranjid.sql`;
-    // `heerid_next_desc` and `ranjid_next_desc` ship from
+    // `heerid_next_desc()` and `ranjid_next_desc()` ship from
     // `desc_generators.sql`. The earlier `generate_id*` /
     // `generate_ranj_id*` names do not exist in the installed schema,
     // so any migration touching these PK kinds would have failed at
@@ -3529,7 +3529,7 @@ mod tests {
     // surfaces here without needing a Postgres-backed run.
 
     /// Framework-injected timestamp columns must carry
-    /// `DEFAULT now` so a typed `Model::create` round-trip without an
+    /// `DEFAULT now()` so a typed `Model::create` round-trip without an
     /// explicit value picks up server time. Without this the first
     /// INSERT into a freshly-`sync_models`'d table fails with `null
     /// value in column "created_at"`.
@@ -3570,7 +3570,7 @@ mod tests {
     }
 
     /// Only the two framework-injected timestamp columns
-    /// (`created_at`, `updated_at`) receive the `now` default. A
+    /// (`created_at`, `updated_at`) receive the `now()` default. A
     /// user-declared Timestamptz column with a different name passes
     /// through with `default_sql = None` so the descriptor layer's
     /// "no per-field defaults today" contract still holds.
@@ -3672,7 +3672,7 @@ mod tests {
     /// here (`SmallInt` placeholder type) would be incorrectly
     /// rewritten to the target's PK type. Asserting the original
     /// `SMALLINT` survives proves the per-field guard at projection.rs
-    /// where `relation_kind.is_some` gates the substitution.
+    /// where `relation_kind.is_some()` gates the substitution.
     #[test]
     fn non_fk_column_sql_type_passes_through_verbatim() {
         const FIELDS: &[FieldDescriptor] = &[
@@ -3688,7 +3688,7 @@ mod tests {
             // Non-FK SmallInt — must NOT be rewritten to UUID (or to
             // anything else) just because it lives on a model with FK
             // fields. The substitution rule is per-field, gated on
-            // `relation_kind.is_some`.
+            // `relation_kind.is_some()`.
             FieldDescriptor {
                 ..field_descriptor("sort_order", FieldSqlType::SmallInt, false)
             },
@@ -3743,10 +3743,10 @@ mod tests {
 
     // ── GH #158 — projection-time relation-registry gate ──────────────────
     // The full integration (live `inventory::iter::<ReverseRelationMarker>`
-    // walk → `project_from_inventory` failure) is intentionally NOT
+    // walk → `project_from_inventory()` failure) is intentionally NOT
     // pinned with a globally-submitted colliding marker: such a submission
     // would persist for every other test in the lib's test binary and
-    // permanently lock `project_from_inventory` into the failing branch.
+    // permanently lock `project_from_inventory()` into the failing branch.
     // Instead we exercise the wrapping path through
     // `project_from_inventory_with_relation_validator`, which the
     // production entry point delegates to. Synthetic registry errors are
@@ -3808,7 +3808,7 @@ mod tests {
 
     #[test]
     fn project_from_inventory_with_clean_validator_does_not_short_circuit() {
-        // Inject a `Ok` validator. The downstream `project_from_iters`
+        // Inject a `Ok(())` validator. The downstream `project_from_iters`
         // call may still return `Ok` or `Err` depending on what the live
         // test-binary inventory holds (e.g. fixtures from other tests),
         // but the failure mode this test pins is "validator returned Ok →
@@ -4583,7 +4583,7 @@ mod tests {
         // distinct special values. `rust_decimal::Decimal` cannot represent
         // any of them, so the structural CHECK must reject them at the DB
         // layer. The leading `scale(<col>) IS NOT NULL` clause is the only
-        // guard that fires on those inputs — `pg_catalog.scale` returns
+        // guard that fires on those inputs — `pg_catalog.scale()` returns
         // NULL for every non-finite NUMERIC, and the bare scale / coefficient
         // clauses NULL-propagate (which CHECK treats as PASS).
         let expr = field_type_check(
@@ -4936,7 +4936,7 @@ mod tests {
             !expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"slots\")"),
             "TIMESTAMPTZ[] check should not emit a subquery CHECK: {expr}"
         );
-        // The helper strategy supersedes the upper-bound-only ALL approach.
+        // The helper strategy supersedes the upper-bound-only ALL() approach.
         // The upper-bound check now lives inside the helper function body rather
         // than in the column CHECK expression, so no `>= ALL(` should appear here.
         assert!(
@@ -4962,7 +4962,7 @@ mod tests {
             !expr.contains("NOT EXISTS (SELECT 1 FROM unnest(\"validity\")"),
             "DATE[] check should not emit a subquery CHECK: {expr}"
         );
-        // The helper strategy supersedes the upper-bound-only ALL approach.
+        // The helper strategy supersedes the upper-bound-only ALL() approach.
         assert!(
             !expr.contains(">= ALL(\"validity\")"),
             "DATE[] check must not fall back to upper-bound-only ALL strategy \
@@ -5480,14 +5480,14 @@ mod tests {
         // Framework-injected `created_at` / `updated_at` columns
         // lower to `FieldSqlType::Timestamptz` like any adopter
         // OffsetDateTime field. The temporal year CHECK applies here
-        // too — Postgres `now` always returns a current-era
+        // too — Postgres `now()` always returns a current-era
         // timestamp so the CHECK is satisfied by the column DEFAULT,
         // but external writers (raw migrations, BI tools) can still
         // drift these columns. The CHECK protects against that drift.
         // This test constructs an explicit `created_at` / `updated_at`
         // descriptor (matching the layout the macro would emit) and
         // verifies the CHECK reaches the projected ColumnSchema. The
-        // column-name match in `project_column` for `DEFAULT now`
+        // column-name match in `project_column` for `DEFAULT now()`
         // doesn't interfere with the CHECK — the two are independent
         // column attributes.
         static FIELDS: &[FieldDescriptor] = &[
@@ -5522,7 +5522,7 @@ mod tests {
             .find(|c| c.name == "updated_at")
             .expect("explicit updated_at column projected");
         for col in [created_at, updated_at] {
-            // Sanity check: the DEFAULT now routing still fires on
+            // Sanity check: the DEFAULT now() routing still fires on
             // the canonical timestamp column names (the year CHECK
             // doesn't displace it).
             assert_eq!(
@@ -5544,7 +5544,7 @@ mod tests {
                 col.name
             );
             // Framework timestamps also receive the finite guard. The
-            // `DEFAULT now` value Postgres writes is always finite,
+            // `DEFAULT now()` value Postgres writes is always finite,
             // so the guard never trips on framework-managed writes;
             // but an external writer that overwrites `created_at` with
             // `'-infinity'::timestamptz` would otherwise poison typed

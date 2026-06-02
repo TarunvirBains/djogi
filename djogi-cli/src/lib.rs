@@ -28,7 +28,7 @@ pub use crate::schema::*;
 pub use crate::verify::*;
 
 // Re-export proc macros so adopters write `djogi_cli::djogi_main!(…)` and
-// `djogi_cli::link_anchor!` instead of depending on `djogi-macros` directly.
+// `djogi_cli::link_anchor!()` instead of depending on `djogi-macros` directly.
 // `link_anchor!` takes no arguments — it is a per-crate marker placed once in
 // each model crate's `lib.rs`.
 pub use djogi_macros::{djogi_main, link_anchor};
@@ -696,7 +696,7 @@ pub enum PartialApplyResolutionCli {
 
 // ── Entrypoints ───────────────────────────────────────────────────────────
 
-/// Run the CLI by parsing arguments from `std::env::args_os`.
+/// Run the CLI by parsing arguments from `std::env::args_os()`.
 /// This is the entry point used by the published standalone `djogi`
 /// binary. It reads the global link-time [`inventory`] registry via
 /// [`djogi::migrate::InventoryDescriptorProvider`].

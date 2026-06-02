@@ -141,7 +141,7 @@ pub(crate) enum ExprNode {
     GroupingVariadic {
         /// Non-empty list of column references being flagged. Empty
         /// arg list is rejected at the constructor (Postgres also
-        /// rejects `GROUPING` with 0 args).
+        /// rejects `GROUPING()` with 0 args).
         args: Vec<ExprNode>,
     },
 
@@ -171,7 +171,7 @@ pub(crate) enum ExprNode {
     /// the `.over(|w| ...)` method on
     /// [`super::aggregate::AggregateExpr`]. `None` leaves the
     /// aggregate bare; the terminal-layer helpers in `query::sql` add
-    /// `OVER ` for the plain ungrouped annotate path only after the
+    /// `OVER ()` for the plain ungrouped annotate path only after the
     /// plain-annotation type-state has proven the aggregate kind is
     /// windowable. Ordered-set, hypothetical-set, and metadata aggregates
     /// are rejected before that synthesized-window path.
@@ -224,7 +224,7 @@ pub(crate) enum ExprNode {
         /// / [`AggOp::PercentileDisc`] / [`AggOp::Mode`],
         /// [`AggOp::HypotheticalRank`] / [`AggOp::HypotheticalDenseRank`] /
         /// [`AggOp::HypotheticalPercentRank`] / [`AggOp::HypotheticalCumeDist`])
-        /// reject `.distinct` at compile time through the type-state
+        /// reject `.distinct()` at compile time through the type-state
         /// (#89). Fetch-time validation in
         /// [`super::sql::check_aggregate_legality`] still catches
         /// COUNT(DISTINCT *) and `STRING_AGG(DISTINCT ...)` without
@@ -235,7 +235,7 @@ pub(crate) enum ExprNode {
         /// [`super::aggregate::AggregateExpr::over`]. `None` means the
         /// aggregate has no `OVER` clause of its own; the ungrouped
         /// annotate path in `query::sql` wraps `None`-window value aggregates
-        /// in `OVER ` for backwards compatibility. Non-windowable aggregate
+        /// in `OVER ()` for backwards compatibility. Non-windowable aggregate
         /// kinds are rejected by the plain-annotation type-state before SQL
         /// emission. `Some(spec)` emits the full
         /// `OVER (PARTITION BY ... ORDER BY ... frame)` from the spec.
@@ -341,7 +341,7 @@ pub(crate) enum ExprNode {
     /// as an `i32`, evaluated server-side per query.
     /// Produced by [`super::Expr::current_year`]. Composes with the existing
     /// `Expr<i32>` arithmetic IR so e.g.
-    /// `Expr::current_year - f.estimated_birth_year.as_expr` yields the
+    /// `Expr::current_year() - f.estimated_birth_year().as_expr()` yields the
     /// row's age as an `Expr<i32>`.
     /// # SQL emission
     /// The emitter renders the literal token stream
@@ -407,7 +407,7 @@ pub(crate) enum ExprNode {
         /// enforce that lateral inner expressions only reference the
         /// actual outer model for the current lateral join.
         model_type: TypeId,
-        /// Source model diagnostic name (`type_name::<M>`) for error
+        /// Source model diagnostic name (`type_name::<M>()`) for error
         /// messages when lateral scoping validation fails.
         model_name: &'static str,
     },
@@ -492,7 +492,7 @@ pub(crate) enum ExprNode {
     },
 
     /// `similarity(col, $pattern)` — trigram similarity score expression.
-    /// Evaluates the `pg_trgm` `similarity` function per row, returning
+    /// Evaluates the `pg_trgm` `similarity()` function per row, returning
     /// an `f64` in `[0.0, 1.0]`. Useful as an input to `filter_expr` for
     /// per-query numeric-threshold comparisons
     /// (`expr.gte(Expr::literal(0.3_f64))`). Note that this function-form
@@ -559,7 +559,7 @@ pub(crate) enum ExprNode {
     /// scalar value (binary `bytea` for v0.1.0 — `ST_AsMVT` / `ST_AsGeobuf`).
     /// # Why a sibling variant, not an extension of [`Self::Aggregate`]
     /// Column aggregates take a single column expression (`AGG(col)`) and
-    /// honour a modifier set (`.distinct`, `.filter(...)`, `.over(...)`,
+    /// honour a modifier set (`.distinct()`, `.filter(...)`, `.over(...)`,
     /// `.order_by(...)`, `.within_group_order_by(...)`). Row aggregates take
     /// **the entire row** (`AGG(record, ...)`) and reject every modifier in
     /// that set — Postgres would error if you tried `ST_AsMVT(DISTINCT t)` or
@@ -613,7 +613,7 @@ pub(crate) enum ExprNode {
 /// wrappers.
 /// Carries the minimum the emitter needs to render
 /// `SELECT <col or 1> FROM <table> [WHERE <condition>]`:
-/// - `table` — always `<T as Model>::table_name` from the typed
+/// - `table` — always `<T as Model>::table_name()` from the typed
 ///   surface (a `&'static str`; never user input).
 /// - `select_column` — `Some(col)` for scalar subqueries (the typed
 ///   wrapper pins it via [`crate::query::field::FieldRef`] so the
@@ -629,7 +629,7 @@ pub(crate) enum ExprNode {
 ///   stays type-erased.
 #[derive(Debug, Clone)]
 pub(crate) struct SubqueryNode {
-    /// Subquery's `FROM` table — `<T as Model>::table_name` from the
+    /// Subquery's `FROM` table — `<T as Model>::table_name()` from the
     /// typed [`super::subquery::Subquery<T, V>`] surface.
     pub(crate) table: &'static str,
     /// Scalar subqueries store `Some(col)`; the EXISTS path stores
@@ -794,7 +794,7 @@ pub(crate) enum AggOp {
     /// `Aggregate` layout unchanged — no other variant needs a second
     /// operand.
     /// The separator is user-supplied at `.string_agg("sep")` call time
-    /// and bound via `acc.push_bind(sep.to_string)` to avoid any risk
+    /// and bound via `acc.push_bind(sep.to_string())` to avoid any risk
     /// of SQL injection from a runtime-computed separator string.
     StringAgg(String),
     /// `BOOL_AND(col)` — true if every non-null value in the column is
@@ -925,10 +925,10 @@ pub(crate) enum AggOp {
     /// Same shape as [`AggOp::PercentileCont`] otherwise — fraction in
     /// `arg`, column in `within_group_order_by`.
     PercentileDisc,
-    /// `MODE WITHIN GROUP (ORDER BY col)` — most common value in the
+    /// `MODE() WITHIN GROUP (ORDER BY col)` — most common value in the
     /// group. Returns the column type (typed `AggregateExpr<V>` with
     /// `V = column type`).
-    /// `MODE` takes no function arguments; the `arg` slot stores a
+    /// `MODE()` takes no function arguments; the `arg` slot stores a
     /// sentinel `Field { column: \"\" }` placeholder which the emitter
     /// ignores on this branch (parallel to how `CountStar` ignores
     /// `arg`). The column being mode-aggregated lives in
@@ -1057,7 +1057,7 @@ pub(crate) enum AggOp {
     /// uses the portable `ST_Collect` form which produces an
     /// equivalent MultiPolygon for polygon-typed inputs. The
     /// distinct AggOp variant carries the intent (callers asked for
-    /// `polygon_agg` semantics, not the more general `collect`)
+    /// `polygon_agg()` semantics, not the more general `collect()`)
     /// and keeps a clean migration path if Djogi ever raises the
     /// PostGIS floor — only the emitter arm changes.
     #[cfg(feature = "spatial")]
@@ -1095,7 +1095,7 @@ pub(crate) enum AggOp {
     /// `ST_MemUnion` runs a pairwise merge that uses bounded working
     /// memory but is slower per-row for moderate input sizes.
     /// Returns `MultiPolygon`. Gated on `feature = "spatial"`.
-    /// Adopters with terabyte-scale polygonal inputs use `mem_union`;
+    /// Adopters with terabyte-scale polygonal inputs use `mem_union()`;
     /// for moderate group sizes [`AggOp::SpatialUnion`] is faster.
     #[cfg(feature = "spatial")]
     SpatialMemUnion,

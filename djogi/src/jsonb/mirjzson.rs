@@ -34,10 +34,10 @@
 //! # Trait posture
 //! `MirJzSON` is **not** `PartialEq` / `Eq` / `Hash` / `PartialOrd`. Whole-
 //! value JSON predicates go through the explicit JSON predicate methods
-//! on `DjogiField<M, MirJzSON>::jsahibon`, not through root
+//! on `DjogiField<M, MirJzSON>::jsahibon()`, not through root
 //! `DjogiField::eq`. Removing the equality / ordering trait impls is
 //! deliberate: a `MirJzSON == MirJzSON` comparison at the model layer
-//! would silently disagree with `jsahibon.eq_json(_)` because Sassi's
+//! would silently disagree with `jsahibon().eq_json(_)` because Sassi's
 //! `JSahibON` equality folds across numeric carriers (`I64(1) ==
 //! U64(1) == F64(1.0)`) but Rust `PartialEq` on the wrapper would imply
 //! reflexivity over the literal `JSahibON` variant — diverging
@@ -94,7 +94,7 @@ pub enum MirJzSONError {
 /// # Layout
 /// `MirJzSON` is `#[repr(transparent)]` around its single
 /// `portable: sassi::JSahibON` field. This is **load-bearing for the
-/// query path**: the `.jsahibon` accessor lifts a
+/// query path**: the `.jsahibon()` accessor lifts a
 /// `fn(&M) -> &MirJzSON` extractor into a
 /// `fn(&M) -> &sassi::JSahibON` extractor by transmuting the function
 /// pointer — sound only because the two reference types share a
@@ -299,7 +299,7 @@ mod tests {
     /// be projected onto any of Sassi's `i64` / `u64` / finite-`f64`
     /// carriers. With `arbitrary_precision` enabled on `serde_json`,
     /// numbers parse as strings and only fail conversion when their
-    /// magnitude exceeds `f64::MAX` — at which point `as_f64` returns
+    /// magnitude exceeds `f64::MAX` — at which point `as_f64()` returns
     /// `None` and the bridge surfaces a typed `UnsupportedJsonValue`.
     /// Numbers that fit `f64` (even very large ones like `1e35`) are
     /// accepted as `JSahibON::F64`; that is documented Sassi semantics

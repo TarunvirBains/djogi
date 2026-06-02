@@ -1068,13 +1068,13 @@ fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) -> Result<(),
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PkFlipDirection {
     /// Ascending → descending. Uses `heerid_to_desc` /
-    /// `ranjid_to_desc` and `heerid_next_desc` / `ranjid_next_desc`
+    /// `ranjid_to_desc` and `heerid_next_desc()` / `ranjid_next_desc()`
     /// as the new column DEFAULT.
     AscToDesc,
     /// Descending → ascending. Uses `heerid_to_asc` / `ranjid_to_asc`
-    /// and `heerid_next` / `ranjid_next` as the new column
+    /// and `heerid_next()` / `ranjid_next()` as the new column
     /// DEFAULT. The autofill trigger SQL is the symmetric mirror
-    /// `IdKind::Heer.flip_fn` always returns `heerid_to_desc` so
+    /// `IdKind::Heer.flip_fn()` always returns `heerid_to_desc` so
     /// the reverse-direction emitter substitutes `heerid_to_asc`
     /// directly in the trigger body it generates.
     DescToAsc,
@@ -1882,7 +1882,7 @@ fn promote_pk_flips_to_groups(
             });
 
         // Co-flag values: re-derive locally because this fn runs
-        // before `classify` would have computed them. Walk the
+        // before `classify()` would have computed them. Walk the
         // remaining ops and check.
         let co_destructive = ops.iter().any(|op| {
             matches!(
@@ -2358,7 +2358,7 @@ fn emit_alter_column(
 
 /// Diff PK shape between `before` and `after`. Recognised flip
 /// pairs emit `PkTypeFlip`; every other non-equal PK transition
-/// emits `Unsupported` with a specific reason so `classify` can
+/// emits `Unsupported` with a specific reason so `classify()` can
 /// surface it cleanly. Non-flip transitions handled here include:
 /// - kind changes outside the flip pairs (e.g. `HeerId → Serial`)
 /// - column-set changes (composite ↔ single, or composite reshape
@@ -3178,7 +3178,7 @@ mod tests {
         // Migrating a model from the default HeerId to a custom
         // newtype lands here. No playbook exists for this transition
         // both the column DEFAULT generator (heerid_next →
-        // user_id_next) and the FK cascade strategy depend on the
+        // user_id_next()) and the FK cascade strategy depend on the
         // adopter's intent, so we reject and let them hand-write it.
         let reason = unsupported_pk_reason(PkType::HeerId, CUSTOM_USER_ID);
         assert!(
@@ -3954,7 +3954,7 @@ mod tests {
 
     #[test]
     fn pk_flip_with_lossy_only_op_does_not_claim_co_destructive() {
-        // Regression: classify previously computed
+        // Regression: classify() previously computed
         // co_destructive: max >= Severity::Destructive
         // which is true whenever max == Lossy because Lossy > Destructive
         // in the severity ordering. That conflated the two flags so a

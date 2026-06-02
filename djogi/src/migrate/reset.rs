@@ -292,7 +292,7 @@ pub enum ResetError {
     /// "ledger table is missing on a fresh DB". Pre-fix every
     /// failure mode of the capture step (connection error, decode
     /// error, generic SQL error, …) collapsed to an empty map via
-    /// `unwrap_or_default`, which silently fell through to the
+    /// `unwrap_or_default()`, which silently fell through to the
     /// drop / recreate path on a transient error. That re-opens the
     /// A flaky ledger read that swallows itself, then
     /// the destructive operation runs anyway against a database
@@ -540,7 +540,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     // failure, decode failure, generic SQL error, permission
     // denied) surfaces as `Transient(..)` and propagates through
     // `ResetError::HistoricalOrderCaptureFailed`. every
-    // error collapsed to `` and the reset proceeded with an
+    // error collapsed to `()` and the reset proceeded with an
     // empty map — which re-opened the for transient
     // failures (the empty map masquerades as "fresh DB with no
     // history" and the destructive drop / recreate runs anyway).
@@ -613,7 +613,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
 ///   recreate proceeds.
 /// - **`Transient(DjogiError)`** — anything else: tokio_postgres
 ///   connect failure (DB unreachable, auth fail, network drop, DB
-///   does not exist), `current_database` query failure, probe
+///   does not exist), `current_database()` query failure, probe
 ///   query failure, decode error, generic SELECT failure. None of
 ///   these prove the DB is fresh; they prove we cannot CONFIRM the
 ///   live state. The caller propagates as
@@ -1410,7 +1410,7 @@ async fn replay_one_migration(
         // caller supplied an audit pool on `ResetRequest::audit_pool`
         // we plumb it through to `RunnerCtx` so each replayed
         // migration writes one `djogi_ddl_audit` row per executed
-        // segment, exactly as a regular `apply` would. `cloned`
+        // segment, exactly as a regular `apply` would. `cloned()`
         // bumps the underlying `Arc` (deadpool pools are Arc-shaped)
         // so the runner's per-segment context can take ownership of
         // its own handle without disturbing the orchestrator's. When
@@ -2956,7 +2956,7 @@ mod tests {
     /// port — the historical-order capture's connect step fails and
     /// the variant must propagate.
     /// CRITICAL invariant: pre-fix this same scenario would have
-    /// `unwrap_or_default` ed the failure and proceeded into the
+    /// `unwrap_or_default()` ed the failure and proceeded into the
     /// destructive `drop_and_create_database` call. Post-fix the
     /// request returns `HistoricalOrderCaptureFailed` BEFORE any
     /// destructive operation runs.
@@ -3008,7 +3008,7 @@ mod tests {
         );
     }
 
-    /// `ResetError::source` returns the underlying `DjogiError` for
+    /// `ResetError::source()` returns the underlying `DjogiError` for
     /// the this variant — the `?` operator and `tracing` style error
     /// chains depend on that. The pre-existing variants in the impl
     /// already do this; the test guards against forgetting the new

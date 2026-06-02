@@ -2,7 +2,7 @@
 //! used to build correlated subqueries.
 //! # `{Model}OuterRef`
 //! A ZST whose inherent associated functions (no receiver — they are
-//! called as `AccountOuterRef::balance`, not `account_outer_ref.balance`)
+//! called as `AccountOuterRef::balance()`, not `account_outer_ref.balance()`)
 //! return [`OuterRef<Self, V>`](::djogi::expr::OuterRef) for every column,
 //! framework and user alike. The emission order mirrors [`stubs`]:
 //! 1. `id` — present for `pk = HeerId | RanjId | HeerIdDesc | RanjIdDesc |
@@ -11,7 +11,7 @@
 //! 3. User-declared columns in struct source order.
 //!    The `OuterRef`'s `V` generic is the user's declared Rust type verbatim
 //!    exactly like `{Model}Fields`. The typed `V` makes a correlated
-//!    subquery like `outer_ref_on<V1>.as_expr.eq(field_ref_on<V2>.as_expr)`
+//!    subquery like `outer_ref_on<V1>().as_expr().eq(field_ref_on<V2>().as_expr())`
 //!    a compile error unless `V1 == V2`, catching value-type mismatches at
 //!    the closure site rather than as a Postgres runtime error.
 //! # Why associated functions (not methods)
@@ -28,7 +28,7 @@
 //!         })
 //!     ).as_expr())
 //! ```
-//! Associated-function syntax (`AccountOuterRef::id` — no receiver)
+//! Associated-function syntax (`AccountOuterRef::id()` — no receiver)
 //! reads naturally because there is no value to receive on; `Fields`
 //! methods take `&self` only because the closure receives a
 //! default-constructed `T::Fields` value and dots into it. Outer refs
@@ -89,7 +89,7 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
                     /// closure to reference the enclosing scope.
                     /// Returns an [`OuterRef`] carrying the column name
                     /// plus phantom markers that bind it to this model
-                    /// and the column's Rust type. Call `.as_expr` to
+                    /// and the column's Rust type. Call `.as_expr()` to
                     /// produce an `Expr<V>` for composition with
                     /// `.eq` / arithmetic / other expression-IR
                     /// consumers.
@@ -116,7 +116,7 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         /// Typed outer-scope column references for correlated subqueries.
         /// Each inherent associated function returns an
         /// [`OuterRef`](::djogi::expr::OuterRef) for one column; call
-        /// `.as_expr` on the handle to produce an
+        /// `.as_expr()` on the handle to produce an
         /// [`Expr<V>`](::djogi::expr::Expr) you can slot into a nested
         /// `filter_expr` closure. Matches the `{Model}Fields` pattern
         /// for inner-scope column references but emits an outer-scope

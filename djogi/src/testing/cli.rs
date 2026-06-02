@@ -15,7 +15,7 @@
 //! `djogi`.
 //! # Raw access
 //! [`current_database`] uses [`crate::__bypass::RawAccessExt::raw_scalar`]
-//! to issue `SELECT current_database` against the per-test
+//! to issue `SELECT current_database()` against the per-test
 //! [`crate::DjogiContext`]. The use is internal to djogi (no `raw_*`
 //! method appears at the call site outside this crate), so adopter test
 //! files do not need a `#[deliberately_bypass_convention_with_raw_sql]`
@@ -59,12 +59,12 @@ pub fn djogi_binary_path() -> PathBuf {
     profile_dir.join("djogi")
 }
 
-/// Resolve the connected test context's `current_database` so callers
+/// Resolve the connected test context's `current_database()` so callers
 /// can splice the per-test database name into a fixture `Djogi.toml`
 /// URL.
-/// Issues a single `SELECT current_database::text` against `ctx` via
+/// Issues a single `SELECT current_database()::text` against `ctx` via
 /// the in-crate raw escape hatch. The cast to `text` is deliberate
-/// `current_database` returns a `name`, and decoding `name` directly
+/// `current_database()` returns a `name`, and decoding `name` directly
 /// into Rust's `String` is fragile across `tokio_postgres` versions.
 pub async fn current_database(ctx: &mut DjogiContext) -> String {
     ctx.raw_scalar::<String>("SELECT current_database()::text", &[])

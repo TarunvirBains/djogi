@@ -31,7 +31,7 @@
 //!    predicate against an already-backfilled subrange must produce
 //!    no observable change).
 //! 3. `UPDATE djogi_live_plans SET backfill_rows_done = …,
-//! last_progress_at = now WHERE plan_id = $1` — the progress
+//! last_progress_at = now() WHERE plan_id = $1` — the progress
 //!    write.
 //!    Steps 2 and 3 are committed together. A crash between them would
 //!    otherwise replay the chunk on resume and double-apply non-idempotent
@@ -503,7 +503,7 @@ async fn drive_chunks(
     Ok(chunks)
 }
 
-/// One chunk's worth of work, all inside a single `atomic` scope so
+/// One chunk's worth of work, all inside a single `atomic()` scope so
 /// the chunk's `UPDATE`, the progress write, AND (when this chunk
 /// exhausts the predicate) the `Running → Validating` status
 /// promotion commit together. Pinning all three writes to the same

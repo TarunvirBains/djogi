@@ -21,7 +21,7 @@
 /// A single unknown-field payload from a JSONB column — a raw
 /// [`serde_json::Value`] preserved verbatim from the database row.
 /// Values in the [`super::Jsonb::extra`] map are never type-checked against
-/// the `T` schema and are never modified by `save` (they are round-tripped
+/// the `T` schema and are never modified by `save()` (they are round-tripped
 /// intact). Accessing their content is always fallible — use the methods on
 /// [`UnknownFieldExt`].
 pub type UnknownField = serde_json::Value;

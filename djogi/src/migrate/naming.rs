@@ -146,7 +146,7 @@ pub fn sanitize_slug(input: &str) -> String {
 
 /// Construct a `V<YYYYMMDDHHMMSS>` timestamp prefix from an instant.
 /// `instant` is taken as a parameter so callers can pin a deterministic
-/// value (tests) or pass `OffsetDateTime::now_utc` (production
+/// value (tests) or pass `OffsetDateTime::now_utc()` (production
 /// compose). The output is exactly 15 ASCII bytes (`V` plus 14 digits).
 pub fn version_prefix(instant: OffsetDateTime) -> String {
     let utc = instant.to_offset(time::UtcOffset::UTC);

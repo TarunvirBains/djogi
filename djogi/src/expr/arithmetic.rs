@@ -92,7 +92,7 @@ mod sealed {
 // AVG always returns NUMERIC for integer inputs and DOUBLE PRECISION
 // for floating-point inputs; casting to DOUBLE PRECISION lets us
 // decode into `f64` uniformly, which matches the typed surface's
-// `Out = f64` promise on `avg`.
+// `Out = f64` promise on `avg()`.
 
 // Per-type cast target matches the Rust type `Out = V` promises:
 // `i16` maps to Postgres `SMALLINT`, `i32` to `INTEGER`, `i64`
@@ -101,7 +101,7 @@ mod sealed {
 // `numeric_value_out_of_range` error if the sum genuinely overflows
 // the target, which is the correct behaviour — users aggregating values
 // that wouldn't fit back into `V` should declare a larger `V` on the
-// column or use `ctx.raw_scalar`. This is documented on `sum` below.
+// column or use `ctx.raw_scalar`. This is documented on `sum()` below.
 impl Numeric for i16 {
     const SUM_CAST: &'static str = "SMALLINT";
     const AVG_CAST: &'static str = "DOUBLE PRECISION";

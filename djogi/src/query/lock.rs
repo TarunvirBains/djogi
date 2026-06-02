@@ -35,8 +35,8 @@
 //! error for a correctness question the caller can answer at the call
 //! site. Instead, the rustdoc on every lock builder calls the
 //! constraint out explicitly, and the integration suite pins the
-//! `FOR UPDATE NOWAIT` semantic to an `atomic` scope so the default
-//! code path is correct. Callers who lock outside of `atomic` are
+//! `FOR UPDATE NOWAIT` semantic to an `atomic()` scope so the default
+//! code path is correct. Callers who lock outside of `atomic()` are
 //! expected to know what they are doing.
 
 /// Row-level lock mode accumulated on a [`QuerySet`](crate::query::QuerySet).

@@ -21,7 +21,7 @@ use crate::geo::{GeoError, GeoPoint, ewkb};
 /// An ordered sequence of at least 2 `GeoPoint` values.
 /// Stored as `GEOGRAPHY(LineString, 4326)` in Postgres.
 /// # Invariant
-/// `points.len >= 2`. The constructor enforces this; deserialization
+/// `points.len() >= 2`. The constructor enforces this; deserialization
 /// re-validates so a value in memory always satisfies the constraint.
 /// # Display
 /// `Display` emits `LINESTRING(<lon> <lat>, ...)` per the OGC WKT convention

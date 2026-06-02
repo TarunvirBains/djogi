@@ -30,7 +30,7 @@
 //! Per `feedback_no_regex_in_djogi.md`: detection uses byte-level
 //! checks (`str::eq_ignore_ascii_case`, `str::trim`, last-segment
 //! ident comparison) and a sorted const placeholder slice with
-//! `iter.any(...)`. No `regex` engine, no regex notation in
+//! `iter().any(...)`. No `regex` engine, no regex notation in
 //! diagnostics.
 
 use syn::{Expr, ExprLit, Lit, LitStr, Meta, MetaNameValue, Token, punctuated::Punctuated};
@@ -69,7 +69,7 @@ pub struct MirJzSONAttr {
 /// - A duplicate `#[mirjzson(...)]` attribute on the same field.
 /// - The bare `#[mirjzson]` form (no argument list).
 /// - Any key other than `justification` inside the argument list.
-///   Returns `Ok(Vec::new)` for structs that declare no `MirJzSON`
+///   Returns `Ok(Vec::new())` for structs that declare no `MirJzSON`
 ///   fields and carry no stray `#[mirjzson(...)]` attributes.
 pub fn parse_mirjzson_attrs(
     struct_item: &syn::ItemStruct,

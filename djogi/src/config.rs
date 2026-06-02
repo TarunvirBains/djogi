@@ -98,7 +98,7 @@ pub struct MigrateConfig {
     /// Threshold (in seconds) above which an open transaction
     /// triggers the pre-flight refusal in the PK-flip orchestration.
     /// The runner enumerates `pg_stat_activity` rows whose
-    /// `xact_start` is older than `now - INTERVAL <threshold>`
+    /// `xact_start` is older than `now() - INTERVAL <threshold>`
     /// before opening the cutover transaction; any rows found refuse
     /// the cutover with `RunnerError::PkFlipHazardLongRunningTx`.
     /// Default `60` seconds. Set to `0` to disable the check.

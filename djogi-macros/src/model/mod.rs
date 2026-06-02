@@ -451,7 +451,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // `emit_rust_getters` is now a no-op (returns
     // an empty token stream regardless of input). The earlier shape
     // emitted one inherent `pub fn <field>(&self) -> <T> {
-    // unimplemented! }` stub per `#[computed(sql = ...)]` field on
+    // unimplemented!() }` stub per `#[computed(sql = ...)]` field on
     // the premise that Rust would prefer a hand-written impl over the
     // stub — but Rust does not allow two inherent methods with the
     // same name on the same type (E0201). The wiring point is kept so
@@ -459,14 +459,14 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // does not have to re-thread the orchestrator. Adopters who need
     // a Rust-side computation today write a plain inherent method
     // with any name they choose; the SQL-side path through
-    // `Vehicle::computed` covers the server-side cases.
+    // `Vehicle::computed()` covers the server-side cases.
     let computed_getters = computed::emit_rust_getters(&struct_item.ident, &computed_attrs);
 
     // 5 — `{Model}Computed` ZST + accessor methods +
-    // `Vehicle::computed` inherent constructor.
-    // Adopters access computed fields via `Vehicle::computed
-    // .total_price` returning `Expr<f64>`, suitable for use in
-    // `.annotate`, `.filter_expr`, `.order_by`. The ZST is
+    // `Vehicle::computed()` inherent constructor.
+    // Adopters access computed fields via `Vehicle::computed()
+    // .total_price()` returning `Expr<f64>`, suitable for use in
+    // `.annotate()`, `.filter_expr()`, `.order_by()`. The ZST is
     // independent of `{Model}Fields` for v0.1.0 simplicity (see the
     // module-level comment in `model::computed` for the bundling
     // tradeoff with plan §7 #10).
@@ -506,7 +506,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
 /// # Mechanism
 /// Stable Rust does not expose `proc_macro::Diagnostic` at warn level. The
 /// idiomatic stable-Rust approach is emitting a `#[deprecated]` const that is
-/// immediately referenced via a second `const _: = ...;` expression. The
+/// immediately referenced via a second `const _: () = ...;` expression. The
 /// compiler fires the deprecated-use lint at the reference site, which surfaces
 /// as a warning in the user's build output without preventing compilation.
 /// # Trigger today: `outbox = "ignore"` without `rationale`
@@ -664,7 +664,7 @@ fn validate_version_fields(
 ///   user-module paths that happen to end in `i32` / `i64`.
 fn is_version_primitive_path(path: &syn::Path) -> bool {
     // Reject any segment that carries angle-bracketed or parenthesized args
-    // (e.g. a typo like `i32<>`). Version fields must be exactly the
+    // (e.g. a typo like `i32<()>`). Version fields must be exactly the
     // bare primitive type.
     if path
         .segments

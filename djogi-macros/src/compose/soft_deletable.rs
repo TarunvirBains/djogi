@@ -24,7 +24,7 @@
 //! Preserved across the design pivot).
 //! The `COLUMN` const on the `SoftDeletable` trait carries the default
 //! `"deleted_at"` value at the trait level; this emission inherits
-//! the default and does not override the const. `QuerySet::not_deleted`
+//! the default and does not override the const. `QuerySet::not_deleted()`
 //! reads the column name through `<M as SoftDeletable>::COLUMN` rather
 //! than from a hard-coded string, so future column-rename overrides are
 //! one trait-const override away.
@@ -39,11 +39,11 @@
 //! on type ...`).
 //! # Default-filter composition deferred
 //! The current implementation ships **only** the trait impl. The runtime helper
-//! `QuerySet::not_deleted` (in `djogi/src/query/queryset.rs`) is a
-//! manual filter the adopter invokes per `objects` chain, now reading
+//! `QuerySet::not_deleted()` (in `djogi/src/query/queryset.rs`) is a
+//! manual filter the adopter invokes per `objects()` chain, now reading
 //! the column name through `<M as SoftDeletable>::COLUMN`. **Automatic**
-//! default-filter composition — making `Model::objects` exclude
-//! soft-deleted rows by default and exposing an `_insecurely`
+//! default-filter composition — making `Model::objects()` exclude
+//! soft-deleted rows by default and exposing an `_insecurely()`
 //! bypass — is deferred to once the `Q<T>` substrate
 //! lands. Per spec line 971 (RESOLVED 2026-05-03, lens, locked):
 //! substrate decisions belong with the substrate refactor.
@@ -83,7 +83,7 @@ use syn::Ident;
 /// The emitted impl inherits the trait-level
 /// `const COLUMN: &'static str = "deleted_at"` default — the column
 /// name lives on the trait, not in this macro emission, so
-/// `QuerySet::not_deleted` and any future SoftDeletable consumer
+/// `QuerySet::not_deleted()` and any future SoftDeletable consumer
 /// reads it through `<M as SoftDeletable>::COLUMN` rather than a
 /// hard-coded string. A future per-model column-rename path can
 /// override the const at the impl level without changing this

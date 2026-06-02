@@ -8,12 +8,12 @@
 //!   `DjogiContext::raw_stream_with_fetch_size`. Yields
 //!   `Result<tokio_postgres::Row, DjogiError>`. The caller decodes rows
 //!   themselves.
-//!   Both terminals require an active `atomic` scope (Postgres named
+//!   Both terminals require an active `atomic()` scope (Postgres named
 //!   cursors are transaction-local). Constructing a stream outside a
 //!   transaction surfaces [`DjogiError::StreamOutsideTransaction`] at
 //!   construction time.
 //! # Implementation: `futures::stream::unfold`
-//! Manual `Stream` impls that build a fresh `next_row` future on each
+//! Manual `Stream` impls that build a fresh `next_row()` future on each
 //! `poll_next` do not work: the future is discarded on `Poll::Pending`, so
 //! no progress accumulates between polls and `FETCH` round trips never
 //! complete. Storing the future inside the stream struct works, but the

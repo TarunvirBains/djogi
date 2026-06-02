@@ -4,7 +4,7 @@
 //! and `query::field` can share a small typed representation without storing
 //! SQL fragments in the condition tree.
 //! Range predicates are SQL-only. They are exposed from root model fields
-//! through `explicit_pg_predicate` because Postgres range canonicalization
+//! through `explicit_pg_predicate()` because Postgres range canonicalization
 //! and operator semantics are not portable to Punnu/Rust evaluation.
 
 use crate::query::condition::FilterValue;

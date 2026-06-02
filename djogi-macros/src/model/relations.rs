@@ -5,7 +5,7 @@
 //! `OneToOneField<T>`, `Option<OneToOneField<T>>`). Each method returns a
 //! [`RelationPath<Source, Target>`](::djogi::relation::RelationPath) carrying:
 //! - the column name on the source table (`"owner_id"`),
-//! - the target table name (via `Target::table_name` at runtime),
+//! - the target table name (via `Target::table_name()` at runtime),
 //! - the relation [`RelationKind`](::djogi::relation::RelationKind).
 //!   Tasks 4 + 5 consume these handles: `QuerySet::prefetch(path)` and
 //!   `QuerySet::select_related(path)` accept `RelationPath<Self, _>` and emit
@@ -26,11 +26,11 @@
 //! # Method-name convention
 //! By convention, users name relation columns `{target}_id` (e.g.
 //! `owner_id: ForeignKey<Owner>`). This module strips one trailing `_id`
-//! when naming the method — the user writes `VehicleRelated::owner` rather
-//! than `VehicleRelated::owner_id`, matching the target struct's name.
+//! when naming the method — the user writes `VehicleRelated::owner()` rather
+//! than `VehicleRelated::owner_id()`, matching the target struct's name.
 //! Columns that do not end in `_id` keep their full name as the method
 //! name — a field like `pub primary: ForeignKey<Owner>` becomes
-//! `VehicleRelated::primary`, which is the identifier the user wrote.
+//! `VehicleRelated::primary()`, which is the identifier the user wrote.
 //! # Empty `{Model}Related`
 //! Models with no relation fields still get a `{Model}Related` unit struct
 //! with `#[derive(Debug, Clone, Copy, Default)]` and no methods. Emitting
@@ -72,7 +72,7 @@ pub fn expand(struct_item: &ItemStruct) -> TokenStream {
             let column_name = crate::syn_util::column_name_from_ident(ident);
 
             // Method name: strip one trailing `_id` segment by convention so
-            // `owner_id: ForeignKey<Owner>` → `VehicleRelated::owner`.
+            // `owner_id: ForeignKey<Owner>` → `VehicleRelated::owner()`.
             // Columns that do not end in `_id` keep their identifier as the
             // method name, so the user always recognises what they wrote.
             let method_stem = column_name

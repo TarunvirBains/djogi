@@ -56,20 +56,20 @@
 //! Resolution: route through `sassi_codegen::generate_cacheable_impl`
 //! with [`CacheableFieldsMode::external`](sassi_codegen::CacheableFieldsMode::external),
 //! which makes sassi-codegen emit `type Fields = #fields_name` and
-//! `fn fields -> Self::Fields { #fields_name::new }` against
+//! `fn fields() -> Self::Fields { #fields_name::new() }` against
 //! djogi's already-emitted companion — no second struct, no
 //! collision, and the `Cacheable` impl shape stays in lock-step with
 //! sassi's own evolution. Adopters reach the field handle through the
 //! same accessor surface `QuerySet::filter(|f| ...)` already exposes,
 //! so Sassi-side predicate builders (`Punnu::scope(...).filter_basic(...)`)
 //! and Djogi-side closures share one DSL.
-//! `{Model}Fields::new` is `const` and zero-cost — the ZST has no
+//! `{Model}Fields::new()` is `const` and zero-cost — the ZST has no
 //! state to populate. After the auto-emit path covers
 //! the common case end-to-end: `Cacheable::Id` resolves to the PK
 //! type (so adopter generic bounds `<T: Cacheable>` see the right
 //! type), `Cacheable::id(&self)` clones `self.id` (so cache-key
 //! derivation works through `Punnu::insert(...)`), and
-//! `Cacheable::fields` constructs the ZST through `{Model}Fields::new`
+//! `Cacheable::fields()` constructs the ZST through `{Model}Fields::new()`
 //! so Sassi-side predicate builders compose against the same
 //! accessors as djogi querysets.
 //! `DeltaSyncCacheable` does NOT depend on `{Model}Fields`, so
@@ -118,7 +118,7 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
     // field name and the source span so a missing field on the
     // adopter struct produces a span-precise error pointing at the
     // attribute literal. The default-`updated_at` branch synthesises
-    // `Span::call_site` because there is no source token to point
+    // `Span::call_site()` because there is no source token to point
     // at — and the framework-injection invariant guarantees
     // `updated_at` always exists on every PK strategy except
     // `pk = None` (already skipped above).
@@ -188,7 +188,7 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
     // accessor surface adopters already use through
     // `QuerySet::filter(|f| ...)`. `CacheableFieldsMode::external` instructs
     // sassi-codegen to emit `type Fields = #fields_name` and
-    // `fn fields -> Self::Fields { #fields_name::new }` against djogi's
+    // `fn fields() -> Self::Fields { #fields_name::new() }` against djogi's
     // already-emitted companion — sidestepping
     // `sassi_codegen::generate_fields_struct` so the `{Model}Fields` name is
     // owned by djogi's stubs pass alone (no E0428 collision).
@@ -206,7 +206,7 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
         // guard is owned by sassi's own derive surface for consumers writing
         // hand-authored `#[derive(Cacheable)]`. Initialising to `None` keeps
         // djogi-macros forward-compatible with sister-repo field additions
-        // without depending on sassi's `..Default::default` semantics for
+        // without depending on sassi's `..Default::default()` semantics for
         // a struct that may add non-Default-implementing fields later.
         wire_portable: None,
         fields: sassi_codegen::CacheableFieldsMode::external(

@@ -10,7 +10,7 @@ use syn::{Expr, ExprLit, Field, Lit, LitStr};
 /// Require a string literal at the right-hand side of `key = …`.
 /// Returns the cloned [`LitStr`] so callers that need the span (most
 /// macros do, for downstream error attribution) keep it. Callers that
-/// only need the bare string should call `.value` on the result.
+/// only need the bare string should call `.value()` on the result.
 pub(crate) fn require_string_lit(value: &Expr, key: &str) -> syn::Result<LitStr> {
     if let Expr::Lit(ExprLit {
         lit: Lit::Str(s), ..
@@ -26,7 +26,7 @@ pub(crate) fn require_string_lit(value: &Expr, key: &str) -> syn::Result<LitStr>
 }
 
 /// SQL column name for a Rust identifier — strips the `r#` prefix that
-/// `Ident::to_string` carries on raw identifiers (e.g. `r#type` → `type`).
+/// `Ident::to_string()` carries on raw identifiers (e.g. `r#type` → `type`).
 /// Plain idents pass through unchanged.
 pub(crate) fn column_name_from_ident(ident: &syn::Ident) -> String {
     let raw = ident.to_string();

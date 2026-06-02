@@ -66,19 +66,19 @@
 //! supplied by the caller are ignored; the database populates them.
 //! Adopters who want to copy the source's `id` into the target (e.g. to
 //! preserve the original identity on an archive table) explicitly map it
-//! via `target.original_id.copy_from(source.id.as_insert_source)`
+//! via `target.original_id().copy_from(source.id().as_insert_source())`
 //! against an adopter-declared user column. Adopters who name
-//! `target.id` directly against an FK-typed PK column take responsibility
+//! `target.id()` directly against an FK-typed PK column take responsibility
 //! for the resulting collision behaviour just as they would in
 //! `Model::create_with_id`.
 //! # Source/target identity is type-checked
 //! The typed surface refuses to compile when the source and target sides
 //! are swapped at the mapping site. Concretely:
-//! - `target_field.copy_from(source_field.as_insert_source)` — OK.
-//! - `source_field.copy_from(target_field.as_insert_source)` — fails
+//! - `target_field.copy_from(source_field.as_insert_source())` — OK.
+//! - `source_field.copy_from(target_field.as_insert_source())` — fails
 //!   to compile (`InsertSelectColumn<T, S>` does not implement
 //!   `IntoInsertColumns<S, T>`).
-//! - `target_field.copy_from(target_field.as_insert_source)` — fails
+//! - `target_field.copy_from(target_field.as_insert_source())` — fails
 //!   to compile (`InsertSelectColumn<T, T>` does not implement
 //!   `IntoInsertColumns<S, T>` when `S != T`).
 //!   See `djogi/tests/compile_fail/insert_select_*` for the pinned
@@ -105,7 +105,7 @@
 //!   ships without lock composition. The FOR SHARE family
 //!   added under is rejected by the same validator. A future
 //!   issue can lift this restriction with a deliberate
-//!   `.with_source_lock` opt-in.
+//!   `.with_source_lock()` opt-in.
 //! - **`distinct != DistinctMode::None`** — `SELECT DISTINCT` inside
 //!   INSERT...SELECT is also valid Postgres semantics ("insert distinct
 //!   source rows only"), but the safer initial surface rejects it.
@@ -122,11 +122,11 @@
 //! - **`limit`** (LIMIT) — useful for chunked archival.
 //! - **`offset`** (OFFSET) — composes with limit for pagination-style
 //!   chunking.
-//! - **`is_empty`** (the `QuerySet::none` short-circuit) — terminals
+//! - **`is_empty`** (the `QuerySet::none()` short-circuit) — terminals
 //!   return `Ok(0)` without touching the database, **but only after**
 //!   the column-mapping and source-state validation above has passed.
-//!   A `.none` chain with an empty mapping, duplicate columns, or
-//!   stale post-`.none` state-adding methods still surfaces a
+//!   A `.none()` chain with an empty mapping, duplicate columns, or
+//!   stale post-`.none()` state-adding methods still surfaces a
 //!   [`DjogiError::Validation`] so the programming error does not hide
 //!   behind a silent zero-row return.
 //! # Tenant / RLS auto-set
@@ -139,7 +139,7 @@
 //! to manage the auth context explicitly when copying across tenants.
 //! # Duplicate column rejection
 //! The emitter rejects an empty column list (Postgres would reject
-//! `INSERT INTO t SELECT ...` regardless) and a column list with
+//! `INSERT INTO t () SELECT ...` regardless) and a column list with
 //! duplicate target columns (Postgres would reject
 //! `INSERT INTO t (a, a) SELECT ...` with `42701 column "a" specified
 //! more than once`). Both are surfaced as [`DjogiError::Validation`]
@@ -329,7 +329,7 @@ impl<S: Model> std::ops::Sub<InsertSelectSource<S, time::Duration>>
 ///     target.original_id().copy_from(source.id().as_insert_source()),
 /// ])
 /// ```
-/// Calling this on a target-side field (e.g. `target.col.as_insert_source`)
+/// Calling this on a target-side field (e.g. `target.col().as_insert_source()`)
 /// produces an `InsertSelectSource<TargetModel, V>` — which the closure's
 /// return type then rejects because it expects an
 /// `InsertSelectSource<SourceModel, V>` to land in `InsertSelectColumn<SourceModel, T>`.
@@ -350,7 +350,7 @@ impl<S: Model, V> FieldRef<S, V> {
 /// # What
 /// Produced exclusively by [`FieldRef::copy_from`] /
 /// [`crate::query::DjogiField::copy_from`] — the closure call
-/// `target.col.copy_from(source.col.as_insert_source)` returns a
+/// `target.col().copy_from(source.col().as_insert_source())` returns a
 /// single `InsertSelectColumn<S, T>` with `target_column = "col"` (the
 /// macro-baked column name from the target [`FieldRef`]) and `source =`
 /// `source.col`'s tagged IR tree.
@@ -390,7 +390,7 @@ pub struct InsertSelectColumn<S: Model, T: Model> {
     /// this node only carries the projection.
     pub(crate) source: ExprNode,
     /// Phantom tag pinning the source and target model identity at
-    /// compile time without owning either. `fn -> (S, T)` matches
+    /// compile time without owning either. `fn() -> (S, T)` matches
     /// the variance pattern on [`QuerySet<S>`] and
     /// [`crate::query::UpdateStmt`].
     _phantom: PhantomData<fn() -> (S, T)>,
@@ -408,7 +408,7 @@ impl<S: Model, T: Model> std::fmt::Debug for InsertSelectColumn<S, T> {
 }
 
 // `Clone` is hand-rolled, not derived: deriving would impose `S: Clone`
-// and `T: Clone` (because the `PhantomData<fn -> (S, T)>` field appears
+// and `T: Clone` (because the `PhantomData<fn() -> (S, T)>` field appears
 // to "own" the type parameters from `derive(Clone)`'s perspective). The
 // manual impl mirrors the [`InsertSelectStmt`] pattern below and matches
 // the same workaround applied to [`QuerySet<T>`].
@@ -454,7 +454,7 @@ impl<S: Model, T: Model> InsertSelectColumn<S, T> {
 /// # Source operand shapes
 /// [`InsertSelectSource<S, V>`] covers every shape the source operand
 /// can take:
-/// - **Plain column copy** — `source.col.as_insert_source` (the
+/// - **Plain column copy** — `source.col().as_insert_source()` (the
 ///   common case). Emits a bare `col` reference inside the source
 ///   `FROM` scope.
 /// - **Constant** — `InsertSelectSource::literal(42i32)`. Emits a single
@@ -548,7 +548,7 @@ impl<S: Model, T: Model> IntoInsertColumns<S, T> for Vec<InsertSelectColumn<S, T
 /// closure.
 /// `Clone` / `Debug` are hand-rolled (not derived) so they do not
 /// require `S: Clone` / `T: Clone` / `S: Debug` / `T: Debug`
-/// `InsertSelectStmt` never owns or borrows a `T`; the `PhantomData<fn -> T>`
+/// `InsertSelectStmt` never owns or borrows a `T`; the `PhantomData<fn() -> T>`
 /// tag mirrors the variance pattern on [`QuerySet<S>`] and
 /// [`crate::query::UpdateStmt`].
 #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
@@ -597,9 +597,9 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// terminals surface the same error classes (empty column list,
     /// duplicate target column, unsupported source-queryset state) even
     /// when the source queryset is [`QuerySet::none`]-derived — a
-    /// silent `Ok` under `.none` would otherwise mask mapping bugs
-    /// until the `.none` guard was removed.
-    /// Returns `Ok` when validation passes. Returns
+    /// silent `Ok` under `.none()` would otherwise mask mapping bugs
+    /// until the `.none()` guard was removed.
+    /// Returns `Ok(())` when validation passes.  Returns
     /// `Err(DjogiError::Validation(...))` for any of the rejection cases
     /// listed on [`execute`](InsertSelectStmt::execute).
     fn validate_execute(&self) -> Result<(), DjogiError> {
@@ -691,17 +691,17 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// count.
     /// # Validation rejections (no SQL issued, returns
     /// [`DjogiError::Validation`])
-    /// Run **before** the `is_empty` short-circuit so a programming
+    /// Run **before** the `is_empty()` short-circuit so a programming
     /// error in the column mapping or source-queryset state still
     /// surfaces when the source happens to be
-    /// [`QuerySet::none`]-derived. A silent `Ok(0)` under `.none`
-    /// would mask the bug until a caller removed the `.none` (or it
+    /// [`QuerySet::none`]-derived. A silent `Ok(0)` under `.none()`
+    /// would mask the bug until a caller removed the `.none()` (or it
     /// was guarded by an auth / feature-flag branch that flipped) — at
     /// which point the same SQL the framework would have rejected here
     /// would suddenly leak out as a live Postgres syntax error or
     /// SQLSTATE.
-    /// - Empty column mapping (`columns.is_empty`). Postgres would
-    ///   reject `INSERT INTO t SELECT ...` as syntactically invalid;
+    /// - Empty column mapping (`columns.is_empty()`). Postgres would
+    ///   reject `INSERT INTO t () SELECT ...` as syntactically invalid;
     ///   the framework pre-validates so the diagnostic carries the
     ///   target table name rather than the bare SQLSTATE.
     /// - Duplicate target column in the mapping (Postgres `42701`
@@ -713,7 +713,7 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// # Short-circuit case (no SQL issued)
     /// After validation passes, returns `Ok(0)` without touching the
     /// database when the source queryset is [`QuerySet::none`]-derived
-    /// (`is_empty == true`).
+    /// (`is_empty() == true`).
     /// # Tenant / RLS auto-set
     /// Calls `auto_set_tenant` (the crate-private helper shared with
     /// every other write terminal) on the target model first, then on
@@ -722,7 +722,7 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// and source share the same tenant key.
     /// # Return value
     /// Returns `u64` — the row count from `tokio_postgres`'s
-    /// `CommandTag::rows_affected`. Postgres' INSERT rowcount is
+    /// `CommandTag::rows_affected()`. Postgres' INSERT rowcount is
     /// non-negative by definition, so there is no sign conversion at
     /// the call site.
     pub fn execute<'ctx>(
@@ -737,8 +737,8 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
             // Validation runs BEFORE the `is_empty` short-circuit so a
             // programming error in the column mapping or in the
             // source-queryset state still surfaces even when the source
-            // queryset is `QuerySet::none`-derived. A silent `Ok(0)`
-            // would mask the bug until a caller removed the `.none`
+            // queryset is `QuerySet::none()`-derived. A silent `Ok(0)`
+            // would mask the bug until a caller removed the `.none()`
             // (or it was guarded by an auth / feature-flag branch that
             // flipped), at which point the same SQL the framework would
             // have rejected here would surface as a live Postgres
@@ -747,9 +747,9 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
             self.validate_execute()?;
 
             // Short-circuit: structural-empty source. Runs AFTER the
-            // validation block above so a `.none` source with a
+            // validation block above so a `.none()` source with a
             // broken column mapping (empty list, duplicate target
-            // column) or stale post-`.none` state-adding chain still
+            // column) or stale post-`.none()` state-adding chain still
             // surfaces the validation error rather than silently
             // succeeding. Mirrors the TASK6:empty_contract on bulk
             // update / delete in spirit, but applies validation first.
@@ -798,8 +798,8 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// mapping, duplicate target column, unsupported source-queryset
     /// state.
     /// # Short-circuit
-    /// Returns `Ok(Vec::new)` when the source queryset is
-    /// [`QuerySet::none`]-derived (`is_empty == true`).
+    /// Returns `Ok(Vec::new())` when the source queryset is
+    /// [`QuerySet::none`]-derived (`is_empty() == true`).
     pub fn execute_returning<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -809,7 +809,7 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
         T: 'ctx + FromPgRow,
     {
         async move {
-            // Same validation contract as execute.
+            // Same validation contract as execute().
             self.validate_execute()?;
 
             // Short-circuit for structural-empty source.

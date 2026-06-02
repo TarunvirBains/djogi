@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn rename_all_apply_camel_case_from_pascal() {
-        // DjogiEnum calls apply with PascalCase variant names.
+        // DjogiEnum calls apply() with PascalCase variant names.
         assert_eq!(RenameAll::CamelCase.apply("InMaintenance"), "inMaintenance");
         assert_eq!(RenameAll::CamelCase.apply("Active"), "active");
     }

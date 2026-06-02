@@ -24,7 +24,7 @@
 //! `ContextInner::Transaction(PgConnection)` in `DjogiContext`. The `BEGIN` /
 //! `COMMIT` / `ROLLBACK` commands are issued via `batch_execute` on the inner
 //! `Object`. `SAVEPOINT` / `RELEASE SAVEPOINT` / `ROLLBACK TO SAVEPOINT` for
-//! nested `atomic` scopes also go through `batch_execute`.
+//! nested `atomic()` scopes also go through `batch_execute`.
 //! # `Send + !Sync`
 //! `tokio_postgres::Client` (and therefore `deadpool_postgres::Object`) is `Send`
 //! but not `Sync`. `PgConnection` inherits these bounds — the same contract
@@ -40,7 +40,7 @@ use tokio_postgres::{Row, Statement};
 /// The cache is owned by the underlying `deadpool_postgres::ClientWrapper`, not
 /// by this checkout wrapper. The same `ClientWrapper` may be checked out
 /// multiple times; its `StatementCache` accumulates entries across all checkouts.
-/// When deadpool recycles the connection (e.g. I/O error, `is_closed` true),
+/// When deadpool recycles the connection (e.g. I/O error, `is_closed()` true),
 /// the `ClientWrapper` is dropped and a new one created — clearing the cache
 /// automatically. See the module-level docs for the full cache lifecycle.
 pub struct PgConnection {

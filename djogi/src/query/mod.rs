@@ -57,7 +57,7 @@ pub mod merge;
 // Wraps Sassi's `JSahibONFieldRef` / `JSahibONOptionFieldRef` /
 // `JSahibONPathRef` / `JSahibONValueRef` surfaces with Djogi
 // trusted-provenance stamping. Adopter code reaches this through
-// `DjogiField<M, MirJzSON>::jsahibon` (re-exported via the impl
+// `DjogiField<M, MirJzSON>::jsahibon()` (re-exported via the impl
 // blocks in the module itself); the module path stays `pub` so the
 // builder types are nameable when adopter code declares helper
 // functions that consume a `DjogiJSahibONFieldRef<M>`.
@@ -245,7 +245,7 @@ pub mod internal {
     // public API (it was `pub use condition::Condition` at module
     // root pre-flip) into the unstable internal namespace alongside
     // `Leaf` / `FilterValue` / `LookupOp`. The
-    // `default_filter_condition -> Option<Condition>` trait method
+    // `default_filter_condition() -> Option<Condition>` trait method
     // names this type and rebases against this path; future code
     // composing through the public algebra never needs to name it
     // (closure-side `FieldRef::eq` etc. type-infer the return).

@@ -24,7 +24,7 @@ use async_trait::async_trait;
 /// Implementations must be `Send + Sync + 'static` so they can be stored in a
 /// `Box<dyn Publisher>` and shared across Tokio tasks.
 /// # Error semantics
-/// - Return `Ok` only after the transport has durably accepted the message
+/// - Return `Ok(())` only after the transport has durably accepted the message
 /// (or the implementation is fire-and-forget by design).
 /// - Return `Err(PublishError::Transient { .. })` for retriable failures so the
 /// relay can call `mark_failed(retryable = true)` and try again later.

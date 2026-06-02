@@ -62,7 +62,7 @@ pub struct OutboxRow {
     pub row_id: String,
 
     /// The CRUD action that produced this outbox entry. Matches the
-    /// `OutboxAction::as_sql_str` values: `"create"`, `"save"`, or `"delete"`.
+    /// `OutboxAction::as_sql_str()` values: `"create"`, `"save"`, or `"delete"`.
     pub action: String,
 
     /// Full JSONB payload — the serialised source row (after `outbox_exclude`
@@ -115,11 +115,11 @@ fn validate_table_ident(name: &str) -> Result<(), DjogiError> {
 /// Uses `FOR UPDATE SKIP LOCKED` inside a sub-`SELECT` so multiple concurrent
 /// worker processes claim disjoint batches without coordination overhead.
 /// Each claimed row transitions `pending → processing` and its `leased_until`
-/// is set to `now + lease_duration`, giving the caller a window in which to
+/// is set to `now() + lease_duration`, giving the caller a window in which to
 /// publish before [`recover_stale`] can reclaim the row.
 /// The claim is atomic: if the enclosing transaction rolls back, the rows
 /// remain `pending`. Callers should therefore wrap their claim + publish cycle
-/// in `atomic` so a publish failure or crash does not leave orphaned
+/// in `atomic()` so a publish failure or crash does not leave orphaned
 /// `processing` rows.
 /// # Parameters
 /// - `outbox_table` — the bare table name (e.g. `"worker_outbox"`). Validated
@@ -139,9 +139,9 @@ pub async fn claim_pending(
     // (the `with-time-0_3` feature covers timestamps, not intervals). We embed
     // the whole-second count directly into the SQL string as an integer literal
     // so Postgres can parse it at planning time without any bind-parameter type
-    // ambiguity. The value comes from `whole_seconds` on a validated
+    // ambiguity. The value comes from `whole_seconds()` on a validated
     // `time::Duration`, not from user input, so direct embedding is safe.
-    // `leased_until IS NULL OR leased_until <= now` gates pending rows that
+    // `leased_until IS NULL OR leased_until <= now()` gates pending rows that
     // are still inside a retry backoff window (see `mark_failed`). Freshly
     // inserted rows have `leased_until = NULL` and claim immediately; rows that
     // were re-queued after a retryable failure have a `leased_until` in the

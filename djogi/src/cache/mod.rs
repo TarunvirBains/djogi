@@ -47,7 +47,7 @@ pub use sassi::{
 // 4 — boot-time `Sassi` registration via inventory.
 // `SassiBootHook` is the newtype `#[derive(Model)]`-emitted
 // `inventory::submit!` blocks deposit. `DjogiContext::from_pool` (and
-// `from_connection`) walk `inventory::iter::<SassiBootHook>` once and
+// `from_connection`) walk `inventory::iter::<SassiBootHook>()` once and
 // freeze the result into `Arc<Sassi>`.
 // Re-exported at the crate root (`djogi::SassiBootHook`) so macro-emitted
 // code can spell `::djogi::SassiBootHook` per
@@ -65,12 +65,12 @@ pub use boot::SassiBootHook;
 /// # What
 /// `DjogiDeltaSyncMeta` is auto-emitted by `#[derive(Model)]` alongside
 /// `Cacheable` and `DeltaSyncCacheable`. It surfaces the column name
-/// corresponding to `DeltaSyncCacheable::watermark` so the
+/// corresponding to `DeltaSyncCacheable::watermark()` so the
 /// `DjogiDeltaFetcher` (5) can emit
 /// `WHERE <col> >= $since` SQL on every tick without string literals in
 /// framework internals.
 /// # Relationship to `DeltaSyncCacheable`
-/// `DeltaSyncCacheable::watermark` returns the Rust value;
+/// `DeltaSyncCacheable::watermark()` returns the Rust value;
 /// `DjogiDeltaSyncMeta::WATERMARK_COLUMN` names the Postgres column that
 /// stores that value. The two are always consistent because the macro
 /// emits both from the same `watermark_field` attribute (or its

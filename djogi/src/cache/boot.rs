@@ -59,7 +59,7 @@
 ///
 /// fn typed_pool(ctx: &DjogiContext) {
 /// // The boot hook for `Post` ran when `ctx` was constructed
-/// // `ctx.punnu::<Post>` returns the registered `Arc<Punnu<Post>>`
+/// // `ctx.punnu::<Post>()` returns the registered `Arc<Punnu<Post>>`
 /// // without the adopter ever naming `SassiBootHook`.
 /// let _post_pool = ctx.punnu::<Post>();
 /// }

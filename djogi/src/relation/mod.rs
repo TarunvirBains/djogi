@@ -7,7 +7,7 @@
 //!   migration layer.
 //!   Later tasks extend this module with:
 //! - `path.rs` / `RelationPath<Source, Target>` — typed ZST relation
-//!   handle produced by `{Source}Related::relation_name` for prefetch
+//!   handle produced by `{Source}Related::relation_name()` for prefetch
 //!   / select_related (Task 2).
 //! - `prefetch.rs` / `PrefetchedRow<T>` — post-prefetch wrapper + its
 //!   two-query stitching loader (Task 4).
@@ -74,7 +74,7 @@ pub mod __macro_support {
 
     /// Construct a [`RelationPath<Source, Target>`] from macro-emitted
     /// identifier strings. The only supported caller is the
-    /// `{Source}Related::relation_name` method that `#[derive(Model)]`
+    /// `{Source}Related::relation_name()` method that `#[derive(Model)]`
     /// emits in the user's crate.
     /// Panics if `source_column` or `target_table` violates any rule in
     /// [`crate::ident::assert_plain_ident`]: empty, over 63 bytes,
