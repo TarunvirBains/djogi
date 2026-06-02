@@ -4182,7 +4182,7 @@ impl<M: crate::model::Model> FieldRef<M, ::std::option::Option<crate::geo::GeoPo
     }
 }
 
-// ── Spatial shape predicates on any GeographyValue field (T9) ────────────────
+// ── Spatial shape predicates on any GeographyValue field ────────────────
 // Gated on `#[cfg(feature = "spatial")]`. Generic over `G: GeographyValue` so
 // the methods are available on `FieldRef<M, Polygon>`, `FieldRef<M, LineString>`,
 // `FieldRef<M, GeoPoint>`, etc. The `other` argument is also generic (`O:
@@ -4308,7 +4308,7 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     }
 }
 
-// ── T10: bounded_by (any GeographyValue) + distance_to (GeoPoint-only) ──────
+// ── bounded_by (any GeographyValue) + distance_to (GeoPoint-only) ──────
 // `.bounded_by` is generic over `G: GeographyValue` — a bbox prefilter makes
 // sense for any geography column (polygon coverage zones, linestring routes,
 // point locations, etc.). The four coordinate arguments follow the GeoPoint
@@ -4584,7 +4584,7 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 // `AggregateExpr<MultiPolygon>` decode. Restricting the receiver to
 // `Polygon` / `MultiPolygon` fields keeps the typed surface sound;
 // adopters wanting union semantics on points use the existing
-// `collect` (T12), which produces a MultiPoint.
+// `collect`, which produces a MultiPoint.
 #[cfg(feature = "spatial")]
 impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// `ST_Union(<col>::geometry)::geography` — per-group region-merging
@@ -4600,7 +4600,7 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
     /// # vs. [`Self::collect`] (when available) and [`Self::convex_hull`]
     /// - `ST_Union` *merges* overlapping/touching polygons, eliminating
     ///   shared edges — output area is the union of input areas.
-    /// - `ST_Collect` (T12, available on points) builds a multi-geometry
+    /// - `ST_Collect` (available on points via `collect`) builds a multi-geometry
     ///   without merging — output is the bag of inputs.
     /// - `ST_ConvexHull(ST_Collect(...))` returns the smallest convex
     ///   polygon enclosing all inputs — strictly larger than the union
@@ -4942,7 +4942,7 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     /// # Order-sensitivity
     /// Unlike most aggregates where row order is incidental, the
     /// resulting LineString's *vertex sequence* directly reflects
-    /// input row order. This aggregate naturally consumes T1's
+    /// input row order. This aggregate naturally consumes the
     /// `.order_by(field)` modifier — the per-aggregate ORDER BY
     /// clause lands inside the `ST_MakeLine` parens to control vertex
     /// sequence at the aggregate level (not the result-set level).
@@ -4982,7 +4982,7 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     /// ```
     /// This wraps the existing `SpatialExpr::Distance` IR variant that was
     /// added in but previously only used by the `.order_by_distance`
-    /// shortcut. T10 exposes it as a first-class expression method so it
+    /// shortcut. This exposes it as a first-class expression method so it
     /// composes cleanly anywhere an `Expr<f64>` is accepted.
     /// Bind order: `$1 = center.lon`, `$2 = center.lat`.
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
@@ -5038,7 +5038,7 @@ impl Condition {
 // condition as if the FK is set, but guard the whole thing with
 // `author_id IS NOT NULL`". That's exactly what `map_filter` emits.
 // The nullability marker also drives the boundary symbol inspection that
-// later tasks (T9 / T10) will use to reject mixing a required-FK accessor
+// future boundary checking will use to reject mixing a required-FK accessor
 // with an optional-FK accessor under the same visage scope.
 
 /// Traversal handle for an optional forward relation (`Option<ForeignKey<T>>` or
@@ -5805,7 +5805,7 @@ mod tests {
     }
 }
 
-// ── T9: Method dispatch tests for shape predicates ────────────────────────
+// ── Method dispatch tests for shape predicates ────────────────────────
 
 #[cfg(all(test, feature = "spatial"))]
 mod spatial_field_tests {
@@ -6087,7 +6087,7 @@ mod spatial_field_tests {
     }
 }
 
-// ── T10: bounded_by + distance_to method dispatch tests ──────────────────
+// ── bounded_by + distance_to method dispatch tests ──────────────────
 
 #[cfg(all(test, feature = "spatial"))]
 mod bbox_tests {
@@ -6098,7 +6098,7 @@ mod bbox_tests {
     use crate::pg::accumulator::SqlAccumulator;
     use std::future::Future;
 
-    // Minimal `Model` stub shared across T10 tests.
+    // Minimal `Model` stub shared across bounded_by / distance_to tests.
     struct Fake;
     impl crate::model::__sealed::Sealed for Fake {}
     #[allow(clippy::manual_async_fn)]
@@ -6523,7 +6523,7 @@ mod distance_tests {
         );
     }
 
-    // ── centroid / collect — T12 PostGIS aggregates ──────────────────────────
+    // ── centroid / collect — PostGIS aggregates ──────────────────────────
 
     #[cfg(feature = "spatial")]
     #[test]
@@ -6808,7 +6808,7 @@ mod distance_tests {
         );
     }
 
-    // ── T13 — union / extent / extent_3d ─────────────────────────────────────
+    // ── union / extent / extent_3d ─────────────────────────────────────
 
     #[cfg(feature = "spatial")]
     #[test]
@@ -6975,7 +6975,7 @@ mod distance_tests {
         );
     }
 
-    // ── T14 — make_line / polygon_agg ────────────────────────────────────────
+    // ── make_line / polygon_agg ────────────────────────────────────────
 
     #[cfg(feature = "spatial")]
     #[test]
@@ -7081,7 +7081,7 @@ mod distance_tests {
         );
     }
 
-    // ── T15 — cluster_intersecting / cluster_within ──────────────────────────
+    // ── cluster_intersecting / cluster_within ──────────────────────────
 
     #[cfg(feature = "spatial")]
     #[test]
@@ -7181,7 +7181,7 @@ mod distance_tests {
         let _agg: AggregateExpr<Vec<MultiPolygon>> = field.cluster_within(2_000.0);
     }
 
-    // ── T16 — mem_union / polygonize ─────────────────────────────────────────
+    // ── mem_union / polygonize ─────────────────────────────────────────
 
     #[cfg(feature = "spatial")]
     #[test]

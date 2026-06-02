@@ -800,16 +800,16 @@ macro_rules! impl_window_annotation_slot_generic_v {
 impl_window_annotation_slot!(RowNumber, "RowNumber");
 impl_window_annotation_slot!(Rank, "Rank");
 impl_window_annotation_slot!(DenseRank, "DenseRank");
-// T19 — zero-arg returning f64
+// Zero-arg window functions returning f64
 impl_window_annotation_slot!(
     crate::expr::PercentRankWindow,
     "PercentRankWindow",
     decoded = f64
 );
 impl_window_annotation_slot!(crate::expr::CumeDistWindow, "CumeDistWindow", decoded = f64);
-// T19 — single-integer-arg returning i32
+// Single-integer-arg window function returning i32
 impl_window_annotation_slot!(crate::expr::NtileWindow, "NtileWindow", decoded = i32);
-// T18 — column-arg generic V
+// Column-arg generic V window functions
 impl_window_annotation_slot_generic_v!(FirstValueWindow, "FirstValueWindow");
 impl_window_annotation_slot_generic_v!(LastValueWindow, "LastValueWindow");
 impl_window_annotation_slot_generic_v!(LeadWindow, "LeadWindow");
@@ -1305,7 +1305,7 @@ mod tests {
         }
     }
 
-    // T3: SQL-text unit tests exercise `build_select_with_annotations`
+    // SQL-text unit tests exercise `build_select_with_annotations`
     // which now bounds on `FromPgRow` so it can enumerate the canonical
     // column list instead of `t.*`. The stub claims a single column
     // `id` — enough to check the emitter's `t.<col>` shape without
@@ -1733,7 +1733,7 @@ mod tests {
         );
     }
 
-    // ── T18-T19 — new window-only functions ────────────────────────
+    // ── New window-only functions ────────────────────────
 
     #[test]
     fn percent_rank_window_emits_over_clause_and_alias() {
@@ -1895,9 +1895,9 @@ mod tests {
         );
     }
 
-    // ── T18-T19 coverage backfill (quality reviewer ) ─────────
-    // First batch of T18-T19 tests covered bare emission. Quality
-    // reviewer flagged that missing-`.alias` rejection,
+    // ── Window-function coverage backfill ─────────
+    // Initial tests covered bare emission. A follow-up review
+    // flagged that missing-`.alias` rejection,
     // `partition_by` integration, and decode-type pinning weren't
     // covered. These tests close those gaps.
 
