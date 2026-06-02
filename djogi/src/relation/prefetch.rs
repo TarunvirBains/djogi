@@ -453,7 +453,7 @@ where
             let slot = if target_is_null {
                 None
             } else {
-                // Decode via `FromPgRow::from_pg_row` — T3's canonical public
+                // Decode via `FromPgRow::from_pg_row` — the canonical public
                 // trait. Emitted by `#[model]` with `COLUMN_LIST`, ordinal
                 // decode, and per-column debug-mode name guards.
                 Some(Target::from_pg_row(&row)?)

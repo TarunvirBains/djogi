@@ -29,7 +29,7 @@
 //! panics loudly under `cargo test`. Release builds drop the assert
 //! ordinal decode stays a single `try_get(i)` call with no per-row
 //! overhead.
-//! Joined-row decode uses a different trait ([`FromJoinedPgRow`], T4)
+//! Joined-row decode uses a different trait ([`FromJoinedPgRow`])
 //! because `select_related` adds aliased child columns whose
 //! ordinal positions depend on the runtime prefetch graph, not the
 //! canonical struct shape.

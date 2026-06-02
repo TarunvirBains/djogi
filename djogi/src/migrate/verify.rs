@@ -1665,7 +1665,7 @@ fn diff_indexes(
 /// Extract the column-name sequence from an [`IndexTargetSchema`].
 /// Expression-form indexes return an empty Vec — those compare
 /// equal only when both sides are expression-form, which is fine for
-/// T5's coarse-grained comparison.
+/// the current coarse-grained comparison.
 fn index_target_column_names(target: &IndexTargetSchema) -> Vec<&str> {
     match target {
         IndexTargetSchema::Columns(cols) => cols.iter().map(|c| c.name.as_str()).collect(),

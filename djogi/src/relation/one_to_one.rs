@@ -146,7 +146,7 @@ where
 }
 
 // Type encode/decode bridge impls that previously lived here existed solely
-// to support an earlier macro-emitted row-decode path. T3 replaced that
+// to support an earlier macro-emitted row-decode path. That was replaced
 // emission with `impl FromPgRow for T` (ordinal decode via
 // `postgres_types::FromSql`), so those bridges are dead code and have been
 // removed. `OneToOneField<T>` is now decoded entirely through

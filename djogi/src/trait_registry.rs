@@ -26,15 +26,15 @@
 //! cross-type query path; adopters who only need the descriptor-
 //! level enumeration use `#[djogi::trait_impl]` and
 //! [`iter_for_trait::<dyn T>`] directly.
-//! Plan §7 #12 (resolved 2026-05-03): T5 owns `djogi::trait_registry::*`
-//! surface only; the sassi-bridging consumer surface is sassi's own
-//! responsibility. T7 (cluster 8δ) extends `djogi::cache::*` for the
-//! Punnu cache surface; this module stays narrowly focused on the
-//! registration plumbing.
+//! Plan §7 #12 (resolved 2026-05-03): this module owns
+//! `djogi::trait_registry::*` surface only; the sassi-bridging
+//! consumer surface is sassi's own responsibility. `djogi::cache::*`
+//! covers the Punnu cache surface; this module stays narrowly focused
+//! on the registration plumbing.
 //! # Type erasure
 //! Trait-object pointer manipulation is the soundness-critical
 //! surface. The registry's wire type is `Arc<dyn Any + Send + Sync>`;
-//! the per-impl caster (T5.3) routes through a per-(Model, Trait)
+//! the per-impl caster routes through a per-(Model, Trait)
 //! carrier struct that satisfies `Any + Send + Sync + 'static`,
 //! using only Rust's built-in coercions — `Arc::downcast`, unsized
 //! `Arc<T>` → `Arc<dyn Trait>` coercion, never `transmute`.
@@ -47,13 +47,13 @@ pub type ErasedArc = std::sync::Arc<dyn std::any::Any + Send + Sync>;
 /// Type-erased caster function — accepts an `ErasedArc` holding the
 /// model instance, returns `Some(carrier_for_dyn_T)` when the input
 /// downcasts to the registered model type; `None` otherwise.
-/// T5.3 finalises the body; T5.1 fixes the type alias so the
-/// `TraitRegistration` field signature stays readable.
+/// Type alias improves readability of the `TraitRegistration.caster`
+/// field signature.
 pub type CasterFn = fn(&ErasedArc) -> Option<ErasedArc>;
 
 /// One trait-impl registration entry. Emitted via
 /// `inventory::submit!(TraitRegistration { ... })` by the
-/// `#[djogi::trait_impl]` attribute macro (T5.2 + T5.3).
+/// `#[djogi::trait_impl]` attribute macro.
 /// # Fields
 /// - `model_type_id` — the `TypeId` of the implementing model
 ///   (`Vehicle` for `impl Searchable for Vehicle`). Returned by a
@@ -65,8 +65,7 @@ pub type CasterFn = fn(&ErasedArc) -> Option<ErasedArc>;
 /// - `model_type_name` / `trait_type_name` — human-readable names
 ///   for diagnostic / introspection paths. `&'static str` so the
 ///   registration stays `const`-submittable.
-/// - `caster` — the type-erased downcast helper. T5.3 fills this in;
-///   T5.1 ships the field shape only.
+/// - `caster` — the type-erased downcast helper emitted by the macro.
 /// # Layout stability
 /// Same convention as `ModelDescriptor` and the other inventory-
 /// submitted descriptors: every text field is `&'static str`, every
@@ -82,13 +81,12 @@ pub type CasterFn = fn(&ErasedArc) -> Option<ErasedArc>;
 // when a new field lands.
 #[derive(Debug)]
 pub struct TraitRegistration {
-    /// Returns the implementing model's `TypeId`. T5.3's macro emits
+    /// Returns the implementing model's `TypeId`. The macro emits
     /// `|| ::std::any::TypeId::of::<Vehicle>` here.
     pub model_type_id: fn() -> std::any::TypeId,
     /// Returns the registered trait's `TypeId` — typically obtained
     /// via `TypeId::of::<dyn Trait>` on a sized newtype that the
-    /// macro emits alongside the registration. T5.3 finalises the
-    /// shape; T5.1 fixes the signature.
+    /// macro emits alongside the registration.
     pub trait_type_id: fn() -> std::any::TypeId,
     /// Human-readable model type name. The `Vehicle` in
     /// `impl Trait for Vehicle`. Used for diagnostics and for the
@@ -101,9 +99,8 @@ pub struct TraitRegistration {
     /// holding the model instance, returns
     /// `Some(arc_to_carrier_for_dyn_T)` when the input downcasts to
     /// the registered model type; `None` otherwise.
-    /// T5.3 fills the body using the canonical `CastedTraitObj`
-    /// carrier pattern (or equivalent safe approach reviewed at
-    /// ; T5.1 ships only the type signature.
+    /// The macro fills the body using the canonical `CastedTraitObj`
+    /// carrier pattern (or equivalent safe approach).
     /// The field is `pub` so the macro can populate it; downstream
     /// consumers reach it via [`iter_for_trait`] / `Sassi::all_impl`.
     pub caster: CasterFn,
@@ -170,8 +167,8 @@ mod tests {
 
     /// Hand-construct a `TraitRegistration` literal — locks the
     /// struct shape so a future rename / retyping surfaces here. The
-    /// `caster` field returns `None` for every input; T5.3 fills in
-    /// a real body.
+    /// `caster` field returns `None` for every input; the macro fills
+    /// in a real body.
     #[test]
     fn trait_registration_struct_shape() {
         struct FakeModel;

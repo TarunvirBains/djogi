@@ -1057,15 +1057,15 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
 /// 5. Asserts the delta is additive only. If the differ ever
 ///    produces a destructive op against an empty target the
 ///    invariant is broken — error rather than silently executing it.
-/// 6. Plans each per-bucket delta via [`plan_delta`] (T3's segment
+/// 6. Plans each per-bucket delta via [`plan_delta`] (segment
 ///    planner), then executes every statement via
 ///    [`DjogiContext::raw_ddl`] in segment + statement order.
 /// # No advisory lock, no ledger
 /// Per the v3 plan rationale: per-test databases are ephemeral and
 /// have no concurrent writers, so the `apply` orchestration layer
-/// (T4 — advisory lock + ledger insertion + snapshot persistence) is
-/// intentionally bypassed. The composition primitives (T1 + T2 + T3)
-/// remain shared with production.
+/// (advisory lock + ledger insertion + snapshot persistence) is
+/// intentionally bypassed. The composition primitives (project,
+/// diff, plan) remain shared with production.
 /// # Pre-flight registry gate (GH #158)
 /// Before step 1 the helper invokes
 /// [`crate::relation::registry::validate_global_relation_accessor_registry`]
@@ -1521,12 +1521,12 @@ fn additive_op_label(op: &SchemaOperation) -> &'static str {
 
 /// Execute every statement in `plan` via `ctx.raw_ddl`. Single
 /// connection, no advisory lock, no ledger updates — this is the
-/// per-test path; production migrations route through the runner
-/// (T4) for the same composition output.
+/// per-test path; production migrations route through the full runner
+/// for the same composition output.
 /// `MetadataOnly` segments are skipped entirely — they exist for the
 /// production runner's folder-rename / app-move bookkeeping and have
 /// no DDL to execute. Empty-target diffs cannot produce them, but the
-/// guard makes the helper robust against future T2 differ changes.
+/// guard makes the helper robust against future differ changes.
 async fn execute_plan(
     ctx: &mut DjogiContext,
     plan: &crate::migrate::MigrationPlan,

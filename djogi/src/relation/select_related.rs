@@ -41,9 +41,9 @@
 //! columns, but that opt-in lives behind a `.select_related_strict(...)`
 //! surface rather than silently changing the default's
 //! semantics.
-//! # T2 scope
+//! # Current scope
 //! - Single-hop only — no chained `select_related(path_a.path_b)`. Multi-hop
-//!   decode lands in T4.
+//!   decode is deferred.
 //! - Multi-relation-per-queryset **is** supported (multiple
 //!   `.select_related(...)` calls accumulate into a `Vec<ErasedSelectRelated>`,
 //!   each producing its own aliased `LEFT JOIN`).
@@ -145,7 +145,7 @@ impl std::fmt::Debug for ErasedSelectRelated {
 /// child rows. The probe uses `row.try_get::<Option<i64>>(id_alias)`
 /// a `None` result indicates a LEFT JOIN miss (NULL FK or orphan target).
 /// This works for `HeerId`-keyed models (BIGINT) and is the standard
-/// T2 probe. T4 will generalise this to other PK types via the
+/// Standard probe pattern. A future pass may generalise this to other PK types via the
 /// `FromPgRow` trait's column-index probing.
 /// Returns `Ok(None)` on miss so the caller can omit the child from
 /// the row's relation map; returns `Ok(Some(box))` on hit; propagates
