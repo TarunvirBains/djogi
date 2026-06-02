@@ -70,7 +70,7 @@ pub(crate) enum ExprNode {
     /// Emitter wraps the fragment in outer parens at every emission
     /// site for operator-precedence stability under further
     /// composition (the same pattern as
-    /// [`crate::query::condition::Condition::RawSql`] from T3.4).
+    /// [`crate::query::condition::Condition::RawSql`]).
     /// Construction goes through
     /// [`crate::expr::Expr::__raw_sql_fragment`], which is
     /// `#[doc(hidden)]` and not part of the user-facing API. The
@@ -165,11 +165,11 @@ pub(crate) enum ExprNode {
     /// rows contribute to the aggregate. Postgres emits this as
     /// `AGG(arg) FILTER (WHERE <cond>)`. `None` emits the bare aggregate.
     /// `distinct` reserves the `DISTINCT` keyword slot for 's
-    /// `.distinct` builder method. Always `false` until T4 wires it.
+    /// `.distinct` builder method. Always `false` when not set.
     /// `window` is an optional [`super::window::WindowSpec`] that promotes
     /// this aggregate to a window function via `OVER (...)`. Supplied by
     /// the `.over(|w| ...)` method on
-    /// [`super::aggregate::AggregateExpr`] (T3). `None` leaves the
+    /// [`super::aggregate::AggregateExpr`]. `None` leaves the
     /// aggregate bare; the terminal-layer helpers in `query::sql` add
     /// `OVER ` for the plain ungrouped annotate path only after the
     /// plain-annotation type-state has proven the aggregate kind is
@@ -192,7 +192,7 @@ pub(crate) enum ExprNode {
         /// column (`y` for stats / `key` for json-object) and `arg2`
         /// carries the second column (`x` for stats / `value` for
         /// json-object).
-        /// T5 introduced this slot to back `covar_pop` / `corr`
+        /// Second argument slot, backing `covar_pop` / `corr`
         /// / `regr_*` / `jsonb_object_agg`. The slot is backward-compatible
         /// every pre-existing unary-aggregate constructor (`unary_agg`,
         /// the `string_agg` shape) sets `arg2: None`, so the unary
@@ -218,7 +218,7 @@ pub(crate) enum ExprNode {
         cast_to: Option<&'static str>,
         /// When `true`, the `DISTINCT` keyword is emitted before the aggregate
         /// argument: `AGG(DISTINCT col)`. Set via
-        /// [`super::aggregate::AggregateExpr::distinct`] (T4), which is
+        /// [`super::aggregate::AggregateExpr::distinct`], which is
         /// exposed only on the `ValueAgg` kind impl block — non-value
         /// aggregate families ([`AggOp::Grouping`], [`AggOp::PercentileCont`]
         /// / [`AggOp::PercentileDisc`] / [`AggOp::Mode`],
@@ -281,9 +281,9 @@ pub(crate) enum ExprNode {
         /// DESC. Direct-IR construction is the only way to produce an empty
         /// slot for these ops, and debug builds assert against that bypass in
         /// [`super::sql::check_aggregate_legality`].
-        /// T7 introduced this slot. Future T8 (hypothetical-
-        /// set aggregates `RANK(args) WITHIN GROUP (ORDER BY ...)`)
-        /// reuses it without further IR change.
+        /// Ordered-set and hypothetical-set aggregates
+        /// (`RANK(args) WITHIN GROUP (ORDER BY ...)`)
+        /// use this slot.
         within_group_order_by: Vec<crate::query::order::OrderExpr>,
     },
 
@@ -992,7 +992,7 @@ pub(crate) enum AggOp {
     /// Returns a `MultiPolygon` — Djogi's typed surface restricts the
     /// receiver to polygon-shaped fields (`Polygon`, `MultiPolygon`) so
     /// the decode is sound; point-shaped inputs use [`AggOp::SpatialCollect`]
-    /// (T12's `collect`) instead. Gated on `feature = "spatial"`.
+    /// (`collect`) instead. Gated on `feature = "spatial"`.
     #[cfg(feature = "spatial")]
     SpatialUnion,
     /// `ST_Extent(<col>::geometry)::geometry::geography` — per-group 2D
@@ -1025,7 +1025,7 @@ pub(crate) enum AggOp {
     /// `.order_by(field)` is chained. Returns `LineString`.
     /// Gated on `feature = "spatial"`.
     /// Order-sensitive: the resulting line's vertex sequence follows
-    /// row order, so this aggregate naturally consumes T1's
+    /// row order, so this aggregate naturally consumes the
     /// `.order_by(field)` modifier — the per-aggregate ORDER BY
     /// clause lands inside the `ST_MakeLine` parens to control
     /// vertex sequence at the aggregate level.

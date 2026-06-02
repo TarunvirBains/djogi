@@ -404,13 +404,13 @@ define_window_rank_fn!(Rank, "RANK", "rank");
 define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 
 /// `PERCENT_RANK OVER (...)` window-only annotation returning `f64`.
-/// T19. Zero-arg window function — the position of the
+/// Zero-arg window function — the position of the
 /// current row as a fraction in `[0.0, 1.0]` within its partition,
 /// computed as `(rank - 1) / (total_rows - 1)`. First row is `0.0`;
 /// last is `1.0`. Ties share the same fraction.
 /// # Distinct from PercentRank in [`crate::expr::AggregateExpr`]
-/// The hypothetical-set form (`f.col.percent_rank_of(value)`,
-/// T8) takes a literal value and answers "what fraction
+/// The hypothetical-set form (`f.col.percent_rank_of(value)`)
+/// takes a literal value and answers "what fraction
 /// would this hypothetical value have if inserted?". This window form
 /// (`PercentRankWindow::new` annotated on each row) gives every
 /// returned row its actual fraction in the partition.
@@ -457,13 +457,13 @@ pub struct PercentRankWindow {
 }
 
 /// `CUME_DIST OVER (...)` window-only annotation returning `f64`.
-/// T19. Zero-arg window function — the cumulative
+/// Zero-arg window function — the cumulative
 /// distribution: `(rows preceding or peer with current) / total_rows`
 /// in the partition. Result is in `(0.0, 1.0]`. First-position rows
 /// get `1/total`; last-position rows get `1.0`.
 /// # Distinct from cume_dist_of in [`crate::expr::AggregateExpr`]
-/// The hypothetical-set form (`f.col.cume_dist_of(value)`, Cluster
-/// E T8) answers "what fraction would rank at-or-below this value?".
+/// The hypothetical-set form (`f.col.cume_dist_of(value)`)
+/// answers "what fraction would rank at-or-below this value?".
 /// This window form gives every row its actual cume-dist position in
 /// the partition.
 /// # Comparison helpers
@@ -616,7 +616,7 @@ impl_zero_arg_f64_window!(PercentRankWindow, "PERCENT_RANK");
 impl_zero_arg_f64_window!(CumeDistWindow, "CUME_DIST");
 
 /// `NTILE(n) OVER (...)` window-only annotation returning `i32`.
-/// T19. Single-integer-arg window function — divides the
+/// Single-integer-arg window function — divides the
 /// partition into `n` approximately-equal buckets and returns the
 /// bucket number (1..=n) of each row. Useful for quartile (n=4),
 /// quintile (n=5), or arbitrary equal-group bucketing.
@@ -699,7 +699,7 @@ impl NtileWindow {
 }
 
 /// Shared shape for column-argument window functions: `LEAD`, `LAG`,
-/// `FIRST_VALUE`, `LAST_VALUE`. T18.
+/// `FIRST_VALUE`, `LAST_VALUE`.
 /// Each takes a column reference as the primary argument; `LEAD` /
 /// `LAG` additionally take an optional offset (default 1) and an
 /// optional default value (returned when the offset row is past the
@@ -800,7 +800,6 @@ define_column_arg_window_fn!(FirstValueWindow, "FIRST_VALUE");
 define_column_arg_window_fn!(LastValueWindow, "LAST_VALUE");
 
 /// `LEAD(col [, offset [, default]]) OVER (...)` window function.
-/// T18.
 /// Returns the value of `col` from the row `offset` rows AFTER the
 /// current row in the partition (default offset is 1). When the
 /// computed row is past the partition's tail, returns `default` if
@@ -826,7 +825,6 @@ pub struct LeadWindow<V> {
 }
 
 /// `LAG(col [, offset [, default]]) OVER (...)` window function.
-/// T18.
 /// Symmetric to [`LeadWindow`] — returns the value `offset` rows
 /// BEFORE the current row in the partition (default offset 1).
 /// Useful for "compare to previous" delta computations.
@@ -940,7 +938,7 @@ macro_rules! impl_lead_lag {
 impl_lead_lag!(LeadWindow, "LEAD");
 impl_lead_lag!(LagWindow, "LAG");
 
-/// `NTH_VALUE(col, n) OVER (...)` window function. T18.
+/// `NTH_VALUE(col, n) OVER (...)` window function.
 /// Returns the value of `col` from the `n`-th row of the window frame
 /// (1-indexed). When the frame has fewer than `n` rows, returns SQL
 /// NULL. Useful for "third-best per group" patterns.

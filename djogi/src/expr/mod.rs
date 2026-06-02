@@ -342,7 +342,7 @@ impl<T> Expr<T> {
 
     /// Construct an `Expr<T>` from a raw SQL fragment — 2.
     /// Macro-only constructor, emitted by `#[computed(sql = "...")]`
-    /// and the `{Model}Computed` ZST accessors (T4.5). The `T`
+    /// and the `{Model}Computed` ZST accessors. The `T`
     /// parameter must match the SQL fragment's return type; the macro
     /// wires this from the computed getter's signature so the typed
     /// seal stays intact at the public boundary.

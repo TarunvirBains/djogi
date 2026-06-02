@@ -170,7 +170,7 @@ pub enum SpatialExpr {
     /// degrees, which is rarely what callers want). Mirrors the
     /// `::geography` cast convention used by [`Self::Within`] /
     /// [`Self::Distance`] so the meters-units invariant of the
-    /// Spatial surface holds for T17 too.
+    /// Spatial surface invariant (meters units) holds here too.
     /// Constructed by [`super::Expr::area_of`]. Composes with the
     /// `Expr<f64>` arithmetic IR for ratios such as
     /// `area_of_intersection(a, b) / area_of(a)`.
@@ -371,7 +371,7 @@ impl SpatialExpr {
                 acc.push_sql(", 4326)::geography && ");
                 acc.push_sql(field_column);
             }
-            // T17 scalar geometry / area helpers
+            // Scalar geometry / area helpers
             SpatialExpr::Area { geom_ewkb } => {
                 // ST_Area($n::bytea::geography) — geography overload returns
                 // square meters; the geometry overload returns square degrees
@@ -426,9 +426,10 @@ enum EwkbCast {
 }
 
 /// Push `$N::bytea::<cast>` for an EWKB bind. Centralises the 3-step splice
-/// (`push_bind` + `::bytea` + `::geometry`/`::geography`) that every T17 arm
-/// repeats — without the helper, each emit body is `acc.push_bind(...);
-/// acc.push_sql("::bytea::geometry")` which a 4th arm would faithfully copy.
+/// (`push_bind` + `::bytea` + `::geometry`/`::geography`) that every
+/// spatial arm repeats — without the helper, each emit body is
+/// `acc.push_bind(...); acc.push_sql("::bytea::geometry")` which each
+/// arm would faithfully copy.
 #[cfg(feature = "spatial")]
 fn push_ewkb_arg(acc: &mut SqlAccumulator, ewkb: &[u8], cast: EwkbCast) {
     acc.push_bind(ewkb.to_vec());
@@ -879,7 +880,7 @@ mod tests {
 
     // ── Sequential bind numbering when multiple expressions are emitted ───────
 
-    // ── T10: BoundedBy emission tests ────────────────────────────────────────
+    // ── BoundedBy emission tests ────────────────────────────────────────
 
     /// `BoundedBy` must emit `ST_MakeEnvelope(...)` using Postgres (x, y) =
     /// (lon, lat) order even though the Rust API accepts (lat, lon).
@@ -984,7 +985,7 @@ mod tests {
         );
     }
 
-    // ── T10: Distance emission tests ─────────────────────────────────────────
+    // ── Distance emission tests ─────────────────────────────────────────
 
     /// `Distance` variant must emit `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`.
     /// Bind order: $1 = lon, $2 = lat.

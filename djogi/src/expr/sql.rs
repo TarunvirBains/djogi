@@ -90,7 +90,7 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                     AggOp::StringAgg(_) if order_by.is_empty() => {
                         // `STRING_AGG(DISTINCT col, sep)` requires a per-
                         // aggregate `ORDER BY` to disambiguate the output
-                        // tail. With T1, callers can chain
+                        // tail. Callers can chain
                         // `.order_by(f.other.asc)`; until they do, the
                         // combination is still ill-formed Postgres.
                         return Err(crate::DjogiError::UnsupportedAggregate {
@@ -183,8 +183,8 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
 
             // Recurse into arg, arg2, and filter sub-trees in case there
             // are nested aggregates (unusual but structurally possible).
-            // arg2 was added by T5; threading it through the walker keeps
-            // future binary-aggregate sub-expressions inside legality.
+            // arg2 backs binary aggregates; threading it through the walker
+            // keeps nested binary-aggregate sub-expressions inside legality.
             check_aggregate_legality(arg)?;
             if let Some(a2) = arg2 {
                 check_aggregate_legality(a2)?;
@@ -384,9 +384,8 @@ pub(crate) fn emit_expr(
                 AggOp::StringAgg(sep) => {
                     // STRING_AGG with DISTINCT requires a per-aggregate
                     // ORDER BY, enforced by `check_aggregate_legality` at
-                    // fetch time. With T1, callers chain
-                    // `.order_by(...)` and the `order_by` slot below
-                    // emits the well-formed Postgres syntax.
+                    // fetch time. Callers chain `.order_by(...)` and
+                    // the `order_by` slot below emits well-formed Postgres.
                     // `sep.clone` is required because `sep` is
                     // `&String` here and `push_bind` takes owned values.
                     acc.push_sql("STRING_AGG(");
@@ -580,7 +579,7 @@ pub(crate) fn emit_expr(
                 // returns `json`; JSONB_OBJECT_AGG returns `jsonb`.
                 // Carried as separate AggOp variants so the emitter
                 // honours the caller's choice (matching the
-                // EVERY/BOOL_AND alias treatment from T3).
+                // EVERY/BOOL_AND alias treatment).
                 AggOp::JsonObjectAgg => emit_binary_agg(
                     acc,
                     "JSON_OBJECT_AGG(",
@@ -608,7 +607,7 @@ pub(crate) fn emit_expr(
                 // every other unary aggregate, so routes through
                 // `emit_unary_agg`.
                 AggOp::Grouping => emit_unary_agg(acc, "GROUPING(", *distinct, arg, order_by, ctx)?,
-                // Ordered-set aggregates (T7) — emit
+                // Ordered-set aggregates — emit
                 // `OP(arg) WITHIN GROUP (ORDER BY target)`. The arg
                 // slot carries the function-call literal (percentile
                 // fraction); the target lives in within_group_order_by.
@@ -634,7 +633,7 @@ pub(crate) fn emit_expr(
                     emit_within_group_target(acc, within_group_order_by);
                     acc.push_sql(")");
                 }
-                // Hypothetical-set aggregates (T8) — same
+                // Hypothetical-set aggregates — same
                 // shape as ordered-set, with the function-call literal
                 // being the hypothetical value (matching the WITHIN
                 // GROUP target column's type).
@@ -672,8 +671,8 @@ pub(crate) fn emit_expr(
                 // when set, lands inside `ST_Collect(...)` because that
                 // is the actual aggregating step; `ST_Centroid` is a
                 // post-aggregate scalar wrapper that doesn't admit
-                // DISTINCT directly. Same for ORDER BY (T1) — it
-                // applies to ST_Collect's input ordering, which only
+                // DISTINCT directly. The per-aggregate ORDER BY applies
+                // to ST_Collect's input ordering, which only
                 // affects the output for non-commutative outer wrappers
                 // (centroid is commutative, but the IR carries the
                 // clause uniformly so future PostGIS aggregates with
@@ -718,7 +717,7 @@ pub(crate) fn emit_expr(
                     filter.as_deref(),
                     ctx,
                 )?,
-                // T13 — region / bounding-box aggregates. `ST_Extent` /
+                // Region / bounding-box aggregates. `ST_Extent` /
                 // `ST_3DExtent` return `box2d` / `box3d` respectively,
                 // neither of which casts directly to `geography`. The
                 // two-step cast chain `::geometry::geography` is
@@ -761,7 +760,7 @@ pub(crate) fn emit_expr(
                     filter.as_deref(),
                     ctx,
                 )?,
-                // T14 — line / polygon aggregates. `ST_MakeLine` is
+                // Line / polygon aggregates. `ST_MakeLine` is
                 // order-sensitive (the per-aggregate ORDER BY controls
                 // the LineString's vertex sequence). `ST_Collect`
                 // (used as the portable fallback for `ST_PolygonAgg`,
@@ -809,7 +808,7 @@ pub(crate) fn emit_expr(
                     filter.as_deref(),
                     ctx,
                 )?,
-                // T15 — clustering aggregates. Both return `geometry[]`
+                // Clustering aggregates. Both return `geometry[]`
                 // at the Postgres level; the trailing `::geography[]`
                 // cast moves the array's element type onto the
                 // geography substrate. ST_ClusterIntersecting fits the
@@ -861,7 +860,7 @@ pub(crate) fn emit_expr(
                     // outer_cast_suffix(op) — matches the placement
                     // discipline shared with emit_spatial_unary_agg.
                 }
-                // T16 — mem_union / polygonize. Same `<col>::geometry`
+                // mem_union / polygonize. Same `<col>::geometry`
                 // → `geography` cast discipline.
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialMemUnion => emit_spatial_unary_agg(
@@ -1342,9 +1341,9 @@ fn push_aggregate_order_by(acc: &mut SqlAccumulator, order_by: &[crate::query::o
 }
 
 /// Emit the `<ord1>, <ord2>, ...` body of a `WITHIN GROUP (ORDER BY ...)`
-/// clause for ordered-set / hypothetical-set aggregates. T7
-/// added this for `PERCENTILE_CONT` / `PERCENTILE_DISC` / `MODE`; T8
-/// hypothetical-set aggregates reuse it.
+/// clause for ordered-set and hypothetical-set aggregates
+/// (`PERCENTILE_CONT`, `PERCENTILE_DISC`, `MODE`, and hypothetical-set
+/// aggregates).
 /// The caller writes `WITHIN GROUP (ORDER BY ` and the closing `)`
 /// around this helper's output, identical to how
 /// [`push_aggregate_order_by`] is sandwiched inside the aggregate
