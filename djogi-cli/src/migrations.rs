@@ -1066,6 +1066,7 @@ async fn apply_one_pending(
         },
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::default_for_config(config),
         audit_pool: audit_pool.cloned(),
+        runner_identity: None, // TODO: resolve from --node-id / HEER_NODE_ID / --single-node-dev
     };
 
     // 5. Apply (or fake-apply) the plan through the library runner.
@@ -2643,6 +2644,7 @@ async fn run_baseline(
             Ok(url) => djogi::migrate::build_audit_pool(&url).await.ok(),
             Err(_) => None,
         },
+        runner_identity: None, // TODO: resolve from --node-id / HEER_NODE_ID / --single-node-dev
     };
 
     match baseline_plan(&mut ctx, &bucket, &runner_ctx, &guard, reason).await {

@@ -1418,6 +1418,10 @@ async fn replay_one_migration(
         // gracefully skips — matching the runner's own best-effort
         // stance documented on `record_ddl_audit_for_plan`.
         audit_pool: audit_pool.cloned(),
+        // Reset replay in this PR uses --single-node-dev identity;
+        // the selected-node and no-identity pre-drop refusals happen
+        // before this code path is reached.
+        runner_identity: None,
     };
 
     apply_plan(ctx, &plan, &runner_ctx, guard)
