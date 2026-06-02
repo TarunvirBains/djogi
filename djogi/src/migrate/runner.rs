@@ -3,7 +3,7 @@
 //! ledger and persisting the snapshot only on full success.
 //! # Lifecycle (/ §8)
 //! ```text
-//! 1. Acquire workspace file lock (T4 guard primitive).
+//! 1. Acquire workspace file lock (guard primitive).
 //! 2. Bootstrap djogi_schema_migrations table.
 //! 3. Acquire pg_advisory_lock on a 64-bit key derived from BucketKey.
 //! 4. Verify the supplied checksum matches a freshly-computed one.
@@ -11,7 +11,7 @@
 //! 6. For each segment, dispatch by SegmentKind:
 //! - Transactional → BEGIN; statements; COMMIT.
 //! - NonTransactional → autocommit each statement; update progress.
-//! - MetadataOnly → no SQL runs; metadata path is T6's job.
+//! - MetadataOnly → no SQL runs; metadata path is `compose`'s job.
 //! 7. On success: mark_applied + persist snapshot.
 //! 8. On failure: mark_failed (or mark_partial for split-apply)
 //! and propagate. Snapshot is NOT moved forward.

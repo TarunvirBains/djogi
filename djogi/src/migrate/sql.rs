@@ -218,8 +218,8 @@ impl std::fmt::Display for SqlEmitError {
             SqlEmitError::PkTypeFlipMustRouteToT9 { table, from, to } => write!(
                 f,
                 "table `{table}`: PK-type flip ({from:?} -> {to:?}) reached the standard \
-                 SQL emitter — these are orchestrated by T9's expand/contract playbook \
-                 and must never go through the standard path"
+                 SQL emitter — these are orchestrated by the PK-flip expand/contract \
+                 playbook and must never go through the standard path"
             ),
             SqlEmitError::UnsupportedPartitionChange { table, detail } => write!(
                 f,
@@ -1694,7 +1694,7 @@ fn emit_rename_app(from: &str, to: &str) -> OperationSql {
     let up = format!(
         "-- METADATA-ONLY: rename app `{from}` to `{to}`.\n\
          -- Folder rename + djogi_schema_migrations.app_label UPDATE happen\n\
-         -- outside the standard SQL emitter (handled by T6 compose / T4 runner)."
+         -- outside the standard SQL emitter (handled by compose / runner)."
     );
     let down = format!(
         "-- METADATA-ONLY: reverse rename `{to}` -> `{from}`.\n\
@@ -1713,7 +1713,7 @@ fn emit_move_model_between_apps(model: &str, from_app: &str, to_app: &str) -> Op
     let up = format!(
         "-- METADATA-ONLY: move model `{model}` from app `{from_app}` to app `{to_app}`.\n\
          -- Folder move + djogi_schema_migrations.app_label UPDATE happen outside\n\
-         -- the standard SQL emitter (handled by T6 compose / T4 runner)."
+         -- the standard SQL emitter (handled by compose / runner)."
     );
     let down = format!(
         "-- METADATA-ONLY: reverse move `{model}` from `{to_app}` back to `{from_app}`.\n\
