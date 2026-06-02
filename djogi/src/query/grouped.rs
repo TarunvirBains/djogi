@@ -438,8 +438,7 @@ where
     /// Keys are decoded positionally (ordinals 0..N_keys). Aggregates are
     /// decoded by alias (`__djogi_agg_N`). For tenant-keyed models, the
     /// terminal propagates the caller's auth tenant into the RLS GUC after
-    /// local validation and before SQL emission. Live round-trip coverage is
-    /// in T14.
+    /// local validation and before SQL emission.
     #[allow(clippy::type_complexity)]
     pub fn fetch_all<'ctx>(
         self,
@@ -781,7 +780,7 @@ mod tests {
         );
     }
 
-    // T2 — .rollup and .cube entry points produce GroupedQuerySet with the
+    // .rollup and .cube entry points produce GroupedQuerySet with the
     // correct GroupingMode. The mode is verified via the SQL emitter — calling
     // .annotate then build_grouped_annotated_select and asserting the clause.
 
@@ -815,7 +814,7 @@ mod tests {
         );
     }
 
-    // T2 — .group_by_sets entry point produces GroupedQuerySet<T, >
+    // .group_by_sets entry point produces GroupedQuerySet<T, >
     // and the emitter outputs GROUPING SETS (...).
 
     #[test]
@@ -837,7 +836,7 @@ mod tests {
         );
     }
 
-    // T11 — .grouping_sets entry point supports multi-column sets per
+    // .grouping_sets entry point supports multi-column sets per
     // group AND the empty grand-total set.
 
     #[test]

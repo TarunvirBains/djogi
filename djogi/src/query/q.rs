@@ -799,10 +799,9 @@ pub(crate) fn q_to_condition<T: Model>(q: Q<T>) -> Condition {
 ///    lookup method (`eq`, `gt`, `ilike`, `between`, `in_list`, …)
 ///    returns [`Condition`] directly, so the
 ///    `BasicPredicate::Field(_)` arm of this match is **not reachable**
-///    from any djogi FieldRef API as of Stage 2. A future
+///    from any djogi FieldRef API. A future
 ///    integration that lifts FieldRef methods to `BasicPredicate` (per
-///    the §660 split's forward-looking direction in
-///    `cluster-8gamma-granular.md`.8) would extend this arm with the
+///    the §660 split's forward-looking direction) would extend this arm with the
 ///    `(field_name, op, value_as<V>)` reconstruction.
 ///    Today the arm logs a debug-only warning and lowers to
 ///    `Condition::True` (vacuous-truth identity). The SQL-parity

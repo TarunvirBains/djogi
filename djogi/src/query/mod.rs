@@ -108,7 +108,7 @@ pub mod visage_queryset;
 pub use aggregate::AggregateQuery;
 pub use annotate::{AnnotatedQuerySet, IntoAggregateTuple};
 pub use closure::{ClosureModel, MaterializeClosureOptions, MaterializeClosureReport};
-// `Condition` is NOT re-exported at this level post-Stage 2.
+// `Condition` is NOT re-exported at this level.
 // The public substrate is `Q<T>` (re-exported below); legacy
 // `Condition`-producing FieldRef lookup methods (`f.col.eq(v)` etc.) are
 // still in use by the closure API (`QuerySet::filter` / `exclude`), so
