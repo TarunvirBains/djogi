@@ -43,7 +43,7 @@ use syn::{Expr, ExprClosure};
 
 /// Order direction for one entry in `#[model(default_order = [...])]`.
 /// Mirrors the SQL-side `ASC` / `DESC` modifier without coupling to any
-/// `OrderExpr` runtime type at parse time — T3.4 lowers `OrderDir` into
+/// `OrderExpr` runtime type at parse time — the descriptor emitter lowers `OrderDir` into
 /// the canonical `crate::query::OrderExpr` value when emitting the
 /// `Model::default_order_by` override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +126,7 @@ pub fn validate_proxy_for_ident(ident: &syn::Ident) -> syn::Result<()> {
 /// adopter wonder why their default ordering disappeared).
 /// Runs at parse time. Field-existence validation (i.e. "does the
 /// model actually have a field named `name`?") is deferred to the
-/// descriptor emitter at T3.3 / T3.4 because the user-field list is
+/// descriptor emitter because the user-field list is
 /// only available at expansion time, not in this attribute-only parser.
 pub fn parse_default_order_list(expr: &syn::Expr) -> syn::Result<Vec<(syn::Ident, OrderDir)>> {
     // The expected shape is `[(ident, dir_ident), ...]` — a Rust array
@@ -200,11 +200,11 @@ pub fn parse_default_order_list(expr: &syn::Expr) -> syn::Result<Vec<(syn::Ident
 }
 
 /// Parse a `default_filter = |f| <expr>` closure value.
-/// At T3.2 we validate only the shape: the value must be a single-input
-/// closure expression. The closure body is captured verbatim for T3.3 to
-/// walk via recursive descent and lower to SQL.
+/// Only the shape is validated here: the value must be a single-input
+/// closure expression. The closure body is captured verbatim for the
+/// SQL lowering pass to walk via recursive descent.
 /// We accept any closure with exactly one input — the descriptor
-/// emitter (T3.3) cross-checks that the input binding matches the
+/// emitter cross-checks that the input binding matches the
 /// model's `{Model}Fields` accessor pattern and that the body uses only
 /// the recognised SQL-projectable operations.
 pub fn parse_default_filter_closure(expr: &syn::Expr) -> syn::Result<ExprClosure> {
@@ -397,7 +397,7 @@ mod tests {
     }
 }
 
-// ── T3.3 — SQL lowering for the captured `default_filter` closure ─────────
+// ── SQL lowering for the captured `default_filter` closure ─────────
 // Recognises a closed grammar of accessor-based predicates against the
 // `{Model}Fields` binding and lowers each into a SQL fragment string that
 // becomes the `&'static str` value of `ModelDescriptor.default_filter_sql`.
@@ -426,12 +426,12 @@ mod tests {
 // `Like` shapes carry a wildcard convention that's better reasoned about
 // at typed call sites than via raw SQL fragments. Both can be added in a
 // later phase once the macro pipeline has grown an `Expr<T>`-typed
-// closure walker (T6 cluster 8γ); v0.1.0 ships the equality/range/null
+// closure walker; v0.1.0 ships the equality/range/null
 // surface adopters most often want for proxy default filters.
 // # Output format
 // A single SQL fragment string suitable for splicing into a WHERE clause
 // after AND-composition with user filters. The fragment is parens-wrapped
-// at every emission site by the runtime composer (T3.4) — the lowered
+// at every emission site by the runtime composer — the lowered
 // string here never adds outer parens for a single leaf, but DOES wrap
 // every binary boolean composition (`AND`, `OR`) in its own parens to
 // keep operator precedence stable across user filter composition.
@@ -501,7 +501,7 @@ fn lower_method_call(mc: &syn::ExprMethodCall, f_binding: &syn::Ident) -> syn::R
     // Boolean combinators — `<pred>.and_with(<pred>)` /
     // `<pred>.or_with(<pred>)`. Recurse on both sides; wrap the result in
     // outer parens so adopter-side AND-composition with `.filter(...)`
-    // never drifts on operator precedence (per T3.4 risk note).
+    // never drifts on operator precedence.
     if method == "and_with" || method == "or_with" {
         if mc.args.len() != 1 {
             return Err(syn::Error::new_spanned(

@@ -58,7 +58,7 @@ pub fn expand(
 
     let n_framework = model_attrs.framework_field_count();
 
-    // GH #227 Stage 4 — expand-time scope-validation pass.
+    // GH #227 — expand-time scope-validation pass.
     // `ExposeSpec::parse_entries` accepts any identifier-shaped scope key
     // (the membership check is deferred to here because field-attribute
     // parsing happens before model-attribute parsing). Now that the full
@@ -107,7 +107,7 @@ pub fn expand(
 
 /// Walk every user field's parsed `expose(...)` declarations and confirm
 /// each declared scope key is either a built-in or appears in
-/// `model_attrs.visage_scopes` — GH #227 Stage 4.
+/// `model_attrs.visage_scopes` — GH #227.
 /// Field-attribute parsing (`ExposeSpec::parse_entries`) is intentionally
 /// permissive because the model-level `visage_scopes(...)` block may
 /// follow the field declarations in source order, and darling invokes
@@ -352,13 +352,13 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let mut user_fields: Vec<TokenStream> = Vec::new();
     let mut user_inits: Vec<TokenStream> = Vec::new();
     let mut has_relation_entry = false;
-    // GH #227 Stage 4 — track whether ANY user field in this scope
+    // GH #227 — track whether ANY user field in this scope
     // routes through a `try_presentation_codec` codec. A fallible codec
     // anywhere flips the visage's conversion impl from
     // `From<&Source>` to `TryFrom<&Source, Error = VisageError>` so
     // `?` propagation reaches the boxed codec error.
     let mut has_try_codec = false;
-    // GH #227 Stage 4 — accumulator for `inventory::submit!` blocks
+    // GH #227 — accumulator for `inventory::submit!` blocks
     // emitted alongside the struct + impl. Each scalar field with a
     // per-scope codec contributes one submission; relation-form fields
     // skip this path entirely (codecs apply to leaf scalar columns,
@@ -404,7 +404,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                 return syn::Error::new_spanned(field, msg).to_compile_error();
             }
 
-            // Scalar form on scalar field — happy path. GH #227 Stage 4
+            // Scalar form on scalar field — happy path. GH #227
             // splits this into two sub-paths:
             // - **No codec** (the existing case): field type and init
             // pass through unchanged.
@@ -666,7 +666,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     // the TryFrom branch; the relation-nesting trigger is
     // unchanged. A scalar `From` is unsound when any of the
     // per-field init expressions may fail.
-    // GH #227 Stage 4 — a fallible presentation codec is the third
+    // GH #227 — a fallible presentation codec is the third
     // trigger for the `TryFrom` branch alongside relation-nesting and
     // derived-fallibility. Any one of the three forces the visage's
     // conversion impl to surface `Result<Self, VisageError>` so `?`
@@ -744,7 +744,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
 
         #visage_descriptor
 
-        // GH #227 Stage 4 — `inventory::submit!` per
+        // GH #227 — `inventory::submit!` per
         // `(model, field, scope, codec)` usage. Emitted AFTER the
         // struct + impl block so the `inventory::submit!` macro sits
         // at item scope (where it must live) rather than inside the

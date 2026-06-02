@@ -142,7 +142,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
     // the attribute carried `sync_models = [...]` with at least one
     // entry. Empty `sync_models = []` and an absent keyword both
     // suppress the call entirely (zero-DDL no-op) so the generated
-    // wrapper is byte-identical with the pre-T10 shape when the user
+    // wrapper is byte-identical with the no-DDL shape when the user
     // does not opt in. The slice is emitted as a `&[&'static
     // ModelDescriptor]` so the runtime helper does not own the
     // descriptors. The `&mut` receiver matches the runtime helper's
@@ -250,7 +250,7 @@ struct Args {
     /// [`djogi::testing::sync_models`] . Each entry is
     /// the bare type path the user wrote — re-emitted with original
     /// span inside the generated slice. `None` means the
-    /// `sync_models` keyword was absent (preserves the pre-T10
+    /// `sync_models` keyword was absent (preserves the
     /// "no auto DDL" behaviour); `Some(empty)` means it was present
     /// with an empty array (explicit zero-DDL no-op — still no
     /// `sync_models` call is emitted).
@@ -654,8 +654,8 @@ mod tests {
 
     #[test]
     fn sync_models_absent_keyword_emits_no_call() {
-        // No `sync_models` keyword at all — preserves pre-T10
-        // wrapper shape exactly.
+        // No `sync_models` keyword at all — preserves the
+        // no-DDL wrapper shape exactly.
         let expanded = render_expansion("");
         assert!(
             !expanded.contains("sync_models"),

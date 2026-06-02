@@ -121,7 +121,7 @@ use syn::{Ident, Path, Result, Token};
 /// method delegates to the model-scoped accessor under the hood and
 /// converts each fetched row via `<PeerVisage as TryFrom<&Returned>>::try_from`.
 /// When no `expose(...)` clauses are supplied the emitter behaves exactly
-/// like the pre-T9 form: one method on the receiver model, no visage
+/// like the basic form: one method on the receiver model, no visage
 /// surface. The clause is additive — the model-scoped accessor is always
 /// emitted.
 pub struct ReverseRelationInput {
@@ -179,7 +179,7 @@ impl Parse for ReverseRelationInput {
         }
         let via_column: Ident = input.parse()?;
 
-        // T9 — optional `, expose(scope -> PeerVisage)` clauses, zero or
+        // Optional `, expose(scope -> PeerVisage)` clauses, zero or
         // more. Each clause is introduced by a leading comma, followed
         // by the `expose` keyword and a parenthesised body of the form
         // `scope -> PeerPath`. Parsing here lives alongside the core

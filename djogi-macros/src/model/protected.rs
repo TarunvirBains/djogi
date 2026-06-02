@@ -54,7 +54,7 @@ pub fn is_known_codec(id: &str) -> bool {
 /// Mirrors `djogi::descriptor::Sensitivity` one-for-one. Stored as a
 /// macro-side enum (rather than as the `String` literal) so the
 /// emitter renders the exact `Sensitivity::Variant` ident without
-/// re-parsing. T3 covers parsing + validation; the emitter calls
+/// re-parsing. The emitter calls
 /// [`Self::ident_tokens`] when populating the descriptor literal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SensitivityLit {
@@ -215,7 +215,7 @@ impl DefaultVolatilityLit {
 
 /// Per-scope presentation-codec declaration parsed from
 /// `protected(per_scope = { scope = { presentation_codec = Path } })`
-/// GH #227 Stage 4.
+/// GH #227.
 /// One entry exists per scope key declared inside a `per_scope = { ... }`
 /// block. `fallible = false` selects the infallible
 /// `PresentationCodec<Input>` dispatch path; `fallible = true` selects the
@@ -277,7 +277,7 @@ pub struct ProtectedSpec {
     pub retention_span: Option<Span>,
     /// Per-scope presentation codec entries parsed from
     /// `per_scope = { scope = { (try_)?presentation_codec = Path } }`
-    /// GH #227 Stage 4. Empty when the user did not write a `per_scope`
+    /// GH #227. Empty when the user did not write a `per_scope`
     /// block. Source order is preserved so downstream emission is
     /// deterministic.
     pub per_scope: Vec<PerScopeCodecEntry>,
@@ -408,7 +408,7 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
     let mut per_scope_span: Option<Span> = None;
 
     for meta in &entries {
-        // GH #227 Stage 4 — `per_scope = { scope = { codec_key = Path } }`
+        // GH #227 — `per_scope = { scope = { codec_key = Path } }`
         // arrives as `Meta::NameValue { value: Expr::Block { ... } }`, which
         // does NOT match the string-literal let-else below. Handle it first
         // so the generic "every entry must be `key = \"value\"`" rejection
@@ -558,7 +558,7 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
 }
 
 /// Parse the `{ scope = { codec_key = Path } }` block that follows
-/// `per_scope = ` inside a `protected(...)` annotation — GH #227 Stage 4.
+/// `per_scope = ` inside a `protected(...)` annotation — GH #227.
 /// The block arrives as `syn::Block` whose statements are each an
 /// assignment expression: `scope_ident = { codec_key = codec_path }`.
 /// Each statement is parsed into one [`PerScopeCodecEntry`]; duplicate
@@ -1230,7 +1230,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // GH #227 Stage 4 — `per_scope = { ... }` presentation-codec block
+    // GH #227 — `per_scope = { ... }` presentation-codec block
     // parser tests.
     // The visage codegen pass consumes [`ProtectedSpec::per_scope`]
     // directly off the field's parsed spec; these tests cover the
