@@ -2,18 +2,14 @@
 //! Six methods, each defaulted to a no-op that returns `Ok`. Adopters
 //! `impl ModelHooks for MyModel` selectively — methods they don't override
 //! stay no-op.
-//! T1.2 adds the sealed [`HasHooks`] marker trait that the macro layer
-//! emits in T1.3 (`#[model(hooks)]`) to gate monomorphic dispatch in
-//! T1.4–T1.6. Until the macro layer lands, `HasHooks` has zero impls and
-//! [`ModelHooks`] remains the public adopter trait — nothing dispatches
-//! against either yet.
+//! The [`HasHooks`] marker trait is sealed and emitted by the macro layer
+//! (`#[model(hooks)]`) to gate monomorphic dispatch in the CRUD terminals.
 //! # Async-fn-in-trait via `impl Future + Send`
 //! Each method returns `impl Future<Output = Result<, DjogiError>> + Send`
 //! rather than going through `BoxFuture` / `Pin<Box<...>>` / the
 //! `async-trait` macro. The default body desugars to a state machine the
 //! compiler elides at call sites that keep the no-op default — there is no
 //! heap allocation, no virtual dispatch, and no `'static` escape on `Self`.
-//! T1.8 verifies the zero-overhead claim with `cargo asm`.
 //! # Receiver shape
 //! `before_*` methods take `&mut self` so the hook body can mutate the
 //! model before it is written to the database (e.g. setting `created_by`,
@@ -98,7 +94,7 @@ pub trait ModelHooks: Sized {
     /// `&mut self` is preserved for symmetry with the other `before_*`
     /// methods even though most delete-time hooks read state rather than
     /// write it — the receiver shape stays uniform across the trait so
-    /// that a generic dispatcher (T1.3) can call any method by name
+    /// that the generic dispatcher can call any method by name
     /// without reasoning about per-method receiver kinds.
     fn before_delete(
         &mut self,
@@ -120,14 +116,13 @@ pub trait ModelHooks: Sized {
 }
 
 /// Sealed marker trait — the type-level gate the `#[model(hooks)]` macro
-/// (T1.3) emits to opt a model into hook dispatch.
+/// emits to opt a model into hook dispatch.
 /// `HasHooks` carries no methods, no associated types, and no lifetime
 /// parameters: it is purely a witness that lets the CRUD terminals
-/// (T1.4–T1.6) branch monomorphically between the no-op fast path and the
+/// branch monomorphically between the no-op fast path and the
 /// hook-dispatch path. Without an `impl HasHooks for M`, the generic
 /// `<M as HasHooks>::…` call sites collapse to dead code that LLVM
-/// removes regardless of LTO settings (T1.8 verifies this with
-/// `cargo asm`).
+/// removes regardless of LTO settings.
 /// # Sealed via `private::Sealed`
 /// The supertrait `private::Sealed` lives in a module-private inner
 /// module so adopter code working only against the public surface
@@ -161,7 +156,7 @@ mod private {
 }
 
 /// Macro-callable re-exports.
-/// The `#[model(hooks)]` proc macro (T1.3) emits paths through
+/// The `#[model(hooks)]` proc macro emits paths through
 /// `::djogi::__private::hooks::*` — never `::djogi::hooks::__seal::*`
 /// directly — so that this module is the single coupling point between
 /// the emitted code and the framework's seal machinery. Adopter code that
@@ -176,8 +171,8 @@ pub mod __seal {
     /// resolves, but only macro-emitted code reaches for it.
     /// The point is not to gate compilation on the const itself — it is
     /// to give the macro a stable, name-routed handle into `djogi` that
-    /// future T1.3 work can extend (e.g. with debug-mode assertions about
-    /// the surrounding `impl ModelHooks` shape) without changing the
+    /// future macro passes can extend (e.g. with debug-mode assertions
+    /// about the surrounding `impl ModelHooks` shape) without changing the
     /// macro's emitted token tree.
     pub trait MarkerSeal {
         const SEAL: ();
@@ -204,8 +199,9 @@ mod tests {
     //! an override returning `Err(DjogiError::Validation(_))` round-trips
     //! the variant without coercion.
     //! Behavioural integration with the CRUD terminals (the
-    //! `before → DB → outbox → after → on_commit drain` sequence) lands in
-    //! T1.7; these tests cover the trait surface in isolation.
+    //! `before → DB → outbox → after → on_commit drain` sequence) is
+    //! tested in the integration suite; these tests cover the trait surface
+    //! in isolation.
     //! The crate root carries `#[cfg(test)] extern crate self as djogi;`
     //! so the absolute `::djogi::*` paths emitted by `#[djogi_test]` resolve
     //! to the current crate when the macro is used from inside the `djogi`

@@ -345,7 +345,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         async { unreachable!("delete_returning: #[model] macro must emit this implementation") }
     }
 
-    // ── Tree-recursive sugar (— T9) ─────────────────
+    // ── Tree-recursive sugar ─────────────────
     // These default methods provide a `tree_edge`-aware shorthand for
     // [`crate::query::QuerySet::tree_descendants`] /
     // [`crate::query::QuerySet::tree_ancestors`]. They resolve the
@@ -679,7 +679,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
 /// `RelationPath<M, M>` that targets the same model's table.
 /// The descriptor's `tree_edge` is the field NAME (which equals the
 /// column name in Djogi); the macro's compile-time validation in B1
-/// (T12) already proved both that the named field exists on the
+/// already proved at macro-expand time both that the named field exists on the
 /// struct and that it is a self-FK, so the lookup here is a pure
 /// metadata read with no fallible step beyond the
 /// `tree_edge.is_some` check.

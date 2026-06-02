@@ -96,7 +96,7 @@ pub mod visage_boundary;
 // open (not sealed) for extensible test and external-tool usage.
 pub use migrate::{DescriptorProvider, InventoryDescriptorProvider};
 
-// T7 fixup — re-export `DjogiVisageOf` at crate root so adopter code that
+// Re-export `DjogiVisageOf` at crate root so adopter code that
 // bounds generics on "something that projects model M" can spell the
 // trait as `djogi::DjogiVisageOf<M>` rather than reaching into the
 // internal `visage_boundary` module. The trait itself is stable public
@@ -120,7 +120,7 @@ pub use crate::cache::SassiBootHook;
 /// qualified paths like `::djogi::__private::inventory::submit!` so that users
 /// only need `djogi` as a direct dependency — they never need to add
 /// `inventory` or `time` themselves.
-/// T2 adds `::djogi::__private::pg` containing the new SQL substrate types
+/// `::djogi::__private::pg` contains the SQL substrate types
 /// (`SqlAccumulator`, `PgConnection`, `ToSql`, `FromSql`, `PgRow`). Macro-
 /// emitted code routes through `::djogi::__private::pg::*` rather than
 /// importing `tokio_postgres` / `postgres_types` directly.
@@ -151,7 +151,7 @@ pub mod __private {
     pub mod pg {
         pub use crate::pg::accumulator::SqlAccumulator;
         pub use crate::pg::connection::PgConnection;
-        /// Canonical row-decode trait (T3). Emitted by `#[model]` with
+        /// Canonical row-decode trait emitted by `#[model]` with
         /// `const COLUMNS`, `const COLUMN_LIST`, and an ordinal
         /// `from_pg_row` body guarded by per-column `debug_assert!`s.
         pub use crate::pg::decode::{
@@ -257,7 +257,7 @@ pub mod __private {
         pub const TOKEN: SealToken = SealToken::__new();
     }
 
-    /// Hook-dispatch re-exports for the `#[model(hooks)]` macro (T1.3).
+    /// Hook-dispatch re-exports for the `#[model(hooks)]` macro.
     /// The macro-emitted code routes through `::djogi::__private::hooks::*`
     /// rather than `::djogi::hooks::*` so the seal supertrait
     /// (`Sealed`, otherwise unnameable from outside the `djogi` crate)
@@ -333,13 +333,12 @@ pub use apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
 // consumer lands and the variant set stabilises.
 #[doc(hidden)]
 pub use apps::AppDiagnostic;
-// .1 — composition primitives. The runtime trait surfaces.
-// `Auditable` impls are emitted by `#[model(auditable)]` (T2.4 — the
-// surface superseded T2.2's `#[derive(Auditable)]` per spec line 1037,
-// locked 2026-05-03); `SoftDeletable` impls are emitted by
-// `#[model(soft_deletable)]` (T2.6 — the surface superseded T2.3's
-// `#[derive(SoftDeletable)]` for the same proc-macros-cannot-observe-
-// sibling-derives constraint).
+// Composition primitives. The runtime trait surfaces.
+// `Auditable` impls are emitted by `#[model(auditable)]` (supersedes
+// `#[derive(Auditable)]` per spec line 1037, locked 2026-05-03);
+// `SoftDeletable` impls are emitted by `#[model(soft_deletable)]`
+// (supersedes `#[derive(SoftDeletable)]` for the same
+// proc-macros-cannot-observe-sibling-derives constraint).
 pub use compose::{Auditable, SoftDeletable};
 pub use context::DjogiContext;
 pub use descriptor::{
@@ -431,11 +430,10 @@ pub use field_codec::FieldCodec;
 pub use field_codec::is_registered as is_codec_registered;
 pub use fts::{FtsDescriptor, TsQuery, TsVector};
 pub use fts_query::FtsFieldRef;
-// (T6.9b): `Condition` retired from the crate
-// root re-export. The public predicate substrate is `Q<T>`; the
-// legacy `Condition` type lives at `djogi::query::internal::Condition`
-// for the few cross-cluster consumers that still name it (8β's
-// `default_filter_condition` trait method, integration tests
+// `Condition` is retired from the crate root re-export. The public
+// predicate substrate is `Q<T>`; the legacy `Condition` type lives at
+// `djogi::query::internal::Condition` for the few consumers that still
+// name it (`default_filter_condition` trait method, integration tests
 // asserting on tree shape). Adopter code composes through `Q<T>` and
 // never reaches for `Condition` directly.
 pub use query::{
@@ -581,9 +579,9 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate::pg::decode::{FromJoinedPgRow, try_get_scalar};
     pub use crate::pg::pool::DjogiPool;
-    // (T6.9b): `Condition` retired from the
-    // prelude. Adopter code composes through `Q<T>` (in this list);
-    // legacy `Condition` callers reach `djogi::query::internal::Condition`.
+    // `Condition` is retired from the prelude. Adopter code composes
+    // through `Q<T>` (in this list); legacy `Condition` callers reach
+    // `djogi::query::internal::Condition`.
     pub use crate::query::{
         AggregateQuery,
         AnnotatedQuerySet,
@@ -677,7 +675,7 @@ pub mod prelude {
     // `std::net::IpAddr` at the field declaration site.
     #[cfg(feature = "network")]
     pub use crate::types::{CidrAddr, MacAddr};
-    // T7 fixup — `DjogiVisageOf<M>` is the seal trait bounding every
+    // `DjogiVisageOf<M>` is the seal trait bounding every
     // `{Visage}` type to its source model `M`. Adopter code that writes
     // generic bounds over "any projection of M" names this trait, so it
     // belongs in the default prelude alongside `Model`.
@@ -699,11 +697,11 @@ pub mod prelude {
     pub use djogi_macros::DjogiEnum;
     // Re-export the `#[derive(JsonbSchema)]` derive macro.
     pub use djogi_macros::JsonbSchema;
-    // .6 — `#[derive(SoftDeletable)]` was retired in favour
-    // of `#[model(soft_deletable)]` (mirrors the T2.4 Auditable pivot).
+    // `#[derive(SoftDeletable)]` was retired in favour of
+    // `#[model(soft_deletable)]` (mirrors the Auditable pivot).
     // The runtime trait `SoftDeletable` re-export above (via
     // `crate::compose::*`) stays — only the derive surface goes away.
-    // T11 / issue #30 — re-export the serde derives so `use djogi::prelude::*`
+    // issue #30 — re-export the serde derives so `use djogi::prelude::*`
     // is sufficient for any `JsonbSchema`-deriving or `DjogiEnum`-deriving
     // type. The macro emits `#[derive(Serialize, Deserialize)]` paths through
     // `::djogi::__private::serde`, but adopter-side typed JSONB schemas

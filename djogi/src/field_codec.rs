@@ -10,7 +10,7 @@
 //! identifier that simply does not exist. That outcome is silent
 //! at-rest data corruption, so the framework treats codecs as code,
 //! not data — the only way to add a codec is to ship a new release of
-//! Djogi with that codec wired into the static registry below. T3's
+//! Djogi with that codec wired into the static registry below. The
 //! macro (`#[field(protected(codec = "<id>"))]`) calls
 //! [`is_registered`] during expansion; an unknown identifier is a
 //! compile error at the call site, never a runtime surprise.
@@ -28,8 +28,7 @@
 //! frozen in [`crate::migrate::OnlineSafetyClassification`].
 //! # V1 registry contents
 //! V1 ships an empty registry. Real codecs (the AEAD / blind-index
-//! pair the spec mentions, etc.) land in later tasks. T4's
-//! job is the trait shape and the registry surface — nothing more.
+//! pair the spec mentions, etc.) land in later releases.
 
 use crate::migrate::OnlineSafetyClassification;
 
@@ -41,8 +40,8 @@ use crate::migrate::OnlineSafetyClassification;
 ///   Identifiers are short ASCII labels following the SQL-identifier
 ///   convention used elsewhere in the framework: an ASCII letter or
 ///   underscore followed by ASCII alphanumerics or underscores, up to
-///   63 bytes. Validation lives in T3's macro layer; T4 only requires
-///   that the ID be a `&'static str`.
+///   63 bytes. Validation lives in the macro layer. The only requirement
+///   here is that the ID be a `&'static str`.
 /// - [`Self::Decoded`] — the in-memory Rust type the application code
 ///   sees (e.g. `String` for a plaintext column representation).
 /// - [`Self::Encoded`] — the at-rest shape stored in Postgres (e.g.
@@ -55,7 +54,7 @@ use crate::migrate::OnlineSafetyClassification;
 pub trait FieldCodec: Send + Sync + 'static {
     /// Compile-time identifier referenced by
     /// `#[field(protected(codec = "<id>"))]`. Must be unique across
-    /// every registered codec; T3's macro rejects duplicates and
+    /// every registered codec; the macro rejects duplicates and
     /// rejects identifiers that are not present in [`REGISTRY`].
     const ID: &'static str;
 
@@ -119,7 +118,7 @@ pub(crate) static REGISTRY: phf::Set<&'static str> = phf::phf_set! {};
 
 /// Returns `true` iff `id` is the compile-time identifier of a codec
 /// shipped with this build of Djogi.
-/// T3's macro consumes this during expansion of
+/// The macro consumes this during expansion of
 /// `#[field(protected(codec = "<id>"))]` — an unknown identifier is a
 /// compile error, never a runtime failure. Adopter code rarely needs
 /// to reach the registry directly because the macro layer already
