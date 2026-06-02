@@ -193,8 +193,8 @@ impl<Out, K: KindEvidence> AggregateExpr<Out, K> {
 
     /// Build an `AggregateExpr<Out>` for the binary `AGG(y, x)` shape.
     /// Powers the two-arg aggregate family — `COVAR_POP`, `COVAR_SAMP`,
-    /// `CORR`, the `REGR_*` regression family (T6), and the JSON-object
-    /// aggregates (T9 — `JSON_OBJECT_AGG` / `JSONB_OBJECT_AGG`). Layout
+    /// `CORR`, the `REGR_*` regression family, and the JSON-object
+    /// aggregates (`JSON_OBJECT_AGG` / `JSONB_OBJECT_AGG`). Layout
     /// mirrors [`Self::unary_agg`] but populates the `arg2` slot with
     /// the second column reference.
     /// Argument convention: for the stats / regression family, `y_column`
@@ -229,7 +229,7 @@ impl<Out, K: KindEvidence> AggregateExpr<Out, K> {
     /// `target` ORDER BY column is populated from the receiver
     /// `FieldRef` at construction time and lives in the
     /// `within_group_order_by` slot.
-    /// T7 introduced this constructor.
+    /// Constructor for ordered-set aggregates.
     pub(crate) fn ordered_set(
         op: AggOp,
         arg: ExprNode,
@@ -952,7 +952,7 @@ impl<M: Model, V> FieldRef<M, V> {
     /// `CUBE` / `GROUPING SETS`), `0` otherwise. Returns
     /// `AggregateExpr<i32>` because Postgres' return type is `INTEGER`.
     /// # When to use
-    /// Pair with the grouping-set surface (T11 will land typed
+    /// Pair with the grouping-set surface (typed
     /// `ROLLUP` / `CUBE` / `GROUPING SETS` builders) to distinguish
     /// subtotal rows from base-fact rows in the result set. Used inside
     /// SELECT / HAVING when reporting hierarchical summaries:
@@ -1046,7 +1046,7 @@ pub fn grouping_of(columns: &[&'static str]) -> AggregateExpr<i32, MetadataAgg> 
 }
 
 // ── PERCENTILE_CONT / PERCENTILE_DISC / MODE — ordered-set aggregates ────────
-// T7. These are Postgres ordered-set aggregates: the function
+// These are Postgres ordered-set aggregates: the function
 // takes a literal value (the percentile fraction; or empty for `mode`)
 // and pairs it with a mandatory `WITHIN GROUP (ORDER BY column)` clause
 // that names the column being percentiled / mode-aggregated.
@@ -1057,9 +1057,9 @@ pub fn grouping_of(columns: &[&'static str]) -> AggregateExpr<i32, MetadataAgg> 
 // by the [`OrderedSetAgg`] kind-state (#89):
 // - DISTINCT is invalid — `.distinct` is not exposed on
 // `AggregateExpr<Out, OrderedSetAgg>`.
-// - The in-paren `order_by` modifier (T1) is invalid — `.order_by(...)`
+// - The in-paren `order_by` modifier is invalid — `.order_by(...)`
 // is not exposed on `AggregateExpr<Out, OrderedSetAgg>`.
-// - The window modifier (T3) is invalid — `.over(...)` is not exposed
+// - The window modifier is invalid — `.over(...)` is not exposed
 // on `AggregateExpr<Out, OrderedSetAgg>`.
 // - Plain ungrouped `QuerySet::annotate(...)` is also invalid for this
 // family because that terminal would synthesize `OVER ` even when the
@@ -1693,7 +1693,7 @@ mod tests {
         assert_eq!(sql.trim(), "BOOL_OR(active)", "got: {sql}");
     }
 
-    // ── .distinct tests (T4) ────────────────────────────────────────────────
+    // ── .distinct tests ────────────────────────────────────────────────
 
     #[test]
     fn sum_distinct_emits_sum_distinct() {
@@ -1860,10 +1860,10 @@ mod tests {
     #[test]
     fn string_agg_distinct_without_order_by_rejected_at_fetch() {
         // STRING_AGG(DISTINCT col, sep) without a per-aggregate ORDER BY is
-        // ill-formed Postgres. With T1 the IR tracks per-aggregate
-        // ORDER BY, so the rejection is scoped to the still-ill-formed
-        // no-ORDER-BY case. With ORDER BY chained, the combination is
-        // accepted (covered by `string_agg_distinct_with_order_by_is_now_accepted`).
+        // ill-formed Postgres. The IR tracks per-aggregate ORDER BY, so
+        // the rejection is scoped to the still-ill-formed no-ORDER-BY case.
+        // With ORDER BY chained, the combination is accepted (covered by
+        // `string_agg_distinct_with_order_by_is_now_accepted`).
         let f: FieldRef<Txn, String> = FieldRef::new("tag");
         let mut agg = f.string_agg(", ");
         if let ExprNode::Aggregate {
@@ -1918,7 +1918,7 @@ mod tests {
         );
     }
 
-    // ── .order_by(...) per-aggregate ORDER BY tests (T1) ─────────────────────
+    // ── .order_by(...) per-aggregate ORDER BY tests ─────────────────────
 
     #[test]
     fn order_by_appends_to_aggregate_node() {
@@ -2024,7 +2024,7 @@ mod tests {
     fn string_agg_distinct_with_order_by_is_now_accepted() {
         // `STRING_AGG(DISTINCT col, sep ORDER BY other)` is well-formed
         // Postgres — the legality check now accepts the combination when
-        // an ORDER BY is present (T1).
+        // an ORDER BY is present.
         let f: FieldRef<Txn, String> = FieldRef::new("tag");
         let g: FieldRef<Txn, i64> = FieldRef::new("rank");
         let agg = f.string_agg(", ").distinct().order_by(g.asc());
@@ -2084,7 +2084,7 @@ mod tests {
     #[test]
     fn over_empty_closure_stores_window_spec() {
         // `.over(|w| w)` sets `window: Some(WindowSpec::default)` — the
-        // terminal layer will emit `OVER ` from it, preserving the pre-T3
+        // terminal layer will emit `OVER ` from it, preserving the original
         // behaviour.
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.sum().over(|w| w);
@@ -2183,7 +2183,7 @@ mod tests {
     #[test]
     fn no_over_call_preserves_default_over_empty_via_terminal() {
         // When `.over(...)` is never called, `window: None` — the terminal
-        // `emit_aggregate_with_window_and_cast` emits `OVER ` as before T3.
+        // `emit_aggregate_with_window_and_cast` emits `OVER ` as in the original design.
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.count();
         let mut acc = SqlAccumulator::new("");
@@ -2196,7 +2196,7 @@ mod tests {
         );
     }
 
-    // ── BIT_AND / BIT_OR / BIT_XOR tests (T2) ────────────────────────────────
+    // ── BIT_AND / BIT_OR / BIT_XOR tests ────────────────────────────────
 
     #[test]
     fn bit_and_emits_bit_and_keyword() {
@@ -2259,7 +2259,7 @@ mod tests {
 
     #[test]
     fn bit_aggregates_compose_with_order_by() {
-        // BIT aggregates inherit the T1 .order_by modifier — useful for
+        // BIT aggregates support the .order_by modifier — useful for
         // deterministic emission when paired with DISTINCT, even though
         // BIT_AND/OR/XOR are commutative and the result is order-invariant.
         let f: FieldRef<Txn, i32> = FieldRef::new("flags");
@@ -2270,7 +2270,7 @@ mod tests {
         assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags ORDER BY flags ASC)");
     }
 
-    // ── GROUPING (T10) ────────────────────────────────────────────────────
+    // ── GROUPING ────────────────────────────────────────────────────
 
     #[test]
     fn grouping_emits_grouping_keyword() {
@@ -2369,7 +2369,7 @@ mod tests {
         assert!(crate::expr::sql::check_aggregate_legality(&agg.node).is_ok());
     }
 
-    // ── JSON object aggregates (T9) ───────────────────────────────────────
+    // ── JSON object aggregates ───────────────────────────────────────
 
     #[test]
     fn json_object_agg_emits_json_object_agg_key_value() {
@@ -2449,7 +2449,7 @@ mod tests {
         let _: AggregateExpr<serde_json::Value> = f_k2.jsonb_object_agg(f_v2);
     }
 
-    // ── REGR_* family (T6) ────────────────────────────────────────────────
+    // ── REGR_* family ────────────────────────────────────────────────
 
     #[test]
     fn regr_slope_emits_regr_slope_y_x() {
@@ -2581,7 +2581,7 @@ mod tests {
             FieldRef::<Txn, f32>::new("y").regr_syy(FieldRef::<Txn, f64>::new("x"));
     }
 
-    // ── COVAR / CORR (T5 — binary aggregates) ─────────────────────────────
+    // ── COVAR / CORR — binary aggregates ─────────────────────────────
 
     #[test]
     fn covar_pop_emits_covar_pop_y_x() {
@@ -2682,7 +2682,7 @@ mod tests {
         if let ExprNode::Aggregate { arg2, .. } = &agg.node {
             assert!(
                 arg2.is_none(),
-                "unary aggregates must leave arg2 empty after the T5 IR change"
+                "unary aggregates must leave arg2 empty"
             );
         } else {
             panic!("AggregateExpr did not wrap an Aggregate node");
@@ -2701,7 +2701,7 @@ mod tests {
         }
     }
 
-    // ── STDDEV / VARIANCE family (T4) ─────────────────────────────────────
+    // ── STDDEV / VARIANCE family ─────────────────────────────────────
 
     #[test]
     fn stddev_pop_emits_stddev_pop() {
@@ -2831,7 +2831,7 @@ mod tests {
         let _: AggregateExpr<f64> = f_i32.variance();
     }
 
-    // ── EVERY (T3) ────────────────────────────────────────────────────────
+    // ── EVERY ────────────────────────────────────────────────────────
 
     #[test]
     fn every_emits_every_keyword() {
@@ -2876,7 +2876,7 @@ mod tests {
         let _: AggregateExpr<i64> = f64.bit_xor();
     }
 
-    // ── PERCENTILE_CONT / PERCENTILE_DISC / MODE — T7 ordered-set ────────────
+    // ── PERCENTILE_CONT / PERCENTILE_DISC / MODE — ordered-set ────────────
 
     #[test]
     fn percentile_cont_emits_within_group() {
@@ -3038,7 +3038,7 @@ mod tests {
         let _ = crate::expr::sql::check_aggregate_legality(&agg.node);
     }
 
-    // ── Hypothetical-set aggregates — T8 ─────────────────────────────────────
+    // ── Hypothetical-set aggregates ─────────────────────────────────────
 
     #[test]
     fn rank_of_emits_within_group() {
@@ -3127,7 +3127,7 @@ mod tests {
 
     #[test]
     fn hypothetical_rank_within_group_override_works() {
-        // The .within_group_order_by(...) modifier (T7) works for
+        // The .within_group_order_by(...) modifier works for
         // hypothetical-set aggregates too — same IR slot.
         // Both the receiver (salary: i64), the supplied argument (7_500: i64),
         // and the replacement column (base_salary: i64) are the same type,
