@@ -12,7 +12,7 @@
 //! `Arc<Sassi>` (cache state is transaction-scope-agnostic). `atomic(&pool,
 //! ...)` constructs a fresh top-level transaction context because no parent
 //! context was supplied. This is the "DjogiContext IS the tenant boundary"
-//! contract from cluster 8δ T7.4.
+//! contract for the cache-tenant boundary.
 
 /// Link-time `Sassi` registration handle emitted by `#[model]`.
 /// # What

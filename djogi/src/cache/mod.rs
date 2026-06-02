@@ -7,14 +7,14 @@
 //! observes `PunnuEvent`s, attaches an L2 [`CacheBackend`], or composes
 //! `MemQ` scopes only ever needs `djogi` in their `Cargo.toml`
 //! reaching for sassi types directly through `djogi::cache::*`. The
-//! framework absorbs the dependency, and the macro layer (T7.2) emits
+//! framework absorbs the dependency, and the macro layer emits
 //! `Cacheable` impls without forcing adopters to learn the sassi
 //! crate name.
 //! # What this module does NOT export
 //! The `sassi-macros::Cacheable` derive is intentionally NOT re-exported.
 //! Djogi has its own `#[derive(Model)]` (via `#[model]`) which auto-emits
-//! the `Cacheable` impl through `sassi-codegen` (T7.2 in the same
-//! cluster). Re-exporting `sassi::Cacheable` (the derive) would create
+//! the `Cacheable` impl through `sassi-codegen`. Re-exporting
+//! `sassi::Cacheable` (the derive) would create
 //! two ways to reach the same trait impl and tempt adopters into mixing
 //! the two surfaces. The trait alone is re-exported here; the derive
 //! flows through `#[model]` only.
@@ -22,7 +22,7 @@
 //! Per `feedback_macro_path_routing.md`, macro-emitted code never spells
 //! `::sassi::*` paths directly — `crate::types` re-exports `Cacheable`,
 //! `DeltaSyncCacheable`, `MonotonicWatermark`, and `BasicPredicate` so
-//! T7.2's emitted impls write `::djogi::types::Cacheable for …` instead.
+//! The emitted impls write `::djogi::types::Cacheable for …` instead.
 //! This module is the adopter-facing surface; `crate::types` is the
 //! macro-emission target. Both paths resolve to the same sassi types.
 

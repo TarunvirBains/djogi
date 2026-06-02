@@ -1,12 +1,12 @@
 //! Composition primitives — `Auditable` and `SoftDeletable`.
 //! These are the runtime trait surfaces a model picks up when adopters
-//! opt in via `#[model(auditable)]` (.4 — supersedes T2.2's
+//! opt in via `#[model(auditable)]` (supersedes the legacy
 //! `#[derive(Auditable)]` per spec line 1037, locked 2026-05-03) or
-//! `#[model(soft_deletable)]` (.6 — supersedes T2.3's
+//! `#[model(soft_deletable)]` (supersedes the legacy
 //! `#[derive(SoftDeletable)]` for symmetry with the auditable surface
-//! and to de-risk 8γ T6's automatic default-filter composition).
-//! .1 landed the trait shapes only; T2.4 / T2.6 ship the
-//! macro emissions and are the source of truth for behavior.
+//! and to de-risk automatic default-filter composition).
+//! Initial landing covered trait shapes only; the full macro emissions
+//! are the source of truth for behavior.
 //! Downstream code that only needs to *bound a generic* on "models with
 //! audit fields" or "models with soft-delete semantics" can import
 //! these traits today.
@@ -22,22 +22,22 @@
 //! filter that excludes rows where `deleted_at IS NOT NULL`; adopter-side
 //! bypass goes through the `_insecurely` audit-warning shape — same
 //! `set_tenant` precedent already in [`crate::DjogiContext`].
-//! That filter and bypass live in the query layer (T2.4 / T2.5);
+//! That filter and bypass live in the query layer;
 //! this module is intentionally bound surface only.
 //! # Sealing model — convention-sealed, not compile-enforced
-//! V3 spec line 758 directs T2.1 to "convention-seal per
+//! V3 spec line 758 directs this module to "convention-seal per
 //! `decisions.md` row 78 pattern". The intent — per the explicit
 //! [CHECK] callout on : "convention-sealed = doc comment
 //! plus trait visibility, no compile-enforced seal" — is doc-only seal.
 //! No `private::Sealed` supertrait, no `__seal::Sealed` re-export. The
 //! reasons:
 //! 1. The traits are *user-implementable in shape* — adopter macros
-//!    (`#[model(auditable)]` T2.4 / `#[model(soft_deletable)]` T2.6)
+//!    (`#[model(auditable)]` / `#[model(soft_deletable)]`)
 //!    emit `impl Auditable for UserModel` / `impl SoftDeletable for
 //! UserModel` directly. If we sealed them via a supertrait, the
 //!    macro emission would need to route through
 //!    `::djogi::__private::compose::Sealed` (the [`crate::hooks`]
-//!    precedent). T2.1 explicitly defers macro work, and threading a
+//!    precedent). This module explicitly defers macro work, and threading a
 //!    seal across two follow-up commits adds churn for no protection
 //!    benefit at this stage.
 //! 2. The framework's harder seals (`Model` via [`crate::model::__sealed`],
@@ -79,8 +79,8 @@
 use crate::model::Model;
 use crate::types::DateTime;
 
-/// Marker trait emitted by `#[model(auditable)]` (.4
-/// supersedes T2.2's `#[derive(Auditable)]` per spec line 1037).
+/// Marker trait emitted by `#[model(auditable)]`
+/// (supersedes the legacy `#[derive(Auditable)]` per spec line 1037).
 /// A model carrying this bound declares `created_by: Option<String>`
 /// itself (Path B per) and the
 /// `#[model(auditable)]` attribute emits the trait impl plus an
@@ -110,16 +110,16 @@ pub trait Auditable: Model {
     fn created_by(&self) -> Option<&str>;
 }
 
-/// Marker trait emitted by `#[model(soft_deletable)]` (.6
-/// supersedes T2.3's `#[derive(SoftDeletable)]` for the same
+/// Marker trait emitted by `#[model(soft_deletable)]`
+/// (supersedes the legacy `#[derive(SoftDeletable)]` for the same
 /// proc-macros-cannot-observe-sibling-derives constraint that drove
-/// the T2.4 Auditable pivot).
+/// the auditable pivot).
 /// A model carrying this bound declares `deleted_at: Option<DateTime>`
 /// itself (Path B per) and the
 /// `#[model(soft_deletable)]` attribute emits the trait impl.
-/// T6 will land automatic default-filter composition once the `Q<T>`
-/// substrate is in place (spec line 971, RESOLVED 2026-05-03, lens,
-/// locked); T2.6 ships the trait impl plus the manual
+/// Automatic default-filter composition uses the `Q<T>`
+/// substrate (spec line 971, RESOLVED 2026-05-03, lens,
+/// locked); this trait ships the surface plus the manual
 /// [`QuerySet::not_deleted`](crate::query::QuerySet::not_deleted)
 /// helper that reads the column name through `<M as
 /// SoftDeletable>::COLUMN` rather than a hard-coded string.

@@ -277,7 +277,7 @@ fn classify_raw_ddl_transaction_session_statement(sql: &str) -> Option<&'static 
 }
 
 // ---------------------------------------------------------------------------
-// Transaction-control statement classifier (#306 T3).
+// Transaction-control statement classifier (#306).
 // ---------------------------------------------------------------------------
 
 fn classify_transaction_control_statement(sql: &str) -> Option<&'static str> {
@@ -332,7 +332,7 @@ fn classify_transaction_control_statement(sql: &str) -> Option<&'static str> {
 }
 
 // ---------------------------------------------------------------------------
-// Unified refusal enum (#306 T3).
+// Unified refusal enum (#306).
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq)]
@@ -1470,7 +1470,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Transaction control statement classification (#306 T3).
+    // Transaction control statement classification (#306).
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1667,7 +1667,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Batch scanner tests for unified refusal (#306 T3).
+    // Batch scanner tests for unified refusal (#306).
     // -----------------------------------------------------------------------
 
     #[test]
