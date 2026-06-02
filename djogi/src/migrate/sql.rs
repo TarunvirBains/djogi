@@ -2,15 +2,15 @@
 //! [`SchemaDelta`] into reviewable Postgres `up` / `down` statement
 //! pairs.
 //! # Scope
-//! T3 owns the *standard* lowering path: every [`SchemaOperation`]
+//! # Scope
+//! The standard lowering path covers every [`SchemaOperation`]
 //! variant the differ emits, plus the deterministic-naming and
-//! quoting policy for identifiers. T3 does **not** own:
-//! - `PkTypeFlip` orchestration. T9 plugs in later with the full
-//!   expand / contract / FK-cascade playbook. T3 surfaces every flip
-//!   as [`SqlEmitError::PkTypeFlipMustRouteToT9`] so the differ can
+//! quoting policy for identifiers. This module does **not** own:
+//! - `PkTypeFlip` orchestration. The PK-flip subsystem handles the full
+//!   expand / contract / FK-cascade playbook. This module surfaces every
+//!   flip as [`SqlEmitError::PkTypeFlipMustRouteToT9`] so the differ can
 //!   never accidentally feed a flip through the standard path.
-//! - Migration file naming, checksums, ledger writes — T6 owns the
-//!   on-disk shape.
+//! - Migration file naming, checksums, ledger writes — owned by `compose`.
 //! # Determinism
 //! Two runs of [`lower_delta`] on the same input produce
 //! byte-identical output. The emitter walks owned `BTreeMap` /
@@ -32,11 +32,11 @@
 //! reconstruct row data on rollback. The emitter populates a
 //! [`LossyRollbackWarning`] alongside each such operation so the
 //! runner / operator can surface the warning at apply time. The
-//! generated `down` SQL is a SQL comment that names the loss; T3
-//! does not invent a recreate-table-from-thin-air statement.
+//! generated `down` SQL is a SQL comment that names the loss; the
+//! emitter does not invent a recreate-table-from-thin-air statement.
 //! `DropIndex` is the only Drop variant whose down side rebuilds
 //! cleanly — the differ carries the full [`IndexSchema`] in the
-//! variant payload (per T2 fixup) so the recreate is a real
+//! variant payload (the differ carries the full IndexSchema) so the recreate is a real
 //! `CREATE INDEX` statement. The lossy marker still surfaces because
 //! the rebuild itself can be expensive on large tables.
 //! # Diff-shape notes
@@ -135,7 +135,7 @@ pub enum LossyRollbackKind {
     /// `DropIndex` — the index definition is gone; queries that
     /// relied on the index will go back to sequential scans.
     DropIndex,
-    /// PK-type-flip cutover (T9 segment 5) committed — the prior PK
+    /// PK-type-flip cutover committed — the prior PK
     /// column, its DEFAULT, and the autofill trigger are gone.
     /// Rollback requires an inverse migration: add the previous-
     /// direction column back, install a reverse autofill trigger,
@@ -167,7 +167,7 @@ pub enum LossyRollbackKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlEmitError {
     /// The differ flagged a transition it could not lower safely.
-    /// T3 propagates the reason verbatim; the operator hand-writes
+    /// The emitter propagates the reason verbatim; the operator hand-writes
     /// the migration.
     Unsupported {
         /// The original `Unsupported { reason }` payload from the
@@ -219,8 +219,8 @@ impl std::fmt::Display for SqlEmitError {
             SqlEmitError::PkTypeFlipMustRouteToT9 { table, from, to } => write!(
                 f,
                 "table `{table}`: PK-type flip ({from:?} -> {to:?}) reached the standard \
-                 SQL emitter — these are orchestrated by T9's expand/contract playbook \
-                 and must never go through the standard path"
+                 SQL emitter — these are orchestrated by the PK-flip expand/contract \
+                 playbook and must never go through the standard path"
             ),
             SqlEmitError::UnsupportedPartitionChange { table, detail } => write!(
                 f,
@@ -249,8 +249,8 @@ impl std::error::Error for SqlEmitError {}
 /// [`SchemaOperation::PkTypeFlip`] both fail this fn — they never
 /// produce executable SQL on the standard path. Callers should
 /// inspect the delta's [`Classification`] before lowering when they
-/// want to route a flip to T9; T3's default behaviour is "fail
-/// loudly so a flip cannot silently mis-apply".
+/// want to route a flip to the PK-flip orchestrator; the default
+/// behaviour is "fail loudly so a flip cannot silently mis-apply".
 /// `clippy::result_large_err` is silenced because [`SqlEmitError`]
 /// is a structural error type whose payload size matters less than
 /// callers being able to inspect every variant without boxing — the
@@ -1397,7 +1397,7 @@ fn emit_drop_index(idx: &IndexSchema) -> OperationSql {
     let _ = write!(up, " {qname};");
 
     // The down side recreates the index from the carried IndexSchema.
-    // DropIndex now carries the full schema (per T2 fixup), so we
+    // DropIndex carries the full schema, so we
     // can emit a real recreate without the prior "comment-only"
     // limitation. The recreate is structurally lossless; only the
     // index data has to be rebuilt by Postgres.
@@ -1690,12 +1690,12 @@ fn emit_rename_app(from: &str, to: &str) -> OperationSql {
     // RenameApp emits NO ddl. The migration engine handles the
     // folder move and the ledger UPDATE outside the standard SQL
     // path (per v3 plan §6 "Rename exception to append-only
-    // ledger"). T3's job is to surface the operation as a
+    // ledger"). The emitter surfaces the operation as a
     // metadata-only segment so the runner dispatches it correctly.
     let up = format!(
         "-- METADATA-ONLY: rename app `{from}` to `{to}`.\n\
          -- Folder rename + djogi_schema_migrations.app_label UPDATE happen\n\
-         -- outside the standard SQL emitter (handled by T6 compose / T4 runner)."
+         -- outside the standard SQL emitter (handled by compose / runner)."
     );
     let down = format!(
         "-- METADATA-ONLY: reverse rename `{to}` -> `{from}`.\n\
@@ -1714,7 +1714,7 @@ fn emit_move_model_between_apps(model: &str, from_app: &str, to_app: &str) -> Op
     let up = format!(
         "-- METADATA-ONLY: move model `{model}` from app `{from_app}` to app `{to_app}`.\n\
          -- Folder move + djogi_schema_migrations.app_label UPDATE happen outside\n\
-         -- the standard SQL emitter (handled by T6 compose / T4 runner)."
+         -- the standard SQL emitter (handled by compose / runner)."
     );
     let down = format!(
         "-- METADATA-ONLY: reverse move `{model}` from `{to_app}` back to `{from_app}`.\n\
