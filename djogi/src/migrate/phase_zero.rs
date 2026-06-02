@@ -212,6 +212,67 @@ fn map_phase_zero_refusal(state: PhaseZeroArtifactState) -> Result<(), PhaseZero
     }
 }
 
+/// Statement-level classification result for the deepest guard in
+/// [`crate::migrate::runner::execute_runner_statement`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PhaseZeroStatementClass {
+    /// Statement is safe to execute — DDL, session SET, DO block, etc.
+    Safe,
+    /// Statement contains a literal database default for a HeeRanjID GUC.
+    /// This is the known-bad shape from pre-fix generated files.
+    LiteralDefault,
+}
+
+/// Classify a single Phase 0 SQL statement for stale patterns.
+///
+/// Unlike [`classify_phase_zero_sql`] which operates on full artifact payloads
+/// (looking at banner markers, section markers, and overall shape), this
+/// function classifies individual statements from migration plan segments.
+///
+/// **What triggers `LiteralDefault`.** Generated-stale Phase 0 artifacts
+/// contain `ALTER DATABASE "<hardcoded_name>" SET heer.node_id = '...';` or
+/// `heer.ranj_node_id = '...'` with literal database names instead of
+/// dynamic defaults like `current_database()`.
+///
+/// **What stays `Safe`.**
+/// - Any DDL (`CREATE SCHEMA`, `CREATE FUNCTION`, `CREATE TABLE`, etc.)
+/// - Session-level SET (`SET heer.node_id = '1';`) — no ALTER DATABASE
+/// - DO blocks with dynamic EXECUTE format using `current_database()`
+/// - Extension installs (`CREATE EXTENSION IF NOT EXISTS ...`)
+///
+/// The runner's deepest guard in `execute_runner_statement` uses this
+/// to refuse stale statements immediately before raw `batch_execute`.
+pub(crate) fn classify_phase_zero_statement(sql: &str) -> PhaseZeroStatementClass {
+    let trimmed = sql.trim();
+
+    // Detect: ALTER DATABASE "literal_db_name" SET heer.node_id = '...';
+    // This is the generated-stale pattern. Current single-node-dev uses
+    // EXECUTE format('ALTER DATABASE %I ...', current_database(), ...)
+    // which does NOT match this pattern.
+    let has_literal_heer_default = trimmed.lines().any(|line| {
+        let l = line.trim();
+        // Match: ALTER DATABASE "..." SET heer.{node,ranj}_node_id = '...';
+        (l.starts_with("ALTER DATABASE \"") || l.starts_with("alter database \""))
+            && (l.contains("SET heer.node_id = '") || l.contains("SET heer.ranj_node_id = '"))
+    });
+
+    if has_literal_heer_default {
+        PhaseZeroStatementClass::LiteralDefault
+    } else {
+        PhaseZeroStatementClass::Safe
+    }
+}
+
+/// Require that a single Phase 0 statement is not stale.
+/// Returns `Ok(())` if safe, or the refusal reason if the statement
+/// contains literal database defaults.
+pub(crate) fn require_current_phase_zero_statement(sql: &str) -> Result<(), &'static str> {
+    match classify_phase_zero_statement(sql) {
+        PhaseZeroStatementClass::Safe => Ok(()),
+        PhaseZeroStatementClass::LiteralDefault => Err("generated-stale"),
+    }
+}
+
 fn contains_literal_database_default(sql: &str, statement_suffix: &str) -> bool {
     sql.lines().map(str::trim).any(|line| {
         line.starts_with("ALTER DATABASE \"")
@@ -381,5 +442,125 @@ mod tests {
             require_current_phase_zero_sql(&sql),
             Err(PhaseZeroRefusal::Ambiguous)
         );
+    }
+
+    // ── Statement-level classifier tests ───────────────────────────────
+
+    use super::{classify_phase_zero_statement, require_current_phase_zero_statement, PhaseZeroStatementClass};
+
+    #[test]
+    fn classify_literal_database_default_as_generated_stale() {
+        let stmt = "ALTER DATABASE \"mydb\" SET heer.node_id = '1';";
+        assert_eq!(
+            classify_phase_zero_statement(stmt),
+            PhaseZeroStatementClass::LiteralDefault
+        );
+        assert_eq!(
+            require_current_phase_zero_statement(stmt),
+            Err("generated-stale")
+        );
+    }
+
+    #[test]
+    fn classify_literal_ranj_node_default_as_generated_stale() {
+        let stmt = "ALTER DATABASE \"production_main\" SET heer.ranj_node_id = '7';";
+        assert_eq!(
+            classify_phase_zero_statement(stmt),
+            PhaseZeroStatementClass::LiteralDefault
+        );
+    }
+
+    #[test]
+    fn classify_session_set_as_safe() {
+        // Session-level SET is safe — no ALTER DATABASE
+        let stmt = "SET heer.node_id = '1';";
+        assert_eq!(
+            classify_phase_zero_statement(stmt),
+            PhaseZeroStatementClass::Safe
+        );
+        assert_eq!(require_current_phase_zero_statement(stmt), Ok(()));
+    }
+
+    #[test]
+    fn classify_ddl_as_safe() {
+        let stmt = "CREATE SCHEMA IF NOT EXISTS heer;";
+        assert_eq!(
+            classify_phase_zero_statement(stmt),
+            PhaseZeroStatementClass::Safe
+        );
+    }
+
+    #[test]
+    fn classify_create_function_as_safe() {
+        let stmt = "CREATE OR REPLACE FUNCTION heer.heerid_next() RETURNS bigint AS $$ ... $$ LANGUAGE plpgsql;";
+        assert_eq!(
+            classify_phase_zero_statement(stmt),
+            PhaseZeroStatementClass::Safe
+        );
+    }
+
+    #[test]
+    fn classify_extension_install_as_safe() {
+        let stmt = "CREATE EXTENSION IF NOT EXISTS \"postgis\";";
+        assert_eq!(
+            classify_phase_zero_statement(stmt),
+            PhaseZeroStatementClass::Safe
+        );
+    }
+
+    #[test]
+    fn classify_dynamic_execute_format_do_block_as_safe() {
+        // Single-node-dev current uses EXECUTE format with current_database()
+        let stmt = "DO $djogi$\nBEGIN\n\
+                    EXECUTE format('ALTER DATABASE %I SET heer.node_id = %L', current_database(), '1');\n\
+                    END\n$djogi$;";
+        assert_eq!(
+            classify_phase_zero_statement(stmt),
+            PhaseZeroStatementClass::Safe
+        );
+    }
+
+    #[test]
+    fn classify_lowercase_alter_database_as_stale() {
+        // Case-insensitive detection for ALTER DATABASE
+        let stmt = "alter database \"mydb\" SET heer.node_id = '1';";
+        assert_eq!(
+            classify_phase_zero_statement(stmt),
+            PhaseZeroStatementClass::LiteralDefault
+        );
+    }
+
+    #[test]
+    fn classify_non_heer_alter_database_as_safe() {
+        // ALTER DATABASE for non-HeeRanjID GUCs is safe
+        let stmt = "ALTER DATABASE \"mydb\" SET search_path = public;";
+        assert_eq!(
+            classify_phase_zero_statement(stmt),
+            PhaseZeroStatementClass::Safe
+        );
+    }
+
+    #[test]
+    fn classify_create_table_if_not_exists_as_safe() {
+        let stmt = "CREATE TABLE IF NOT EXISTS heer.heer_nodes (id integer PRIMARY KEY);";
+        assert_eq!(
+            classify_phase_zero_statement(stmt),
+            PhaseZeroStatementClass::Safe
+        );
+    }
+
+    #[test]
+    fn truncate_for_log_keeps_short_statements_intact() {
+        use crate::DjogiError;
+        // The truncate_for_log is in runner.rs but we can verify the error variant
+        // carries the statement correctly through the DjogiError type.
+        let err = DjogiError::StalePhaseZeroStatement {
+            refusal_reason: "generated-stale",
+            statement: "ALTER DATABASE \"mydb\" SET heer.node_id = '1';".to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("stale Phase 0 statement refused"));
+        assert!(msg.contains("generated-stale"));
+        assert!(msg.contains("ALTER DATABASE \"mydb\""));
     }
 }

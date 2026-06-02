@@ -294,6 +294,7 @@ fn make_runner_ctx(
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         // T9.4 audit-pool plumbing: not exercised in T5 paths.
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     }
 }
 
@@ -2871,6 +2872,7 @@ async fn baseline_projects_live_database_into_snapshot(mut ctx: djogi::DjogiCont
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     };
     let _plan = plan; // unused — baseline does not consume the plan SQL
 
@@ -2919,6 +2921,7 @@ async fn baseline_rejects_caller_supplied_snapshot(mut ctx: djogi::DjogiContext)
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     };
     let _plan = plan;
 
@@ -2988,6 +2991,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     };
     baseline_plan(
         &mut ctx,
@@ -3021,6 +3025,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     };
     baseline_plan(
         &mut ctx,
