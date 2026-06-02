@@ -2680,10 +2680,7 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.sum();
         if let ExprNode::Aggregate { arg2, .. } = &agg.node {
-            assert!(
-                arg2.is_none(),
-                "unary aggregates must leave arg2 empty after the T5 IR change"
-            );
+            assert!(arg2.is_none(), "unary aggregates must leave arg2 empty");
         } else {
             panic!("AggregateExpr did not wrap an Aggregate node");
         }
