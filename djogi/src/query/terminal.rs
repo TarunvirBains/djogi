@@ -207,8 +207,7 @@ where
             // a `T: Clone` bound and the existing fetch_all surface
             // is unchanged for callers who don't bind a cache.
             // Errors from `Punnu::insert` are logged-and-swallowed
-            // inside `PunnuCacheTarget::insert`; see the granular
-            // plan §3 commit T7.3 risk note for the rationale.
+            // inside `PunnuCacheTarget::insert`.
             if let Some(target) = cache_target.as_ref() {
                 for row in &result {
                     target.insert(row).await;
@@ -320,9 +319,9 @@ where
     /// transaction via inline-match. Prefetch fan-out inside an
     /// `atomic` scope works transparently and sees
     /// the scope's uncommitted writes.
-    // TODO(8δ T7.x): does NOT yet honour `cache_target` — see the
+    // TODO: does NOT yet honour `cache_target` — see the
     // remote anchor at the bottom of this impl block (above `stream`)
-    // for the cluster-wide deferral rationale.
+    // for the deferral rationale.
     pub fn fetch_all_prefetched<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -407,9 +406,9 @@ where
     /// query and prefetch fan-out both dispatch through the context
     /// helpers, so `select_related` works inside an
     /// `atomic` scope and sees the scope's uncommitted writes.
-    // TODO(8δ T7.x): does NOT yet honour `cache_target` — see the
+    // TODO: does NOT yet honour `cache_target` — see the
     // remote anchor at the bottom of this impl block (above `stream`)
-    // for the cluster-wide deferral rationale.
+    // for the deferral rationale.
     pub fn fetch_all_joined<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -616,9 +615,9 @@ where
     /// Honours the `is_empty` structural-none contract — a
     /// `QuerySet::none`-derived queryset returns `Ok(HashMap::new)`
     /// without SQL emission, matching every other terminal.
-    // TODO(8δ T7.x): does NOT yet honour `cache_target` — see the
+    // TODO: does NOT yet honour `cache_target` — see the
     // remote anchor at the bottom of this impl block (above `stream`)
-    // for the cluster-wide deferral rationale.
+    // for the deferral rationale.
     pub fn in_bulk<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -759,12 +758,11 @@ where
     ///     Ok(())
     /// })).await?;
     /// ```
-    // TODO(8δ T7.x): stream surfaces (`stream`,
+    // TODO: stream surfaces (`stream`,
     // `stream_with_fetch_size`) and the joined / prefetched
     // terminals (`fetch_all_prefetched`, `fetch_all_joined`,
     // `in_bulk`) intentionally do NOT yet honour `cache_target`.
-    // Commit T7.3 scopes the post-fetch hook to the
-    // three terminals named in the granular plan §3 commit T7.3
+    // The post-fetch hook is scoped to the three terminals
     // `fetch_all`, `first`, `fetch_one`. The streaming surface
     // needs a separate design pass (back-pressure interactions
     // with `Punnu::insert`'s async write-through, and the

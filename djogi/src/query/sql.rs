@@ -2312,7 +2312,7 @@ pub(crate) fn build_exists<T: Model>(
 /// even when the caller's closure omitted it: parity with the single-row
 /// `save` path, which also bumps `updated_at` on every write. Users who
 /// need to preserve `updated_at` across a bulk update reach for raw SQL
-/// via `ctx.raw_execute` (T5) — same as any other ORM layer that
+/// via `ctx.raw_execute` — same as any other ORM layer that
 /// treats the audit column as non-optional.
 /// `WHERE` is emitted via the shared [`push_where`] helper, so
 /// `QuerySet::none`-derived querysets (caught earlier in
@@ -2599,7 +2599,7 @@ where
 }
 
 /// Build `UPDATE <table> SET ... [WHERE ...] RETURNING <pk_column>`.
-/// Issue #304 Stage 2 — bulk update cache invalidation SQL builder.
+/// Issue #304 — bulk update cache invalidation SQL builder.
 /// Emits the same UPDATE statement as [`build_update`] but appends a
 /// `RETURNING <pk_column>` clause so the caller can collect the primary-
 /// key IDs of every affected row for targeted cache eviction.
@@ -2934,7 +2934,7 @@ mod tests {
         }
     }
 
-    // T3: the SQL emitter bounds on `T: FromPgRow` so it can interpolate
+    // the SQL emitter bounds on `T: FromPgRow` so it can interpolate
     // `COLUMN_LIST` into `SELECT` / `SELECT DISTINCT` shapes. The unit
     // tests below exercise SQL-text shape only (no row decode), so we
     // supply a stub impl with a single `id` column — enough for
@@ -3306,7 +3306,7 @@ mod tests {
     #[test]
     fn raw_sql_condition_wraps_in_parens() {
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        // (T6.9): wrap the legacy `Condition` through
+        // wrap the legacy `Condition` through
         // `Q::Condition(_)` so `qs.condition`'s `Q<T>` substrate stays
         // honest. The direct-Q emitter delegates this arm to
         // `emit_condition`, so SQL parity with the pre-flip
@@ -3325,7 +3325,7 @@ mod tests {
     /// Proxy raw-SQL filter AND-composes with a user leaf filter: the
     /// emitted WHERE clause has both terms separated by AND inside the
     /// flattened `Condition::And` tree. End-to-end coverage that the
-    /// runtime wiring from T3.4 (`QuerySet::new` seeding + `filter`
+    /// runtime wiring (`QuerySet::new` seeding + `filter`
     /// AND-composition + `RawSql` emission) lines up.
     #[test]
     fn raw_sql_condition_ands_with_user_filter() {
@@ -3334,7 +3334,7 @@ mod tests {
         let raw = Condition::__from_raw_sql_fragment("active = TRUE");
         let user = Condition::Leaf(Leaf::eq_raw("price", FilterValue::I64(100)));
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        // (T6.9): wrap the composed legacy tree
+        // wrap the composed legacy tree
         // through `Q::Condition(_)` for the substrate flip. The direct-Q
         // emitter delegates this arm to `emit_condition`, so the
         // assertion on the emitted `WHERE ((active = TRUE) AND price = $1)`
@@ -3997,7 +3997,7 @@ mod tests {
         );
     }
 
-    // ── T2 emitter: GROUPING SETS ─────────────────────────────────────────
+    // ── GROUPING SETS emitter ─────────────────────────────────────────
 
     #[test]
     fn build_grouped_annotated_select_emits_grouping_sets() {
@@ -4034,11 +4034,12 @@ mod tests {
         );
     }
 
-    // ── T1 emitter behavior: ROLLUP / CUBE ────────────────────────────────
-    // These tests document that the T1 emitter already handles ROLLUP and
-    // CUBE correctly. T2 adds the entry-point methods (.rollup, .cube) and
-    // the GROUPING SETS emitter arm; the tests below pin the existing
-    // emitter behavior so regressions surface before the new arms land.
+    // ── ROLLUP / CUBE emitter behavior ────────────────────────────────
+    // These tests document that the emitter already handles ROLLUP and
+    // CUBE correctly. The entry-point methods (.rollup, .cube) and
+    // the GROUPING SETS emitter arm build on this; the tests below pin
+    // the existing emitter behavior so regressions surface before the
+    // new arms land.
 
     #[test]
     fn build_grouped_annotated_select_emits_rollup() {
@@ -4096,7 +4097,7 @@ mod tests {
         );
     }
 
-    // T5 — alias-collision diagnostic
+    // alias-collision diagnostic
 
     #[test]
     fn alias_collision_detected_in_grouped_select() {
@@ -4160,7 +4161,7 @@ mod tests {
         );
     }
 
-    // ── T11: spatial JOIN grouped SELECT emitter ────────────────────────────
+    // ── spatial JOIN grouped SELECT emitter ────────────────────────────
     // These tests construct a `GroupedAnnotatedQuerySet` with a spatial join
     // spec and assert that the emitted SQL contains the expected LEFT JOIN,
     // ST_Covers call (the geography-native point-in-polygon function), and
@@ -4351,7 +4352,7 @@ mod tests {
         );
     }
 
-    // ── T12: cluster_by_proximity SQL emission ────────────────────────────
+    // ── cluster_by_proximity SQL emission ────────────────────────────
 
     /// Helper: build a `GroupedAnnotatedQuerySet` with a cluster spec, bypassing
     /// the `cluster_by_proximity` entry point so we can test SQL emission in
@@ -4438,7 +4439,7 @@ mod tests {
         );
     }
 
-    /// Regression test for the pre-T14.5 shape `SELECT ST_ClusterDBSCAN(...)
+    /// Regression test for the prior shape `SELECT ST_ClusterDBSCAN(...)
     /// OVER AS cluster_id ... GROUP BY cluster_id`, which Postgres rejects
     /// with `ERROR: window functions are not allowed in GROUP BY`. The
     /// emitter must wrap the window call in an inner subquery so the outer
@@ -4482,7 +4483,7 @@ mod tests {
         );
     }
 
-    // ── T12: bucket_by_cell SQL emission ─────────────────────────────────
+    // ── bucket_by_cell SQL emission ─────────────────────────────────
 
     /// Helper: build a `GroupedAnnotatedQuerySet` with a geohash spec.
     #[cfg(feature = "spatial")]
