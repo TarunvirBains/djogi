@@ -454,7 +454,7 @@ mod tests {
         }
     }
 
-    // ── T11.1: RegionKey implements IntoGroupKeyTuple ─────────────────────
+    // ── RegionKey implements IntoGroupKeyTuple ─────────────────────
 
     #[test]
     fn region_key_implements_into_group_key_tuple() {
@@ -462,7 +462,7 @@ mod tests {
         assert_bound::<RegionKey<FakeRegion>>();
     }
 
-    // ── T11.1: push_select_columns emits `r.<pk-col> AS rk0` ─────────────
+    // ── push_select_columns emits `r.<pk-col> AS rk0` ─────────────
 
     #[test]
     fn push_select_columns_emits_qualified_alias() {
@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(acc.sql(), "r.id AS rk0");
     }
 
-    // ── T11.1: push_group_by_columns emits `r.<pk-col>` ──────────────────
+    // ── push_group_by_columns emits `r.<pk-col>` ──────────────────
 
     #[test]
     fn push_group_by_columns_emits_qualified_column() {
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(acc.sql(), "r.id");
     }
 
-    // ── T11.1: SpatialJoinSpec fields are accessible (crate-internal) ─────
+    // ── SpatialJoinSpec fields are accessible (crate-internal) ─────
 
     #[test]
     fn spatial_join_spec_fields_are_readable() {
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(spec.r_pk_col, "id");
     }
 
-    // ── T12: ClusterRadius constructors ───────────────────────────────────
+    // ── ClusterRadius constructors ───────────────────────────────────
 
     #[test]
     fn cluster_radius_meters_converts_to_degrees() {
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(r.minpoints, 1);
     }
 
-    // ── T12: GeohashPrecision::as_i32 ─────────────────────────────────────
+    // ── GeohashPrecision::as_i32 ─────────────────────────────────────
 
     #[test]
     fn geohash_precision_as_i32_returns_correct_value() {
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(GeohashPrecision::P12.as_i32(), 12);
     }
 
-    // ── T12: ClusterId IntoGroupKeyTuple ──────────────────────────────────
+    // ── ClusterId IntoGroupKeyTuple ──────────────────────────────────
 
     #[test]
     fn cluster_id_implements_into_group_key_tuple() {
@@ -577,7 +577,7 @@ mod tests {
         assert_eq!(acc.sql(), "cluster_id");
     }
 
-    // ── T12: GeohashKey IntoGroupKeyTuple ─────────────────────────────────
+    // ── GeohashKey IntoGroupKeyTuple ─────────────────────────────────
 
     #[test]
     fn geohash_key_implements_into_group_key_tuple() {

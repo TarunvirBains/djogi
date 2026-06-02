@@ -1,6 +1,5 @@
 //! `RecursiveQuerySet<T>` — typed recursive-CTE query builder for
-//! tree-shaped models. (T9 + T10 + T11 + T11b)
-//! and (T13 + T13a).
+//! tree-shaped models.
 //! # What
 //! A `RecursiveQuerySet<T>` is the entry point for walking a self-referential
 //! parent edge on a model `T`. It is constructed via
@@ -575,7 +574,6 @@ pub(crate) fn build_recursive_exists<T: Model + FromPgRow>(
 /// Same recursive-CTE shape as [`build_recursive_select`], with the
 /// outer SELECT extended to project the CTE's `depth` and `path`
 /// columns alongside `T`'s own column list.
-/// (T13).
 pub(crate) fn build_recursive_select_with_paths<T: Model + FromPgRow>(
     qs: RecursiveQuerySet<T>,
 ) -> Result<SqlAccumulator, DjogiError> {
@@ -594,7 +592,7 @@ enum RecursiveProjection {
     /// Outer `SELECT <cols...>` — the row terminal.
     Rows,
     /// Outer `SELECT <cols...>, depth, path` — the
-    /// `fetch_all_with_paths` terminal (B3 T13). Adds two trailing
+    /// `fetch_all_with_paths` terminal. Adds two trailing
     /// columns the row decoder pulls out by name (`depth`, `path`)
     /// without touching `T`'s own `FromPgRow` impl.
     RowsWithDepthAndPath,
@@ -898,7 +896,6 @@ where
 
     /// Materialise every reachable row paired with its **depth** and
     /// **path** — the edge-name sequence from the root to that row.
-    /// (T13).
     /// `depth` is the `i32` count of recursive hops from the anchor;
     /// `path` is the `Vec<String>` of edge column names appended one
     /// per recursive step. For a single-edge `tree_descendants` walk

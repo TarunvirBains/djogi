@@ -1,5 +1,4 @@
-//! Delta-sync fetcher for `QuerySet::refresh_into` — 3 skeleton,
-//! T8.5 SQL implementation, T8.8 always-on LRU eviction warn.
+//! Delta-sync fetcher for `QuerySet::refresh_into`.
 //! # What
 //! `DjogiDeltaFetcher<T>` owns a snapshot of the substrate needed to issue
 //! delta queries against the source-of-truth Postgres pool: a `DjogiPool`
@@ -23,7 +22,7 @@
 //! holds for every well-formed `DjogiDeltaFetcher<T>`. Verified: compilation
 //! succeeds without manual impls. The const-fn-pointer assertion at the
 //! bottom of this file pins the contract at the type-system level.
-//! # T8.5 SQL path
+//! # SQL path
 //! `fetch_delta` issues real SQL on every non-empty tick. A
 //! `QuerySet::none` refresh returns an empty delta without touching the
 //! source table:
