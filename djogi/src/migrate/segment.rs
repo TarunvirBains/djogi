@@ -149,7 +149,7 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
 
     // PK-flip fast-path: a delta carrying a `PkTypeFlipGroup` /
     // `PkTypeFlipMultiGroup` consumes the entire migration (whole-
-    // migration non-transactional, per 7-Zero §6.2 deterministic
+    // migration non-transactional, per §6.2 deterministic
     // A). Route to the dedicated multi-segment emitter and ignore
     // the standard per-operation path.
     // **Single-parent groups** (`PkTypeFlipGroup`) lower as

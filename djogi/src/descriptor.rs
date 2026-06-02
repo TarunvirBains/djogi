@@ -1119,7 +1119,7 @@ mod tests {
             }
             super::IndexTarget::Expression(_) => panic!("expected Columns target"),
         }
-        // New-in-7-Zero benign defaults round-trip.
+        // Benign defaults round-trip.
         assert_eq!(spec.predicate, None);
         assert!(spec.include.is_empty());
         assert!(!spec.nulls_not_distinct);
@@ -2775,7 +2775,7 @@ pub struct CustomPrimaryKeyKind {
 /// **most-recent-first** without a secondary descending index. See
 /// [`crate::types::HeerIdDesc`] / [`crate::types::RanjIdDesc`] and the
 /// Plan §4.1 for the full indexing trade-off. The ascending ↔
-/// descending PK migration itself lands in ; 7-Zero only freezes the
+/// descending PK migration itself lands in a later release; this release only freezes the
 /// variant additions, attribute-parse paths, and descriptor shape.
 /// `#[non_exhaustive]` guards the enum so future PK shapes (sharded IDs,
 /// app-scoped IDs, etc.) can be added without breaking downstream match
@@ -3138,7 +3138,7 @@ impl ModelDescriptor {
 
     /// Iterate the column names of every self-FK edge declared on this
     /// model — every field whose `relation_kind` is `Some(_)` and whose
-    /// `is_self_fk` flag is `true`. (T13a).
+    /// `is_self_fk` flag is `true`.
     /// Used by [`Model::full_ancestors`](crate::model::Model::full_ancestors)
     /// to discover every parent edge to walk in one recursive CTE — each
     /// returned column name becomes the source-column of a synthesised
