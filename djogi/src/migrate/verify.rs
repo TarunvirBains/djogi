@@ -13,13 +13,11 @@
 //!    should carry a checksum that re-validates against the snapshot's
 //!    declared format version. Format errors surface as `D6xx`.
 //!    Verify never mutates anything — it is strictly read-only against
-//!    the live database and the snapshot file. The previous T5 entry
-//!    point bootstrapped the ledger table on the way in, which violated
-//!    the "verify never writes" contract on a fresh DB; that has been
-//!    removed and a missing ledger now surfaces as a typed `D621`
-//!    Error diagnostic instead. Mutations belong to [`super::repair`].
-//! # Minimum viable verify (T5)
-//! T5 reads the live catalog into a *partial* [`AppliedSchema`]
+//!    the live database and the snapshot file. A missing ledger
+//!    surfaces as a typed `D621` Error diagnostic instead of
+//!    bootstrapping the table. Mutations belong to [`super::repair`].
+//! # Scope of the current verify implementation
+//! Verify reads the live catalog into a *partial* [`AppliedSchema`]
 //! containing only what the verify path needs to compare:
 //! - **Tables.** Name + column list (name, rendered SQL type,
 //!   nullability, default expression).
@@ -33,15 +31,14 @@
 //!   Other fields ([`crate::migrate::schema::TableSchema::fts`],
 //!   [`crate::migrate::schema::TableSchema::partition`],
 //!   [`crate::migrate::schema::TableSchema::tenant_key`], enum types)
-//!   surface as advisory `Info` diagnostics for T8 can
-//!   tighten them to `Error` once the live-DB projection grows. The
-//!   deferral is intentional: the v3 plan's stop condition explicitly
-//!   says ">500 LOC of catalog SQL is a sign you should narrow scope
-//!   and surface it for review". Any tightening lands in T8 alongside
-//!   the `migrations status` work.
+//!   surface as advisory `Info` diagnostics that can be tightened to
+//!   `Error` once the live-DB projection grows. The deferral is
+//!   intentional: the v3 plan's stop condition explicitly says
+//!   ">500 LOC of catalog SQL is a sign you should narrow scope
+//!   and surface it for review".
 //! # Diagnostic codes (D6xx range)
 //! Verify's diagnostic codes live in the `D6xx` namespace (D025 is
-//! T4's guard, D004 is build-rs folder drift). Each code has a stable
+//! the guard module, D004 is build-rs folder drift). Each code has a stable
 //! meaning — re-using a code for a different condition is a hard
 //! reviewer ding. Current assignments:
 //! | Code | Severity | Meaning |
@@ -163,8 +160,8 @@ pub enum VerifySeverity {
 }
 
 /// One verify diagnostic. The `code` follows Djogi's `D###`
-/// convention (D6xx is verify's reserved range — D025 lives in T4's
-/// guard, D004 in build-rs folder drift).
+/// convention (D6xx is verify's reserved range — D025 lives in the
+/// guard module, D004 in build-rs folder drift).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyDiagnostic {
     /// Stable identifier (e.g. `"D601"`). Operators reference this in
@@ -282,7 +279,7 @@ impl std::error::Error for VerifyRunError {
 
 /// Run verify against the live database, comparing the supplied
 /// snapshot to the live catalog and the ledger.
-/// **Read-only.** Verify never writes. The previous T5 arrangement
+/// **Read-only.** Verify never writes. A previous arrangement
 /// called `ledger::bootstrap` on the way in, which created
 /// `djogi_schema_migrations` on a fresh DB — a hard violation of the
 /// "verify never mutates" contract. The fix: verify probes for the
@@ -305,7 +302,7 @@ pub async fn verify(
 }
 
 /// Same as [`verify`] but threads a [`crate::config::PolicyConfig`]
-/// so the caller can pin the severity of T7's `D622` (out-of-order
+/// so the caller can pin the severity of `D622` (out-of-order
 /// applied migration) diagnostic.
 /// **Why a separate entry point.** The historical signature
 /// `verify(ctx, snapshot)` is consumed by every existing caller. Adding
@@ -363,7 +360,7 @@ pub async fn verify_with_policy(
             });
         }
 
-        // T7 / D622: surface every ledger row whose `out_of_order_flag`
+        // D622: surface every ledger row whose `out_of_order_flag`
         // is set. Each occurrence becomes its own diagnostic entry so
         // the operator can see the full list. Severity is Warning by
         // default; `policy.strict_out_of_order = true` upgrades to
@@ -394,11 +391,11 @@ pub async fn verify_with_policy(
 
     // Compare snapshot indexes to live indexes — name + table +
     // columns + uniqueness + method. INCLUDE / partial
-    // predicate surface as Info per the T5 stop condition.
+    // predicate surface as Info (advisory, per the scope stop condition).
     diff_indexes(snapshot, &live, &mut diagnostics);
 
     // Surface advisory diagnostics for fields the projection does not
-    // yet exercise so operators know the limit of T5's verify scope.
+    // yet exercise so operators know the current verify scope.
     diff_advisory_fields(snapshot, &mut diagnostics);
 
     diagnostics.sort_by_key(|d| d.sort_key());
@@ -503,7 +500,7 @@ pub async fn verify_bucket(
                 });
             }
 
-            // T7 / D622: surface every ledger row whose `out_of_order_flag`
+            // D622: surface every ledger row whose `out_of_order_flag`
             // is set. Severity follows `policy.strict_out_of_order`.
             emit_out_of_order_diagnostics(&ledger_rows, policy, &mut diagnostics);
         }
@@ -752,10 +749,10 @@ async fn read_tables(
             primary_key: super::schema::PrimaryKeySchema {
                 columns: primary_key_columns,
                 // Live PG cannot tell us the PK kind without reaching
-                // into the column DEFAULT expression; T5's verify keeps
+                // into the column DEFAULT expression; the verify pass keeps
                 // the kind comparison in advisory mode (`HeerId` is the
                 // common case but the projection cannot prove it from
-                // the catalog alone). T8 tightens this.
+                // the catalog alone).
                 kind: super::schema::PkKindSchema::HeerId,
             },
             rationale: None,
@@ -865,7 +862,7 @@ async fn read_all_columns(
             foreign_key: None,
             // Verify does not yet read `pg_attrdef` to discover stored
             // generated expressions; advisory mode treats every live
-            // column as non-generated. T8/future verify pass tightens.
+            // column as non-generated; a future verify pass may tighten.
             generated: None,
             identity: None,
             index_type: None,
@@ -971,8 +968,8 @@ async fn read_all_primary_key_columns(
 /// - HeeRanjID artifact tables — see [`HEERANJID_ARTIFACT_TABLES`].
 /// - The ledger table.
 ///   `INCLUDE(...)` columns and partial-predicate `WHERE` clauses are
-///   deliberately NOT projected here — the T5 stop condition keeps
-///   those at advisory `Info` level for now (D693). T8 will tighten.
+///   deliberately NOT projected here — they are kept at advisory `Info`
+///   level for now (D693).
 async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, VerifyRunError> {
     // Step 1 — one row per index with name + table + uniqueness +
     // access method. Step 2 (read_all_index_columns, batched per
@@ -1063,7 +1060,7 @@ async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, Verify
 /// map keyed by index name; each value is the columns in
 /// `pg_index.indkey` order. Each [`IndexColumnSchema`] carries the
 /// default sort direction / nulls policy / opclass — the live
-/// catalog read stops short of opclass detection (T8 territory) so
+/// catalog read does not yet include opclass detection, so
 /// the snapshot's own knobs are the comparison ground truth.
 /// Replaces the per-index helper that ran one round-trip per index.
 async fn read_all_index_columns(
@@ -1114,8 +1111,8 @@ async fn read_all_index_columns(
 
 /// Map a Postgres `pg_am.amname` string to the corresponding
 /// [`IndexTypeSchema`] variant. Unknown methods fall back to
-/// `BTree`; T8 will surface that as a warning, but T5 keeps the
-/// projection forgiving so the diff path can still proceed.
+/// `BTree`; the projection is kept forgiving for now so the diff
+/// path can still proceed.
 fn pg_amname_to_index_type(amname: &str) -> IndexTypeSchema {
     match amname {
         "btree" => IndexTypeSchema::BTree,
@@ -1588,7 +1585,7 @@ fn diff_indexes(
 
         // D612 — column-list drift. We compare the raw column-name
         // sequence; opclass / order / nulls are not yet projected
-        // from live (T8 territory) so we narrow the comparison to
+        // from live (not yet implemented), so we narrow the comparison to
         // the column names in order.
         let snap_cols = index_target_column_names(&snap_idx.target);
         let live_cols = index_target_column_names(&live_idx.target);
@@ -1650,15 +1647,14 @@ fn diff_indexes(
 
         // D693 — INCLUDE columns / partial-predicate are not yet
         // projected from live. Surface as Info so the operator sees
-        // exactly what is and is not covered. T8 tightens this.
+        // exactly what is and is not covered.
         if !snap_idx.include.is_empty() || snap_idx.predicate.is_some() {
             diagnostics.push(VerifyDiagnostic {
                 code: "D693".to_string(),
                 severity: VerifySeverity::Info,
                 message: format!(
-                    "index `{name}` declares INCLUDE / partial-predicate; T5 \
-                     verify does not yet project these from the live catalog \
-                     (deferred to T8)",
+                    "index `{name}` declares INCLUDE / partial-predicate; \
+                     verify does not yet project these from the live catalog",
                 ),
                 location: Some(format!("index:{name}")),
             });
@@ -1689,8 +1685,8 @@ fn index_target_column_names(target: &IndexTargetSchema) -> Vec<&str> {
 ///   loop; Postgres renders nested casts unchanged on `pg_get_expr`,
 ///   so the comparator must peel them)
 /// - `42` vs `43` → mismatch (different value)
-/// - `now` vs `current_timestamp` → mismatch (different func — T8
-///   may add an alias map)
+/// - `now` vs `current_timestamp` → mismatch (different func; a
+///   future pass may add an alias map)
 ///   Trim is whitespace-only on both ends; other whitespace inside
 ///   the expression is preserved (Postgres preserves it on the way
 ///   back to the catalog).
@@ -1769,7 +1765,7 @@ fn render_default_for_message(d: &Option<String>) -> String {
     }
 }
 
-/// Surface advisory `Info` diagnostics for snapshot fields the T5
+/// Surface advisory `Info` diagnostics for snapshot fields the current
 /// projection does not yet check. Operators see exactly what is
 /// covered and what is deferred.
 fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDiagnostic>) {
@@ -1785,9 +1781,9 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             code: "D690".to_string(),
             severity: VerifySeverity::Info,
             message: format!(
-                "{n} table(s) declare FTS configuration; T5 verify does not \
+                "{n} table(s) declare FTS configuration; verify does not \
                  yet check FTS triggers / generated columns against the live \
-                 catalog (deferred to T8)",
+                 catalog",
                 n = fts_tables.len(),
             ),
             location,
@@ -1806,9 +1802,9 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             code: "D691".to_string(),
             severity: VerifySeverity::Info,
             message: format!(
-                "{n} table(s) declare a partition strategy; T5 verify does \
+                "{n} table(s) declare a partition strategy; verify does \
                  not yet check partition method / column against the live \
-                 catalog (deferred to T8)",
+                 catalog",
                 n = partitioned.len(),
             ),
             location,
@@ -1821,9 +1817,8 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             code: "D692".to_string(),
             severity: VerifySeverity::Info,
             message: format!(
-                "{n} enum type(s) declared; T5 verify does not yet check \
-                 enum variants against the live `pg_enum` catalog (deferred \
-                 to T8)",
+                "{n} enum type(s) declared; verify does not yet check \
+                 enum variants against the live `pg_enum` catalog",
                 n = snapshot.enums.len(),
             ),
             location: None,
@@ -1867,13 +1862,13 @@ fn render_type_for_compare(s: &str) -> String {
     out
 }
 
-// ── Internal accessors used by repair / baseline / T8 ────────────────────
+// ── Internal accessors used by repair / baseline ────────────────────
 
 /// Live-DB projection accessor — entry point for code paths that
 /// need the projection without the verify-side diff. Used by
 /// [`super::runner::baseline_plan`] and
-/// [`super::repair::repair_snapshot_rebuild`]; reserved for
-/// T8's tightened verify diagnostics.
+/// [`super::repair::repair_snapshot_rebuild`]; and by verify
+/// diagnostics that require a full live projection.
 /// **Bucket scoping.** The projection is scoped to the supplied
 /// [`BucketKey`] so an app's baseline / rebuild does not pull in
 /// another app's tables. Postgres has no per-app schema concept
@@ -2796,7 +2791,7 @@ mod tests {
         assert!(!is_heeranjid_artifact_table(""));
     }
 
-    // ── T7: emit_out_of_order_diagnostics (D622) ─────────────────────────
+    // ── emit_out_of_order_diagnostics (D622) ─────────────────────────
 
     fn ledger_row_at(version: &str, app: &str, ooo: bool, status: LedgerStatus) -> LedgerRow {
         LedgerRow {
