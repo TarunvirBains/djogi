@@ -758,8 +758,8 @@ pub fn expand(input: TokenStream) -> TokenStream {
             let visage_doc = format!(
                 "Visage-scoped many-to-many accessor — returns a SELECT-narrowed \
                  `VisageQuerySet<{peer_name}>` containing every `{peer_name}` associated \
-                 with this `{source_visage}` via the `{through_type}` junction. Phase \
-                 7-Zero-2 T13b emits an EXISTS-correlated subquery against the \
+                 with this `{source_visage}` via the `{through_type}` junction. The \
+                 accessor emits an EXISTS-correlated subquery against the \
                  `{through_type}` table: the outer query SELECTs only `{peer_name}`'s \
                  exposed columns from `{target_type}` and the EXISTS predicate ties \
                  each peer row to a junction row whose `{this_fk}` matches this \
