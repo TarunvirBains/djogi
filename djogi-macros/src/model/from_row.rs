@@ -1,4 +1,4 @@
-//! Generates `impl FromPgRow for T` (T3 canonical row-decode).
+//! Generates `impl FromPgRow for T` — canonical row-decode.
 //! # What
 //! Emits one `impl` block per `#[model]`-annotated struct:
 //! - `const COLUMNS: &'static [&'static str]` — column names in the

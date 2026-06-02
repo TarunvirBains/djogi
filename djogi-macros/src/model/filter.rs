@@ -246,7 +246,7 @@ pub fn expand(
          both paths preserve the same database result semantics."
     );
 
-    // ── `IntoQ<#name>` bridge (T6.7) ───────────────
+    // ── `IntoQ<#name>` bridge ───────────────
     // Lifts `{Model}Filter` into the `Q<T>` algebra so it composes with
     // the `QuerySet::filter_struct` / `exclude_struct` signature
     // `<F: IntoQ<T>>`. The impl lazily maps the single stored

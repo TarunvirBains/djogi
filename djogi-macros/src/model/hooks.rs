@@ -3,7 +3,7 @@
 //! 3.
 //! When `model_attrs.hooks == false`, [`expand`] returns an empty
 //! [`TokenStream`] without invoking `quote!`. Models that do not opt in
-//! emit zero hook-dispatch overhead: the CRUD terminals (T1.4–T1.6) read
+//! emit zero hook-dispatch overhead: the CRUD terminals read
 //! the `HasHooks` bound at monomorphisation time, so without the impl the
 //! dispatch helpers fold to no-ops that LLVM elides regardless of LTO
 //! settings (§D2).

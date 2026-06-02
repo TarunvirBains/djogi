@@ -67,9 +67,8 @@ pub struct DerivedAttr {
     /// for the derived field with a `let model: &Self::Model = src;`
     /// rebind so the adopter writes against `model.<field>` syntax.
     pub rust: String,
-    /// Span of the Rust string literal — kept so future Stage 5
-    /// (codegen) can anchor parse-related diagnostics back to the
-    /// source span.
+    /// Span of the Rust string literal — kept so the codegen pass
+    /// can anchor parse-related diagnostics back to the source span.
     #[allow(dead_code)] // wired up in codegen pass below
     pub rust_span: Span,
     /// Optional rustdoc captured from `doc = "..."`. Attached to every
@@ -1098,7 +1097,7 @@ pub fn cross_check(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Fallibility detection — Stage 5 (codegen) consumer
+// Fallibility detection — codegen consumer
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Syntactic shape recognised by [`detect_fallibility_shape`].
