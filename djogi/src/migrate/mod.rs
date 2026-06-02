@@ -13,7 +13,7 @@
 //! | [`guard`] | File-level workspace lock primitive used by `compose` / `attune` / `apply` / `repair` / `baseline`. |
 //! | [`ledger`] | `djogi_schema_migrations` DDL bootstrap, row CRUD, and `V1:<sha256-hex>` checksum format. |
 //! | [`runner`] | Apply orchestration — advisory lock, transactional / non-transactional segment dispatch, partial-state recording, snapshot persist on success. |
-//! T8 adds `docs`, `seed`, and `reset` — markdown documentation
+//! `docs`, `seed`, and `reset` submodules add: markdown documentation
 //! generation, the seed runner / `djogi_seed_runs` ledger, and the
 //! triple-gated `db reset` orchestrator.
 //! # Public surface
@@ -33,7 +33,7 @@
 //!   global `inventory::iter` collectors and produces one
 //!   [`AppliedSchema`] per [`BucketKey`].
 //!   The lower-level [`projection::project_from_iters`] is `pub(crate)`
-//!   and exists for tests + the T10 `#[djogi_test(sync_models)]`
+//!   and exists for tests + the `#[djogi_test(sync_models)]`
 //!   helper. External consumers use [`project_from_inventory`].
 //!   Diff entry points: external consumers use [`diff_bucket_maps`]
 //!   which correctly handles cross-bucket moves. The per-bucket
@@ -42,8 +42,8 @@
 //!   SQL + segment entry points: external consumers use
 //!   [`plan_delta`] (typically) or [`lower_delta`] (when only the
 //!   per-operation SQL pairs are needed without segment grouping).
-//!   [`MigrationPlan`] is the canonical T3 output the runner T4 will
-//!   consume; segment kinds tell the runner how to dispatch each
+//!   [`MigrationPlan`] is the canonical output the runner
+//!   consumes; segment kinds tell the runner how to dispatch each
 //!   group of statements.
 
 pub mod attune;

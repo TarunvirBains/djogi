@@ -7,8 +7,7 @@
 //! concurrent invocations of the migration tooling so two operators
 //! running the migration tooling simultaneously cannot race on the same
 //! `migrations/` tree or shared `target/djogi_pending/` staging area.
-//! T4 owns the primitive; T5 (`repair`) and T6 (`compose` /
-//! `apply` orchestration) consume it.
+//! Used by `repair`, `compose`, and `apply` orchestration.
 //! # Mechanism
 //! Unix-only today. The implementation calls `flock(2)` directly via
 //! `libc::flock` because the alternatives are heavier:
@@ -39,7 +38,7 @@
 //! that a process exiting cleanly never holds another up by more
 //! than ~50 ms, but loose enough to avoid pegging a CPU core.
 //! # Composition with `pg_advisory_lock`
-//! The runner T4 acquires the file lock first, then the Postgres
+//! The runner acquires the file lock first, then the Postgres
 //! advisory lock. The order is deterministic: every Djogi process
 //! takes (file-lock, advisory-lock) in that sequence, so two
 //! operators running concurrently cannot deadlock — one of them
@@ -94,7 +93,7 @@ pub enum GuardError {
     /// failure mode (e.g. `EBADF`, `EINVAL`).
     Flock { path: PathBuf, errno: i32 },
 
-    /// Windows is not supported in T4. When Windows lands it will
+    /// Windows is not currently supported. When Windows support lands it will
     /// use `LockFileEx`; until then this variant lets callers fail
     /// fast with an actionable message rather than a silent panic.
     #[cfg(not(unix))]
@@ -227,7 +226,7 @@ fn acquire_unix(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardE
 
     // Ensure the parent directory exists. Treat
     // a missing parent as an I/O error rather than silently creating a
-    // workspace root — the caller (T6 `compose` / runner) chose the
+    // workspace root — the caller (`compose` / runner) chose the
     // workspace; we do not invent file layout.
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()

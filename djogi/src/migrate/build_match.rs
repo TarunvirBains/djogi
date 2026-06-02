@@ -1,5 +1,5 @@
 //! Three-way match logic for `build.rs` drift diagnostics.
-//! T6 owns this module. It is a pure-data layer that takes the three
+//! Pure-data layer that takes the three
 //! schema inputs to the build.rs three-way match and produces
 //! the warnings to surface to the operator. No I/O, no SQL, no
 //! filesystem — purely computing the diagnostic strings from typed

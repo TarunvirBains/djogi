@@ -1,5 +1,5 @@
 //! Out-of-order policy + multi-DB guardrails for the migration runner.
-//! # Scope (/ T7)
+//! # Scope
 //! Two responsibilities:
 //! 1. **Out-of-order detection / enforcement.** A migration applies
 //!    *out-of-order* when its `version` string lexically precedes some

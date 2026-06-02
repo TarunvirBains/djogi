@@ -518,7 +518,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
         .map_err(|e| ResetError::WorkspaceLockFailed { source: e })?;
 
     // 4. Capture the HISTORICAL apply order from
-    // the live ledger BEFORE the drop. T7's out-of-order policy
+    // the live ledger BEFORE the drop. The out-of-order policy
     // allows a hotfix migration to apply AFTER a later one, e.g.
     // `applied_at` of `0001 < 0003 < 0002`. Lexical version-string
     // sort would replay them as `0001, 0002, 0003`, which is NOT

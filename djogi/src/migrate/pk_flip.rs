@@ -1,5 +1,4 @@
-//! PK-type-flip migration SQL emission and segment planning — T9 of
-//! the v3 plan.
+//! PK-type-flip migration SQL emission and segment planning.
 //! # What this module owns
 //! Lowering of [`SchemaOperation::PkTypeFlipGroup`] into the
 //! multi-segment [`MigrationPlan`] required by the HeeRanjID
@@ -900,7 +899,7 @@ fn next_fn_name(family: PkFlipFamily, direction: PkFlipDirection) -> &'static st
 /// promises ships alongside. For we always emit the
 /// `'heer'` / `'ranj'` literal and rely on the procedure's flip-fn
 /// dispatch — the desc-only procedure satisfies the asc→desc path
-/// (the headline T9 case); the reverse path is unblocked by the
+/// (the asc→desc case); the reverse path is unblocked by the
 /// `migrate_asc_to_desc.rs` example wiring in HeeRanjID v0.3.x and
 /// surfaces here as a runtime error if attempted before that
 /// procedure pair is published. Operator-facing message is the SQL

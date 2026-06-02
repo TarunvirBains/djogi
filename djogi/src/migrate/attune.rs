@@ -1095,8 +1095,9 @@ async fn scan_ledger(
 
     // Attune is bucket-scoped at the (database, app) level, but the
     // ledger does not record `database` directly — it lives on the
-    // bucket from which the runner derived the row. For T7 we treat
-    // the active connection as a single database; the bucket
+    // bucket from which the runner derived the row. The current
+    // single-pool arrangement treats the active connection as one
+    // database; the bucket
     // identity reduces to `(database, app_label)`. The `database`
     // argument is the active connection's `current_database`
     // resolved once at the top of `attune` so DiffOnly never bootstraps
@@ -1132,7 +1133,7 @@ async fn scan_ledger(
 
 /// Read the active database's name from `current_database`. Used to
 /// stamp the bucket identity on ledger rows when reading them back.
-/// The active database IS the bucket database for T7's single-pool
+/// The active database IS the bucket database in the current single-pool
 /// arrangement; the helper exists so a future multi-pool shape can
 /// override the source without churning the call sites.
 async fn active_database_name(ctx: &mut DjogiContext) -> Result<String, AttuneError> {

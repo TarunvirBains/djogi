@@ -1,4 +1,4 @@
-//! Seed runner — / T8.
+//! Seed runner — `djogi db seed` subcommand.
 //! Operator-authored seed migrations live under `seeds/<database>/` as
 //! plain `.sql` files. `djogi db seed` discovers them, runs them in
 //! filename-sorted order, and records each successful run in a
@@ -10,7 +10,7 @@
 //!   schema forward. The schema ledger (`djogi_schema_migrations`)
 //!   carries the snapshot-version contract; conflating seeds with
 //!   schema migrations would muddle the snapshot invariants the
-//!   runner owes T5 / T7.
+//!   runner relies on.
 //! - Seeds are dev-flavoured: the gate is "localhost-or-explicit-allow"
 //!   (lighter than `db reset`'s production refusal) so a CI integration
 //!   suite can seed a remote test DB with `--allow-non-localhost`

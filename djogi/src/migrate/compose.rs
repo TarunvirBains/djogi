@@ -1,4 +1,4 @@
-//! `migrations compose` orchestrator — T6's central entry point.
+//! `migrations compose` orchestrator — central entry point.
 //! Compose translates the descriptor inventory + the last-applied
 //! snapshot into one new pair of files per drifted bucket:
 //! 1. The committed migration SQL pair under
@@ -274,7 +274,7 @@ pub enum ComposeError {
     },
     /// The differ produced [`Classification::Unsupported`] for at
     /// least one bucket — a non-flip PK transition, an enum variant
-    /// removal, etc. The operator hand-writes the migration. T6 stops
+    /// removal, etc. The operator hand-writes the migration. Compose stops
     /// before any file is written.
     UnsupportedDelta { bucket: BucketKey, reason: String },
     /// SQL emission failed (e.g. a `PkTypeFlip` reached the standard
@@ -433,7 +433,7 @@ pub struct ComposeRequest<'a> {
     /// and `<workspace>/target/djogi_pending/`, both of which require
     /// the workspace lock per the file-lock contract.
     pub _guard: &'a WorkspaceGuard,
-    /// Join-table cutover layout for any T9 PK-flip group emitted by
+    /// Join-table cutover layout for any PK-flip group emitted by
     /// the differ. `None` defaults to
     /// [`super::diff::PkFlipJoinTableOption::OptionA`] — single
     /// mega-transaction across both parents and the join table per
@@ -618,9 +618,9 @@ pub fn parse_pending_bytes(
     bytes: &[u8],
     path: Option<PathBuf>,
 ) -> Result<PendingPlan, PendingLoadError> {
-    // Stage 1 — peek at `format_version`. A future version with
+    // Phase 1 — peek at `format_version`. A future version with
     // additional fields would otherwise trip `deny_unknown_fields`
-    // in stage 2 with a cryptic error.
+    // in phase 2 with a cryptic error.
     if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(bytes)
         && let Some(serde_json::Value::String(found)) = map.get("format_version")
         && found != PENDING_FORMAT_VERSION
@@ -631,7 +631,7 @@ pub fn parse_pending_bytes(
             path,
         });
     }
-    // Stage 2 — strict structural parse.
+    // Phase 2 — strict structural parse.
     let plan: PendingPlan = serde_json::from_slice(bytes).map_err(|e| PendingLoadError::Parse {
         path: path.clone(),
         source: e,

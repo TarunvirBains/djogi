@@ -9,7 +9,7 @@
 //! 's `IndexSpec::requires_out_of_transaction` field
 //! captures the operator's intent at descriptor time. The segment
 //! planner laddered the lowered SQL into transactional batches with
-//! non-transactional segments between them; the runner T4 drives each
+//! non-transactional segments between them; the runner drives each
 //! segment with the matching execution mode.
 //! Metadata-only operations ([`SchemaOperation::RenameApp`],
 //! [`SchemaOperation::MoveModelBetweenApps`]) do not emit DDL — only
@@ -27,7 +27,7 @@
 //! Within a plan, operations are ordered to satisfy dependency
 //! constraints:
 //! 1. `AddEnum` runs before any column that references the new type
-//!    (we do not emit cross-references in T3 — column types are raw
+//!    (column types are raw
 //!    SQL — so this is a "be safe" ordering, not a strict requirement).
 //! 2. `AddTable` runs before `AddForeignKey` referencing it.
 //! 3. `RenameTable` runs before any further mutation on the renamed
@@ -76,7 +76,7 @@ pub struct MigrationPlan {
 /// runner opens one transaction and executes every statement inside
 /// it; within a non-transactional segment each statement runs
 /// outside any transaction; within a metadata-only segment no SQL
-/// runs at all (folder moves + ledger UPDATEs happen via T6 / T4).
+/// runs at all (folder moves + ledger UPDATEs happen via `compose` / runner).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
     /// How the runner should execute this segment.
@@ -102,7 +102,7 @@ pub enum SegmentKind {
     /// No SQL runs. Metadata-only operations
     /// ([`SchemaOperation::RenameApp`],
     /// [`SchemaOperation::MoveModelBetweenApps`]) emit comment
-    /// placeholders via T3's SQL emitter so the migration file is
+    /// placeholders via the SQL emitter so the migration file is
     /// self-documenting; the runner reads the segment kind and
     /// dispatches to the metadata path (folder rename + ledger
     /// UPDATE). Carrying the SQL placeholder text lets `migrations
@@ -147,7 +147,7 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
         });
     }
 
-    // T9 fast-path: a delta carrying a `PkTypeFlipGroup` /
+    // PK-flip fast-path: a delta carrying a `PkTypeFlipGroup` /
     // `PkTypeFlipMultiGroup` consumes the entire migration (whole-
     // migration non-transactional, per 7-Zero §6.2 deterministic
     // A). Route to the dedicated multi-segment emitter and ignore

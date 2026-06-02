@@ -36,7 +36,7 @@
 //! bucket so that an FK from `billing.invoices.user_id` to
 //! `users.users.id` resolves cleanly even though the two tables
 //! live in different buckets. Cross-database FKs are rejected by
-//! The differ (T2), not here — the projection's job is purely
+//! The differ, not here — the projection's job is purely
 //! to record the FK target as a (table, column) pair.
 //! # Identity invariants
 //! Three uniqueness rules are enforced; violations return
@@ -644,7 +644,7 @@ where
     // Enums — global namespace, but emitted into every bucket whose
     // models reference them. For now, emit each enum into every
     // bucket that holds at least one model (simple and correct for
-    // 0.1.0; T2's differ can refine if needed). Enforce duplicate
+    // 0.1.0; the differ can refine if needed). Enforce duplicate
     // postgres_type detection.
     let mut enum_map: BTreeMap<&str, EnumSchema> = BTreeMap::new();
     let mut enum_rust_type_for_pg: BTreeMap<&str, &str> = BTreeMap::new();
@@ -719,7 +719,7 @@ where
             // source; index ownership belongs to the parent in v0.1.0.
             // A proxy/parent `table = ...` mismatch is caught at
             // descriptor-lookup time (`T::table_name`), not here
-            // see `docs/guide/proxy.md` (T5.7).
+            // see `docs/guide/proxy.md`.
             if m.proxy_for.is_some() {
                 continue;
             }
@@ -3520,7 +3520,7 @@ mod tests {
     }
 
     // ──
-    // The three substrate fixes shipped with T10 (framework-col
+    // The three substrate fixes (framework-col
     // defaults, FK column SQL type substitution, `Jsonb<T>` recognition
     // in the macros' `rust_type_to_sql`) only had indirect coverage
     // through the live `sync_models_live.rs` integration

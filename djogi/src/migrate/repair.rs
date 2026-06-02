@@ -1707,7 +1707,7 @@ mod tests {
         }
     }
 
-    // ── ResumePlanShapeMismatch display (T3 / #317) ─────────────────────
+    // ── ResumePlanShapeMismatch display (#317) ─────────────────────
 
     #[test]
     fn repair_error_resume_plan_shape_mismatch_display_names_counts() {

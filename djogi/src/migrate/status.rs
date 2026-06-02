@@ -1,4 +1,4 @@
-//! `migrations status` rendering — T6's read-only status command.
+//! `migrations status` rendering — read-only status command.
 //! Walks the migration ledger, groups by `app_label`, sorts by
 //! `applied_at` ASC within an app, and renders an operator-facing
 //! table. Implements the + §6 amendment exit-code matrix:
@@ -97,7 +97,7 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
         for row in app_rows {
             let run_short = format_run_id_short(row.run_id);
             let status_str = row.status.as_db_str();
-            // T7: prefix the line with `[ooo]` when the row was
+            // Prefix the line with `[ooo]` when the row was
             // recorded as out-of-order so operators reading the status
             // listing immediately see the historical drift. The marker
             // is a fixed-width prefix (with a single trailing space)
@@ -141,7 +141,7 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
     }
 }
 
-/// Render the T9 PK-flip warning lines for a pending migration plan.
+/// Render PK-flip warning lines for a pending migration plan.
 /// **Inputs.** The caller passes the [`MigrationPlan`] returned by
 /// [`super::segment::plan_delta`]. When the plan classifies as
 /// `PkTypeFlip`, this fn returns the operator-facing warning lines:
@@ -463,7 +463,7 @@ mod tests {
         assert!(note_line.contains("step 2 of 3 crashed"));
     }
 
-    // ── T7: out-of-order marker ──────────────────────────────────────────
+    // ── Out-of-order marker ──────────────────────────────────────────
 
     #[test]
     fn out_of_order_flag_renders_ooo_marker() {

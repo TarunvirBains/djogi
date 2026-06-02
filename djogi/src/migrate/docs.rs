@@ -1,4 +1,4 @@
-//! Markdown documentation generation — / T8.
+//! Markdown documentation generation — `djogi docs` subcommand.
 //! `djogi docs` renders a per-model reference page from the global
 //! [`crate::descriptor::ModelDescriptor`] inventory. Each model's
 //! generated page lists table identity, the field set with SQL types

@@ -44,11 +44,10 @@
 //! - [`compute_checksum`] — hash a sequence of SQL fragments into the
 //!   `V1:<hex>` form.
 //! - [`LedgerRow`] / [`LedgerStatus`] / [`ExecutionMode`] — typed row
-//!   shape used by the runner T4.
+//!   shape used by the runner.
 //! - [`insert_pending`] / [`mark_applied`] / [`mark_failed`] /
 //!   [`mark_partial`] — row mutation helpers. Each opens its own
-//!   pool connection or runs inside the runner-supplied transaction
-//!   per the dispatch rules in T4.
+//!   pool connection or runs inside the runner-supplied transaction.
 //!   All CRUD helpers take `&mut DjogiContext` so the runner can route
 //!   through either an open transaction (for the per-migration
 //!   transactional segment) or the pool (for the standalone INSERT
@@ -143,7 +142,7 @@ pub(crate) async fn load_full_row_by_version(
 }
 
 /// Constant emitting the `djogi_schema_migrations` DDL. Public so
-/// integration tests and the T6 `init` command can replay it
+/// integration tests and the `init` command can replay it
 /// without reaching into the runner.
 pub const LEDGER_TABLE_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS djogi_schema_migrations (
@@ -203,12 +202,12 @@ pub enum LedgerStatus {
     /// Every segment ran successfully; snapshot was persisted.
     Applied,
     /// Migration represents a baseline of an existing database. Used
-    /// by `djogi migrations baseline` (T8).
+    /// by `djogi migrations baseline`.
     Baseline,
     /// Migration was marked applied without running its SQL — used
     /// when an out-of-band tool already applied the change.
     Faked,
-    /// Migration was rolled back via `djogi migrations down` (T8).
+    /// Migration was rolled back via `djogi migrations down`.
     RolledBack,
     /// Apply failed; no further work attempted. The runner records
     /// `partial_apply_note` for split applies that crashed mid-stream.
@@ -267,7 +266,7 @@ impl ExecutionMode {
 
 /// Owned shape of a `djogi_schema_migrations` row. Used by the runner
 /// to assemble a row before insertion and by the row-CRUD helpers
-/// when reading back. Public so T5 (`repair`) and T8 (`status`) can
+/// when reading back. Public so `repair` and `status` can
 /// share the type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedgerRow {
@@ -290,8 +289,8 @@ pub struct LedgerRow {
     pub execution_time_ms: i64,
     /// `true` when the migration applied later than its sort order
     /// would suggest (e.g. a new dev branch picks up a peer's
-    /// migration after the dev's own newer one). T7 sets this; T4
-    /// always writes `false`.
+    /// migration after the dev's own newer one). The out-of-order
+    /// detection sets this; a fresh normal apply always writes `false`.
     pub out_of_order_flag: bool,
     /// For split-apply migrations: how many non-transactional steps
     /// have completed. `0` for transactional-only migrations.
@@ -712,7 +711,7 @@ pub async fn mark_applied(
 }
 
 /// Mark a ledger row as `applied` while PRESERVING the
-/// `partial_apply_note`. T7's out-of-order detection sets the note
+/// `partial_apply_note`. The out-of-order detection sets the note
 /// at insert time (the conflicting peer + optional override reason);
 /// preserving it on success keeps the audit trail honest about why
 /// the row carries `out_of_order_flag = TRUE` even after it reached
@@ -826,7 +825,7 @@ pub async fn mark_partial(
 /// Read-only projection of a ledger row used by `migrations status`.
 /// Carries enough fields for the operator-facing list output without
 /// over-fetching (the full [`LedgerRow`] is heavier and includes
-/// fields `status` does not surface). T6 owns this projection because
+/// fields `status` does not surface). This projection is shaped
 /// it is shaped specifically for the status command's grouped /
 /// time-sorted output.
 #[derive(Debug, Clone, PartialEq, Eq)]

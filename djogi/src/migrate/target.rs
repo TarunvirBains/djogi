@@ -1,5 +1,5 @@
 //! Filesystem layout helpers for the migration tree.
-//! T6 owns this module. Two responsibilities:
+//! Two responsibilities:
 //! 1. **Path resolution.** Map a `(database, app)` [`BucketKey`] to
 //!    the canonical on-disk paths for that bucket — committed
 //!    migration files under `migrations/<database>/<app>/`, the
@@ -54,7 +54,7 @@ use std::path::{Path, PathBuf};
 use super::naming::{MIGRATION_DOWN_SUFFIX, MIGRATION_FILE_EXT};
 use super::projection::BucketKey;
 
-/// Default committed-migrations directory name. T6 hard-codes this so
+/// Default committed-migrations directory name. Hard-coded so
 /// every consumer agrees on the layout; future configurability lives
 /// behind a `Djogi.toml::migrate.migrations_dir` field which falls
 /// back to this constant.

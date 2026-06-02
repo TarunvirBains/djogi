@@ -1,5 +1,5 @@
 //! Canonical version slug + filename naming for composed migrations.
-//! T6 owns this module. Two responsibilities:
+//! Two responsibilities:
 //! 1. **Version IDs.** A composed migration is named
 //!    `V<YYYYMMDDHHMMSS>__<sanitized-slug>` (e.g.
 //!    `V20260425010203__add_users`). The `V`-prefixed timestamp is the

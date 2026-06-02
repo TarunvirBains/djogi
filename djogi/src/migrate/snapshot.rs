@@ -36,8 +36,8 @@ use super::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
 
 /// Errors surfaced by snapshot load / save. Distinct from
 /// [`crate::error::DjogiError`] because snapshot I/O happens both
-/// inside the runtime (T4 runner) and at build time (`build.rs`,
-/// T6) — `build.rs` cannot depend on the full `DjogiError` machinery.
+/// inside the runtime and at build time (`build.rs`)
+/// — `build.rs` cannot depend on the full `DjogiError` machinery.
 #[derive(Debug)]
 pub enum SnapshotError {
     /// File-system I/O error — read, write, create-dir-all.
@@ -183,7 +183,7 @@ pub fn parse_snapshot_bytes(
 ) -> Result<AppliedSchema, SnapshotError> {
     let bytes = strip_utf8_bom(bytes);
 
-    // Stage 1 — peek at `format_version` only. Use a permissive
+    // Phase 1 — peek at `format_version` only. Use a permissive
     // `serde_json::Value` so the peek succeeds even when the rest of
     // the document carries fields the strict struct deserializer
     // doesn't recognise (the case that matters: an older Djogi
@@ -201,7 +201,7 @@ pub fn parse_snapshot_bytes(
         });
     }
 
-    // Stage 2 — full strict deserialize. Reaching here means
+    // Phase 2 — full strict deserialize. Reaching here means
     // `format_version` is either absent (will fail strict deserialize
     // because the field is required) or matches the expected
     // version.

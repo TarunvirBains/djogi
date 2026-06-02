@@ -1,6 +1,6 @@
 //! Internal schema model — the in-memory representation that
 //! `schema_snapshot.json` round-trips through and that the
-//! differ (T2) compares against.
+//! the schema differ compares against.
 //! The descriptor types in [`crate::descriptor`] use `&'static`
 //! slices everywhere because they are populated at compile time via
 //! `inventory::submit!`. Snapshot types are owned (`String`,
@@ -295,13 +295,13 @@ pub struct ColumnSchema {
     /// projection fills the `Restrict` default when the descriptor
     /// declares no explicit cascade.
     /// **Substrate-mirror field — not consumed by the SQL emitter.**
-    /// T3's SQL emitter reads [`ForeignKeySchema::on_delete`]
+    /// The SQL emitter reads [`ForeignKeySchema::on_delete`]
     /// (the conceptual home for cascade) for both inline and
     /// standalone FK paths. This field is retained on the column for
     /// future non-SQL consumers (e.g. `cargo djogi inspect`,
     /// descriptor-level diagnostics) and as a snapshot record of the
     /// per-column declaration. Removing it would be a substrate
-    /// change beyond T3's charter (dual-source-of-truth design).
+    /// change (dual-source-of-truth design).
     pub on_delete: Option<OnDeleteSchema>,
 
     /// `#[field(outbox = "ignore")]` — exclude from outbox payload.
@@ -880,7 +880,7 @@ pub struct IndexSchema {
 
     /// `true` when the emitter must run this index DDL outside any
     /// transaction (e.g. `CREATE INDEX CONCURRENTLY`). Drives
-    /// segment planning in T3.
+    /// segment planning.
     pub requires_out_of_transaction: bool,
 
     /// Owning table name.
