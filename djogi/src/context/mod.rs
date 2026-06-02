@@ -658,7 +658,7 @@ impl DjogiContext {
                 panic!(
                     "cross-context Punnu access: this Punnu<{}> was not registered \
                      on this DjogiContext's Sassi. Each DjogiContext has its own \
-                     cache registry per cluster 8δ T7.4 (Path X tenant boundary). \
+                     cache registry (Path X tenant boundary). \
                      Acquire the Punnu via ctx.punnu::<T>() on this same context.",
                     std::any::type_name::<T>(),
                 );

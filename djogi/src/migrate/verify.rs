@@ -1653,9 +1653,8 @@ fn diff_indexes(
                 code: "D693".to_string(),
                 severity: VerifySeverity::Info,
                 message: format!(
-                    "index `{name}` declares INCLUDE / partial-predicate; T5 \
-                     verify does not yet project these from the live catalog \
-                     (deferred to T8)",
+                    "index `{name}` declares INCLUDE / partial-predicate; \
+                     verify does not yet project these from the live catalog",
                 ),
                 location: Some(format!("index:{name}")),
             });
@@ -1782,9 +1781,9 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             code: "D690".to_string(),
             severity: VerifySeverity::Info,
             message: format!(
-                "{n} table(s) declare FTS configuration; T5 verify does not \
+                "{n} table(s) declare FTS configuration; verify does not \
                  yet check FTS triggers / generated columns against the live \
-                 catalog (deferred to T8)",
+                 catalog",
                 n = fts_tables.len(),
             ),
             location,
@@ -1803,9 +1802,9 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             code: "D691".to_string(),
             severity: VerifySeverity::Info,
             message: format!(
-                "{n} table(s) declare a partition strategy; T5 verify does \
+                "{n} table(s) declare a partition strategy; verify does \
                  not yet check partition method / column against the live \
-                 catalog (deferred to T8)",
+                 catalog",
                 n = partitioned.len(),
             ),
             location,
@@ -1818,9 +1817,8 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             code: "D692".to_string(),
             severity: VerifySeverity::Info,
             message: format!(
-                "{n} enum type(s) declared; T5 verify does not yet check \
-                 enum variants against the live `pg_enum` catalog (deferred \
-                 to T8)",
+                "{n} enum type(s) declared; verify does not yet check \
+                 enum variants against the live `pg_enum` catalog",
                 n = snapshot.enums.len(),
             ),
             location: None,
