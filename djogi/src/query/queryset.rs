@@ -110,7 +110,7 @@ pub(crate) trait CacheTarget<T>: Send + Sync {
     /// (see [`PunnuCacheTarget`] — the wrapper requires
     /// `T: Cacheable + Clone`); routing the clone through the
     /// trait keeps the `T: Clone` bound off every terminal-method
-    /// signature in `terminal.rs`, preserving the pre-T7.3 surface
+    /// signature in `terminal.rs`, preserving the prior surface
     /// for adopters who never call `.cache(...)`.
     /// `&self` (not `&mut`) because `Punnu::insert` does. Returning
     /// a boxed future keeps the trait object-safe.
@@ -155,9 +155,8 @@ impl<T: crate::types::Cacheable + Clone> CacheTarget<T> for PunnuCacheTarget<T> 
         let punnu = self.punnu.clone();
         let value = value.clone();
         Box::pin(async move {
-            // Per granular plan §3 commit T7.3 risk note
-            // (line 148): "Errors from `insert` (e.g.,
-            // `InsertError::Conflict` under `OnConflict::Reject`)
+            // The cache-insert error contract: "Errors from `insert`
+            // (e.g., `InsertError::Conflict` under `OnConflict::Reject`)
             // MUST NOT abort the fetch; log via `tracing::warn!` and
             // continue. Do NOT add `?` to the insert."
             // The terminal contract is "fetch returned rows;
@@ -179,7 +178,7 @@ impl<T: crate::types::Cacheable + Clone> CacheTarget<T> for PunnuCacheTarget<T> 
 }
 
 /// Lazy query builder. Nothing hits the database until a terminal method
-/// (added in Task 6) is called.
+/// is called.
 /// See the module-level documentation for design rationale, variance, and
 /// short-circuit semantics.
 pub struct QuerySet<T: Model> {
@@ -188,7 +187,7 @@ pub struct QuerySet<T: Model> {
     /// and grows via AND as `filter` / `exclude` / `filter_struct` /
     /// `exclude_struct` are chained.
     /// # Substrate
-    /// As of (T6.9), the queryset's filter
+    /// The queryset's filter
     /// substrate is the [`Q<T>`](crate::query::Q) algebra rather than
     /// the legacy [`Condition`] tree. made SQL emission
     /// walk `Q<T>` directly: legacy [`Condition`] payloads still
@@ -661,12 +660,12 @@ impl<T: Model> QuerySet<T> {
     /// Prefer `T::objects` at call sites — it is the idiomatic
     /// spelling and reads as "all objects of this model (before
     /// filtering)".
-    /// # Proxy default-filter / default-order seeding (4)
+    /// # Proxy default-filter / default-order seeding
     /// Reads [`Model::default_filter_condition`] and
     /// [`Model::default_order_by`] at construction time. Non-proxy
     /// models inherit the default trait impls (returns `None` /
     /// `Vec::new`) so the seeded queryset is structurally identical
-    /// to the pre-T3.4 surface; rustc inlines the `None` / empty `Vec`
+    /// to the prior surface; rustc inlines the `None` / empty `Vec`
     /// returns and folds the seeding step away on the hot path.
     /// Proxy models override the trait methods via the macro, so the
     /// seeded queryset starts with the proxy's lowered SQL fragment
@@ -678,7 +677,7 @@ impl<T: Model> QuerySet<T> {
     /// convention (`queryset.rs` lines 25–28).
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn new() -> Self {
-        // Proxy default filter (8β T3.4) → Q<T> (8γ Stage 2 substrate flip).
+        // Proxy default filter → Q<T> (substrate flip).
         // `T::default_filter_condition` returns `Option<Condition>`; wrap
         // any returned condition in `Q::Condition(c)` so it round-trips
         // through the bridge with identical SQL. Non-proxy models return
@@ -884,7 +883,7 @@ impl<T: Model> QuerySet<T> {
     /// `sassi::BasicPredicate<T>` is deliberately excluded: it can pair a
     /// forged SQL column name with an unrelated Rust extractor.
     /// Legacy `Condition` inputs still produce character-for-character SQL
-    /// parity with the pre-Cluster-8γ `Condition` substrate. `{Model}Filter`
+    /// parity with the legacy `Condition` substrate. `{Model}Filter`
     /// inputs keep `FilterClause` as their single source of truth and lazily
     /// reconstruct portable Q leaves for conservative bool/string equality and
     /// membership clauses; unsupported fields, wrapped/optional shapes, value
@@ -1511,7 +1510,7 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// `GROUP BY GROUPING SETS (...)` — explicit multi-column sets,
-    /// one tuple of columns per set. T11.
+    /// one tuple of columns per set.
     /// Accepts a closure that returns `Vec<Vec<&'static str>>`
     /// outer Vec is the list of sets; inner Vec is the list of
     /// columns in each set. An empty inner Vec is the "grand total"
@@ -1537,7 +1536,7 @@ impl<T: Model> QuerySet<T> {
     /// [`Self::rollup`] / [`Self::cube`] for hierarchical subtotal
     /// patterns.
     /// # Detecting subtotal rows
-    /// Pair with [`crate::query::field::FieldRef::grouping`] (T10)
+    /// Pair with [`crate::query::field::FieldRef::grouping`]
     /// inside `.annotate(...)` to flag which dimensions were rolled
     /// up in each result row:
     /// ```ignore
@@ -1572,7 +1571,7 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
-    // ── Tree-recursive transitions (— T9) ───────────
+    // ── Tree-recursive transitions ───────────
     // `tree_descendants` / `tree_ancestors` consume the queryset and
     // return a [`RecursiveQuerySet<T>`], which has its own filter /
     // ordering / search-mode builders and its own terminals. The
@@ -1914,14 +1913,15 @@ impl<T: Model> QuerySet<T> {
     }
 }
 
-// .3 — manual `.not_deleted` helper for `SoftDeletable`
+// Manual `.not_deleted` helper for `SoftDeletable`
 // models.
 // **Spec lock (line 971, RESOLVED 2026-05-03, lens, locked):**
 // automatic default-filter composition is deferred to
-// once the `Q<T>` substrate lands. T2.3 ships only the manual helper
-// adopters must call `.not_deleted` explicitly on each
-// `objects` chain that should exclude soft-deleted rows. 8γ will
-// replace this method with auto-composition under the new substrate.
+// once the `Q<T>` substrate lands. Today only the manual helper
+// ships — adopters must call `.not_deleted` explicitly on each
+// `objects` chain that should exclude soft-deleted rows. A later
+// change will replace this method with auto-composition under the
+// new substrate.
 // **Design notes:**
 // 1. The bound is `M: crate::SoftDeletable` (re-exported through
 // `crate::compose`). The trait already implies `M: Model` via its
@@ -1936,7 +1936,7 @@ impl<T: Model> QuerySet<T> {
 // means there's no compile-time guarantee that
 // `T::Fields::default.deleted_at` exists at the type level.
 // - The column name reads from `<M as SoftDeletable>::COLUMN`
-// (defaults to `"deleted_at"`; T2.6 added the trait const).
+// (defaults to `"deleted_at"` via the trait const).
 // Reading via the trait surface lets a future column-override
 // path (e.g. `#[model(soft_deletable(column = "trashed_at"))]`)
 // flow through `.not_deleted` automatically — the helper is
@@ -1949,10 +1949,10 @@ impl<T: Model> QuerySet<T> {
 impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
     /// Filter to rows where `deleted_at IS NULL` — the manual
     /// soft-delete exclusion helper.
-    /// **Manual today; auto-composed in 8γ T6.** 6 ships
-    /// this helper only; adopters who want soft-deleted rows excluded
-    /// must call `.not_deleted` on every `objects` chain. Phase
-    /// 8γ T6 will land automatic default-filter composition once the
+    /// **Manual today; auto-composed under the future substrate.** This
+    /// ships the manual helper only; adopters who want soft-deleted rows excluded
+    /// must call `.not_deleted` on every `objects` chain. A future
+    /// substrate flip will land automatic default-filter composition once the
     /// `Q<T>` substrate is in place — at which point this helper
     /// becomes redundant on the default code path. The method name
     /// will likely be retained as a no-op or as the explicit reverse
@@ -1981,7 +1981,7 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
         // `T::Fields` ZST and would also pin the column type at
         // compile time, defeating the convention-by-name model the
         // `SoftDeletable` trait uses for its getter).
-        // 6: read the column name through `<M as
+        // Read the column name through `<M as
         // SoftDeletable>::COLUMN` rather than a hard-coded `"deleted_at"`
         // string. The trait const defaults to `"deleted_at"` (canonical
         // case) but a future per-model rename can override the const
@@ -1992,7 +1992,7 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
             crate::query::condition::LookupOp::IsNull,
             crate::query::condition::FilterValue::Null,
         );
-        // : route through the new `and_q_into_q` helper.
+        // Route through the new `and_q_into_q` helper.
         // `Condition` lifts to `Q::Condition(_)` via the sealed `IntoQ`
         // impl, preserving the legacy SQL emission shape this caller
         // depends on.
@@ -2001,11 +2001,11 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
     }
 }
 
-// ── 3 — `.cache(&punnu)` opt-in modifier ─────────────────────
+// ── `.cache(&punnu)` opt-in modifier ─────────────────────
 // Bound `T: Model + sassi::Cacheable` is split into a dedicated impl
 // block for the same reason `not_deleted` lives in its own block: the
 // extra trait bound is opt-in. Models that don't go through
-// `#[derive(Model)]` (and therefore don't pick up T7.2's auto-emitted
+// `#[derive(Model)]` (and therefore don't pick up the auto-emitted
 // `Cacheable` impl) keep the existing `impl<T: Model> QuerySet<T>`
 // surface unchanged — `.cache(...)` simply doesn't compile for them,
 // matching the spec contract that the cache modifier is opt-in.
@@ -2018,8 +2018,6 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
 // re-export at `djogi/src/types.rs` is `pub use sassi::cacheable::Cacheable;`
 // so the bound resolves byte-identically.
 // Spec anchors: §664 (`.cache(&punnu)` modifier; opt-in).
-// Plan §374. Granular plan
-// `cluster-8delta-granular.md` §3 commit T7.3.
 impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     /// Internal helper: stamp this QuerySet with a type-erased Punnu cache
     /// target so the next terminal method sends each materialised row
@@ -2274,12 +2272,12 @@ impl_into_distinct_columns_djogi_tuple!(A, B, C, D);
 impl_into_distinct_columns_djogi_tuple!(A, B, C, D, E);
 impl_into_distinct_columns_djogi_tuple!(A, B, C, D, E, F);
 
-// ── 4 — into_basic_predicate: conservative Q<T> → BasicPredicate<T> ─────
+// ── into_basic_predicate: conservative Q<T> → BasicPredicate<T> ─────
 // Placed on `impl<T: Model> QuerySet<T>` (the base block) because extraction
 // is purely structural — it walks the Q<T> condition tree without any
-// DeltaSyncCacheable behaviour. The T8.3 stub lived in the
+// DeltaSyncCacheable behaviour. The stub previously lived in the
 // DeltaSyncCacheable-bounded block because it was a placeholder co-located
-// with refresh_into. T8.4 moves the real implementation to the correct bound.
+// with refresh_into. The real implementation now lives on the correct bound.
 // Visibility: `pub` — adopters who want to inspect whether a QuerySet is
 // reducible before calling refresh_into need to call this. It is not part of
 // the everyday filter API (that is QuerySet::filter / filter_struct), but it
@@ -2493,8 +2491,8 @@ impl<T: crate::model::Model> QuerySet<T> {
 // `T: Model + DeltaSyncCacheable + Send + Sync + 'static`. Widening any
 // existing block's bound would cascade to methods that have no need of
 // `DeltaSyncCacheable`, breaking the clean opt-in layering.
-// `into_basic_predicate` was previously stubbed here in T8.3 but has been
-// moved to `impl<T: Model> QuerySet<T>` in T8.4 — extraction is purely
+// `into_basic_predicate` was previously stubbed here but has been
+// moved to `impl<T: Model> QuerySet<T>` — extraction is purely
 // structural (no DeltaSyncCacheable behaviour needed).
 // Path-routing note (non-emitted code):
 // Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
@@ -2518,7 +2516,7 @@ where
     /// value, and the QuerySet's trusted BasicPredicate filter. SQL-only
     /// predicates return `Err((self, PortablePredicateError))` before any
     /// subscription starts. The fetcher NEVER captures `&mut DjogiContext`.
-    /// # T8.5 — real SQL path
+    /// # Real SQL path
     /// The fetcher's `fetch_delta` body now issues real SQL on every tick.
     /// Each tick acquires a fresh connection from the pool, constructs a
     /// `DjogiContext` with the captured `AuthContext` (auth-locked-to-
@@ -2526,7 +2524,7 @@ where
     /// `SELECT <columns> FROM <table> WHERE <watermark_col> >= $1
     /// [OR id IN ($2, …)] ORDER BY <watermark_col>` for delta ticks.
     /// Full baseline ticks with a portable filter push that filter into SQL.
-    /// # T8.8 — refresh knobs (spec §674)
+    /// # Refresh knobs (spec §674)
     /// The returned `DeltaRefreshHandle<T>` exposes two adopter-facing knobs
     /// from sassi's native API — no djogi-side wrappers required:
     /// - **`with_eviction_recovery(bool)`** — when enabled, LRU evictions of
@@ -2558,7 +2556,7 @@ where
     /// `QuerySet::none` is preserved as a structural empty subscription:
     /// update ticks return empty deltas without querying the source table.
     /// # Interval placeholder
-    /// The 30 s interval is a placeholder. T8.6 may add a builder for
+    /// The 30 s interval is a placeholder. A future change may add a builder for
     /// caller-supplied interval; see spec §672 review.
     // `clippy::result_large_err` is silenced for the same reason as
     // [`QuerySet::cache`]: the `Err` variant carries the original queryset
@@ -2646,7 +2644,7 @@ where
             outbox_watermark: std::sync::Mutex::new(None),
             _model: std::marker::PhantomData,
         };
-        // [CHECK] Default 30s interval is a placeholder; T8.6 may add a
+        // [CHECK] Default 30s interval is a placeholder; a future change may add a
         // builder for caller-supplied interval. Pin via spec §672 review.
         let interval = std::time::Duration::from_secs(30);
         punnu.start_delta_refresh(interval, fetcher)
@@ -2712,7 +2710,7 @@ mod tests {
         }
     }
 
-    // (T6.9): `qs.condition` is `Q<T>` post-flip.
+    // `qs.condition` is `Q<T>` post-flip.
     // Tests that pattern-match on the legacy `Condition` shape lower
     // through the bridge first. After this bridge is a
     // compatibility oracle for legacy parity, not the production SQL
@@ -2785,7 +2783,7 @@ mod tests {
         ));
     }
 
-    // ── T6.7 — `IntoQ<T>` + `filter_struct(Q<T>)` + `exclude_struct(Q<T>)` ────
+    // ── `IntoQ<T>` + `filter_struct(Q<T>)` + `exclude_struct(Q<T>)` ────
     // Locks the substrate-aware filter API: trusted `IntoQ<T>` impls
     // (Q<T> directly, PortablePredicate<T>, or `{Model}Filter`
     // through the macro-emitted bridge) compose at the `Q<T>` layer.
@@ -2872,7 +2870,7 @@ mod tests {
         }
     }
 
-    /// **T6.9 substrate-flip lock.** `QuerySet<T>::condition` is `Q<T>`
+    /// **Substrate-flip lock.** `QuerySet<T>::condition` is `Q<T>`
     /// post-flip, not `Condition`. Type-level assertion: a fresh
     /// queryset's condition must be a `Q<T>` shape and lower to
     /// `Condition::True` through the bridge.
@@ -2921,7 +2919,7 @@ mod tests {
     // - User `.order_by(...)` calls APPEND to the seeded ordering
     // (matches the existing queryset-level append convention).
     // - The non-proxy `Fake` model above remains structurally identical
-    // to its pre-T3.4 shape — no `RawSql` leakage when the trait
+    // to its prior shape — no `RawSql` leakage when the trait
     // default impls (`None` / `Vec::new`) are used.
 
     /// A proxy-shaped model. The hand-rolled impl overrides
@@ -3023,7 +3021,7 @@ mod tests {
     /// `QuerySet::new` seeds `condition` from
     /// `Model::default_filter_condition` when the proxy override
     /// returns `Some(...)`.
-    /// (T6.9): `qs.condition` is `Q<T>` — lower
+    /// `qs.condition` is `Q<T>` — lower
     /// through the bridge to assert the legacy shape the SQL emitter
     /// actually sees.
     #[test]
@@ -3057,7 +3055,7 @@ mod tests {
     /// User `.filter(...)` AND-composes with the seeded default filter
     /// the proxy condition stays as the prefix and the user's leaf is
     /// appended via the standard `Condition::and` flatten path.
-    /// (T6.9): `qs.condition` is `Q<T>` — lower
+    /// `qs.condition` is `Q<T>` — lower
     /// through the bridge so the assertion still inspects the shape
     /// the SQL emitter renders.
     #[test]
@@ -3216,12 +3214,12 @@ mod tests {
         }
     }
 
-    /// The non-proxy `Fake` model is structurally unchanged by T3.4
+    /// The non-proxy `Fake` model is structurally unchanged —
     /// `default_filter_condition` returns `None` (default impl) and
     /// `default_order_by` returns the empty `Vec`, so the seeded queryset
-    /// is identical to the pre-T3.4 shape (`Condition::True` + empty
+    /// is identical to the prior shape (`Condition::True` + empty
     /// ordering).
-    /// (T6.9): the substrate is now `Q<T>`. For
+    /// The substrate is now `Q<T>`. For
     /// `default_filter_condition == None`, `QuerySet::new` seeds
     /// `Q::always_true` (== `Q::Portable(True)`), which
     /// the bridge lowers to the legacy `Condition::True` — preserving
@@ -3236,7 +3234,7 @@ mod tests {
         assert!(qs.ordering.is_empty());
     }
 
-    // ── T11: group_by_region / count_by_region type-dispatch tests ────────────
+    // ── group_by_region / count_by_region type-dispatch tests ────────────
     // These tests confirm the entry-point signatures compile and return the
     // expected type shapes. The SQL emission shape is tested in sql.rs.
 
@@ -3540,7 +3538,7 @@ mod tests {
         // If we got here without a deadlock or panic, the Once guard is correct.
     }
 
-    // ── T12: cluster_by_proximity / bucket_by_cell type-dispatch tests ────────
+    // ── cluster_by_proximity / bucket_by_cell type-dispatch tests ────────
 
     /// `cluster_by_proximity` returns `GroupedQuerySet<T, ClusterId>`.
     #[cfg(feature = "spatial")]
@@ -3571,7 +3569,7 @@ mod tests {
         );
     }
 
-    // ── T8.4 — into_basic_predicate: conservative Q<T>→BasicPredicate<T> walk ──
+    // ── into_basic_predicate: conservative Q<T>→BasicPredicate<T> walk ──
     // These tests set `qs.condition` directly (via `pub(crate)` access) to
     // exercise every reducible and unreducible shape. The integration test
     // (`basic_predicate_extraction.rs`) covers the externally
