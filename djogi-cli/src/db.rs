@@ -184,6 +184,7 @@ async fn run_reset(
             pk_flip_join_table_option: config.migrate.pk_flip_join_table_option,
         },
         audit_pool,
+        runner_identity: None, // TODO(Stage 4): wire --node-id / --single-node-dev from CLI flags
     };
     match reset_app_database(req).await {
         Ok(report) => {
