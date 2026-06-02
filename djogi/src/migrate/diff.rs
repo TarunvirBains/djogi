@@ -4,7 +4,7 @@
 //! # Operation taxonomy
 //! Every difference between two schemas is encoded as one or more
 //! [`SchemaOperation`] entries with a stable shape so the SQL emitter
-//! (T3) can lower them deterministically. Operations come in three
+//! the SQL emitter can lower them deterministically. Operations come in three
 //! categories:
 //! - **Table-level**: `AddTable` / `DropTable` / `RenameTable` /
 //!   `MoveModelBetweenApps`.
@@ -74,7 +74,7 @@ pub struct SchemaDelta {
     pub classification: Classification,
 }
 
-/// One structural change between two schemas. The SQL emitter (T3)
+/// One structural change between two schemas. The SQL emitter
 /// lowers each variant into one or more `up`/`down` statements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchemaOperation {
@@ -108,7 +108,7 @@ pub enum SchemaOperation {
     },
 
     /// Column type / nullability / default changed. The differ
-    /// records the full new column shape so T3 can emit the right
+    /// records the full new column shape so the SQL emitter can produce the right
     /// `ALTER COLUMN` sequence.
     AlterColumn {
         table: String,
@@ -126,7 +126,7 @@ pub enum SchemaOperation {
     /// Foreign key dropped. The column may still exist; only the
     /// `REFERENCES` constraint is removed. The full
     /// [`ForeignKeySchema`] (including the cascade discipline that
-    /// existed on the old side) is carried so T3 can emit a
+    /// existed on the old side) is carried so the SQL emitter can produce a
     /// reversible rollback that restores the original `FOREIGN KEY
     /// ... REFERENCES ... ON DELETE ...` clause without operator
     /// hand-edit.
@@ -141,12 +141,12 @@ pub enum SchemaOperation {
     /// Index added.
     AddIndex(IndexSchema),
 
-    /// Index dropped — carries the full [`IndexSchema`] so T3's
+    /// Index dropped — carries the full [`IndexSchema`] so the
     /// segment planner can preserve the old index's
     /// `requires_out_of_transaction`, `extension_dependency`, and
     /// uniqueness shape when laddering the drop into the right
     /// segment kind. Dropping just the name (the previous shape)
-    /// forced T3 to re-derive metadata it shouldn't need to recover.
+    /// forced the emitter to re-derive metadata it shouldn't need to recover.
     DropIndex(IndexSchema),
 
     /// Table-level `EXCLUDE` constraint added on an existing table.
@@ -225,15 +225,15 @@ pub enum SchemaOperation {
 
     /// PK type changed within the supported flip pairs (HeerId ↔
     /// HeerIdRecencyBiased, RanjId ↔ RanjIdRecencyBiased). Triggers
-    /// `Classification::PkTypeFlip` and is the entry point for T9's
-    /// expand/contract orchestration.
+    /// `Classification::PkTypeFlip` and is the entry point for the
+    /// PK-flip expand/contract orchestration.
     /// **Production lifecycle.** The per-table flip op is emitted by
     /// the per-table differ ([`diff_pk_in_table`]). At the bucket-walk
     /// finalisation step ([`diff_bucket_maps`]) every per-table
     /// `PkTypeFlip` is **promoted** into a single
     /// [`SchemaOperation::PkTypeFlipGroup`] for that bucket — the
     /// group payload carries the parent table plus every dependent
-    /// child / self-FK / join-table / partitioned-parent shape so T9's
+    /// child / self-FK / join-table / partitioned-parent shape so the
     /// segment planner has the full transitive closure available
     /// without re-walking the schema. The standalone `PkTypeFlip`
     /// variant survives for unit-test reach-in fixtures and for
@@ -249,7 +249,7 @@ pub enum SchemaOperation {
     /// Aggregated PK-type flip across one parent table and every
     /// dependent child whose FK references the parent's PK. Emitted
     /// by [`diff_bucket_maps`] from per-table [`PkTypeFlip`] ops at
-    /// finalisation time. T9's segment planner consumes this single
+    /// finalisation time. The segment planner consumes this single
     /// op to emit the multi-stage flip plan (preparation, autofill
     /// trigger install, backfill, concurrent unique index, NOT NULL
     /// proof, cutover) verbatim from the HeeRanjID playbook.
@@ -369,7 +369,7 @@ pub enum SchemaOperation {
 
 /// Detailed shape of a column-level alteration.
 /// Keeps the differ's [`SchemaOperation::AlterColumn`] entry compact
-/// while letting T3 dispatch on a typed enum rather than diffing
+/// while letting the SQL emitter dispatch on a typed enum rather than diffing
 /// the full [`ColumnSchema`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ColumnChange {
@@ -1239,7 +1239,7 @@ pub struct PkFlipPartitionedMeta {
 /// `Unsupported`. `PkTypeFlip` is orthogonal: any delta carrying a
 /// `PkTypeFlip` operation classifies as `PkTypeFlip`, but the
 /// `co_destructive` / `co_lossy` flags surface co-existing severity
-/// so T9's orchestration knows whether the delta also drops a
+/// so the PK-flip orchestration knows whether the delta also drops a
 /// column / index / FK or tightens a nullability — letting the
 /// `--allow-destructive` gate fire even when the headline
 /// classification is the flip.
@@ -1275,11 +1275,11 @@ pub enum Classification {
     /// edit the migration.
     Unsupported { reason: String },
 
-    /// At least one PK-type flip. Routes through T9's
+    /// At least one PK-type flip. Routes through the PK-flip
     /// expand/contract orchestration rather than the standard
     /// transactional apply.
     /// `co_destructive` / `co_lossy` surface co-existing severity so
-    /// T9's gate logic can apply `--allow-destructive` semantics
+    /// the gate logic can apply `--allow-destructive` semantics
     /// even when the headline classification is the flip. Without
     /// these flags a delta containing both `PkTypeFlip` and
     /// `DropColumn` would silently bypass the destructive gate.
@@ -1368,7 +1368,7 @@ pub fn diff_bucket_maps(
     before: &BTreeMap<BucketKey, AppliedSchema>,
     after: &BTreeMap<BucketKey, AppliedSchema>,
 ) -> Result<Vec<SchemaDelta>, DiffError> {
-    // Stage 1 — pre-scan for cross-bucket moves driven by
+    // Phase 1 — pre-scan for cross-bucket moves driven by
     // `TableSchema.moved_from_app`. A model with `moved_from_app =
     // Some("billing")` in the after-schema, whose table name was
     // present in the before-schema's `(database, "billing")` bucket,
@@ -1439,7 +1439,7 @@ pub fn diff_bucket_maps(
         });
 
         // Emit `MoveModelBetweenApps` on the DESTINATION bucket so the
-        // operation lands once and on the side T6's compose anchors
+        // operation lands once and on the side compose anchors
         // its `git mv` against.
         for (src_bucket, dest_bucket, model) in &moves {
             if dest_bucket == &bucket {
@@ -1453,7 +1453,7 @@ pub fn diff_bucket_maps(
             }
         }
 
-        // T9 finalisation: aggregate every per-table `PkTypeFlip` op
+        // PK-flip finalisation: aggregate every per-table `PkTypeFlip` op
         // into a `PkTypeFlipGroup` enriched with FK cascade /
         // self-FK / join-table / cycle / partition metadata. The
         // grouping uses the new schema (`a`) as the source of truth
@@ -2440,7 +2440,7 @@ fn diff_pk_in_table(
         return;
     }
     // Anything else in the PK changed — surface as Unsupported so
-    // the operator hand-rolls a migration. T9's expand/contract
+    // the operator hand-rolls a migration. The PK-flip expand/contract
     // playbook only covers the asc↔desc flips today; other PK
     // transitions don't have a generated playbook.
     ops.push(SchemaOperation::Unsupported {
@@ -2575,7 +2575,7 @@ fn diff_indexes(
                     && bi.extension_dependency == ai.extension_dependency;
                 if !logical_eq {
                     // Drop + Add carries the full IndexSchema for both
-                    // sides so T3's segment planner knows whether the
+                    // sides so the segment planner knows whether the
                     // dropped index was non-transactional, unique,
                     // constraint-backed, or carried an extension
                     // dependency — without that metadata the planner
