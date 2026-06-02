@@ -94,8 +94,8 @@ pub use state::{INSTALL_SQL, LivePlanRow, PlanStatus, record_failure, update_sta
 /// table — so populated crud-log mirrors classify the same way as
 /// the application database.
 /// Defined here (rather than in [`crate::config`]) because
-/// has not yet shipped the logging profile config plumbing; T5 needs
-/// the type to drive its `ClassifyContext`. When the logging
+/// has not yet shipped the logging profile config plumbing; the classifier
+/// needs this type to drive its `ClassifyContext`. When the logging
 /// substrate lands, this enum becomes the canonical home and config
 /// parsing maps the `[logging] profile = "..."` string into one of
 /// these variants.

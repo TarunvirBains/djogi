@@ -97,7 +97,7 @@ ALTER TABLE djogi_live_plans
 
 /// Lifecycle states for a live-plan row. Mirrors the SQL CHECK
 /// constraint on `djogi_live_plans.status` byte-for-byte.
-/// State transitions are operator-driven via T10's CLI; the runner
+/// State transitions are operator-driven via the CLI; the runner
 /// never auto-advances past an operator gate. `Failed`,
 /// `FailedTerminal`, and `Abandoned` are terminal — the runner refuses
 /// to advance past them. `FailedRetriable` indicates a transient
@@ -476,7 +476,7 @@ pub async fn stamp_completed_at(
 }
 
 /// Update a row's lifecycle status. The CLI's state-machine
-/// transitions are enforced at the operator surface (T10); this
+/// transitions are enforced at the operator surface; this
 /// helper writes the new value verbatim so transitions remain
 /// observable in the row regardless of which CLI command performed
 /// them.

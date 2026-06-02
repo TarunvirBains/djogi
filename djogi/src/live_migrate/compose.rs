@@ -252,7 +252,7 @@ pub async fn compose_live_plans(
             plan_id.to_string(),
             slug.clone(),
             OnlineSafetyClassification::ExpandContract,
-            Vec::new(), // Steps populated by executor in Stage 3
+            Vec::new(), // Steps populated by the plan executor at run time
         );
 
         // Write plan file to disk

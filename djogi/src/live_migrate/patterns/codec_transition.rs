@@ -9,7 +9,7 @@
 //! [`SchemaOperation`], this pattern accepts an
 //! [`AlterColumn`](SchemaOperation::AlterColumn) carrying
 //! [`ColumnChange::ChangeType`] whose `from`/`to` are interpreted by
-//! the dispatcher (T10) as the old / new codec identifiers. The step
+//! the dispatcher as the old / new codec identifiers. The step
 //! graph is a structural mirror of
 //! [`replacement_column`](super::replacement_column) — the
 //! semantically-meaningful difference is the per-row conversion the

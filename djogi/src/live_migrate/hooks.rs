@@ -37,7 +37,7 @@
 //! (`<column>_new`) and the codec transition function is recorded as
 //! `<from_codec>-><to_codec>` for the dual-write hook.
 //! Pattern emitters that wish to register additional hooks must use
-//! one of the two grammars above; T9 does not currently extend the
+//! one of the two grammars above; the parser currently does not extend
 //! parser past `dual_read` / `dual_write` because forbids
 //! business-logic branching.
 //! # What this module does NOT do
@@ -152,7 +152,7 @@ const CODEC_MARKER: &str = "codec";
 /// Suffix appended to the legacy column name to derive the shadow
 /// column name. Convention pinned by
 /// [`crate::live_migrate::patterns::replacement_column`] and reused
-/// by [`crate::live_migrate::patterns::codec_transition`]; T9 follows
+/// by [`crate::live_migrate::patterns::codec_transition`]; the codec-transition pattern follows
 /// the same convention so the snapshot's `shadow_column` field is
 /// machine-derivable from the hook ID alone.
 const SHADOW_SUFFIX: &str = "_new";
@@ -290,7 +290,7 @@ pub fn active_hooks_at_step(plan: &LivePlan, step_ordinal: u32) -> Result<Active
 // ── Side-effect suppression flag consumer ─────────────────────────────
 
 /// Returns `true` if the current Postgres session has the
-/// live-migrate side-effect suppression flag active. Set by T7's
+/// live-migrate side-effect suppression flag active. Set by the
 /// chunk-transaction wrapper via `SET LOCAL`; this function reads
 /// it back via `current_setting('<name>', true)` (the second argument
 /// `true` is `missing_ok` — Postgres returns NULL rather than erroring
@@ -299,7 +299,7 @@ pub fn active_hooks_at_step(plan: &LivePlan, step_ordinal: u32) -> Result<Active
 /// fan-out to short-circuit work that would duplicate or contradict
 /// the backfill itself.
 /// The GUC name is shared with [`SIDE_EFFECT_SUPPRESSION_TXN_LOCAL`]
-/// so producer (T7) and consumer (this function) cannot drift.
+/// so the setter and this reader cannot drift.
 pub async fn side_effects_suppressed(ctx: &mut DjogiContext) -> Result<bool, HookError> {
     let sql = format!(
         "SELECT current_setting('{name}', true)",

@@ -105,7 +105,7 @@ pub struct ClassifyContext<'a> {
     /// table — letting adopters fast-path columns whose default
     /// expression Djogi could not classify deterministically.
     /// Spec: §3 / §820 of the v3 plan. Populated by compose
-    /// from `FieldDescriptor::default_volatility_override` (T3, PR 1).
+    /// from `FieldDescriptor::default_volatility_override`.
     pub default_volatility_overrides: &'a BTreeMap<(String, String), DefaultVolatility>,
 }
 
@@ -430,7 +430,7 @@ fn classify_add_column(
     };
     // Default is present — same volatility/override pipeline applies
     // regardless of nullability. Adopter override wins over the static
-    // table; T3 enforces that overrides only attach to fields with a
+    // table; the macro enforces that overrides only attach to fields with a
     // default expression, so the lookup is always meaningful when
     // present.
     if let Some(override_volatility) = ctx
@@ -855,8 +855,7 @@ fn classify_validation_against_threshold(ctx: &ClassifyContext<'_>) -> OnlineSaf
 ///   On a populated table the lock holds for the duration of the
 ///   build; unknown-row-count takes the conservative path.
 ///   Hash indexes without concurrent are refused at compose time (a
-///   separate validation entry point handles the refusal — out of T5
-///   scope).
+///   separate validation entry point handles the refusal).
 fn classify_index_addition(
     index: &IndexSchema,
     ctx: &ClassifyContext<'_>,

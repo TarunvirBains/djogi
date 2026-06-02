@@ -117,7 +117,7 @@ impl Pattern for UniqueViaIndex {
 /// dispatcher uses to mark a replacement build, return the legacy
 /// index name to drop. Returns `None` for plain unique-add operations
 /// that have no legacy counterpart. The convention is documented at
-/// the dispatch layer (T10); the pattern only needs the suffix-strip
+/// the dispatch layer; the pattern only needs the suffix-strip
 /// rule to know whether the cleanup step belongs in the plan.
 fn legacy_replacement_target(index: &IndexSchema) -> Option<String> {
     let name = &index.name;

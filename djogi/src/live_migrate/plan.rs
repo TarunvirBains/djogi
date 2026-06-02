@@ -5,7 +5,7 @@
 //! Two artefacts back every live migration:
 //! 1. **The plan file** — an immutable JSON document on disk that
 //!    encodes the *definition* of the rollout: which steps run, in
-//!    which order, with which parameters. Generated once by T8's
+//!    which order, with which parameters. Generated once by the
 //!    pattern emitters, never edited after `djogi live run` opens it.
 //! 2. **The DB row** — a mutable row in `djogi_live_plans` that tracks
 //!    the *runtime state*: where the operator is in the step graph,
@@ -22,8 +22,7 @@
 //! ([`StepKind::ValidateBackfill`], [`StepKind::CutoverReads`],
 //! [`StepKind::FinalizeConstraints`]) split sequential execution from
 //! operator-driven phases — the runner pauses and surfaces the gate;
-//! the operator drives the next-step transition explicitly via the CLI
-//! (T10).
+//! the operator drives the next-step transition explicitly via the CLI.
 //! # Stability
 //! [`StepKind`], [`PlanClassification`], and [`StepParameters`] are
 //! [`#[non_exhaustive]`] so future patterns / classifications can land
@@ -39,7 +38,7 @@ use crate::types::HeerId;
 
 /// One step in a live migration plan. Each variant maps to one row in
 /// the on-disk plan file's `steps` array; the runner dispatches each
-/// step to the matching executor in T7+.
+/// step to the matching executor.
 /// `#[non_exhaustive]` because the v3 plan §3 explicitly anticipates
 /// new step kinds landing in later phases (e.g. a future
 /// `RebuildIndexConcurrently` pattern). Adding a variant must not break
@@ -252,10 +251,10 @@ impl PlanClassification {
 /// Per-step parameters. Each variant carries the smallest payload the
 /// matching executor needs; variant tags align with [`StepKind`] so the
 /// runner can pair `Step.kind` with `Step.parameters` by enum tag.
-/// `#[non_exhaustive]` because T8's pattern emitters will refine which
+/// `#[non_exhaustive]` because the pattern emitters may refine which
 /// fields each variant carries. The serde tag is the kind name in
 /// `snake_case`; all internal field names follow the same convention so
-/// JSON consumers (T11 visage admin) can decode without per-variant
+/// JSON consumers (visage admin) can decode without per-variant
 /// per-field rename annotations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -266,7 +265,7 @@ pub enum StepParameters {
     /// split on `;`.
     ExpandSchema { sql_segments: Vec<String> },
     /// Hook IDs to register with the runtime when the compatibility
-    /// window opens. Hook resolution happens in T9; this step records
+    /// window opens. Hook resolution happens at run time; this step records
     /// the IDs only.
     BeginCompatibilityWindow { hooks: Vec<String> },
     /// Chunked backfill description. `predicate_template` must be an
