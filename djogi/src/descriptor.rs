@@ -166,8 +166,8 @@ pub enum FieldSqlType {
     /// is a typed `GeographySubtype` so the migration differ can
     /// compare subtypes by discriminant — subtype renames or new variants
     /// do not surface as spurious migration diffs.
-    /// Shipped with `Point` hardcoded in `Display`; T6 freezes the
-    /// final descriptor shape that will consume.
+    /// Shipped with `Point` hardcoded in `Display`; the descriptor
+    /// shape is frozen for the consumer.
     Geography {
         subtype: GeographySubtype,
         srid: u32,
@@ -895,7 +895,7 @@ mod tests {
         RangeSubtypeKind, field_descriptor, migration_shape::MigrationShape, model_descriptor,
     };
 
-    // ── T6: GeographySubtype Display ─────────────────────────────────────────
+    // ── GeographySubtype Display ─────────────────────────────────────────
 
     /// Regression guard: `Geography { subtype: Point, srid: 4326 }`
     /// must emit exactly `"geography(Point, 4326)"` — unchanged from
@@ -1125,7 +1125,7 @@ mod tests {
         assert!(!spec.nulls_not_distinct);
     }
 
-    // ── T1 (v3) — new descriptor-shape assertions ───────────────
+    // ── New descriptor-shape assertions ───────────────
 
     #[test]
     fn index_kind_has_three_variants() {
@@ -1362,7 +1362,7 @@ mod tests {
         } = spec;
     }
 
-    // ── T4 (v3) — index_name deterministic helper ──────────────
+    // ── index_name deterministic helper ──────────────
 
     #[test]
     fn index_name_short_non_unique_is_verbatim() {
@@ -1576,7 +1576,7 @@ mod tests {
         assert!(shape.columns[1].not_null);
     }
 
-    // ── T11: has_gist_on_geography helper ────────────────────────────────────
+    // ── has_gist_on_geography helper ────────────────────────────────────
 
     // Static descriptors used by has_gist_on_geography tests.
     // `ModelDescriptor` requires `'static` slices for `fields` and `indexes`,
@@ -1812,7 +1812,7 @@ mod tests {
 
     /// `default_filter_sql` defaults to `None` for every non-proxy descriptor.
     /// Mirror of `proxy_for_field_defaults_to_none` — the two fields ship
-    /// together in T3.1 and share the no-op default convention.
+    /// together and share the no-op default convention.
     #[test]
     fn default_filter_sql_field_defaults_to_none() {
         static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
@@ -1848,7 +1848,7 @@ mod tests {
     /// `computed_fields` defaults to the empty slice for every model
     /// without `#[computed(sql = "...")]` attributes — the common case.
     /// Mirrors the proxy_for / default_filter_sql default-shape tests
-    /// in T3.1: locks the struct-layout-stability convention so adding
+    /// Locks the struct-layout-stability convention so adding
     /// `computed_fields` does not break existing descriptor literal
     /// sites that go through the `model_descriptor(...)` factory spread.
     #[test]
@@ -1937,8 +1937,8 @@ mod protected_field_metadata_tests {
         assert_eq!(pfm.retention, RetentionLabel::Extended);
     }
 
-    /// `Default` produces the neutral "ordinary field" state. T3+ relies on
-    /// these defaults when the macro elides unset attribute knobs.
+    /// `Default` produces the neutral "ordinary field" state. The macro
+    /// relies on these defaults when eliding unset attribute knobs.
     #[test]
     fn default_protected_field_metadata_is_neutral() {
         let pfm = ProtectedFieldMetadata::default();
@@ -1995,8 +1995,8 @@ mod protected_field_metadata_tests {
     }
 
     /// `FieldDescriptor` accepts both `protected: None` (the default that
-    /// the macro emits today) and `protected: Some(_)` (the shape T3 will
-    /// emit once `#[field(protected(...))]` is wired). A literal-level
+    /// the macro emits today) and `protected: Some(_)` (emitted when
+    /// `#[field(protected(...))]` is wired). A literal-level
     /// smoke test prevents accidental shape regressions.
     #[test]
     fn field_descriptor_accepts_protected_none_and_some() {
@@ -2179,7 +2179,7 @@ pub struct FieldDescriptor {
 
     /// `true` when this column's `ForeignKey<T>` / `OneToOneField<T>` target
     /// is the same model the field belongs to — i.e. a *self-FK* edge.
-    /// (T8) — metadata-only flag the recursive-query
+    /// Metadata-only flag the recursive-query
     /// builder (B2) reads to validate `RelationPath<T, T>` use at compile
     /// time and to surface multi-edge ambiguity at runtime.
     /// Always `false` for non-relation columns and for FK/O2O columns whose
@@ -2198,8 +2198,8 @@ pub struct FieldDescriptor {
     pub visage_map: &'static [(&'static str, &'static str)],
 
     /// `#[field(protected(...))]` metadata. `None` for fields that did
-    /// not opt in. descriptor surface only; T3 wires
-    /// macro parsing; T5+ classifier consumes for transition routing.
+    /// not opt in. Descriptor surface only; macro parsing wires it;
+    /// the live-migration classifier consumes for transition routing.
     /// Distinct from `Sensitivity::None` inside a `Some(_)` value: an
     /// outer `None` means the adopter never invoked `protected(...)`,
     /// while `Some(ProtectedFieldMetadata { sensitivity: None, .. })`
@@ -2211,14 +2211,14 @@ pub struct FieldDescriptor {
     /// for the default expression's Postgres volatility classification.
     /// Stores the parsed override; the consumer (the
     /// `pg_volatility.rs` lookup table that classifies default
-    /// expressions during compose) lands in T5.
+    /// expressions during compose).
     /// `None` means "fall through to the static `pg_volatility.rs`
     /// lookup at compose time"; `Some(variant)` means the adopter has
     /// asserted the volatility class for a default expression Djogi
     /// could not classify (typically a user-defined function or an
     /// extension call). The override is a pure assertion — the
     /// classifier trusts it without re-checking, so a wrong override
-    /// can produce unsafe online-migration plans. T3 enforces:
+    /// can produce unsafe online-migration plans. The macro enforces:
     /// - Only on fields that also carry `default = "..."` (otherwise
     ///   there is no expression to classify).
     /// - Only the three documented variants (`"immutable"`, `"stable"`,
@@ -2438,8 +2438,8 @@ pub struct FieldDescriptor {
 }
 
 /// Adopter-supplied override for the Postgres volatility class of a
-/// column default expression. descriptor surface; T5
-/// wires the classifier that consumes the override.
+/// column default expression. Descriptor surface; the live-migration
+/// classifier consumes the override.
 /// Variants mirror Postgres's `provolatile` categories:
 /// - [`Self::Immutable`] — the expression always returns the same value
 ///   for the same inputs and never reads database state. Safe to evaluate
@@ -2615,8 +2615,8 @@ pub enum RedactionPolicy {
     None,
     /// Hash the value using HeeRanjId-compatible hashing (HMAC-SHA256
     /// with a per-deployment key) before emission. Only valid on
-    /// fields whose stored type is HeerId / RanjId compatible — T3
-    /// enforces that constraint at macro-parse time.
+    /// fields whose stored type is HeerId / RanjId compatible — the
+    /// macro enforces that constraint at parse time.
     HashId,
     /// Mask the value — preserve length / type signal, replace
     /// content with the deployment's masking glyph (default `*`).
@@ -2671,7 +2671,7 @@ impl Default for RetentionLabel {
 /// reinterpretation.
 /// `rationale` is a bare `&'static str` (not `Option<&'static str>`)
 /// to match the spec: when `sensitivity == None` the rationale is
-/// empty (`""`); when `sensitivity > None` T3's macro enforces a
+/// empty (`""`); when `sensitivity > None` the macro enforces a
 /// non-empty literal at parse time. The descriptor itself does not
 /// enforce the constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2686,7 +2686,7 @@ pub struct ProtectedFieldMetadata {
 impl Default for ProtectedFieldMetadata {
     /// Neutral defaults: no sensitivity, no rationale, no redaction,
     /// no codec, standard retention. Constructed via `..Default::default`
-    /// in T3+ when the macro elides unset attribute knobs.
+    /// when the macro elides unset attribute knobs.
     fn default() -> Self {
         Self {
             sensitivity: Sensitivity::None,
@@ -2767,7 +2767,7 @@ pub struct CustomPrimaryKeyKind {
 /// rare, mostly join tables — and carries the ordered list of column names.
 /// `Custom` is emitted for adopter-declared PK types registered through
 /// [`PrimaryKey`](crate::primary_key::PrimaryKey) + `djogi::primary_key!`
-/// (wiring lands in Task 3; the variant exists from T1 so match sites
+/// (the variant exists so match sites
 /// across the crate freeze their exhaustiveness contract now).
 /// `HeerIdDesc` / `RanjIdDesc` (added in v3) store the same
 /// logical identity as their ascending siblings but with timestamp + sequence
@@ -2928,7 +2928,7 @@ pub struct ModelDescriptor {
     /// additions to `OfflineOnly`.
     pub exclusion_constraints: &'static [ExclusionConstraintSpec],
 
-    // ── Tree queries (— T12) ────────────────────────
+    // ── Tree queries ────────────────────────
     /// Default self-FK column for tree-recursive queries. Set via
     /// `#[model(tree_edge = "parent_id")]`.
     /// When `Some(col)`, B2's `T::tree_descendants(root_id)` inherent
@@ -2959,7 +2959,7 @@ pub struct ModelDescriptor {
     /// SQL fragment for the proxy's default filter, if any. Macro-
     /// emitted as a constant string at expand time. Composed into
     /// every `QuerySet<ProxyModel>` via the `Model::default_filter_condition`
-    /// override (T3.4). The fragment is the lowered form of the
+    /// override. The fragment is the lowered form of the
     /// `default_filter = |f| ...` closure on `#[model(...)]`.
     /// `None` for non-proxy models and for proxies without a
     /// `default_filter` clause.
@@ -3019,8 +3019,7 @@ pub struct ModelDescriptor {
     pub tablespace: Option<&'static str>,
 }
 
-/// Descriptor for one `#[computed(sql = "...")]` field — Cluster
-/// 8β T4.
+/// Descriptor for one `#[computed(sql = "...")]` field.
 /// Computed fields are non-stored in v0.1.0: the SQL expression is
 /// evaluated at query time (filter, order_by, annotate via the
 /// `{Model}Computed` ZST emitted alongside the model), and the Rust-
@@ -3124,8 +3123,8 @@ impl ModelDescriptor {
 
     /// Count of self-FK edges on this model — the number of fields
     /// whose `relation_kind` is `Some(_)` and whose `is_self_fk`
-    /// flag is `true`. (T8).
-    /// Used by 's recursive-query builder:
+    /// flag is `true`.
+    /// Used by the recursive-query builder:
     /// - `0` — `T::tree_descendants(...)` is unavailable; caller must
     ///   declare a self-FK before reaching for the tree-query API.
     /// - `1` — exactly one parent edge; the inherent sugar resolves
@@ -3301,7 +3300,7 @@ pub mod migration_shape {
     // -----------------------------------------------------------------------
 
     /// The migration-SQL intent implied by a [`ModelDescriptor`].
-    /// T6 contract helper. will subsume this by emitting the same
+    /// Contract helper — will be subsumed by emitting the same
     /// structure's contents as actual DDL files. Until then,
     /// `MigrationShape` is the typed proof that the descriptor encodes
     /// enough information for a downstream emitter to produce correct
