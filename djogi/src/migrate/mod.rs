@@ -57,6 +57,7 @@ pub mod guard;
 pub mod ledger;
 pub mod naming;
 pub mod pg_volatility;
+pub(crate) mod phase_zero;
 pub mod pk_flip;
 pub mod policy;
 pub mod projection;
@@ -124,6 +125,10 @@ pub use naming::{
     version_prefix,
 };
 pub use pg_volatility::{Volatility, classify_default_expression};
+pub(crate) use phase_zero::{
+    PhaseZeroArtifactState, PhaseZeroRefusal, classify_phase_zero_artifact,
+    classify_phase_zero_sql, require_current_phase_zero_artifact, require_current_phase_zero_sql,
+};
 pub use pk_flip::{PkFlipError, lower_pk_flip_group};
 pub use policy::{OutOfOrderPolicy, is_localhost_connection};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory, project_from_provider};
