@@ -1056,7 +1056,7 @@ pub enum DjogiError {
     /// This variant is the conversion target for pool-construction callers
     /// (`DjogiPool::connect`, `DjogiPool::from_database_config`,
     /// `DjogiPoolBuilder::build`) that call `validate_startup_inventory`
-    /// before accepting traffic. Stage 3 of GH #227 wires those callers.
+    /// before accepting traffic. GH #227 wires those callers.
     /// The inner `Vec` carries one
     /// [`PresentationStartupError`](crate::presentation::PresentationStartupError)
     /// per failing codec usage. Each entry names the `(model, field, scope,

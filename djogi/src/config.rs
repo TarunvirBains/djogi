@@ -96,7 +96,7 @@ pub struct MigrateConfig {
     pub strict_concurrent_warnings: bool,
 
     /// Threshold (in seconds) above which an open transaction
-    /// triggers the pre-flight refusal in T9's PK-flip orchestration.
+    /// triggers the pre-flight refusal in the PK-flip orchestration.
     /// The runner enumerates `pg_stat_activity` rows whose
     /// `xact_start` is older than `now - INTERVAL <threshold>`
     /// before opening the cutover transaction; any rows found refuse
@@ -105,7 +105,7 @@ pub struct MigrateConfig {
     #[serde(default = "default_pk_flip_long_tx_threshold_secs")]
     pub pk_flip_long_tx_threshold_secs: u32,
 
-    /// Join-table cutover layout for T9's PK-flip orchestration.
+    /// Join-table cutover layout for PK-flip orchestration.
     /// `'A'` (default — uppercase ASCII letter A) emits a single
     /// mega-transaction across both parents and the join table per
     /// playbook §7. `'B'` emits sequential per-parent migrations

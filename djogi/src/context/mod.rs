@@ -207,7 +207,7 @@ pub enum ContextInner {
 /// variant to dispatch to the database now go through the execution
 /// helpers (`ctx.query_one`, `ctx.execute`, etc.) rather than reaching
 /// into this enum directly. This alias is kept for backward compatibility
-/// during the T2 transition; T5 will remove the pattern-match exposure.
+/// during the transition; a future pass will remove the pattern-match exposure.
 #[doc(hidden)]
 pub type __ContextInnerForMacros = ContextInner;
 
@@ -582,7 +582,7 @@ impl DjogiContext {
     /// independent pools.
     /// To enforce that a received `Arc<Punnu<T>>` belongs to this context
     /// before passing it into a framework method, use
-    /// [`DjogiContext::use_punnu`] (cluster 8δ T7.6).
+    /// [`DjogiContext::use_punnu`].
     pub fn punnu<T>(&self) -> Option<Arc<sassi::Punnu<T>>>
     where
         T: crate::types::Cacheable + 'static,
@@ -598,7 +598,7 @@ impl DjogiContext {
     /// a framework method like [`QuerySet::cache`](crate::QuerySet::cache).
     /// Passing a `Punnu<T>` that was registered on a *different* context's
     /// `Sassi` is a cross-context misuse — the two contexts have independent
-    /// cache registries (per the T7.4 "DjogiContext IS the tenant boundary"
+    /// cache registries (per the "DjogiContext IS the tenant boundary"
     /// contract), so writes to one context's `Punnu` are never observable on
     /// the other.
     /// The check uses `Arc::ptr_eq` to compare the passed handle against the
@@ -658,7 +658,7 @@ impl DjogiContext {
                 panic!(
                     "cross-context Punnu access: this Punnu<{}> was not registered \
                      on this DjogiContext's Sassi. Each DjogiContext has its own \
-                     cache registry per cluster 8δ T7.4 (Path X tenant boundary). \
+                     cache registry (Path X tenant boundary). \
                      Acquire the Punnu via ctx.punnu::<T>() on this same context.",
                     std::any::type_name::<T>(),
                 );
@@ -774,7 +774,7 @@ impl DjogiContext {
     /// control statements that carry no user-supplied values.
     /// Pool-path checkout is guarded by [`PoolConnGuard`]; see [`Self::query_all`]
     /// for the dirty-by-default lifecycle.
-    #[allow(dead_code)] // Used by PgConnection directly in transaction.rs; may be wired up in T5.
+    #[allow(dead_code)] // Used by PgConnection directly in transaction.rs; may be wired up in a future pass.
     pub(crate) async fn batch_execute(&mut self, sql: &str) -> Result<(), DjogiError> {
         self.reject_if_transaction_poisoned()?;
         match &mut self.inner {
