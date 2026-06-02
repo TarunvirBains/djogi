@@ -22,7 +22,7 @@
 //! route through `::djogi::*` paths only — never `::sassi::*` directly.
 //! `sassi-codegen` exposes a `sassi_path: &TokenStream` parameter to
 //! every entry point so consumers can target their own re-export
-//! surface. Djogi's `types.rs` (T7.1) re-exports `Cacheable`,
+//! surface. Djogi's `types.rs` re-exports `Cacheable`,
 //! `DeltaSyncCacheable`, `BasicPredicate`, `MonotonicWatermark` from
 //! sassi — passing `sassi_path = ::djogi::types` makes the emitted
 //! impls write `impl ::djogi::types::Cacheable for {Model}`, which is
@@ -33,14 +33,14 @@
 //! `crud::expand`'s `Model::Pk: Encode` constraint and
 //! `feedback_pk_and_fk_cascades_are_core.md`). They likewise do NOT
 //! get a `Cacheable` impl emitted here — the cache surface cannot
-//! ride the `QuerySet`-driven cache modifier path (T7.3) when the
+//! ride the `QuerySet`-driven cache modifier path when the
 //! model has no `Model` impl, so the `Cacheable` impl in isolation
 //! has no value, and the `id`-field-required contract on
 //! sassi-codegen would force adopters who chose a different PK
 //! column name to rename it. Skip emission and defer to a hand-
 //! rolled `impl Cacheable` if the adopter genuinely needs cache
 //! support on a `pk = None` model. Same shape as `crud::expand`'s
-//! `Model` impl gate; cluster 8ε's `filter::expand` IntoQ bridge
+//! `Model` impl gate; `filter::expand` IntoQ bridge
 //! (PR #116) extends the precedent.
 //! # Companion `{Model}Fields` shape — `CacheableFieldsMode::External`
 //! Sassi's [`Cacheable`](::djogi::types::Cacheable) trait declares
@@ -68,7 +68,7 @@
 //! the common case end-to-end: `Cacheable::Id` resolves to the PK
 //! type (so adopter generic bounds `<T: Cacheable>` see the right
 //! type), `Cacheable::id(&self)` clones `self.id` (so cache-key
-//! derivation works through `Punnu::insert(...)` via T7.3+), and
+//! derivation works through `Punnu::insert(...)`), and
 //! `Cacheable::fields` constructs the ZST through `{Model}Fields::new`
 //! so Sassi-side predicate builders compose against the same
 //! accessors as djogi querysets.
@@ -226,9 +226,9 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
     // at boot time and register a `Punnu<{Model}>` without adopter glue.
     // Path-routing: every path in this emission goes through `::djogi::*` per
     // `feedback_macro_path_routing.md`. `::djogi::SassiBootHook` is re-exported
-    // at the djogi crate root (T7.4). `::djogi::cache::Sassi` and
+    // at the djogi crate root. `::djogi::cache::Sassi` and
     // `::djogi::cache::Punnu` are both re-exported through `djogi::cache`
-    // (T7.1). `::djogi::__private::inventory::submit!` is already available
+    // `::djogi::__private::inventory::submit!` is already available
     // for macro-emitted code.
     // GH #125 — construction routes through the hidden public
     // `::djogi::SassiBootHook::__djogi_from_model_macro` associated

@@ -3,12 +3,12 @@
 //! captures the per-field metadata (`sql` source, return type, the
 //! optional `stored` keyword which is **always rejected** in v0.1.0
 //! with a deferral error pointing at).
-//! T4.3 captures syntactic state only — no Rust-side getter emission
-//! (T4.4) and no `{Model}Computed` ZST emission (T4.5). The parser
+//! The parser captures syntactic state only — no Rust-side getter emission
+//! and no `{Model}Computed` ZST emission. The parser
 //! runs alongside the existing `FieldAttrs::parse` walker so adopters
 //! can mix `#[field(...)]` and `#[computed(...)]` annotations on the
 //! same struct without macro-pipeline interference; the descriptor
-//! emitter (T4.5) cross-references computed names against regular
+//! emitter cross-references computed names against regular
 //! field names for collision detection.
 //! # Field-level annotation, not struct-level
 //! Per the lens (`feedback_decision_priorities.md`, plan §7 #7
@@ -31,7 +31,7 @@
 //! Per `feedback_no_regex_in_djogi` — every parser path uses byte-
 //! level checks against `syn`-parsed tokens; the SQL fragment is
 //! captured verbatim as a `String` and emitted into the descriptor
-//! as a `&'static str` literal at expand time. T4.4's token-level
+//! as a `&'static str` literal at expand time. The token-level
 //! validation pass walks the SQL string byte-by-byte to confirm
 //! every `\w+`-shape token resolves to a declared field, again
 //! without regex.
@@ -41,14 +41,14 @@ use syn::{Expr, Lit, Meta, MetaNameValue, Token, punctuated::Punctuated};
 /// One parsed `#[computed(sql = "...")]` annotation.
 /// Captured at field-walk time alongside the regular `FieldAttrs`
 /// parser. The field's Rust type (`return_type`) is captured from the
-/// declared `syn::Field::ty` so T4.5 threads the type through the
+/// declared `syn::Field::ty` so the emitter threads the type through the
 /// typed `Expr<T>::__raw_sql_fragment(...)` constructor.
 #[derive(Debug, Clone)]
 pub struct ComputedAttr {
     /// SQL expression source as written in the attribute.
     pub sql: String,
     /// Rust return type of the computed getter — sourced from the
-    /// `syn::Field::ty` of the field carrying the annotation. T4.5
+    /// `syn::Field::ty` of the field carrying the annotation. The emitter
     /// threads it into the typed `Expr<T>::__raw_sql_fragment(...)`
     /// carrier in the `{Model}Computed` accessor emission.
     pub return_type: syn::Type,
@@ -56,7 +56,7 @@ pub struct ComputedAttr {
 
 /// Walk a struct's fields and pull out every `#[computed(sql = "...")]`
 /// annotation. Returns a vec of `(field_ident, ComputedAttr)` pairs in
-/// declared order — T4.5 emits the `{Model}Computed` accessors in this
+/// declared order — the macro emits the `{Model}Computed` accessors in this
 /// order so the descriptor entries and the ZST methods stay aligned.
 /// Errors surface span-precise diagnostics on:
 /// - The `stored` keyword (rejected with a deferral message).
@@ -205,7 +205,7 @@ fn parse_computed_args(
             // entry), and conflating them was exactly the conceptual
             // error the Path B reshape eliminated.
             // The diagnostic surfaces a span-anchored hard rejection
-            // (Stage 2 of the deprecation flow — the Path A spec was
+            // (the Path A spec was
             // never adopted publicly so there is no compatibility
             // surface to preserve) with a remediation pointer to
             // `#[derived(...)]` and the visage-derived-fields spec.
@@ -251,7 +251,7 @@ fn parse_computed_args(
     Ok(sql)
 }
 
-// ── T4.4 — Rust-side getter emission (intentionally a no-op) ─────────────
+// ── Rust-side getter emission (intentionally a no-op) ─────────────
 // Earlier shapes of this task emitted one inherent method per
 // `#[computed(sql = "...")]` field with an `unimplemented!` body so
 // adopters could "override the stub" with a hand-written
@@ -291,11 +291,11 @@ pub fn emit_rust_getters(
     proc_macro2::TokenStream::new()
 }
 
-// ── T4.5 — `{Model}Computed` ZST emission for SQL projection ─────────────
+// ── `{Model}Computed` ZST emission for SQL projection ─────────────
 // Emits a ZST `{Model}Computed` whose accessors return
 // `Expr<V>` (where `V` is the computed field's Rust return type) so
 // adopters can use computed fields in `.annotate`, `.filter_expr`,
-// and `.order_by` — the SQL-projectable half of T4. The ZST is
+// and `.order_by`. The ZST is
 // constructed via `Vehicle::computed` (an inherent method we also
 // emit on `#name`), giving adopters the call-site pattern:
 // ```rust
@@ -309,10 +309,10 @@ pub fn emit_rust_getters(
 // `f.total_price` symmetrically with regular fields. That decision
 // requires extending `FieldRef` with an internal `Source` enum
 // (Column | RawSql), which is a substantial surface-area change
-// touching every method. T4.5 ships the simpler ZST split for
+// touching every method. This ships the simpler ZST split for
 // v0.1.0 — the call-site difference is `Vehicle::computed
 // .total_price` vs `f.total_price`. Adopter ergonomics drift
-// slightly but the API surface stays narrow. T6's Q-Algebra refactor
+// slightly but the API surface stays narrow. The Q-Algebra refactor
 // is the natural place to bundle if real adopter feedback warrants.
 
 /// Emit the `{Model}Computed` ZST + its accessor methods + the
@@ -479,7 +479,7 @@ mod tests {
 
     /// #225 — `expose = "..."` inside `#[computed]`
     /// is rejected with a remediation pointer to `#[derived(...)]`.
-    /// Stage 2 (parse-time hard rejection): the Path A draft was
+    /// (parse-time hard rejection): the Path A draft was
     /// never adopted publicly, so this ships without a deprecation
     /// warning intermediate step.
     #[test]
@@ -564,7 +564,7 @@ mod tests {
         assert!(ts.is_empty());
     }
 
-    /// T4.5 — `emit_computed_zst` emits the `{Model}Computed` ZST
+    /// `emit_computed_zst` emits the `{Model}Computed` ZST
     /// plus accessor methods plus `Vehicle::computed` constructor.
     /// Each accessor returns `Expr<V>` typed for the field's declared
     /// return type and routes through `Expr::__raw_sql_fragment`.
@@ -590,7 +590,7 @@ mod tests {
         assert!(ts.contains("pub fn computed"));
     }
 
-    /// T4.5 — non-computed model pays zero emission cost.
+    /// Non-computed model pays zero emission cost.
     #[test]
     fn empty_computed_attrs_skips_zst_emission() {
         let struct_name: syn::Ident = parse2(quote! { Vehicle }).unwrap();
@@ -599,7 +599,7 @@ mod tests {
     }
 
     /// Multiple computed fields on one struct parse cleanly in declared
-    /// order. T4.5's emitter relies on the order to keep descriptor
+    /// order. The emitter relies on the order to keep descriptor
     /// entries and ZST accessors aligned.
     #[test]
     fn preserves_declared_order_across_multiple_computed_fields() {

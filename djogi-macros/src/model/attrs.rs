@@ -361,7 +361,7 @@ pub struct ModelAttrs {
     pub tablespace: Option<String>,
 
     /// Custom visage scopes from `#[model(visage_scopes(name = Suffix, ...))]`
-    /// GH #227 Stage 4.
+    /// GH #227.
     /// Each entry is `(scope_key, struct_suffix)` — e.g. `("support",
     /// "Support")` generates `{Model}Support` alongside the four built-in
     /// scope visages (`Public` / `SelfView` / `Admin` / `Export`). The
@@ -713,7 +713,7 @@ impl ModelAttrs {
         let mut table_comment: Option<String> = Option::None;
         let mut storage_params: Option<String> = Option::None;
         let mut tablespace: Option<String> = Option::None;
-        // GH #227 Stage 4 — `#[model(visage_scopes(name = Suffix, ...))]`.
+        // GH #227 — `#[model(visage_scopes(name = Suffix, ...))]`.
         // Accumulator + duplicate-block detection. Each entry is
         // `(scope_key, struct_suffix)`; the visage emitter chains this
         // Vec onto its built-in `SCOPES` table.
@@ -1132,7 +1132,7 @@ impl ModelAttrs {
                     }
                     fts = Some(FtsSpec::parse_from_list(list)?);
                 }
-                // `visage_scopes(name = Suffix, ...)` — GH #227 Stage 4.
+                // `visage_scopes(name = Suffix, ...)` — GH #227.
                 // Paren-delimited list of `scope_ident = SuffixIdent`
                 // entries. Each pair adds one custom scope to the
                 // visage emitter's iteration set (alongside the four
@@ -1445,7 +1445,7 @@ impl ModelAttrs {
             // — opt-in strict HeerId /
             // RanjId structural CHECK propagation flag.
             strict_ids,
-            // GH #227 Stage 4 — custom visage scopes.
+            // GH #227 — custom visage scopes.
             visage_scopes,
         })
     }
@@ -2163,7 +2163,7 @@ impl ExposeSpec {
                 continue;
             }
 
-            // GH #227 Stage 4 — custom-scope names declared via
+            // GH #227 — custom-scope names declared via
             // `#[model(visage_scopes(name = Suffix, ...))]` are not in
             // scope at field-attribute-parse time (the model attributes
             // have not been fully read by the time darling invokes
@@ -3220,7 +3220,7 @@ fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
     }
 }
 
-/// Parse `#[model(visage_scopes(name = Suffix, ...))]` — GH #227 Stage 4.
+/// Parse `#[model(visage_scopes(name = Suffix, ...))]` — GH #227.
 /// Returns the parsed `(scope_key, struct_suffix)` pairs in source order.
 /// Validation rules (all enforced here so the diagnostic anchors at the
 /// offending ident):

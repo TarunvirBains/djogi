@@ -676,8 +676,8 @@ pub fn expand(
     // (`None` / empty `Vec`) inline to a no-op at every `QuerySet::new`
     // call site. Zero-cost for the common case per the lens (`feedback_
     // decision_priorities.md`).
-    // The default-filter override threads the lowered SQL fragment from
-    // T3.3 through `Condition::__from_raw_sql_fragment` — the
+    // The default-filter override threads the lowered SQL fragment
+    // through `Condition::__from_raw_sql_fragment` — the
     // `#[doc(hidden)]` constructor that wraps the `pub(crate)`
     // `Condition::RawSql` variant. The fragment is `&'static str`,
     // baked at expand time, so no allocation runs at queryset
@@ -759,7 +759,7 @@ pub fn expand(
     // 1. This is the only place the full `impl Model for T` block is assembled
     // adding it in `soft_deletable.rs` would require a second `impl Model`
     // block on the same type, which Rust rejects.
-    // 2. `model_attrs.soft_deletable` is already read by T2.6 path-routing (see
+    // 2. `model_attrs.soft_deletable` is already read by path-routing (see
     // `soft_deletable::expand`) so reading it here adds zero new state.
     // Path routing: `::djogi::SoftDeletable` follows the macro-path-routing
     // convention (`feedback_macro_path_routing.md`) — public re-export path,
@@ -951,7 +951,7 @@ pub fn expand(
     // `value` must be mutable when any of the following participates:
     // - `sequence_within` (assigns the counter back into the seq field)
     // - `#[model(hooks)]` (`before_create(&mut value, ctx)`)
-    // - `#[model(auditable)]` (T2.4 — `value.__djogi_auditable_populate(ctx)`
+    // - `#[model(auditable)]` (`value.__djogi_auditable_populate(ctx)`
     // mutates `created_by` in place when auth is present and the field
     // is currently None)
     // A single shared flag keeps the binding choice explicit.
@@ -1016,10 +1016,10 @@ pub fn expand(
     // the outbox write (hook sequence:
     // before_create -> INSERT -> outbox -> after_create -> on_commit drain).
     // For non-hooks models both branches collapse to empty `TokenStream`
-    // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
-    // verifies this with `cargo asm`. The dispatch itself routes through
+    // (no `quote!` invocation) so opt-out paths emit zero codegen.
+    // The dispatch itself routes through
     // `::djogi::__private::hooks::ModelHooks` per the macro-path-routing
-    // convention; the `HasHooks` impl emitted in T1.3 satisfies the bound
+    // convention; the `HasHooks` impl satisfies the bound
     // at the use site without any runtime branch.
     let (before_create_call, after_create_call) = if model_attrs.hooks {
         let before_create_call = if model_attrs.tenant_key.is_some() {
@@ -1090,9 +1090,9 @@ pub fn expand(
             // canonical sequence is:
             // #auto_set_tenant
             // #create_value_binding
-            // #auditable_populate ← here (T2.4)
-            // #before_create_call ← T1.4
-            // #sequence_upsert_preamble ← T1
+            // #auditable_populate ← here
+            // #before_create_call
+            // #sequence_upsert_preamble
             // ... INSERT, outbox, after_create ...
             // Empty TokenStream when `#[model(auditable)]` is absent
             // zero codegen for opt-out models.
@@ -1168,8 +1168,8 @@ pub fn expand(
     // `LockConflict` early and `after_save` would observe stale state
     // that was never written to the DB.
     // For non-hooks models both branches collapse to empty `TokenStream`
-    // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
-    // verifies this with `cargo asm`.
+    // (no `quote!` invocation) so opt-out paths emit zero codegen.
+    //
     let (before_save_call, after_save_call) = if model_attrs.hooks {
         let before_save_call = if model_attrs.tenant_key.is_some() {
             quote! {
@@ -1438,8 +1438,8 @@ pub fn expand(
     // outbox row carries the canonical snapshot. v3 §D1 fixes the
     // after-hook receiver as `&self`, not `&mut self`.
     // For non-hooks models both branches collapse to empty `TokenStream`
-    // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
-    // verifies this with `cargo asm`.
+    // (no `quote!` invocation) so opt-out paths emit zero codegen.
+    //
     let (before_delete_call, after_delete_call) = if model_attrs.hooks {
         let before_delete_call = if model_attrs.tenant_key.is_some() {
             quote! {
@@ -2187,7 +2187,7 @@ pub fn expand(
     };
 
     // Per-row bind emission that prepends an explicit id bind ahead of
-    // the user-column binds. Shared by the post-T5 `bulk_create` dispatch
+    // the user-column binds. Shared by the `bulk_create` dispatch
     // (for every PK kind except `Serial`) and by `bulk_upsert` (which
     // has always taken caller-supplied ids). Hoisted above both
     // emitters so the bulk_create path can reference it — TokenStream
@@ -2240,17 +2240,17 @@ pub fn expand(
     };
 
     // `bulk_create` dispatches on `pk_kind`.
-    // Pre-T5 emission inserted rows with per-row `DEFAULT` for `id`,
+    // The original emission inserted rows with per-row `DEFAULT` for `id`,
     // which forced Postgres to invoke `heerid_next` / `ranjid_next`
     // / custom `default_sql` once per row — N separate allocations per
-    // batch. Post-T5, every PK kind that implements `PrimaryKeyDbGen`
+    // batch. Now, every PK kind that implements `PrimaryKeyDbGen`
     // pre-allocates the full batch of ids in **one** round-trip through
     // `<T as PrimaryKeyDbGen>::generate_many(ctx, n)` and then issues
     // the INSERT with explicit `id` values.
     // `Serial` (`i32`) deliberately does not implement
     // `PrimaryKeyDbGen` — its sequence is per-row by construction, and
     // there is no bulk allocator to call. Serial models keep the
-    // pre-T5 per-row-`DEFAULT` path; the generic dispatch arm is
+    // per-row-`DEFAULT` path; the generic dispatch arm is
     // unreachable for them.
     // `None` is handled by the early return at the top of `expand`, so
     // we never reach this block.
@@ -2445,8 +2445,8 @@ pub fn expand(
             format!(" DO UPDATE SET {bulk_upsert_set_list} RETURNING {column_list}");
 
         // `id_first_per_row_binds` (hoisted above `bulk_create_impl`)
-        // emits the id-first per-row tuple bindings — same shape the
-        // post-T5 `bulk_create` uses after `PrimaryKeyDbGen::generate_many`.
+        // emits the id-first per-row tuple bindings — same shape
+        // `bulk_create` uses after `PrimaryKeyDbGen::generate_many`.
 
         quote! {
             /// Bulk-upsert — `INSERT ... ON CONFLICT (<cols>) DO UPDATE SET ...`.
