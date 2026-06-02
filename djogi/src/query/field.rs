@@ -7274,7 +7274,7 @@ mod distance_tests {
         );
     }
 
-    // ── line_agg — T14b retroactive completion ───────────────────────────────
+    // ── line_agg ─────────────────────────────────────────────────────────────
 
     #[cfg(feature = "spatial")]
     #[test]

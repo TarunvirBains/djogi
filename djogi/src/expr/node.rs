@@ -1029,7 +1029,7 @@ pub(crate) enum AggOp {
     /// `.order_by(field)` modifier — the per-aggregate ORDER BY
     /// clause lands inside the `ST_MakeLine` parens to control
     /// vertex sequence at the aggregate level.
-    /// Sibling [`AggOp::SpatialLineAgg`] (T14b) handles the
+    /// Sibling [`AggOp::SpatialLineAgg`] handles the
     /// "collect already-existing LineStrings into a MultiLineString"
     /// use case once the `MultiLineString` geo type lands.
     #[cfg(feature = "spatial")]
@@ -1045,8 +1045,7 @@ pub(crate) enum AggOp {
     /// `ST_LineAgg` keyword is the safe choice. If a future
     /// installation drift surfaces, the emitter arm is the single
     /// migration site.
-    /// T14b retroactively shipped this aggregate after
-    /// Track A's initial deferral — no arbitrary deferrals per
+    /// This aggregate shipped after the initial deferral — no arbitrary deferrals per
     /// `feedback_no_arbitrary_deferrals.md`.
     #[cfg(feature = "spatial")]
     SpatialLineAgg,

@@ -525,8 +525,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     }
 
     /// Walk **every** self-FK edge declared on this model upward
-    /// the multi-edge sibling of [`Model::tree_ancestors`]. Phase
-    /// 8-Zero (T13a).
+    /// the multi-edge sibling of [`Model::tree_ancestors`].
     /// `full_ancestors` is the right shape for kinship / pedigree
     /// queries where a node has more than one parent edge (e.g.
     /// `mother_id` + `father_id` on an animal model). The recursive
@@ -584,7 +583,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         )
     }
 
-    // ── Materialised transitive closure (— T13b) ─────
+    // ── Materialised transitive closure ──────────────
     // [`materialize_closure`](Model::materialize_closure) populates a
     // closure-table sibling of this model. Per the scalability lens
     // (Risk 10), materialised transitive closure is the production-
@@ -600,7 +599,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     // without changing this method signature.
 
     /// Populate a transitive-closure table for this model's self-FK
-    /// graph. (T13b).
+    /// graph.
     /// `C` is an adopter-supplied [`ClosureModel`] whose `Source =
     /// Self` — the type-level binding pins the closure table to the
     /// source model so wrong-source closure tables fail at compile
