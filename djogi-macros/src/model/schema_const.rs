@@ -1,8 +1,6 @@
 //! Emit a `pub const {MODEL}_SCHEMA: &str` per model.
-//!
 //! For every `#[derive(Model)]` input, emit one compile-time string
 //! constant that pretty-prints the model's shape:
-//!
 //! ```text
 //! pub const VEHICLE_SCHEMA: &str = "table: vehicles
 //! fields:
@@ -17,27 +15,20 @@
 //!   - owner_id -> Owner (FK)
 //! ";
 //! ```
-//!
 //! Adopters and tooling lift the const without going through the
 //! `inventory` runtime path — useful for agent ergonomics and
 //! `cargo expand` introspection.
-//!
 //! # Determinism
-//!
 //! Byte-deterministic against `ParsedModel`: framework fields render
 //! first in fixed order, user fields in declaration order, indexes in
 //! declaration order, relations alphabetically by source-field column.
-//!
 //! # Naming
-//!
 //! `{pascal_to_snake(name).to_uppercase()}_SCHEMA`:
-//!
 //! - `Vehicle` → `VEHICLE_SCHEMA`
 //! - `OrgUser` → `ORG_USER_SCHEMA`
 //! - `HTTPSProxy` → `HTTPS_PROXY_SCHEMA`
-//!
-//! Adopters declaring their own `VEHICLE_SCHEMA` at the same scope
-//! see a Rust "duplicate definition" error — a feature, not a bug.
+//!   Adopters declaring their own `VEHICLE_SCHEMA` at the same scope
+//!   see a Rust "duplicate definition" error — a feature, not a bug.
 
 use crate::case::pascal_to_snake;
 use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
@@ -46,7 +37,6 @@ use quote::{ToTokens, format_ident, quote};
 use syn::ItemStruct;
 
 /// Emit the per-model `{MODEL}_SCHEMA: &str` const.
-///
 /// `struct_item` is the **post-injection** struct (framework fields
 /// already prepended by `inject::expand`). `field_attrs` aligns with
 /// `struct_item.fields.iter().skip(model_attrs.framework_field_count())`.

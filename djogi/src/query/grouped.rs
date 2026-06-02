@@ -1,16 +1,13 @@
-//! Grouped query state types. See Phase 6.5 plan for the type-state
+//! Grouped query state types. See plan for the type-state
 //! contract and method legality table.
-//!
 //! # Type-state transitions
-//!
 //! - `QuerySet<T>` → `GroupedQuerySet<T, K>` via `.group_by`
 //! - `GroupedQuerySet<T, K>` → `GroupedAnnotatedQuerySet<T, K, A>` via `.annotate`
 //! - `GroupedAnnotatedQuerySet<T, K, A>` is the only state with terminals
 //!   (`.fetch_all`, `.stream`)
-//!
-//! Premature `.fetch_all` on `GroupedQuerySet<T, K>` is a compile error
-//! (no such method exists). This is enforced structurally rather than via
-//! runtime checks.
+//!   Premature `.fetch_all` on `GroupedQuerySet<T, K>` is a compile error
+//!   (no such method exists). This is enforced structurally rather than via
+//!   runtime checks.
 
 #![allow(clippy::manual_async_fn)]
 
@@ -21,7 +18,6 @@ use crate::query::queryset::QuerySet;
 use std::marker::PhantomData;
 
 /// Crate-private seal for `IntoGroupKeyTuple`.
-///
 /// The `pub(crate)` visibility lets sibling modules (notably
 /// `spatial_grouping.rs`) implement `IntoGroupKeyTuple` for their key types
 /// without weakening the seal against downstream crates — the trait is still
@@ -122,12 +118,11 @@ impl_into_group_key_tuple!(
 );
 
 // ── Arity 1: single DjogiField<M, V> ────────────────────────────────────────
-//
 // PR3: post-flip root accessors return `DjogiField<M, V>`. `GROUP BY` is a
 // SQL-only boundary (no Punnu evaluator participates in column emission),
 // so the impl forwards the wrapper's column metadata through the same
 // emission code paths `FieldRef` already drives. Sealing stays in place
-// — `DjogiField` is a Djogi-owned type that can only be constructed
+// `DjogiField` is a Djogi-owned type that can only be constructed
 // through the validated `__make_djogi_field` macro entry point.
 
 impl<M: Model, V> sealed::Sealed for DjogiField<M, V> {}
@@ -152,7 +147,6 @@ where
 }
 
 // ── Arity 2..=4: tuples of DjogiField<M, V_i> ───────────────────────────────
-//
 // Mirrors the `FieldRef` tuple impl set so post-PR3 root closures returning
 // `(f.col_a(), f.col_b(), ...)` compose directly without unwrapping each
 // accessor.
@@ -207,7 +201,6 @@ impl_into_group_key_tuple_djogi!(
 );
 
 // ── Spatial group source ─────────────────────────────────────────────────────
-//
 // `SpatialGroupSource` consolidates the three spatial emission strategies
 // (region-join, DBSCAN window, geohash scalar) into a single enum so
 // `GroupedQuerySet` / `GroupedAnnotatedQuerySet` carries one optional field
@@ -215,13 +208,11 @@ impl_into_group_key_tuple_djogi!(
 // cascading through three separate Option fields.
 
 /// Discriminated union of the three spatial group-source strategies.
-///
 /// - `Join` — region path: LEFT JOIN + `ST_Contains` + GROUP BY region PK.
 /// - `Cluster` — DBSCAN path: `ST_ClusterDBSCAN(...) OVER ()` window aggregate.
 /// - `Geohash` — geohash path: `ST_GeoHash(..., precision)` scalar function.
-///
-/// Stored as `Option<SpatialGroupSource>` on `GroupedQuerySet` and
-/// `GroupedAnnotatedQuerySet`; `None` means a plain non-spatial GROUP BY.
+///   Stored as `Option<SpatialGroupSource>` on `GroupedQuerySet` and
+///   `GroupedAnnotatedQuerySet`; `None` means a plain non-spatial GROUP BY.
 #[cfg(feature = "spatial")]
 #[derive(Debug, Clone)]
 pub(crate) enum SpatialGroupSource {
@@ -239,7 +230,6 @@ pub(crate) enum SpatialGroupSource {
 // impls can name `sealed::Sealed` directly without weakening the public seal.
 
 // ── Arity 0: unit key () — used exclusively by group_by_sets ─────────────
-//
 // GROUPING SETS emits its own column list directly from the `Sets` payload;
 // the key tuple plays no role in SQL emission for that mode. The `()` impl
 // exists only so `GroupedQuerySet<T, ()>` satisfies the `IntoGroupKeyTuple`
@@ -271,7 +261,6 @@ impl IntoGroupKeyTuple for () {
 // ── GroupedQuerySet ───────────────────────────────────────────────────────
 
 /// Grouping mode for `GROUP BY` variant.
-///
 /// `Plain` emits a plain `GROUP BY col [, col ...]`. `Rollup` and `Cube`
 /// wrap the column list in `ROLLUP (...)` and `CUBE (...)` respectively.
 /// `Sets` emits `GROUPING SETS (...)` with an explicit per-set column list,
@@ -287,18 +276,16 @@ pub enum GroupingMode {
     Cube,
     /// `GROUP BY GROUPING SETS ((col_a), (col_b), ...)`. Each inner
     /// `Vec<&'static str>` is one grouping set's column list. Column names
-    /// are `&'static str` because they come from `FieldRef::column()` —
+    /// are `&'static str` because they come from `FieldRef::column`
     /// validated upstream by `assert_plain_ident`.
     Sets(Vec<Vec<&'static str>>),
 }
 
-/// Grouped queryset with no annotations yet. No terminal available —
+/// Grouped queryset with no annotations yet. No terminal available
 /// user must call `.annotate(...)` before fetching.
-///
 /// This is the intermediate state produced by `QuerySet::group_by`. Dropping
 /// one without annotating is flagged by the `#[must_use]` attribute — the
 /// query is silently discarded if the result is not used.
-///
 /// The optional `spatial_source` field carries the spatial group-source spec
 /// for spatially-derived group keys (`group_by_region`, `cluster_by_proximity`,
 /// `bucket_by_cell`). `None` means a plain `GROUP BY col` query. The SQL
@@ -317,12 +304,10 @@ pub struct GroupedQuerySet<T: Model, K: IntoGroupKeyTuple> {
 // ── GroupedAnnotatedQuerySet ──────────────────────────────────────────────
 
 /// Grouped and annotated queryset — the only grouped state that has terminals.
-///
 /// Produced by `GroupedQuerySet::annotate`. Terminals (`fetch_all`) execute the
 /// `SELECT keys, aggregates FROM table [WHERE ...] GROUP BY keys
 /// [HAVING ...] [ORDER BY ...] [LIMIT ...] [OFFSET ...]` query and decode the
 /// result into `Vec<(K::Decoded, A::Decoded)>`.
-///
 /// The optional `spatial_source` field carries the spatial group-source spec
 /// propagated from `GroupedQuerySet`. `None` for all plain GROUP BY paths.
 #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
@@ -352,7 +337,6 @@ pub struct GroupedAnnotatedQuerySet<
 impl<T: Model, K: IntoGroupKeyTuple> GroupedQuerySet<T, K> {
     /// Attach aggregate expressions to this grouped query, transitioning into
     /// `GroupedAnnotatedQuerySet<T, K, A>` — the state that has terminals.
-    ///
     /// The closure receives a default-constructed `T::Fields` and returns one
     /// aggregate (arity 1) or a tuple (arity 2..=4). Until this is called,
     /// no terminal method is available; the type-state enforces correct
@@ -394,7 +378,6 @@ impl<T: Model, K: IntoGroupKeyTuple + Clone, A: crate::query::annotate::IntoAggr
     GroupedAnnotatedQuerySet<T, K, A>
 {
     /// Attach a `HAVING` clause to the grouped query.
-    ///
     /// The closure receives clones of the key tuple and aggregate tuple so the
     /// caller can call consuming methods directly (e.g. `a.gt(100)`). Calling
     /// `.having(...)` twice replaces the previous clause — last call wins,
@@ -410,7 +393,6 @@ impl<T: Model, K: IntoGroupKeyTuple + Clone, A: crate::query::annotate::IntoAggr
     }
 
     /// Append an `ORDER BY` expression to the grouped query.
-    ///
     /// The closure receives clones of the key tuple and aggregate tuple.
     /// Multiple calls append; they do not replace (same append semantics as
     /// `QuerySet::order_by`). The `ORDER BY` clause is emitted after `HAVING`.
@@ -453,12 +435,10 @@ where
 {
     /// Execute the grouped query and collect every result row into
     /// `Vec<(K::Decoded, A::Decoded)>`.
-    ///
     /// Keys are decoded positionally (ordinals 0..N_keys). Aggregates are
     /// decoded by alias (`__djogi_agg_N`). For tenant-keyed models, the
     /// terminal propagates the caller's auth tenant into the RLS GUC after
-    /// local validation and before SQL emission. Live round-trip coverage is
-    /// in T14.
+    /// local validation and before SQL emission.
     #[allow(clippy::type_complexity)]
     pub fn fetch_all<'ctx>(
         self,
@@ -474,7 +454,7 @@ where
         A::Decoded: 'ctx,
     {
         async move {
-            // Validate DISTINCT modifier combinations before building SQL —
+            // Validate DISTINCT modifier combinations before building SQL
             // rejected combos surface as DjogiError::UnsupportedAggregate.
             self.aggregates.check_legality()?;
 
@@ -800,7 +780,7 @@ mod tests {
         );
     }
 
-    // T2 — .rollup and .cube entry points produce GroupedQuerySet with the
+    // .rollup and .cube entry points produce GroupedQuerySet with the
     // correct GroupingMode. The mode is verified via the SQL emitter — calling
     // .annotate then build_grouped_annotated_select and asserting the clause.
 
@@ -834,7 +814,7 @@ mod tests {
         );
     }
 
-    // T2 — .group_by_sets entry point produces GroupedQuerySet<T, ()>
+    // .group_by_sets entry point produces GroupedQuerySet<T, >
     // and the emitter outputs GROUPING SETS (...).
 
     #[test]
@@ -856,7 +836,7 @@ mod tests {
         );
     }
 
-    // T11 — .grouping_sets() entry point supports multi-column sets per
+    // .grouping_sets entry point supports multi-column sets per
     // group AND the empty grand-total set.
 
     #[test]

@@ -1,32 +1,25 @@
-//! Phase 7.5 live-migration layer — skeleton.
-//!
-//! `live_migrate` is the Phase 7.5 home for operator-driven
+//! Live-migration layer — skeleton.
+//! `live_migrate` is the home for operator-driven
 //! compatibility-window rollouts (the spec's expand → backfill →
-//! flip → contract sequence). It sits *above* Phase 7's segment
+//! flip → contract sequence). It sits *above* the segment
 //! planner: every type that flows through this module is imported
 //! from [`crate::migrate`] rather than redefined here. The boundary
 //! between the two layers is the [`OnlineSafetyClassification`] enum
 //! frozen in `migrate::schema`.
-//!
 //! # What this module consumes
-//!
 //! `live_migrate` accepts **only**
 //! [`OnlineSafetyClassification::ExpandContract`]. That is the spec's
 //! `RequiresLivePlan` handoff marker — the one variant whose
-//! orchestration cannot complete inside a single Phase 7 segment.
-//! The remaining three variants stay inside Phase 7:
-//!
+//! orchestration cannot complete inside a single segment.
+//! The remaining three variants stay inside :
 //! - `OnlineSafe` — the runner applies it directly.
 //! - `FastLockDestructiveGuarded` — the runner applies it behind
 //!   the `--allow-destructive` gate.
 //! - `OfflineOnly` — Djogi refuses to emit SQL; the operator must
 //!   acknowledge downtime or handle the change manually.
-//!
-//! Those three are operator-acknowledgement or direct-apply
-//! branches; none of them are live-plan branches.
-//!
+//!   Those three are operator-acknowledgement or direct-apply
+//!   branches; none of them are live-plan branches.
 //! # What this module does *not* consume
-//!
 //! Primary-key type flips are routed through their own dedicated
 //! [`SchemaOperation::PkTypeFlipGroup`] /
 //! [`SchemaOperation::PkTypeFlipMultiGroup`] cascade emitters in
@@ -42,9 +35,7 @@
 //! [`OnlineSafetyClassification`] (a per-operation online-safety
 //! verdict). The two enums are different by design, and the
 //! live-plan layer only ever consumes the latter.
-//!
 //! # Naming note
-//!
 //! Throughout this module, [`OnlineSafetyClassification`] is the
 //! four-variant online-safety enum (`OnlineSafe`,
 //! `FastLockDestructiveGuarded`, `ExpandContract`, `OfflineOnly`)
@@ -55,7 +46,6 @@
 //! reason about it. The two enums coexist on `SchemaDelta` at
 //! different granularities; the disjoint names ensure they cannot
 //! be confused.
-//!
 //! [`SchemaOperation::PkTypeFlipGroup`]: crate::migrate::SchemaOperation::PkTypeFlipGroup
 //! [`SchemaOperation::PkTypeFlipMultiGroup`]: crate::migrate::SchemaOperation::PkTypeFlipMultiGroup
 
@@ -95,7 +85,6 @@ pub use state::{INSTALL_SQL, LivePlanRow, PlanStatus, record_failure, update_sta
 
 /// Logging-profile axis read from `Djogi.toml`'s `[logging] profile`
 /// at compose time and threaded into [`ClassifyContext`].
-///
 /// The profile drives the §6.5 three-DB short-circuit: under `Light`
 /// and `Balanced` the CRUD-log database degrades audit writes
 /// gracefully, so brief lock windows on crud-log mirror tables don't
@@ -104,14 +93,12 @@ pub use state::{INSTALL_SQL, LivePlanRow, PlanStatus, record_failure, update_sta
 /// `INSERT` / `UPDATE` / `DELETE` on the corresponding application
 /// table — so populated crud-log mirrors classify the same way as
 /// the application database.
-///
-/// Defined here (rather than in [`crate::config`]) because Phase 7
-/// has not yet shipped the logging profile config plumbing; T5 needs
-/// the type to drive its `ClassifyContext`. When Phase 7's logging
+/// Defined here (rather than in [`crate::config`]) because
+/// has not yet shipped the logging profile config plumbing; the classifier
+/// needs this type to drive its `ClassifyContext`. When the logging
 /// substrate lands, this enum becomes the canonical home and config
 /// parsing maps the `[logging] profile = "..."` string into one of
 /// these variants.
-///
 /// `#[non_exhaustive]` so future profiles (e.g. a `BestEffort` or
 /// `Replicated` variant) can be added without breaking downstream
 /// matches.
@@ -120,7 +107,7 @@ pub use state::{INSTALL_SQL, LivePlanRow, PlanStatus, record_failure, update_sta
 pub enum LoggingProfile {
     /// Lowest-overhead profile — audit writes are best-effort,
     /// failures degrade silently. Migrations on crud-log mirror
-    /// tables route directly to Phase 7 (no live-plan).
+    /// tables route directly to (no live-plan).
     Light,
     /// Default profile — bounded retry on audit writes, failures
     /// surface as warnings. Same direct-route policy as `Light`.

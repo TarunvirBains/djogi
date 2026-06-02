@@ -1,6 +1,6 @@
 // Verifies that a hand-written `impl ManyToMany<Target> for Source` with a
 // typed `related()` / `add_related()` / `remove_related()` body compiles
-// end-to-end against the Phase 4-retrofitted trait shape (`&mut DjogiContext`
+// end-to-end against the trait shape (`&mut DjogiContext`
 // in place of generic executor).
 //
 // Pinned invariants (all compile-time):
@@ -22,7 +22,7 @@
 //     body `f.person_id().eq(ForeignKey::new(self.id.clone()))`
 //     compiles because the FK wrapper projects through its inner
 //     `T::Pk`'s `IntoFilterValue` impl.
-//   - The Phase 3 Task 7 `many_to_many!` macro stamps out this exact
+//   - The `many_to_many!` macro stamps out this exact
 //     shape on behalf of the user; this fixture locks in the hand-
 //     written form that macro output must match.
 //
@@ -88,8 +88,8 @@ impl ManyToMany<Group> for Person {
             .fetch_all(&mut *ctx)
             .await?;
 
-        // Step 2: project the junction rows down to target PKs. Phase 3
-        // Task 7's macro emits an `IN (…)` query against `Target`;
+        // Step 2: project the junction rows down to target PKs. The
+        // `many_to_many!` macro emits an `IN (…)` query against `Target`;
         // pending a typed `.r#in(...)` lookup we fetch each target by
         // PK through `Group::get`. Two queries → N+1 is acceptable for
         // the hand-written reference impl; the macro form is free to

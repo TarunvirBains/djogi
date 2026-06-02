@@ -1,16 +1,12 @@
 //! `CASE WHEN ... THEN ... ELSE ... END` — multi-armed conditional
 //! expression builder.
-//!
 //! # What
-//!
 //! [`Case::when`] opens a builder; [`CaseBuilder::when`] appends arms;
 //! [`CaseBuilder::otherwise`] closes the builder and produces the typed
 //! [`Expr<V>`]. The value type `V` is pinned by the first arm's `then`
 //! operand (the turbofish `Case::<V>::when(..)` is never needed at the
 //! call site because Rust infers `V` from the argument type).
-//!
 //! # Why a builder
-//!
 //! CASE is always at least two arms (WHEN + ELSE). Calling `Case::when`
 //! alone does not produce an `Expr<V>` — it produces a
 //! [`CaseBuilder<V>`] whose only path to `Expr<V>` is
@@ -20,9 +16,7 @@
 //! Step 3 decision — "`otherwise` is REQUIRED — forces the user to
 //! decide" — is enforced by this type-state transition, not by a runtime
 //! check.
-//!
 //! # Multi-arm CASE
-//!
 //! ```ignore
 //! use djogi::prelude::*;
 //! use djogi::expr::case::Case;
@@ -37,15 +31,12 @@
 //! )
 //! .otherwise(Expr::literal("ok".to_string()));
 //! ```
-//!
 //! Each arm's `cond` is `Expr<bool>` and `then_val` is `Expr<V>` (the
 //! same `V` the builder carries). The final `Expr<V>` slots into
 //! [`crate::query::field::FieldRef::set_expr`] for CASE-backed UPDATE
 //! assignments, or into a nested expression for CASE-backed
 //! filter / select-list positions.
-//!
 //! # Where
-//!
 //! - [`super::node::ExprNode::Case`] — the untyped payload.
 //! - [`super::sql::emit_expr`] — renders the SQL tokens (one arm per
 //!   `(cond, val)` pair, then `ELSE <default> END`).
@@ -58,7 +49,6 @@ use std::marker::PhantomData;
 /// tree. `Case::when(cond, then)` returns a [`CaseBuilder<V>`]; chain
 /// additional `.when(..)` calls for multi-arm CASE, then close with
 /// `.otherwise(default)` to produce the typed [`Expr<V>`].
-///
 /// `Case<V>` itself never materialises an instance — the builder pattern
 /// lives on [`CaseBuilder<V>`]. `Case<V>` exists purely as a namespace
 /// for the [`Case::when`] entry point; the `V` generic on the type
@@ -74,15 +64,12 @@ pub struct Case<V> {
 
 impl<V> Case<V> {
     /// Open a CASE builder with the first `(cond, then_val)` arm.
-    ///
     /// Returns a [`CaseBuilder<V>`] — **not** an [`Expr<V>`]. The
     /// builder's only public path to `Expr<V>` is
     /// [`CaseBuilder::otherwise`], which requires the caller to supply
     /// an `ELSE <default>` arm. That type-state transition is the
     /// "otherwise is required" enforcement — no runtime check needed.
-    ///
     /// # Type inference
-    ///
     /// `V` is inferred from `then_val`'s type parameter. The builder
     /// methods pin `V` across every subsequent `.when(..)` call, so a
     /// caller that accidentally mixes value types (e.g. a `String`
@@ -98,7 +85,6 @@ impl<V> Case<V> {
 
 /// In-progress CASE tree. Grown via [`CaseBuilder::when`]; closed into
 /// the typed [`Expr<V>`] by [`CaseBuilder::otherwise`].
-///
 /// `#[must_use]` because a `CaseBuilder` that never reaches `.otherwise`
 /// is almost always a mistake — the caller built arms that will never
 /// be emitted into SQL. The drop-without-otherwise case is structurally
@@ -121,7 +107,6 @@ pub struct CaseBuilder<V> {
 
 impl<V> CaseBuilder<V> {
     /// Append another `WHEN <cond> THEN <val>` arm.
-    ///
     /// Arms are ordered — Postgres picks the first arm whose condition
     /// is true. Callers who need "most-specific-first" semantics should
     /// append accordingly; there is no automatic reordering because
@@ -134,7 +119,6 @@ impl<V> CaseBuilder<V> {
 
     /// Close the builder with the `ELSE <default>` arm and produce the
     /// typed [`Expr<V>`].
-    ///
     /// The default is required — a CASE without one produces NULL when
     /// no arm fires, which is rarely the intended semantics. Forcing
     /// the caller to supply a default converts "forgot the fallback"
@@ -153,10 +137,9 @@ impl<V> CaseBuilder<V> {
 mod tests {
     //! Emitter shape tests — assert the SQL tokens produced for a
     //! single-arm CASE and a multi-arm CASE. Live DB coverage lives
-    //! in `tests/integration/phase4_transactions_expressions.rs`.
-    //!
+    //! in `tests/integration/transactions_expressions.rs`.
     //! The tests reach `FieldRef::new` via its `pub(crate)` constructor
-    //! — expr lives in the same crate, so direct construction is fine.
+    //! expr lives in the same crate, so direct construction is fine.
     //! Column strings satisfy `assert_plain_ident`.
 
     use super::*;
@@ -222,7 +205,7 @@ mod tests {
     #[test]
     fn single_arm_case_emits_when_then_else() {
         // Case::when(bal < 0, "overdrawn").otherwise("ok") must emit
-        //   CASE WHEN balance < $1 THEN $2 ELSE $3 END
+        // CASE WHEN balance < $1 THEN $2 ELSE $3 END
         // with three binds — one for the 0 literal on the LHS of the
         // comparison, one for each string literal.
         let f: FieldRef<Acct, i64> = FieldRef::new("balance");
@@ -245,7 +228,7 @@ mod tests {
     #[test]
     fn multi_arm_case_emits_arms_in_order() {
         // Two WHEN arms + ELSE. Assert the literal order is preserved
-        // — the emitter does not reorder arms, so the first-match
+        // the emitter does not reorder arms, so the first-match
         // semantics are predictable.
         let f: FieldRef<Acct, i64> = FieldRef::new("balance");
         let g: FieldRef<Acct, i64> = FieldRef::new("balance");

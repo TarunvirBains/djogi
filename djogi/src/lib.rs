@@ -1,40 +1,33 @@
 //! Djogi — A Model-first web framework for Rust.
-//!
 //! Define your data schema as Rust structs, and the framework derives
 //! everything else: ORM, migrations, admin UI, audit trail, shell bindings,
 //! JSONB schema handling.
-//!
 //! Djogi's core is web-framework-agnostic — it owns the data layer and
 //! delegates HTTP routing/middleware/rendering to whichever Rust web
 //! framework the adopter chooses. Axum is the most-supported integration
 //! target today and ships behind the opt-in `axum` feature flag; it is not
 //! a core dependency.
-//!
 //! # Crate layout at a glance
-//!
-//! | Module       | Role |
+//! | Module | Role |
 //! |--------------|------|
-//! | `config`     | `DjogiConfig` loaded from `Djogi.toml` + env (figment). |
-//! | `context`    | `DjogiContext` — carries either a pooled handle or active transaction. Replaces `E: Executor` generics on `Model` + `QuerySet` signatures (Phase 4 Task 1). |
+//! | `config` | `DjogiConfig` loaded from `Djogi.toml` + env (figment). |
+//! | `context` | `DjogiContext` — carries either a pooled handle or active transaction. Replaces `E: Executor` generics on `Model` + `QuerySet` signatures . |
 //! | `descriptor` | `ModelDescriptor` and friends — the single source of truth about every registered model. Populated by `#[model]` via `inventory::submit!`. |
-//! | `error`      | `DjogiError` — the one error type returned by every `Model` method. |
-//! | `model`      | The `Model` trait the macro implements for every user struct. Defined in Phase 1 Task 2. |
-//! | `query`      | Filter AST: public API is `Condition` + `FieldRef` (plus `QuerySet<T>` and `OrderExpr`). Low-level enums (`Leaf`, `LookupOp`, `FilterValue`) live under `djogi::query::internal` for advanced/custom emitters. Filled in across Phase 2. |
-//! | `relation`   | Relation field types — `ForeignKey<T>`, `OneToOneField<T>`, resolved-cache wrappers, and `OnDelete`. Landed in Phase 3 Task 1; extended by Tasks 2–6 with `RelationPath`, `ManyToMany`, and the macro glue. |
-//! | `types`      | `DateTime`, `Date`, and re-exports of `HeerId`/`RanjId` — the canonical types imported via `prelude`. |
-//!
+//! | `error` | `DjogiError` — the one error type returned by every `Model` method. |
+//! | `model` | The `Model` trait the macro implements for every user struct. Defined in . |
+//! | `query` | Filter AST: public API is `Condition` + `FieldRef` (plus `QuerySet<T>` and `OrderExpr`). Low-level enums (`Leaf`, `LookupOp`, `FilterValue`) live under `djogi::query::internal` for advanced/custom emitters. Filled in across . |
+//! | `relation` | Relation field types — `ForeignKey<T>`, `OneToOneField<T>`, resolved-cache wrappers, and `OnDelete`. Landed in ; extended by Tasks 2–6 with `RelationPath`, `ManyToMany`, and the macro glue. |
+//! | `types` | `DateTime`, `Date`, and re-exports of `HeerId`/`RanjId` — the canonical types imported via `prelude`. |
 //! # Recommended usage
-//!
 //! ```ignore
 //! use djogi::prelude::*;
 //!
 //! #[model(table = "posts")]
 //! struct Post {
-//!     title: String,
-//!     body: String,
+//! title: String,
+//! body: String,
 //! }
 //! ```
-//!
 //! `prelude::*` brings in the `#[model]` attribute macro, `Model` trait,
 //! canonical types (`DateTime`, `Date`, `HeerId`, `RanjId`), and the
 //! `DjogiError` enum — everything a model definition needs.
@@ -77,11 +70,11 @@ pub mod model;
 pub mod notify;
 pub mod outbox;
 pub mod pg;
-// Phase 8.5 Cluster 4 (djogi#170 umbrella) — typed Postgres newtypes
-// with hand-rolled wire codecs. Ships `Interval` (djogi#212), `Range<T>`
-// (djogi#215 substrate), and the network family (`MacAddr` /
-// `CidrAddr`, djogi#213, behind the `network` feature flag). Future
-// umbrella dispatches add more newtypes alongside without reshaping
+// Djogi#170) — typed Postgres newtypes
+// with hand-rolled wire codecs. Ships `Interval`, `Range<T>`
+// (substrate), and the network family (`MacAddr` /
+// `CidrAddr`, , behind the `network` feature flag). Future
+// Future dispatches add more newtypes alongside without reshaping
 // the public surface.
 pub mod pg_types;
 pub mod presentation;
@@ -103,17 +96,16 @@ pub mod visage_boundary;
 // open (not sealed) for extensible test and external-tool usage.
 pub use migrate::{DescriptorProvider, InventoryDescriptorProvider};
 
-// T7 fixup — re-export `DjogiVisageOf` at crate root so adopter code that
+// Re-export `DjogiVisageOf` at crate root so adopter code that
 // bounds generics on "something that projects model M" can spell the
 // trait as `djogi::DjogiVisageOf<M>` rather than reaching into the
 // internal `visage_boundary` module. The trait itself is stable public
 // API; only the module it lives in is implementation-detail.
 pub use visage_boundary::DjogiVisageOf;
 
-// Cluster 8δ T7.4 — `SassiBootHook` re-export so `#[derive(Model)]`-emitted
+// 4 — `SassiBootHook` re-export so `#[derive(Model)]`-emitted
 // `inventory::submit!` blocks can spell `::djogi::SassiBootHook` per
 // `feedback_macro_path_routing.md` (macro paths route through djogi only).
-//
 // GH #125 — re-exported under `#[doc(hidden)]` to keep this link-time
 // machinery off the v0.1.0 adopter-facing surface. The type itself is
 // already `#[doc(hidden)]` at its definition site (`cache::boot`); the
@@ -123,14 +115,12 @@ pub use visage_boundary::DjogiVisageOf;
 pub use crate::cache::SassiBootHook;
 
 /// Private re-exports used only by macro-generated code.
-///
 /// These are `#[doc(hidden)]` because they are an implementation detail of the
 /// `#[model]` macro, not part of the public API. Macro-emitted code uses fully
 /// qualified paths like `::djogi::__private::inventory::submit!` so that users
 /// only need `djogi` as a direct dependency — they never need to add
 /// `inventory` or `time` themselves.
-///
-/// T2 adds `::djogi::__private::pg` containing the new SQL substrate types
+/// `::djogi::__private::pg` contains the SQL substrate types
 /// (`SqlAccumulator`, `PgConnection`, `ToSql`, `FromSql`, `PgRow`). Macro-
 /// emitted code routes through `::djogi::__private::pg::*` rather than
 /// importing `tokio_postgres` / `postgres_types` directly.
@@ -140,7 +130,6 @@ pub mod __private {
     pub use inventory;
     pub use postgres_types;
     /// `rust_decimal` re-export for macro-emitted `u64 → Decimal` bind shims.
-    ///
     /// Macro-emitted code routes `Decimal` through
     /// `::djogi::__private::rust_decimal::Decimal` so adopter crates do not
     /// need a direct `rust_decimal` dependency — only `djogi` needs it.
@@ -152,7 +141,6 @@ pub mod __private {
     pub use tokio_postgres;
 
     /// New SQL substrate re-exports for macro-emitted code.
-    ///
     /// Macro emission routes through `::djogi::__private::pg::*` rather than
     /// directly importing `tokio_postgres::*` or `postgres_types::*` — this
     /// keeps the macro output decoupled from the exact crate versions and
@@ -163,7 +151,7 @@ pub mod __private {
     pub mod pg {
         pub use crate::pg::accumulator::SqlAccumulator;
         pub use crate::pg::connection::PgConnection;
-        /// Canonical row-decode trait (T3). Emitted by `#[model]` with
+        /// Canonical row-decode trait emitted by `#[model]` with
         /// `const COLUMNS`, `const COLUMN_LIST`, and an ordinal
         /// `from_pg_row` body guarded by per-column `debug_assert!`s.
         pub use crate::pg::decode::{
@@ -190,7 +178,6 @@ pub mod __private {
     impl<T: ?Sized> SameAs<T> for T {}
 
     /// Visage boundary marker + its seal.
-    ///
     /// Proc-macro-emitted visages impl `Sealed<M>` and `DjogiVisageOf<M>`
     /// for their source model `M`. Downstream code cannot satisfy the
     /// sealed supertrait, so no hostile `impl DjogiVisageOf<OtherModel>`
@@ -200,9 +187,8 @@ pub mod __private {
     pub use crate::visage_boundary::DjogiVisageOf;
     pub use crate::visage_boundary::private::Sealed as VisageSealed;
 
-    /// Closed-world metadata seal for [`crate::DjogiVisage`] — Phase 8.5
+    /// Closed-world metadata seal for [`crate::DjogiVisage`]
     /// issue #231 reconciliation.
-    ///
     /// Distinct from `VisageSealed`: `VisageSealed<M>` carries a
     /// reflexive `impl<M: Model> VisageSealed<M> for M` blanket so
     /// `DjogiVisageOf<M>` accepts the model itself as a "degenerate
@@ -213,7 +199,6 @@ pub mod __private {
     /// `impl DjogiVisage for MyModel { type Model = Self; ... }` to
     /// fabricate a visage that never went through the `#[model]`
     /// macro's emission path.
-    ///
     /// `DjogiVisageSealed` plugs that gap: **no reflexive blanket**.
     /// The single emitter is the `#[model]` proc macro, which
     /// emits `impl ::djogi::__private::DjogiVisageSealed for {Visage}`
@@ -227,7 +212,7 @@ pub mod __private {
     pub use crate::visage::private::Sealed as DjogiVisageSealed;
 
     /// Seal for macro-emitted [`DerivedParity`](crate::testing::DerivedParity)
-    /// trait impls — Phase 8.5 issue #231 reconciliation. Adopters do
+    /// trait impls — #231 reconciliation. Adopters do
     /// not impl `DerivedParity` themselves; the bound is satisfied
     /// only by `#[model]`-emitted visages with at least one in-scope
     /// derived entry. Re-exported through `__private` so the macro
@@ -242,16 +227,15 @@ pub mod __private {
     /// trait constant. Re-exported here so macro-emitted code routes
     /// through `::djogi::__private::ProjectionEntry` per
     /// `feedback_macro_path_routing.md` — adopter code never names this
-    /// type. Phase 8.5 issue #231. See the module-level docs on
+    /// type. #231. See the module-level docs on
     /// [`crate::visage::projection`] for the convention seal.
     pub use crate::visage::projection::ProjectionEntry;
 
     /// Hidden seal-token witnesses for [`crate::primary_key::PrimaryKey`]
     /// and [`crate::apps::App`].
-    ///
     /// The public `djogi::primary_key` and `djogi::apps` paths used to
     /// re-export the token consts (`__DJOGI_PK_SEAL_TOKEN`,
-    /// `__DJOGI_APPS_SEAL_TOKEN`). That made the seals bypassable —
+    /// `__DJOGI_APPS_SEAL_TOKEN`). That made the seals bypassable
     /// downstream code could grab the public consts and hand-roll a
     /// trait impl. The consts now live only here, under the
     /// `__private` namespace whose contract states "downstream code
@@ -273,8 +257,7 @@ pub mod __private {
         pub const TOKEN: SealToken = SealToken::__new();
     }
 
-    /// Hook-dispatch re-exports for the `#[model(hooks)]` macro (T1.3).
-    ///
+    /// Hook-dispatch re-exports for the `#[model(hooks)]` macro.
     /// The macro-emitted code routes through `::djogi::__private::hooks::*`
     /// rather than `::djogi::hooks::*` so the seal supertrait
     /// (`Sealed`, otherwise unnameable from outside the `djogi` crate)
@@ -282,7 +265,6 @@ pub mod __private {
     /// the public surface — `djogi::ModelHooks` for the trait one
     /// implements, `djogi::hooks::HasHooks` for trait bounds — and never
     /// touches this module.
-    ///
     /// Per `feedback_macro_path_routing.md`: macro-emitted paths route
     /// through `::djogi::*` only; the macro never reaches into
     /// `::heeranjid::*` / `::time::*` / `::uuid::*` / etc. directly.
@@ -293,7 +275,6 @@ pub mod __private {
     }
 
     /// `tracing` re-export for macro-generated `_insecurely()` warn! calls.
-    ///
     /// Routing through `::djogi::__private::tracing` keeps user crates from
     /// needing `tracing` as a direct dependency — the same path-routing
     /// convention used for `inventory`, `postgres_types`, and `futures`.
@@ -303,12 +284,10 @@ pub mod __private {
     /// proc-macro's emitted `IntoQ<#model>` impl for `{Model}Filter`
     /// can satisfy the crate-private `sealed_into_q::Sealed`
     /// supertrait from inside the adopter crate.
-    ///
     /// Adopter code never names this trait — `IntoQ<T>` is the public
     /// surface. Only `djogi-macros::model::filter` reaches in here,
     /// and only to stamp the seal on the `{Model}Filter` types it
     /// generates.
-    ///
     /// See `crate::query::q::__SealedIntoQ` for the underlying
     /// crate-private seal, and `query::q::IntoQ` for the public
     /// trait downstream code consumes.
@@ -320,10 +299,8 @@ pub mod __private {
     /// indirectly via `filter_struct(my_filter)`; the helper exists at
     /// this path so macro-emitted code can route through
     /// `::djogi::__private::query::*` per `feedback_macro_path_routing.md`.
-    ///
-    /// Phase 8eta PR2a additions (consumed by PR2b's direct-`Q<T>` SQL
+    /// Additions (consumed by PR2b's direct-`Q<T>` SQL
     /// walker and PR2d's macro override):
-    ///
     /// - `SqlEmitContext` — the parent-table-threading context PR2d's
     ///   generated `__djogi_emit_field_predicate` arms expect.
     /// - `PortablePredicateError` — the typed lowering error PR2b's
@@ -337,7 +314,7 @@ pub mod __private {
         pub use crate::query::portable::{PortablePredicateError, SqlEmitContext};
         pub use crate::query::q::{IntoQ, Q};
 
-        // Phase 8eta PR2b — hidden re-export of the portable SQL helper
+        // Hidden re-export of the portable SQL helper
         // module. PR2d's macro-emitted
         // `Model::__djogi_emit_field_predicate` override consumes
         // `::djogi::__private::query::portable_emit::*`. The helpers
@@ -356,13 +333,12 @@ pub use apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
 // consumer lands and the variant set stabilises.
 #[doc(hidden)]
 pub use apps::AppDiagnostic;
-// Phase 8 §T2.1 — composition primitives. The runtime trait surfaces.
-// `Auditable` impls are emitted by `#[model(auditable)]` (T2.4 — the
-// surface superseded T2.2's `#[derive(Auditable)]` per spec line 1037,
-// locked 2026-05-03); `SoftDeletable` impls are emitted by
-// `#[model(soft_deletable)]` (T2.6 — the surface superseded T2.3's
-// `#[derive(SoftDeletable)]` for the same proc-macros-cannot-observe-
-// sibling-derives constraint).
+// Composition primitives. The runtime trait surfaces.
+// `Auditable` impls are emitted by `#[model(auditable)]` (supersedes
+// `#[derive(Auditable)]` per spec line 1037, locked 2026-05-03);
+// `SoftDeletable` impls are emitted by `#[model(soft_deletable)]`
+// (supersedes `#[derive(SoftDeletable)]` for the same
+// proc-macros-cannot-observe-sibling-derives constraint).
 pub use compose::{Auditable, SoftDeletable};
 pub use context::DjogiContext;
 pub use descriptor::{
@@ -410,21 +386,18 @@ pub use djogi_macros::djogi_test;
 pub use error::{DbError, DjogiError};
 
 /// Crate-scoped `Result` alias — `Result<T, DjogiError>`.
-///
 /// Every fallible Djogi operation returns a `DjogiError` from a single
 /// public error type, so adopter code can name the success type alone:
-///
 /// ```ignore
 /// use djogi::prelude::*;
 ///
 /// async fn publish(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<Article> {
-///     let mut article = Article::get(ctx, id).await?;
-///     article.published = true;
-///     article.save(ctx).await?;
-///     Ok(article)
+/// let mut article = Article::get(ctx, id).await?;
+/// article.published = true;
+/// article.save(ctx).await?;
+/// Ok(article)
 /// }
 /// ```
-///
 /// The alias mirrors the convention exported by `tokio::io::Result`,
 /// `sqlx::Result`, and most other Rust libraries that own a single error
 /// type — adopters expect `djogi::Result<T>` to exist and can write it
@@ -432,7 +405,6 @@ pub use error::{DbError, DjogiError};
 /// boundaries; reach for the explicit `Result<T, DjogiError>` form only
 /// when a function returns a non-Djogi error (in which case it should
 /// not be using this alias anyway).
-///
 /// Intentionally **not** re-exported through `djogi::prelude` — including
 /// it would shadow `std::result::Result<T, E>` at every adopter call site
 /// that wrote `Result<T, E>` for a non-djogi error. Spell it
@@ -458,11 +430,10 @@ pub use field_codec::FieldCodec;
 pub use field_codec::is_registered as is_codec_registered;
 pub use fts::{FtsDescriptor, TsQuery, TsVector};
 pub use fts_query::FtsFieldRef;
-// Cluster 8γ Stage 2 (T6.9b): `Condition` retired from the crate
-// root re-export. The public predicate substrate is `Q<T>`; the
-// legacy `Condition` type lives at `djogi::query::internal::Condition`
-// for the few cross-cluster consumers that still name it (8β's
-// `default_filter_condition` trait method, integration tests
+// `Condition` is retired from the crate root re-export. The public
+// predicate substrate is `Q<T>`; the legacy `Condition` type lives at
+// `djogi::query::internal::Condition` for the few consumers that still
+// name it (`default_filter_condition` trait method, integration tests
 // asserting on tree shape). Adopter code composes through `Q<T>` and
 // never reaches for `Condition` directly.
 pub use query::{
@@ -485,40 +456,35 @@ pub use types::{
     Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, Range, RangeBound, RanjId,
     RanjIdDesc, RanjIdRecencyBiased,
 };
-// djogi#213 — typed Postgres network types (`network` feature).
+// typed Postgres network types (`network` feature).
 #[cfg(feature = "network")]
 pub use types::{CidrAddr, CidrAddrError, MacAddr, MacAddrParseError};
 pub use visage::{DjogiVisage, VisageError};
 
 /// The canonical adopter import.
-///
 /// `use djogi::prelude::*;` brings the framework's adopter-facing surface into
 /// scope in a single line: every type a model definition or CRUD call site
 /// needs, every macro the model surface depends on, and the canonical type
 /// re-exports (`HeerId`, `RanjId`, `Date`, `DateTime`).
-///
 /// # Example
-///
 /// ```ignore
 /// use djogi::prelude::*;
 ///
 /// #[model(table = "articles")]
 /// pub struct Article {
-///     pub title: String,
-///     pub body: String,
-///     pub published: bool,
+/// pub title: String,
+/// pub body: String,
+/// pub published: bool,
 /// }
 ///
 /// async fn publish(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<Article> {
-///     let mut article = Article::get(ctx, id).await?;
-///     article.published = true;
-///     article.save(ctx).await?;
-///     Ok(article)
+/// let mut article = Article::get(ctx, id).await?;
+/// article.published = true;
+/// article.save(ctx).await?;
+/// Ok(article)
 /// }
 /// ```
-///
 /// # What is in scope
-///
 /// - **Framework macros** — `#[model]`, `#[djogi_test]`, `apps!`, `primary_key!`,
 ///   `#[derive(DjogiEnum)]`, `#[derive(JsonbSchema)]`, plus the serde derives so
 ///   adopter-side typed JSONB schemas can `#[derive(Serialize, Deserialize)]`
@@ -542,9 +508,7 @@ pub use visage::{DjogiVisage, VisageError};
 ///   `DjogiContext::defer_constraints` / `set_constraints_immediate`).
 /// - **Spatial primitive** — `GeoPoint` is included when the `spatial`
 ///   feature is enabled; otherwise it is absent from the prelude.
-///
 /// # What is *not* in scope
-///
 /// - **The crate-scoped `Result<T>` alias.** Adopters spell it
 ///   `djogi::Result<T>` at function signatures (the same shape used by
 ///   `tokio::io::Result`, `sqlx::Result`, etc.). Pulling it through the
@@ -562,14 +526,13 @@ pub use visage::{DjogiVisage, VisageError};
 /// - **The `__private` macro-emission re-exports.** Macro-emitted code
 ///   routes through `::djogi::__private::*` per the path-routing
 ///   convention; adopter code never names those paths.
-///
-/// The prelude is the framework's stability commitment for adopter imports —
-/// names land here once they are intended to live for the long haul.
+///   The prelude is the framework's stability commitment for adopter imports
+///   names land here once they are intended to live for the long haul.
 pub mod prelude {
     #[doc(hidden)]
     pub use crate::apps::AppDiagnostic;
     pub use crate::apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
-    // Phase 8 §T2.1 — composition primitives (see crate root re-export).
+    // .1 — composition primitives (see crate root re-export).
     pub use crate::compose::{Auditable, SoftDeletable};
     pub use crate::context::DjogiContext;
     pub use crate::descriptor::{
@@ -584,7 +547,7 @@ pub mod prelude {
     // every adopter call site that wrote `Result<T, E>` for a non-djogi
     // error, breaking type-resolution for the two-argument form. Adopters
     // who want the alias spell it `djogi::Result<T>` at function signatures
-    // — the same shape `tokio::io::Result` / `sqlx::Result` use today.
+    // the same shape `tokio::io::Result` / `sqlx::Result` use today.
     pub use crate::expr::{
         AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, HypotheticalSetAgg,
         KindEvidence, MetadataAgg, OrderedSetAgg, OuterRef, QualifyCondition, QualifyOp, Rank,
@@ -616,9 +579,9 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate::pg::decode::{FromJoinedPgRow, try_get_scalar};
     pub use crate::pg::pool::DjogiPool;
-    // Cluster 8γ Stage 2 (T6.9b): `Condition` retired from the
-    // prelude. Adopter code composes through `Q<T>` (in this list);
-    // legacy `Condition` callers reach `djogi::query::internal::Condition`.
+    // `Condition` is retired from the prelude. Adopter code composes
+    // through `Q<T>` (in this list); legacy `Condition` callers reach
+    // `djogi::query::internal::Condition`.
     pub use crate::query::{
         AggregateQuery,
         AnnotatedQuerySet,
@@ -627,7 +590,7 @@ pub mod prelude {
         CachedPortableQuerySet,
         ClosureModel,
         ConditionExt,
-        // Phase 8.5 djogi#103 + GH#299 — VALUES join (inner, left, cross).
+        // Djogi#103 + GH#299 — VALUES join (inner, left, cross).
         CrossValuesJoinedQuerySet,
         DjogiPortableEq,
         FieldRef,
@@ -663,7 +626,7 @@ pub mod prelude {
         QuerySet,
         RecursiveDirection,
         RecursiveQuerySet,
-        // Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
+        // Djogi#180 — PG18 OLD/NEW RETURNING result type.
         // `ReturningPair<T>` carries both the before- and after-UPDATE row
         // snapshots; used by `Model::update_returning_pair` and
         // `UpdateStmt::execute_returning_pairs`.
@@ -679,8 +642,8 @@ pub mod prelude {
         VisageQuerySet,
     };
     // `atomic` / `atomic_with` / `retry_on_conflict` /
-    // `retry_on_conflict_with_backoff` — Phase 4 Task 1 canonical transaction
-    // scope + retry helper, plus the Phase 8.5 typed isolation-level surface
+    // `retry_on_conflict_with_backoff` — canonical transaction
+    // scope + retry helper, plus the typed isolation-level surface
     // (#168), production backoff policy (#164), and typed deferred-constraints
     // scope (#169).
     pub use crate::transaction::{
@@ -706,13 +669,13 @@ pub mod prelude {
         Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, Interval, Range, RangeBound,
         RanjId, RanjIdDesc, RanjIdRecencyBiased,
     };
-    // djogi#213 — typed Postgres network types (`network` feature).
+    // typed Postgres network types (`network` feature).
     // `IpAddr` lives in `std::net` and is not re-exported through the
     // prelude (it is stdlib, not djogi); adopters spell it
     // `std::net::IpAddr` at the field declaration site.
     #[cfg(feature = "network")]
     pub use crate::types::{CidrAddr, MacAddr};
-    // T7 fixup — `DjogiVisageOf<M>` is the seal trait bounding every
+    // `DjogiVisageOf<M>` is the seal trait bounding every
     // `{Visage}` type to its source model `M`. Adopter code that writes
     // generic bounds over "any projection of M" names this trait, so it
     // belongs in the default prelude alongside `Model`.
@@ -721,10 +684,10 @@ pub mod prelude {
     // is the only import a model definition needs.
     pub use djogi_macros::model;
     // Re-export the `djogi::apps!` function-like macro — required to declare
-    // compile-time schema ownership domains (Phase 7-Zero v3 T7).
+    // compile-time schema ownership domains .
     pub use djogi_macros::apps;
     // Re-export the `djogi::primary_key!` function-like macro — lets
-    // adopters declare custom PK newtypes (Phase 7-Zero-2 T3).
+    // adopters declare custom PK newtypes .
     pub use djogi_macros::primary_key;
     // Re-export the `#[djogi_test]` attribute macro for test functions.
     // The macro generates code that calls `::djogi::testing::setup_test_db`;
@@ -734,11 +697,11 @@ pub mod prelude {
     pub use djogi_macros::DjogiEnum;
     // Re-export the `#[derive(JsonbSchema)]` derive macro.
     pub use djogi_macros::JsonbSchema;
-    // Phase 8 §T2.6 — `#[derive(SoftDeletable)]` was retired in favour
-    // of `#[model(soft_deletable)]` (mirrors the T2.4 Auditable pivot).
+    // `#[derive(SoftDeletable)]` was retired in favour of
+    // `#[model(soft_deletable)]` (mirrors the Auditable pivot).
     // The runtime trait `SoftDeletable` re-export above (via
     // `crate::compose::*`) stays — only the derive surface goes away.
-    // T11 / issue #30 — re-export the serde derives so `use djogi::prelude::*`
+    // issue #30 — re-export the serde derives so `use djogi::prelude::*`
     // is sufficient for any `JsonbSchema`-deriving or `DjogiEnum`-deriving
     // type. The macro emits `#[derive(Serialize, Deserialize)]` paths through
     // `::djogi::__private::serde`, but adopter-side typed JSONB schemas

@@ -6,7 +6,7 @@
 //! is `djogi-macros`-owned, the trait re-exports are `djogi`-owned,
 //! and putting the integration test alongside the macro keeps the
 //! provenance clear. The lihaaf compile-pass fixtures
-//! (`tests/compile_pass/phase8_t7_cacheable_*.rs`) cover the
+//! (`tests/compile_pass/t7_cacheable_*.rs`) cover the
 //! macro-emission side from a standalone-fixture angle; this file is
 //! the in-crate side — uses `#[derive(Model)]` directly through the
 //! `djogi` dev-dep prelude and asserts on the resulting trait
@@ -528,7 +528,7 @@ fn djogi_enum_field_fallback_rejects_protected_and_same_sql_non_enum_fields() {
 
 /// `pk = None` skips Cacheable emission entirely. Asserting absence
 /// requires a separate lihaaf compile_fail fixture
-/// (`tests/compile_fail/phase8_t7_cacheable_skipped_for_pk_none.rs`)
+/// (`tests/compile_fail/cacheable_skipped_for_pk_none.rs`)
 /// because absence-of-impl is not directly probable at runtime.
 /// This stub names the asserted invariant for grep-discoverability.
 #[test]

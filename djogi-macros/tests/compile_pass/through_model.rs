@@ -1,6 +1,6 @@
 // Verifies that `#[model(table = "...", through)]` parses, compiles, and
 // populates `ModelDescriptor::is_through = true`. The through-marker flag
-// is a Task 6 foundation for the upcoming `ManyToMany<Target>` trait: the
+// is a foundation for the upcoming `ManyToMany<Target>` trait: the
 // runtime side gets the marker now so later commits can wire it into the
 // trait and tooling without a second macro churn.
 //
@@ -13,7 +13,7 @@
 //     `false` on ordinary models — this fixture asserts both branches.
 //
 // The two FK columns on `PersonGroup` mirror the `person_groups_p3` DDL
-// in `tests/integration/migrations/phase3/007_person_groups.sql`, so this
+// in `tests/integration/migrations/relations/007_person_groups.sql`, so this
 // file also catches a type-shape regression if either side of that pair
 // drifts.
 

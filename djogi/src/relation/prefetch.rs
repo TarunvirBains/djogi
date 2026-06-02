@@ -1,55 +1,44 @@
 //! `PrefetchedRow<T>` — the post-prefetch wrapper + its loader machinery.
-//!
 //! # What
-//!
 //! [`PrefetchedRow<T>`] pairs a main-query row with the related rows the
 //! prefetch layer materialised for it. User code obtains a
 //! `Vec<PrefetchedRow<T>>` from
 //! [`QuerySet::fetch_all_prefetched`](crate::query::QuerySet::fetch_all_prefetched)
 //! and reads resolved relations via [`PrefetchedRow::get`], typed by the same
 //! `RelationPath<Source, Target>` that was passed to `.prefetch(...)`.
-//!
 //! # Why a wrapper and not a mutated row
-//!
-//! Phase 3 Task 1 locked in [`ForeignKey<T>`](crate::relation::ForeignKey) as a
+//! Locked in [`ForeignKey<T>`](crate::relation::ForeignKey) as a
 //! PK-only wrapper whose `.resolved()` **always returns `None`** — the type's
 //! whole purpose is to carry a foreign-key reference and nothing else, with
 //! `Copy` / `Eq` / `Hash` semantics derived from the inner PK. Mutating the
 //! row post-fetch to attach cached children would either break that contract
 //! (lose `Copy` by adding interior mutability) or silently diverge two wrappers
 //! that previously compared equal by PK. Neither is acceptable.
-//!
 //! Instead, the prefetch layer returns a **new** wrapper type
 //! (`PrefetchedRow<T>`) that owns the row by value plus a side table of
 //! resolved relations keyed by source column name. The base model type is
 //! untouched — a caller who ignores prefetches still reads raw `T` via
 //! [`fetch_all`](crate::query::QuerySet::fetch_all).
-//!
 //! # How the stitching query is shaped
-//!
 //! For each registered prefetch path, a single SQL round trip fetches the
 //! target rows paired with their originating parent PKs via a `LEFT JOIN`:
-//!
 //! ```sql
 //! SELECT t.col_1, t.col_2, …, t.col_N, p.id AS __djogi_parent_id
 //! FROM <parent_table> p
 //! LEFT JOIN <target_table> t ON t.id = p.<source_column>
 //! WHERE p.id IN ($1, $2, …, $N)
 //! ```
-//!
 //! Target columns come FIRST in `FromPgRow::COLUMN_LIST` order so
 //! [`FromPgRow::from_pg_row`](crate::pg::decode::FromPgRow::from_pg_row)
 //! can decode them positionally (ordinals `0..N_COLS`) without seeing
 //! the trailing `__djogi_parent_id` sentinel; the decoder's
 //! debug-build drift guard checks ordinals `0..N_COLS` exactly and
 //! ignores any trailing columns.
-//!
 //! `IN (...)` is preferred over `ANY($1)` so the loader does not have
 //! to require `Source::Pk: PgHasArrayType` — neither `HeerId` nor
 //! `RanjId` implement that trait in the sibling HeeRanjID crate, and
 //! the per-distinct-arity prepared plan cost is an accepted trade-off
 //! for keeping the framework's type bounds minimal.
-//!
 //! The target columns are enumerated explicitly (via
 //! `<Target as Model>::descriptor().fields`) rather than using `t.*`:
 //! that way the `__djogi_parent_id` synthetic alias cannot collide with
@@ -59,7 +48,6 @@
 //! guarantee it is the parent PK. Explicit enumeration removes the
 //! conflict surface entirely; the synthetic alias is the only column
 //! under that name in the result set by construction.
-//!
 //! - The `LEFT JOIN` naturally handles nullable FK columns: rows whose
 //!   `source_column` is `NULL` appear with every enumerated target
 //!   column null-decoded, which surfaces as `None` on the per-parent
@@ -75,9 +63,7 @@
 //!   the same target payload under its own parent PK. Stitching preserves
 //!   that per-parent association; `row.get(...)` on each `PrefetchedRow`
 //!   returns its own `&Target` reference backed by its own `Box<Target>`.
-//!
 //! # Loader shape
-//!
 //! Each prefetch loader returns `Vec<Option<Box<dyn Any + Send + Sync>>>`
 //! aligned 1-to-1 with the input parent-PK list. An entry is `Some(Box<Target>)`
 //! when the parent's FK resolved to a live target row, and `None`
@@ -86,14 +72,12 @@
 //! into `PrefetchedRow::relations` keyed by `source_column` on the path.
 //! Downcast back to `&Target` happens at read time via
 //! [`PrefetchedRow::get`], driven by the typed `RelationPath<Source, Target>`.
-//!
 //! # Type erasure choice
-//!
 //! `QuerySet<T>` accumulates prefetch paths for arbitrary, heterogeneous
 //! target types (`.prefetch(VehicleRelated::owner()).prefetch(VehicleRelated::fuel_type())`
 //! stores loaders for `Owner` and `FuelType` side by side). The
 //! [`ErasedPrefetch`] handle therefore carries an `fn` pointer whose concrete
-//! signature is monomorphised per call-site at `.prefetch(...)` time —
+//! signature is monomorphised per call-site at `.prefetch(...)` time
 //! [`prefetch_loader`] captures both model types via regular generics. The
 //! erasure at the `Vec<ErasedPrefetch>` layer is a plain function pointer
 //! (`fn`) — no `Box<dyn Trait>` — because every prefetchable shape reuses
@@ -103,14 +87,12 @@
 //! `HashMap`; the downcast at `PrefetchedRow::get` time is infallible by
 //! construction (`path.source_column()` plus the `RelationPath` type
 //! parameters together pin the concrete `Target`).
-//!
 //! # Where
-//!
 //! Consumed by [`crate::query::terminal::QuerySet::fetch_all_prefetched`]
-//! and emitted in [`crate::query::queryset::QuerySet::prefetch`]. Phase 3
+//! and emitted in [`crate::query::queryset::QuerySet::prefetch`].
 //! Task 5 (`select_related`) ships a *separate* JOIN-based path
 //! (`JoinedRow<Parent, Child>`) that does not share this loader infrastructure
-//! — see the Task 5 header comment on that module for the split rationale.
+//! see the Task 5 header comment on that module for the split rationale.
 
 use crate::DjogiError;
 use crate::context::ContextInner;
@@ -129,7 +111,6 @@ use tokio_postgres::types::FromSql;
 /// Type-erased resolved-target payload. One `Box` per prefetched row
 /// slot; `Option` so NULL FKs and orphan LEFT JOIN misses can carry
 /// through as "absent" without forcing a sentinel target value.
-///
 /// Kept at the module level so both the [`PrefetchLoaderFn`] return
 /// signature and the per-path aligned vector in
 /// [`apply_prefetches`] name the same type. Prevents the clippy
@@ -145,31 +126,26 @@ pub(crate) type ResolvedTargetSlot = Option<Box<dyn Any + Send + Sync>>;
 pub(crate) type AlignedTargets = Vec<ResolvedTargetSlot>;
 
 /// Post-prefetch wrapper pairing a main-query row with resolved relations.
-///
 /// Produced by
 /// [`QuerySet::fetch_all_prefetched`](crate::query::QuerySet::fetch_all_prefetched).
 /// Access the underlying row via the public [`PrefetchedRow::row`] field
 /// and resolved relations via [`PrefetchedRow::get`].
-///
 /// # Why the relations map keys on `&'static str` rather than `TypeId`
-///
 /// Two prefetch paths can legitimately resolve to the same target type
 /// (e.g. `author: ForeignKey<User>` and `editor: ForeignKey<User>` on a
 /// `Post` — both point at `User`). A `TypeId` key would collapse the two
 /// into a single slot. The source column name is the natural discriminator
-/// — it is unique per relation by macro-emission rules and available on
+/// it is unique per relation by macro-emission rules and available on
 /// every `RelationPath` via
 /// [`RelationPath::source_column`](crate::relation::RelationPath::source_column).
-///
 /// # Ownership shape
-///
 /// `Box<dyn Any + Send + Sync>` lets the map carry heterogeneous target
 /// types without a variadic generic; `Send + Sync` propagates through so
 /// `Vec<PrefetchedRow<T>>` can cross async task boundaries.
 pub struct PrefetchedRow<T: Model> {
     /// The main-query row, as returned by the underlying
     /// [`fetch_all`](crate::query::QuerySet::fetch_all) path. Relation
-    /// fields on this row remain in their raw (unresolved) shape —
+    /// fields on this row remain in their raw (unresolved) shape
     /// prefetch does not mutate them. See the module-level docs for the
     /// rationale.
     pub row: T,
@@ -197,14 +173,12 @@ impl<T: Model + std::fmt::Debug> std::fmt::Debug for PrefetchedRow<T> {
 
 impl<T: Model> PrefetchedRow<T> {
     /// Look up a prefetched relation by its [`RelationPath`].
-    ///
     /// Returns `Some(&Target)` when the main-query row carried a non-null
     /// FK **and** the target row existed at query time. Returns `None`
     /// for nullable FKs whose column was `NULL`, for FKs pointing at rows
     /// that have since been deleted (LEFT JOIN miss), and for any path
     /// that was never registered via
     /// [`QuerySet::prefetch`](crate::query::QuerySet::prefetch).
-    ///
     /// The typed `RelationPath<T, Target>` argument means mismatched
     /// target types fail at the type level — a
     /// `RelationPath<Vehicle, Owner>` can only be read back as
@@ -231,25 +205,21 @@ impl<T: Model> PrefetchedRow<T> {
 // ---------------------------------------------------------------------------
 
 /// Function signature every prefetch loader satisfies.
-///
 /// `parent_pks` arrives as `Box<dyn Any + Send + Sync>` to let one
 /// heterogeneous `Vec<ErasedPrefetch>` store loaders for different
 /// `Source::Pk` types — the loader downcasts back to its concrete
 /// `Source::Pk` on entry. The return vector is erased the same way; the
 /// caller in [`apply_prefetches`] stores each `Option<Box<dyn Any>>` in
 /// the per-row relations map without ever naming `Target`.
-///
 /// The return shape is `Vec<Option<Box<dyn Any + Send + Sync>>>` aligned
 /// 1-to-1 with the input `parent_pks` order: index `i` carries the
 /// target for parent `i`, or `None` if that parent's FK was null or the
 /// target row was absent. Keeping the alignment lets the stitcher be
 /// `Target`-agnostic.
-///
 /// Using a plain `fn` pointer (not `Box<dyn Fn>` or `&'static dyn Trait`)
 /// keeps [`ErasedPrefetch`] allocation-free and avoids a virtual-call
 /// per registration. Every call site monomorphises [`prefetch_loader`]
 /// once and the resulting `fn` pointer has a fixed, ABI-stable address.
-///
 /// The loader takes `&'a mut ContextInner` rather than a bare `&'a PgPool`
 /// so prefetch fan-out works over both pool-backed and
 /// transaction-backed [`DjogiContext`](crate::context::DjogiContext)
@@ -257,7 +227,7 @@ impl<T: Model> PrefetchedRow<T> {
 /// context variant to reach either the pool connection or the open transaction.
 /// Without this generalisation, `.prefetch(...)`
 /// inside an `atomic()` scope would fail with a
-/// `DjogiError::Db` configuration-style error — see Phase 4 Task 1 for
+/// `DjogiError::Db` configuration-style error — see for
 /// the closure.
 pub(crate) type PrefetchLoaderFn = for<'a> fn(
     exec: &'a mut ContextInner,
@@ -270,7 +240,6 @@ pub(crate) type PrefetchLoaderFn = for<'a> fn(
 
 /// A single type-erased prefetch registration on a
 /// [`QuerySet<T>`](crate::query::QuerySet).
-///
 /// Built by [`QuerySet::prefetch`](crate::query::QuerySet::prefetch) from
 /// a typed [`RelationPath<Source, Target>`]. The `loader` captures both
 /// `Source` and `Target` at the type level via monomorphisation of
@@ -308,28 +277,24 @@ impl std::fmt::Debug for ErasedPrefetch {
 // ---------------------------------------------------------------------------
 
 /// Monomorphised prefetch loader.
-///
 /// One `fn` pointer per unique `(Source, Target)` pair. Captures both
 /// model types via regular generics; the `fn`-pointer coercion at the
 /// `.prefetch(...)` call site turns it into a [`PrefetchLoaderFn`].
-///
 /// Returns a `Vec<Option<Box<dyn Any + Send + Sync>>>` aligned 1-to-1
 /// with the input `parent_pks`. Each slot is
 /// `Some(Box::new(target) as Box<dyn Any>)` when the parent's FK
 /// resolved to a live target row, or `None` otherwise (NULL FK or
 /// LEFT JOIN miss).
-///
 /// The generic bounds spell out the full set of `postgres_types` / `Any`
 /// contracts the runtime path needs:
-///
 /// - `Source: Model` — lets us name `Source::Pk` for downcasting.
 /// - `Source::Pk: postgres_types::ToSql + FromSql + Eq + Hash + Clone +
-///   'static + Send + Sync` — required to bind the per-parent `IN (...)`
+/// 'static + Send + Sync` — required to bind the per-parent `IN (...)`
 ///   arguments, decode the `__djogi_parent_id` column, dedupe the
 ///   query-side input, and use the PK as a HashMap key for stitching.
 ///   No array-type bound — the emitter uses `IN (...)` rather than
 ///   `ANY($1)` precisely so the HeeRanjID PKs slot in unchanged.
-/// - `Target: Model + FromPgRow + Clone + Send + Unpin + 'static` —
+/// - `Target: Model + FromPgRow + Clone + Send + Unpin + 'static`
 ///   the LEFT JOIN returns target columns; `FromPgRow::from_pg_row` decodes them
 ///   from a `tokio_postgres::Row`, `Any` erases the concrete type for
 ///   the return channel.
@@ -390,12 +355,10 @@ where
         }
 
         // Build the stitching query using SqlAccumulator:
-        //
-        //   SELECT t.col_1, t.col_2, ..., t.col_N, p.id AS __djogi_parent_id
-        //   FROM <parent_table> p
-        //   LEFT JOIN <target_table> t ON t.id = p.<source_column>
-        //   WHERE p.id IN ($1, $2, ..., $N)
-        //
+        // SELECT t.col_1, t.col_2, ..., t.col_N, p.id AS __djogi_parent_id
+        // FROM <parent_table> p
+        // LEFT JOIN <target_table> t ON t.id = p.<source_column>
+        // WHERE p.id IN ($1, $2, ..., $N)
         // Target columns come FIRST in the canonical `FromPgRow::COLUMN_LIST`
         // order so `FromPgRow::from_pg_row` decodes them positionally
         // (ordinals 0..N_COLS) and the per-column name guards pass. The
@@ -403,21 +366,18 @@ where
         // and is read by name (`row.try_get("__djogi_parent_id")`), which
         // is tolerant of its ordinal position shifting if the target
         // gains more columns in a future schema revision.
-        //
         // `IN (...)` with one bind per parent PK is used rather than
         // `ANY($1)` — no array-type bound is needed so the HeeRanjID PKs
         // slot in unchanged. The downside is one prepared plan per distinct
         // list arity; this is the accepted trade-off.
-        //
         // LEFT JOIN naturally handles nullable FKs and orphan targets:
         // parent rows with NULL `source_column` or whose FK points at a
         // deleted target emit target columns as NULL, which the null
         // probe below surfaces as `None`.
-        //
         // Target columns are enumerated explicitly via
         // `Target::descriptor().fields` rather than using `t.*` to keep
         // the wire shape stable across migrations that might list user
-        // columns before framework columns (the Phase 4 `accounts` case).
+        // columns before framework columns (the `accounts` case).
         let target_table = <Target as Model>::table_name();
         let target_fields = <Target as Model>::descriptor().fields;
         let mut acc = SqlAccumulator::new("SELECT ");
@@ -478,14 +438,12 @@ where
             // which silently dropped every prefetched target on models
             // with `pk = RanjId` (UUID cannot decode to `i64`) because
             // the decode error was swallowed with `unwrap_or(true)`.
-            //
             // The Model trait already bounds `Pk: FromSql<'a>`, so no
             // extra bound is needed on the loader. Target columns live
             // at ordinals `0..N_COLS` in the emitted SELECT and `id`
             // is the first entry per `FromPgRow::COLUMNS`; either name
             // (`"id"`) or ordinal (`0`) access works, and the name
             // path is stable across future descriptor reshufflings.
-            //
             // Decode errors propagate via `?` — a failure here is a
             // genuine type mismatch or a corrupted row, neither of
             // which should be silently treated as "target absent".
@@ -495,7 +453,7 @@ where
             let slot = if target_is_null {
                 None
             } else {
-                // Decode via `FromPgRow::from_pg_row` — T3's canonical public
+                // Decode via `FromPgRow::from_pg_row` — the canonical public
                 // trait. Emitted by `#[model]` with `COLUMN_LIST`, ordinal
                 // decode, and per-column debug-mode name guards.
                 Some(Target::from_pg_row(&row)?)
@@ -506,10 +464,9 @@ where
 
         // Align back to the original parent-PK order. Each parent whose
         // PK resolved to `Some(Target)` gets a fresh `Box<Target>` so
-        // two parents pointing at the same target don't share storage —
+        // two parents pointing at the same target don't share storage
         // matches the user-facing contract on `PrefetchedRow::get`
         // (returns a `&Target`, not a shared pointer).
-        //
         // The `Target: Clone` bound on this fn is what lets us mint a
         // per-parent owned copy from the single HashMap entry; `Model`
         // itself does not require `Clone`, but every `#[model]`-derived
@@ -539,7 +496,6 @@ where
 // ---------------------------------------------------------------------------
 
 /// Extract the parent-row PKs for passing into prefetch loaders.
-///
 /// Clones `T::Pk` out of each row (PKs are cheap — `HeerId` and friends
 /// are `Copy`-sized) and type-erases them so the loader-fn signature
 /// stays monomorphic across every `(Source, Target)` pair.
@@ -554,7 +510,6 @@ where
 
 /// Apply every registered prefetch loader to `rows` and return a
 /// `Vec<PrefetchedRow<T>>` preserving input order.
-///
 /// Short-circuits on an empty input slice — no loaders are invoked,
 /// no extra SQL round trips. With a non-empty input we always issue
 /// one SQL query per *distinct* registered prefetch path; the
@@ -637,7 +592,7 @@ where
 
 // ---------------------------------------------------------------------------
 // Unit tests — exercise the wrapper in isolation. Live-Postgres integration
-// coverage lives in `tests/integration/phase3_relations.rs`.
+// coverage lives in `tests/integration/relations.rs`.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]

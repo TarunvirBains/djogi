@@ -1,5 +1,4 @@
 //! Shared context and classifier for visage emit passes.
-//!
 //! The three visage emitters (`visages`, `visage_fields`, `visage_query`) each
 //! need the same scope-membership classification for every user field. This
 //! module centralises that logic so the classification is computed once per
@@ -11,7 +10,6 @@ use quote::format_ident;
 use syn::{Ident, ItemStruct};
 
 /// Shared parameters threaded through the three visage emit passes.
-///
 /// `visages::expand` builds one `VisageEmitContext` per scope (the four
 /// `("public", "Public") | ("self_view", "SelfView") | ...` pairs) and hands
 /// the same `&VisageEmitContext` to `visages::emit_projection_for_scope`,
@@ -39,7 +37,7 @@ pub(crate) struct VisageEmitContext<'a> {
     /// PK strategies, 2 for `pk = "none"`). Used to skip past the framework
     /// prefix when iterating user fields.
     pub n_framework: usize,
-    /// Phase 8.5 #231 — every parsed struct-level `#[derived(...)]`
+    /// #231 — every parsed struct-level `#[derived(...)]`
     /// attribute on the source struct, in source order. The visage
     /// emitter filters these per-scope (an attribute contributes a
     /// projection entry iff its `scopes = [...]` list includes
@@ -84,7 +82,6 @@ pub(crate) enum ScopeMembership<'a> {
 
 /// Classify whether and how `field` participates in `scope`, given its
 /// resolved `attrs`.
-///
 /// This function centralises the three-way `(scalar_hit, relation_hit,
 /// is_relation)` dispatch that was previously duplicated inside
 /// `visages::emit_projection_for_scope`, `visage_fields::expand`, and
@@ -132,14 +129,12 @@ pub(crate) fn classify_field_for_scope<'a>(
 }
 
 /// Build the path-aware peer fields path from a `RelationExposure`.
-///
-/// After Phase 8eta PR3, `{Model}Fields` is a ZST whose accessors return
+/// After, `{Model}Fields` is a ZST whose accessors return
 /// `DjogiField<Self, V>` and the struct no longer carries `__djogi_path`
 /// or `with_path`. To keep visage relation traversal compiling — which
 /// composes a peer fields handle threaded with the FK column as a
 /// SQL-alias path prefix — the helper distinguishes two cases by
 /// inspecting the field's resolved relation info:
-///
 /// 1. **Full peer model**: `expose(scope -> Department)` where the path's
 ///    last segment matches the relation target ident. After PR3 the
 ///    full-peer route uses `{Department}SqlFields`, the path-aware
@@ -148,20 +143,18 @@ pub(crate) fn classify_field_for_scope<'a>(
 ///    are SQL-only by construction; routing them through the SQL fields
 ///    view keeps cache and refresh boundaries free of relation paths
 ///    that would silently misclassify as portable.
-///
 /// 2. **Narrow visage**: `expose(scope -> Department::Public)` where the
 ///    path's last segment names a narrow visage type. Visage `{Visage}Fields`
 ///    keeps `__djogi_path` / `with_path` (it is its own struct, not the
 ///    root portable surface). Suffixing the path's last segment with
 ///    `Fields` continues to resolve the existing visage struct.
-///
-/// `field` is the relation field on the source model, used only to look
-/// up the resolved relation target ident through `detect_relation`. When
-/// the lookup fails (a non-relation field passed by mistake), the helper
-/// falls back to the narrow-visage suffix to preserve the pre-PR3 shape;
-/// the calling site (`visage_fields::expand`) already gates relation-form
-/// emission behind `ScopeMembership::RelationEmbed`, so the fallback is
-/// defensive rather than load-bearing.
+///    `field` is the relation field on the source model, used only to look
+///    up the resolved relation target ident through `detect_relation`. When
+///    the lookup fails (a non-relation field passed by mistake), the helper
+///    falls back to the narrow-visage suffix to preserve the pre-PR3 shape;
+///    the calling site (`visage_fields::expand`) already gates relation-form
+///    emission behind `ScopeMembership::RelationEmbed`, so the fallback is
+///    defensive rather than load-bearing.
 pub(crate) fn peer_traversal_fields_path(
     field: &syn::Field,
     exposure: &RelationExposure,

@@ -1,9 +1,6 @@
 //! Field-level codecs for at-rest transformations of protected fields.
-//!
-//! Phase 7.5 T4 — trait + compile-time registry surface.
-//!
+//! Trait + compile-time registry surface.
 //! # Boundary contract (§1 D3 + §1 D4)
-//!
 //! Codec identifiers are `&'static str` consts declared on the trait
 //! impl, and the registry is a [`phf::Set`] populated at framework
 //! compile time. Runtime registration is *not* exposed: a codec that
@@ -13,13 +10,11 @@
 //! identifier that simply does not exist. That outcome is silent
 //! at-rest data corruption, so the framework treats codecs as code,
 //! not data — the only way to add a codec is to ship a new release of
-//! Djogi with that codec wired into the static registry below. T3's
+//! Djogi with that codec wired into the static registry below. The
 //! macro (`#[field(protected(codec = "<id>"))]`) calls
 //! [`is_registered`] during expansion; an unknown identifier is a
 //! compile error at the call site, never a runtime surprise.
-//!
 //! # The trait — `classify_transition` rationale (§1 D4)
-//!
 //! [`FieldCodec::classify_transition`] is an associated function (not
 //! a method on `&self`) because the question it answers — "if a field
 //! moves from codec `Self` to codec `Other`, what migration safety
@@ -29,43 +24,37 @@
 //! no-op signal; returning [`OnlineSafetyClassification::OfflineOnly`]
 //! refuses the change; returning
 //! [`OnlineSafetyClassification::ExpandContract`] hands the migration
-//! over to Phase 7.5's live-plan layer per the boundary contract
+//! over to 's live-plan layer per the boundary contract
 //! frozen in [`crate::migrate::OnlineSafetyClassification`].
-//!
 //! # V1 registry contents
-//!
 //! V1 ships an empty registry. Real codecs (the AEAD / blind-index
-//! pair the spec mentions, etc.) land in later Phase 7.5 tasks. T4's
-//! job is the trait shape and the registry surface — nothing more.
+//! pair the spec mentions, etc.) land in later releases.
 
 use crate::migrate::OnlineSafetyClassification;
 
 /// Trait implemented by every field-level codec.
-///
 /// Implementors are zero-sized marker types (a codec is *code*, not a
 /// runtime instance) and supply:
-///
 /// - [`Self::ID`] — the compile-time string constant the descriptor
 ///   stores in [`crate::descriptor::ProtectedFieldMetadata::codec`].
 ///   Identifiers are short ASCII labels following the SQL-identifier
 ///   convention used elsewhere in the framework: an ASCII letter or
 ///   underscore followed by ASCII alphanumerics or underscores, up to
-///   63 bytes. Validation lives in T3's macro layer; T4 only requires
-///   that the ID be a `&'static str`.
+///   63 bytes. Validation lives in the macro layer. The only requirement
+///   here is that the ID be a `&'static str`.
 /// - [`Self::Decoded`] — the in-memory Rust type the application code
 ///   sees (e.g. `String` for a plaintext column representation).
 /// - [`Self::Encoded`] — the at-rest shape stored in Postgres (e.g.
 ///   `Vec<u8>` for an AEAD-protected column).
 /// - [`Self::Error`] — the codec's error type, returned from both
 ///   [`encode`](Self::encode) and [`decode`](Self::decode).
-///
-/// `encode` and `decode` round-trip a single value across the
-/// in-memory ↔ at-rest boundary. `classify_transition` answers
-/// migration questions: see the module-level docs for the rationale.
+///   `encode` and `decode` round-trip a single value across the
+///   in-memory ↔ at-rest boundary. `classify_transition` answers
+///   migration questions: see the module-level docs for the rationale.
 pub trait FieldCodec: Send + Sync + 'static {
     /// Compile-time identifier referenced by
     /// `#[field(protected(codec = "<id>"))]`. Must be unique across
-    /// every registered codec; T3's macro rejects duplicates and
+    /// every registered codec; the macro rejects duplicates and
     /// rejects identifiers that are not present in [`REGISTRY`].
     const ID: &'static str;
 
@@ -88,40 +77,34 @@ pub trait FieldCodec: Send + Sync + 'static {
     fn decode(stored: &Self::Encoded) -> Result<Self::Decoded, Self::Error>;
 
     /// Classify the migration from `Self` to `Other`.
-    ///
     /// - [`OnlineSafetyClassification::OnlineSafe`] is the convention
     ///   for the identity transition (`Self == Other`).
     /// - [`OnlineSafetyClassification::ExpandContract`] hands the
-    ///   migration over to Phase 7.5's live-plan layer.
+    ///   migration over to 's live-plan layer.
     /// - [`OnlineSafetyClassification::OfflineOnly`] refuses the
     ///   migration outright; the operator must acknowledge downtime
     ///   or rewrite the change by hand.
     /// - [`OnlineSafetyClassification::FastLockDestructiveGuarded`] is
-    ///   gated by `--allow-destructive` in the Phase 7 runner.
-    ///
-    /// Reads as an associated function because the answer is a
-    /// property of the two codec types, not of any value.
+    ///   gated by `--allow-destructive` in the runner.
+    ///   Reads as an associated function because the answer is a
+    ///   property of the two codec types, not of any value.
     fn classify_transition<Other: FieldCodec>() -> OnlineSafetyClassification;
 }
 
 /// Registry of every codec identifier known to the framework at
 /// compile time.
-///
 /// Built with [`phf::phf_set!`] so [`is_registered`] resolves to a
 /// constant-time perfect-hash lookup. V1 is empty — real codecs land
-/// in later Phase 7.5 tasks. The set is `pub(crate)` because adopters
+/// in later tasks. The set is `pub(crate)` because adopters
 /// query it through [`is_registered`] rather than reaching for the
 /// underlying container; that indirection lets future phases swap the
 /// representation without breaking downstream code.
-///
 /// # Synchronization contract with `djogi-macros`
-///
 /// Adding a codec ID requires updating BOTH this `phf::Set` and the
 /// sibling `KNOWN_CODEC_IDS` sorted const slice in
 /// `djogi-macros::model::protected`. The macro validates
 /// `#[field(protected(codec = "<id>"))]` at proc-macro expansion time
-/// (Phase 7.5 T3); the runtime registry serves runtime queries.
-///
+/// ; the runtime registry serves runtime queries.
 /// The duplicate is intentional: proc macros run before any runtime
 /// dependency is available, so the macro crate cannot read this
 /// `phf::Set` directly. A `const fn is_registered` would push the
@@ -135,13 +118,11 @@ pub(crate) static REGISTRY: phf::Set<&'static str> = phf::phf_set! {};
 
 /// Returns `true` iff `id` is the compile-time identifier of a codec
 /// shipped with this build of Djogi.
-///
-/// T3's macro consumes this during expansion of
+/// The macro consumes this during expansion of
 /// `#[field(protected(codec = "<id>"))]` — an unknown identifier is a
 /// compile error, never a runtime failure. Adopter code rarely needs
 /// to reach the registry directly because the macro layer already
 /// guards every declaration site.
-///
 /// `#[doc(hidden)]` — primarily a macro-layer validator at expansion
 /// time; the macro crate keeps its own mirror of the registry, so this
 /// runtime fn has no current adopter consumer.

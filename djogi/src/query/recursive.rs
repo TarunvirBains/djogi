@@ -1,9 +1,6 @@
 //! `RecursiveQuerySet<T>` — typed recursive-CTE query builder for
-//! tree-shaped models. Phase 8-Zero Cluster B2 (T9 + T10 + T11 + T11b)
-//! and Cluster B3 (T13 + T13a).
-//!
+//! tree-shaped models.
 //! # What
-//!
 //! A `RecursiveQuerySet<T>` is the entry point for walking a self-referential
 //! parent edge on a model `T`. It is constructed via
 //! [`QuerySet::tree_descendants`](crate::query::QuerySet::tree_descendants) /
@@ -11,22 +8,18 @@
 //! via the inherent sugar [`Model::tree_descendants`] /
 //! [`Model::tree_ancestors`] when the model declares
 //! `#[model(tree_edge = "<column>")]`.
-//!
 //! Like [`QuerySet`](crate::query::QuerySet), it is lazy — every builder
 //! method consumes `self` and returns `Self`; nothing reaches the database
 //! until a terminal method ([`fetch_all`](RecursiveQuerySet::fetch_all),
 //! [`count`](RecursiveQuerySet::count), [`exists`](RecursiveQuerySet::exists),
 //! [`first`](RecursiveQuerySet::first)) is called.
-//!
 //! # Why a separate type (not extra `QuerySet` methods)
-//!
 //! Recursive queries compose differently from plain `SELECT`s — `offset`,
 //! `distinct`, row locks, prefetch, and update / delete each require
 //! recursive-CTE-specific handling that is either incorrect or actively
 //! misleading on the regular `QuerySet`. Splitting the surface keeps the
 //! plain queryset's API stable and cleanly excludes the methods that
 //! cannot soundly compose with a recursive walk:
-//!
 //! - `offset` — `OFFSET n` over a recursive walk silently drops ancestors
 //!   from the head of the result, which almost never matches caller
 //!   intent.
@@ -35,10 +28,10 @@
 //!   redundant and prone to suppressing legitimately-distinct rows.
 //! - `select_for_update` / `nowait` / `skip_locked` /
 //!   `select_for_share` / `for_share_nowait` / `for_share_skip_locked`
-//!   — row locks on a recursive walk acquire one lock per visited row
+//!   row locks on a recursive walk acquire one lock per visited row
 //!   in walk order. Pre-1.0 we ban this until we have a clear "lock
-//!   the whole subtree atomically" story (out of scope for Phase
-//!   8-Zero). The FOR SHARE family (djogi#104) inherits the same
+//!   the whole subtree atomically" story (out of scope for the current
+//!   release). The FOR SHARE family inherits the same
 //!   exclusion.
 //! - `prefetch` / `select_related` — fan-out over a tree multiplies the
 //!   round trips by the size of the subtree; the right shape is a single
@@ -46,36 +39,31 @@
 //!   shape avoids accidental N+1 over a tree.
 //! - bulk `update` / `delete` — non-trivial cascade semantics; deferred
 //!   to a later phase when we can declare the lock and visibility model.
-//!
 //! # SQL shape
-//!
 //! The emitter produces one of:
-//!
 //! ```sql
 //! -- DESCENDANTS (one edge)
 //! WITH RECURSIVE __djogi_tree (depth, path, <cols...>) AS (
-//!     SELECT 0, ARRAY[]::text[], <cols...>
-//!     FROM <table>
-//!     WHERE id = $1
-//!   UNION ALL
-//!     SELECT parent.depth + 1, parent.path || ARRAY['<edge_col>'],
-//!            <child.cols...>
-//!     FROM <table> child
-//!     JOIN __djogi_tree parent ON child.<edge_col> = parent.id
-//!     [WHERE <user_filter>]
-//!     [AND parent.depth < $n]
+//! SELECT 0, ARRAY[]::text[], <cols...>
+//! FROM <table>
+//! WHERE id = $1
+//! UNION ALL
+//! SELECT parent.depth + 1, parent.path || ARRAY['<edge_col>'],
+//! <child.cols...>
+//! FROM <table> child
+//! JOIN __djogi_tree parent ON child.<edge_col> = parent.id
+//! [WHERE <user_filter>]
+//! [AND parent.depth < $n]
 //! ) [SEARCH BREADTH FIRST BY <col> SET __djogi_search_seq]
-//!   CYCLE id SET is_cycle USING cycle_path
+//! CYCLE id SET is_cycle USING cycle_path
 //! SELECT <cols...> FROM __djogi_tree
 //! WHERE NOT is_cycle
 //! [ORDER BY <__djogi_search_seq,> <user_order>]
 //! ```
-//!
 //! For `tree_ancestors` the join condition flips to
 //! `parent.<edge_col> = child.id` — child walks up, parent has the FK
 //! pointing at child.
-//!
-//! For `full_ancestors` (B3 — T13a) the recursive term consolidates
+//! For `full_ancestors` the recursive term consolidates
 //! every self-FK edge into a single recursive SELECT and fans the
 //! per-edge alternatives out through a non-recursive
 //! `JOIN LATERAL (... UNION ALL ...) child ON TRUE` subquery. Each
@@ -86,9 +74,7 @@
 //! "mother_id"]` (paternal grandmother). This shape satisfies
 //! Postgres's "exactly one self-reference in the recursive term"
 //! rule for multi-edge models.
-//!
 //! # SQL invariants
-//!
 //! - **`UNION ALL`**, never `UNION` — multiplicity preservation is
 //!   load-bearing for `full_ancestors`. Wright-style kinship
 //!   coefficients sum independent connecting paths through common
@@ -107,7 +93,7 @@
 //!   the caller invoked
 //!   [`search_breadth_first_by`](RecursiveQuerySet::search_breadth_first_by) /
 //!   [`search_depth_first_by`](RecursiveQuerySet::search_depth_first_by).
-//!   The internal sequence column `__djogi_search_seq` is macro-internal —
+//!   The internal sequence column `__djogi_search_seq` is macro-internal
 //!   the `__djogi_` prefix is framework-reserved (see
 //!   `docs/spec/reserved-identifiers.md`), so it cannot collide with
 //!   adopter model fields. It is never projected into the outer SELECT,
@@ -118,9 +104,7 @@
 //!   building SQL, exactly like the plain `QuerySet` terminals. Without
 //!   this, recursive walks leak across tenants whenever the model carries
 //!   a `tenant_key`.
-//!
 //! # `clippy::manual_async_fn`
-//!
 //! Every terminal returns `impl Future<Output = ...> + Send + 'ctx`
 //! rather than `async fn`. The explicit-bound form matches the
 //! [`Model`](crate::model::Model) trait's RPITIT shape and is required
@@ -128,9 +112,7 @@
 //! Tokio runtimes (e.g. inside an Axum handler). The lint fires on
 //! every such method; allowing it at the module level matches the
 //! same allowance in [`crate::query::terminal`].
-//!
-//! # Visages do not implement tree queries (Phase 8-Zero T14b)
-//!
+//! # Visages do not implement tree queries
 //! [`VisageQuerySet`](crate::query::VisageQuerySet) intentionally does
 //! NOT carry `tree_descendants` / `tree_ancestors` / `full_ancestors` in
 //! v0.1.0. Recursive walks need the full row materialised at every step
@@ -140,7 +122,6 @@
 //! but drops every other column is no different from a plain
 //! `RecursiveQuerySet<T>` filtered through a SELECT projection — the
 //! latter is what callers should reach for today.
-//!
 //! Future work could surface a `VisageRecursiveQuerySet` variant that
 //! validates self-FK presence at the boundary and projects the visage's
 //! column set onto the outer SELECT after the CTE materialises. Out of
@@ -153,7 +134,7 @@ use crate::context::DjogiContext;
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::{FromPgRow, try_get_scalar};
-// Phase 8eta PR3: `FieldRef` is no longer the parameter type for
+// `FieldRef` is no longer the parameter type for
 // `search_breadth_first_by` / `search_depth_first_by` — both methods now
 // accept any `IntoSqlField<T, V>`. The unit tests in `mod tests` below
 // continue to construct `FieldRef::<_, _>::new(...)` values directly
@@ -185,12 +166,10 @@ use std::marker::PhantomData;
 const SEARCH_SEQ_COL: &str = "__djogi_search_seq";
 
 /// Direction of the recursive walk.
-///
 /// `Descendants` walks downward — given a root row, accumulate every row
 /// whose self-FK chain leads back up to the root. `Ancestors` walks
 /// upward — given a leaf, accumulate every row reached by following the
 /// self-FK from the current node to its parent.
-///
 /// Stored on the builder; consulted by the SQL emitter to pick the
 /// recursive-term JOIN condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +181,6 @@ pub enum RecursiveDirection {
 }
 
 /// Search-order discriminator.
-///
 /// Mutually exclusive with itself — last call to
 /// [`search_breadth_first_by`](RecursiveQuerySet::search_breadth_first_by) /
 /// [`search_depth_first_by`](RecursiveQuerySet::search_depth_first_by)
@@ -232,7 +210,6 @@ impl SearchMode {
 
 /// Lazy recursive-CTE query builder. Nothing hits the database until a
 /// terminal method is called.
-///
 /// Constructed via
 /// [`QuerySet::tree_descendants`](crate::query::QuerySet::tree_descendants) /
 /// [`QuerySet::tree_ancestors`](crate::query::QuerySet::tree_ancestors)
@@ -240,7 +217,6 @@ impl SearchMode {
 /// the inherent sugar
 /// [`Model::tree_descendants`] / [`Model::tree_ancestors`] (works only on
 /// models that declare `#[model(tree_edge = "...")]`).
-///
 /// See the module-level documentation for the SQL shape, the `UNION ALL`
 /// rationale, and the auto-tenant contract.
 pub struct RecursiveQuerySet<T: Model> {
@@ -258,7 +234,6 @@ pub struct RecursiveQuerySet<T: Model> {
     /// UNION ALL ...) child ON TRUE` subquery — single-edge walks
     /// degenerate to one alternative (no inner `UNION ALL` inside the
     /// lateral) and behave exactly as the B2 single-edge form.
-    ///
     /// An empty `edges` Vec is invalid — every constructor enforces
     /// `!edges.is_empty()` either at debug-assert time (the typed
     /// `from_path` / `from_paths` callers) or at terminal time
@@ -309,13 +284,12 @@ impl<T: Model> std::fmt::Debug for RecursiveQuerySet<T> {
 }
 
 impl<T: Model> RecursiveQuerySet<T> {
-    /// Construct from a typed [`RelationPath<T, T>`] and a root id —
+    /// Construct from a typed [`RelationPath<T, T>`] and a root id
     /// the work-horse constructor that
     /// [`QuerySet::tree_descendants`](crate::query::QuerySet::tree_descendants) /
     /// [`QuerySet::tree_ancestors`](crate::query::QuerySet::tree_ancestors)
     /// delegate into. Crate-private — callers reach through the typed
     /// `QuerySet` methods.
-    ///
     /// Validates only the relation kind: a self-FK relation must be
     /// `RelationKind::ForeignKey` or `RelationKind::OneToOne`. Anything
     /// else (`ManyToMany`, future variants) cannot anchor a tree walk.
@@ -358,17 +332,15 @@ impl<T: Model> RecursiveQuerySet<T> {
 
     /// Multi-edge constructor — the
     /// [`Model::full_ancestors`](crate::model::Model::full_ancestors)
-    /// entry point. Phase 8-Zero Cluster B3 (T13a).
-    ///
+    /// entry point.
     /// One [`RelationPath<T, T>`] per self-FK edge declared on `T`;
     /// the SQL emitter then produces a single recursive SELECT that
     /// fans the per-edge alternatives out through a non-recursive
-    /// `JOIN LATERAL (... UNION ALL ...) child ON TRUE` subquery —
+    /// `JOIN LATERAL (... UNION ALL ...) child ON TRUE` subquery
     /// satisfying Postgres's "exactly one self-reference in the
     /// recursive term" rule while still walking every declared parent
     /// edge in a single CTE pass. `edges.len() == 1` degenerates to
     /// the same SQL the single-edge constructor produces.
-    ///
     /// Accepts an empty `edges` Vec — terminals fail with a
     /// descriptive [`DjogiError::Query`] at execution time. Carrying
     /// the empty-edge state through the builder keeps the
@@ -404,9 +376,8 @@ impl<T: Model> RecursiveQuerySet<T> {
     }
 
     /// AND a typed filter closure onto the recursive-term `WHERE`.
-    ///
     /// Same closure shape as [`QuerySet::filter`](crate::query::QuerySet::filter)
-    /// — receives a default-constructed `T::Fields` and returns any
+    /// receives a default-constructed `T::Fields` and returns any
     /// [`IntoQ<T>`](crate::query::IntoQ) value
     /// (`Condition`, `PortablePredicate<T>`, `Predicate<T>`,
     /// `Q<T>`, `Expr<bool>`). The predicate applies to **every recursive
@@ -415,7 +386,6 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// the subtree rooted here, narrowed by predicate" — narrowing the
     /// root would change which subtree is being walked, not which rows
     /// in it match.
-    ///
     /// PR3: the closure return type generalised from `Condition` to
     /// `IntoQ<T>` so post-flip root closures returning portable
     /// predicates (`f.col().eq(value)` -> `PortablePredicate<T>`)
@@ -435,9 +405,8 @@ impl<T: Model> RecursiveQuerySet<T> {
     }
 
     /// AND an expression-IR predicate onto the recursive-term `WHERE`.
-    ///
     /// Field-vs-field comparisons and arithmetic predicates work exactly
-    /// as on [`QuerySet::filter_expr`](crate::query::QuerySet::filter_expr) —
+    /// as on [`QuerySet::filter_expr`](crate::query::QuerySet::filter_expr)
     /// the closure returns an `Expr<bool>`, which is wrapped in
     /// `Q::Expression` before being AND-ed onto the accumulated tree.
     /// Same anchor-row caveat as [`filter`](Self::filter): the anchor is
@@ -453,14 +422,12 @@ impl<T: Model> RecursiveQuerySet<T> {
 
     /// Append outer `ORDER BY` clauses applied **after** CTE
     /// materialization.
-    ///
     /// Ordering is never injected inside the recursive term — it would
     /// have no defined effect on `UNION ALL` and Postgres's recursive
     /// query planner explicitly disallows it. Use
     /// [`search_breadth_first_by`](Self::search_breadth_first_by) /
     /// [`search_depth_first_by`](Self::search_depth_first_by) when the
     /// goal is BFS / DFS traversal order, not lexical column ordering.
-    ///
     /// Multiple `order_by` calls **append** in Django-style — library
     /// code can stack tiebreakers without clobbering the caller's
     /// primary ordering.
@@ -477,13 +444,11 @@ impl<T: Model> RecursiveQuerySet<T> {
 
     /// Bound recursive depth — emits `AND parent.depth < $n` in the
     /// recursive term.
-    ///
     /// **No default.** When this method is not called, the walk runs to
     /// natural exhaustion or until the `CYCLE id` clause detects a cycle.
     /// Both termination paths are correct; pick `with_max_depth` only
     /// when caller intent really is "stop after N hops" (e.g. UI
     /// breadcrumb that should never render more than 5 ancestors).
-    ///
     /// The bound is bound as a positional `$n` parameter — the value
     /// never appears verbatim in the emitted SQL.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
@@ -494,23 +459,19 @@ impl<T: Model> RecursiveQuerySet<T> {
 
     /// Emit `SEARCH BREADTH FIRST BY <col> SET __djogi_search_seq` on
     /// the CTE.
-    ///
     /// Postgres annotates each recursive row with a sequence value the
     /// outer SELECT's `ORDER BY __djogi_search_seq` then sorts by; this
     /// terminal automatically prepends that ORDER BY (the user's
     /// `order_by` clauses, if any, append after as tiebreakers) so
     /// callers see BFS-traversal order without writing the order term
     /// by hand.
-    ///
-    /// Mutually exclusive with [`search_depth_first_by`](Self::search_depth_first_by) —
+    /// Mutually exclusive with [`search_depth_first_by`](Self::search_depth_first_by)
     /// last call wins. Type-state would be heavy for v0.1.0; mutual
     /// exclusion is documented behaviour.
-    ///
     /// `__djogi_search_seq` is macro-internal — the `__djogi_` prefix
     /// is framework-reserved (see
     /// `docs/spec/reserved-identifiers.md`), so a model field cannot
     /// collide with the synthetic search column.
-    ///
     /// PR3: accepts both legacy `FieldRef<T, V>` and the post-flip root
     /// accessor return type `DjogiField<T, V>` through the sealed
     /// [`IntoSqlField`](crate::query::field::IntoSqlField) bridge.
@@ -528,7 +489,6 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// Emit `SEARCH DEPTH FIRST BY <col> SET __djogi_search_seq` on
     /// the CTE — DFS sibling of
     /// [`search_breadth_first_by`](Self::search_breadth_first_by).
-    ///
     /// Same auto-prepended outer `ORDER BY __djogi_search_seq`,
     /// same mutual-exclusion rule. Same `IntoSqlField` bridge as
     /// [`search_breadth_first_by`](Self::search_breadth_first_by).
@@ -555,9 +515,8 @@ fn and_q_into_q<T: Model, A: crate::query::IntoQ<T>>(current: Q<T>, addition: A)
 
 // ── SQL builder ────────────────────────────────────────────────────────────
 
-/// Emit the canonical column list with a per-column `<alias>.` prefix —
+/// Emit the canonical column list with a per-column `<alias>.` prefix
 /// `<alias>.col1, <alias>.col2, ...`.
-///
 /// Used inside the CTE's anchor and recursive terms to project every
 /// column of `T` from a specific table reference (`<table>` for the
 /// anchor, `child` for the recursive term). The bare-name form
@@ -580,12 +539,10 @@ fn push_qualified_columns<T: FromPgRow>(acc: &mut SqlAccumulator, alias: &'stati
 /// Build the recursive-CTE SELECT for `qs`. Pure SQL emission — never
 /// touches a connection. The returned [`SqlAccumulator`] is consumed by
 /// the terminals below.
-///
 /// Consumes the queryset because the root id is stored as a
 /// `Box<dyn ToSql + Sync + Send>` that the emitter moves into the
 /// accumulator's bind vector. Terminals already take `self` by value,
 /// so the consume-by-value shape composes naturally.
-///
 /// Bind ordering: `$1` is the root id; subsequent `$n` slots are
 /// allocated by [`emit_q`] for the user filter and by
 /// [`with_max_depth`](RecursiveQuerySet::with_max_depth) for the depth
@@ -616,8 +573,7 @@ pub(crate) fn build_recursive_exists<T: Model + FromPgRow>(
 
 /// Same recursive-CTE shape as [`build_recursive_select`], with the
 /// outer SELECT extended to project the CTE's `depth` and `path`
-/// columns alongside `T`'s own column list. Phase 8-Zero Cluster B3
-/// (T13).
+/// columns alongside `T`'s own column list.
 pub(crate) fn build_recursive_select_with_paths<T: Model + FromPgRow>(
     qs: RecursiveQuerySet<T>,
 ) -> Result<SqlAccumulator, DjogiError> {
@@ -625,7 +581,6 @@ pub(crate) fn build_recursive_select_with_paths<T: Model + FromPgRow>(
 }
 
 /// Outer projection mode for the shared recursive-CTE emitter.
-///
 /// Four terminals share the recursive-CTE shape (anchor + recursive
 /// term + CYCLE + optional SEARCH); only the outer SELECT differs.
 /// Routing through this enum keeps the CTE definition emitted exactly
@@ -637,7 +592,7 @@ enum RecursiveProjection {
     /// Outer `SELECT <cols...>` — the row terminal.
     Rows,
     /// Outer `SELECT <cols...>, depth, path` — the
-    /// `fetch_all_with_paths` terminal (B3 T13). Adds two trailing
+    /// `fetch_all_with_paths` terminal. Adds two trailing
     /// columns the row decoder pulls out by name (`depth`, `path`)
     /// without touching `T`'s own `FromPgRow` impl.
     RowsWithDepthAndPath,
@@ -662,8 +617,7 @@ fn build_recursive_inner<T: Model + FromPgRow>(
         RecursiveProjection::Exists => acc.push_sql("SELECT EXISTS ("),
     }
 
-    // ── WITH RECURSIVE __djogi_tree (depth, path, <cols...>) AS ( ────────
-    //
+    // ── WITH RECURSIVE __djogi_tree (depth, path, <cols...>) AS (────────
     // The CTE column list orders `depth` and `path` first — the
     // anchor's `SELECT 0, ARRAY[]::text[], <cols...>` and the
     // recursive's `SELECT parent.depth + 1, parent.path ||
@@ -674,7 +628,6 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     acc.push_sql(") AS (");
 
     // ── Anchor: SELECT 0, ARRAY[]::text[], <cols...> FROM <table> WHERE id = $1
-    //
     // The anchor's `path` is the empty `text[]` — every recursive
     // step appends one edge name, so the path length on a row equals
     // the number of edges traversed from the root, which is exactly
@@ -693,14 +646,12 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     acc.push_bind(DynBind(qs.root_id));
 
     // ── UNION ALL — single recursive term, all edges fanned out ──────────
-    //
     // `UNION ALL` (not `UNION`) is load-bearing for `full_ancestors`
     // multiplicity preservation. With multiple edges, the same
     // ancestor reached by two distinct edge sequences (e.g. a common
     // ancestor on both maternal and paternal sides of a pedigree)
     // must surface twice; `UNION` would dedup and silently break
     // Wright-style kinship coefficient computations.
-    //
     // **Single recursive reference invariant.** Postgres rejects
     // recursive CTEs whose recursive term contains the CTE name more
     // than once ("recursive reference must not appear more than
@@ -716,8 +667,7 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     // them with a synthetic `__djogi_edge_label` text column the
     // outer SELECT splices into `path`. Multi-path arrivals are
     // preserved because each lateral alternative emits its own row
-    // — UNION ALL never deduplicates.
-    //
+    // UNION ALL never deduplicates.
     // `qs` is consumed by value here, so each field can be moved out
     // directly — `condition` (a `Q<T>` enum tree) and `ordering`
     // (a `Vec<OrderExpr>`) used to be cloned out of historical caution,
@@ -792,7 +742,7 @@ fn build_recursive_inner<T: Model + FromPgRow>(
             // against the `__djogi_tree parent` side of the JOIN,
             // which exposes the same column names through the
             // same alias scope.
-            // Phase 8eta PR3 — recursive filters carry `Q<T>` like the
+            // Recursive filters carry `Q<T>` like the
             // plain `QuerySet` path. `emit_q` handles both legacy
             // `Condition` leaves and trusted portable predicates, qualifying
             // root columns through the `child` lateral alias.
@@ -818,7 +768,7 @@ fn build_recursive_inner<T: Model + FromPgRow>(
         }
     }
 
-    // ── ) [SEARCH ...] CYCLE id SET is_cycle USING cycle_path ────────────
+    // ──) [SEARCH ...] CYCLE id SET is_cycle USING cycle_path ────────────
     acc.push_sql(")");
     if let Some(mode) = search_mode {
         acc.push_sql(mode.keyword());
@@ -878,7 +828,6 @@ fn build_recursive_inner<T: Model + FromPgRow>(
 
 /// Emit the outer `ORDER BY` clause shared by [`RecursiveProjection::Rows`]
 /// and [`RecursiveProjection::RowsWithDepthAndPath`].
-///
 /// SEARCH-ordering first (so BFS / DFS works without an explicit
 /// `order_by`), then the user's ordering as tiebreakers. Either alone
 /// is valid; both together is valid SQL and matches Django's
@@ -918,7 +867,6 @@ where
     T: FromPgRow + Send + Unpin,
 {
     /// Materialise every reachable row into a `Vec<T>`.
-    ///
     /// Honours the [`auto_set_tenant`] contract — RLS-keyed models have
     /// `app.tenant_id` set from the caller's auth context before the
     /// CTE runs. Order of returned rows depends on the builder state:
@@ -948,15 +896,12 @@ where
 
     /// Materialise every reachable row paired with its **depth** and
     /// **path** — the edge-name sequence from the root to that row.
-    /// Phase 8-Zero Cluster B3 (T13).
-    ///
     /// `depth` is the `i32` count of recursive hops from the anchor;
     /// `path` is the `Vec<String>` of edge column names appended one
     /// per recursive step. For a single-edge `tree_descendants` walk
     /// every row's `path` is `["<edge_col>"; depth]` — uniform but
     /// useful when the caller needs the edge name without re-deriving
     /// it from the queryset shape.
-    ///
     /// For a multi-edge
     /// [`Model::full_ancestors`](crate::model::Model::full_ancestors)
     /// walk every step independently picks which edge it followed, so
@@ -968,8 +913,7 @@ where
     /// across `path` permutations, so multiplicity is preserved
     /// (every distinct path materialises a separate row even when it
     /// reaches the same ancestor twice).
-    ///
-    /// The tuple shape `(T, i32, Vec<String>)` is intentional —
+    /// The tuple shape `(T, i32, Vec<String>)` is intentional
     /// pre-1.0 we keep the surface narrow; a typed wrapper struct
     /// would lock in field names that benchmark callers may want
     /// renamed once shell ergonomics surface real usage. The
@@ -1008,7 +952,6 @@ where
 
     /// Return the first reachable row, or `None` if the walk yields
     /// no rows.
-    ///
     /// Emits the same recursive CTE as `fetch_all` with a tailored
     /// outer `LIMIT 1`. The `LIMIT` lives on the outer SELECT — after
     /// CYCLE filtering and SEARCH / user ORDER BY — so callers get
@@ -1041,7 +984,6 @@ where
 {
     /// `SELECT COUNT(*) FROM (... recursive CTE ...)` — the
     /// reachable-row count.
-    ///
     /// `i64` to match Postgres's `BIGINT` `COUNT(*)` result and leave
     /// headroom for tables that grow past `i32::MAX`.
     pub fn count<'ctx>(
@@ -1062,7 +1004,7 @@ where
         }
     }
 
-    /// `SELECT EXISTS(SELECT 1 FROM (... recursive CTE ...) LIMIT 1)` —
+    /// `SELECT EXISTS(SELECT 1 FROM (... recursive CTE ...) LIMIT 1)`
     /// "does the walk reach at least one row" without materialising the
     /// whole subtree.
     pub fn exists<'ctx>(
@@ -1092,10 +1034,8 @@ where
 /// `edges: vec![]` through the builder so the caller's
 /// `.with_max_depth(...)` / `.fetch_all(...)` chain still type-checks.
 /// At terminal time we surface the misuse as a descriptive
-/// [`DjogiError::Query`] before any SQL is built. Phase 8-Zero
-/// Cluster B3 (T13a).
-///
-/// The error message names the model and points at the requirement —
+/// [`DjogiError::Query`] before any SQL is built.
+/// The error message names the model and points at the requirement
 /// callers either declare a self-FK or fall back to
 /// [`Model::tree_descendants`] / [`Model::tree_ancestors`] which
 /// already communicate the requirement at construction time.
@@ -1114,8 +1054,7 @@ fn check_edges_present<T: Model>(edges: &[RelationPath<T, T>]) -> Result<(), Djo
 /// Newtype wrapping `Box<dyn ToSql + Sync + Send>` so it can satisfy
 /// the `T: ToSql + Sync + Send + 'static` bound on
 /// [`SqlAccumulator::push_bind`].
-///
-/// `Box<dyn ToSql + Sync + Send>` itself does not impl `ToSql` —
+/// `Box<dyn ToSql + Sync + Send>` itself does not impl `ToSql`
 /// `ToSql` is not auto-implemented for trait objects because of its
 /// associated `accepts` fn. Stamping a thin newtype with delegating
 /// `to_sql` / `accepts` impls is the canonical workaround. Every
@@ -1124,7 +1063,6 @@ fn check_edges_present<T: Model>(edges: &[RelationPath<T, T>]) -> Result<(), Djo
 /// is exactly what `T::Pk`'s native `ToSql` impl produces — no wire-
 /// format reinterpretation, no unsafe, no extra allocation beyond the
 /// `Box` already on the queryset.
-///
 /// `RecursiveQuerySet` carries the root id as `Box<dyn ToSql + Sync +
 /// Send>` so the builder's struct shape is independent of `T::Pk`'s
 /// concrete type. At terminal time the box moves into a [`DynBind`]
@@ -1179,7 +1117,6 @@ mod tests {
     //! the emitted SQL or a count of bind slots. No live database is
     //! reached here; integration tests against a real Postgres live
     //! in B5.
-    //!
     //! `MiniTree` is a stub `Model` + `FromPgRow` impl just rich
     //! enough to drive the recursive-CTE emitter. Its CRUD methods
     //! panic — they're never called in these tests, which exercise
@@ -1563,7 +1500,7 @@ mod tests {
     #[test]
     fn anchor_initialises_path_as_empty_text_array() {
         // The anchor row has `depth = 0` and `path = ARRAY[]::text[]`
-        // — the empty path the recursive term then accumulates one
+        // the empty path the recursive term then accumulates one
         // edge name into per step.
         let qs = root();
         let acc = build_recursive_select(qs).expect("recursive select");
@@ -1646,10 +1583,9 @@ mod tests {
         // the recursive term. Multi-edge walks therefore consolidate
         // every edge into a single recursive SELECT and enumerate
         // edge alternatives via a non-recursive `LATERAL (... UNION
-        // ALL ...)` subquery. (B5 round-2 fixup — the original
+        // ALL ...)` subquery. (B5 fixup — the original
         // per-edge UNION ALL form failed live with "recursive
         // reference must not appear more than once".)
-        //
         // Total `UNION ALL` count is `1 + (N - 1)` for N edges:
         // - 1 between anchor and the consolidated recursive term
         // - N - 1 inside the LATERAL between the per-edge SELECTs
@@ -1723,7 +1659,7 @@ mod tests {
         // `with_max_depth` attaches once to the consolidated
         // recursive term (not per-edge as the historical multi-branch
         // shape did). Total binds = 1 root id + 1 depth cap = 2,
-        // regardless of edge count. (B5 round-2 fixup.)
+        // regardless of edge count. (B5 fixup.)
         let qs = full_ancestors_two_edges().with_max_depth(3);
         let acc = build_recursive_select(qs).expect("recursive select");
         let sql = acc.sql();

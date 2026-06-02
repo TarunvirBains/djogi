@@ -1,27 +1,20 @@
 //! Spatial grouping — typed group-key newtypes and helpers for spatial
 //! GROUP BY paths (region grouping, DBSCAN clustering, geohash bucketing).
-//!
 //! Key types: [`RegionKey<R>`], [`ClusterId`], [`GeohashKey`].
 //! Builder helpers: [`ClusterRadius`], [`GeohashPrecision`].
-//!
 //! # Why this module exists
-//!
 //! Spatial GROUP BY operations share structure with plain GROUP BY (keys +
 //! aggregates + HAVING + ORDER BY) but derive the group key from a spatial
 //! JOIN (`ST_Contains(r.geo, t.geo)`) rather than a plain `GROUP BY col`.
 //! This module provides the typed wrappers that carry that structural
 //! difference without leaking SQL into the caller.
-//!
 //! # IntoGroupKeyTuple placement
-//!
 //! `IntoGroupKeyTuple` is defined in `grouped.rs` with a `pub(crate)`
 //! `sealed::Sealed` super-trait. The crate-level seal lets the spatial key
 //! impls for `RegionKey<R>`, `ClusterId`, and `GeohashKey` live alongside
 //! their type definitions in this file rather than in `grouped.rs` — the
 //! seal still bars downstream crates from implementing the trait.
-//!
 //! # Feature gate
-//!
 //! Everything in this module is behind the `spatial` feature flag.
 
 #![cfg(feature = "spatial")]
@@ -35,11 +28,9 @@ use std::marker::PhantomData;
 
 /// Parameters captured at `group_by_region` call time. The SQL builder reads
 /// these to emit the LEFT JOIN clause and the GROUP BY target.
-///
 /// All fields are `&'static str` — they come from macro-baked
 /// `Model::table_name()` and `FieldDescriptor::name`, so they are always
 /// `'static`. No user input flows through this struct.
-///
 /// This type is internal to `djogi` — it is not constructed or inspected by
 /// user code. Only `group_by_region` produces it; only the SQL builder reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,14 +52,11 @@ pub(crate) struct SpatialJoinSpec {
 
 /// Group key produced by [`QuerySet::group_by_region`] /
 /// [`QuerySet::count_by_region`].
-///
 /// - `Some(pk)` — the row fell inside region `R` with that primary key.
 /// - `None` — the row matched no region (LEFT JOIN semantics; the
 ///   "unassigned" bucket so rows outside all known regions are not silently
 ///   dropped).
-///
 /// # Type parameter
-///
 /// `R` is the region model — any type that implements [`Model`]. The primary
 /// key type is `R::Pk`.
 #[derive(Debug, Clone, PartialEq)]
@@ -89,24 +77,18 @@ pub struct RegionKey<R: Model> {
 // ── ClusterRadius ─────────────────────────────────────────────────────────────
 
 /// Radius for [`QuerySet::cluster_by_proximity`] — DBSCAN's `eps` parameter.
-///
 /// # Choosing a radius
-///
 /// `meters(n)` converts to degrees using the equatorial approximation
 /// (111 320 m/degree). For high-latitude precision, supply a precomputed
 /// degree value with `degrees(n)` instead.
-///
 /// # `min_points`
-///
 /// The `min_points` builder sets DBSCAN's `minpoints` threshold — the minimum
 /// number of points within `eps` of a point for that point to be a *core
 /// point*. Points that are reachable from a core point but not core themselves
 /// are *border points*; remaining points are *noise* (exposed as
 /// `ClusterId(None)`). Default is `1` (every isolated point becomes its own
 /// single-member cluster; nothing is noise).
-///
 /// # Example
-///
 /// ```ignore
 /// // Cluster stores within 500 m, requiring at least 3 nearby stores
 /// // for a point to anchor a cluster.
@@ -117,7 +99,6 @@ pub struct ClusterRadius {
     /// DBSCAN `eps` parameter in degrees (computed from meters at construction).
     pub(crate) eps_degrees: f64,
     /// DBSCAN `minpoints` parameter. Default `1`.
-    ///
     /// Typed as `i32` to match the PostGIS `ST_ClusterDBSCAN(geometry, float8,
     /// integer)` signature directly — no cast, no silent wrap on overflow.
     pub(crate) minpoints: i32,
@@ -125,7 +106,6 @@ pub struct ClusterRadius {
 
 impl ClusterRadius {
     /// Build a `ClusterRadius` from a distance in **metres**.
-    ///
     /// Converts using the equatorial approximation `1 degree ≈ 111 320 m`,
     /// derived from `(2 · π · R_earth) / 360` with the WGS84 equatorial radius
     /// `R_earth = 6 378 137 m`. Accuracy degrades with latitude — at 60° the
@@ -141,7 +121,6 @@ impl ClusterRadius {
     }
 
     /// Build a `ClusterRadius` from a distance in **degrees** directly.
-    ///
     /// Use this when you have a precomputed degree value or when metre-based
     /// conversion is not accurate enough for your latitude.
     pub fn degrees(d: f64) -> Self {
@@ -152,11 +131,9 @@ impl ClusterRadius {
     }
 
     /// Set the DBSCAN `minpoints` threshold (builder pattern, consumes `self`).
-    ///
     /// Points with fewer than `n` neighbours within `eps` are *noise*
     /// (`ClusterId(None)`). Default is `1`.
-    ///
-    /// Typed as `i32` to match `ST_ClusterDBSCAN`'s `integer` parameter —
+    /// Typed as `i32` to match `ST_ClusterDBSCAN`'s `integer` parameter
     /// passing a negative or zero value makes PostGIS reject the query at
     /// execution time.
     pub fn min_points(mut self, n: i32) -> Self {
@@ -168,10 +145,8 @@ impl ClusterRadius {
 // ── GeohashPrecision ──────────────────────────────────────────────────────────
 
 /// Precision level for [`QuerySet::bucket_by_cell`] geohash bucketing.
-///
 /// Geohash encodes a geographic point as a short string where longer strings
 /// represent smaller, more precise grid cells:
-///
 /// | Precision | Cell size (approx) |
 /// |---|---|
 /// | P1 | 5 000 km × 5 000 km (continent) |
@@ -180,9 +155,7 @@ impl ClusterRadius {
 /// | P7 | 153 m × 153 m (street block) |
 /// | P9 | 4.8 m × 4.8 m (building) |
 /// | P12 | sub-metre |
-///
 /// `P5` is a popular default for heatmaps and sharding use cases.
-///
 /// This enum is `#[non_exhaustive]` — future PostGIS versions may support
 /// precision levels beyond 12, and Djogi reserves the right to add variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,7 +210,6 @@ impl GeohashPrecision {
 // ── ClusterId ─────────────────────────────────────────────────────────────────
 
 /// Group key produced by [`QuerySet::cluster_by_proximity`].
-///
 /// - `ClusterId(Some(id))` — the row belongs to cluster `id`. Ids are
 ///   assigned by PostGIS `ST_ClusterDBSCAN` and are dense non-negative
 ///   integers starting at `0`, but their values should not be interpreted
@@ -245,9 +217,7 @@ impl GeohashPrecision {
 /// - `ClusterId(None)` — the row is a *noise point*: isolated, with fewer
 ///   than `minpoints` neighbours within `eps`. Only possible when
 ///   `ClusterRadius::min_points(n)` is set to `n > 1`.
-///
 /// # When `None` appears
-///
 /// With `ClusterRadius::meters(500.0)` (default `min_points = 1`), every
 /// point is always a core point of its own cluster, so `None` is never
 /// produced. Increase `min_points` to push sparse / isolated points into the
@@ -258,27 +228,20 @@ pub struct ClusterId(pub Option<i32>);
 // ── GeohashKey ────────────────────────────────────────────────────────────────
 
 /// Group key produced by [`QuerySet::bucket_by_cell`].
-///
 /// Holds the geohash string at the chosen [`GeohashPrecision`], wrapped in
 /// `Option` for symmetry with [`ClusterId`] and to handle the NULL case:
-///
 /// - `GeohashKey(Some(h))` — the row's geography column had a value, and
 ///   `ST_GeoHash` produced the geohash string `h`.
 /// - `GeohashKey(None)` — the row's geography column was SQL `NULL`
 ///   (`Option<G>` field). `ST_GeoHash(NULL, _)` returns `NULL`, and these
 ///   rows land in a single `None` bucket.
-///
-/// Non-nullable geography columns (no `Option<G>`) never produce `None`.
-///
+///   Non-nullable geography columns (no `Option<G>`) never produce `None`.
 /// # Interpreting the key
-///
 /// Geohash strings are prefix-ordered: `"dr5r"` falls inside the coarser cell
 /// `"dr5"`, which falls inside `"dr"`, etc. You can therefore perform
 /// coarser-grained re-aggregation by truncating the key string on the client
 /// side without re-querying.
-///
 /// # Example
-///
 /// ```ignore
 /// let buckets: Vec<(GeohashKey, i64)> = Store::objects()
 ///     .bucket_by_cell(|f| f.location(), GeohashPrecision::P5)
@@ -299,7 +262,6 @@ pub struct GeohashKey(pub Option<String>);
 
 /// Internal parameters captured at `cluster_by_proximity` call time.
 /// Consumed by the SQL builder to emit the `ST_ClusterDBSCAN` window call.
-///
 /// Not part of the public API — constructed only by `cluster_by_proximity`;
 /// read only by the SQL builder.
 #[derive(Debug, Clone)]
@@ -315,7 +277,6 @@ pub(crate) struct ClusterSpec {
 
 /// Internal parameters captured at `bucket_by_cell` call time.
 /// Consumed by the SQL builder to emit the `ST_GeoHash` scalar call.
-///
 /// Not part of the public API — constructed only by `bucket_by_cell`;
 /// read only by the SQL builder.
 #[derive(Debug, Clone)]
@@ -327,13 +288,11 @@ pub(crate) struct GeohashSpec {
 }
 
 // ── IntoGroupKeyTuple impls for the spatial key types ───────────────────────
-//
 // These were previously stranded in `grouped.rs` because the `sealed::Sealed`
 // trait was module-private. Now that the seal is `pub(crate)`, each spatial
 // key owns its impl alongside its type definition.
 
 // RegionKey: `r.<pk-col>` group / select column derived from the JOIN target.
-//
 // `r_pk_col` is `Some` on the sentinel value stored in `GroupedQuerySet::keys`
 // (set by `group_by_region`) and `None` on the decoded output produced by
 // `decode_tuple` — the user-facing value needs no column name.
@@ -495,7 +454,7 @@ mod tests {
         }
     }
 
-    // ── T11.1: RegionKey implements IntoGroupKeyTuple ─────────────────────
+    // ── RegionKey implements IntoGroupKeyTuple ─────────────────────
 
     #[test]
     fn region_key_implements_into_group_key_tuple() {
@@ -503,7 +462,7 @@ mod tests {
         assert_bound::<RegionKey<FakeRegion>>();
     }
 
-    // ── T11.1: push_select_columns emits `r.<pk-col> AS rk0` ─────────────
+    // ── push_select_columns emits `r.<pk-col> AS rk0` ─────────────
 
     #[test]
     fn push_select_columns_emits_qualified_alias() {
@@ -517,7 +476,7 @@ mod tests {
         assert_eq!(acc.sql(), "r.id AS rk0");
     }
 
-    // ── T11.1: push_group_by_columns emits `r.<pk-col>` ──────────────────
+    // ── push_group_by_columns emits `r.<pk-col>` ──────────────────
 
     #[test]
     fn push_group_by_columns_emits_qualified_column() {
@@ -531,7 +490,7 @@ mod tests {
         assert_eq!(acc.sql(), "r.id");
     }
 
-    // ── T11.1: SpatialJoinSpec fields are accessible (crate-internal) ─────
+    // ── SpatialJoinSpec fields are accessible (crate-internal) ─────
 
     #[test]
     fn spatial_join_spec_fields_are_readable() {
@@ -547,7 +506,7 @@ mod tests {
         assert_eq!(spec.r_pk_col, "id");
     }
 
-    // ── T12: ClusterRadius constructors ───────────────────────────────────
+    // ── ClusterRadius constructors ───────────────────────────────────
 
     #[test]
     fn cluster_radius_meters_converts_to_degrees() {
@@ -580,7 +539,7 @@ mod tests {
         assert_eq!(r.minpoints, 1);
     }
 
-    // ── T12: GeohashPrecision::as_i32 ─────────────────────────────────────
+    // ── GeohashPrecision::as_i32 ─────────────────────────────────────
 
     #[test]
     fn geohash_precision_as_i32_returns_correct_value() {
@@ -589,7 +548,7 @@ mod tests {
         assert_eq!(GeohashPrecision::P12.as_i32(), 12);
     }
 
-    // ── T12: ClusterId IntoGroupKeyTuple ──────────────────────────────────
+    // ── ClusterId IntoGroupKeyTuple ──────────────────────────────────
 
     #[test]
     fn cluster_id_implements_into_group_key_tuple() {
@@ -618,7 +577,7 @@ mod tests {
         assert_eq!(acc.sql(), "cluster_id");
     }
 
-    // ── T12: GeohashKey IntoGroupKeyTuple ─────────────────────────────────
+    // ── GeohashKey IntoGroupKeyTuple ─────────────────────────────────
 
     #[test]
     fn geohash_key_implements_into_group_key_tuple() {

@@ -1,5 +1,4 @@
 //! Configuration via `Djogi.toml` + environment variables.
-//!
 //! `DATABASE_URL` env var always overrides `[database].url`.
 //! Secrets live in env vars, never in `Djogi.toml`.
 
@@ -20,7 +19,6 @@ pub struct DjogiConfig {
     /// out-of-order policy default (production/CI rejects out-of-order
     /// applies; development warns and proceeds) and gates destructive
     /// `attune --squash` operations.
-    ///
     /// Recognised values today: `"development"` (default), `"production"`,
     /// `"staging"`, `"test"`. Anything that is not the literal
     /// `"production"` string is treated as non-production.
@@ -73,8 +71,7 @@ pub struct ServerConfig {
 /// Migration-engine settings. Controls the runner's relpages-probe
 /// behaviour for `CREATE INDEX` statements that lack
 /// `requires_out_of_transaction = true`.
-///
-/// Per Phase 7-Zero v3 §6.5 — when a transactional `CREATE INDEX` is
+/// Per .5 — when a transactional `CREATE INDEX` is
 /// about to run against a table whose `pg_class.relpages` exceeds
 /// `concurrent_warn_relpages`, the runner emits a
 /// `tracing::warn!` advising the operator to opt the index into
@@ -99,7 +96,7 @@ pub struct MigrateConfig {
     pub strict_concurrent_warnings: bool,
 
     /// Threshold (in seconds) above which an open transaction
-    /// triggers the pre-flight refusal in T9's PK-flip orchestration.
+    /// triggers the pre-flight refusal in the PK-flip orchestration.
     /// The runner enumerates `pg_stat_activity` rows whose
     /// `xact_start` is older than `now() - INTERVAL <threshold>`
     /// before opening the cutover transaction; any rows found refuse
@@ -108,7 +105,7 @@ pub struct MigrateConfig {
     #[serde(default = "default_pk_flip_long_tx_threshold_secs")]
     pub pk_flip_long_tx_threshold_secs: u32,
 
-    /// Join-table cutover layout for T9's PK-flip orchestration.
+    /// Join-table cutover layout for PK-flip orchestration.
     /// `'A'` (default — uppercase ASCII letter A) emits a single
     /// mega-transaction across both parents and the join table per
     /// playbook §7. `'B'` emits sequential per-parent migrations
@@ -142,7 +139,6 @@ impl Default for MigrateConfig {
 /// Migration policy knobs — controls how the runner reacts to
 /// out-of-order applies and how `verify` reports historical
 /// out-of-order rows.
-///
 /// These fields are intentionally separate from [`MigrateConfig`].
 /// `MigrateConfig` controls runner mechanics (relpages probe, strict
 /// warnings) — `PolicyConfig` controls policy decisions (allow vs
@@ -155,7 +151,6 @@ pub struct PolicyConfig {
     /// When `false` (the default), the same rows surface as `D622`
     /// Warning — verify still reports the drift, but does not fail
     /// the run.
-    ///
     /// Pair with the runner-side [`crate::migrate::OutOfOrderPolicy`]:
     /// the runner gates whether out-of-order applies are PERMITTED;
     /// `strict_out_of_order` gates whether already-applied out-of-order
@@ -193,7 +188,6 @@ impl DjogiConfig {
     /// [`crate::migrate::OutOfOrderPolicy`] to `Reject` and to gate
     /// `attune --squash` against accidental destructive history
     /// rewrites.
-    ///
     /// **Definition.** `profile` literally equal to the lowercase
     /// string `"production"`. Anything else (including
     /// `"Production"`, `"PROD"`, `"prod"`) is treated as
@@ -236,7 +230,6 @@ impl DjogiConfig {
 
     /// Load configuration from `<workspace>/Djogi.toml` instead of the
     /// cwd-relative `Djogi.toml`.
-    ///
     /// This is the path-aware loader used by CLI subcommands that
     /// accept `--workspace <path>`. The default
     /// [`load`](Self::load) reads `Djogi.toml` from the current
@@ -308,7 +301,7 @@ mod tests {
     }
 
     /// Loading a TOML that omits `[database].max_connections` keeps
-    /// `None` rather than silently substituting a non-zero default —
+    /// `None` rather than silently substituting a non-zero default
     /// the `from_database_config` path must be able to fall through to
     /// the builder default.
     #[test]

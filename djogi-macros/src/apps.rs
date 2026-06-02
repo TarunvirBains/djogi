@@ -1,7 +1,5 @@
 //! `djogi::apps! { … }` function-like proc macro.
-//!
 //! Lowers a block of `#[app(...)] pub struct Foo;` declarations into:
-//!
 //! 1. The unit structs themselves, with every `#[app(...)]` attribute
 //!    stripped (the emitted struct is plain Rust; all app metadata is
 //!    captured in the [`App`] impl).
@@ -15,10 +13,8 @@
 //! 4. A single zero-sized invocation sentinel emitted exactly once
 //!    per `djogi::apps!` call. Two invocations in the same crate
 //!    collide on the sentinel's name and rustc raises `duplicate
-//!    definition`.
-//!
+//! definition`.
 //! # Parser
-//!
 //! Hand-rolled, matching the model-index parser shape. Darling's
 //! derive grammar cannot express "a block of top-level item
 //! declarations, each with its own attribute" — this is closer to a
@@ -28,15 +24,11 @@
 //! (including no visibility at all) is accepted verbatim and
 //! preserved in the emitted struct; field form other than unit
 //! (tuple or named) is rejected with a precise span.
-//!
 //! # ASCII validation
-//!
 //! Every label shape check uses byte-level primitives. Default label
 //! derivation calls `str::to_ascii_lowercase`; explicit overrides go
 //! through `validate_label_shape` before any token emission.
-//!
 //! # Path routing
-//!
 //! Every macro-emitted path starts with `::djogi::` per
 //! `feedback_macro_path_routing.md`. The macro never references
 //! `::heeranjid::*` / `::time::*` / `::inventory::*` directly.
@@ -154,10 +146,9 @@ fn parse_app_decl(input: ParseStream<'_>) -> syn::Result<AppDecl> {
 /// - `database = "…"` (required),
 /// - `renamed_from = "old_label"` (optional lifecycle marker),
 /// - `tombstone` (optional lifecycle flag).
-///
-/// Errors on duplicates, unknown keys, non-string values, or when
-/// `renamed_from` and `tombstone` both appear (mutually exclusive —
-/// a tombstoned app is being retired, not renamed).
+///   Errors on duplicates, unknown keys, non-string values, or when
+///   `renamed_from` and `tombstone` both appear (mutually exclusive
+///   a tombstoned app is being retired, not renamed).
 struct ParsedAppAttr {
     label_override: Option<LitStr>,
     database: String,
@@ -314,7 +305,6 @@ fn parse_app_attribute(attrs: &[Attribute], ident: &Ident) -> syn::Result<Parsed
 
 /// Resolve the effective label for an app decl: explicit override if
 /// present, otherwise the struct identifier lowercased byte-by-byte.
-///
 /// The explicit path validates the override against §3; the default
 /// path assumes `to_ascii_lowercase` of a valid Rust identifier still
 /// satisfies §3 (first byte ASCII-letter or `_`, remaining bytes
@@ -333,17 +323,14 @@ fn derive_label(decl: &AppDecl) -> syn::Result<String> {
 }
 
 /// Byte-level ASCII-shape check.
-///
 /// Rules:
-///
 /// 1. Non-empty.
 /// 2. First byte is `b'_'` or `u8::is_ascii_alphabetic`.
 /// 3. Remaining bytes are `b'_'` or `u8::is_ascii_alphanumeric`.
 /// 4. Total length ≤ 63 bytes (Postgres `NAMEDATALEN - 1`).
-///
-/// `via_override` only changes the error message's advice — "add an
-/// explicit `#[app(label = \"…\")]`" is only useful when the current
-/// failure came from the default-derivation path.
+///    `via_override` only changes the error message's advice — "add an
+///    explicit `#[app(label = \"…\")]`" is only useful when the current
+///    failure came from the default-derivation path.
 fn validate_label_shape(label: &str, span: Span, via_override: bool) -> syn::Result<()> {
     let bytes = label.as_bytes();
     if bytes.is_empty() {
@@ -518,7 +505,6 @@ fn emit_one(decl: &AppDecl, label: &str) -> TokenStream {
 }
 
 /// Emit a same-scope duplicate-invocation sentinel.
-///
 /// Cross-scope duplicate app identities are validated by
 /// [`crate::apps::AppRegistry::all`].
 fn emit_invocation_sentinel() -> TokenStream {

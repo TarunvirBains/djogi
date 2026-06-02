@@ -1,37 +1,28 @@
 //! Generates `impl ::djogi::pg::decode::FromJoinedPgRow for T`.
-//!
 //! # What
-//!
 //! Emits the prefix-aware row decoder for every `#[model]`-annotated struct.
 //! The generated `from_joined_pg_row(row, prefix)` reads each field by name via
 //! `row.try_get(...)`, letting the
 //! `select_related` emitter decode both the parent (empty prefix) and a
 //! child (e.g. `"rel_owner_id."`) from the same joined row without
 //! column-name collisions.
-//!
 //! # Why a sibling impl to `FromPgRow`
-//!
 //! [`FromPgRow`](::djogi::pg::decode::FromPgRow) decodes by canonical
 //! projection order and therefore has no prefix parameter. Joined decode
 //! needs a caller-supplied alias stem, so the macro emits a sibling impl
 //! with one `row.try_get` per field using stable alias mapping:
 //! `"{prefix}{column_name}"` for generic joined rows and `o{idx}` / `n{idx}`
 //! for legacy `__djogi_old__` / `__djogi_new__` decoding.
-//!
 //! An empty prefix (`""`) degenerates to the same column names the model
 //! declares directly. The macro intentionally does not derive joined decode
 //! through `FromPgRow`: one path is positional, the other is name-based and
 //! prefix-aware.
-//!
 //! # How
-//!
-//! Column name == field name, same convention Phase 1's `from_row::expand`
+//! Column name == field name, same convention the `from_row::expand`
 //! uses. Injected framework fields (`id` / `created_at` / `updated_at`) are
 //! included automatically because the macro iterates the post-injection
 //! struct shape.
-//!
 //! # Where
-//!
 //! Called from `mod.rs` after `inject::expand` has mutated the struct, so the
 //! iterator includes the framework fields without extra bookkeeping.
 
@@ -43,7 +34,6 @@ use super::attrs::{FieldAttrs, ModelAttrs};
 use super::sql_bind::{bind_kind, decode_joined_field_tokens, is_nullable, is_tracked_inner};
 
 /// Generate the `FromJoinedPgRow` impl for `struct_item`.
-///
 /// `model_attrs` and `field_attrs` are accepted for API consistency with the
 /// sibling `from_row::expand` and for future use (e.g. `column` overrides).
 pub fn expand(

@@ -1,18 +1,14 @@
 //! `#[derive(DjogiEnum)]` proc macro — typed Postgres enum support.
-//!
 //! Emits four things per enum:
-//!
 //! 1. `impl postgres_types::ToSql for MyEnum` — encodes the Rust variant as its mapped
 //!    Postgres wire string. Uses `to_sql_checked!()` for the forwarded type-check path.
 //! 2. `impl<'a> postgres_types::FromSql<'a> for MyEnum` — decodes the wire bytes as a
 //!    string, matches against known variants, returns `Err(EnumDecodeError { ... })` for
 //!    unknown labels.
 //! 3. `inventory::submit!(::djogi::descriptor::EnumDescriptor { ... })` — registers the
-//!    enum's metadata for the Phase 7 migration differ.
+//!    enum's metadata for the migration differ.
 //! 4. `impl MyEnum { pub fn variants() -> &'static [&'static str] }` — convenience fn.
-//!
 //! # Attribute grammar
-//!
 //! ```rust,ignore
 //! #[derive(DjogiEnum, Clone, Copy, PartialEq, Eq, Debug)]
 //! #[djogi_enum(name = "vehicle_status", rename_all = "snake_case")]
@@ -23,17 +19,13 @@
 //!     Retired,
 //! }
 //! ```
-//!
 //! - `name` (required) — the Postgres type name.
 //! - `rename_all` (optional, default `"snake_case"`) — case conversion applied to all
 //!   variants. Supported values: `snake_case`, `SCREAMING_SNAKE_CASE`, `lowercase`,
 //!   `UPPERCASE`, `PascalCase`, `camelCase`, `kebab-case`.
-//!
-//! Per-variant override: `#[djogi_enum_variant(name = "...")]` takes precedence over
-//! `rename_all`.
-//!
+//!   Per-variant override: `#[djogi_enum_variant(name = "...")]` takes precedence over
+//!   `rename_all`.
 //! # Compile-time validation
-//!
 //! - Empty enum → error: "requires at least one variant".
 //! - Non-unit variant (tuple/struct) → error: "variants must be unit-only".
 //! - Two variants map to the same Postgres string → error at the second variant.
@@ -286,14 +278,12 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let matches_field_type_fn =
         format_ident!("__djogi_enum_matches_field_type_{}", enum_name_snake);
 
-    // ── Emit IntoFilterValue match arms (Phase 7-Zero-2 T7, Step 8) ─────────
-    //
+    // ── Emit IntoFilterValue match arms (, Step 8) ─────────
     // A `DjogiEnum` round-trips as a Postgres enum column (backed by a
     // wire string), so for filter-closure use it converts into
     // `FilterValue::String(<wire>)`. This lets users write
     // `f.status().eq(VehicleStatus::Active)` in a filter closure and have
     // the clause encode the enum variant as its wire label.
-    //
     // The match mirrors the `ToSql` arms — same `(variant, wire)` pairs,
     // re-emitted as an owned `String`. Keeping a dedicated match (rather
     // than delegating to `variants()[self as usize]`) avoids taking a
@@ -362,7 +352,6 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
         impl #enum_name {
             /// Returns the ordered slice of Postgres wire strings for all variants.
-            ///
             /// The order matches the enum declaration order and the
             /// [`::djogi::descriptor::EnumDescriptor::variants`] slice.
             pub fn variants() -> &'static [&'static str] {
@@ -563,7 +552,7 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             }
         }
 
-        // Phase 7-Zero-2 T7 — filter-closure support. Encoding the enum
+        // Filter-closure support. Encoding the enum
         // variant as its Postgres wire string (`FilterValue::String`)
         // matches how the `ToSql` impl sends it over the wire, so
         // `.eq(MyEnum::Variant)` / `.neq(...)` / `.in_list([...])` in a

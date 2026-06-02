@@ -1,12 +1,8 @@
 //! `MultiPolygon` — a collection of one or more `Polygon` values.
-//!
 //! Stored as `GEOGRAPHY(MultiPolygon, 4326)` in Postgres. The type enforces
 //! a minimum of one polygon at construction time; deserialization re-validates.
-//!
 //! # Wire format
-//!
 //! EWKB layout (little-endian, SRID 4326):
-//!
 //! ```text
 //! Offset  Size  Content
 //!      0     1  Endianness marker: 0x01 (little-endian)
@@ -16,7 +12,6 @@
 //!     13   var  Sub-polygons: each is a headerless EWKB polygon —
 //!               [endian_byte(1), poly_type_word_no_srid(4), ring_count(4), rings...]
 //! ```
-//!
 //! Each sub-polygon carries its own endianness byte and type word
 //! (`0x00000003`, no SRID flag) but no SRID — the outer container holds it.
 
@@ -27,15 +22,10 @@ use serde::{Deserialize, Serialize};
 use crate::geo::{GeoError, Polygon, ewkb};
 
 /// A collection of at least 1 `Polygon`.
-///
 /// Stored as `GEOGRAPHY(MultiPolygon, 4326)` in Postgres.
-///
 /// # Display
-///
 /// `Display` emits `MULTIPOLYGON(((...)), ...)` per OGC WKT.
-///
 /// # Serde
-///
 /// Serializes as an array of polygons (each polygon is itself an array of
 /// rings, each ring an array of `{"lat": f64, "lon": f64}` objects).
 /// Deserialization validates via `MultiPolygon::new`, so an empty array yields
@@ -47,7 +37,6 @@ pub struct MultiPolygon {
 
 impl MultiPolygon {
     /// Construct a `MultiPolygon` from a `Vec` of `Polygon` values.
-    ///
     /// Returns `Err(GeoError::InvalidMultiPolygon)` if `polygons` is empty.
     pub fn new(polygons: Vec<Polygon>) -> Result<Self, GeoError> {
         if polygons.is_empty() {

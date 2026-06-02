@@ -1,0 +1,7 @@
+error: derived `name = inbound_site` collides with the exposed model column `inbound_site` in scope `public` (E_DJG_VDF_002)
+  --> $DIR/derived_002_column_collision.rs:18:14
+   |
+18 |     name   = inbound_site,
+   |              ^^^^^^^^^^^^
+
+error: aborting due to 1 previous error

@@ -1,34 +1,28 @@
 //! Internal expression AST node — the untyped dynamic payload behind the
 //! typed [`Expr<T>`](super::Expr) wrapper.
-//!
 //! # What
-//!
 //! [`ExprNode`] is an untyped enum tree: leaves are `Field { column }` /
 //! `Literal(FilterValue)`, internal nodes are arithmetic, comparison, and
 //! (in later phases) subquery / aggregate / CASE forms. The typed
 //! [`Expr<T>`](super::Expr) wrapper projects `T`-safety over this dynamic
 //! core so user-facing APIs stay typed while the SQL emitter only has one
 //! variant tree to walk.
-//!
 //! # Why separate the typed wrapper from the node?
-//!
 //! - **One emitter walk.** [`super::sql::emit_expr`] matches this enum
 //!   exhaustively. If `ExprNode` were polymorphic in `T`, every emitter
 //!   call site would monomorphise per-type; by erasing `T` at the enum
 //!   boundary we get one codegen path and one set of tests.
 //! - **Arithmetic composition.** `Expr<i32> + Expr<i32>` yields `Expr<i32>`
-//!   — the typed wrapper enforces the operator is only available for
+//!   the typed wrapper enforces the operator is only available for
 //!   numeric `T`, but the node it wraps stores a plain `Add(Box<_>, Box<_>)`
 //!   regardless of `T`. Same pattern for comparisons (`Expr<T>.eq(Expr<T>)
-//!   -> Expr<bool>` — the wrapper changes `T` from `T` to `bool`, the node
+//! -> Expr<bool>` — the wrapper changes `T` from `T` to `bool`, the node
 //!   is a `Cmp { op: Eq, .. }`).
 //! - **Phase expansion.** Tasks 4 / 5 add `Case`, `Exists`, `Subquery`,
 //!   `Aggregate`, and `OuterRef` variants. Keeping the enum untyped means
 //!   those additions don't ripple into every type-parameterised site; only
 //!   the emitter and a few typed constructors grow.
-//!
 //! # Where
-//!
 //! - [`super::Expr`] — typed wrapper, the public surface.
 //! - [`super::sql::emit_expr`] — the matching emitter (one arm per variant).
 //! - [`crate::query::condition::Condition::Expr`] — the bridge that promotes
@@ -37,7 +31,7 @@
 use crate::query::condition::FilterValue;
 use std::any::TypeId;
 
-// Phase 4 Task 5 landed the `Case` / `Exists` / `Subquery` / `OuterRef`
+// Landed the `Case` / `Exists` / `Subquery` / `OuterRef`
 // variants alongside the `SubqueryNode` payload at the bottom of this
 // file. The emitter in `expr::sql` has matching arms in lockstep. The
 // `#[non_exhaustive]` marker is crate-private today (same-crate matches
@@ -47,8 +41,7 @@ use std::any::TypeId;
 /// Untyped expression tree. The typed [`super::Expr<T>`] wrapper carries
 /// the phantom `T` parameter and projects type safety over the dynamic
 /// variants stored here. The SQL emitter walks this enum directly.
-///
-/// Marked `#[non_exhaustive]` to leave room for Phase 4 Tasks 4 / 5
+/// Marked `#[non_exhaustive]` to leave room for Tasks 4 / 5
 /// additions (`Case`, `Exists`, `Subquery`, `Aggregate`, `OuterRef`) without
 /// forcing a downstream semver bump. `Condition::Expr` carries `Expr<bool>`,
 /// not `ExprNode`, so the typed seal stays intact at the public boundary.
@@ -62,12 +55,11 @@ pub(crate) enum ExprNode {
     /// not re-validate; the seal is on the constructor.
     Field { column: &'static str },
 
-    /// Raw SQL fragment — Phase 8β T4.2 carve-out for the
+    /// Raw SQL fragment — 2 carve-out for the
     /// `#[computed(sql = "...")]` field surface.
-    ///
     /// The fragment is a `&'static str` baked at macro expansion time
     /// from the user-authored SQL expression. The macro does NOT parse
-    /// the fragment (per the lens, plan §7 #6 resolved 2026-05-03 —
+    /// the fragment (per the lens, plan §7 #6 resolved 2026-05-03
     /// shipping a tiny in-house SQL parser introduces a
     /// Rust-vs-Postgres parse-divergence surface that is hard to test
     /// exhaustively); it does run a token-level validation pass
@@ -75,12 +67,10 @@ pub(crate) enum ExprNode {
     /// struct field on the model and that operators come from an
     /// explicit allowlist. Anything outside the allowlist surfaces as
     /// a span-precise compile error.
-    ///
     /// Emitter wraps the fragment in outer parens at every emission
     /// site for operator-precedence stability under further
     /// composition (the same pattern as
-    /// [`crate::query::condition::Condition::RawSql`] from T3.4).
-    ///
+    /// [`crate::query::condition::Condition::RawSql`]).
     /// Construction goes through
     /// [`crate::expr::Expr::__raw_sql_fragment`], which is
     /// `#[doc(hidden)]` and not part of the user-facing API. The
@@ -135,7 +125,6 @@ pub(crate) enum ExprNode {
     /// bit `j` is `1` iff `columns[N-1-j]` was rolled up in the
     /// current row under `GROUP BY ROLLUP` / `CUBE` / `GROUPING SETS`,
     /// else `0`.
-    ///
     /// The single-column form `GROUPING(col)` continues to use
     /// `ExprNode::Aggregate { op: AggOp::Grouping, ... }` — the variadic
     /// IR layout adds a new variant rather than retrofitting an N-arg
@@ -145,10 +134,9 @@ pub(crate) enum ExprNode {
     /// A dedicated variant keeps the bulk-of-aggregate fields
     /// (`distinct`, `filter`, `window`, `order_by`, `within_group_order_by`)
     /// from polluting a metadata function that cannot accept them.
-    ///
     /// Each arg is `ExprNode::Field { column }` with `column` validated
     /// at constructor time via `crate::ident::assert_plain_ident`. No
-    /// other `ExprNode` shape is accepted at the typed-surface level —
+    /// other `ExprNode` shape is accepted at the typed-surface level
     /// the free function `grouping_of` only takes `&[&'static str]`.
     GroupingVariadic {
         /// Non-empty list of column references being flagged. Empty
@@ -165,7 +153,6 @@ pub(crate) enum ExprNode {
     /// return type (`i64` for `COUNT`, `f64` for `AVG`, `V` for
     /// `SUM`/`MIN`/`MAX`) so the emitted scalar decodes to the right
     /// Rust type without runtime casting.
-    ///
     /// `arg` is the column or sub-expression being aggregated. For
     /// `COUNT(*)` the dedicated [`AggOp::CountStar`] variant is paired
     /// with an arbitrary `arg` (the emitter ignores it on that branch);
@@ -174,18 +161,15 @@ pub(crate) enum ExprNode {
     /// star away from
     /// [`crate::ident::assert_plain_ident`] / [`crate::ident::debug_assert_ident!`]
     /// and from the column-qualification pass that select_related adds.
-    ///
     /// `filter` is an optional boolean sub-expression that gates which
     /// rows contribute to the aggregate. Postgres emits this as
     /// `AGG(arg) FILTER (WHERE <cond>)`. `None` emits the bare aggregate.
-    ///
-    /// `distinct` reserves the `DISTINCT` keyword slot for Phase 6.5 T4's
-    /// `.distinct()` builder method. Always `false` until T4 wires it.
-    ///
+    /// `distinct` reserves the `DISTINCT` keyword slot for 's
+    /// `.distinct` builder method. Always `false` when not set.
     /// `window` is an optional [`super::window::WindowSpec`] that promotes
     /// this aggregate to a window function via `OVER (...)`. Supplied by
     /// the `.over(|w| ...)` method on
-    /// [`super::aggregate::AggregateExpr`] (T3). `None` leaves the
+    /// [`super::aggregate::AggregateExpr`]. `None` leaves the
     /// aggregate bare; the terminal-layer helpers in `query::sql` add
     /// `OVER ()` for the plain ungrouped annotate path only after the
     /// plain-annotation type-state has proven the aggregate kind is
@@ -208,10 +192,9 @@ pub(crate) enum ExprNode {
         /// column (`y` for stats / `key` for json-object) and `arg2`
         /// carries the second column (`x` for stats / `value` for
         /// json-object).
-        ///
-        /// Cluster E T5 introduced this slot to back `covar_pop` / `corr`
+        /// Second argument slot, backing `covar_pop` / `corr`
         /// / `regr_*` / `jsonb_object_agg`. The slot is backward-compatible
-        /// — every pre-existing unary-aggregate constructor (`unary_agg`,
+        /// every pre-existing unary-aggregate constructor (`unary_agg`,
         /// the `string_agg` shape) sets `arg2: None`, so the unary
         /// emission path remains untouched. The emitter ignores `arg2`
         /// on the unary family and renders the comma-separated second
@@ -224,7 +207,6 @@ pub(crate) enum ExprNode {
         /// Optional explicit Postgres-side cast applied to the aggregate
         /// result. Emits as `AGG(arg)::<cast_to>` before the optional
         /// `FILTER` clause is pushed.
-        ///
         /// Why: Postgres widens integer aggregates — `SUM(BIGINT)` returns
         /// `NUMERIC`, `AVG(BIGINT)` returns `NUMERIC`, `SUM(SMALLINT)`
         /// returns `BIGINT`. The typed [`super::aggregate::AggregateExpr`]
@@ -236,7 +218,7 @@ pub(crate) enum ExprNode {
         cast_to: Option<&'static str>,
         /// When `true`, the `DISTINCT` keyword is emitted before the aggregate
         /// argument: `AGG(DISTINCT col)`. Set via
-        /// [`super::aggregate::AggregateExpr::distinct`] (T4), which is
+        /// [`super::aggregate::AggregateExpr::distinct`], which is
         /// exposed only on the `ValueAgg` kind impl block — non-value
         /// aggregate families ([`AggOp::Grouping`], [`AggOp::PercentileCont`]
         /// / [`AggOp::PercentileDisc`] / [`AggOp::Mode`],
@@ -263,7 +245,6 @@ pub(crate) enum ExprNode {
         /// emits no ORDER BY; non-empty emits
         /// `AGG(arg ORDER BY <ord1>, <ord2>, ...)` (or for STRING_AGG:
         /// `STRING_AGG(arg, sep ORDER BY ...)`).
-        ///
         /// Some aggregates' result depends on input order — `ARRAY_AGG`,
         /// `JSONB_AGG`, `STRING_AGG`, plus the ordered-set / hypothetical-
         /// set families (PERCENTILE_CONT, MODE, etc., per the
@@ -272,8 +253,7 @@ pub(crate) enum ExprNode {
         /// modifier). Without this slot, callers couldn't get
         /// deterministic results from order-sensitive aggregates without
         /// wrapping the whole query in a derived table.
-        ///
-        /// Also unblocks `STRING_AGG(DISTINCT col, sep ORDER BY other)` —
+        /// Also unblocks `STRING_AGG(DISTINCT col, sep ORDER BY other)`
         /// Postgres rejects that combination unless an ORDER BY is
         /// supplied; the fetch-time check in
         /// [`super::sql::check_aggregate_legality`] still rejects
@@ -284,17 +264,14 @@ pub(crate) enum ExprNode {
         /// aggregates ([`AggOp::PercentileCont`] / [`AggOp::PercentileDisc`]
         /// / [`AggOp::Mode`]) and (eventually) hypothetical-set
         /// aggregates. Empty for every other aggregate.
-        ///
         /// Distinct from the per-aggregate [`order_by`](Self::Aggregate::order_by)
         /// slot — that one renders ORDER BY *inside* the aggregate's
         /// parens (`AGG(arg ORDER BY ...)` for value aggregates like
         /// `array_agg`). This slot renders ORDER BY *after* the parens
         /// in a `WITHIN GROUP` clause:
-        ///
         /// ```sql
         /// PERCENTILE_CONT($1) WITHIN GROUP (ORDER BY response_ms)
         /// ```
-        ///
         /// For ordered-set and hypothetical-set aggregates this slot is
         /// **mandatory**. The typed builder methods on `FieldRef` populate it
         /// at construction time from the receiver column (default ASC), and
@@ -304,16 +281,14 @@ pub(crate) enum ExprNode {
         /// DESC. Direct-IR construction is the only way to produce an empty
         /// slot for these ops, and debug builds assert against that bypass in
         /// [`super::sql::check_aggregate_legality`].
-        ///
-        /// Cluster E T7 introduced this slot. Future T8 (hypothetical-
-        /// set aggregates `RANK(args) WITHIN GROUP (ORDER BY ...)`)
-        /// reuses it without further IR change.
+        /// Ordered-set and hypothetical-set aggregates
+        /// (`RANK(args) WITHIN GROUP (ORDER BY ...)`)
+        /// use this slot.
         within_group_order_by: Vec<crate::query::order::OrderExpr>,
     },
 
     /// `CASE WHEN <cond> THEN <val> [WHEN <cond> THEN <val> ...] ELSE
     /// <default> END` — multi-armed conditional expression.
-    ///
     /// The typed builder [`super::case::Case`] / [`super::case::CaseBuilder`]
     /// is the sole construction path. Every arm is a
     /// `(condition, value)` pair — the condition is an arbitrary
@@ -336,7 +311,6 @@ pub(crate) enum ExprNode {
     },
 
     /// `EXISTS (<subquery>)` — boolean-valued subquery predicate.
-    ///
     /// The typed surface [`super::subquery::Exists`] owns the construction
     /// path; the wrapped [`SubqueryNode`] carries the correlated
     /// queryset's table + optional `WHERE` payload. `select_column` on
@@ -347,7 +321,6 @@ pub(crate) enum ExprNode {
 
     /// Scalar subquery — `(SELECT <col> FROM ... WHERE ... [LIMIT 1])`
     /// usable as any other `Expr<V>` in the outer tree.
-    ///
     /// The typed surface [`super::subquery::Subquery<T, V>`] owns the
     /// construction path. `select_column` is always `Some(col)` for
     /// this variant; the emitter renders the stored column verbatim
@@ -356,26 +329,21 @@ pub(crate) enum ExprNode {
 
     /// `array_length(column, 1)` — number of elements in a 1-dimensional
     /// Postgres array column.
-    ///
     /// The dimension argument is hardcoded to `1`; Djogi arrays are always
     /// 1-dimensional and multi-dimensional arrays are not a supported field
     /// type. Produces an `Expr<i32>` at the typed-wrapper layer; the emitter
     /// renders `array_length({column}, 1)`.
-    ///
     /// The `column` string is a `&'static str` validated at
     /// [`crate::query::field::FieldRef::new`] construction time.
     ArrayLength { column: &'static str },
 
     /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` — the current calendar year
     /// as an `i32`, evaluated server-side per query.
-    ///
     /// Produced by [`super::Expr::current_year`]. Composes with the existing
     /// `Expr<i32>` arithmetic IR so e.g.
     /// `Expr::current_year() - f.estimated_birth_year().as_expr()` yields the
     /// row's age as an `Expr<i32>`.
-    ///
     /// # SQL emission
-    ///
     /// The emitter renders the literal token stream
     /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` — no bind parameter is
     /// taken because there is no user-supplied value (the year is read from
@@ -383,10 +351,8 @@ pub(crate) enum ExprNode {
     /// cast narrows Postgres's native `numeric` return from `EXTRACT` back
     /// to a Rust-decodable `i32` so the typed surface's `Expr<i32>` promise
     /// holds end-to-end.
-    ///
     /// # Volatility note
-    ///
-    /// `CURRENT_DATE` is `STABLE` (not `IMMUTABLE`) per Postgres semantics —
+    /// `CURRENT_DATE` is `STABLE` (not `IMMUTABLE`) per Postgres semantics
     /// it changes by calendar day, not within a single transaction. The
     /// IR does not annotate volatility on `ExprNode` variants today; callers
     /// who need a deterministic snapshot of "now" inside a long-running
@@ -394,7 +360,6 @@ pub(crate) enum ExprNode {
     CurrentYear,
 
     /// Outer-scope column reference inside a correlated subquery.
-    ///
     /// Emits the column name unqualified — Postgres resolves the name
     /// against the enclosing query scope when there is no matching
     /// column in the subquery's own `FROM` list. When both inner and
@@ -416,13 +381,11 @@ pub(crate) enum ExprNode {
     /// Table-qualified outer-scope column reference inside a correlated
     /// subquery — emits `<table>.<column>` rather than the unqualified
     /// [`Self::OuterRef`] form.
-    ///
-    /// Phase 7-Zero-2 T13b introduced this variant for the macro-emitted
+    /// Introduced this variant for the macro-emitted
     /// M2M EXISTS predicate, where the inner through table and the outer
     /// peer table both carry framework `id` / `created_at` / `updated_at`
     /// columns. The unqualified form would raise `42702 column reference
     /// "id" is ambiguous`; emitting `<peer_table>.id` disambiguates.
-    ///
     /// Both fields are `&'static str` validated at construction time via
     /// [`crate::ident::assert_plain_ident`]; safe to push as raw SQL.
     OuterRefColumn {
@@ -450,7 +413,6 @@ pub(crate) enum ExprNode {
     },
 
     /// `<col> @@ to_tsquery('<dictionary>', $n)` — full-text search match.
-    ///
     /// Produced by `FtsFieldRef::matches(query)`. The column name is the
     /// GENERATED ALWAYS AS tsvector column (typically `"search"`). The
     /// dictionary name is embedded into the SQL as a literal token (e.g.
@@ -458,7 +420,6 @@ pub(crate) enum ExprNode {
     /// name, not a user value — it came from `#[model(fts = { dictionary = "..."
     /// })]` and was validated at macro parse time. The query text is bound
     /// as a parameter.
-    ///
     /// The emitter renders: `<column> @@ to_tsquery('<dictionary>', $n)`
     TsMatch {
         /// The tsvector column name (e.g. `"search"`). Validated at
@@ -472,12 +433,10 @@ pub(crate) enum ExprNode {
     },
 
     /// `ts_rank(<col>, to_tsquery('<dictionary>', $n))` — relevance score.
-    ///
     /// Produced by `FtsFieldRef::rank(query)`. Returns an `f32` scalar
     /// that Postgres computes per-row as the document's relevance against
     /// the query. Useful in `ORDER BY ... DESC` to surface the most
     /// relevant results first.
-    ///
     /// The emitter renders: `ts_rank(<column>, to_tsquery('<dictionary>', $n))`
     TsRank {
         /// The tsvector column name. Validated at construction.
@@ -489,7 +448,6 @@ pub(crate) enum ExprNode {
     },
 
     /// `ts_rank_cd(<col>, to_tsquery('<dictionary>', $n))` — cover-density rank.
-    ///
     /// Like `TsRank` but uses the cover-density ranking algorithm, which
     /// weighs proximity of matching terms more heavily. Useful when term
     /// position within the document matters.
@@ -505,7 +463,6 @@ pub(crate) enum ExprNode {
     // ── pg_trgm (gated on `trgm` feature) ──────────────────────────────────
     /// `<col> % $pattern` — trigram similarity predicate from the
     /// `pg_trgm` Postgres extension.
-    ///
     /// The `%` operator returns `true` when the two operands' trigram
     /// similarity meets or exceeds the session GUC
     /// `pg_trgm.similarity_threshold` (Postgres default `0.3`). It is the
@@ -514,19 +471,15 @@ pub(crate) enum ExprNode {
     /// index built with one of those opclasses over the column. The
     /// expression evaluates to `boolean`, so it fits into
     /// [`Condition::Expr(Expr<bool>)`][crate::query::condition::Condition::Expr].
-    ///
     /// Adopters who need a per-query numeric threshold (instead of the
     /// session GUC) use the score-expression form
     /// [`TrgmSimilarityScore`][Self::TrgmSimilarityScore] composed inside
     /// `filter_expr` via the `Expr<T>` comparison API. That form is
     /// **not** accelerated by `gin_trgm_ops` / `gist_trgm_ops`.
-    ///
     /// Column name is validated at `FieldRef` construction via
     /// `assert_plain_ident`. The pattern is always bound as a positional
     /// parameter — no user text is interpolated into the SQL fragment.
-    ///
     /// Emitter renders: `<col> % $n`
-    ///
     /// Gate: `#[cfg(feature = "trgm")]` — enable with
     /// `djogi = { features = ["trgm"] }`.
     #[cfg(feature = "trgm")]
@@ -539,7 +492,6 @@ pub(crate) enum ExprNode {
     },
 
     /// `similarity(col, $pattern)` — trigram similarity score expression.
-    ///
     /// Evaluates the `pg_trgm` `similarity()` function per row, returning
     /// an `f64` in `[0.0, 1.0]`. Useful as an input to `filter_expr` for
     /// per-query numeric-threshold comparisons
@@ -549,16 +501,12 @@ pub(crate) enum ExprNode {
     /// (`%`, `<->`, …), not arbitrary `similarity(...)` >= comparisons.
     /// For index-accelerated trgm scans, use
     /// [`TrgmSimilarTo`][Self::TrgmSimilarTo].
-    ///
     /// Wider `Expr<f64>` integration (using the score in `order_by` or
     /// surfacing it via `annotate`) is a documented framework gap; see
     /// `docs/guide/trgm.md` for the current limitations.
-    ///
     /// Column name is validated at `FieldRef` construction; pattern is
     /// always bound as a positional parameter.
-    ///
     /// Emitter renders: `similarity(<col>, $n)`
-    ///
     /// Gate: `#[cfg(feature = "trgm")]`.
     #[cfg(feature = "trgm")]
     TrgmSimilarityScore {
@@ -569,20 +517,17 @@ pub(crate) enum ExprNode {
     },
 
     /// A Postgres `INTERVAL` literal derived from a `time::Duration`.
-    ///
-    /// Emitted as the raw SQL token `INTERVAL '{microseconds} microseconds'` —
+    /// Emitted as the raw SQL token `INTERVAL '{microseconds} microseconds'`
     /// no bind parameter is used because `tokio-postgres` / `postgres-types`
     /// does not ship a `ToSql` impl for `time::Duration` (the `time` crate's
     /// native duration type). Microseconds are faithful to `Duration`'s
     /// full sub-millisecond precision.
-    ///
     /// The microsecond count is saturating-clamped to `i64` range at
     /// construction time (via [`super::literal::saturating_micros`]);
     /// Durations outside that range encode as `i64::MAX` or `i64::MIN`
     /// (~±292,277 years) rather than wrapping silently. Those extremes are
     /// already Postgres `INTERVAL` overflows, so saturation is the correct
     /// sentinel value.
-    ///
     /// This variant is produced only by the `impl From<time::Duration> for
     /// Expr<time::Duration>` bridge in [`super::literal`]. User code that
     /// arrives here via `Expr::literal(duration)` has already gone through
@@ -595,28 +540,24 @@ pub(crate) enum ExprNode {
         microseconds: i64,
     },
 
-    // ── Spatial expressions (Phase 6 `spatial` feature) ─────────────────────
+    // ── Spatial expressions (`spatial` feature) ─────────────────────
     /// A spatial predicate or expression, delegating to
     /// [`super::spatial::SpatialExpr`] for SQL emission.
-    ///
     /// Gated on `#[cfg(feature = "spatial")]` so builds without the feature
     /// never see any PostGIS references. The variant is only ever constructed
     /// by [`crate::query::field::FieldRef<M, GeoPoint>::within_km`] (produces
     /// `SpatialExpr::Within`, typed as `Expr<bool>`) or captured inside
     /// [`crate::query::order::OrderExpr::SpatialDistance`] (uses
     /// `SpatialExpr::Distance`, typed as `Expr<f64>`).
-    ///
     /// `SpatialExpr` is `Clone + Debug`, so this variant does not break the
     /// enum's own `#[derive(Debug, Clone)]`.
     #[cfg(feature = "spatial")]
     Spatial(crate::expr::spatial::SpatialExpr),
 
-    // ── Row-shape aggregate (Phase 8.5 Cluster F #92) ───────────────────────
+    // ── Row-shape aggregate (#92) ─────────────────────────────────
     /// Row-shape aggregate function — folds a **set of rows** into a single
     /// scalar value (binary `bytea` for v0.1.0 — `ST_AsMVT` / `ST_AsGeobuf`).
-    ///
     /// # Why a sibling variant, not an extension of [`Self::Aggregate`]
-    ///
     /// Column aggregates take a single column expression (`AGG(col)`) and
     /// honour a modifier set (`.distinct()`, `.filter(...)`, `.over(...)`,
     /// `.order_by(...)`, `.within_group_order_by(...)`). Row aggregates take
@@ -626,15 +567,12 @@ pub(crate) enum ExprNode {
     /// would silently expose those slots through the [`super::aggregate::AggregateExpr`]
     /// modifier impl blocks; a dedicated variant keeps the kind discipline
     /// crisp.
-    ///
     /// # SQL shape
-    ///
     /// The emitter renders `<KEYWORD>(<row_alias>, <bind>, <bind>, …)`
     /// against a caller-supplied row alias (`__djogi_row` by convention).
     /// The outer terminal wraps the inner SELECT in a derived table whose
     /// alias matches this convention so the aggregate's record argument
     /// resolves to the full row record:
-    ///
     /// ```sql
     /// SELECT ST_AsMVT(__djogi_row, $1, $2, $3, $4)
     /// FROM (
@@ -642,9 +580,7 @@ pub(crate) enum ExprNode {
     ///     FROM <table> AS t [WHERE …] [ORDER BY …] [LIMIT …]
     /// ) AS __djogi_row
     /// ```
-    ///
     /// # Construction
-    ///
     /// Construction is sealed behind the typed
     /// [`super::row_aggregate::RowAggregate`] wrapper; the `columns` slot is
     /// informational and reserved for future row-shape variants that need
@@ -661,7 +597,6 @@ pub(crate) enum ExprNode {
         /// at Postgres-runtime, so v0.1.0's emitter does not consume this
         /// slot. Kept on the variant so that adding a column-projecting
         /// row aggregate does not force an IR rev.
-        ///
         /// `#[allow(dead_code)]` because the field is deliberately
         /// reserved — it is populated by every typed constructor (e.g.
         /// `crate::query::row_aggregate_terminal` pulls `T::COLUMNS`
@@ -676,10 +611,8 @@ pub(crate) enum ExprNode {
 /// Internal subquery payload — the untyped counterpart to the typed
 /// [`super::subquery::Subquery<T, V>`] / [`super::subquery::Exists`]
 /// wrappers.
-///
 /// Carries the minimum the emitter needs to render
 /// `SELECT <col or 1> FROM <table> [WHERE <condition>]`:
-///
 /// - `table` — always `<T as Model>::table_name()` from the typed
 ///   surface (a `&'static str`; never user input).
 /// - `select_column` — `Some(col)` for scalar subqueries (the typed
@@ -687,7 +620,7 @@ pub(crate) enum ExprNode {
 ///   identifier is always validated); `None` for EXISTS, where the
 ///   emitter renders `SELECT 1`.
 /// - `where_clause` — the correlated predicate, stored as a
-///   type-erased [`ErasedSubqueryPredicate`] handle. Phase 8eta PR2b
+///   type-erased [`ErasedSubqueryPredicate`] handle.
 ///   replaced the pre-flip `Option<Condition>` storage so expression
 ///   subqueries carry full `Q<T>` predicates — including portable root
 ///   field leaves — without round-tripping through `q_to_condition`.
@@ -713,14 +646,12 @@ pub(crate) struct SubqueryNode {
 /// `Arc<dyn SubqueryPredicateEmitter>` so a `SubqueryNode` can carry the
 /// outer queryset's `Q<T>` predicate without leaking the model parameter
 /// into the type-erased subquery wrappers.
-///
-/// Phase 8eta PR2b — the storage rewrite that retires the pre-flip
+/// The storage rewrite that retires the pre-flip
 /// `Option<Condition>` payload. Construction goes through
 /// [`Self::from_q`]; every Djogi-trusted predicate emitted from a
 /// subquery flows through that path so cache/refresh boundaries can audit
 /// (PR4) the trusted-portable provenance carried inside the wrapped
 /// `Q<T>`.
-///
 /// The trait is `Send + Sync + 'static` because `ExprNode` itself is and
 /// `Expr<bool>` is freely cloneable across thread boundaries.
 #[derive(Clone)]
@@ -730,7 +661,6 @@ pub(crate) struct ErasedSubqueryPredicate(std::sync::Arc<dyn SubqueryPredicateEm
 /// concrete implementer carries a `Q<T>` for one specific `T: Model`
 /// and emits SQL through the direct walker
 /// (`crate::query::sql::emit_q::<T>`).
-///
 /// Subquery emission threads the caller's `SqlEmitContext`. This keeps
 /// lateral-scope metadata alive for nested expression/subquery emission
 /// while preserving the existing column-qualification behavior: subquery
@@ -801,7 +731,6 @@ impl std::fmt::Debug for ErasedSubqueryPredicate {
 }
 
 /// Aggregate operator — the sub-discriminant inside [`ExprNode::Aggregate`].
-///
 /// The [`super::aggregate::AggregateExpr<Out>`] wrapper pins the Rust
 /// return type per variant (`i64` for `Count`/`CountStar`, `f64` for
 /// `Avg`, the column type `V` for `Sum`/`Min`/`Max`). The emitter in
@@ -809,9 +738,7 @@ impl std::fmt::Debug for ErasedSubqueryPredicate {
 /// renders `COUNT(*)` specially for [`AggOp::CountStar`] so the bare `*`
 /// never flows through the identifier-validation / column-qualification
 /// paths.
-///
 /// # Why `PartialEq` only (no `Eq`)
-///
 /// [`AggOp::SpatialClusterWithin`] carries an inline `f64` distance,
 /// and `f64` has only [`PartialEq`] — NaN is not reflexively equal to
 /// itself. The crate uses `matches!` for variant discrimination (which
@@ -834,7 +761,7 @@ pub(crate) enum AggOp {
     Sum,
     /// `AVG(col)` — returns `f64`. Postgres widens integer averages to
     /// `numeric`, but we decode to `f64` for ergonomics; callers who
-    /// need `Decimal` precision use `ctx.raw_scalar` until a Phase 5
+    /// need `Decimal` precision use `ctx.raw_scalar` until a
     /// `Decimal`-typed aggregate lands.
     Avg,
     /// `MIN(col)` — returns `V`. Requires the column type to be
@@ -846,7 +773,6 @@ pub(crate) enum AggOp {
     /// [`AggOp::Min`].
     Max,
     /// `ARRAY_AGG(col)` — collects non-null values into a Postgres array.
-    ///
     /// Returns `Vec<V>` at the Rust level. The typed builder on
     /// [`super::aggregate::FieldRef`] pins `Out = Vec<V>` so the
     /// annotate decode path calls `row.try_get::<_, Vec<V>>(alias)`.
@@ -856,20 +782,17 @@ pub(crate) enum AggOp {
     ArrayAgg,
     /// `JSONB_AGG(col)` — aggregates rows into a JSON array, returned as
     /// `serde_json::Value`.
-    ///
     /// Uses `JSONB_AGG` rather than `JSON_AGG` because Djogi standardises
     /// on JSONB for all JSON storage and wire formats (see `docs/spec/decisions.md`).
     JsonAgg,
     /// `STRING_AGG(col, sep)` — concatenates non-null string values with a
     /// separator.
-    ///
     /// The separator is stored inline in the variant so the emitter can
     /// push it as a bind parameter without a separate `ExprNode`. Carrying
     /// the separator directly on the variant rather than as a second
     /// `ExprNode` child of `Aggregate { arg, .. }` keeps the existing
     /// `Aggregate` layout unchanged — no other variant needs a second
     /// operand.
-    ///
     /// The separator is user-supplied at `.string_agg("sep")` call time
     /// and bound via `acc.push_bind(sep.to_string())` to avoid any risk
     /// of SQL injection from a runtime-computed separator string.
@@ -963,7 +886,6 @@ pub(crate) enum AggOp {
     /// per-row key/value pairs. `arg` carries the key column, `arg2`
     /// carries the value column. Returns `serde_json::Value` at the
     /// typed surface.
-    ///
     /// Distinct from [`AggOp::JsonbObjectAgg`] in the Postgres return
     /// type (`json` vs `jsonb`); both are exposed because adopters
     /// needing JSON output (e.g. for an external consumer that cannot
@@ -980,7 +902,6 @@ pub(crate) enum AggOp {
     /// a subtotal row from `ROLLUP` / `CUBE` / `GROUPING SETS`), `0`
     /// otherwise. Returns `INTEGER` at the Postgres level; the typed
     /// surface decodes into `i32`.
-    ///
     /// Single-column form. The variadic `GROUPING(c1, …, cN)` ships
     /// through the dedicated [`ExprNode::GroupingVariadic`] variant
     /// rather than reshaping this op's arg slot.
@@ -989,7 +910,6 @@ pub(crate) enum AggOp {
     /// percentile (interpolating between adjacent values when the
     /// requested fraction falls between two rows). Returns
     /// `DOUBLE PRECISION` (cast to `f64` at the typed surface).
-    ///
     /// Ordered-set aggregate — the fraction `p` lives in the `arg` slot
     /// as a literal `f64`; the column being percentiled lives in the
     /// `within_group_order_by` slot. WITHIN GROUP is mandatory and is
@@ -1002,14 +922,12 @@ pub(crate) enum AggOp {
     /// percentile (returns the actual value at the percentile cut, no
     /// interpolation). Return type matches the column type — the typed
     /// `AggregateExpr<V>` carries `V = column type`.
-    ///
     /// Same shape as [`AggOp::PercentileCont`] otherwise — fraction in
     /// `arg`, column in `within_group_order_by`.
     PercentileDisc,
     /// `MODE() WITHIN GROUP (ORDER BY col)` — most common value in the
     /// group. Returns the column type (typed `AggregateExpr<V>` with
     /// `V = column type`).
-    ///
     /// `MODE()` takes no function arguments; the `arg` slot stores a
     /// sentinel `Field { column: \"\" }` placeholder which the emitter
     /// ignores on this branch (parallel to how `CountStar` ignores
@@ -1019,19 +937,18 @@ pub(crate) enum AggOp {
     /// `RANK(value) WITHIN GROUP (ORDER BY col)` — hypothetical-set
     /// rank: the rank that `value` would have if inserted into the
     /// sorted column. Returns `BIGINT` (typed as `i64`).
-    ///
     /// Distinct from the window-only rank function in
     /// [`super::window_fn::Rank`]: that one ranks each row within a
     /// PARTITION/ORDER window, while this one answers "what rank
     /// would this hypothetical value have?" given a single ordered
-    /// set. Same modifier discipline as the ordered-set aggregates —
+    /// set. Same modifier discipline as the ordered-set aggregates
     /// no DISTINCT, no in-paren ORDER BY, mandatory WITHIN GROUP.
     HypotheticalRank,
     /// `DENSE_RANK(value) WITHIN GROUP (ORDER BY col)` — hypothetical-
     /// set dense rank (no gaps in rank numbering when ties occur).
     /// Returns `BIGINT`.
     HypotheticalDenseRank,
-    /// `PERCENT_RANK(value) WITHIN GROUP (ORDER BY col)` —
+    /// `PERCENT_RANK(value) WITHIN GROUP (ORDER BY col)`
     /// hypothetical-set percent rank: the position the hypothetical
     /// value would have as a fraction in `[0.0, 1.0]`. Returns
     /// `DOUBLE PRECISION`.
@@ -1045,21 +962,18 @@ pub(crate) enum AggOp {
     /// of point geometries. Fused two-call shape (the emitter wraps
     /// `ST_Collect` inside `ST_Centroid` and casts back to geography).
     /// Returns `GeoPoint`. Gated on `feature = "spatial"`.
-    ///
     /// Sibling of [`AggOp::SpatialConvexHull`] — same wrapped emission
     /// shape (`WRAP(ST_Collect(...))::geography`) and same modifier
     /// composition story.
     #[cfg(feature = "spatial")]
     SpatialCentroid,
-    /// `ST_ConvexHull(ST_Collect(<col>::geometry))::geography` —
+    /// `ST_ConvexHull(ST_Collect(<col>::geometry))::geography`
     /// per-group convex-hull aggregate. Migrated from
-    /// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` in Cluster E
-    /// round-5: the old IR shape silently dropped `.distinct()` /
-    /// `.filter()` / `.over()` / `.order_by()` modifiers because
-    /// those mutate `ExprNode::Aggregate` only. As a proper AggOp
-    /// variant ConvexHull now composes uniformly with the rest of
-    /// the aggregate family.
-    ///
+    /// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})`: the old IR shape
+    /// silently dropped `.distinct` / `.filter` / `.over` /
+    /// `.order_by` modifiers because those mutate `ExprNode::Aggregate`
+    /// only. As a proper AggOp variant ConvexHull now composes uniformly
+    /// with the rest of the aggregate family.
     /// Wrapped emission: ST_Collect is the actual aggregate;
     /// ST_ConvexHull is a scalar wrapper applied to the collected
     /// geometry set per group. Same shape as
@@ -1078,7 +992,7 @@ pub(crate) enum AggOp {
     /// Returns a `MultiPolygon` — Djogi's typed surface restricts the
     /// receiver to polygon-shaped fields (`Polygon`, `MultiPolygon`) so
     /// the decode is sound; point-shaped inputs use [`AggOp::SpatialCollect`]
-    /// (T12's `collect()`) instead. Gated on `feature = "spatial"`.
+    /// (`collect`) instead. Gated on `feature = "spatial"`.
     #[cfg(feature = "spatial")]
     SpatialUnion,
     /// `ST_Extent(<col>::geometry)::geometry::geography` — per-group 2D
@@ -1086,7 +1000,6 @@ pub(crate) enum AggOp {
     /// which Djogi casts through `geometry` (yielding a four-vertex
     /// rectangle Polygon) and back to `geography` for the typed decode.
     /// Returns `Polygon`. Gated on `feature = "spatial"`.
-    ///
     /// The `box2d::geometry::geography` cast chain is well-defined
     /// PostGIS — the geometry-side cast produces a polygon footprint,
     /// and the geography-side cast keeps the value on the geography
@@ -1101,7 +1014,6 @@ pub(crate) enum AggOp {
     /// polygon footprint, and the geography-side cast keeps the value
     /// on the geography substrate. Returns `Polygon`.
     /// Gated on `feature = "spatial"`.
-    ///
     /// Adopters with true 3D data should reach for `ctx.raw_scalar`
     /// against the `box3d` type directly — Djogi's typed geography
     /// surface is 2D-only.
@@ -1112,14 +1024,12 @@ pub(crate) enum AggOp {
     /// LineString in row order, or per-aggregate ORDER BY order when
     /// `.order_by(field)` is chained. Returns `LineString`.
     /// Gated on `feature = "spatial"`.
-    ///
     /// Order-sensitive: the resulting line's vertex sequence follows
-    /// row order, so this aggregate naturally consumes T1's
+    /// row order, so this aggregate naturally consumes the
     /// `.order_by(field)` modifier — the per-aggregate ORDER BY
     /// clause lands inside the `ST_MakeLine` parens to control
     /// vertex sequence at the aggregate level.
-    ///
-    /// Sibling [`AggOp::SpatialLineAgg`] (Cluster E T14b) handles the
+    /// Sibling [`AggOp::SpatialLineAgg`] handles the
     /// "collect already-existing LineStrings into a MultiLineString"
     /// use case once the `MultiLineString` geo type lands.
     #[cfg(feature = "spatial")]
@@ -1128,7 +1038,6 @@ pub(crate) enum AggOp {
     /// `MultiLineString` builder. Collects per-row `LineString` values
     /// into a single `MultiLineString`. Returns `MultiLineString`.
     /// Gated on `feature = "spatial"`.
-    ///
     /// `ST_LineAgg` is PostgreSQL 17+ / PostGIS 3.5+; on earlier
     /// installations the equivalent shape is
     /// `ST_LineFromMultiPoint(ST_Collect(<col>))` for a multipoint
@@ -1136,16 +1045,13 @@ pub(crate) enum AggOp {
     /// `ST_LineAgg` keyword is the safe choice. If a future
     /// installation drift surfaces, the emitter arm is the single
     /// migration site.
-    ///
-    /// Cluster E T14b retroactively shipped this aggregate after
-    /// Track A's initial deferral — no arbitrary deferrals per
+    /// This aggregate shipped after the initial deferral — no arbitrary deferrals per
     /// `feedback_no_arbitrary_deferrals.md`.
     #[cfg(feature = "spatial")]
     SpatialLineAgg,
     /// `ST_Collect(<col>::geometry)::geography` — per-group polygon
     /// collection (portable fallback for `ST_PolygonAgg`). Returns
     /// `MultiPolygon`. Gated on `feature = "spatial"`.
-    ///
     /// `ST_PolygonAgg` is PostGIS 3.5+; Djogi's documented PostGIS
     /// floor is 3.x (see `docs/guide/spatial.md`), so the emitter
     /// uses the portable `ST_Collect` form which produces an
@@ -1162,7 +1068,6 @@ pub(crate) enum AggOp {
     /// `geometry[]` at the Postgres level; Djogi casts the array
     /// element type to `geography` so the typed surface decodes into
     /// `Vec<MultiPolygon>`. Gated on `feature = "spatial"`.
-    ///
     /// Available on polygon-shaped fields only — the typed return
     /// `Vec<MultiPolygon>` matches the natural PostGIS output for
     /// polygonal inputs. Point-shaped inputs produce `Vec<MultiPoint>`
@@ -1177,7 +1082,6 @@ pub(crate) enum AggOp {
     /// on the variant (matching [`AggOp::StringAgg`]'s separator pattern)
     /// and bound as a parameter at emission. Returns
     /// `Vec<MultiPolygon>`. Gated on `feature = "spatial"`.
-    ///
     /// Same receiver-shape gating as
     /// [`AggOp::SpatialClusterIntersecting`] — polygon-shaped fields
     /// only.
@@ -1191,7 +1095,6 @@ pub(crate) enum AggOp {
     /// `ST_MemUnion` runs a pairwise merge that uses bounded working
     /// memory but is slower per-row for moderate input sizes.
     /// Returns `MultiPolygon`. Gated on `feature = "spatial"`.
-    ///
     /// Adopters with terabyte-scale polygonal inputs use `mem_union()`;
     /// for moderate group sizes [`AggOp::SpatialUnion`] is faster.
     #[cfg(feature = "spatial")]
@@ -1202,7 +1105,6 @@ pub(crate) enum AggOp {
     /// cast lets the typed surface decode it as `MultiPolygon` for the
     /// typical line-segments-to-region case. Gated on
     /// `feature = "spatial"`.
-    ///
     /// Only available on `LineString` fields — the input must be a
     /// collection of edges for the polygonization algorithm to produce
     /// sensible output. The receiver-type gate enforces this at the
@@ -1215,16 +1117,13 @@ pub(crate) enum AggOp {
 /// [`ExprNode::RowAggregate`]. Each variant pins the SQL keyword the emitter
 /// renders plus the bindable argument payload that variant's PostGIS function
 /// accepts.
-///
 /// Both variants are PostGIS-only and therefore gated on `feature = "spatial"`.
 /// The enum itself is `pub(crate)` — construction is sealed behind the typed
 /// [`super::row_aggregate::RowAggregate`] wrapper, which the
 /// [`crate::query::annotate::AnnotatedQuerySet`] /
 /// [`crate::query::queryset::QuerySet`] terminal builders use to keep adopter
 /// code from fabricating row aggregates with hostile bind payloads.
-///
 /// # Why `PartialEq` only (no `Eq`)
-///
 /// Parallel rationale to [`AggOp`]: variants carry `String` payloads (cheap
 /// to compare for equality) but the enum has no requirement to key into a
 /// `HashMap` / `HashSet`. Mirroring [`AggOp`]'s `PartialEq`-only stance keeps
@@ -1232,10 +1131,9 @@ pub(crate) enum AggOp {
 #[cfg(feature = "spatial")]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RowAggOp {
-    /// `ST_AsMVT(row, layer_name, extent, geom_name, feature_id_name)` —
+    /// `ST_AsMVT(row, layer_name, extent, geom_name, feature_id_name)`
     /// Mapbox Vector Tile encoder. Returns `bytea`; the typed surface
     /// decodes into `Vec<u8>`.
-    ///
     /// All four trailing arguments are bound through the SQL accumulator so
     /// a runtime-computed layer name cannot SQL-inject into the emission
     /// stream. PostGIS defaults are `'default'` / `4096` / `'geom'` /
@@ -1257,12 +1155,11 @@ pub(crate) enum RowAggOp {
         geom_name: String,
         /// Optional name of the column to encode as the MVT feature id.
         /// `None` falls through to PostGIS's `NULL` default (no feature id
-        /// — features are rendered anonymously).
+        /// features are rendered anonymously).
         feature_id_name: Option<String>,
     },
     /// `ST_AsGeobuf(row, geom_name)` — Geobuf encoder. Returns `bytea`; the
     /// typed surface decodes into `Vec<u8>`.
-    ///
     /// PostGIS's Geobuf surface accepts a single trailing geometry-column
     /// argument; v0.1.0's typed surface always emits it explicitly so the
     /// emission shape stays stable across PostGIS releases that might
@@ -1275,7 +1172,6 @@ pub(crate) enum RowAggOp {
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].
-///
 /// Mirrors the subset of [`crate::query::condition::LookupOp`] that takes
 /// two expression operands (not, e.g., `IS NULL` which takes one). The
 /// emitter maps each variant to the corresponding SQL token.

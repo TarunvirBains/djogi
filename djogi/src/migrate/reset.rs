@@ -1,31 +1,24 @@
-//! `db reset` orchestrator — Phase 7 v3 §8 / T8.
-//!
+//! `db reset` orchestrator.
 //! `db reset` is the destructive triple-gated path: it drops the
 //! application database, recreates it, and replays every committed
 //! migration found under `migrations/<database>/<app>/`. The triple
-//! gate per the v3 §8 brief:
-//!
+//! gate per the brief:
 //! 1. `DATABASE_URL` MUST resolve to localhost (reused
 //!    [`super::policy::is_localhost_connection`]).
 //! 2. `Djogi.toml::profile` MUST NOT equal `"production"`.
 //! 3. The caller MUST supply explicit confirmation (a `--yes` flag in
 //!    the CLI; programmatic callers pass [`ResetRequest::confirmed`]
 //!    `= true`).
-//!
-//! All three gates are enforced before any I/O. A refusal returns a
-//! typed [`ResetError::Refused`] so the operator-facing message is
-//! actionable.
-//!
+//!    All three gates are enforced before any I/O. A refusal returns a
+//!    typed [`ResetError::Refused`] so the operator-facing message is
+//!    actionable.
 //! # Logging-DB isolation
-//!
 //! Per CLAUDE.md, the CRUD-log and event-log databases survive every
-//! `db reset` invocation. Today the runner is single-context (Phase 4)
+//! `db reset` invocation. Today the runner is single-context
 //! so this module only operates on the application DB; the seam is
 //! documented at [`reset_app_database`] for the day the three-database
 //! `DjogiContext::pool_for(database)` API lands.
-//!
 //! # `DROP DATABASE` connection plumbing
-//!
 //! Postgres refuses to drop the database the current session is
 //! connected to. We follow the standard libpq idiom: connect to the
 //! `postgres` maintenance database with the same credentials, issue
@@ -33,11 +26,10 @@
 //! `docs/spec/decisions.md`), then `CREATE DATABASE …`. The forced
 //! variant terminates other sessions to avoid the classic "another
 //! session is connected" bounce.
-//!
 //! After recreation the runner re-points at the fresh database via
 //! [`crate::pg::pool::DjogiPool::connect`] and replays each migration
-//! file pair in HISTORICAL apply order (Codex umbrella U-4 per
-//! `docs/spec/configuration.md`). T7's out-of-order policy allows a
+//! file pair in HISTORICAL apply order per the configuration spec.
+//! The out-of-order policy allows a
 //! hotfix migration to apply AFTER a later one, so lexical version
 //! sort is NOT a faithful replay of what the live DB experienced.
 //! `db reset` pre-flight reads `djogi_schema_migrations.applied_at`
@@ -45,12 +37,9 @@
 //! absent from the historical order (typically disk files added after
 //! the last apply) sort lexically afterwards. Fresh DBs with no
 //! ledger fall back to lexical sort safely.
-//!
-//! # Historical-order capture error policy (Codex umbrella round-2 U-6)
-//!
+//! # Historical-order capture error policy
 //! The pre-flight capture step has TWO qualitatively different
-//! failure modes that pre-U-6 collapsed to the same outcome:
-//!
+//! failure modes that previously collapsed to the same outcome:
 //! - **Ledger genuinely missing** (the `pg_class` probe returns
 //!   `false`): legitimate fresh-DB fallback. Reset proceeds with an
 //!   empty historical map, and `build_replay_plan` falls back to
@@ -59,15 +48,12 @@
 //!   failure, permission denied: opaque. Reset propagates as
 //!   [`ResetError::HistoricalOrderCaptureFailed`] and refuses to
 //!   drop / recreate.
-//!
-//! Pre-U-6 every failure mode swallowed itself via `unwrap_or_default()`
-//! at the call site, so a flaky ledger read on a populated DB still
-//! triggered the destructive operation. The fix is the
-//! [`HistoricalCaptureError`] split: `LedgerMissing` is the only
-//! legitimate fall-back signal; `Transient(DjogiError)` propagates.
-//!
+//!   Every failure mode swallowed itself via `unwrap_or_default`
+//!   at the call site, so a flaky ledger read on a populated DB still
+//!   triggered the destructive operation. The fix is the
+//!   [`HistoricalCaptureError`] split: `LedgerMissing` is the only
+//!   legitimate fall-back signal; `Transient(DjogiError)` propagates.
 //! # No regex
-//!
 //! URL parsing reuses the byte-level extractor in
 //! [`super::policy::extract_host`] for the localhost gate, plus a
 //! minimal forward-scan helper to split out the `<host>/<dbname>` parts.
@@ -77,7 +63,7 @@
 // boxed and string-rich variants; the resulting `Result` payload
 // exceeds clippy's default 128-byte threshold for `result_large_err`.
 // Boxing the whole error type would force every caller to indirect
-// through a heap allocation just to discriminate among the variants —
+// through a heap allocation just to discriminate among the variants
 // the signal-vs-cost tradeoff favours allowing the lint at file
 // scope here, mirroring the same `#[allow(clippy::result_large_err)]`
 // pattern that `crate::config` and `crate::migrate::projection` use.
@@ -113,7 +99,6 @@ use super::target::{app_dirname, bucket_dir, migrations_root};
 // ── Public types ──────────────────────────────────────────────────────────
 
 /// Configuration handed to [`reset_app_database`].
-///
 /// Constructed by the CLI glue from the resolved workspace, the
 /// loaded [`crate::config::DjogiConfig`], and the operator's `--yes`
 /// flag.
@@ -151,7 +136,6 @@ pub struct ResetRequest<'a> {
     /// skipped — appropriate for adopters who have not yet provisioned
     /// the second DB OR for tests that only care about the app-side
     /// replay.
-    ///
     /// **Why a raw `deadpool_postgres::Pool`:** mirrors
     /// [`super::runner::RunnerCtx::audit_pool`] so the replay
     /// orchestrator can pass the pool through without re-wrapping.
@@ -159,7 +143,6 @@ pub struct ResetRequest<'a> {
     /// audit pool is internal substrate; `DjogiPool`'s wider invariants
     /// such as post-connect callbacks and status reporting are not
     /// needed for the audit-side context the runner builds).
-    ///
     /// **Construction.** Production callers build this via
     /// [`super::resolve_audit_url`] + [`super::build_audit_pool`]. The
     /// CLI's `db reset` glue degrades to `None` (with a warn log) if
@@ -304,17 +287,16 @@ pub enum ResetError {
     InvalidDatabaseName { name: String },
     /// Workspace lock acquisition failed before the replay could run.
     WorkspaceLockFailed { source: super::guard::GuardError },
-    /// Codex umbrella round-2 U-6: capturing the live ledger's
+    /// Capturing the live ledger's
     /// historical apply order failed for a reason that is NOT
     /// "ledger table is missing on a fresh DB". Pre-fix every
     /// failure mode of the capture step (connection error, decode
     /// error, generic SQL error, …) collapsed to an empty map via
     /// `unwrap_or_default()`, which silently fell through to the
     /// drop / recreate path on a transient error. That re-opens the
-    /// U-4 hazard: a flaky ledger read that swallows itself, then
+    /// A flaky ledger read that swallows itself, then
     /// the destructive operation runs anyway against a database
     /// whose true state we never confirmed.
-    ///
     /// Post-fix: the ONLY legitimate fall-back-to-lexical signal is
     /// the `pg_class` probe returning `false` (genuinely fresh DB
     /// or freshly-recreated DB without bootstrap yet). Every other
@@ -479,14 +461,13 @@ impl std::error::Error for ResetError {
 
 /// Drop, recreate, and replay every committed migration against the
 /// application database in `req.database_url`.
-///
 /// Triple-gated per the module docs. Returns a [`ResetReport`] on
 /// success or a [`ResetError`] on any failure mode — including a
 /// gate refusal, which is surfaced as `ResetError::Refused` rather
 /// than as a successful no-op.
 pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, ResetError> {
     // 1. Triple gate — every gate runs BEFORE any I/O so a refusal
-    //    leaves zero side effects on the workspace OR the database.
+    // leaves zero side effects on the workspace OR the database.
     if !is_localhost_connection(req.database_url) {
         return Err(ResetError::Refused(ResetRefusal::NotLocalhost {
             database_url: req.database_url.to_string(),
@@ -502,16 +483,15 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     }
 
     // 2. Derive the app database name and the maintenance URL.
-    //
-    //    Two-step parse: first extract+percent-decode the path
-    //    component, then validate the decoded bytes against the strict
-    //    Postgres-identifier grammar. We refuse weird-looking names
-    //    BEFORE splicing them into `DROP DATABASE` / `CREATE DATABASE`
-    //    DDL — defence-in-depth against URL-injection where a crafted
-    //    URL like `postgres://localhost/'; DROP TABLE foo; --` could
-    //    otherwise reach the DDL builder. The maintenance database
-    //    name flows from operator config (`--maintenance-database`,
-    //    default `postgres`) so it's validated separately.
+    // Two-step parse: first extract+percent-decode the path
+    // component, then validate the decoded bytes against the strict
+    // Postgres-identifier grammar. We refuse weird-looking names
+    // BEFORE splicing them into `DROP DATABASE` / `CREATE DATABASE`
+    // DDL — defence-in-depth against URL-injection where a crafted
+    // URL like `postgres://localhost/'; DROP TABLE foo; --` could
+    // otherwise reach the DDL builder. The maintenance database
+    // name flows from operator config (`--maintenance-database`,
+    // default `postgres`) so it's validated separately.
     let database =
         extract_database_from_url(req.database_url).ok_or(ResetError::DatabaseUrlMalformed {
             database_url: req.database_url.to_string(),
@@ -531,41 +511,39 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     )?;
 
     // 3. Acquire workspace lock — replay mutates ledger state on the
-    //    fresh DB; concurrent compose / apply / repair operations
-    //    against the same workspace must not interleave with reset.
+    // fresh DB; concurrent compose / apply / repair operations
+    // against the same workspace must not interleave with reset.
     let lock_path = req.workspace_root.join(super::guard::LOCK_FILE_NAME);
     let _guard = super::guard::acquire(&lock_path, super::guard::DEFAULT_TIMEOUT)
         .map_err(|e| ResetError::WorkspaceLockFailed { source: e })?;
 
-    // 4. Codex umbrella U-4: capture the HISTORICAL apply order from
-    //    the live ledger BEFORE the drop. T7's out-of-order policy
-    //    allows a hotfix migration to apply AFTER a later one, e.g.
-    //    `applied_at` of `0001 < 0003 < 0002`. Lexical version-string
-    //    sort would replay them as `0001, 0002, 0003`, which is NOT
-    //    the sequence the live database actually experienced. If
-    //    `0002` only succeeded historically because `0003` was
-    //    already in place, lexical replay would re-apply it
-    //    out-of-order on a fresh DB — different state from what we
-    //    just dropped.
-    //
-    //    Strategy: pre-flight a read-only connection to the live DB,
-    //    query `djogi_schema_migrations` ordered by `applied_at`, and
-    //    capture `(bucket, version) -> rank`. We then use that rank
-    //    as the replay sort key. Versions absent from the historical
-    //    order (e.g. files added on disk after the last apply) sort
-    //    AFTER any historical entry, lexically among themselves.
-    //
-    //    Codex umbrella round-2 U-6 — error-policy split:
-    //    `HistoricalCaptureError::LedgerMissing` is the ONLY legitimate
-    //    fall-back-to-lexical signal (`pg_class` probe returned false:
-    //    genuinely fresh DB). Every OTHER failure mode (connection
-    //    failure, decode failure, generic SQL error, permission
-    //    denied) surfaces as `Transient(..)` and propagates through
-    //    `ResetError::HistoricalOrderCaptureFailed`. Pre-U-6 every
-    //    error collapsed to `()` and the reset proceeded with an
-    //    empty map — which re-opened the U-4 hazard for transient
-    //    failures (the empty map masquerades as "fresh DB with no
-    //    history" and the destructive drop / recreate runs anyway).
+    // 4. Capture the HISTORICAL apply order from
+    // the live ledger BEFORE the drop. The out-of-order policy
+    // allows a hotfix migration to apply AFTER a later one, e.g.
+    // `applied_at` of `0001 < 0003 < 0002`. Lexical version-string
+    // sort would replay them as `0001, 0002, 0003`, which is NOT
+    // the sequence the live database actually experienced. If
+    // `0002` only succeeded historically because `0003` was
+    // already in place, lexical replay would re-apply it
+    // out-of-order on a fresh DB — different state from what we
+    // just dropped.
+    // Strategy: pre-flight a read-only connection to the live DB,
+    // query `djogi_schema_migrations` ordered by `applied_at`, and
+    // capture `(bucket, version) -> rank`. We then use that rank
+    // as the replay sort key. Versions absent from the historical
+    // order (e.g. files added on disk after the last apply) sort
+    // AFTER any historical entry, lexically among themselves.
+    // Error-policy split:
+    // `HistoricalCaptureError::LedgerMissing` is the ONLY legitimate
+    // fall-back-to-lexical signal (`pg_class` probe returned false:
+    // genuinely fresh DB). Every OTHER failure mode (connection
+    // failure, decode failure, generic SQL error, permission
+    // denied) surfaces as `Transient(..)` and propagates through
+    // `ResetError::HistoricalOrderCaptureFailed`. every
+    // error collapsed to `()` and the reset proceeded with an
+    // empty map — which re-opened the for transient
+    // failures (the empty map masquerades as "fresh DB with no
+    // history" and the destructive drop / recreate runs anyway).
     let historical_entries = match capture_historical_replay_entries(req.database_url).await {
         Ok(entries) => entries,
         Err(HistoricalCaptureError::LedgerMissing) => Vec::new(),
@@ -583,20 +561,20 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     let historical_order = build_historical_order(&historical_entries);
 
     // 5. Drop + recreate the application database via the maintenance
-    //    connection. A fresh tokio_postgres client is opened just for
-    //    the two DDLs — the maintenance pool is intentionally NOT
-    //    cached because db reset is interactive / one-shot.
+    // connection. A fresh tokio_postgres client is opened just for
+    // the two DDLs — the maintenance pool is intentionally NOT
+    // cached because db reset is interactive / one-shot.
     drop_and_create_database(&maintenance_url, &database).await?;
 
     // 6. Connect to the freshly-created application DB and replay
-    //    every committed migration.
+    // every committed migration.
     let pool = DjogiPool::connect(req.database_url)
         .await
         .map_err(|e| ResetError::AppConnectFailed { source: e })?;
     let mut ctx = DjogiContext::from_pool(pool);
 
     let buckets = scan_committed_migrations(req.workspace_root, &database)?;
-    // Codex umbrella U-4: replay order = historical apply order
+    // Replay order = historical apply order
     // (`applied_at` ascending) for versions that have a historical
     // entry; lexical-after-historical for versions that do not.
     let replay_plan = build_replay_plan(&buckets, &historical_order);
@@ -626,10 +604,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
 }
 
 /// Internal error classifier for [`capture_historical_apply_order`]
-/// per Codex umbrella round-2 U-6.
-///
 /// The capture step has two qualitatively different failure modes:
-///
 /// - **`LedgerMissing`** — the `pg_class` probe came back `false`.
 ///   The connection succeeded, the catalog query succeeded, and the
 ///   answer was "no `djogi_schema_migrations` table here". This is
@@ -644,12 +619,11 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
 ///   live state. The caller propagates as
 ///   `ResetError::HistoricalOrderCaptureFailed` and refuses to
 ///   drop / recreate.
-///
-/// Pre-U-6 the helper returned `Result<_, ()>` and `unwrap_or_default()`
-/// at the call site collapsed every failure mode to "empty map →
-/// proceed with lexical fallback". That re-opened the U-4 hazard
-/// under a transient connection / query failure: the destructive
-/// path runs against a database whose history we never read.
+///   The helper returned `Result<_, >` and `unwrap_or_default`
+///   at the call site collapsed every failure mode to "empty map →
+///   proceed with lexical fallback". That re-opened the
+///   under a transient connection / query failure: the destructive
+///   path runs against a database whose history we never read.
 #[derive(Debug)]
 enum HistoricalCaptureError {
     /// `pg_class` probe returned `false` — ledger genuinely absent.
@@ -668,25 +642,21 @@ struct HistoricalReplayEntry {
     checksum_down: Option<String>,
 }
 
-/// Codex umbrella U-4 + round-2 U-6 — capture the historical apply
+/// Capture the historical apply
 /// order from the live ledger before the drop.
-///
 /// Connects to the application DB at `database_url`, probes for the
 /// presence of `djogi_schema_migrations`, and (when present) queries
 /// it ordered by `applied_at ASC, id ASC`. Returns a
 /// `(bucket, version) -> rank` map where lower ranks applied first
 /// historically.
-///
-/// Per U-6, the error classification is intentional and load-bearing:
-///
+/// The error classification is intentional and load-bearing:
 /// - Probe says ledger absent → `Err(HistoricalCaptureError::LedgerMissing)`
 ///   (caller falls back to lexical).
 /// - Anything else → `Err(HistoricalCaptureError::Transient(..))`
 ///   (caller propagates and refuses the destructive drop).
-///
-/// Only `Applied` / `Faked` / `Baseline` rows participate — `Pending`,
-/// `Failed`, `RolledBack` do not represent migrations whose effect
-/// the live DB carries forward.
+///   Only `Applied` / `Faked` / `Baseline` rows participate — `Pending`,
+///   `Failed`, `RolledBack` do not represent migrations whose effect
+///   the live DB carries forward.
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 async fn capture_historical_apply_order(
@@ -1063,18 +1033,16 @@ fn render_replay_semantics_issue(issue: &ResetReplaySemanticsIssue) -> String {
     }
 }
 
-/// Codex umbrella U-4 — given the on-disk bucket map and the captured
+/// Given the on-disk bucket map and the captured
 /// historical apply order, produce the deterministic replay plan as a
 /// flat `Vec<(BucketKey, String)>` in the order migrations should be
 /// re-applied.
-///
 /// **Sort key** (lower wins): `(historical_rank.unwrap_or(u64::MAX),
 /// bucket.database, bucket.app, version)`. Versions WITH a historical
 /// rank apply first (in apply-order); versions WITHOUT (typically
 /// disk files added after the last historical apply) apply last,
 /// sorted lexically among themselves so re-running the reset
 /// produces byte-identical output.
-///
 /// Pulled out as a free function so unit tests can pin every edge
 /// case without standing up a live connection.
 fn build_replay_plan(
@@ -1162,13 +1130,11 @@ async fn drop_and_create_database(maintenance_url: &str, database: &str) -> Resu
 
 /// Walk `migrations/<database>/` and collect every committed
 /// `V<ts>__<slug>.sql` migration grouped by `(database, app)` bucket.
-///
 /// Returns a `BTreeMap` so iteration order is deterministic across
 /// runs — key order is `(database, app)` ASCII-sorted; per-bucket
 /// migration lists are version-sorted (lexical = chronological per
 /// the [`super::naming`] convention).
-///
-/// Files matching the down-side suffix (`.down.sdjql`) are skipped —
+/// Files matching the down-side suffix (`.down.sdjql`) are skipped
 /// the up-side filename serves as the canonical version identifier.
 fn scan_committed_migrations(
     workspace_root: &Path,
@@ -1195,9 +1161,7 @@ struct ReplaySqlFiles {
 /// Compute the canonical checksum of a committed migration SQL file's
 /// contents, in the same domain compose uses when it records the ledger
 /// `checksum_up` / `checksum_down` values.
-///
 /// # Why this exists
-///
 /// Compose computes checksums over the [`super::OperationSql`] fragments
 /// (`label` + `up` / `down` SQL), NOT over the rendered file that those
 /// fragments are written into. A composed migration file carries a
@@ -1210,12 +1174,10 @@ struct ReplaySqlFiles {
 /// recomputed checksum matches what compose persisted — load-bearing for
 /// `djogi migrations repair checksum-drift`, which recomputes from disk
 /// when the operator omits `--checksum-up` / `--checksum-down`.
-///
 /// # Behavior
-///
 /// When `sql` is a recognizable composed file (correct header + banner),
 /// the digest is computed over its canonical fragments for `side`.
-/// Otherwise — a hand-authored or legacy file with no composed framing —
+/// Otherwise — a hand-authored or legacy file with no composed framing
 /// it falls back to the whole-file digest, matching how such files are
 /// checksummed elsewhere.
 pub fn compute_committed_sql_checksum(sql: &str, side: ResetSqlSide) -> String {
@@ -1226,14 +1188,12 @@ pub fn compute_committed_sql_checksum(sql: &str, side: ResetSqlSide) -> String {
 
 /// Compute the canonical checksum of a committed *down* SQL file, or
 /// `None` when the down side carries no real statements.
-///
 /// Shares the fragment-level domain documented on
 /// [`compute_committed_sql_checksum`]. Returns `None` (matching compose's
-/// `NULL` `checksum_down` sentinel) when the down file is comment-only —
+/// `NULL` `checksum_down` sentinel) when the down file is comment-only
 /// either every composed fragment is a comment, or, for a non-composed
 /// file, every non-blank line is a `--` comment. A down side with at
 /// least one real statement returns `Some(digest)`.
-///
 /// Note this takes file *contents* already read from disk; a missing
 /// down file (which also maps to a `None` / `NULL` down checksum) is the
 /// caller's concern, not handled here.
@@ -1389,7 +1349,6 @@ fn read_replay_sql_files(
 }
 
 /// Read one migration's committed SQL and apply it through the runner.
-///
 /// Manifest-backed migrations replay the committed segment plan so
 /// non-transactional statements keep their original execution shape.
 /// Legacy migrations without a manifest fall back to a single
@@ -1431,7 +1390,7 @@ async fn replay_one_migration(
         snapshot: None,
         snapshot_path: None,
         // `MigrateConfig` does not derive `Clone` (the type carries
-        // a small fixed-size payload but the wider Phase 7 stance is
+        // a small fixed-size payload but the wider stance is
         // to construct it explicitly per call so future changes
         // surface at every callsite). We mirror the operator's
         // settings into a fresh instance.
@@ -1447,7 +1406,7 @@ async fn replay_one_migration(
         // means a bug here surfaces as a warning rather than a hard
         // failure during the time-sensitive reset window.
         out_of_order_policy: OutOfOrderPolicy::AllowWithDiagnostic,
-        // Phase 8.5 Cluster 2 issue #118 — production wire-up. When the
+        // Production wire-up. When the
         // caller supplied an audit pool on `ResetRequest::audit_pool`
         // we plumb it through to `RunnerCtx` so each replayed
         // migration writes one `djogi_ddl_audit` row per executed
@@ -1473,11 +1432,9 @@ async fn replay_one_migration(
 // ── URL helpers ───────────────────────────────────────────────────────────
 
 /// Extract the database-name component from a Postgres URL.
-///
 /// Returns `None` when the URL has no path-component database name
 /// (e.g. `postgres://localhost`) — `db reset` cannot derive a database
 /// to drop in that case.
-///
 /// **Percent-decoding.** The path-component bytes are percent-decoded
 /// before being returned: a path of `my%2Fdb` decodes to `my/db`.
 /// Without this step a URL like `postgres://localhost/my%2Fdb` would
@@ -1489,13 +1446,11 @@ async fn replay_one_migration(
 /// re-connects to. Returns `None` on malformed escapes (a `%` not
 /// followed by two hex digits) — refusing rather than guessing keeps
 /// the destructive path defensive.
-///
 /// Validation against the Postgres identifier grammar (ASCII letter
 /// or underscore followed by ASCII alphanumerics or underscores, up
-/// to 63 bytes) is layered on top by [`is_valid_pg_identifier`] —
+/// to 63 bytes) is layered on top by [`is_valid_pg_identifier`]
 /// extraction returns the raw decoded string so error messages can
 /// surface what the operator actually supplied.
-///
 /// **No regex.** Walks the URL bytes from the rightmost `/` once and
 /// then walks the path bytes once more during the percent-decode.
 fn extract_database_from_url(url: &str) -> Option<String> {
@@ -1534,7 +1489,6 @@ fn extract_database_from_url(url: &str) -> Option<String> {
 /// exactly two hex digits (case-insensitive ASCII); any other shape
 /// returns `None`. Output is treated as UTF-8 — non-UTF-8 byte
 /// sequences also return `None`.
-///
 /// Kept private to this module so the destructive `db reset` path is
 /// the only consumer; if a future caller needs the same primitive we
 /// can promote it without churning the public surface.
@@ -1573,21 +1527,18 @@ fn hex_digit_value(b: u8) -> Option<u8> {
 }
 
 /// Validate a string against the strict Postgres-identifier grammar:
-///
 /// > ASCII letter or underscore, followed by zero-or-more ASCII
 /// > alphanumerics or underscores, up to 63 bytes total.
-///
-/// **No regex.** Byte-level checks per `docs/spec/decisions.md` —
-/// `u8::is_ascii_alphabetic`, `u8::is_ascii_alphanumeric`, and
-/// explicit byte equality against `b'_'`.
-///
-/// Postgres' own grammar is technically more permissive (it accepts
-/// any byte sequence inside double-quoted identifiers), but the
-/// grammar above is the one every Djogi-emitted identifier obeys.
-/// Refusing anything wider keeps the `DROP DATABASE` /
-/// `CREATE DATABASE` paths free of operator-supplied bytes that the
-/// double-quote escape elsewhere in the codebase wouldn't otherwise
-/// surface.
+/// > **No regex.** Byte-level checks per `docs/spec/decisions.md`
+/// > `u8::is_ascii_alphabetic`, `u8::is_ascii_alphanumeric`, and
+/// > explicit byte equality against `b'_'`.
+/// > Postgres' own grammar is technically more permissive (it accepts
+/// > any byte sequence inside double-quoted identifiers), but the
+/// > grammar above is the one every Djogi-emitted identifier obeys.
+/// > Refusing anything wider keeps the `DROP DATABASE` /
+/// > `CREATE DATABASE` paths free of operator-supplied bytes that the
+/// > double-quote escape elsewhere in the codebase wouldn't otherwise
+/// > surface.
 fn is_valid_pg_identifier(name: &str) -> bool {
     let bytes = name.as_bytes();
     // Length: 1..=63 bytes (the standard Postgres `NAMEDATALEN - 1`).
@@ -1611,10 +1562,8 @@ fn is_valid_pg_identifier(name: &str) -> bool {
 /// Replace the database-name component in a Postgres URL with a new
 /// value. Preserves the scheme, authority, and any trailing query
 /// string.
-///
 /// Returns `None` when the URL has no recognisable database component.
-///
-/// Visible to the rest of the crate so the seed runner (Codex B-1)
+/// Visible to the rest of the crate so the seed runner (
 /// can reuse the same splice — `db seed --database <name>` derives
 /// the per-database connection URL from the application URL by
 /// replacing the path component in place.
@@ -1810,7 +1759,7 @@ mod tests {
         assert_eq!(extract_database_from_url("mysql://localhost/main"), None);
     }
 
-    /// Codex round-1 B-2 — percent-decoding has to happen BEFORE the
+    /// Percent-decoding has to happen BEFORE the
     /// runner sees the database name, otherwise the maintenance-DB
     /// drop and the post-recreate reconnect target two different
     /// strings (one literal-percent, one decoded). The extractor MUST
@@ -1836,7 +1785,7 @@ mod tests {
         );
     }
 
-    /// Codex round-1 B-2 — malformed `%XX` escapes must refuse rather
+    /// Malformed `%XX` escapes must refuse rather
     /// than silently fall through to a literal `%`. A `%Z9` is not a
     /// valid escape; we don't pretend it is.
     #[test]
@@ -1858,7 +1807,7 @@ mod tests {
         );
     }
 
-    /// Codex round-1 B-2 — the strict-identifier grammar covers the
+    /// The strict-identifier grammar covers the
     /// happy path (typical names) and refuses anything we won't
     /// emit into DDL.
     #[test]
@@ -1897,7 +1846,7 @@ mod tests {
         assert!(!is_valid_pg_identifier("café"));
     }
 
-    /// Codex round-1 B-2 — `reset_app_database` must surface
+    /// `reset_app_database` must surface
     /// `InvalidDatabaseName` rather than splicing decoded bytes into
     /// DDL. We exercise three failure shapes plus the maintenance-DB
     /// override path through the public entry.
@@ -2855,7 +2804,7 @@ mod tests {
         );
     }
 
-    // ── Codex umbrella U-4: historical-order replay plan ────────────────
+    // ── Historical-order replay plan ──────────────────────────────────
 
     fn bk(database: &str, app: &str) -> BucketKey {
         BucketKey {
@@ -2867,7 +2816,7 @@ mod tests {
     /// `build_replay_plan` honours the historical apply order: when
     /// `0001 → applied_at_rank 0`, `0003 → rank 1`, `0002 → rank 2`,
     /// the replay plan is `[0001, 0003, 0002]` — NOT lexical
-    /// `[0001, 0002, 0003]`. This is the load-bearing umbrella U-4
+    /// `[0001, 0002, 0003]`. This is the load-bearing
     /// invariant.
     #[test]
     fn u4_replay_plan_honours_historical_apply_order_over_lexical() {
@@ -2903,7 +2852,7 @@ mod tests {
 
     /// When NO historical order exists (fresh DB, ledger missing),
     /// the plan falls back to lexical version-string sort. This is
-    /// the safe-by-default behaviour that pre-umbrella reset always
+    /// the safe-by-default behaviour that previously reset always
     /// used.
     #[test]
     fn u4_replay_plan_falls_back_to_lexical_when_historical_empty() {
@@ -2965,14 +2914,13 @@ mod tests {
         );
     }
 
-    // ── Codex umbrella round-2 U-6: error-policy classification ─────────
+    // ── Error-policy classification ─────────────────────────────────────
 
     /// Connecting to a syntactically valid but unreachable URL must
-    /// classify as `Transient`, NOT `LedgerMissing`. Pre-U-6 the
+    /// classify as `Transient`, NOT `LedgerMissing`. the
     /// connect-failure path collapsed to an empty map and the
-    /// destructive operation would proceed; post-U-6 the call surfaces
+    /// destructive operation would proceed; now the call surfaces
     /// the failure so the caller refuses to drop / recreate.
-    ///
     /// We point at a port nobody listens on (TCP `:1` is the standard
     /// "discard" pseudo-port — kernels reject the connect immediately).
     #[tokio::test]
@@ -3007,7 +2955,6 @@ mod tests {
     /// development profile, confirmed) but points at an unreachable
     /// port — the historical-order capture's connect step fails and
     /// the variant must propagate.
-    ///
     /// CRITICAL invariant: pre-fix this same scenario would have
     /// `unwrap_or_default()` ed the failure and proceeded into the
     /// destructive `drop_and_create_database` call. Post-fix the
@@ -3062,7 +3009,7 @@ mod tests {
     }
 
     /// `ResetError::source()` returns the underlying `DjogiError` for
-    /// the U-6 variant — the `?` operator and `tracing` style error
+    /// the this variant — the `?` operator and `tracing` style error
     /// chains depend on that. The pre-existing variants in the impl
     /// already do this; the test guards against forgetting the new
     /// arm if someone touches the match block later.

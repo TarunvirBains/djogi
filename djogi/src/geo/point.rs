@@ -1,24 +1,17 @@
 //! The `GeoPoint` value type — a WGS-84 latitude/longitude coordinate.
-//!
 //! `GeoPoint` is the fundamental spatial primitive in Djogi's spatial layer.
 //! It maps to a `GEOGRAPHY(Point, 4326)` column in Postgres and round-trips
 //! through the PostGIS EWKB wire format.
-//!
 //! # Coordinate convention
-//!
 //! Djogi stores `lat` and `lon` as separate named fields (latitude first,
 //! matching the human-readable convention). On the wire, the OGC WKT `POINT`
 //! format and the EWKB `X`/`Y` fields use **longitude first** — this is
 //! handled transparently by `Display` and the codec.
-//!
 //! # Validation
-//!
 //! `GeoPoint::new` rejects non-finite values (NaN, infinity) and out-of-range
 //! coordinates at construction time. A `GeoPoint` in memory is always a valid
 //! WGS-84 coordinate.
-//!
 //! # Postgres integration
-//!
 //! `ToSql` and `FromSql` route through the codec macro
 //! [`crate::geo::impl_geography_codec`]: write EWKB directly into the bind
 //! buffer for `to_sql`, decode via [`GeoPoint::from_ewkb_bytes`] for
@@ -35,19 +28,14 @@ use crate::geo::GeoError;
 use crate::geo::ewkb;
 
 /// A WGS-84 latitude/longitude coordinate.
-///
 /// Construct via [`GeoPoint::new`]. Direct struct literals are intentionally
 /// not supported — the constructor enforces the invariant that both coordinates
 /// are finite and within range.
-///
 /// # Display
-///
 /// `Display` emits `POINT(<lon> <lat>)` per the OGC WKT convention (longitude
 /// first). This is suitable for passing to PostGIS functions and for
 /// human-readable output.
-///
 /// # Serde
-///
 /// Serializes as `{"lat": <f64>, "lon": <f64>}`. Deserialization validates
 /// the coordinate bounds via `GeoPoint::new`, so a malformed JSON object
 /// yields a `serde` error rather than silently constructing an invalid point.
@@ -78,7 +66,6 @@ impl GeoPoint {
     pub const MAX_LON: f64 = 180.0;
 
     /// Construct a new `GeoPoint`, validating coordinate ranges.
-    ///
     /// Returns `Err(GeoError::InvalidLatitude)` if `lat` is not finite or
     /// is outside [`Self::MIN_LAT`]..=[`Self::MAX_LAT`]. Returns
     /// `Err(GeoError::InvalidLongitude)` if `lon` is not finite or is
@@ -111,7 +98,6 @@ impl GeoPoint {
 
     /// Compute the great-circle distance to `other` in metres using the
     /// Haversine formula with an Earth radius of 6 371 000 m.
-    ///
     /// The Haversine formula gives the shortest-path distance over the
     /// surface of a sphere and is accurate to within about 0.5% for
     /// most terrestrial distances. Use PostGIS `ST_Distance` for higher
@@ -284,7 +270,7 @@ mod tests {
 
     #[test]
     fn haversine_sanity() {
-        // SFO: 37.6189 N, 122.3750 W  →  JFK: 40.6413 N, 73.7781 W
+        // SFO: 37.6189 N, 122.3750 W → JFK: 40.6413 N, 73.7781 W
         // Great-circle distance approximately 4151 km.
         let sfo = GeoPoint::new(37.6189, -122.3750).unwrap();
         let jfk = GeoPoint::new(40.6413, -73.7781).unwrap();

@@ -5,19 +5,19 @@ error[E0277]: the trait bound `AggregateExpr<f64, OrderedSetAgg>: djogi::query::
      |                                                 ^^^^^^^^ the trait `djogi::query::annotate::PlainAnnotationSlot` is not implemented for `AggregateExpr<f64, OrderedSetAgg>`
      |
 help: the trait `djogi::query::annotate::PlainAnnotationSlot` is implemented for `AggregateExpr<V>`
-    --> djogi/src/query/annotate.rs:608:1
+    --> djogi/src/query/annotate.rs:548:1
      |
- 608 | / impl<V> PlainAnnotationSlot for AggregateExpr<V, ValueAgg> where
- 609 | |     V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static
+ 548 | / impl<V> PlainAnnotationSlot for AggregateExpr<V, ValueAgg> where
+ 549 | |     V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static
      | |___________________________________________________________________^
      = note: required for `AggregateExpr<f64, OrderedSetAgg>` to implement `djogi::query::annotate::PlainAnnotationTuple`
 note: required by a bound in `annotate::<impl QuerySet<T>>::annotate`
-    --> djogi/src/query/annotate.rs:1312:12
+    --> djogi/src/query/annotate.rs:1236:12
      |
-1309 |     pub fn annotate<F, A>(self, f: F) -> AnnotatedQuerySet<T, A>
+1233 |     pub fn annotate<F, A>(self, f: F) -> AnnotatedQuerySet<T, A>
      |            -------- required by a bound in this associated function
 ...
-1312 |         A: PlainAnnotationTuple,
+1236 |         A: PlainAnnotationTuple,
      |            ^^^^^^^^^^^^^^^^^^^^ required by this bound in `annotate::<impl QuerySet<T>>::annotate`
 
 error: aborting due to 1 previous error

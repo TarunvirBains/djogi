@@ -1,0 +1,7 @@
+error: `using = "hash"` is incompatible with an `expr = ".."` expression target. Postgres hash indexes do not support this combination — drop the combination or switch to a btree index.
+ --> $DIR/model_indexes_hash_expr.rs:5:5
+  |
+5 |     index(expr = "lower(email)", using = "hash"),
+  |     ^^^^^
+
+error: aborting due to 1 previous error

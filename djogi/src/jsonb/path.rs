@@ -1,34 +1,24 @@
 //! Flat JSONB path querying — `FieldRef<M, Jsonb<T>>::path::<V>("dot.path")`.
-//!
 //! # What
-//!
 //! [`JsonbPathRef<M, V>`] is produced by calling `.path::<V>("a.b.c")` on a
 //! `FieldRef<M, Jsonb<T>>`. It carries the JSONB column name and a dotted path
 //! string, and exposes the same comparison surface as `FieldRef<M, V>`:
 //! `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in_list`, `is_null`,
 //! `is_not_null`.
-//!
 //! # SQL emission shape
-//!
 //! Given column `specs` and path `"engine.cylinders"` with type `i32`:
-//!
 //! ```sql
 //! (specs->'engine'->>'cylinders')::int
 //! ```
-//!
 //! The last path segment uses the text-extraction operator `->>'seg'`; every
 //! preceding segment uses the object-navigation operator `->'seg'`. The
 //! resulting text is then cast to the SQL type corresponding to `V`.
-//!
 //! # Path identifier validation
-//!
 //! Each `.`-separated segment must be non-empty, begin with an ASCII letter or
 //! underscore, contain only ASCII alphanumerics or underscores, and be at most
 //! 63 bytes long. This rule is enforced in plain English — no regex engine is
 //! used or allowed anywhere in Djogi (see `decisions.md`).
-//!
 //! # Why flat only?
-//!
 //! `path()` is intentionally shallow: it accepts a dotted string (evaluated at
 //! runtime) and emits a direct `->` chain. Typed deep paths (a full
 //! `#[derive(JsonbSchema)]` with compile-time field access) are deferred to
@@ -40,17 +30,14 @@ use crate::query::condition::{Condition, FilterValue};
 use std::marker::PhantomData;
 
 /// Validates a single JSONB path segment.
-///
 /// Each segment must:
-///
 /// - Be non-empty.
 /// - Begin with an ASCII letter (`a`–`z`, `A`–`Z`) or underscore (`_`).
 /// - Contain only ASCII alphanumerics (`a`–`z`, `A`–`Z`, `0`–`9`) or
 ///   underscores (`_`).
 /// - Be at most 63 bytes long (the Postgres `NAMEDATALEN - 1` limit).
-///
-/// Returns `true` if the segment satisfies every rule, `false` otherwise.
-/// No regex engine is used — all checks are byte-level stdlib primitives.
+///   Returns `true` if the segment satisfies every rule, `false` otherwise.
+///   No regex engine is used — all checks are byte-level stdlib primitives.
 pub(crate) fn is_plain_ident(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.is_empty() || bytes.len() > 63 {
@@ -83,12 +70,10 @@ fn validate_dotted_path(dotted: &'static str) {
 }
 
 /// A typed handle for filtering on a JSONB sub-path.
-///
 /// Produced by [`crate::query::field::FieldRef::path`] on a
 /// `FieldRef<M, Jsonb<T>>`. `V` is the Rust type the path segment is expected
 /// to hold; it determines the Postgres cast applied to the text-extracted
 /// value (e.g. `::int` for `i32`, `::bigint` for `i64`).
-///
 /// `JsonbPathRef` is `Copy` — it holds only two `&'static str` pointers and
 /// two phantom markers.
 pub struct JsonbPathRef<M, V> {
@@ -124,11 +109,8 @@ impl<M, V> JsonbPathRef<M, V> {
     }
 
     /// Construct a `JsonbPathRef` from macro-generated code in user crates.
-    ///
     /// Exposed for `#[derive(JsonbSchema)]` output. Validates the path.
-    ///
     /// # Panics
-    ///
     /// Panics if any segment of `path` violates the plain-identifier rules
     /// (same rules as [`validate_dotted_path`]). The `#[derive(JsonbSchema)]`
     /// macro only emits field name literals as segments, so this is a
@@ -157,22 +139,18 @@ impl<M, V> JsonbPathRef<M, V> {
 }
 
 /// Closed taxonomy of Postgres casts a JSONB path LHS can wear.
-///
 /// `Jsonb<T>` path extraction (`(col->...->>'key')`) always yields TEXT.
 /// To compare against a numeric, temporal, UUID, decimal, interval, or
 /// network bind value, the LHS must be cast to the matching Postgres type
 /// before the comparison runs — otherwise Postgres compares as text and
 /// `'10' < '9'` because text ordering is lexicographic, not numeric.
-///
 /// This enum is the typed public API surface for that cast metadata.
 /// Adopter-supplied wrapper types delegate JSONB cast selection through
 /// the value-typed [`IntoFilterValue::jsonb_sql_cast`] trait method,
 /// which returns a variant of this enum — never a free-form SQL string.
 /// That keeps every cast that ever reaches the SQL emitter constrained
 /// to the closed set below.
-///
 /// # Variants
-///
 /// - [`Int2`](Self::Int2): `::int2` — `i8` / `i16` / `u8` widening.
 /// - [`Int4`](Self::Int4): `::int4` — `i32` / `u16` widening.
 /// - [`Int8`](Self::Int8): `::int8` — `i64` / `u32` widening / HeerId family.
@@ -187,10 +165,9 @@ impl<M, V> JsonbPathRef<M, V> {
 /// - `Inet`: `::inet` — `std::net::IpAddr` (`network` feature only).
 /// - `Cidr`: `::cidr` — `djogi::CidrAddr` (`network` feature only).
 /// - `Macaddr`: `::macaddr` — `djogi::MacAddr` (`network` feature only).
-///
-/// The enum is `#[non_exhaustive]` so future Postgres-cast surface (e.g.
-/// `::bytea`, `::tstzrange`, …) can be added without a SemVer break on
-/// downstream matches.
+///   The enum is `#[non_exhaustive]` so future Postgres-cast surface (e.g.
+///   `::bytea`, `::tstzrange`, …) can be added without a SemVer break on
+///   downstream matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum JsonbSqlCast {
@@ -230,7 +207,6 @@ pub enum JsonbSqlCast {
 impl JsonbSqlCast {
     /// SQL cast suffix string the emitter splices after the parenthesised
     /// JSONB extraction expression (e.g. `(col->>'key')` + `"::int8"`).
-    ///
     /// `pub(crate)` because the only legitimate consumer is the JSONB
     /// path SQL emitter inside this crate. Adopters select the variant
     /// through [`IntoFilterValue::jsonb_sql_cast`]; the string form is
@@ -261,7 +237,6 @@ impl JsonbSqlCast {
 /// Resolve the typed [`JsonbSqlCast`] for a `std::any::type_name::<V>()`
 /// string, or `None` for `String` / `&str` (text extraction already
 /// produces text — no cast needed) and for any type not in the table.
-///
 /// This is the canonical lookup behind [`IntoFilterValue::jsonb_sql_cast`]'s
 /// default body. Primitive types (`i16`, `i32`, `f32`, `bool`, …) return
 /// their short form. Types from external crates return their
@@ -272,7 +247,6 @@ impl JsonbSqlCast {
 /// defensively (test fixtures and hand-written callers may use either
 /// form). All known [`IntoFilterValue`] implementors are explicitly
 /// mapped; an unknown type falls through to `None`.
-///
 /// Every [`IntoFilterValue`] implementor whose Rust value type maps to a
 /// non-text Postgres column must appear in this table. If a new
 /// implementor is added to `query::field` without a corresponding cast
@@ -288,8 +262,8 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         "i16" => Some(JsonbSqlCast::Int2),
         "i32" => Some(JsonbSqlCast::Int4),
         "i64" => Some(JsonbSqlCast::Int8),
-        // Narrow integers (Phase 7-Zero-2 polish, GH issue #29) plus
-        // `u64` (djogi#161 / Phase 8.5 v3 Cluster 2). Each narrow type
+        // Narrow integers (polish, GH issue #29) plus
+        // `u64` (v3 ). Each narrow type
         // widens to the smallest signed Postgres type that fits its full
         // range; `u64` exceeds `int8`'s positive range, so it widens to
         // bare `NUMERIC` and binds via `rust_decimal::Decimal` (see
@@ -311,7 +285,7 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         // (`"OffsetDateTime"`, `"Date"`, `"time::OffsetDateTime"`, etc.) are
         // kept defensively in case a caller passes a hand-written name
         // (test fixtures do this) or a future rustc release simplifies
-        // the format. Codex round-1 BLOCK (Cluster A finding 1) caught
+        // the format.
         // that the table mapped only the public-path forms while
         // `type_name<>()` produced the full forms — every temporal jsonb
         // path comparison was silently falling back to text.
@@ -333,11 +307,11 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         }
         // HeerIdDesc — descending-order variant; `IntoFilterValue`
         // exists at `djogi/src/query/field.rs:461`. Real `type_name`
-        // is `heeranjid::heer_desc::HeerIdDesc`. Codex round-2 BLOCK
-        // (Cluster F finding 1) caught this gap — JSONB comparisons
-        // against a `HeerIdDesc`-typed value were silently falling
-        // back to text. The `HeerIdRecencyBiased` re-export alias
-        // resolves to the same type; one arm covers both.
+        // is `heeranjid::heer_desc::HeerIdDesc`.
+        // Issue #92 caught this gap — JSONB comparisons against a
+        // `HeerIdDesc`-typed value were silently falling back to
+        // text. The `HeerIdRecencyBiased` re-export alias resolves
+        // to the same type; one arm covers both.
         "heeranjid::heer_desc::HeerIdDesc"
         | "djogi::types::HeerIdDesc"
         | "heeranjid::HeerIdDesc" => Some(JsonbSqlCast::Int8),
@@ -355,7 +329,7 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         "rust_decimal::decimal::Decimal" | "rust_decimal::Decimal" | "Decimal" => {
             Some(JsonbSqlCast::Numeric)
         }
-        // Interval (djogi#212) — djogi's own newtype wrapping the Postgres
+        // Interval — djogi's own newtype wrapping the Postgres
         // `INTERVAL` wire format. The struct is defined in `djogi::pg_types`
         // (not a private sub-module), so `type_name::<djogi::Interval>()`
         // produces `djogi::pg_types::Interval` at runtime. The public
@@ -369,13 +343,12 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         "djogi::pg_types::Interval" | "djogi::types::Interval" | "Interval" => {
             Some(JsonbSqlCast::Interval)
         }
-        // Network family (djogi#213) — INET / CIDR / MACADDR text
+        // Network family — INET / CIDR / MACADDR text
         // extraction inside JSONB columns produces the canonical
         // Postgres text form (`192.168.1.0`, `10.0.0.0/8`,
         // `aa:bb:cc:dd:ee:ff`). Casting to the typed column type lets
         // Postgres normalise the value (e.g., trim leading zeros in
         // IPv4 octets) before comparison.
-        //
         // `IpAddr` is `std::net::IpAddr`; `type_name` returns
         // `core::net::ip_addr::IpAddr` at runtime under stable Rust.
         // `MacAddr` / `CidrAddr` live in `djogi::pg_types` (not a
@@ -383,7 +356,6 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
         // `djogi::pg_types::MacAddr` / `djogi::pg_types::CidrAddr`.
         // Defensive aliases (`djogi::types::*`, bare names) included
         // for hand-written test strings as elsewhere in this match.
-        //
         // Match arms stay live (not feature-gated) so the string lookup
         // works the same with or without the `network` feature, but the
         // returned variants only resolve when the feature is on. Without
@@ -414,9 +386,8 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
 
 /// Returns the Postgres SQL type cast suffix for `V`, or `None` for `String`
 /// and `&str` (text extraction already produces text — no cast needed).
-///
-/// Compatibility shim that wraps [`jsonb_sql_cast_for_type`] —
-/// preserves the pre-djogi#161 string-returning API for the in-crate
+/// Compatibility shim that wraps [`jsonb_sql_cast_for_type`]
+/// preserves the pre-string-returning API for the in-crate
 /// regression tests below. Live SQL emission now reaches the cast
 /// metadata through [`IntoFilterValue::jsonb_sql_cast`] →
 /// [`JsonbSqlCast::suffix`] so adopter wrappers can delegate cast
@@ -427,18 +398,14 @@ pub(crate) fn sql_cast_for_type(type_name: &str) -> Option<&'static str> {
 }
 
 /// Build the SQL fragment for a JSONB path extraction with optional cast.
-///
 /// Given `column = "specs"`, `path = "engine.cylinders"`, and
 /// `cast = Some("::int")` this produces:
-///
 /// ```text
 /// (specs->'engine'->>'cylinders')::int
 /// ```
-///
 /// The last segment always uses `->>'seg'` (text extraction); every prior
 /// segment uses `->'seg'` (object navigation). The entire expression is
 /// parenthesised before the cast is appended.
-///
 /// Production SQL emission now happens inside `emit_jsonb_path_leaf` in
 /// `query::sql` (which also handles `parent_table` qualification). This
 /// function is kept for unit-test assertions on the SQL shape.
@@ -476,11 +443,8 @@ pub(crate) fn build_path_sql(
 /// structural components of the path expression so the SQL emitter can
 /// qualify the column reference with a parent table name when rendering
 /// inside a `SELECT ... LEFT JOIN` context.
-///
 /// Stored in [`Condition::JsonbPath`].
-///
 /// # Why structured, not pre-rendered
-///
 /// If the expression SQL (`(col->'a'->>'b')::int`) were pre-rendered at
 /// `JsonbPathRef` construction time (inside the filter closure), the
 /// column name would be bare — `col` not `parent.col`. Inside a joined
@@ -517,9 +481,8 @@ use crate::query::field::IntoFilterValue;
 
 impl<M: Model, V: IntoFilterValue + 'static> JsonbPathRef<M, V> {
     /// Return the Postgres cast suffix for `V`.
-    ///
     /// Routes through the typed [`IntoFilterValue::jsonb_sql_cast`]
-    /// dispatch (djogi#161) — wrapper types like `primary_key!`-emitted
+    /// dispatch — wrapper types like `primary_key!`-emitted
     /// custom PKs, `ForeignKey<T>`, and `OneToOneField<T>` override the
     /// default body to delegate to their inner SQL value type, so JSONB
     /// path comparisons against those wrappers emit the same typed cast
@@ -695,7 +658,6 @@ mod tests {
     }
 
     // ── sql_cast_for_type — full matrix coverage ─────────────────────────
-    //
     // Every IntoFilterValue implementor must appear in this table with the
     // correct Postgres cast. These tests prove the table is complete and the
     // cast strings are correct. type_name::<V>() returns the form used by the
@@ -716,7 +678,7 @@ mod tests {
         assert_eq!(sql_cast_for_type("i64"), Some("::int8"));
     }
 
-    // Narrow-integer JSONB casts (Phase 7-Zero-2 polish, GH issue #29).
+    // Narrow-integer JSONB casts (polish, GH issue #29).
     // Each maps to the smallest signed Postgres type that fits the
     // narrow Rust type's full range. Mirrors the IntoFilterValue
     // widening in `query::field`.
@@ -820,7 +782,6 @@ mod tests {
         assert_eq!(sql_cast_for_type("some::unknown::Type"), None);
     }
 
-    // Codex round-1 BLOCK (Cluster A finding 1) — assert the cast arms
     // against `std::any::type_name::<V>()` output directly, not against
     // hand-written strings. The hand-written `"time::OffsetDateTime"`
     // form is what we *thought* `type_name` produced; the real output
@@ -911,8 +872,8 @@ mod tests {
     // Lock the actual `type_name::<crate::Interval>()` output against the
     // cast table so any future rustc `type_name` format change surfaces as
     // a test failure here rather than as silent text-fallback in production
-    // JSONB interval queries (same pattern as the Codex round-1 temporal
-    // fix and the round-2 HeerIdDesc/RanjIdDesc fix).
+    // JSONB interval queries (same pattern as the
+    // fix and the HeerIdDesc/RanjIdDesc fix).
     #[test]
     fn sql_cast_uses_actual_type_name_for_interval() {
         let name = std::any::type_name::<crate::Interval>();
@@ -923,11 +884,11 @@ mod tests {
         );
     }
 
-    // djogi#213 — network family JSONB path casts. Same pattern as the
+    // network family JSONB path casts. Same pattern as the
     // Interval casts above: defensive spellings + the `type_name`
     // output anchor so a future rustc format change surfaces here
     // rather than as silent text-fallback in JSONB INET/CIDR/MACADDR
-    // path comparisons. Feature-gated per djogi#161 cast-dispatch
+    // path comparisons. Feature-gated per cast-dispatch
     // refactor: `JsonbSqlCast::Inet` is `#[cfg(feature = "network")]`
     // because `IntoFilterValue for std::net::IpAddr` is feature-gated,
     // so the cast variant only resolves through dispatch under the
@@ -1005,7 +966,6 @@ mod tests {
         );
     }
 
-    // Codex round-2 BLOCK (Cluster F finding 1) — `HeerIdDesc` / `RanjIdDesc`
     // (the descending-order variants of the PK types) implement
     // `IntoFilterValue` and can be used as `JsonbPathRef<M, V>` value
     // generics. They were missing from the cast table — every JSONB
@@ -1033,8 +993,7 @@ mod tests {
         );
     }
 
-    // ── djogi#161 — `u64` JSONB cast (Numeric) ────────────────────────────
-    //
+    // ── — `u64` JSONB cast (Numeric) ────────────────────────────
     // `u64` exceeds `int8`'s positive range, so it widens through
     // `IntoFilterValue` to `FilterValue::Decimal` (bare NUMERIC bind).
     // The matching JSONB path LHS cast is `::numeric`. Pre-#161 `u64`
@@ -1071,7 +1030,6 @@ mod tests {
     }
 
     // ── JsonbSqlCast enum-level assertions ────────────────────────────────
-    //
     // The string-returning `sql_cast_for_type` shim is implemented as a
     // wrapper over the typed `jsonb_sql_cast_for_type`. These tests pin
     // the variant ↔ suffix relationship so a typo in `JsonbSqlCast::suffix`
@@ -1132,8 +1090,7 @@ mod tests {
         assert_eq!(JsonbSqlCast::Macaddr.suffix(), "::macaddr");
     }
 
-    // ── djogi#161 — `IntoFilterValue::jsonb_sql_cast()` trait dispatch ────
-    //
+    // ── — `IntoFilterValue::jsonb_sql_cast` trait dispatch ────
     // The trait method is the canonical adopter-facing entry point. The
     // default impl on `IntoFilterValue` walks `type_name::<Self>()`
     // through `jsonb_sql_cast_for_type`. Wrapper newtypes override the
@@ -1245,7 +1202,7 @@ mod tests {
         }
     }
 
-    /// djogi#161 SQL-shape pin — when `V` is a wrapper that delegates
+    /// SQL-shape pin — when `V` is a wrapper that delegates
     /// `IntoFilterValue::jsonb_sql_cast` to `i64`, the leaf produced
     /// by `JsonbPathRef::<M, LocalI64Id>` must carry `::int8` cast.
     /// The full rendered LHS is `(specs->>'rank')::int8`, asserted via
@@ -1266,12 +1223,12 @@ mod tests {
         );
         // Render the LHS SQL shape with the same cast suffix the emitter
         // splices in for production queries — pins the end-to-end shape
-        // pre/post djogi#161.
+        // pre/post .
         let lhs = build_path_sql(leaf.column, leaf.path, leaf.cast);
         assert_eq!(lhs, "(specs->>'rank')::int8");
     }
 
-    /// djogi#161 SQL-shape pin — `JsonbPathRef<_, u64>` must carry
+    /// SQL-shape pin — `JsonbPathRef<_, u64>` must carry
     /// `::numeric` cast (NOT no cast), so `u64` JSONB path comparisons
     /// use Postgres NUMERIC ordering instead of text ordering.
     #[test]

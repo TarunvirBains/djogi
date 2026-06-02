@@ -1,12 +1,9 @@
 //! Annotation terminal — `QuerySet::annotate(...)` + its
 //! [`AnnotatedQuerySet<T, A>`] pending handle.
-//!
 //! # What
-//!
 //! `QuerySet<T>::annotate(|f| f.col().sum())` returns an
 //! [`AnnotatedQuerySet<T, A>`] whose terminal
 //! [`AnnotatedQuerySet::fetch_all`] issues
-//!
 //! ```sql
 //! SELECT t.<c1>, t.<c2>, ..., <agg_0> AS __djogi_agg_0, <agg_1> AS __djogi_agg_1, ...
 //! FROM <table> AS t
@@ -14,46 +11,35 @@
 //! [ORDER BY ...]
 //! [LIMIT $n] [OFFSET $n]
 //! ```
-//!
 //! The `t.<c_N>` prefix is the canonical column list emitted by
 //! `FromPgRow::COLUMN_LIST`, one column per field in struct-field
 //! order. Using an explicit column list (rather than `t.*`) pins the
 //! wire shape so `FromPgRow::from_pg_row` can decode positionally.
-//!
 //! and decodes the result into `Vec<(T, Decoded)>` where `Decoded`
 //! is a single value for arity 1 and a tuple for arities 2..=4.
-//!
 //! # Why a typed-tuple return
-//!
-//! Per Phase 4 plan Q5 (Resolved: A + doc-only guidance), annotations
+//! Per plan Q5 (Resolved: A + doc-only guidance), annotations
 //! return `Vec<(Model, Aggregates...)>`. Users who need 3+ aggregates
 //! either stay on the tuple form or shape into a local struct post-
 //! hoc — there is no const-generic lint discouraging wide tuples.
-//!
 //! # The sealed `IntoAggregateTuple` trait
-//!
 //! Implemented for:
-//!
 //! - `AggregateExpr<V, K>` (arity 1) — `Decoded = V`
 //! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>)` — `Decoded = (V1, V2)`
 //! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>, AggregateExpr<V3, K3>)`
-//!   — `Decoded = (V1, V2, V3)`
+//!   `Decoded = (V1, V2, V3)`
 //! - `(AggregateExpr<V1, K1>, AggregateExpr<V2, K2>, AggregateExpr<V3, K3>,
-//!   AggregateExpr<V4, K4>)` — `Decoded = (V1, V2, V3, V4)`
-//!
-//! Plain ungrouped [`QuerySet::annotate`] applies the narrower
-//! [`PlainAnnotationTuple`] bound because that terminal synthesizes
-//! `OVER ()` for aggregate slots. Only value aggregates can use that
-//! synthesized window. Ordered-set, hypothetical-set, and metadata
-//! aggregate kinds remain legal through scalar [`QuerySet::aggregate`]
-//! and grouped annotate, but do not compile on the plain annotate path.
-//!
-//! The trait is sealed by a private supertrait so downstream crates
-//! cannot add their own impls — same seal pattern as
-//! [`crate::query::queryset::IntoDistinctColumns`].
-//!
+//! AggregateExpr<V4, K4>)` — `Decoded = (V1, V2, V3, V4)`
+//!   Plain ungrouped [`QuerySet::annotate`] applies the narrower
+//!   [`PlainAnnotationTuple`] bound because that terminal synthesizes
+//!   `OVER ()` for aggregate slots. Only value aggregates can use that
+//!   synthesized window. Ordered-set, hypothetical-set, and metadata
+//!   aggregate kinds remain legal through scalar [`QuerySet::aggregate`]
+//!   and grouped annotate, but do not compile on the plain annotate path.
+//!   The trait is sealed by a private supertrait so downstream crates
+//!   cannot add their own impls — same seal pattern as
+//!   [`crate::query::queryset::IntoDistinctColumns`].
 //! # Why ordinal-prefix decode for `T` + name-based decode for aggregates
-//!
 //! The main row contains both `T`'s columns (emitted as
 //! `t.<c1>, t.<c2>, ...` in the canonical `FromPgRow::COLUMNS`
 //! order) and the aggregate columns (from `<agg> AS __djogi_agg_N`).
@@ -85,8 +71,7 @@ use std::marker::PhantomData;
 // ── Sealed seal ──────────────────────────────────────────────────────
 
 // Sealed marker for [`IntoAggregateTuple`] impls.
-//
-// Phase 8.5 Cluster 4A widens this from `mod` to `pub(crate) mod` so
+// Widens this from `mod` to `pub(crate) mod` so
 // pair-tuple slot types implemented in `query::joined` (which compose
 // through the existing `impl<S: AnnotationSlot> IntoAggregateTuple for
 // S` blanket) can satisfy the bound through `AnnotationSlot::Sealed`.
@@ -100,13 +85,12 @@ pub(crate) mod sealed {
 }
 
 // Sealed marker for [`AnnotationSlot`] impls.
-//
-// Phase 8.5 Cluster 4A widens the inner module from `mod` to
+// Widens the inner module from `mod` to
 // `pub(crate) mod` so the pair-tuple surface (`query::joined`) can
 // implement `AnnotationSlot` for `PairClosureKinshipSum<C>` and the
 // blanket `impl<S: AnnotationSlot> IntoAggregateTuple for S` picks up
 // the new slot without weakening the seal against downstream crates
-// — `Sealed` stays un-namable outside `djogi` because the module is
+// `Sealed` stays un-namable outside `djogi` because the module is
 // `pub(crate)`.
 pub(crate) mod annotation_slot_sealed {
     pub trait Sealed {}
@@ -132,7 +116,6 @@ fn aggregate_alias(slot: usize) -> &'static str {
 }
 
 /// A single annotation expression that can occupy one SELECT-list slot.
-///
 /// This is a hidden extension point used by Djogi's own annotation tuple
 /// bridge. It is sealed, so downstream crates cannot inject custom SQL into
 /// the annotation emitter. Public code normally names
@@ -170,25 +153,19 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
     }
 
     /// Validate that this slot's alias does not collide with a model column name.
-    ///
     /// # What
-    ///
     /// Called by [`AnnotatedQuerySet::fetch_all`] with `T::COLUMNS` before
     /// SQL build. A collision means the derived-table outer query exposes two
     /// identically-named columns — the model column emitted as `t.<col>` and
     /// the window annotation emitted as `<expr> AS <alias>` — making the outer
     /// `WHERE <alias>` predicate from [`.qualify(...)`](crate::query::QuerySet)
     /// ambiguous at Postgres.
-    ///
     /// # Why the default is `Ok(())`
-    ///
     /// Aggregate slots ([`crate::expr::AggregateExpr`]) use framework-generated
     /// `__djogi_agg_N` aliases that are validated against the `__djogi_` prefix
     /// reservation at build time and can never collide with adopter-chosen model
     /// column names. Window function slots override this to reject matching aliases.
-    ///
     /// # How
-    ///
     /// Overrides compare `self.alias_name()` (if `Some`) against every entry in
     /// `model_columns` using ASCII case-insensitive comparison
     /// (`alias.eq_ignore_ascii_case(col)`) to match PostgreSQL's
@@ -203,14 +180,12 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
 
     /// Whether this annotation slot needs a closure-pair LEFT JOIN
     /// (i.e. `la` / `ra` aliases) to be in scope to produce valid SQL.
-    ///
     /// Returns `false` by default — virtually every annotation slot is
     /// independent of a pair-tuple's closure join. The single override
     /// today is [`PairClosureKinshipSum`](crate::query::PairClosureKinshipSum):
     /// it emits SQL that references `la.<path_count>` / `ra.<depth>` so
     /// without a closure-pair join in the FROM clause it produces a
     /// Postgres `42P01 missing FROM-clause` error at execute time.
-    ///
     /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
     /// consults this through the tuple bridge
     /// ([`IntoAggregateTuple::requires_closure_pair_join`]) before SQL
@@ -224,38 +199,34 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
 
     /// Whether this slot's emitted SQL is safe to use inside a
     /// pair-tuple `JoinedQuerySet::annotate(...)` terminal.
-    ///
     /// Returns `false` by default. Override to `true` only when the
     /// slot's emitter either:
-    ///   - References pair-side closure aliases (`la.` / `ra.`)
-    ///     explicitly — `PairClosureKinshipSum<C>`.
-    ///   - Composes through pair-aware builders that qualify column
-    ///     references (`l.col` / `r.col`) — window functions invoked
-    ///     via `partition_by_pair` / `order_by_pair_asc` /
-    ///     `order_by_pair_desc`.
-    ///
-    /// Ordinary [`AggregateExpr<V>`] (e.g. `f.age().sum()`) keeps
-    /// the default `false`: it emits a bare-column SQL fragment like
-    /// `SUM(age) OVER ()` which is structurally ambiguous in joined
-    /// contexts where both sides may share column names (a guarantee
-    /// on self-joins, typical on heterogeneous joins).
-    ///
-    /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
-    /// consults this through the tuple bridge
-    /// ([`IntoAggregateTuple::is_joined_safe`]) before SQL build and
-    /// rejects the entire tuple with a typed `DjogiError::Validation`
-    /// when any slot is not joined-safe. The diagnostic message points
-    /// adopters at the pair-aware alternatives.
-    ///
-    /// Note: window functions return `true` here even if the user
-    /// composes them with the non-pair `partition_by(field)` instead
-    /// of `partition_by_pair(side, field)` — that would still emit a
-    /// bare column reference. Detecting that variant requires
-    /// inspecting the `WindowSpec.partition_by` / `.order_by` strings
-    /// for `.`-qualification; a follow-on slice will tighten the gate.
-    /// For now, the slot-level opt-in keeps the surface minimal while
-    /// the ambiguous case (`AggregateExpr` with no pair-aware path)
-    /// stays rejected.
+    /// - References pair-side closure aliases (`la.` / `ra.`)
+    ///   explicitly — `PairClosureKinshipSum<C>`.
+    /// - Composes through pair-aware builders that qualify column
+    ///   references (`l.col` / `r.col`) — window functions invoked
+    ///   via `partition_by_pair` / `order_by_pair_asc` /
+    ///   `order_by_pair_desc`.
+    ///   Ordinary [`AggregateExpr<V>`] (e.g. `f.age().sum()`) keeps
+    ///   the default `false`: it emits a bare-column SQL fragment like
+    ///   `SUM(age) OVER ()` which is structurally ambiguous in joined
+    ///   contexts where both sides may share column names (a guarantee
+    ///   on self-joins, typical on heterogeneous joins).
+    ///   [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
+    ///   consults this through the tuple bridge
+    ///   ([`IntoAggregateTuple::is_joined_safe`]) before SQL build and
+    ///   rejects the entire tuple with a typed `DjogiError::Validation`
+    ///   when any slot is not joined-safe. The diagnostic message points
+    ///   adopters at the pair-aware alternatives.
+    ///   Note: window functions return `true` here even if the user
+    ///   composes them with the non-pair `partition_by(field)` instead
+    ///   of `partition_by_pair(side, field)` — that would still emit a
+    ///   bare column reference. Detecting that variant requires
+    ///   inspecting the `WindowSpec.partition_by` / `.order_by` strings
+    ///   for `.`-qualification; a follow-on slice will tighten the gate.
+    ///   For now, the slot-level opt-in keeps the surface minimal while
+    ///   the ambiguous case (`AggregateExpr` with no pair-aware path)
+    ///   stays rejected.
     fn is_joined_safe(&self) -> bool {
         false
     }
@@ -265,34 +236,29 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
     /// references the framework-fixed `l.` / `r.` / `la.` / `ra.`
     /// aliases that a single-Model or grouped FROM clause does not
     /// provide.
-    ///
     /// Returns `false` by default. Override to `true` when the slot's
     /// SQL emitter splices a pair-tuple alias literally:
-    ///
-    ///   - [`PairClosureKinshipSum<C>`](crate::query::PairClosureKinshipSum)
-    ///     emits `SUM(la.path_count * ra.path_count * ...)` referencing
-    ///     the closure-pair `la` / `ra` aliases. Already covered by the
-    ///     existing `requires_closure_pair_join()` signal, but pair-tuple
-    ///     scope is the broader gate (this slot needs both pair-side
-    ///     aliases **and** the closure-pair LEFT JOINs).
-    ///   - [`PairAreaOverlapRatio<L, R>`](crate::query::PairAreaOverlapRatio)
-    ///     (spatial only) emits
-    ///     `ST_Area(ST_Intersection(l.<lcol>, r.<rcol>))` referencing
-    ///     the pair-side `l` / `r` aliases. Does **not** need closure
-    ///     pair joins, so the existing `requires_closure_pair_join()`
-    ///     signal alone would let it sneak past the single-Model /
-    ///     grouped annotate gates. This is the signal that catches it.
-    ///
-    /// [`AnnotatedQuerySet::fetch_all`](crate::query::AnnotatedQuerySet::fetch_all)
-    /// and the grouped annotate terminals consult this through the tuple
-    /// bridge ([`IntoAggregateTuple::requires_pair_tuple_scope`]) before
-    /// SQL build and return a typed `DjogiError::Validation` when the
-    /// aggregate tuple includes any pair-only slot. The diagnostic
-    /// points adopters at the `self_pairs()` / `cross_join_with()`
-    /// entry points for the pair-tuple substrate.
-    ///
+    /// - [`PairClosureKinshipSum<C>`](crate::query::PairClosureKinshipSum)
+    ///   emits `SUM(la.path_count * ra.path_count * ...)` referencing
+    ///   the closure-pair `la` / `ra` aliases. Already covered by the
+    ///   existing `requires_closure_pair_join()` signal, but pair-tuple
+    ///   scope is the broader gate (this slot needs both pair-side
+    ///   aliases **and** the closure-pair LEFT JOINs).
+    /// - [`PairAreaOverlapRatio<L, R>`](crate::query::PairAreaOverlapRatio)
+    ///   (spatial only) emits
+    ///   `ST_Area(ST_Intersection(l.<lcol>, r.<rcol>))` referencing
+    ///   the pair-side `l` / `r` aliases. Does **not** need closure
+    ///   pair joins, so the existing `requires_closure_pair_join()`
+    ///   signal alone would let it sneak past the single-Model /
+    ///   grouped annotate gates. This is the signal that catches it.
+    ///   [`AnnotatedQuerySet::fetch_all`](crate::query::AnnotatedQuerySet::fetch_all)
+    ///   and the grouped annotate terminals consult this through the tuple
+    ///   bridge ([`IntoAggregateTuple::requires_pair_tuple_scope`]) before
+    ///   SQL build and return a typed `DjogiError::Validation` when the
+    ///   aggregate tuple includes any pair-only slot. The diagnostic
+    ///   points adopters at the `self_pairs()` / `cross_join_with()`
+    ///   entry points for the pair-tuple substrate.
     /// # Why this is separate from `requires_closure_pair_join`
-    ///
     /// `requires_closure_pair_join()` is the narrower signal: it asks
     /// whether the slot's SQL references the **closure-pair** `la.` /
     /// `ra.` aliases specifically. A slot that needs only the pair-side
@@ -309,22 +275,20 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
 
     /// Validate this slot against an optional closure-pair join
     /// captured by the queryset.
-    ///
     /// Default returns `Ok(())`. Override on slots that splice
     /// `ClosureModel` metadata (column-name `&'static str` accessors)
     /// into emitted SQL — today only
     /// [`PairClosureKinshipSum<C>`](crate::query::PairClosureKinshipSum)
     /// fits — to:
-    ///   (1) Run [`crate::query::closure::validate_closure_metadata_idents::<C>`]
-    ///       so a hand-rolled `impl ClosureModel` cannot smuggle SQL
-    ///       through the slot's `push_sql` sites.
-    ///   (2) When `closure_pair` is `Some(cp)`, compare each captured
-    ///       identifier on `cp` against `C`'s same-named accessor so
-    ///       a `left_join_closure_pair::<C1>()` paired with
-    ///       `PairClosureKinshipSum::<C2>::new()` (C1 ≠ C2) is
-    ///       rejected before SQL build instead of surfacing as a
-    ///       Postgres `42703 column does not exist` error.
-    ///
+    /// (1) Run [`crate::query::closure::validate_closure_metadata_idents::<C>`]
+    /// so a hand-rolled `impl ClosureModel` cannot smuggle SQL
+    /// through the slot's `push_sql` sites.
+    /// (2) When `closure_pair` is `Some(cp)`, compare each captured
+    /// identifier on `cp` against `C`'s same-named accessor so
+    /// a `left_join_closure_pair::<C1>()` paired with
+    /// `PairClosureKinshipSum::<C2>::new()` (C1 ≠ C2) is
+    /// rejected before SQL build instead of surfacing as a
+    /// Postgres `42703 column does not exist` error.
     /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
     /// calls this through the tuple bridge
     /// ([`IntoAggregateTuple::validate_against_closure_pair`]).
@@ -338,7 +302,6 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
 
 /// A single annotation slot that is allowed to flow through the plain
 /// ungrouped `QuerySet::annotate` SELECT-list emitter.
-///
 /// This is intentionally narrower than [`AnnotationSlot`]. `AnnotationSlot`
 /// remains the shared grouped/scalar annotation bridge; `PlainAnnotationSlot`
 /// protects the ungrouped path that calls `push_column` and therefore may add
@@ -347,7 +310,6 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
 pub trait PlainAnnotationSlot: AnnotationSlot {}
 
 /// Tuple-level counterpart to [`PlainAnnotationSlot`].
-///
 /// `QuerySet::annotate` is the only public terminal builder that requires this
 /// bound. Grouped annotate continues to require only [`IntoAggregateTuple`] so
 /// metadata, ordered-set, and hypothetical-set aggregates remain available in
@@ -361,13 +323,11 @@ pub trait PlainAnnotationTuple: IntoAggregateTuple {
 
 /// Type-level bridge from the closure return type of
 /// [`QuerySet::annotate`] to the SELECT-list + row-decode logic.
-///
 /// Sealed via [`sealed::Sealed`] — downstream crates can name the
 /// trait as a bound (`where A: IntoAggregateTuple`) but cannot
 /// implement it. Every impl is framework-provided, which keeps the
 /// SELECT-list shape and decode ordering in lockstep across all
 /// supported arities.
-///
 /// `Decoded` is the tuple type users receive at fetch time: the scalar
 /// for arity 1, a Rust tuple for arities 2..=4, or `()` for the explicitly
 /// empty annotation edge case.
@@ -377,14 +337,12 @@ pub trait IntoAggregateTuple: sealed::Sealed {
 
     /// Push annotation SELECT-list columns onto `acc`, each prefixed with
     /// `, ` and aliased for row decode.
-    ///
     /// Indexing starts at 0; callers already pushed `SELECT t.*` so
     /// every push here begins with a comma.
     fn push_columns(&self, acc: &mut SqlAccumulator);
 
     /// Push the aggregate SELECT-list columns onto `acc` without the
     /// `OVER ()` window-function wrap, each aliased as `__djogi_agg_{N}`.
-    ///
     /// Used by `build_grouped_annotated_select` — a `GROUP BY` query must
     /// not use window functions in the SELECT list for its aggregate columns.
     /// Every push here begins with a comma; callers already pushed the key
@@ -392,14 +350,12 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     fn push_columns_bare(&self, acc: &mut SqlAccumulator);
 
     /// Push grouped aggregate SELECT-list columns after an optional key list.
-    ///
     /// `group_by_sets` uses the unit key `()`, so it has no typed key columns
     /// to emit before the aggregate list. In that shape the first aggregate
     /// must not prepend `, `.
     fn push_columns_bare_after(&self, acc: &mut SqlAccumulator, has_previous_columns: bool);
 
     /// Decode the annotation columns from `row` into [`Self::Decoded`].
-    ///
     /// The aliases are fixed (`__djogi_agg_0`, `__djogi_agg_1`, ...)
     /// so the impl reads each slot by name. Offset-based decoding is
     /// not used because `row.try_get` by name is more robust to
@@ -415,12 +371,10 @@ pub trait IntoAggregateTuple: sealed::Sealed {
 
     /// Validate all aggregate nodes in this tuple for unsupported
     /// DISTINCT modifier combinations before building SQL.
-    ///
     /// Called at the start of each terminal method
     /// ([`AnnotatedQuerySet::fetch_all`], grouped terminals) so the
     /// caller gets a typed [`crate::DjogiError::UnsupportedAggregate`]
     /// rather than a cryptic Postgres syntax error.
-    ///
     /// Default impl returns `Ok(())` — overridden by each concrete impl
     /// to walk its nodes through
     /// [`crate::expr::sql::check_aggregate_legality`].
@@ -430,26 +384,20 @@ pub trait IntoAggregateTuple: sealed::Sealed {
 
     /// Validate that no annotation alias in this tuple collides with a
     /// model column name.
-    ///
     /// # What
-    ///
     /// Forwards each slot's
     /// [`AnnotationSlot::check_no_column_collision`] check. Called with
     /// `T::COLUMNS` before SQL build by:
-    ///
     /// - [`AnnotatedQuerySet::fetch_all`]
     /// - [`crate::query::row_aggregate_terminal::AsMvtTerminal::fetch_one`]
     /// - [`crate::query::row_aggregate_terminal::AsGeobufTerminal::fetch_one`]
-    ///
-    /// All three callers emit the same `SELECT * FROM (…) AS __djogi_q
+    ///   All three callers emit the same `SELECT * FROM (…) AS __djogi_q
     /// WHERE <alias> …` outer qualify wrap, so a window alias shadowing a
-    /// model column makes the outer WHERE predicate ambiguous at Postgres.
-    /// This check turns that runtime Postgres error into a typed
-    /// [`crate::DjogiError::Validation`] with a remediation hint before
-    /// any SQL is emitted.
-    ///
+    ///   model column makes the outer WHERE predicate ambiguous at Postgres.
+    ///   This check turns that runtime Postgres error into a typed
+    ///   [`crate::DjogiError::Validation`] with a remediation hint before
+    ///   any SQL is emitted.
     /// # Default
-    ///
     /// Returns `Ok(())` — covers the `()` no-annotation case and any
     /// future aggregate-only tuple whose slots use framework-generated
     /// aliases that can never match model columns.
@@ -462,15 +410,13 @@ pub trait IntoAggregateTuple: sealed::Sealed {
 
     /// Whether any slot in this aggregate tuple requires a closure-pair
     /// LEFT JOIN to be in scope to produce valid SQL.
-    ///
     /// Single-slot impls (the blanket `impl<S> IntoAggregateTuple for S
     /// where S: AnnotationSlot`) forward to
     /// [`AnnotationSlot::requires_closure_pair_join`]; tuple impls OR
     /// across every slot. Default `false` covers the `()` /
     /// no-annotation case.
-    ///
     /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
-    /// queries this before SQL build so the cluster-4A
+    /// queries this before SQL build so the
     /// `PairClosureKinshipSum` slot is rejected with a typed
     /// `DjogiError::Validation` when the queryset has no `closure_pair`
     /// set, instead of letting Postgres surface a missing-FROM-clause
@@ -481,11 +427,9 @@ pub trait IntoAggregateTuple: sealed::Sealed {
 
     /// Whether **every** slot in this aggregate tuple is safe to use
     /// inside a pair-tuple `JoinedQuerySet::annotate(...)` terminal.
-    ///
     /// Forwards to [`AnnotationSlot::is_joined_safe`] for the single-
     /// slot blanket; tuple impls AND across slots. Default `true`
     /// covers the `()` / no-annotation case (vacuously safe).
-    ///
     /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
     /// queries this before SQL build to reject ordinary
     /// `AggregateExpr<V>` slots (e.g. `f.age().sum()`) that would emit
@@ -498,11 +442,9 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// Whether any slot in this aggregate tuple requires pair-tuple
     /// scope (`l.` / `r.` / `la.` / `ra.` aliases) to produce valid
     /// SQL.
-    ///
     /// Forwards to [`AnnotationSlot::requires_pair_tuple_scope`] for
     /// the single-slot blanket; tuple impls OR across every slot.
     /// Default `false` covers the `()` / no-annotation case.
-    ///
     /// [`AnnotatedQuerySet::fetch_all`](crate::query::AnnotatedQuerySet::fetch_all)
     /// and the grouped annotate terminals consult this before SQL
     /// build so pair-only slots (`PairClosureKinshipSum`,
@@ -520,10 +462,8 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// [`AnnotationSlot::validate_against_closure_pair`] per slot
     /// (single-slot blanket calls once; tuple impls walk every slot
     /// and propagate the first error).
-    ///
     /// Default returns `Ok(())` — `()` and tuples-of-no-pair-aggregates
     /// trivially validate.
-    ///
     /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
     /// calls this before SQL build so a `PairClosureKinshipSum<C>`
     /// slot whose `C`'s metadata is hostile or mismatched against the
@@ -557,7 +497,7 @@ where
 
     fn push_column(&self, acc: &mut SqlAccumulator, slot: usize) {
         acc.push_sql(", ");
-        // Phase 8eta PR2b: `emit_aggregate_*` is now fallible because
+        // `emit_aggregate_*` is now fallible because
         // aggregates may carry filter expressions that contain portable
         // subqueries. The annotation-slot trait surface is `()`-returning
         // (changing it would cascade through every aggregate + window
@@ -614,7 +554,6 @@ impl<V> PlainAnnotationSlot for AggregateExpr<V, ValueAgg> where
 
 /// Returns `true` if `alias` would collide with `col` under PostgreSQL's
 /// unquoted-identifier case-folding rules.
-///
 /// PostgreSQL folds every unquoted identifier to lowercase at parse time, so
 /// `ID`, `Id`, and `id` all name the same identifier from Postgres's point of
 /// view. Window aliases are accepted by
@@ -625,7 +564,6 @@ impl<V> PlainAnnotationSlot for AggregateExpr<V, ValueAgg> where
 /// byte-exact comparison would silently pass `alias("ID")` against column
 /// `"id"`, allowing the collision to reach Postgres and produce a cryptic
 /// "column reference is ambiguous" error at query time.
-///
 /// Non-ASCII characters are rejected at alias-construction time by
 /// `assert_user_supplied_ident`, so pure ASCII case folding is sufficient.
 #[inline]
@@ -719,14 +657,13 @@ macro_rules! impl_window_annotation_slot {
 
             // Rank-family windows (`ROW_NUMBER`, `RANK`, `DENSE_RANK`)
             // have pair-aware composition through
-            // [`PairWindowExt`](crate::query::joined::PairWindowExt) —
+            // [`PairWindowExt`](crate::query::joined::PairWindowExt)
             // `partition_by_pair` / `order_by_pair_asc` /
             // `order_by_pair_desc` qualify each stored column with the
             // side's alias (`"l.<col>"` / `"r.<col>"`). The instance is
             // joined-safe iff every stored column is so qualified
             // (vacuously safe when there is no PARTITION BY / ORDER BY,
             // since `ROW_NUMBER() OVER ()` references no columns).
-            //
             // A user-built `RowNumber::new().partition_by(f.id())` —
             // the non-pair-aware path — stores the bare `"id"` and
             // trips this gate, getting rejected at
@@ -841,7 +778,6 @@ macro_rules! impl_window_annotation_slot_generic_v {
             // `"l.<col>"` / `"r.<col>"`, so the emitted SQL would be
             // `FIRST_VALUE(name) OVER (...)` — ambiguous in self-join
             // contexts where both pair sides carry a `name` column.
-            //
             // Reporting `false` here makes
             // [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
             // reject the slot at the safety gate with a typed
@@ -864,16 +800,16 @@ macro_rules! impl_window_annotation_slot_generic_v {
 impl_window_annotation_slot!(RowNumber, "RowNumber");
 impl_window_annotation_slot!(Rank, "Rank");
 impl_window_annotation_slot!(DenseRank, "DenseRank");
-// Cluster E T19 — zero-arg returning f64
+// Zero-arg window functions returning f64
 impl_window_annotation_slot!(
     crate::expr::PercentRankWindow,
     "PercentRankWindow",
     decoded = f64
 );
 impl_window_annotation_slot!(crate::expr::CumeDistWindow, "CumeDistWindow", decoded = f64);
-// Cluster E T19 — single-integer-arg returning i32
+// Single-integer-arg window function returning i32
 impl_window_annotation_slot!(crate::expr::NtileWindow, "NtileWindow", decoded = i32);
-// Cluster E T18 — column-arg generic V
+// Column-arg generic V window functions
 impl_window_annotation_slot_generic_v!(FirstValueWindow, "FirstValueWindow");
 impl_window_annotation_slot_generic_v!(LastValueWindow, "LastValueWindow");
 impl_window_annotation_slot_generic_v!(LeadWindow, "LeadWindow");
@@ -979,11 +915,10 @@ impl PlainAnnotationTuple for () {
 }
 
 // ── Arity 2..=4: tuples of annotation slots ──────────────────────────
-//
 // One macro invocation per arity. The macro generates the sealed
 // marker, the `push_columns` body that walks the tuple emitting each
 // slot, and the `decode_tuple` body that reads each slot by its
-// `__djogi_agg_N` alias. Arity > 4 is intentionally unsupported —
+// `__djogi_agg_N` alias. Arity > 4 is intentionally unsupported
 // per plan Q5 the rustdoc steers users to a local struct for wider
 // shapes.
 
@@ -1103,11 +1038,9 @@ impl_into_aggregate_tuple!(arity = 4, types = [(A, 0), (B, 1), (C, 2), (D, 3),])
 
 /// Pending annotated query — produced by [`QuerySet::annotate`] and
 /// terminated with [`Self::fetch_all`].
-///
 /// Holds the upstream queryset (for `FROM` + `WHERE` + `ORDER BY` +
 /// `LIMIT` + `OFFSET`) plus the typed aggregate tuple that shapes the
 /// SELECT list extensions.
-///
 /// Users typically receive `Vec<(T, A::Decoded)>` back — the
 /// aggregate side of each row is shaped to match the closure's
 /// return type.
@@ -1121,30 +1054,27 @@ pub struct AnnotatedQuerySet<T: Model, A: IntoAggregateTuple> {
 
 impl<T: Model, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     /// Filter rows by an annotated window-function output.
-    ///
     /// PostgreSQL 18 has no `QUALIFY` clause, so the predicate lowers to
     /// an outer `WHERE` over a derived table that wraps this annotated
     /// select. Reading the SQL: `SELECT * FROM (<inner annotated select>)
     /// AS __djogi_q WHERE <alias> <op> $N`.
-    ///
     /// The closure receives `&A` — the same annotation value the user
     /// passed to [`QuerySet::annotate`]. Calling `.lt(...)` / `.lte(...)`
     /// / `.eq(...)` / `.gte(...)` / `.gt(...)` on a window function
     /// produces a [`QualifyCondition`](crate::QualifyCondition) bound to
     /// that function's `.alias("…")`, so there is no string lookup and
     /// no way to reference an alias that was not registered.
-    ///
     /// ```ignore
     /// use djogi::prelude::*;
     ///
     /// let rows: Vec<(Elephant, i64)> = Elephant::objects()
-    ///     .annotate(|e| RowNumber::new()
-    ///         .partition_by(e.herd_id())
-    ///         .order_by(e.score().desc())
-    ///         .alias("rank"))
-    ///     .qualify(|w| w.lte(3))
-    ///     .fetch_all(&mut ctx)
-    ///     .await?;
+    /// .annotate(|e| RowNumber::new()
+    /// .partition_by(e.herd_id())
+    /// .order_by(e.score().desc())
+    /// .alias("rank"))
+    /// .qualify(|w| w.lte(3))
+    /// .fetch_all(&mut ctx)
+    /// .await?;
     /// ```
     #[must_use = "annotated queries are lazy — dropping one silently omits the query"]
     pub fn qualify<F>(mut self, f: F) -> Self
@@ -1163,7 +1093,6 @@ where
 {
     /// Execute the annotated query and collect every matching row into
     /// a `Vec<(T, A::Decoded)>`.
-    ///
     /// Dispatches through the context's execution helpers — annotated
     /// queries work inside an `atomic()` scope. For tenant-keyed models,
     /// the terminal propagates the caller's auth tenant into the RLS GUC
@@ -1191,7 +1120,7 @@ where
                 return Ok(Vec::new());
             }
 
-            // Validate DISTINCT modifier combinations before building SQL —
+            // Validate DISTINCT modifier combinations before building SQL
             // rejected combos surface as DjogiError::UnsupportedAggregate.
             aggregates.check_legality()?;
 
@@ -1211,21 +1140,19 @@ where
 
             // Reject pair-only aggregates on the single-Model annotate
             // path. Two signals together cover the rejection set:
-            //
-            //   - `requires_closure_pair_join()` (today:
-            //     `PairClosureKinshipSum<C>`) flags slots that reference
-            //     `la.` / `ra.` closure-pair aliases.
-            //   - `requires_pair_tuple_scope()` (today:
-            //     `PairAreaOverlapRatio<L, R>` plus every slot above —
-            //     the closure-pair signal implies pair-tuple scope) flags
-            //     slots that reference `l.` / `r.` pair-side aliases
-            //     without necessarily needing closure metadata.
-            //
+            // - `requires_closure_pair_join()` (today:
+            // `PairClosureKinshipSum<C>`) flags slots that reference
+            // `la.` / `ra.` closure-pair aliases.
+            // - `requires_pair_tuple_scope()` (today:
+            // `PairAreaOverlapRatio<L, R>` plus every slot above
+            // the closure-pair signal implies pair-tuple scope) flags
+            // slots that reference `l.` / `r.` pair-side aliases
+            // without necessarily needing closure metadata.
             // Without the broader scope gate, `PairAreaOverlapRatio`
             // would compile into a single-Model `QuerySet::annotate(...)`
             // chain and surface as `42P01 missing FROM-clause entry for
             // table "l"` at execute time. The check turns that into a
-            // typed `DjogiError::Validation` with a remediation hint —
+            // typed `DjogiError::Validation` with a remediation hint
             // same shape the joined path uses for its dual error of
             // "kinship aggregate without closure-pair join".
             if aggregates.requires_pair_tuple_scope() || aggregates.requires_closure_pair_join() {
@@ -1274,7 +1201,6 @@ where
 
 impl<T: Model> QuerySet<T> {
     /// Augment this queryset with one or more aggregate columns.
-    ///
     /// The closure receives a default-constructed `T::Fields` handle
     /// and returns either a single plain-annotation slot (arity 1) or
     /// a tuple of slots (arity 2..=4). For aggregate expressions, the
@@ -1286,24 +1212,22 @@ impl<T: Model> QuerySet<T> {
     /// [`AnnotatedQuerySet::fetch_all`], which returns
     /// `Vec<(T, Decoded)>` where `Decoded` is the scalar (arity 1)
     /// or a Rust tuple (arity 2..=4).
-    ///
-    /// Per Phase 4 plan Q5, wider annotations (arity 3+) are
+    /// Per plan Q5, wider annotations (arity 3+) are
     /// discouraged in guide docs — shape into a local struct
     /// post-hoc for readability. There is no lint; wider annotations
     /// compile and run, they just scale poorly as the tuple widens.
-    ///
     /// ```ignore
     /// use djogi::prelude::*;
     ///
     /// // arity-1 annotation: Vec<(Account, i64)>
     /// let rows: Vec<(Account, i64)> = Account::objects()
-    ///     .annotate(|f| f.balance().sum())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .annotate(|f| f.balance().sum())
+    /// .fetch_all(&mut ctx).await?;
     ///
     /// // arity-2 annotation: Vec<(Account, (i64, f64))>
     /// let rows: Vec<(Account, (i64, f64))> = Account::objects()
-    ///     .annotate(|f| (f.balance().sum(), f.balance().avg()))
-    ///     .fetch_all(&mut ctx).await?;
+    /// .annotate(|f| (f.balance().sum(), f.balance().avg()))
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "annotated queries are lazy — dropping one silently omits the query"]
     pub fn annotate<F, A>(self, f: F) -> AnnotatedQuerySet<T, A>
@@ -1381,7 +1305,7 @@ mod tests {
         }
     }
 
-    // T3: SQL-text unit tests exercise `build_select_with_annotations`
+    // SQL-text unit tests exercise `build_select_with_annotations`
     // which now bounds on `FromPgRow` so it can enumerate the canonical
     // column list instead of `t.*`. The stub claims a single column
     // `id` — enough to check the emitter's `t.<col>` shape without
@@ -1601,7 +1525,6 @@ mod tests {
     }
 
     // ── Issue #71 — alias collision validation ───────────────────────────────
-    //
     // `check_no_column_collision` fires at annotate-time (inside
     // `AnnotatedQuerySet::fetch_all`) when the user-supplied alias matches a
     // column in the model's `FromPgRow::COLUMNS` list. The failure mode
@@ -1609,17 +1532,14 @@ mod tests {
     // at execute time because the derived-table outer query exposes both the
     // model column (as `t.<col>`) and the window output (as `<expr> AS
     // <alias>`) under the same name.
-    //
     // The unit tests below call `check_no_column_collision` directly (not
     // through `fetch_all`) to stay fast and database-free.
-    //
     // Live qualify coverage (non-colliding aliases exercising the derived-table
     // outer-WHERE shape through `fetch_all`) is provided by the integration
-    // test `tests/integration/phase8_zero_cluster_c_window_live.rs` — that
+    // test `tests/integration/window_live.rs` — that
     // file uses `"rank"` / `"dense_rank"` aliases that do not collide with
     // model columns, so it exercises the qualify-lowering path, not the
     // collision-detection path.
-    //
     // Live terminal-level collision coverage (calling `check_no_column_collision`
     // through the actual terminal `fetch_one` methods on non-empty querysets) is
     // in `query::row_aggregate_terminal::tests` — see
@@ -1711,7 +1631,7 @@ mod tests {
         // happens at build time through `assert_user_supplied_ident`).
         let f: FieldRef<Acc, i64> = FieldRef::new("balance");
         let agg = f.sum();
-        // Pass a column list that could theoretically contain anything —
+        // Pass a column list that could theoretically contain anything
         // AggregateExpr's check_no_column_collision must remain Ok(()).
         let result = AnnotationSlot::check_no_column_collision(&agg, &["id", "balance", "score"]);
         assert!(
@@ -1747,20 +1667,18 @@ mod tests {
     }
 
     // ── Issue #71 case-fold pins — Postgres identifier folding ──────────────
-    //
     // PostgreSQL folds unquoted identifiers to lowercase at parse time:
     // `alias("ID")` and model column `"id"` name the same identifier. The two
     // `check_no_column_collision` macro paths now use `alias_collides_with_column`
     // (which delegates to `str::eq_ignore_ascii_case`) so that uppercase aliases
     // are rejected before SQL is emitted.
-    //
     // One pin per macro path (`impl_window_annotation_slot!` via `RowNumber`,
     // `impl_window_annotation_slot_generic_v!` via `LeadWindow`) plus one tuple
     // pin to verify the case-fold path survives tuple-walking.
 
     #[test]
     fn row_number_uppercase_alias_collides_with_lowercase_model_column() {
-        // `Acc::COLUMNS = &["id"]`. Alias `"ID"` must be rejected —
+        // `Acc::COLUMNS = &["id"]`. Alias `"ID"` must be rejected
         // Postgres folds `ID` → `id` so both name the same identifier.
         // Exercises the `impl_window_annotation_slot!` macro path.
         let rn = RowNumber::new().alias("ID");
@@ -1815,7 +1733,7 @@ mod tests {
         );
     }
 
-    // ── Cluster E T18-T19 — new window-only functions ────────────────────────
+    // ── New window-only functions ────────────────────────
 
     #[test]
     fn percent_rank_window_emits_over_clause_and_alias() {
@@ -1977,10 +1895,9 @@ mod tests {
         );
     }
 
-    // ── T18-T19 coverage backfill (quality reviewer round-1 finding) ─────────
-    //
-    // First batch of T18-T19 tests covered bare emission. Quality
-    // reviewer flagged that missing-`.alias()` rejection,
+    // ── Window-function coverage backfill ─────────
+    // Initial tests covered bare emission. A follow-up review
+    // flagged that missing-`.alias` rejection,
     // `partition_by` integration, and decode-type pinning weren't
     // covered. These tests close those gaps.
 
@@ -2051,7 +1968,7 @@ mod tests {
         let _: FirstValueWindow<String> = FirstValueWindow::new(label);
     }
 
-    // GAP-4 closure (Codex T22 round-2): type-pin tests for the
+    // GAP-4 closure (
     // remaining column-arg window-fn family. LastValueWindow,
     // LagWindow, and NthValueWindow are macro-generated from the
     // same template as FirstValue / Lead, but the type-pin
@@ -2113,7 +2030,6 @@ mod tests {
     }
 
     // ── requires_pair_tuple_scope — default + tuple-OR semantics ──────
-    //
     // The trait method [`AnnotationSlot::requires_pair_tuple_scope`]
     // defaults to `false`. Tuple impls OR across slots so a single
     // pair-only slot poisons the tuple for the single-Model / grouped
@@ -2245,14 +2161,12 @@ mod tests {
     }
 
     // ── Issue #95 — f64 qualify for PercentRankWindow / CumeDistWindow ───────
-    //
     // These tests pin the SQL lowering for f64 qualify thresholds on the two
     // FLOAT8-returning zero-arg window functions. Each test covers:
-    //   - The correct derived-table shape (`SELECT * FROM (...) AS __djogi_q WHERE …`).
-    //   - The correct operator (`<`, `<=`, `>=`, `>`, `=`).
-    //   - A single bind slot allocated (the f64 threshold).
-    //   - No `QUALIFY` token in the emitted SQL (Postgres 18 has no QUALIFY clause).
-    //
+    // - The correct derived-table shape (`SELECT * FROM (...) AS __djogi_q WHERE …`).
+    // - The correct operator (`<`, `<=`, `>=`, `>`, `=`).
+    // - A single bind slot allocated (the f64 threshold).
+    // - No `QUALIFY` token in the emitted SQL (Postgres 18 has no QUALIFY clause).
     // The tests do NOT execute against a live database — they assert on the SQL
     // text emitted by `build_annotated_select_for_fetch`. Live-DB coverage is
     // provided by the existing window bench tests once the framework types are

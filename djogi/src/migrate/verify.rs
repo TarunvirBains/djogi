@@ -1,11 +1,8 @@
 //! Live-database verification — compares the on-disk snapshot, the
 //! `djogi_schema_migrations` ledger, and the live Postgres catalog,
 //! producing a deterministic list of [`VerifyDiagnostic`] entries.
-//!
-//! # Scope (Phase 7 v3 §8 / v2 T5)
-//!
+//! # Scope
 //! Verify answers three questions:
-//!
 //! 1. **Ledger ↔ catalog.** Every migration the ledger says is
 //!    `applied` should show up in the live catalog (its tables,
 //!    columns, indexes, foreign keys exist).
@@ -15,77 +12,64 @@
 //! 3. **Snapshot ↔ ledger.** The most recent applied ledger row
 //!    should carry a checksum that re-validates against the snapshot's
 //!    declared format version. Format errors surface as `D6xx`.
-//!
-//! Verify never mutates anything — it is strictly read-only against
-//! the live database and the snapshot file. The previous T5 entry
-//! point bootstrapped the ledger table on the way in, which violated
-//! the "verify never writes" contract on a fresh DB; that has been
-//! removed and a missing ledger now surfaces as a typed `D621`
-//! Error diagnostic instead. Mutations belong to [`super::repair`].
-//!
-//! # Minimum viable verify (T5)
-//!
-//! T5 reads the live catalog into a *partial* [`AppliedSchema`]
+//!    Verify never mutates anything — it is strictly read-only against
+//!    the live database and the snapshot file. A missing ledger
+//!    surfaces as a typed `D621` Error diagnostic instead of
+//!    bootstrapping the table. Mutations belong to [`super::repair`].
+//! # Scope of the current verify implementation
+//! Verify reads the live catalog into a *partial* [`AppliedSchema`]
 //! containing only what the verify path needs to compare:
-//!
 //! - **Tables.** Name + column list (name, rendered SQL type,
 //!   nullability, default expression).
-//! - **Primary keys.** Column list — diffed (B-6). Kind detection
-//!   stays deferred to T8.
+//! - **Primary keys.** Column list — diffed. Kind detection stays
+//!   deferred.
 //! - **Indexes.** Name + table + columns (in order) + uniqueness +
-//!   method — diffed (B-7). `INCLUDE` and partial-predicate surface
-//!   as `Info` (T5 stop condition).
+//!   method — diffed. `INCLUDE` and partial-predicate surface as
+//!   `Info` diagnostics.
 //! - **Foreign keys.** Source `(table, column)` + target
 //!   `(table, column)` + cascade + deferrability — diffed as D609.
-//!
-//! Other fields ([`crate::migrate::schema::TableSchema::fts`],
-//! [`crate::migrate::schema::TableSchema::partition`],
-//! [`crate::migrate::schema::TableSchema::tenant_key`], enum types)
-//! surface as advisory `Info` diagnostics for Phase 7 — T8 can
-//! tighten them to `Error` once the live-DB projection grows. The
-//! deferral is intentional: the v3 plan's stop condition explicitly
-//! says ">500 LOC of catalog SQL is a sign you should narrow scope
-//! and surface it for review". Any tightening lands in T8 alongside
-//! the `migrations status` work.
-//!
+//!   Other fields ([`crate::migrate::schema::TableSchema::fts`],
+//!   [`crate::migrate::schema::TableSchema::partition`],
+//!   [`crate::migrate::schema::TableSchema::tenant_key`], enum types)
+//!   surface as advisory `Info` diagnostics that can be tightened to
+//!   `Error` once the live-DB projection grows. The deferral is
+//!   intentional: the v3 plan's stop condition explicitly says
+//!   ">500 LOC of catalog SQL is a sign you should narrow scope
+//!   and surface it for review".
 //! # Diagnostic codes (D6xx range)
-//!
 //! Verify's diagnostic codes live in the `D6xx` namespace (D025 is
-//! T4's guard, D004 is build-rs folder drift). Each code has a stable
+//! the guard module, D004 is build-rs folder drift). Each code has a stable
 //! meaning — re-using a code for a different condition is a hard
 //! reviewer ding. Current assignments:
-//!
 //! | Code | Severity | Meaning |
 //! |------|----------|---------|
-//! | D601 | Error    | Snapshot table missing from live DB. |
-//! | D602 | Error    | Live table not present in snapshot. |
-//! | D603 | Error    | Snapshot column missing from live DB. |
-//! | D604 | Error    | Live column not present in snapshot. |
-//! | D605 | Error    | Nullability drift between snapshot and live. |
-//! | D606 | Warning  | SQL-type rendering drift (advisory). |
-//! | D607 | Error    | Column DEFAULT differs between snapshot and live. |
-//! | D608 | Error    | Primary key column list differs. |
-//! | D609 | Error    | Foreign-key shape differs. |
-//! | D610 | Error    | Snapshot index missing from live DB. |
-//! | D611 | Warning  | Live index not present in snapshot. |
-//! | D612 | Error    | Index columns differ (shape mismatch). |
-//! | D613 | Error    | Index uniqueness differs. |
-//! | D614 | Warning  | Index method (btree / gin / ...) differs. |
-//! | D615 | Error    | Index is on the wrong table. |
-//! | D621 | Error    | Ledger table is missing — run apply / baseline first. |
-//! | D622 | Warning  | Out-of-order migration applied — `out_of_order_flag = TRUE`. Strict mode upgrades to Error. |
-//! | D623 | Error    | Repair refused — partition leaf identity mismatch (topology drift since apply). Emitted by `migrate::repair`. |
-//! | D624 | Error    | Rollback refused — partition leaf identity mismatch (topology drift since apply). Emitted by `migrate::runner`. |
-//! | D690 | Info     | FTS configuration declared but not yet checked. |
-//! | D691 | Info     | Partition strategy declared but not yet checked. |
-//! | D692 | Info     | Enum types declared but not yet checked. |
-//! | D693 | Info     | Index `INCLUDE` columns / predicate not yet checked. |
-//! | D699 | Error    | Ledger reports applied rows but DB has no tables. |
-//!
+//! | D601 | Error | Snapshot table missing from live DB. |
+//! | D602 | Error | Live table not present in snapshot. |
+//! | D603 | Error | Snapshot column missing from live DB. |
+//! | D604 | Error | Live column not present in snapshot. |
+//! | D605 | Error | Nullability drift between snapshot and live. |
+//! | D606 | Warning | SQL-type rendering drift (advisory). |
+//! | D607 | Error | Column DEFAULT differs between snapshot and live. |
+//! | D608 | Error | Primary key column list differs. |
+//! | D609 | Error | Foreign-key shape differs. |
+//! | D610 | Error | Snapshot index missing from live DB. |
+//! | D611 | Warning | Live index not present in snapshot. |
+//! | D612 | Error | Index columns differ (shape mismatch). |
+//! | D613 | Error | Index uniqueness differs. |
+//! | D614 | Warning | Index method (btree / gin / ...) differs. |
+//! | D615 | Error | Index is on the wrong table. |
+//! | D621 | Error | Ledger table is missing — run apply / baseline first. |
+//! | D622 | Warning | Out-of-order migration applied — `out_of_order_flag = TRUE`. Strict mode upgrades to Error. |
+//! | D623 | Error | Repair refused — partition leaf identity mismatch (topology drift since apply). Emitted by `migrate::repair`. |
+//! | D624 | Error | Rollback refused — partition leaf identity mismatch (topology drift since apply). Emitted by `migrate::runner`. |
+//! | D690 | Info | FTS configuration declared but not yet checked. |
+//! | D691 | Info | Partition strategy declared but not yet checked. |
+//! | D692 | Info | Enum types declared but not yet checked. |
+//! | D693 | Info | Index `INCLUDE` columns / predicate not yet checked. |
+//! | D699 | Error | Ledger reports applied rows but DB has no tables. |
 //! Every `D6xx` code is unique. Adding a new code goes at the end of
 //! whichever sub-range matches the topic (60x for table, 61x for index,
 //! 62x for ledger lifecycle, 69x for advisory).
-//!
 //! D623 and D624 are emitted from `migrate::repair` and
 //! `migrate::runner` respectively, embedded in the Display message in
 //! square-bracket form rather than the `VerifyDiagnostic` field-
@@ -94,17 +78,13 @@
 //! verify.rs for the field-assignment form, so it does not pick up
 //! D623/D624; they are kept unique by their entries in this table and
 //! in the `D6XX_CODE_REGISTRY` const below.
-//!
 //! # Determinism
-//!
 //! Output ordering is stable. [`VerifyDiagnostic`] lists are sorted
 //! by `(code, location)` before return, and every catalog query that
 //! powers the projection uses an explicit `ORDER BY` clause so the
 //! comparison surface is reproducible. No `HashMap` / `HashSet` in
 //! the public path.
-//!
 //! # HeeRanjID artifact tables
-//!
 //! Some Postgres tables belong to the HeeRanjID substrate and must
 //! never surface as drift even when an adopter declares a
 //! legitimately-named table starting with `heer_`. To avoid the
@@ -112,9 +92,7 @@
 //! sorted allowlist of HeeRanjID table names — see
 //! [`HEERANJID_ARTIFACT_TABLES`]. Adding a new HeeRanjID table goes
 //! through the HeeRanjID workspace; Djogi only mirrors the names.
-//!
 //! # Postgres-only
-//!
 //! Per the Djogi-wide Postgres-18-only stance, queries reach into
 //! `pg_class`, `pg_attribute`, `pg_index`, `pg_constraint`,
 //! `pg_attrdef`, and `information_schema.columns`. The selection
@@ -140,13 +118,11 @@ use super::schema::{
 /// excludes these from the live-DB projection so HeeRanjID's
 /// substrate tables do not show up as "extra live tables" during
 /// drift checks.
-///
 /// **Adopter-owned tables that legitimately start with `heer_` are
 /// preserved.** The previous arrangement used `NOT LIKE 'heer\\_%'`
 /// which silently dropped any adopter-owned table whose name began
-/// with `heer_`. The allowlist is the precise fix (A-1): only
+/// with `heer_`. The allowlist is the precise fix: only
 /// HeeRanjID's own tables are excluded.
-///
 /// Source of truth: HeeRanjID's `sql/postgres/schema.sql`. Update
 /// this list whenever HeeRanjID adds or removes a substrate table.
 /// Sorted alphabetically so binary_search works.
@@ -184,8 +160,8 @@ pub enum VerifySeverity {
 }
 
 /// One verify diagnostic. The `code` follows Djogi's `D###`
-/// convention (D6xx is verify's reserved range — D025 lives in T4's
-/// guard, D004 in build-rs folder drift).
+/// convention (D6xx is verify's reserved range — D025 lives in the
+/// guard module, D004 in build-rs folder drift).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyDiagnostic {
     /// Stable identifier (e.g. `"D601"`). Operators reference this in
@@ -213,7 +189,6 @@ impl VerifyDiagnostic {
 }
 
 /// Result of a verify run.
-///
 /// `diagnostics` is sorted by `(code, location)` for determinism.
 /// `has_errors()` returns true when at least one diagnostic carries
 /// [`VerifySeverity::Error`].
@@ -304,8 +279,7 @@ impl std::error::Error for VerifyRunError {
 
 /// Run verify against the live database, comparing the supplied
 /// snapshot to the live catalog and the ledger.
-///
-/// **Read-only (B-8).** Verify never writes. The previous T5 arrangement
+/// **Read-only.** Verify never writes. A previous arrangement
 /// called `ledger::bootstrap` on the way in, which created
 /// `djogi_schema_migrations` on a fresh DB — a hard violation of the
 /// "verify never mutates" contract. The fix: verify probes for the
@@ -314,7 +288,6 @@ impl std::error::Error for VerifyRunError {
 /// `djogi migrations apply` or `djogi migrations baseline` first").
 /// Verify returns successfully (with the diagnostic) instead of
 /// mutating state.
-///
 /// **Determinism.** `diagnostics` is sorted by `(code, location)`.
 /// Iteration over the live catalog uses ordered queries so a re-run
 /// against an unchanged DB produces an identical report.
@@ -329,9 +302,8 @@ pub async fn verify(
 }
 
 /// Same as [`verify`] but threads a [`crate::config::PolicyConfig`]
-/// so the caller can pin the severity of T7's `D622` (out-of-order
+/// so the caller can pin the severity of `D622` (out-of-order
 /// applied migration) diagnostic.
-///
 /// **Why a separate entry point.** The historical signature
 /// `verify(ctx, snapshot)` is consumed by every existing caller. Adding
 /// a `policy: &PolicyConfig` parameter would churn every call site even
@@ -345,7 +317,7 @@ pub async fn verify_with_policy(
 ) -> Result<VerifyReport, VerifyRunError> {
     let mut diagnostics: Vec<VerifyDiagnostic> = Vec::new();
 
-    // B-8: probe for the ledger without bootstrapping it. Verify is
+    // Probe for the ledger without bootstrapping it. Verify is
     // read-only; on a fresh DB we surface D621 and leave the ledger
     // un-created. The probe uses pg_class so the SELECT below can
     // never fail with relation-not-found.
@@ -388,7 +360,7 @@ pub async fn verify_with_policy(
             });
         }
 
-        // T7 / D622: surface every ledger row whose `out_of_order_flag`
+        // D622: surface every ledger row whose `out_of_order_flag`
         // is set. Each occurrence becomes its own diagnostic entry so
         // the operator can see the full list. Severity is Warning by
         // default; `policy.strict_out_of_order = true` upgrades to
@@ -409,21 +381,21 @@ pub async fn verify_with_policy(
         (0, 0, None)
     };
 
-    // Project the live catalog. Any catalog read failure is fatal —
+    // Project the live catalog. Any catalog read failure is fatal
     // we cannot produce useful diagnostics from a partial read.
     let live = project_live_schema(ctx).await?;
 
     // Compare snapshot tables to live tables (includes per-column
-    // default + nullability + type comparison; PK comparison from B-6).
+    // default + nullability + type comparison; PK comparison from).
     diff_tables(snapshot, &live, &mut diagnostics);
 
     // Compare snapshot indexes to live indexes — name + table +
-    // columns + uniqueness + method (B-7). INCLUDE / partial
-    // predicate surface as Info per the T5 stop condition.
+    // columns + uniqueness + method. INCLUDE / partial
+    // predicate surface as Info (advisory, per the scope stop condition).
     diff_indexes(snapshot, &live, &mut diagnostics);
 
     // Surface advisory diagnostics for fields the projection does not
-    // yet exercise so operators know the limit of T5's verify scope.
+    // yet exercise so operators know the current verify scope.
     diff_advisory_fields(snapshot, &mut diagnostics);
 
     diagnostics.sort_by_key(|d| d.sort_key());
@@ -437,16 +409,13 @@ pub async fn verify_with_policy(
 }
 
 /// Run verify scoped to a single `(database, app)` bucket.
-///
 /// Unlike [`verify_with_policy`], which diffs the snapshot against the
 /// whole `public` catalog, this entry point scopes the live projection
 /// to the bucket via inventory-driven `app_label` filtering (the same
 /// approach used by repair and baseline through the internal
 /// `live_schema_for_repair` projection). The caller must pass a context
 /// already routed to the correct database for `bucket.database`.
-///
 /// # Parameters
-///
 /// - `emit_ledger_diagnostics` — the caller passes `true` for the first
 ///   bucket of each database target, so the ledger-lifecycle diagnostics
 ///   (`D621` ledger-missing, `D622` out-of-order, `D699` schema-dropped)
@@ -465,16 +434,12 @@ pub async fn verify_with_policy(
 ///   [`verify_with_policy`]'s `!snapshot.models.is_empty()` gate, which is
 ///   per-bucket; the database-wide flag is the correct scope because the
 ///   ledger and the "zero live tables" condition are both database-wide.
-///
 /// # Errors
-///
 /// Returns [`VerifyRunError`] if any catalog or ledger read fails. A
 /// schema mismatch is *not* an error — it surfaces as an `Error`-severity
 /// diagnostic inside the returned [`VerifyReport`]; use
 /// [`VerifyReport::has_errors`] to detect that case.
-///
 /// # Determinism
-///
 /// `diagnostics` is sorted by `(code, location)`, matching
 /// [`verify_with_policy`].
 pub async fn verify_bucket(
@@ -488,7 +453,7 @@ pub async fn verify_bucket(
     let mut diagnostics: Vec<VerifyDiagnostic> = Vec::new();
 
     // Ledger block — mirrors `verify_with_policy` (read-only probe, no
-    // bootstrap per B-8). The ledger is shared per database, so the
+    // bootstrap per). The ledger is shared per database, so the
     // ledger-lifecycle diagnostics (D621/D622/D699) are gated by
     // `emit_ledger_diagnostics` to fire once per database rather than once
     // per app bucket. The summary counts are populated in every branch so
@@ -535,7 +500,7 @@ pub async fn verify_bucket(
                 });
             }
 
-            // T7 / D622: surface every ledger row whose `out_of_order_flag`
+            // D622: surface every ledger row whose `out_of_order_flag`
             // is set. Severity follows `policy.strict_out_of_order`.
             emit_out_of_order_diagnostics(&ledger_rows, policy, &mut diagnostics);
         }
@@ -558,11 +523,10 @@ pub async fn verify_bucket(
 
     // Bucket-scoped live projection — the only structural difference from
     // `verify_with_policy`, which projects the whole `public` catalog.
-    //
     // Standalone/unlinked named-bucket fallback (#370): pass the on-disk
     // snapshot's own table names so that a NAMED bucket verified from the
     // published standalone `djogi` (empty descriptor inventory) scopes the
-    // live tables from the snapshot instead of the empty inventory set —
+    // live tables from the snapshot instead of the empty inventory set
     // otherwise a valid snapshot would report every table as missing. The
     // fallback is consulted only when this process's whole model inventory
     // is empty (see `live_schema_for_repair`), so the linked-binary path is
@@ -590,7 +554,6 @@ pub async fn verify_bucket(
 /// `out_of_order_flag` is set. Severity follows
 /// [`crate::config::PolicyConfig::strict_out_of_order`] — Warning when
 /// false, Error when true.
-///
 /// The conflicting peer's identity is recovered from the ledger by
 /// finding the highest-version row that was already applied at the
 /// time. We do that here rather than at apply time so verify can
@@ -662,7 +625,7 @@ fn emit_out_of_order_diagnostics(
 
 /// Returns `true` when `djogi_schema_migrations` exists in the
 /// `public` schema. Used by verify to gate the ledger read without
-/// bootstrapping (B-8).
+/// bootstrapping.
 async fn ledger_table_exists(ctx: &mut DjogiContext) -> Result<bool, VerifyRunError> {
     let row = ctx
         .query_one(
@@ -695,9 +658,8 @@ async fn ledger_table_exists(ctx: &mut DjogiContext) -> Result<bool, VerifyRunEr
 /// [`AppliedSchema`]. The projection captures tables, columns,
 /// primary keys, indexes, and foreign keys — see the module docs for
 /// the scope rationale.
-///
 /// **Excludes the migration ledger table itself.** The
-/// `djogi_schema_migrations` table is bookkeeping, not user schema —
+/// `djogi_schema_migrations` table is bookkeeping, not user schema
 /// surfacing it as drift would noise up every verify run.
 async fn project_live_schema(ctx: &mut DjogiContext) -> Result<AppliedSchema, VerifyRunError> {
     let foreign_keys = read_foreign_keys(ctx).await?;
@@ -722,11 +684,10 @@ async fn project_live_schema(ctx: &mut DjogiContext) -> Result<AppliedSchema, Ve
 
 /// Read every user table in the `public` schema along with its
 /// columns. Excludes framework-internal bookkeeping tables:
-///
 /// - `djogi_schema_migrations` — the ledger.
 /// - HeeRanjID artifact tables — see [`HEERANJID_ARTIFACT_TABLES`].
 ///   Adopter-owned tables that legitimately start with `heer_` are
-///   preserved (A-1 fix).
+///   preserved.
 async fn read_tables(
     ctx: &mut DjogiContext,
     foreign_keys: &[LiveForeignKey],
@@ -735,7 +696,7 @@ async fn read_tables(
     // `pg_class.relkind = 'r'` for ordinary tables and filter out
     // the ledger here. HeeRanjID artifact tables are filtered in
     // Rust against the [`HEERANJID_ARTIFACT_TABLES`] allowlist after
-    // the query (A-1) — the previous LIKE 'heer\\_%' silently
+    // the query — the previous LIKE 'heer\\_%' silently
     // dropped adopter-owned tables that legitimately start with
     // `heer_`.
     let table_rows = ctx
@@ -788,10 +749,10 @@ async fn read_tables(
             primary_key: super::schema::PrimaryKeySchema {
                 columns: primary_key_columns,
                 // Live PG cannot tell us the PK kind without reaching
-                // into the column DEFAULT expression; T5's verify keeps
+                // into the column DEFAULT expression; the verify pass keeps
                 // the kind comparison in advisory mode (`HeerId` is the
                 // common case but the projection cannot prove it from
-                // the catalog alone). T8 tightens this.
+                // the catalog alone).
                 kind: super::schema::PkKindSchema::HeerId,
             },
             rationale: None,
@@ -805,12 +766,11 @@ async fn read_tables(
             // means "verify did not assert anything about the table's
             // exclusion constraints," not "the table has none."
             exclusion_constraints: Vec::new(),
-            // Phase 8.5 Cluster 4 (djogi#217) — verify does not yet read
-            // `obj_description(c.oid, 'pg_class')` to round-trip the
-            // table comment from `pg_description`. Advisory mode reports
-            // the live catalog as carrying no comment; a future verify
-            // pass that reads `pg_description.description` populates this
-            // slot.
+            // Verify does not yet read `obj_description(c.oid,
+            // 'pg_class')` to round-trip the table comment from
+            // `pg_description`. Advisory mode reports the live catalog as
+            // carrying no comment; a future verify pass that reads
+            // `pg_description.description` populates this slot.
             table_comment: None,
             storage_params: None,
             tablespace: None,
@@ -891,18 +851,18 @@ async fn read_all_columns(
 
         out.entry(table_name).or_default().push(ColumnSchema {
             check: None,
-            // Phase 8.5 Cluster 4 (djogi#217) — verify does not yet
-            // read `col_description(c.oid, attnum)` to round-trip the
-            // column comment from `pg_description`. Advisory mode
-            // reports the live catalog as carrying no comment; a future
-            // verify pass that reads `pg_description.description` for
-            // `attnum`-keyed entries populates this slot.
+            // Verify does not yet read `col_description(c.oid, attnum)`
+            // to round-trip the column comment from `pg_description`.
+            // Advisory mode reports the live catalog as carrying no
+            // comment; a future verify pass that reads
+            // `pg_description.description` for `attnum`-keyed entries
+            // populates this slot.
             comment: None,
             default_sql,
             foreign_key: None,
             // Verify does not yet read `pg_attrdef` to discover stored
             // generated expressions; advisory mode treats every live
-            // column as non-generated. T8/future verify pass tightens.
+            // column as non-generated; a future verify pass may tighten.
             generated: None,
             identity: None,
             index_type: None,
@@ -920,12 +880,11 @@ async fn read_all_columns(
             sequence_within: None,
             sql_type: render_type_for_compare(&sql_type),
             unique: false,
-            // Phase 8.5 Cluster 4 (djogi#220) — `type_change_using` is
-            // a transient projection-only slot (`#[serde(skip)]` on
-            // `ColumnSchema`); verify reads from the live Postgres
-            // catalog, which has no concept of an adopter's
-            // `#[field(type_change_using = "...")]` directive. The
-            // slot is always `None` for catalog-derived columns.
+            // `type_change_using` is a transient projection-only slot
+            // (`#[serde(skip)]` on `ColumnSchema`); verify reads from
+            // the live Postgres catalog, which has no concept of an
+            // adopter's `#[field(type_change_using = "...")]` directive.
+            // The slot is always `None` for catalog-derived columns.
             type_change_using: None,
         });
     }
@@ -1001,19 +960,16 @@ async fn read_all_primary_key_columns(
     Ok(out)
 }
 
-/// Read every non-PK index in `public` along with its shape (B-7) —
+/// Read every non-PK index in `public` along with its shape
 /// columns in order, uniqueness, method (btree / gin / ...).
-///
 /// Skips:
-///
 /// - PK indexes (the column list lives on the table's
 ///   [`super::schema::PrimaryKeySchema`]).
 /// - HeeRanjID artifact tables — see [`HEERANJID_ARTIFACT_TABLES`].
 /// - The ledger table.
-///
-/// `INCLUDE(...)` columns and partial-predicate `WHERE` clauses are
-/// deliberately NOT projected here — the T5 stop condition keeps
-/// those at advisory `Info` level for now (D693). T8 will tighten.
+///   `INCLUDE(...)` columns and partial-predicate `WHERE` clauses are
+///   deliberately NOT projected here — they are kept at advisory `Info`
+///   level for now (D693).
 async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, VerifyRunError> {
     // Step 1 — one row per index with name + table + uniqueness +
     // access method. Step 2 (read_all_index_columns, batched per
@@ -1104,7 +1060,7 @@ async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, Verify
 /// map keyed by index name; each value is the columns in
 /// `pg_index.indkey` order. Each [`IndexColumnSchema`] carries the
 /// default sort direction / nulls policy / opclass — the live
-/// catalog read stops short of opclass detection (T8 territory) so
+/// catalog read does not yet include opclass detection, so
 /// the snapshot's own knobs are the comparison ground truth.
 /// Replaces the per-index helper that ran one round-trip per index.
 async fn read_all_index_columns(
@@ -1155,8 +1111,8 @@ async fn read_all_index_columns(
 
 /// Map a Postgres `pg_am.amname` string to the corresponding
 /// [`IndexTypeSchema`] variant. Unknown methods fall back to
-/// `BTree`; T8 will surface that as a warning, but T5 keeps the
-/// projection forgiving so the diff path can still proceed.
+/// `BTree`; the projection is kept forgiving for now so the diff
+/// path can still proceed.
 fn pg_amname_to_index_type(amname: &str) -> IndexTypeSchema {
     match amname {
         "btree" => IndexTypeSchema::BTree,
@@ -1171,13 +1127,11 @@ fn pg_amname_to_index_type(amname: &str) -> IndexTypeSchema {
 
 /// Read the ledger rows we use for verification. Returns rows in
 /// `applied_at` order so iteration is chronological.
-///
-/// **Caller must confirm the ledger exists (B-8).** Verify probes for
+/// **Caller must confirm the ledger exists.** Verify probes for
 /// the ledger via [`ledger_table_exists`] before calling this helper;
 /// running it without that check would surface a relation-not-found
 /// from the SELECT below. The verify entry point handles the missing
 /// ledger by emitting `D621` and skipping this read entirely.
-///
 /// Uses [`LedgerRow::try_from`] (cluster-2 simplify Finding 3) to
 /// centralize the 14-column try_get cascade in ledger.rs.
 async fn read_applied_ledger(ctx: &mut DjogiContext) -> Result<Vec<LedgerRow>, VerifyRunError> {
@@ -1286,7 +1240,7 @@ async fn read_foreign_keys(ctx: &mut DjogiContext) -> Result<Vec<LiveForeignKey>
                     query_label: "foreign_keys.condeferred",
                     source: DjogiError::from(e),
                 })?;
-        // A-1: filter HeeRanjID artifact tables in Rust against the
+        // Filter HeeRanjID artifact tables in Rust against the
         // sorted allowlist rather than via SQL prefix matching.
         if is_heeranjid_artifact_table(&table) || is_heeranjid_artifact_table(&ref_table) {
             continue;
@@ -1323,15 +1277,14 @@ async fn read_foreign_keys(ctx: &mut DjogiContext) -> Result<Vec<LiveForeignKey>
 
 /// Compare every snapshot table to its live counterpart and emit
 /// drift diagnostics.
-///
 /// Diagnostics emitted:
 /// - D601 / D602 — table presence mismatch (Error).
 /// - D603 / D604 — column presence mismatch (Error).
-/// - D605       — column nullability differs (Error).
-/// - D606       — column type-string drift (Warning).
-/// - D607       — column DEFAULT differs (Error, B-5).
-/// - D608       — primary key column list differs (Error, B-6).
-/// - D609       — foreign-key shape differs (Error).
+/// - D605 — column nullability differs (Error).
+/// - D606 — column type-string drift (Warning).
+/// - D607 — column DEFAULT differs (Error).
+/// - D608 — primary key column list differs (Error).
+/// - D609 — foreign-key shape differs (Error).
 fn diff_tables(
     snapshot: &AppliedSchema,
     live: &AppliedSchema,
@@ -1461,7 +1414,7 @@ fn diff_tables(
                 });
             }
 
-            // D607 — column DEFAULT drift (B-5). Both sides compare
+            // D607 — column DEFAULT drift. Both sides compare
             // through `normalize_default_expr` — Postgres canonicalises
             // string defaults as `'foo'::text` even when the operator
             // wrote `'foo'`, so we strip trailing `::TYPE` casts on
@@ -1499,11 +1452,11 @@ fn diff_tables(
             }
         }
 
-        // D608 — PK column list differs (B-6). Compares the snapshot's
+        // D608 — PK column list differs. Compares the snapshot's
         // declared PK columns against the live PK projection. Cases:
-        //   - snapshot has PK, live does not → Error
-        //   - snapshot has no PK, live does → Error
-        //   - both have PKs but column list (in order) differs → Error
+        // - snapshot has PK, live does not → Error
+        // - snapshot has no PK, live does → Error
+        // - both have PKs but column list (in order) differs → Error
         diff_primary_key(
             name,
             &snap_table.primary_key,
@@ -1522,7 +1475,7 @@ fn diff_primary_key(
     live_pk: &PrimaryKeySchema,
     diagnostics: &mut Vec<VerifyDiagnostic>,
 ) {
-    // Both empty column lists is the "no PK on either side" case —
+    // Both empty column lists is the "no PK on either side" case
     // a clean match. The live-DB projection populates `columns` with
     // the actual PK column names when a PK exists, and an empty
     // vector when no PK constraint is found.
@@ -1548,15 +1501,14 @@ fn diff_primary_key(
 }
 
 /// Compare the snapshot's index list to the live projection.
-///
 /// Diagnostics emitted:
 /// - D610 — snapshot index missing in live DB (Error).
 /// - D611 — live index not in snapshot (Warning — may be a
 ///   constraint-backed auto-index).
-/// - D612 — index columns differ (Error, B-7).
-/// - D613 — index uniqueness differs (Error, B-7).
-/// - D614 — index method differs (Warning, B-7).
-/// - D615 — index lives on a different table (Error, B-7).
+/// - D612 — index columns differ (Error).
+/// - D613 — index uniqueness differs (Error).
+/// - D614 — index method differs (Warning).
+/// - D615 — index lives on a different table (Error).
 /// - D693 — `INCLUDE` / partial-predicate not yet checked (Info).
 fn diff_indexes(
     snapshot: &AppliedSchema,
@@ -1607,7 +1559,7 @@ fn diff_indexes(
     }
 
     // D612 / D613 / D614 / D615 — shape comparison on shared names
-    // (B-7). For every name present on both sides we compare table,
+    // . For every name present on both sides we compare table,
     // columns (in order), uniqueness, and access method.
     for (name, snap_idx) in &snap_by_name {
         let Some(live_idx) = live_by_name.get(name) else {
@@ -1633,7 +1585,7 @@ fn diff_indexes(
 
         // D612 — column-list drift. We compare the raw column-name
         // sequence; opclass / order / nulls are not yet projected
-        // from live (T8 territory) so we narrow the comparison to
+        // from live (not yet implemented), so we narrow the comparison to
         // the column names in order.
         let snap_cols = index_target_column_names(&snap_idx.target);
         let live_cols = index_target_column_names(&live_idx.target);
@@ -1695,15 +1647,14 @@ fn diff_indexes(
 
         // D693 — INCLUDE columns / partial-predicate are not yet
         // projected from live. Surface as Info so the operator sees
-        // exactly what is and is not covered. T8 tightens this.
+        // exactly what is and is not covered.
         if !snap_idx.include.is_empty() || snap_idx.predicate.is_some() {
             diagnostics.push(VerifyDiagnostic {
                 code: "D693".to_string(),
                 severity: VerifySeverity::Info,
                 message: format!(
-                    "index `{name}` declares INCLUDE / partial-predicate; T5 \
-                     verify does not yet project these from the live catalog \
-                     (deferred to T8)",
+                    "index `{name}` declares INCLUDE / partial-predicate; \
+                     verify does not yet project these from the live catalog",
                 ),
                 location: Some(format!("index:{name}")),
             });
@@ -1714,7 +1665,7 @@ fn diff_indexes(
 /// Extract the column-name sequence from an [`IndexTargetSchema`].
 /// Expression-form indexes return an empty Vec — those compare
 /// equal only when both sides are expression-form, which is fine for
-/// T5's coarse-grained comparison.
+/// the current coarse-grained comparison.
 fn index_target_column_names(target: &IndexTargetSchema) -> Vec<&str> {
     match target {
         IndexTargetSchema::Columns(cols) => cols.iter().map(|c| c.name.as_str()).collect(),
@@ -1722,30 +1673,26 @@ fn index_target_column_names(target: &IndexTargetSchema) -> Vec<&str> {
     }
 }
 
-/// Canonicalise a column DEFAULT expression for comparison (B-5).
-///
+/// Canonicalise a column DEFAULT expression for comparison.
 /// **Strategy.** Postgres typically renders defaults with explicit
 /// type casts (`'foo'::text`, `now()::timestamp with time zone`).
 /// Operators authoring snapshots often write the bare form
 /// (`'foo'`, `now()`). We strip ALL trailing `::<type>` casts on
 /// both sides so equivalent expressions compare equal:
-///
 /// - `'foo'` vs `'foo'::text` → match
 /// - `now()` vs `now()::timestamptz` → match
 /// - `'foo'::text::varchar` → `'foo'` (nested casts collapsed in a
-///   loop — Codex round-2 B-5 fix; Postgres renders nested casts
-///   unchanged on `pg_get_expr`, so the comparator must peel them)
+///   loop; Postgres renders nested casts unchanged on `pg_get_expr`,
+///   so the comparator must peel them)
 /// - `42` vs `43` → mismatch (different value)
-/// - `now()` vs `current_timestamp` → mismatch (different func — T8
-///   may add an alias map)
-///
-/// Trim is whitespace-only on both ends; other whitespace inside
-/// the expression is preserved (Postgres preserves it on the way
-/// back to the catalog).
-///
-/// `None` and the empty string are normalised to `None` so a column
-/// declared with `DEFAULT NULL` (which Postgres collapses to "no
-/// default") matches a snapshot that omits the field entirely.
+/// - `now` vs `current_timestamp` → mismatch (different func; a
+///   future pass may add an alias map)
+///   Trim is whitespace-only on both ends; other whitespace inside
+///   the expression is preserved (Postgres preserves it on the way
+///   back to the catalog).
+///   `None` and the empty string are normalised to `None` so a column
+///   declared with `DEFAULT NULL` (which Postgres collapses to "no
+///   default") matches a snapshot that omits the field entirely.
 fn normalize_default_expr(expr: Option<&str>) -> Option<String> {
     let raw = expr?.trim();
     if raw.is_empty() {
@@ -1758,7 +1705,6 @@ fn normalize_default_expr(expr: Option<&str>) -> Option<String> {
     // string. The byte-level forward scan with a single-quote
     // toggle skips over `::` sequences inside quoted strings; no
     // pattern-matching engine is involved.
-    //
     // Loop termination: each iteration either strips at least one
     // byte (`raw[..idx]` where `idx < raw.len()`) or breaks. The
     // length monotonically decreases, so the loop terminates.
@@ -1819,7 +1765,7 @@ fn render_default_for_message(d: &Option<String>) -> String {
     }
 }
 
-/// Surface advisory `Info` diagnostics for snapshot fields the T5
+/// Surface advisory `Info` diagnostics for snapshot fields the current
 /// projection does not yet check. Operators see exactly what is
 /// covered and what is deferred.
 fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDiagnostic>) {
@@ -1835,9 +1781,9 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             code: "D690".to_string(),
             severity: VerifySeverity::Info,
             message: format!(
-                "{n} table(s) declare FTS configuration; T5 verify does not \
+                "{n} table(s) declare FTS configuration; verify does not \
                  yet check FTS triggers / generated columns against the live \
-                 catalog (deferred to T8)",
+                 catalog",
                 n = fts_tables.len(),
             ),
             location,
@@ -1856,9 +1802,9 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             code: "D691".to_string(),
             severity: VerifySeverity::Info,
             message: format!(
-                "{n} table(s) declare a partition strategy; T5 verify does \
+                "{n} table(s) declare a partition strategy; verify does \
                  not yet check partition method / column against the live \
-                 catalog (deferred to T8)",
+                 catalog",
                 n = partitioned.len(),
             ),
             location,
@@ -1871,9 +1817,8 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             code: "D692".to_string(),
             severity: VerifySeverity::Info,
             message: format!(
-                "{n} enum type(s) declared; T5 verify does not yet check \
-                 enum variants against the live `pg_enum` catalog (deferred \
-                 to T8)",
+                "{n} enum type(s) declared; verify does not yet check \
+                 enum variants against the live `pg_enum` catalog",
                 n = snapshot.enums.len(),
             ),
             location: None,
@@ -1886,7 +1831,6 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
 /// no aliases); `format_type` from the catalog returns lowercase
 /// (`bigint`, `text`, `character varying(255)`). We normalise to
 /// lowercase + map the well-known aliases.
-///
 /// **Implementation: byte-level lowercasing followed by explicit
 /// substring substitution against a fixed alias table.** No
 /// pattern-matching engine is involved — every comparison is
@@ -1918,20 +1862,18 @@ fn render_type_for_compare(s: &str) -> String {
     out
 }
 
-// ── Internal accessors used by repair / baseline / T8 ────────────────────
+// ── Internal accessors used by repair / baseline ────────────────────
 
 /// Live-DB projection accessor — entry point for code paths that
 /// need the projection without the verify-side diff. Used by
-/// [`super::runner::baseline_plan`] (B-11) and
-/// [`super::repair::repair_snapshot_rebuild`] (B-12); reserved for
-/// T8's tightened verify diagnostics.
-///
-/// **Bucket scoping (Codex round-2 B-11).** The projection is scoped
-/// to the supplied [`BucketKey`] so an app's baseline / rebuild does
-/// not pull in another app's tables. Postgres has no per-app schema
-/// concept (every app's tables live in `public`), so the scoping is
-/// driven from the inventory's `ModelDescriptor::app` field:
-///
+/// [`super::runner::baseline_plan`] and
+/// [`super::repair::repair_snapshot_rebuild`]; and by verify
+/// diagnostics that require a full live projection.
+/// **Bucket scoping.** The projection is scoped to the supplied
+/// [`BucketKey`] so an app's baseline / rebuild does not pull in
+/// another app's tables. Postgres has no per-app schema concept
+/// (every app's tables live in `public`), so the scoping is driven
+/// from the inventory's `ModelDescriptor::app` field:
 /// - **Synthetic global bucket** (`bucket.app == ""`,
 ///   [`crate::AppDescriptor::GLOBAL_LABEL`]): every live table is
 ///   included EXCEPT those whose `ModelDescriptor` declares a
@@ -1943,43 +1885,39 @@ fn render_type_for_compare(s: &str) -> String {
 ///   projected. Live tables that have no inventory descriptor are
 ///   excluded — they belong to either the global bucket or another
 ///   app's baseline, never to a named app's projection.
-///
-/// **Where the bucket database flows.** The `database` component is
-/// already routed by the caller via `DjogiContext::switch_to(...)`
-/// before calling this function — `ctx` is always pointing at the
-/// right pool. The projection itself only ever queries the
-/// connection it is given; the bucket database is advisory at this
-/// layer (it is checked in the caller against the routed pool).
-///
-/// **Why inventory and not the ledger.** The ledger only records
-/// migration versions, not the tables those migrations touched. A
-/// bucket-scoped projection driven from `app_label` history would
-/// require a per-migration table-touch index that does not exist
-/// today. Inventory-driven scoping is the project-wide convention
-/// the migration substrate already uses (see
-/// [`super::projection::project_from_inventory`]); reusing it keeps
-/// the two projection paths in lockstep.
-///
-/// **Standalone / unlinked named-bucket scoping (#370).** The
-/// published standalone `djogi` binary links no adopter model crates,
-/// so the `ModelDescriptor` inventory is empty. For a NAMED bucket
-/// that leaves `this_bucket_tables` empty, which would filter the live
-/// schema to nothing and make a valid on-disk snapshot report every
-/// table as missing (false drift). When (a) the bucket is named, (b)
-/// no descriptor in this process claims it, and (c) the entire
-/// `ModelDescriptor` inventory is empty (the standalone signal — NOT
-/// merely a linked binary whose app was removed, which must still
-/// surface real drift), the live schema is instead scoped to the
-/// `fallback_table_names` the caller threads in (verify passes the
-/// on-disk snapshot's own table names). A correct snapshot then
-/// validates cleanly against a live DB that has its tables. The GLOBAL
-/// bucket is unaffected: with an empty inventory `all_app_tables` is
-/// empty, so it already retains every live table.
-///
-/// **`fallback_table_names` is verify-only.** The repair and baseline
-/// callers pass `None` — they project the live DB to BUILD a snapshot
-/// and have no on-disk snapshot to scope from — so their behavior is
-/// byte-for-byte unchanged by this parameter.
+///   **Where the bucket database flows.** The `database` component is
+///   already routed by the caller via `DjogiContext::switch_to(...)`
+///   before calling this function — `ctx` is always pointing at the
+///   right pool. The projection itself only ever queries the
+///   connection it is given; the bucket database is advisory at this
+///   layer (it is checked in the caller against the routed pool).
+///   **Why inventory and not the ledger.** The ledger only records
+///   migration versions, not the tables those migrations touched. A
+///   bucket-scoped projection driven from `app_label` history would
+///   require a per-migration table-touch index that does not exist
+///   today. Inventory-driven scoping is the project-wide convention
+///   the migration substrate already uses (see
+///   [`super::projection::project_from_inventory`]); reusing it keeps
+///   the two projection paths in lockstep.
+///   **Standalone / unlinked named-bucket scoping (#370).** The
+///   published standalone `djogi` binary links no adopter model crates,
+///   so the `ModelDescriptor` inventory is empty. For a NAMED bucket
+///   that leaves `this_bucket_tables` empty, which would filter the live
+///   schema to nothing and make a valid on-disk snapshot report every
+///   table as missing (false drift). When (a) the bucket is named, (b)
+///   no descriptor in this process claims it, and (c) the entire
+///   `ModelDescriptor` inventory is empty (the standalone signal — NOT
+///   merely a linked binary whose app was removed, which must still
+///   surface real drift), the live schema is instead scoped to the
+///   `fallback_table_names` the caller threads in (verify passes the
+///   on-disk snapshot's own table names). A correct snapshot then
+///   validates cleanly against a live DB that has its tables. The GLOBAL
+///   bucket is unaffected: with an empty inventory `all_app_tables` is
+///   empty, so it already retains every live table.
+///   **`fallback_table_names` is verify-only.** The repair and baseline
+///   callers pass `None` — they project the live DB to BUILD a snapshot
+///   and have no on-disk snapshot to scope from — so their behavior is
+///   byte-for-byte unchanged by this parameter.
 pub(super) async fn live_schema_for_repair(
     ctx: &mut DjogiContext,
     bucket: &BucketKey,
@@ -1989,10 +1927,10 @@ pub(super) async fn live_schema_for_repair(
 
     // Build the set of table names declared in inventory, grouped by
     // app label. We only walk inventory once and produce two sets:
-    //   - this_bucket_tables: tables whose descriptor declares the
-    //     supplied bucket's app label.
-    //   - all_app_tables: tables whose descriptor declares ANY
-    //     non-global app label.
+    // - this_bucket_tables: tables whose descriptor declares the
+    // supplied bucket's app label.
+    // - all_app_tables: tables whose descriptor declares ANY
+    // non-global app label.
     // Both sets compare on Postgres table name (`ModelDescriptor::
     // table_name`) so the live projection's BTreeMap key lines up.
     // `inventory_is_empty` is the standalone/unlinked signal (#370):
@@ -2088,9 +2026,8 @@ mod tests {
     fn col(name: &str, sql_type: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
-            // Phase 8.5 Cluster 4 (djogi#217) — column comments default
-            // off in test fixtures; tests asserting comment behaviour
-            // set the slot explicitly.
+            // Column comments default off in test fixtures; tests
+            // asserting comment behaviour set the slot explicitly.
             comment: None,
             default_sql: None,
             foreign_key: None,
@@ -2152,8 +2089,7 @@ mod tests {
             renamed_from: None,
             rls_enabled: false,
             table: name.to_string(),
-            // Phase 8.5 Cluster 4 (djogi#217) — table-level comments
-            // default off in test fixtures.
+            // Table-level comments default off in test fixtures.
             table_comment: None,
             storage_params: None,
             tablespace: None,
@@ -2521,7 +2457,7 @@ mod tests {
         assert!(diagnostics.iter().any(|d| d.code == "D692"));
     }
 
-    // ── normalize_default_expr (B-5) ─────────────────────────────────────
+    // ── normalize_default_expr ─────────────────────────────────────
 
     #[test]
     fn normalize_default_strips_trailing_text_cast() {
@@ -2572,13 +2508,13 @@ mod tests {
 
     #[test]
     fn normalize_default_strips_nested_casts() {
-        // Codex round-2 B-5 follow-up: the previous implementation
-        // peeled exactly ONE trailing `::TYPE`. For nested casts —
-        // legitimate when an adopter writes `'foo'::text::varchar`
-        // and Postgres renders it back unchanged — only the outermost
-        // cast was stripped, leaving `'foo'::text` and producing a
-        // spurious D607. The fix loops the strip step until the
-        // expression no longer ends with a cast.
+        // The previous implementation peeled exactly ONE trailing
+        // `::TYPE`. For nested casts — legitimate when an adopter
+        // writes `'foo'::text::varchar` and Postgres renders it back
+        // unchanged — only the outermost cast was stripped, leaving
+        // `'foo'::text` and producing a spurious D607. The fix loops
+        // the strip step until the expression no longer ends with a
+        // cast.
         assert_eq!(
             normalize_default_expr(Some("'foo'::text::varchar")),
             Some("'foo'".to_string())
@@ -2595,7 +2531,7 @@ mod tests {
         );
     }
 
-    // ── diff_primary_key (B-6) ──────────────────────────────────────────
+    // ── diff_primary_key ──────────────────────────────────────────
 
     #[test]
     fn diff_pk_match_emits_no_diagnostic() {
@@ -2661,7 +2597,7 @@ mod tests {
         assert_eq!(diagnostics[0].code, "D608");
     }
 
-    // ── diff_indexes shape mismatch (B-7) ────────────────────────────────
+    // ── diff_indexes shape mismatch ────────────────────────────────
 
     fn idx_with_columns(name: &str, table: &str, cols: &[&str]) -> IndexSchema {
         IndexSchema {
@@ -2776,7 +2712,7 @@ mod tests {
         }
     }
 
-    // ── diff_tables D607 (B-5) ──────────────────────────────────────────
+    // ── diff_tables D607 ──────────────────────────────────────────
 
     #[test]
     fn diff_tables_default_drift_emits_d607() {
@@ -2822,7 +2758,7 @@ mod tests {
         );
     }
 
-    // ── HeeRanjID artifact allowlist (A-1) ──────────────────────────────
+    // ── HeeRanjID artifact allowlist ──────────────────────────────
 
     #[test]
     fn heeranjid_allowlist_is_sorted() {
@@ -2846,16 +2782,16 @@ mod tests {
     fn heeranjid_allowlist_does_not_match_adopter_heer_prefix_tables() {
         // The previous LIKE-based exclusion swallowed adopter-owned
         // tables that legitimately started with `heer_`. Confirm the
-        // allowlist does not. (Codex round-2 A-1: the spec example
-        // names this table `heer_orders` — an adopter's "orders"
-        // table that legitimately carries the `heer_` prefix.)
+        // allowlist does not. (The spec example names this table
+        // `heer_orders` — an adopter's "orders" table that
+        // legitimately carries the `heer_` prefix.)
         assert!(!is_heeranjid_artifact_table("heer_user"));
         assert!(!is_heeranjid_artifact_table("heer_orders"));
         assert!(!is_heeranjid_artifact_table("heer"));
         assert!(!is_heeranjid_artifact_table(""));
     }
 
-    // ── T7: emit_out_of_order_diagnostics (D622) ─────────────────────────
+    // ── emit_out_of_order_diagnostics (D622) ─────────────────────────
 
     fn ledger_row_at(version: &str, app: &str, ooo: bool, status: LedgerStatus) -> LedgerRow {
         LedgerRow {
@@ -3058,19 +2994,18 @@ mod tests {
         );
     }
 
-    // ── D6xx code-uniqueness audit (A-2) ─────────────────────────────────
+    // ── D6xx code-uniqueness audit ─────────────────────────────────
 
     /// Master table of every D6xx diagnostic code that can be emitted
     /// from this module. The audit test below walks the verify.rs
     /// source at compile time and asserts every emitted code literal
     /// appears here (and that each entry is unique). Adding a new
     /// emit site without updating this table is a hard test failure.
-    ///
-    /// Codex round-2 A-2: the previous test inspected this hand-typed
-    /// array directly, which left a hole — a new code emitted in the
-    /// module body but absent from the array escaped the uniqueness
-    /// check. The audit test now closes that hole by cross-checking
-    /// the table against the source file's emit-site literals.
+    /// The previous test inspected this hand-typed array directly,
+    /// which left a hole — a new code emitted in the module body but
+    /// absent from the array escaped the uniqueness check. The audit
+    /// test now closes that hole by cross-checking the table against
+    /// the source file's emit-site literals.
     const D6XX_CODE_REGISTRY: &[(&str, &str)] = &[
         ("D601", "snapshot table missing in live"),
         ("D602", "live table not in snapshot"),
@@ -3114,21 +3049,18 @@ mod tests {
 
     #[test]
     fn d6xx_emit_sites_all_covered_by_registry() {
-        // Codex round-2 A-2: walk the verify.rs source for every
-        // VerifyDiagnostic emit site's code literal and assert each
-        // one appears in the master registry above. A new emit site
-        // that adds a code without listing it in
-        // `D6XX_CODE_REGISTRY` fails this test.
-        //
+        // Walk the verify.rs source for every VerifyDiagnostic emit
+        // site's code literal and assert each one appears in the master
+        // registry above. A new emit site that adds a code without
+        // listing it in `D6XX_CODE_REGISTRY` fails this test.
         // Implementation: `include_str!` pulls the source text in at
         // compile time. We forward-scan for the canonical emit-site
         // byte sequence — the field-assignment `code` followed by
         // colon-space-quote-D — and read the four-character code that
         // follows. A byte-level scan keeps us inside the no-regex rule.
-        //
         // False-positive guard. The prefix is composed at runtime
         // from a plain string and a uppercase-D byte so the prefix
-        // bytes do not appear verbatim in this very test's source —
+        // bytes do not appear verbatim in this very test's source
         // otherwise the scanner would match its own scan-target
         // string. Comment and docstring prose elsewhere in this file
         // never carry the exact eight-byte sequence consisting of
@@ -3192,7 +3124,7 @@ mod tests {
         }
         // Reverse direction: every registry entry should have at
         // least one emit site. (A registry-only entry is fine in
-        // principle — e.g. a code reserved for a future emit site —
+        // principle — e.g. a code reserved for a future emit site
         // but in practice every current entry SHOULD be emitted, so
         // we surface the gap as a soft `eprintln!` rather than a
         // hard assertion to keep the test focused on the duplicate-

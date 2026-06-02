@@ -1,0 +1,7 @@
+error: `#[derived]` `name` `select` is a Postgres reserved keyword; it cannot appear unquoted in generated SQL (E_DJG_VDF_014)
+  --> $DIR/derived_014_reserved_keyword_name.rs:18:14
+   |
+18 |     name   = select,
+   |              ^^^^^^
+
+error: aborting due to 1 previous error

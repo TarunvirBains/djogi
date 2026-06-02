@@ -1,24 +1,18 @@
 //! Unknown-field type alias and conversion extension trait.
-//!
 //! # What
-//!
 //! [`UnknownField`] is a type alias for [`serde_json::Value`]. Every JSON key
 //! present in the database column but absent from the typed `T` schema in
 //! [`super::Jsonb<T>`] lands here during deserialization. It is preserved
 //! across every [`Model::save`](crate::model::Model::save) call so that
 //! unknown columns from future schema versions (or sibling services) are
 //! never silently dropped.
-//!
 //! # Why a type alias, not a newtype?
-//!
 //! A newtype would require wrapping + unwrapping at every boundary where the
 //! user inspects the extra map. The type alias keeps the public surface
 //! minimal: call [`UnknownFieldExt::try_as_str`] / [`try_as_i64`] etc.
 //! directly on the `&UnknownField` reference from
 //! [`Jsonb::extra`](super::Jsonb::extra) without any `.0` unwrap.
-//!
 //! # Conversion contract
-//!
 //! All conversions return `Result<_, UnknownFieldError>` — no implicit
 //! coercion, no `Default` fallback. The README mandates this to keep unknown
 //! field access auditable: every interaction is a deliberate `?` at the call
@@ -26,7 +20,6 @@
 
 /// A single unknown-field payload from a JSONB column — a raw
 /// [`serde_json::Value`] preserved verbatim from the database row.
-///
 /// Values in the [`super::Jsonb::extra`] map are never type-checked against
 /// the `T` schema and are never modified by `save()` (they are round-tripped
 /// intact). Accessing their content is always fallible — use the methods on
@@ -38,7 +31,6 @@ pub type UnknownField = serde_json::Value;
 #[non_exhaustive]
 pub enum UnknownFieldError {
     /// The JSON value is present but has the wrong JSON type.
-    ///
     /// For example, calling [`UnknownFieldExt::try_as_i64`] on a JSON string
     /// produces `TypeMismatch { expected: "i64", actual: "string" }`.
     #[error("type mismatch: expected {expected}, got {actual}")]
@@ -50,7 +42,6 @@ pub enum UnknownFieldError {
         actual: &'static str,
     },
     /// Deserialization via [`serde_json`] failed.
-    ///
     /// Returned only by [`UnknownFieldExt::try_into_typed`] when the JSON
     /// structure does not match the target type's `Deserialize` impl.
     #[error("deserialize: {0}")]
@@ -58,7 +49,6 @@ pub enum UnknownFieldError {
 }
 
 /// Typed accessor methods on [`UnknownField`] values.
-///
 /// All methods are infallible at the Rust type level but return `Result` to
 /// force the caller to handle mismatches explicitly. No coercion is performed:
 /// a JSON number is not coerced to a string; a JSON `null` is not accepted as
@@ -91,7 +81,6 @@ pub trait UnknownFieldExt {
     ) -> Result<&serde_json::Map<String, serde_json::Value>, UnknownFieldError>;
 
     /// Deserialize the value into any `T: serde::de::DeserializeOwned`.
-    ///
     /// Uses [`serde_json::from_value`] internally. Returns
     /// `Err(UnknownFieldError::Deserialize(_))` if the JSON structure does not
     /// match `T`'s `Deserialize` impl.

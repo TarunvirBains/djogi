@@ -1,37 +1,29 @@
 //! Aggregate expressions — the typed surface for `COUNT` / `SUM` / `AVG`
 //! / `MIN` / `MAX` on a [`FieldRef`].
-//!
 //! # What
-//!
 //! [`AggregateExpr<Out, K>`] is a `PhantomData<fn() -> Out>`-tagged wrapper
 //! around the [`ExprNode::Aggregate`] node. `Out` is the Rust type the
 //! aggregate decodes to at fetch time:
-//!
-//! | Aggregate        | `Out`                                  |
+//! | Aggregate | `Out` |
 //! |------------------|----------------------------------------|
 //! | `count()`        | `i64`                                  |
 //! | `count_star()`   | `i64`                                  |
 //! | `sum()`          | `V` (column's numeric type)            |
 //! | `avg()`          | `f64`                                  |
 //! | `min()` / `max()`| `V` (column's type)                    |
-//!
 //! Every aggregate composes with the expression IR's existing walk — an
 //! [`AggregateExpr<Out, K>`] holds a plain [`ExprNode::Aggregate`] node and
 //! the emitter in [`super::sql::emit_expr`] lowers it to the matching
 //! Postgres keyword + optional `FILTER (WHERE ...)` tail.
-//!
 //! # Why typed `Out`
-//!
 //! The scalar terminal ([`crate::query::aggregate::AggregateQuery::fetch_one`])
 //! and the per-column decode on [`crate::query::annotate::AnnotatedQuerySet`]
 //! both drive `tokio_postgres::Client::query_one` / `row.get::<_, Out>(..)`
-//! — the decoder needs to know the Rust type up front. `Out` is that pin: it
+//! the decoder needs to know the Rust type up front. `Out` is that pin: it
 //! captures whatever the aggregate returns so the SELECT-list builder
 //! never needs runtime type reflection. No `AggregateExpr<Any>` — the
 //! compile-time bound is the whole point.
-//!
 //! # Bounds on `min` / `max`
-//!
 //! Rust's `Ord` is the natural "orderable" trait, but `f32` / `f64` do
 //! not implement it (NaN makes total order impossible in Rust). Postgres
 //! happily runs `MIN`/`MAX` on both integer and floating-point columns,
@@ -41,9 +33,7 @@
 //! can be aggregated — that covers `i16`,
 //! `i32`, `i64`, `f32`, `f64`, `Decimal`, `time::OffsetDateTime`,
 //! `time::Date`, `String`, and the HeeRanjID PK types.
-//!
 //! # Chaining `.filter(...)`
-//!
 //! `AggregateExpr::filter` attaches a `FILTER (WHERE <cond>)` clause.
 //! Calling `.filter(...)` twice on the same aggregate **overwrites**
 //! the previous filter; users compose multi-predicate filters with the
@@ -51,9 +41,7 @@
 //! result to `.filter(...)`. This matches the `QuerySet::limit(n)`
 //! pattern where the last call wins — simplest to reason about,
 //! easiest to document.
-//!
 //! # Where
-//!
 //! - [`super::node::ExprNode::Aggregate`] / [`super::node::AggOp`] — the
 //!   untyped payload.
 //! - [`super::sql::emit_expr`] — renders the SQL tokens.
@@ -76,7 +64,6 @@ pub(crate) mod sealed {
 }
 
 /// Compile-time marker for aggregate-modifier families.
-///
 /// The four blessed markers — [`ValueAgg`], [`MetadataAgg`],
 /// [`OrderedSetAgg`], [`HypotheticalSetAgg`] — partition the aggregate
 /// universe by which modifier methods are legal. Each
@@ -84,7 +71,6 @@ pub(crate) mod sealed {
 /// per-kind `impl` blocks below project the modifier surface (e.g.
 /// `.distinct()` lives only on `AggregateExpr<Out, ValueAgg>`, never on
 /// `AggregateExpr<Out, OrderedSetAgg>`).
-///
 /// The trait is sealed via [`sealed::Sealed`]: only framework-internal
 /// kind markers implement it. Downstream crates cannot name `Sealed`,
 /// so external `KindEvidence` impls are unreachable — that means the
@@ -121,14 +107,12 @@ impl KindEvidence for HypotheticalSetAgg {}
 
 /// Typed aggregate expression — the result of `f.col().count()`,
 /// `.sum()`, `.avg()`, `.min()`, `.max()`.
-///
 /// Carries an [`ExprNode::Aggregate`] payload plus a `PhantomData<fn() ->
 /// Out>` tag pinning the Rust decode type and a `PhantomData<fn() -> K>`
 /// tag pinning the modifier family. `#[must_use]` because a dropped
 /// aggregate is usually a mistake — the user likely meant to feed it
 /// into [`crate::query::QuerySet::aggregate`] or
 /// [`crate::query::QuerySet::annotate`].
-///
 /// `Clone + Debug` are implemented manually rather than via
 /// `#[derive(Clone, Debug)]` because the derive macro would add
 /// `K: Clone` / `K: Debug` bounds on every method that takes
@@ -183,7 +167,6 @@ impl<Out, K: KindEvidence> AggregateExpr<Out, K> {
     }
 
     /// Build an `AggregateExpr<Out>` for the unary `AGG(column)` shape.
-    ///
     /// Eleven typed builders on `FieldRef` (`count`, `count_star`, `sum`,
     /// `avg`, `min`, `max`, `array_agg`, `json_agg`, `bool_and`, `bool_or`)
     /// constructed the same six-field `ExprNode::Aggregate { ... }`
@@ -209,13 +192,11 @@ impl<Out, K: KindEvidence> AggregateExpr<Out, K> {
     }
 
     /// Build an `AggregateExpr<Out>` for the binary `AGG(y, x)` shape.
-    ///
     /// Powers the two-arg aggregate family — `COVAR_POP`, `COVAR_SAMP`,
-    /// `CORR`, the `REGR_*` regression family (T6), and the JSON-object
-    /// aggregates (T9 — `JSON_OBJECT_AGG` / `JSONB_OBJECT_AGG`). Layout
+    /// `CORR`, the `REGR_*` regression family, and the JSON-object
+    /// aggregates (`JSON_OBJECT_AGG` / `JSONB_OBJECT_AGG`). Layout
     /// mirrors [`Self::unary_agg`] but populates the `arg2` slot with
     /// the second column reference.
-    ///
     /// Argument convention: for the stats / regression family, `y_column`
     /// is the dependent variable (first), `x_column` is the independent
     /// variable (second). For JSON-object aggregates, `y_column` is the
@@ -241,7 +222,6 @@ impl<Out, K: KindEvidence> AggregateExpr<Out, K> {
 
     /// Build an `AggregateExpr<Out>` for the ordered-set
     /// `AGG(args) WITHIN GROUP (ORDER BY target)` shape.
-    ///
     /// Powers `PercentileCont` / `PercentileDisc` / `Mode`. The `arg`
     /// slot carries the function-call literal (the percentile fraction
     /// for `PercentileCont` / `PercentileDisc`, or a sentinel
@@ -249,8 +229,7 @@ impl<Out, K: KindEvidence> AggregateExpr<Out, K> {
     /// `target` ORDER BY column is populated from the receiver
     /// `FieldRef` at construction time and lives in the
     /// `within_group_order_by` slot.
-    ///
-    /// Cluster E T7 introduced this constructor.
+    /// Constructor for ordered-set aggregates.
     pub(crate) fn ordered_set(
         op: AggOp,
         arg: ExprNode,
@@ -282,9 +261,7 @@ impl<Out> AggregateExpr<Out, ValueAgg> {
 
     /// Apply the `DISTINCT` modifier to this aggregate, emitting
     /// `AGG(DISTINCT col)` rather than `AGG(col)`.
-    ///
     /// # Rejected at compile time
-    ///
     /// `.distinct()` lives only on this `impl<Out> AggregateExpr<Out, ValueAgg>`
     /// block — non-value aggregate families ([`MetadataAgg`] for
     /// `GROUPING`, [`OrderedSetAgg`] for `PERCENTILE_CONT` / `PERCENTILE_DISC`
@@ -293,13 +270,10 @@ impl<Out> AggregateExpr<Out, ValueAgg> {
     /// chain `.distinct()` on those is a method-not-found compile error
     /// at the type-state guard (#89). No runtime check is needed for
     /// the typed surface.
-    ///
     /// # Rejected at fetch time
-    ///
     /// Three combinations escape the type-state and surface as
     /// [`crate::DjogiError::UnsupportedAggregate`] from
     /// [`crate::expr::sql::check_aggregate_legality`]:
-    ///
     /// - `COUNT(*)` with `DISTINCT`: `COUNT(DISTINCT *)` is not valid SQL.
     ///   `count_star()` shares the `ValueAgg` type-state with `count()`,
     ///   `sum()`, etc., so `.distinct()` is callable; the runtime check
@@ -307,7 +281,7 @@ impl<Out> AggregateExpr<Out, ValueAgg> {
     ///   via [`FieldRef::count`] instead.
     /// - `STRING_AGG(DISTINCT col, sep)` without a per-aggregate
     ///   `ORDER BY`: Postgres requires `STRING_AGG(DISTINCT col, sep
-    ///   ORDER BY ...)` to disambiguate the output tail. Chain
+    /// ORDER BY ...)` to disambiguate the output tail. Chain
     ///   [`Self::order_by`] with a deterministic key to make the
     ///   combination well-formed.
     /// - `COUNT(*)` with a per-aggregate `ORDER BY`: the `COUNT(*)`
@@ -395,25 +369,22 @@ impl<Out> AggregateExpr<Out, HypotheticalSetAgg> {
 }
 
 // ── COUNT ─────────────────────────────────────────────────────────────
-//
 // `count` is available on every `FieldRef<M, V>` regardless of `V`,
 // because Postgres `COUNT(col)` works on any column type (it counts
 // non-null values). `count_star` is an associated function because it
 // does not need a column reference — users call it as
 // `AggregateExpr::<i64>::count_star()` or, from a field-closure context,
 // build it manually by reaching into the `ExprNode` (which they cannot
-// — the enum is crate-private). Task 4 ships `.count()` only; the
+// the enum is crate-private). Task 4 ships `.count` only; the
 // `COUNT(*)` variant is exposed through `FieldRef::count_star()` as an
 // inherent method that uses any FieldRef to satisfy the receiver but
 // renders as `COUNT(*)`.
 
 impl<M: Model, V> FieldRef<M, V> {
     /// `COUNT(column)` — returns `i64`.
-    ///
     /// Counts rows where the column is non-null. For a total row count
     /// that ignores NULL status, use [`FieldRef::count_star`] (which
     /// emits `COUNT(*)`).
-    ///
     /// `COUNT` in Postgres always returns `BIGINT`, which decodes
     /// directly into `i64` — no cast needed.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -422,7 +393,6 @@ impl<M: Model, V> FieldRef<M, V> {
     }
 
     /// `COUNT(*)` — returns `i64`.
-    ///
     /// Counts every row in the (grouped) relation, including those
     /// where every column is NULL. Routes through a dedicated
     /// [`AggOp::CountStar`] variant rather than
@@ -430,7 +400,6 @@ impl<M: Model, V> FieldRef<M, V> {
     /// reaches the identifier-validation pass in
     /// [`crate::ident::assert_plain_ident`] nor the column-
     /// qualification pass that select_related adds.
-    ///
     /// `FieldRef<M, V>` is the receiver because `AggregateExpr`
     /// constructors live on `FieldRef` by convention — the receiver's
     /// `column()` is **not** used for `COUNT(*)` (the emitter ignores
@@ -446,35 +415,30 @@ impl<M: Model, V> FieldRef<M, V> {
 }
 
 // ── SUM / AVG ─────────────────────────────────────────────────────────
-//
 // Gated on the sealed `Numeric` trait from `expr::arithmetic` — same
-// seal that gates `+` / `-` / `*` / `/` on `Expr<T>`. Phase 4 ships
-// `i16 / i32 / i64 / f32 / f64`; `Decimal` extends the trait in Phase 5.
+// seal that gates `+` / `-` / `*` / `/` on `Expr<T>`. ships
+// `i16 / i32 / i64 / f32 / f64`; `Decimal` extends the trait in .
 
 impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// `SUM(column)` — returns `V`.
-    ///
     /// Sums non-null values of the column. Gated on the sealed
     /// [`Numeric`] trait so only framework-blessed numeric types
     /// compose — `sum` on a `String` column is a compile error, not a
     /// runtime SQL error.
-    ///
     /// # Postgres widening vs `Out = V`
-    ///
     /// Postgres widens integer sums — `SUM(BIGINT)` returns `NUMERIC`,
     /// `SUM(SMALLINT)` returns `BIGINT`. The typed surface keeps
     /// `Out = V` for ergonomics (most call sites sum into the same
     /// scalar type they declared on the column), and the emitter
     /// narrows the result back with an explicit `::<V::SUM_CAST>`
     /// cast so the decoder can return `V` directly.
-    ///
     /// This means a sum that overflows the original column's range
-    /// raises a `numeric_value_out_of_range` error at query time —
+    /// raises a `numeric_value_out_of_range` error at query time
     /// Postgres refuses to truncate on the narrowing cast. That is
     /// deliberate: silent truncation would be worse than an error.
     /// Users aggregating values that exceed `V::MAX` should declare a
     /// larger column type or use `ctx.raw_scalar` for a `NUMERIC` /
-    /// `Decimal` decode; Phase 5's `Decimal` `Numeric` impl is the
+    /// `Decimal` decode; the `Decimal` `Numeric` impl is the
     /// framework-supported path for precision-critical sums.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn sum(self) -> AggregateExpr<V> {
@@ -485,33 +449,29 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     }
 
     /// `AVG(column)` — returns `f64`.
-    ///
     /// Averages non-null values. Postgres returns `NUMERIC` for
     /// integer inputs and `DOUBLE PRECISION` for floating-point
     /// inputs; the typed surface pins `Out = f64` for both by
     /// emitting an explicit `::DOUBLE PRECISION` cast so the decoder
     /// returns uniformly `f64`. Callers who need `Decimal`-precision
-    /// averages use `ctx.raw_scalar` until Phase 5's `Decimal` support
+    /// averages use `ctx.raw_scalar` until the `Decimal` support
     /// lands.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn avg(self) -> AggregateExpr<f64> {
         // Always DOUBLE PRECISION regardless of the input numeric type
-        // — the typed surface's `Out = f64` promise holds uniformly.
+        // the typed surface's `Out = f64` promise holds uniformly.
         AggregateExpr::unary_agg(AggOp::Avg, self.column(), Some(<V as Numeric>::AVG_CAST))
     }
 
     /// `STDDEV_POP(column)` — population standard deviation, returned as
     /// `f64`.
-    ///
     /// Postgres returns `NUMERIC` for integer inputs and `DOUBLE PRECISION`
     /// for floating-point inputs; the explicit `::DOUBLE PRECISION` cast
     /// narrows uniformly to `f64` so the typed surface's `Out = f64`
     /// promise holds across all blessed numeric column types. Use this
     /// when you have data for the entire population and want the exact
     /// dispersion measure (no sample-correction `n-1` term).
-    ///
     /// # Empty / single-row groups
-    ///
     /// Returns `NULL` when the group has zero non-null rows; with only
     /// one non-null row, the population stddev is `0`. The non-`Option`
     /// return type means callers operating on potentially empty groups
@@ -524,17 +484,13 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     }
 
     /// `STDDEV_SAMP(column)` — sample standard deviation, returned as `f64`.
-    ///
     /// Uses the Bessel-corrected formula (divides by `n-1`), the standard
     /// choice when treating the rows as a sample of a larger population.
     /// Empty groups and single-row groups return `NULL` (Postgres divides
     /// by zero in the latter case).
-    ///
     /// See [`FieldRef::stddev`] for the alias spelling and
     /// [`FieldRef::stddev_pop`] for the population form.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Per-org sample stddev of order amounts
     /// let scatter: Vec<(i64, f64)> = Order::objects()
@@ -550,7 +506,6 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// `STDDEV(column)` — Postgres alias for [`FieldRef::stddev_samp`].
     /// Both produce identical results; the emitter preserves the spelling
     /// the caller used (matching the [`FieldRef::every`] alias treatment).
-    ///
     /// Adopters reading SQL-standard docs reach for `STDDEV_SAMP`;
     /// adopters reading `pg` docs typically write `STDDEV`. Both
     /// work, both round-trip exactly as written.
@@ -560,13 +515,10 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     }
 
     /// `VAR_POP(column)` — population variance, returned as `f64`.
-    ///
     /// Population form (no `n-1` correction). Same NULL-on-empty-group
     /// behaviour as the stddev pair; same `DOUBLE PRECISION` narrowing
     /// cast applies.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Population variance of latency across the day's request stream
     /// let var: f64 = Request::objects()
@@ -580,15 +532,11 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     }
 
     /// `VAR_SAMP(column)` — sample variance, returned as `f64`.
-    ///
     /// Bessel-corrected (`n-1`) form. Returns `NULL` for empty groups
     /// and for single-row groups (division by zero on `n-1`).
-    ///
     /// See [`FieldRef::variance`] for the alias spelling and
     /// [`FieldRef::var_pop`] for the population form.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Per-region sample variance of customer order totals
     /// let dispersion: Vec<(i64, f64)> = Order::objects()
@@ -604,9 +552,7 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// `VARIANCE(column)` — Postgres alias for [`FieldRef::var_samp`].
     /// Same spelling-preservation contract as [`FieldRef::stddev`] /
     /// [`FieldRef::every`].
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// let var: f64 = Order::objects()
     ///     .aggregate(|f| f.amount().variance())
@@ -618,20 +564,16 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     }
 
     /// `COVAR_POP(y, x)` — population covariance, returned as `f64`.
-    ///
     /// Self is `y` (dependent variable); the argument is `x`
     /// (independent variable). This matches Postgres' convention across
     /// the regression / covariance family — the `y` column is always
     /// the first argument.
-    ///
     /// Cast to `DOUBLE PRECISION` so the typed surface's `Out = f64`
     /// promise holds for any combination of integer / float column
     /// types on either side. Both sides gate on the sealed `Numeric`
     /// trait — `covar_pop` between a `String` column and an `i64`
     /// column is a compile error, not a runtime Postgres type error.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Population covariance of order_total vs cost
     /// let cov: f64 = Order::objects()
@@ -649,7 +591,6 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     }
 
     /// `COVAR_SAMP(y, x)` — sample covariance, returned as `f64`.
-    ///
     /// Bessel-corrected (`n-1`) form. Same `y, x` argument convention
     /// and `DOUBLE PRECISION` cast as [`FieldRef::covar_pop`].
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -663,14 +604,11 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     }
 
     /// `CORR(y, x)` — Pearson correlation coefficient, returned as `f64`.
-    ///
     /// Result range is `[-1.0, 1.0]`: `1.0` for perfect positive linear
     /// correlation, `-1.0` for perfect negative, `0.0` for no linear
     /// relationship. Same `y, x` argument convention and
     /// `DOUBLE PRECISION` cast as [`FieldRef::covar_pop`].
-    ///
     /// # Empty / single-row groups
-    ///
     /// Returns `NULL` for empty groups and for groups where one of the
     /// columns has zero variance (Postgres divides by the product of
     /// the two stddevs); the non-`Option` return type means callers
@@ -688,16 +626,12 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
 
     /// `REGR_AVGX(y, x)` — average of the independent variable across
     /// rows where both `y` and `x` are non-null. Returned as `f64`.
-    ///
     /// Receiver is `y`, argument is `x` — Postgres convention for the
     /// regression family. Same `DOUBLE PRECISION` cast as the rest of
     /// the binary numeric aggregates.
-    ///
     /// Returns `NULL` for empty groups (no (y, x) pairs survive the
     /// non-null filter).
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Average ad-spend (x) on days that produced any conversions (y)
     /// let mean_x: f64 = Day::objects()
@@ -717,11 +651,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// `REGR_AVGY(y, x)` — average of the dependent variable across
     /// rows where both `y` and `x` are non-null. Returned as `f64`.
     /// Same convention as [`FieldRef::regr_avgx`].
-    ///
     /// Returns `NULL` for empty groups.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Average response time (y) on rows where load (x) is also recorded
     /// let mean_y: f64 = Sample::objects()
@@ -740,17 +671,13 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
 
     /// `REGR_COUNT(y, x)` — number of input rows where both `y` and
     /// `x` are non-null. Returned as `i64`.
-    ///
     /// Unlike the rest of the regression family, Postgres returns
     /// `BIGINT` here — the typed surface returns `AggregateExpr<i64>`
     /// to match. The cast slot uses `BIGINT` for emission uniformity
     /// with the unary `count()` path.
-    ///
     /// Returns `0` (not NULL) for empty groups — `BIGINT` count
     /// aggregates have a defined zero identity.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // How many (y, x) pairs went into the regression?
     /// let n: i64 = Sample::objects()
@@ -764,12 +691,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
 
     /// `REGR_INTERCEPT(y, x)` — y-intercept of the least-squares-fit
     /// line through the (y, x) pairs. Returned as `f64`.
-    ///
     /// Returns `NULL` for empty groups and groups where `x` has zero
     /// variance (the regression line is undefined).
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Per-region regression intercept of conversions on ad-spend
     /// let intercepts: Vec<(i64, f64)> = Day::objects()
@@ -789,13 +713,10 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
 
     /// `REGR_R2(y, x)` — coefficient of determination of the
     /// least-squares-fit line. Returned as `f64`.
-    ///
     /// Range is `[0.0, 1.0]`: `1.0` for a perfect fit, `0.0` for no
     /// linear relationship. Returns `NULL` when the group is empty or
     /// `x` has zero variance.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // How well does ad-spend explain conversions in each region?
     /// let r2: Vec<(i64, f64)> = Day::objects()
@@ -815,11 +736,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
 
     /// `REGR_SLOPE(y, x)` — slope of the least-squares-fit line
     /// through the (y, x) pairs. Returned as `f64`.
-    ///
     /// Same NULL behaviour as [`FieldRef::regr_intercept`].
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Per-region slope: how much does each $ of ad-spend buy in conversions?
     /// let slopes: Vec<(i64, f64)> = Day::objects()
@@ -841,12 +759,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// across the (y, x) pairs (`SUM((x - AVG(x))^2)`). Returned as
     /// `f64`. Useful as the denominator in slope / r² calculations
     /// when computing the regression manually.
-    ///
     /// Returns `NULL` for empty groups; returns `0.0` when every (y, x)
     /// pair has the same `x` (zero variance).
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// let sxx: f64 = Sample::objects()
     ///     .aggregate(|f| f.y().regr_sxx(f.x()))
@@ -866,11 +781,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// across the pairs (`SUM((x - AVG(x)) * (y - AVG(y)))`).
     /// Returned as `f64`. Useful as the numerator in slope / covariance
     /// calculations.
-    ///
     /// Returns `NULL` for empty groups.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Sum of cross-deviations — input to manual covariance computation
     /// let sxy: f64 = Sample::objects()
@@ -891,12 +803,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// across the (y, x) pairs (`SUM((y - AVG(y))^2)`). Returned as
     /// `f64`. Useful as the denominator in r² calculations when
     /// computing the regression manually.
-    ///
     /// Returns `NULL` for empty groups; returns `0.0` when every (y, x)
     /// pair has the same `y` (zero variance on the dependent side).
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// let syy: f64 = Sample::objects()
     ///     .aggregate(|f| f.y().regr_syy(f.x()))
@@ -914,13 +823,12 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
 }
 
 // ── MIN / MAX ─────────────────────────────────────────────────────────
-//
 // Bound on `V: IntoFilterValue` — every SQL-bindable type Djogi ships
 // with already implements that trait (see `query::field::IntoFilterValue`).
 // Mirroring that bound here keeps the set of MIN/MAX-able columns in
 // lockstep with the set of filter-able columns: one seal to extend
 // when a future phase adds a new column type (e.g. `Decimal` in
-// Phase 5). Rust `Ord` is deliberately not used — `f64` doesn't
+// ). Rust `Ord` is deliberately not used — `f64` doesn't
 // implement it, but Postgres `MIN(col)` / `MAX(col)` on a `DOUBLE
 // PRECISION` column is a routine query.
 
@@ -929,7 +837,6 @@ where
     V: crate::query::field::IntoFilterValue,
 {
     /// `MIN(column)` — returns `V`.
-    ///
     /// Returns the smallest non-null value of the column per
     /// Postgres' per-type ordering. The bound on
     /// [`crate::query::field::IntoFilterValue`] mirrors the set of
@@ -943,7 +850,6 @@ where
     }
 
     /// `MAX(column)` — returns `V`.
-    ///
     /// Returns the largest non-null value of the column. Same bound
     /// rationale as [`FieldRef::min`].
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -953,27 +859,24 @@ where
 }
 
 // ── ARRAY_AGG / JSON_AGG ───────────────────────────────────────────────────
-//
 // Available on every `FieldRef<M, V>` regardless of `V` — Postgres can
 // ARRAY_AGG / JSONB_AGG any column type. The return type:
 // - `array_agg()` → `AggregateExpr<Vec<V>>`: the annotate decode path calls
-//   `row.try_get::<_, Vec<V>>(alias)`, which postgres-types handles via its
-//   built-in array decoding when `V: FromSql`.
+// `row.try_get::<_, Vec<V>>(alias)`, which postgres-types handles via its
+// built-in array decoding when `V: FromSql`.
 // - `json_agg()` → `AggregateExpr<serde_json::Value>`: JSONB_AGG always
-//   produces a JSON array; decoding into `serde_json::Value` covers every
-//   element type without requiring `V`-specific codec knowledge.
+// produces a JSON array; decoding into `serde_json::Value` covers every
+// element type without requiring `V`-specific codec knowledge.
 
 impl<M: Model, V> FieldRef<M, V> {
     /// `ARRAY_AGG(column)` — collects non-null column values into a Postgres
     /// array, returned as `Vec<V>` at the Rust level.
-    ///
     /// postgres-types decodes a Postgres array column into `Vec<V>` when `V`
     /// implements `FromSql`; all scalar column types Djogi ships satisfy that
     /// bound. If `V` does not implement `FromSql`, the failure is a runtime
     /// decode error at fetch time, not a compile error here, because
     /// `FieldRef` is constructed at macro-expansion time with a type the
     /// framework knows is decodable.
-    ///
     /// The aggregate emits `ARRAY_AGG(column)` without any narrowing cast.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn array_agg(self) -> AggregateExpr<Vec<V>> {
@@ -982,7 +885,6 @@ impl<M: Model, V> FieldRef<M, V> {
 
     /// `JSONB_AGG(column)` — aggregates column values into a JSON array,
     /// returned as `serde_json::Value`.
-    ///
     /// Djogi standardises on JSONB for all JSON storage and wire formats
     /// (see `docs/spec/decisions.md`), so `JSONB_AGG` is emitted rather
     /// than `JSON_AGG`. The returned `serde_json::Value` is always a
@@ -996,13 +898,10 @@ impl<M: Model, V> FieldRef<M, V> {
     /// `JSON_OBJECT_AGG(key, value)` — builds a JSON object (Postgres
     /// `json` type) from per-row key/value tuples. Returned as
     /// `serde_json::Value` (always a `Value::Object`).
-    ///
-    /// Receiver is the key column, argument is the value column —
+    /// Receiver is the key column, argument is the value column
     /// `f.id().json_object_agg(f.name())` emits
     /// `JSON_OBJECT_AGG(id, name)`.
-    ///
     /// # Why `serde_json::Value` and not `Jsonb<T>`
-    ///
     /// `Jsonb<T>` is a typed schema wrapper — adopters declare the
     /// expected shape `T` at column-definition time, and the wrapper
     /// validates incoming data against it on every save. The aggregate
@@ -1013,9 +912,7 @@ impl<M: Model, V> FieldRef<M, V> {
     /// type. `serde_json::Value` is the open-shape escape hatch:
     /// adopters who know the expected shape can `serde_json::from_value`
     /// the result into their own typed struct at the call site.
-    ///
     /// # Why exposed alongside [`FieldRef::jsonb_object_agg`]
-    ///
     /// Djogi standardises on JSONB for storage and wire formats (see
     /// `docs/spec/decisions.md`), but adopters consuming the output
     /// from an external system that requires `json` rather than
@@ -1025,11 +922,9 @@ impl<M: Model, V> FieldRef<M, V> {
     /// [`FieldRef::jsonb_object_agg`] sibling emits `JSONB_OBJECT_AGG`.
     /// Both decode into `serde_json::Value` at the Rust level for the
     /// reason above.
-    ///
     /// # Duplicate keys
-    ///
     /// Postgres' `JSON_OBJECT_AGG` rejects duplicate keys at runtime
-    /// — the call raises `22023 (invalid_parameter_value)`. Callers
+    /// the call raises `22023 (invalid_parameter_value)`. Callers
     /// guaranteeing uniqueness can pre-DISTINCT the row set or use
     /// `.filter(...)`; otherwise the JSONB variant is more forgiving
     /// (Postgres treats later keys as overwriting earlier ones for
@@ -1043,7 +938,6 @@ impl<M: Model, V> FieldRef<M, V> {
     /// [`FieldRef::json_object_agg`]. Same shape, different Postgres
     /// return type (`jsonb` rather than `json`). Returned as
     /// `serde_json::Value`.
-    ///
     /// **Recommended default** when storing or wire-serialising the
     /// aggregate result — Djogi standardises on JSONB across the
     /// framework. Use [`FieldRef::json_object_agg`] only when an
@@ -1057,14 +951,11 @@ impl<M: Model, V> FieldRef<M, V> {
     /// current row (i.e. the row is a subtotal produced by `ROLLUP` /
     /// `CUBE` / `GROUPING SETS`), `0` otherwise. Returns
     /// `AggregateExpr<i32>` because Postgres' return type is `INTEGER`.
-    ///
     /// # When to use
-    ///
-    /// Pair with the grouping-set surface (Cluster E T11 will land typed
+    /// Pair with the grouping-set surface (typed
     /// `ROLLUP` / `CUBE` / `GROUPING SETS` builders) to distinguish
     /// subtotal rows from base-fact rows in the result set. Used inside
     /// SELECT / HAVING when reporting hierarchical summaries:
-    ///
     /// ```ignore
     /// // SELECT region, dept, SUM(sales),
     /// //        GROUPING(region) AS is_region_subtotal,
@@ -1080,9 +971,7 @@ impl<M: Model, V> FieldRef<M, V> {
     ///     ))
     ///     .fetch_all(&mut ctx).await?;
     /// ```
-    ///
     /// # Variadic form
-    ///
     /// Postgres also accepts `GROUPING(c1, c2, …, cN)` returning a
     /// bitmask. Use the free function [`crate::grouping_of`] for that
     /// shape — bit 0 (LSB) maps to the rightmost argument; each bit
@@ -1094,7 +983,6 @@ impl<M: Model, V> FieldRef<M, V> {
 }
 
 /// `GROUPING(c1, c2, …, cN)` — variadic bitmask form.
-///
 /// Returns `AggregateExpr<i32>` carrying a bitmask. Postgres assigns
 /// bit `0` (the least-significant bit) to the **rightmost** argument
 /// and bit `N-1` to the leftmost. Each bit is `1` when that column
@@ -1103,13 +991,10 @@ impl<M: Model, V> FieldRef<M, V> {
 /// maps to bit 0 (LSB): the row that rolls up `c` only yields
 /// bitmask `0b001 == 1`; the row that rolls up `a` and `c` yields
 /// `0b101 == 5`.
-///
 /// Postgres returns `INTEGER` for this form regardless of input
-/// column types — the bitmask is positional, not value-derived —
+/// column types — the bitmask is positional, not value-derived
 /// so the typed surface pins `Out = i32`.
-///
 /// # Why a free function and not a method on `FieldRef`
-///
 /// The columns flagged by a single `GROUPING(...)` call can have
 /// different value types (`GROUPING(region, dept_id)` where one
 /// is `String` and the other `i64`). A method on `FieldRef<M, V>`
@@ -1119,9 +1004,7 @@ impl<M: Model, V> FieldRef<M, V> {
 /// becomes uninformative. Keeping the variadic constructor as a
 /// free function avoids paying for tuple-of-fields plumbing that
 /// no other aggregate uses.
-///
 /// # Panics
-///
 /// Panics if `columns` is empty — Postgres rejects `GROUPING()`
 /// with no args. The panic surfaces the framework-bug at the
 /// construction site rather than at fetch time as a Postgres
@@ -1130,9 +1013,7 @@ impl<M: Model, V> FieldRef<M, V> {
 /// or underscore followed by ASCII alphanumerics or underscores,
 /// up to 63 bytes) — same contract every other framework-baked
 /// `&'static str` column reference upholds.
-///
 /// # Example
-///
 /// ```ignore
 /// // SELECT region, dept, SUM(sales),
 /// //        GROUPING(region, dept) AS subtotal_bitmask
@@ -1165,37 +1046,33 @@ pub fn grouping_of(columns: &[&'static str]) -> AggregateExpr<i32, MetadataAgg> 
 }
 
 // ── PERCENTILE_CONT / PERCENTILE_DISC / MODE — ordered-set aggregates ────────
-//
-// Cluster E T7. These are Postgres ordered-set aggregates: the function
+// These are Postgres ordered-set aggregates: the function
 // takes a literal value (the percentile fraction; or empty for `mode()`)
 // and pairs it with a mandatory `WITHIN GROUP (ORDER BY column)` clause
 // that names the column being percentiled / mode-aggregated.
-//
 // The IR layout: the `arg` slot stores the function-call literal; the
 // `within_group_order_by` slot stores the column being aggregated. The
 // emitter renders `OP(arg) WITHIN GROUP (ORDER BY target)`.
-//
 // Postgres rules these aggregates honour, all enforced at compile time
 // by the [`OrderedSetAgg`] kind-state (#89):
 // - DISTINCT is invalid — `.distinct()` is not exposed on
-//   `AggregateExpr<Out, OrderedSetAgg>`.
-// - The in-paren `order_by` modifier (T1) is invalid — `.order_by(...)`
-//   is not exposed on `AggregateExpr<Out, OrderedSetAgg>`.
-// - The window modifier (T3) is invalid — `.over(...)` is not exposed
-//   on `AggregateExpr<Out, OrderedSetAgg>`.
+// `AggregateExpr<Out, OrderedSetAgg>`.
+// - The in-paren `order_by` modifier is invalid — `.order_by(...)`
+// is not exposed on `AggregateExpr<Out, OrderedSetAgg>`.
+// - The window modifier is invalid — `.over(...)` is not exposed
+// on `AggregateExpr<Out, OrderedSetAgg>`.
 // - Plain ungrouped `QuerySet::annotate(...)` is also invalid for this
-//   family because that terminal would synthesize `OVER ()` even when the
-//   user cannot call `.over(...)`. The `PlainAnnotationTuple` bound rejects
-//   ordered-set aggregates there while scalar `QuerySet::aggregate(...)` and
-//   grouped annotate remain generic over `K`.
+// family because that terminal would synthesize `OVER ()` even when the
+// user cannot call `.over(...)`. The `PlainAnnotationTuple` bound rejects
+// ordered-set aggregates there while scalar `QuerySet::aggregate(...)` and
+// grouped annotate remain generic over `K`.
 // - WITHIN GROUP is mandatory — the typed `AggregateExpr::ordered_set`
-//   constructor populates the `within_group_order_by` slot at build
-//   time from the receiver column, and `.within_group_order_by(...)`
-//   replaces (never empties) it. The runtime `debug_assert!` in
-//   `check_aggregate_legality` catches future direct-IR construction
-//   that bypasses the typed surface.
+// constructor populates the `within_group_order_by` slot at build
+// time from the receiver column, and `.within_group_order_by(...)`
+// replaces (never empties) it. The runtime `debug_assert!` in
+// `check_aggregate_legality` catches future direct-IR construction
+// that bypasses the typed surface.
 // - FILTER (WHERE ...) is valid and exposed via `.filter(...)`.
-//
 // `percentile_cont` is `Numeric`-gated because Postgres returns
 // `DOUBLE PRECISION` for numeric inputs and `INTERVAL` for interval
 // inputs; the typed surface pins `Out = f64` and emits a
@@ -1207,24 +1084,18 @@ impl<M: Model, V: crate::expr::arithmetic::Numeric> FieldRef<M, V> {
     /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY <col>)` — continuous
     /// percentile with linear interpolation between adjacent values.
     /// Returns `AggregateExpr<f64>`.
-    ///
     /// `p` must be in `[0.0, 1.0]`. Postgres rejects out-of-range values
     /// at runtime with a typed error; Djogi binds `p` as a literal so
     /// the emitted SQL carries it in the function-call arg slot.
-    ///
     /// The receiver column becomes the `WITHIN GROUP (ORDER BY ...)`
     /// target with default ASC direction. Override via
     /// [`AggregateExpr::within_group_order_by`] if a different column or
     /// DESC direction is needed.
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL — the non-`Option` typed surface
     /// treats that as a runtime error. Wrap `Out = Option<f64>` at the
     /// call site for NULL-safe handling.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Median request latency per service
     /// let medians: Vec<(ServiceId, f64)> = Request::objects()
@@ -1258,20 +1129,14 @@ where
     /// percentile (no interpolation; returns the actual value at the
     /// percentile cut). Returns `AggregateExpr<V>` — the column's own
     /// type, since Postgres returns the actual data point.
-    ///
     /// Use when the column type can't be linearly interpolated
     /// (categorical / ordinal / non-numeric data) or when adopters need
     /// the actual row value rather than an interpolated approximation.
-    ///
     /// Same WITHIN GROUP target population as
     /// [`FieldRef::percentile_cont`] — receiver column at default ASC.
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Discrete median order amount (returns an actual order's
     /// // amount, not an interpolated value).
@@ -1292,20 +1157,15 @@ where
 
     /// `MODE() WITHIN GROUP (ORDER BY <col>)` — most common value in the
     /// group. Returns `AggregateExpr<V>` — the column's own type.
-    ///
     /// Ties: Postgres returns the first value encountered in the
     /// `WITHIN GROUP (ORDER BY ...)` ordering. Default ASC means ties
     /// resolve to the smaller value; flip via
     /// [`AggregateExpr::within_group_order_by`] passing
     /// `self.desc()` to bias toward the larger.
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups (or all-NULL inputs) produce SQL NULL — `MODE()`
     /// over NULLs has no defined value.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Most common payment method per region
     /// let popular: Vec<(RegionId, String)> = Order::objects()
@@ -1325,22 +1185,16 @@ where
     /// `RANK(value) WITHIN GROUP (ORDER BY <col>)` — hypothetical-set
     /// rank: the rank that `value` would have if inserted into the
     /// sorted column. Returns `AggregateExpr<i64>`.
-    ///
     /// # Distinct from the window-form rank
-    ///
     /// Postgres has two `RANK` functions:
     /// - **Window form** ([`crate::expr::Rank`]) — ranks each row within
     ///   a `PARTITION BY ... ORDER BY ...` window.
     /// - **Hypothetical-set form** (this method) — answers "what rank
     ///   would this hypothetical value have in the sorted set?" without
     ///   inserting the row. The argument matches the column type.
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups produce SQL NULL.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // What rank would a $7,500 salary have among the engineering team?
     /// let rank: i64 = Employee::objects()
@@ -1355,10 +1209,9 @@ where
         AggregateExpr::ordered_set(AggOp::HypotheticalRank, arg, target, Some("BIGINT"))
     }
 
-    /// `DENSE_RANK(value) WITHIN GROUP (ORDER BY <col>)` —
+    /// `DENSE_RANK(value) WITHIN GROUP (ORDER BY <col>)`
     /// hypothetical-set dense rank (ties don't leave gaps in rank
     /// numbering). Returns `AggregateExpr<i64>`.
-    ///
     /// Same shape and rationale as [`Self::rank_of`]; differs only in
     /// tie-handling semantics.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -1368,16 +1221,13 @@ where
         AggregateExpr::ordered_set(AggOp::HypotheticalDenseRank, arg, target, Some("BIGINT"))
     }
 
-    /// `PERCENT_RANK(value) WITHIN GROUP (ORDER BY <col>)` —
+    /// `PERCENT_RANK(value) WITHIN GROUP (ORDER BY <col>)`
     /// hypothetical-set percent rank: the position the hypothetical
     /// value would occupy as a fraction in `[0.0, 1.0]`. Returns
     /// `AggregateExpr<f64>`.
-    ///
     /// Distinct from the window-form `PERCENT_RANK()` (which doesn't
     /// take a hypothetical arg and operates over a window partition).
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // What percentile (as a fraction) would a 100 ms latency be at?
     /// let pct: f64 = Request::objects()
@@ -1396,15 +1246,12 @@ where
         )
     }
 
-    /// `CUME_DIST(value) WITHIN GROUP (ORDER BY <col>)` —
+    /// `CUME_DIST(value) WITHIN GROUP (ORDER BY <col>)`
     /// hypothetical-set cumulative distribution: the fraction of rows
     /// that would rank at or below the hypothetical value. Returns
     /// `AggregateExpr<f64>`.
-    ///
     /// Distinct from the window-form `CUME_DIST()`.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // What fraction of orders are at or below a $500 amount?
     /// let pct: f64 = Order::objects()
@@ -1425,7 +1272,6 @@ where
 }
 
 // ── STRING_AGG ──────────────────────────────────────────────────────────────
-//
 // Gated on `V = String` — string concatenation is only meaningful on TEXT
 // columns. The separator is user-supplied at call time and bound as a
 // parameter (never interpolated into the SQL string) to guard against
@@ -1434,14 +1280,11 @@ where
 impl<M: Model> FieldRef<M, String> {
     /// `STRING_AGG(column, sep)` — concatenates non-null string values with
     /// a separator, returned as `String`.
-    ///
     /// The separator is bound as a positional parameter (`$N`) rather than
     /// interpolated directly into the SQL string, which means even a separator
     /// that contains SQL metacharacters is handled safely by the Postgres wire
     /// protocol.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// Post::objects()
     ///     .annotate(|f| f.title().string_agg(", "))
@@ -1468,7 +1311,6 @@ impl<M: Model> FieldRef<M, String> {
 }
 
 // ── BOOL_AND / BOOL_OR ──────────────────────────────────────────────────────
-//
 // Gated on `V = bool` — boolean aggregates are only meaningful on BOOLEAN
 // columns. Postgres emits NULL for an empty set; the typed surface returns
 // `bool` which will be a runtime decode error on an empty grouping. Callers
@@ -1479,7 +1321,6 @@ impl<M: Model> FieldRef<M, String> {
 impl<M: Model> FieldRef<M, bool> {
     /// `BOOL_AND(column)` — returns `true` if every non-null value in the
     /// column is `true`, `false` if any non-null value is `false`.
-    ///
     /// Returns `NULL` (decoded as a runtime error on the non-`Option` return
     /// type) when the grouping has no rows. Callers operating on potentially
     /// empty groups should use `ctx.raw_scalar` with `COALESCE(BOOL_AND(...),
@@ -1491,7 +1332,6 @@ impl<M: Model> FieldRef<M, bool> {
 
     /// `BOOL_OR(column)` — returns `true` if at least one non-null value in
     /// the column is `true`, `false` if all non-null values are `false`.
-    ///
     /// Same NULL behaviour as [`FieldRef::bool_and`] — empty groups produce
     /// NULL which decodes as a runtime error on the non-`Option` surface.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -1502,7 +1342,6 @@ impl<M: Model> FieldRef<M, bool> {
     /// `EVERY(column)` — Postgres-standard alias for [`FieldRef::bool_and`].
     /// Returns `true` if every non-null value in the column is `true`,
     /// `false` if any non-null value is `false`.
-    ///
     /// `EVERY` and `BOOL_AND` are interchangeable in Postgres — they
     /// produce identical results. Djogi exposes both because adopters
     /// reading from one set of docs expect the spelling they know;
@@ -1516,7 +1355,6 @@ impl<M: Model> FieldRef<M, bool> {
 }
 
 // ── BIT_AND / BIT_OR / BIT_XOR ──────────────────────────────────────────────
-//
 // Bitwise integer aggregates. Sealed on a separate `IntegerColumn` trait
 // rather than `Numeric` because Postgres BIT_AND / BIT_OR / BIT_XOR are
 // defined for SMALLINT / INTEGER / BIGINT (and bit-string types Djogi
@@ -1524,7 +1362,6 @@ impl<M: Model> FieldRef<M, bool> {
 // is a Postgres type error. Gating on `IntegerColumn` produces a compile-
 // time error if a caller writes `f.score().bit_or()` on an `f64` column,
 // which beats the runtime Postgres error.
-//
 // The return type is `Out = V` (the column's own integer type) — Postgres
 // returns the same width it operates on, no widening, so no narrowing
 // cast is required. Mirrors `min` / `max` in that respect.
@@ -1543,15 +1380,12 @@ mod integer_column_seal {
 /// Sealed marker trait for column types that admit Postgres bitwise
 /// aggregate functions ([`FieldRef::bit_and`], [`FieldRef::bit_or`],
 /// [`FieldRef::bit_xor`]).
-///
 /// Implemented for `i16`, `i32`, `i64` — the three integer scalar types
 /// Djogi blesses. Floating-point types (`f32`, `f64`), `time::Duration`,
 /// and `Decimal` deliberately do NOT implement this; the corresponding
 /// `BIT_AND(REAL)` / `BIT_OR(NUMERIC)` calls are Postgres type errors,
 /// and gating at the type system catches them at compile time.
-///
 /// # Why a separate trait from [`super::arithmetic::Numeric`]?
-///
 /// `Numeric` admits floats and `Duration` for arithmetic operator
 /// composition. Bit aggregates are integer-only — a separate trait
 /// keeps the gating precise. The two traits overlap on `i16`/`i32`/`i64`;
@@ -1566,16 +1400,13 @@ impl IntegerColumn for i64 {}
 impl<M: Model, V: IntegerColumn> FieldRef<M, V> {
     /// `BIT_AND(column)` — bitwise AND across non-null integer values,
     /// returned as the column's integer type.
-    ///
     /// Useful for flag-bitmask reduction: `f.flags().bit_and()` returns
     /// the set of bits set in *every* non-null row of the group.
     /// Identity (no rows or all NULL): all-bits-set in two's complement
     /// (`-1` for signed types). Empty groups decode as NULL — wrap `Out`
     /// in `Option<V>` at the call site (or use a `FILTER (WHERE ...)`
     /// guard) for NULL-safe handling.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Bits common to every flag value across the org's users
     /// let common_bits: i32 = User::objects()
@@ -1589,21 +1420,16 @@ impl<M: Model, V: IntegerColumn> FieldRef<M, V> {
     }
 
     /// `BIT_OR(column)` — bitwise OR across non-null integer values.
-    ///
     /// Useful for "did any row have flag X set?" reductions:
     /// `f.flags().bit_or()` returns the union of bits across the group.
     /// Identity: 0 (no bits set).
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups (or all-NULL inputs) decode as SQL NULL, which the
     /// non-`Option` typed surface treats as a runtime error. Wrap
     /// `Out = Option<V>` at the call site for NULL-safe handling, or
     /// chain `.filter(col.is_not_null())` so the aggregate sees a
     /// guaranteed-non-empty input.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Union of every set flag across the active session set
     /// let any_set: i32 = Session::objects()
@@ -1617,18 +1443,13 @@ impl<M: Model, V: IntegerColumn> FieldRef<M, V> {
     }
 
     /// `BIT_XOR(column)` — bitwise XOR across non-null integer values.
-    ///
     /// Useful for parity / checksum-style aggregations. Postgres 14+
     /// adds this aggregate; Djogi's PostgreSQL 18 floor includes it.
     /// Identity: 0.
-    ///
     /// # Postgres NULL behaviour
-    ///
     /// Empty groups (or all-NULL inputs) decode as SQL NULL — same
     /// caveat as [`Self::bit_or`].
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// // Parity bit across a row's per-event flag stream
     /// let parity: i64 = Event::objects()
@@ -1872,7 +1693,7 @@ mod tests {
         assert_eq!(sql.trim(), "BOOL_OR(active)", "got: {sql}");
     }
 
-    // ── .distinct() tests (T4) ────────────────────────────────────────────────
+    // ── .distinct tests ────────────────────────────────────────────────
 
     #[test]
     fn sum_distinct_emits_sum_distinct() {
@@ -2039,10 +1860,10 @@ mod tests {
     #[test]
     fn string_agg_distinct_without_order_by_rejected_at_fetch() {
         // STRING_AGG(DISTINCT col, sep) without a per-aggregate ORDER BY is
-        // ill-formed Postgres. With Cluster E T1 the IR tracks per-aggregate
-        // ORDER BY, so the rejection is scoped to the still-ill-formed
-        // no-ORDER-BY case. With ORDER BY chained, the combination is
-        // accepted (covered by `string_agg_distinct_with_order_by_is_now_accepted`).
+        // ill-formed Postgres. The IR tracks per-aggregate ORDER BY, so
+        // the rejection is scoped to the still-ill-formed no-ORDER-BY case.
+        // With ORDER BY chained, the combination is accepted (covered by
+        // `string_agg_distinct_with_order_by_is_now_accepted`).
         let f: FieldRef<Txn, String> = FieldRef::new("tag");
         let mut agg = f.string_agg(", ");
         if let ExprNode::Aggregate {
@@ -2063,7 +1884,7 @@ mod tests {
         );
     }
 
-    // ── Codex round-1 fixup tests ────────────────────────────────────────────
+    // ── Fixup tests ──────────────────────────────────────────────────────
 
     #[test]
     fn count_star_with_order_by_rejected_at_fetch() {
@@ -2097,7 +1918,7 @@ mod tests {
         );
     }
 
-    // ── .order_by(...) per-aggregate ORDER BY tests (T1) ─────────────────────
+    // ── .order_by(...) per-aggregate ORDER BY tests ─────────────────────
 
     #[test]
     fn order_by_appends_to_aggregate_node() {
@@ -2203,7 +2024,7 @@ mod tests {
     fn string_agg_distinct_with_order_by_is_now_accepted() {
         // `STRING_AGG(DISTINCT col, sep ORDER BY other)` is well-formed
         // Postgres — the legality check now accepts the combination when
-        // an ORDER BY is present (Cluster E T1).
+        // an ORDER BY is present.
         let f: FieldRef<Txn, String> = FieldRef::new("tag");
         let g: FieldRef<Txn, i64> = FieldRef::new("rank");
         let agg = f.string_agg(", ").distinct().order_by(g.asc());
@@ -2254,7 +2075,6 @@ mod tests {
     }
 
     // ── .over(|w| ...) end-to-end tests ──────────────────────────────────────
-    //
     // These tests exercise the round-trip: `.over(|w| ...)` on `AggregateExpr`
     // stores a `WindowSpec` on the node, then `emit_aggregate_with_window_and_cast`
     // picks it up and emits the correct `OVER (...)` clause. The bare
@@ -2264,7 +2084,7 @@ mod tests {
     #[test]
     fn over_empty_closure_stores_window_spec() {
         // `.over(|w| w)` sets `window: Some(WindowSpec::default())` — the
-        // terminal layer will emit `OVER ()` from it, preserving the pre-T3
+        // terminal layer will emit `OVER ()` from it, preserving the original
         // behaviour.
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.sum().over(|w| w);
@@ -2363,7 +2183,7 @@ mod tests {
     #[test]
     fn no_over_call_preserves_default_over_empty_via_terminal() {
         // When `.over(...)` is never called, `window: None` — the terminal
-        // `emit_aggregate_with_window_and_cast` emits `OVER ()` as before T3.
+        // `emit_aggregate_with_window_and_cast` emits `OVER ()` as in the original design.
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.count();
         let mut acc = SqlAccumulator::new("");
@@ -2376,7 +2196,7 @@ mod tests {
         );
     }
 
-    // ── BIT_AND / BIT_OR / BIT_XOR tests (T2) ────────────────────────────────
+    // ── BIT_AND / BIT_OR / BIT_XOR tests ────────────────────────────────
 
     #[test]
     fn bit_and_emits_bit_and_keyword() {
@@ -2439,7 +2259,7 @@ mod tests {
 
     #[test]
     fn bit_aggregates_compose_with_order_by() {
-        // BIT aggregates inherit the T1 .order_by modifier — useful for
+        // BIT aggregates support the .order_by modifier — useful for
         // deterministic emission when paired with DISTINCT, even though
         // BIT_AND/OR/XOR are commutative and the result is order-invariant.
         let f: FieldRef<Txn, i32> = FieldRef::new("flags");
@@ -2450,7 +2270,7 @@ mod tests {
         assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags ORDER BY flags ASC)");
     }
 
-    // ── GROUPING (T10) ────────────────────────────────────────────────────
+    // ── GROUPING ────────────────────────────────────────────────────
 
     #[test]
     fn grouping_emits_grouping_keyword() {
@@ -2549,7 +2369,7 @@ mod tests {
         assert!(crate::expr::sql::check_aggregate_legality(&agg.node).is_ok());
     }
 
-    // ── JSON object aggregates (T9) ───────────────────────────────────────
+    // ── JSON object aggregates ───────────────────────────────────────
 
     #[test]
     fn json_object_agg_emits_json_object_agg_key_value() {
@@ -2629,7 +2449,7 @@ mod tests {
         let _: AggregateExpr<serde_json::Value> = f_k2.jsonb_object_agg(f_v2);
     }
 
-    // ── REGR_* family (T6) ────────────────────────────────────────────────
+    // ── REGR_* family ────────────────────────────────────────────────
 
     #[test]
     fn regr_slope_emits_regr_slope_y_x() {
@@ -2761,7 +2581,7 @@ mod tests {
             FieldRef::<Txn, f32>::new("y").regr_syy(FieldRef::<Txn, f64>::new("x"));
     }
 
-    // ── COVAR / CORR (T5 — binary aggregates) ─────────────────────────────
+    // ── COVAR / CORR — binary aggregates ─────────────────────────────
 
     #[test]
     fn covar_pop_emits_covar_pop_y_x() {
@@ -2860,10 +2680,7 @@ mod tests {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.sum();
         if let ExprNode::Aggregate { arg2, .. } = &agg.node {
-            assert!(
-                arg2.is_none(),
-                "unary aggregates must leave arg2 empty after the T5 IR change"
-            );
+            assert!(arg2.is_none(), "unary aggregates must leave arg2 empty");
         } else {
             panic!("AggregateExpr did not wrap an Aggregate node");
         }
@@ -2881,7 +2698,7 @@ mod tests {
         }
     }
 
-    // ── STDDEV / VARIANCE family (T4) ─────────────────────────────────────
+    // ── STDDEV / VARIANCE family ─────────────────────────────────────
 
     #[test]
     fn stddev_pop_emits_stddev_pop() {
@@ -3011,7 +2828,7 @@ mod tests {
         let _: AggregateExpr<f64> = f_i32.variance();
     }
 
-    // ── EVERY (T3) ────────────────────────────────────────────────────────
+    // ── EVERY ────────────────────────────────────────────────────────
 
     #[test]
     fn every_emits_every_keyword() {
@@ -3056,7 +2873,7 @@ mod tests {
         let _: AggregateExpr<i64> = f64.bit_xor();
     }
 
-    // ── PERCENTILE_CONT / PERCENTILE_DISC / MODE — T7 ordered-set ────────────
+    // ── PERCENTILE_CONT / PERCENTILE_DISC / MODE — ordered-set ────────────
 
     #[test]
     fn percentile_cont_emits_within_group() {
@@ -3132,7 +2949,7 @@ mod tests {
     #[test]
     fn within_group_order_by_overrides_default_target() {
         // .within_group_order_by(other.desc()) replaces the default ASC target
-        // the typed builder set on construction.  The replacement column must
+        // the typed builder set on construction. The replacement column must
         // be the same SQL/Rust decode type as the receiver (both f64 here) so
         // the aggregate's return-type contract is preserved — crossing types
         // (e.g. f64 receiver ordered by i64) would produce a runtime decode
@@ -3218,7 +3035,7 @@ mod tests {
         let _ = crate::expr::sql::check_aggregate_legality(&agg.node);
     }
 
-    // ── Hypothetical-set aggregates — T8 ─────────────────────────────────────
+    // ── Hypothetical-set aggregates ─────────────────────────────────────
 
     #[test]
     fn rank_of_emits_within_group() {
@@ -3307,11 +3124,11 @@ mod tests {
 
     #[test]
     fn hypothetical_rank_within_group_override_works() {
-        // The .within_group_order_by(...) modifier (T7) works for
+        // The .within_group_order_by(...) modifier works for
         // hypothetical-set aggregates too — same IR slot.
         // Both the receiver (salary: i64), the supplied argument (7_500: i64),
         // and the replacement column (base_salary: i64) are the same type,
-        // preserving the hypothetical-set comparability contract.  Using a
+        // preserving the hypothetical-set comparability contract. Using a
         // replacement column of an incompatible type would violate the
         // contract and is explicitly disallowed by the public docs.
         let f: FieldRef<Txn, i64> = FieldRef::new("salary");

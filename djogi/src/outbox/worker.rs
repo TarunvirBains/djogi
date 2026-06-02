@@ -1,11 +1,8 @@
-//! Outbox worker primitives — Phase 5 Task 11.5.
-//!
+//! Outbox worker primitives — .
 //! These functions implement the consumer side of the transactional outbox
 //! pattern. They are gated on the `outbox` cargo feature so adopters who only
 //! write to the outbox (via `#[model(events)]`) do not pull in this module.
-//!
 //! # State machine
-//!
 //! ```text
 //! pending ──claim_pending──► processing ──mark_published──► published
 //!                                │
@@ -14,23 +11,18 @@
 //!
 //! processing ──recover_stale (lease expired)──► pending
 //! ```
-//!
 //! # Retry budget
-//!
 //! `MAX_RETRY_COUNT = 10` — if a retryable failure occurs ten or more times the
 //! row transitions to `failed` terminally. This is a hard-coded constant rather
 //! than a deployment configuration because retry budgets belong in the operator's
 //! monitoring + alerting stack, not the framework. If the adopter needs a custom
 //! budget they can wrap `mark_failed` in their own relay logic.
-//!
 //! # Table name validation
-//!
 //! Every function that accepts an `outbox_table` argument validates it before
 //! embedding it in SQL. A valid identifier is: an ASCII letter or underscore as
 //! the first byte, followed by ASCII alphanumerics or underscores, up to 63
 //! bytes total. Anything that fails this check returns
 //! `DjogiError::Db(DbError::other("invalid outbox table name: ..."))`.
-//!
 //! Validation is done with byte-level checks — no regex engine is used or
 //! permitted anywhere in this codebase.
 
@@ -44,7 +36,6 @@ use time::OffsetDateTime;
 // ---------------------------------------------------------------------------
 
 /// Maximum number of retryable failures before a row becomes terminally failed.
-///
 /// Chosen as a round number large enough to absorb transient downstream
 /// hiccups without letting poison-pill rows spin forever. Deployments that need
 /// more or fewer retries should wrap `mark_failed` in their own relay loop that
@@ -56,7 +47,6 @@ pub const MAX_RETRY_COUNT: i32 = 10;
 // ---------------------------------------------------------------------------
 
 /// A claimed outbox row, returned by [`claim_pending`].
-///
 /// The fields correspond to the normative `worker_outbox` schema columns. The
 /// `id` here is the outbox row's own primary key (not the application row's PK);
 /// use `row_id` to correlate with the source table.
@@ -88,7 +78,6 @@ pub struct OutboxRow {
 // ---------------------------------------------------------------------------
 
 /// Validate that `name` is safe to embed as an unquoted SQL identifier.
-///
 /// Validates the Postgres unquoted-identifier contract for the outbox
 /// table name. Routes through [`crate::ident::check_user_supplied_ident`]
 /// so the rules stay in lock-step with every other runtime ident check
@@ -123,20 +112,16 @@ fn validate_table_ident(name: &str) -> Result<(), DjogiError> {
 // ---------------------------------------------------------------------------
 
 /// Atomically claim up to `batch_size` pending outbox rows and return them.
-///
 /// Uses `FOR UPDATE SKIP LOCKED` inside a sub-`SELECT` so multiple concurrent
 /// worker processes claim disjoint batches without coordination overhead.
 /// Each claimed row transitions `pending → processing` and its `leased_until`
 /// is set to `now() + lease_duration`, giving the caller a window in which to
 /// publish before [`recover_stale`] can reclaim the row.
-///
 /// The claim is atomic: if the enclosing transaction rolls back, the rows
 /// remain `pending`. Callers should therefore wrap their claim + publish cycle
 /// in `atomic()` so a publish failure or crash does not leave orphaned
 /// `processing` rows.
-///
 /// # Parameters
-///
 /// - `outbox_table` — the bare table name (e.g. `"worker_outbox"`). Validated
 ///   before SQL embedding; returns an error if invalid.
 /// - `batch_size` — maximum number of rows to claim in one call.
@@ -221,10 +206,8 @@ pub async fn claim_pending(
 }
 
 /// Transition an outbox row from `processing` to `published` (terminal success).
-///
 /// After this call the row will never be claimed again. Callers should invoke
 /// this only after the downstream publisher has confirmed delivery.
-///
 /// `row_id` here is the `id` column of the **outbox** row (the value in
 /// `OutboxRow::id`), not the source application row's PK.
 pub async fn mark_published(
@@ -247,15 +230,13 @@ pub async fn mark_published(
 }
 
 /// Transition an outbox row from `processing` based on publish outcome.
-///
 /// - **Retryable + below budget**: row moves back to `pending`, `retry_count`
 ///   increments by one, and `leased_until` is cleared. The next
 ///   [`claim_pending`] call will pick it up again.
 /// - **Non-retryable OR budget exhausted** (`retry_count >= MAX_RETRY_COUNT`):
 ///   row transitions to `failed` terminally with `failed_reason` set to
 ///   `error_message`.
-///
-/// `row_id` is the outbox row's own `id` (from `OutboxRow::id`).
+///   `row_id` is the outbox row's own `id` (from `OutboxRow::id`).
 pub async fn mark_failed(
     ctx: &mut DjogiContext,
     outbox_table: &str,
@@ -292,11 +273,9 @@ pub async fn mark_failed(
     if transition_to_pending {
         // Retryable and within budget: return to pending, increment counter, and
         // schedule the next attempt with exponential backoff.
-        //
         // The backoff reuses `leased_until` as a "not claimable before" gate on
         // pending rows (see `claim_pending`, which filters out pending rows whose
         // `leased_until` is still in the future). This avoids a schema change.
-        //
         // Delay = 2^new_retry seconds, capped at 1024 (≈17 min). Base-2 doubling
         // starting at 2s for the first retry, 4s, 8s, … up to the cap at
         // retry_count = 10. Poison-pill rows hit the retry budget before the cap
@@ -329,18 +308,14 @@ pub async fn mark_failed(
 }
 
 /// Reset stale `processing` rows back to `pending` so they can be reclaimed.
-///
 /// A row is considered stale when its `leased_until` timestamp is more than
 /// `stale_threshold` seconds in the past — i.e. the worker that claimed it
 /// failed to call `mark_published` or `mark_failed` within the lease window
 /// and the caller-supplied grace threshold has also elapsed. The grace window
 /// avoids racing healthy workers whose lease has only just expired. This is
 /// the crash-recovery path.
-///
 /// Returns the number of rows that were moved back to `pending`.
-///
 /// # When to call this
-///
 /// Call `recover_stale` periodically (e.g. once per poll loop iteration) from
 /// a separate context — not inside the same atomic scope as `claim_pending`.
 /// This ensures that rows abandoned by crashed workers are available to the

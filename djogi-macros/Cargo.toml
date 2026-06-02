@@ -9,7 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Proc macros for the Djogi framework — derive(Model), field attributes, descriptor emission"
 documentation = "https://docs.rs/djogi-macros"
-readme = "../ReadMe.MD"
+readme = "README.md"
 keywords = ["djogi", "proc-macro", "derive", "model", "orm"]
 categories = ["database", "development-tools::procedural-macro-helpers"]
 
@@ -36,7 +36,7 @@ syn.workspace = true
 quote.workspace = true
 proc-macro2.workspace = true
 darling.workspace = true
-# sassi-codegen — Cluster 8δ T7.2. Shared codegen primitives for the
+# sassi-codegen — shared codegen primitives for the
 # `Cacheable` and `DeltaSyncCacheable` impl emission. `model::cacheable::expand`
 # delegates to `sassi_codegen::generate_cacheable_impl` (via
 # `CacheableFieldsMode::external(...)` so sassi-codegen's own
@@ -70,24 +70,24 @@ djogi = { path = "../djogi" }
 # standalone rustc invocation that links against the dev-dependencies
 # declared here (mirrored into `package.metadata.lihaaf.dev_deps` below).
 serde.workspace = true
-# serde_json — needed by the Phase 7-Zero T2 compile_pass fixture covering
-# `#[field(index = "gin")]` on `Jsonb<serde_json::Value>`. Same rationale as
-# serde above: lihaaf links the fixture binaries against the dev-deps
+# serde_json — needed by the compile_pass fixture covering
+# `#[field(index = "gin")]` on `Jsonb<serde_json::Value>`. Same rationale
+# as serde above: lihaaf links the fixture binaries against the dev-deps
 # declared in djogi-macros' `[dev-dependencies]` table.
 serde_json.workspace = true
-# sassi — needed by Phase 8γ T6.10 lihaaf compile-fail fixture
-# (`phase8_lookup_op_regex_lifted_to_basic_predicate.rs`) which references
+# sassi — needed by the `lookup_op_regex_lifted_to_basic_predicate.rs`
+# compile-fail fixture which references
 # `sassi::LookupOp` directly to prove the no-regex-engine invariant
 # (`decisions.md` rows 107 + 108): sassi's `LookupOp` enum has no `Regex`
 # / `IRegex` variants, so the fixture build MUST fail. Use the same published
 # beta as djogi's runtime dependency so fixture diagnostics exercise the
 # adopter-visible source.
 sassi = "0.1.0-beta.3"
-# uuid — needed by Phase 8.5 #171 typed-array compile-pass fixture
-# (`typed_array_elements.rs`) which declares `Vec<uuid::Uuid>` model fields and
-# exercises the `contains`/`overlap` operators on them. `uuid` is already a
-# workspace dep (djogi uses it for `RanjId` encoding); the dev-dep here makes
-# the crate name resolvable in lihaaf fixture binaries.
+# uuid — needed by the typed-array compile-pass fixture (#171,
+# `typed_array_elements.rs`) which declares `Vec<uuid::Uuid>` model fields
+# and exercises the `contains`/`overlap` operators on them. `uuid` is
+# already a workspace dep (djogi uses it for `RanjId` encoding); the
+# dev-dep here makes the crate name resolvable in lihaaf fixture binaries.
 uuid.workspace = true
 # rust_decimal — needed by the same typed-array fixture for `Vec<Decimal>`
 # field declarations and array operators. Already a workspace dep (djogi uses

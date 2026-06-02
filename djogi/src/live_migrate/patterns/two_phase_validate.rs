@@ -1,5 +1,4 @@
 //! Two-phase constraint validation pattern.
-//!
 //! Covers the "Add CHECK constraint to table > validation threshold",
 //! "Add NOT NULL constraint to populated table" (via the
 //! `CHECK (col IS NOT NULL)` shim documented in §7), and "Add FK
@@ -8,20 +7,16 @@
 //! [`OnlineSafetyClassification::OfflineOnly`](crate::migrate::OnlineSafetyClassification::OfflineOnly)
 //! per §7 — Postgres 18 does not accept `NOT VALID` for `EXCLUDE`,
 //! so two-phase staging is structurally impossible.
-//!
 //! # Operation shape
-//!
 //! Accepts [`AddForeignKey`](SchemaOperation::AddForeignKey) — the
 //! only constraint kind currently exposed on
 //! [`SchemaOperation`](crate::migrate::SchemaOperation) for which the
 //! validation-threshold escalation applies. CHECK / NOT NULL routing
 //! lands when those operations gain dedicated variants.
-//!
 //! # Step graph
-//!
 //! 1. [`StepKind::ExpandSchema`] — `ALTER TABLE <t> ADD CONSTRAINT
-//!    <name> FOREIGN KEY (<col>) REFERENCES <ref_t>(<ref_col>) NOT
-//!    VALID`. The `NOT VALID` suffix tells Postgres to skip the
+//! <name> FOREIGN KEY (<col>) REFERENCES <ref_t>(<ref_col>) NOT
+//! VALID`. The `NOT VALID` suffix tells Postgres to skip the
 //!    validation pass that would otherwise scan every row under an
 //!    `AccessExclusiveLock`.
 //! 2. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
@@ -29,10 +24,9 @@
 //!    `VALIDATE` pass takes a `ShareUpdateExclusiveLock` on the
 //!    target table — readers and writers continue while the scan
 //!    completes.
-//!
-//! No backfill is needed — `VALIDATE` reads existing rows in place;
-//! it never rewrites them. [`Pattern::IDEMPOTENT_PREDICATE`] is
-//! `false` because no [`StepKind::BackfillChunked`] step is emitted.
+//!    No backfill is needed — `VALIDATE` reads existing rows in place;
+//!    it never rewrites them. [`Pattern::IDEMPOTENT_PREDICATE`] is
+//!    `false` because no [`StepKind::BackfillChunked`] step is emitted.
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};

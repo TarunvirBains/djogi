@@ -1,32 +1,25 @@
 //! Programmatic filter API — the closure-free path for callers who can't
 //! express their filters as a `|f|` closure at compile time.
-//!
 //! # What
-//!
 //! [`Lookup<V>`] is the stable user-facing enum enumerating the lookup
 //! operators a `{Model}Filter` setter accepts. Variants carrying a value
 //! bound `V: IntoFilterValue` so every type the typed [`FieldRef`] path
 //! accepts (strings, integers, `HeerId`, `RanjId`, …) composes here too.
-//!
 //! [`FilterClause`] is the type-erased record a macro-emitted setter
 //! appends to its internal `Vec`. Erasing the value here — the typed
 //! `Lookup<V>` is projected through [`IntoFilterValue`] into a
 //! [`FilterValue`] discriminant — is what lets a single `{Model}Filter`
 //! struct carry a mixed set of clauses (a bool clause next to an `i32`
 //! clause next to a string clause) without a per-clause generic tuple.
-//!
 //! [`ModelFilter`] is the trait every macro-emitted `{Model}Filter`
 //! implements. Its sole method hands the accumulated `Vec<FilterClause>`
 //! to [`QuerySet::filter_struct`], which folds them into a single
 //! [`Condition::And`] and AND-s that onto the queryset's existing
 //! condition tree.
-//!
 //! # Why
-//!
 //! The closure API (`QuerySet::filter(|f| ...)`) is the preferred user
 //! surface — the compiler type-checks every lookup against the column's
 //! declared type. But three real callers cannot write a closure:
-//!
 //! 1. **Shell** — Rhai cannot express a Rust closure that closes over the
 //!    model's ZST `Fields`. The shell's filter-builder bindings need a
 //!    runtime object they can populate one lookup at a time.
@@ -35,17 +28,14 @@
 //!    closure.
 //! 3. **Dynamic SQL assemblers** — search/export jobs that stitch a query
 //!    from a config file or a feature flag.
-//!
-//! Both paths preserve the same **query result semantics**, but they do
-//! not always materialize the same internal predicate tree: closure
-//! filters build typed portable predicates directly, while
-//! `{Model}Filter` stores erased [`FilterClause`] values and lazily
-//! reconstructs portable `Q` leaves only for owner-approved portable
-//! cases (`bool`/`String` Eq/Neq/In/NotIn). Everything else
-//! conservatively falls back to `Q::Condition`, preserving SQL behavior.
-//!
+//!    Both paths preserve the same **query result semantics**, but they do
+//!    not always materialize the same internal predicate tree: closure
+//!    filters build typed portable predicates directly, while
+//!    `{Model}Filter` stores erased [`FilterClause`] values and lazily
+//!    reconstructs portable `Q` leaves only for owner-approved portable
+//!    cases (`bool`/`String` Eq/Neq/In/NotIn). Everything else
+//!    conservatively falls back to `Q::Condition`, preserving SQL behavior.
 //! # How (user surface)
-//!
 //! ```ignore
 //! use djogi::prelude::*;
 //!
@@ -55,17 +45,14 @@
 //!
 //! let rows = Post::objects().filter_struct(filter).fetch_all(&pool).await?;
 //! ```
-//!
 //! # Where
-//!
 //! - `Condition` / `Leaf` / `FilterValue` / `LookupOp` — [`crate::query::condition`].
 //! - `IntoFilterValue` — [`crate::query::field`] (shared with the closure API).
 //! - `{Model}Filter` codegen — `djogi-macros/src/model/filter.rs`.
 //! - `QuerySet::filter_struct` — [`crate::query::queryset`].
-//!
-//! [`FieldRef`]: crate::query::FieldRef
-//! [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
-//! [`Condition::And`]: crate::query::Condition::And
+//!   [`FieldRef`]: crate::query::FieldRef
+//!   [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
+//!   [`Condition::And`]: crate::query::Condition::And
 
 use crate::model::Model;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
@@ -74,17 +61,14 @@ use crate::query::q::{CompoundOp, Q};
 
 /// User-facing lookup constructor — one variant per operator the
 /// programmatic filter API exposes.
-///
 /// Generic over `V` so newtype columns compose the same way they do
 /// through [`FieldRef`]: any `V: IntoFilterValue` is accepted by the
 /// value-carrying variants, and the single [`FilterClause::from_lookup`]
 /// funnel projects every variant through `IntoFilterValue` into a
 /// [`FilterValue`].
-///
 /// Marked `#[non_exhaustive]` — later phases (array ops, JSONB lookups,
 /// trigram search) extend this set, and downstream exhaustive matches
 /// would break on every such addition.
-///
 /// [`FieldRef`]: crate::query::FieldRef
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -118,7 +102,6 @@ pub enum Lookup<V> {
     /// `column BETWEEN a AND b` (inclusive on both ends per SQL spec).
     Between(V, V),
     /// Postgres POSIX regex match — `column ~ value` (case-sensitive).
-    ///
     /// Routes to the same operator as [`FieldRef::regex`](crate::query::field::FieldRef::regex);
     /// `value` is a Postgres POSIX regex pattern, evaluated entirely
     /// server-side. Djogi does not link a Rust regex engine — this
@@ -127,14 +110,12 @@ pub enum Lookup<V> {
     /// case-insensitive counterpart.
     Regex(String),
     /// Postgres POSIX case-insensitive regex match — `column ~* value`.
-    ///
     /// Routes to the same operator as
     /// [`FieldRef::iregex`](crate::query::field::FieldRef::iregex);
     /// `value` is a Postgres POSIX regex pattern, evaluated entirely
     /// server-side via the `~*` operator. Djogi does not link a Rust
     /// regex engine — the match runs on the database. See
     /// [`Lookup::Regex`] for the case-sensitive counterpart.
-    ///
     /// **SQL-only.** This variant does not lift into a Sassi portable
     /// predicate (which would require a Rust regex engine); it stays on
     /// the djogi side as a `Q::Condition` leaf.
@@ -144,33 +125,27 @@ pub enum Lookup<V> {
 impl<V: IntoFilterValue> Lookup<V> {
     /// Project this lookup into the `(operator, value)` pair its SQL
     /// leaf will carry.
-    ///
     /// This is the **single point** where operator-value structural
     /// invariants are established:
-    ///
     /// - `Between` always pairs with [`FilterValue::Pair`];
     /// - `In` / `NotIn` always pair with [`FilterValue::List`];
     /// - `IsNull` / `IsNotNull` always pair with [`FilterValue::Null`];
     /// - every other variant pairs with a scalar [`FilterValue`].
-    ///
-    /// Downstream code ([`FilterClause::from_lookup`] in the clause path,
-    /// the closure API through [`crate::query::field`]) funnels every
-    /// lookup through this method, so the `unreachable!()` branches in
-    /// [`crate::query::sql::emit_leaf`] that guard mismatched op/value
-    /// shapes are genuinely unreachable from safe code. If a new
-    /// [`Lookup`] variant is added, this method is the only place the
-    /// pairing needs to be declared.
-    ///
+    ///   Downstream code ([`FilterClause::from_lookup`] in the clause path,
+    ///   the closure API through [`crate::query::field`]) funnels every
+    ///   lookup through this method, so the `unreachable!()` branches in
+    ///   [`crate::query::sql::emit_leaf`] that guard mismatched op/value
+    ///   shapes are genuinely unreachable from safe code. If a new
+    ///   [`Lookup`] variant is added, this method is the only place the
+    ///   pairing needs to be declared.
     /// # Operator mapping
-    ///
     /// The `Contains` / `StartsWith` / `EndsWith` variants map to the
     /// **case-insensitive** `ILIKE`-family operators (`IContains`
     /// / `IStartsWith` / `IEndsWith`), mirroring the closure API's
     /// `.contains` / `.starts_with` / `.ends_with` default. Case-sensitive
-    /// substring matching is not currently exposed on [`Lookup`] —
+    /// substring matching is not currently exposed on [`Lookup`]
     /// callers who need it reach for the closure API or the raw
     /// `ctx.raw_execute` / `ctx.raw_scalar` escape hatch.
-    ///
     /// `Regex` maps to [`LookupOp::Regex`] — the case-sensitive POSIX
     /// operator (`~`). `IRegex` maps to [`LookupOp::IRegex`] — the
     /// case-insensitive POSIX operator (`~*`). Both are SQL-only and
@@ -211,7 +186,6 @@ impl<V: IntoFilterValue> Lookup<V> {
 
 /// Erased clause — what a macro-emitted `{Model}Filter` setter pushes
 /// into its internal `Vec`.
-///
 /// The `column` name is a macro-baked `&'static str` literal; the macro
 /// never derives it from user input. `op` is the SQL operator;
 /// [`from_lookup`] chooses it per `Lookup<V>` variant. `value` is the
@@ -221,9 +195,7 @@ impl<V: IntoFilterValue> Lookup<V> {
 /// `Vec<FilterClause>` hold a heterogeneous set of clauses (a `bool`
 /// clause next to an `i32` clause next to a `String` clause) without
 /// per-clause boxing gymnastics.
-///
 /// # Invariants
-///
 /// Fields are `pub(crate)` so the only path to a `FilterClause` from
 /// outside the crate is [`FilterClause::from_lookup`]. That funnel routes
 /// every value through [`Lookup::into_op_value`], which pairs each
@@ -233,7 +205,6 @@ impl<V: IntoFilterValue> Lookup<V> {
 /// (`sql::emit_leaf`) that guard against mismatched op/value pairings
 /// are genuinely unreachable from safe code — downstream crates cannot
 /// hand-craft an invalid clause by poking at fields directly.
-///
 /// [`from_lookup`]: FilterClause::from_lookup
 #[derive(Debug, Clone)]
 pub struct FilterClause {
@@ -248,7 +219,6 @@ pub struct FilterClause {
 }
 
 /// Consumed [`FilterClause`] parts for macro-generated clause-to-`Q` mapping.
-///
 /// This is hidden implementation surface: generated `{Model}Filter`
 /// `IntoQ` impls need to inspect the erased column/op/value tuple after
 /// consuming the clause, but external callers still cannot construct a
@@ -271,7 +241,6 @@ impl FilterClauseParts {
 
 impl FilterClause {
     /// Project a `Lookup<V>` into a type-erased `FilterClause`.
-    ///
     /// This is the **only** public constructor for `FilterClause` — every
     /// macro-emitted setter funnels through it, and the `FilterClause`
     /// fields are `pub(crate)` so downstream crates cannot sidestep it.
@@ -279,11 +248,9 @@ impl FilterClause {
     /// ([`Lookup::into_op_value`]), so the `unreachable!()` branches in
     /// [`crate::query::sql::emit_leaf`] that guard shape mismatches are
     /// genuinely unreachable from safe code.
-    ///
     /// The `V: IntoFilterValue` bound is the same one the typed
     /// [`FieldRef`] lookup methods use, so newtype columns and
     /// string-like types compose identically in both surfaces.
-    ///
     /// [`FieldRef`]: crate::query::FieldRef
     #[must_use]
     pub fn from_lookup<V: IntoFilterValue>(column: &'static str, lookup: Lookup<V>) -> Self {
@@ -294,7 +261,6 @@ impl FilterClause {
     /// Turn this clause into a `Condition::Leaf`. Called by
     /// [`QuerySet::filter_struct`] when folding a filter's `Vec` into
     /// the queryset's condition tree.
-    ///
     /// [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
     pub fn into_condition(self) -> Condition {
         Condition::Leaf(Leaf::new(self.column, self.op, self.value))
@@ -316,12 +282,9 @@ impl FilterClause {
 /// accumulated clauses so [`QuerySet::filter_struct`] can fold them into
 /// a single `Condition::And(...)` AND-ed onto the queryset's existing
 /// tree.
-///
 /// Users never implement this trait by hand — the `#[model]` macro
 /// stamps it alongside the filter struct.
-///
 /// # Object safety
-///
 /// `ModelFilter` is **not** object-safe: [`into_clauses`] takes
 /// `self` by value, which is incompatible with `dyn ModelFilter` trait
 /// objects (`self: Box<Self>` would be the by-value equivalent, but
@@ -330,14 +293,12 @@ impl FilterClause {
 /// storage-erased filters, so keeping the by-value shape preserves
 /// the zero-alloc path and matches the rest of the builder surface
 /// (`QuerySet`'s chain methods are also by-value self).
-///
 /// If a use case needs to store a heterogeneous list of filters
 /// (each column's operator and value computed at runtime rather than
 /// at compile time), the trait's shape can be extended — either via
 /// a sibling `DynModelFilter` trait with `fn into_clauses(
 /// self: Box<Self>) -> Vec<FilterClause>`, or via an owned-clauses
 /// field on the filter struct.
-///
 /// [`into_clauses`]: ModelFilter::into_clauses
 /// [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
 pub trait ModelFilter {
@@ -348,26 +309,22 @@ pub trait ModelFilter {
 
 /// Fold a clause vec into a single `Condition`, preserving the empty/one/
 /// many cases the queryset layer cares about.
-///
 /// - `[]` → `Condition::True` (vacuous — filter_struct returns early so
 ///   callers never actually see this case, but keeping the helper total
 ///   means unit tests can exercise every branch).
 /// - `[c]` → `c` unwrapped — emitting a single-element `And` would render
 ///   as `(c)` with redundant parentheses.
 /// - `[c1, c2, ...]` → `Condition::And(vec![c1, c2, ...])`.
-///
-/// Not public API — this is an implementation detail of `filter_struct`.
-/// The plan lists it as a "helper to fold a Vec<FilterClause> into a
-/// Condition::And(...) tree"; keeping it in this module means the
-/// queryset layer stays free of condition-tree construction details.
-///
+///   Not public API — this is an implementation detail of `filter_struct`.
+///   The plan lists it as a "helper to fold a Vec<FilterClause> into a
+///   Condition::And(...) tree"; keeping it in this module means the
+///   queryset layer stays free of condition-tree construction details.
 /// # Visibility
-///
 /// `pub` on the symbol but routed through `::djogi::__private::query`
 /// in the public path tree, so adopter code reaching for it crosses
 /// the framework boundary into the unstable `__private` namespace.
-/// Macro-emitted `IntoQ<#model>` impls for `{Model}Filter` (Cluster
-/// 8γ Stage 2 — T6.7) need to call this from the adopter crate; the
+/// Macro-emitted `IntoQ<#model>` impls for `{Model}Filter`
+/// need to call this from the adopter crate; the
 /// `pub(crate)` shape blocks that, while `pub` + `__private`-only
 /// re-export preserves the same "internal" contract every other
 /// `__private` helper carries (see `feedback_macro_path_routing.md`).
@@ -394,7 +351,6 @@ pub fn clauses_into_condition(clauses: Vec<FilterClause>) -> Condition {
 
 /// Fold consumed clauses into `Q<M>`, delegating leaf reconstruction to
 /// macro-generated model-aware code.
-///
 /// Empty filters are the portable true identity. Single clauses return the
 /// mapped leaf directly. Multi-clause filters preserve setter order under an
 /// explicit `AND` compound node rather than routing through the legacy
@@ -444,7 +400,6 @@ mod tests {
         // reshuffled `into_op_value` match arm) is caught by the unit
         // tier rather than by the SQL emitter's downstream
         // `unreachable!()` branches.
-        //
         // The column string is preserved verbatim in every case — the
         // macro bakes a `&'static str` literal per setter and this
         // funnel never rewrites it.
@@ -525,7 +480,7 @@ mod tests {
 
     #[test]
     fn lookup_contains_maps_to_icontains_op() {
-        // Documented mapping: `Contains` is the case-insensitive variant —
+        // Documented mapping: `Contains` is the case-insensitive variant
         // matches the closure API's `.contains` default.
         let clause =
             FilterClause::from_lookup("title", Lookup::<String>::Contains("hi".to_string()));
@@ -542,7 +497,7 @@ mod tests {
 
     #[test]
     fn lookup_iregex_projects_to_iregex_op_and_string_value() {
-        // `Lookup::IRegex` maps to `LookupOp::IRegex` (Postgres `~*` —
+        // `Lookup::IRegex` maps to `LookupOp::IRegex` (Postgres `~*`
         // case-insensitive POSIX regex). The pattern string is passed
         // verbatim as `FilterValue::String`; no Rust regex engine is
         // linked — the match runs server-side.
@@ -575,7 +530,7 @@ mod tests {
     #[test]
     fn clauses_into_condition_single_unwraps_to_leaf() {
         // Single-clause filters should not be wrapped in a one-element And
-        // — the SQL emitter would render that as `(leaf)` with redundant
+        // the SQL emitter would render that as `(leaf)` with redundant
         // parens.
         let clause = FilterClause::from_lookup("published", Lookup::Eq(true));
         let c = clauses_into_condition(vec![clause]);

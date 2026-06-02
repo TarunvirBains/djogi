@@ -1,7 +1,0 @@
-error: `#[field(index = "hash", unique)]` on `slug`: PostgreSQL unique indexes are btree-only, so a non-btree `index = "hash"` combined with `unique` is ambiguous. Either: (a) use `#[field(index = "btree", unique)]` (or just `#[field(unique)]`), (b) drop `unique` if a non-unique `hash` lookup index is what you want, or (c) keep `#[field(unique)]` and declare the secondary `hash` index at the model level via `#[model(indexes(index(fields = [slug], using = "hash")))]`.
-  --> $DIR/phase7_zero_field_hash_with_unique.rs:16:21
-   |
-16 |     #[field(index = "hash", unique)]
-   |                     ^^^^^^
-
-error: aborting due to 1 previous error

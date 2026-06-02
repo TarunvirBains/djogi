@@ -1,0 +1,33 @@
+error[E0277]: the trait bound `Widget: ModelHooks` is not satisfied
+   --> $DIR/hooks_attr_without_impl.rs:23:12
+    |
+ 23 | pub struct Widget {
+    |            ^^^^^^ unsatisfied trait bound
+    |
+help: the trait `ModelHooks` is not implemented for `Widget`
+   --> $DIR/hooks_attr_without_impl.rs:23:1
+    |
+ 23 | pub struct Widget {
+    | ^^^^^^^^^^^^^^^^^
+note: required by a bound in `HasHooks`
+   --> djogi/src/hooks.rs:147:21
+    |
+147 | pub trait HasHooks: ModelHooks + private::Sealed {}
+    |                     ^^^^^^^^^^ required by this bound in `HasHooks`
+
+error[E0277]: the trait bound `Widget: ModelHooks` is not satisfied
+  --> $DIR/hooks_attr_without_impl.rs:21:1
+   |
+21 | #[model(table = "phase8_hooks_no_impl_widgets", hooks)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `ModelHooks` is not implemented for `Widget`
+  --> $DIR/hooks_attr_without_impl.rs:23:1
+   |
+23 | pub struct Widget {
+   | ^^^^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 2 previous errors
+
+For more information about this error, try `rustc --explain E0277`.

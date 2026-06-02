@@ -1,12 +1,9 @@
 //! `djogi schema --format json` — emit a deterministic JSON document
 //! covering every registered model's shape.
-//!
 //! Adopters and tooling consume the document for agent integration
 //! (LLMs, schema browsers), CI assertions on schema drift, and
 //! machine-readable handoffs to downstream codegen.
-//!
 //! # JSON shape (schema_version = 1)
-//!
 //! ```json
 //! {
 //!   "schema_version": 1,
@@ -25,15 +22,12 @@
 //!   ]
 //! }
 //! ```
-//!
 //! # Determinism
-//!
 //! - `models` is sorted by `(app, type_name)`, both ascending.
 //! - Within each model, `fields` follows declaration order.
 //! - `relations` is sorted alphabetically by source-column name.
-//!
-//! Two consecutive runs against the same compiled binary produce
-//! byte-equal output, suitable for `diff` in CI.
+//!   Two consecutive runs against the same compiled binary produce
+//!   byte-equal output, suitable for `diff` in CI.
 
 use djogi::descriptor::{FieldDescriptor, ModelDescriptor, PkType};
 use djogi::relation::OnDelete;
@@ -64,7 +58,6 @@ pub enum SchemaError {
 }
 
 /// Top-level JSON document emitted by `djogi schema`.
-///
 /// `schema_version: 1` lets adopters match on the version when
 /// parsing future evolution. Major bumps are coordinated breaks;
 /// minor additive fields land without touching the version.
@@ -110,9 +103,8 @@ struct RelationEntry {
 }
 
 /// Run `djogi schema` against the registered descriptor inventory.
-///
 /// Writes to `output` if `Some`, otherwise to stdout. Returns
-/// [`SchemaError::NoModelsRegistered`] if the inventory is empty —
+/// [`SchemaError::NoModelsRegistered`] if the inventory is empty
 /// almost always operator error (the binary was linked without a
 /// crate that uses `#[derive(Model)]`).
 pub fn run(
@@ -237,8 +229,8 @@ fn relation_kind_label(kind: djogi::relation::RelationKind) -> &'static str {
     match kind {
         djogi::relation::RelationKind::ForeignKey => "ForeignKey",
         djogi::relation::RelationKind::OneToOne => "OneToOne",
-        // RelationKind is #[non_exhaustive]; the next variant (Phase 3
-        // T7's ManyToMany) will surface as "Unknown" until added here.
+        // RelationKind is #[non_exhaustive]; future variants
+        // will surface as "Unknown" until added here.
         _ => "Unknown",
     }
 }

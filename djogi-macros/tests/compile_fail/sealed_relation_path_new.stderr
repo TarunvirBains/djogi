@@ -4,13 +4,13 @@ error[E0624]: associated function `new` is private
  41 |       let _: RelationPath<Vehicle, Owner> = RelationPath::new(
     |                                                           ^^^ private associated function
     |
-   ::: djogi/src/relation/path.rs:124:5
+   ::: djogi/src/relation/path.rs:108:5
     |
-124 | /     pub(crate) const fn new(
-125 | |         source_column: &'static str,
-126 | |         target_table: &'static str,
-127 | |         kind: RelationKind,
-128 | |     ) -> Self {
+108 | /     pub(crate) const fn new(
+109 | |         source_column: &'static str,
+110 | |         target_table: &'static str,
+111 | |         kind: RelationKind,
+112 | |     ) -> Self {
     | |_____________- private associated function defined here
     |
     = help: items from traits can only be used if the trait is in scope

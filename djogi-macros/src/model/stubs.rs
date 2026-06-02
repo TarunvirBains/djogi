@@ -1,59 +1,46 @@
 //! Generates `{Model}Fields` and the path-aware sibling `{Model}SqlFields`.
-//!
 //! # `{Model}Fields` (PR3)
-//!
-//! After Phase 8eta PR3, `{Model}Fields` is a **zero-sized** type whose
+//! After, `{Model}Fields` is a **zero-sized** type whose
 //! inherent methods return [`DjogiField<Self, V>`](::djogi::query::DjogiField)
 //! for every column — framework and user alike. The wrapper bundles a
 //! portable [`sassi::Field<M, V>`] (consumed by Punnu in-memory evaluation)
 //! and a SQL-only [`FieldRef<M, V>`](::djogi::query::FieldRef) so a single
 //! closure can compose portable predicates **and** PostgreSQL-specific
 //! predicates without naming two types.
-//!
 //! Emission order mirrors `descriptor::expand`:
-//!
 //! 1. `id` — present for `pk = HeerId | RanjId | HeerIdDesc | RanjIdDesc |
-//!    Serial`; omitted for `pk = None` (matches the descriptor's
+//! Serial`; omitted for `pk = None` (matches the descriptor's
 //!    framework-prefix gating, keeping the single schema contract consistent).
 //! 2. `created_at`, `updated_at` — always emitted, typed as
 //!    `::djogi::types::DateTime`.
 //! 3. User-declared columns in struct source order.
-//!
-//! Root `{Model}Fields` carries **no** `__djogi_path` slot. Path-aware
-//! traversal lives on the SQL-only sibling `{Model}SqlFields` so portable
-//! predicates target physical root columns only — relation traversal
-//! columns (e.g. `"department.name"`) are not portable across cache and
-//! refresh boundaries.
-//!
+//!    Root `{Model}Fields` carries **no** `__djogi_path` slot. Path-aware
+//!    traversal lives on the SQL-only sibling `{Model}SqlFields` so portable
+//!    predicates target physical root columns only — relation traversal
+//!    columns (e.g. `"department.name"`) are not portable across cache and
+//!    refresh boundaries.
 //! # `{Model}SqlFields`
-//!
 //! Path-aware companion view. Same accessor surface as `{Model}Fields`
 //! but every accessor returns [`FieldRef<Self, V>`](::djogi::query::FieldRef).
 //! Used by macro-emitted relation/visage SQL paths and by internal helpers
 //! that already operate in SQL space. Carries the optional `__djogi_path`
 //! slot and a `with_path(path: &'static str)` constructor; the root
 //! `{Model}Fields` ZST does not.
-//!
 //! # `pk = None`
-//!
 //! `DjogiField<M, V>` and `FieldRef<M, V>` both bound `M: Model`, and
 //! `crud::expand` does **not** emit `impl Model` for `pk = None` models
 //! (the `Pk: Encode` bound can't be honestly satisfied without a real PK
-//! — see `crud.rs` for the rationale). This module mirrors the gate:
+//! see `crud.rs` for the rationale). This module mirrors the gate:
 //! `pk = None` keeps the Phase-1 empty-stub `{Model}Fields` ZST and
 //! suppresses `{Model}SqlFields` entirely. A future phase introducing a
 //! composite/user-managed PK trait will unlock accessors for them.
-//!
 //! # `{Model}Filter`
-//!
 //! Lives in its own module: [`crate::model::filter`]. `{Model}Filter` is an
 //! **erased** counterpart to `{Model}Fields` — a runtime `Vec<FilterClause>`
 //! with one setter per user field, used with `QuerySet::filter_struct` for
 //! closure-free filtering (shell, admin, dynamic UI). Keeping the two in
 //! separate modules keeps this file focused on the typed-accessor surface.
-//!
 //! # Path routing
-//!
 //! All emitted type references go through `::djogi::types::*` and
 //! `::djogi::query::*` rather than reaching into `heeranjid` / `time` /
 //! `uuid` directly. Macro output compiles in the user's crate, which depends
@@ -67,7 +54,6 @@ use syn::ItemStruct;
 
 /// Emit `{Model}Fields` (and the SQL-only sibling `{Model}SqlFields`)
 /// with one inherent accessor per column.
-///
 /// `struct_item` is the post-injection struct: its `fields` list already has
 /// the framework-injected columns (`id` / `created_at` / `updated_at`) at the
 /// front in the same order `descriptor::expand` relies on. The `model_attrs`
@@ -75,14 +61,12 @@ use syn::ItemStruct;
 /// behaviour). Per-field emission reads ident, column name, and Rust type
 /// from `portable_field_info` so root accessors stay in lock-step with
 /// `crud::expand`'s `Model::__djogi_emit_field_predicate` arms.
-///
 /// `portable_field_info` is the shared metadata vector built by
 /// [`crate::model::portable_field_emit::build`] in `mod.rs`. Both `stubs.rs`
 /// (root + SQL accessors) and `crud.rs` (portable predicate dispatch arms)
 /// walk the same vector so column-name and Rust-type computation never drift.
-///
 /// `{Model}Filter` is emitted separately by [`crate::model::filter::expand`]
-/// — keeping the two in different modules isolates their codegen surfaces.
+/// keeping the two in different modules isolates their codegen surfaces.
 pub fn expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
@@ -93,20 +77,17 @@ pub fn expand(
     let sql_fields_name = format_ident!("{}SqlFields", name);
 
     // ── `{Model}Fields` accessor emission (PR3 — flipped to DjogiField) ──────
-    //
     // Every accessor returns `DjogiField<Self, V>`. The wrapper's inherent
     // methods cover the portable predicate surface (eq/neq/in/not_in/null
     // tests, ordering for `V: DjogiPortableOrd`, ASCII-stable string
     // patterns) and route PostgreSQL-specific predicates through
     // `.explicit_pg_predicate()`.
-    //
     // `crud::expand` does NOT emit `impl Model` for `pk = None` models (the
     // trait's `Pk: Encode` bound can't be honestly satisfied without a real
     // PK), so emitting accessor methods here for those models would fail
-    // to compile with E0277 the moment the user's struct is parsed —
+    // to compile with E0277 the moment the user's struct is parsed
     // breaking the contract that pk=none models still get struct
     // injection, `FromRow`, and descriptor registration.
-    //
     // Resolution: mirror `crud::expand`'s gate exactly. `pk = None` keeps
     // the Phase-1 empty-stub behavior; a future phase introducing a
     // composite/user-managed PK trait can emit accessors keyed on that
@@ -121,7 +102,6 @@ pub fn expand(
         // ident, column name, and Rust type from the metadata keeps this
         // accessor surface in lock-step with `crud::expand`'s portable
         // predicate arms — the same vector drives both consumers.
-        //
         // Each accessor calls
         // `::djogi::query::field::__macro_support::__make_djogi_field`,
         // which is a re-export of
@@ -141,7 +121,6 @@ pub fn expand(
                 let ty = &info.rust_type;
                 quote! {
                     /// Typed handle for this column.
-                    ///
                     /// Returns a [`DjogiField`] that bundles a portable
                     /// `sassi::Field<Self, V>` (used by Punnu in-memory
                     /// evaluation) with a SQL-only `FieldRef<Self, V>`
@@ -152,7 +131,6 @@ pub fn expand(
                     /// specific predicates (regex, JSONB path, spatial,
                     /// array operators) through
                     /// [`DjogiField::explicit_pg_predicate`].
-                    ///
                     /// [`DjogiField`]: ::djogi::query::DjogiField
                     /// [`DjogiField::explicit_pg_predicate`]: ::djogi::query::DjogiField::explicit_pg_predicate
                     #[inline]
@@ -169,9 +147,8 @@ pub fn expand(
         quote! {
             impl #fields_name {
                 /// Construct a root-scope `Fields` handle.
-                ///
                 /// Equivalent to the `Default` impl. Root `{Model}Fields` is
-                /// a ZST after Phase 8eta PR3, so this constructor produces
+                /// a ZST after, so this constructor produces
                 /// the empty struct directly without copying any state.
                 #[doc(hidden)]
                 #[inline]
@@ -185,8 +162,7 @@ pub fn expand(
     };
 
     // ── `{Model}SqlFields` accessor emission (PR2d retained, PR3 sole route
-    //    for relation/visage traversal) ──────────────────────────────────────
-    //
+    // for relation/visage traversal) ──────────────────────────────────────
     // The SQL-only sibling view — same accessor surface as `{Model}Fields`
     // but every accessor returns `FieldRef<Self, V>` and the struct carries
     // an optional SQL-alias path prefix (`__djogi_path`). Visage relation
@@ -207,7 +183,6 @@ pub fn expand(
                 let ty = &info.rust_type;
                 quote! {
                     /// SQL-only typed handle for this column.
-                    ///
                     /// Returns a [`FieldRef`](::djogi::query::FieldRef)
                     /// carrying the column name plus phantom markers that
                     /// bind it to this model and the column's Rust type.
@@ -264,15 +239,12 @@ pub fn expand(
         quote! {
             impl #fields_name {
                 /// Typed handle for the full-text search column.
-                ///
                 /// Returns an [`FtsFieldRef`](::djogi::fts_query::FtsFieldRef) that
                 /// exposes `.matches(q)` and `.rank(q)` for building `@@` and
                 /// `ts_rank` predicates in filter closures and order expressions.
-                ///
-                /// The tsvector column is a `GENERATED ALWAYS AS` computed column —
+                /// The tsvector column is a `GENERATED ALWAYS AS` computed column
                 /// Postgres maintains it automatically on every INSERT / UPDATE, so
                 /// application code never writes to it directly.
-                ///
                 /// [`FtsFieldRef`]: ::djogi::fts_query::FtsFieldRef
                 #[inline]
                 pub fn search(&self) -> ::djogi::fts_query::FtsFieldRef<#name> {
@@ -288,14 +260,12 @@ pub fn expand(
     };
 
     // The two structs differ in shape after PR3:
-    //
     // - `{Model}Fields` — ZST. No `__djogi_path` slot; root portable fields
-    //   target physical root columns only. Adopters compose root closures
-    //   against this handle via `QuerySet::filter(|f| f.col().eq(...))`.
+    // target physical root columns only. Adopters compose root closures
+    // against this handle via `QuerySet::filter(|f| f.col().eq(...))`.
     // - `{Model}SqlFields` — path-aware. Carries `__djogi_path:
-    //   Option<&'static str>` so visage/relation accessors can compose
-    //   dotted column paths.
-    //
+    // Option<&'static str>` so visage/relation accessors can compose
+    // dotted column paths.
     // For `pk = None` models both structs are suppressed (no `Model` impl,
     // no `FieldRef`/`DjogiField` accessors).
     let (struct_decls, sql_struct_decl) = if matches!(model_attrs.pk, PkStrategy::None) {
@@ -313,8 +283,7 @@ pub fn expand(
         (
             quote! {
                 /// Typed root field accessors for QuerySet filter closures.
-                ///
-                /// Zero-sized after Phase 8eta PR3 — every accessor reaches
+                /// Zero-sized after every accessor reaches
                 /// the column metadata through a baked-in `&'static str`
                 /// (the column name) and a baked-in `fn(&Self) -> &V`
                 /// extractor. `Default` is required by the
@@ -328,7 +297,6 @@ pub fn expand(
             quote! {
                 /// SQL-only typed field accessors — the path-aware sibling
                 /// of `{Model}Fields`.
-                ///
                 /// Carries an optional SQL-alias path so visage-scoped
                 /// traversal chains (`a.department().name()`) compose into
                 /// dot-qualified column names at emission time. Default

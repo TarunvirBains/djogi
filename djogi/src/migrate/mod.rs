@@ -1,9 +1,7 @@
-//! Migration system — Phase 7's home for everything that takes
+//! Migration system — the home for everything that takes
 //! `ModelDescriptor` inventory and lowers it to executable Postgres
 //! migrations.
-//!
 //! The module fans out to several concerns:
-//!
 //! | Submodule | Role |
 //! |-----------|------|
 //! | [`schema`] | Owned snapshot data types — what `schema_snapshot.json` round-trips through. |
@@ -15,16 +13,12 @@
 //! | [`guard`] | File-level workspace lock primitive used by `compose` / `attune` / `apply` / `repair` / `baseline`. |
 //! | [`ledger`] | `djogi_schema_migrations` DDL bootstrap, row CRUD, and `V1:<sha256-hex>` checksum format. |
 //! | [`runner`] | Apply orchestration — advisory lock, transactional / non-transactional segment dispatch, partial-state recording, snapshot persist on success. |
-//!
-//! T8 adds `docs`, `seed`, and `reset` — markdown documentation
+//! `docs`, `seed`, and `reset` submodules add: markdown documentation
 //! generation, the seed runner / `djogi_seed_runs` ledger, and the
 //! triple-gated `db reset` orchestrator.
-//!
 //! # Public surface
-//!
 //! Today the public entry points are:
-//!
-//! - [`AppliedSchema`] / [`TableSchema`] / [`ColumnSchema`] etc. —
+//! - [`AppliedSchema`] / [`TableSchema`] / [`ColumnSchema`] etc.
 //!   the snapshot data model.
 //! - [`SNAPSHOT_FORMAT_VERSION`] — the current snapshot version
 //!   string (loaders reject anything else).
@@ -38,22 +32,19 @@
 //! - [`project_from_inventory`] — production entry point; walks the
 //!   global `inventory::iter` collectors and produces one
 //!   [`AppliedSchema`] per [`BucketKey`].
-//!
-//! The lower-level [`projection::project_from_iters`] is `pub(crate)`
-//! and exists for tests + the T10 `#[djogi_test(sync_models)]`
-//! helper. External consumers use [`project_from_inventory`].
-//!
-//! Diff entry points: external consumers use [`diff_bucket_maps`]
-//! which correctly handles cross-bucket moves. The per-bucket
-//! `diff_schemas` is `pub(crate)` and only used by the bucket-walk
-//! worker.
-//!
-//! SQL + segment entry points: external consumers use
-//! [`plan_delta`] (typically) or [`lower_delta`] (when only the
-//! per-operation SQL pairs are needed without segment grouping).
-//! [`MigrationPlan`] is the canonical T3 output the runner T4 will
-//! consume; segment kinds tell the runner how to dispatch each
-//! group of statements.
+//!   The lower-level [`projection::project_from_iters`] is `pub(crate)`
+//!   and exists for tests + the `#[djogi_test(sync_models)]`
+//!   helper. External consumers use [`project_from_inventory`].
+//!   Diff entry points: external consumers use [`diff_bucket_maps`]
+//!   which correctly handles cross-bucket moves. The per-bucket
+//!   `diff_schemas` is `pub(crate)` and only used by the bucket-walk
+//!   worker.
+//!   SQL + segment entry points: external consumers use
+//!   [`plan_delta`] (typically) or [`lower_delta`] (when only the
+//!   per-operation SQL pairs are needed without segment grouping).
+//!   [`MigrationPlan`] is the canonical output the runner
+//!   consumes; segment kinds tell the runner how to dispatch each
+//!   group of statements.
 
 pub mod attune;
 pub mod audit;

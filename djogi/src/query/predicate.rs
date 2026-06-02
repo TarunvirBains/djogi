@@ -1,8 +1,6 @@
 //! `PortablePredicate<T>` + `Predicate<T>` — Djogi-owned wrappers around the
 //! Sassi predicate substrate.
-//!
 //! # Why a Djogi wrapper around `sassi::BasicPredicate<T>`?
-//!
 //! Sassi exposes `BasicPredicate<T>` as the universal Rust-evaluable predicate
 //! algebra. Anyone with `pub use sassi::Field` can construct
 //! `Field::new("any_string", arbitrary_extractor)` and then call
@@ -10,7 +8,6 @@
 //! `LookupOp`, and extractor closure may not match any real Djogi column on
 //! `T`. If raw `BasicPredicate<T>` were accepted at Djogi cache or SQL
 //! boundaries, two threats would land at runtime:
-//!
 //! 1. **Field-name forgery** — an attacker (or honest mistake) can pair a
 //!    valid column name with a closure that reads a different field of the
 //!    struct. SQL emission would target the named column while in-memory
@@ -21,16 +18,13 @@
 //!    `SqlAccumulator::push_sql`, which assumes its inputs were already
 //!    validated against [`crate::ident::assert_plain_ident`] (the same gate
 //!    applied to `FieldRef` and `RelationPath`).
-//!
-//! `PortablePredicate<T>` is the trusted-Djogi-provenance wrapper. Its
-//! `from_djogi_field` constructor requires a [`crate::query::field::DjogiFieldProvenance`]
-//! token, and that token is constructible only by Djogi-owned root field
-//! methods on `DjogiField` / `DjogiPresentField`. The seal is the same
-//! pattern the rest of the crate uses for `RelationPath`,
-//! `OptionalRelationRef`, and `__SealedIntoQ`.
-//!
+//!    `PortablePredicate<T>` is the trusted-Djogi-provenance wrapper. Its
+//!    `from_djogi_field` constructor requires a [`crate::query::field::DjogiFieldProvenance`]
+//!    token, and that token is constructible only by Djogi-owned root field
+//!    methods on `DjogiField` / `DjogiPresentField`. The seal is the same
+//!    pattern the rest of the crate uses for `RelationPath`,
+//!    `OptionalRelationRef`, and `__SealedIntoQ`.
 //! # `Predicate<T>` — a trusted `Q<T>` wrapper
-//!
 //! `Predicate<T>` is a thin shell over `Q<T>` carrying the mixed-operator
 //! matrix from the v3 plan. Pure-portable composition (`PortablePredicate<T>
 //! & PortablePredicate<T>`) stays inside `PortablePredicate<T>` so flattening
@@ -38,9 +32,7 @@
 //! operand is a `Predicate<T>` or a `Condition`) lift through `Predicate<T>`
 //! so the resulting `Q<T>` carries a `Q::Compound { op, parts }` structure
 //! the cache boundary can audit.
-//!
 //! # PR2b scope
-//!
 //! - Implement `IntoQ<T>` for `PortablePredicate<T>`, `Predicate<T>`, and
 //!   `crate::expr::Expr<bool>` (sealed alongside the existing impls in
 //!   `query::q`).
@@ -60,7 +52,6 @@ use std::ops::{BitAnd, BitOr, BitXor, Not};
 
 mod sealed {
     /// Crate-private seal for [`super::IntoPortablePredicate`].
-    ///
     /// Only types defined inside `djogi` can implement
     /// [`super::IntoPortablePredicate`]. PR2a implements it for
     /// [`super::PortablePredicate`] only — raw `sassi::BasicPredicate<T>`
@@ -71,7 +62,6 @@ mod sealed {
 }
 
 /// Trusted-provenance Djogi portable predicate.
-///
 /// Wraps a `sassi::BasicPredicate<T>` whose `Field(_)` leaves were produced
 /// through Djogi's root-field surface (`DjogiField` / `DjogiPresentField`),
 /// not through raw `sassi::Field::new(...)` calls. The
@@ -79,17 +69,13 @@ mod sealed {
 /// at the type level; vacuous predicates ([`PortablePredicate::always_true`] /
 /// [`PortablePredicate::always_false`]) carry `field_provenance: None`
 /// because they contain no field leaves to vouch for.
-///
 /// # Why this is a separate type from `Q<T>`
-///
 /// `Q<T>` carries SQL-only nodes (`Q::Ilike`, `Q::Regex`, `Q::JsonbPath`,
 /// expression escape hatches, etc.) that cannot be evaluated in Punnu
 /// without database access. `PortablePredicate<T>` is the strictly-portable
 /// subset — every leaf can be evaluated against `&T` in memory and emitted
 /// as SQL. Cache and refresh boundaries (PR4) accept only this type.
-///
 /// # Construction
-///
 /// Downstream code constructs values through the root-field methods on
 /// [`crate::query::field::DjogiField`] (e.g.
 /// `f.title().eq("rust") -> PortablePredicate<Post>`). The
@@ -105,7 +91,6 @@ impl<T: Model> PortablePredicate<T> {
     /// Wrap a Sassi `BasicPredicate<T>` produced by a Djogi root-field
     /// method. Crate-private — see the module docs for why this is not
     /// `pub`.
-    ///
     /// `provenance` is the trusted-construction marker callable only from
     /// `DjogiField` / `DjogiPresentField` methods. The token itself
     /// carries no payload; its presence in the type signature is the
@@ -123,7 +108,6 @@ impl<T: Model> PortablePredicate<T> {
     }
 
     /// Vacuous-truth predicate.
-    ///
     /// Used by PR2b's `Q::Portable` migration as the canonical identity for
     /// unfiltered querysets. `field_provenance` is `None` because `True`
     /// carries no field leaves.
@@ -137,7 +121,6 @@ impl<T: Model> PortablePredicate<T> {
     }
 
     /// Vacuous-falsehood predicate.
-    ///
     /// Used by PR2b's `Q::Portable` migration as the canonical identity for
     /// `QuerySet::none()`-style impossible queries. `field_provenance` is
     /// `None` because `False` carries no field leaves.
@@ -151,7 +134,6 @@ impl<T: Model> PortablePredicate<T> {
     }
 
     /// Unwrap into the underlying `sassi::BasicPredicate<T>`.
-    ///
     /// Provenance is intentionally dropped on extraction — once a caller
     /// has the raw Sassi predicate, they have left the trusted-Djogi-API
     /// path. This is the documented escape hatch for callers reaching
@@ -234,11 +216,9 @@ impl<T: Model> IntoBasicPredicate<T> for PortablePredicate<T> {
 }
 
 /// Sealed-trait conversion for Djogi-owned portable predicates.
-///
 /// PR2a implements this **only** for [`PortablePredicate<T>`]. Raw
 /// `sassi::BasicPredicate<T>` deliberately does not get an impl — see the
 /// module docs for the threat model.
-///
 /// PR2b extends this trait with `IntoQ<T>` interop so portable predicates
 /// flow through `QuerySet::filter` / `exclude` without reaching for
 /// `Q::Portable(...)` by hand. PR2a keeps the trait sealed and minimal so
@@ -257,13 +237,11 @@ impl<T: Model> IntoPortablePredicate<T> for PortablePredicate<T> {
 }
 
 // ── Pure-portable boolean composition ──────────────────────────────────────
-//
 // PR2a only implements the `PortablePredicate<T> ⊕ PortablePredicate<T>` rows
 // of the v3 operator matrix. Mixed `Predicate`/`Condition` rows land in PR2b
 // after the direct-`Q<T>` SQL emitter exists; without that emitter, mixed
 // composition would have to lower portable predicates through
 // `q_to_condition`, which is the exact bridge v3 retires.
-//
 // Provenance composition rule: a composite predicate carries provenance iff
 // either operand had a Djogi field leaf. `True`/`False` operands keep their
 // `None` provenance. This matches the trusted-construction invariant — the
@@ -332,7 +310,6 @@ impl<T: Model> Not for PortablePredicate<T> {
 }
 
 /// Trusted-provenance `Q<T>` wrapper for the mixed-operator matrix.
-///
 /// `Predicate<T>` is the output type of the
 /// `PortablePredicate<T> ⊕ Condition`-style combinator rows: any time a
 /// composition mixes Djogi-trusted portable leaves with a SQL-only
@@ -340,11 +317,9 @@ impl<T: Model> Not for PortablePredicate<T> {
 /// resulting predicate lifts to `Predicate<T>` so the SQL emitter sees a
 /// `Q::Compound { op, parts }` shape and the cache boundary can audit
 /// which leaves were portable.
-///
 /// `IntoQ<T> for Predicate<T>` unwraps to the inner `Q<T>` directly, so
 /// `QuerySet::filter` / `filter_struct` accept any `P: IntoQ<T>` and the
 /// caller never has to spell `Q::Compound { ... }` by hand.
-///
 /// User code typically reaches `Predicate<T>` through the operator
 /// overloads on `PortablePredicate<T>` and `Condition` (declared below);
 /// constructing values directly stays crate-private.
@@ -394,7 +369,6 @@ impl<T: Model> std::fmt::Debug for Predicate<T> {
 }
 
 // ── PR2b — `IntoQ<T>` impls for the new wrappers ────────────────────────────
-//
 // `IntoQ<T>` is sealed inside `query::q` (see `__SealedIntoQ`). The seal is
 // `pub(crate)` and re-exported through `crate::__private::__SealedIntoQ` so
 // macro-emitted code can satisfy it from adopter crates. Inside the djogi
@@ -426,10 +400,8 @@ impl<T: Model> IntoQ<T> for Predicate<T> {
 }
 
 // ── Mixed-operator matrix ───────────────────────────────────────────────────
-//
 // Closed grid covering every operand pairing involving `PortablePredicate<T>`,
 // `Predicate<T>`, and `Condition` per the v3 plan PR2 Step 1 table:
-//
 // | Left | Operator | Right | Output |
 // |---|---|---|---|
 // | `PortablePredicate<T>` | & / | / ^ | `PortablePredicate<T>` | `PortablePredicate<T>` |
@@ -442,14 +414,11 @@ impl<T: Model> IntoQ<T> for Predicate<T> {
 // | `Condition` | & / | / ^ | `Predicate<T>` | `Predicate<T>` |
 // | unary `!` | `PortablePredicate<T>` | `PortablePredicate<T>` |
 // | unary `!` | `Predicate<T>` | `Predicate<T>` |
-//
 // Pure-portable rows already exist above (`impl BitAnd for PortablePredicate`).
 // Mixed rows below all route through `Q<T>`'s operator impls so the
 // flattening / non-associativity rules stay centralised in one place.
-//
 // Pure-Condition rows use `Condition`'s own `BitAnd` / `BitOr` (see
 // `query::condition`). They are unchanged by PR2b.
-//
 // `Add`, `Sub`, `Mul`, `Div`, `Rem`, shifts, and compound-assign variants are
 // **not** implemented — boolean-only surface per the v3 plan.
 
@@ -494,7 +463,6 @@ impl<T: Model> Not for Predicate<T> {
 }
 
 // ── PortablePredicate ⊕ Predicate ──────────────────────────────────────────
-//
 // Mixed compositions where one side is portable and the other is already
 // mixed/SQL-only. The result lifts to `Predicate<T>` so the audit boundary
 // can see the full shape; the inner `Q<T>` operators handle flattening and
@@ -543,7 +511,6 @@ impl<T: Model> BitXor<PortablePredicate<T>> for Predicate<T> {
 }
 
 // ── PortablePredicate ⊕ Condition ──────────────────────────────────────────
-//
 // Mixed compositions with a legacy `Condition` (typically produced by the
 // closure-side `f.col.eq(v)` API). The Condition lifts to `Q::Condition(_)`
 // and the result is a `Predicate<T>`.

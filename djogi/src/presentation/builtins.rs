@@ -1,13 +1,10 @@
 //! Built-in presentation codecs for djogi protected fields.
-//!
 //! All built-in codecs are ordinary implementations of the public
 //! [`PresentationCodecInfo`](super::PresentationCodecInfo) /
 //! [`PresentationCodec`](super::PresentationCodec) /
 //! [`TryPresentationCodec`](super::TryPresentationCodec) traits.
 //! Adopter-defined codecs use the same traits and the same dispatch paths.
-//!
 //! # Codec catalog
-//!
 //! | Type | Input | Output | Reversible | Queryable | Infallible? |
 //! |------|-------|--------|------------|-----------|-------------|
 //! | [`Identity`] | `T` | `T` | Yes | Predicate + Order | Yes |
@@ -15,9 +12,7 @@
 //! | [`MaskOptionString`] | `Option<String>` | `Option<String>` | No | No | Yes |
 //! | [`HmacSha256HexString`] | `String` | [`HmacSha256Hex`] | No | No | No |
 //! | [`HmacSha256HexOptionString`] | `Option<String>` | `Option<HmacSha256Hex>` | No | No | No |
-//!
 //! The two HMAC codecs are available only with crate feature `hmac-codec`.
-//!
 //! **`MaskString` in both slots**: `MaskString` implements both
 //! [`PresentationCodec<String>`](super::PresentationCodec) (infallible,
 //! used in `presentation_codec = MaskString`) and
@@ -27,19 +22,15 @@
 //! error type — it can never fail. This allows `MaskString` to be used in
 //! visage scopes that mix infallible and fallible codecs without requiring a
 //! separate masking type.
-//!
 //! # Key format for HMAC built-ins
-//!
 //! `DJOGI_PRESENTATION_HMAC_KEY` must be exactly 64 **lowercase** ASCII hex
 //! characters (encoding 32 bytes). Mixed-case is rejected — `a` through `f`
 //! only, not `A` through `F`. This differs from snapshot signing's
 //! mixed-case acceptance deliberately: a case-only env-var change must
 //! fail startup rather than silently looking like a key rotation.
-//!
 //! Rotation changes future HMAC outputs only after a process restart (or
 //! an explicit future reload API). Downstream caches, exports, or
 //! correlations using old HMAC values become invalid after rotation.
-//!
 //! HMAC inputs are the exact UTF-8 bytes of the Rust `String`. No Unicode
 //! normalization is applied. `"Caf\u{e9}"` (NFC) and `"Cafe\u{301}"` (NFD)
 //! produce different HMAC outputs.
@@ -73,11 +64,9 @@ type HmacSha256 = Hmac<Sha256>;
 const HMAC_KEY_ENV: &str = "DJOGI_PRESENTATION_HMAC_KEY";
 
 /// Process-wide cache for the decoded 32-byte HMAC key.
-///
 /// Populated by [`HmacSha256HexString::validate_startup`] on first
 /// successful validation. Once set, env-var changes do not affect
 /// HMAC outputs until process restart.
-///
 /// Failed loads are NOT cached — the `OnceLock` is only written after a
 /// successful parse, so retrying after fixing the environment succeeds.
 #[cfg(feature = "hmac-codec")]
@@ -85,7 +74,6 @@ static HMAC_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 
 /// Mutex serializing env-var mutation in tests so concurrent test runs
 /// do not interfere with each other's key state.
-///
 /// Only active under `#[cfg(test)]`. Production code never uses this mutex.
 #[cfg(all(test, feature = "hmac-codec"))]
 pub(crate) static TEST_HMAC_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -93,15 +81,13 @@ pub(crate) static TEST_HMAC_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::
 // ── Key parsing ────────────────────────────────────────────────────────────
 
 /// Parse exactly 64 lowercase hex characters into a 32-byte array.
-///
 /// Validation rules:
 /// - Exactly 64 characters (= 32 bytes when decoded).
 /// - Every character must be in `0`–`9` or `a`–`f` (lowercase only).
 /// - Uppercase `A`–`F` are explicitly rejected with [`PresentationStartupError::NonLowercaseHexByte`].
 /// - Invalid non-hex bytes produce [`PresentationStartupError::InvalidHexByte`].
-///
-/// Failed parses are never cached. The caller may retry after fixing the
-/// environment variable.
+///   Failed parses are never cached. The caller may retry after fixing the
+///   environment variable.
 #[cfg(feature = "hmac-codec")]
 fn parse_hmac_key(hex: &str, env_name: &'static str) -> Result<[u8; 32], PresentationStartupError> {
     let bytes = hex.as_bytes();
@@ -124,7 +110,6 @@ fn parse_hmac_key(hex: &str, env_name: &'static str) -> Result<[u8; 32], Present
 }
 
 /// Decode a single hex nibble (one character) from a byte.
-///
 /// - `0`–`9`: returns 0–9.
 /// - `a`–`f` (lowercase only): returns 10–15.
 /// - `A`–`F` (uppercase): returns `NonLowercaseHexByte` error.
@@ -150,12 +135,10 @@ fn decode_hex_nibble(
 }
 
 /// Internal startup validation for the shared HMAC key.
-///
 /// Reads `DJOGI_PRESENTATION_HMAC_KEY`, validates the format, and stores the
 /// decoded key in `HMAC_KEY` via `OnceLock::set`. If the lock is already set
-/// (concurrent or prior call succeeded), the new value is silently ignored —
+/// (concurrent or prior call succeeded), the new value is silently ignored
 /// process-wide key is stable after first successful load.
-///
 /// Failed validation is NOT cached; a later retry after fixing the environment
 /// can succeed.
 #[cfg(feature = "hmac-codec")]
@@ -195,21 +178,16 @@ fn hmac_sha256_hex_string_present_with_cached_key(
 // ── Identity ───────────────────────────────────────────────────────────────
 
 /// Presentation codec that returns the storage value unchanged.
-///
 /// `Identity` is a deliberate opt-in to plaintext presentation. Use it
 /// explicitly on scopes where you want to expose the storage value as-is.
 /// Because it is reversible and queryable, it grants the same access as a
 /// raw field accessor — document this clearly in your model.
-///
 /// # Queryability
-///
 /// `Identity` implements [`PresentationQueryCodec`] and [`PresentationOrderCodec`],
 /// making predicate and ordering access available on visage fields governed by
 /// this codec. Predicate calls delegate to storage-value equality through
 /// [`PresentationQueryField::eq_storage`], which is an SQL-only predicate.
-///
 /// # Reversibility
-///
 /// `Identity`'s output is the input — `try_reverse(&Identity::present(v)) == Ok(v.clone())`.
 pub struct Identity;
 
@@ -278,7 +256,6 @@ where
     type QueryValue = T;
 
     /// Build an equality predicate via storage-value equality.
-    ///
     /// Delegates to [`PresentationQueryField::eq_storage`], granting direct
     /// storage-value predicate access. Document the consequence when using
     /// `Identity` on a protected field: callers can probe field values
@@ -302,25 +279,19 @@ where
 // ── MaskString ────────────────────────────────────────────────────────────
 
 /// Presentation codec that replaces a `String` field with a fixed mask.
-///
 /// The masked output is the literal string `"[REDACTED]"`. It does not
 /// preserve the length, character class, or structure of the original value.
 /// The mask is intentionally non-domain — it cannot be mistaken for a real
 /// value.
-///
 /// # Reversibility and queryability
-///
 /// Not reversible. Not queryable. Use [`Identity`] if you need to expose
 /// the original value or query against it.
-///
 /// # Option handling
-///
 /// This codec is for `String` (non-nullable). For `Option<String>`, use
 /// [`MaskOptionString`], which preserves `None`.
 pub struct MaskString;
 
 /// The fixed mask string emitted by [`MaskString`] and [`MaskOptionString`].
-///
 /// Using a single fixed string (rather than length-preserving masking or
 /// randomized output) keeps the output clearly out-of-domain and avoids
 /// leaking structural information such as approximate length.
@@ -334,7 +305,6 @@ impl PresentationCodecInfo<String> for MaskString {
 
 impl PresentationCodec<String> for MaskString {
     /// Replace the storage value with the fixed mask `"[REDACTED]"`.
-    ///
     /// The original value is not retained in the output. Callers who need
     /// the original value must access the source model through
     /// `Model::objects()` (which remains privileged).
@@ -345,7 +315,6 @@ impl PresentationCodec<String> for MaskString {
 
 impl TryPresentationCodec<String> for MaskString {
     /// This codec is infallible — the error type is [`std::convert::Infallible`].
-    ///
     /// `MaskString` may be used in both `presentation_codec = MaskString`
     /// (infallible slot, calls [`PresentationCodec::present`]) and
     /// `try_presentation_codec = MaskString` (fallible slot, calls this
@@ -363,21 +332,16 @@ impl TryPresentationCodec<String> for MaskString {
 // ── MaskOptionString ──────────────────────────────────────────────────────
 
 /// Presentation codec that masks an `Option<String>` field.
-///
 /// `None` is preserved unchanged — a `NULL` in the database produces
 /// `None` in the presented output, not `Some("[REDACTED]")`. A `Some`
 /// value is replaced with `Some("[REDACTED]")`.
-///
 /// # Rationale for `None` preservation
-///
 /// `NULL` vs non-NULL is structural information that is visible at the SQL
 /// level regardless of redaction (a `COUNT(*)` vs `COUNT(col)` reveals
 /// null prevalence). Changing `None` to `Some("[REDACTED]")` would
 /// incorrectly imply a non-null value was present. `None` preservation
 /// is the honest choice.
-///
 /// # Reversibility and queryability
-///
 /// Not reversible. Not queryable.
 pub struct MaskOptionString;
 
@@ -405,20 +369,15 @@ impl TryPresentationCodec<Option<String>> for MaskOptionString {
 // ── HmacSha256Hex newtype ─────────────────────────────────────────────────
 
 /// A 64-character lowercase hex-encoded HMAC-SHA256 output.
-///
 /// Used as the `Output` type for [`HmacSha256HexString`] and
 /// [`HmacSha256HexOptionString`]. The inner `String` is always exactly
 /// 64 lowercase hex characters (encoding 32 bytes).
-///
 /// # No public constructor
-///
-/// There is no public infallible constructor that accepts arbitrary strings —
+/// There is no public infallible constructor that accepts arbitrary strings
 /// `HmacSha256Hex` values are produced by the keyed codecs, or by the
 /// fallible `TryFrom<String>` / serde-deserialization path that validates the
 /// 64-character lowercase-hex invariant before constructing the value.
-///
 /// # Serialization
-///
 /// Serializes as a JSON string containing the 64-char hex value. String
 /// deserialization validates the same invariant and rejects malformed input.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -448,7 +407,6 @@ pub enum HmacSha256HexError {
 }
 
 /// Validate that `hex` is exactly 64 lowercase ASCII hex characters.
-///
 /// This helper is shared by `TryFrom<String>`, serde deserialization, and the
 /// Postgres `FromSql` path so all string-based construction paths enforce the
 /// same invariant.
@@ -474,7 +432,6 @@ fn validate_hmac_sha256_hex(hex: &str) -> Result<(), HmacSha256HexError> {
 
 impl HmacSha256Hex {
     /// Construct from a known-valid 64-char lowercase hex string.
-    ///
     /// This constructor is crate-private — only codec implementations
     /// inside this module may produce `HmacSha256Hex` values. Downstream
     /// code cannot construct this type from arbitrary strings.
@@ -500,12 +457,10 @@ impl TryFrom<String> for HmacSha256Hex {
 
 impl<'a> tokio_postgres::types::FromSql<'a> for HmacSha256Hex {
     /// Decode an `HmacSha256Hex` from a Postgres TEXT column.
-    ///
     /// The underlying Postgres type must be TEXT (or a compatible VARCHAR),
     /// because `HmacSha256Hex` is always a 64-character lowercase hex string.
     /// Decoding delegates to `String::from_sql`, then validates the decoded
     /// string before constructing the newtype.
-    ///
     /// This impl is provided so that `VisageQuerySet` and `FromPgRow` for
     /// visages whose fields use `HmacSha256HexString` as a codec can be
     /// compiled. In practice, `HmacSha256Hex` values are computed in-memory
@@ -527,39 +482,28 @@ impl<'a> tokio_postgres::types::FromSql<'a> for HmacSha256Hex {
 // ── HmacSha256HexString ────────────────────────────────────────────────────
 
 /// HMAC-SHA256 presentation codec for `String` fields.
-///
-/// Transforms a `String` storage value into a [`HmacSha256Hex`] —
+/// Transforms a `String` storage value into a [`HmacSha256Hex`]
 /// a 64-character lowercase hex-encoded HMAC-SHA256 output — keyed by the
 /// process-wide `DJOGI_PRESENTATION_HMAC_KEY`.
-///
 /// # Key configuration
-///
 /// Set `DJOGI_PRESENTATION_HMAC_KEY` to exactly 64 lowercase hex characters
 /// (encoding 32 bytes) before `DjogiPool::connect` / `DjogiPoolBuilder::build`
 /// is called. Mixed-case is rejected — only `0`–`9` and `a`–`f` are valid.
-///
 /// # Startup validation
-///
 /// Validated by [`validate_startup_inventory`](super::super::validate_startup_inventory).
-/// Pool construction calls this automatically (Stage 3). Apps without a pool
+/// Pool construction calls this automatically. Apps without a pool
 /// must call it explicitly.
-///
 /// # Fallibility
-///
 /// This codec uses `TryPresentationCodec`. If startup validation was
 /// bypassed and the key is not cached, `try_present` returns
 /// [`BuiltInPresentationError::KeyNotValidated`]. Generated projection code
 /// maps this to
 /// [`VisageError::PresentationCodec`](crate::visage::VisageError::PresentationCodec)
-/// — no panics on the request path.
-///
+/// no panics on the request path.
 /// # Queryability
-///
 /// Disabled. A blind-index / queryable-HMAC design is a separate feature
 /// (issue #227 notes) requiring normalization, storage, and lookup contracts.
-///
 /// # Unicode note
-///
 /// The HMAC input is the exact UTF-8 bytes of the decoded Rust `String`.
 /// No Unicode normalization is applied. `"Caf\u{e9}"` (NFC) and
 /// `"Cafe\u{301}"` (NFD) produce different HMAC outputs.
@@ -582,9 +526,8 @@ impl TryPresentationCodec<String> for HmacSha256HexString {
     type Error = BuiltInPresentationError;
 
     /// Compute HMAC-SHA256 over the UTF-8 bytes of `value`.
-    ///
     /// Returns `Err(KeyNotValidated)` if the key has not been loaded
-    /// (startup validation was bypassed). Never reads the environment —
+    /// (startup validation was bypassed). Never reads the environment
     /// the per-value path uses only the pre-cached key.
     fn try_present(value: &String) -> Result<HmacSha256Hex, BuiltInPresentationError> {
         hmac_sha256_hex_string_present_with_cached_key(value, HMAC_KEY.get())
@@ -594,11 +537,9 @@ impl TryPresentationCodec<String> for HmacSha256HexString {
 // ── HmacSha256HexOptionString ──────────────────────────────────────────────
 
 /// HMAC-SHA256 presentation codec for `Option<String>` fields.
-///
 /// Same behavior as [`HmacSha256HexString`] for `Some` values.
 /// `None` is preserved unchanged — a `NULL` storage value produces
 /// `None` in the presented output, not `Some(HmacSha256Hex("..."))`.
-///
 /// See [`HmacSha256HexString`] for the key configuration and startup
 /// validation contract.
 #[cfg(feature = "hmac-codec")]
@@ -633,7 +574,6 @@ impl TryPresentationCodec<Option<String>> for HmacSha256HexOptionString {
 // ── Hex encoding ─────────────────────────────────────────────────────────
 
 /// Encode `bytes` as a lowercase hex string.
-///
 /// Uses byte-level stdlib primitives — no regex engine, no external hex crate.
 /// Always produces a string of exactly `bytes.len() * 2` lowercase hex chars.
 #[cfg(feature = "hmac-codec")]
@@ -836,12 +776,10 @@ mod tests {
 
     /// When the key is not cached (startup bypassed), try_present must return
     /// Err(KeyNotValidated), not panic.
-    ///
     /// This test does NOT set the env var or call validate_startup. It verifies
     /// the "startup bypassed" path via an explicit empty cache branch. This
     /// branch is now tested deterministically with an injected `None` key state,
     /// instead of depending on process-wide `HMAC_KEY` state.
-    ///
     /// The definitive "cache miss → KeyNotValidated" guarantee is enforced by
     /// the type system: the per-value path exclusively reads an injected cache
     /// state and never reads the environment variable in the production path.

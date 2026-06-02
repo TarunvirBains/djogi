@@ -1,7 +1,5 @@
 //! `VisageQuerySet<V>` — read-only queryset over a visage projection.
-//!
 //! # What
-//!
 //! Each emitted visage struct gets a queryset entry point: `UserPublic::filter(|f| ...)`.
 //! Because visages are projections, not tables, they do not implement [`Model`]
 //! (the existing `QuerySet<T: Model>` carries a `T: Model` bound that visages
@@ -10,7 +8,6 @@
 //! [`VisageQuerySet<V>`] — a sibling type that mirrors the read-only subset of
 //! [`QuerySet`]'s surface and emits a SELECT narrowed to the visage's exposed
 //! column list.
-//!
 //! Predicate typing matches the source model, not the visage projection:
 //! `VisageQuerySet<V>` stores a `Q<V::Model>` filter tree and every
 //! filter-builder entry point accepts any [`IntoQ<V::Model>`](crate::query::IntoQ)
@@ -18,9 +15,7 @@
 //! mixed [`Predicate<V::Model>`](crate::query::Predicate) trees, portable
 //! field predicates, and codec-gated `Q<_>` values all compose through the
 //! same `filter(...)` surface.
-//!
 //! # Why a sibling type instead of relaxing `QuerySet<T>`'s bound
-//!
 //! `QuerySet<T: Model>` participates in dozens of code paths (`prefetch`,
 //! `select_related`, `for_update`, `annotate`, JSONB / spatial / FTS
 //! emitters) that all assume `T::table_name()`, `T::Pk`, and `T::Fields`
@@ -31,9 +26,7 @@
 //! column shape — which is exactly the leak this task is meant to plug.
 //! `VisageQuerySet<V>` keeps the read-only path narrow and the model
 //! path unchanged.
-//!
 //! # Read-only surface (no `bulk_create` / `save` / `delete`)
-//!
 //! Visages are **projections**: they discard non-exposed columns and may
 //! embed peer projections for relations. A round-trip insert from a
 //! visage cannot reconstruct the source row faithfully (the dropped
@@ -43,13 +36,11 @@
 //! point. Compile-time enforcement falls out of method absence: the
 //! visage struct has no `bulk_create` / `save` / `delete` methods, and
 //! `VisageQuerySet<V>` only exposes read terminals.
-//!
 //! # SQL narrowing
-//!
 //! `VisageQuerySet<V>` carries a pre-rendered `projection_list:
 //! &'static str` — the macro renders the visage's SELECT projection
 //! once at compile time (column entries pass through verbatim;
-//! derived entries from Phase 8.5 issue #231 render as
+//! derived entries from #231 render as
 //! `(<sql>) AS <alias>`) and the queryset splices the rendered
 //! string directly into the SELECT slot. The string is emitted in
 //! lockstep with the visage's positional `FromPgRow` decoder so row
@@ -58,9 +49,7 @@
 //! `email` on the `public` scope) are absent from the SELECT
 //! projection and from any `RETURNING` shape — they cannot leak
 //! through this surface.
-//!
 //! # Why RPITIT (not `async fn`)
-//!
 //! Every terminal returns `impl Future<Output = ...> + Send` rather
 //! than using bare `async fn`. The explicit `+ Send` bound matches the
 //! model-side `QuerySet` terminals and guarantees the returned future
@@ -83,23 +72,19 @@ use std::future::Future;
 use std::marker::PhantomData;
 
 /// Read-only queryset over a visage projection.
-///
 /// Constructed by the `#[model]`-emitted `V::filter(...)` entry point.
 /// Builder methods (`order_by`, `limit`, `offset`) consume `self` and
 /// return `Self`, mirroring [`QuerySet`]'s immutable-by-convention
 /// composition style. Terminal methods (`fetch_all`, `fetch_one`,
 /// `first`, `count`, `exists`) consume the queryset and execute SQL
 /// against a caller-supplied `&mut DjogiContext`.
-///
 /// `V` is the visage type. The macro pairs each visage with its source
 /// model via the `DjogiVisageOf<M>` seal; `VisageQuerySet<V>` does not
 /// expose that pairing because the read path doesn't need it — the
 /// table name and column list are already baked into the queryset
 /// state at construction time.
-///
 /// [`QuerySet`]: crate::query::QuerySet
-//
-// Phase 8-Zero T14b: visages do not implement tree-query traits.
+// Visages do not implement tree-query traits.
 // `VisageQuerySet<V>` intentionally has no `tree_descendants` /
 // `tree_ancestors` / `full_ancestors` methods — recursive walks need
 // the full row materialised at every step, which is the column set
@@ -114,7 +99,7 @@ pub struct VisageQuerySet<V: DjogiVisage> {
     /// slice. For column-only visages this is just the comma-joined
     /// column names; for visages with derived entries the macro
     /// renders the entries as `(<sql>) AS <alias>` and joins the
-    /// list at compile time. Phase 8.5 issue #231.
+    /// list at compile time. #231.
     pub(crate) projection_list: &'static str,
     /// Accumulated filter tree. Starts as [`Q::always_true`].
     pub(crate) condition: Q<V::Model>,
@@ -158,7 +143,6 @@ impl<V: DjogiVisage> std::fmt::Debug for VisageQuerySet<V> {
 impl<V: DjogiVisage> VisageQuerySet<V> {
     /// Construct a `VisageQuerySet` with the given table and narrowed
     /// projection list.
-    ///
     /// Called by the `#[model]`-emitted `V::filter(...)` / `V::order_by(...)`
     /// / `V::limit(...)` entry points; not part of the user-visible API.
     /// The queryset starts with a vacuous root predicate (`Q::always_true()`).
@@ -183,11 +167,9 @@ impl<V: DjogiVisage> VisageQuerySet<V> {
     }
 
     /// AND another predicate onto the accumulated filter tree.
-    ///
     /// Accepts any [`IntoQ<V::Model>`](crate::query::IntoQ) payload:
     /// legacy [`Condition`](crate::query::internal::Condition),
     /// portable / mixed predicate wrappers, or a pre-built `Q<V::Model>`.
-    ///
     /// See also: [`QuerySet::filter`](crate::query::QuerySet::filter)
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn filter<P>(mut self, cond: P) -> Self
@@ -199,12 +181,10 @@ impl<V: DjogiVisage> VisageQuerySet<V> {
     }
 
     /// Append an ordering expression.
-    ///
     /// Mirrors [`QuerySet::order_by`]'s append semantics — repeated
     /// calls accumulate rather than replace, so library code can add a
     /// stable tiebreaker without clobbering the caller's primary
     /// ordering.
-    ///
     /// [`QuerySet::order_by`]: crate::query::QuerySet::order_by
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn order_by<I: Into<Vec<OrderExpr>>>(mut self, orderings: I) -> Self {
@@ -213,7 +193,6 @@ impl<V: DjogiVisage> VisageQuerySet<V> {
     }
 
     /// Apply SQL `LIMIT n`. Replaces any prior `limit` value.
-    ///
     /// Panics if `n > i64::MAX` — Postgres bind type for `LIMIT` is `BIGINT`,
     /// so values above `i64::MAX` cannot round-trip. The check uses
     /// `try_from` (not `debug_assert!`) so release builds also panic
@@ -227,7 +206,6 @@ impl<V: DjogiVisage> VisageQuerySet<V> {
     }
 
     /// Apply SQL `OFFSET n`. Replaces any prior `offset` value.
-    ///
     /// Panics if `n > i64::MAX` — see [`Self::limit`] for the rationale.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn offset(mut self, n: u64) -> Self {
@@ -238,14 +216,12 @@ impl<V: DjogiVisage> VisageQuerySet<V> {
     }
 
     /// Render the SQL string this queryset would send to Postgres.
-    ///
     /// **This is internal-test plumbing — never call this from adopter
     /// code.** The emitted SQL is implementation-detail and has no
     /// stability guarantee across phases. Tests that pin SELECT
     /// narrowing use this hook to assert the textual shape directly
     /// without needing `pg_stat_statements` server-side configuration
     /// (which is unavailable on most Postgres test environments).
-    ///
     /// The double-underscore prefix is the framework's
     /// `feedback_macro_path_routing` convention for "macro-internal
     /// public-by-necessity surface, do not depend on" — same as
@@ -271,7 +247,6 @@ fn run_all_sql<V: DjogiVisage>(
 
 /// Build `SELECT col1, col2, ... FROM <table> [WHERE ...] [ORDER BY ...]
 /// [LIMIT $n] [OFFSET $n]` for a visage queryset.
-///
 /// The projection comes from the visage's narrowed `columns` slice, NOT
 /// from a model descriptor walk. This is the load-bearing difference
 /// from the model-side `build_select`: dropped columns never appear in
@@ -281,7 +256,7 @@ pub(crate) fn build_visage_select<V: DjogiVisage>(
 ) -> Result<SqlAccumulator, crate::query::portable::PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
     acc.push_sql("SELECT ");
-    // Phase 8.5 #231 — splice the pre-rendered projection list. For
+    // #231 — splice the pre-rendered projection list. For
     // column-only visages this matches the prior `push_csv(columns)`
     // shape byte-for-byte; for visages with derived entries it
     // additionally emits `(<sql>) AS <alias>` segments wherever the
@@ -294,7 +269,6 @@ pub(crate) fn build_visage_select<V: DjogiVisage>(
 }
 
 /// Build `SELECT COUNT(*) FROM <table> [WHERE ...]` for a visage queryset.
-///
 /// Ignores `ordering`, `limit`, and `offset` — count is invariant under
 /// those clauses. Mirrors the model-side `build_count` shape so the
 /// emitted statement is the simplest predicate-matching count Postgres
@@ -323,8 +297,7 @@ pub(crate) fn build_visage_exists<V: DjogiVisage>(
 }
 
 /// Emit the `WHERE ...` clause for a visage queryset, if non-vacuous.
-///
-/// Phase 8eta PR2b: `emit_condition` borrow-walks and returns
+/// `emit_condition` borrow-walks and returns
 /// `Result<(), PortablePredicateError>`; visage querysets carry pure
 /// `Condition` payloads (no portable predicates yet), so the only
 /// failure path is an inner expression-IR emit error inside a
@@ -379,10 +352,8 @@ where
     V: FromPgRow + Send + Unpin + 'static,
 {
     /// Execute the query and collect every matching row into a `Vec<V>`.
-    ///
     /// Mirrors [`QuerySet::fetch_all`] but with a narrow SELECT and the
     /// visage's own positional `FromPgRow` decoder.
-    ///
     /// [`QuerySet::fetch_all`]: crate::query::QuerySet::fetch_all
     pub fn fetch_all<'ctx>(
         self,
@@ -400,7 +371,6 @@ where
     }
 
     /// Execute the query and require **exactly one** matching row.
-    ///
     /// - Zero rows → [`DjogiError::NotFound`].
     /// - Two or more rows → [`DjogiError::MultipleObjects`].
     pub fn fetch_one<'ctx>(

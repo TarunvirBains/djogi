@@ -1,21 +1,17 @@
 //! Query API — lazy `QuerySet<T>`, typed filters, SQL emission.
-//!
 //! The public surface is re-exported at crate root and in `prelude`:
 //! users write `use djogi::prelude::*;` and get `QuerySet`, `FieldRef`,
 //! `Lookup`, `Q`, etc. without a second import.
-//!
 //! Internally: `queryset` holds the builder state, `condition` the filter
-//! tree (the legacy substrate, retired by Cluster 8γ T6.9), `q` the
-//! public Q-algebra (the post-8γ substrate), `field` the typed column
+//! tree (the legacy substrate, retired in favour of `Q<T>`), `q` the
+//! public Q-algebra, `field` the typed column
 //! handles, `order` ordering expressions, `filter` the programmatic-builder
 //! types, `update` bulk-update assignments, `sql` the `ConditionBuilder` +
 //! SQL emitters, and `terminal` the `fetch_*` methods. Splitting by
 //! responsibility keeps each file auditable.
-//!
 //! # Public vs internal surface
-//!
 //! User code composes filters through `Q<T>` (the public algebra
-//! introduced by Cluster 8γ) and `FieldRef` lookup methods — **never** by
+//! `Q<T>`) and `FieldRef` lookup methods — **never** by
 //! constructing `Leaf`/`FilterValue`/`LookupOp` variants directly. The
 //! raw AST types remain reachable under [`internal`] for in-tree
 //! consumers (the SQL emitter, migration differ, shell bindings) and
@@ -23,17 +19,14 @@
 //! not peer public API with `Q` / `FieldRef`. Treat paths inside
 //! `internal` as unstable — variant names, payload shapes, and the
 //! module layout can shift across phases without a semver bump.
-//!
-//! # Substrate — Q<T> alongside Condition during the 8γ transition
-//!
-//! `Condition` is the pre-8γ filter tree; `Q<T>` is the post-8γ
-//! public algebra. The Cluster 8γ refactor introduces `Q<T>` as an
-//! additive surface first (T6.1–T6.5 + T6.10–T6.13) so adopters and
-//! sister clusters (8β / 8δ / 8ε) can compose against the new shape
-//! without waiting for the substrate swap. T6.6–T6.9 then retire the
-//! internal `Condition` enum and route every `QuerySet<T>::filter`
-//! through `Q<T>`. Both types remain reachable through this stage of
-//! the work; `pub use condition::Condition` stays in place so existing
+//! # Substrate — Q<T> alongside Condition
+//! `Condition` is the legacy filter tree; `Q<T>` is the
+//! public algebra. The refactor introduces `Q<T>` as an
+//! additive surface first so adopters can compose against the new shape
+//! while the substrate swap completes. The internal `Condition` enum
+//! is retired and every `QuerySet<T>::filter` routes through `Q<T>`.
+//! Both types remain reachable; `pub use condition::Condition` stays in
+//! place so existing
 //! `FieldRef::eq` / `gt` / `ilike` etc. callers continue compiling.
 
 pub mod aggregate;
@@ -43,12 +36,12 @@ pub mod condition;
 pub mod field;
 pub mod filter;
 pub mod grouped;
-// Phase 8.5 Cluster 4B (djogi#106) — typed bulk-copy surface
+// Djogi#106) — typed bulk-copy surface
 // `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE ...]`.
 // Closes the framework gap that previously forced adopters to fall back
 // to `ctx.raw_execute(...)` for cross-table archival / migration shapes.
 pub mod insert_select;
-// Phase 8.5 Cluster 4A — typed pair-tuple query surface
+// Typed pair-tuple query surface
 // (`JoinedQuerySet<L, R>` + `JoinedAnnotatedQuerySet<L, R, A>`).
 // Substrate for GH #99 (which is itself the substrate for #84). This
 // slice covers part of the typed pair-tuple surface; the mating-pairs
@@ -58,10 +51,9 @@ pub mod insert_select;
 pub mod joined;
 pub mod lateral;
 pub(crate) mod lock;
-// Phase 8.5 Issue #178 — typed `MERGE INTO ... USING` query surface.
+// Issue #178 — typed `MERGE INTO ... USING` query surface.
 pub mod merge;
-// Phase 8.5 djogi#195 — `MirJzSON` JSON predicate builders.
-//
+// Djogi#195 — `MirJzSON` JSON predicate builders.
 // Wraps Sassi's `JSahibONFieldRef` / `JSahibONOptionFieldRef` /
 // `JSahibONPathRef` / `JSahibONValueRef` surfaces with Djogi
 // trusted-provenance stamping. Adopter code reaches this through
@@ -71,8 +63,7 @@ pub mod merge;
 // functions that consume a `DjogiJSahibONFieldRef<M>`.
 pub mod mirjzson;
 pub mod order;
-// Phase 8eta PR2a — Djogi-owned portable predicate substrate.
-//
+// Djogi-owned portable predicate substrate.
 // `predicate` is the public re-export module for `PortablePredicate<T>` and
 // the (PR2b-populated) `Predicate<T>` shell. `portable` is hidden because
 // PR2b's macro-emitted `Model::__djogi_emit_field_predicate` overrides have
@@ -87,12 +78,12 @@ pub mod q;
 pub mod queryset;
 pub mod recursive;
 pub(crate) mod refresh;
-// Phase 8.5 Cluster F (#92) — row-shape aggregate terminals
+// Row-shape aggregate terminals (#92)
 // (`as_mvt(...)` / `as_geobuf(...)`). Gated on `feature = "spatial"`
 // because both shipped row aggregates are PostGIS surfaces.
 #[cfg(feature = "spatial")]
 pub mod row_aggregate_terminal;
-// Phase 8.5 Cluster 4B (#101) — typed set operations between same-model
+// #101) — typed set operations between same-model
 // `QuerySet<T>` instances. The module is `pub` so adopters can name
 // `SetOpQuerySet` / `SetOpKind` as parameter and return types; the
 // common case (chained `.union(...)` / `.union_all(...)` /
@@ -102,7 +93,7 @@ pub mod row_aggregate_terminal;
 pub mod set_op;
 #[cfg(feature = "spatial")]
 pub mod spatial_grouping;
-// Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
+// Djogi#180 — PG18 OLD/NEW RETURNING result type.
 // `ReturningPair<T>` is the public before/after snapshot for UPDATE returning.
 // No PG17 fallback; Djogi already has a hard PG18 floor.
 pub mod returning;
@@ -110,25 +101,24 @@ pub(crate) mod sql;
 pub mod stream;
 pub mod terminal;
 pub mod update;
-// Phase 8.5 djogi#103 — typed VALUES inline-relation join surface.
+// Djogi#103 — typed VALUES inline-relation join surface.
 pub mod values;
 pub mod visage_queryset;
 
 pub use aggregate::AggregateQuery;
 pub use annotate::{AnnotatedQuerySet, IntoAggregateTuple};
 pub use closure::{ClosureModel, MaterializeClosureOptions, MaterializeClosureReport};
-// `Condition` is NOT re-exported at this level post-Cluster 8γ Stage 2.
+// `Condition` is NOT re-exported at this level.
 // The public substrate is `Q<T>` (re-exported below); legacy
 // `Condition`-producing FieldRef lookup methods (`f.col.eq(v)` etc.) are
 // still in use by the closure API (`QuerySet::filter` / `exclude`), so
 // the type itself stays reachable at `crate::query::condition::Condition`
 // for inference. Removing it from the public re-export tree closes the
-// "downstream Into<Condition> ambiguity" attack v3 §T6 Codex bullet
+// "downstream Into<Condition> ambiguity" attack
 // calls out — adopter code that needs to name the type uses
 // `crate::query::internal::Condition` (the unstable namespace below)
 // or composes via `Q<T>` instead.
-// Phase 8eta PR2a — Djogi root field wrapper surface.
-//
+// Djogi root field wrapper surface.
 // `DjogiField`, `DjogiPresentField`, `ExplicitPgPredicateField`, and the
 // portable marker traits are introduced additively in PR2a so the
 // public re-export tree compiles before macros and SQL emitters flip in
@@ -141,13 +131,13 @@ pub use field::{
     FieldRef, IntoFieldFilterValue, IntoFilterValue, IntoPortableFieldValue, IntoSqlField,
     OptionalRelationRef,
 };
-// Phase 8.5 djogi#195 — MirJzSON JSON predicate builder re-exports.
+// Djogi#195 — MirJzSON JSON predicate builder re-exports.
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use mirjzson::{
     DjogiJSahibONFieldRef, DjogiJSahibONOptionFieldRef, DjogiJSahibONPathRef,
     DjogiJSahibONValueRef, MirJzSONFieldRef, MirJzSONOptionFieldRef,
 };
-// Phase 8.5 Cluster 4B (djogi#106) — public re-export for the
+// Djogi#106) — public re-export for the
 // INSERT...SELECT surface. `InsertSelectColumn<S, T>` is the typed
 // (target_column, source_expression) leaf carrying both source and
 // target model identity at the type level; `InsertSelectSource<S, V>`
@@ -158,12 +148,12 @@ pub use mirjzson::{
 pub use insert_select::{
     InsertSelectColumn, InsertSelectSource, InsertSelectStmt, IntoInsertColumns,
 };
-// Phase 8.5 Cluster 4A — typed pair-tuple query surface re-exports.
+// Typed pair-tuple query surface re-exports.
 pub use joined::{
     JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, PairClosureKinshipSum,
     PairOrderExpr, PairSide, PairWindowExt,
 };
-// Phase 8.5 Issue #178 — typed MERGE re-exports.
+// Issue #178 — typed MERGE re-exports.
 pub use lateral::{InnerLateral, LateralQuerySet, LeftLateral};
 pub use merge::{
     IntoMergeInsertColumns, IntoMergeOn, IntoMergeTargetExpr, IntoMergeUpdates,
@@ -179,8 +169,7 @@ pub use merge::{
 #[cfg(feature = "spatial")]
 pub use joined::PairAreaOverlapRatio;
 pub use order::{Direction, NullsOrder, OrderExpr};
-// Phase 8eta PR2a — public predicate-wrapper surface.
-//
+// Public predicate-wrapper surface.
 // `PortablePredicate<T>` is the trusted-Djogi-provenance wrapper that flows
 // through PR2b's direct-`Q<T>` SQL emitter and PR4's cache boundary.
 // `Predicate<T>` is the PR2b operator-matrix shell. `IntoPortablePredicate`
@@ -200,14 +189,14 @@ pub use queryset::{
     CachedPortableQuerySet, DistinctMode, IntoDistinctColumns, PortableQuerySet, QuerySet,
 };
 pub use recursive::{RecursiveDirection, RecursiveQuerySet};
-// Phase 8.5 Cluster F (#92) — row-shape aggregate terminals
+// Row-shape aggregate terminals (#92)
 // (`as_mvt(...)` / `as_geobuf(...)`). The terminals own their typed
 // `Vec<u8>` decode and consume an annotation tuple; the `EmptyAnnotation`
 // sentinel covers the no-annotation case so plain `QuerySet::as_mvt`
 // produces an `AsMvtTerminal<T, EmptyAnnotation>`.
 #[cfg(feature = "spatial")]
 pub use row_aggregate_terminal::{AsGeobufTerminal, AsMvtTerminal, EmptyAnnotation};
-// Phase 8.5 Cluster 4B (#101) — typed set operations. `IntoSetOpArm` is
+// #101) — typed set operations. `IntoSetOpArm` is
 // the sealed trait the builder methods take; adopters never name it,
 // but it must be re-exported so trait-method dispatch resolves in
 // downstream crates. `SetOpKind` / `SetOpQuerySet` are named in adopter
@@ -216,22 +205,22 @@ pub use row_aggregate_terminal::{AsGeobufTerminal, AsMvtTerminal, EmptyAnnotatio
 pub use set_op::{IntoSetOpArm, SetOpKind, SetOpQuerySet};
 // `BasicPredicate<T>` is sassi's universal Rust-evaluable predicate algebra.
 // Re-exported here so adopters reach it as `djogi::query::BasicPredicate`
-// without depending on sassi directly. The Cluster 8γ refactor (T6) lifts
-// the 15 Rust-evaluable `LookupOp` variants into `sassi::BasicPredicate`
+// without depending on sassi directly. The 15 Rust-evaluable
+// `LookupOp` variants lift into `sassi::BasicPredicate`
 // while keeping the 2 SQL-only ops (`Regex`, `IRegex`) on the djogi side
 // (`Q::Regex`) — see spec §8e bullet 6 and `decisions.md` row 107 + 108.
 pub use sassi::BasicPredicate;
 #[cfg(feature = "spatial")]
 pub use spatial_grouping::{ClusterId, ClusterRadius, GeohashKey, GeohashPrecision, RegionKey};
 pub use stream::{ModelCursorStream, RawCursorStream};
-// Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING result type.
+// Djogi#180 — PG18 OLD/NEW RETURNING result type.
 pub use returning::ReturningPair;
 pub use update::{IntoAssignments, UpdateAssignment, UpdateStmt};
-// Phase 8.5 djogi#103 — typed VALUES join surface.
+// Djogi#103 — typed VALUES join surface.
 // `InlineValues`, the three queryset types, and the supporting traits are the
-// user-facing names.  `ValuesScalar` / `ValuesRow` / `IntoValuesColumns` are
+// user-facing names. `ValuesScalar` / `ValuesRow` / `IntoValuesColumns` are
 // sealed but must be re-exported so trait-method dispatch (`eq_values`,
-// `col0`, …) resolves in downstream crates.  `ValuesFields` and
+// `col0`, …) resolves in downstream crates. `ValuesFields` and
 // `ValuesFieldRef` must be nameable as closure parameter / return types when
 // adopters write helpers that accept an `ON` predicate directly.
 // `CrossValuesJoinedQuerySet` (GH #299) is the unconditional Cartesian join.
@@ -242,23 +231,20 @@ pub use values::{
 pub use visage_queryset::VisageQuerySet;
 
 /// Raw Condition-AST surface — not peer public API with `Condition`.
-///
 /// Holds `Leaf`, `FilterValue`, and `LookupOp` for framework-internal
 /// consumers (SQL emitter, differ, shell). User code that finds itself
 /// reaching for these is a sign the `FieldRef` API is missing a lookup
 /// method — please file an issue rather than building leaves by hand.
-///
 /// # Stability
-///
 /// Items re-exported here follow the same variant-level `#[non_exhaustive]`
 /// guarantees as `FilterValue` / `LookupOp` themselves, but the **set of
 /// items** in this module, and its path, may change across phases. Pin
 /// your own type aliases if you depend on them.
 pub mod internal {
-    // Cluster 8γ Stage 2 (T6.9b): `Condition` graduates from peer
+    // `Condition` graduates from peer
     // public API (it was `pub use condition::Condition` at module
     // root pre-flip) into the unstable internal namespace alongside
-    // `Leaf` / `FilterValue` / `LookupOp`. Cluster 8β's
+    // `Leaf` / `FilterValue` / `LookupOp`. The
     // `default_filter_condition() -> Option<Condition>` trait method
     // names this type and rebases against this path; future code
     // composing through the public algebra never needs to name it
@@ -280,7 +266,7 @@ mod tests {
         let _: crate::query::BasicPredicate<()> = crate::query::BasicPredicate::True;
     }
 
-    /// Phase 8eta PR2a — re-export contract for the Djogi predicate
+    /// Re-export contract for the Djogi predicate
     /// substrate. The `pub use predicate::{...}` and `pub use field::{...}`
     /// lines above must remain in place; PR2b's macro emission, PR4's
     /// cache boundary, and adopter `impl DjogiPortableOrd` callsites all

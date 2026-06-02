@@ -1,6 +1,5 @@
 //! Djogi CLI library — entry points for the `djogi` binary and for
 //! adopter-linked binaries that inject their own [`DescriptorProvider`].
-//!
 //! The published standalone `djogi` binary links no adopter model crates,
 //! so reading the global `inventory` registry directly yields zero adopter
 //! models. Injecting a [`DescriptorProvider`] lets an adopter-linked binary
@@ -39,7 +38,6 @@ pub use djogi_macros::{djogi_main, link_anchor};
 pub use djogi::migrate::{DescriptorProvider, InventoryDescriptorProvider};
 
 /// Print a support-boundary preflight error to stderr.
-///
 /// Used by every CLI entry point that runs `check_postgres_version`.
 /// The "support boundary" prefix distinguishes infrastructure refusals
 /// (wrong PG version, missing extension) from policy refusals (localhost
@@ -64,7 +62,7 @@ pub enum TopCommand {
         #[command(subcommand)]
         command: DbCommand,
     },
-    /// Schema migration tooling (Phase 7).
+    /// Schema migration tooling .
     Migrations {
         #[command(subcommand)]
         command: MigrationsCommand,
@@ -77,17 +75,15 @@ pub enum TopCommand {
         #[command(subcommand)]
         command: MigrateCommand,
     },
-    /// Phase 7.5 live-migration operator surface — drives expand →
+    /// Live-migration operator surface — drives expand →
     /// backfill → flip → contract sequences for `ExpandContract`-
     /// classified deltas.
-    ///
     /// Requires PostgreSQL 18 or later.
     Live {
         #[command(subcommand)]
         command: live::LiveCmd,
     },
     /// Render Markdown documentation from the descriptor inventory.
-    ///
     /// One file per registered model under `<output>/<app>/`, plus a
     /// top-level `README.md` index. Output is byte-deterministic
     /// against the same descriptor set.
@@ -101,17 +97,14 @@ pub enum TopCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
-    /// Cluster 8ε T9.6 — read-only HMAC cross-check of every
+    /// 6 — read-only HMAC cross-check of every
     /// `migrations/<target>/<app>/schema_snapshot.json` against the
     /// audit DB's `djogi_ddl_audit` ledger.
-    ///
     /// Requires PostgreSQL 18 or later — exits with code 2 if the
     /// server is below the minimum.
-    ///
     /// Exit codes: `0` when every snapshot reports `OK` or `Skipped`
     /// (audit table absent or no audit row yet), `1` on any mismatch
     /// or runtime error (config / connect / I/O / key decode).
-    ///
     /// **Read-only.** Verify never issues `INSERT`, `UPDATE`,
     /// `DELETE`, or DDL — the only SQL leaving the CLI is a
     /// positional-bind `SELECT` against `djogi_ddl_audit`.
@@ -121,32 +114,28 @@ pub enum TopCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
-    /// Cluster 8ζ T12.2 — JSON descriptor dump.
-    ///
+    /// 2 — JSON descriptor dump.
     /// Emits a deterministic JSON document covering every model
     /// registered via `inventory::submit!`. Use for agent
     /// integration, CI assertions on schema drift, and
     /// machine-readable handoffs to downstream codegen.
-    ///
     /// **Read-only.** Schema never opens a Postgres connection;
     /// the inventory walk is fully in-process.
     Schema {
         /// Output format. `json` is the only value in v0.1.0;
-        /// `openapi` and `markdown` are reserved for Phase 9.
+        /// `openapi` and `markdown` are reserved for .
         #[arg(long, value_enum, default_value_t = SchemaFormat::Json)]
         format: SchemaFormat,
         /// Optional output file. Absent means stdout.
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// Cluster 8ε T10 — partition / vacuum analysis for adopter
+    /// Partition / vacuum analysis for adopter
     /// Postgres tables. Queries `pg_stat_user_tables` (and, when
     /// installed, `pg_partman`) and recommends vacuum / partition
     /// actions per the precedence laid out in [`analyze::Recommendation`].
-    ///
     /// Requires PostgreSQL 18 or later — exits with code 2 if the
     /// server is below the minimum.
-    ///
     /// **Read-only.** Analyze issues only `SELECT` against system
     /// catalogues; it never writes.
     Analyze {
@@ -195,7 +184,6 @@ impl SchemaFormat {
 
 /// Output format for `djogi analyze` — clap-side mirror of
 /// [`analyze::AnalyzeFormat`].
-///
 /// This enum exists only so `clap::ValueEnum` can derive the
 /// `--format human|json` parser without dragging the clap-derive
 /// dependency into the `analyze` module's pure-substrate header.
@@ -219,10 +207,8 @@ impl AnalyzeFormat {
 }
 
 /// Parse + validate `--threshold-vacuum` at the CLI boundary.
-///
 /// Rejects three classes of nonsense input that plain `f64::parse`
 /// otherwise lets through:
-///
 /// 1. **Non-finite values** (`NaN`, `inf`, `-inf`). Without this guard,
 ///    `ratio > NaN` evaluates to `false` for every ratio, so
 ///    `VacuumNeeded` would silently never fire — the worst kind of
@@ -234,10 +220,9 @@ impl AnalyzeFormat {
 ///    `pg_stat_user_tables` row can produce a ratio above `1.0`, so a
 ///    threshold above `1.0` would mean "VacuumNeeded never fires," which
 ///    is again silent failure rather than legitimate configuration.
-///
-/// Wired via clap's `value_parser` attribute so the rejection happens at
-/// argument-parsing time — operators see a clear error message and a
-/// non-zero exit, never a silently-misbehaving analyze run.
+///    Wired via clap's `value_parser` attribute so the rejection happens at
+///    argument-parsing time — operators see a clear error message and a
+///    non-zero exit, never a silently-misbehaving analyze run.
 fn parse_threshold_vacuum(s: &str) -> Result<f64, String> {
     let v: f64 = s
         .parse()
@@ -260,10 +245,8 @@ pub enum DbCommand {
     /// confirmation is supplied via `--yes` or the interactive
     /// prompt. Logging databases (`crud_log`, `event_log`) are NOT
     /// touched.
-    ///
     /// Requires PostgreSQL 18 or later — exits with code 2 if the
     /// server is below the minimum.
-    ///
     /// Exit codes: 0 on success, 1 on error (config / network / SQL
     /// / replay), 2 on gate refusal (not localhost, production
     /// profile, missing `--yes`, below PG 18).
@@ -294,16 +277,13 @@ pub enum DbCommand {
     /// Idempotent — re-runs skip seeds whose `V1:<sha256>` checksum
     /// matches the `djogi_seed_runs` ledger; refuses on checksum
     /// drift. Localhost-gated by default.
-    ///
     /// Requires PostgreSQL 18 or later — exits with code 2 if the
     /// server is below the minimum.
-    ///
     /// `--database <name>` selects BOTH the seed directory and the
     /// connection target. The CLI splices `<name>` into
     /// `database.url`'s path component so seeds always land on the
     /// matching DB; a malformed application URL refuses with exit
     /// code 1.
-    ///
     /// Exit codes: 0 on success, 1 on error (config / network / SQL
     /// / checksum drift / malformed URL), 2 on gate refusal
     /// (non-localhost without `--allow-non-localhost`, below PG 18).
@@ -328,10 +308,8 @@ pub enum DbCommand {
     /// `db reset` — localhost (override via `--allow-non-localhost`),
     /// non-production profile, explicit `--yes` (waived under
     /// `--dry-run`).
-    ///
     /// Requires PostgreSQL 18 or later — exits with code 2 if the
     /// server is below the minimum.
-    ///
     /// Exit codes: 0 on success, 1 on error (config / connect / SQL),
     /// 2 on gate refusal (non-localhost, production profile, missing
     /// `--yes` without `--dry-run`, below PG 18).
@@ -367,10 +345,8 @@ pub enum DbCommand {
 pub enum MigrateCommand {
     /// Alias for `djogi migrations apply`. See
     /// `djogi migrations apply --help` for full documentation.
-    ///
     /// Record pending migrations as applied in the ledger, optionally
     /// without executing their SQL (`--fake`).
-    ///
     /// See `djogi migrations apply --help` for crash-recovery behavior,
     /// including already-faked reruns and snapshot rebuilds.
     Apply {
@@ -416,7 +392,6 @@ pub enum MigrationsCommand {
     },
     /// Print the current state of the migration ledger, grouped by
     /// app. Read-only — does not acquire the workspace lock.
-    ///
     /// Requires PostgreSQL 18 or later.
     Status {
         /// Workspace root override (only used when reading
@@ -426,11 +401,9 @@ pub enum MigrationsCommand {
     },
     /// Compare live database catalog against the schema snapshot.
     /// Read-only — does not acquire the workspace lock or execute DDL.
-    ///
     /// Exits 0 if no error-level diagnostics are found. Exits 1 on
     /// runtime errors (config / pool / SQL). Exits 2 if the Postgres
     /// server is below version 18.
-    ///
     /// Use `--strict` to upgrade out-of-order migration warnings (D622)
     /// to errors, causing verify to exit non-zero when the ledger
     /// contains out-of-order applied rows.
@@ -451,10 +424,8 @@ pub enum MigrationsCommand {
     /// attunement. `--squash --from <ver>` collapses local history
     /// into a single migration (localhost + dev_mode + dev profile +
     /// DJOGI_ENV gates).
-    ///
     /// Requires PostgreSQL 18 or later — exits with code 2 if the
     /// server is below the minimum.
-    ///
     /// Exit codes: 0 on success, 1 on runtime error (config / network
     /// / SQL / git), 2 on refusal (gate failure, arg validation,
     /// below PG 18).
@@ -521,15 +492,12 @@ pub enum MigrationsCommand {
     },
     /// Apply all pending migrations in ledger order. This is the canonical spelling;
     /// `djogi migrate apply` is a compatibility alias.
-    ///
     /// **Transaction semantics** are per-segment: transactional
     /// segments roll back on error; non-transactional segments
     /// autocommit and may leave partial progress.
-    ///
     /// **On crash** or unexpected termination, re-run
     /// `djogi migrations apply`. For partial non-transactional
     /// progress, use `djogi migrations repair resume-partial`.
-    ///
     /// **Existing-database adoption:** use `--fake` to mark pending
     /// migrations as applied without executing their SQL. This is for
     /// databases whose schema already exists (from a prior tool, manual
@@ -538,10 +506,8 @@ pub enum MigrationsCommand {
     /// before faking. The `--fake` flag respects the same out-of-order
     /// policy as real apply; if CI/prod policy is `Reject`, fake-apply
     /// on an out-of-order version is also rejected.
-    ///
     /// For previewing pending work without executing it, use
     /// `djogi migrations status`.
-    ///
     /// If the command is interrupted after recording a ledger row with
     /// a terminal status (`applied`, `faked`, `baseline`), re-running
     /// reports `VersionAlreadyApplied` (exit 2). For non-terminal
@@ -584,15 +550,12 @@ pub enum MigrationsCommand {
     /// snapshot. Use for existing databases being adopted under Djogi's
     /// migration ledger, where the schema already exists and compose +
     /// apply cannot run on a populated database without a starting point.
-    ///
     /// Projects the live catalog into a single `baseline` ledger row
     /// (no SQL runs against user tables) and writes the projected
     /// snapshot so future migrations diff against the real DB state.
     /// Invoking the subcommand IS the operator acknowledgment.
-    ///
     /// Requires PostgreSQL 18 or later — exits with code 2 if the
     /// server is below the minimum.
-    ///
     /// Exit codes: 0 on success, 1 on runtime error (config / network /
     /// SQL / projection failure), 2 on refusal (empty `--reason`, duplicate
     /// version, unresolvable database URL, snapshot-persist failure after
@@ -623,13 +586,11 @@ pub enum MigrationsCommand {
 
 /// `djogi migrations repair <subcommand>` — the four operator-confirmed
 /// repair flows.
-///
 /// Each variant maps 1:1 onto a `djogi::migrate::repair::*` library
 /// function. Invoking the subcommand IS the operator acknowledgment;
 /// there is no separate `--confirm` flag. Every flow pins one Postgres
 /// session, takes the per-bucket advisory lock, and holds the workspace
 /// file lock for its duration.
-///
 /// Exit codes (shared across all four): `0` success, `1`
 /// runtime/I/O error (retryable), `2` refusal or structural mismatch
 /// (operator must intervene).
@@ -721,7 +682,6 @@ pub enum RepairSubcommand {
 
 /// CLI-side mirror of [`djogi::migrate::PartialApplyResolution`] for the
 /// `repair partial-apply` resolution argument.
-///
 /// This enum exists only so `clap::ValueEnum` can parse
 /// `rolled-back | faked | applied` at the CLI boundary without the
 /// library enum carrying a clap-derive dependency. Conversion to the
@@ -737,7 +697,6 @@ pub enum PartialApplyResolutionCli {
 // ── Entrypoints ───────────────────────────────────────────────────────────
 
 /// Run the CLI by parsing arguments from `std::env::args_os()`.
-///
 /// This is the entry point used by the published standalone `djogi`
 /// binary. It reads the global link-time [`inventory`] registry via
 /// [`djogi::migrate::InventoryDescriptorProvider`].
@@ -757,12 +716,10 @@ pub fn run_from_env() -> ExitCode {
 
 /// Run the CLI with an explicit argument iterable. Useful for testing and
 /// embedding.
-///
 /// Accepts any `IntoIterator<Item = T>` where `T: Into<OsString> + Clone`,
 /// matching the bound of [`clap::Parser::try_parse_from`]. In practice,
 /// arrays of `&str` (e.g. `["djogi", "migrations", "compose"]`) and
 /// `Vec<String>` both satisfy this bound.
-///
 /// Falls back to [`djogi::migrate::InventoryDescriptorProvider`] for
 /// descriptors.
 pub fn run_with_args<I, T>(args: I) -> ExitCode
@@ -787,10 +744,8 @@ where
 }
 
 /// Run the CLI with an explicit argument iterable and a [`DescriptorProvider`].
-///
 /// Accepts any `IntoIterator<Item = T>` where `T: Into<OsString> + Clone`,
 /// matching the bound of [`clap::Parser::try_parse_from`].
-///
 /// Adopter-linked binaries pass their own provider so descriptor-dependent
 /// commands (`compose`, `verify`, `schema`, `docs`) see the adopter's
 /// models instead of an empty inventory.
@@ -1008,26 +963,22 @@ fn dispatch_command(
 /// command (`compose` / `verify` / `schema` / `docs`) resolves zero model
 /// descriptors, and exits the command with code `2` (refusal — the
 /// command refuses because it cannot see the schema it needs).
-///
 /// The message is dual-cause because zero descriptors has two distinct
 /// causes the operator must be able to tell apart:
-///
 /// 1. they ran the *standalone published* `djogi`, which links no
 ///    application models (build an adopter-linked `djogi` and run from it;
 ///    the standalone binary can still `migrations apply`); or
 /// 2. this *is* their adopter-linked `djogi` but the linker dropped an
 ///    unreferenced model crate (ensure every `#[derive(Model)]` crate is
 ///    referenced via `link_models` / `djogi_main!`).
-///
-/// The first line is kept verbatim in sync with the troubleshooting
-/// anchor in `docs/guide/adopter-cli.md` ("no djogi models are registered
-/// in this binary") so an operator who searches the message lands on the
-/// guide section that explains it.
-///
-/// `command` is the failing command name (e.g. `"migrations compose"`),
-/// echoed so the operator knows which invocation refused. The single
-/// emitter feeds `compose`, `verify`, `schema`, and `docs`, so one message
-/// covers all four.
+///    The first line is kept verbatim in sync with the troubleshooting
+///    anchor in `docs/guide/adopter-cli.md` ("no djogi models are registered
+///    in this binary") so an operator who searches the message lands on the
+///    guide section that explains it.
+///    `command` is the failing command name (e.g. `"migrations compose"`),
+///    echoed so the operator knows which invocation refused. The single
+///    emitter feeds `compose`, `verify`, `schema`, and `docs`, so one message
+///    covers all four.
 pub(crate) fn print_zero_descriptor_diagnostic(command: &str) {
     eprintln!("error: no djogi models are registered in this binary (djogi {command}).");
     eprintln!();

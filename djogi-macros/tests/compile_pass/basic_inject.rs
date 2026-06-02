@@ -1,10 +1,10 @@
 // Verifies that #[model] compiles and injects id/created_at/updated_at.
-// Phase 7-Zero-2 T2 flipped the default PK to `HeerIdRecencyBiased`; this
+// T2 flipped the default PK to `HeerIdRecencyBiased`; this
 // fixture pins the ascending-HeerId injection path via an explicit
 // `pk = HeerId` so the type checks below exercise the historical shape.
 //
 // `pub struct Post` mirrors the macro-emitted `pub struct PostPublic` /
-// `PostSelfView` / `PostAdmin` / `PostExport` visages: Phase 8.5 #231
+// `PostSelfView` / `PostAdmin` / `PostExport` visages: #231
 // reconciliation pins `type Model: Model` on `DjogiVisage`, so the
 // source model must be at least as visible as its visages (otherwise
 // `impl DjogiVisage for PostPublic { type Model = Post; ... }` trips

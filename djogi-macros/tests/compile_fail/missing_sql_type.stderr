@@ -1,0 +1,12 @@
+error: djogi::primary_key! requires `sql_type = "..."`
+ --> $DIR/missing_sql_type.rs:4:1
+  |
+4 | / djogi::primary_key! {
+5 | |     pub struct Bad(i64);
+6 | |     default_sql = "0";
+7 | | }
+  | |_^
+  |
+  = note: this error originates in the macro `djogi::primary_key` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 1 previous error

@@ -1,19 +1,15 @@
 //! Live-migration rollout patterns.
-//!
 //! Each module under [`patterns`](self) implements one rollout shape
-//! that the classifier (T5) maps a [`SchemaOperation`] onto. A pattern
+//! that the classifier maps a [`SchemaOperation`] onto. A pattern
 //! takes the operation plus an ambient [`PatternContext`] and emits a
-//! [`Vec<Step>`](Step) — the immutable step graph the runner (T7+)
+//! [`Vec<Step>`](Step) — the immutable step graph the runner
 //! later executes. Patterns are pure: no I/O, no `pg_catalog` reads,
 //! no host-variable behaviour. The output is the canonical plan-file
 //! payload, identical between any two runs of the compose pipeline
 //! over the same descriptor inputs.
-//!
 //! # Pattern catalogue
-//!
-//! Nine patterns ship under T8, paired with one documentation-only
+//! Nine patterns ship, paired with one documentation-only
 //! module that records why a tenth never will:
-//!
 //! - [`nullable_not_null`] — nullable add followed by backfill plus
 //!   `SET NOT NULL` finalize.
 //! - [`replacement_column`] — shadow column expand/contract for type
@@ -37,9 +33,7 @@
 //! - [`generated_column_refusal`] — documentation breadcrumb
 //!   explaining why no shadow-column pattern ships for stored
 //!   generated column rewrites.
-//!
 //! # Why no `generated_column_replacement.rs`
-//!
 //! Stored generated column rewrites classify as
 //! [`OnlineSafetyClassification::OfflineOnly`](crate::migrate::OnlineSafetyClassification::OfflineOnly)
 //! per the §7 amendment of the v3 plan. The obvious-seeming "add a
@@ -51,14 +45,11 @@
 //! entirely (e.g. into a regular column populated by an application
 //! trigger) and route the resulting change through
 //! [`replacement_column`] instead.
-//!
 //! [`generated_column_refusal`] is a marker-only module that records
 //! this decision next to the patterns that *do* ship, so a future
 //! reader who searches the patterns directory does not waste cycles
 //! re-deriving why the pattern is missing.
-//!
 //! # Idempotent-predicate contract (§3)
-//!
 //! v3 plan §3 mandates that every [`StepKind::BackfillChunked`] step
 //! a pattern emits carries an idempotent `WHERE` predicate:
 //! re-running the same chunk against rows already touched produces
@@ -68,21 +59,17 @@
 //! `true`, and per-pattern unit tests assert the predicate text
 //! contains an idempotent shape (`IS NULL`, `IS DISTINCT FROM`, or
 //! a similar self-cancelling clause).
-//!
 //! Transforms whose chunk semantics cannot prove idempotency do not
 //! ship as patterns at all — the classifier routes them to
 //! [`OnlineSafetyClassification::OfflineOnly`](crate::migrate::OnlineSafetyClassification::OfflineOnly)
 //! per the v3 plan rather than letting them masquerade as
 //! ExpandContract.
-//!
 //! # Public surface
-//!
 //! Only the [`Pattern`] trait, [`PatternContext`], and [`PatternError`]
 //! are re-exported from [`crate::live_migrate`]. The individual zero-
 //! sized pattern types stay module-private — production callers reach
-//! them through the classifier-driven dispatch (T10), never by
+//! them through the classifier-driven dispatch, never by
 //! direct construction.
-//!
 //! [`SchemaOperation`]: crate::migrate::SchemaOperation
 //! [`Step`]: crate::live_migrate::plan::Step
 //! [`StepKind::BackfillChunked`]: crate::live_migrate::plan::StepKind::BackfillChunked
@@ -103,7 +90,6 @@ pub mod unique_via_index;
 
 /// Ambient configuration threaded into every pattern's
 /// [`Pattern::emit`] call.
-///
 /// The compose pipeline constructs one `PatternContext` per
 /// `(database, app)` bucket from `Djogi.toml`'s `[live]` section, so
 /// every pattern in the bucket sees the same thresholds and chunk
@@ -180,13 +166,11 @@ pub trait Pattern {
 
 /// Route a single classifier-confirmed `ExpandContract` operation to
 /// the matching pattern emitter and return its step graph.
-///
 /// The classifier ([`crate::live_migrate::classify_operation`]) has
 /// already decided that `op` belongs on the live-plan path; this
 /// function picks the pattern whose declared shape covers the
 /// operation variant. Selection is exhaustive over the variants the
 /// classifier can route here:
-///
 /// - [`SchemaOperation::AlterColumn`] dispatches to
 ///   [`replacement_column::ReplacementColumn`] for `ChangeType`,
 ///   [`codec_transition::CodecTransition`] for codec rotations, and
@@ -205,11 +189,10 @@ pub trait Pattern {
 /// - [`SchemaOperation::AddColumn`] dispatches to
 ///   [`three_step_default::ThreeStepDefault`] for columns whose default
 ///   expression is Postgres-volatile.
-///
-/// Returns [`PatternError::CannotEmit`] for operation variants the
-/// classifier should never have routed onto this path (rename ops,
-/// drop ops, enum ops). The classifier's `OnlineSafetyClassification`
-/// verdict is the gate; this function is the dispatcher behind it.
+///   Returns [`PatternError::CannotEmit`] for operation variants the
+///   classifier should never have routed onto this path (rename ops,
+///   drop ops, enum ops). The classifier's `OnlineSafetyClassification`
+///   verdict is the gate; this function is the dispatcher behind it.
 pub fn dispatch_pattern(
     op: &SchemaOperation,
     ctx: &PatternContext,
@@ -219,7 +202,7 @@ pub fn dispatch_pattern(
 
     match op {
         SchemaOperation::AlterColumn { change, .. } => match change {
-            // djogi#220 — belt-and-braces refusal for adopter-supplied
+            // belt-and-braces refusal for adopter-supplied
             // `USING` expressions. The classifier
             // ([`crate::live_migrate::classify::classify_column_change`])
             // already routes `ColumnChange::ChangeType { using: Some(_), .. }`
@@ -318,7 +301,7 @@ fn operation_variant_name(op: &SchemaOperation) -> &'static str {
 }
 
 /// Reasons a pattern's [`Pattern::emit`] may refuse. Exposed publicly
-/// so the dispatch layer (T10) can surface the exact mismatch in
+/// so the dispatch layer can surface the exact mismatch in
 /// operator messages.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -400,9 +383,8 @@ mod tests {
     /// Cross-pattern dispatch witness — every shipped pattern handles
     /// the operation shape it documents, and rejects an operation it
     /// does not own. The test reaches into module-private pattern
-    /// types because the dispatch layer (T10) has not landed yet;
-    /// once it does, this test will move to live behind the
-    /// dispatcher's API.
+    /// types accessed directly; once the dispatch layer API matures,
+    /// this test will move to live behind it.
     #[test]
     fn dispatch_witnesses_pattern_id_uniqueness() {
         let ids = [
@@ -510,7 +492,7 @@ mod tests {
     #[test]
     fn dispatch_witness_steps_have_sequential_ordinals() {
         // Every pattern's emitted Vec<Step> must report ordinals
-        // 0, 1, 2, ... — LivePlan::validate (T6) refuses gaps or
+        // 0, 1, 2, ... — `LivePlan::validate` refuses gaps or
         // duplicates, and the runner relies on the sort being a
         // no-op when the input is already canonical.
         let ctx = PatternContext::with_defaults();
@@ -619,10 +601,10 @@ mod tests {
 
     #[test]
     fn dispatch_pattern_refuses_change_type_with_adopter_using() {
-        // djogi#220 — `ChangeType { using: Some(_), .. }` is routed to
+        // `ChangeType { using: Some(_), .. }` is routed to
         // OfflineOnly by the classifier, so the dispatcher should
         // never receive one. This refusal is a defense-in-depth guard
-        // against future composers that bypass the classifier —
+        // against future composers that bypass the classifier
         // emitting the shadow-column backfill default cast in that
         // case would silently corrupt or fail-per-row on exactly the
         // rows the adopter USING was written to handle.

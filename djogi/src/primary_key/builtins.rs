@@ -1,22 +1,18 @@
 //! Built-in [`PrimaryKey`] implementations.
-//!
 //! Covers the four HeeRanjId variants (`HeerId`, `HeerIdDesc`, `RanjId`,
 //! `RanjIdDesc`) plus `Serial` (`i32`). Each variant implements
 //! [`PrimaryKey`], four of the five also implement [`PrimaryKeyDbGen`];
 //! `Serial` deliberately does not. Absence of [`PrimaryKeyDbGen`] on
 //! `i32` is load-bearing: `pk = Serial` models get a clean compile
 //! error at `bulk_create` call sites instead of a runtime failure.
-//!
 //! # Single round-trip contract
-//!
 //! [`PrimaryKeyDbGen::generate_many`] issues exactly one query against
 //! the HeeRanjId `generate_ids` / `generate_ranjids` SQL functions the
 //! schema installs. The node_id is resolved by
 //! `current_heer_node_id()` / `current_heer_ranj_node_id()` inside
 //! Postgres, so callers need no per-request session setup beyond the
-//! standard `djogi_test` fixtures which route Phase 0 bootstrap through
-//! `djogi::migrate::bootstrap::run_phase_zero` (Track 0 strategic lockdown).
-//!
+//! standard `djogi_test` fixtures which route bootstrap through
+//! `djogi::migrate::bootstrap::run_phase_zero` (strategic lockdown).
 //! Desc variants post-process each ascending row with
 //! `heerid_to_desc(id)` / `ranjid_to_desc(id)` in the SAME query — the
 //! XOR transform is `IMMUTABLE` so Postgres folds it into the batch.
@@ -116,7 +112,6 @@ impl_heeranjid_pk!(
 );
 
 // ── Serial (i32) ───────────────────────────────────────────────────────
-//
 // `Serial` deliberately does not implement `PrimaryKeyDbGen`. The
 // `bulk_create` signature bounds on that trait, so `pk = Serial`
 // models get a clean compile error at the call site instead of a
@@ -139,6 +134,5 @@ impl PrimaryKey for i32 {
 // the existing project convention: every test that calls
 // `setup_test_db()` is a named integration target in `djogi/Cargo.toml`
 // rather than a `cfg(test)` unit test inside the library source.
-//
 // Unit-level coverage for the non-DB parts of `PrimaryKey` lives in the
 // `tests` module of `djogi/src/primary_key/mod.rs`.

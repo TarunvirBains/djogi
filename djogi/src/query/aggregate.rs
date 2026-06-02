@@ -1,16 +1,12 @@
 //! Scalar-aggregate terminal — `QuerySet::aggregate(...)` + its
 //! [`AggregateQuery<T, Out, K>`] pending handle.
-//!
 //! # What
-//!
 //! `QuerySet<T>::aggregate(|f| f.col().sum())` returns an
 //! [`AggregateQuery<T, Out, K>`] whose terminal
 //! [`AggregateQuery::fetch_one`] issues
-//!
 //! ```sql
 //! SELECT <agg_expr> FROM <table> [WHERE ...]
 //! ```
-//!
 //! and decodes the single scalar result into `Out`. `Out` is the Rust
 //! return type carried by [`crate::expr::AggregateExpr<Out, K>`] — `i64`
 //! for `COUNT`, `f64` for `AVG`, `V` for `SUM`/`MIN`/`MAX` where `V` is
@@ -19,27 +15,21 @@
 //! from the aggregate the closure returns so non-value families
 //! (`PERCENTILE_CONT`, `RANK_OF`, `GROUPING`, etc.) flow through this
 //! terminal without explicit annotation.
-//!
 //! # Why a dedicated pending handle
-//!
 //! The aggregate terminal is a scalar decode, not a row decode, so it
 //! needs a different entry point from the row terminals. Keeping the
 //! typed-scalar pending struct separate from [`QuerySet<T>`] preserves
-//! Phase 2's terminal signatures byte-for-byte — no call site that
+//! The terminal signatures byte-for-byte — no call site that
 //! reaches `.fetch_all(ctx)` is forced to learn a new return type. The
 //! cost is one tiny wrapper struct; the benefit is clean additivity.
-//!
 //! # Clause set
-//!
 //! `SELECT <agg>, FROM <table> [WHERE ...]` — no `ORDER BY`, no
 //! `LIMIT`, no `OFFSET`, no `GROUP BY`. Ungrouped aggregates always
 //! collapse to exactly one result row regardless of cardinality, so
 //! those clauses would be meaningless / syntax errors. Grouped
 //! aggregates (`annotate(|f| f.col.count()).group_by(...)`) ship in a
 //! later phase; Task 4's scalar path stays single-row by design.
-//!
 //! # Empty short-circuit
-//!
 //! `QuerySet::none()` on the upstream queryset is honoured — the
 //! terminal short-circuits to a sentinel value without issuing any
 //! SQL. For `COUNT`-shaped aggregates the sentinel is `0`; for
@@ -65,21 +55,18 @@ use std::marker::PhantomData;
 
 /// Pending aggregate query — produced by [`QuerySet::aggregate`] and
 /// terminated with [`Self::fetch_one`].
-///
 /// Holds the upstream queryset (for the `FROM` + `WHERE` clauses) plus
 /// the aggregate expression itself. `Out` is the Rust type the driver
 /// decodes the scalar result into; `K` is the aggregate's modifier
 /// family ([`crate::expr::ValueAgg`] / [`crate::expr::MetadataAgg`] /
 /// [`crate::expr::OrderedSetAgg`] / [`crate::expr::HypotheticalSetAgg`]),
 /// threaded from the wrapped [`AggregateExpr<Out, K>`].
-///
 /// `K` defaults to [`crate::expr::ValueAgg`] so pre-#89 call sites that
 /// passed a value aggregate (`f.col().sum()`, `f.col().count()`, etc.)
 /// keep working without explicit annotation. Non-value families
 /// (`f.col().percentile_cont(0.5)`, `f.col().rank_of(7_500)`,
 /// `f.col().grouping()`) infer `K` from the returned aggregate's kind
 /// marker.
-///
 /// `#[must_use]` because an unawaited pending query is always a
 /// mistake; the `.fetch_one(ctx)` call is what actually runs the SQL.
 #[must_use = "aggregate queries are lazy — dropping one silently omits the query"]
@@ -95,13 +82,10 @@ where
     Out: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
 {
     /// Execute the aggregate query and decode the single scalar result.
-    ///
     /// Dispatches through the context's execution helpers — aggregate
     /// queries work inside an `atomic()` scope and see the scope's
     /// uncommitted writes.
-    ///
     /// # Short-circuit
-    ///
     /// Does **not** short-circuit on `QuerySet::none()`. Aggregate
     /// semantics differ per op (COUNT on empty → 0; SUM on empty →
     /// NULL; AVG on empty → NULL) and the typed surface cannot
@@ -121,7 +105,7 @@ where
         K: 'ctx,
     {
         async move {
-            // Validate DISTINCT modifier combinations before building SQL —
+            // Validate DISTINCT modifier combinations before building SQL
             // rejected combos (COUNT(*) + DISTINCT, STRING_AGG + DISTINCT)
             // surface as DjogiError::UnsupportedAggregate rather than a
             // cryptic Postgres syntax error.
@@ -142,7 +126,6 @@ where
 
 impl<T: Model> QuerySet<T> {
     /// Apply a scalar aggregate to this queryset.
-    ///
     /// The closure receives a default-constructed `T::Fields` handle
     /// and must return an [`AggregateExpr<Out, K>`]. The returned
     /// aggregate can be any kind: value aggregates (`COUNT` / `SUM` /
@@ -153,17 +136,14 @@ impl<T: Model> QuerySet<T> {
     /// `AggregateExpr<Out, OrderedSetAgg>`), or hypothetical-set
     /// aggregates (`RANK_OF` / `DENSE_RANK_OF` / `PERCENT_RANK_OF` /
     /// `CUME_DIST_OF`, returning `AggregateExpr<Out, HypotheticalSetAgg>`).
-    ///
     /// `K` is inferred from the aggregate the closure returns. Chain
     /// `.filter(Expr<bool>)` on value aggregates for
     /// `FILTER (WHERE ...)` post-filtering; the per-kind impl blocks
     /// on `AggregateExpr` enforce which modifiers are legal per family.
-    ///
     /// The pending [`AggregateQuery<T, Out, K>`] is terminated with
     /// [`AggregateQuery::fetch_one`], which issues
     /// `SELECT <agg> FROM <table> [WHERE ...]` and decodes the single
     /// scalar result.
-    ///
     /// ```ignore
     /// use djogi::prelude::*;
     ///

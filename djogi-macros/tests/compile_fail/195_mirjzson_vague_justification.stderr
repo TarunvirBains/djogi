@@ -1,0 +1,7 @@
+error: `#[mirjzson(justification = "TODO")]` — that value is a placeholder, not a specific reason. Replace it with the actual reason `MirJzSON` is preferable to `Jsonb<T>` for this field (e.g. "payload schema is owned by the upstream partner SDK")
+  --> $DIR/195_mirjzson_vague_justification.rs:14:32
+   |
+14 |     #[mirjzson(justification = "TODO")]
+   |                                ^^^^^^
+
+error: aborting due to 1 previous error

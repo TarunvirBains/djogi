@@ -1,8 +1,6 @@
 //! The `Model` trait — the contract every `#[model]` struct satisfies.
-//!
 //! All CRUD methods take `&mut DjogiContext`, so the same call site works against a
 //! pool or inside a transaction without re-borrows or type juggling:
-//!
 //! ```ignore
 //! // Pool-backed:
 //! let mut ctx = DjogiContext::from_pool(pool.clone());
@@ -15,29 +13,23 @@
 //!     Ok(())
 //! })).await?;
 //! ```
-//!
 //! ## Context dispatch
-//!
 //! Each CRUD method takes `&mut DjogiContext` by mutable reference. The body
 //! pattern-matches on [`DjogiContext::inner_mut`](crate::DjogiContext) to dispatch
 //! to the right query path — pool-backed contexts check out a connection,
 //! transaction-backed ones reuse the open transaction. See `djogi::context`
 //! module docs for the full rationale.
-//!
 //! ## Send bounds
-//!
 //! The returned `Future` types carry `+ Send` explicitly so callers can `.await`
 //! them across task boundaries. `&mut DjogiContext` is itself `Send` because
 //! `DjogiContext` only holds `Send` data (a `DjogiPool`, which is `Arc`-backed
 //! and `Send`, or an open `tokio_postgres` transaction client, which is `Send`).
-//!
 //! ## Single-value `Pk`
-//!
 //! The associated `Pk` type is a single SQL-bindable value (`Encode + Type`).
 //! Composite primary keys (`#[model(pk = ["field_a", "field_b"])]`) are
 //! declared in `PkType::Composite` for the descriptor but are deferred to
-//! Phase 2, where they require a different `get()` signature backed by the
-//! QuerySet filter API. Phase 1 emits a "not yet supported" compile error
+//! , where they require a different `get` signature backed by the
+//! QuerySet filter API. emits a "not yet supported" compile error
 //! if a user sets a composite PK.
 
 use crate::DjogiError;
@@ -46,7 +38,6 @@ use crate::descriptor::ModelDescriptor;
 use std::future::Future;
 
 /// Seal marker for the [`Model`] trait.
-///
 /// The `#[model(...)]` attribute macro emits
 /// `impl djogi::model::__sealed::Sealed for T {}` alongside the
 /// `impl Model for T` block. A hand-rolled `impl Model` that skips
@@ -74,9 +65,7 @@ pub mod __sealed {
 /// makes hand-rolled `impl Model` blocks unsatisfiable, so every `Model` in
 /// production code carries the full derivation chain (descriptor emission,
 /// `FromPgRow`, the `{Model}Fields` / `{Model}Filter` companions, registration).
-///
 /// # What implementing `Model` gives the adopter
-///
 /// - **Single-row CRUD.** [`Model::create`], [`Model::get`], [`Model::save`],
 ///   [`Model::delete`], [`Model::refresh_from_db`] — every method takes
 ///   `&mut DjogiContext` so the same call site works against a pool-backed
@@ -95,13 +84,10 @@ pub mod __sealed {
 ///   [`docs/spec/raw-sql-escape-hatches.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/raw-sql-escape-hatches.md))
 ///   can decode rows into the model with positional, debug-asserted column
 ///   reads.
-///
 /// # How to implement (and the only way to)
-///
 /// Adopters never write `impl Model for MyType` by hand. The sealed
 /// supertrait blocks it at compile time. Use the `#[model(...)]` attribute
 /// macro re-exported through `djogi::prelude`:
-///
 /// ```ignore
 /// use djogi::prelude::*;
 ///
@@ -112,25 +98,20 @@ pub mod __sealed {
 ///     pub published: bool,
 /// }
 /// ```
-///
 /// The macro injects the selected primary key type (`HeerIdRecencyBiased` /
 /// `HeerIdDesc` by default), `created_at: DateTime`, and
 /// `updated_at: DateTime` as real public struct fields, generates the `Model`
 /// impl, the `FromPgRow` impl, the `ArticleFields` / `ArticleFilter` /
 /// `ArticleRelated` companion types, and submits the descriptor via
 /// `inventory::submit!` for app/migration registration.
-///
 /// # Where to read further
-///
 /// - **Specification** — [`docs/spec/models.md`](https://github.com/tarunvir/djogi/blob/main/docs/spec/models.md)
 ///   for the formal `Model` contract, framework field semantics, and the
 ///   `pk = ...` configuration matrix.
 /// - **Getting started** — [`docs/guide/getting-started.md`](https://github.com/tarunvir/djogi/blob/main/docs/guide/getting-started.md)
 ///   for an end-to-end walkthrough.
 /// - **Crate root rustdoc** — module table summarising the public surface.
-///
 /// # Why the seal
-///
 /// Every `Model` method composes through emitter sites that trust
 /// `Self::table_name()` and `Self::descriptor().fields[].name` to be
 /// well-formed identifiers. A hand-rolled `impl Model` could smuggle hostile
@@ -139,7 +120,7 @@ pub mod __sealed {
 /// framework subversion (which has simpler routes via `unsafe`).
 pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// Primary key Rust type.
-    /// - `pk = HeerIdRecencyBiased` (default, Phase 7-Zero-2 T2) → `HeerIdDesc`
+    /// - `pk = HeerIdRecencyBiased` (default) → `HeerIdDesc`
     /// - `pk = HeerId` → `HeerId` (ascending 64-bit)
     /// - `pk = RanjIdRecencyBiased` → `RanjIdDesc`
     /// - `pk = RanjId` → `RanjId` (heeranjid's UUIDv8 newtype)
@@ -148,7 +129,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     ///   `postgres_types::ToSql` bound below, and a dummy newtype
     ///   would misrepresent the model's actual key shape. `pk = None` models
     ///   still get struct injection, `FromRow`, and descriptor registration
-    ///   — they just don't get CRUD methods. A future phase will introduce
+    ///   they just don't get CRUD methods. A future phase will introduce
     ///   a separate trait for composite/user-managed PKs.
     type Pk: Clone
         + Send
@@ -159,14 +140,13 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
 
     /// Compile-time field handle bag. Generated by `#[model]` as
     /// `{Model}Fields` — a ZST whose root-column methods return
-    /// [`crate::query::DjogiField<Self, V>`] after Phase 8eta PR3.
+    /// [`crate::query::DjogiField<Self, V>`] after .
     /// SQL-only path-aware traversal lives on the generated
     /// `{Model}SqlFields` sibling.
-    ///
     /// `Default` is required so `QuerySet::filter`'s closure can construct
     /// the ZST handle without the caller naming it; the generated struct
     /// trivially satisfies this via `#[derive(Default)]`. The unit type
-    /// `()` also satisfies the bound, which keeps pre-Phase-2 test-only
+    /// `()` also satisfies the bound, which keeps minimal test-only
     /// `Model` impls (e.g. the `Fake` model in `query::field`'s unit
     /// tests) valid without dragging in a full field bag.
     type Fields: Copy + Default + Send + Sync + 'static;
@@ -178,14 +158,12 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// model. The default impl returns an empty queryset — no filters, no
     /// ordering, no limit — and is correct for every model; individual
     /// models should not override it.
-    ///
     /// This method is the canonical entry point for every query, so the
     /// trait's associated `type Fields` bounds (`Copy + Default + Send +
     /// Sync + 'static`) already satisfy `QuerySet::filter`'s default-
     /// constructed field bag.
-    ///
     /// Proxy models inherit `objects()` and rely on the default-filter /
-    /// default-ordering hooks (Phase 8β T3.4) to seed the returned
+    /// default-ordering hooks (4) to seed the returned
     /// queryset with the proxy's `#[model(default_filter, default_order)]`
     /// state — the override happens inside [`crate::query::QuerySet::new`]
     /// rather than here so non-proxy models never pay a virtual-call cost.
@@ -199,21 +177,17 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// macro emits an override returning `Some(Condition::RawSql(...))`
     /// containing the lowered SQL fragment from
     /// `model::proxy::lower_default_filter_to_sql`.
-    ///
     /// Non-proxy models keep this default impl (returns `None`), which
-    /// is a zero-cost no-op at every `QuerySet::new()` call site —
+    /// is a zero-cost no-op at every `QuerySet::new` call site
     /// rustc inlines the `None` return and the conditional in
     /// [`crate::query::QuerySet::new`] folds the default seed away.
-    ///
     /// User `.filter(|f| ...)` calls AND-compose with the default,
     /// matching Django-style semantics: the proxy filter is the prefix
     /// no adopter call can drop, and explicit filters narrow further on
     /// top of it. Bulk-delete on a proxy queryset inherits this scoping
-    /// automatically — no separate runtime warning per D5 (v3 line 144).
-    ///
+    /// automatically — no separate runtime warning per D5 .
     /// # Why `Option<Condition>` rather than `Condition`
-    ///
-    /// `None` is the structural-no-op signal for the default impl —
+    /// `None` is the structural-no-op signal for the default impl
     /// distinct from `Some(Condition::True)`. Both render the same SQL,
     /// but `None` lets [`crate::query::QuerySet::new`] short-circuit
     /// without an enum match per call (the cost of which would be
@@ -225,19 +199,16 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// Default ordering applied to every freshly constructed
     /// [`crate::query::QuerySet<Self>`]. Proxy models override via
     /// `#[model(proxy_for = Parent, default_order = [(field, Asc), ...])]`
-    /// — the macro emits an override returning the lowered
+    /// the macro emits an override returning the lowered
     /// [`Vec<crate::query::OrderExpr>`] from the parsed
     /// `(field, Asc|Desc)` tuples.
-    ///
     /// Non-proxy models keep this default impl (returns the empty
     /// `Vec`). User `.order_by(|f| ...)` calls **append** to the
     /// default per the existing Django-style queryset convention
     /// (`queryset.rs` lines 25–28 — append, not replace). Adopter
     /// surprise is minimised: one ordering rule for every queryset
     /// shape, regardless of proxy / non-proxy status.
-    ///
     /// # Why `Vec` rather than `&'static [OrderExpr]`
-    ///
     /// `OrderExpr` is `Clone` but not `Copy` (the spatial variant
     /// holds a `GeoPoint`), so a `&'static [OrderExpr]` would force
     /// every call site to clone the slice into a `Vec` for the
@@ -251,7 +222,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// Returns the primary key value for this instance.
     fn pk_value(&self) -> &Self::Pk;
 
-    /// Static model descriptor — used by the migration differ (Phase 6).
+    /// Static model descriptor — used by the migration differ .
     fn descriptor() -> &'static ModelDescriptor;
 
     /// Fetch by primary key. Returns `DjogiError::NotFound` if absent.
@@ -269,7 +240,6 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
     /// Update all user-defined fields for this row. Sets `updated_at = now()`.
-    ///
     /// On success `self` is rehydrated from the `UPDATE ... RETURNING *`
     /// result — `updated_at` advances, and any column mutated by a
     /// `BEFORE UPDATE` trigger or server-side default surfaces in the
@@ -288,51 +258,37 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         ctx: &'ctx mut DjogiContext,
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx;
 
-    // ── Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING ─────────────────────────
+    // ── — PG18 OLD/NEW RETURNING ─────────────────────────
 
     /// Update this row and return a before/after snapshot pair.
-    ///
     /// Uses PostgreSQL 18 `RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)`
     /// to retrieve both the pre-update and post-update row images in a single
     /// round-trip, decoded into a [`ReturningPair<Self>`].
-    ///
     /// # Consumes `self`
-    ///
     /// This method consumes `self` because the caller's in-memory instance is
     /// stale after the update. The type system prevents accidental reuse.
     /// Continue working with `pair.new` after the call returns.
-    ///
     /// # Relation to `save()`
-    ///
     /// `save()` is the in-place update API — it rehydrates `self` from the DB
     /// and returns `()`. Use `save()` when you want to continue using the same
     /// instance. Use `update_returning_pair` when you need both the before and
     /// after snapshots.
-    ///
     /// # Versioned models
-    ///
     /// For models with `#[field(version)]`, this method enforces the same
     /// optimistic-lock behavior as `save()`: if the DB version has advanced
     /// beyond the in-memory value, the call returns
     /// [`DjogiError::LockConflict`].
-    ///
     /// # Hooks and outbox
-    ///
     /// Hook and outbox order mirrors `save()`:
     /// `before_save → UPDATE RETURNING → outbox(pair.new) → after_save(pair.new) → on_commit`.
-    ///
     /// The outbox `Save` payload is the DB-returned post-image (`pair.new`),
     /// not the (stale) consumed `self`. No diff-shaped outbox payload is
     /// emitted in this release — see the outbox module docs for the v1 policy.
-    ///
     /// # Protected fields
-    ///
     /// Both `old` and `new` expose full model field values, including
     /// `#[field(protected(...))]` fields. Redaction policy is deferred to
     /// issue #227.
-    ///
     /// # PostgreSQL 18 only
-    ///
     /// Djogi has a hard PostgreSQL 18 floor. No fallback or polyfill is
     /// provided for older PostgreSQL versions.
     fn update_returning_pair(
@@ -354,39 +310,28 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     }
 
     /// Delete this row and return the pre-delete DB snapshot.
-    ///
     /// Uses PostgreSQL 18 `RETURNING WITH (OLD AS __djogi_old)` to retrieve the
     /// row's state at the moment of deletion. The returned `Self` reflects
     /// server-side defaults and trigger effects visible in the `OLD` table
     /// reference — it is more reliable than the consumed `self` for outbox
     /// and audit purposes.
-    ///
     /// DELETE has no `NEW` side. For UPDATE before/after pairs see
     /// [`Model::update_returning_pair`].
-    ///
     /// # Consumes `self`
-    ///
     /// Like [`Model::delete`], this method consumes `self`. The returned value
     /// is the DB-authoritative pre-delete snapshot, not the caller's value.
-    ///
     /// # Hooks and outbox
-    ///
     /// Hook and outbox order mirrors `delete()`:
     /// `before_delete → DELETE RETURNING → outbox(self) → after_delete(self) → on_commit`.
-    ///
     /// The outbox `Delete` payload is the in-memory instance (`self`) after
     /// `before_delete` mutations. This keeps hook-time mutations visible to both
     /// `after_delete` and outbox consumers, while the return value remains the
     /// DB snapshot (`deleted`) returned by `RETURNING`.
-    ///
     /// # Protected fields
-    ///
     /// The returned snapshot contains full model field values, including
     /// `#[field(protected(...))]` fields. Redaction policy is deferred to
     /// issue #227.
-    ///
     /// # PostgreSQL 18 only
-    ///
     /// Djogi has a hard PostgreSQL 18 floor. No fallback or polyfill is
     /// provided for older PostgreSQL versions.
     fn delete_returning(
@@ -400,8 +345,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         async { unreachable!("delete_returning: #[model] macro must emit this implementation") }
     }
 
-    // ── Tree-recursive sugar (Phase 8-Zero Cluster B2 — T9) ─────────────────
-    //
+    // ── Tree-recursive sugar ─────────────────
     // These default methods provide a `tree_edge`-aware shorthand for
     // [`crate::query::QuerySet::tree_descendants`] /
     // [`crate::query::QuerySet::tree_ancestors`]. They resolve the
@@ -409,7 +353,6 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     // [`ModelDescriptor::tree_edge`](crate::descriptor::ModelDescriptor)
     // and fail with [`DjogiError::Validation`] if the model has not
     // declared `#[model(tree_edge = "...")]`.
-    //
     // The runtime check is the deliberate trade-off: a compile-time
     // gate would require either an extra trait the macro implements
     // only when `tree_edge` is set, or generic-bounded specialization
@@ -420,14 +363,11 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
 
     /// `tree_edge`-aware shorthand for
     /// [`QuerySet::tree_descendants`](crate::query::QuerySet::tree_descendants).
-    ///
     /// Resolves the self-FK column from this model's
     /// `#[model(tree_edge = "...")]` declaration and constructs a
     /// [`RecursiveQuerySet`](crate::query::RecursiveQuerySet)
     /// pre-anchored at `root_id`.
-    ///
     /// # Errors
-    ///
     /// Returns [`DjogiError::Validation`] when the model has not
     /// declared a default `tree_edge`. The error message names the
     /// model and instructs the caller to either add
@@ -469,15 +409,12 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
 
     /// Framework-internal: returns `true` when this row should be tombstoned
     /// (rather than upserted) by the delta-sync fetcher. Default: `false`.
-    ///
     /// Models opting into `#[model(soft_deletable)]` get a macro-emitted
     /// override that forwards to
     /// `<Self as SoftDeletable>::deleted_at(self).is_some()`.
     /// Adopters do NOT override this method directly — the soft-delete
     /// surface is `#[model(soft_deletable)]` + the `SoftDeletable` trait.
-    ///
     /// # Why on `Model` rather than gated on `SoftDeletable`
-    ///
     /// The delta-sync fetcher in `djogi::query::refresh` walks items
     /// generically over `T: Model + Cacheable + ...`. Rust's coherence rules
     /// don't allow specializing the walk based on whether `T: SoftDeletable`,
@@ -491,8 +428,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     }
 
     /// Framework-internal: emit a portable field predicate as SQL.
-    ///
-    /// Phase 8eta PR2a installs the default that returns
+    /// Installs the default that returns
     /// [`crate::query::PortablePredicateError::UnsupportedModel`] so
     /// hand-written `Model` impls (test stubs, internal fixtures with
     /// `type Fields = ()`) keep compiling without claiming to support
@@ -500,18 +436,14 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// on every PK-backed `#[model]`-emitted impl with a generated
     /// `(field_name, LookupOp)` dispatch that calls into the
     /// `crate::query::portable::emit::*` helpers.
-    ///
     /// # Why on `Model` rather than a separate trait?
-    ///
     /// The direct-`Q<T>` walker in PR2b iterates `Q::Portable` leaves
     /// generically over `T: Model`. A separate `PortableSqlEmit<T>` trait
     /// would require every existing test fixture and adopter `Model` impl
     /// to add a stub implementation before PR2b could compile — PRs
     /// would not be bisectable. Putting the hook on `Model` with a safe
     /// default keeps the trait surface unified and preserves bisection.
-    ///
     /// # Adopter contract
-    ///
     /// Adopters do **not** override this method directly — the `#[model(...)]`
     /// attribute macro emits the override on every macro-generated impl.
     /// Hand-written `impl Model` blocks (which are themselves discouraged
@@ -532,10 +464,8 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
 
     /// Framework-internal outbox hook for `execute_returning_pairs`/bulk
     /// save-style mutations.
-    ///
     /// The default implementation is a hidden no-op so non-events models
     /// compile without `serde::Serialize`/outbox plumbing.
-    ///
     /// #[model(events)]-annotated implementations override this hook to
     /// emit a single `Save` outbox row per returned `pair.new` payload.
     #[doc(hidden)]
@@ -549,7 +479,6 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
 
     /// Framework-internal batched outbox hook for bulk
     /// `execute_returning_pairs` writes.
-    ///
     /// Default is a hidden no-op so non-events models compile without
     /// `serde::Serialize`/outbox plumbing.
     #[doc(hidden)]
@@ -562,7 +491,6 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     }
 
     /// Framework-internal cache invalidation hook for save-style writes.
-    ///
     /// Default is a hidden no-op so callers can invoke this from generic
     /// bulk paths without imposing extra public trait bounds.
     #[doc(hidden)]
@@ -576,7 +504,6 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
 
     /// Framework-internal gate for deciding whether a bulk row-count update
     /// should collect affected primary keys for cache invalidation.
-    ///
     /// Default is false so hand-written/internal `Model` impls keep the existing
     /// row-count fast path.
     #[doc(hidden)]
@@ -586,7 +513,6 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     }
 
     /// Framework-internal cache invalidation hook for bulk save-style writes.
-    ///
     /// Default is a hidden no-op so generic bulk terminals do not impose public
     /// cache trait bounds on all `Model` implementors.
     #[doc(hidden)]
@@ -598,10 +524,8 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         Ok(())
     }
 
-    /// Walk **every** self-FK edge declared on this model upward —
-    /// the multi-edge sibling of [`Model::tree_ancestors`]. Phase
-    /// 8-Zero Cluster B3 (T13a).
-    ///
+    /// Walk **every** self-FK edge declared on this model upward
+    /// the multi-edge sibling of [`Model::tree_ancestors`].
     /// `full_ancestors` is the right shape for kinship / pedigree
     /// queries where a node has more than one parent edge (e.g.
     /// `mother_id` + `father_id` on an animal model). The recursive
@@ -612,23 +536,20 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// edges. Path multiplicity is preserved — an ancestor reachable
     /// by two distinct edge sequences appears twice, which is
     /// load-bearing for Wright-style kinship coefficient sums.
-    ///
     /// Combine with
     /// [`fetch_all_with_paths`](crate::query::RecursiveQuerySet::fetch_all_with_paths)
     /// to recover which edge sequence reached each ancestor — that is
     /// the only terminal that distinguishes
     /// `["mother_id", "father_id"]` from `["father_id", "mother_id"]`
     /// when both lead to the same row.
-    ///
     /// # Edge cases
-    ///
     /// - `self_fk_count() == 0` — the returned `RecursiveQuerySet`
     ///   carries an empty `edges` Vec. Builder methods chain
     ///   normally; the **terminal** fails with
     ///   [`DjogiError::Validation`] naming the model. Errors at
     ///   terminal time (not construction time) keep the return type
     ///   uniform — callers can write `Model::full_ancestors(id)
-    ///   .with_max_depth(5).fetch_all(ctx).await?` without an extra
+    /// .with_max_depth(5).fetch_all(ctx).await?` without an extra
     ///   `?` for `self_fk_count() == 0`.
     /// - `self_fk_count() == 1` — degenerates to
     ///   [`Model::tree_ancestors`] over the lone edge. Same SQL
@@ -662,8 +583,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         )
     }
 
-    // ── Materialised transitive closure (Phase 8-Zero Cluster B4 — T13b) ─────
-    //
+    // ── Materialised transitive closure ──────────────
     // [`materialize_closure`](Model::materialize_closure) populates a
     // closure-table sibling of this model. Per the scalability lens
     // (Risk 10), materialised transitive closure is the production-
@@ -672,7 +592,6 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     // shipping a framework helper means the framework *supports* the
     // production pattern rather than just *demonstrating* the
     // recursive-CTE one.
-    //
     // The macro-side wiring (`#[model(closure_for = T)]`) that would
     // generate the [`ClosureModel`] impl from a single attribute is
     // explicitly out of scope for B4 — adopters hand-write the impl
@@ -680,13 +599,11 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     // without changing this method signature.
 
     /// Populate a transitive-closure table for this model's self-FK
-    /// graph. Phase 8-Zero Cluster B4 (T13b).
-    ///
+    /// graph.
     /// `C` is an adopter-supplied [`ClosureModel`] whose `Source =
     /// Self` — the type-level binding pins the closure table to the
     /// source model so wrong-source closure tables fail at compile
     /// time. Reach for this helper when:
-    ///
     /// - The source table has more than a handful of rows and tree
     ///   queries against it have become hot. Closure-table lookups
     ///   are indexed point-reads; recursive-CTE walks are O(subtree
@@ -695,9 +612,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     ///   The closure table records `path_count` per
     ///   `(source, ancestor, depth)` triple, which is the input to
     ///   coefficient sums.
-    ///
     /// # Behaviour
-    ///
     /// - **`opts.roots = None`** — walks every row in the source
     ///   table. Right shape for the initial population.
     /// - **`opts.roots = Some(ids)`** — walks only those source rows.
@@ -713,30 +628,22 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     ///   correct total. `TRUNCATE` the closure table first only when
     ///   stale rows for *deleted* edges must be purged (the helper
     ///   does not garbage-collect rows whose path no longer exists).
-    ///
     /// # Required closure-table schema
-    ///
     /// The closure table **must** carry a unique constraint on
     /// `(source_column, ancestor_column, depth_column)` — Postgres
     /// rejects `ON CONFLICT (...)` against missing constraints with
     /// `42P10`. See [`crate::query::closure`] module docs for the
     /// canonical CREATE TABLE shape.
-    ///
     /// # Errors
-    ///
     /// Returns [`DjogiError::Validation`] when:
-    ///
     /// - `Self::descriptor().self_fk_count() == 0` — there are no
     ///   self-FK edges to walk.
     /// - Any [`ClosureModel`] column-name accessor returns an invalid
     ///   identifier (non-ASCII, reserved keyword, > 63 bytes, etc.).
-    ///
-    /// Returns the underlying database error wrapped in
-    /// [`DjogiError`] for query failures (typically a missing unique
-    /// constraint surfaces as `42P10` here).
-    ///
+    ///   Returns the underlying database error wrapped in
+    ///   [`DjogiError`] for query failures (typically a missing unique
+    ///   constraint surfaces as `42P10` here).
     /// # Example
-    ///
     /// ```ignore
     /// // Initial population — walk every row.
     /// let report = Elephant::materialize_closure::<ElephantAncestry>(
@@ -769,14 +676,12 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
 
 /// Look up `M`'s declared `tree_edge` and synthesise a
 /// `RelationPath<M, M>` that targets the same model's table.
-///
 /// The descriptor's `tree_edge` is the field NAME (which equals the
 /// column name in Djogi); the macro's compile-time validation in B1
-/// (T12) already proved both that the named field exists on the
+/// already proved at macro-expand time both that the named field exists on the
 /// struct and that it is a self-FK, so the lookup here is a pure
 /// metadata read with no fallible step beyond the
 /// `tree_edge.is_some()` check.
-///
 /// `target_table = M::table_name()` because a self-FK by definition
 /// targets the same model. `RelationKind::ForeignKey` is the
 /// canonical kind for self-FK edges; if a future phase adds

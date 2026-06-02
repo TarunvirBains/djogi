@@ -1,12 +1,9 @@
 //! Typed `VALUES` inline-relation join source.
-//!
 //! # What
-//!
 //! [`InlineValues<Row>`] is a typed, validated builder for a Postgres
-//! `VALUES (..), (..)` clause used as a JOIN source.  Adopters pre-compute a
+//! `VALUES (..), (..)` clause used as a JOIN source. Adopters pre-compute a
 //! small lookup dataset in Rust, wrap it in `InlineValues`, and join it
 //! against a model queryset with an explicit, type-checked `ON` predicate:
-//!
 //! ```ignore
 //! use djogi::prelude::*;
 //!
@@ -23,11 +20,8 @@
 //!     .fetch_all(&mut ctx)
 //!     .await?;
 //! ```
-//!
 //! # SQL shape
-//!
 //! For a two-column row `(A, B)` and user alias `weights`:
-//!
 //! ```sql
 //! SELECT
 //!     __djogi_m.id   AS id,
@@ -45,9 +39,7 @@
 //! [ORDER BY __djogi_m.created_at DESC]
 //! [LIMIT $6] [OFFSET $7]
 //! ```
-//!
 //! # Safety model
-//!
 //! - All row data flows through [`SqlAccumulator::push_bind`] — never
 //!   string-interpolated.
 //! - Alias and column names are validated with
@@ -55,46 +47,37 @@
 //!   rejecting the `__djogi_` prefix and Postgres reserved keywords.
 //! - SQL type casts (e.g. `::BIGINT`) come from sealed framework constants on
 //!   [`ValuesScalar`] — not from user input.
-//! - No implicit `ON TRUE`.  The join predicate is always a structured typed
+//! - No implicit `ON TRUE`. The join predicate is always a structured typed
 //!   predicate, never a raw SQL string.
-//!
 //! # Empty behaviour
-//!
-//! Empty `InlineValues` is valid.  Terminal methods short-circuit after
+//! Empty `InlineValues` is valid. Terminal methods short-circuit after
 //! validation:
-//!
-//! | Method      | Inner join result            | Left join result                                          | Cross join result     |
+//! | Method | Inner join result | Left join result | Cross join result |
 //! |:------------|:-----------------------------|:----------------------------------------------------------|:----------------------|
-//! | `fetch_all` | `Ok(vec![])`                 | executes query — one pair per joined row; misses yield `None` | `Ok(vec![])`      |
-//! | `first`     | `Ok(None)`                   | executes query — first joined pair or `None`              | `Ok(None)`            |
-//! | `fetch_one` | `Err(NotFound)`              | executes query — exactly one joined pair or error         | `Err(NotFound)`       |
-//! | `count`     | `Ok(0)`                      | executes query — count of joined pairs                    | `Ok(0)`               |
-//! | `exists`    | `Ok(false)`                  | executes query — any joined pair?                         | `Ok(false)`           |
-//!
+//! | `fetch_all` | `Ok(vec![])` | executes query — one pair per joined row; misses yield `None` | `Ok(vec![])` |
+//! | `first` | `Ok(None)` | executes query — first joined pair or `None` | `Ok(None)` |
+//! | `fetch_one` | `Err(NotFound)` | executes query — exactly one joined pair or error | `Err(NotFound)` |
+//! | `count` | `Ok(0)` | executes query — count of joined pairs | `Ok(0)` |
+//! | `exists` | `Ok(false)` | executes query — any joined pair? | `Ok(false)` |
 //! # Supported row types
-//!
-//! Tuple rows of arity 1–6.  Each column type must implement [`ValuesScalar`].
+//! Tuple rows of arity 1–6. Each column type must implement [`ValuesScalar`].
 //! Supported scalars: `String`, `i8`, `u8`, `i16`, `u16`, `i32`, `u32`,
 //! `i64`, `u64`, `f32`, `f64`, `bool`, `Decimal`, `Uuid`, `HeerId`,
 //! `HeerIdDesc`, `RanjId`, `RanjIdDesc`, `DateTime` (`OffsetDateTime`),
 //! `PrimitiveDateTime`, `Date`, `Time`, `Interval`, `Vec<u8>`, and
 //! `Option<T>` for each of the above.
-//!
 //! # Supported join types
-//!
-//! | Entry point                           | Join kind      | Result type          |
+//! | Entry point | Join kind | Result type |
 //! |:--------------------------------------|:---------------|:---------------------|
-//! | [`QuerySet::join_values`]             | INNER JOIN     | `Vec<(T, Row)>`      |
-//! | [`QuerySet::left_join_values`]        | LEFT JOIN      | `Vec<(T, Option<Row>)>` |
-//! | [`QuerySet::cross_join_values`]       | CROSS JOIN     | `Vec<(T, Row)>`      |
-//!
+//! | [`QuerySet::join_values`] | INNER JOIN | `Vec<(T, Row)>` |
+//! | [`QuerySet::left_join_values`] | LEFT JOIN | `Vec<(T, Option<Row>)>` |
+//! | [`QuerySet::cross_join_values`] | CROSS JOIN | `Vec<(T, Row)>` |
 //! # Non-goals
-//!
 //! - No implicit `ON TRUE` joins; cartesian products require the explicit
 //!   [`QuerySet::cross_join_values`] API.
 //! - No struct rows — only tuples.
 //! - Very large value lists should be loaded through a temp/staging table; Postgres
-//!   plans large `VALUES` clauses expensively.  Keep per-query VALUES under ~1 000
+//!   plans large `VALUES` clauses expensively. Keep per-query VALUES under ~1 000
 //!   rows; chunk larger inputs or use `COPY` + temp table.
 #![allow(clippy::manual_async_fn)]
 
@@ -123,7 +106,7 @@ const PG_MAX_PARAMS: usize = 65_535;
 const MODEL_ALIAS: &str = "__djogi_m";
 
 /// Framework-owned presence sentinel column appended to every VALUES row in
-/// LEFT JOIN mode.  Detects "no match" vs "matched row with nullable columns".
+/// LEFT JOIN mode. Detects "no match" vs "matched row with nullable columns".
 const SENTINEL_COL: &str = "__djogi_present";
 
 /// The fixed aliases used in the SELECT list for each projected values column.
@@ -147,13 +130,10 @@ mod sealed {
 // ── ValuesScalar ──────────────────────────────────────────────────────────────
 
 /// A scalar type that can appear in a typed `VALUES` inline relation column.
-///
 /// This is a sealed trait — all implementations are inside this module.
 /// Adopters use the standard Rust types listed in the module documentation;
 /// they do not implement this trait directly.
-///
 /// # Contract
-///
 /// - `SQL_CAST` is the Postgres type name used to cast the *first-row*
 ///   placeholder: `$1::BIGINT`, `$1::TEXT`, etc.
 /// - `push_bind_owned` pushes exactly one positional bind slot, performing any
@@ -168,7 +148,6 @@ pub trait ValuesScalar: sealed::SealedValuesScalar + Clone + Send + Sync + 'stat
     /// Push a typed `NULL` for this scalar's wire type.
     fn push_null(acc: &mut SqlAccumulator);
     /// Decode from a positional column in a Postgres row.
-    ///
     /// `alias` is the framework-generated SELECT-list alias
     /// (e.g. `"__djogi_values_0"`), used for error messages and the
     /// debug-build column-name assertion in [`decode_at`].
@@ -243,10 +222,9 @@ impl_scalar_direct!(crate::RanjIdDesc, "UUID");
 impl_scalar_direct!(crate::Interval, "INTERVAL");
 
 // ── Scalar impls: widened ─────────────────────────────────────────────────────
-//
 // Narrow integer types that `tokio-postgres` does not support directly must
 // be widened to a compatible wire type before binding, and narrowed back on
-// decode.  This matches the macro-emitted CRUD path in `sql_bind.rs`.
+// decode. This matches the macro-emitted CRUD path in `sql_bind.rs`.
 
 macro_rules! impl_scalar_widened {
     ($N:ty, $W:ty, $CAST:literal, $widen:expr) => {
@@ -337,8 +315,7 @@ impl ValuesScalar for Option<u64> {
 // ── IntoValuesColumns — arity-checked column-name carrier ────────────────────
 
 /// Sealed trait for the column-name tuple supplied to [`InlineValues::new`].
-///
-/// Implemented for `(&'static str,)` through the 6-tuple.  The arity of the
+/// Implemented for `(&'static str)` through the 6-tuple. The arity of the
 /// supplied tuple must match the row type; mismatches are caught at compile
 /// time because [`InlineValues::new`] constrains `C = Row::Columns`.
 pub trait IntoValuesColumns: sealed::SealedColumns {
@@ -427,7 +404,6 @@ impl IntoValuesColumns
 // ── ValuesRow — sealed trait for tuple row types ──────────────────────────────
 
 /// Sealed trait for row types stored in an [`InlineValues`].
-///
 /// Implemented for tuples of arity 1–6 where every element implements
 /// [`ValuesScalar`].
 pub trait ValuesRow: sealed::SealedValuesRow + Clone + Send + Sync + 'static {
@@ -516,8 +492,7 @@ impl_values_row!(6; (&'static str, &'static str, &'static str, &'static str, &'s
 // ── ValuesFieldRef ────────────────────────────────────────────────────────────
 
 /// A typed reference to one column in a [`ValuesFields`] bag.
-///
-/// Created by `ValuesFields::{col0, col1, …}` inside the `ON` closure.  `V`
+/// Created by `ValuesFields::{col0, col1, …}` inside the `ON` closure. `V`
 /// ties the reference to a specific Rust type so [`FieldRef::eq_values`] can
 /// enforce a type match between the model column and the values column at
 /// compile time.
@@ -550,9 +525,8 @@ impl<V> std::fmt::Debug for ValuesFieldRef<V> {
 // ── ValuesFields ──────────────────────────────────────────────────────────────
 
 /// Zero-sized bag of typed column handles for a VALUES row.
-///
 /// Received as the second argument of the `ON` closure in
-/// [`QuerySet::join_values`] / [`QuerySet::left_join_values`].  Each method
+/// [`QuerySet::join_values`] / [`QuerySet::left_join_values`]. Each method
 /// returns a [`ValuesFieldRef<V>`] tied to the column's Rust type.
 pub struct ValuesFields<Row>(PhantomData<fn() -> Row>);
 
@@ -660,11 +634,9 @@ impl<
 // ── ValuesOn — structured ON predicate ───────────────────────────────────────
 
 /// An opaque, type-safe ON predicate for a VALUES join.
-///
 /// Constructed by [`FieldRef::eq_values`] and composed with `&`.
 /// Only equality predicates are supported in v0.1.
-///
-/// There is intentionally no raw-SQL constructor.  Any future bypass must
+/// There is intentionally no raw-SQL constructor. Any future bypass must
 /// follow Djogi's explicit bypass culture.
 pub struct ValuesOn<T: Model>(ValuesOnKind<T>);
 
@@ -728,17 +700,14 @@ fn fmt_values_on_kind<T: Model>(
 // ── FieldRef::eq_values ───────────────────────────────────────────────────────
 
 /// Extend `FieldRef<M, V>` with `eq_values` when `V: ValuesScalar`.
-///
 /// Placed here rather than in `field.rs` so that `ValuesOn` / `ValuesFieldRef`
-/// do not need to be visible from that module.  Rust allows inherent impls
+/// do not need to be visible from that module. Rust allows inherent impls
 /// in any module of the same crate.
 impl<M: Model, V: ValuesScalar> crate::query::field::FieldRef<M, V> {
     /// Build an equality predicate between this model column and a VALUES
     /// column.
-    ///
     /// Both sides must share the same Rust type `V`; comparing a
     /// `FieldRef<T, i64>` to a `ValuesFieldRef<f64>` is a compile error.
-    ///
     /// The model field must resolve to a root-table column. Relation-path
     /// fields such as `animal.department().name()` are rejected when the
     /// terminal executes because VALUES joins do not synthesize the extra
@@ -749,11 +718,9 @@ impl<M: Model, V: ValuesScalar> crate::query::field::FieldRef<M, V> {
 }
 
 /// Extend `DjogiField<M, V>` with `eq_values` when `V: ValuesScalar`.
-///
 /// Djogi's generated field-accessor closures yield `DjogiField<M, V>`
 /// (wrapping `FieldRef`). Both the direct `FieldRef` path and the
 /// `DjogiField` path must support `eq_values`, so adopters can write:
-///
 /// ```ignore
 /// Animal::objects().join_values(weights, |a, v| {
 ///     a.id().eq_values(v.col0())  // a.id() returns DjogiField<Animal, HeerIdDesc>
@@ -762,12 +729,10 @@ impl<M: Model, V: ValuesScalar> crate::query::field::FieldRef<M, V> {
 impl<M: Model, V: ValuesScalar> crate::query::field::DjogiField<M, V> {
     /// Build an equality predicate between this model column and a VALUES
     /// column.
-    ///
-    /// Both sides must share the same Rust type `V`.  Comparing a
+    /// Both sides must share the same Rust type `V`. Comparing a
     /// `DjogiField<T, i64>` to a `ValuesFieldRef<f64>` is a compile error.
     /// Root-table columns are supported; relation-path fields are rejected
     /// when the terminal executes for the same reason as [`FieldRef::eq_values`].
-    ///
     /// ```ignore
     /// .join_values(weights, |animal, v| {
     ///     animal.id().eq_values(v.col0())      // HeerIdDesc matches col0 ✓
@@ -782,9 +747,8 @@ impl<M: Model, V: ValuesScalar> crate::query::field::DjogiField<M, V> {
 // ── InlineValues ──────────────────────────────────────────────────────────────
 
 /// A validated, typed inline VALUES relation.
-///
 /// Holds a list of row tuples plus validated SQL identifiers (alias and column
-/// names).  Constructed via [`InlineValues::new`], which validates all
+/// names). Constructed via [`InlineValues::new`], which validates all
 /// identifiers at construction time.
 pub struct InlineValues<Row: ValuesRow> {
     pub(crate) rows: Vec<Row>,
@@ -816,27 +780,21 @@ impl<Row: ValuesRow> std::fmt::Debug for InlineValues<Row> {
 
 impl<Row: ValuesRow> InlineValues<Row> {
     /// Create and validate a typed inline VALUES relation.
-    ///
     /// # Arguments
-    ///
     /// - `rows` — the value data; may be empty (valid zero-row relation).
     /// - `alias` — SQL alias for the VALUES sub-relation (e.g. `"weights"`).
     ///   Must be a plain SQL identifier that does not start with `__djogi_`.
     /// - `columns` — arity-checked tuple of `&'static str` column names.
-    ///   Each name must pass the same validation as `alias`.  No duplicates
+    ///   Each name must pass the same validation as `alias`. No duplicates
     ///   after Postgres unquoted-identifier case folding.
-    ///
     /// # Errors
-    ///
     /// Returns [`DjogiError::Validation`] if:
     /// - `alias` or any column name fails identifier validation.
     /// - Column names contain duplicates, including mixed-case spellings that
     ///   fold to the same unquoted Postgres identifier.
     /// - `rows.len() × Row::ARITY` exceeds the Postgres parameter ceiling
-    ///   (65 535).  Chunk the list or use a staging table instead.
-    ///
+    ///   (65 535). Chunk the list or use a staging table instead.
     /// # Example
-    ///
     /// ```ignore
     /// let weights: InlineValues<(i64, f64)> = InlineValues::new(
     ///     vec![(1_i64, 0.91_f64), (2_i64, 0.72_f64)],
@@ -921,8 +879,7 @@ impl<Row: ValuesRow> InlineValues<Row> {
 // ── ValuesJoinedQuerySet (inner join) ─────────────────────────────────────────
 
 /// A lazy INNER JOIN of a model queryset against an inline VALUES relation.
-///
-/// Constructed by [`QuerySet::join_values`].  Terminals produce `(T, Row)` pairs.
+/// Constructed by [`QuerySet::join_values`]. Terminals produce `(T, Row)` pairs.
 pub struct ValuesJoinedQuerySet<T: Model, Row: ValuesRow> {
     pub(crate) left: QuerySet<T>,
     pub(crate) values: InlineValues<Row>,
@@ -941,8 +898,7 @@ impl<T: Model, Row: ValuesRow> std::fmt::Debug for ValuesJoinedQuerySet<T, Row> 
 // ── LeftValuesJoinedQuerySet (left join) ──────────────────────────────────────
 
 /// A lazy LEFT JOIN of a model queryset against an inline VALUES relation.
-///
-/// Constructed by [`QuerySet::left_join_values`].  Terminals produce
+/// Constructed by [`QuerySet::left_join_values`]. Terminals produce
 /// `(T, Option<Row>)` pairs — `None` when no values row matched.
 /// Multiple values rows can match the same left row, producing multiple pairs.
 pub struct LeftValuesJoinedQuerySet<T: Model, Row: ValuesRow> {
@@ -963,16 +919,13 @@ impl<T: Model, Row: ValuesRow> std::fmt::Debug for LeftValuesJoinedQuerySet<T, R
 // ── CrossValuesJoinedQuerySet (cartesian join) ────────────────────────────────
 
 /// A lazy CROSS JOIN of a model queryset against an inline VALUES relation.
-///
-/// Constructed by [`QuerySet::cross_join_values`].  Terminals produce `(T, Row)`
+/// Constructed by [`QuerySet::cross_join_values`]. Terminals produce `(T, Row)`
 /// pairs — one pair for every combination of model row and VALUES row
 /// (Cartesian product, no `ON` predicate).
-///
 /// # Empty behaviour
-///
 /// If either the model queryset is `none()`-derived or [`InlineValues`] has
 /// zero rows, terminals short-circuit and return the empty result without a
-/// database round-trip.  A Cartesian product with an empty set is always empty.
+/// database round-trip. A Cartesian product with an empty set is always empty.
 pub struct CrossValuesJoinedQuerySet<T: Model, Row: ValuesRow> {
     pub(crate) left: QuerySet<T>,
     pub(crate) values: InlineValues<Row>,
@@ -990,19 +943,14 @@ impl<T: Model, Row: ValuesRow> std::fmt::Debug for CrossValuesJoinedQuerySet<T, 
 
 impl<T: Model> QuerySet<T> {
     /// INNER JOIN this queryset against an inline VALUES relation.
-    ///
     /// Returns a [`ValuesJoinedQuerySet<T, Row>`] whose terminals produce
     /// `(T, Row)` pairs.
-    ///
     /// # Unsupported left-queryset state
-    ///
     /// `.prefetch(…)`, `.select_related(…)`, `.cache(…)`, row locks, and
     /// non-default `distinct` are rejected at terminal time with
-    /// [`DjogiError::Validation`].  Filters, ordering, limit, and offset are
+    /// [`DjogiError::Validation`]. Filters, ordering, limit, and offset are
     /// supported.
-    ///
     /// # Short-circuit
-    ///
     /// If the left queryset is `none()`-derived or `InlineValues` has zero
     /// rows, terminals return the empty result without a database round-trip.
     pub fn join_values<Row, F>(
@@ -1023,15 +971,12 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// LEFT JOIN this queryset against an inline VALUES relation.
-    ///
     /// Returns a [`LeftValuesJoinedQuerySet<T, Row>`] whose terminals produce
     /// `(T, Option<Row>)` pairs.
     /// Multiple matching values rows duplicate the left row into multiple pairs.
-    ///
     /// # Empty values
-    ///
     /// Unlike [`QuerySet::join_values`], an empty `InlineValues` does **not**
-    /// short-circuit to zero results.  All model rows are returned with `None`
+    /// short-circuit to zero results. All model rows are returned with `None`
     /// for the values column.
     pub fn left_join_values<Row, F>(
         self,
@@ -1051,20 +996,15 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// CROSS JOIN this queryset against an inline VALUES relation.
-    ///
     /// Returns a [`CrossValuesJoinedQuerySet<T, Row>`] whose terminals produce
     /// `(T, Row)` pairs — one for every combination of model row and VALUES row
     /// (Cartesian product; no `ON` predicate).
-    ///
     /// # Unsupported left-queryset state
-    ///
     /// `.prefetch(…)`, `.select_related(…)`, `.cache(…)`, row locks, and
     /// non-default `distinct` are rejected at terminal time with
-    /// [`DjogiError::Validation`].  Filters, ordering, limit, and offset are
+    /// [`DjogiError::Validation`]. Filters, ordering, limit, and offset are
     /// supported.
-    ///
     /// # Short-circuit
-    ///
     /// If the left queryset is `none()`-derived or [`InlineValues`] has zero
     /// rows, terminals return the empty result without a database round-trip.
     /// A Cartesian product with an empty set is always empty.
@@ -1162,9 +1102,7 @@ fn validate_values_on_kind<T: Model>(on: &ValuesOnKind<T>, site: &str) -> Result
 // ── SQL builders ─────────────────────────────────────────────────────────────
 
 /// Build the full SELECT SQL for an INNER VALUES join.
-///
 /// # Preconditions
-///
 /// - `vqs.values.rows` is non-empty (callers short-circuit before calling).
 /// - Left queryset state has been validated.
 pub(crate) fn build_values_join_select<T, Row>(
@@ -1205,15 +1143,12 @@ where
 }
 
 /// Build SELECT SQL for a LEFT JOIN where the values side is empty.
-///
 /// Uses a **typed zero-row relation** subquery rather than inlining
 /// `NULL::TYPE` directly in the SELECT list. Postgres can
 /// fully type-check and plan the query from the subquery column types, and
 /// the ON predicate is preserved so the join shape is structurally identical
 /// to the non-empty path.
-///
 /// Emitted shape (arity-2 example):
-///
 /// ```sql
 /// SELECT __djogi_m.id   AS id,
 ///        __djogi_m.name AS name, ...,
@@ -1230,7 +1165,6 @@ where
 /// ON __djogi_m.id = weights.animal_id
 /// [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]
 /// ```
-///
 /// The `WHERE 1=0` in the subquery is a constant-false predicate; the Postgres
 /// planner folds it away (zero rows, no scan), but the column definitions
 /// provide the type context needed to validate the outer query.
@@ -1257,9 +1191,8 @@ where
     acc.push_sql(MODEL_ALIAS);
 
     // LEFT JOIN (typed zero-row subquery) AS <alias>
-    //
     // The subquery selects typed NULLs for each values column plus the
-    // sentinel, with WHERE 1=0 to guarantee zero rows.  The column names
+    // sentinel, with WHERE 1=0 to guarantee zero rows. The column names
     // match what the outer SELECT projection references so Postgres can
     // resolve the aliases.
     acc.push_sql(" LEFT JOIN (SELECT ");
@@ -1346,7 +1279,6 @@ where
 }
 
 /// Build EXISTS for a LEFT VALUES join.
-///
 /// Existence depends only on whether the left queryset yields any rows. A
 /// left join always produces at least one `(T, Option<Row>)` pair per left
 /// row, so the VALUES payload and ON predicate do not affect this terminal.
@@ -1367,9 +1299,7 @@ where
 }
 
 /// Build the full SELECT SQL for a CROSS VALUES join.
-///
 /// # Preconditions
-///
 /// - `cqs.values.rows` is non-empty (callers short-circuit before calling).
 /// - Left queryset state has been validated via [`validate_left_qs`].
 pub(crate) fn build_cross_values_join_select<T, Row>(
@@ -1391,9 +1321,7 @@ where
 }
 
 /// Build COUNT(*) for a CROSS VALUES join.
-///
 /// # Preconditions
-///
 /// - `cqs.values.rows` is non-empty (callers short-circuit before calling).
 /// - Left queryset state has been validated via [`validate_left_qs`].
 pub(crate) fn build_cross_values_join_count<T, Row>(
@@ -1413,9 +1341,7 @@ where
 }
 
 /// Build EXISTS for a CROSS VALUES join.
-///
 /// # Preconditions
-///
 /// - `cqs.values.rows` is non-empty (callers short-circuit before calling).
 /// - Left queryset state has been validated via [`validate_left_qs`].
 pub(crate) fn build_cross_values_join_exists<T, Row>(
@@ -1502,7 +1428,6 @@ fn push_left_join_values<Row: ValuesRow, T: Model>(
 }
 
 /// Emit `CROSS JOIN (VALUES ...) AS alias(cols)`.
-///
 /// No `ON` predicate — cross joins are unconditional Cartesian products.
 /// No sentinel column — every VALUES row pairs with every model row; there
 /// is no "no match" case to detect.
@@ -1514,7 +1439,7 @@ fn push_cross_join_values<Row: ValuesRow>(values: &InlineValues<Row>, acc: &mut 
     push_col_list(values, acc, false);
 }
 
-/// Emit `VALUES (...), (...)`.  If `with_sentinel`, appends `, TRUE` to each row.
+/// Emit `VALUES (...), (...)`. If `with_sentinel`, appends `, TRUE` to each row.
 fn push_values_rows<Row: ValuesRow>(
     values: &InlineValues<Row>,
     acc: &mut SqlAccumulator,
@@ -1836,7 +1761,6 @@ where
     Row: ValuesRow + Send + Unpin,
 {
     /// Execute and collect all `(T, Option<Row>)` pairs.
-    ///
     /// When multiple values rows match one left row, each joined row is
     /// returned as its own pair.
     pub fn fetch_all<'ctx>(
@@ -1952,7 +1876,6 @@ where
     }
 
     /// Count joined pairs.
-    ///
     /// Empty values is the one special case: the typed zero-row relation path
     /// yields one `None` pair per left row, so `count()` there equals the
     /// filtered left-row count.
@@ -2023,7 +1946,6 @@ where
     Row: ValuesRow + Send + Unpin,
 {
     /// Execute and collect all `(T, Row)` pairs (Cartesian product).
-    ///
     /// Short-circuits to `Ok(vec![])` when the model queryset is
     /// `none()`-derived or `InlineValues` has zero rows.
     pub fn fetch_all<'ctx>(
@@ -2055,7 +1977,6 @@ where
     }
 
     /// Return the first `(T, Row)` pair from the Cartesian product, or `None`.
-    ///
     /// Short-circuits to `Ok(None)` when the model queryset is
     /// `none()`-derived or `InlineValues` has zero rows.
     pub fn first<'ctx>(
@@ -2089,7 +2010,6 @@ where
     }
 
     /// Expect exactly one pair in the Cartesian product; error on zero or multiple.
-    ///
     /// Short-circuits to `Err(DjogiError::NotFound)` when the model queryset
     /// is `none()`-derived or `InlineValues` has zero rows.
     pub fn fetch_one<'ctx>(
@@ -2124,7 +2044,6 @@ where
     }
 
     /// Count pairs in the Cartesian product.
-    ///
     /// Short-circuits to `Ok(0)` when the model queryset is `none()`-derived
     /// or `InlineValues` has zero rows.
     pub fn count<'ctx>(
@@ -2154,7 +2073,6 @@ where
     }
 
     /// Return `true` if the Cartesian product is non-empty (both sides have rows).
-    ///
     /// Short-circuits to `Ok(false)` when the model queryset is
     /// `none()`-derived or `InlineValues` has zero rows.
     pub fn exists<'ctx>(
@@ -2192,7 +2110,7 @@ mod tests {
     use crate::descriptor::ModelDescriptor;
 
     // Minimal in-crate stub model — mirrors the `Fake` model pattern used by
-    // `query::queryset` unit tests.  SQL-shape tests only inspect the emitted
+    // `query::queryset` unit tests. SQL-shape tests only inspect the emitted
     // SQL string; no actual database round-trip occurs.
     struct Stub;
     impl crate::model::__sealed::Sealed for Stub {}

@@ -1,17 +1,13 @@
 //! Row-shape aggregate expressions — the typed surface for `ST_AsMVT` /
 //! `ST_AsGeobuf`.
-//!
 //! # What
-//!
 //! [`RowAggregate<Out, K>`] is the row-shape sibling of
 //! [`super::aggregate::AggregateExpr<Out, K>`]. Same shape — `PhantomData`
 //! tags pinning the Rust decode type and a sealed kind marker — different
 //! IR backing: [`super::node::ExprNode::RowAggregate`] (whole-row input,
 //! no modifier slots) instead of [`super::node::ExprNode::Aggregate`]
 //! (column input, full modifier surface).
-//!
 //! ## Two aggregate families, one design pattern
-//!
 //! | | Column aggregate | Row aggregate |
 //! |---|---|---|
 //! | Examples | `COUNT(col)`, `SUM(col)`, `ST_Centroid(col)` | `ST_AsMVT(t)`, `ST_AsGeobuf(t)` |
@@ -20,34 +16,26 @@
 //! | IR variant | [`super::node::ExprNode::Aggregate`] | [`super::node::ExprNode::RowAggregate`] |
 //! | Typed wrapper | [`super::aggregate::AggregateExpr`] | [`RowAggregate`] (this file) |
 //! | Kind discipline | sealed [`super::aggregate::KindEvidence`] | sealed [`RowKindEvidence`] |
-//!
 //! ## Why a separate IR variant (not an `AggregateExpr` extension)
-//!
 //! Postgres rejects every column-aggregate modifier when applied to a
 //! row-shape aggregate:
-//!
 //! - `ST_AsMVT(DISTINCT t, …)` — `42883: row-level expression cannot be DISTINCT`
 //! - `ST_AsMVT(t, …) FILTER (WHERE …)` — `FILTER` is a column-aggregate-only modifier
 //! - `ST_AsMVT(t, …) OVER (…)` — row aggregates are not windowable
 //! - `ST_AsMVT(t, … ORDER BY …)` — ORDER BY inside the parens is rejected on row aggregates
 //! - `ST_AsMVT(t, …) WITHIN GROUP (ORDER BY …)` — same
-//!
-//! Sharing [`super::aggregate::AggregateExpr`] would force every modifier
-//! method onto a wrapper that semantically rejects them. A sibling type
-//! makes the discipline structural: row aggregates simply have no
-//! modifier methods.
-//!
+//!   Sharing [`super::aggregate::AggregateExpr`] would force every modifier
+//!   method onto a wrapper that semantically rejects them. A sibling type
+//!   makes the discipline structural: row aggregates simply have no
+//!   modifier methods.
 //! # Bytes at the Rust boundary
-//!
 //! Both shipped row aggregates return `bytea` at the Postgres level — MVT
 //! protobuf bytes / Geobuf bytes. The typed surface decodes that into
 //! `Vec<u8>` via `postgres_types::FromSql` on `Vec<u8>` (Postgres `bytea`
 //! decodes natively into `Vec<u8>`). The `Out = Vec<u8>` parameter on
 //! every constructor pins this at the type level.
-//!
 //! # Where
-//!
-//! - [`super::node::ExprNode::RowAggregate`] / [`super::node::RowAggOp`] —
+//! - [`super::node::ExprNode::RowAggregate`] / [`super::node::RowAggOp`]
 //!   the untyped IR payload.
 //! - [`super::sql::emit_expr`] — renders the SQL tokens.
 //! - [`crate::query::annotate::AnnotatedQuerySet::as_mvt`] /
@@ -71,13 +59,11 @@ pub(crate) mod sealed {
 }
 
 /// Compile-time marker for row-aggregate modifier families.
-///
 /// Row aggregates share a single kind family at v0.1.0 ([`BinaryRowAgg`]):
 /// every shipped row aggregate (`ST_AsMVT` / `ST_AsGeobuf`) returns binary
 /// `bytea` and admits no modifiers. The trait is sealed via [`sealed::Sealed`]
-/// — only framework-internal markers implement it, mirroring the
+/// only framework-internal markers implement it, mirroring the
 /// [`super::aggregate::KindEvidence`] discipline.
-///
 /// The trait exists today even though the v0.1.0 family is singular because
 /// future row-shape aggregates (text-returning encoders, JSON-returning
 /// shape encoders) will slot in as additional kind markers without rev'ing
@@ -86,7 +72,6 @@ pub trait RowKindEvidence: sealed::Sealed {}
 
 /// Binary `bytea`-returning row aggregate family — `ST_AsMVT` and
 /// `ST_AsGeobuf`. The Rust decode type is always `Vec<u8>`.
-///
 /// No modifier impl block exists for this kind — the row aggregate
 /// universe is modifier-free at v0.1.0. The phantom marker is still
 /// load-bearing because it pins the kind discipline at type level and
@@ -101,18 +86,14 @@ impl RowKindEvidence for BinaryRowAgg {}
 /// [`crate::query::annotate::AnnotatedQuerySet::as_mvt`] /
 /// [`crate::query::annotate::AnnotatedQuerySet::as_geobuf`] (and the
 /// matching helpers on [`crate::query::queryset::QuerySet`]).
-///
 /// Carries an [`ExprNode::RowAggregate`] payload plus phantom tags for the
 /// Rust decode type `Out` and the modifier-kind marker `K`. The kind tag
 /// is enforced via the sealed [`RowKindEvidence`] trait so downstream
 /// crates cannot smuggle in custom kinds.
-///
 /// `#[must_use]` because a dropped row aggregate is always a mistake — the
 /// terminal builder consumes it and dropping silently discards the entire
 /// encoded output.
-///
 /// # Manual `Clone` / `Debug`
-///
 /// Same rationale as [`super::aggregate::AggregateExpr`]: the kind marker
 /// types are ZSTs with no derives, so a `#[derive(Clone, Debug)]` would
 /// add unwanted `K: Clone` / `K: Debug` bounds at every call site that
@@ -168,7 +149,6 @@ impl<Out, K: RowKindEvidence> RowAggregate<Out, K> {
 // ── ST_AsMVT typed constructor ───────────────────────────────────────────
 
 /// MVT (Mapbox Vector Tile) encoder options.
-///
 /// PostGIS's `ST_AsMVT(row, layer_name, extent, geom_name, feature_id_name)`
 /// signature is variadic at the SQL level — all but the row argument carry
 /// per-call defaults. The typed surface always emits explicit values for
@@ -176,12 +156,9 @@ impl<Out, K: RowKindEvidence> RowAggregate<Out, K> {
 /// across PostGIS releases (which could rev the SQL-side defaults), and
 /// emits the optional `feature_id_name` only when set so the call falls
 /// through to PostGIS's `NULL` default when omitted.
-///
 /// # Construction
-///
 /// Start with [`MvtOptions::new`] which seeds the PostGIS defaults that
 /// are sound for most adopter workflows:
-///
 /// ```ignore
 /// use djogi::expr::row_aggregate::MvtOptions;
 /// let opts = MvtOptions::new("my_layer")
@@ -200,7 +177,6 @@ pub struct MvtOptions {
 impl MvtOptions {
     /// Construct MVT options with PostGIS defaults (`extent = 4096`,
     /// `geom_name = "geom"`, no feature id).
-    ///
     /// The `layer_name` is bound through the SQL accumulator so a
     /// runtime-computed layer name cannot SQL-inject — but the caller
     /// must still ensure the layer name is meaningful to the MVT
@@ -251,7 +227,6 @@ impl MvtOptions {
 /// columns. Used by the terminal builders on
 /// [`crate::query::annotate::AnnotatedQuerySet`] /
 /// [`crate::query::queryset::QuerySet`]; not part of the public surface.
-///
 /// `columns` is the projected column list of the inner SELECT — the
 /// emitter does not currently inspect it (PostGIS resolves columns from
 /// the record type at runtime), but it is stored on the IR variant so
@@ -292,7 +267,7 @@ pub(crate) fn build_geobuf_aggregate(
 mod tests {
     //! Unit-level tests for row-aggregate IR + emission shape. The full
     //! live PostGIS round trip lives in
-    //! `tests/integration/phase8_5_c4f_row_aggregate_mvt_live.rs`.
+    //! `tests/integration/row_aggregate_mvt_live.rs`.
 
     use super::*;
     use crate::expr::node::ExprNode;

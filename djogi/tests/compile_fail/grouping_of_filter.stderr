@@ -4,9 +4,9 @@ error[E0599]: `AggregateExpr<i32, MetadataAgg>` is not an iterator
   4 |     let _ = djogi::grouping_of(&["region", "dept"]).filter(djogi::expr::Expr::literal(true));
     |                                                     ^^^^^^ `AggregateExpr<i32, MetadataAgg>` is not an iterator
     |
-   ::: djogi/src/expr/aggregate.rs:143:1
+   ::: djogi/src/expr/aggregate.rs:127:1
     |
-143 | pub struct AggregateExpr<Out, K = ValueAgg> {
+127 | pub struct AggregateExpr<Out, K = ValueAgg> {
     | ------------------------------------------- doesn't satisfy `AggregateExpr<i32, MetadataAgg>: Iterator`
     |
     = note: the following trait bounds were not satisfied:

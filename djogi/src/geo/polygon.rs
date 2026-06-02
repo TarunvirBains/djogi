@@ -1,14 +1,10 @@
 //! `Polygon` — a closed ring with optional holes.
-//!
 //! Stored as `GEOGRAPHY(Polygon, 4326)` in Postgres. Rings are sequences of
 //! `GeoPoint` values where the first and last points are identical (closed).
 //! At least 3 distinct vertices (4 total including the closing point) are
 //! required per ring.
-//!
 //! # Wire format
-//!
 //! EWKB layout (little-endian, SRID 4326):
-//!
 //! ```text
 //! Offset  Size  Content
 //!      0     1  Endianness marker: 0x01 (little-endian)
@@ -17,7 +13,6 @@
 //!      9     4  Number of rings (u32 LE)
 //!     13   var  Rings: each ring = [num_points u32 LE, point_data 16*n bytes]
 //! ```
-//!
 //! The outer ring is first; hole rings follow in order.
 
 use std::fmt;
@@ -27,30 +22,20 @@ use serde::{Deserialize, Serialize};
 use crate::geo::{GeoError, GeoPoint, ewkb};
 
 /// A polygon with an outer ring and optional holes.
-///
 /// Stored as `GEOGRAPHY(Polygon, 4326)` in Postgres.
-///
 /// # Ring invariants
-///
 /// - Every ring must have at least 4 points (3 distinct vertices + closing
 ///   repeat of the first point).
 /// - Every ring must be closed: first point equals last point.
 /// - `rings[0]` is the outer boundary; `rings[1..]` are holes.
-///
 /// # Constructors
-///
 /// Three constructors cover common usage patterns:
-///
 /// - [`Polygon::closed`] — outer ring, auto-closed if not already closed.
 /// - [`Polygon::with_ring`] — outer ring that must already be closed.
 /// - [`Polygon::with_holes`] — outer ring plus one or more hole rings.
-///
 /// # Display
-///
 /// `Display` emits `POLYGON((<lon> <lat>, ...), ...)` per OGC WKT.
-///
 /// # Serde
-///
 /// Serializes as an array of rings, each ring an array of
 /// `{"lat": f64, "lon": f64}` objects. Deserialization validates each ring.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,7 +59,6 @@ fn validate_ring(ring: &[GeoPoint], label: &'static str) -> Result<(), GeoError>
 
 impl Polygon {
     /// Construct from an outer ring, auto-closing it if needed.
-    ///
     /// If `points.len() < 3` the constructor returns
     /// `GeoError::InvalidPolygon`. If the first and last points differ the
     /// first point is appended to close the ring. After auto-closing, if the
@@ -96,7 +80,6 @@ impl Polygon {
     }
 
     /// Construct from an already-closed outer ring.
-    ///
     /// Returns `GeoError::InvalidPolygon` if the ring has fewer than 4 points
     /// or is not closed.
     pub fn with_ring(points: Vec<GeoPoint>) -> Result<Self, GeoError> {
@@ -110,7 +93,6 @@ impl Polygon {
     }
 
     /// Construct from a closed outer ring plus zero or more closed hole rings.
-    ///
     /// Returns `GeoError::InvalidPolygon` if the outer ring or any hole ring
     /// fails validation.
     pub fn with_holes(outer: Vec<GeoPoint>, holes: Vec<Vec<GeoPoint>>) -> Result<Self, GeoError> {
@@ -123,7 +105,6 @@ impl Polygon {
     /// Construct from a pre-built `Vec` of rings. `rings[0]` is the outer
     /// boundary; `rings[1..]` are holes. Each ring must already be closed
     /// (first point equals last) and have at least 4 points.
-    ///
     /// Returns `GeoError::InvalidPolygon` if `rings` is empty or any ring
     /// fails validation. Used by EWKB decoders and the `serde::Deserialize`
     /// impl to avoid the split-then-rejoin pattern that `with_holes`

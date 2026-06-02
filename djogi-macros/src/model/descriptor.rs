@@ -1,17 +1,14 @@
 //! Generates `inventory::submit!(ModelDescriptor {...})` from the `#[model]`
 //! struct definition. Runs AFTER `inject::expand` has mutated `struct_item`.
-//!
-//! Phase 1.5: `ModelDescriptor::fields` is the **complete** schema contract.
+//! `ModelDescriptor::fields` is the **complete** schema contract.
 //! Framework-injected columns (`id`, `created_at`, `updated_at`) are emitted
 //! first (in injection order), followed by user-declared fields in source
 //! order. Downstream consumers (migration differ, admin UI, `djogi docs`, RLS
 //! generator) iterate `descriptor.fields` as the single schema source and
 //! never synthesize framework columns out-of-band.
-//!
 //! For `pk = None`, `id` is omitted from the framework prefix (the user's
 //! own PK field appears as a regular user field in declared order).
-//!
-//! The emitted submission uses Phase 1 defaults for every amended field
+//! The emitted submission uses defaults for every amended field
 //! (partition_by, has_outbox, idempotency_key, tenant_key, cache_ttl,
 //! rationale, indexes) — those attrs are populated by later phases' parser
 //! extensions. Per-field defaults (rationale, outbox_exclude, index_type)
@@ -29,14 +26,11 @@ use syn::ItemStruct;
 
 /// Emits a `FieldDescriptor { ... }` literal for a framework-injected
 /// column (`id`, `created_at`, `updated_at`).
-///
 /// Framework fields share every descriptor knob except `name`,
 /// `sql_type`, and the `unique` bit: PK columns are unique,
 /// timestamp columns are neither. The visage map always projects the
 /// column under its own name across the four built-in scopes.
-///
 /// ## Why `indexed: false` for the PK column
-///
 /// Postgres creates an implicit unique BTree index for every `PRIMARY
 /// KEY` constraint — a second explicit BTree index on the same `id`
 /// column would be structurally redundant. Setting `indexed: true`
@@ -47,11 +41,9 @@ use syn::ItemStruct;
 /// slot stays `false` on all four non-`None` PK strategies;
 /// `unique: #pk` carries the correct uniqueness signal that the
 /// snapshot comparer reads.
-///
 /// Relation metadata is unconditionally `None` — `id` is a primary
 /// key, not a foreign key, and `created_at` / `updated_at` are
 /// scalars; the visage hookup attaches per-user-field only.
-///
 /// Centralising the emission means future descriptor field additions
 /// land in one place rather than rippling through every PK-strategy
 /// arm.
@@ -84,8 +76,7 @@ fn framework_field_descriptor(
             target_type_name: None,
             // Framework-injected columns (`id`, `created_at`,
             // `updated_at`) are never relation fields, so the
-            // self-FK flag is always `false`. Phase 8-Zero
-            // Cluster B1 (T8).
+            // self-FK flag is always `false`.
             is_self_fk: false,
             visage_map: &[
                 ("admin", #name),
@@ -96,7 +87,7 @@ fn framework_field_descriptor(
             protected: ::std::option::Option::None,
             default_volatility_override: ::std::option::Option::None,
             generated: ::std::option::Option::None,
-            // Phase 8α T2.5 — framework-injected columns are never
+            // 5 — framework-injected columns are never
             // contributed by a composition derive.
             composed_via: ::std::option::Option::None,
             // Framework-injected columns use identity-mapped types
@@ -105,20 +96,20 @@ fn framework_field_descriptor(
             // Framework-injected columns carry no adopter
             // `#[field(check = "...")]`; the slot is always `None`.
             check_sql: ::std::option::Option::None,
-            // Phase 8.5 Cluster 4 (djogi#217) — framework-injected
+            // Djogi#217) — framework-injected
             // columns carry no adopter `#[field(comment)]`; the slot
             // is always `None`. Adopters who want descriptive labels
             // on the framework columns can read from the descriptor's
             // `rationale` slot instead.
             comment: ::std::option::Option::None,
-            // Phase 8.5 djogi#189 — propagated from `#[model(strict_ids)]`
+            // Djogi#189 — propagated from `#[model(strict_ids)]`
             // for the `id` column. Strict ID dispatch matches on the
             // HeerRanjID semantic family (HeerId / HeerIdDesc / RanjId /
             // RanjIdDesc) derived from the parent model's PkType; the
             // resolved SQL column type is not consulted for this decision.
             // Always `false` for `created_at` / `updated_at`.
             strict_id_check: #strict_id_check,
-            // Phase 8.5 Cluster 4 djogi#220 — framework-injected columns
+            // Djogi#220 — framework-injected columns
             // (`id`, `created_at`, `updated_at`) carry no adopter
             // `#[field(type_change_using)]`. Their SQL types are fixed
             // by the framework and never participate in adopter-driven
@@ -141,10 +132,9 @@ pub fn expand(
 }
 
 /// Inner emission entry point — returns `syn::Result` so the new
-/// `#[model(tree_edge = "...")]` validation (T12) can surface a
+/// `#[model(tree_edge = "...")]` validation can surface a
 /// span-precise compile error pointing at the offending literal.
-///
-/// Pre-T12 the descriptor emitter was infallible, but `tree_edge`
+/// Previously the descriptor emitter was infallible, but `tree_edge`
 /// requires cross-checking the named field against the struct's
 /// declared user fields and their detected relation shape — a
 /// validation that can fail when the column does not exist or is
@@ -155,11 +145,11 @@ fn try_expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
-    // Phase 8β T4.5 — `#[computed(sql = "...")]` field metadata.
-    // T4.1 added the descriptor field; T4.5 populates it from the
-    // captured attributes by emitting one ComputedFieldDescriptor
-    // literal per entry into the inventory::submit! body. Empty
-    // slice when no computed fields are declared.
+    // 5 — `#[computed(sql = "...")]` field metadata.
+    // Populated from captured attributes by emitting one
+    // ComputedFieldDescriptor literal per entry into the
+    // inventory::submit! body. Empty slice when no computed fields
+    // are declared.
     computed_attrs: &[(syn::Ident, crate::model::computed::ComputedAttr)],
 ) -> syn::Result<TokenStream> {
     let source_ident = &struct_item.ident;
@@ -198,24 +188,21 @@ fn try_expand(
         .zip(field_attrs.iter())
         .collect();
 
-    // ── Self-FK metadata (Phase 8-Zero Cluster B1 — T8) ─────────────────────
-    //
+    // ── Self-FK metadata ─────────────────────
     // For each user field that resolves to a `ForeignKey<T>` /
     // `OneToOneField<T>` (or its nullable form), compare the detected
     // target's last-segment ident to the source struct's short name.
     // A match marks the field as a *self-FK* — an edge from the model
-    // to itself — which Phase 8-Zero Cluster B2's recursive-query
+    // to itself — which 's recursive-query
     // builder uses to validate `RelationPath<T, T>` and to disambiguate
     // multi-edge tree models.
-    //
     // The check is name-based on purpose: the descriptor's
-    // `target_type_name` is also the short ident, and Phase 6's
+    // `target_type_name` is also the short ident, and the
     // migration differ already matches relations through that string.
     // Re-using the same heuristic keeps every descriptor consumer on
     // the same lookup key.
-    //
-    // T12 (`#[model(tree_edge = "...")]`) reads this set to validate
-    // that the named column is a self-FK before emitting the
+    // `#[model(tree_edge = "...")]` validation reads this set to confirm
+    // the named column is a self-FK before emitting the
     // descriptor's `tree_edge` slot.
     let self_fk_field_names: std::collections::BTreeSet<String> = user_fields
         .iter()
@@ -226,8 +213,7 @@ fn try_expand(
         })
         .collect();
 
-    // ── #[model(tree_edge = "...")] validation (T12) ────────────────────────
-    //
+    // ── #[model(tree_edge = "...")] validation ────────────────────────
     // The named column must exist on the user's struct AND must be a
     // self-FK per the set computed above. Any mismatch surfaces a
     // span-precise compile error pointing at the literal so the
@@ -263,7 +249,7 @@ fn try_expand(
     }
 
     // ── Framework-field FieldDescriptors ─────────────────────────────────────
-    // Phase 1.5: framework columns are emitted FIRST so `descriptor.fields` is
+    // Framework columns are emitted FIRST so `descriptor.fields` is
     // the complete schema contract. `id` varies by pk strategy; `created_at`
     // and `updated_at` are always Timestamptz, non-null, not unique/indexed.
     // For `pk = None`, skip `id` entirely — the user's own PK appears as a
@@ -271,14 +257,13 @@ fn try_expand(
 
     // HeerIdDesc / RanjIdDesc share the same stored column type as their
     // ascending siblings (BIGINT / UUID). The PK-type flip lives on
-    // `ModelDescriptor::pk_type` and is consumed by Phase 7's migration
+    // `ModelDescriptor::pk_type` and is consumed by the migration
     // differ, not here.
-    //
     // Custom PK types delegate the column type through the user type's
     // `PrimaryKey::SQL_TYPE` associated const; `FieldSqlType::Custom`
     // stores it verbatim so the migration differ can compare by string
     // equality.
-    // djogi#189 — propagate `#[model(strict_ids)]` to the framework `id`
+    // propagate `#[model(strict_ids)]` to the framework `id`
     // column ONLY when the PK strategy uses a built-in HeerId / RanjId
     // family carrier. The projection layer reads the descriptor's
     // `strict_id_check` flag alongside the parent PK's semantic family
@@ -329,7 +314,7 @@ fn try_expand(
                 )
             },
             true,
-            // djogi#189 (post-review hardening) — Custom PK types are
+            // (post-review hardening) — Custom PK types are
             // NEVER candidates for the HeerId / RanjId structural CHECK,
             // regardless of `#[model(strict_ids)]`. The Custom carrier
             // may share its SQL type with HeerId / RanjId (`"BIGINT"` /
@@ -340,11 +325,10 @@ fn try_expand(
             // domain at the DB layer without their consent; emitting
             // the UUIDv8 + RFC 4122 CHECK against a Custom UUID PK
             // would reject every valid UUIDv4 the adopter inserts.
-            //
             // Adopters whose Custom PK happens to share HeerRanjID's
             // bit layout (e.g., a thin newtype around `HeerId`) and
             // who genuinely want the structural CHECK should declare
-            // it explicitly via `#[field(check = "<predicate>")]` —
+            // it explicitly via `#[field(check = "<predicate>")]`
             // the typed-and-explicit path is preferred over inferring
             // the family from a coincidental SQL-carrier match.
             false,
@@ -371,12 +355,12 @@ fn try_expand(
         .iter()
         .map(|(field, fa)| {
             let name = crate::syn_util::column_name_from_field(field);
-            // Phase 4 Task 6 — `#[field(outbox = "ignore")]` marks the
+            // `#[field(outbox = "ignore")]` marks the
             // column as excluded from the transactional outbox payload.
             // `FieldAttrs::parse` has already validated the string value,
             // so a non-`None` `outbox` attr always means "ignore" here.
             let outbox_exclude = fa.outbox.as_deref() == Some("ignore");
-            // Phase 4 Task 7.6 — `#[field(sequence_within = "col")]`
+            // `#[field(sequence_within = "col")]`
             // scopes a monotonic sequence to a parent FK column. The
             // macro runtime uses this descriptor slot to detect the
             // scoped-sequence field in `Model::create`.
@@ -393,15 +377,14 @@ fn try_expand(
             let (inner_ty, nullable) = unwrap_schema_type(&field.ty);
 
             // For relation fields the SQL column type is the target's PK
-            // type, not the Rust wrapper type. Phase 6's migration emitter
+            // type, not the Rust wrapper type. the migration emitter
             // consumes `sql_type` alongside `target_type_name` to produce
-            // `REFERENCES` clauses; Phase 3 uses the `target_type_name`
-            // as the primary signal and leaves `sql_type` as the Phase 1
-            // best-effort scalar mapping. A future amendment (Phase 6)
+            // `REFERENCES` clauses; uses the `target_type_name`
+            // as the primary signal and leaves `sql_type` as the
+            // best-effort scalar mapping. A future amendment
             // can extend this to look the target PK type up via a second
             // `ModelDescriptor` pass.
-            //
-            // Phase 8.5 djogi#216 Piece A — `#[field(domain = "<name>")]`
+            // Djogi#216 Piece A — `#[field(domain = "<name>")]`
             // intercepts the sql_type selection BEFORE the type-driven
             // mapping runs. The descriptor's `FieldSqlType::Domain {
             // name, base }` variant carries the bare domain name (the
@@ -414,7 +397,6 @@ fn try_expand(
             // `domain` set could not reach this point, but the
             // explicit `relation.is_some()` branch keeps the FK SQL
             // type stable even if the parse-time guard ever regresses.
-            //
             // `base: &<base_tokens>` relies on Rust's constant-promotion
             // rule: a `&EXPR` where EXPR is const-evaluable promotes to
             // `&'static T`. Every `FieldSqlType` variant the macro
@@ -428,7 +410,7 @@ fn try_expand(
             // suite depend on.
             let sql_type = if relation.is_some() {
                 // FK columns use the target's PK SQL type, resolved at
-                // projection time.  Emit TEXT as a placeholder here;
+                // projection time. Emit TEXT as a placeholder here;
                 // `migrate::projection` overwrites it with the actual
                 // target PK type when it has access to all descriptors.
                 sql_str_to_tokens("TEXT")
@@ -464,7 +446,7 @@ fn try_expand(
                 None => quote! { None },
             };
 
-            // Phase 5 — `#[field(index)]` or `#[field(index = "method")]`.
+            // `#[field(index)]` or `#[field(index = "method")]`.
             // Three cases:
             // 1. fa.index = true, index_method = None → bare `#[field(index)]`, apply auto-default
             // 2. fa.index_method = Some(method) → explicit method (may or may not have bare index)
@@ -492,15 +474,14 @@ fn try_expand(
                 quote! { ::std::option::Option::None }
             };
 
-            // Phase 4.5 — populate visage_map from the parsed
+            // populate visage_map from the parsed
             // `#[field(expose(...))]` spec. Scalar scopes map to this
             // column's name; relation scopes map to the peer visage
             // type name. Empty / suppressed specs emit `&[]`.
             let projection_map_tokens = build_projection_map_tokens(&fa.expose, &name);
             // Relation metadata — `None`/`&[]` for scalar columns.
-            //
             // Descriptor lookup keys off the short target name (last path
-            // segment) — Phase 6's migration differ matches this against
+            // segment) — the migration differ matches this against
             // `ModelDescriptor::type_name`, which is also just the short
             // ident — so we deliberately use `info.target_name` here rather
             // than the full `info.target_type`. The full type path is only
@@ -525,10 +506,10 @@ fn try_expand(
                             None => quote! { None },
                         };
                         let target_lit = info.target_name.as_str();
-                        // Phase 8-Zero Cluster B1 (T8): name-based self-FK
+                        // Name-based self-FK
                         // detection. Matches the detector's `target_name`
                         // (last-segment ident of the inner type) against the
-                        // source struct's short name. Same heuristic Phase 6's
+                        // source struct's short name. Same heuristic the
                         // migration differ uses to resolve relations across
                         // descriptors, so the descriptor consumers stay on a
                         // single lookup key.
@@ -566,7 +547,7 @@ fn try_expand(
                 }
                 None => quote! { ::std::option::Option::None },
             };
-            // Phase 7.5 PR 7 — `#[field(generated = "<expr>")]`. The
+            // PR 7 — `#[field(generated = "<expr>")]`. The
             // expression is emitted verbatim; `stored: true` is hard-
             // coded because Pg18 supports only stored generated columns
             // (the descriptor's `stored` flag is reserved for future
@@ -587,30 +568,24 @@ fn try_expand(
                 None => quote! { ::std::option::Option::None },
             };
 
-            // Phase 8α T2.5 — composition-derive provenance.
-            //
+            // 5 — composition-derive provenance.
             // Both composition surfaces are now driven by `#[model(...)]`
-            // attributes (T2.4 + T2.6 pivots, 2026-05-03 / 2026-05-04):
-            //
-            // - `#[model(auditable)]` (T2.4): `model_attrs.auditable
-            //   == true` flips the `created_by` column to
-            //   `composed_via: Some("Auditable")`.
-            //
-            // - `#[model(soft_deletable)]` (T2.6 — supersedes T2.3's
-            //   `#[derive(SoftDeletable)]`): `model_attrs.soft_deletable
-            //   == true` flips the `deleted_at` column to
-            //   `composed_via: Some("SoftDeletable")`. T2.6 tightens the
-            //   detection from field-name-only to field-name-plus-flag,
-            //   eliminating the false-positive risk that motivated
-            //   round-1 Gemini BLOCK-1: an adopter who declares a
-            //   `deleted_at` column without opting into the
-            //   composition no longer sees the (informational) tag on
-            //   that column.
-            //
+            // attributes (pivoted 2026-05-03 / 2026-05-04):
+            // - `#[model(auditable)]`: `model_attrs.auditable
+            // == true` flips the `created_by` column to
+            // `composed_via: Some("Auditable")`.
+            // - `#[model(soft_deletable)]` (supersedes the legacy
+            // `#[derive(SoftDeletable)]`): `model_attrs.soft_deletable
+            // == true` flips the `deleted_at` column to
+            // `composed_via: Some("SoftDeletable")`. Tightens the
+            // detection from field-name-only to field-name-plus-flag,
+            // eliminating the false-positive risk that an adopter who
+            // declares a `deleted_at` column without opting into the
+            // composition would see the (informational) tag on that
+            // column.
             // Order matters: `created_by` checked first so a model that
             // declares both `auditable` and `soft_deletable` tags each
             // column with its own provenance independently.
-            //
             // Per spec line 1124, `composed_via` is metadata only — the
             // migration differ does NOT key off it. Reading
             // `composed_via` to decide migration strategy or
@@ -627,7 +602,7 @@ fn try_expand(
                 quote! { ::std::option::Option::None }
             };
 
-            // Phase 8.5 Cluster 2 (djogi#190) — source-type discriminator.
+            // — source-type discriminator.
             // FK columns always get `None` (their type is the target's PK,
             // which is always identity-width). Relation fields are scalar
             // proxies for the FK column; the source type is irrelevant there.
@@ -637,7 +612,7 @@ fn try_expand(
                 rust_source_type_tokens_for_type(&inner_ty)
             };
 
-            // Phase 8.5 Cluster 2 (djogi#105) — adopter `#[field(check = "...")]`
+            // — adopter `#[field(check = "...")]`
             // raw-SQL CHECK expression. The string is already validated as
             // non-empty / non-whitespace by `FieldAttrs::parse`; emit it
             // verbatim into the descriptor so the projection layer can
@@ -650,7 +625,7 @@ fn try_expand(
                 None => quote! { ::std::option::Option::None },
             };
 
-            // Phase 8.5 Cluster 4 (djogi#217) — adopter
+            // Djogi#217) — adopter
             // `#[field(comment = "<text>")]` column-level free-text
             // comment. Validated as non-empty / non-whitespace-only
             // by `FieldAttrs::parse`; emit verbatim into the
@@ -666,7 +641,7 @@ fn try_expand(
                 None => quote! { ::std::option::Option::None },
             };
 
-            // Phase 8.5 Cluster 4 (djogi#220) — adopter
+            // Djogi#220) — adopter
             // `#[field(type_change_using = "<sql expr>")]` USING clause
             // for non-default-cast column type changes. Validated as
             // non-empty / non-whitespace-only by `FieldAttrs::parse`;
@@ -682,15 +657,13 @@ fn try_expand(
                 None => quote! { ::std::option::Option::None },
             };
 
-            // Phase 8.5 djogi#189 — opt-in HeerId / RanjId structural CHECK.
-            //
+            // Djogi#189 — opt-in HeerId / RanjId structural CHECK.
             // Set `strict_id_check: true` on the descriptor when:
-            //   1. `#[field(strict_id_check)]` was declared on this field
-            //      (already validated as type-compatible by `FieldAttrs::parse`).
-            //   2. `#[model(strict_ids)]` is on AND the field is a
-            //      bare HeerId / RanjId family scalar OR a relation
-            //      field (`ForeignKey<T>` / `OneToOneField<T>`).
-            //
+            // 1. `#[field(strict_id_check)]` was declared on this field
+            // (already validated as type-compatible by `FieldAttrs::parse`).
+            // 2. `#[model(strict_ids)]` is on AND the field is a
+            // bare HeerId / RanjId family scalar OR a relation
+            // field (`ForeignKey<T>` / `OneToOneField<T>`).
             // For (2), the macro relies on the field's declared Rust type;
             // it does not (and cannot) inspect FK target PK types here.
             // Relation-field propagation is deliberately broad — every FK
@@ -701,8 +674,7 @@ fn try_expand(
             // family via `type_to_pk_family` and silently skips the CHECK
             // for FK-to-Serial, FK-to-Custom, FK-to-None, and FK-to-Composite
             // targets. The macro propagates; the projection filters.
-            //
-            // djogi#189 (post-review hardening): the projection filter
+            // (post-review hardening): the projection filter
             // is family-based, not SQL-type-based, so an FK to a
             // `PkType::Custom { sql_type: "BIGINT" / "UUID", .. }` no
             // longer accidentally inherits the HeerId / RanjId CHECK
@@ -722,55 +694,54 @@ fn try_expand(
                     max_length: #max_length,
                     renamed_from: #renamed_from,
                     rationale: None,
-                    // Phase 4 Task 6 — `#[field(outbox = "ignore")]` toggles
+                    // `#[field(outbox = "ignore")]` toggles
                     // per-column outbox exclusion. The outbox helper walks
                     // `descriptor.fields` at emit time and strips any key
                     // flagged here from the JSONB payload.
                     outbox_exclude: #outbox_exclude,
                     sequence_within: #sequence_within_tokens,
                     index_type: #index_type_tokens,
-                    // Phase 3 Task 2 — relation metadata emitted only for FK/O2O
+                    // relation metadata emitted only for FK/O2O
                     // columns. Non-relation columns keep `None`/`&[]`.
                     relation_kind: #relation_kind_tokens,
                     on_delete: #on_delete_tokens,
                     target_type_name: #target_type_name_tokens,
-                    // Phase 8-Zero Cluster B1 (T8) — true when the
-                    // FK / O2O target is the same model the field
-                    // belongs to. Always `false` for scalar columns
-                    // and for relation fields whose target is a
+                    // True when the FK / O2O target is the same model
+                    // the field belongs to. Always `false` for scalar
+                    // columns and for relation fields whose target is a
                     // different model.
                     is_self_fk: #is_self_fk_lit,
                     visage_map: #projection_map_tokens,
                     protected: #protected_tokens,
                     default_volatility_override: #default_volatility_tokens,
-                    // Phase 7.5 PR 7 — stored generated column metadata.
+                    // PR 7 — stored generated column metadata.
                     // Lowered from `#[field(generated = "<expr>")]`;
                     // `stored: true` is implicit (Pg18 supports only
                     // STORED). `None` for non-generated columns.
                     generated: #generated_tokens,
-                    // Phase 8α T2.5 + T2.6 — composition-derive provenance.
+                    // Composition-derive provenance.
                     // `Some("Auditable")` for the `created_by` column on
                     // a `#[model(auditable)]` model; `Some("SoftDeletable")`
                     // for the `deleted_at` column on a
-                    // `#[model(soft_deletable)]` model (T2.6 tightened
-                    // the detection from field-name-only to
+                    // `#[model(soft_deletable)]` model (detection
+                    // tightened from field-name-only to
                     // field-name + attribute opt-in to eliminate the
                     // adopter false-positive risk); `None` otherwise.
                     composed_via: #composed_via_tokens,
-                    // Phase 8.5 Cluster 2 (djogi#190) — bind/decode
+                    // — bind/decode
                     // source-type discriminator. `Some(RustSourceType::*)`
                     // for i8/u8/u16/u32/u64; `None` for direct-mapped types.
                     rust_source_type: #rust_source_type_tokens,
-                    // Phase 8.5 Cluster 2 (djogi#105) — adopter
+                    // — adopter
                     // `#[field(check = "<sql>")]` raw-SQL CHECK expression.
                     // `None` for fields without an adopter check.
                     check_sql: #check_sql_tokens,
-                    // Phase 8.5 Cluster 4 (djogi#217) — adopter
+                    // Djogi#217) — adopter
                     // `#[field(comment = "<text>")]` column-level
                     // comment. `None` for fields without an adopter
                     // comment.
                     comment: #comment_tokens,
-                    // Phase 8.5 djogi#189 — opt-in strict HeerRanjID CHECK
+                    // Djogi#189 — opt-in strict HeerRanjID CHECK
                     // propagation. `true` when the field carries
                     // `#[field(strict_id_check)]` or the model carries
                     // `#[model(strict_ids)]` and the field qualifies.
@@ -782,7 +753,7 @@ fn try_expand(
                     // the field's sql_type only after macro parse-time
                     // HeerRanjID family validation confirms membership.
                     strict_id_check: #strict_id_check_lit,
-                    // Phase 8.5 Cluster 4 djogi#220 — adopter
+                    // Djogi#220 — adopter
                     // `#[field(type_change_using = "<sql expr>")]` USING
                     // clause for non-default-cast column type changes.
                     // The SQL emitter appends `USING (<expr>)` only when
@@ -832,10 +803,10 @@ fn try_expand(
     let is_through = model_attrs.through;
     let has_outbox = model_attrs.events;
 
-    // Phase 5 Task 14 — emit FtsDescriptor tokens when `#[model(fts = ...)]`
+    // emit FtsDescriptor tokens when `#[model(fts = ...)]`
     // is set. Both `source` and `dictionary` are `&'static str` literals.
     let fts_tokens = fts_descriptor_tokens(&model_attrs.fts);
-    // Phase 4 Task 7.5 — `#[model(idempotency_key = "column")]` emits the
+    // `#[model(idempotency_key = "column")]` emits the
     // column name into the descriptor so runtime consumers
     // (`create_or_find`, `bulk_upsert_by_descriptor`) can discover the
     // conflict key. Non-idempotent models keep `None`.
@@ -844,15 +815,15 @@ fn try_expand(
         None => quote! { ::std::option::Option::None },
     };
 
-    // Phase 5 Task 9 — `#[model(tenant_key = "col")]` wires the column name
+    // `#[model(tenant_key = "col")]` wires the column name
     // into the descriptor AND emits a side-channel `target/djogi_rls/` SQL
-    // file for the Phase 7 migration differ to consume.
+    // file for the migration differ to consume.
     let tenant_key_tokens = match &model_attrs.tenant_key {
         Some(col) => quote! { ::std::option::Option::Some(#col) },
         None => quote! { ::std::option::Option::None },
     };
 
-    // Phase 8.5 Cluster 4 (djogi#217) — `#[model(table_comment = "<text>")]`
+    // Djogi#217) — `#[model(table_comment = "<text>")]`
     // free-text table comment. Validated as non-empty / non-whitespace-only
     // by `ModelAttrs::parse`; emit verbatim into the descriptor so the
     // migration composer can lower it to `COMMENT ON TABLE <t> IS '<text>'`.
@@ -882,19 +853,17 @@ fn try_expand(
         );
     }
 
-    // ── Phase 6 Task 2 + T8: implicit GiST indexes for geography fields ────────
-    //
+    // ── Implicit GiST indexes for geography fields ────────
     // For every user field whose Rust type is any `GeographyValue`-implementing
     // geometry (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
-    // `MultiPolygon`), emit one `IndexSpec` entry. Phase 7-Zero v3 widened the
+    // `MultiPolygon`), emit one `IndexSpec` entry. widened the
     // IndexSpec shape — the column list is now `IndexTarget::Columns(&[
     // IndexColumnSpec::simple(...)])`, the `unique: bool` flag is now
     // `kind: IndexKind::NonUnique`, and three new optional fields (`predicate`,
     // `include`, `nulls_not_distinct`) default to benign values. No behavior
-    // change: the emitted DDL under the Phase 7 differ is still
+    // change: the emitted DDL under the differ is still
     // `CREATE INDEX CONCURRENTLY ... USING gist ("<col>")` after the
     // `CREATE EXTENSION IF NOT EXISTS postgis` guard.
-    //
     // The names are baked in as `'static str` string literals — they are
     // compile-time constants derived from the model attrs and field names.
     // No `Box::leak` is needed because the entire `inventory::submit!` block
@@ -902,7 +871,7 @@ fn try_expand(
     // are literal arrays with `'static` lifetimes.
     let mut named_index_specs: Vec<(String, TokenStream)> = Vec::new();
 
-    // Phase 6 spatial GiST indexes — implicit, one per GeographyValue field.
+    // Spatial GiST indexes — implicit, one per GeographyValue field.
     // The generated name `<table>_<col>_gix` is reserved against user-
     // declared collisions below.
     let mut reserved_generated_names: Vec<String> = Vec::new();
@@ -932,7 +901,7 @@ fn try_expand(
         named_index_specs.push((index_name, tokens));
     }
 
-    // Phase 7-Zero v3 T3 — lower every `#[model(indexes(...))]` declaration.
+    // Lower every `#[model(indexes(...))]` declaration.
     // Column-name validation walks the user-declared field set (raw-ident-
     // stripped) to catch typos at macro-expansion time. Name collisions
     // with the spatial GiST reserved names above are rejected in the
@@ -955,7 +924,7 @@ fn try_expand(
         reserved_generated_names: &reserved_generated_names,
     };
     for decl in &model_attrs.indexes {
-        // Pre-T12 the descriptor emitter was infallible and lowered
+        // Previously the descriptor emitter was infallible and lowered
         // index-emission errors to inline `compile_error!` tokens; now
         // that `try_expand` returns `syn::Result`, propagate the error
         // through the existing failure channel for a single error path.
@@ -965,7 +934,7 @@ fn try_expand(
 
     // Alphabetise by generated name — deterministic emission means minor
     // reorderings in the user's source do not produce spurious migration
-    // diffs. Matches the Phase 4.5 `visage_map` alphabetisation per
+    // diffs. Matches the `visage_map` alphabetisation per
     // `feedback_verify_api_shape_conventions.md`.
     named_index_specs.sort_by(|a, b| a.0.cmp(&b.0));
     let index_spec_tokens: Vec<TokenStream> =
@@ -977,8 +946,7 @@ fn try_expand(
         quote! { &[ #(#index_spec_tokens,)* ] }
     };
 
-    // Phase 7-Zero v3 T8 — apps subsystem linkage.
-    //
+    // Apps subsystem linkage.
     // `#[model(app = Vehicles)]` becomes `app: Some(<Vehicles as
     // ::djogi::App>::LABEL)` in the descriptor. Resolution happens at
     // const-eval time; `None` maps to the synthetic global bucket.
@@ -1016,14 +984,14 @@ fn try_expand(
         },
         None => quote! { ::core::option::Option::None },
     };
-    // Phase 7 T2 — `#[model(renamed_from = "old_table")]` carries the
+    // `#[model(renamed_from = "old_table")]` carries the
     // prior table name as a string literal. None for unrenamed models.
     let renamed_from_tokens = match &model_attrs.renamed_from {
         Some(s) => quote! { ::core::option::Option::Some(#s) },
         None => quote! { ::core::option::Option::None },
     };
 
-    // Phase 7.5 PR 7 — `#[model(exclusion(...))]` lowering. Each parsed
+    // PR 7 — `#[model(exclusion(...))]` lowering. Each parsed
     // ExclusionDecl emits one ExclusionConstraintSpec struct literal;
     // the descriptor field receives the wrapped `&[ ... ]` slice. Empty
     // slice when no exclusion(...) entry was declared.
@@ -1038,7 +1006,7 @@ fn try_expand(
         quote! { &[ #(#entries,)* ] }
     };
 
-    // Phase 8-Zero Cluster B1 (T12) — `#[model(tree_edge = "col")]`.
+    // `#[model(tree_edge = "col")]`.
     // The string was validated above (field-existence + self-FK
     // resolution) before reaching here, so emission is unconditional.
     let tree_edge_tokens = match &model_attrs.tree_edge {
@@ -1049,10 +1017,10 @@ fn try_expand(
         None => quote! { ::core::option::Option::None },
     };
 
-    // Phase 8β T3.3 — `#[model(proxy_for = ParentType)]` lowers the bare
+    // 3 — `#[model(proxy_for = ParentType)]` lowers the bare
     // identifier to a `&'static str` carrying the parent's Rust type
     // name. The migration differ uses this discriminator to skip DDL
-    // emission for proxies; the runtime composer (T3.4) uses it to
+    // emission for proxies; the runtime composer uses it to
     // identify proxy querysets that need default-filter / default-order
     // composition.
     let proxy_for_tokens = match &model_attrs.proxy_for {
@@ -1063,15 +1031,15 @@ fn try_expand(
         None => quote! { ::core::option::Option::None },
     };
 
-    // Phase 8β T3.3 — `#[model(default_filter = |f| ...)]` is lowered to
+    // 3 — `#[model(default_filter = |f| ...)]` is lowered to
     // a SQL fragment string at expand time. The closure body is walked
     // through the closed grammar in `crate::model::proxy::lower_default_filter_to_sql`;
     // anything outside that grammar surfaces a span-precise compile
     // error here, before any descriptor emission runs.
-    //
     // Empty / `None` for non-proxy models and for proxies without a
-    // `default_filter` clause. T3.4 reads this at QuerySet construction
-    // time and AND-composes it into the seeded `Condition` tree.
+    // `default_filter` clause. The runtime composer reads this at
+    // QuerySet construction time and AND-composes it into the seeded
+    // `Condition` tree.
     let default_filter_sql_tokens = match &model_attrs.proxy_default_filter {
         Some(closure) => {
             let sql = crate::model::proxy::lower_default_filter_to_sql(closure)?;
@@ -1080,7 +1048,7 @@ fn try_expand(
         None => quote! { ::core::option::Option::None },
     };
 
-    // Phase 8β T4.5 — populate `ModelDescriptor.computed_fields` from
+    // 5 — populate `ModelDescriptor.computed_fields` from
     // the captured `#[computed(sql = "...")]` attributes. Emits one
     // `ComputedFieldDescriptor { ... }` literal per entry; empty slice
     // when no computed fields are declared. The descriptor's
@@ -1136,59 +1104,59 @@ fn try_expand(
                 fields: &[
                     #(#all_field_descriptors,)*
                 ],
-                // Phase 1 defaults — populated by later phases' attr parsers.
+                // Defaults — populated by later phases' attr parsers.
                 partition_by: None,
-                // Phase 4 Task 6 — `#[model(table = "...", events)]` toggles
+                // `#[model(table = "...", events)]` toggles
                 // transactional outbox emission on every ctx-scoped
                 // create/save/delete. `djogi::outbox::emit_event` keys off
                 // this flag at codegen time.
                 has_outbox: #has_outbox,
                 idempotency_key: #idempotency_key_tokens,
-                // Phase 5 Task 9 — RLS tenant discriminator column.
+                // RLS tenant discriminator column.
                 tenant_key: #tenant_key_tokens,
                 cache_ttl: None,
                 rationale: None,
-                // Phase 6 Task 2 — implicit GiST IndexSpec for every GeoPoint
+                // implicit GiST IndexSpec for every GeoPoint
                 // field. Non-spatial models keep the empty slice default.
                 indexes: #indexes_tokens,
                 // Task 6 (phase3-relations): `#[model(table = "...", through)]`
                 is_through: #is_through,
-                // Phase 5 Task 14 — Full-Text Search.
+                // Full-Text Search.
                 fts: #fts_tokens,
-                // Phase 7-Zero v3 T8 — apps subsystem linkage.
+                // Apps subsystem linkage.
                 app: #app_tokens,
                 moved_from_app: #moved_from_app_tokens,
-                // Phase 7 T2 — table-rename hint.
+                // Table-rename hint.
                 renamed_from: #renamed_from_tokens,
-                // Phase 7.5 PR 7 — `EXCLUDE` constraint declarations.
+                // PR 7 — `EXCLUDE` constraint declarations.
                 // Lowered from the parsed `#[model(exclusion(...))]`
                 // entries on `model_attrs.exclusions`. Empty slice when
                 // no `exclusion(...)` group is present.
                 exclusion_constraints: #exclusion_constraints_tokens,
-                // Phase 8-Zero Cluster B1 (T12) — `#[model(tree_edge = "col")]`
-                // default self-FK column for tree-recursive queries. Validated
-                // at the top of `try_expand` against the user-field list and
-                // the self-FK detector (T8); reaches here only when the named
+                // `#[model(tree_edge = "col")]` — default self-FK column
+                // for tree-recursive queries. Validated at the top of
+                // `try_expand` against the user-field list and the
+                // self-FK detector; reaches here only when the named
                 // column resolves to a self-FK on this model.
                 tree_edge: #tree_edge_tokens,
-                // Phase 8β T3 — proxy-model schema-passthrough surface.
-                // T3.3 populates these from `#[model(proxy_for = ParentType,
+                // Proxy-model schema-passthrough surface.
+                // Populated from `#[model(proxy_for = ParentType,
                 // default_filter = |f| ...)]`. The migration differ keys
                 // off `proxy_for.is_some()` to skip DDL emission for proxy
                 // descriptors; the runtime composer keys off
                 // `default_filter_sql` to AND-compose the lowered fragment
-                // into every `QuerySet<Self>::new()` (T3.4).
+                // into every `QuerySet<Self>::new`.
                 proxy_for: #proxy_for_tokens,
                 default_filter_sql: #default_filter_sql_tokens,
-                // Phase 8β T4 — computed-field descriptors. T4.5
-                // populates this from parsed `#[computed(sql = "...")]`
-                // field attributes; empty slice for non-computed models.
+                // Computed-field descriptors populated from
+                // `#[computed(sql = "...")]` field attributes;
+                // empty slice for non-computed models.
                 computed_fields: #computed_fields_tokens,
-                // Phase 8.5 Cluster 4 (djogi#217) — adopter
+                // Djogi#217) — adopter
                 // `#[model(table_comment = "<text>")]` free-text
                 // table comment. `None` when the attribute is absent.
                 table_comment: #table_comment_tokens,
-                // Phase 8.5 Cluster 4 (djogi#218/#219) — adopter
+                // Djogi#218/#219) — adopter
                 // `#[model(storage_params = "...")]` and
                 // `#[model(tablespace = "...")]` metadata.
                 storage_params: #storage_params_tokens,
@@ -1201,24 +1169,20 @@ fn try_expand(
 
 /// Emit a side-channel `target/djogi_rls/{table}_rls.sql` file when the model
 /// declares a `tenant_key`.
-///
 /// The emitted SQL contains two statements:
 /// 1. `ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;`
 /// 2. `CREATE POLICY {table}_tenant_isolation ON {table} USING (col = current_setting(...));`
-///
-/// The cast in the `USING` expression depends on the tenant column's SQL type:
+///    The cast in the `USING` expression depends on the tenant column's SQL type:
 /// - `BigInt` → `::bigint`
-/// - `Uuid`   → `::uuid`
-/// - `Text`   → no cast
+/// - `Uuid` → `::uuid`
+/// - `Text` → no cast
 /// - Any other type → compile error (via `proc_macro_error` note, non-fatal).
-///
-/// Phase 7's migration differ will consume this file. Until then, the file
-/// serves as documentation and as an integration-test fixture the test can
-/// verify was created.
-///
-/// The function is intentionally non-fatal on I/O errors (uses `eprintln!` not
-/// `panic!`) so a proc macro failure due to a missing `target/` directory does
-/// not break builds in unusual environments.
+///   The migration differ will consume this file. Until then, the file
+///   serves as documentation and as an integration-test fixture the test can
+///   verify was created.
+///   The function is intentionally non-fatal on I/O errors (uses `eprintln!` not
+///   `panic!`) so a proc macro failure due to a missing `target/` directory does
+///   not break builds in unusual environments.
 fn emit_rls_side_channel(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
@@ -1251,8 +1215,7 @@ fn emit_rls_side_channel(
             FieldSqlTypeCategory::Unsupported(ref other) => {
                 // Emit a build-time warning to stderr. The RLS file is still
                 // written with an empty cast so the build stays green — a
-                // Phase 7 compile-fail test will tighten this to a hard error.
-                //
+                // Compile-fail test will tighten this to a hard error.
                 // GH issue #37 — `ForeignKey<T>` / `OneToOneField<T>` columns
                 // route through `BigInt` in `field_sql_type_category`, so they
                 // do not reach this branch even if the FK target uses RanjId
@@ -1269,7 +1232,7 @@ fn emit_rls_side_channel(
         }
     } else {
         // Field not found — possibly a framework column (id, created_at, updated_at)
-        // or a typo. Emit with empty cast; Phase 7 will tighten validation.
+        // or a typo. Emit with empty cast; will tighten validation.
         eprintln!(
             "djogi-macros: tenant_key value `{tenant_col}` does not match any \
              user-declared field on struct `{}`; check spelling.",
@@ -1280,7 +1243,7 @@ fn emit_rls_side_channel(
 
     let sql = format!(
         "-- RLS DDL for {table} — generated by #[model(tenant_key = \"{tenant_col}\")].\n\
-         -- Phase 7's migration differ consumes this file to apply RLS policies.\n\
+         -- Djogi's migration differ consumes this file to apply RLS policies.\n\
          -- The `true` flag in current_setting makes a missing GUC return NULL\n\
          -- instead of raising, keeping connections without set_tenant() safe.\n\
          \n\
@@ -1317,7 +1280,6 @@ fn emit_rls_side_channel(
 /// `ExposeSpec`. Scalar scope entries map scope → column name; relation
 /// scope entries map scope → peer visage type name. Empty / suppressed
 /// specs emit `&[]`.
-///
 /// Entries are sorted by scope name so descriptor snapshots don't churn
 /// based on the underlying `HashSet` / `HashMap` iteration order.
 fn build_projection_map_tokens(
@@ -1373,7 +1335,7 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "BOOLEAN" => quote! { ::djogi::FieldSqlType::Boolean },
         "TIMESTAMPTZ" => quote! { ::djogi::FieldSqlType::Timestamptz },
         "DATE" => quote! { ::djogi::FieldSqlType::Date },
-        // djogi#190 — u64 now uses bare NUMERIC (no precision/scale) so the
+        // u64 now uses bare NUMERIC (no precision/scale) so the
         // migration projection layer can match on `FieldSqlType::Numeric` with
         // `RustSourceType::U64` and emit the integrality CHECK. The old
         // "NUMERIC(20, 0)" arm is removed because u64 no longer emits that
@@ -1381,7 +1343,7 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "NUMERIC" => quote! { ::djogi::FieldSqlType::Numeric },
         "UUID" => quote! { ::djogi::FieldSqlType::Uuid },
         "JSONB" => quote! { ::djogi::FieldSqlType::Jsonb },
-        // djogi#369 — `Vec<u8>` lowers to BYTEA (see `rust_type_to_sql`).
+        // `Vec<u8>` lowers to BYTEA (see `rust_type_to_sql`).
         // The descriptor variant is unconditional; tokio-postgres' native
         // `Vec<u8>` codec handles the wire round-trip with no feature flag.
         "BYTEA" => quote! { ::djogi::FieldSqlType::Bytea },
@@ -1397,9 +1359,9 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "UUID[]" => quote! { ::djogi::FieldSqlType::UuidArray },
         "NUMERIC[]" => quote! { ::djogi::FieldSqlType::NumericArray },
         // Spatial — all GeographyValue types map to the typed Geography variant
-        // with the matching GeographySubtype discriminant so Phase 7's
+        // with the matching GeographySubtype discriminant so the
         // migration differ can compare subtypes by discriminant rather than
-        // Display text. T8 extends this match to cover all five geometry types.
+        // Display text. This match covers all five geometry types.
         "GEOGRAPHY(Point, 4326)" => {
             quote! {
                 ::djogi::FieldSqlType::Geography {
@@ -1440,12 +1402,12 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
                 }
             }
         }
-        // djogi#212 — `INTERVAL` lowers to the typed `FieldSqlType::Interval`
+        // `INTERVAL` lowers to the typed `FieldSqlType::Interval`
         // variant so the differ / projection / docs surfaces work without
         // a string-comparison shortcut. The mapping tracks
         // `rust_type_to_sql`'s `djogi::Interval` arm.
         "INTERVAL" => quote! { ::djogi::FieldSqlType::Interval },
-        // djogi#213 — Postgres network family. The descriptor variants
+        // Postgres network family. The descriptor variants
         // are unconditional (declared in `descriptor.rs` regardless of
         // feature state) so migration snapshots / docs stay stable when
         // the `network` feature toggles. The matching Rust types
@@ -1455,7 +1417,7 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "INET" => quote! { ::djogi::FieldSqlType::Inet },
         "CIDR" => quote! { ::djogi::FieldSqlType::Cidr },
         "MACADDR" => quote! { ::djogi::FieldSqlType::Macaddr },
-        // djogi#215 — range SQL types
+        // range SQL types
         // lower to the typed `FieldSqlType::Range { subtype }` variant.
         // The mapping tracks `rust_type_to_sql`'s explicit outer-wrapper
         // namespace policy for runtime-backed `djogi::Range<T>`; one arm
@@ -1513,13 +1475,11 @@ fn is_jsonb_type(ty: &syn::Type) -> bool {
 
 /// Detect if a field type is any `GeographyValue`-implementing geometry type
 /// by checking the last-segment ident.
-///
 /// Returns `true` if the type path ends in one of the five recognized geometry
 /// type names (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
 /// `MultiPolygon`), after stripping `Option`. Uses last-segment path matching
 /// so qualified paths (`djogi::geo::LineString`, `geo::Polygon`, etc.) and bare
 /// idents are all accepted.
-///
 /// The `spatial` feature flag lives on the `djogi` runtime crate, not on
 /// `djogi-macros`. The macro recognises type names unconditionally so it emits
 /// the correct descriptor regardless of feature state. If the user omits the
@@ -1542,7 +1502,6 @@ fn is_geography_field_type(ty: &syn::Type) -> bool {
 }
 
 /// Detect if a field type is `GeoPoint` specifically.
-///
 /// Retained as a narrower helper for callers that need to distinguish
 /// `GeoPoint` from other geometry types (e.g. test assertions). For the
 /// common "is this any geography?" check, prefer `is_geography_field_type`.
@@ -1561,7 +1520,6 @@ fn is_geopoint_type(ty: &syn::Type) -> bool {
 /// Detect if a field type is `Geography` by checking the last-segment ident.
 /// Returns `true` if the type path ends in `Geography`, after stripping `Option`.
 /// Uses last-segment path matching to accept bare `Geography<T>`, `djogi::Geography<T>`, etc.
-///
 /// This helper is retained for the `#[field(index)]` auto-index default so that
 /// any user who annotates a field typed as a raw `Geography<…>` wrapper (not
 /// the canonical `GeoPoint`) also gets a GiST index by default.
@@ -1594,7 +1552,6 @@ fn default_index_type(ty: &syn::Type) -> TokenStream {
 
 /// Emit the `fts: Option<FtsDescriptor>` token stream for the
 /// `inventory::submit!` block.
-///
 /// When `spec` is `None`, emits `::std::option::Option::None`. When `Some`,
 /// emits `::std::option::Option::Some(::djogi::descriptor::FtsDescriptor { ... })`.
 /// The `source` and `dictionary` strings become `&'static str` literals baked
@@ -1608,7 +1565,7 @@ fn fts_descriptor_tokens(spec: &Option<FtsSpec>) -> TokenStream {
             let dictionary = &s.dictionary;
             quote! {
                 ::std::option::Option::Some(::djogi::descriptor::FtsDescriptor {
-                    // Default generated column name. Phase 8 will add a
+                    // Default generated column name. will add a
                     // `column = "..."` override; until then it is always "search".
                     column: "search",
                     source: #source,
@@ -1837,7 +1794,7 @@ mod tests {
         );
     }
 
-    /// djogi#369 — the `"BYTEA"` SQL string (produced by `rust_type_to_sql`
+    /// the `"BYTEA"` SQL string (produced by `rust_type_to_sql`
     /// for a `Vec<u8>` field) must lower to the typed `FieldSqlType::Bytea`
     /// token, not the `Custom("BYTEA")` fallback. If this arm were dropped,
     /// the `other =>` tail would emit `FieldSqlType::Custom("BYTEA")`, which

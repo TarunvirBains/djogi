@@ -1,34 +1,26 @@
 //! Unique-via-index pattern.
-//!
 //! Covers two rows of the v3 plan §7 classification table:
-//!
 //! 1. "Add unique constraint to populated table" — emit `CREATE
-//!    UNIQUE INDEX CONCURRENTLY` then promote it to a constraint via
+//! UNIQUE INDEX CONCURRENTLY` then promote it to a constraint via
 //!    `ALTER TABLE … ADD CONSTRAINT … UNIQUE USING INDEX`.
 //! 2. "Replacing an index (DROP + CREATE on overlapping columns)"
 //!    when the live plan owns the rebuild — emit `CREATE INDEX
-//!    CONCURRENTLY` for the new shape, gate on `indvalid`, then
+//! CONCURRENTLY` for the new shape, gate on `indvalid`, then
 //!    `DROP INDEX CONCURRENTLY` the legacy index.
-//!
 //! # Operation shape
-//!
 //! Accepts [`AddIndex`](SchemaOperation::AddIndex). The pattern
 //! branches on the input's [`IndexKindSchema`] to choose between the
 //! plain-rebuild and constraint-promotion graphs.
-//!
 //! # Step graph (unique constraint promotion)
-//!
 //! 1. [`StepKind::ExpandSchema`] — `CREATE UNIQUE INDEX CONCURRENTLY
-//!    <name> ON <table> (...)`.
+//! <name> ON <table> (...)`.
 //! 2. [`StepKind::ValidateBackfill`] — operator gate on
 //!    `pg_index.indvalid`.
 //! 3. [`StepKind::FinalizeConstraints`] — `ALTER TABLE <t> ADD
-//!    CONSTRAINT <name> UNIQUE USING INDEX <name>` (the constraint
+//! CONSTRAINT <name> UNIQUE USING INDEX <name>` (the constraint
 //!    name reuses the index name; Postgres allows the same identifier
 //!    for both).
-//!
 //! # Step graph (plain index rebuild)
-//!
 //! 1. [`StepKind::ExpandSchema`] — `CREATE INDEX CONCURRENTLY ...`.
 //! 2. [`StepKind::ValidateBackfill`] — operator gate on
 //!    `pg_index.indvalid`.
@@ -37,10 +29,9 @@
 //!    constraint case under introspection — operators see "this step
 //!    has nothing to do, advance" rather than "this pattern omitted
 //!    finalize".
-//!
-//! No backfill is needed in either branch — the index build is the
-//! only data-touching step. [`Pattern::IDEMPOTENT_PREDICATE`] is
-//! `false`.
+//!    No backfill is needed in either branch — the index build is the
+//!    only data-touching step. [`Pattern::IDEMPOTENT_PREDICATE`] is
+//!    `false`.
 
 use super::index_dependent::render_create_index;
 use super::{Pattern, PatternContext, PatternError};
@@ -126,7 +117,7 @@ impl Pattern for UniqueViaIndex {
 /// dispatcher uses to mark a replacement build, return the legacy
 /// index name to drop. Returns `None` for plain unique-add operations
 /// that have no legacy counterpart. The convention is documented at
-/// the dispatch layer (T10); the pattern only needs the suffix-strip
+/// the dispatch layer; the pattern only needs the suffix-strip
 /// rule to know whether the cleanup step belongs in the plan.
 fn legacy_replacement_target(index: &IndexSchema) -> Option<String> {
     let name = &index.name;

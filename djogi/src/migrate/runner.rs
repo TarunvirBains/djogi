@@ -1,45 +1,37 @@
 //! Migration runner — applies a [`MigrationPlan`] against a target
 //! database, recording each step in the `djogi_schema_migrations`
 //! ledger and persisting the snapshot only on full success.
-//!
-//! # Lifecycle (Phase 7 v3 §6 / §8)
-//!
+//! # Lifecycle (/ §8)
 //! ```text
-//! 1. Acquire workspace file lock (T4 guard primitive).
+//! 1. Acquire workspace file lock (guard primitive).
 //! 2. Bootstrap djogi_schema_migrations table.
 //! 3. Acquire pg_advisory_lock on a 64-bit key derived from BucketKey.
 //! 4. Verify the supplied checksum matches a freshly-computed one.
 //! 5. Insert the pending ledger row OUTSIDE the apply transaction.
 //! 6. For each segment, dispatch by SegmentKind:
-//!      - Transactional   → BEGIN; statements; COMMIT.
-//!      - NonTransactional → autocommit each statement; update progress.
-//!      - MetadataOnly    → no SQL runs; metadata path is T6's job.
+//! - Transactional → BEGIN; statements; COMMIT.
+//! - NonTransactional → autocommit each statement; update progress.
+//! - MetadataOnly → no SQL runs; metadata path is `compose`'s job.
 //! 7. On success: mark_applied + persist snapshot.
 //! 8. On failure: mark_failed (or mark_partial for split-apply)
-//!    and propagate. Snapshot is NOT moved forward.
+//! and propagate. Snapshot is NOT moved forward.
 //! 9. Always: release pg_advisory_lock and workspace file lock.
 //! ```
-//!
 //! # Snapshot persistence invariant
-//!
 //! The snapshot file at `migrations/<target>/<app>/schema_snapshot.json`
 //! is written ONLY after the ledger row reaches `applied`. Any failure
-//! — transactional rollback, non-transactional crash, ledger update
+//! transactional rollback, non-transactional crash, ledger update
 //! error — leaves the snapshot at its prior value. This is the hard
-//! invariant T4 owes T5 (`repair`) and T7 (`status`): if the snapshot
+//! invariant: if the snapshot
 //! moved, every preceding migration succeeded.
-//!
 //! # Determinism
-//!
 //! Two runs against the same plan + same DB state must produce the
 //! same ledger writes (modulo `applied_at`, `applied_by`,
 //! `execution_time_ms`, and `run_id`). Hashing of `BucketKey` to the
 //! advisory-lock key uses SHA-256 truncated to the low 64 bits — a
 //! stable hash that does not depend on Rust's randomised default
 //! `Hasher`.
-//!
-//! # Relpages probe (Phase 7-Zero v3 §6.5)
-//!
+//! # Relpages probe (.5)
 //! Before every transactional `CREATE INDEX` whose `IndexSchema`
 //! does NOT carry `requires_out_of_transaction == true`, the runner
 //! queries `pg_class.relpages` for the target table. When relpages
@@ -151,7 +143,7 @@ pub enum RunnerError {
     /// `djogi_schema_migrations` — out-of-order conflict probe,
     /// rollback row-fetch, etc.). Distinct from
     /// [`RunnerError::LedgerWriteFailed`]
-    /// — no row was written; the failure is in a reading probe and
+    /// no row was written; the failure is in a reading probe and
     /// surfaces with a `query_label` so operators can correlate the
     /// error to the specific ledger probe (sibling of
     /// [`RunnerError::CatalogQueryFailed`] for the ledger surface).
@@ -173,7 +165,7 @@ pub enum RunnerError {
     /// `ledger::bootstrap` failed — the ledger table's
     /// `CREATE TABLE IF NOT EXISTS` DDL could not run. Distinct from
     /// [`RunnerError::LedgerWriteFailed`] (row CRUD: INSERT/UPDATE)
-    /// — bootstrap is DDL, not row-level work, and almost always
+    /// bootstrap is DDL, not row-level work, and almost always
     /// signals a permissions or connection problem rather than a
     /// data conflict.
     LedgerBootstrapFailed { source: DjogiError },
@@ -281,7 +273,7 @@ pub enum RunnerError {
 
     /// `baseline_plan` was called with `runner_ctx.snapshot.is_some()`.
     /// Baseline derives the canonical snapshot from a fresh live-DB
-    /// projection (B-11) so the operator-supplied channel is rejected
+    /// projection so the operator-supplied channel is rejected
     /// up-front to prevent stale-snapshot baselines from poisoning
     /// future diffs.
     BaselineSnapshotShouldNotBeProvided,
@@ -292,7 +284,6 @@ pub enum RunnerError {
     /// `Reject`. Surfaces the conflicting peer so the operator can
     /// decide between rebasing the migration to a later timestamp,
     /// supplying an explicit override, or reordering the apply.
-    ///
     /// Note: this error fires BEFORE the pending ledger row is
     /// inserted, so a `Reject` outcome leaves no trace in the
     /// database. The operator-facing message is the only artifact.
@@ -316,7 +307,7 @@ pub enum RunnerError {
         source: Box<super::verify::VerifyRunError>,
     },
 
-    /// **D060** — T9 PK-flip pre-flight: logical-replication apply
+    /// **D060** — PK-flip pre-flight: logical-replication apply
     /// machinery is active in this database. Walsenders surfaced via
     /// `pg_stat_replication` and/or local subscriptions surfaced via
     /// `pg_subscription` (`subenabled = true`) signal that a separate
@@ -338,7 +329,7 @@ pub enum RunnerError {
         subscriptions: Vec<String>,
     },
 
-    /// **D061** — T9 PK-flip pre-flight: a `zzz_*` trigger already
+    /// **D061** — PK-flip pre-flight: a `zzz_*` trigger already
     /// exists on the migrating table (or one of its children).
     /// Collisions with the autofill trigger naming convention abort
     /// the install; the operator must rename or drop the existing
@@ -350,7 +341,7 @@ pub enum RunnerError {
         trigger_names: Vec<String>,
     },
 
-    /// **D062** — T9 PK-flip pre-flight: at least one trigger on the
+    /// **D062** — PK-flip pre-flight: at least one trigger on the
     /// migrating table (or a child) is already disabled (`tgenabled
     /// <> 'O'`). A disabled trigger leaves writes during the window
     /// without their `_desc` shadow populated; the runner refuses.
@@ -361,7 +352,7 @@ pub enum RunnerError {
         triggers: Vec<(String, char)>,
     },
 
-    /// **D063** — T9 PK-flip pre-flight: at least one open Postgres
+    /// **D063** — PK-flip pre-flight: at least one open Postgres
     /// transaction has run for longer than the configured threshold
     /// (`MigrateConfig::pk_flip_long_tx_threshold_secs`). The
     /// cutover would either block on `AccessExclusiveLock` or abort
@@ -373,7 +364,7 @@ pub enum RunnerError {
         threshold_secs: u32,
     },
 
-    /// **D064** — T9 verification halt: between backfill and
+    /// **D064** — PK-flip verification halt: between backfill and
     /// cutover, the per-table verification SELECT returned a non-zero
     /// count of NULL / mismatched shadow rows. The runner halts
     /// before opening the cutover transaction.
@@ -386,7 +377,7 @@ pub enum RunnerError {
 
     /// A Postgres system-catalog query (pg_class, pg_constraint,
     /// pg_subscription, etc.) failed before the migration could
-    /// proceed. Distinct from [`RunnerError::LedgerWriteFailed`] —
+    /// proceed. Distinct from [`RunnerError::LedgerWriteFailed`]
     /// the ledger was not touched; the failure is in a read-only
     /// catalog probe. The `query_label` field names the probe so
     /// operators can correlate the error to the specific catalog
@@ -415,7 +406,6 @@ pub enum RunnerError {
     /// it. This is a session-pinning correctness failure: the lock was
     /// either never acquired on this session or was acquired on a
     /// different one (the pre-#274 pool-backed bug).
-    ///
     /// This variant fires ONLY when the migration operation itself
     /// succeeded. If both the operation and the release fail, the
     /// original operation error is returned and the unlock failure is
@@ -769,9 +759,8 @@ impl std::error::Error for RunnerError {
 /// Caller-supplied context for one runner invocation. Decouples the
 /// runner from a hard-coded `Djogi.toml` location so tests can
 /// inject their own knobs.
-///
 /// **Snapshot path policy.** `snapshot_path` is owned by the caller
-/// — the runner does not invent a path. T6's `apply` orchestrator
+/// the runner does not invent a path. The `apply` orchestrator
 /// constructs `migrations/<target>/<app>/schema_snapshot.json` from
 /// the workspace root and the bucket; tests pass `None` to skip the
 /// snapshot persist step entirely (useful when the test cares only
@@ -799,7 +788,7 @@ pub struct RunnerCtx {
     pub snapshot_path: Option<PathBuf>,
     /// Migrate-engine config (relpages threshold + strict mode).
     pub config: MigrateConfig,
-    /// Policy gate for out-of-order applies (T7). Defaults to
+    /// Policy gate for out-of-order applies. Defaults to
     /// [`super::policy::OutOfOrderPolicy::AllowWithDiagnostic`] for
     /// dev iteration; CI / production loaders flip to `Reject` via
     /// [`super::policy::OutOfOrderPolicy::default_for_config`]. The
@@ -808,38 +797,33 @@ pub struct RunnerCtx {
     pub out_of_order_policy: super::policy::OutOfOrderPolicy,
     /// Optional pool pointing at the **audit DB** (`crud_log_url` in
     /// `Djogi.toml`).
-    ///
     /// When `Some`, the runner writes one row to `djogi_ddl_audit`
     /// per successful migration via [`super::audit::record_ddl`],
     /// so `djogi db reset` (which drops the app DB) cannot erase
     /// the migration history. When `None` the audit write is
     /// silently skipped — appropriate for tests and for adopters
     /// who have not yet provisioned the second DB.
-    ///
-    /// **Wiring status:**
-    ///
-    /// - **Cluster 8ε (T9.4 / T9.5)** added the field and wired
+    /// **Wiring:**
+    /// - Added the field and wired
     ///   [`super::record_ddl_audit`] into `apply_plan_inner`'s
     ///   success-only path. The runner writes audit rows whenever
     ///   the caller supplies `Some(pool)`.
-    /// - **Phase 8.5 Cluster 2 issue #118** wired the production CLI
+    /// - **issue #118** wired the production CLI
     ///   dispatch (`db reset` replay path) to populate this field
     ///   from `crud_log_url` (env-var override or
     ///   derive-from-`database.url` fallback) via
     ///   [`super::resolve_audit_url`] + [`super::build_audit_pool`].
-    ///
-    /// Tests that build `RunnerCtx` literals typically leave this
-    /// `None` — the dedicated audit-row coverage runs in
-    /// `tests/internal/sources/phase8_5_c2_118_*`.
-    ///
-    /// **Why `deadpool_postgres::Pool` and not `DjogiPool`:** the
-    /// audit pool is not user-facing — adopters never see it, and
-    /// the runner constructs the audit-side `DjogiContext` itself
-    /// via `DjogiPool { inner: pool.clone() }` at the call site.
-    /// Holding the raw pool here keeps the dependency on
-    /// `DjogiPool`'s wider invariants (post-connect callbacks,
-    /// status reporting) out of `RunnerCtx`'s shape — those are
-    /// app-side concerns that do not apply to the audit DB.
+    ///   Tests that build `RunnerCtx` literals typically leave this
+    ///   `None` — the dedicated audit-row coverage runs in
+    ///   `tests/internal/sources/phase8_5_c2_118_*`.
+    ///   **Why `deadpool_postgres::Pool` and not `DjogiPool`:** the
+    ///   audit pool is not user-facing — adopters never see it, and
+    ///   the runner constructs the audit-side `DjogiContext` itself
+    ///   via `DjogiPool { inner: pool.clone() }` at the call site.
+    ///   Holding the raw pool here keeps the dependency on
+    ///   `DjogiPool`'s wider invariants (post-connect callbacks,
+    ///   status reporting) out of `RunnerCtx`'s shape — those are
+    ///   app-side concerns that do not apply to the audit DB.
     pub audit_pool: Option<deadpool_postgres::Pool>,
 }
 
@@ -855,9 +839,9 @@ pub struct RunReport {
     pub transactional_segments: usize,
     /// Number of non-transactional segments executed.
     pub non_transactional_segments: usize,
-    /// Number of metadata-only segments encountered. T4 records the
-    /// segments but does not execute filesystem moves; T6 owns that
-    /// path.
+    /// Number of metadata-only segments encountered. The runner records
+    /// the count but does not execute filesystem moves; `compose` owns
+    /// that path.
     pub metadata_segments: usize,
     /// Wall-clock elapsed time in milliseconds.
     pub execution_time_ms: i64,
@@ -866,35 +850,30 @@ pub struct RunReport {
 // ── Public entry point ────────────────────────────────────────────────────
 
 /// Apply a [`MigrationPlan`] against the runner's context.
-///
 /// **Witness-typed workspace lock.** The `_guard: &WorkspaceGuard`
 /// parameter is a compile-time witness that the caller already holds
 /// the workspace file lock — its mere presence at the type level
 /// proves the lock is alive for the duration of the call. The runner
 /// itself does not touch the guard; the parameter is named with a
 /// leading underscore to signal "consumed at the type level only".
-///
-/// Misuse — calling `apply_plan` without first acquiring the lock —
+/// Misuse — calling `apply_plan` without first acquiring the lock
 /// is a compile error rather than a silent race window. Tests that
 /// only care about ledger semantics still go through the lock by
 /// asking the [`super::guard::acquire`] helper for a per-test path.
-///
 /// **Three-database awareness.** The runner currently routes every
 /// query through the supplied `&mut DjogiContext`'s pool. The
 /// `RunnerCtx::bucket.database` field is hashed into the advisory
 /// lock key and surfaced in operator-facing errors, but the actual
-/// query routing follows the context the caller supplied. Phase 4's
+/// query routing follows the context the caller supplied. the
 /// `DjogiContext` is single-pool today; when the three-database
 /// `DjogiContext::pool_for(database)` API lands the runner will
 /// pull the right pool from `runner_ctx.bucket.database` here. The
 /// `BucketKey.database` channel exists today so the orchestrator
-/// (T6 `apply`) can construct one `DjogiContext` per database before
+/// (`apply`) can construct one `DjogiContext` per database before
 /// invoking the runner.
-///
 /// **Per-bucket advisory lock.** The runner DOES acquire and
 /// release the per-bucket Postgres advisory lock around every
 /// segment dispatch.
-///
 /// **Snapshot persistence.** Writes the snapshot file ONLY after
 /// the ledger row reaches `applied` and every segment succeeded.
 /// Any failure leaves the snapshot at its prior value.
@@ -915,7 +894,6 @@ pub async fn apply_plan(
 }
 
 /// Internal apply path that runs on an already-pinned context.
-///
 /// Both pool-backed (after checkout) and transaction-backed callers
 /// route here. All queries in this function — bootstrap, advisory
 /// lock, DDL, ledger writes, and unlock — run on the same physical
@@ -958,7 +936,7 @@ async fn apply_plan_inner(
 ) -> Result<RunReport, RunnerError> {
     let started = Instant::now();
 
-    // T9 pre-flight: when the plan classifies as `PkTypeFlip`, run
+    // PK-flip pre-flight: when the plan classifies as `PkTypeFlip`, run
     // the hazard checks (D060–D063) BEFORE any side effect. The
     // runner refuses on any hit with an actionable diagnostic; no
     // ledger row is inserted, no SQL runs.
@@ -986,15 +964,13 @@ async fn apply_plan_inner(
         });
     }
 
-    // T7: out-of-order detection. Walk the bucket's existing applied
+    // Out-of-order detection: walk the bucket's existing applied
     // ledger rows and surface any whose `version` is lexically greater
     // than ours — that indicates this version applies "before" a
     // previously-applied peer (the dev branch picked up a feature
     // branch's older migration after main shipped a newer one).
-    //
     // Lexical compare is correct because the version prefix is
     // `V<14 digits>` (timestamp-derived) so lexical order = chronological.
-    //
     // The detection runs BEFORE inserting the pending row so a
     // `Reject` policy leaves no database trace.
     let conflicting_peer = find_higher_applied_version(ctx, &plan.bucket, &runner_ctx.version)
@@ -1032,7 +1008,7 @@ async fn apply_plan_inner(
     // the operator-supplied override reason lands on the row alongside
     // the out_of_order_flag. This is the audit-trail half of the
     // "tracing::warn! plus partial_apply_note" contract called out in
-    // the T7 brief.
+    // the out-of-order policy brief.
     let initial_note = compose_initial_note(
         is_out_of_order,
         runner_ctx.out_of_order_policy.override_reason(),
@@ -1040,7 +1016,7 @@ async fn apply_plan_inner(
     );
     let durable_non_tx_note = initial_note.clone();
 
-    // B-2: expand `<EACH_LEAF_TABLE>` placeholders inside any
+    // Expand `<EACH_LEAF_TABLE>` placeholders inside any
     // partitioned-flip segment before any runner-owned writes. This
     // produces the concrete SQL the runner will actually execute, so
     // every downstream preflight and step-count calculation works on
@@ -1125,7 +1101,7 @@ async fn apply_plan_inner(
                     run_transactional_segment(ctx, segment, seg_idx, runner_ctx, &add_table_set)
                         .await
                 {
-                    // N-1: the relpages probe runs BEFORE BEGIN, so
+                    // The relpages probe runs BEFORE BEGIN, so
                     // a probe failure must NOT be reported as a
                     // transactional-segment failure (the tx has not
                     // even opened yet). Distinguish probe-side
@@ -1166,8 +1142,8 @@ async fn apply_plan_inner(
                 }
             }
             SegmentKind::MetadataOnly => {
-                // T4 records the segment count but does not execute
-                // filesystem moves — that is T6's `apply`
+                // The runner records the segment count but does not execute
+                // filesystem moves — that is `apply`'s
                 // orchestrator. The presence of metadata-only
                 // segments is captured in the ledger via the count
                 // tracked here and returned in the RunReport.
@@ -1177,26 +1153,23 @@ async fn apply_plan_inner(
     }
 
     // 7. Mark applied + persist snapshot. The order is:
-    //    a. Write the snapshot file.
-    //    b. Mark the ledger row applied.
-    //
+    // a. Write the snapshot file.
+    // b. Mark the ledger row applied.
     // If (a) fails, the ledger stays `pending` and the operator can
     // inspect the partial state. If (b) fails after (a) succeeded,
     // the snapshot is on disk but the ledger says pending — also a
     // recoverable state because the runner's idempotency check
-    // (T6) sees the snapshot match the descriptor and treats it as
+    // `apply` sees the snapshot match the descriptor and treats it as
     // already-applied.
-    //
     // However: per the v3 plan's hard invariant ("snapshot moves
     // forward AFTER ledger reaches applied"), we flip the order:
-    //    a. Mark the ledger row applied.
-    //    b. Write the snapshot file.
-    //
+    // a. Mark the ledger row applied.
+    // b. Write the snapshot file.
     // If (b) fails, the operator runs `compose` to regenerate the
     // snapshot from the descriptor inventory.
     let elapsed_ms: i64 = elapsed_ms(started);
 
-    // T7: when the row was flagged out-of-order, preserve the
+    // When the row was flagged out-of-order, preserve the
     // partial_apply_note so the historical conflict + override reason
     // stay visible alongside `applied` status. The default
     // `mark_applied` clears the note (its prior purpose was to
@@ -1224,13 +1197,12 @@ async fn apply_plan_inner(
         })?;
     }
 
-    // T9.5 / Phase 8.5 issue #118 — DDL audit. Best-effort: if any
+    // #118 — DDL audit. Best-effort: if any
     // audit-side step fails we log via `tracing::warn!` and SKIP. The
     // app DB DDL has already succeeded; an audit-DB outage MUST NOT
     // roll back work that already committed. See
     // `record_ddl_audit_for_plan` for the full failure-mode
     // rationale.
-    //
     // **Snapshot decoupling (issue #118).** The audit-write loop runs
     // whenever `audit_pool.is_some()`, regardless of whether a
     // snapshot was persisted on this apply. The snapshot signature
@@ -1239,7 +1211,7 @@ async fn apply_plan_inner(
     // `snapshot: None` (the on-disk snapshot is unchanged across the
     // drop / recreate / replay cycle) and would otherwise have its
     // audit row suppressed by an unrelated pre-condition. The audit
-    // row's primary purpose — recording that a migration's DDL ran —
+    // row's primary purpose — recording that a migration's DDL ran
     // is independent of whether new schema bytes hit disk.
     record_ddl_audit_for_plan(plan, runner_ctx, runner_ctx.snapshot.as_ref()).await;
 
@@ -1254,32 +1226,24 @@ async fn apply_plan_inner(
 }
 
 /// Write one `djogi_ddl_audit` row per executed (non-metadata-only)
-/// segment in the plan. T9.5; snapshot decoupling Phase 8.5 issue
-/// #118.
-///
+/// segment in the plan. Snapshot decoupling issue #118.
 /// # Why this lives on the success-only path
-///
 /// The caller invokes this AFTER:
-///
 /// 1. Every segment has committed (transactional or non-transactional).
 /// 2. `mark_applied` flipped the ledger row to `applied`.
 /// 3. `save_snapshot` persisted the new schema-of-record to disk
 ///    (when a snapshot was supplied by the caller; the `db reset`
 ///    replay path deliberately does not).
-///
-/// Calling it earlier would risk an audit row whose
-/// `snapshot_signature_hex` does not correspond to any persisted
-/// snapshot — the signature would be of an in-memory `AppliedSchema`
-/// that never reached disk. Per v3 plan §453 the audit row's purpose
-/// is to ground the migration trail to the schema-of-record file
-/// `djogi verify` (T9.6) inspects.
-///
-/// # Snapshot is optional (Phase 8.5 issue #118)
-///
+///    Calling it earlier would risk an audit row whose
+///    `snapshot_signature_hex` does not correspond to any persisted
+///    snapshot — the signature would be of an in-memory `AppliedSchema`
+///    that never reached disk. Per v3 plan §453 the audit row's purpose
+///    is to ground the migration trail to the schema-of-record file
+///    `djogi verify` inspects.
+/// # Snapshot is optional (#118)
 /// The `snapshot` parameter is `Option<&AppliedSchema>`. The audit
 /// row's primary purpose — recording that a migration's DDL ran — is
 /// independent of whether new schema bytes hit disk on this apply:
-///
 /// - **`Some(snapshot)`** — the runner just persisted these bytes to
 ///   `snapshot_path`. The audit row's `snapshot_signature_hex` is
 ///   the HMAC over those bytes (or the no-op zero hex when the
@@ -1290,41 +1254,32 @@ async fn apply_plan_inner(
 ///   `NULL` in the signature column. NULL distinguishes "no snapshot
 ///   was written this apply" from "snapshot written, signed under
 ///   the no-op key" (the latter produces 64 zero hex chars).
-///
-/// Pre-issue-#118 this function took `&AppliedSchema` and the call
-/// site gated audit writes on snapshot presence — which meant `db
+///   Pre-issue-#118 this function took `&AppliedSchema` and the call
+///   site gated audit writes on snapshot presence — which meant `db
 /// reset` (the only production constructor of `RunnerCtx`) could
-/// never write audit rows.
-///
+///   never write audit rows.
 /// # Three-database awareness
-///
 /// The audit DB is operationally separate from the app DB
 /// (`crud_log_url` vs. `url`). We construct a fresh
 /// [`DjogiContext`] from `runner_ctx.audit_pool` — NEVER from the
 /// app-side context — so a query routed here cannot accidentally
 /// run against the app DB. See CLAUDE.md "Three-Database
 /// Architecture".
-///
 /// # Failure-mode rationale
-///
 /// Three steps can fail: the audit-DDL bootstrap, individual
 /// `INSERT` calls, and the implicit pool checkout each `DjogiContext`
-/// helper performs. ALL THREE log via `tracing::warn!` and SKIP —
+/// helper performs. ALL THREE log via `tracing::warn!` and SKIP
 /// none propagate. Reasons:
-///
 /// - The app DB DDL has already committed.
 /// - The on-disk snapshot has already been persisted (when supplied).
 /// - The ledger row has already reached `applied`.
-///
-/// Rolling any of those back because the audit DB is unreachable
-/// would be a worse outcome than a missing audit row. Operators
-/// rebuilding the audit trail can replay from the ledger + snapshot;
-/// they cannot recover from a runner that refused to record an
-/// otherwise-clean migration apply because a sibling DB happened to
-/// be down.
-///
+///   Rolling any of those back because the audit DB is unreachable
+///   would be a worse outcome than a missing audit row. Operators
+///   rebuilding the audit trail can replay from the ledger + snapshot;
+///   they cannot recover from a runner that refused to record an
+///   otherwise-clean migration apply because a sibling DB happened to
+///   be down.
 /// # Per-segment rows
-///
 /// One row per executed segment so the audit trail captures the same
 /// granularity the runner reports (the `Transactional /
 /// NonTransactional` split). MetadataOnly segments produce no SQL so
@@ -1334,9 +1289,7 @@ async fn apply_plan_inner(
 /// apply share the post-apply schema-of-record, and the audit reader
 /// reconstructs the per-segment timeline from `applied_at` ordering
 /// on the ledger side.
-///
 /// # Signing key
-///
 /// `DJOGI_SNAPSHOT_SIGNING_KEY` unset OR malformed → silently
 /// degrades to the no-op key `[0u8; 32]`. The runner intentionally
 /// does NOT log on malformed input; the CLI entry point that sets
@@ -1379,8 +1332,7 @@ async fn record_ddl_audit_for_plan(
     // operator-facing surface for malformed keys (`djogi verify` surfaces
     // them as `VerifyError::KeyDecode`); the runner is the audit-side
     // consumer, not the configuration owner.
-    //
-    // **Snapshot decoupling (Phase 8.5 issue #118).** Audit rows now
+    // **Snapshot decoupling (#118).** Audit rows now
     // fire whenever `audit_pool.is_some()` regardless of whether a
     // snapshot was persisted on this apply (the runner's `db reset`
     // replay path deliberately passes `snapshot: None`). When no
@@ -1463,7 +1415,7 @@ async fn record_ddl_audit_for_plan(
         // Routes through the public re-export `record_ddl_audit`
         // (the in-module fn is `audit::record_ddl`; the re-export
         // adds the `_audit` suffix to disambiguate from sibling
-        // ledger / seed CRUD helpers — see T9.4 INFO finding on
+        // ledger / seed CRUD helpers — see the naming-disambiguation note on
         // naming drift). Calling the re-export keeps the runner
         // aligned with the public-surface name even though the
         // private path would also resolve.
@@ -1490,12 +1442,11 @@ async fn record_ddl_audit_for_plan(
     }
 }
 
-// ── Rollback / fake-apply / baseline (Phase 7 v3 §8 — T5) ─────────────────
+// ── Rollback / fake-apply / baseline ─────────────────
 
 /// Operator-supplied policy for a rollback whose `down` SQL is
 /// flagged lossy by the SQL emitter (e.g. `DropColumn`, `DropTable`,
 /// `DropEnum`, `DropIndex`).
-///
 /// Lossy rollback means the down SQL cannot reconstruct the original
 /// row data — for `DropColumn` the column is gone, for `DropTable`
 /// the rows are gone, for `DropEnum` the type's existence is gone.
@@ -1669,14 +1620,11 @@ impl std::error::Error for RollbackError {
 
 /// Roll back a previously-applied migration by running its emitted
 /// `down` SQL in reverse order.
-///
 /// **Witness-typed workspace lock.** Like [`apply_plan`], rollback
 /// requires a `&WorkspaceGuard` so the file lock is held for the
 /// entire operation.
-///
 /// **Order of execution.** Apply runs transactional segments first
 /// then non-transactional. Rollback inverts that:
-///
 /// 1. Non-transactional segments run first, in reverse statement
 ///    order, autocommitting each step. (Apply's order is
 ///    NonTx-segment-after-Tx-segment by segment-list position; the
@@ -1684,27 +1632,24 @@ impl std::error::Error for RollbackError {
 ///    each segment's statements.)
 /// 2. Transactional segments run last, all wrapped in one Postgres
 ///    transaction so a partial-rollback failure rolls back cleanly.
-///
-/// **Lossy down handling.** Pre-walks the plan and collects every
-/// operation whose `lossy.is_some()`. With
-/// [`LossyRollbackPolicy::Refuse`] (the default), surfaces the list
-/// as [`RollbackError::LossyRollbackRefused`] before any SQL runs.
-/// With [`LossyRollbackPolicy::Allow { reason }`], the rollback
-/// proceeds and the reason is preserved in the ledger row's
-/// `partial_apply_note`.
-///
-/// **Snapshot semantics.** Rollback does NOT re-derive the prior
-/// snapshot from the down SQL — that requires a full delta-replay
-/// engine which is not in T5's scope. The caller (typically T6's
-/// `apply` orchestrator with a snapshot history) supplies the prior
-/// snapshot explicitly via `prior_snapshot` and `prior_snapshot_path`.
-/// Pass `None` to skip the snapshot revert (tests, when the snapshot
-/// is not under test).
-///
-/// **Ledger update.** On success, the ledger row's status flips to
-/// [`LedgerStatus::RolledBack`], `applied_steps_count` resets to 0,
-/// and `partial_apply_note` is filled with a record of the rollback
-/// (timestamp + lossy reason if any).
+///    **Lossy down handling.** Pre-walks the plan and collects every
+///    operation whose `lossy.is_some()`. With
+///    [`LossyRollbackPolicy::Refuse`] (the default), surfaces the list
+///    as [`RollbackError::LossyRollbackRefused`] before any SQL runs.
+///    With [`LossyRollbackPolicy::Allow { reason }`], the rollback
+///    proceeds and the reason is preserved in the ledger row's
+///    `partial_apply_note`.
+///    **Snapshot semantics.** Rollback does NOT re-derive the prior
+///    snapshot from the down SQL — that requires a full delta-replay
+///    engine which is outside the rollback scope. The caller (typically
+///    `apply` orchestrator with a snapshot history) supplies the prior
+///    snapshot explicitly via `prior_snapshot` and `prior_snapshot_path`.
+///    Pass `None` to skip the snapshot revert (tests, when the snapshot
+///    is not under test).
+///    **Ledger update.** On success, the ledger row's status flips to
+///    [`LedgerStatus::RolledBack`], `applied_steps_count` resets to 0,
+///    and `partial_apply_note` is filled with a record of the rollback
+///    (timestamp + lossy reason if any).
 pub async fn rollback_plan(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
@@ -1713,7 +1658,7 @@ pub async fn rollback_plan(
     lossy_policy: LossyRollbackPolicy,
     prior_snapshot: Option<&super::schema::AppliedSchema>,
 ) -> Result<RollbackReport, RollbackError> {
-    // B-3: hoist the PriorSnapshotMissing check to the very top —
+    // Hoist the PriorSnapshotMissing check to the very top
     // before any ledger bootstrap, before any DDL, before any ledger
     // mutation.
     if prior_snapshot.is_none() && runner_ctx.snapshot_path.is_some() {
@@ -1729,13 +1674,11 @@ pub async fn rollback_plan(
 }
 
 /// Determine whether lossy rollback is permitted for the given plan.
-///
 /// Scans all statements in the plan for lossy markers and enforces
 /// the policy. Returns the operator-supplied reason string (if any)
 /// when lossy operations are present but allowed, or None if no
 /// lossy operations exist. Refuses with [`RollbackError`] when
 /// lossy operations are present and the policy is `Refuse`.
-///
 /// This operates against the materialized replay plan (partition-expanded),
 /// not the original unexpanded plan, so per-leaf lossy markers are properly
 /// detected (GH #317).
@@ -1764,7 +1707,6 @@ fn rollback_lossy_allow_reason(
 }
 
 /// Internal rollback path that runs on an already-pinned context.
-///
 /// Materializes the strict replay plan inside the advisory lock before
 /// scanning lossy markers or executing down SQL. Partition-expanded
 /// statements are rematerialized from the same execution stream used
@@ -1779,22 +1721,22 @@ async fn rollback_plan_pinned(
     prior_snapshot: Option<&super::schema::AppliedSchema>,
 ) -> Result<RollbackReport, RollbackError> {
     // 1. Bootstrap the ledger so the SELECT below cannot fail with
-    //    relation-not-found.
+    // relation-not-found.
     ledger::bootstrap(ctx)
         .await
         .map_err(|e| RollbackError::Runner(RunnerError::LedgerBootstrapFailed { source: e }))?;
 
     // 2. Acquire the per-bucket advisory lock BEFORE loading the ledger
-    //    row. Moving the row read inside the lock eliminates the TOCTOU
-    //    window between the status check and the down-SQL mutations
-    //    (GH #274).
+    // row. Moving the row read inside the lock eliminates the TOCTOU
+    // window between the status check and the down-SQL mutations
+    // (GH #274).
     let lock_key = advisory_lock_key(&plan.bucket);
     acquire_advisory_lock(ctx, &plan.bucket, lock_key)
         .await
         .map_err(RollbackError::Runner)?;
 
     // 3. Confirm the row exists and is in a rollbackable status — inside
-    //    the lock so the status read is atomic with the subsequent write.
+    // the lock so the status read is atomic with the subsequent write.
     let row_result = load_ledger_row_for_version(ctx, &runner_ctx.version)
         .await
         .map_err(|e| {
@@ -1820,11 +1762,11 @@ async fn rollback_plan_pinned(
         }
     };
     // 3a. Verify the ledger row belongs to the same logical app bucket
-    //     that owns the advisory lock. An operator-constructed or stale
-    //     MigrationPlan whose bucket.app differs from the row's
-    //     app_label would mutate the row while holding a lock for the
-    //     wrong bucket — the same hazard the repair flow guards
-    //     (GH #274 hardening).
+    // that owns the advisory lock. An operator-constructed or stale
+    // MigrationPlan whose bucket.app differs from the row's
+    // app_label would mutate the row while holding a lock for the
+    // wrong bucket — the same hazard the repair flow guards
+    // (GH #274 hardening).
     if row.app_label != plan.bucket.app {
         let e = RollbackError::BucketAppMismatch {
             version: runner_ctx.version.clone(),
@@ -1866,10 +1808,10 @@ async fn rollback_plan_pinned(
     }
 
     // 5. Materialize strict replay plan inside advisory lock. Partition-expanded
-    //    statements are rematerialized from the same execution stream used by apply;
-    //    rollback replays reverse down SQL against the expanded stream. Lossy
-    //    scanning operates on the materialized plan, not the original unexpanded
-    //    plan, so per-leaf lossy markers are properly detected (GH #317).
+    // statements are rematerialized from the same execution stream used by apply;
+    // rollback replays reverse down SQL against the expanded stream. Lossy
+    // scanning operates on the materialized plan, not the original unexpanded
+    // plan, so per-leaf lossy markers are properly detected (GH #317).
     let (replay_plan, leaves_cache_rollback) =
         match materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict).await {
             Ok((p, cache)) => (p, cache),
@@ -1928,14 +1870,13 @@ async fn rollback_plan_pinned(
 
 /// Internal rollback core logic — split out so the advisory-lock release
 /// runs on every exit branch.
-///
-/// **Atomicity contract (B-1).** The transactional segments share ONE
+/// **Atomicity contract.** The transactional segments share ONE
 /// Postgres transaction, opened before the first segment's down SQL
 /// runs and committed after the last. A failure mid-walk rolls back
 /// the entire compound — no transactional segment commits in
 /// isolation while a peer fails. Non-transactional segments are
 /// inherently auto-committed and run before the compound transaction
-/// (per the apply-order inversion the v3 plan calls for in T4).
+/// (per the apply-order inversion the v3 plan specifies).
 async fn rollback_inner(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
@@ -1944,15 +1885,15 @@ async fn rollback_inner(
     allow_reason: Option<String>,
 ) -> Result<RollbackReport, RollbackError> {
     // 5. Walk segments in reverse list order. Apply runs
-    //    transactional segments first then non-transactional. Rollback
-    //    inverts that:
-    //      a. Non-transactional segments first (auto-committed,
-    //         REVERSE statement order per segment, REVERSE segment
-    //         order across the plan).
-    //      b. Transactional segments second, ALL inside a SINGLE
-    //         compound Postgres transaction (REVERSE statement order
-    //         per segment, REVERSE segment order across the plan).
-    //         A failure inside the compound tx aborts the whole tx.
+    // transactional segments first then non-transactional. Rollback
+    // inverts that:
+    // a. Non-transactional segments first (auto-committed,
+    // REVERSE statement order per segment, REVERSE segment
+    // order across the plan).
+    // b. Transactional segments second, ALL inside a SINGLE
+    // compound Postgres transaction (REVERSE statement order
+    // per segment, REVERSE segment order across the plan).
+    // A failure inside the compound tx aborts the whole tx.
     let mut transactional_undone = 0usize;
     let mut non_transactional_undone = 0usize;
 
@@ -1990,7 +1931,7 @@ async fn rollback_inner(
                     continue;
                 }
                 if let Err(e) = execute_runner_statement(ctx, &stmt.down, runner_ctx).await {
-                    // Best-effort ROLLBACK of the whole compound tx —
+                    // Best-effort ROLLBACK of the whole compound tx
                     // surface the original error verbatim.
                     let _ = ctx.batch_execute("ROLLBACK").await;
                     return Err(RollbackError::DownStatementFailed {
@@ -2013,14 +1954,13 @@ async fn rollback_inner(
     }
 
     // 6. Update the ledger row to `rolled_back`. The note records the
-    //    rollback timestamp and (when applicable) the lossy reason.
-    //
-    //    B-2: clear `total_steps` to NULL so a rolled-back row no
-    //    longer advertises stale progress. The columns we touch are:
-    //      - status              -> 'rolled_back'
-    //      - applied_steps_count -> 0
-    //      - total_steps         -> NULL
-    //      - partial_apply_note  -> rollback record
+    // rollback timestamp and (when applicable) the lossy reason.
+    // clear `total_steps` to NULL so a rolled-back row no
+    // longer advertises stale progress. The columns we touch are:
+    // - status -> 'rolled_back'
+    // - applied_steps_count -> 0
+    // - total_steps -> NULL
+    // - partial_apply_note -> rollback record
     let timestamp = OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "<unknown timestamp>".to_string());
@@ -2046,10 +1986,9 @@ async fn rollback_inner(
     })?;
 
     // 7. Persist the prior snapshot, if supplied. The caller maintains
-    //    snapshot history; T5 only writes whatever was handed in.
-    //
+    // snapshot history; the rollback path only writes whatever was handed in.
     // The `prior_snapshot.is_none() && snapshot_path.is_some()` case
-    // is rejected at the TOP of `rollback_plan` (B-3) — by the time
+    // is rejected at the TOP of `rollback_plan` — by the time
     // we reach this branch the invariant is "either both are present
     // or `prior_snapshot` is None and `snapshot_path` is also None".
     let mut snapshot_reverted = false;
@@ -2109,24 +2048,20 @@ pub struct RollbackReport {
 
 /// Mark a migration version as `faked` — record the row in the ledger
 /// without running any SQL.
-///
 /// **Use case.** An out-of-band tool already applied the schema
 /// change (manual SQL, prior dev tooling, restored backup) and the
 /// operator wants Djogi's ledger to reflect "this version is
 /// considered applied; skip its DDL on a future apply".
-///
 /// **Snapshot moves forward.** The caller supplies a `snapshot` and
 /// `snapshot_path` representing the state Djogi should consider
 /// authoritative now. Fake-apply asserts that the schema is in this
 /// state without verifying it — the operator owns that verification.
-///
 /// **Why a separate function.** Keeping fake-apply distinct from
 /// `apply_plan` makes the audit trail honest: the ledger row carries
 /// `status = 'faked'` (not `applied`) and a `partial_apply_note`
 /// describing the operator's reason. Anyone reviewing the ledger
 /// later can immediately see the row was not produced by the runner's
 /// happy path.
-///
 /// `reason` is required and persisted to `partial_apply_note`.
 pub async fn fake_apply_plan(
     ctx: &mut DjogiContext,
@@ -2244,7 +2179,7 @@ async fn fake_apply_inner(
     // `insert_pending` binds `row.status.as_db_str()` directly, so
     // constructing the row with `LedgerStatus::Faked` writes the
     // correct terminal status in a single INSERT — no post-insert
-    // UPDATE needed (cluster-2 simplify Finding 1). The B-4 concern
+    // UPDATE needed (cluster-2 simplify Finding 1). The concern
     // (crash between INSERT and UPDATE leaving a stranded `pending`
     // row) is eliminated because there is now only one DB operation.
     let row = LedgerRow {
@@ -2279,9 +2214,8 @@ async fn fake_apply_inner(
     };
 
     // Snapshot moves forward when supplied. The write ordering is:
-    //   a. W1: ledger row committed as terminal `faked` (already done above).
-    //   b. W3: persist snapshot to disk.
-    //
+    // a. W1: ledger row committed as terminal `faked` (already done above).
+    // b. W3: persist snapshot to disk.
     // If (b) fails, the ledger row is `faked` but the snapshot is stale or
     // missing. Recovery: run `djogi migrations compose` (or `attune`) to
     // regenerate the snapshot from the descriptor inventory. The ledger row
@@ -2307,8 +2241,7 @@ async fn fake_apply_inner(
 
 /// Establish a baseline ledger row for an existing database that was
 /// created without Djogi (or by an earlier Djogi version).
-///
-/// **What it does (B-11).** Projects the LIVE database catalog into
+/// **What it does.** Projects the LIVE database catalog into
 /// an [`AppliedSchema`] using the verify-side projection helper, then
 /// inserts a single ledger row with `status = 'baseline'`,
 /// `checksum_up` derived from the projected schema, and a
@@ -2317,21 +2250,18 @@ async fn fake_apply_inner(
 /// holds, captured exactly. The projection is then persisted to
 /// `runner_ctx.snapshot_path` (when provided) as the canonical
 /// baseline so future migrations diff against it.
-///
-/// **The runner DOES NOT trust a caller-supplied snapshot.** Codex
-/// review (B-11) flagged that the previous arrangement let an
-/// operator baseline an existing schema with a stale snapshot —
+/// **The runner DOES NOT trust a caller-supplied snapshot.**
+/// review flagged that the previous arrangement let an
+/// operator baseline an existing schema with a stale snapshot
 /// future diffs then started from the wrong state. To prevent that
 /// failure mode, the runner now refuses any caller that pre-fills
 /// `runner_ctx.snapshot` and instead always projects fresh.
-///
 /// **One baseline per bucket.** A bucket should carry at most one
 /// `baseline` row in its history. The unique-violation on `version`
 /// already enforces this when the operator picks the convention
 /// (e.g. `V0__baseline`); the runner does not enforce one-per-bucket
 /// itself because the ledger is shared across buckets via `app_label`
 /// and the operator owns the version-naming policy.
-///
 /// `reason` is recorded in `partial_apply_note` so the audit trail
 /// captures why the baseline was established.
 pub async fn baseline_plan(
@@ -2341,7 +2271,7 @@ pub async fn baseline_plan(
     _guard: &WorkspaceGuard,
     reason: &str,
 ) -> Result<RunReport, RunnerError> {
-    // B-11: refuse caller-supplied snapshots.
+    // Refuse caller-supplied snapshots.
     if runner_ctx.snapshot.is_some() {
         return Err(RunnerError::BaselineSnapshotShouldNotBeProvided);
     }
@@ -2385,17 +2315,16 @@ async fn baseline_inner(
 ) -> Result<RunReport, RunnerError> {
     let started = Instant::now();
 
-    // B-11: project the live DB into an AppliedSchema. The projection
+    // Project the live DB into an AppliedSchema. The projection
     // helper is reserved for repair / baseline use — verify uses the
     // same machinery internally. Failures here surface as the typed
     // BaselineProjectionFailed variant so the operator sees that the
     // projection (not the ledger) was the failing step.
-    //
-    // Bucket-scoped (Codex round-2 B-11): the projection only includes
+    // Bucket-scoped (
     // tables that match this bucket's app boundary, so an app's
     // baseline does not capture another app's tables.
     // `None` snapshot fallback (#370): baseline projects the live DB to
-    // establish the snapshot, so it has no on-disk snapshot to scope from —
+    // establish the snapshot, so it has no on-disk snapshot to scope from
     // inventory-driven scoping only, behavior unchanged.
     let projected = super::verify::live_schema_for_repair(ctx, bucket, None)
         .await
@@ -2479,7 +2408,7 @@ async fn baseline_inner(
 /// projection itself (no SQL fragments exist for a baseline) so the
 /// stored checksum is content-addressed: re-projecting the same DB
 /// later must yield the same checksum. Used by `baseline_plan`
-/// (B-11) and `repair_snapshot_rebuild` (B-12).
+/// and `repair_snapshot_rebuild`.
 pub(crate) fn checksum_for_baseline_snapshot(schema: &super::schema::AppliedSchema) -> String {
     // serde_json with sorted keys gives a deterministic byte stream;
     // BTreeMap fields in AppliedSchema already serialize alphabetically.
@@ -2492,7 +2421,6 @@ pub(crate) fn checksum_for_baseline_snapshot(schema: &super::schema::AppliedSche
 
 /// Read a ledger row for a given version. Used by the rollback path
 /// to confirm the row is in a state that admits rollback.
-///
 /// Delegates to [`ledger::load_full_row_by_version`] — the 14-column
 /// SELECT and try_get cascade live in ledger.rs to avoid triplication
 /// across runner / repair / verify (cluster-2 simplify Finding 3).
@@ -2524,7 +2452,6 @@ async fn execute_runner_statement(
 /// Run every statement inside a transactional segment within a
 /// single Postgres transaction. On any error, ROLLBACK and surface
 /// the failing statement label.
-///
 /// `segment_index` is the caller's loop index — threaded in so the
 /// error variant carries the correct position rather than always
 /// reporting `0` (cluster-2 simplify Finding 2).
@@ -2535,7 +2462,7 @@ async fn run_transactional_segment(
     runner_ctx: &RunnerCtx,
     add_table_set: &BTreeSet<String>,
 ) -> Result<(), RunnerError> {
-    // T9 verification segment short-circuit: when every statement
+    // PK-flip verification segment short-circuit: when every statement
     // in this segment carries a `PkFlipVerify` label the segment is
     // a halt-point gate, not DDL. Run each as a `query_one` against
     // a `SELECT count(*)` body and assert the count is zero.
@@ -2622,7 +2549,6 @@ async fn run_transactional_segment(
 /// the new `applied_steps_count`. If the post-DDL ack fails, the
 /// claim note remains in place so repair resume refuses to re-run the
 /// ambiguous step automatically.
-///
 /// Returns the number of steps completed within this segment so the
 /// outer runner can update its running tally of cross-segment progress.
 struct NonTransactionalSegmentRun<'a> {
@@ -2697,16 +2623,14 @@ async fn run_non_transactional_segment(
 // ── Advisory lock + relpages probe ────────────────────────────────────────
 
 /// Derive a stable 64-bit advisory-lock key from a `BucketKey`. Uses
-/// SHA-256 truncated to the low 64 bits for a fixed-seed hash —
+/// SHA-256 truncated to the low 64 bits for a fixed-seed hash
 /// stdlib `Hasher` is randomised per process and cannot be used.
-///
-/// **Byte order: big-endian.** The Phase 7 v3 contract pins
+/// **Byte order: big-endian.** The v3 contract pins
 /// big-endian decoding of the first 8 SHA-256 digest bytes so an
 /// alternate-language implementation following the same spec
 /// computes the identical `i64` and contends correctly with this
 /// runner. Network byte order is the spec; little-endian would key
 /// the same bucket to a different value across implementations.
-///
 /// Format: `SHA256("djogi:advisory_lock:" || database || "\0" || app)`,
 /// then take the first 8 digest bytes as a big-endian signed 64-bit
 /// integer (Postgres `bigint`). The `djogi:advisory_lock:` prefix
@@ -2725,11 +2649,9 @@ pub fn advisory_lock_key(bucket: &BucketKey) -> i64 {
 }
 
 /// Acquire a Postgres advisory lock on `key`.
-///
 /// Postgres `pg_advisory_lock(bigint)` blocks indefinitely; this
 /// function uses `pg_try_advisory_lock(bigint)` in a bounded retry
 /// loop so a stuck holder cannot wedge the runner.
-///
 /// **Session contract (GH #274).** This function MUST be called on
 /// a pinned `DjogiContext` — i.e., one backed by a single checked-out
 /// `PgConnection`. Postgres session-level advisory locks are bound to
@@ -2794,19 +2716,16 @@ pub(crate) async fn acquire_advisory_lock(
 }
 
 /// Release a previously-acquired advisory lock.
-///
 /// Returns `true` when `pg_advisory_unlock` confirms the lock was
 /// held and released. Returns `false` when `pg_advisory_unlock`
 /// returns `false` — meaning the lock was NOT held on this physical
 /// session. A `false` return is a session-pinning correctness failure
 /// (GH #274 / #280): the lock was either acquired on a different
 /// connection or never acquired at all.
-///
 /// When the unlock query itself fails (e.g. the connection closed),
 /// this function logs a `tracing::warn!` and returns `true` — the
 /// session death will release the lock anyway and the warn is the
 /// observable signal.
-///
 /// **Callers must always invoke this function even when the migration
 /// operation errored.** Use [`handle_release_result`] to reconcile
 /// the operation result with the bool returned here: if the operation
@@ -2865,16 +2784,13 @@ pub(crate) async fn release_advisory_lock(ctx: &mut PinnedCtx<'_>, key: i64) -> 
 }
 
 /// Reconcile an operation result with the advisory lock release outcome.
-///
 /// # Behaviour matrix
-///
 /// | Operation | Release | Result |
 /// |-----------|---------|--------|
-/// | `Ok`  | `true`  | `Ok` (success, lock properly released) |
-/// | `Ok`  | `false` | `Err(AdvisoryUnlockReturnedFalse)` — correctness failure |
-/// | `Err` | `true`  | `Err` — original operation error |
+/// | `Ok` | `true` | `Ok` (success, lock properly released) |
+/// | `Ok` | `false` | `Err(AdvisoryUnlockReturnedFalse)` — correctness failure |
+/// | `Err` | `true` | `Err` — original operation error |
 /// | `Err` | `false` | `Err` — original error; release failure already logged |
-///
 /// The `false` case on the success path is the hard correctness failure
 /// added by GH #274 / #280: it means the migration SQL may have run but
 /// the advisory lock was not protecting it on the correct session.
@@ -2903,11 +2819,9 @@ pub(crate) fn handle_release_result<T>(
 /// On WARN path: emit `tracing::warn!` and continue. On strict path
 /// (`migrate.strict_concurrent_warnings = true`): surface
 /// `RunnerError::RelpagesThresholdExceeded`.
-///
 /// **`pg_class.relpages = None` disambiguation.** A `None` row from
 /// the probe means Postgres does not currently know about the table.
 /// Two legitimate cases produce that:
-///
 /// 1. The current plan creates the table in an earlier segment of
 ///    THIS run (`AddTable` statement). The runner treats this as
 ///    `relpages = 0` (a freshly-created empty table cannot exceed
@@ -2916,10 +2830,9 @@ pub(crate) fn handle_release_result<T>(
 ///    That is a typo / mis-quoted identifier — the index would fail
 ///    inside `BEGIN` anyway, but the strict-mode probe catches it
 ///    earlier with a clearer `TargetTableNotFound` diagnostic.
-///
-/// Silently dropping case 2 to `relpages = 0` would disable the
-/// strict warning path for any mis-targeted `CREATE INDEX`, which
-/// is exactly the failure mode strict-mode exists to catch.
+///    Silently dropping case 2 to `relpages = 0` would disable the
+///    strict warning path for any mis-targeted `CREATE INDEX`, which
+///    is exactly the failure mode strict-mode exists to catch.
 async fn relpages_probe(
     ctx: &mut DjogiContext,
     runner_ctx: &RunnerCtx,
@@ -2990,11 +2903,9 @@ async fn relpages_probe(
     Ok(())
 }
 
-/// **T9 pre-flight gate** — run before any side effect when the
+/// **PK-flip pre-flight gate** — run before any side effect when the
 /// plan is a PK-type-flip migration.
-///
-/// Implements D060–D063 from the v3 plan §T9 contract:
-///
+/// Implements D060–D063 from the v3 plan contract:
 /// - **D060** Logical-replication machinery active — `pg_stat_replication`
 ///   walsenders OR enabled rows in `pg_subscription` for the current
 ///   database → refusal. Postgres does not expose another backend's
@@ -3006,21 +2917,19 @@ async fn relpages_probe(
 ///   → refusal.
 /// - **D063** Open transactions older than the configured threshold
 ///   → refusal.
-///
-/// The set of "migrating tables" is recovered from the cutover
-/// segment's labels — every `PkFlipPrep` / `PkFlipCutover` /
-/// `PkFlipBackfill` / `PkFlipConcurrentIndex` / `PkFlipNotNullProof`
-/// label carries the parent table name as its trailing token; we
-/// also collect every child table name from the multi-segment SQL
-/// via byte-level identifier scanning of the `up` text. This avoids
-/// re-walking the descriptor here — the segment plan already carries
-/// the full set the cutover will touch.
-///
-/// **No regex** — the table-name extraction uses byte-level forward
-/// scans for `ALTER TABLE <ident> ` literal substrings; the
-/// identifier rules (ASCII letter or underscore, then alphanumerics
-/// or underscore, ≤ 63 bytes) are spelled out in plain English in
-/// the helper.
+///   The set of "migrating tables" is recovered from the cutover
+///   segment's labels — every `PkFlipPrep` / `PkFlipCutover` /
+///   `PkFlipBackfill` / `PkFlipConcurrentIndex` / `PkFlipNotNullProof`
+///   label carries the parent table name as its trailing token; we
+///   also collect every child table name from the multi-segment SQL
+///   via byte-level identifier scanning of the `up` text. This avoids
+///   re-walking the descriptor here — the segment plan already carries
+///   the full set the cutover will touch.
+///   **No regex** — the table-name extraction uses byte-level forward
+///   scans for `ALTER TABLE <ident> ` literal substrings; the
+///   identifier rules (ASCII letter or underscore, then alphanumerics
+///   or underscore, ≤ 63 bytes) are spelled out in plain English in
+///   the helper.
 async fn pk_flip_preflight(
     ctx: &mut DjogiContext,
     runner_ctx: &RunnerCtx,
@@ -3047,17 +2956,15 @@ async fn pk_flip_preflight(
     }
 
     // D060 — logical-replication machinery active in this DB.
-    //
     // Why the indirection: Postgres does not let one backend read
     // another backend's `session_replication_role` GUC from
     // `pg_stat_activity`. The playbook §12.3 hazard names "Logical
     // replication apply workers" as the concrete failure mode, and
     // those are observable via:
-    //   - `pg_stat_replication` — every active walsender (the apply
-    //     side runs with role = 'replica' by default).
-    //   - `pg_subscription`     — subscriptions with `subenabled =
-    //     true` indicate an apply worker may be running in this DB.
-    //
+    // - `pg_stat_replication` — every active walsender (the apply
+    // side runs with role = 'replica' by default).
+    // - `pg_subscription` — subscriptions with `subenabled =
+    // true` indicate an apply worker may be running in this DB.
     // We surface BOTH as the D060 hazard so the operator knows which
     // signal fired. Either alone is sufficient to refuse.
     let walsender_rows = ctx
@@ -3200,7 +3107,6 @@ async fn pk_flip_preflight(
 
 /// Recover every table name appearing immediately after an
 /// `ALTER TABLE` token in `sql`. Byte-level forward scan; no regex.
-///
 /// Identifier rule: ASCII letter or underscore as the first byte,
 /// then ASCII alphanumerics or underscores, up to 63 bytes (the
 /// Postgres `NAMEDATALEN - 1` ceiling). We accept double-quoted
@@ -3444,7 +3350,6 @@ fn compute_checksum_for_plan_up(plan: &MigrationPlan) -> String {
 /// Lift an `OperationSql` into a `(index_name, target_table)` pair if
 /// the statement is a transactional `CREATE INDEX`. Returns `None`
 /// for any other operation.
-///
 /// The label format is set by the SQL emitter — `AddIndex <name>`
 /// for new indexes (see `sql.rs::emit_add_index`). The table name is
 /// recovered from the SQL's `ON "<table>"` clause via byte-level
@@ -3569,25 +3474,24 @@ fn note_for_failed_transactional_segment(seg_idx: usize, e: &RunnerError) -> Str
 /// HeerId is a 64-bit time-ordered ID — perfect for the per-runner
 /// invocation key, which we want to be unique, sortable, and stable
 /// across machines.
-///
-/// **Phase 0 carve-out (Track 0).** When `version` is the canonical
-/// Phase 0 bootstrap label (`super::bootstrap::PHASE_ZERO_VERSION`),
-/// HeeRanjID is by definition not yet installed — Phase 0 is what
+/// **carve-out .** When `version` is the canonical
+/// Bootstrap label (`super::bootstrap::PHASE_ZERO_VERSION`),
+/// HeeRanjID is by definition not yet installed — is what
 /// installs it. Calling `heerid_next()` would fail with "function
-/// does not exist". For Phase 0 only, we fall back to a wall-clock
+/// does not exist". For only, we fall back to a wall-clock
 /// nanosecond-precision id derived from
 /// `clock_timestamp() - epoch '2026-01-01'`, which fits in `i64`
 /// for the next ~140 years and is unique-enough across the one-time
-/// Phase 0 emission per database. Subsequent migrations route
-/// through the standard HeerId path because Phase 0 has by then
+/// Emission per database. Subsequent migrations route
+/// through the standard HeerId path because has by then
 /// installed `heerid_next()`.
 async fn generate_run_id(ctx: &mut DjogiContext, version: &str) -> Result<i64, RunnerError> {
     if version == super::bootstrap::PHASE_ZERO_VERSION {
-        // Phase 0 carve-out — HeerRanjID not yet installed at this
+        // Carve-out — HeerRanjID not yet installed at this
         // point. Fall back to a wall-clock nanosecond id. We use
         // `EXTRACT(EPOCH FROM clock_timestamp()) * 1e9` for nanosecond
         // resolution; the cast to BIGINT fits comfortably in i64
-        // for the foreseeable future. Two concurrent Phase 0 applies
+        // for the foreseeable future. Two concurrent applies
         // against the same workspace are impossible (the workspace
         // lock guarantees exclusion), so collision risk is zero.
         let row = ctx
@@ -3640,13 +3544,11 @@ fn db_code_matches(db: &DbError, target: &tokio_postgres::error::SqlState) -> bo
 
 /// Classify a duplicate-version collision by loading the full ledger
 /// row and dispatching by `status`.
-///
 /// Terminal statuses (`applied`, `faked`, `baseline`) surface the
 /// existing `VersionAlreadyApplied` variant and preserve the
 /// informational `applied_at` lookup. Non-terminal statuses
 /// (`pending`, `failed`, `rolled_back`) surface
 /// `VersionCollisionNonTerminal` with the blocking row identity.
-///
 /// If the readback lookup errors or returns `None` after a 23505,
 /// surface a `LedgerQueryFailed` path explicitly rather than
 /// pretending the row is already applied.
@@ -3696,14 +3598,12 @@ async fn classify_duplicate_version_collision(
 /// lexically exceeds `candidate_version`. Returns the peer's
 /// `(version, applied_at_rfc3339)` tuple — or `None` when no peer
 /// would conflict (the typical happy-path case).
-///
 /// **Why "applied / faked / baseline"?** These three statuses
 /// represent rows that the runner has acknowledged as "this
 /// migration is in the database" — `pending` and `failed` rows do
 /// not, and rolled-back rows have explicitly opted out. Treating
 /// rolled-back rows as conflicting peers would block re-applying a
 /// reverted migration, which is a legitimate workflow.
-///
 /// **Lexical compare.** The version prefix is `V<14 ASCII digits>`
 /// (timestamp-derived) so lexical order = chronological order. We
 /// compare the full version string (including the `__<slug>` tail)
@@ -3716,7 +3616,7 @@ async fn find_higher_applied_version(
 ) -> Result<Option<(String, Option<String>)>, DjogiError> {
     // app_label is the bucket's per-app key — the per-database
     // dimension is implicit in which connection / pool the runner
-    // routes through, mirroring T4 / T5 / T6's single-pool stance.
+    // routes through, mirroring the runner's single-pool stance.
     // When `DjogiContext::pool_for(database)` lands the per-database
     // routing comes for free; the SELECT still scopes by app_label.
     let row_opt = ctx
@@ -3773,15 +3673,13 @@ fn collect_add_table_targets(plan: &MigrationPlan) -> BTreeSet<String> {
     out
 }
 
-// ── B-2: partition leaf-placeholder expansion ─────────────────────────────
+// ── partition leaf-placeholder expansion ─────────────────────────────
 
 /// Controls how empty-leaf partitions are handled during expansion.
-///
 /// **ApplyLenient** (default for `apply_plan`): preserves the current
 /// empty-leaf no-op fallback, emitting a comment-only statement so the
 /// segment completes without error. The operator sees the diagnostic and
 /// can attach partitions before retrying.
-///
 /// **ReplayStrict** (rollback / repair): refuses zero leaves because
 /// replaying a shorter stream would silently miss leaf work that the
 /// ledger already counted. Returns `RunnerError::PartitionExpansionNoLeaves`
@@ -3829,7 +3727,6 @@ pub(crate) fn serialize_leaf_identity(
 
 /// Compute the current parent-to-leaves cache for `plan` using LENIENT
 /// partition expansion, suitable for a pre-strict leaf-identity check.
-///
 /// **Why lenient.** `apply_plan` records `leaf_identity` from a
 /// `ApplyLenient` expansion (which tolerates zero leaves), so a fresh
 /// lenient cache compares apples-to-apples against the stored value.
@@ -3852,7 +3749,6 @@ pub(crate) async fn compute_leaf_identity_cache(
 /// Walk every segment and expand the `<EACH_LEAF_TABLE>` placeholder
 /// inside any partitioned-flip statement into one concrete-leaf
 /// statement per leaf, sorted by `regclass::text` for determinism.
-///
 /// Statements affected (by label prefix):
 /// - `PkFlipPartitionedBackfill <parent>` — body carries
 ///   `CALL heeranjid_bulk_backfill('<EACH_LEAF_TABLE>', ...)`. Each
@@ -3860,19 +3756,16 @@ pub(crate) async fn compute_leaf_identity_cache(
 /// - `PkFlipPartitionedIndex <parent>` — body carries the parent
 ///   UNIQUE-on-ONLY placeholder plus a comment block describing the
 ///   per-leaf `CREATE UNIQUE INDEX CONCURRENTLY` + `ALTER INDEX
-///   ATTACH PARTITION` pattern. The comment is replaced with two
+/// ATTACH PARTITION` pattern. The comment is replaced with two
 ///   concrete statements per leaf.
-///
-/// Statements with no placeholder (`PkFlipPartitionedPrep`,
-/// `PkFlipPartitionedCutover`) are passed through untouched.
-///
-/// **No regex.** Placeholder substitution uses byte-level
-/// `String::replace` semantics with a fixed literal token. Per-leaf
-/// statement composition uses straight string concatenation and the
-/// `writeln!` macro.
-///
-/// **Failure modes.** If `pg_inherits` returns no leaves for a
-/// declared partitioned parent, behavior depends on [`PartitionExpansionMode`]:
+///   Statements with no placeholder (`PkFlipPartitionedPrep`,
+///   `PkFlipPartitionedCutover`) are passed through untouched.
+///   **No regex.** Placeholder substitution uses byte-level
+///   `String::replace` semantics with a fixed literal token. Per-leaf
+///   statement composition uses straight string concatenation and the
+///   `writeln!` macro.
+///   **Failure modes.** If `pg_inherits` returns no leaves for a
+///   declared partitioned parent, behavior depends on [`PartitionExpansionMode`]:
 /// - ApplyLenient: produces a single comment line so the segment SQL
 ///   surfaces the empty-leaves state cleanly rather than running an
 ///   `<EACH_LEAF_TABLE>` literal that would fail with `undefined_table`.
@@ -3943,7 +3836,6 @@ fn partitioned_parent_from_label(label: &str) -> Option<String> {
 
 /// Query `pg_inherits` for the leaf partitions of `parent`,
 /// deterministically sorted by `regclass::text`.
-///
 /// **Why a two-step lookup.** Postgres rejects a TEXT bind in the
 /// binary-protocol position where it expects `regclass`
 /// (tokio-postgres surfaces `WrongType { postgres: Regclass, rust:
@@ -3956,9 +3848,9 @@ async fn lookup_partition_leaves(
     parent: &str,
 ) -> Result<Vec<String>, RunnerError> {
     // 1. Resolve parent's OID. `to_regclass` returns NULL for an
-    //    unknown / non-relation name; we surface that as an empty
-    //    leaf list so callers see "no leaves" rather than a hard
-    //    error during plan composition.
+    // unknown / non-relation name; we surface that as an empty
+    // leaf list so callers see "no leaves" rather than a hard
+    // error during plan composition.
     let oid_row = ctx
         .query_one("SELECT to_regclass($1)::oid", &[&parent])
         .await
@@ -3972,9 +3864,9 @@ async fn lookup_partition_leaves(
     };
 
     // 2. Fetch leaves keyed off the resolved OID. `inhparent` is
-    //    `oid`; binding an `Oid` (u32 in tokio-postgres mapping)
-    //    matches by type and avoids the regclass binary-protocol
-    //    coercion path.
+    // `oid`; binding an `Oid` (u32 in tokio-postgres mapping)
+    // matches by type and avoids the regclass binary-protocol
+    // coercion path.
     let rows = ctx
         .query_all(
             "SELECT inhrelid::regclass::text \
@@ -4002,7 +3894,6 @@ async fn lookup_partition_leaves(
 /// partitioned-flip statement. The original statement carries
 /// `<EACH_LEAF_TABLE>` as a literal placeholder; we substitute and
 /// emit one statement per leaf so the runner walks them in sequence.
-///
 /// For the index segment we ALSO emit the per-leaf `ATTACH PARTITION`
 /// statement immediately after each leaf's CONCURRENTLY index build
 /// so the partitioned parent's UNIQUE index becomes valid as soon as
@@ -4071,7 +3962,6 @@ fn expand_partition_statement(
         // per-leaf pattern. Keep the parent-level statement as the
         // FIRST OperationSql (transactional-friendly catalog op), then
         // emit one CONCURRENTLY + ATTACH per leaf.
-        //
         // Recover the parent index name from the parent-level
         // statement: it's `idx_<parent>_<part_col>_id_desc_idx` (or
         // similar). Rather than parse, pull the marker line that
@@ -4221,18 +4111,15 @@ fn strip_trailing_semicolon(s: &str) -> String {
 /// schema prefix and bare relation name. `lookup_partition_leaves`
 /// returns `regclass::text` values that Postgres schema-qualifies when
 /// the leaf is not on `search_path` (`myschema.events_p_a`).
-///
 /// The separator is the LAST unquoted `.`; characters inside a
 /// double-quoted identifier (`"weird.name"`) are skipped so an embedded
 /// dot never splits a quoted segment. Returns `(Some(schema), bare)`
 /// when an unquoted dot is present, else `(None, whole)`.
-///
 /// **Why the split matters.** `CREATE INDEX` forbids a schema-qualified
 /// *index* name (the index lands in the table's schema), whereas
 /// `DROP INDEX` and `ALTER INDEX … ATTACH PARTITION` accept and need the
 /// qualification. Composing the leaf index name from `bare` and then
 /// re-qualifying only for DROP/ATTACH keeps both forms correct.
-///
 /// **No regex.** Byte-level scan tracking quote state; no regex engine.
 fn split_leaf_schema(qualified: &str) -> (Option<&str>, &str) {
     let bytes = qualified.as_bytes();
@@ -4635,8 +4522,8 @@ mod tests {
     #[test]
     fn advisory_lock_key_database_app_separator_prevents_collision() {
         // A naive concat would collide:
-        //   ("ab", "c")  ->  "abc"
-        //   ("a", "bc")  ->  "abc"
+        // ("ab", "c") -> "abc"
+        // ("a", "bc") -> "abc"
         // The `\0` separator means the two cannot collide.
         let a = advisory_lock_key(&bucket("ab", "c"));
         let b = advisory_lock_key(&bucket("a", "bc"));
@@ -4647,16 +4534,15 @@ mod tests {
     fn advisory_lock_key_pins_big_endian_byte_decode() {
         // Spec-pinned reference value. The test exists to lock in the
         // big-endian decode of the first 8 SHA-256 digest bytes per
-        // the Phase 7 v3 contract — an alternate-language
+        // the v3 contract — an alternate-language
         // implementation following the same spec must compute the
         // same i64 for these inputs.
-        //
         // Reference computation (also verified offline with Python):
-        //   d = sha256(b"djogi:advisory_lock:" + b"test_db" + b"\x00" + b"test_app")
-        //   bytes[..8] = 7d 01 ce 8f 30 91 ba 37
-        //   big-endian i64 = 0x7d01ce8f3091ba37 = 9_007_707_844_108_204_599
-        //   little-endian (the WRONG decode) would produce
-        //                                     4_015_681_655_511_318_909.
+        // d = sha256(b"djogi:advisory_lock:" + b"test_db" + b"\x00" + b"test_app")
+        // bytes[..8] = 7d 01 ce 8f 30 91 ba 37
+        // big-endian i64 = 0x7d01ce8f3091ba37 = 9_007_707_844_108_204_599
+        // little-endian (the WRONG decode) would produce
+        // 4_015_681_655_511_318_909.
         let bk = bucket("test_db", "test_app");
         let key = advisory_lock_key(&bk);
         assert_eq!(
@@ -4784,7 +4670,6 @@ mod tests {
 
     #[test]
     fn heer_id_non_zero_round_trips_directly() {
-        // Codex round-2 noted that the ZERO test alone does not exercise
         // the real conversion logic — every implementation maps zero to
         // zero. Pin a non-trivial bit pattern through both paths to
         // catch a future Display-vs-as_i64 drift that the zero case
@@ -5009,7 +4894,7 @@ mod tests {
         assert!(!is_unique_violation(&nf));
     }
 
-    // ── checksum_for_baseline_snapshot (B-11) ────────────────────────────
+    // ── checksum_for_baseline_snapshot ────────────────────────────
 
     #[test]
     fn checksum_for_baseline_snapshot_is_deterministic() {
@@ -5050,7 +4935,7 @@ mod tests {
         assert_ne!(cs_a, cs_b, "schema change must yield different checksum");
     }
 
-    // ── BaselineSnapshotShouldNotBeProvided guard (B-11) ─────────────────
+    // ── BaselineSnapshotShouldNotBeProvided guard ─────────────────
 
     #[test]
     fn baseline_snapshot_should_not_be_provided_renders_message() {
@@ -5100,7 +4985,7 @@ mod tests {
         assert!(std::error::Error::source(&e).is_none());
     }
 
-    // ── apply_plan DDL audit wiring (T9.5) ────────────────────────────────
+    // ── apply_plan DDL audit wiring ────────────────────────────────
 
     #[allow(clippy::await_holding_lock)]
     #[djogi_test]
@@ -5244,14 +5129,13 @@ mod tests {
         );
     }
 
-    /// Phase 8.5 issue #118 — apply path with `audit_pool: Some` AND
+    /// #118 — apply path with `audit_pool: Some` AND
     /// `snapshot: None` (the `db reset` replay shape) MUST still
     /// write `djogi_ddl_audit` rows. Pre-fix the audit-write loop
     /// was gated on snapshot presence inside the same `if let`
     /// block as `save_snapshot`, so production reset (which passes
     /// `snapshot: None`) silently bypassed the audit overlay even
     /// though the pool was wired through.
-    ///
     /// Distinguishing assertion: `snapshot_signature_hex` is `NULL`
     /// (not the no-op zero hex) — `NULL` is the contract for
     /// "no snapshot was supplied this apply".
@@ -5265,7 +5149,7 @@ mod tests {
             .expect("djogi_test context should be pool-backed")
             .inner;
         // Build the runner ctx with audit_pool=Some BUT snapshot=None
-        // — this is the production `db reset` replay shape that the
+        // this is the production `db reset` replay shape that the
         // pre-fix code path could not service.
         let runner_ctx = RunnerCtx {
             bucket: plan.bucket.clone(),
@@ -5365,7 +5249,7 @@ mod tests {
         let _ = std::fs::remove_file(cleanup_path);
     }
 
-    // ── B-1: RolledBack re-apply path ──────────────────────────────────────
+    // ── RolledBack re-apply path ──────────────────────────────────────
 
     #[djogi::deliberately_bypass_convention_with_raw_sql]
     // JUSTIFICATION (PIN): Insert a RolledBack row to test the
@@ -5409,7 +5293,7 @@ mod tests {
         }
     }
 
-    // ── B-1 regression guard: Pending status refusal ───────────────────────
+    // ── regression guard: Pending status refusal ───────────────────────
 
     #[djogi::deliberately_bypass_convention_with_raw_sql]
     // JUSTIFICATION (PIN): Insert a Pending row to verify the
@@ -5729,7 +5613,6 @@ mod tests {
         // index name (Postgres forbids a schema on the index name), while
         // DROP INDEX and ATTACH PARTITION must re-qualify with the leaf's
         // schema. Regression test for GH #357 / #366.
-        //
         // The parent statement here matches the real emitter format from
         // pk_flip.rs: bare index name, schema-qualified `ON ONLY` target,
         // and the underscore column form `id_desc` (not the space form

@@ -1,7 +1,0 @@
-error: `#[field(index = "gin")]` on `view_count`: GIN indexes at the field level are only valid on `Jsonb<T>`, `Vec<T>`, and `TsVector`. For other types, declare the index at the model level: `#[model(indexes(index(fields = [view_count], using = "gin", opclass = "...")))]`.
-  --> $DIR/phase7_zero_field_gin_on_unsupported_type.rs:12:21
-   |
-12 |     #[field(index = "gin")]
-   |                     ^^^^^
-
-error: aborting due to 1 previous error

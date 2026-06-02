@@ -1,7 +1,0 @@
-error: `#[field(strict_id_check)]` is only valid on HeerId / RanjId family fields (HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc, RanjIdRecencyBiased) or relation fields (ForeignKey<T>, OneToOneField<T>), optionally wrapped in `Option<…>`. The structural CHECK applies to BIGINT (HeerId family) and UUID (RanjId family) columns; other column types have no HeerRanjID bit-layout invariant to enforce. Drop the attribute or use the model-wide `#[model(strict_ids)]` (which silently skips non-applicable fields).
-  --> $DIR/phase8_5_c2_189_strict_id_check_wrong_type.rs:16:13
-   |
-16 |     #[field(strict_id_check)]
-   |             ^^^^^^^^^^^^^^^
-
-error: aborting due to 1 previous error

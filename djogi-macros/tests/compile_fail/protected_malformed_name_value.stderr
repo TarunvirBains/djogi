@@ -1,0 +1,7 @@
+error: `protected` must be invoked as `protected(sensitivity = "...", ...)`. Bare `protected` and name-value `protected = "..."` forms are not valid syntax for protected-field metadata.
+  --> $DIR/protected_malformed_name_value.rs:14:25
+   |
+14 |     #[field(protected = "pii")]
+   |                         ^^^^^
+
+error: aborting due to 1 previous error

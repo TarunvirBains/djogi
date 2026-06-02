@@ -1,7 +1,0 @@
-error: nested traversal `{ ... }` inside `expose(scope -> Peer { ... })` is not yet implemented by the visage emitter — ships in a later phase task. Use `scope -> PeerPath` (no braces) for now.
-  --> $DIR/phase7_zero2_t6_nested_brace_deferred.rs:21:34
-   |
-21 |     #[field(expose(public -> Dep { name -> DepPublic }))]
-   |                                  ^
-
-error: aborting due to 1 previous error

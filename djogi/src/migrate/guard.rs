@@ -1,7 +1,5 @@
-//! File-level workspace lock primitive (Phase 7 v3 §6 file-lock contract).
-//!
+//! File-level workspace lock primitive (file-lock contract).
 //! # What it does
-//!
 //! Every migration-engine entry point that mutates on-disk state
 //! (`compose`, `attune`, `apply`, `repair`, `baseline`) acquires a
 //! single `LOCK_EX` advisory file lock on
@@ -9,14 +7,10 @@
 //! concurrent invocations of the migration tooling so two operators
 //! running the migration tooling simultaneously cannot race on the same
 //! `migrations/` tree or shared `target/djogi_pending/` staging area.
-//! T4 owns the primitive; T5 (`repair`) and T6 (`compose` /
-//! `apply` orchestration) consume it.
-//!
+//! Used by `repair`, `compose`, and `apply` orchestration.
 //! # Mechanism
-//!
 //! Unix-only today. The implementation calls `flock(2)` directly via
 //! `libc::flock` because the alternatives are heavier:
-//!
 //! - The full `nix` crate would pull in a large dependency just for
 //!   one syscall wrapper.
 //! - `fs2` and `file-lock` are abandoned or carry their own subtle
@@ -25,14 +19,11 @@
 //!   abnormal process exit by the kernel; that gives us the
 //!   "no stale lock cleanup needed" property without writing our own
 //!   reaper.
-//!
-//! Windows support is deferred — the [`acquire`] entry point returns
-//! a typed [`GuardError::WindowsUnsupported`] on non-unix targets.
-//! When Windows lands it will use `LockFileEx` against the same path;
-//! callers do not need to change.
-//!
+//!   Windows support is deferred — the [`acquire`] entry point returns
+//!   a typed [`GuardError::WindowsUnsupported`] on non-unix targets.
+//!   When Windows lands it will use `LockFileEx` against the same path;
+//!   callers do not need to change.
 //! # PID file
-//!
 //! On a successful acquire the lock holder writes its PID (decimal
 //! ASCII, terminated with `\n`) to the lock file. On a timeout, the
 //! second acquirer reads the file, parses the PID, and surfaces it in
@@ -40,25 +31,19 @@
 //! intentionally write the PID *after* acquiring the lock and
 //! *before* returning the [`WorkspaceGuard`]: the file content is
 //! advisory only — `flock` itself protects mutual exclusion.
-//!
 //! # Bounded retry
-//!
 //! `flock(2)` has no native timeout, so the implementation polls
 //! `flock(LOCK_EX | LOCK_NB)` every `RETRY_INTERVAL` (50 ms) up to
 //! the deadline. The polling cadence is deliberately tight enough
 //! that a process exiting cleanly never holds another up by more
 //! than ~50 ms, but loose enough to avoid pegging a CPU core.
-//!
 //! # Composition with `pg_advisory_lock`
-//!
-//! The runner T4 acquires the file lock first, then the Postgres
+//! The runner acquires the file lock first, then the Postgres
 //! advisory lock. The order is deterministic: every Djogi process
 //! takes (file-lock, advisory-lock) in that sequence, so two
 //! operators running concurrently cannot deadlock — one of them
 //! waits on the file lock, the other waits on the advisory lock.
-//!
 //! # No regex
-//!
 //! The PID parser uses byte-level checks
 //! (`u8::is_ascii_digit`) per the Djogi-wide no-regex policy. Plain
 //! decimal ASCII, optionally followed by a trailing newline.
@@ -68,7 +53,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Default acquire timeout — 30 seconds per Phase 7 v3 §6 file-lock
+/// Default acquire timeout — 30 seconds per file-lock
 /// contract.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -108,7 +93,7 @@ pub enum GuardError {
     /// failure mode (e.g. `EBADF`, `EINVAL`).
     Flock { path: PathBuf, errno: i32 },
 
-    /// Windows is not supported in T4. When Windows lands it will
+    /// Windows is not currently supported. When Windows support lands it will
     /// use `LockFileEx`; until then this variant lets callers fail
     /// fast with an actionable message rather than a silent panic.
     #[cfg(not(unix))]
@@ -169,7 +154,6 @@ impl std::error::Error for GuardError {
 /// RAII guard returned by [`acquire`]. The `flock` is released when
 /// this value is dropped — either via the explicit `drop()` call or
 /// when the holding scope exits (including the panic-unwind path).
-///
 /// The guard intentionally does NOT delete the lock file on drop:
 /// keeping the file around keeps its inode stable across invocations,
 /// which is what `flock` keys on. Deleting and recreating between
@@ -209,18 +193,14 @@ impl Drop for WorkspaceGuard {
 /// Acquire the workspace migration lock. Bounded-retry; on timeout,
 /// reads the holder PID from the lock file and surfaces it via
 /// [`GuardError::Timeout`].
-///
-/// `path` is typically `<workspace-root>/.djogi-migrations-lock` —
+/// `path` is typically `<workspace-root>/.djogi-migrations-lock`
 /// see [`LOCK_FILE_NAME`]. Callers that want to compose their own
 /// path (tests, djogi-cli sub-tools that pin the workspace root)
 /// pass it directly.
-///
 /// `timeout` is the bound on the polling loop; production callers
 /// pass [`DEFAULT_TIMEOUT`]. Tests use a much shorter value to keep
 /// the suite under a few seconds even on contended runners.
-///
 /// # Errors
-///
 /// - [`GuardError::Io`] — could not open / create the lock file.
 /// - [`GuardError::Timeout`] — another invocation held the lock for
 ///   the full `timeout` duration.
@@ -246,7 +226,7 @@ fn acquire_unix(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardE
 
     // Ensure the parent directory exists. Treat
     // a missing parent as an I/O error rather than silently creating a
-    // workspace root — the caller (T6 `compose` / runner) chose the
+    // workspace root — the caller (`compose` / runner) chose the
     // workspace; we do not invent file layout.
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()

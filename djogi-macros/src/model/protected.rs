@@ -1,25 +1,21 @@
 //! Macro-side parsing and validation for `#[field(protected(...))]` and
 //! `#[field(default_volatility = "...")]`.
-//!
-//! Phase 7.5 T3 owns:
-//!
+//! Owns:
 //! 1. **Parsing** the `protected(...)` nested attribute into a
 //!    [`ProtectedSpec`] that the descriptor emitter consumes when
 //!    building the `Option<ProtectedFieldMetadata>` literal.
 //! 2. **Validating** the four rules from the v3 plan §6 with
 //!    span-precise errors:
-//!    - `sensitivity = "none"` cannot be combined with any other
-//!      protected field.
-//!    - `sensitivity > none` requires a non-empty `rationale`.
-//!    - `codec = "X"` must reference a registered codec ID.
-//!    - `redaction = "hash_id"` is only valid on a HeerId / RanjId /
-//!      custom-PK-compatible field type.
+//! - `sensitivity = "none"` cannot be combined with any other
+//!   protected field.
+//! - `sensitivity > none` requires a non-empty `rationale`.
+//! - `codec = "X"` must reference a registered codec ID.
+//! - `redaction = "hash_id"` is only valid on a HeerId / RanjId /
+//!   custom-PK-compatible field type.
 //! 3. **Parsing and validating** the optional
 //!    `#[field(default_volatility = "...")]` override into
 //!    [`DefaultVolatilityLit`].
-//!
 //! # Codec ID validation strategy
-//!
 //! Proc macros run before any runtime dependency is available, so the
 //! macro crate cannot read `djogi::field_codec::REGISTRY` directly.
 //! Instead, [`KNOWN_CODEC_IDS`] mirrors the runtime `phf::Set` as a
@@ -27,7 +23,6 @@
 //! lookup — no regex, no runtime FFI, span-precise diagnostics. The
 //! synchronization contract (update both lists when adding a codec)
 //! is documented on the runtime `REGISTRY` static.
-//!
 //! V1 ships an empty registry, so any `codec = "..."` literal triggers
 //! the unknown-codec error. The error message lists the empty set
 //! verbatim ("(none)") so adopters reading the diagnostic understand
@@ -42,10 +37,9 @@ use syn::{
 
 /// Sorted const slice of every codec ID that the macro recognises at
 /// expansion time.
-///
 /// Kept in sync with `djogi::field_codec::REGISTRY` per the contract
 /// documented on that static. V1 ships empty — every real codec lands
-/// in later Phase 7.5 tasks. Sorted so [`is_known_codec`] resolves via
+/// in later tasks. Sorted so [`is_known_codec`] resolves via
 /// `slice::binary_search`; matches the project's no-regex,
 /// sorted-const-slice convention.
 pub const KNOWN_CODEC_IDS: &[&str] = &[];
@@ -57,11 +51,10 @@ pub fn is_known_codec(id: &str) -> bool {
 }
 
 /// Parsed `sensitivity = "..."` literal.
-///
 /// Mirrors `djogi::descriptor::Sensitivity` one-for-one. Stored as a
 /// macro-side enum (rather than as the `String` literal) so the
 /// emitter renders the exact `Sensitivity::Variant` ident without
-/// re-parsing. T3 covers parsing + validation; the emitter calls
+/// re-parsing. The emitter calls
 /// [`Self::ident_tokens`] when populating the descriptor literal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SensitivityLit {
@@ -221,18 +214,16 @@ impl DefaultVolatilityLit {
 }
 
 /// Per-scope presentation-codec declaration parsed from
-/// `protected(per_scope = { scope = { presentation_codec = Path } })` —
-/// GH #227 Stage 4.
-///
+/// `protected(per_scope = { scope = { presentation_codec = Path } })`
+/// GH #227.
 /// One entry exists per scope key declared inside a `per_scope = { ... }`
 /// block. `fallible = false` selects the infallible
 /// `PresentationCodec<Input>` dispatch path; `fallible = true` selects the
 /// fallible `TryPresentationCodec<Input>` path (which surfaces
 /// `VisageError::PresentationCodec` from the visage's `TryFrom<&Model>`
-/// impl). The two are mutually exclusive within a single scope block —
+/// impl). The two are mutually exclusive within a single scope block
 /// declaring both `presentation_codec` and `try_presentation_codec` on
 /// the same scope is rejected at parse time.
-///
 /// Presentation codecs are runtime-only metadata: they do NOT flow into
 /// `ProtectedFieldMetadata` or any other migration-differ surface, so
 /// changing a codec is never a schema event. The macro lowers per-scope
@@ -260,7 +251,6 @@ pub struct PerScopeCodecEntry {
 }
 
 /// Parsed `#[field(protected(...))]` annotation.
-///
 /// `sensitivity` is mandatory (the protected attribute is meaningless
 /// without it); every other knob is optional and falls back to the
 /// neutral default the descriptor's `Default` impl supplies. Spans for
@@ -286,13 +276,13 @@ pub struct ProtectedSpec {
     /// though the resulting value matches the default.
     pub retention_span: Option<Span>,
     /// Per-scope presentation codec entries parsed from
-    /// `per_scope = { scope = { (try_)?presentation_codec = Path } }` —
-    /// GH #227 Stage 4. Empty when the user did not write a `per_scope`
+    /// `per_scope = { scope = { (try_)?presentation_codec = Path } }`
+    /// GH #227. Empty when the user did not write a `per_scope`
     /// block. Source order is preserved so downstream emission is
     /// deterministic.
     pub per_scope: Vec<PerScopeCodecEntry>,
     /// `Some(span)` when the user wrote a `per_scope = { ... }` block
-    /// — the span anchors rule (a) "sensitivity = none cannot be
+    /// the span anchors rule (a) "sensitivity = none cannot be
     /// combined with any other knob" so the diagnostic points at the
     /// `per_scope` key rather than the unrelated keys (rationale /
     /// redaction / codec / retention).
@@ -308,7 +298,6 @@ impl ProtectedSpec {
     /// for the descriptor literal. The codec / rationale fields lower
     /// to their literal forms; absent values use the matching `None` /
     /// neutral defaults declared on the descriptor.
-    ///
     /// The [`Self::per_scope`] field is intentionally NOT lowered into
     /// the descriptor — presentation codecs are runtime-only metadata
     /// (consumed by visage codegen + `inventory` startup validation)
@@ -342,11 +331,9 @@ impl ProtectedSpec {
 
 /// Walk the raw `#[field(...)]` attrs on `field` and parse every
 /// `protected(...)` nested list into a [`ProtectedSpec`].
-///
 /// Multiple `protected(...)` annotations on the same field are
 /// rejected — the error span lands on the second occurrence. Returns
 /// `Ok(None)` when no `protected(...)` is present (the common case).
-///
 /// The parser does not validate cross-key rules; that runs in
 /// [`validate`] after the spec is fully assembled. Splitting parse vs
 /// validate keeps span recovery local: parse owns the per-literal
@@ -421,7 +408,7 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
     let mut per_scope_span: Option<Span> = None;
 
     for meta in &entries {
-        // GH #227 Stage 4 — `per_scope = { scope = { codec_key = Path } }`
+        // GH #227 — `per_scope = { scope = { codec_key = Path } }`
         // arrives as `Meta::NameValue { value: Expr::Block { ... } }`, which
         // does NOT match the string-literal let-else below. Handle it first
         // so the generic "every entry must be `key = \"value\"`" rejection
@@ -518,7 +505,7 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
             "per_scope" => {
                 // `per_scope` requires the `{ ... }` block-expression
                 // form (handled above). Reach this arm only when the
-                // user wrote `per_scope = "<string>"` or similar —
+                // user wrote `per_scope = "<string>"` or similar
                 // surface a dedicated diagnostic instead of the
                 // generic unknown-key error so the migration message
                 // is actionable.
@@ -571,23 +558,19 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
 }
 
 /// Parse the `{ scope = { codec_key = Path } }` block that follows
-/// `per_scope = ` inside a `protected(...)` annotation — GH #227 Stage 4.
-///
+/// `per_scope = ` inside a `protected(...)` annotation — GH #227.
 /// The block arrives as `syn::Block` whose statements are each an
 /// assignment expression: `scope_ident = { codec_key = codec_path }`.
 /// Each statement is parsed into one [`PerScopeCodecEntry`]; duplicate
 /// scope keys are rejected here so the diagnostic anchors at the second
 /// occurrence rather than waiting for the visage emitter to see a
 /// duplicate.
-///
 /// Grammar (one statement):
-///
 /// ```text
 /// scope_ident = {
 ///     (presentation_codec | try_presentation_codec) = SomeCodec::Path,
 /// }
 /// ```
-///
 /// Both `presentation_codec` (infallible) and `try_presentation_codec`
 /// (fallible) are accepted; declaring both inside the same scope block
 /// is rejected so the emitter does not have to disambiguate. The codec
@@ -599,7 +582,7 @@ fn parse_per_scope_block(block: &syn::Block) -> syn::Result<Vec<PerScopeCodecEnt
     let mut entries: Vec<PerScopeCodecEntry> = Vec::new();
     for stmt in &block.stmts {
         // Each statement must be an expression statement carrying an
-        // assignment expression (no `;` needed inside the user's block —
+        // assignment expression (no `;` needed inside the user's block
         // syn lowers both shapes to `Stmt::Expr(..., None)`).
         let outer_expr = match stmt {
             Stmt::Expr(expr, _) => expr,
@@ -666,7 +649,6 @@ fn parse_per_scope_block(block: &syn::Block) -> syn::Result<Vec<PerScopeCodecEnt
 
 /// Parse the inner `{ presentation_codec = Path }` block for a single
 /// scope entry inside `per_scope = { ... }`.
-///
 /// Accepts exactly one of `presentation_codec` or `try_presentation_codec`.
 /// Declaring both keys within the same inner block is rejected; future
 /// extensions (e.g. a queryability-override key) slot in alongside these
@@ -773,7 +755,7 @@ fn parse_per_scope_inner_block(
     })
 }
 
-/// Run the four cross-key validation rules from §6 of the Phase 7.5
+/// Run the four cross-key validation rules from §6 of the
 /// v3 plan. Each rule emits a `syn::Error` carrying the most useful
 /// span for the violation (e.g. the bad codec literal, not the whole
 /// attribute).
@@ -854,7 +836,7 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
     }
 
     // Rule (d): `redaction = "hash_id"` requires a HeerId / RanjId /
-    // custom-PK-compatible field type. The check is conservative —
+    // custom-PK-compatible field type. The check is conservative
     // any unrecognised type rejects, even when the underlying SQL
     // shape could in principle support hashing, because a wrong
     // accept here ships an unsafe redaction policy at runtime.
@@ -894,7 +876,6 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
 
 /// `true` when `ty` is one of the HeerId-compatible PK / FK ident
 /// shapes the framework recognises.
-///
 /// Recognises the bare ident, every `djogi::*` / `djogi::types::*`
 /// fully-qualified path, and one layer of `Option<...>`. Custom-PK
 /// types declared via `djogi::primary_key!` carry an arbitrary user
@@ -1042,7 +1023,7 @@ mod tests {
         // The user wrote `redaction = "none"` explicitly. Even though
         // the resulting `RedactionLit` value equals the neutral default,
         // rule (a) treats the *presence* of the key as a contradiction
-        // — so the macro must reject this.
+        // so the macro must reject this.
         let f = field(quote! {
             #[field(protected(sensitivity = "none", redaction = "none"))]
             pub note: String,
@@ -1249,9 +1230,8 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // GH #227 Stage 4 — `per_scope = { ... }` presentation-codec block
+    // GH #227 — `per_scope = { ... }` presentation-codec block
     // parser tests.
-    //
     // The visage codegen pass consumes [`ProtectedSpec::per_scope`]
     // directly off the field's parsed spec; these tests cover the
     // attribute-parse surface only (no expanded codegen).
@@ -1341,7 +1321,6 @@ mod tests {
         // Two entries for the same `public` scope inside one
         // per_scope block — the second must surface as a parse-time
         // error so the diagnostic anchors at the duplicate ident.
-        //
         // The `per_scope = { ... }` body parses as a Rust block, so
         // statements separate via `;` (not `,`); the trailing entry
         // omits the separator.

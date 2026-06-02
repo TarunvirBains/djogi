@@ -1,7 +1,0 @@
-error: `tree_edge = "owner_id"` must name a self-FK field; the column exists on `NonSelfFkNode` but its target type is not `NonSelfFkNode`. Tree-recursive queries walk a self-referential parent edge — point `tree_edge` at a `ForeignKey<NonSelfFkNode>` or `Option<ForeignKey<NonSelfFkNode>>` field on the same struct
-  --> $DIR/phase8_zero_tree_edge_non_self_fk.rs:28:17
-   |
-28 |     tree_edge = "owner_id",
-   |                 ^^^^^^^^^^
-
-error: aborting due to 1 previous error

@@ -1,18 +1,14 @@
 //! Row-shape aggregate terminals — `as_mvt(...)` / `as_geobuf(...)` on
 //! [`crate::query::QuerySet`] and [`crate::query::AnnotatedQuerySet`].
-//!
 //! # What
-//!
 //! [`AsMvtTerminal<T, A>`] / [`AsGeobufTerminal<T, A>`] are the typed
 //! handles produced by [`AnnotatedQuerySet::as_mvt`] /
 //! [`AnnotatedQuerySet::as_geobuf`] (and the convenience entry points on
 //! [`crate::query::QuerySet`] that synthesise an empty annotation tuple).
-//! Each handle terminates with `fetch_one(ctx)` returning `Vec<u8>` —
+//! Each handle terminates with `fetch_one(ctx)` returning `Vec<u8>`
 //! the encoded MVT protobuf bytes or Geobuf bytes for the entire matching
 //! row set.
-//!
 //! # SQL shape
-//!
 //! ```sql
 //! SELECT ST_AsMVT(__djogi_row, $1, $2, $3, $4)
 //! FROM (
@@ -20,23 +16,18 @@
 //!     FROM <table> AS t [WHERE …] [ORDER BY …] [LIMIT …]
 //! ) AS __djogi_row
 //! ```
-//!
 //! The derived-table alias is the framework-fixed `__djogi_row`; the row
 //! aggregate emitter (`crate::expr::sql::emit_row_aggregate`) hard-codes
 //! that alias for the first argument of the SQL function call. Splicing
 //! a user-controlled alias here would let a row-aggregate IR node land
 //! against a hostile FROM alias the emitter cannot validate.
-//!
 //! # Why a separate module
-//!
 //! The terminal handles are gated on `feature = "spatial"` (both PostGIS
 //! row aggregates Djogi ships at v0.1.0 require the feature). Putting
 //! them next to the other spatial query surface keeps the cfg-gating
 //! crisp and avoids polluting [`crate::query::annotate`] with spatial
 //! references.
-//!
 //! # Where
-//!
 //! - [`crate::expr::row_aggregate`] — typed `RowAggregate<Out, K>` wrapper.
 //! - [`crate::expr::node::ExprNode::RowAggregate`] — untyped IR variant.
 //! - [`crate::expr::sql::emit_row_aggregate`] — SQL emission.
@@ -69,12 +60,10 @@ use std::future::Future;
 /// [`crate::query::annotate::AnnotatedQuerySet::as_mvt`] or
 /// [`crate::query::queryset::QuerySet::as_mvt`] and terminated with
 /// [`Self::fetch_one`].
-///
 /// Holds the upstream queryset (for the inner SELECT's `FROM` / `WHERE` /
 /// `ORDER BY` / `LIMIT` tail), the annotation tuple shaping the inner
 /// SELECT list, and the typed [`RowAggregate`] capturing the encoder
 /// configuration (layer name, extent, geom column, optional feature id).
-///
 /// `#[must_use]` because an unawaited terminal is always a mistake — the
 /// `.fetch_one(ctx)` call is what actually runs the SQL.
 #[must_use = "row-shape aggregate terminals are lazy — dropping discards the query"]
@@ -87,7 +76,6 @@ pub struct AsMvtTerminal<T: Model, A: IntoAggregateTuple> {
 /// [`crate::query::annotate::AnnotatedQuerySet::as_geobuf`] or
 /// [`crate::query::queryset::QuerySet::as_geobuf`] and terminated with
 /// [`Self::fetch_one`].
-///
 /// Same shape as [`AsMvtTerminal`] but carries Geobuf-specific
 /// configuration — only the geometry column name.
 #[must_use = "row-shape aggregate terminals are lazy — dropping discards the query"]
@@ -100,14 +88,11 @@ pub struct AsGeobufTerminal<T: Model, A: IntoAggregateTuple> {
 
 /// Build the wrapping SQL `SELECT <row_agg> FROM (<inner annotated select>)
 /// AS __djogi_row`, common to both `AsMvtTerminal` and `AsGeobufTerminal`.
-///
 /// Per the emitter contract in [`crate::expr::sql::emit_row_aggregate`],
 /// the row aggregate's record argument is the framework-fixed
 /// `__djogi_row` alias. This helper splices the same alias into the
 /// outer SELECT so the IR and the FROM clause agree.
-///
 /// # Why the row-aggregate inner select shape
-///
 /// Adopters compose the row content via the existing annotate surface
 /// (model columns + optional aggregate annotations). The inner select
 /// emits `SELECT t.col1, t.geog::geometry AS geog, …, agg AS
@@ -168,24 +153,18 @@ where
 {
     /// Execute the `ST_AsMVT(...)` query and decode the encoded MVT
     /// protobuf bytes.
-    ///
     /// Returns a single `Vec<u8>` — the full MVT tile payload for the
     /// matching row set. The PostGIS aggregate folds every row in the
     /// inner SELECT into one protobuf, so the return is always one
     /// `bytea`, never an array.
-    ///
     /// # Empty input rows
-    ///
     /// `QuerySet::none()` short-circuits to `Ok(Vec::new())` without
     /// emitting SQL.
-    ///
     /// For non-`.none()` queries, a SQL filter that matches zero rows
     /// yields `NULL` for `ST_AsMVT` from PostGIS. We map that to
     /// `Ok(Vec::new())` to keep terminal behavior ergonomic and avoid
     /// a `WasNull` decode error.
-    ///
     /// # Errors
-    ///
     /// - The annotation tuple fails its `check_legality()` (e.g. an
     ///   illegal aggregate modifier survived earlier validation).
     /// - A window annotation alias collides with a `T` model column name
@@ -275,23 +254,17 @@ where
 {
     /// Execute the `ST_AsGeobuf(...)` query and decode the encoded Geobuf
     /// bytes.
-    ///
     /// Same semantics as [`AsMvtTerminal::fetch_one`] — folds every row
     /// in the inner SELECT into one `bytea`, returns the single row's
     /// scalar value.
-    ///
     /// # Empty input rows
-    ///
     /// `QuerySet::none()` short-circuits to `Ok(Vec::new())` without
     /// emitting SQL.
-    ///
     /// For non-`.none()` queries, a SQL filter that matches zero rows
     /// yields `NULL` for `ST_AsGeobuf` from PostGIS. We map that to
     /// `Ok(Vec::new())` to keep terminal behavior ergonomic and avoid
     /// a `WasNull` decode error.
-    ///
     /// # Errors
-    ///
     /// - The annotation tuple fails its `check_legality()` (e.g. an
     ///   illegal aggregate modifier survived earlier validation).
     /// - A window annotation alias collides with a `T` model column name
@@ -363,14 +336,11 @@ where
 impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     /// Encode every matching row as Mapbox Vector Tile bytes — terminal
     /// equivalent of PostGIS's `ST_AsMVT(record, …)` row aggregate.
-    ///
-    /// The row content is whatever this annotated queryset projects —
+    /// The row content is whatever this annotated queryset projects
     /// model columns plus any aggregate annotations. PostGIS resolves
     /// the geometry column at runtime by the name in
     /// [`MvtOptions::with_geom_name`] (default `"geom"`).
-    ///
     /// # Why a row aggregate (not a column aggregate)
-    ///
     /// `ST_AsMVT` takes the whole row as input — every column becomes
     /// either the encoded geometry, the feature id, or a feature
     /// property. The typed surface routes through
@@ -378,11 +348,9 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     /// rather than [`AggregateExpr`](crate::expr::AggregateExpr) so the
     /// column-aggregate modifier set (`.distinct()`, `.filter()`,
     /// `.over()`, …) cannot accidentally compose with a row aggregate
-    /// — Postgres rejects every such combination, so the type-level
+    /// Postgres rejects every such combination, so the type-level
     /// gate keeps the call sites well-formed.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// use djogi::prelude::*;
     /// use djogi::expr::row_aggregate::MvtOptions;
@@ -394,9 +362,7 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     ///     .fetch_one(&mut ctx)
     ///     .await?;
     /// ```
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// SELECT ST_AsMVT(__djogi_row, $1, $2, $3 [, $4])
     /// FROM (
@@ -404,9 +370,7 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     ///     FROM features AS t [WHERE …]
     /// ) AS __djogi_row
     /// ```
-    ///
     /// # Where
-    ///
     /// - [`AsMvtTerminal::fetch_one`] — runs the query and decodes the
     ///   `Vec<u8>` payload.
     /// - [`MvtOptions`] — non-default encoder configuration.
@@ -418,7 +382,6 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
 
     /// Encode every matching row as MVT bytes with non-default encoder
     /// options.
-    ///
     /// Composes with the same per-call defaults as [`Self::as_mvt`] when
     /// the supplied [`MvtOptions`] is left at its built-in defaults; use
     /// [`MvtOptions::with_extent`] / [`MvtOptions::with_geom_name`] /
@@ -437,14 +400,11 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     /// Encode every matching row as Geobuf bytes — terminal equivalent
     /// of PostGIS's `ST_AsGeobuf(rowset anyelement, geom_name text)` row
     /// aggregate.
-    ///
     /// Same composition story as [`Self::as_mvt`] — the row aggregate
     /// folds every row in the inner annotated select into one `bytea`,
     /// and the row aggregate's modifier discipline is enforced by
     /// the [`RowAggregate`] type having no modifier methods.
-    ///
     /// # Example
-    ///
     /// ```ignore
     /// use djogi::prelude::*;
     ///
@@ -455,9 +415,7 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     ///     .fetch_one(&mut ctx)
     ///     .await?;
     /// ```
-    ///
     /// # SQL emission
-    ///
     /// ```sql
     /// SELECT ST_AsGeobuf(__djogi_row, $1)
     /// FROM (SELECT t.id, t.location, … FROM features AS t [WHERE …]) AS __djogi_row
@@ -475,14 +433,12 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
 impl<T: Model + FromPgRow> QuerySet<T> {
     /// Encode every matching row as Mapbox Vector Tile bytes — terminal
     /// equivalent of PostGIS's `ST_AsMVT(record, …)` row aggregate.
-    ///
     /// Bare-queryset entry point — equivalent to chaining
     /// `.annotate(|_| ())` + `.as_mvt(layer_name)` but lighter on the
     /// call site for the common case where no annotations are needed.
     /// The inner SELECT projects every model column from `T::COLUMNS`;
     /// PostGIS resolves the geometry column at runtime by the name in
     /// [`MvtOptions::with_geom_name`] (default `"geom"`).
-    ///
     /// See [`AnnotatedQuerySet::as_mvt`] for the annotated variant
     /// (which lets adopters extend the row with aggregate columns
     /// before encoding) and for full SQL-emission documentation.
@@ -529,17 +485,15 @@ impl<T: Model + FromPgRow> QuerySet<T> {
 
 // ── Empty annotation tuple ──────────────────────────────────────────────
 
-/// Sentinel annotation tuple representing "no aggregate annotations" —
+/// Sentinel annotation tuple representing "no aggregate annotations"
 /// used by [`QuerySet::as_mvt`] / [`QuerySet::as_geobuf`] to satisfy
 /// [`AsMvtTerminal`] / [`AsGeobufTerminal`]'s `A: IntoAggregateTuple`
 /// bound without forcing adopters to chain `.annotate(|_| ())`.
-///
 /// Implements both [`IntoAggregateTuple`] and the narrower
 /// [`crate::query::annotate::PlainAnnotationTuple`] — emitting no
 /// columns and decoding to `()`. The row aggregate emitter never reads
 /// the annotation columns (it folds the entire inner row regardless of
 /// SELECT-list shape), so an empty tuple is the natural sentinel.
-///
 /// `#[doc(hidden)]` because adopter code never names this type
 /// directly — it appears only as the second type parameter of the
 /// terminal handles produced by [`QuerySet::as_mvt`] /
@@ -570,7 +524,7 @@ impl IntoAggregateTuple for EmptyAnnotation {
         _row: &tokio_postgres::Row,
     ) -> Result<Self::Decoded, tokio_postgres::Error> {
         // The row aggregate terminal never decodes the annotation slot
-        // — it decodes only position 0 (the row aggregate's bytea).
+        // it decodes only position 0 (the row aggregate's bytea).
         // This impl is reachable from the standard `AnnotatedQuerySet::fetch_all`
         // path only if an adopter manually constructed an
         // `AnnotatedQuerySet<T, EmptyAnnotation>`, which the
@@ -599,7 +553,6 @@ impl crate::query::annotate::PlainAnnotationTuple for EmptyAnnotation {
 /// Return the canonical column list for `T` as a `Vec<&'static str>`
 /// suitable for the [`crate::expr::node::ExprNode::RowAggregate::columns`]
 /// slot.
-///
 /// Pulls from [`FromPgRow::COLUMNS`] — the same source of truth the
 /// annotated SELECT list uses. The IR variant stores this for
 /// documentation / future-projection purposes; v0.1.0's emitter does
@@ -611,9 +564,8 @@ fn inner_columns_for<T: FromPgRow>() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     //! Unit-level tests for the row-aggregate terminal SQL shape.
-    //!
     //! Live PostGIS round-trip behaviour lives in
-    //! `tests/integration/phase8_5_c4f_row_aggregate_mvt_live.rs`.
+    //! `tests/integration/row_aggregate_mvt_live.rs`.
 
     use super::*;
     use crate::descriptor::{
@@ -850,7 +802,6 @@ mod tests {
     }
 
     // ── Issue #71 — alias-collision guard on row-aggregate terminals ─────────
-    //
     // `AsMvtTerminal::fetch_one` and `AsGeobufTerminal::fetch_one` consume
     // qualify via the wrapped `AnnotatedQuerySet`; the spatial SQL builder
     // (`djogi/src/query/sql.rs:1804-1813`) emits the same
@@ -858,21 +809,18 @@ mod tests {
     // `AnnotatedQuerySet::fetch_all`. A window alias that shadows a model column
     // must be rejected before SQL emission, not surface as a cryptic Postgres
     // "column reference is ambiguous" error at execute time.
-    //
     // Two layers of regression pin:
-    //
     // 1. Unit-level (database-free): the `*_alias_colliding_*` tests below call
-    //    `IntoAggregateTuple::check_no_column_collision` directly — same framing
-    //    as the analogous annotate.rs tests — to pin the validator logic against
-    //    `TileFeature::COLUMNS`. Fast, runnable without DATABASE_URL.
-    //
+    // `IntoAggregateTuple::check_no_column_collision` directly — same framing
+    // as the analogous annotate.rs tests — to pin the validator logic against
+    // `TileFeature::COLUMNS`. Fast, runnable without DATABASE_URL.
     // 2. Terminal-level (DATABASE_URL-gated): `*_fetch_one_rejects_colliding_alias`
-    //    tests call the actual `fetch_one` methods with a non-empty (non-`.none()`)
-    //    queryset and a colliding alias. The collision check fires before any DB
-    //    access so the DB is never queried, but the test verifies that removing
-    //    `check_no_column_collision` from `fetch_one` would cause the assertion to
-    //    fail (the query would fall through to SQL emission / DB execution instead
-    //    of returning `DjogiError::Validation`).
+    // tests call the actual `fetch_one` methods with a non-empty (non-`.none()`)
+    // queryset and a colliding alias. The collision check fires before any DB
+    // access so the DB is never queried, but the test verifies that removing
+    // `check_no_column_collision` from `fetch_one` would cause the assertion to
+    // fail (the query would fall through to SQL emission / DB execution instead
+    // of returning `DjogiError::Validation`).
 
     #[test]
     fn as_mvt_terminal_alias_colliding_with_tile_feature_column_returns_validation_error() {
@@ -929,7 +877,6 @@ mod tests {
     }
 
     // ── Issue #71 case-fold unit pins ────────────────────────────────────────
-    //
     // PostgreSQL folds unquoted identifiers to lowercase, so alias `"ID"` and
     // column `"id"` name the same identifier from Postgres's point of view.
     // The validator now uses `alias_collides_with_column` (ASCII
@@ -1042,7 +989,6 @@ mod tests {
     }
 
     // ── Issue #71 case-fold terminal-level mutation pins (DATABASE_URL-gated) ──
-    //
     // These pins verify that removing `check_no_column_collision` from
     // `AsMvtTerminal::fetch_one` / `AsGeobufTerminal::fetch_one` would let an
     // uppercase-alias query fall through to SQL emission rather than returning

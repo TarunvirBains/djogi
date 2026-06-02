@@ -1,16 +1,12 @@
 //! Inventory-based registry for reverse / M2M accessor macros.
-//!
 //! # What
-//!
 //! Each `djogi::reverse_one_to_many!(...)` / `djogi::reverse_one_to_one!(...)`
 //! invocation expands to (among other things) a
 //! [`::inventory::submit!`] block that registers a
 //! [`ReverseRelationMarker`] record carrying enough metadata to identify
 //! the accessor: its kind, the source model it lives on, the method
 //! name, the target model, and the via column.
-//!
 //! # Why
-//!
 //! The reverse / M2M macros are **single-declaration**: one line per
 //! direction, no field-side metadata on the source struct. That choice
 //! keeps the macros readable (`reverse_one_to_many!(Owner, cars ->
@@ -19,30 +15,23 @@
 //! recorded explicitly. The `inventory` crate solves that: every
 //! invocation emits a static record into a link-time-collected slice,
 //! walkable at startup.
-//!
-//! Phase 4.5's projection generator — the first real consumer — walks
+//! 's projection generator — the first real consumer — walks
 //! these records to discover which reverse accessors live on each
 //! model without re-parsing source or inspecting method tables. Phase
 //! 3 itself does not consume them; shipping the registry now is
 //! forward-compatibility infrastructure.
-//!
 //! ## Collision detection
-//!
 //! rustc covers the trait-layer half; the registry walker
 //! [`validate_relation_accessor_collisions`] covers the cross-suffix
 //! half.
-//!
 //! Each macro invocation emits a per-relation **trait** plus its impl
 //! (GH issue #39 — coherence rule, see `reverse_relation.rs` and
 //! `many_to_many.rs` module docs). The trait name embeds the macro kind
 //! suffix:
-//!
 //! - `reverse_one_to_many!` / `reverse_one_to_one!` → `{Receiver}{Method}ReverseRelation`
-//! - `many_to_many!`                                → `{Source}{Relation}ManyToManyRelation`
-//!
-//! That suffix split means rustc only catches **same-suffix**
-//! collisions:
-//!
+//! - `many_to_many!` → `{Source}{Relation}ManyToManyRelation`
+//!   That suffix split means rustc only catches **same-suffix**
+//!   collisions:
 //! - Two `reverse_one_to_many!`s with the same `(Receiver, method)` (or
 //!   one `reverse_one_to_many!` and one `reverse_one_to_one!`) emit the
 //!   same `…ReverseRelation` trait twice → E0428 / E0119, build fails.
@@ -58,64 +47,55 @@
 //!   call site that has both traits in scope — the diagnostic points at
 //!   the call site instead of at the macro invocations, and there is no
 //!   guarantee any call site exercises the ambiguity.
-//!
-//! [`validate_relation_accessor_collisions`] closes that gap. It walks
-//! a sequence of [`ReverseRelationMarker`]s (typically
-//! `inventory::iter::<ReverseRelationMarker>()`), groups them by
-//! `(source, accessor_name)`, and returns
-//! [`RelationRegistryError::AccessorCollisions`] for any group whose
-//! members disagree on `kind`, `target`, or `via`. The cross-suffix
-//! collision then surfaces during Djogi's registry/projection pass with
-//! the offending source, accessor, kind, target, and via metadata,
-//! rather than at an arbitrary downstream method-call site.
-//!
-//! The framework's own bootstrap paths invoke the gate automatically:
-//! `djogi::migrate::project_from_inventory` validates the global
-//! registry before producing snapshot output, and the test sync helper
-//! (`djogi::testing::sync_models` via `build_sync_plans`) validates
-//! before composing per-bucket DDL. Adopters with a custom bootstrap —
-//! one that does not run through the framework's projection or sync
-//! helpers — can still call
-//! [`validate_global_relation_accessor_registry`] (a zero-arg shortcut
-//! for the canonical `inventory::iter::<ReverseRelationMarker>` walk)
-//! during startup or in a dedicated CI gate test.
-//! [`validate_relation_accessor_collisions`] remains the lower-level
-//! entry point for custom tooling that needs to feed in a synthetic
-//! marker iterator (e.g. registry-merge consumers).
-//!
+//!   [`validate_relation_accessor_collisions`] closes that gap. It walks
+//!   a sequence of [`ReverseRelationMarker`]s (typically
+//!   `inventory::iter::<ReverseRelationMarker>()`), groups them by
+//!   `(source, accessor_name)`, and returns
+//!   [`RelationRegistryError::AccessorCollisions`] for any group whose
+//!   members disagree on `kind`, `target`, or `via`. The cross-suffix
+//!   collision then surfaces during Djogi's registry/projection pass with
+//!   the offending source, accessor, kind, target, and via metadata,
+//!   rather than at an arbitrary downstream method-call site.
+//!   The framework's own bootstrap paths invoke the gate automatically:
+//!   `djogi::migrate::project_from_inventory` validates the global
+//!   registry before producing snapshot output, and the test sync helper
+//!   (`djogi::testing::sync_models` via `build_sync_plans`) validates
+//!   before composing per-bucket DDL. Adopters with a custom bootstrap
+//!   one that does not run through the framework's projection or sync
+//!   helpers — can still call
+//!   [`validate_global_relation_accessor_registry`] (a zero-arg shortcut
+//!   for the canonical `inventory::iter::<ReverseRelationMarker>` walk)
+//!   during startup or in a dedicated CI gate test.
+//!   [`validate_relation_accessor_collisions`] remains the lower-level
+//!   entry point for custom tooling that needs to feed in a synthetic
+//!   marker iterator (e.g. registry-merge consumers).
 //! # How
-//!
 //! At link time, every `ReverseRelationMarker` submitted via `inventory::
 //! submit!` is appended to a crate-level static slice. User code walks
 //! them with `inventory::iter::<ReverseRelationMarker>()`:
-//!
 //! ```ignore
 //! for marker in inventory::iter::<ReverseRelationMarker> {
 //!     println!("{} has {} accessor pointing at {}",
 //!         marker.source(), marker.name(), marker.target());
 //! }
 //! ```
-//!
 //! # Where
-//!
 //! - `ReverseRelationMarker` — this module.
 //! - [`__macro_support::__make_reverse_relation_marker`] — the sole
 //!   validated constructor; the only supported caller is macro-emitted
 //!   code in `djogi-macros/src/reverse_relation.rs`.
 //! - `djogi_macros::reverse_one_to_many!` — emits the `inventory::
-//!   submit!` block.
+//! submit!` block.
 //! - `djogi_macros::reverse_one_to_one!` — same, with
 //!   `RelationKind::O2O`.
 //! - `djogi_macros::many_to_many!` — emits `RelationKind::M2M`
 //!   records using the same marker shape.
 
 /// Kind discriminator for registered relation accessors.
-///
 /// `#[non_exhaustive]` so a future phase can add new relation flavors
 /// (e.g. polymorphic reverses, self-referential through-accessors)
 /// without breaking downstream pattern matches on the enum. Matching
 /// code must include a `_ => …` arm.
-///
 /// The enum itself stays public so consumers walking
 /// `inventory::iter::<ReverseRelationMarker>` can match on the kind,
 /// but fabrication of a full [`ReverseRelationMarker`] still goes
@@ -137,7 +117,6 @@ pub enum RelationKind {
 }
 
 /// One registered reverse / M2M accessor.
-///
 /// The fields are all `&'static str` so records can live in a
 /// `const`-initialised static slot and survive the whole-program
 /// lifetime. Keeping them string-typed (rather than `TypeId` or
@@ -145,15 +124,12 @@ pub enum RelationKind {
 /// `#[model]` expansion order: a marker submitted by a macro-expanded
 /// `reverse_one_to_many!` in crate `A` can reference types declared in
 /// crate `B` without forcing ordering between the two expansions.
-///
-/// Phase 4.5's projection generator is the first real consumer — it
+/// 's projection generator is the first real consumer — it
 /// maps `source`/`target` strings to the correspondingly-registered
 /// `ModelDescriptor` entries (which carry the same `&'static str`
-/// identifier). Phase 3 itself does not walk these records; they are
+/// identifier). itself does not walk these records; they are
 /// forward-compatibility infrastructure.
-///
 /// # Seal
-///
 /// The fields are `pub(crate)` so downstream code cannot
 /// `inventory::submit!` a fabricated marker with arbitrary
 /// `source` / `name` / `target` / `via` strings. The `name` and `via`
@@ -167,11 +143,9 @@ pub enum RelationKind {
 /// `target` are Rust type names: they are validated at the macro call
 /// site via `debug_assert_ident!` (cheap) because Rust's own tokenizer
 /// already constrains the shapes reachable into a `syn::Ident`.
-///
 /// Accessors [`source`](Self::source), [`name`](Self::name),
 /// [`target`](Self::target), [`via`](Self::via), and
 /// [`kind`](Self::kind) expose the data read-only.
-///
 /// `#[doc(hidden)]` because the struct is populated by macro expansion,
 /// not by hand. Downstream code should reach this type through
 /// `inventory::iter::<ReverseRelationMarker>` rather than constructing
@@ -228,7 +202,6 @@ impl ReverseRelationMarker {
 ::inventory::collect!(ReverseRelationMarker);
 
 /// Errors produced by relation-registry validators.
-///
 /// Currently surfaces a single failure mode — accessor collisions that
 /// rustc cannot catch because the colliding macros emit different trait
 /// suffixes. Held under `#[non_exhaustive]` so future relation-graph
@@ -241,7 +214,6 @@ pub enum RelationRegistryError {
     /// One or more `(source, accessor_name)` pairs were registered by
     /// multiple [`ReverseRelationMarker`]s that disagree on `kind`,
     /// `target`, or `via`.
-    ///
     /// Carries every conflicting group so a single call to
     /// [`validate_relation_accessor_collisions`] reports every cross-kind
     /// collision in one pass instead of forcing an iterative
@@ -253,7 +225,6 @@ pub enum RelationRegistryError {
 /// One detected accessor collision — every marker that shares a
 /// `(source, name)` pair with at least one disagreement on `kind`,
 /// `target`, or `via`.
-///
 /// Returned (in a `Vec`) inside
 /// [`RelationRegistryError::AccessorCollisions`]. The `Display` impl
 /// renders a diagnostic block listing every conflicting marker; the
@@ -301,18 +272,16 @@ impl std::fmt::Display for RelationAccessorCollision {
 
 /// Stable total order over [`RelationKind`] discriminants for
 /// diagnostic-ordering purposes only.
-///
 /// `RelationKind` is `#[non_exhaustive]` and intentionally does not
 /// derive `Ord` — adopters pattern-match on the variants and adding
 /// `Ord` would constrain the public ordering semantics to whatever the
 /// derive picks. Internal sorts (specifically the within-group marker
 /// sort in [`validate_relation_accessor_collisions`]) just need *some*
 /// stable key, so we project to `u8` here.
-///
 /// The match is intentionally exhaustive (no `_` arm). Within the
 /// defining crate `#[non_exhaustive]` does not relax exhaustiveness,
 /// so any future variant added here surfaces as a compile error and
-/// forces the maintainer to choose its sort position deliberately —
+/// forces the maintainer to choose its sort position deliberately
 /// which is what we want, since every diagnostic snapshot test
 /// downstream depends on the ordering being stable.
 const fn kind_order(k: RelationKind) -> u8 {
@@ -326,29 +295,23 @@ const fn kind_order(k: RelationKind) -> u8 {
 /// Walk a sequence of [`ReverseRelationMarker`]s and surface any
 /// `(source, accessor_name)` pair claimed by markers that disagree on
 /// `kind`, `target`, or `via`.
-///
 /// # What this catches that rustc misses
-///
 /// The reverse / M2M macros emit per-relation traits whose names embed
 /// the macro kind:
-///
 /// - `reverse_one_to_many!` / `reverse_one_to_one!` →
 ///   `{Receiver}{Method}ReverseRelation`
 /// - `many_to_many!` →
 ///   `{Source}{Relation}ManyToManyRelation`
-///
-/// rustc only catches **same-suffix** trait redefinitions (E0428 / E0119);
-/// a `reverse_one_to_many!` and a `many_to_many!` competing for the
-/// same `.cars()` accessor on `Owner` produce `OwnerCarsReverseRelation`
-/// and `OwnerCarsManyToManyRelation`, both of which compile, and the
-/// collision only manifests as an "ambiguous method call" at every
-/// downstream call site that has both traits in scope. This validator
-/// closes the gap: callers route the inventory iterator through it once
-/// at startup (or in a CI gate) and the diagnostic names the conflicting
-/// accessor metadata rather than an arbitrary downstream call site.
-///
+///   rustc only catches **same-suffix** trait redefinitions (E0428 / E0119);
+///   a `reverse_one_to_many!` and a `many_to_many!` competing for the
+///   same `.cars()` accessor on `Owner` produce `OwnerCarsReverseRelation`
+///   and `OwnerCarsManyToManyRelation`, both of which compile, and the
+///   collision only manifests as an "ambiguous method call" at every
+///   downstream call site that has both traits in scope. This validator
+///   closes the gap: callers route the inventory iterator through it once
+///   at startup (or in a CI gate) and the diagnostic names the conflicting
+///   accessor metadata rather than an arbitrary downstream call site.
 /// # Tolerance for legitimate duplicates
-///
 /// A group whose members all share the same `(kind, target, via)`
 /// triple is treated as an intentional duplicate (e.g. a registry-merge
 /// tool concatenating two inventories that happen to overlap on a
@@ -358,15 +321,11 @@ const fn kind_order(k: RelationKind) -> u8 {
 /// imply two identical trait impls and rustc rejects the build with
 /// E0428 before the markers ever reach this validator. The tolerance
 /// is defensive future-proofing, not a deliberate macro escape hatch.
-///
 /// # Diagnostic ordering
-///
 /// Collisions are reported in deterministic `(source, name)` order so
 /// the diagnostic is stable between runs — important for integrating
 /// the validator into reproducible CI gates and snapshot-style tests.
-///
 /// # Example
-///
 /// ```ignore
 /// // Typical adopter call site — startup or a CI gate test:
 /// djogi::relation::registry::validate_relation_accessor_collisions(
@@ -443,7 +402,6 @@ where
 /// Validate the link-time-collected
 /// [`inventory::iter::<ReverseRelationMarker>`] for cross-kind accessor
 /// collisions in one zero-arg call.
-///
 /// Convenience companion to [`validate_relation_accessor_collisions`]
 /// for adopters whose bootstrap does not already feed an explicit
 /// marker iterator. The body is exactly
@@ -452,9 +410,7 @@ where
 /// sync-helper paths a single call site to gate on, and gives custom
 /// bootstraps a stable entry point that does not require spelling out
 /// the inventory iterator type.
-///
 /// # When to call this
-///
 /// The framework calls this automatically inside
 /// `djogi::migrate::project_from_inventory` and
 /// `djogi::testing::build_sync_plans` (the two paths that produce
@@ -465,16 +421,12 @@ where
 /// helper once at startup or in a dedicated CI gate test so cross-kind
 /// accessor collisions surface at deploy time rather than at a downstream
 /// "ambiguous method call" call site.
-///
 /// # Cost
-///
 /// One linear walk of the inventory plus a `BTreeMap` group-by. Marker
 /// counts are tiny (one per declared reverse / M2M accessor — tens to
 /// low hundreds for a typical app), so the cost is dominated by the
 /// `inventory::iter` walk itself, not the validator.
-///
 /// # Example
-///
 /// ```ignore
 /// // Custom bootstrap — adopter calls the gate explicitly.
 /// fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -489,14 +441,12 @@ pub fn validate_global_relation_accessor_registry() -> Result<(), RelationRegist
 
 /// Macro-only entry point for constructing [`ReverseRelationMarker`]
 /// values. **Not** part of the stable public API.
-///
 /// `djogi-macros` emits a call into this module from the
 /// `reverse_one_to_many!` / `reverse_one_to_one!` / (future)
 /// `many_to_many!` expansion inside every `inventory::submit!` block.
 /// The items here are `pub` only so cross-crate codegen can reach
 /// them; the double-underscore prefix and `#[doc(hidden)]` marker
 /// signal that downstream code must not call these directly.
-///
 /// Mirrors the seal patterns in [`crate::relation::__macro_support`]
 /// (for `RelationPath::new`) and [`crate::query::field::__macro_support`]
 /// (for `FieldRef::new`): fields are `pub(crate)` and the only
@@ -512,7 +462,6 @@ pub mod __macro_support {
     /// identifier strings. The only supported caller is the
     /// `::inventory::submit!` block that the reverse-relation
     /// macros expand in the user's crate.
-    ///
     /// Panics (at const-eval time — `inventory::submit!` wraps the
     /// returned value in a `static` initializer) if `name` or `via`
     /// violates any rule in
@@ -527,10 +476,9 @@ pub mod __macro_support {
     /// `syn::Ident` in the macro, so the Rust tokenizer has already
     /// rejected obviously malformed inputs at parse time; they are
     /// passed through unmodified.
-    ///
     /// `const fn` because `inventory::submit!` expands to
     /// `static __INVENTORY: Node = Node { value: &{ <expr> }, ... };`
-    /// — the value expression must be const-evaluable or the build
+    /// the value expression must be const-evaluable or the build
     /// fails with `E0015` (non-const in const context). Mirrors the
     /// `const fn RelationPath::new` seal; both sit behind the shared
     /// validator family.
@@ -555,7 +503,6 @@ pub mod __macro_support {
 
     /// Validate a framework-emitted identifier in const context without
     /// constructing a marker.
-    ///
     /// This remains available for macro-support call sites that need the
     /// plain identifier contract while still allowing djogi's own
     /// `__djogi_*` namespace. User-supplied macro arguments should use
@@ -567,7 +514,6 @@ pub mod __macro_support {
 
     /// Validate a macro-emitted user-supplied identifier in const
     /// context without constructing a marker.
-    ///
     /// `many_to_many!` needs this for `that_fk`: unlike `relation` and
     /// `this_fk`, it does not flow through the stored
     /// [`ReverseRelationMarker`] fields, but it still becomes a
@@ -705,7 +651,7 @@ mod tests {
         // Walk every submitted marker; at least the one this module
         // submitted must be present. The check filters by the unique
         // source/name pair to stay robust if other crates later submit
-        // markers into the same collector (Phase 4.5 integration
+        // markers into the same collector (integration
         // tests, downstream apps).
         let mut seen = false;
         for marker in ::inventory::iter::<ReverseRelationMarker> {
@@ -724,7 +670,6 @@ mod tests {
     }
 
     // ── validate_relation_accessor_collisions ────────────────────────────
-    //
     // The validator's contract is small enough to verify with
     // hand-built marker fixtures rather than driven through the proc
     // macro. Every test below routes construction through the sealed
@@ -763,7 +708,7 @@ mod tests {
 
     #[test]
     fn validator_tolerates_identical_duplicates() {
-        // Two markers identical in every field — kind, target, via —
+        // Two markers identical in every field — kind, target, via
         // are treated as an intentional duplicate. The reverse / M2M
         // macros never emit this in practice (each invocation also
         // emits a unique trait impl that rustc would E0428 on a true
@@ -939,7 +884,7 @@ mod tests {
         // (1) compile without arguments, (2) return `Result`, and
         // (3) produce the same outcome as walking the live inventory
         // through `validate_relation_accessor_collisions` directly.
-        // Asserting outcome-equality keeps the helper a thin alias —
+        // Asserting outcome-equality keeps the helper a thin alias
         // anyone who later swaps in a memoised / cached implementation
         // must keep the result shape stable.
         let direct =

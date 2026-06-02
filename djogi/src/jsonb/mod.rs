@@ -1,37 +1,27 @@
 //! `Jsonb<T>` — typed JSONB column wrapper with unknown-field preservation.
-//!
 //! # What
-//!
 //! [`Jsonb<T>`] wraps a Postgres `JSONB` column with a typed schema `T`. On
 //! every database read the JSON object is split:
-//!
 //! - Keys whose names match fields in `T`'s `Deserialize` impl land in
 //!   [`Jsonb::data`] as a typed value.
 //! - Keys that `T` does not know about (unknown/future fields) land in
 //!   [`Jsonb::extra`] as raw [`serde_json::Value`]s.
-//!
-//! On every `save()` the two halves are merged back into a single JSON object
-//! before the value is bound. No unknown key is ever dropped.
-//!
+//!   On every `save()` the two halves are merged back into a single JSON object
+//!   before the value is bound. No unknown key is ever dropped.
 //! # Why preserve unknown fields?
-//!
 //! JSONB columns often evolve: a future service or migration version may add
 //! new keys to an existing column. If a running service deserializes only the
 //! keys it knows about and then re-serializes the full object on the next
 //! `save()`, those new keys would be silently erased. Djogi prevents this by
 //! carrying the unknown portion in [`Jsonb::extra`] and merging it back on
 //! write.
-//!
 //! # Postgres codec
-//!
 //! [`Jsonb<T>`] implements [`postgres_types::ToSql`] and
 //! [`postgres_types::FromSql`]. Both implementations delegate via
 //! [`serde_json::Value`] — the postgres-types crate ships a `serde_json::Value`
 //! codec behind the `with-serde_json-1` feature, which is already enabled in
 //! Djogi's workspace `Cargo.toml`.
-//!
 //! # Serde contract
-//!
 //! `T` must implement both [`serde::Serialize`] and [`serde::Deserialize`].
 //! The `Jsonb<T>` wrapper's own `Serialize` impl merges `data` fields with
 //! `extra` fields into one flat JSON object. The `Deserialize` impl
@@ -55,20 +45,15 @@ use postgres_types::{FromSql, IsNull, ToSql, Type};
 use serde::{Deserialize, Serialize};
 
 /// A typed JSONB column value with unknown-field preservation.
-///
 /// `T` is the typed portion of the JSON object — the keys the caller's schema
 /// declares. `extra` holds every key present in the database object but absent
 /// from `T`'s `Deserialize` impl. Both halves are merged on every
 /// serialization so the database column always contains the full original
 /// object plus any mutations the caller applies to `data`.
-///
 /// # Construction
-///
 /// Use [`Jsonb::new`] when building a value to insert. For values loaded from
 /// the database, the `FromSql` impl constructs `Jsonb<T>` automatically.
-///
 /// # Accessing unknown fields
-///
 /// ```rust
 /// use djogi::jsonb::{Jsonb, UnknownFieldExt};
 /// use serde::{Deserialize, Serialize};
@@ -94,7 +79,6 @@ pub struct Jsonb<T> {
 
 impl<T: Default> Default for Jsonb<T> {
     /// Construct a `Jsonb<T>` with `T::default()` and an empty `extra` map.
-    ///
     /// Required so that model structs containing `Jsonb<T>` can derive
     /// `Default` (the `#[model]` macro emits a `Default` impl for the
     /// whole struct, which propagates to every field).
@@ -108,7 +92,6 @@ impl<T: Default> Default for Jsonb<T> {
 
 impl<T> Jsonb<T> {
     /// Construct a new `Jsonb<T>` from a typed value with an empty `extra` map.
-    ///
     /// This is the correct constructor for values being inserted for the first
     /// time. `save()` will serialize `data` + the (empty) `extra` to the
     /// column.
@@ -120,7 +103,6 @@ impl<T> Jsonb<T> {
     }
 
     /// Read-only view of the unknown-field map.
-    ///
     /// Keys are in the order they appeared in the original JSON object
     /// (preserved because `serde_json` is compiled with `preserve_order`).
     pub fn extra(&self) -> &IndexMap<String, UnknownField> {
@@ -129,7 +111,6 @@ impl<T> Jsonb<T> {
 }
 
 // ── Sassi cache-boundary projection ───────────────────────────────────────
-//
 // `Jsonb<T>` is a *database* representation, not a Sassi wire type.
 // `to_jsahibon` is the explicit cache-boundary projection per the
 // MirJzSON spec: when a backend cache contains a model whose field is
@@ -138,19 +119,17 @@ impl<T> Jsonb<T> {
 // merged JSON document (typed `data` keys merged with unknown `extra`
 // keys) as a Sassi-portable `JSahibON`. This helper supports the
 // full-document case.
-//
 // The conversion is fallible (returns `MirJzSONError`) because:
-//
 // 1. `serde_json::to_value(&self)` may serialise to a non-object payload
-//    if `T`'s `Serialize` impl returns a primitive / array. That edge
-//    case already exists in the `Jsonb<T> -> serde_json::Value` path
-//    and the projection inherits the same behaviour — `JSahibON` carries
-//    the resulting non-object value as-is (string / array / number /
-//    bool / null).
+// if `T`'s `Serialize` impl returns a primitive / array. That edge
+// case already exists in the `Jsonb<T> -> serde_json::Value` path
+// and the projection inherits the same behaviour — `JSahibON` carries
+// the resulting non-object value as-is (string / array / number /
+// bool / null).
 // 2. Sassi's `JSahibON::try_from(serde_json::Value)` rejects non-finite
-//    f64 and out-of-range arbitrary-precision numbers, which can land
-//    in the JSON value if `T` serialises a custom type that bypasses
-//    Sassi's invariants.
+// f64 and out-of-range arbitrary-precision numbers, which can land
+// in the JSON value if `T` serialises a custom type that bypasses
+// Sassi's invariants.
 
 impl<T> Jsonb<T>
 where
@@ -158,26 +137,21 @@ where
 {
     /// Project this typed JSONB column into a Sassi-portable
     /// [`sassi::JSahibON`].
-    ///
     /// The full merged document — typed `data` fields plus every
     /// unknown key in `extra` — is serialised through `serde_json` and
     /// re-projected onto Sassi's portable JSON value model.
-    ///
     /// **Cache-boundary projection.** Adopters call this when handing a
     /// model containing `Jsonb<T>` to a Sassi cache (`Punnu<T>`) or to a
     /// frontend over a wire payload that downcasts JSONB through
     /// `JSahibON`. The conversion is named (`to_jsahibon`) rather than
     /// implicit so the database-to-portable boundary is visible at the
     /// call site.
-    ///
     /// # Errors
-    ///
     /// Returns [`MirJzSONError::UnsupportedJsonValue`] when `T`'s
-    /// `Serialize` impl produces JSON content Sassi cannot represent —
+    /// `Serialize` impl produces JSON content Sassi cannot represent
     /// non-finite `f64`, or `serde_json::Number` carriers outside Sassi's
     /// supported numeric range. The error message forwards Sassi's own
     /// diagnostic so the cause is visible.
-    ///
     /// Returns [`MirJzSONError::JsonDecode`] when `T`'s `Serialize` impl
     /// itself fails — typically a custom serialiser that rejects certain
     /// states.
@@ -193,7 +167,6 @@ where
 
 impl<T: Serialize> Serialize for Jsonb<T> {
     /// Merges `data` and `extra` into a single JSON object.
-    ///
     /// The typed fields in `data` are serialized first; then every entry in
     /// `extra` is inserted into the resulting object. If a key exists in both
     /// `data` and `extra` (which should not happen in well-behaved code — the
@@ -225,9 +198,7 @@ where
 {
     /// Deserializes the JSON object, splitting it into typed `data` and unknown
     /// `extra`.
-    ///
     /// The deserialization strategy:
-    ///
     /// 1. Deserialize the full raw `serde_json::Value`.
     /// 2. Deserialize `T` from that value — this populates `data` with known
     ///    fields.
@@ -401,22 +372,20 @@ mod tests {
     }
 
     // ── Cache-boundary projection: Jsonb<T>::to_jsahibon ──────────────────
-    //
     // Per the MirJzSON spec, `Jsonb<T>::to_jsahibon()` is the explicit
     // cache-boundary helper: callers that need to ship `Jsonb<T>` through
     // a Sassi/Punnu cache (where the wire-side downcast goes through
     // `sassi::JSahibON`, not `serde_json::Value`) reach for this method
     // rather than letting the conversion happen implicitly. The tests
     // below pin the projection's contract:
-    //
     // - typed `data` fields merge with unknown `extra` keys into the
-    //   resulting JSON document (same as `serialize`).
+    // resulting JSON document (same as `serialize`).
     // - non-object `T` serialisations survive the projection (carrying
-    //   the resulting primitive / array as the corresponding `JSahibON`
-    //   variant — the round-trip is total because `JSahibON` covers every
-    //   `serde_json::Value` variant).
+    // the resulting primitive / array as the corresponding `JSahibON`
+    // variant — the round-trip is total because `JSahibON` covers every
+    // `serde_json::Value` variant).
     // - non-portable JSON content (which `Jsonb<T>` itself can hold via
-    //   `extra`) surfaces as a typed `MirJzSONError` rather than panicking.
+    // `extra`) surfaces as a typed `MirJzSONError` rather than panicking.
 
     #[test]
     fn to_jsahibon_merges_data_and_extra() {

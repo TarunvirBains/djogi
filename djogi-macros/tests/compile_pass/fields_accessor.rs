@@ -11,7 +11,7 @@
 //     SQL-safe column string (`"type"`, never `"r#type"`);
 //   - the emission compiles for `pk = Serial` (different `id` type).
 //
-// TODO: add Jsonb + ForeignKey fixtures once those types land (Phase 3+).
+// TODO: add Jsonb + ForeignKey fixtures once those types land.
 //
 // `pk = None` is deliberately NOT exercised here: `crud::expand` does not
 // emit `impl Model` for those models (see the module docs), and `DjogiField<M,
@@ -27,13 +27,13 @@
 use djogi::prelude::*;
 use djogi::query::{DjogiField, PortablePredicate};
 
-// Phase 7-Zero-2 T2 flipped the default PK to `HeerIdRecencyBiased`; this
+// T2 flipped the default PK to `HeerIdRecencyBiased`; this
 // fixture continues to exercise the ascending-HeerId accessor shape via
 // an explicit `pk = HeerId` annotation.
 //
 // `pub struct` is required so the macro-emitted `pub` visages
 // (`UserPublic`, `UserSelfView`, ...) carrying `type Model = User`
-// satisfy rustc's private-in-public check — Phase 8.5 #231
+// satisfy rustc's private-in-public check — #231
 // reconciliation pins `type Model: Model` on `DjogiVisage`.
 #[model(table = "users", pk = HeerId)]
 #[derive(Debug, Clone)]

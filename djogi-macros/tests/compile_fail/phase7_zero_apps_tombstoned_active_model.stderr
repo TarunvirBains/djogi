@@ -1,9 +1,0 @@
-error[E0080]: evaluation panicked: cannot declare an active model on a tombstoned app; use `#[model(app = NewApp, moved_from_app = OldApp)]` to record historical metadata
-  --> $DIR/phase7_zero_apps_tombstoned_active_model.rs:11:1
-   |
-11 | #[model(table = "invoices", app = OldBilling)]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed here
-
-error: aborting due to 1 previous error
-
-For more information about this error, try `rustc --explain E0080`.

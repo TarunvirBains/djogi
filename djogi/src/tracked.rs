@@ -1,31 +1,23 @@
 //! Dirty-tracking wrapper for model fields — `Tracked<T>`.
-//!
 //! # What
-//!
 //! [`Tracked<T>`] wraps a column value with a dirty flag. The flag flips
 //! on every `&mut` acquisition (via the `DerefMut` impl) so a `save()`
 //! call can emit only the columns that actually changed since the last
 //! load — partial UPDATEs instead of full row rewrites.
-//!
 //! Mark a column with `#[field(track)]` and the `#[derive(Model)]`
 //! macro lifts the column type into `Tracked<T>`, threads change
 //! detection through the `save()` emitter, and resets the flag after
 //! `RETURNING *` rehydration.
-//!
 //! # Why dirty-track at all
-//!
 //! Bulk-write workloads (CSV imports, batch reconciliation,
 //! background backfills) often touch one or two columns per row. The
-//! default Phase 1 `save()` rewrites every column on every call, which
+//! default `save` rewrites every column on every call, which
 //! triggers row-version churn (every `Tracked` model carries a
 //! [`crate::version`] column) and bloats the WAL.
-//!
 //! `Tracked<T>` opt-ins per field. Models that need full-row save
 //! semantics simply don't mark fields with `#[field(track)]` — the
 //! save() body falls back to the unconditional UPDATE shape.
-//!
 //! # Where consumed
-//!
 //! `djogi-macros::model::save` builds the SET clause by walking
 //! `Tracked` fields and only including those with `is_dirty() == true`.
 //! `from_pg_row` constructs every `Tracked<T>` field with
@@ -56,13 +48,11 @@ impl<T> Tracked<T> {
     }
 
     /// Reset the dirty flag to `false`.
-    ///
     /// Called by macro-emitted `save()` bodies after `RETURNING *` rehydration
     /// to ensure every `Tracked<T>` field is clean once `save()` returns.
     /// `from_pg_row` already constructs `Tracked::new(T)` with `dirty = false`,
     /// so this is defensive — but required by the Task 2 contract so that future
     /// in-place rehydration changes cannot silently break the invariant.
-    ///
     /// `#[doc(hidden)]` — this is an implementation detail of the `#[model]`
     /// macro, not intended for direct caller use. Visibility is `pub` only
     /// because macro-emitted code runs in user crates outside `djogi`.

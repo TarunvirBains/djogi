@@ -1,4 +1,4 @@
-// Phase 8.5 — #171: unsupported array element type must be rejected.
+// #171: unsupported array element type must be rejected.
 //
 // `Vec<u32>` is not in the `IntoArrayFilterValue` sealed set.  The
 // model macro accepts the field declaration (it maps to

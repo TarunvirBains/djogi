@@ -1,31 +1,24 @@
-//! Seed runner — Phase 7 v3 §8 / T8.
-//!
+//! Seed runner — `djogi db seed` subcommand.
 //! Operator-authored seed migrations live under `seeds/<database>/` as
 //! plain `.sql` files. `djogi db seed` discovers them, runs them in
 //! filename-sorted order, and records each successful run in a
 //! dedicated [`SEED_LEDGER_TABLE_DDL`] ledger so re-invocation skips
 //! already-applied seeds.
-//!
 //! # Why a separate ledger
-//!
 //! Seeds are conceptually separate from schema migrations:
-//!
 //! - Seeds populate reference / fixture data — they do not move the
 //!   schema forward. The schema ledger (`djogi_schema_migrations`)
 //!   carries the snapshot-version contract; conflating seeds with
 //!   schema migrations would muddle the snapshot invariants the
-//!   runner owes T5 / T7.
+//!   runner relies on.
 //! - Seeds are dev-flavoured: the gate is "localhost-or-explicit-allow"
 //!   (lighter than `db reset`'s production refusal) so a CI integration
 //!   suite can seed a remote test DB with `--allow-non-localhost`
 //!   without going through the destructive-history path.
-//!
-//! The two ledgers share the `V1:<sha256-hex>` checksum format from
-//! [`super::ledger`] so future tooling can reason about checksums
-//! uniformly.
-//!
+//!   The two ledgers share the `V1:<sha256-hex>` checksum format from
+//!   [`super::ledger`] so future tooling can reason about checksums
+//!   uniformly.
 //! # No regex
-//!
 //! File-name discovery uses byte-level checks against `OsStr::to_str()`.
 //! No regex engine, no regex notation. Files are accepted iff the
 //! filename ends in `".sql"` and the rest is non-empty after the
@@ -46,7 +39,6 @@ use super::runner::{advisory_lock_key, release_advisory_lock};
 /// [`super::ledger::LEDGER_TABLE_DDL`] but stays narrowly scoped to
 /// the four columns a seed needs: name, checksum, applied-at, and the
 /// recorded operator.
-///
 /// `seed_name` is `UNIQUE` so re-running the same seed file is a
 /// detectable no-op rather than producing duplicate rows.
 pub const SEED_LEDGER_TABLE_DDL: &str = "\
@@ -63,7 +55,7 @@ CREATE TABLE IF NOT EXISTS djogi_seed_runs (
 const SEED_RUN_LOCK_APP_LABEL: &str = "__djogi_seed_run__";
 
 /// Directory name (relative to workspace root) that the seed walker
-/// scans. The per-database split parallels the `migrations/` layout —
+/// scans. The per-database split parallels the `migrations/` layout
 /// seeds for the application database live at `seeds/<database>/`,
 /// seeds for the CRUD-log DB at `seeds/crud_log/`, etc.
 pub const SEEDS_DIRNAME: &str = "seeds";
@@ -313,7 +305,7 @@ fn seed_run_lock_bucket(database: &str) -> BucketKey {
     }
 }
 
-/// Successful seed-run report. One entry per discovered seed file —
+/// Successful seed-run report. One entry per discovered seed file
 /// includes both newly-applied seeds and previously-applied seeds
 /// that the runner skipped.
 #[derive(Debug, Clone)]
@@ -344,7 +336,6 @@ pub enum SeedOutcome {
 
 /// Derive the per-database connection URL for `db seed` from the
 /// application URL and the operator-supplied `--database <name>`.
-///
 /// The CLI accepts `--database <name>` to pick which seed directory
 /// (`seeds/<name>/`) to walk. The same flag must also route SQL
 /// execution to the matching connection — otherwise every seed runs
@@ -352,11 +343,9 @@ pub enum SeedOutcome {
 /// fix (config has no per-database URL fields today) is to splice
 /// the operator's `<name>` into the URL's path component, producing
 /// a URL that targets the matching database on the same authority.
-///
 /// Returns `None` when the URL has no recognisable database
 /// component (the same condition `replace_db_in_url` flags). The
 /// caller surfaces this as `db seed: malformed DATABASE_URL`.
-///
 /// **No regex.** Wraps [`super::reset::replace_db_in_url`] which
 /// itself walks the URL bytes once.
 pub fn derive_per_database_url(application_url: &str, database: &str) -> Option<String> {
@@ -365,11 +354,9 @@ pub fn derive_per_database_url(application_url: &str, database: &str) -> Option<
 
 /// Walk `<workspace_root>/<SEEDS_DIRNAME>/<database>/` and return every
 /// `.sql` file in alphabetical order.
-///
 /// **Read-only.** Never creates, deletes, or modifies any path.
 /// Returns an empty vector when the directory does not exist (the
 /// typical state of a project with no seeds yet).
-///
 /// **Filtering.** Hidden files (those whose name starts with `b'.'`)
 /// are skipped. Non-`.sql` files and directories are skipped. Non-UTF-8
 /// filenames are skipped silently. The accepted byte set inside the
@@ -435,7 +422,6 @@ pub fn discover_seeds(
 }
 
 /// Bootstrap the seed-runs ledger if it does not yet exist.
-///
 /// Idempotent — `CREATE TABLE IF NOT EXISTS`. Safe to call before
 /// every seed run.
 pub async fn bootstrap(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
@@ -493,15 +479,12 @@ async fn fetch_seed_ledger_row(
 }
 
 /// Look up a seed's recorded checksum, if any.
-///
 /// Returns `Ok(None)` when the seed has never been applied. Returns
 /// `Ok(Some(checksum))` when an entry is present.
-///
 /// Routes through [`DjogiContext`]'s `pub(crate)` `query_opt`
 /// helper (the same surface the runner uses for `load_applied_at`).
 /// Mirrors the in-crate convention rather than constructing a
 /// `FromPgRow` impl over a 1-tuple.
-///
 /// Errors are surfaced as [`SeedError`] directly:
 /// - [`SeedError::LedgerWrite`] when the SELECT itself fails (relation
 ///   missing, network drop, …).
@@ -609,7 +592,6 @@ async fn mark_seed_failed(
 }
 
 /// Compute the `V1:<sha256-hex>` checksum for a seed file's bytes.
-///
 /// Wraps [`super::ledger::compute_checksum`] over a single fragment
 /// (the file's UTF-8 contents). Seeds typically run as one big
 /// `batch_execute` so a single fragment is the natural shape; if a
@@ -620,7 +602,6 @@ pub fn compute_seed_checksum(body: &str) -> String {
 }
 
 /// Apply a single seed body via the simple-query protocol.
-///
 /// Seeds are typically multi-statement INSERT scripts; we route them
 /// through `raw_ddl` (i.e. `batch_execute`) so the operator can place
 /// `BEGIN`/`COMMIT` blocks, multi-statement DDL, or `\copy`-style data
@@ -639,13 +620,11 @@ async fn reset_after_seed_apply_failure(ctx: &mut DjogiContext) {
 }
 
 /// Run every discovered seed against the connected context.
-///
 /// **Idempotent.** Re-runs skip seeds whose checksum already matches
 /// an `applied` ledger row. A checksum mismatch is a hard
 /// [`SeedError::ChecksumDrift`], and stale / failed claim rows are
 /// also hard stops — the runner never silently replays an ambiguous
 /// non-idempotent seed body.
-///
 /// **Claim-first execution.** Each seed body still runs via `raw_ddl`
 /// (`batch_execute`), which lets the operator place explicit
 /// `BEGIN`/`COMMIT` blocks inside the seed file when needed. The
@@ -654,14 +633,12 @@ async fn reset_after_seed_apply_failure(ctx: &mut DjogiContext) {
 /// row is finalised to `applied`; SQL failure marks it `failed`.
 /// A crash or final-ledger-write failure after SQL commit therefore
 /// leaves a durable stale claim instead of an absent row.
-///
 /// **No workspace lock.** `run_seeds` does NOT acquire the workspace
 /// file lock ([`super::guard::WorkspaceGuard`]) because it does not
 /// mutate the migration tree. Concurrency is instead serialized inside
 /// Postgres: the runner pins one session, takes a per-database
 /// advisory lock for the duration of the run, and writes claim rows in
 /// `djogi_seed_runs`.
-///
 /// **Localhost gate.** If `database_url` does NOT resolve to localhost
 /// AND `allow_non_localhost` is `false`, returns
 /// [`SeedError::LocalhostGate`] before opening any I/O.
@@ -940,7 +917,6 @@ mod tests {
         assert!(msg.contains("--allow-non-localhost"));
     }
 
-    /// Codex round-1 B-1 — the `derive_per_database_url` helper is
     /// the linchpin of per-database routing. It must splice the
     /// operator-supplied database name into the URL path so the CLI
     /// can connect to the matching DB.
@@ -976,7 +952,6 @@ mod tests {
         );
     }
 
-    /// Codex round-1 A-2 — the LedgerDecode variant carries the
     /// column name and a `tokio_postgres::Error` source. We can't
     /// fabricate a real `tokio_postgres::Error` here without a live
     /// DB, but we CAN exercise the Display formatting from the
@@ -989,7 +964,7 @@ mod tests {
         // has no public constructor outside the live driver. The
         // variant exists so the seed runner can name the failing
         // column without collapsing to `LedgerWrite`. The integration
-        // test in `tests/integration/phase7_t8_seed_docs_live.rs`
+        // test in `tests/internal/seed_docs_live.rs`
         // exercises the live path; here we exercise the matchability
         // of the variant: a `LedgerWrite` and a `LedgerDecode` over
         // the same underlying mishap discriminate at the type level.

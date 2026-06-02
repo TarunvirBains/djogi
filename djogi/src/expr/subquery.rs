@@ -1,11 +1,8 @@
 //! Correlated subqueries, EXISTS predicates, and typed outer-scope
 //! column references — the remaining expression-IR surface the plan's
 //! Task 5 brief calls out.
-//!
 //! # What this module ships
-//!
 //! Three typed wrappers, one macro seal:
-//!
 //! - [`Subquery<T, V>`] — `(SELECT <col> FROM T::table_name() WHERE ...)`
 //!   as a scalar [`Expr<V>`]. Built from a [`QuerySet<T>`] plus a
 //!   [`FieldRef<T, V>`] picking the column to project.
@@ -21,10 +18,8 @@
 //!   point `{Model}OuterRef::column()` accessors route through (same
 //!   identifier-validation pattern as
 //!   [`crate::query::field::__macro_support::__make_field_ref`]).
-//!
 //! # Design: store the queryset's `Q<T>` behind an erased emitter
-//!
-//! Phase 8eta PR2b — the subquery's `WHERE` predicate is the parent
+//! The subquery's `WHERE` predicate is the parent
 //! queryset's accumulated `Q<T>` tree, wrapped in an
 //! [`crate::expr::node::ErasedSubqueryPredicate`] handle and carried on
 //! the [`crate::expr::node::SubqueryNode`] payload. Emission flows
@@ -33,7 +28,6 @@
 //! predicates inside a subquery emit through
 //! `Model::__djogi_emit_field_predicate` (PR2d's macro override) without
 //! ever round-tripping through `q_to_condition`.
-//!
 //! **Why type-erase rather than parameterise the node?** `SubqueryNode`
 //! is a variant inside `ExprNode`, which itself is the type-erased
 //! payload behind `Expr<V>`. Threading a `T` parameter through
@@ -43,9 +37,7 @@
 //! provenance shape of the inner predicate. The trait object's `emit`
 //! method drives `query::sql::emit_q::<T>` from the model-knowing side,
 //! inside the constructor that captures `T`.
-//!
 //! # Why typed `OuterRef<M, V>` (plan Q12 = B)
-//!
 //! Bare `&'static str` would let the user write
 //! `Expr::outer_ref_raw("id").as_expr().eq(other_col.as_expr())` with no
 //! check that "id" actually exists on the outer-scope model or that the
@@ -53,18 +45,13 @@
 //! `OuterRef<Account, HeerId>::id()` is constructive evidence that
 //! column "id" exists on `Account` as `HeerId`, and `.as_expr()` returns
 //! an `Expr<HeerId>` that can only `.eq` another `Expr<HeerId>`.
-//!
 //! # Macro integration
-//!
 //! `#[derive(Model)]` emits a `{Model}OuterRef` ZST with one accessor per
 //! column, mirroring the `{Model}Fields` pattern. The accessors route
 //! through [`__macro_support::__make_outer_ref`] so the column string
 //! gets the same validation as [`FieldRef::new`].
-//!
 //! # Column qualification
-//!
 //! `OuterRef` exposes two emission modes:
-//!
 //! - [`OuterRef::as_expr`] — emits the column name **unqualified**. Postgres
 //!   resolves an unqualified name against the enclosing query scope when
 //!   the inner `FROM` list has no matching column, which covers the common
@@ -74,22 +61,21 @@
 //!   verified the inner / outer scopes share no column names.
 //! - [`OuterRef::as_qualified_expr`] — emits `<M::table_name()>.<column>`
 //!   so the reference disambiguates to the outer scope unconditionally.
-//!   Phase 7-Zero-2 T13b's macro-emitted M2M `EXISTS` predicates use this
+//!   's macro-emitted M2M `EXISTS` predicates use this
 //!   form because the through-table and target-table always collide on
 //!   framework-column names. Adopters writing correlated subqueries by
 //!   hand should reach for this whenever the inner / outer column-name
 //!   sets are not provably disjoint.
-//!
-//! Generalised `parent_table` threading for `select_related + filter_expr`
-//! composition (where the outer FROM may be aliased rather than literal
-//! `M::table_name()`) is the next step on this surface and remains a
-//! Phase 8+ enhancement. See `docs/roadmap/future-work.md` §4.7.
+//!   Generalised `parent_table` threading for `select_related + filter_expr`
+//!   composition (where the outer FROM may be aliased rather than literal
+//!   `M::table_name()`) is the next step on this surface and remains a
+//! + enhancement. See `docs/roadmap/future-work.md` §4.7.
 
 use crate::expr::Expr;
 use crate::expr::node::{ErasedSubqueryPredicate, ExprNode, SubqueryNode};
 use crate::model::Model;
-// Phase 8eta PR3: `Subquery::new` no longer demands a `FieldRef<T, V>`
-// — it accepts any `IntoSqlField<T, V>` so post-flip root accessors
+// `Subquery::new` no longer demands a `FieldRef<T, V>`
+// it accepts any `IntoSqlField<T, V>` so post-flip root accessors
 // (`DjogiField<T, V>`) compose without explicit unwrapping. The unit
 // tests under `mod tests` construct `FieldRef` values directly via
 // their own scoped imports — no top-level use is needed.
@@ -98,24 +84,20 @@ use std::any::TypeId;
 use std::marker::PhantomData;
 
 // ── Subquery<T, V> ────────────────────────────────────────────────────
-//
 // Scalar subquery — (SELECT <col> FROM T::table_name() WHERE ...).
 // The SQL is parenthesised at emission time so the subquery can appear
 // in any `Expr<V>` position.
 
 /// Typed scalar subquery — lowers to `(SELECT <col> FROM <table>
 /// WHERE <cond>)` when emitted.
-///
 /// `T` pins the source model (so the emitter knows which table to
 /// SELECT from) and `V` pins the column's Rust type (so the scalar
 /// returned by the subquery slots into `Expr<V>` positions without an
 /// explicit cast). Both are phantom-typed; the node itself carries only
 /// the untyped [`SubqueryNode`] payload.
-///
 /// `#[must_use]` — a dropped `Subquery` is usually a mistake; the user
 /// likely meant to feed it to `.as_expr()` and thence to
 /// [`crate::query::QuerySet::filter_expr`] / an arithmetic composition.
-///
 /// Construction: [`Subquery::new`] takes the source queryset and the
 /// projected column. No other public constructor — the `SubqueryNode`
 /// inside is crate-private so downstream code cannot fabricate a
@@ -134,30 +116,24 @@ pub struct Subquery<T: Model, V> {
 impl<T: Model, V> Subquery<T, V> {
     /// Build a scalar subquery from a source queryset and the column to
     /// project.
-    ///
     /// The `qs` parameter supplies the `FROM <table>` source and the
     /// correlated `WHERE` predicate; the `column` parameter picks which
     /// scalar the subquery returns. `T` on both arguments is the same
     /// model, so the compiler rejects a column ref taken from a
     /// different model's `Fields` handle.
-    ///
     /// # How the `WHERE` clause flows
-    ///
     /// `qs.condition` is cloned verbatim into the
-    /// [`SubqueryNode::where_clause`] slot — every Phase 2 lookup op the
+    /// [`SubqueryNode::where_clause`] slot — every lookup op the
     /// caller composed via `filter` / `filter_expr` is preserved. The
     /// clone is structural (the condition tree is shallow `Vec` / `Box`
     /// / enum variants); typical correlated-subquery call sites build
     /// the queryset fresh, so there is nothing to share-ownership with.
-    ///
     /// `Condition::True` (the "no filter" identity) is stored as
     /// `Some(True)` and the emitter renders it as `WHERE TRUE`. This
     /// matches the existing `push_where` shim's behaviour — a vacuous
     /// predicate is rare in correlated subqueries, so the emission
     /// overhead is not worth a special case here.
-    ///
     /// # What this ignores about `qs`
-    ///
     /// A queryset carries ordering, limit/offset, distinct mode, and
     /// prefetch / select_related registrations. The subquery emitter
     /// consumes only the table name and condition tree; ordering and
@@ -166,7 +142,7 @@ impl<T: Model, V> Subquery<T, V> {
     /// `ORDER BY ... LIMIT 1` would be the usual way to force that but
     /// is out of scope for Task 5). Callers who need a deterministic
     /// scalar from a multi-row source should use `ctx.raw_scalar`
-    /// until Phase 5 extends this surface.
+    /// until extends this surface.
     /// PR3: accepts both legacy `FieldRef<T, V>` and the post-flip root
     /// accessor return type `DjogiField<T, V>` through the sealed
     /// [`IntoSqlField`](crate::query::field::IntoSqlField) bridge.
@@ -180,7 +156,7 @@ impl<T: Model, V> Subquery<T, V> {
             node: SubqueryNode {
                 table: T::table_name(),
                 select_column: Some(column.into_sql_field().column()),
-                // Phase 8eta PR2b: store the queryset's `Q<T>` behind an
+                // Store the queryset's `Q<T>` behind an
                 // erased emitter handle so portable root-field predicates
                 // emit through `query::sql::emit_q` without round-tripping
                 // through `q_to_condition`. Vacuous-truth queries (no
@@ -195,7 +171,6 @@ impl<T: Model, V> Subquery<T, V> {
 
     /// Promote this subquery to a typed [`Expr<V>`] for use in
     /// `filter_expr`, `set_expr`, or any other expression-IR consumer.
-    ///
     /// The phantom `V` on `Subquery<T, V>` projects directly onto the
     /// resulting `Expr<V>` — so a subquery that selects a `HeerId`
     /// column produces an `Expr<HeerId>` that can `.eq` another
@@ -207,7 +182,6 @@ impl<T: Model, V> Subquery<T, V> {
 }
 
 // ── Exists ────────────────────────────────────────────────────────────
-//
 // EXISTS (SELECT 1 FROM T::table_name() WHERE ...) — boolean predicate.
 // No `V` parameter on the typed surface because EXISTS always yields a
 // boolean (`Expr<bool>`) regardless of what columns the inner queryset
@@ -215,13 +189,11 @@ impl<T: Model, V> Subquery<T, V> {
 
 /// Typed `EXISTS (...)` predicate — lowers to `EXISTS (SELECT 1 FROM
 /// <table> WHERE <cond>)` when emitted.
-///
 /// `T` pins the source model at construction time (so the emitter
 /// knows which table to SELECT from); the typed surface drops `T`
 /// after `.as_expr()` because the `Expr<bool>` result is type-erased
 /// (every `Exists` produces the same `Expr<bool>` type regardless of
 /// source model).
-///
 /// `#[must_use]` — a dropped `Exists` is usually a mistake; the user
 /// likely meant to feed it to `.as_expr()` and thence to
 /// [`crate::query::QuerySet::filter_expr`].
@@ -235,26 +207,21 @@ pub struct Exists {
 
 impl Exists {
     /// Build an `EXISTS (...)` predicate from a source queryset.
-    ///
     /// Drops the queryset's `T` parameter at construction because the
     /// emitted SQL only needs the table name + condition tree — every
     /// `Exists` carries an `Expr<bool>` result regardless of the inner
     /// model. Callers who want to express "at least one row matches"
     /// over a correlated predicate use this as the idiomatic shape.
-    ///
     /// # Why `select_column = None`
-    ///
     /// Postgres' EXISTS only evaluates the subquery to the point of
     /// finding (or failing to find) a single row; the selected columns
-    /// are never materialised. `SELECT 1` is the idiomatic stand-in —
+    /// are never materialised. `SELECT 1` is the idiomatic stand-in
     /// it tells the planner "any row will do" without binding a
     /// specific column name that might later be renamed or dropped.
     /// Routing through `select_column = None` at the node level keeps
     /// the rendering decision ("`1` vs a column") inside the emitter,
     /// not the typed builder.
-    ///
     /// # What this ignores about `qs`
-    ///
     /// Mirrors the [`Subquery::new`] rule: only the table name and
     /// condition tree flow into the emitted SQL. Ordering, limit/offset,
     /// distinct mode, prefetch, and select_related registrations on the
@@ -264,13 +231,13 @@ impl Exists {
     /// vestigial — but it is worth knowing that `Exists::new(qs.limit(1))`
     /// does not constrain the planner's row search at all. Callers who
     /// need row-bounded EXISTS semantics should use `ctx.raw_execute`
-    /// until Phase 5 widens this surface.
+    /// until widens this surface.
     pub fn new<T: Model>(qs: QuerySet<T>) -> Self {
         Exists {
             node: SubqueryNode {
                 table: T::table_name(),
                 select_column: None,
-                // Phase 8eta PR2b: store the queryset's `Q<T>` behind
+                // Store the queryset's `Q<T>` behind
                 // an erased emitter handle. EXISTS still emits `SELECT
                 // 1` from the inner subquery; only the WHERE body
                 // changes shape vs the pre-flip `Option<Condition>`
@@ -289,14 +256,12 @@ impl Exists {
 }
 
 // ── OuterRef<M, V> ────────────────────────────────────────────────────
-//
 // Outer-scope column reference — shape mirrors `FieldRef<M, V>` so the
 // compiler enforces the same value-type discipline on correlated
-// predicates that Phase 2's literal-RHS filters already enjoy.
+// predicates that the literal-RHS filters already enjoy.
 
 /// Typed reference to a column in the enclosing query scope — the
 /// outer-scope counterpart to [`FieldRef<M, V>`].
-///
 /// Inside a correlated subquery (the typical site for `OuterRef`), an
 /// unqualified column name resolves against the enclosing `FROM`
 /// clause when the inner query's `FROM` list has no matching column.
@@ -304,30 +269,23 @@ impl Exists {
 /// column name plus phantom markers that bind it to a specific model
 /// (`M`) and a specific value type (`V`), so `.as_expr()` produces an
 /// `Expr<V>` that only composes with same-`V` operands.
-///
 /// # Limitation: unqualified emission
-///
 /// `as_expr()` renders the column name without a table qualifier. When
 /// the inner and outer scopes both expose a same-named column (every
 /// Djogi model has `id`, `created_at`, `updated_at`, so this is real
 /// for intra-model correlated subqueries), Postgres raises `42702
 /// column reference "X" is ambiguous`. Workarounds:
-///
 /// - Correlate on tables whose bare column names do not collide.
 /// - Use `ctx.raw_execute` / `ctx.raw_scalar` for explicitly-aliased
 ///   correlations.
-///
-/// The qualified form (carrying an outer-table alias) is deferred
-/// alongside the broader `parent_table` threading needed for
-/// `select_related + filter_expr` composition — flagged in the
-/// [`crate::expr::sql`] module header and on [`OuterRef::as_expr`].
-///
+///   The qualified form (carrying an outer-table alias) is deferred
+///   alongside the broader `parent_table` threading needed for
+///   `select_related + filter_expr` composition — flagged in the
+///   [`crate::expr::sql`] module header and on [`OuterRef::as_expr`].
 /// # Construction
-///
 /// Users do not call [`OuterRef::new`] directly. The
 /// `#[derive(Model)]` macro emits a `{Model}OuterRef` ZST helper with
 /// one accessor per column:
-///
 /// ```ignore
 /// // Emitted by the macro for `struct Account { balance: i64 }`:
 /// impl AccountOuterRef {
@@ -337,7 +295,6 @@ impl Exists {
 ///     pub fn updated_at() -> OuterRef<Account, DateTime> { /* ... */ }
 /// }
 /// ```
-///
 /// The accessors route through [`__macro_support::__make_outer_ref`]
 /// so every column string is validated via
 /// [`crate::ident::assert_plain_ident`] at construction time.
@@ -372,9 +329,8 @@ impl<M: Model, V> OuterRef<M, V> {
     /// `{Model}OuterRef::column()` accessors route through
     /// [`__macro_support::__make_outer_ref`], which validates the
     /// identifier before calling this. Downstream code cannot
-    /// fabricate an `OuterRef` with an unvalidated column string —
+    /// fabricate an `OuterRef` with an unvalidated column string
     /// the seal mirrors [`FieldRef::new`]'s `pub(crate)` visibility.
-    ///
     /// `const` so the macro-emitted accessors stay trivially
     /// inlinable — same pattern as [`FieldRef::new`].
     pub(crate) const fn new(column: &'static str) -> Self {
@@ -387,7 +343,6 @@ impl<M: Model, V> OuterRef<M, V> {
 
     /// Promote this outer-scope column ref to a typed [`Expr<V>`] for
     /// use inside a correlated subquery's `filter_expr` closure.
-    ///
     /// The emitted SQL is the bare column name — Postgres resolves the
     /// reference against the outer scope when the inner query's `FROM`
     /// list has no matching column. Same-named collisions raise a
@@ -402,14 +357,12 @@ impl<M: Model, V> OuterRef<M, V> {
     /// Promote this outer-scope column ref to a typed [`Expr<V>`] that
     /// emits as `<M::table_name()>.<column>` instead of the bare column
     /// name.
-    ///
     /// Use this whenever the inner subquery and outer scope share a
     /// column name (every Djogi model carries `id` / `created_at` /
     /// `updated_at`, so M2M correlations always collide). The qualified
     /// form lets Postgres resolve the reference unambiguously, sidestepping
     /// the `42702 column reference is ambiguous` failure that the bare
     /// [`Self::as_expr`] form falls into.
-    ///
     /// `M::table_name()` is the source of the qualifier — every
     /// `Model::table_name()` is validated by Djogi's identifier rules at
     /// `#[model]` expansion time, so the resulting SQL token is safe to
@@ -425,18 +378,14 @@ impl<M: Model, V> OuterRef<M, V> {
     /// Promote this outer-scope column ref to a typed [`Expr<V>`] that
     /// emits as `l.<column>`, using the fixed `l` alias defined by
     /// lateral queries.
-    ///
     /// Use this in the inner closure of `join_lateral` or
     /// `left_join_lateral` to correlate the inner query with the
     /// outer query.
-    ///
     /// The returned expression is validated when SQL is built:
-    ///
     /// - It is only legal inside a lateral-inner lowering scope.
     /// - Its source model `M` must match the actual lateral outer model.
-    ///
-    /// Out-of-scope or wrong-model usage fails as a typed
-    /// `DjogiError::Predicate` before any SQL reaches PostgreSQL.
+    ///   Out-of-scope or wrong-model usage fails as a typed
+    ///   `DjogiError::Predicate` before any SQL reaches PostgreSQL.
     #[must_use = "OuterRef is inert unless promoted to Expr<V>"]
     pub fn as_lateral_outer_expr(self) -> Expr<V> {
         Expr::from_node(ExprNode::OuterRefAlias {
@@ -449,8 +398,7 @@ impl<M: Model, V> OuterRef<M, V> {
 }
 
 // ── Q<T> → Option<ErasedSubqueryPredicate> helper ─────────────────────
-//
-// Phase 8eta PR2b — replaces the pre-flip `condition_to_opt` helper.
+// Replaces the pre-flip `condition_to_opt` helper.
 // Vacuous-truth `Q<T>` queries (e.g. an unfiltered queryset whose
 // condition is `Q::Portable(PortablePredicate::True)`) collapse to
 // `None` so the subquery emitter skips the `WHERE` clause entirely on
@@ -504,14 +452,12 @@ fn is_vacuously_true<T: Model>(q: &crate::query::q::Q<T>) -> bool {
 }
 
 /// Macro-only entry points. **Not** part of the stable public API.
-///
 /// `djogi-macros` emits calls into this module from the `{Model}OuterRef`
-/// helper struct that `#[derive(Model)]` expands in the user's crate —
+/// helper struct that `#[derive(Model)]` expands in the user's crate
 /// the items here are `pub` only so cross-crate codegen can reach them.
 /// The double-underscore prefix and `#[doc(hidden)]` marker signal to
 /// tooling and reviewers that downstream code must not call these
 /// directly; the macro is the sole supported caller.
-///
 /// The seal closes the identifier-smuggling vector that
 /// [`OuterRef::new`]'s `pub(crate)` visibility addresses at the crate
 /// boundary: cross-crate code reaches an `OuterRef` only through this
@@ -528,7 +474,6 @@ pub mod __macro_support {
     /// name. The only supported caller is the
     /// `{Model}OuterRef::column()` accessor that `#[derive(Model)]`
     /// emits in the user's crate.
-    ///
     /// Panics if `column` violates any rule in
     /// [`crate::ident::assert_plain_ident`]: empty, over 63 bytes,
     /// leading digit, a non-identifier byte, or a reserved Postgres
@@ -547,7 +492,7 @@ pub mod __macro_support {
 mod tests {
     //! Emitter shape tests — each construct renders the expected SQL
     //! tokens. Live DB coverage is in
-    //! `tests/integration/phase4_transactions_expressions.rs`.
+    //! `tests/integration/transactions_expressions.rs`.
 
     use super::*;
     use crate::Expr;

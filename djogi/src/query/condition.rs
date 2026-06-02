@@ -1,9 +1,8 @@
 //! Condition tree — the filter AST that `QuerySet<T>` accumulates.
-//!
 //! `Condition` is deliberately shallow: no SQL strings are stored here. SQL
 //! generation happens exactly once at terminal-method time (`query::sql`).
 //! This keeps composition cheap (cloning a QuerySet = cloning a Vec<Condition>
-//! — no duplicated SQL buffers) and keeps the injection-safety review surface
+//! no duplicated SQL buffers) and keeps the injection-safety review surface
 //! in one place.
 
 use crate::HeerId;
@@ -34,51 +33,45 @@ pub enum Condition {
 
     Not(Box<Condition>),
 
-    /// Bridge from the typed expression IR (Phase 4 Task 3a) — an
+    /// Bridge from the typed expression IR (Task 3a) — an
     /// `Expr<bool>` slotted into the filter tree by
     /// [`crate::query::QuerySet::filter_expr`]. The SQL emitter
     /// delegates to [`crate::expr::sql::emit_expr`] for this variant,
     /// bypassing [`super::sql::emit_leaf`] because the expression IR
     /// generalises both sides of the comparison (neither operand has
-    /// to be a bare column), making the Phase 2 column-vs-literal
+    /// to be a bare column), making the column-vs-literal
     /// leaf path the wrong abstraction for this emission.
     Expr(crate::expr::Expr<bool>),
 
     /// `col @> $1` — array contains. The column must be a Postgres array type;
     /// `values` is a bound array parameter holding the elements to test for.
-    ///
     /// Produced by [`crate::query::field::FieldRef::<M, Vec<V>>::contains`].
     ArrayContains(crate::array::ArrayContainsLeaf),
 
     /// `col <@ $1` — array contained by. Every element of `col` must also
     /// appear in the argument array.
-    ///
     /// Produced by [`crate::query::field::FieldRef::<M, Vec<V>>::contained_by`].
     ArrayContainedBy(crate::array::ArrayContainedByLeaf),
 
     /// `col && $1` — array overlap. The column and argument share at least one
     /// element.
-    ///
     /// Produced by [`crate::query::field::FieldRef::<M, Vec<V>>::overlap`].
     ArrayOverlap(crate::array::ArrayOverlapLeaf),
 
     /// Postgres range predicate (`@>`, `<@`, `&&`, `<<`, `>>`, `&<`, `&>`,
     /// `-|-`) over a `Range<T>` column.
-    ///
     /// Produced by the SQL-only range methods on
     /// [`crate::query::field::ExplicitPgPredicateField`] and the legacy
     /// [`crate::query::field::FieldRef`] surface.
     RangePredicate(crate::range::RangePredicateLeaf),
 
     /// JSONB flat-path comparison — `(col->'a'->>'b')::cast op $1`.
-    ///
     /// Produced by [`crate::jsonb::path::JsonbPathRef`] comparison methods.
     /// The expression SQL is pre-rendered from validated identifiers.
     JsonbPath(crate::jsonb::path::JsonbPathLeaf),
 
-    /// Raw SQL fragment — Phase 8β T3.4 carve-out for proxy
+    /// Raw SQL fragment — 4 carve-out for proxy
     /// `default_filter` lowering.
-    ///
     /// The fragment is a `&'static str` baked at macro-expand time by
     /// [`crate::__private::lower_default_filter_fragment`] (which forwards
     /// to `djogi-macros`'s `model::proxy::lower_default_filter_to_sql`).
@@ -87,20 +80,16 @@ pub enum Condition {
     /// and rejects every other shape with a span-precise compile error,
     /// so the fragment that reaches this variant cannot smuggle SQL
     /// from runtime input — the only construction path is the macro.
-    ///
     /// # Why an escape-hatch variant rather than a full IR lowering
-    ///
     /// Per the lens (`feedback_decision_priorities.md`, plan §7 #5
     /// resolved 2026-05-03): macro-only constructor + a sealed inner
-    /// payload for 8β. T6 Stage 2 will migrate this to the typed
-    /// `Q<T>` IR; migrating callers is a semver-minor change at the
+    /// payload for the initial landing. Migration to the typed
+    /// `Q<T>` IR is a semver-minor change at the
     /// enum-variant level. Constructing one outside the crate goes
     /// through
     /// [`Condition::__from_raw_sql_fragment`], which is
     /// `#[doc(hidden)]` and not part of the supported surface.
-    ///
     /// # Injection-safety seal: [`RawSqlFragment`] newtype
-    ///
     /// The variant carries a [`RawSqlFragment`] whose inner field is
     /// `pub(crate)` — adopter code in safe Rust cannot construct one
     /// (the field is unnameable and there is no `pub` constructor
@@ -110,9 +99,7 @@ pub enum Condition {
     /// Earlier shapes carrying a bare `&'static str` allowed
     /// `Condition::RawSql(Box::leak(...))` to inject arbitrary SQL into
     /// WHERE clauses — the newtype closes that hole.
-    ///
     /// # Why no bind parameters
-    ///
     /// The closed grammar rejects every non-literal RHS, so the
     /// fragment is fully self-contained at expand time. No `$n` binds
     /// are threaded through the accumulator — the emitter pushes the
@@ -123,8 +110,7 @@ pub enum Condition {
 }
 
 /// Sealed wrapper around the `&'static str` carried by
-/// [`Condition::RawSql`] — Phase 8β T3.4 injection-safety newtype.
-///
+/// [`Condition::RawSql`] — 4 injection-safety newtype.
 /// Construction is restricted to the `djogi` crate via the `pub(crate)`
 /// inner field. `djogi-macros` and adopter crates reach this through
 /// [`Condition::__from_raw_sql_fragment`] (the `#[doc(hidden)]`
@@ -134,7 +120,6 @@ pub enum Condition {
 /// outside, the inner field's `pub(crate)` visibility prevents
 /// constructing a `Condition::RawSql(RawSqlFragment(arbitrary_str))`
 /// literal in adopter code.
-///
 /// This mirrors the same defensive boundary
 /// [`crate::query::condition::Leaf`] / [`crate::jsonb::path::JsonbPathLeaf`]
 /// apply for their own constructor paths — Djogi's standard pattern for
@@ -154,14 +139,13 @@ impl RawSqlFragment {
 }
 
 impl Condition {
-    /// Macro-only constructor for the raw-SQL escape hatch — Phase 8β
-    /// T3.4. Routes through a `#[doc(hidden)]` public surface so
+    /// Macro-only constructor for the raw-SQL escape hatch.
+    /// Routes through a `#[doc(hidden)]` public surface so
     /// `djogi-macros`'s emitted code (in adopter crates) can construct
     /// one without naming the sealed [`RawSqlFragment`] newtype's
     /// `pub(crate)` field. Not part of the user-facing API; the
     /// `__`-prefix + `#[doc(hidden)]` pair signals that downstream code
     /// must not call this directly.
-    ///
     /// The `&'static str` argument is the lowered SQL fragment from
     /// `model::proxy::lower_default_filter_to_sql`. The lowering pass
     /// enforces the closed grammar at expand time, so the fragment
@@ -190,7 +174,6 @@ impl Condition {
     /// WHERE-clause emitter (model and visage paths) to skip the clause
     /// entirely rather than emit `WHERE TRUE`. Cleaner logs, no chance of an
     /// optimizer surprise on trivially-true predicates.
-    ///
     /// Recognises the shapes the queryset constructors actually produce:
     /// `True`, `And(empty | all-True)`, and `Not(Or(empty))`. Other shapes
     /// (`Or(all-True)`, `Not(And(empty))`) are not collapsed because the
@@ -253,9 +236,8 @@ impl Condition {
     }
 
     /// Wrap a condition in SQL NOT. `Not(Not(x)) == x` is NOT auto-simplified
-    /// — users rarely write double-negation by accident and the emitter can
+    /// users rarely write double-negation by accident and the emitter can
     /// handle it correctly either way.
-    ///
     /// Two equivalent spellings exist: this associated function
     /// (`Condition::not(cond)`, matching `Condition::and(a, b)` /
     /// `Condition::or(a, b)`) and the unary [`std::ops::Not`] operator
@@ -271,13 +253,11 @@ impl Condition {
 }
 
 /// Fluent method-style composition for [`Condition`].
-///
 /// The inherent associated constructors [`Condition::and`] /
 /// [`Condition::or`] stay in place for backwards compatibility, so the
 /// method spelling lives on an extension trait. `djogi::prelude::*`
 /// re-exports this trait, letting adopter code write
 /// `field.eq(v).and(other.eq(w))` without naming the trait.
-///
 /// Negation deliberately stays off this trait. Adding `fn not(self) ->
 /// Condition` here would alias the inherent `std::ops::Not::not(self) ->
 /// Self::Output` impl below, and any caller importing the prelude
@@ -332,10 +312,9 @@ impl Not for Condition {
 }
 
 /// A single column-level comparison: `column op value`.
-///
 /// Fields are `pub(crate)` so the only construction path is through the
 /// typed `FieldRef` lookup methods (`eq`, `neq`, `gt`, `ilike`, etc.).
-/// The emitter assumes those methods for the `(op, value)` pairing —
+/// The emitter assumes those methods for the `(op, value)` pairing
 /// e.g. `IContains` carries `FilterValue::String`, `Between` carries
 /// `FilterValue::Pair` — so widening the fields would let downstream
 /// code construct ill-formed leaves that hit emitter `unreachable!`
@@ -386,18 +365,14 @@ impl Leaf {
 /// The operator half of a `Leaf`. Every lookup method maps to one of
 /// these variants. SQL emission (`query::sql`) pattern-matches on this
 /// enum to produce the correct operator token.
-///
 /// Marked `#[non_exhaustive]` — later phases (array ops, JSONB lookups,
 /// trigram search) extend this set, and downstream exhaustive matches
 /// would break on every such addition. External pattern matches must
 /// include a `_ => …` arm.
-///
 /// # The §660 split — Rust-evaluable vs SQL-only
-///
 /// Per spec §8e bullet 6 (`docs/spec/implementation-plan.md:660`),
 /// every variant on this enum partitions cleanly into one of two
 /// classes:
-///
 /// **Rust-evaluable (15 variants).** `Eq`, `Neq`, `Gt`, `Gte`, `Lt`,
 /// `Lte`, `In`, `NotIn`, `IsNull`, `IsNotNull`, `Between`, `IContains`,
 /// `IStartsWith`, `IEndsWith`, `IExact`. These ops have a sassi
@@ -405,8 +380,7 @@ impl Leaf {
 /// `sassi::BasicPredicate::Field` — they ride through `Q::Portable` in
 /// the public algebra and can be evaluated against an in-memory `&T`
 /// without a database round-trip (the substrate Punnu cache builds
-/// on at Cluster 8δ).
-///
+/// on the Punnu cache).
 /// **SQL-only (2 variants).** `Regex`, `IRegex` — Postgres POSIX
 /// `~` / `~*`. These do **not** have sassi counterparts (sassi's
 /// `LookupOp` enum has no `Regex` / `IRegex` variants by design) and
@@ -414,23 +388,19 @@ impl Leaf {
 /// the public algebra. Lifting them to `BasicPredicate` would require
 /// a Rust regex engine, which the framework forbids per `decisions.md`
 /// rows 107 + 108 and `feedback_no_regex_in_djogi.md`.
-///
 /// The partition is locked by:
-///
 /// - The lihaaf compile-fail fixture
-///   `djogi-macros/tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
-///   (Cluster 8γ Stage 1 T6.10) — verifies `sassi::LookupOp::Regex`
+///   `djogi-macros/tests/compile_fail/lookup_op_regex_lifted_to_basic_predicate.rs`
+///   (10) — verifies `sassi::LookupOp::Regex`
 ///   does not exist at the type level, so a future sassi release that
 ///   adds a `Regex` variant would silently break the no-regex
 ///   invariant; this fixture catches it.
-///
 /// - The `lookup_op_partitions_cleanly_into_15_lift_2_sql_only` test
 ///   in this module — exhaustively walks every `LookupOp` variant and
 ///   asserts each lands in the correct class.
-///
-/// Adding a new variant under `#[non_exhaustive]` requires extending
-/// the partition test and explicitly placing the variant in one of
-/// the two classes; the test will fail to compile until that's done.
+///   Adding a new variant under `#[non_exhaustive]` requires extending
+///   the partition test and explicitly placing the variant in one of
+///   the two classes; the test will fail to compile until that's done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LookupOp {
@@ -482,7 +452,6 @@ pub enum LookupOp {
 /// Every shipped variant is tagged either `RustEvaluable` (lifts to
 /// `sassi::BasicPredicate::Field` via `Q::Portable`) or `SqlOnly` (stays
 /// djogi-side via `Q::Regex` etc.).
-///
 /// Adopters do not name this enum — it is the type-level partition
 /// the lowering bridge and the lihaaf compile-fail fixture lean on. A
 /// new `LookupOp` variant added under `#[non_exhaustive]` must be placed
@@ -502,28 +471,24 @@ pub enum LookupOpSourceClass {
 
 impl LookupOp {
     /// Source-side class per the §660 split.
-    ///
     /// Exhaustive over the **shipped** variants. The match has no
     /// `_ => …` catch-all so adding a new `LookupOp` variant fails
     /// to compile this method until the arm is added — that is the
     /// load-bearing protection: a future variant cannot silently fall
     /// into the wrong class.
-    ///
     /// # Why a method, not a const
-    ///
     /// A `const` map (`[(LookupOp::Eq, RustEvaluable), …]`) would
     /// require linear-search lookup at every callsite. The match
     /// optimises into a single jump table at the same compile-time
     /// cost without sacrificing the type-level partition guarantee.
-    //
     // `#[allow(dead_code)]` — no production path consumes
-    // `source_class` today (the pre-T6.9 `Condition`-based emission
+    // `source_class` today (the legacy `Condition`-based emission
     // is still the SQL path). The classification is consumed by the
     // partition test in the `tests` module and by future cluster
-    // integrations that need the source-side tag (e.g. Cluster 8δ
-    // Punnu cache eligibility checks). Keeping the API loaded but
+    // integrations that need the source-side tag (e.g. Punnu
+    // cache eligibility checks). Keeping the API loaded but
     // dormant per `feedback_atomic_commits.md` — the §660 split
-    // documentation ships at T6.8; the consumers land later.
+    // documentation ships in a later commit; the consumers land later.
     #[allow(dead_code)]
     pub(crate) fn source_class(self) -> LookupOpSourceClass {
         // Exhaustive — no `_` arm. New variants land in the right
@@ -555,7 +520,6 @@ impl LookupOp {
     /// SQL operator token for the simple binary-comparison forms emitted as
     /// `col OP value`. Returns `None` for variants whose emission shape
     /// differs (`IS NULL`, `BETWEEN`, `IN`, `ILIKE`, `LOWER(col) = LOWER(v)`).
-    ///
     /// Used by the leaf emitters in `query::sql` to collapse what was
     /// previously eight near-identical match arms into one path.
     pub(crate) fn binary_op_token(self) -> Option<&'static str> {
@@ -575,13 +539,11 @@ impl LookupOp {
 
 /// A concrete value to bind to a query parameter. One variant per
 /// SQL-bindable Rust type Djogi knows about. Implementers adding a new
-/// column type (e.g. `Decimal` in Phase 5) extend this enum here; `sql.rs`
+/// column type (e.g. `Decimal` in) extend this enum here; `sql.rs`
 /// pattern-matches and calls `qb.push_bind(v)` on each variant.
-///
 /// `List` carries a boxed `Vec<FilterValue>` for `IN (...)` / `NOT IN (...)`.
 /// Mixed-type lists are representable but the emitter rejects them — the
 /// typed `FieldRef<M, V>` API prevents construction from user code.
-///
 /// Marked `#[non_exhaustive]` — new SQL-bindable types (e.g. JSONB payload
 /// variants) are added in later phases. Adding a
 /// variant must not break downstream code that pattern-matches on this
@@ -607,16 +569,14 @@ pub enum FilterValue {
     /// Reverse-chronological `HeerId` — stored as BIGINT, same Postgres
     /// surface as [`FilterValue::HeerId`]. Kept as a distinct variant so
     /// `FieldRef<M, HeerIdDesc>::eq(x)` can preserve the type identity all
-    /// the way into the emitted bind site (Phase 7-Zero v3).
+    /// the way into the emitted bind site (v3).
     HeerIdDesc(crate::types::HeerIdDesc),
     /// Reverse-chronological `RanjId` — stored as UUID, same Postgres
     /// surface as [`FilterValue::RanjId`]. See [`FilterValue::HeerIdDesc`].
     RanjIdDesc(crate::types::RanjIdDesc),
     Null,
     /// For IN (...) / NOT IN (...) list lookups.
-    ///
     /// # Invariants (enforced by construction, not the enum itself)
-    ///
     /// - Elements must be SQL-bindable **scalars** — never nested `List` or
     ///   `Pair`. The typed `FieldRef<M, V>::in_list(impl IntoIterator<Item = V>)`
     ///   API prevents nesting by construction; manual `FilterValue::List`
@@ -627,28 +587,27 @@ pub enum FilterValue {
     List(Vec<FilterValue>),
     /// BETWEEN a AND b payload (two bound values).
     Pair(Box<FilterValue>, Box<FilterValue>),
-    /// `NUMERIC` / `DECIMAL` column values (Phase 5).
+    /// `NUMERIC` / `DECIMAL` column values .
     Decimal(rust_decimal::Decimal),
-    /// Postgres `INTERVAL` column values (djogi#212).
+    /// Postgres `INTERVAL` column values.
     Interval(crate::Interval),
-    /// Postgres `INET` column values (djogi#213, `network` feature).
+    /// Postgres `INET` column values (, `network` feature).
     /// Carries `std::net::IpAddr`; the wire codec is the always-on
     /// `postgres-types` native impl which writes /32 or /128 netmasks
     /// for the host-address case.
     #[cfg(feature = "network")]
     Inet(std::net::IpAddr),
-    /// Postgres `CIDR` column values (djogi#213, `network` feature).
+    /// Postgres `CIDR` column values (, `network` feature).
     /// Carries `djogi::CidrAddr { addr, prefix }` with construction-time
     /// host-bit-zero validation.
     #[cfg(feature = "network")]
     Cidr(crate::CidrAddr),
-    /// Postgres `MACADDR` column values (djogi#213, `network` feature).
+    /// Postgres `MACADDR` column values (, `network` feature).
     /// Carries `djogi::MacAddr([u8; 6])`.
     #[cfg(feature = "network")]
     Macaddr(crate::MacAddr),
 
-    // ── Range variants (djogi#215) ───────────────────────────────────────
-    //
+    // ── Range variants ───────────────────────────────────────
     // Used by PostgreSQL range operators and explicit SQL equality over
     // range columns. Each variant binds a typed `Range<T>` as a Postgres
     // range parameter so tokio-postgres can encode the correct OID.
@@ -665,8 +624,7 @@ pub enum FilterValue {
     /// `Range<time::Date>` parameter (`daterange`).
     RangeDate(crate::Range<time::Date>),
 
-    // ── Array variants (Phase 5 Task 5) ──────────────────────────────────
-    //
+    // ── Array variants ──────────────────────────────────
     // Used exclusively by the array column operators (`@>`, `<@`, `&&`).
     // Each variant binds a typed `Vec<V>` as a Postgres array parameter
     // so tokio-postgres can encode it with the correct OID. Mixed-type
@@ -823,22 +781,19 @@ mod tests {
         assert!(matches!(empty, Condition::Or(ref v) if v.is_empty()));
     }
 
-    // ── T6.8 — §660 partition test ────────────────────────────────────────
-    //
+    // ── §660 partition test ────────────────────────────────────────
     // Locks the Rust-evaluable vs SQL-only split documented on
     // [`LookupOp`]. Every shipped variant is tagged via
     // `source_class()` and the test verifies the exact 15-vs-2 partition.
-    //
     // The partition is load-bearing per `decisions.md` rows 107 + 108
     // and `feedback_no_regex_in_djogi.md`: lifting `Regex` / `IRegex`
     // to sassi would require a Rust regex engine, which the framework
     // forbids. The lihaaf compile-fail fixture
-    // `djogi-macros/tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
-    // (Cluster 8γ Stage 1 T6.10) catches the type-level violation;
+    // `djogi-macros/tests/compile_fail/lookup_op_regex_lifted_to_basic_predicate.rs`
+    // (10) catches the type-level violation;
     // this unit test catches the source-side classification mistake
     // (e.g. a future cluster accidentally re-tagging `Regex` as
     // `RustEvaluable`).
-    //
     // Adding a new `LookupOp` variant fails to compile
     // `LookupOp::source_class` (no `_ => …` arm) until placed
     // explicitly in one of the two classes; this test fails to compile

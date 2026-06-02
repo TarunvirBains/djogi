@@ -1,7 +1,5 @@
 //! Generates `{Model}Filter` — the programmatic filter builder.
-//!
 //! # What
-//!
 //! For every `#[model]` struct, emit a plain `{Model}Filter` struct with
 //! one setter method per **user** field (framework columns `id` /
 //! `created_at` / `updated_at` are filtered through the typed closure
@@ -10,9 +8,7 @@
 //! Rust type — the macro reads the type verbatim from the post-injection
 //! struct, so `Option<T>` / `Jsonb<T>` / user-defined wrapper types
 //! propagate through without a translation table.
-//!
 //! # Why separate from `{Model}Fields`?
-//!
 //! `{Model}Fields` (stamped by `stubs.rs`) is a **typed** bag: it returns
 //! [`FieldRef<M, V>`] handles that carry zero runtime state but bind the
 //! closure-API's `.eq` / `.gte` / … lookups to the column's value type
@@ -26,16 +22,12 @@
 //! conservatively falls back to `Q::Condition` otherwise. The erased
 //! builder shape is what makes closure-free callers (shell, admin,
 //! dynamic UIs) possible at all.
-//!
 //! Setters consume `self` and return `Self` — the idiomatic Rust
 //! owned-builder pattern that matches [`QuerySet`]'s own chain shape.
 //! Dropping an intermediate builder is fine; only the final call's
 //! chain matters.
-//!
 //! # How (emitted code)
-//!
 //! For `struct Post { title: String, published: bool, view_count: i32, ... }`:
-//!
 //! ```ignore
 //! pub struct PostFilter {
 //!     clauses: ::std::vec::Vec<::djogi::FilterClause>,
@@ -62,7 +54,6 @@
 //!
 //! impl ::djogi::ModelFilter for PostFilter { ... }
 //! ```
-//!
 //! The `SameAs<__V>` bound is a reflexive type-equality witness — the
 //! blanket `impl<T: ?Sized> SameAs<T> for T` means `A: SameAs<B>` holds
 //! if and only if `A == B`. That pins `__V = #field_ty` at every call
@@ -77,9 +68,7 @@
 //! their setter emitted, and only its call site fails with a localized
 //! trait-bound error. The whole `{Model}Filter` remains compilable and
 //! composable.
-//!
 //! # Typed setters and unsupported column types
-//!
 //! Each setter is typed against the column's declared Rust type. At
 //! the call site, `Lookup<__V>` must infer `__V = #field_ty` — the
 //! emitted `#field_ty: SameAs<__V>` bound is the reflexive
@@ -88,59 +77,50 @@
 //! wrong value type to a setter (for example
 //! `PostFilter::new().view_count(Lookup::Eq("42"))` for an `i32`
 //! column) fails at the call site, not later at bind time.
-//!
 //! The `IntoFilterValue` bound is emitted on the **method generic
 //! `__V`**, not on the concrete `#field_ty`. Two consequences:
-//!
-//!   1. A column whose declared Rust type does not yet implement
-//!      `IntoFilterValue` (for example `Decimal` when the
-//!      `rust_decimal` feature is off, `Vec<String>`, a user-defined
-//!      JSONB payload wrapper) still gets a setter emitted. Rust
-//!      checks a concrete-type `where` clause at impl-definition time
-//!      (issue #48214), which would whole-model-reject a model
-//!      containing such a column. Keeping the bound on `__V` defers
-//!      the check to monomorphization, so only the unsupported
-//!      setter's call site fails — with a localized
-//!      "trait bound `…: IntoFilterValue` is not satisfied" rather
-//!      than a whole-model reject.
-//!   2. Explicit NULL checks via `Lookup::IsNull` / `Lookup::IsNotNull`
-//!      still go through `IntoFilterValue` (because
-//!      `Lookup<V>::into_op_value` is bounded on `V`). For columns
-//!      without such an impl, those setters are unusable — the
-//!      closure API's `.is_null()` remains the escape hatch.
-//!
-//! Nullable columns (`Option<T>`) take `Lookup<Option<T>>` directly —
-//! the field type is read verbatim, so users write
-//! `Lookup::Eq(Some("hello".to_string()))` /
-//! `Lookup::<Option<T>>::IsNull`. The closure API has the same shape
-//! for nullable columns, so the two surfaces stay symmetric. (A later
-//! phase may add a sugar layer that re-emits `Option<T>` setters as
-//! `Lookup<T>` for the `Eq` / `Neq` variants specifically; that is
-//! purely additive and does not need a change to this module.)
-//!
+//! 1. A column whose declared Rust type does not yet implement
+//!    `IntoFilterValue` (for example `Decimal` when the
+//!    `rust_decimal` feature is off, `Vec<String>`, a user-defined
+//!    JSONB payload wrapper) still gets a setter emitted. Rust
+//!    checks a concrete-type `where` clause at impl-definition time
+//!    (issue #48214), which would whole-model-reject a model
+//!    containing such a column. Keeping the bound on `__V` defers
+//!    the check to monomorphization, so only the unsupported
+//!    setter's call site fails — with a localized
+//!    "trait bound `…: IntoFilterValue` is not satisfied" rather
+//!    than a whole-model reject.
+//! 2. Explicit NULL checks via `Lookup::IsNull` / `Lookup::IsNotNull`
+//!    still go through `IntoFilterValue` (because
+//!    `Lookup<V>::into_op_value` is bounded on `V`). For columns
+//!    without such an impl, those setters are unusable — the
+//!    closure API's `.is_null()` remains the escape hatch.
+//!    Nullable columns (`Option<T>`) take `Lookup<Option<T>>` directly
+//!    the field type is read verbatim, so users write
+//!    `Lookup::Eq(Some("hello".to_string()))` /
+//!    `Lookup::<Option<T>>::IsNull`. The closure API has the same shape
+//!    for nullable columns, so the two surfaces stay symmetric. (A later
+//!    phase may add a sugar layer that re-emits `Option<T>` setters as
+//!    `Lookup<T>` for the `Eq` / `Neq` variants specifically; that is
+//!    purely additive and does not need a change to this module.)
 //! # `pk = None` gate
-//!
 //! `crud::expand` does not emit `impl Model` for `pk = None` models
 //! (`Model::Pk: Encode` cannot be satisfied without a real PK — see
 //! `crud.rs` for the rationale). The `{Model}Filter` struct itself, its
 //! setters, and the `ModelFilter` impl have no `Model` dependency — the
 //! clauses are erased `FilterClause` records, not `FieldRef<M, V>`
 //! handles — so they compile for every pk strategy.
-//!
-//! The Cluster 8γ Stage 2 `IntoQ<#name>` bridge is the one piece that
+//! The `IntoQ<#name>` bridge is the one piece that
 //! does require `#name: Model` (because `Q<T: Model>` carries that
 //! bound). Skip the bridge emission for `pk = None` models — the
 //! `QuerySet::filter_struct` / `exclude_struct` entry points are
 //! unreachable on a model with no `Model` impl anyway, so the missing
 //! `IntoQ` impl is not observable.
-//!
 //! # Path routing
-//!
 //! All emitted type references go through `::djogi::*` rather than
 //! reaching into sub-modules directly. Macro output compiles in the
 //! user's crate, which depends only on `djogi`; routing through the
 //! top-level re-exports means a single dep is sufficient.
-//!
 //! [`Lookup<V>`]: ::djogi::Lookup
 //! [`FilterClause`]: ::djogi::FilterClause
 //! [`FieldRef<M, V>`]: ::djogi::FieldRef
@@ -155,7 +135,6 @@ use syn::ItemStruct;
 
 /// Emit `{Model}Filter` with one setter per user field plus the
 /// `ModelFilter` trait impl.
-///
 /// `struct_item` is the post-injection struct: framework columns sit at
 /// the front in the order `inject::expand` placed them. We skip past
 /// them — filtering by `id` / `created_at` / `updated_at` goes through
@@ -163,8 +142,7 @@ use syn::ItemStruct;
 /// fields in source order. Skip count is keyed off `model_attrs.pk` the
 /// same way `descriptor::expand` does it, keeping the single
 /// framework-field contract consistent across generated code.
-///
-/// `_field_attrs` is threaded through for forward compatibility —
+/// `_field_attrs` is threaded through for forward compatibility
 /// per-field rename hints, validation, or column-override keys may alter
 /// the emitted setter names in a later phase. Unused today.
 pub fn expand(
@@ -189,14 +167,12 @@ pub fn expand(
 
     // Typed setters: the value's generic `__V` is pinned to the
     // column's declared Rust type through a reflexive `SameAs<#ty>`
-    // bound. A user passing the wrong value type —
+    // bound. A user passing the wrong value type
     // `PostFilter::new().view_count(Lookup::Eq("42"))` for an `i32`
     // column — infers `__V = &str`, which then fails the
     // `i32: SameAs<__V>` bound with a clear "expected `i32`" error at
     // the call site. Matches the closure API's compile-time discipline.
-    //
     // # Why not `where #ty: IntoFilterValue` directly?
-    //
     // Rust rejects concrete bounds in method `where` clauses whose
     // subject isn't a method generic (issue #48214: "where clauses on
     // method must reference a type parameter"). An emission like
@@ -205,9 +181,7 @@ pub fn expand(
     // model whose columns include a type without an `IntoFilterValue`
     // impl. That would be a whole-model regression, not the localized
     // call-site failure the review called for.
-    //
     // # Deferred-bound pattern
-    //
     // Introduce a method generic `__V` and tie it to `#ty` via a
     // reflexive trait: `trait SameAs<T: ?Sized> {}` with a blanket
     // `impl<T: ?Sized> SameAs<T> for T`. Since the only way for
@@ -221,13 +195,10 @@ pub fn expand(
     // setter whose column type lacks the impl points at the call
     // site with "the trait bound `#ty: IntoFilterValue` is not
     // satisfied".
-    //
     // The helper trait lives in `djogi::__private::SameAs` to keep it
     // out of the public namespace — users compose filters through
     // `Lookup<V>` and never need to name `SameAs` themselves.
-    //
     // # Raw `Lookup::<#ty>::IsNull` still works
-    //
     // `Lookup::IsNull` carries no value, but the variant is still
     // generic in `V` — the user writes `Lookup::<#ty>::IsNull` or
     // lets inference fill `__V = #ty` from the setter's signature.
@@ -275,8 +246,7 @@ pub fn expand(
          both paths preserve the same database result semantics."
     );
 
-    // ── `IntoQ<#name>` bridge (Cluster 8γ Stage 2 — T6.7) ───────────────
-    //
+    // ── `IntoQ<#name>` bridge ───────────────
     // Lifts `{Model}Filter` into the `Q<T>` algebra so it composes with
     // the `QuerySet::filter_struct` / `exclude_struct` signature
     // `<F: IntoQ<T>>`. The impl lazily maps the single stored
@@ -284,7 +254,6 @@ pub fn expand(
     // column/op/value tuple is known to match the model field. Clauses
     // outside that conservative mapping fall back to `Q::Condition`,
     // preserving existing SQL behavior without storing parallel Q state.
-    //
     // Gated on `pk != PkStrategy::None`: `Q<T: Model>` carries a
     // `Model` bound, but `crud::expand` does not emit `impl Model` for
     // `pk = None` models. Skipping the bridge there keeps the rest of

@@ -1,0 +1,7 @@
+error: `#[field(index = "spgist", unique)]` on `path`: PostgreSQL unique indexes are btree-only, so a non-btree `index = "spgist"` combined with `unique` is ambiguous. Either: (a) use `#[field(index = "btree", unique)]` (or just `#[field(unique)]`), (b) drop `unique` if a non-unique `spgist` lookup index is what you want, or (c) keep `#[field(unique)]` and declare the secondary `spgist` index at the model level via `#[model(indexes(index(fields = [path], using = "spgist")))]`.
+  --> $DIR/field_spgist_with_unique.rs:10:21
+   |
+10 |     #[field(index = "spgist", unique)]
+   |                     ^^^^^^^^
+
+error: aborting due to 1 previous error

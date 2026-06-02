@@ -1,6 +1,5 @@
-//! Kafka publisher stub — Phase 5 Task 11.5.
-//!
-//! Gated on the `outbox-kafka` feature flag. The actual integration —
+//! Kafka publisher stub — .
+//! Gated on the `outbox-kafka` feature flag. The actual integration
 //! including adding `rdkafka` as a workspace dependency — ships in a future
 //! task once the provider dependency matrix is decided. Today this file
 //! provides a type-checked placeholder so the feature flag compiles and
@@ -11,7 +10,6 @@ use crate::outbox::worker::OutboxRow;
 use async_trait::async_trait;
 
 /// Delivers outbox rows to a Kafka topic (stub — not yet implemented).
-///
 /// Enable with `djogi = { features = ["outbox-kafka"] }`. The full
 /// implementation ships once the `rdkafka` workspace dep is added.
 pub struct KafkaPublisher;

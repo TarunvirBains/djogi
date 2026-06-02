@@ -1,10 +1,8 @@
 //! Postgres range predicate payloads.
-//!
 //! `Range<T>` itself lives in [`crate::pg_types`]. This module owns the
 //! query-side payloads for PostgreSQL range operators so `query::condition`
 //! and `query::field` can share a small typed representation without storing
 //! SQL fragments in the condition tree.
-//!
 //! Range predicates are SQL-only. They are exposed from root model fields
 //! through `explicit_pg_predicate()` because Postgres range canonicalization
 //! and operator semantics are not portable to Punnu/Rust evaluation.
@@ -50,7 +48,6 @@ impl RangePredicateOp {
 }
 
 /// Payload for `range_column OP $1`.
-///
 /// Fields are `pub(crate)` so the only construction path is through the
 /// typed range predicate methods on `FieldRef`. Downstream code can inspect
 /// range predicates via the read-only accessors but cannot forge a raw column
@@ -118,7 +115,6 @@ mod sealed {
 }
 
 /// Element types supported by Djogi's built-in range predicates.
-///
 /// Sealed so downstream code cannot pair a `Range<T>` field with a RHS value
 /// that has no matching Djogi range bind variant.
 pub trait RangeElement: sealed::Sealed + Clone + 'static {

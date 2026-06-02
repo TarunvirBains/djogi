@@ -2,21 +2,17 @@
 //! `inventory::submit!`) into owned [`AppliedSchema`] data — one
 //! [`AppliedSchema`] per `(database, app)` bucket per the snapshot
 //! contract.
-//!
 //! The descriptor types in [`crate::descriptor`] are populated at
 //! compile time and use `&'static` references throughout; the snapshot
 //! types in [`crate::migrate::schema`] are owned so they can survive
 //! load-from-disk. This module is the single boundary that does the
 //! translation.
-//!
 //! # Per-bucket projection
-//!
-//! Phase 7's snapshot contract is one file per `(database, app)`
+//! The snapshot contract is one file per `(database, app)`
 //! pair, with the synthetic global bucket
-//! (`("main", "")`) always present (per Phase 7-Zero §4B). The
+//! (`("main", "")`) always present (per §4B). The
 //! projection therefore returns a [`BTreeMap`] keyed by [`BucketKey`]
 //! rather than a single [`AppliedSchema`]. The mapping rule:
-//!
 //! - Models with no `#[model(app = ...)]` declaration land in the
 //!   synthetic global bucket — `("main", "")`.
 //! - Models with `#[model(app = SomeApp)]` land in
@@ -24,9 +20,7 @@
 //! - Enums and FK targets are placed alongside the models that
 //!   reference them — see "Cross-bucket FK targets" below for the
 //!   resolution rule.
-//!
 //! # Determinism
-//!
 //! Each per-bucket [`AppliedSchema`] is sorted alphabetically:
 //! `models` is a `BTreeMap` (alphabetical by table name), `enums` is
 //! a `BTreeMap` (alphabetical by Postgres type name), `indexes` is
@@ -35,23 +29,18 @@
 //! serde emits keys alphabetically. `columns` preserves descriptor
 //! declaration order — Postgres `CREATE TABLE` cares about column
 //! order.
-//!
 //! # Cross-bucket FK targets
-//!
 //! `FieldDescriptor.target_type_name` carries the target's Rust type
 //! name. The snapshot needs the Postgres table name. The projection
 //! builds a global `type_name → table_name` map across **every**
 //! bucket so that an FK from `billing.invoices.user_id` to
 //! `users.users.id` resolves cleanly even though the two tables
 //! live in different buckets. Cross-database FKs are rejected by
-//! Phase 7's differ (T2), not here — the projection's job is purely
+//! The differ, not here — the projection's job is purely
 //! to record the FK target as a (table, column) pair.
-//!
 //! # Identity invariants
-//!
 //! Three uniqueness rules are enforced; violations return
 //! [`ProjectionError`] without partial state:
-//!
 //! 1. Every [`crate::descriptor::ModelDescriptor::type_name`] is
 //!    globally unique. Two models cannot share a Rust type name even
 //!    across modules — otherwise FK target resolution would silently
@@ -84,7 +73,6 @@ use super::schema::{
 };
 
 /// Identity of a snapshot bucket — `(database_target, app_label)`.
-///
 /// The synthetic global bucket is `BucketKey { database:
 /// "main".into(), app: "".into() }` and is always present in any
 /// projection result, even if no models live in it.
@@ -92,7 +80,7 @@ use super::schema::{
 pub struct BucketKey {
     /// Database target — `"main"`, `"crud_log"`, `"event_log"`, or a
     /// user-defined target. Each target gets its own migration
-    /// ledger and advisory lock per Phase 7's contract.
+    /// ledger and advisory lock per the contract.
     pub database: String,
     /// App label — the `#[djogi::apps!]` `LABEL` value. Empty
     /// string `""` for the synthetic global bucket (models without
@@ -101,7 +89,6 @@ pub struct BucketKey {
 }
 
 /// Errors surfaced by the descriptor projection.
-///
 /// Surfaces correctness failures that would otherwise produce a
 /// silently-wrong snapshot: duplicate model identities, duplicate
 /// table names within a bucket, duplicate enum SQL names, FK targets
@@ -163,7 +150,6 @@ pub enum ProjectionError {
         /// The target model's table.
         target_table: String,
     },
-    /// Codex round-7 WARN 6: two [`DeferrabilitySpec`] entries share
     /// the same `(model_type_name, field_name)` key but disagree on
     /// the deferrability values. Without this gate, `BTreeMap::collect`
     /// silently picks last-writer-wins from inventory iteration order,
@@ -180,7 +166,6 @@ pub enum ProjectionError {
         /// `(deferrable, initially_deferred)` from the second spec.
         second: (bool, bool),
     },
-    /// Phase 8β BLOCK-2 fix: a `ForeignKey<T>` / `OneToOneField<T>`
     /// resolves to a proxy descriptor whose `proxy_for` parent is not
     /// registered in the inventory. Proxies never project DDL — the
     /// parent owns the table — so the FK's actual SQL target is the
@@ -200,11 +185,10 @@ pub enum ProjectionError {
         /// The unregistered parent type the proxy points to.
         parent_type: String,
     },
-    /// Phase 8β BLOCK-2 fix: a chain of `proxy_for` references forms a
     /// cycle (e.g. `A.proxy_for = B`, `B.proxy_for = A`). The FK
     /// resolution walker would loop forever; reject up front so the
     /// projection bails with an actionable diagnostic. Per the proxy
-    /// design (Phase 8β T3), proxies should always terminate at a
+    /// design, proxies should always terminate at a
     /// concrete (non-proxy) parent — a cycle is a misconfiguration.
     ProxyCycle {
         /// The type at which the cycle was first detected.
@@ -214,7 +198,6 @@ pub enum ProjectionError {
     /// [`crate::relation::registry::ReverseRelationMarker`] inventory
     /// contains at least one `(source, accessor_name)` pair claimed by
     /// markers that disagree on `kind`, `target`, or `via`.
-    ///
     /// Surfaced eagerly by [`project_from_inventory`] before any
     /// per-bucket projection work so the diagnostic names the colliding
     /// source, accessor, kind, target, and via metadata rather than an
@@ -353,22 +336,16 @@ fn insert_unique<K: Ord, V, E>(
 
 /// Project the schema graph from an injected [`DescriptorProvider`]
 /// (#370).
-///
 /// # What
-///
 /// The injectable sibling of [`project_from_inventory`]: it sources
 /// models/enums/apps/deferrability from `p` instead of the global
 /// `inventory` registry.
-///
 /// # Why
-///
 /// `djogi-cli`'s descriptor-dependent commands call this with the
 /// provider threaded from `run_with_provider`, so an adopter-linked
 /// binary projects from *its* models. The published standalone binary
 /// passes [`InventoryDescriptorProvider`] and reproduces today's path.
-///
 /// # Pre-projection registry gate
-///
 /// Runs the relation-accessor collision gate
 /// ([`crate::relation::registry::validate_global_relation_accessor_registry`])
 /// before any projection work — exactly as [`project_from_inventory`] does
@@ -395,11 +372,9 @@ pub fn project_from_provider(
 
 /// Project from the compiled-in `inventory` registry and run the
 /// relation-accessor collision gate.
-///
 /// This delegates to [`project_from_provider`] with
 /// [`InventoryDescriptorProvider`], which reads descriptors via
 /// [`AppRegistry::all`] and the global `inventory::iter` collectors.
-///
 /// Tests and external tooling that need custom descriptor sets should
 /// use [`project_from_provider`] directly with a synthetic provider.
 #[allow(clippy::result_large_err)]
@@ -409,7 +384,6 @@ pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, Pr
 
 /// Inner half of [`project_from_inventory`] with the relation-registry
 /// validator extracted to a closure parameter.
-///
 /// The production entry point passes
 /// [`crate::relation::registry::validate_global_relation_accessor_registry`]
 /// directly. Tests inject `|| Ok(())` (clean-registry path) or
@@ -418,7 +392,6 @@ pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, Pr
 /// colliding marker via `inventory::submit!` from a test would persist
 /// for every other test in the same binary, and the lib's `cargo test`
 /// surface should be able to assert both branches.
-///
 /// `pub(crate)` because the closure type signature is an internal
 /// implementation detail; outside callers should keep going through
 /// [`project_from_inventory`].
@@ -442,10 +415,8 @@ where
 /// Project from explicit descriptor iterables. Lower-level entry
 /// point used by [`project_from_inventory`] and by tests that need
 /// to feed in synthetic descriptors.
-///
 /// `generated_at` is taken as a parameter so tests can pin a
 /// deterministic timestamp.
-///
 /// Returns a `BTreeMap` keyed by [`BucketKey`] — one
 /// [`AppliedSchema`] per `(database, app)`. The synthetic global
 /// bucket (`("main", "")`) is always present in the result, even if
@@ -489,7 +460,7 @@ where
 {
     let models: Vec<&ModelDescriptor> = models.into_iter().collect();
     let apps: Vec<&AppDescriptor> = apps.into_iter().collect();
-    // Codex round-7 WARN 6: replace `.collect()` with explicit
+    // .collect` with explicit
     // duplicate detection. Inventory iteration order is not
     // deterministic across builds, so silent last-writer-wins on a
     // disagreeing duplicate would produce non-byte-stable migrations.
@@ -520,7 +491,7 @@ where
     }
 
     // First pass — duplicate type_name detection across the entire
-    // inventory (B-1). Reject before doing per-bucket work.
+    // inventory. Reject before doing per-bucket work.
     // Idempotent reinsert (same type_name → same table) is silently
     // accepted; only disagreement raises.
     let mut type_to_table: BTreeMap<&str, &str> = BTreeMap::new();
@@ -547,14 +518,12 @@ where
     // `type_name → proxy_for_target` map in the same walk. Both maps
     // iterate the full model inventory unconditionally, so a single
     // pass keeps the projection setup linear.
-    //
     // The `type_to_bucket` half validates that each model's declared
     // app exists and gives the cross-database FK pass below a fast
     // lookup from a model's `type_name` to its `(database, app)`
     // bucket.
-    //
     // The `type_to_proxy_for` half lets the FK pass traverse proxy
-    // chains to the concrete parent. Phase 8β BLOCK-2 fix: when an FK
+    // chains to the concrete parent.
     // targets a proxy, the actual SQL table the FK references is the
     // parent's (proxies are schema-passthrough — never projected).
     // Validating the proxy's bucket would silently accept FKs that
@@ -584,13 +553,12 @@ where
         }
     }
 
-    // Cross-database FK validation (Codex T2 review B-3). Postgres
+    // Cross-database FK validation (. Postgres
     // FK constraints cannot span databases, so a model in
     // `(main, billing)` referencing a model in
     // `(crud_log, audit)` is structurally invalid. Reject at
     // projection time so the differ never has to reason about
     // cross-database FK transitions.
-    //
     // Proxies are skipped on the SOURCE side (the parent's projection
     // already registered the inherited FK columns) and resolved
     // through `type_to_proxy_for` on the TARGET side so we validate
@@ -662,7 +630,7 @@ where
     }
 
     // Ensure every registered app has a bucket — even if it has no
-    // models. Phase 7's filesystem layout (`migrations/<db>/<app>/`)
+    // models. the filesystem layout (`migrations/<db>/<app>/`)
     // expects the directory; downstream consumers (D004 build.rs
     // diagnostic) compare snapshots against the filesystem listing.
     for app in label_to_app.values() {
@@ -676,7 +644,7 @@ where
     // Enums — global namespace, but emitted into every bucket whose
     // models reference them. For now, emit each enum into every
     // bucket that holds at least one model (simple and correct for
-    // 0.1.0; T2's differ can refine if needed). Enforce duplicate
+    // 0.1.0; the differ can refine if needed). Enforce duplicate
     // postgres_type detection.
     let mut enum_map: BTreeMap<&str, EnumSchema> = BTreeMap::new();
     let mut enum_rust_type_for_pg: BTreeMap<&str, &str> = BTreeMap::new();
@@ -718,14 +686,13 @@ where
     // target may live in a separate crate that defines its own
     // descriptor). The projection layer is the canonical place to
     // resolve this since it walks every descriptor in the inventory.
-    //
-    // Surfaced by Phase 7 T10. Unmapped target type names fall back to
+    // Surfaced by Unmapped target type names fall back to
     // the original `f.sql_type` (e.g. when the FK target is in a
-    // different `sync_models` call or hasn't been registered yet —
+    // different `sync_models` call or hasn't been registered yet
     // `sync_models` itself rejects that case before the projection
     // runs, so the fallback is informational).
     let mut type_to_pk_sql: BTreeMap<&str, String> = BTreeMap::new();
-    // djogi#189 (post-review hardening) — alongside the FK SQL-type
+    // (post-review hardening) — alongside the FK SQL-type
     // substitution map, build a parallel map of each model's HeerRanjID
     // semantic family. The strict-ID CHECK projection dispatches off
     // this map, NOT off `type_to_pk_sql`, so a `PkType::Custom` PK with
@@ -744,15 +711,15 @@ where
         let mut tables: BTreeMap<String, TableSchema> = BTreeMap::new();
         let mut indexes: Vec<IndexSchema> = Vec::new();
         for m in &ms {
-            // Phase 8β T3.5 — proxy schema-passthrough. Proxies share
+            // 5 — proxy schema-passthrough. Proxies share
             // their parent's table (`#[model(proxy_for = Parent)]`),
             // so emitting DDL here would duplicate the parent's
             // `CREATE TABLE`. Skip projection entirely (table + indexes)
             // so the differ never sees the proxy descriptor as a schema
             // source; index ownership belongs to the parent in v0.1.0.
             // A proxy/parent `table = ...` mismatch is caught at
-            // descriptor-lookup time (`T::table_name()`), not here —
-            // see `docs/guide/proxy.md` (T5.7).
+            // descriptor-lookup time (`T::table_name`), not here
+            // see `docs/guide/proxy.md`.
             if m.proxy_for.is_some() {
                 continue;
             }
@@ -807,19 +774,17 @@ where
             // was a snapshot-only annotation with no SQL consequence on fresh
             // creates — only the `ColumnChange::SetIndexed` path (common-table
             // column diff) emitted DDL, and that path is silent for new tables.
-            //
             // Proxy models skip index ownership: the parent already projects
             // its own field indexes; projecting them again from the proxy
             // would produce duplicate `IndexSchema` names and spurious
             // `AddIndex` ops. The `proxy_for.is_some()` guard above already
             // `continue`s before reaching this block.
-            //
             // Explicit-wins precedence: if an explicit `#[model(indexes(...))]`
             // entry (pushed above from `m.indexes`) already occupies the same
             // canonical `(table, name)` as this synthetic, skip the synthetic.
             // Both paths compute the name via `descriptor::index_name(...)` so
             // the canonical form is byte-identical. The explicit declaration may
-            // carry richer modifiers — `predicate`, `INCLUDE`, `opclass`, etc. —
+            // carry richer modifiers — `predicate`, `INCLUDE`, `opclass`, etc.
             // that the synthetic (default-everything, single-column) would
             // silently discard after `sort_by + BTreeMap::collect` (last-wins).
             // Preserving the explicit entry means the user's intent survives.
@@ -843,7 +808,7 @@ where
         });
 
         // Per-bucket enum projection — for now, every bucket sees the
-        // global enum set. Phase 7.5 may scope enums per app.
+        // global enum set. may scope enums per app.
         let bucket_enums: BTreeMap<String, EnumSchema> = enum_map
             .iter()
             .map(|(k, v)| ((*k).to_string(), v.clone()))
@@ -864,9 +829,8 @@ where
     Ok(out)
 }
 
-/// Returns the current UTC time as RFC 3339, second precision —
+/// Returns the current UTC time as RFC 3339, second precision
 /// e.g. `2026-04-25T13:18:57Z`. Uses `time::OffsetDateTime::now_utc`.
-///
 /// Sub-second precision is stripped so the snapshot's `generated_at`
 /// is byte-stable when the same descriptor inventory is projected
 /// twice in close succession (e.g. `compose` followed by `verify`).
@@ -928,7 +892,7 @@ fn project_model(
         renamed_from: m.renamed_from.map(|s| s.to_string()),
         rls_enabled: m.tenant_key.is_some(),
         table: m.table_name.to_string(),
-        // Phase 8.5 Cluster 4 (djogi#217) — copy adopter
+        // Djogi#217) — copy adopter
         // `#[model(table_comment = "…")]` from descriptor verbatim.
         // The composer owns single-quote escaping at SQL-emission time.
         table_comment: m.table_comment.map(|s| s.to_string()),
@@ -941,7 +905,7 @@ fn project_model(
 fn project_fts_column(fts: &FtsDescriptor) -> ColumnSchema {
     ColumnSchema {
         check: None,
-        // Phase 8.5 Cluster 4 (djogi#217) — FTS tsvector columns are
+        // Djogi#217) — FTS tsvector columns are
         // framework-synthesised; no adopter `#[field(comment)]` flows.
         comment: None,
         default_sql: None,
@@ -964,7 +928,7 @@ fn project_fts_column(fts: &FtsDescriptor) -> ColumnSchema {
         sequence_within: None,
         sql_type: "TSVECTOR".to_string(),
         unique: false,
-        // Phase 8.5 Cluster 4 (djogi#220) — framework-synthesised FTS
+        // Djogi#220) — framework-synthesised FTS
         // tsvector columns carry no adopter
         // `#[field(type_change_using)]`; the attribute applies to
         // adopter-declared fields only.
@@ -1036,7 +1000,7 @@ fn project_outbox_table(
         renamed_from: None,
         rls_enabled: false,
         table,
-        // Phase 8.5 Cluster 4 (djogi#217) — framework-synthesised
+        // Djogi#217) — framework-synthesised
         // `<table>_outbox` tables inherit no adopter DDL metadata;
         // comments / storage params / tablespace are model-specific
         // and never copy onto the outbox sibling.
@@ -1094,7 +1058,7 @@ fn outbox_pending_index_name(table: &str) -> String {
 fn outbox_column(name: &str, sql_type: &str, default_sql: Option<&str>) -> ColumnSchema {
     ColumnSchema {
         check: None,
-        // Phase 8.5 Cluster 4 (djogi#217) — framework-synthesised
+        // Djogi#217) — framework-synthesised
         // outbox columns carry no adopter `#[field(comment)]`; the
         // attribute applies to user-declared fields only.
         comment: None,
@@ -1115,7 +1079,7 @@ fn outbox_column(name: &str, sql_type: &str, default_sql: Option<&str>) -> Colum
         sequence_within: None,
         sql_type: sql_type.to_string(),
         unique: false,
-        // Phase 8.5 Cluster 4 (djogi#220) — framework-synthesised
+        // Djogi#220) — framework-synthesised
         // outbox columns carry no adopter
         // `#[field(type_change_using)]`; the attribute applies to
         // user-declared fields only.
@@ -1152,9 +1116,9 @@ fn project_exclusion_constraint(spec: &ExclusionConstraintSpec) -> ExclusionCons
         where_clause: spec.where_clause.map(|s| s.to_string()),
         deferrable: spec.deferrable,
         initially_deferred: spec.initially_deferred,
-        // djogi#148 — carry the macro-derived `Some("btree_gist")` /
+        // carry the macro-derived `Some("btree_gist")` /
         // adopter-declared extension name into the owned schema so the
-        // Phase 0 bootstrap composer can aggregate the install list
+        // Bootstrap composer can aggregate the install list
         // without re-walking descriptors.
         extension_dependency: spec.extension_dependency.map(|s| s.to_string()),
     }
@@ -1176,24 +1140,20 @@ fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema
 
 /// Render a column-level CHECK expression bounding the widened column
 /// to the Rust source type's representable range.
-///
 /// Returns `None` for columns whose Rust type maps identity-width to
 /// the Postgres column type (`i16`, `i32`, `i64`, `bool`, `String`,
 /// `f32`, `f64`, ...) — the column type already enforces the range,
 /// and a redundant CHECK would inflate every snapshot for no safety
 /// win.
-///
-/// **Active arms (djogi#187 — temporal year bounds + finite guard).** Each
+/// **Active arms (— temporal year bounds + finite guard).** Each
 /// temporal `FieldSqlType` variant has exactly one Rust source type that
 /// lowers to it (`time::Date` → `Date`, `time::OffsetDateTime` →
 /// `Timestamptz`), so dispatch on `FieldSqlType` alone is unambiguous and
 /// the CHECK reaches `project_column` directly. The bound shape:
-///
-/// | Rust                     | Postgres column | CHECK expression                                                                                |
+/// | Rust | Postgres column | CHECK expression |
 /// |--------------------------|-----------------|--------------------------------------------------------------------------------------------------|
-/// | `time::Date`             | `DATE`          | `pg_catalog.isfinite(<col>) AND <col> <= DATE '9999-12-31'`                                      |
-/// | `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `pg_catalog.isfinite(<col>) AND <col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`            |
-///
+/// | `time::Date` | `DATE` | `pg_catalog.isfinite(<col>) AND <col> <= DATE '9999-12-31'` |
+/// | `time::OffsetDateTime` | `TIMESTAMPTZ` | `pg_catalog.isfinite(<col>) AND <col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'` |
 /// **Two clauses, both required.** The upper-bound clause rejects
 /// `time::*`-OOB INSERTs (DATE up to 5874897 AD; TIMESTAMPTZ up to
 /// 294276 AD), while the leading `pg_catalog.isfinite(<col>)` clause
@@ -1207,7 +1167,6 @@ fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema
 /// `pg_catalog.isfinite(...)` returns NULL for NULL input, so CHECK's
 /// standard NULL-as-satisfied rule still passes SQL NULL through on
 /// nullable columns.
-///
 /// The lower bound is intentionally omitted because Postgres's own
 /// date input parser already rejects every value `time::Date` cannot
 /// represent: ISO year -9999 = 10000 BC, but Postgres's earliest
@@ -1219,22 +1178,19 @@ fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema
 /// byte clause Postgres cannot test. See
 /// `docs/spec/decisions.md` "Type-derived CHECK projection" for the
 /// rationale.
-///
 /// Adopters who enable the `time/large-dates` feature flag widen the
 /// representable range to ±999_999; the CHECK projected here remains
 /// at the default ±9999 by design — `time::Date::MAX_YEAR` is a
 /// compile-time constant the projection layer cannot inspect without
 /// leaking the feature flag into the descriptor surface.
-///
-/// **Live arms (djogi#190 — integer widening).** The integer arms
+/// **Live arms (— integer widening).** The integer arms
 /// (`i8 / u8 / u16 / u32 / u64`) are now gated on the
-/// `rust_source_type` discriminator introduced by djogi#190 on
+/// `rust_source_type` discriminator introduced by on
 /// `FieldDescriptor`. Only columns whose descriptor carries a
 /// `Some(RustSourceType::*)` value receive a range CHECK; every other
 /// `SmallInt` / `Integer` / `BigInt` / `NumericPrecision` column
 /// (e.g. an `i16` field lowering to `SmallInt`, or an `i64` field
 /// lowering to `BigInt`) keeps `None` so no spurious CHECK is emitted.
-///
 /// The expression references the column by its quoted name so
 /// identifiers using reserved words round-trip cleanly through
 /// Postgres parsing. The descriptor's `name` field is the user's Rust
@@ -1249,45 +1205,40 @@ fn field_type_check(
 
     let qcol = quote_ident_for_check(column_name);
     match sql_type {
-        // ── djogi#187 — temporal year upper bound + finite guard ─────
-        //
+        // ── — temporal year upper bound + finite guard ─────
         // Two layered defenses against `time::Date` /
         // `time::OffsetDateTime` decode poisoning:
-        //
         // 1. **Year upper bound** — `time::Date` /
-        //    `time::OffsetDateTime` cap at ISO year 9999 by default.
-        //    Postgres `DATE` / `TIMESTAMPTZ` accept much higher years
-        //    (`DATE` up to 5874897 AD; `TIMESTAMPTZ` up to 294276 AD).
-        //    External writers (raw SQL migration, BI tool, sister
-        //    application) can land a row whose year exceeds the time
-        //    crate's MAX. The next typed `SELECT` decoding via
-        //    `row.try_get::<Date>` / `row.try_get::<OffsetDateTime>`
-        //    fails with `DjogiError::Decode`, and a single bad row
-        //    poisons subsequent reads through the typed surface.
-        //
+        // `time::OffsetDateTime` cap at ISO year 9999 by default.
+        // Postgres `DATE` / `TIMESTAMPTZ` accept much higher years
+        // (`DATE` up to 5874897 AD; `TIMESTAMPTZ` up to 294276 AD).
+        // External writers (raw SQL migration, BI tool, sister
+        // application) can land a row whose year exceeds the time
+        // crate's MAX. The next typed `SELECT` decoding via
+        // `row.try_get::<Date>` / `row.try_get::<OffsetDateTime>`
+        // fails with `DjogiError::Decode`, and a single bad row
+        // poisons subsequent reads through the typed surface.
         // 2. **Finite guard** — Postgres `DATE` / `TIMESTAMPTZ` admit
-        //    two non-finite special values, `'infinity'` and
-        //    `'-infinity'`, that `time::Date` / `time::OffsetDateTime`
-        //    cannot represent at all. The `pg_catalog.isfinite(<col>)`
-        //    predicate evaluates to FALSE on those two literals and
-        //    NULL on SQL NULL — combined with the year bound under
-        //    AND, it rejects both infinities while leaving CHECK's
-        //    standard NULL-as-satisfied semantics intact on nullable
-        //    columns. Without this guard a raw
-        //    `INSERT … DATE '-infinity'` lands successfully (because
-        //    `'-infinity'::date <= DATE '9999-12-31'` is TRUE) and
-        //    later poisons a typed decode — the same failure mode the
-        //    NUMERIC special-value guard
-        //    (`scale(<col>) IS NOT NULL` for `Decimal`) was designed
-        //    to close.
-        //
+        // two non-finite special values, `'infinity'` and
+        // `'-infinity'`, that `time::Date` / `time::OffsetDateTime`
+        // cannot represent at all. The `pg_catalog.isfinite(<col>)`
+        // predicate evaluates to FALSE on those two literals and
+        // NULL on SQL NULL — combined with the year bound under
+        // AND, it rejects both infinities while leaving CHECK's
+        // standard NULL-as-satisfied semantics intact on nullable
+        // columns. Without this guard a raw
+        // `INSERT … DATE '-infinity'` lands successfully (because
+        // `'-infinity'::date <= DATE '9999-12-31'` is TRUE) and
+        // later poisons a typed decode — the same failure mode the
+        // NUMERIC special-value guard
+        // (`scale(<col>) IS NOT NULL` for `Decimal`) was designed
+        // to close.
         // The lower bound is omitted because Postgres's own date input
         // parser rejects every value `time::Date` cannot represent on
         // the finite end (Postgres's MIN is 4713 BC; `time::Date`'s
         // MIN is 10000 BC — values in ISO years -9999 to -4713 are
         // unreachable through Postgres regardless of CHECK). See the
         // doc comment above.
-        //
         // The upper-bound `TIMESTAMP` literal includes microsecond
         // resolution so `OffsetDateTime::new(..., 23, 59, 59, 999_999)`
         // round-trips identically and CHECK-equals against the literal.
@@ -1302,40 +1253,34 @@ fn field_type_check(
             // `time::OffsetDateTime` MAX of `9999-12-31 23:59:59.999999 UTC`.
             Some(timestamptz_range_expr(&qcol))
         }
-        // ── djogi#190 — integer widening (live, gated on rust_source_type) ──
-        //
+        // ── — integer widening (live, gated on rust_source_type) ──
         // The discriminator ensures the CHECK fires ONLY for the narrow /
         // unsigned types (i8/u8/u16/u32/u64), not for every adopter `i16` /
         // `i64` column that shares the same `FieldSqlType` variant.
-        //
         // Range bounds follow the Rust type's representable range:
-        //
-        //   i8  → SMALLINT : -128..=127
-        //   u8  → SMALLINT : 0..=255
-        //   u16 → INTEGER  : 0..=65535
-        //   u32 → BIGINT   : 0..=4294967295
-        //   u64 → NUMERIC  : 0..=18446744073709551615 AND col = trunc(col)
-        //
+        // i8 → SMALLINT : -128..=127
+        // u8 → SMALLINT : 0..=255
+        // u16 → INTEGER : 0..=65535
+        // u32 → BIGINT : 0..=4294967295
+        // u64 → NUMERIC : 0..=18446744073709551615 AND col = trunc(col)
         // Two-sided CHECKs (lower AND upper) are emitted for all five types:
         // the lower bound guards against negative values written by an
         // external writer; the upper bound guards against values exceeding
         // the Rust type's MAX.
-        //
         // **u64 integrality check**: u64 uses bare `NUMERIC` (no precision/scale).
-        // Unlike `NUMERIC(20, 0)`, bare NUMERIC does NOT round fractional inputs —
+        // Unlike `NUMERIC(20, 0)`, bare NUMERIC does NOT round fractional inputs
         // it stores exactly what is given. The `col = trunc(col)` predicate in the
         // CHECK rejects any stored value whose fractional part is non-zero (e.g.
         // a raw `INSERT … NUMERIC '1.5'`). The decode path (`decode_u64_from_decimal`)
         // also enforces the same integrality guard on the Rust side, but the DB-level
         // CHECK prevents the value from landing in the first place.
-        //
         // `None` for direct-mapped integer columns without a
         // `rust_source_type` discriminator (`i16 → SMALLINT`,
         // `i32 → INTEGER`, `i64 → BIGINT`); the Postgres column type
         // already enforces the relevant range. Adopter `Decimal → NUMERIC`
         // columns reach the `FieldSqlType::Numeric` arm below — they carry
         // `Some(RustSourceType::Decimal)` and project a structural CHECK
-        // (djogi#188), not None.
+        // , not None.
         FieldSqlType::SmallInt => match rust_source_type {
             Some(RustSourceType::I8) => Some(format!("{qcol} >= -128 AND {qcol} <= 127")),
             Some(RustSourceType::U8) => Some(format!("{qcol} >= 0 AND {qcol} <= 255")),
@@ -1349,98 +1294,91 @@ fn field_type_check(
             Some(RustSourceType::U32) => Some(format!("{qcol} >= 0 AND {qcol} <= 4294967295")),
             _ => None,
         },
-        // ── djogi#190 (u64) and djogi#188 (Decimal) share the bare-NUMERIC
-        //    column type but project distinct CHECK shapes. The
-        //    `rust_source_type` discriminator routes each Rust source to
-        //    the right CHECK. ────────────────────────────────────────────
-        //
+        // ── (u64) and (Decimal) share the bare-NUMERIC
+        // column type but project distinct CHECK shapes. The
+        // `rust_source_type` discriminator routes each Rust source to
+        // the right CHECK. ────────────────────────────────────────────
         // **u64** — bare NUMERIC with range + integrality CHECK.
         // The integrality clause (`col = trunc(col)`) is the critical
         // addition over the old NUMERIC(20, 0) design: bare NUMERIC
         // preserves fractional inputs unchanged, so the CHECK must
         // explicitly reject them. `trunc()` is the standard Postgres
         // function for truncating a NUMERIC toward zero.
-        //
-        // **Decimal (djogi#188)** — bare NUMERIC with a structural CHECK
+        // **Decimal** — bare NUMERIC with a structural CHECK
         // bounding the value to `rust_decimal::Decimal`'s **exact
         // representable** range. The CHECK enforces no-silent-loss
         // semantics: Postgres rejects any write that the typed Rust
         // path would otherwise rescale, round, or fail to fit.
-        //
-        //   * `scale(col) IS NOT NULL` — Postgres NUMERIC admits three
-        //     non-finite special values (`NaN`, `Infinity`, `-Infinity`)
-        //     that `rust_decimal::Decimal` cannot represent at all. The
-        //     `pg_catalog.scale()` function returns NULL for every
-        //     non-finite NUMERIC (NaN since PG 12, ±Infinity since
-        //     PG 14, both covered by Djogi's PG 18+ baseline), and
-        //     `IS NOT NULL` collapses that to a concrete FALSE so the
-        //     CHECK fails on those inputs rather than NULL-propagating
-        //     to PASS. Without this guard the later `scale <= 28` and
-        //     coefficient clauses would NULL-propagate (`NULL <= 28`
-        //     is NULL) and CHECK semantics (`NULL` treated as
-        //     satisfied) would silently admit `'NaN'::numeric` and
-        //     friends — a typed `Decimal::from_sql` decode would then
-        //     fail with `DjogiError::Decode` on the read side. The
-        //     scalar `FieldSqlType::Numeric` arm wraps the whole
-        //     conjunction with `({qcol}) IS NULL OR (...)` so this
-        //     guard does not also reject SQL NULL on nullable Decimal
-        //     columns; for `NUMRANGE` endpoints the equivalent NULL
-        //     pass-through is provided by `range_endpoint_checks`.
-        //   * `scale(col) <= 28` — `rust_decimal::Decimal` carries
-        //     5 scale bits inside an i32 word, capping representable
-        //     scale at `Decimal::MAX_SCALE = 28`. The pinned
-        //     rust_decimal Postgres `FromSql` impl (see
-        //     `rust_decimal::postgres::common::checked_from_postgres`)
-        //     does **not** reject scale > 28 outright — it silently
-        //     rescales the incoming NUMERIC to scale 28 with rounding
-        //     (`result.rescale((scale as u32).min(Self::MAX_SCALE))`).
-        //     This CHECK rejects such writes at the DB layer so the
-        //     value Postgres holds matches the value Rust will decode,
-        //     bit for bit, with no silent precision loss on the way in.
-        //   * `abs(col) * power(10::numeric, scale(col)) <= 79228162514264337593543950335`
-        //     — the rust_decimal coefficient is a 96-bit unsigned mantissa,
-        //     i.e. `coefficient <= 2^96 - 1 = 79_228_162_514_264_337_593_543_950_335`.
-        //     For any NUMERIC `col` with scale `s`, the coefficient is
-        //     `|col| * 10^s`; the CHECK enforces this stays within the
-        //     96-bit envelope. Values that overflow this envelope cause
-        //     `checked_from_postgres` to return `None` (a hard decode
-        //     failure surfaced as `DjogiError::Decode`) — this CHECK
-        //     rejects them at the DB layer before they can poison a
-        //     typed read.
-        //
+        // * `scale(col) IS NOT NULL` — Postgres NUMERIC admits three
+        // non-finite special values (`NaN`, `Infinity`, `-Infinity`)
+        // that `rust_decimal::Decimal` cannot represent at all. The
+        // `pg_catalog.scale()` function returns NULL for every
+        // non-finite NUMERIC (NaN since PG 12, ±Infinity since
+        // PG 14, both covered by Djogi's PG 18+ baseline), and
+        // `IS NOT NULL` collapses that to a concrete FALSE so the
+        // CHECK fails on those inputs rather than NULL-propagating
+        // to PASS. Without this guard the later `scale <= 28` and
+        // coefficient clauses would NULL-propagate (`NULL <= 28`
+        // is NULL) and CHECK semantics (`NULL` treated as
+        // satisfied) would silently admit `'NaN'::numeric` and
+        // friends — a typed `Decimal::from_sql` decode would then
+        // fail with `DjogiError::Decode` on the read side. The
+        // scalar `FieldSqlType::Numeric` arm wraps the whole
+        // conjunction with `({qcol}) IS NULL OR (...)` so this
+        // guard does not also reject SQL NULL on nullable Decimal
+        // columns; for `NUMRANGE` endpoints the equivalent NULL
+        // pass-through is provided by `range_endpoint_checks`.
+        // * `scale(col) <= 28` — `rust_decimal::Decimal` carries
+        // 5 scale bits inside an i32 word, capping representable
+        // scale at `Decimal::MAX_SCALE = 28`. The pinned
+        // rust_decimal Postgres `FromSql` impl (see
+        // `rust_decimal::postgres::common::checked_from_postgres`)
+        // does **not** reject scale > 28 outright — it silently
+        // rescales the incoming NUMERIC to scale 28 with rounding
+        // (`result.rescale((scale as u32).min(Self::MAX_SCALE))`).
+        // This CHECK rejects such writes at the DB layer so the
+        // value Postgres holds matches the value Rust will decode,
+        // bit for bit, with no silent precision loss on the way in.
+        // * `abs(col) * power(10::numeric, scale(col)) <= 79228162514264337593543950335`
+        // the rust_decimal coefficient is a 96-bit unsigned mantissa,
+        // i.e. `coefficient <= 2^96 - 1 = 79_228_162_514_264_337_593_543_950_335`.
+        // For any NUMERIC `col` with scale `s`, the coefficient is
+        // `|col| * 10^s`; the CHECK enforces this stays within the
+        // 96-bit envelope. Values that overflow this envelope cause
+        // `checked_from_postgres` to return `None` (a hard decode
+        // failure surfaced as `DjogiError::Decode`) — this CHECK
+        // rejects them at the DB layer before they can poison a
+        // typed read.
         // The three-clause shape rejects every kind of unrepresentable value:
-        //   - A 100-digit integer at scale 0 → coefficient > 2^96-1 → rejected.
-        //   - A value with scale 50 → scale check fails → rejected
-        //     (preventing the silent rescale-and-round path).
-        //   - A `NaN` / `Infinity` / `-Infinity` literal → `scale()` returns
-        //     NULL → `scale(col) IS NOT NULL` evaluates to FALSE → rejected
-        //     (preventing the special-value-poisons-decode path).
+        // - A 100-digit integer at scale 0 → coefficient > 2^96-1 → rejected.
+        // - A value with scale 50 → scale check fails → rejected
+        // (preventing the silent rescale-and-round path).
+        // - A `NaN` / `Infinity` / `-Infinity` literal → `scale()` returns
+        // NULL → `scale(col) IS NOT NULL` evaluates to FALSE → rejected
+        // (preventing the special-value-poisons-decode path).
         // For valid rust_decimal values (e.g. `49.99` with scale 2,
         // coefficient `4999`), all three clauses pass.
-        //
         // Postgres semantics: CHECK constraints treat NULL as satisfied,
         // so nullable Decimal columns work without modification. The
         // `power()` and `scale()` calls are stable Postgres functions
         // (no extensions required); per-row overhead is one NUMERIC
-        // arithmetic operation plus one function call. The umbrella
-        // issue #185 records a per-write budget target for the family
+        // arithmetic operation plus one function call. Issue #185
+        // records a per-write budget target for the family
         // but is still open — a measured-µs claim against that budget
         // is left to #185's benchmark workstream rather than asserted
         // here.
-        //
         // The performance trade-off versus a column-side `NUMERIC(P, S)`
         // was deliberate (see `docs/spec/decisions.md` "Decimal precision
-        // and scale projection (djogi#188)"): `NUMERIC(28, 28)` admits
+        // and scale projection"): `NUMERIC(28, 28)` admits
         // ±9.x (one integer digit) and rejects ordinary adopter values
         // like `49.99`; `NUMERIC(29, 14)` or similar arbitrary
-        // precision/scale defaults silently round adopter writes —
+        // precision/scale defaults silently round adopter writes
         // worse than rejecting them. Bare NUMERIC with a structural
         // CHECK preserves the adopter's full precision/scale choice
         // and rejects only values that fall outside rust_decimal's
         // exact-representable domain — i.e., values that would either
         // be silently rescaled / rounded on decode (scale > 28) or
         // outright fail to decode (coefficient > 2^96 - 1).
-        //
         // No `rust_source_type` discriminator (the fall-through `_` arm)
         // means a bare-NUMERIC column whose Rust source is neither `u64`
         // nor `Decimal` — i.e., a user-defined type with
@@ -1484,9 +1422,9 @@ fn field_type_check(
         },
         // All other `FieldSqlType` variants (`Text`, `Real`,
         // `DoublePrecision`, `Boolean`, `Uuid`, `Jsonb`, `Bytea`
-        // (djogi#369 — raw binary has no representable-range constraint),
+        // (— raw binary has no representable-range constraint),
         // arrays, `Citext`, `Geography`, `Custom`, and every
-        // `NumericPrecision { .. }` instance — djogi#188 ships
+        // `NumericPrecision { .. }` instance — ships
         // `rust_decimal::Decimal` as bare `Numeric` + structural CHECK,
         // not as `NumericPrecision`) carry their own type bounds via
         // the column type itself; no Rust-derived CHECK applies. Future
@@ -1498,9 +1436,7 @@ fn field_type_check(
 
 /// Inner representability predicate for a DATE expression that resolves
 /// to a `time::Date`-storable value.
-///
 /// Two clauses, both required:
-///
 /// 1. `pg_catalog.isfinite(<expr>)` — rejects Postgres's two non-finite
 ///    DATE special values (`'infinity'::date` and `'-infinity'::date`)
 ///    that `time::Date` cannot represent at all. Without this guard a
@@ -1514,24 +1450,21 @@ fn field_type_check(
 ///    default MAX (`Date::MAX_YEAR = 9999`). Postgres DATE accepts
 ///    much higher years (up to 5874897 AD); the upper-bound clause
 ///    rejects writes that exceed the Rust type's representable range.
-///
-/// **Callers are responsible for the NULL pass-through.** The helper
-/// returns a bare conjunction with no `<expr> IS NULL OR` outer wrap.
-/// At the scalar `FieldSqlType::Date` arm Postgres CHECK's
-/// NULL-treated-as-satisfied semantics handles SQL NULL (both clauses
-/// evaluate to NULL, the conjunction is NULL, CHECK is satisfied).
-/// At the range-endpoint arm `range_endpoint_checks` wraps the helper
-/// with `<endpoint> IS NULL OR (...)` so empty / unbounded / NULL
-/// ranges short-circuit before the helper runs.
+///    **Callers are responsible for the NULL pass-through.** The helper
+///    returns a bare conjunction with no `<expr> IS NULL OR` outer wrap.
+///    At the scalar `FieldSqlType::Date` arm Postgres CHECK's
+///    NULL-treated-as-satisfied semantics handles SQL NULL (both clauses
+///    evaluate to NULL, the conjunction is NULL, CHECK is satisfied).
+///    At the range-endpoint arm `range_endpoint_checks` wraps the helper
+///    with `<endpoint> IS NULL OR (...)` so empty / unbounded / NULL
+///    ranges short-circuit before the helper runs.
 fn date_range_expr(column_expr: &str) -> String {
     format!("pg_catalog.isfinite({column_expr}) AND {column_expr} <= DATE '9999-12-31'")
 }
 
 /// Inner representability predicate for a TIMESTAMPTZ expression that
 /// resolves to a `time::OffsetDateTime`-storable value.
-///
 /// Two clauses, both required:
-///
 /// 1. `pg_catalog.isfinite(<expr>)` — rejects Postgres's two non-finite
 ///    TIMESTAMPTZ special values (`'infinity'::timestamptz` and
 ///    `'-infinity'::timestamptz`) that `time::OffsetDateTime` cannot
@@ -1547,11 +1480,10 @@ fn date_range_expr(column_expr: &str) -> String {
 ///    timezone-invariant — using plain `TIMESTAMP '...'` (without TZ)
 ///    would make Postgres interpret the literal in the session
 ///    timezone, shifting the effective upper bound.
-///
-/// **Callers are responsible for the NULL pass-through.** Same shape
-/// as `date_range_expr`: the scalar `FieldSqlType::Timestamptz` arm
-/// relies on CHECK's NULL semantics, and `range_endpoint_checks` adds
-/// the `<endpoint> IS NULL OR (...)` wrap for the range case.
+///    **Callers are responsible for the NULL pass-through.** Same shape
+///    as `date_range_expr`: the scalar `FieldSqlType::Timestamptz` arm
+///    relies on CHECK's NULL semantics, and `range_endpoint_checks` adds
+///    the `<endpoint> IS NULL OR (...)` wrap for the range case.
 fn timestamptz_range_expr(column_expr: &str) -> String {
     format!(
         "pg_catalog.isfinite({column_expr}) AND \
@@ -1561,7 +1493,6 @@ fn timestamptz_range_expr(column_expr: &str) -> String {
 
 /// Inner representability predicate for a TIMESTAMP expression that
 /// resolves to a `time::PrimitiveDateTime`-storable value.
-///
 /// Mirrors the TIMESTAMPTZ helper without a timezone suffix. PostgreSQL
 /// `TIMESTAMP` admits `infinity` / `-infinity` and years outside the default
 /// `time::PrimitiveDateTime` range, so both a finite guard and an upper-bound
@@ -1575,7 +1506,6 @@ fn timestamp_range_expr(column_expr: &str) -> String {
 
 /// Inner representability predicate for a NUMERIC expression that
 /// resolves to a `rust_decimal::Decimal`-storable value.
-///
 /// The leading `scale({column_expr}) IS NOT NULL` clause rejects the
 /// PostgreSQL NUMERIC special values `NaN`, `Infinity`, and
 /// `-Infinity` — `pg_catalog.scale()` is defined to return NULL for
@@ -1584,7 +1514,6 @@ fn timestamp_range_expr(column_expr: &str) -> String {
 /// that to a concrete FALSE so the CHECK fails on those inputs rather
 /// than NULL-propagating to PASS. Regular finite NUMERICs continue
 /// through the existing scale / coefficient bounds.
-///
 /// **Callers are responsible for the NULL pass-through.** This helper
 /// returns a bare conjunction with no `<col> IS NULL OR` outer wrap:
 /// the scalar `FieldSqlType::Numeric` arm wraps the result with
@@ -1619,12 +1548,10 @@ fn range_endpoint_checks(range_column: &str, bound_check: fn(&str) -> String) ->
 }
 
 /// Per-element finite-value CHECK for `DATE[]` columns.
-///
 /// Emits `<col> IS NULL OR djogi.__djogi_date_array_is_finite_v1(<col>)`. The helper
 /// function (defined in `compose::DATE_ARRAY_HELPER_PRELUDE`) applies
 /// `pg_catalog.bool_and(value IS NULL OR (pg_catalog.isfinite(value) AND value <=
 /// '9999-12-31'::pg_catalog.date))` over all unnested elements:
-///
 /// - Rejects both `+infinity` and `-infinity` date elements — `pg_catalog.isfinite(date)`
 ///   returns FALSE for both non-finite DATE special values, not just the upper one.
 ///   The previous `upper_bound >= ALL(col)` strategy passed `-infinity` because
@@ -1632,17 +1559,15 @@ fn range_endpoint_checks(range_column: &str, bound_check: fn(&str) -> String) ->
 /// - Admits `NULL` elements (consistent with SQL array-element NULL semantics).
 /// - Admits empty arrays (COALESCE inside the helper maps the empty-set `bool_and`
 ///   NULL to TRUE).
-///
-/// **Why a helper function and not a direct expression?** Postgres CHECK clauses may not
-/// contain subqueries or `unnest(...)` aggregate forms directly; the helper function
-/// encapsulates the `unnest` + `bool_and` loop in a valid IMMUTABLE SQL function.
-/// This mirrors the `NumericArray` precedent in [`numeric_array_is_rust_decimal_check`].
+///   **Why a helper function and not a direct expression?** Postgres CHECK clauses may not
+///   contain subqueries or `unnest(...)` aggregate forms directly; the helper function
+///   encapsulates the `unnest` + `bool_and` loop in a valid IMMUTABLE SQL function.
+///   This mirrors the `NumericArray` precedent in [`numeric_array_is_rust_decimal_check`].
 fn date_array_is_finite_check(array_column: &str) -> String {
     format!("{array_column} IS NULL OR djogi.__djogi_date_array_is_finite_v1({array_column})")
 }
 
 /// Per-element finite-value CHECK for `TIMESTAMPTZ[]` columns.
-///
 /// Same shape as [`date_array_is_finite_check`] but wraps
 /// `djogi.__djogi_tstz_array_is_finite_v1(...)` from `compose::TSTZ_ARRAY_HELPER_PRELUDE`.
 /// The helper applies `pg_catalog.isfinite(value)` to every unnested element, rejecting
@@ -1660,28 +1585,24 @@ fn numeric_array_is_rust_decimal_check(array_column: &str) -> String {
 
 /// Combine a type-derived CHECK with an adopter `#[field(check = "...")]`
 /// expression into a single constraint slot.
-///
 /// Both forms produce an `Option<String>`; the combination rules:
-///
 /// - Neither present → `None` (no CHECK constraint).
 /// - Only one present → the present one verbatim (no extra parentheses).
 /// - Both present → `({type-derived}) AND ({adopter})` — single SQL
 ///   expression, both clauses must pass.
-///
-/// The single constraint slot keeps the ADD / DROP / AMEND lifecycle in
-/// the differ unchanged: a column has at most one CHECK at
-/// `<table>_<column>_check`. Constraint name uniqueness is guaranteed by
-/// `migrate/sql.rs::check_constraint_name`. The combined-expression
-/// approach loses a small amount of fault-diagnostic granularity (a CHECK
-/// violation surfaces the whole `(A) AND (B)` expression rather than
-/// pinpointing which clause failed), but Postgres includes the full
-/// expression text in the error message so adopters can still tell the
-/// type bound from the adopter bound on inspection.
-///
-/// Defensive normalisation: both inputs are `trim()`'d to avoid
-/// `"(expr1 ) AND ( expr2)"` whitespace artefacts in snapshot output.
-/// The differ compares CHECK expressions by string equality, so any
-/// drift in whitespace would emit a spurious AMEND on every compose.
+///   The single constraint slot keeps the ADD / DROP / AMEND lifecycle in
+///   the differ unchanged: a column has at most one CHECK at
+///   `<table>_<column>_check`. Constraint name uniqueness is guaranteed by
+///   `migrate/sql.rs::check_constraint_name`. The combined-expression
+///   approach loses a small amount of fault-diagnostic granularity (a CHECK
+///   violation surfaces the whole `(A) AND (B)` expression rather than
+///   pinpointing which clause failed), but Postgres includes the full
+///   expression text in the error message so adopters can still tell the
+///   type bound from the adopter bound on inspection.
+///   Defensive normalisation: both inputs are `trim()`'d to avoid
+///   `"(expr1) AND (expr2)"` whitespace artefacts in snapshot output.
+///   The differ compares CHECK expressions by string equality, so any
+///   drift in whitespace would emit a spurious AMEND on every compose.
 fn combine_check_expressions(
     type_derived: Option<String>,
     adopter: Option<&str>,
@@ -1696,7 +1617,6 @@ fn combine_check_expressions(
 
 /// HeeRanjID semantic family of a column carrying a strict-ID-checkable
 /// identifier — the dispatch key for [`strict_id_check_expr`].
-///
 /// Strict-ID applicability is a property of the column's **semantic
 /// identity**, not its resolved Postgres SQL type. A `BIGINT`-shaped
 /// `PkType::Custom(...)` PK (e.g., a `Snowflake`-style application ID)
@@ -1707,24 +1627,20 @@ fn combine_check_expressions(
 /// layer without their consent). Likewise a `UUID`-shaped
 /// `PkType::Custom(...)` (e.g., a UUIDv4 application ID) is not a
 /// RanjId carrier and must not receive the UUIDv8 + RFC 4122 CHECK.
-///
 /// Mapping from [`PkType`]:
-///
 /// * [`PkType::HeerId`] / [`PkType::HeerIdDesc`] → [`StrictIdFamily::HeerId`]
 /// * [`PkType::RanjId`] / [`PkType::RanjIdDesc`] → [`StrictIdFamily::RanjId`]
 /// * [`PkType::Serial`] / [`PkType::None`] /
 ///   [`PkType::Composite`] / [`PkType::Custom`] → [`StrictIdFamily::None`]
-///
-/// The mapping is computed once per descriptor at projection entry and
-/// flows through [`project_model`] / [`project_column`] alongside
-/// [`pk_sql_type_text`]'s SQL-type substitution. This keeps the
-/// semantic-family and FK SQL-type substitutions parallel — both are
-/// resolved at the same projection-time crossing where every
-/// descriptor in the inventory is visible.
-///
-/// djogi#189 (post-review hardening: SQL-type → semantic-family
-/// dispatch so `PkType::Custom` is never coerced into a HeerId / RanjId
-/// CHECK based on a coincidental SQL carrier match).
+///   The mapping is computed once per descriptor at projection entry and
+///   flows through [`project_model`] / [`project_column`] alongside
+///   [`pk_sql_type_text`]'s SQL-type substitution. This keeps the
+///   semantic-family and FK SQL-type substitutions parallel — both are
+///   resolved at the same projection-time crossing where every
+///   descriptor in the inventory is visible.
+///   (post-review hardening: SQL-type → semantic-family
+///   dispatch so `PkType::Custom` is never coerced into a HeerId / RanjId
+///   CHECK based on a coincidental SQL carrier match).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StrictIdFamily {
     /// HeerId / HeerIdDesc — BIGINT carrier, structural invariant
@@ -1741,7 +1657,6 @@ enum StrictIdFamily {
 
 /// Compute the [`StrictIdFamily`] from a [`PkType`] — the canonical
 /// dispatch key for HeerId / RanjId structural CHECK projection.
-///
 /// `Composite` / `None` map to `StrictIdFamily::None` because a model
 /// with no single-column PK cannot legitimately host a HeerId / RanjId
 /// `id` column; FK references against such targets are rejected by
@@ -1749,8 +1664,7 @@ enum StrictIdFamily {
 /// unconditionally — the framework cannot inspect a third-party
 /// `PrimaryKey::SQL_TYPE`'s semantic identity, so the only safe default
 /// is "no HeerRanjID invariant to enforce."
-///
-/// djogi#189.
+/// .
 fn strict_id_family_of_pk(pk: &PkType) -> StrictIdFamily {
     match pk {
         PkType::HeerId | PkType::HeerIdDesc => StrictIdFamily::HeerId,
@@ -1770,17 +1684,14 @@ fn strict_id_family_of_pk(pk: &PkType) -> StrictIdFamily {
 }
 
 /// Project the opt-in structural CHECK for HeerId / RanjId columns
-/// (djogi#189).
-///
+/// .
 /// Returns `Some(<sql expression>)` when the column's HeerRanjID
 /// semantic family is [`StrictIdFamily::HeerId`] or
 /// [`StrictIdFamily::RanjId`], and `None` for [`StrictIdFamily::None`].
 /// The opt-in flag (`strict_id_check`) is owned by the descriptor and
 /// is read by the caller before this helper runs — this function is a
 /// pure family → CHECK mapper.
-///
 /// # CHECK shape
-///
 /// * [`StrictIdFamily::HeerId`] (BIGINT carrier) → `<col> >= 0`. The
 ///   Rust `HeerId::from_i64` rejects every negative `i64` (bit 63 = 1),
 ///   and the constructor for `HeerId::new` masks the remaining 63 bits
@@ -1789,34 +1700,29 @@ fn strict_id_family_of_pk(pk: &PkType) -> StrictIdFamily {
 ///   is therefore `bit 63 = 0`, which lowers to `col >= 0` on the
 ///   Postgres signed `BIGINT` carrier.
 /// * [`StrictIdFamily::RanjId`] (UUID carrier) → `version=8 AND
-///   variant=RFC4122`. `RanjId::from_uuid` rejects every UUID whose
+/// variant=RFC4122`. `RanjId::from_uuid` rejects every UUID whose
 ///   version nibble (bits 76-79) is not `0b1000` or whose variant
 ///   high bits (bits 62-63) are not `0b10`. The flip mask for
 ///   `RanjIdDesc` (`0xFFFF_FFFF_FFFF_0FFF_0FFF_FFFF_8000_FFFF`)
 ///   preserves both fields, so the ascending and descending variants
 ///   share the same structural CHECK.
-///
-/// The UUID CHECK extracts the two relevant nibbles from the canonical
-/// 8-4-4-4-12 lowercase text form Postgres emits via the `::text` cast:
-/// position 15 is the version hex digit (`'8'` for UUIDv8), position 20
-/// is the variant high nibble (`'8'`, `'9'`, `'a'`, `'b'` for RFC4122
-/// `10xx`). Postgres `uuid_out` canonicalises every UUID to lowercase
-/// hex, so case folding on the literal set is unnecessary. The
-/// substring path adds ~1–3 µs per row vs `<1 µs` for the BIGINT
-/// comparison — both are opt-in because automatic emission would break
-/// existing models that carry externally-generated IDs.
-///
+///   The UUID CHECK extracts the two relevant nibbles from the canonical
+///   8-4-4-4-12 lowercase text form Postgres emits via the `::text` cast:
+///   position 15 is the version hex digit (`'8'` for UUIDv8), position 20
+///   is the variant high nibble (`'8'`, `'9'`, `'a'`, `'b'` for RFC4122
+///   `10xx`). Postgres `uuid_out` canonicalises every UUID to lowercase
+///   hex, so case folding on the literal set is unnecessary. The
+///   substring path adds ~1–3 µs per row vs `<1 µs` for the BIGINT
+///   comparison — both are opt-in because automatic emission would break
+///   existing models that carry externally-generated IDs.
 /// # NULL pass-through
-///
 /// Both CHECK shapes evaluate to NULL on a NULL column value (`col >=
 /// 0` returns NULL on `col IS NULL`; `substring(NULL::text, ...)`
 /// returns NULL; the equality / `IN` comparisons against NULL also
 /// produce NULL). Postgres CHECK constraints treat NULL as satisfied,
 /// so nullable HeerId / RanjId columns work unchanged. No explicit
 /// `<col> IS NULL OR (...)` wrap is required.
-///
 /// # Why semantic-family dispatch, not resolved-SQL-type dispatch
-///
 /// An earlier draft dispatched on the resolved SQL type string
 /// (`"BIGINT"` / `"UUID"`) returned by `pk_sql_type_text`. That
 /// strategy coerced every [`PkType::Custom`] PK whose inner SQL_TYPE
@@ -1831,8 +1737,7 @@ fn strict_id_family_of_pk(pk: &PkType) -> StrictIdFamily {
 /// can still propagate the opt-in flag broadly when `#[model(strict_ids)]`
 /// fires; the projection layer's family lookup is where applicability
 /// is filtered.
-///
-/// djogi#189.
+/// .
 fn strict_id_check_expr(family: StrictIdFamily, column_name: &str) -> Option<String> {
     let qcol = quote_ident_for_check(column_name);
     match family {
@@ -1841,7 +1746,7 @@ fn strict_id_check_expr(family: StrictIdFamily, column_name: &str) -> Option<Str
         // 13 bit layout uses every other bit, and `HeerId::from_i64`
         // rejects negatives via `if raw < 0 { return Err(NegativeHeerId) }`.
         // Verified against `~/projects/HeeRanjID/heeranjid/src/heer.rs`
-        // at the time djogi#189 landed.
+        // at the time landed.
         StrictIdFamily::HeerId => Some(format!("{qcol} >= 0")),
 
         // ── RanjId / RanjIdDesc (UUID carrier) ───────────────────────
@@ -1849,7 +1754,6 @@ fn strict_id_check_expr(family: StrictIdFamily, column_name: &str) -> Option<Str
         // 8-4-4-4-12 text form is the version hex digit; position 20 is
         // the variant high nibble (must be one of `'8'..='b'` for the
         // `10xx` variant pattern).
-        //
         // The CHECK uses `pg_catalog.substring(...)` rather than the
         // unqualified `substring` so the catalog reference cannot be
         // hijacked by a per-schema function override that an adopter
@@ -1862,7 +1766,6 @@ fn strict_id_check_expr(family: StrictIdFamily, column_name: &str) -> Option<Str
         // rejects non-`0b1000` version and non-`0b10` variant) and
         // `ranj_desc.rs` (the `RANJ_FLIP_MASK` preserves bits 76-79 and
         // 62-63).
-        //
         // Function-call form `substring(text, start, len)` is used
         // intentionally — the SQL-standard syntax `substring(X FROM N
         // FOR M)` is only recognised on the unqualified `substring`,
@@ -1876,7 +1779,7 @@ fn strict_id_check_expr(family: StrictIdFamily, column_name: &str) -> Option<Str
         )),
 
         // Every other semantic family — Serial, Custom, Composite, None
-        // — receives no strict-ID CHECK. The macro propagates the
+        // receives no strict-ID CHECK. The macro propagates the
         // opt-in flag broadly when `#[model(strict_ids)]` is on; this
         // arm is where the family-based filter takes effect, ensuring
         // a Custom `BIGINT`-shaped PK never inherits the HeerId
@@ -1890,7 +1793,6 @@ fn strict_id_check_expr(family: StrictIdFamily, column_name: &str) -> Option<Str
 /// `migrate/sql.rs` because the projection layer cannot depend back
 /// on the SQL emitter. The two implementations stay byte-identical;
 /// any change to one must update the other.
-///
 /// Wraps the identifier in double quotes and doubles any embedded
 /// double quote (the Postgres rule). Matches the convention every other
 /// SQL emitter in this crate uses for column references.
@@ -1960,14 +1862,13 @@ fn project_column(
         // INSERTs without explicit values pick up server time. The
         // descriptor layer does not carry per-field default expressions
         // (every field shares one nullable shape), so the projection
-        // owns this rule for the two framework cols. Phase 1's
+        // owns this rule for the two framework cols. the
         // hand-written CREATE TABLE statements (`tests/integration/
-        // migrations/phase3/*.sql` and friends) have always used this
+        // migrations/relations/*.sql` and friends) have always used this
         // shape — the migration engine produces the same DDL by
         // recording the default here.
-        //
-        // Surfaced by Phase 7 T10 (`#[djogi_test(sync_models = [...])]`)
-        // — without this, every sync_models'd table rejected its first
+        // Surfaced by (`#[djogi_test(sync_models = [...])]`)
+        // without this, every sync_models'd table rejected its first
         // INSERT with `null value in column "created_at"` because the
         // typed `Model::create` path leaves `created_at` blank for the
         // DB to populate via the column DEFAULT.
@@ -1998,34 +1899,31 @@ fn project_column(
     // sequencing clause, and `pk_default_sql(Serial)` returns `None`
     // because IDENTITY is not a DEFAULT expression — it has its own
     // ALTER COLUMN ADD/DROP IDENTITY syntax for migrations.
-    //
     // Storing the IDENTITY intent in a dedicated `identity` field on
     // ColumnSchema (rather than inlining the clause into `sql_type`)
     // means:
-    //   1. The IR shape is correct — IDENTITY is not part of the
-    //      column type; it has its own ALTER COLUMN ADD/DROP IDENTITY
-    //      syntax. Inlining into sql_type would route through
-    //      `ColumnChange::ChangeType` and emit
-    //      `ALTER COLUMN id TYPE INTEGER GENERATED BY DEFAULT AS IDENTITY`
-    //      which is invalid SQL.
-    //   2. Snapshot round-trip stays clean — the sql_type comparison
-    //      is "INTEGER" both before and after the fix; only the new
-    //      `identity` field changes.
-    //   3. CREATE TABLE DDL emission renders the IDENTITY clause via
-    //      the dedicated branch in `migrate/sql.rs::push_column_inline`,
-    //      producing valid Postgres syntax.
-    //
+    // 1. The IR shape is correct — IDENTITY is not part of the
+    // column type; it has its own ALTER COLUMN ADD/DROP IDENTITY
+    // syntax. Inlining into sql_type would route through
+    // `ColumnChange::ChangeType` and emit
+    // `ALTER COLUMN id TYPE INTEGER GENERATED BY DEFAULT AS IDENTITY`
+    // which is invalid SQL.
+    // 2. Snapshot round-trip stays clean — the sql_type comparison
+    // is "INTEGER" both before and after the fix; only the new
+    // `identity` field changes.
+    // 3. CREATE TABLE DDL emission renders the IDENTITY clause via
+    // the dedicated branch in `migrate/sql.rs::push_column_inline`,
+    // producing valid Postgres syntax.
     // Note: the differ at `migrate/diff.rs::diff_column_alter` does
     // NOT yet compare the `identity` field. Snapshot-upgrade scenarios
     // (e.g. an adopter who ran compose before this fix and now has
     // `identity: None` on disk while a fresh projection produces
     // `identity: Some(ByDefault)`) won't trigger the
     // `ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY` migration
-    // — the diff is silent on the identity field. Pre-publish, adopters
+    // the diff is silent on the identity field. Pre-publish, adopters
     // reset and recompose. Tracked as anchored follow-up #93 with
     // `ColumnChange::SetIdentity { from, to }` IR variant + lowering
     // pipeline mapped out.
-    //
     // FK columns *referencing* a Serial PK must NOT get the IDENTITY
     // clause — sequence ownership lives on the parent's PK column,
     // not its references. The guard `f.name == "id" && parent.pk_type
@@ -2038,46 +1936,43 @@ fn project_column(
         None
     };
 
-    // Type-derived CHECK projection (djogi#186 contract; djogi#187 for
-    // temporal types; djogi#190 for integer widening; djogi#188 for
-    // Decimal structural bounds; djogi#105 for adopter
+    // Type-derived CHECK projection (contract; for
+    // temporal types; for integer widening; for
+    // Decimal structural bounds; for adopter
     // `#[field(check)]` expressions).
-    //
     // The contract:
-    //
-    //   * `field_type_check` dispatches on the descriptor's
-    //     `FieldSqlType` + `rust_source_type` to emit a type-derived
-    //     CHECK for widened or structurally-bounded columns whose
-    //     Postgres column type accepts values outside the Rust source
-    //     type's representable range.
-    //   * Adopter-supplied `#[field(check = "<expr>")]` flows through
-    //     `f.check_sql` and is combined with the type-derived CHECK
-    //     via logical `AND` so a single constraint slot
-    //     (`<table>_<column>_check`) carries both. The differ's ADD /
-    //     DROP / AMEND lifecycle stays unchanged.
-    //   * For non-FK columns we call the helper; non-`None` results
-    //     reach `ColumnSchema.check`, the SQL emitter inlines them on
-    //     CREATE TABLE and the differ emits `ColumnChange::SetCheck`
-    //     for ADD / DROP / AMEND lifecycles.
-    //   * FK columns inherit their type from the parent's PK, which is
-    //     always identity-width (BIGINT for HeerId, UUID for RanjId).
-    //     The Rust-derived CHECK doesn't apply, so the type-derived
-    //     half is hard-coded `None`. Adopter `#[field(check)]` on an
-    //     FK column is still honoured — the adopter may want a domain
-    //     invariant on the FK column itself (e.g., `owner_id > 0`),
-    //     and there is no structural reason to forbid it.
-    //
+    // * `field_type_check` dispatches on the descriptor's
+    // `FieldSqlType` + `rust_source_type` to emit a type-derived
+    // CHECK for widened or structurally-bounded columns whose
+    // Postgres column type accepts values outside the Rust source
+    // type's representable range.
+    // * Adopter-supplied `#[field(check = "<expr>")]` flows through
+    // `f.check_sql` and is combined with the type-derived CHECK
+    // via logical `AND` so a single constraint slot
+    // (`<table>_<column>_check`) carries both. The differ's ADD /
+    // DROP / AMEND lifecycle stays unchanged.
+    // * For non-FK columns we call the helper; non-`None` results
+    // reach `ColumnSchema.check`, the SQL emitter inlines them on
+    // CREATE TABLE and the differ emits `ColumnChange::SetCheck`
+    // for ADD / DROP / AMEND lifecycles.
+    // * FK columns inherit their type from the parent's PK, which is
+    // always identity-width (BIGINT for HeerId, UUID for RanjId).
+    // The Rust-derived CHECK doesn't apply, so the type-derived
+    // half is hard-coded `None`. Adopter `#[field(check)]` on an
+    // FK column is still honoured — the adopter may want a domain
+    // invariant on the FK column itself (e.g., `owner_id > 0`),
+    // and there is no structural reason to forbid it.
     // **Live arms inside `field_type_check`:**
-    //   - djogi#187: `Date` / `Timestamptz` → year ±9999 upper-bound
-    //     CHECK (unconditional — FieldSqlType alone disambiguates).
-    //   - djogi#190: `SmallInt` / `Integer` / `BigInt` / `Numeric`
-    //     → range CHECK (+ integrality for u64) gated on the
-    //     `rust_source_type` discriminator. Direct-mapped types
-    //     (`i16 → SmallInt`, `i64 → BigInt`) have `rust_source_type: None`
-    //     and keep `check: None` so no spurious CHECK fires.
-    //   - djogi#188: `Numeric` + `Some(RustSourceType::Decimal)` →
-    //     structural CHECK enforcing rust_decimal's 96-bit mantissa /
-    //     scale-≤-28 representable range.
+    // - : `Date` / `Timestamptz` → year ±9999 upper-bound
+    // CHECK (unconditional — FieldSqlType alone disambiguates).
+    // - : `SmallInt` / `Integer` / `BigInt` / `Numeric`
+    // → range CHECK (+ integrality for u64) gated on the
+    // `rust_source_type` discriminator. Direct-mapped types
+    // (`i16 → SmallInt`, `i64 → BigInt`) have `rust_source_type: None`
+    // and keep `check: None` so no spurious CHECK fires.
+    // - : `Numeric` + `Some(RustSourceType::Decimal)` →
+    // structural CHECK enforcing rust_decimal's 96-bit mantissa /
+    // scale-≤-28 representable range.
     let type_derived_check: Option<String> = if foreign_key.is_some() {
         // FK columns inherit their type from the parent's PK (BIGINT for
         // HeerId, UUID for RanjId). The Rust-derived CHECK doesn't apply.
@@ -2086,45 +1981,42 @@ fn project_column(
         field_type_check(&f.sql_type, f.rust_source_type, f.name)
     };
 
-    // djogi#189 — opt-in HeerId / RanjId structural CHECK.
-    //
+    // opt-in HeerId / RanjId structural CHECK.
     // Distinct from `type_derived_check` because the strict-ID CHECK:
-    //   1. Dispatches on the column's **HeerRanjID semantic family**
-    //      (HeerId / RanjId / None), NOT on the resolved SQL type
-    //      string. A `PkType::Custom { sql_type: "BIGINT", .. }` shares
-    //      the BIGINT SQL carrier with HeerId but carries no HeeRanjID
-    //      bit-layout invariant; the semantic-family dispatch ensures
-    //      the CHECK only fires where the family is actually HeerId or
-    //      RanjId. See [`strict_id_family_of_pk`] and [`StrictIdFamily`]
-    //      for the rationale.
-    //   2. Is opt-in via `f.strict_id_check`, not on every HeerId /
-    //      RanjId column (default-off semantics — see the field's
-    //      doc comment for the perf rationale).
-    //   3. Applies to FK columns too — the adopter may opt-in on a
-    //      whole model via `#[model(strict_ids)]`, and every FK whose
-    //      target uses a HeerId or RanjId PK should reject externally
-    //      generated structurally-invalid IDs. The FK target's family
-    //      is resolved via `type_to_pk_family` (the parallel of
-    //      `type_to_pk_sql` for SQL carrier substitution).
-    //
+    // 1. Dispatches on the column's **HeerRanjID semantic family**
+    // (HeerId / RanjId / None), NOT on the resolved SQL type
+    // string. A `PkType::Custom { sql_type: "BIGINT", .. }` shares
+    // the BIGINT SQL carrier with HeerId but carries no HeeRanjID
+    // bit-layout invariant; the semantic-family dispatch ensures
+    // the CHECK only fires where the family is actually HeerId or
+    // RanjId. See [`strict_id_family_of_pk`] and [`StrictIdFamily`]
+    // for the rationale.
+    // 2. Is opt-in via `f.strict_id_check`, not on every HeerId /
+    // RanjId column (default-off semantics — see the field's
+    // doc comment for the perf rationale).
+    // 3. Applies to FK columns too — the adopter may opt-in on a
+    // whole model via `#[model(strict_ids)]`, and every FK whose
+    // target uses a HeerId or RanjId PK should reject externally
+    // generated structurally-invalid IDs. The FK target's family
+    // is resolved via `type_to_pk_family` (the parallel of
+    // `type_to_pk_sql` for SQL carrier substitution).
     // **Family resolution rules.**
-    //
     // * FK / O2O column → look up the target's family via
-    //   `type_to_pk_family`. Targets with no entry (unregistered
-    //   descriptor; the caller already errors elsewhere) default to
-    //   `None` so an unresolved FK never accidentally inherits a
-    //   HeerId / RanjId CHECK.
+    // `type_to_pk_family`. Targets with no entry (unregistered
+    // descriptor; the caller already errors elsewhere) default to
+    // `None` so an unresolved FK never accidentally inherits a
+    // HeerId / RanjId CHECK.
     // * Framework `id` column → the parent model's PK family.
     // * Any other column with `strict_id_check: true` — bare HeerId /
-    //   RanjId user scalar opted in via `#[field(strict_id_check)]` or
-    //   `#[model(strict_ids)]`. The macro validates type compatibility
-    //   at parse time (see `is_strict_id_check_compatible`), so the
-    //   descriptor's `FieldSqlType` unambiguously identifies the
-    //   family for these fields: `BigInt` → HeerId, `Uuid` → RanjId.
-    //   Any other `FieldSqlType` on a non-FK non-`id` column with
-    //   `strict_id_check: true` indicates a macro/projection contract
-    //   drift and the defensive `_ => None` skips the CHECK rather
-    //   than emitting a meaningless SQL fragment.
+    // RanjId user scalar opted in via `#[field(strict_id_check)]` or
+    // `#[model(strict_ids)]`. The macro validates type compatibility
+    // at parse time (see `is_strict_id_check_compatible`), so the
+    // descriptor's `FieldSqlType` unambiguously identifies the
+    // family for these fields: `BigInt` → HeerId, `Uuid` → RanjId.
+    // Any other `FieldSqlType` on a non-FK non-`id` column with
+    // `strict_id_check: true` indicates a macro/projection contract
+    // drift and the defensive `_ => None` skips the CHECK rather
+    // than emitting a meaningless SQL fragment.
     let strict_id_check_clause: Option<String> = if f.strict_id_check {
         let family = if f.relation_kind.is_some() {
             f.target_type_name
@@ -2153,7 +2045,7 @@ fn project_column(
 
     ColumnSchema {
         check,
-        // Phase 8.5 Cluster 4 (djogi#217) — copy adopter
+        // Djogi#217) — copy adopter
         // `#[field(comment = "…")]` from descriptor verbatim. The
         // composer owns single-quote escaping at SQL-emission time.
         comment: f.comment.map(|s| s.to_string()),
@@ -2174,7 +2066,7 @@ fn project_column(
         sequence_within: f.sequence_within.map(|s| s.to_string()),
         sql_type,
         unique: f.unique,
-        // Phase 8.5 Cluster 4 djogi#220 — adopter
+        // Djogi#220 — adopter
         // `#[field(type_change_using = "<sql expr>")]` USING clause.
         // Transient: `#[serde(skip)]` on `ColumnSchema::type_change_using`
         // keeps the slot out of the on-disk snapshot, and `ColumnSchema`'s
@@ -2189,19 +2081,17 @@ fn project_column(
 
 /// Render the SQL type text for a model's PK as it appears on FK
 /// columns referencing that model.
-///
 /// `HeerId` / `HeerIdRecencyBiased` → `BIGINT`,
 /// `RanjId` / `RanjIdRecencyBiased` → `UUID`,
 /// `Serial` → `INTEGER`,
 /// `Custom { sql_type, .. }` → that text verbatim,
 /// `Composite` / `None` → `TEXT` (placeholder; FK references against
-///   composite or no-PK tables are rejected upstream by the descriptor
-///   contract — the placeholder lets the projection complete instead
-///   of panicking, and the broken DDL surfaces at apply time).
-///
+/// composite or no-PK tables are rejected upstream by the descriptor
+/// contract — the placeholder lets the projection complete instead
+/// of panicking, and the broken DDL surfaces at apply time).
 /// This helper resolves the SQL carrier only. The HeerRanjID semantic
-/// family — the dispatch key for strict-ID CHECK projection (djogi#189)
-/// — is carried separately via [`strict_id_family_of_pk`]. A
+/// family — the dispatch key for strict-ID CHECK projection
+/// is carried separately via [`strict_id_family_of_pk`]. A
 /// `PkType::Custom { sql_type: "BIGINT", .. }` reports `"BIGINT"` here
 /// (the FK source column needs the correct SQL type), but reports
 /// [`StrictIdFamily::None`] there (no HeerRanjID invariant applies).
@@ -2315,17 +2205,14 @@ fn project_fts_index(table: &str, fts: &FtsDescriptor) -> IndexSchema {
 
 /// Synthesise a plain `IndexSchema` from a `#[field(index)]` /
 /// `#[field(index = "method")]` annotation.
-///
 /// `col_name` is the Postgres column name, `index_type` is the method
 /// from the field descriptor (`None` falls back to BTree), and `table`
 /// is the owning table name.
-///
 /// The resulting `IndexSchema` has `kind = NonUnique` and a single-column
 /// `target` with all modifiers at their defaults (ASC, NULLS DEFAULT, no
 /// opclass). Field-level `#[field(index)]` does not support per-column
 /// knobs; composite or custom-opclass indexes must use
 /// `#[model(indexes(index(...)))]` instead.
-///
 /// The name follows the deterministic `<table>_<col>_idx` convention from
 /// [`crate::descriptor::index_name`], matching the name used by
 /// `ColumnChange::SetIndexed` in the SQL emitter so that any outstanding
@@ -2393,7 +2280,7 @@ fn project_index(idx: &IndexSpec, table: &str) -> IndexSchema {
     // Invariant: unique-bearing variants (`UniqueConstraint` /
     // `UniqueIndex`) must be btree-only — PostgreSQL rejects
     // `CREATE UNIQUE INDEX … USING <non-btree>` and the constraint form
-    // has no `USING` clause at all (Phase 8.5 #83). The macro layer
+    // has no `USING` clause at all (#83). The macro layer
     // rejects `unique(..., using = "<non-btree>")` at compile time. The
     // debug-mode assertion here catches any descriptor that bypasses the
     // macro path (direct `IndexSpec` construction, future code paths)
@@ -2408,7 +2295,7 @@ fn project_index(idx: &IndexSpec, table: &str) -> IndexSchema {
         ) || matches!(idx.index_type, IndexType::BTree),
         "project_index: PostgreSQL unique indexes are btree-only; \
          IndexSpec {name:?} on table {table:?} carries kind {kind:?} \
-         with non-btree index_type {ty:?} (Phase 8.5 #83).",
+         with non-btree index_type {ty:?} (djogi#83).",
         name = idx.name,
         table = table,
         kind = idx.kind,
@@ -2600,7 +2487,7 @@ mod tests {
         assert!(global.models.is_empty());
     }
 
-    /// Phase 8β T3.5 — proxy descriptors are skipped from DDL emission
+    /// 5 — proxy descriptors are skipped from DDL emission
     /// (schema-passthrough). Two proxies of the same parent register
     /// alongside the parent without surfacing a duplicate-table-in-bucket
     /// collision; the parent's projection is the only one that reaches
@@ -2639,7 +2526,7 @@ mod tests {
         assert!(global.models.contains_key("vehicles"));
     }
 
-    /// Phase 8β T3.5 — proxy descriptors registering before the parent
+    /// 5 — proxy descriptors registering before the parent
     /// in inventory iteration order (which is non-deterministic per
     /// `inventory` semantics) still resolve cleanly: the parent's
     /// projection wins regardless of the order proxies appear in the
@@ -2851,7 +2738,6 @@ mod tests {
 
     #[test]
     fn fk_cascade_round_trips_through_foreign_key_schema() {
-        // Codex T3 review B-3: the column's declared `OnDelete` must
         // populate `ForeignKeySchema.on_delete` so the SQL emitter
         // can render the right `ON DELETE ...` clause without
         // silently coercing to RESTRICT.
@@ -3257,13 +3143,12 @@ mod tests {
     /// inlining the clause into `sql_type`, which would route through
     /// `ColumnChange::ChangeType` and emit invalid `ALTER COLUMN ...
     /// TYPE INTEGER GENERATED BY DEFAULT AS IDENTITY` for snapshot
-    /// upgrades — Codex round-1 BLOCK).
-    ///
+    /// upgrades — .
     /// The DDL emitter renders `INTEGER GENERATED BY DEFAULT AS
     /// IDENTITY NOT NULL` from `sql_type = "INTEGER"` plus
     /// `identity = Some(IdentityKindSchema::ByDefault)`. The differ
     /// detects identity additions and emits
-    /// `ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY` —
+    /// `ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY`
     /// the correct PG syntax for adding identity to existing tables.
     #[test]
     fn serial_pk_emits_identity_field_on_id_column() {
@@ -3418,7 +3303,6 @@ mod tests {
 
     #[test]
     fn cross_database_fk_rejected_at_projection() {
-        // Codex T2 review B-3: an FK from a model in one database to
         // a model in another database is structurally invalid
         // (Postgres FKs cannot span databases). Projection rejects
         // before producing a snapshot.
@@ -3474,7 +3358,7 @@ mod tests {
         }
     }
 
-    /// Phase 8β BLOCK-2 — FK targeting a proxy in another database
+    /// FK targeting a proxy in another database
     /// must resolve THROUGH the proxy to its parent and trip
     /// CrossDatabaseForeignKey when the *parent* (not the proxy) lives
     /// in a different database from the source. Today's pre-fix code
@@ -3546,7 +3430,7 @@ mod tests {
         }
     }
 
-    /// Phase 8β BLOCK-2 — FK to a proxy whose `proxy_for` parent is
+    /// FK to a proxy whose `proxy_for` parent is
     /// not registered in the inventory must surface
     /// `ProxyParentNotRegistered`. Without this gate, the FK would
     /// silently emit `REFERENCES <parent_table>(id)` against a table
@@ -3590,7 +3474,7 @@ mod tests {
         }
     }
 
-    /// Phase 8β BLOCK-2 — same-database FK to a proxy whose parent
+    /// Same-database FK to a proxy whose parent
     /// also sits in the same database resolves cleanly. The walker
     /// crosses the proxy and lands on the parent; the cross-DB check
     /// short-circuits because both sides share the database.
@@ -3635,17 +3519,16 @@ mod tests {
         assert_eq!(fk.ref_table, "vehicles");
     }
 
-    // ── Codex T10 round-1 regression tests ──────────────────────────
-    //
-    // The three substrate fixes shipped with T10 (framework-col
+    // ──
+    // The three substrate fixes (framework-col
     // defaults, FK column SQL type substitution, `Jsonb<T>` recognition
     // in the macros' `rust_type_to_sql`) only had indirect coverage
-    // through the live `phase7_t10_sync_models_live.rs` integration
-    // suite. The Codex round-1 review flagged this gap (Concern 1
+    // through the live `sync_models_live.rs` integration
+    // suite. The
     // PARTIAL) — the rules now have direct unit tests so a regression
     // surfaces here without needing a Postgres-backed run.
 
-    /// Phase 7 T10 — framework-injected timestamp columns must carry
+    /// Framework-injected timestamp columns must carry
     /// `DEFAULT now()` so a typed `Model::create` round-trip without an
     /// explicit value picks up server time. Without this the first
     /// INSERT into a freshly-`sync_models`'d table fails with `null
@@ -3686,7 +3569,7 @@ mod tests {
         );
     }
 
-    /// Phase 7 T10 — only the two framework-injected timestamp columns
+    /// Only the two framework-injected timestamp columns
     /// (`created_at`, `updated_at`) receive the `now()` default. A
     /// user-declared Timestamptz column with a different name passes
     /// through with `default_sql = None` so the descriptor layer's
@@ -3714,7 +3597,7 @@ mod tests {
         );
     }
 
-    /// Phase 7 T10 — FK column's SQL type is substituted to match the
+    /// FK column's SQL type is substituted to match the
     /// target model's PK SQL type. The descriptor layer cannot do this
     /// lookup (each model's descriptor is emitted in isolation; the FK
     /// target may live in a separate crate), so the projection is the
@@ -3780,11 +3663,9 @@ mod tests {
         }
     }
 
-    /// Phase 7 T10 — non-FK columns pass through `f.sql_type` verbatim.
+    /// Non-FK columns pass through `f.sql_type` verbatim.
     /// Ensures the substitution only fires when `relation_kind` is
     /// `Some(_)` AND `target_type_name` resolves in the type map.
-    ///
-    /// Codex T10 round-2 sharpened scenario: a non-FK column on the
     /// SAME model where another field is a FK to a model with a DIFFERENT
     /// PK SQL type. If a regression in the substitution rule walked
     /// every column instead of only relation columns, the non-FK column
@@ -3861,7 +3742,6 @@ mod tests {
     }
 
     // ── GH #158 — projection-time relation-registry gate ──────────────────
-    //
     // The full integration (live `inventory::iter::<ReverseRelationMarker>`
     // walk → `project_from_inventory()` failure) is intentionally NOT
     // pinned with a globally-submitted colliding marker: such a submission
@@ -3974,8 +3854,7 @@ mod tests {
         assert!(msg.contains("GH #158"), "missing issue anchor: {msg}");
     }
 
-    // ── djogi#187 — temporal year-bounds CHECK projection ──────────────────
-    //
+    // ── — temporal year-bounds CHECK projection ──────────────────
     // `field_type_check` projects a year ±9999 CHECK on `Date` and
     // `Timestamptz` columns to match `time::Date` and
     // `time::OffsetDateTime` representable range. These arms ship
@@ -4054,7 +3933,7 @@ mod tests {
             "DATE CHECK must place the finite guard before the year bound under AND: {expr}"
         );
         // Confirm the two clauses are syntactically joined under AND
-        // — without that, Postgres would short-circuit on the upper
+        // without that, Postgres would short-circuit on the upper
         // bound alone and admit `-infinity`.
         assert_eq!(
             expr, "pg_catalog.isfinite(\"birthday\") AND \"birthday\" <= DATE '9999-12-31'",
@@ -4132,7 +4011,7 @@ mod tests {
             FieldSqlType::Numeric,
             FieldSqlType::Uuid,
             FieldSqlType::Jsonb,
-            // djogi#369 — BYTEA carries no representable-range constraint;
+            // BYTEA carries no representable-range constraint;
             // raw binary has no Rust-derived CHECK.
             FieldSqlType::Bytea,
             FieldSqlType::TextArray,
@@ -4157,14 +4036,13 @@ mod tests {
         // `i16 → SmallInt`, `i32 → Integer`, `i64 → BigInt` columns have no
         // `rust_source_type` discriminator (`None`). The gate ensures they
         // never receive a narrow/unsigned range CHECK.
-        //
         // A bare-NUMERIC column with `rust_source_type: None` is reached only
         // by user-defined scalar types (`DjogiSqlType::SQL_TYPE = "NUMERIC"`).
         // Those have no representable-range claim that the framework can
         // make on the adopter's behalf, so they keep `check: None`.
         // Adopter `Decimal` columns are NOT in this set — they carry
         // `Some(RustSourceType::Decimal)` and project the structural
-        // CHECK via the Numeric arm of `field_type_check` (djogi#188).
+        // CHECK via the Numeric arm of `field_type_check`.
         for ty in [
             FieldSqlType::SmallInt,
             FieldSqlType::Integer,
@@ -4179,8 +4057,7 @@ mod tests {
         }
     }
 
-    // ── djogi#190 — integer widening CHECK projection (now live) ──────────
-    //
+    // ── — integer widening CHECK projection (now live) ──────────
     // `field_type_check` now emits range CHECKs for the five narrow /
     // unsigned Rust types, gated on the `rust_source_type` discriminator.
     // Each test drives the helper directly and asserts the expression string.
@@ -4270,15 +4147,13 @@ mod tests {
         );
     }
 
-    // ── djogi#190 — integer source-type discriminator projection tests ────
-    //
+    // ── — integer source-type discriminator projection tests ────
     // `project_column` passes `f.rust_source_type` to `field_type_check`.
     // Columns WITHOUT a `rust_source_type` discriminator (i.e. direct-mapped
     // `i16 → SmallInt`, `i32 → Integer`, `i64 → BigInt`) keep `check: None`
-    // — the discriminator gate prevents spurious CHECKs on non-widened
+    // the discriminator gate prevents spurious CHECKs on non-widened
     // columns. Columns WITH a discriminator (`i8/u8/u16/u32/u64`) receive
     // the corresponding range CHECK.
-    //
     // The "guard" tests below assert that direct-mapped integer columns
     // (without `rust_source_type`) remain CHECK-free. The HeerId-backed `id`
     // column (`BigInt`, no discriminator) is the canonical case: if it ever
@@ -4489,10 +4364,9 @@ mod tests {
         );
     }
 
-    // ── djogi#187 — temporal year-bounds projection (live wiring) ──────────
-    //
+    // ── — temporal year-bounds projection (live wiring) ──────────
     // The Date and Timestamptz arms of `field_type_check` ship active
-    // — `FieldSqlType::Date` has a single Rust source type
+    // `FieldSqlType::Date` has a single Rust source type
     // (`time::Date`) and `FieldSqlType::Timestamptz` has a single Rust
     // source type (`time::OffsetDateTime`), so dispatching on
     // `FieldSqlType` alone is unambiguous and the CHECK reaches
@@ -4596,7 +4470,6 @@ mod tests {
         // PK type (not currently supported), FK columns project no
         // Rust-derived CHECK because the FK column's bounds follow
         // the parent's PK shape.
-        //
         // This pin guards against a future regression where FK
         // projection accidentally inherits the CHECK string from the
         // field's `sql_type` rather than the parent's PK type.
@@ -4648,8 +4521,7 @@ mod tests {
         );
     }
 
-    // ── djogi#188 — Decimal structural CHECK projection ────────────────────
-    //
+    // ── — Decimal structural CHECK projection ────────────────────
     // `Decimal` columns (`rust_decimal::Decimal`) lower to `FieldSqlType::Numeric`
     // and carry `Some(RustSourceType::Decimal)`. The projection emits a
     // structural CHECK bounding the value to rust_decimal's representable
@@ -4683,12 +4555,12 @@ mod tests {
     #[test]
     fn field_type_check_decimal_arm_quotes_reserved_word_column() {
         // The Decimal CHECK references the column five times:
-        //   1. outer `({qcol}) IS NULL` pass-through wrap;
-        //   2. `scale({qcol}) IS NOT NULL` (special-value guard);
-        //   3. `scale({qcol}) <= 28` (scale bound);
-        //   4. `abs({qcol})` (coefficient base);
-        //   5. `scale({qcol})` inside `power(10::numeric, ...)` (coefficient
-        //      exponent).
+        // 1. outer `({qcol}) IS NULL` pass-through wrap;
+        // 2. `scale({qcol}) IS NOT NULL` (special-value guard);
+        // 3. `scale({qcol}) <= 28` (scale bound);
+        // 4. `abs({qcol})` (coefficient base);
+        // 5. `scale({qcol})` inside `power(10::numeric, ...)` (coefficient
+        // exponent).
         // All five must round-trip the column name through
         // `quote_ident_for_check` so a reserved-word column name parses
         // cleanly.
@@ -5334,8 +5206,7 @@ mod tests {
         );
     }
 
-    // ── djogi#105 — adopter `#[field(check = "...")]` projection ───────────
-    //
+    // ── — adopter `#[field(check = "...")]` projection ───────────
     // The macro emits `FieldDescriptor::check_sql` from the parsed
     // `#[field(check = "...")]` attribute. The projection layer combines
     // it with any type-derived CHECK via logical `AND` into a single
@@ -5613,7 +5484,6 @@ mod tests {
         // timestamp so the CHECK is satisfied by the column DEFAULT,
         // but external writers (raw migrations, BI tools) can still
         // drift these columns. The CHECK protects against that drift.
-        //
         // This test constructs an explicit `created_at` / `updated_at`
         // descriptor (matching the layout the macro would emit) and
         // verifies the CHECK reaches the projected ColumnSchema. The
@@ -5689,8 +5559,7 @@ mod tests {
         }
     }
 
-    // ── djogi#189 — opt-in HeerId / RanjId structural CHECK ─────────────
-    //
+    // ── — opt-in HeerId / RanjId structural CHECK ─────────────
     // The helper `strict_id_check_expr` maps a HeerRanjID semantic family
     // ([`StrictIdFamily::HeerId`] / [`StrictIdFamily::RanjId`]) to the
     // structural CHECK that enforces the HeeRanjID bit-layout invariants.
@@ -5742,7 +5611,7 @@ mod tests {
 
     #[test]
     fn strict_id_family_of_pk_maps_heeranjid_variants_correctly() {
-        // The dispatch key for djogi#189 strict-ID CHECK projection.
+        // The dispatch key for strict-ID CHECK projection.
         // HeerId / HeerIdDesc → HeerId family (BIGINT carrier);
         // RanjId / RanjIdDesc → RanjId family (UUID carrier);
         // Serial / None / Composite / Custom → None (no HeerRanjID
@@ -5996,18 +5865,17 @@ mod tests {
 
     #[test]
     fn project_column_strict_id_check_skipped_on_custom_bigint_pk_id() {
-        // djogi#189 (post-review hardening) — the framework `id` column
+        // (post-review hardening) — the framework `id` column
         // on a `PkType::Custom { sql_type: "BIGINT", .. }` model must
         // NOT receive the HeerId `col >= 0` CHECK even when
         // `strict_id_check: true` propagated to the descriptor. The
         // Custom PK has no HeerRanjID bit-layout invariant; emitting
         // `col >= 0` would constrain the adopter's custom ID domain at
         // the DB layer without their consent.
-        //
         // The macro is expected to skip propagation for Custom PKs
         // (descriptor.rs `id_strict_id_check` is gated on the family).
         // This test is a belt-and-braces guard against future regressions
-        // — even if the macro mistakenly sets the flag, the projection
+        // even if the macro mistakenly sets the flag, the projection
         // layer's family lookup catches the case.
         const CUSTOM_BIGINT_PK: crate::descriptor::CustomPrimaryKeyKind =
             crate::descriptor::CustomPrimaryKeyKind {
@@ -6043,7 +5911,7 @@ mod tests {
 
     #[test]
     fn project_column_strict_id_check_skipped_on_custom_uuid_pk_id() {
-        // djogi#189 (post-review hardening) — symmetric to the
+        // (post-review hardening) — symmetric to the
         // Custom-BIGINT case: a `PkType::Custom { sql_type: "UUID", .. }`
         // (e.g. an adopter using UUIDv4 application IDs) must NOT
         // receive the RanjId UUIDv8 + RFC 4122 CHECK. The CHECK would
@@ -6081,7 +5949,7 @@ mod tests {
 
     #[test]
     fn project_column_strict_id_check_skipped_on_fk_to_custom_bigint_target() {
-        // djogi#189 (post-review hardening) — `#[model(strict_ids)]` on
+        // (post-review hardening) — `#[model(strict_ids)]` on
         // a HeerId-PK model whose FK column targets a custom BIGINT-shaped
         // PK. The macro propagates `strict_id_check: true` to every FK
         // because it cannot inspect the FK target's PK semantic family
@@ -6144,7 +6012,7 @@ mod tests {
 
     #[test]
     fn project_column_strict_id_check_skipped_on_fk_to_custom_uuid_target() {
-        // djogi#189 (post-review hardening) — symmetric to the
+        // (post-review hardening) — symmetric to the
         // FK-to-Custom-BIGINT case: an FK targeting a `PkType::Custom`
         // with UUID carrier (e.g. a UUIDv4 application ID) must not
         // receive the RanjId UUIDv8 + RFC 4122 CHECK on the FK column.
@@ -6238,17 +6106,15 @@ mod tests {
         );
     }
 
-    /// Class A projection-layer pin (djogi#83 / strict-swe BLOCK-1) —
+    /// Class A projection-layer pin (strict-swe )
     /// the framework PK column must carry `indexed: false` after the
     /// descriptor fix, so the field-level index fanout in
     /// `project_from_iters` must NOT synthesise a `<table>_id_idx`
     /// NonUnique BTree index.
-    ///
     /// Postgres already creates an implicit unique BTree index for the
     /// `PRIMARY KEY` constraint; a second explicit index on the same
     /// column would be redundant and would appear in every adopter's
     /// emitted migrations.
-    ///
     /// **Coverage scope — projection layer only.** The fixture builds a
     /// [`FieldDescriptor`] manually with `indexed: false, unique: true`,
     /// mirroring the post-fix `framework_field_descriptor` emission.
@@ -6260,7 +6126,7 @@ mod tests {
     /// that re-introduces `indexed: true` in any of the five PK strategy
     /// arms). Macro-layer regression detection requires the
     /// `#[djogi_test(sync_models = [...])]` integration test in
-    /// `tests/integration/phase85_pk_index_coverage.rs`.
+    /// `tests/integration/pk_index_coverage.rs`.
     #[test]
     fn framework_pk_does_not_synthesize_id_idx_on_fresh_addtable() {
         // Shape mirrors the post-fix `framework_field_descriptor`
@@ -6297,8 +6163,8 @@ mod tests {
         );
     }
 
-    /// Class C regression guard (djogi#83 / strict-swe FIX_BEFORE_v0.1.0)
-    /// — when a user declares both `#[field(index)]` AND a matching
+    /// Class C regression guard (strict-swe FIX_BEFORE_v0.1.0)
+    /// when a user declares both `#[field(index)]` AND a matching
     /// `#[model(indexes(index(fields = [col])))]` on the same column, the
     /// explicit declaration's modifiers (predicate, INCLUDE, opclass, …)
     /// must be preserved. The field-level synthetic shares the same
@@ -6360,24 +6226,22 @@ mod tests {
         );
     }
 
-    /// Positive field-level synthesis pin (djogi#83 sweep CLASS B —
+    /// Positive field-level synthesis pin (sweep CLASS B
     /// adjacent) — when a non-FK model field carries `indexed: true`
     /// and there is no explicit `#[model(indexes(...))]` declaration
     /// that occupies the same canonical name, the projection must
     /// synthesise exactly one [`IndexSchema`] named
     /// `<table>_<col>_idx` in `global.indexes`.
-    ///
     /// This pin targets the field-level synthesis loop added in commit
     /// 853c42e6. The FK-indexed tests at lines 3662 and 3732 only assert
     /// SQL-type substitution — they do not verify that `global.indexes`
     /// gains an entry. The explicit-wins test above uses `indexed: true`
     /// but exercises the *skip* branch (explicit already present). This
     /// test covers the happy-path *creation* branch.
-    ///
     /// For macro-layer coverage (full descriptor → `sync_models` →
     /// live DDL pipeline), see the integration test
-    /// `phase85_field_index_emitted` in
-    /// `tests/integration/phase85_pk_index_coverage.rs`.
+    /// `field_index_emitted_macro_path` in
+    /// `tests/integration/pk_index_coverage.rs`.
     #[test]
     fn field_indexed_true_synthesises_one_canonical_index_in_global() {
         static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {

@@ -1,7 +1,0 @@
-error: `#[field(domain = "...")]` is not allowed on a relation field (`ForeignKey<T>` / `OneToOneField<T>`, optionally wrapped in `Option<...>`). The FK column's SQL type is determined by the target model's PK type — the adopter cannot override it with a domain reference. Drop the attribute; if the target's PK needs to flow through a domain, declare the domain on the target's PK column instead.
-  --> $DIR/phase8_5_c4_216_domain_on_o2o_field.rs:20:22
-   |
-20 |     #[field(domain = "positive_amount")]
-   |                      ^^^^^^^^^^^^^^^^^
-
-error: aborting due to 1 previous error

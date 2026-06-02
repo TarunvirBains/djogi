@@ -1,9 +1,7 @@
 //! Runtime rollout hooks for live-migration compatibility windows.
-//!
 //! Hooks ship ONLY when mechanically derivable from the live plan
-//! ([§1 D2 OQ-03] — narrow runtime hook surface, locked). Two hook
+//! ([§1 D2 ] — narrow runtime hook surface, locked). Two hook
 //! families today:
-//!
 //! 1. **Dual-read** — during the [`StepKind::ExpandSchema`] window,
 //!    reads consult both the legacy column and the new shadow column.
 //!    The runtime returns the legacy value if present (it is the
@@ -12,46 +10,37 @@
 //! 2. **Dual-write** — while both legacy and new columns exist,
 //!    writes update both columns; [`StepKind::CutoverWrites`] drops
 //!    the legacy update.
-//!
-//! Both hook families are derived from the live plan's step graph —
-//! adopter code does NOT register handlers. The runner activates the
-//! hooks when stepping through [`StepKind::BeginCompatibilityWindow`]
-//! and deactivates them at [`StepKind::CutoverReads`] (drops dual-read)
-//! and [`StepKind::CutoverWrites`] (drops dual-write).
-//!
-//! Business-specific branching is explicitly NOT supported — those
-//! hooks live in app code.
-//!
+//!    Both hook families are derived from the live plan's step graph
+//!    adopter code does NOT register handlers. The runner activates the
+//!    hooks when stepping through [`StepKind::BeginCompatibilityWindow`]
+//!    and deactivates them at [`StepKind::CutoverReads`] (drops dual-read)
+//!    and [`StepKind::CutoverWrites`] (drops dual-write).
+//!    Business-specific branching is explicitly NOT supported — those
+//!    hooks live in app code.
 //! # Hook ID convention
-//!
 //! Pattern emitters in [`crate::live_migrate::patterns`] encode hook
 //! identities as strings inside
 //! [`StepParameters::BeginCompatibilityWindow::hooks`]. The format
 //! uses `::` (two colons) as the field separator so plain colons
 //! inside payload bytes do not need escaping. Two grammars are
 //! recognised:
-//!
 //! ```text
 //! dual_read::<table>::<column>
 //! dual_write::<table>::<column>
 //! dual_read::codec::<table>::<column>::<from_codec>
 //! dual_write::codec::<table>::<column>::<from_codec>-><to_codec>
 //! ```
-//!
 //! For the **non-codec** form, the shadow column is derived as
 //! `<column>_new` — that is the
 //! [`crate::live_migrate::patterns::replacement_column`] convention.
 //! For the **codec** form, the shadow column carries the same suffix
 //! (`<column>_new`) and the codec transition function is recorded as
 //! `<from_codec>-><to_codec>` for the dual-write hook.
-//!
 //! Pattern emitters that wish to register additional hooks must use
-//! one of the two grammars above; T9 does not currently extend the
-//! parser past `dual_read` / `dual_write` because OQ-03 forbids
+//! one of the two grammars above; the parser currently does not extend
+//! parser past `dual_read` / `dual_write` because forbids
 //! business-logic branching.
-//!
 //! # What this module does NOT do
-//!
 //! - It does **not** wire the consumer side into the model save path
 //!   or the visage projection layer. That wiring is a follow-up;
 //!   today's surface is the `ActiveHooks` snapshot data structure and
@@ -61,13 +50,12 @@
 //! - It does **not** poll the database for hook activation. The only
 //!   I/O surface is [`side_effects_suppressed`], which queries the
 //!   per-session GUC set by the chunked backfill runner.
-//!
-//! [§1 D2 OQ-03]: https://github.com/djogi/djogi-spec
-//! [`StepKind::ExpandSchema`]: crate::live_migrate::plan::StepKind::ExpandSchema
-//! [`StepKind::BeginCompatibilityWindow`]: crate::live_migrate::plan::StepKind::BeginCompatibilityWindow
-//! [`StepKind::CutoverReads`]: crate::live_migrate::plan::StepKind::CutoverReads
-//! [`StepKind::CutoverWrites`]: crate::live_migrate::plan::StepKind::CutoverWrites
-//! [`StepParameters::BeginCompatibilityWindow::hooks`]: crate::live_migrate::plan::StepParameters::BeginCompatibilityWindow
+//!   [§1 D2 ]: https://github.com/djogi/djogi-spec
+//!   [`StepKind::ExpandSchema`]: crate::live_migrate::plan::StepKind::ExpandSchema
+//!   [`StepKind::BeginCompatibilityWindow`]: crate::live_migrate::plan::StepKind::BeginCompatibilityWindow
+//!   [`StepKind::CutoverReads`]: crate::live_migrate::plan::StepKind::CutoverReads
+//!   [`StepKind::CutoverWrites`]: crate::live_migrate::plan::StepKind::CutoverWrites
+//!   [`StepParameters::BeginCompatibilityWindow::hooks`]: crate::live_migrate::plan::StepParameters::BeginCompatibilityWindow
 
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
@@ -80,7 +68,6 @@ use crate::live_migrate::plan::{LivePlan, StepKind, StepParameters};
 /// window. While active, runtime reads consult `legacy_column` first
 /// and fall back to `shadow_column` only when the legacy value is
 /// absent on the row.
-///
 /// The pair is keyed by `table` + `legacy_column` because there is
 /// at most one ongoing replacement per legacy column at a time.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -122,7 +109,6 @@ pub struct DualWriteHook {
 /// Snapshot of which hook families are active at a particular point
 /// in a live plan's execution. Read by the model emit pipeline and
 /// the visage projection layer at the start of each operation.
-///
 /// The snapshot is a value type — cheap to clone, no internal
 /// references, safe to ferry across `await` points.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -135,8 +121,7 @@ pub struct ActiveHooks {
     /// the active step. The flag is stepwise: it goes back to `false`
     /// at the next step boundary. Consumers use this to short-circuit
     /// outbox / event emission for rows the backfill itself touched
-    /// — those events would otherwise duplicate the original write.
-    ///
+    /// those events would otherwise duplicate the original write.
     /// Note: this is the same intent as the per-chunk transaction's
     /// session GUC ([`SIDE_EFFECT_SUPPRESSION_TXN_LOCAL`]) but operates
     /// at plan granularity rather than transaction granularity. The
@@ -167,7 +152,7 @@ const CODEC_MARKER: &str = "codec";
 /// Suffix appended to the legacy column name to derive the shadow
 /// column name. Convention pinned by
 /// [`crate::live_migrate::patterns::replacement_column`] and reused
-/// by [`crate::live_migrate::patterns::codec_transition`]; T9 follows
+/// by [`crate::live_migrate::patterns::codec_transition`]; the codec-transition pattern follows
 /// the same convention so the snapshot's `shadow_column` field is
 /// machine-derivable from the hook ID alone.
 const SHADOW_SUFFIX: &str = "_new";
@@ -180,16 +165,13 @@ enum ParsedHook {
 }
 
 /// Parse one hook identifier in the canonical pattern-emitter format.
-///
 /// Accepted shapes:
-///
 /// ```text
 /// dual_read::<table>::<column>
 /// dual_write::<table>::<column>
 /// dual_read::codec::<table>::<column>::<from_codec>
 /// dual_write::codec::<table>::<column>::<from_codec>-><to_codec>
 /// ```
-///
 /// Returns [`HookError::MalformedHookId`] for any other shape. The
 /// parser is a byte-level scan over the `::`-separated tokens — no
 /// regex (per CLAUDE.md) and no allocation beyond the resulting
@@ -247,10 +229,8 @@ fn parse_hook_id(id: &str) -> Result<ParsedHook, HookError> {
 /// Walk the live plan up to (and including) the given step ordinal
 /// and produce the [`ActiveHooks`] snapshot. Pure function — same
 /// plan + same ordinal always yields the same snapshot.
-///
 /// The walker emulates the runner's state machine without executing
 /// any DDL or DML:
-///
 /// 1. `BeginCompatibilityWindow` registers the dual-read / dual-write
 ///    pairs encoded in its `hooks: Vec<String>` field.
 /// 2. `CutoverReads` drops every active `DualReadHook`.
@@ -259,15 +239,13 @@ fn parse_hook_id(id: &str) -> Result<ParsedHook, HookError> {
 ///    the duration of that step; the flag goes back to `false` at the
 ///    next step boundary. (Consumers needing transaction-grained
 ///    suppression should consult [`side_effects_suppressed`] instead.)
-///
-/// `step_ordinal` is the zero-based position at which the snapshot is
-/// taken. Ordinals beyond the plan's step count saturate at the
-/// terminal state — the snapshot returns the state after the last
-/// step has run.
-///
-/// Returns `Err(HookError::MalformedHookId)` if any
-/// `BeginCompatibilityWindow` step carries a hook ID outside the
-/// canonical pattern-emitter grammar.
+///    `step_ordinal` is the zero-based position at which the snapshot is
+///    taken. Ordinals beyond the plan's step count saturate at the
+///    terminal state — the snapshot returns the state after the last
+///    step has run.
+///    Returns `Err(HookError::MalformedHookId)` if any
+///    `BeginCompatibilityWindow` step carries a hook ID outside the
+///    canonical pattern-emitter grammar.
 pub fn active_hooks_at_step(plan: &LivePlan, step_ordinal: u32) -> Result<ActiveHooks, HookError> {
     let mut snapshot = ActiveHooks::default();
 
@@ -312,18 +290,16 @@ pub fn active_hooks_at_step(plan: &LivePlan, step_ordinal: u32) -> Result<Active
 // ── Side-effect suppression flag consumer ─────────────────────────────
 
 /// Returns `true` if the current Postgres session has the
-/// live-migrate side-effect suppression flag active. Set by T7's
+/// live-migrate side-effect suppression flag active. Set by the
 /// chunk-transaction wrapper via `SET LOCAL`; this function reads
 /// it back via `current_setting('<name>', true)` (the second argument
 /// `true` is `missing_ok` — Postgres returns NULL rather than erroring
 /// when the GUC is unset).
-///
 /// Used by `#[model(events)]` emitters and the visage projection
 /// fan-out to short-circuit work that would duplicate or contradict
 /// the backfill itself.
-///
 /// The GUC name is shared with [`SIDE_EFFECT_SUPPRESSION_TXN_LOCAL`]
-/// so producer (T7) and consumer (this function) cannot drift.
+/// so the setter and this reader cannot drift.
 pub async fn side_effects_suppressed(ctx: &mut DjogiContext) -> Result<bool, HookError> {
     let sql = format!(
         "SELECT current_setting('{name}', true)",
@@ -349,7 +325,6 @@ pub async fn side_effects_suppressed(ctx: &mut DjogiContext) -> Result<bool, Hoo
 // ── Errors ────────────────────────────────────────────────────────────
 
 /// Errors raised by the hooks module.
-///
 /// `#[non_exhaustive]` so future hook families (or stricter parser
 /// rejections) can land without breaking downstream matches.
 #[derive(Debug, thiserror::Error)]

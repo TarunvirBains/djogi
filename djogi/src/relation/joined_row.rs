@@ -1,23 +1,18 @@
 //! `JoinedRow<T>` — the post-`select_related` row wrapper.
-//!
 //! # What
-//!
 //! [`JoinedRow<T>`] pairs a parent-query row with the child rows the
 //! `LEFT JOIN` materialised for it in the same round trip. User code
 //! obtains a `Vec<JoinedRow<T>>` from
 //! [`QuerySet::fetch_all_joined`](crate::query::QuerySet::fetch_all_joined)
 //! and reads joined relations via [`JoinedRow::get`], typed by the same
 //! `RelationPath<Source, Target>` that was passed to `.select_related(...)`.
-//!
 //! The wrapper shape mirrors [`PrefetchedRow<T>`](crate::relation::PrefetchedRow)
-//! — same `row` field, same `get(path)` accessor, same `&'static str`
+//! same `row` field, same `get(path)` accessor, same `&'static str`
 //! source-column key on the resolved-relations map. The *decoding path*
 //! differs: prefetch issues a follow-up query and decodes the child's
 //! columns from their own result set, while select_related decodes the
 //! child from the **same** row as the parent, under aliased column names.
-//!
 //! # Why a new wrapper (not reuse `PrefetchedRow`)
-//!
 //! The two terminals produce structurally identical maps from
 //! `source_column -> Box<dyn Any>`, but they ship on opt-in terminals
 //! (`fetch_all_prefetched` / `fetch_all_joined`) with distinct generic
@@ -31,14 +26,11 @@
 //! the reader prefetch ran. A future amendment could collapse them
 //! behind a shared `RelatedRow<T>` trait, but the phase-3 priority is
 //! clarity of mechanism at the API boundary.
-//!
 //! # How the SQL carries both sides through one row
-//!
 //! The parent table's columns come through the result set unqualified
 //! (`id`, `make`, `owner_id`, …). Each joined child's columns are
 //! aliased in the SELECT list under a prefix derived from the
 //! [`RelationPath::source_column`]:
-//!
 //! ```sql
 //! SELECT vehicles_p3.*,
 //!        rel_owner_id.id   AS "rel_owner_id.id",
@@ -47,21 +39,18 @@
 //! FROM vehicles_p3
 //! LEFT JOIN owners_p3 rel_owner_id ON vehicles_p3.owner_id = rel_owner_id.id
 //! ```
-//!
 //! The quoted alias `"rel_owner_id.id"` embeds a literal dot, matching
 //! the table-qualified shape Postgres would emit for a `.select(t.*)`
 //! cross-table projection. `row.try_get("rel_owner_id.id")` returns
 //! the child's `id` — and `try_get_raw("rel_owner_id.id").is_null()`
 //! distinguishes LEFT JOIN misses (all child columns NULL) from live
 //! child rows, matching the probe Task 4's prefetch loader established.
-//!
 //! # Where
-//!
 //! Consumed by [`crate::relation::select_related::apply_select_related`]
 //! and emitted from [`crate::query::terminal::QuerySet::fetch_all_joined`].
 //! The post-fetch wrapper is returned as-is to user code — there is no
 //! terminal-free "join this and forget about prefetch" access path in
-//! Phase 3; callers consume the typed handle or reach for the raw
+//! ; callers consume the typed handle or reach for the raw
 //! `ctx.raw_execute` / `ctx.raw_scalar` escape hatch.
 
 use crate::model::Model;
@@ -71,14 +60,11 @@ use std::collections::HashMap;
 
 /// Post-`select_related` wrapper pairing a main-query row with joined
 /// relations.
-///
 /// Produced by
 /// [`QuerySet::fetch_all_joined`](crate::query::QuerySet::fetch_all_joined).
 /// Access the underlying row via the public [`JoinedRow::row`] field and
 /// joined relations via [`JoinedRow::get`].
-///
 /// # Why the relations map keys on `&'static str`
-///
 /// Same reasoning as [`PrefetchedRow`](crate::relation::PrefetchedRow):
 /// two paths can legitimately point at the same target type (e.g.
 /// `author: ForeignKey<User>` and `editor: ForeignKey<User>` on a
@@ -86,9 +72,7 @@ use std::collections::HashMap;
 /// source column name is the natural discriminator — unique per
 /// relation by macro-emission rules and directly available on every
 /// [`RelationPath`].
-///
 /// # Ownership
-///
 /// `Box<dyn Any + Send + Sync>` lets the map carry heterogeneous child
 /// types without a variadic generic; `Send + Sync` propagates so
 /// `Vec<JoinedRow<T>>` can cross async task boundaries. When a path is
@@ -127,14 +111,12 @@ impl<T: Model + std::fmt::Debug> std::fmt::Debug for JoinedRow<T> {
 
 impl<T: Model> JoinedRow<T> {
     /// Look up a joined relation by its [`RelationPath`].
-    ///
     /// Returns `Some(&Target)` when the main-query row carried a
     /// non-null FK **and** the child row existed at join time. Returns
     /// `None` for nullable FKs whose column was `NULL`, for FKs pointing
     /// at child rows that were missing (LEFT JOIN miss), and for any
     /// path that was never registered via
     /// [`QuerySet::select_related`](crate::query::QuerySet::select_related).
-    ///
     /// The typed `RelationPath<T, Target>` argument means mismatched
     /// target types fail at the type level — a
     /// `RelationPath<Vehicle, Owner>` can only be read back as
@@ -264,7 +246,7 @@ mod tests {
     #[test]
     fn joined_row_debug_lists_relation_keys() {
         // Debug output should name the joined-relation columns so
-        // operators can see which relations attached at a glance —
+        // operators can see which relations attached at a glance
         // parity with PrefetchedRow's Debug shape.
         let mut relations: HashMap<&'static str, Box<dyn Any + Send + Sync>> = HashMap::new();
         relations.insert("child_id", Box::new(Child) as Box<dyn Any + Send + Sync>);

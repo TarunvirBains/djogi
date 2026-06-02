@@ -1,31 +1,24 @@
 //! Generates `{Model}OuterRef` — the typed outer-scope column-reference bag
 //! used to build correlated subqueries.
-//!
 //! # `{Model}OuterRef`
-//!
 //! A ZST whose inherent associated functions (no receiver — they are
 //! called as `AccountOuterRef::balance()`, not `account_outer_ref.balance()`)
 //! return [`OuterRef<Self, V>`](::djogi::expr::OuterRef) for every column,
 //! framework and user alike. The emission order mirrors [`stubs`]:
-//!
 //! 1. `id` — present for `pk = HeerId | RanjId | HeerIdDesc | RanjIdDesc |
-//!    Serial`; omitted for `pk = None`.
+//! Serial`; omitted for `pk = None`.
 //! 2. `created_at`, `updated_at` — always emitted.
 //! 3. User-declared columns in struct source order.
-//!
-//! The `OuterRef`'s `V` generic is the user's declared Rust type verbatim
-//! — exactly like `{Model}Fields`. The typed `V` makes a correlated
-//! subquery like `outer_ref_on<V1>().as_expr().eq(field_ref_on<V2>().as_expr())`
-//! a compile error unless `V1 == V2`, catching value-type mismatches at
-//! the closure site rather than as a Postgres runtime error.
-//!
+//!    The `OuterRef`'s `V` generic is the user's declared Rust type verbatim
+//!    exactly like `{Model}Fields`. The typed `V` makes a correlated
+//!    subquery like `outer_ref_on<V1>().as_expr().eq(field_ref_on<V2>().as_expr())`
+//!    a compile error unless `V1 == V2`, catching value-type mismatches at
+//!    the closure site rather than as a Postgres runtime error.
 //! # Why associated functions (not methods)
-//!
 //! `OuterRef` does not carry any per-instance state — it is a typed
 //! handle that erases to a `&'static str` column name at construction.
 //! The canonical call site is inside a correlated subquery's
 //! `filter_expr` closure:
-//!
 //! ```ignore
 //! Account::objects()
 //!     .filter_expr(|_| Exists::new(
@@ -35,24 +28,19 @@
 //!         })
 //!     ).as_expr())
 //! ```
-//!
 //! Associated-function syntax (`AccountOuterRef::id()` — no receiver)
 //! reads naturally because there is no value to receive on; `Fields`
 //! methods take `&self` only because the closure receives a
 //! default-constructed `T::Fields` value and dots into it. Outer refs
 //! have no such carrier — they reference the enclosing scope, which is
 //! a compile-time concept, not a runtime value.
-//!
 //! # `pk = None`
-//!
 //! Same gate as [`crate::model::stubs`] / [`crate::model::crud`]: models
 //! that opt out of a PK do not get `impl Model`, so `OuterRef<M, V>`
 //! (which is bounded `M: Model`) cannot resolve. Emitting accessors here
 //! for those models would fail at E0277; mirror the Phase-1 empty-stub
 //! gate instead.
-//!
 //! # Path routing
-//!
 //! All emitted type references go through `::djogi::expr::*` and
 //! `::djogi::types::*` — matching the project rule that macro-emitted
 //! code never reaches into `heeranjid` / `time` / `uuid` directly.
@@ -63,7 +51,6 @@ use quote::{format_ident, quote};
 use syn::ItemStruct;
 
 /// Emit `{Model}OuterRef` with one associated function per column.
-///
 /// `struct_item` is the post-injection struct: its `fields` list already
 /// has the framework-injected columns (`id` / `created_at` /
 /// `updated_at`) at the front in the same order `descriptor::expand`
@@ -100,14 +87,12 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
                     /// Typed outer-scope handle for this column — use
                     /// inside a correlated subquery's `filter_expr`
                     /// closure to reference the enclosing scope.
-                    ///
                     /// Returns an [`OuterRef`] carrying the column name
                     /// plus phantom markers that bind it to this model
                     /// and the column's Rust type. Call `.as_expr()` to
                     /// produce an `Expr<V>` for composition with
                     /// `.eq` / arithmetic / other expression-IR
                     /// consumers.
-                    ///
                     /// [`OuterRef`]: ::djogi::expr::OuterRef
                     #[inline]
                     pub fn #ident() -> ::djogi::expr::OuterRef<#name, #ty> {
@@ -129,7 +114,6 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
 
     quote! {
         /// Typed outer-scope column references for correlated subqueries.
-        ///
         /// Each inherent associated function returns an
         /// [`OuterRef`](::djogi::expr::OuterRef) for one column; call
         /// `.as_expr()` on the handle to produce an
@@ -138,7 +122,6 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         /// for inner-scope column references but emits an outer-scope
         /// reference (unqualified column name — Postgres resolves against
         /// the enclosing query scope).
-        ///
         /// `Default` is derived so downstream code can trivially
         /// construct the ZST if some future API wants an instance-style
         /// handle; today every method is an associated function with no

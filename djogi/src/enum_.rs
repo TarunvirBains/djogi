@@ -1,22 +1,17 @@
 //! Runtime glue for `#[derive(DjogiEnum)]`.
-//!
 //! Most of the codec logic (ToSql / FromSql impls) is generated per-enum by the proc macro.
 //! This module holds shared error types and re-exports that complete the runtime surface.
-//!
 //! # Design
-//!
 //! A Postgres enum column round-trips as a string on the wire. `#[derive(DjogiEnum)]`
 //! generates:
-//!
 //! 1. `ToSql` — encodes `self` as the mapped string label.
 //! 2. `FromSql` — decodes a wire string, matches against known variants, returns
 //!    `Err(EnumDecodeError::UnknownVariant { ... })` for unrecognised labels.
 //! 3. `inventory::submit!(EnumDescriptor { ... })` — registers the enum's metadata so
-//!    the Phase 7 migration differ can emit `CREATE TYPE ... AS ENUM (...)`.
+//!    the migration differ can emit `CREATE TYPE ... AS ENUM (...)`.
 //! 4. A `variants()` convenience fn returning the mapped string slice.
 
 /// Decode failed: the Postgres wire string did not match any known variant.
-///
 /// Returned (boxed) from `FromSql::from_sql` when the wire bytes decode to a string that
 /// is not in the enum's variant map. The `postgres_type` field names the Postgres enum
 /// type (e.g. `"vehicle_status"`) so error messages identify the column clearly.

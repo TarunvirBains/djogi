@@ -1,0 +1,7 @@
+error: derived visage scope `public` overlaps relation-form exposure `department` in the same scope; derived fields and relation-form embedding are not combinable until the relation projector emits derived expressions (E_DJG_VDF_010)
+  --> $DIR/derived_relation_form_overlap.rs:22:15
+   |
+22 |     scopes = [public],
+   |               ^^^^^^
+
+error: aborting due to 1 previous error

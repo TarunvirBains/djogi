@@ -1,26 +1,23 @@
 //! Nullable add → backfill → `SET NOT NULL` finalize pattern.
-//!
 //! Covers the "Add NOT NULL constraint to populated table" row of the
 //! v3 plan §7 classification table. The descriptor change that
 //! triggers this pattern is an
 //! [`AlterColumn`](SchemaOperation::AlterColumn) carrying
 //! [`ColumnChange::SetNullable(false)`] — i.e. an existing nullable
 //! column being tightened to `NOT NULL`. The column itself was added
-//! as nullable in an earlier Phase 7 segment; this pattern handles
+//! as nullable in an earlier segment; this pattern handles
 //! the finalization step graph that makes the constraint flip safe
 //! against live writers.
-//!
 //! # Step graph
-//!
 //! 1. [`StepKind::ExpandSchema`] — sentinel record. The actual
-//!    `ADD COLUMN` happened in Phase 7 (or in a previous live plan
+//!    `ADD COLUMN` happened in (or in a previous live plan
 //!    via [`replacement_column`](super::replacement_column)); this
 //!    pattern records a no-op expand fragment so the plan-file shape
 //!    matches the canonical expand → validate → finalize sequence
 //!    other patterns share.
 //! 2. [`StepKind::ValidateBackfill`] — operator gate. The runner
 //!    pauses until `SELECT count(*) FROM <table> WHERE <col> IS
-//!    NULL` returns zero. Filling existing NULL rows is the
+//! NULL` returns zero. Filling existing NULL rows is the
 //!    operator's responsibility — the
 //!    [`SchemaOperation::AlterColumn`] delta carrying
 //!    [`ColumnChange::SetNullable(false)`] does NOT itself supply a
@@ -31,10 +28,8 @@
 //!    [`super::three_step_default`] / [`super::replacement_column`]
 //!    when an expression is available.
 //! 3. [`StepKind::FinalizeConstraints`] — `ALTER TABLE <table> ALTER
-//!    COLUMN <col> SET NOT NULL`.
-//!
+//! COLUMN <col> SET NOT NULL`.
 //! # Idempotency
-//!
 //! The validate gate is naturally idempotent: re-checking the
 //! `WHERE <col> IS NULL` count is read-only. The pattern emits no
 //! chunked backfill, so the §3 idempotent-predicate contract is
@@ -61,7 +56,7 @@ pub struct NullableNotNull;
 
 impl Pattern for NullableNotNull {
     const ID: &'static str = "nullable_not_null";
-    /// `false` because this pattern never emits a chunked backfill —
+    /// `false` because this pattern never emits a chunked backfill
     /// the §3 idempotent-predicate contract is therefore satisfied
     /// vacuously. See the module-level docstring for why no chunked
     /// step ships.

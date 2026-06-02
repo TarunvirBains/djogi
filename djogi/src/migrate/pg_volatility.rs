@@ -1,5 +1,4 @@
 //! Postgres 18 built-in default-expression volatility lookup.
-//!
 //! The online-safety classifier walks `DEFAULT` expressions on
 //! [`crate::migrate::SchemaOperation::AddColumn`] / `AlterColumn`
 //! operations and asks "would Pg18 catalog-fast-path this default,
@@ -9,9 +8,7 @@
 //! expressions catalog-fast-path; `VOLATILE` ones force a backfill
 //! per Pg18 release notes (catalog-only fast-path is gated on the
 //! default being non-volatile).
-//!
 //! # Why a static table
-//!
 //! The classifier is required to be **pure** — given the same two
 //! descriptor states it must always produce the same classification
 //! (per §7 plan and `feedback_completionist_lens.md`). Reading
@@ -21,7 +18,6 @@
 //! extensions, or which contrib functions happen to be installed on
 //! the operator's machine. That is the kind of latent inconsistency
 //! that makes `git diff schema_snapshot.json` reviews unreliable.
-//!
 //! Instead, this module ships a Djogi-owned static slice of every
 //! Pg18 built-in identifier the classifier needs to recognise.
 //! Lookup is a simple `binary_search` against the sorted slice. The
@@ -29,9 +25,7 @@
 //! (no per-machine variation), zero-allocation (no `HashMap`
 //! initialisation), and the sortedness invariant is asserted in a
 //! unit test so additions cannot silently break the binary search.
-//!
 //! # Conservative fallback
-//!
 //! Identifiers absent from the table — user-defined functions,
 //! extension-shipped helpers Djogi cannot enumerate — classify as
 //! [`Volatility::Volatile`]. That is the safe direction: an unknown
@@ -41,28 +35,21 @@
 //! catalog-only `ADD COLUMN ... DEFAULT <volatile>()` that Postgres
 //! accepts but the classifier promised would not require backfill,
 //! producing the wrong runtime behaviour.
-//!
 //! Adopters with a known-safe UDF override per-field via
 //! `#[field(default_volatility = "stable" | "immutable" | "volatile")]`
-//! (parsed by Phase 7.5 T3 — see
+//! (parsed by see
 //! [`crate::descriptor::DefaultVolatility`]).
-//!
 //! # §7 routing
-//!
 //! - `IMMUTABLE` / `STABLE` defaults: `OnlineSafe` (Pg18 catalog-only
 //!   fast-path).
 //! - `VOLATILE` defaults: `ExpandContract` (3-step pattern — add
 //!   nullable column with no default → SET DEFAULT → chunked
 //!   backfill).
-//!
-//! See `docs/superpowers/plans/2026-04-23-phase7-5-live-migrations-and-protected-data-v3.md`
-//! §7 (the classification table) for the full routing matrix.
+//!   See `docs/spec/live-migrations.md` for the full routing matrix.
 
 /// Postgres `provolatile` category lifted into Rust.
-///
 /// Mirrors the Pg18 `pg_proc.provolatile` axis; the variant order
 /// matches Postgres' own ordering of "least to most variable".
-///
 /// `#[non_exhaustive]` so future Postgres categories (or refinements
 /// like a `Leakproof` axis) can land without breaking downstream
 /// matches.
@@ -81,11 +68,9 @@ pub enum Volatility {
 
 /// Sorted slice of `(identifier, volatility)` pairs for every Pg18
 /// built-in the classifier needs to recognise.
-///
 /// **Sort invariant.** Entries are sorted lexicographically by
 /// identifier. `binary_search_by_key` depends on this — a unit test
 /// asserts the invariant and any future addition must preserve it.
-///
 /// **Identifier shape.** Built-ins that take no arguments are stored
 /// with their parenthesised call form (`now()`, `clock_timestamp()`)
 /// because that is the literal text the classifier sees inside a
@@ -96,7 +81,6 @@ pub enum Volatility {
 /// the two shapes — Postgres treats `now()` and `now` differently
 /// (the first is a function call, the second is an identifier
 /// reference) and the classifier preserves that distinction.
-///
 /// **Why both `current_timestamp` cases.** Postgres accepts SQL
 /// keywords case-insensitively, so the table holds both forms the
 /// classifier is likely to see in a descriptor's `default_sql`
@@ -125,9 +109,7 @@ const BUILTIN_VOLATILITY: &[(&str, Volatility)] = &[
 ];
 
 /// Classify a `DEFAULT` expression's volatility.
-///
 /// Resolution order:
-///
 /// 1. Trim ASCII whitespace.
 /// 2. Recognise literal shapes — string literals (`'...'` /
 ///    `E'...'` / dollar-quoted), numeric literals, boolean
@@ -141,11 +123,8 @@ const BUILTIN_VOLATILITY: &[(&str, Volatility)] = &[
 ///    default. Per the module-level docs, unknown identifiers must
 ///    route through the 3-step ExpandContract path because we cannot
 ///    prove they are safe to catalog-fast-path.
-///
-/// The classifier never reads `pg_catalog`. Compose stays pure.
-///
+///    The classifier never reads `pg_catalog`. Compose stays pure.
 /// # Examples
-///
 /// ```ignore
 /// use djogi::migrate::pg_volatility::{Volatility, classify_default_expression};
 ///
@@ -173,7 +152,6 @@ pub fn classify_default_expression(expr: &str) -> Volatility {
 
 /// Recognise the four literal shapes Postgres accepts in a `DEFAULT`
 /// expression: string, numeric, boolean, and `NULL`.
-///
 /// **The entire trimmed expression must be a single literal token.**
 /// Compound expressions like `1 + random()` are NOT literals — the
 /// presence of operators, function-call parentheses, or whitespace
@@ -182,9 +160,7 @@ pub fn classify_default_expression(expr: &str) -> Volatility {
 /// for those would route a volatile compound default through the
 /// Immutable fast-path, silently skipping the 3-step ExpandContract
 /// pattern Pg18 requires.
-///
 /// Plain-English shape rules, implemented with byte-level checks only:
-///
 /// - **String literal.** Trimmed expression starts AND ends with a
 ///   single quote `'`, OR is `E'...'` / `e'...'` (escape-string
 ///   syntax) starting with the prefix and ending with `'`, OR is
@@ -224,7 +200,7 @@ fn is_literal_shape(expr: &str) -> bool {
     if is_single_quoted_run(bytes, 0) {
         return true;
     }
-    // E-strings allow C-style backslash escapes inside the literal —
+    // E-strings allow C-style backslash escapes inside the literal
     // `E'it\'s'` is a single literal whose body holds an apostrophe.
     // Plain `'...'` runs do not interpret backslash escapes (only the
     // `''` doubled-quote form), so the two paths use different
@@ -421,7 +397,7 @@ mod tests {
         }
     }
 
-    /// The binary-search lookup also requires no duplicate keys —
+    /// The binary-search lookup also requires no duplicate keys
     /// the strict `<` in the sortedness assertion catches duplicates,
     /// but a second test asserts the property explicitly so a future
     /// refactor of the sort assertion (e.g. relaxing to `<=`) cannot
@@ -618,7 +594,7 @@ mod tests {
 
     #[test]
     fn is_literal_shape_rejects_compound_numeric_expressions() {
-        // `1 + random()` starts with a digit but is not a pure literal —
+        // `1 + random` starts with a digit but is not a pure literal
         // the operator and function call mean Postgres evaluates the
         // expression at write time and the volatility of any sub-call
         // dominates. The classifier MUST NOT short-circuit to Immutable.

@@ -9,9 +9,9 @@ error[E0599]: `AsGeobufTerminal<TileFeature, djogi::query::EmptyAnnotation>` is 
    | |_________|
    |
    |
-  ::: djogi/src/query/row_aggregate_terminal.rs:94:1
+  ::: djogi/src/query/row_aggregate_terminal.rs:82:1
    |
-94 |   pub struct AsGeobufTerminal<T: Model, A: IntoAggregateTuple> {
+82 |   pub struct AsGeobufTerminal<T: Model, A: IntoAggregateTuple> {
    |   ------------------------------------------------------------ doesn't satisfy `_: Iterator`
    |
    = note: the following trait bounds were not satisfied:

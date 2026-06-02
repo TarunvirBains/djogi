@@ -1,28 +1,22 @@
 //! Backfill-before-tightening pattern.
-//!
 //! Covers the "Add FK constraint to populated table > validation
 //! threshold" and "Add composite unique" rows of the v3 plan §7
 //! classification table when existing rows must first be scrubbed to
-//! satisfy the constraint. The Phase 7 segment that adds the
+//! satisfy the constraint. The segment that adds the
 //! constraint emitted it `NOT VALID` (or added the column with the FK
 //! left dangling); this pattern handles the data-cleaning step graph
 //! before the operator-driven `VALIDATE`.
-//!
 //! # Operation shape
-//!
 //! Accepts [`AddForeignKey`](SchemaOperation::AddForeignKey) — the
 //! delta carries the FK's target table / column so the gate query
 //! and finalize SQL can reference both endpoints.
-//!
 //! # Step graph
-//!
-//! 1. [`StepKind::ExpandSchema`] — sentinel record. Phase 7 already
+//! 1. [`StepKind::ExpandSchema`] — sentinel record. already
 //!    added the column / `NOT VALID` constraint; this pattern owns
 //!    only the validation half.
 //! 2. [`StepKind::BackfillChunked`] — UPDATE rows whose `<col>`
 //!    fails the FK predicate. The pattern emits a complete
 //!    UPDATE-tail fragment of the shape
-//!
 //!    ```sql
 //!    SET <col> = NULL
 //!    WHERE id IN (SELECT id FROM <table>
@@ -30,15 +24,14 @@
 //!                   AND <col> NOT IN (SELECT <ref_col> FROM <ref_table>)
 //!                 LIMIT $1)
 //!    ```
-//!
-//!    Idempotent — once the offending rows have been nulled (or
-//!    remediated by the operator out-of-band), they fall out of the
-//!    inner predicate forever. `LIMIT $1` bounds the row count to one
-//!    chunk; `$1` is the only placeholder the runner binds.
+//! Idempotent — once the offending rows have been nulled (or
+//! remediated by the operator out-of-band), they fall out of the
+//! inner predicate forever. `LIMIT $1` bounds the row count to one
+//! chunk; `$1` is the only placeholder the runner binds.
 //! 3. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//!    until the count of violators is zero.
+//! until the count of violators is zero.
 //! 4. [`StepKind::FinalizeConstraints`] — `ALTER TABLE <t> VALIDATE
-//!    CONSTRAINT <name>`.
+//! CONSTRAINT <name>`.
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};

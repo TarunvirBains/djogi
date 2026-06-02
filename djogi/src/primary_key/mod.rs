@@ -1,7 +1,5 @@
 //! Primary-key trait surface.
-//!
 //! Three-trait split per `docs/spec/decisions.md`:
-//!
 //! - [`PrimaryKey`] (required) — every PK type declares its [`PkType`]
 //!   discriminant and the schema-emission bits (`SQL_TYPE`, `DEFAULT_SQL`),
 //!   plus a zero-valued [`sentinel`](PrimaryKey::sentinel) factory used by
@@ -12,18 +10,14 @@
 //! - [`PrimaryKeyClientGen`] (optional, custom-only) — client-side single
 //!   and bulk generation. Built-in PKs never client-generate: HeeRanjId's
 //!   node/sequence/epoch model requires a database round-trip.
-//!
-//! Every generation helper takes `&mut DjogiContext`, never a raw pool.
-//! The context dispatches to the pool or the active transaction without
-//! the caller caring which.
-//!
+//!   Every generation helper takes `&mut DjogiContext`, never a raw pool.
+//!   The context dispatches to the pool or the active transaction without
+//!   the caller caring which.
 //! # Const-position sentinels via heeranjid 0.3.5+
-//!
 //! The trait function `<T as PrimaryKey>::sentinel()` is the
 //! polymorphic-context entry point. When the caller knows the concrete
 //! PK type, **prefer the upstream `T::ZERO` const** (added in heeranjid
 //! 0.3.5):
-//!
 //! ```ignore
 //! // Inside #[model(no_default)] constructor helpers:
 //! Widget {
@@ -32,22 +26,17 @@
 //!     // ...
 //! }
 //! ```
-//!
 //! `T::ZERO` is the wire-zero bit pattern, declared `pub const` on each
 //! of HeerId / HeerIdDesc / RanjId / RanjIdDesc upstream. The
 //! `PrimaryKey::sentinel()` impls in this crate delegate to that const,
 //! so the trait fn returns the same wire bytes the const exposes.
-//!
 //! Use the trait fn when writing code polymorphic over PK type
 //! (e.g. inside macro expansions or generic helpers); reach for the
 //! const directly otherwise.
-//!
 //! Heeranjid 0.3.5's `T::ZERO` consts replaced the older
 //! `T::new(0, 0, 0)` reconstruction and are now the canonical
 //! const-position sentinel values.
-//!
 //! # Historical note
-//!
 //! Earlier heeranjid releases did not expose a const sentinel; 0.3.5
 //! shipped `T::ZERO`, while `sentinel()` remains the polymorphic entry point.
 
@@ -58,16 +47,14 @@ use crate::error::{DbError, DjogiError};
 pub mod builtins;
 
 /// Hidden seal witness type for [`PrimaryKey`].
-///
 /// `#[doc(hidden)] pub` because the trait associated const
-/// `__DJOGI_PK_SEAL` has this type and the trait itself is public —
+/// `__DJOGI_PK_SEAL` has this type and the trait itself is public
 /// macro emission in downstream crates needs to be able to name the
 /// type. The struct has no public constructor; the sole value lives
 /// in [`crate::__private::pk_seal::TOKEN`] which routes through the
 /// off-limits `__private` namespace. Nothing in the public
 /// `djogi::primary_key` path surfaces a constructor — the previous
 /// public `__DJOGI_PK_SEAL_TOKEN` re-export is gone.
-///
 /// Downstream code reaching the value through `djogi::__private` is
 /// explicitly violating the framework boundary; same convention as
 /// `VisageSealed` in [`crate::__private`].
@@ -108,20 +95,17 @@ pub fn bulk_row_count_mismatch_err(got: usize, want: usize, label: &str) -> Djog
 }
 
 /// Contract every primary-key type must satisfy.
-///
 /// Implementations map the type to its [`PkType`] discriminant, the
 /// Postgres column type, the optional `DEFAULT` clause, and the zero
 /// value the macro-emitted `Default` impl uses for the `id` field.
-///
 /// # Sealing
-///
 /// Sealed via a hidden `PkSealToken` witness — the only paths to a
 /// valid impl are the built-in HeerId / RanjId / Serial impls in
 /// [`builtins`] and the [`djogi::primary_key!`] macro. Hand-rolled
 /// `impl PrimaryKey for …` in downstream crates fail at the
 /// [`__DJOGI_PK_SEAL`](Self::__DJOGI_PK_SEAL) const because the token
 /// type has no public constructor and the public `djogi::primary_key`
-/// path no longer re-exports either the type or its sole instance —
+/// path no longer re-exports either the type or its sole instance
 /// macro-emitted code reaches them through
 /// [`crate::__private::pk_seal`] (a doc-hidden path under the
 /// off-limits `__private` namespace). Matches the
@@ -151,7 +135,6 @@ pub trait PrimaryKey: Sized + 'static {
 }
 
 /// Optional DB-backed bulk-allocation path.
-///
 /// Every built-in PK variant except `Serial` implements this. The
 /// absence on `i32` is intentional: `bulk_create` for `pk = Serial`
 /// models is a compile error today, which
@@ -169,7 +152,6 @@ pub trait PrimaryKeyDbGen: PrimaryKey {
 }
 
 /// Optional client-side generation path.
-///
 /// Custom-only. Built-in PKs never client-generate because HeeRanjId's
 /// timestamp / node_id / sequence layout requires the database to own
 /// the monotonic state. Adopter-defined PK types that can produce an ID

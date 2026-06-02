@@ -1,8 +1,6 @@
 //! Compile-time schema ownership domains — the apps subsystem.
-//!
 //! Users declare apps once per crate via the
 //! [`djogi::apps!`](crate::apps) function-like proc macro:
-//!
 //! ```rust,ignore
 //! djogi::apps! {
 //!     #[app(database = "main")]
@@ -15,15 +13,12 @@
 //!     pub struct Audit;
 //! }
 //! ```
-//!
 //! Each entry expands to a zero-sized unit struct, a hidden seal
 //! witness on its [`App`] impl, and an `inventory::submit!` of the
 //! struct's [`AppDescriptor`]. Migration and ledger code iterate the
 //! collected descriptors via [`AppRegistry::all`] to group tables by
 //! `(database_target, app_label)`.
-//!
 //! # Sealing
-//!
 //! [`App`] carries a hidden seal witness whose type has no public
 //! constructor. The [`djogi::apps!`] macro emits that witness for each
 //! declared app; hand-written `impl djogi::App for MyStruct {}` in
@@ -32,9 +27,7 @@
 //! downstream crates cannot satisfy the seal with `impl
 //! djogi::apps::sealed::Sealed for MyStruct {}` or aliases of that
 //! path.
-//!
 //! # Global bucket
-//!
 //! [`AppRegistry::all`] always includes a synthetic bucket whose
 //! `LABEL` is the empty string and whose `DATABASE` is the default
 //! target (`"main"`). Models declared without `#[model(app = …)]` in
@@ -46,17 +39,15 @@
 use std::sync::OnceLock;
 
 /// Hidden seal witness type for [`App`].
-///
 /// `#[doc(hidden)] pub` because the trait associated const
-/// `__DJOGI_APP_SEAL` has this type and the trait itself is public —
+/// `__DJOGI_APP_SEAL` has this type and the trait itself is public
 /// macro emission in downstream crates needs to be able to name the
 /// type. The struct has no public constructor; the sole value lives
 /// in [`crate::__private::apps_seal::TOKEN`] which routes through
 /// the off-limits `__private` namespace. The previous public
 /// `__DJOGI_APPS_SEAL_TOKEN` re-export at this module's top level
-/// has been removed because it made the seal bypassable —
+/// has been removed because it made the seal bypassable
 /// downstream code could grab the const and hand-roll an `App` impl.
-///
 /// Downstream code reaching the value through `djogi::__private` is
 /// explicitly violating the framework boundary; same convention as
 /// `VisageSealed` in [`crate::__private`].
@@ -77,15 +68,12 @@ impl SealToken {
 }
 
 /// Compile-time schema ownership domain for a set of models.
-///
 /// Implemented by every unit struct declared inside a [`djogi::apps!`]
 /// invocation. Downstream code references an app by type path
 /// (`#[model(app = Vehicles)]`); Rust's own name resolution enforces
 /// declaration and the seal rejects non-app types with a trait-bound
 /// error.
-///
 /// # Associated constants
-///
 /// - `LABEL` — the stable string identifier used in migration files,
 ///   ledger rows, and snapshot JSON. Defaults to the struct identifier
 ///   lowercased byte-by-byte (`Vehicles` → `"vehicles"`); override
@@ -119,11 +107,9 @@ pub trait App {
 }
 
 /// Runtime metadata for one registered app.
-///
 /// Emitted once per `djogi::apps!` entry via `inventory::submit!`,
 /// collected by [`AppRegistry::all`], and read by migration,
 /// snapshot, and ledger consumers.
-///
 /// `renamed_from` and `tombstone` support lifecycle markers without
 /// requiring a struct-layout change at every `inventory::submit!`
 /// call site.
@@ -178,10 +164,8 @@ inventory::collect!(AppDescriptor);
 
 /// Enforce app-identity uniqueness on a slice already sorted by
 /// `(label, database)`.
-///
 /// Two flavours of collision exist in the registry; both panic loudly
 /// at startup so the wrong app cannot land in a migration directory:
-///
 /// 1. **Same `(database, label)` declared twice.** The migration
 ///    contract's literal identity collision — typically the result of
 ///    declaring the same app in two `djogi::apps!` invocations across
@@ -195,13 +179,11 @@ inventory::collect!(AppDescriptor);
 ///    routes to the wrong database. The descriptor-shape upgrade that
 ///    would unlock the looser identity is deferred to
 ///    `docs/spec/apps-and-database-domains.md`.
-///
-/// Mirrors the `type_to_identity` collision panic in
-/// [`AppRegistry::cross_app_edges`].
-///
-/// Lifted to a free function so unit tests can drive synthetic
-/// descriptor lists past the panic guard without going through the
-/// link-time `inventory` collection.
+///    Mirrors the `type_to_identity` collision panic in
+///    [`AppRegistry::cross_app_edges`].
+///    Lifted to a free function so unit tests can drive synthetic
+///    descriptor lists past the panic guard without going through the
+///    link-time `inventory` collection.
 fn validate_app_identity_uniqueness(sorted: &[AppDescriptor]) {
     for pair in sorted.windows(2) {
         if pair[0].label.is_empty() || pair[0].label != pair[1].label {
@@ -234,11 +216,9 @@ fn validate_app_identity_uniqueness(sorted: &[AppDescriptor]) {
 
 /// Runtime lookup facade over the apps registered in this crate
 /// graph.
-///
 /// Consumers prefer [`AppRegistry::all`] to iterating
 /// `inventory::iter::<AppDescriptor>` directly — `all` handles two
 /// concerns:
-///
 /// 1. **Alphabetisation.** Inventory returns descriptors in link
 ///    order, which is non-deterministic across rebuilds and
 ///    toolchains. `all()` returns them sorted by `label` so
@@ -254,12 +234,9 @@ pub struct AppRegistry;
 impl AppRegistry {
     /// Returns every registered [`AppDescriptor`] plus the synthetic
     /// global bucket, sorted alphabetically by `label`.
-    ///
     /// The synthetic bucket's label is the empty string, which sorts
     /// first.
-    ///
     /// # Identity uniqueness enforcement
-    ///
     /// App identity per the migration contract is the pair
     /// `(database, label)` — migrations group by
     /// `<database_target>/<app_label>/` on disk. The full contract
@@ -273,7 +250,6 @@ impl AppRegistry {
     /// djogi-using library crates — this function panics on first
     /// call if two descriptors share a `label` (regardless of
     /// `database`).
-    ///
     /// Catching the collision here rather than at compile time is a
     /// deliberate trade: the macro is function-like and expands at
     /// its call site, so crate-global compile-time enforcement would
@@ -281,9 +257,7 @@ impl AppRegistry {
     /// orphan-rule dances. Runtime panic at startup
     /// (`AppRegistry::all()` runs before any migration work) is
     /// loud, early, and informative.
-    ///
     /// ## Why label uniqueness, not the looser `(database, label)`?
-    ///
     /// `ModelDescriptor` carries only the app **label**, not its
     /// database. The cross-app FK edge generator looks up a model's
     /// database via the registry's `label → database` map; if two
@@ -294,7 +268,6 @@ impl AppRegistry {
     /// for the deferred upgrade — v1 forbids the same-label /
     /// different-database case entirely so the registry stays
     /// unambiguous.
-    ///
     /// The result is computed lazily on first call and memoised in a
     /// `OnceLock`. Inventory is fixed at link time so caching the
     /// sorted vector is sound.
@@ -317,7 +290,6 @@ impl AppRegistry {
     }
 
     /// Returns every cross-app foreign-key edge in the inventory.
-    ///
     /// An edge exists when a field on a [`crate::ModelDescriptor`]
     /// carries `relation_kind` of either
     /// [`crate::descriptor::RelationKind::ForeignKey`] or
@@ -328,25 +300,20 @@ impl AppRegistry {
     /// returned — they are always safe from the apps-subsystem's
     /// perspective since source and target share a migration
     /// `<database>/<app>/` directory and compose atomically.
-    ///
     /// Migration planning consumes this list to:
-    ///
     /// - Emit cross-app FK clauses with the correct
     ///   `REFERENCES "<target-schema>".<target-table>(id)` form.
     /// - Order per-app compose steps so target apps are applied
     ///   before source apps (FKs resolve at declaration time).
-    ///
-    /// Models whose source or target resolves to the synthetic
-    /// global bucket (empty label) are treated normally — the
-    /// bucket is a valid app for FK-graph purposes.
-    ///
-    /// Unresolvable targets (a `target_type_name` with no matching
-    /// `ModelDescriptor` in inventory) are silently skipped here —
-    /// the validation layer reports unresolved targets so this graph
-    /// helper can stay allocation- and lookup-focused.
-    ///
-    /// Result is memoised in a `OnceLock` since inventory is fixed
-    /// at link time.
+    ///   Models whose source or target resolves to the synthetic
+    ///   global bucket (empty label) are treated normally — the
+    ///   bucket is a valid app for FK-graph purposes.
+    ///   Unresolvable targets (a `target_type_name` with no matching
+    ///   `ModelDescriptor` in inventory) are silently skipped here
+    ///   the validation layer reports unresolved targets so this graph
+    ///   helper can stay allocation- and lookup-focused.
+    ///   Result is memoised in a `OnceLock` since inventory is fixed
+    ///   at link time.
     pub fn cross_app_edges() -> &'static [CrossAppEdge] {
         static CACHE: OnceLock<Vec<CrossAppEdge>> = OnceLock::new();
         CACHE.get_or_init(|| {
@@ -358,7 +325,6 @@ impl AppRegistry {
             // the registry. The synthetic global bucket is in
             // `AppRegistry::all()` so unapp'd models ("") resolve
             // through the same map without a special case.
-            //
             // Same-label / different-database collisions would
             // silently collapse this `.collect()` and route a model
             // to the wrong database — `validate_app_identity_uniqueness`
@@ -453,23 +419,19 @@ impl AppRegistry {
     }
 
     /// Returns every cross-app cycle in the FK graph.
-    ///
     /// Each element is a sequence of app identities `[(db, label),
     /// …, (db, label)]` describing one cycle. Identities include the
     /// database target because `(database, label)` is the apps
     /// contract's identity pair — same-label apps in different
     /// databases are distinct participants.
-    ///
     /// Same-app cycles (a model in `Billing` referencing another
     /// model in `Billing` through some chain) are deferred to
     /// intra-app analysis — this method surfaces only inter-app
     /// cycles.
-    ///
     /// Algorithm: standard DFS with three-color marking over the
     /// condensed app→app graph (edges collapsed from
     /// [`Self::cross_app_edges`]). `O(A + E)` where `A` is the app
     /// count and `E` is the number of distinct inter-app edges.
-    ///
     /// Result is memoised; inventory is fixed at link time.
     pub fn cross_app_cycles() -> &'static [Vec<AppIdentity>] {
         static CACHE: OnceLock<Vec<Vec<AppIdentity>>> = OnceLock::new();
@@ -568,9 +530,7 @@ pub struct AppIdentity {
 
 /// One cross-app foreign-key edge surfaced by
 /// [`AppRegistry::cross_app_edges`].
-///
 /// Migration planning uses these edges to:
-///
 /// - Order per-app compose steps so target apps apply before source
 ///   apps (FK constraints resolve at DDL time).
 /// - Emit schema-qualified `REFERENCES "<target-schema>".<table>`
@@ -578,11 +538,10 @@ pub struct AppIdentity {
 ///   apps.
 /// - Reject cross-database FKs entirely at compose time — Postgres
 ///   cannot enforce a FK across database targets.
-///
-/// App identity is `(database, label)`: two apps with the same label
-/// in different databases are distinct participants. Both are
-/// recorded per edge so consumers can pattern-match the full
-/// identity without re-looking-up the registry.
+///   App identity is `(database, label)`: two apps with the same label
+///   in different databases are distinct participants. Both are
+///   recorded per edge so consumers can pattern-match the full
+///   identity without re-looking-up the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrossAppEdge {
     /// Database target owning the source model.
@@ -603,15 +562,12 @@ pub struct CrossAppEdge {
 
 /// Apps-subsystem diagnostic contracts surfaced to migration
 /// consumers.
-///
 /// Detection logic and error text live with the filesystem-vs-snapshot
 /// and ledger-vs-registry comparisons. The enum lives here so
 /// consumers can pattern-match on stable variants without a subsequent
 /// breaking change.
-///
 /// Adding a variant is a breaking change; the enum is
 /// `#[non_exhaustive]` so callers outside this crate cannot exhaust.
-///
 /// `#[doc(hidden)]` while no consumer is wired in production — the
 /// variant set may shift before the first migration-tooling release
 /// surfaces these. Re-exposed in rustdoc when compose / status / attune

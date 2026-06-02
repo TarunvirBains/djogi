@@ -1,8 +1,6 @@
 //! Literal bridges — `impl From<V> for Expr<V>` for every SQL-bindable
 //! scalar Djogi ships with.
-//!
 //! # What
-//!
 //! Each scalar `V` that Djogi knows how to bind to a Postgres parameter
 //! (every variant of [`FilterValue`] that carries exactly one value) gets
 //! one `impl From<V> for Expr<V>` here. This is the typed promotion path:
@@ -10,23 +8,19 @@
 //! `ExprNode::Literal(FilterValue::I32(100))`, and composition methods
 //! (`eq`, `neq`, arithmetic operators) can rely on `V` matching the
 //! column's declared type at the `FieldRef<M, V>` side.
-//!
 //! # Why mirror [`crate::query::field::IntoFilterValue`] rather than
 //! composing with it?
-//!
-//! `IntoFilterValue` is the Phase 2 bridge from a Rust value to a
+//! `IntoFilterValue` is the bridge from a Rust value to a
 //! `FilterValue`. We *could* implement `impl<V: IntoFilterValue> From<V>
 //! for Expr<V>` and inherit every bindable type for free, but that
 //! blanket impl would collide with the reflexive `From<T> for T` if we
 //! ever add a public-facing `From<Expr<T>>` wrapper later (e.g. for
 //! `set_expr` ergonomics in Task 3b). Writing the impls out by hand is
-//! repetitive but additive-safe — Phase 5's `Decimal` / `Interval`
+//! repetitive but additive-safe — the `Decimal` / `Interval`
 //! extensions slot in without touching existing impls, and no blanket
 //! impl will ever conflict with a hypothetical `impl From<Expr<T>> for
 //! Expr<T>` or similar.
-//!
 //! # Coverage (must match [`FilterValue`] one-for-one)
-//!
 //! - `String` / `&'static str` — the `&str` case maps into `Expr<String>`
 //!   so literals like `Expr::literal("draft")` don't leave the user
 //!   with an unbindable `&'static str` expression (Postgres has no
@@ -35,12 +29,11 @@
 //! - `time::OffsetDateTime` / `time::Date` — the Djogi canonical
 //!   timestamp / date types (re-exported as `DateTime` / `Date`).
 //! - `uuid::Uuid` / `HeerId` / `RanjId` — id types.
-//!
-//! The intentionally-omitted `FilterValue::Null / ::List / ::Pair`
-//! variants do not get `From` impls here: null is not a typed value
-//! (there is no `Expr<NULL>`), lists belong in `IN (...)` which is a
-//! separate `FieldRef` lookup, and pairs are the `BETWEEN` payload
-//! shape, not a standalone expression.
+//!   The intentionally-omitted `FilterValue::Null / ::List / ::Pair`
+//!   variants do not get `From` impls here: null is not a typed value
+//!   (there is no `Expr<NULL>`), lists belong in `IN (...)` which is a
+//!   separate `FieldRef` lookup, and pairs are the `BETWEEN` payload
+//!   shape, not a standalone expression.
 
 use crate::expr::Expr;
 use crate::query::condition::FilterValue;
@@ -145,10 +138,9 @@ impl From<crate::types::RanjIdDesc> for Expr<crate::types::RanjIdDesc> {
 // `time::Duration` maps to `ExprNode::IntervalLiteral` rather than
 // `FilterValue::*` because `tokio-postgres` / `postgres-types` does not ship
 // a `ToSql` impl for `time::Duration`. Instead of adding a bind parameter,
-// the emitter renders the duration as a raw SQL token —
+// the emitter renders the duration as a raw SQL token
 // `INTERVAL '{microseconds} microseconds'` — so the value is embedded
 // directly in the query text.
-//
 // `Expr::literal(time::Duration::days(30))` produces an `Expr<time::Duration>`
 // whose node is `ExprNode::IntervalLiteral { microseconds: 2592000000000 }`.
 // This expression composes with `Expr<time::OffsetDateTime>` arithmetic via the
@@ -170,7 +162,6 @@ impl From<crate::Interval> for crate::expr::Expr<crate::Interval> {
 
 /// Convert a `time::Duration` to microseconds as `i64`, saturating at the
 /// boundaries of `i64` range rather than wrapping.
-///
 /// `time::Duration::whole_microseconds()` returns `i128`. For Durations within
 /// `i64`'s microsecond range (roughly ±292,277 years) the result is exact.
 /// For larger Durations (e.g. `time::Duration::MAX`), the value saturates to
@@ -179,7 +170,6 @@ impl From<crate::Interval> for crate::expr::Expr<crate::Interval> {
 /// is already a Postgres `INTERVAL` overflow, and the saturated value correctly
 /// signals "maximum expressible" to the DB rather than producing a bogus
 /// wrapped value.
-///
 /// Exposed as a `pub(crate)` free function so unit tests can call it directly.
 pub(crate) fn saturating_micros(d: time::Duration) -> i64 {
     let raw: i128 = d.whole_microseconds();

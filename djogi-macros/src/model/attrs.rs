@@ -1,14 +1,11 @@
 //! Attribute parsing for `#[model(table = "...", pk = X)]`
 //! and `#[field(unique, index, max_length = N, renamed_from = "...", on_delete = "...")]`.
-//!
-//! `pk` takes a bare identifier (Phase 7-Zero-2 T2) — `HeerId`,
-//! `HeerIdRecencyBiased`, `RanjId`, etc. The pre-T2 string-literal form
+//! `pk` takes a bare identifier — `HeerId`,
+//! `HeerIdRecencyBiased`, `RanjId`, etc. The old string-literal form
 //! (`pk = "heerid"`) is rejected with a span-carrying diagnostic.
-//!
 //! `ModelAttrs` keeps a hand-rolled parser: the surface is three keys, the
 //! error messages from `syn::Error::new_spanned` already carry precise
 //! source spans, and there is no incentive to grow it.
-//!
 //! `FieldAttrs` parses via `darling::FromField`. Per-field attrs grow over
 //! time (later phases add `db_column`, `choices`, `validators`, etc.), and
 //! darling's declarative derive gives us span-aware errors for unknown
@@ -25,7 +22,6 @@ use syn::spanned::Spanned;
 use syn::{Expr, ExprLit, Lit, Meta, MetaNameValue, Token};
 
 /// Parsed `#[model(fts(source = "...", dictionary = "..."))]` sub-attribute.
-///
 /// Both fields are required. `source` is a comma-separated list of column
 /// names (e.g. `"title, body"`); `dictionary` is a Postgres text-search
 /// configuration name (e.g. `"english"`). Both are validated byte-level at
@@ -49,7 +45,6 @@ pub struct ModelAttrs {
     /// Primary key strategy.
     pub pk: PkStrategy,
     /// When `true`, the macro skips generating the `Default` impl.
-    ///
     /// Use `#[model(table = "...", no_default)]` for models that contain
     /// field types that do not implement `Default` (e.g. `time::Date`).
     /// Without this flag the generated `Default` impl would fail to compile.
@@ -57,43 +52,36 @@ pub struct ModelAttrs {
     /// on struct-update syntax (`..Model::default()`).
     pub no_default: bool,
     /// When `true`, this model is a many-to-many through / junction model.
-    ///
     /// Set via `#[model(table = "...", through)]`. The flag flows through
     /// to [`ModelDescriptor::is_through`](djogi::descriptor::ModelDescriptor::is_through)
     /// at codegen time, where it acts as a marker that:
-    ///
     /// - This table is the junction for a specific `impl ManyToMany<Target> for Source`.
-    /// - Phase 6's migration differ may later suppress standalone-model
+    /// - the migration differ may later suppress standalone-model
     ///   admin/routing affordances for through tables (deferred).
-    ///
-    /// Through models remain ordinary queryable `Model`s — the flag is
-    /// documentation and future differentiation, not a structural
-    /// constraint. Users still `#[derive(Model)]` them as normal and
-    /// query them with the standard `QuerySet` API.
+    ///   Through models remain ordinary queryable `Model`s — the flag is
+    ///   documentation and future differentiation, not a structural
+    ///   constraint. Users still `#[derive(Model)]` them as normal and
+    ///   query them with the standard `QuerySet` API.
     pub through: bool,
     /// When `true`, this model emits a transactional outbox row on every
     /// successful `create` / `save` / `delete` performed through a
     /// `DjogiContext`.
-    ///
     /// Set via `#[model(table = "...", events)]`. The flag flows through
     /// to [`ModelDescriptor::has_outbox`](djogi::descriptor::ModelDescriptor::has_outbox)
     /// at codegen time, where `djogi::outbox::emit_event` keys off it to
     /// decide whether to write to `{table}_outbox` inside the active
-    /// transaction. Phase 4 Task 6 lands the CRUD-side emission; macro-
+    /// transaction. lands the CRUD-side emission; macro-
     /// side DDL emission to `target/djogi_outbox/{table}_outbox.sql` (so
-    /// the Phase 7 migration differ can consume it) is **deferred**. For
+    /// the migration differ can consume it) is **deferred**. For
     /// now, downstream crates hand-write the `{table}_outbox` DDL
     /// alongside their own migrations.
-    ///
     /// Models without `events` skip the outbox call entirely at
     /// macro-expansion time — there is no runtime cost for opt-out.
     pub events: bool,
-    /// The user-field name that serves as the idempotency key —
-    /// Phase 4 Task 7.5 consumer wiring.
-    ///
+    /// The user-field name that serves as the idempotency key
+    /// Consumer wiring.
     /// Set via `#[model(table = "...", idempotency_key = "request_id")]`.
     /// When present, the macro emits two inherent methods:
-    ///
     /// - `create_or_find(ctx, row)` — attempts an
     ///   `INSERT ... ON CONFLICT (<this col>) DO NOTHING RETURNING *`
     ///   and, on conflict, re-SELECTs the existing row. Returns
@@ -101,53 +89,44 @@ pub struct ModelAttrs {
     /// - `bulk_upsert_by_descriptor(ctx, rows)` — thin wrapper over
     ///   [`bulk_upsert`] that reads this column as the sole ON
     ///   CONFLICT target.
-    ///
-    /// When not set, both methods are still emitted as thin stubs
-    /// that return [`DjogiError::MissingIdempotencyKey`] at runtime —
-    /// simplest-possible pointer at the attribute the caller needs
-    /// to add. This mirrors Phase 1's approach of populating the
-    /// descriptor slot even for models that don't consume it yet.
-    ///
-    /// The inner string must be a plain ASCII-identifier column name
-    /// (letter/underscore start, alphanumerics and underscores after).
-    /// The parser rejects anything else so the value can be safely
-    /// embedded into the emitted SQL.
+    ///   When not set, both methods are still emitted as thin stubs
+    ///   that return [`DjogiError::MissingIdempotencyKey`] at runtime
+    ///   simplest-possible pointer at the attribute the caller needs
+    ///   to add. This mirrors the approach of populating the
+    ///   descriptor slot even for models that don't consume it yet.
+    ///   The inner string must be a plain ASCII-identifier column name
+    ///   (letter/underscore start, alphanumerics and underscores after).
+    ///   The parser rejects anything else so the value can be safely
+    ///   embedded into the emitted SQL.
     pub idempotency_key: Option<String>,
 
     /// The user-field name that serves as the tenant discriminator for
-    /// Row Level Security — Phase 5 Task 9.
-    ///
+    /// Row Level Security — .
     /// Set via `#[model(table = "...", tenant_key = "org_id")]`. When present,
     /// the macro emits a side-channel `target/djogi_rls/{table}_rls.sql` file
     /// containing `ALTER TABLE … ENABLE ROW LEVEL SECURITY` and a
     /// `CREATE POLICY … USING (col = current_setting('app.tenant_id')::type)`
-    /// statement. Phase 7's migration differ will consume this file; for now
+    /// statement. the migration differ will consume this file; for now
     /// it is hand-applied in integration tests.
-    ///
     /// The column referenced by `tenant_key` must be one of: `BigInt`
     /// (HeerId), `Uuid` (RanjId), `Text`, or `Citext`. Any other SQL type
     /// triggers a span-precise compile error at the `tenant_key` attribute.
-    ///
     /// At runtime, call [`DjogiContext::set_tenant`] inside an `atomic()`
     /// block to activate the RLS policy for a request.
     pub tenant_key: Option<String>,
 
-    /// Full-text search specification — Phase 5 Task 14.
-    ///
+    /// Full-text search specification — .
     /// Set via `#[model(fts(source = "col1, col2", dictionary = "english"))]`.
     /// When present, the macro emits an `FtsDescriptor` into the
     /// `ModelDescriptor` and the `{Model}Fields` struct gains a `search()`
     /// accessor that returns a typed `FtsFieldRef` for building
     /// `@@` / `ts_rank` predicates.
-    ///
     /// Both `source` and `dictionary` are required; omitting either is a
     /// compile error. Both values are validated byte-level at parse time
     /// per `feedback_no_regex_in_djogi`.
     pub fts: Option<FtsSpec>,
 
     /// Model-level index declarations parsed from `#[model(indexes(...))]`
-    /// — Phase 7-Zero v3 T3.
-    ///
     /// Each entry lowers to one `IndexSpec` struct literal in the
     /// descriptor's `indexes` slice. Empty when no `indexes(...)` group
     /// is present; otherwise the order follows the user's source-order
@@ -156,8 +135,7 @@ pub struct ModelAttrs {
     pub indexes: Vec<crate::model::indexes::ModelIndexDecl>,
 
     /// Model-level `EXCLUDE` constraint declarations parsed from
-    /// `#[model(exclusion(...))]` — Phase 7.5 PR 7.
-    ///
+    /// `#[model(exclusion(...))]` — PR 7.
     /// Multiple `exclusion(...)` entries on the same model are valid
     /// and accumulate here in source order. Names must be unique within
     /// a model; duplicate names are rejected at parse time. Each entry
@@ -168,14 +146,14 @@ pub struct ModelAttrs {
     /// Compile-time schema ownership domain — the type path of the app
     /// this model belongs to. Set via `#[model(app = Vehicles)]`.
     /// `None` places the model in the synthetic global bucket, which
-    /// Phase 7's differ files under `<default-database>/<empty-label>/`.
+    /// The differ files under `<default-database>/<empty-label>/`.
     /// Resolved at emission time via `<Path as ::djogi::App>::LABEL` so
     /// the descriptor carries the stable string identifier, not the
     /// Rust type path.
     pub app: Option<syn::Path>,
 
     /// Historical-metadata pointer to the model's prior app. Set via
-    /// `#[model(moved_from_app = OldBilling)]`. Enables Phase 7's
+    /// `#[model(moved_from_app = OldBilling)]`. Enables the
     /// differ to track model-across-app moves without forcing the old
     /// app to stay declared. The pointed-at app may be tombstoned;
     /// that's the intended lifecycle shape for retirements. Resolved
@@ -183,9 +161,7 @@ pub struct ModelAttrs {
     pub moved_from_app: Option<syn::Path>,
 
     /// Prior table name when the model has been renamed via
-    /// `#[model(table = "...", renamed_from = "old_table")]` —
-    /// Phase 7 T2.
-    ///
+    /// `#[model(table = "...", renamed_from = "old_table")]`
     /// String literal value. The differ uses this to emit
     /// `ALTER TABLE old_table RENAME TO new_table` rather than the
     /// destructive DROP+CREATE pair. The macro validates the string
@@ -194,17 +170,14 @@ pub struct ModelAttrs {
     /// underscores after, ≤63 bytes).
     pub renamed_from: Option<String>,
 
-    /// Default self-FK column for tree-recursive queries — Phase 8-Zero
-    /// Cluster B1 (T12).
-    ///
+    /// Default self-FK column for tree-recursive queries.
     /// Set via `#[model(tree_edge = "parent_id")]`. The named column
     /// must exist on the user's struct AND must resolve to a self-FK
     /// (a `ForeignKey<Self>` / `OneToOneField<Self>` field, optionally
     /// `Option<…>`-wrapped). Cross-checks against the user-field list
-    /// and the T8 self-FK detector run at descriptor-emit time —
+    /// and the self-FK detector run at descriptor-emit time;
     /// failures surface as span-precise compile errors pointing at the
     /// `"…"` literal.
-    ///
     /// Stored as `Option<syn::LitStr>` rather than `Option<String>`
     /// so the descriptor-side validator can attach the original literal's
     /// span to its diagnostic — same `.value() -> String` accessor as
@@ -213,74 +186,61 @@ pub struct ModelAttrs {
     /// the standard Djogi identifier rule (ASCII letter or underscore
     /// first byte; ASCII alphanumerics or underscores thereafter;
     /// ≤ 63 bytes — the Postgres unquoted-identifier cap).
-    ///
     /// `None` means the model declares no default tree edge. Models with
     /// 2+ self-FK edges must set this *or* every caller passes
     /// `RelationPath` explicitly to the recursive-query builder.
     pub tree_edge: Option<syn::LitStr>,
 
-    /// When `true`, this model opts into lifecycle-hook dispatch — Phase 8α T1.3.
-    ///
+    /// When `true`, this model opts into lifecycle-hook dispatch.
     /// Set via `#[model(hooks)]`. The macro emits
     /// `impl ::djogi::__private::hooks::Sealed for #ident {}` and
     /// `impl ::djogi::__private::hooks::HasHooks for #ident {}` so the
-    /// CRUD terminals (T1.4–T1.6) can branch monomorphically between the
+    /// CRUD terminals can branch monomorphically between the
     /// no-op fast path and the hook-dispatch path. The adopter must also
     /// `impl ModelHooks for MyModel` — the `HasHooks` supertrait bound
     /// (`HasHooks: ModelHooks + Sealed`) makes that requirement a compile
     /// error at the use site if it is missing.
-    ///
     /// Models without the flag pay zero hook-dispatch overhead — no
     /// `HasHooks` impl is emitted, so the dispatch helpers fold to no-ops
-    /// via marker-trait monomorphisation (Phase 8 §D2).
-    ///
+    /// via marker-trait monomorphisation (§D2).
     /// Standalone keyword only — `hooks = true` / `hooks = false` are
     /// rejected, mirroring the convention `events`, `through`, and
     /// `no_default` already follow.
     pub hooks: bool,
 
-    /// When `true`, this model opts into the [`Auditable`] composition —
-    /// Phase 8α T2.4.
-    ///
+    /// When `true`, this model opts into the [`Auditable`] composition
+    /// 4.
     /// Set via `#[model(auditable)]`. The macro emits both:
-    ///
     /// 1. `impl ::djogi::Auditable for #ident { ... }` — the trait impl
     ///    exposing `created_by(&self) -> Option<&str>`, borrowing from
     ///    the adopter-declared `pub created_by: Option<String>` field.
     /// 2. `impl #ident { #[doc(hidden)] pub(crate) fn
-    ///    __djogi_auditable_populate(&mut self, ctx: &mut DjogiContext)
-    ///    { ... } }` — the populator helper invoked from
+    /// __djogi_auditable_populate(&mut self, ctx: &mut DjogiContext)
+    /// { ... } }` — the populator helper invoked from
     ///    `Model::create` between `auto_set_tenant` and the user
-    ///    `before_create` hook (Phase 8 §D6).
-    ///
-    /// Models without the flag pay zero auditable-dispatch overhead —
-    /// no impl is emitted, so the populator call collapses to a
-    /// no-op and the `Auditable` bound is unsatisfied at the use site
-    /// (compile-time error if a generic asks for it).
-    ///
-    /// Standalone keyword only — `auditable = true` / `auditable = false`
-    /// are rejected, mirroring the convention `hooks`, `events`,
-    /// `through`, and `no_default` already follow.
-    ///
+    ///    `before_create` hook (§D6).
+    ///    Models without the flag pay zero auditable-dispatch overhead
+    ///    no impl is emitted, so the populator call collapses to a
+    ///    no-op and the `Auditable` bound is unsatisfied at the use site
+    ///    (compile-time error if a generic asks for it).
+    ///    Standalone keyword only — `auditable = true` / `auditable = false`
+    ///    are rejected, mirroring the convention `hooks`, `events`,
+    ///    `through`, and `no_default` already follow.
     /// # 2026-05-03 design pivot
-    ///
-    /// T2.2 (commit 939b9ab) shipped `#[derive(Auditable)]` as the
-    /// opt-in surface; T2.4 supersedes it with this attribute and the
-    /// derive is removed from the v3 surface. Per spec line 1037
+    /// Commit 939b9ab shipped `#[derive(Auditable)]` as the
+    /// opt-in surface; the current design supersedes it with this attribute and the
+    /// derive is removed from the current surface. Per spec line 1037
     /// (locked 2026-05-03): proc macros cannot observe sibling derives,
     /// so the derive could not deterministically signal to
     /// `#[derive(Model)]` / `#[model(...)]`. Single
     /// `#[model(auditable)]` solves this cleanly — model macro emits
     /// the trait impl AND the populator hook wiring in one expansion.
-    ///
     /// [`Auditable`]: ::djogi::Auditable
     pub auditable: bool,
 
-    /// When `true`, this model opts into the [`SoftDeletable`] composition —
-    /// Phase 8α T2.6.
-    ///
+    /// When `true`, this model opts into the [`SoftDeletable`] composition
+    /// 6.
     /// Set via `#[model(soft_deletable)]`. The macro emits:
-    ///
     /// `impl ::djogi::SoftDeletable for #ident { ... }` — the trait impl
     /// exposing `deleted_at(&self) -> Option<DateTime>`, copying from the
     /// adopter-declared `pub deleted_at: Option<DateTime>` field. The
@@ -288,32 +248,26 @@ pub struct ModelAttrs {
     /// the canonical column name without re-emitting it per model; the
     /// emitted `impl` inherits the default and `QuerySet::not_deleted()`
     /// reads it through `<M as SoftDeletable>::COLUMN`.
-    ///
-    /// Models without the flag pay zero soft-deletable-dispatch overhead —
+    /// Models without the flag pay zero soft-deletable-dispatch overhead
     /// no impl is emitted, so the `SoftDeletable` bound is unsatisfied at
     /// the use site (compile-time error if a generic asks for it).
-    ///
     /// Standalone keyword only — `soft_deletable = true` /
     /// `soft_deletable = false` are rejected, mirroring the convention
     /// `auditable`, `hooks`, `events`, `through`, and `no_default` already
     /// follow.
-    ///
     /// # 2026-05-03 design pivot
-    ///
-    /// T2.3 (commit 863c4cb) shipped `#[derive(SoftDeletable)]` as the
-    /// opt-in surface; T2.6 supersedes it with this attribute and the
-    /// derive is removed from the v3 surface — same constraint that drove
-    /// the T2.4 Auditable pivot. Proc macros cannot observe sibling
+    /// Commit 863c4cb shipped `#[derive(SoftDeletable)]` as the
+    /// opt-in surface; the current design supersedes it with this attribute and the
+    /// derive is removed from the current surface — same constraint that drove
+    /// the Auditable pivot. Proc macros cannot observe sibling
     /// derives, so a derive could not deterministically signal to
-    /// `#[model(...)]` that 8γ T6's automatic default-filter composition
+    /// `#[model(...)]` that automatic default-filter composition
     /// should be wired. Doing the migration NOW is cheaper than later
-    /// (8γ would have to unwind composition wiring).
-    ///
+    /// (otherwise composition wiring would need unwinding).
     /// [`SoftDeletable`]: ::djogi::SoftDeletable
     pub soft_deletable: bool,
 
-    /// Parent type identifier when this model is a proxy — Phase 8β T3.2.
-    ///
+    /// Parent type identifier when this model is a proxy — 2.
     /// Set via `#[model(proxy_for = ParentType)]`. The bare identifier
     /// names the parent model whose table this proxy shares; the
     /// migration differ treats proxies as schema-passthrough (no
@@ -324,13 +278,11 @@ pub struct ModelAttrs {
     /// `Model` so the proxy queryset honours its own default filter /
     /// default ordering without leaking storage concerns into the
     /// proxy's emission path.
-    ///
     /// `None` for ordinary (non-proxy) models — the common case.
     pub proxy_for: Option<syn::Ident>,
 
     /// Default ordering applied to every `QuerySet<Self>` on
-    /// construction — Phase 8β T3.2.
-    ///
+    /// construction — 2.
     /// Set via `#[model(default_order = [(field, Asc|Desc), ...])]`.
     /// Empty when no `default_order = [...]` clause is present;
     /// otherwise the entries follow the user's source order, which
@@ -338,56 +290,48 @@ pub struct ModelAttrs {
     /// Explicit `.order_by(...)` calls APPEND to this default per
     /// Django-style semantics — see `queryset.rs:25-28` for the
     /// canonical append rule.
-    ///
     /// Only meaningful when `proxy_for` is also set; the parser
     /// surfaces a span-precise error if `default_order` is set on a
     /// non-proxy model.
     pub proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)>,
 
     /// Default filter AND-composed into every `QuerySet<Self>` on
-    /// construction — Phase 8β T3.2.
-    ///
+    /// construction — 2.
     /// Set via `#[model(default_filter = |f| f.active.eq(true))]`.
     /// The closure body is captured verbatim at parse time; the
     /// descriptor emitter walks it via recursive descent and lowers
     /// the recognised patterns (eq / gte / and_with / etc.) to a SQL
     /// fragment string, then emits that fragment as the body of the
     /// proxy's `Model::default_filter_condition` override.
-    ///
     /// Only meaningful when `proxy_for` is also set; the parser
     /// surfaces a span-precise error if `default_filter` is set on a
     /// non-proxy model.
     pub proxy_default_filter: Option<syn::ExprClosure>,
 
-    /// Watermark field for the auto-emitted [`DeltaSyncCacheable`] impl —
-    /// Cluster 8δ T7.2.
-    ///
+    /// Watermark field for the auto-emitted [`DeltaSyncCacheable`] impl
+    /// 2.
     /// Set via `#[model(watermark_field = "expires_at")]` to override
     /// the default `updated_at` watermark. The named field MUST exist
     /// on the post-injection struct; the field-existence check runs in
     /// `model::cacheable::expand` (where the user field list is in
     /// scope) and surfaces a span-precise compile error pointing at
     /// the `"…"` literal when missing.
-    ///
     /// `None` means the macro pipes `updated_at` through to
     /// `sassi_codegen::WatermarkField` — every model emits a
-    /// `DeltaSyncCacheable` impl by default because Phase 7 framework-
+    /// `DeltaSyncCacheable` impl by default because framework-
     /// field injection guarantees `updated_at: ::djogi::types::DateTime`
     /// exists on every model that carries a PK (i.e. every variant
     /// except `pk = None`).
-    ///
     /// Stored as `Option<syn::LitStr>` so the cacheable-emit pass can
     /// attach the original literal's span to its diagnostic — same
     /// pattern as `tree_edge`.
-    ///
     /// Byte-level grammar enforced at parse time: ASCII letter or
     /// underscore first byte, ASCII alphanumerics or underscores
     /// thereafter, ≤ 63 bytes (the standard Djogi identifier rule per
     /// `feedback_no_regex_in_djogi`).
     pub watermark_field: Option<syn::LitStr>,
 
-    /// `#[model(table_comment = "<text>")]` — Phase 8.5 djogi#217.
-    ///
+    /// `#[model(table_comment = "<text>")]` — .
     /// Free-text table-level comment lowered by the migration composer
     /// to `COMMENT ON TABLE <t> IS '<text>'` immediately after the
     /// `CREATE TABLE` statement. The composer doubles single quotes
@@ -395,15 +339,13 @@ pub struct ModelAttrs {
     /// lexer rule under `standard_conforming_strings = on`, the PG 18
     /// default that djogi requires), so adopters can write apostrophes
     /// verbatim.
-    ///
     /// Validated as non-empty / non-whitespace-only at parse time in
     /// `ModelAttrs::parse`; the descriptor stores the adopter's
     /// original text. `None` for models that declare no table-level
     /// comment — the common case.
     pub table_comment: Option<String>,
 
-    /// `#[model(storage_params = "key=val, ...")]` — Phase 8.5 djogi#218.
-    ///
+    /// `#[model(storage_params = "key=val, ...")]` — .
     /// Comma-separated Postgres storage-parameter fragment lowered to
     /// `ALTER TABLE <t> SET (key=val, ...)`. Parsed and validated at
     /// macro time; the descriptor stores a canonical safe fragment
@@ -411,8 +353,7 @@ pub struct ModelAttrs {
     /// string.
     pub storage_params: Option<String>,
 
-    /// `#[model(tablespace = "<name>")]` — Phase 8.5 djogi#219.
-    ///
+    /// `#[model(tablespace = "<name>")]` — .
     /// Explicit table tablespace lowered to `ALTER TABLE <t> SET
     /// TABLESPACE <name>`. Validated with the same plain-identifier
     /// grammar used for table names so SQL emission can quote it
@@ -420,8 +361,7 @@ pub struct ModelAttrs {
     pub tablespace: Option<String>,
 
     /// Custom visage scopes from `#[model(visage_scopes(name = Suffix, ...))]`
-    /// — GH #227 Stage 4.
-    ///
+    /// GH #227.
     /// Each entry is `(scope_key, struct_suffix)` — e.g. `("support",
     /// "Support")` generates `{Model}Support` alongside the four built-in
     /// scope visages (`Public` / `SelfView` / `Admin` / `Export`). The
@@ -429,9 +369,7 @@ pub struct ModelAttrs {
     /// `#[field(expose(...))]`; the struct suffix is the PascalCase suffix
     /// appended to the model ident to form the generated visage struct
     /// name.
-    ///
     /// Validated at parse time:
-    ///
     /// - Scope keys must NOT collide with [`ExposeSpec::BUILTIN_SCOPES`]
     ///   (`public` / `self_view` / `admin` / `export`) — shadowing a
     ///   built-in scope would produce two visage structs with the same
@@ -444,15 +382,13 @@ pub struct ModelAttrs {
     ///   (matching the built-in `Public` / `SelfView` casing convention).
     /// - Scope keys must be unique within the same `visage_scopes(...)`
     ///   block.
-    ///
-    /// Empty when no `visage_scopes(...)` block is present. The visage
-    /// emitter chains this Vec onto its built-in `SCOPES` table and
-    /// emits one generated visage struct per resulting `(key, suffix)`
-    /// pair.
+    ///   Empty when no `visage_scopes(...)` block is present. The visage
+    ///   emitter chains this Vec onto its built-in `SCOPES` table and
+    ///   emits one generated visage struct per resulting `(key, suffix)`
+    ///   pair.
     pub visage_scopes: Vec<(String, String)>,
 
-    /// `#[model(strict_ids)]` — Phase 8.5 djogi#189.
-    ///
+    /// `#[model(strict_ids)]` — .
     /// When `true`, the macro propagates the opt-in strict structural
     /// CHECK to every column on this model whose declared shape *could*
     /// be a HeerId / RanjId carrier: the framework-injected `id` field
@@ -466,7 +402,6 @@ pub struct ModelAttrs {
     /// family projects `<col> >= 0`, `RanjId` family projects the
     /// UUIDv8 + RFC 4122 variant CHECK, and any other family (Serial,
     /// Custom, Composite, None) silently skips the CHECK.
-    ///
     /// **Family vs SQL-type dispatch.** The projection layer dispatches
     /// on the descriptor's [`PkType`] semantic family
     /// ([`StrictIdFamily`] in `djogi/src/migrate/projection.rs`), not on
@@ -476,13 +411,11 @@ pub struct ModelAttrs {
     /// family-based dispatch correctly maps it to `StrictIdFamily::None`
     /// (no CHECK) rather than coercing a custom adopter ID into the
     /// HeerId / RanjId structural CHECK.
-    ///
     /// Models whose `pk` is not a HeerId / RanjId variant still receive
     /// the propagation on their FK columns — those FKs may target HeerId
     /// or RanjId tables, and the strict CHECK applies there. The macro
     /// cannot inspect FK target PK families at parse time, so it relies on
     /// the projection layer's per-family dispatch to filter.
-    ///
     /// Standalone keyword only — `strict_ids = true` / `strict_ids = false`
     /// are rejected, mirroring the convention `hooks`, `auditable`,
     /// `soft_deletable`, `events`, `through`, and `no_default` already
@@ -679,12 +612,10 @@ fn render_storage_param_entries(entries: &[StorageParamEntry]) -> String {
 }
 
 /// Parsed `pk = X` value.
-///
-/// Grammar is a bare identifier (Phase 7-Zero-2 T2). The pre-T2
+/// Grammar is a bare identifier. The old
 /// string-literal grammar (`pk = "heerid"`) is rejected with a
 /// span-carrying diagnostic directing callers at the new form. The
 /// accepted identifier set:
-///
 /// - `HeerId` — ascending 64-bit HeerId (historical default).
 /// - `RanjId` — ascending UUIDv8 RanjId.
 /// - `HeerIdRecencyBiased` / `HeerIdDesc` — reverse-chronological
@@ -697,29 +628,27 @@ fn render_storage_param_entries(entries: &[StorageParamEntry]) -> String {
 ///   RanjId; same dual-name treatment.
 /// - `Serial` — `SERIAL` / `INTEGER` PK for lookup tables.
 /// - `None` — no framework-injected `id`; adopter manages the PK.
-///
-/// Phase 7-Zero-2 T2 flipped the attribute's default: omitted `pk` now
-/// resolves to [`PkStrategy::HeerIdDesc`] (recency-biased), not
-/// [`PkStrategy::HeerId`].
-///
-/// Phase 7-Zero-2 T3 adds [`PkStrategy::Custom`] — the attribute parser's
-/// fall-through bucket for any identifier that is not one of the built-in
-/// aliases. Carries the full `syn::Path` so the descriptor emitter can
-/// reference the user's newtype via `<Path as ::djogi::primary_key::PrimaryKey>::KIND`,
-/// which lowers to `PkType::Custom(CustomPrimaryKeyKind { .. })` at
-/// `inventory::submit!` registration time.
+///   Flipped the attribute's default: omitted `pk` now
+///   resolves to [`PkStrategy::HeerIdDesc`] (recency-biased), not
+///   [`PkStrategy::HeerId`].
+///   Adds [`PkStrategy::Custom`] — the attribute parser's
+///   fall-through bucket for any identifier that is not one of the built-in
+///   aliases. Carries the full `syn::Path` so the descriptor emitter can
+///   reference the user's newtype via `<Path as ::djogi::primary_key::PrimaryKey>::KIND`,
+///   which lowers to `PkType::Custom(CustomPrimaryKeyKind { .. })` at
+///   `inventory::submit!` registration time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PkStrategy {
     HeerId,
     RanjId,
     /// `pk = HeerIdRecencyBiased` (canonical) or `pk = HeerIdDesc`
     /// (internal-name alias) — reverse-chronological HeerId variant
-    /// added in Phase 7-Zero v3. Lowers to `PkType::HeerIdDesc`;
+    /// added in v3. Lowers to `PkType::HeerIdDesc`;
     /// injects `id: HeerIdDesc` into the struct.
     HeerIdDesc,
     /// `pk = RanjIdRecencyBiased` (canonical) or `pk = RanjIdDesc`
     /// (internal-name alias) — reverse-chronological RanjId variant
-    /// added in Phase 7-Zero v3. Lowers to `PkType::RanjIdDesc`;
+    /// added in v3. Lowers to `PkType::RanjIdDesc`;
     /// injects `id: RanjIdDesc` into the struct.
     RanjIdDesc,
     Serial,
@@ -744,7 +673,6 @@ impl ModelAttrs {
     }
 
     /// Parse `#[model(table = "posts", pk = HeerId)]` from the attribute token stream.
-    ///
     /// Duplicate keys are rejected with a span-carrying error pointing at the
     /// second occurrence — last-write-wins silently is a footgun in proc-macro
     /// UX (users can't see which key won without expanding the macro).
@@ -765,7 +693,7 @@ impl ModelAttrs {
         let mut seen_auditable = false;
         let mut soft_deletable = false;
         let mut seen_soft_deletable = false;
-        // djogi#189 — `#[model(strict_ids)]` flag accumulator.
+        // `#[model(strict_ids)]` flag accumulator.
         let mut strict_ids = false;
         let mut seen_strict_ids = false;
         let mut idempotency_key: Option<String> = Option::None;
@@ -779,13 +707,13 @@ impl ModelAttrs {
         let mut renamed_from: Option<String> = Option::None;
         let mut tree_edge: Option<syn::LitStr> = Option::None;
         let mut watermark_field: Option<syn::LitStr> = Option::None;
-        // Phase 8.5 Cluster 4 (djogi#217) — `#[model(table_comment = "<text>")]`
+        // Djogi#217) — `#[model(table_comment = "<text>")]`
         // free-text table comment accumulator. Filled by the matching arm
         // inside the meta dispatch loop; duplicate detection happens there.
         let mut table_comment: Option<String> = Option::None;
         let mut storage_params: Option<String> = Option::None;
         let mut tablespace: Option<String> = Option::None;
-        // GH #227 Stage 4 — `#[model(visage_scopes(name = Suffix, ...))]`.
+        // GH #227 — `#[model(visage_scopes(name = Suffix, ...))]`.
         // Accumulator + duplicate-block detection. Each entry is
         // `(scope_key, struct_suffix)`; the visage emitter chains this
         // Vec onto its built-in `SCOPES` table.
@@ -795,7 +723,7 @@ impl ModelAttrs {
         let mut proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)> = Vec::new();
         let mut seen_proxy_default_order = false;
         let mut proxy_default_filter: Option<syn::ExprClosure> = Option::None;
-        // T3.3 (VERIFY-1 fixup) — capture the span of the `default_order`
+        // Capture the span of the `default_order`
         // / `default_filter` key idents at parse time so the post-loop
         // orphan-attribute guards can surface span-precise diagnostics
         // pointing at the offending key rather than at the model's
@@ -838,7 +766,7 @@ impl ModelAttrs {
                     seen_events = true;
                     events = true;
                 }
-                // Flag-only attribute: `hooks` — Phase 8α T1.3.
+                // Flag-only attribute: `hooks` — 3.
                 // Standalone keyword only; the `hooks::expand` emitter
                 // reads `model_attrs.hooks` to decide whether to emit
                 // the `Sealed` + `HasHooks` impl pair for this model.
@@ -852,15 +780,15 @@ impl ModelAttrs {
                     seen_hooks = true;
                     hooks = true;
                 }
-                // Flag-only attribute: `auditable` — Phase 8α T2.4.
-                // Standalone keyword only; supersedes the T2.2
+                // Flag-only attribute: `auditable`.
+                // Standalone keyword only; supersedes the
                 // `#[derive(Auditable)]` derive (removed 2026-05-03 per
                 // spec line 1037). The model emitter reads
                 // `model_attrs.auditable` to decide whether to emit:
-                //   1. `impl ::djogi::Auditable for #ident { ... }`
-                //   2. `impl #ident { fn __djogi_auditable_populate(...) }`
-                //   3. The populator call inside `create_body` between
-                //      `#auto_set_tenant` and `#before_create_call`.
+                // 1. `impl ::djogi::Auditable for #ident { ... }`
+                // 2. `impl #ident { fn __djogi_auditable_populate(...) }`
+                // 3. The populator call inside `create_body` between
+                // `#auto_set_tenant` and `#before_create_call`.
                 Meta::Path(path) if path.is_ident("auditable") => {
                     if seen_auditable {
                         return Err(syn::Error::new_spanned(
@@ -871,13 +799,13 @@ impl ModelAttrs {
                     seen_auditable = true;
                     auditable = true;
                 }
-                // Flag-only attribute: `soft_deletable` — Phase 8α T2.6.
-                // Standalone keyword only; supersedes the T2.3
+                // Flag-only attribute: `soft_deletable`.
+                // Standalone keyword only; supersedes the
                 // `#[derive(SoftDeletable)]` derive. The model emitter
                 // reads `model_attrs.soft_deletable` to decide whether
                 // to emit `impl ::djogi::SoftDeletable for #ident { ... }`
                 // and to gate the `composed_via: Some("SoftDeletable")`
-                // tag on the `deleted_at` column (descriptor T2.5).
+                // tag on the `deleted_at` column (descriptor).
                 Meta::Path(path) if path.is_ident("soft_deletable") => {
                     if seen_soft_deletable {
                         return Err(syn::Error::new_spanned(
@@ -888,7 +816,7 @@ impl ModelAttrs {
                     seen_soft_deletable = true;
                     soft_deletable = true;
                 }
-                // Flag-only attribute: `strict_ids` — Phase 8.5 djogi#189.
+                // Flag-only attribute: `strict_ids` — .
                 // Standalone keyword only; the descriptor emitter
                 // propagates `model_attrs.strict_ids` to every applicable
                 // column (id field on HeerId / RanjId PKs, bare HeerId /
@@ -908,11 +836,11 @@ impl ModelAttrs {
                     seen_strict_ids = true;
                     strict_ids = true;
                 }
-                // `pk = X` bare-identifier form (Phase 7-Zero-2 T2). Accepts
+                // `pk = X` bare-identifier form. Accepts
                 // only single-segment paths matching the alias set in
                 // `PkStrategy::from_path`. Multi-segment paths and unknown
-                // identifiers are rejected so that custom PK types (a T3
-                // feature) can't sneak through the T2 parser.
+                // identifiers are rejected so that custom PK types
+                // can't sneak through the parser.
                 Meta::NameValue(MetaNameValue {
                     path,
                     value: Expr::Path(expr_path),
@@ -926,7 +854,7 @@ impl ModelAttrs {
                     }
                     pk = Some(PkStrategy::from_path(&expr_path.path)?);
                 }
-                // `pk = "…"` — the pre-T2 string-literal form. Dedicated
+                // `pk = "…"` — the old string-literal form. Dedicated
                 // diagnostic so callers get a clear migration message; the
                 // span points at the `pk` key so the underline isolates the
                 // offender rather than the whole attribute.
@@ -959,7 +887,7 @@ impl ModelAttrs {
                                 "duplicate `table` key in #[model(...)]",
                             ));
                         }
-                        // Phase 7-Zero-2 T13b safety: the table name flows
+                        // Safety: the table name flows
                         // into `Model::table_name()` which is pushed as a
                         // raw SQL token by the SQL emitter (e.g.
                         // `OuterRef::as_qualified_expr` → `<table>.<col>`,
@@ -982,7 +910,7 @@ impl ModelAttrs {
                         }
                         let key_val = s.value();
                         // Validate: plain ASCII identifier. Spelled out
-                        // byte-level per `feedback_no_regex_in_djogi` —
+                        // byte-level per `feedback_no_regex_in_djogi`
                         // leading letter/underscore, rest alnum/underscore.
                         let bytes = key_val.as_bytes();
                         let ident_ok = !bytes.is_empty()
@@ -1026,7 +954,7 @@ impl ModelAttrs {
                         }
                         tenant_key = Some(key_val);
                     } else if path.is_ident("renamed_from") {
-                        // Phase 7 T2 — `#[model(renamed_from = "old_table")]`
+                        // `#[model(renamed_from = "old_table")]`
                         // table-rename hint. Same Postgres identifier
                         // grammar that `table = "..."` enforces.
                         if renamed_from.is_some() {
@@ -1038,7 +966,6 @@ impl ModelAttrs {
                         crate::ident::check_table_name(&s.value(), s.span())?;
                         renamed_from = Some(s.value());
                     } else if path.is_ident("tree_edge") {
-                        // Phase 8-Zero Cluster B1 (T12) —
                         // `#[model(tree_edge = "parent_id")]` default
                         // self-FK column for tree-recursive queries.
                         // Field-existence + self-FK validation lives
@@ -1075,14 +1002,13 @@ impl ModelAttrs {
                         }
                         tree_edge = Some(s.clone());
                     } else if path.is_ident("watermark_field") {
-                        // Cluster 8δ T7.2 — `#[model(watermark_field = "...")]`.
+                        // 2 — `#[model(watermark_field = "...")]`.
                         // Names the field that backs the auto-emitted
                         // `DeltaSyncCacheable` impl. Defaults to
                         // `updated_at` (the framework-injected timestamp);
                         // override here when the model's freshness signal
                         // is e.g. `expires_at`, a `version: i64`, or a
                         // domain-specific `recorded_at`.
-                        //
                         // Field-existence validation runs in
                         // `model::cacheable::expand` where the user field
                         // list is in scope; here we only enforce the
@@ -1118,7 +1044,7 @@ impl ModelAttrs {
                         }
                         watermark_field = Some(s.clone());
                     } else if path.is_ident("table_comment") {
-                        // Phase 8.5 djogi#217 — adopter-supplied free-text
+                        // Djogi#217 — adopter-supplied free-text
                         // comment lowered to `COMMENT ON TABLE … IS '…'`.
                         // The composer owns single-quote escaping at
                         // SQL-emission time so the macro accepts any
@@ -1163,7 +1089,7 @@ impl ModelAttrs {
                         crate::ident::check_table_name(&s.value(), s.span())?;
                         tablespace = Some(s.value());
                     } else if path.is_ident("proxy_for") {
-                        // Phase 8β T3.2 — string-literal form rejected
+                        // 2 — string-literal form rejected
                         // mirroring the `pk = "..."` rejection. Bare-ident
                         // catches typos at compile time and matches the
                         // `pk = HeerIdRecencyBiased` convention. The
@@ -1206,7 +1132,7 @@ impl ModelAttrs {
                     }
                     fts = Some(FtsSpec::parse_from_list(list)?);
                 }
-                // `visage_scopes(name = Suffix, ...)` — GH #227 Stage 4.
+                // `visage_scopes(name = Suffix, ...)` — GH #227.
                 // Paren-delimited list of `scope_ident = SuffixIdent`
                 // entries. Each pair adds one custom scope to the
                 // visage emitter's iteration set (alongside the four
@@ -1223,7 +1149,7 @@ impl ModelAttrs {
                     seen_visage_scopes = true;
                     visage_scopes = parse_visage_scopes_list(list)?;
                 }
-                // `indexes(index(...), unique(...), ...)` — Phase 7-Zero v3 T3.
+                // `indexes(index(...), unique(...), ...)`
                 // Full model-level grammar lives in `crate::model::indexes`;
                 // parse here and stash the IR for the descriptor emitter.
                 Meta::List(list) if list.path.is_ident("indexes") => {
@@ -1237,7 +1163,7 @@ impl ModelAttrs {
                     indexes = crate::model::indexes::parse_indexes_meta_list(list)?;
                 }
                 // `exclusion(name = "...", using = "...", elements = [...])`
-                // — Phase 7.5 PR 7. Multiple `exclusion(...)` entries are
+                // PR 7. Multiple `exclusion(...)` entries are
                 // valid; each one parses independently and appends to the
                 // accumulated Vec. Cross-entry duplicate-name detection
                 // runs after the loop completes (see
@@ -1246,9 +1172,9 @@ impl ModelAttrs {
                     let decl = crate::model::exclusion::parse_exclusion_meta_list(list)?;
                     exclusions.push(decl);
                 }
-                // `app = Vehicles` — Phase 7-Zero v3 T8. Value is a
+                // `app = Vehicles` — Value is a
                 // Rust type path (not a string) since apps are
-                // addressed by type per §4B (Codex P0-03). The
+                // addressed by type per §4B. The
                 // descriptor emitter lowers the path to
                 // `<Path as ::djogi::App>::LABEL` at const-eval time.
                 Meta::NameValue(MetaNameValue {
@@ -1264,7 +1190,7 @@ impl ModelAttrs {
                     }
                     app = Some(expr_path.path.clone());
                 }
-                // `moved_from_app = OldBilling` — Phase 7-Zero v3 T8.
+                // `moved_from_app = OldBilling`
                 // Same path-valued form as `app`; historical metadata
                 // only, so the referenced app may be tombstoned.
                 Meta::NameValue(MetaNameValue {
@@ -1299,9 +1225,9 @@ impl ModelAttrs {
                          by type, not by string label",
                     ));
                 }
-                // `proxy_for = ParentType` — Phase 8β T3.2 bare-identifier
+                // `proxy_for = ParentType` — bare-identifier
                 // form. Path expression matching the `pk = HeerId`
-                // convention; the descriptor emitter (T3.3) lowers the ident
+                // convention; the descriptor emitter lowers the ident
                 // to a `&'static str` for `ModelDescriptor.proxy_for`.
                 Meta::NameValue(MetaNameValue {
                     path,
@@ -1325,7 +1251,7 @@ impl ModelAttrs {
                     crate::model::proxy::validate_proxy_for_ident(&ident)?;
                     proxy_for = Some(ident);
                 }
-                // `default_order = [(field, Asc|Desc), ...]` — Phase 8β T3.2.
+                // `default_order = [(field, Asc|Desc), ...]` — 2.
                 // Array of `(ident, dir_ident)` tuples. See
                 // `crate::model::proxy::parse_default_order_list` for
                 // the byte-level grammar. Only meaningful for proxy
@@ -1342,7 +1268,7 @@ impl ModelAttrs {
                         ));
                     }
                     seen_proxy_default_order = true;
-                    // T3.3 (VERIFY-1 fixup) — record the key span so the
+                    // Record the key span so the
                     // post-loop orphan-attribute guard surfaces a precise
                     // diagnostic location.
                     proxy_default_order_span = Some(path.span());
@@ -1357,9 +1283,9 @@ impl ModelAttrs {
                          `default_order = [(name, Asc), (created_at, Desc)]`",
                     ));
                 }
-                // `default_filter = |f| <expr>` — Phase 8β T3.2.
-                // Closure expression captured verbatim; T3.3 walks the
-                // body and lowers it to a SQL fragment string.
+                // `default_filter = |f| <expr>`.
+                // Closure expression captured verbatim; the body is walked
+                // and lowered to a SQL fragment string.
                 Meta::NameValue(MetaNameValue {
                     path,
                     value: closure_expr @ Expr::Closure(_),
@@ -1371,7 +1297,7 @@ impl ModelAttrs {
                             "duplicate `default_filter = …` key in #[model(...)]",
                         ));
                     }
-                    // T3.3 (VERIFY-1 fixup) — record the key span so the
+                    // Record the key span so the
                     // post-loop orphan-attribute guard surfaces a precise
                     // diagnostic location.
                     proxy_default_filter_span = Some(path.span());
@@ -1399,19 +1325,18 @@ impl ModelAttrs {
             }
         }
 
-        // Phase 7.5 PR 7 — cross-entry duplicate-name check on
+        // PR 7 — cross-entry duplicate-name check on
         // accumulated `exclusion(...)` declarations. Runs after the
         // dispatch loop so a single span-precise error covers the
         // collision rather than splitting into two diagnostics.
         crate::model::exclusion::validate_unique_names(&exclusions)?;
 
-        // Phase 8β T3.2 — cross-attribute validation for proxy keys.
+        // 2 — cross-attribute validation for proxy keys.
         // `default_order` / `default_filter` are only meaningful when
         // `proxy_for` is also set; standalone use surfaces as a
         // span-precise diagnostic so the adopter knows to add
         // `proxy_for = …` (or remove the orphan key).
-        //
-        // T3.3 (VERIFY-1 fixup) — point the span at the offending key
+        // Point the span at the offending key
         // ident (`default_order` / `default_filter`) rather than at
         // `Span::call_site()`. The orphan-key span needs to be re-derived
         // here because the dispatch loop above consumed the original
@@ -1439,14 +1364,14 @@ impl ModelAttrs {
                  instead",
             ));
         }
-        // Phase 8β T3.2 — proxy models share the parent's table by
+        // 2 — proxy models share the parent's table by
         // construction. The macro requires `table = "..."` at parse time
         // (the table name flows into many emission sites; auto-deriving
         // from the parent would require cross-type lookup at expand time
         // which the macro pipeline does not support). Adopters declare
         // the SAME `table` value the parent uses; the macro accepts the
         // declaration as-is and the cross-type "tables match" invariant
-        // is verified at descriptor-lookup time (T3.5 migration-differ
+        // is verified at descriptor-lookup time (migration-differ
         // collision detection). The risk of declaring a different table
         // than the parent is documented in `docs/guide/proxy.md`; the
         // descriptor pipeline catches the mismatch as a duplicate
@@ -1482,7 +1407,7 @@ impl ModelAttrs {
             ));
         }
 
-        // Phase 7-Zero-2 T2 flipped the default: omitted `pk` now resolves
+        // Flipped the default: omitted `pk` now resolves
         // to `HeerIdDesc` (recency-biased), not `HeerId`. Models that still
         // want ascending PK ordering must declare `pk = HeerId` explicitly.
         // See `docs/spec/primary-keys.md` §3.5a for the recency-biased
@@ -1512,15 +1437,15 @@ impl ModelAttrs {
             proxy_default_order,
             proxy_default_filter,
             watermark_field,
-            // Phase 8.5 Cluster 4 (djogi#217) — adopter
+            // Djogi#217) — adopter
             // `#[model(table_comment = "<text>")]` free-text comment.
             table_comment,
             storage_params,
             tablespace,
-            // Phase 8.5 Cluster 2 (djogi#189) — opt-in strict HeerId /
+            // — opt-in strict HeerId /
             // RanjId structural CHECK propagation flag.
             strict_ids,
-            // GH #227 Stage 4 — custom visage scopes.
+            // GH #227 — custom visage scopes.
             visage_scopes,
         })
     }
@@ -1528,26 +1453,23 @@ impl ModelAttrs {
 
 impl PkStrategy {
     /// Lower a `pk = X` path expression to a `PkStrategy`.
-    ///
     /// Accepts the single-segment identifier set documented on
     /// [`PkStrategy`]. The two recency-biased identifiers carry
     /// public-facing and internal-facing spellings:
-    ///
     /// - `HeerIdRecencyBiased` and `HeerIdDesc` both lower to
     ///   [`PkStrategy::HeerIdDesc`].
     /// - `RanjIdRecencyBiased` and `RanjIdDesc` both lower to
     ///   [`PkStrategy::RanjIdDesc`].
-    ///
-    /// Any identifier that is not one of the built-in aliases is treated
-    /// as an adopter-declared custom PK type (`djogi::primary_key!` or
-    /// hand-rolled). Multi-segment paths (e.g. `crate::ids::UserId`) are
-    /// also accepted as Custom — the descriptor emitter routes through
-    /// `<Path as ::djogi::primary_key::PrimaryKey>::KIND` either way, so
-    /// the only constraint is that the path resolves to a type that
-    /// implements `PrimaryKey`. That bound is checked at `#[model]`
-    /// expansion time by the emitted trait impl lookups; a path pointing
-    /// at a non-PK type surfaces a type-error at the const-lookup site,
-    /// not here.
+    ///   Any identifier that is not one of the built-in aliases is treated
+    ///   as an adopter-declared custom PK type (`djogi::primary_key!` or
+    ///   hand-rolled). Multi-segment paths (e.g. `crate::ids::UserId`) are
+    ///   also accepted as Custom — the descriptor emitter routes through
+    ///   `<Path as ::djogi::primary_key::PrimaryKey>::KIND` either way, so
+    ///   the only constraint is that the path resolves to a type that
+    ///   implements `PrimaryKey`. That bound is checked at `#[model]`
+    ///   expansion time by the emitted trait impl lookups; a path pointing
+    ///   at a non-PK type surfaces a type-error at the const-lookup site,
+    ///   not here.
     fn from_path(path: &syn::Path) -> syn::Result<Self> {
         if let Some(ident) = path.get_ident() {
             return Ok(match ident.to_string().as_str() {
@@ -1567,7 +1489,6 @@ impl PkStrategy {
 impl FtsSpec {
     /// Parse `{ source = "col1, col2", dictionary = "english" }` from a
     /// `Meta::List` (the `{ ... }` token stream inside `fts = { ... }`).
-    ///
     /// Both `source` and `dictionary` are required. Values are validated
     /// byte-level per `feedback_no_regex_in_djogi` — no regex engine.
     fn parse_from_list(list: &syn::MetaList) -> syn::Result<Self> {
@@ -1726,7 +1647,6 @@ impl FtsSpec {
 }
 
 /// Options extracted from a single `#[field(...)]` annotation on a struct field.
-///
 /// Parsed via `darling::FromField`. Unknown keys, type mismatches, and
 /// duplicate keys are reported by darling with source spans. `ident` and
 /// `ty` are darling "magic" fields — the derive auto-populates them from
@@ -1734,21 +1654,19 @@ impl FtsSpec {
 /// list — so [`FieldAttrs::parse`] callers can read them alongside the
 /// parsed attrs without threading the `syn::Field` separately.
 // Not every field is read on every call site (e.g. `ident`/`ty` are pending
-// use by later Phase 2 / Phase 3 codegen). Suppress dead_code at struct
+// use by later / codegen). Suppress dead_code at struct
 // granularity so new fields don't spuriously re-trip the lint.
 #[allow(dead_code)]
 #[derive(Debug, FromField)]
 #[darling(attributes(field), allow_unknown_fields)]
 pub struct FieldAttrs {
     /// The struct field's identifier.
-    ///
     /// Darling's `FromField` derive auto-populates this from
     /// `syn::Field::ident` by magic field name. Always `Some(_)` for
     /// named-field structs; tuple/unit structs are rejected earlier in
     /// `inject::expand`.
     pub ident: Option<syn::Ident>,
     /// The struct field's Rust type.
-    ///
     /// Darling's `FromField` derive auto-populates this from
     /// `syn::Field::ty` by magic field name. The type must be `syn::Type`
     /// (not `Option<syn::Type>`) because the derive emits
@@ -1793,9 +1711,8 @@ pub struct FieldAttrs {
     /// `#[field(outbox = "ignore")]` — strip this column from the
     /// transactional outbox payload emitted by models with
     /// `#[model(events)]`.
-    ///
     /// Only valid value today is `"ignore"` (the field name appears in
-    /// the outbox-exclude set for Phase 4 Task 6). The single-valued
+    /// the outbox-exclude set for). The single-valued
     /// enum shape lives behind a string literal so future additions
     /// (`outbox = "encrypt"`, `outbox = "hash"`, etc.) slot in without
     /// reshaping the macro surface. [`FieldAttrs::parse`] post-validates
@@ -1811,7 +1728,6 @@ pub struct FieldAttrs {
     /// (another writer already bumped the version) `save()` returns
     /// `Err(DjogiError::LockConflict(_))` rather than silently
     /// succeeding with a no-op.
-    ///
     /// Only bare `i32` / `i64` are accepted — `Option<i32>` and all
     /// other types are rejected at macro-expansion time with a
     /// span-precise compile error.
@@ -1820,25 +1736,21 @@ pub struct FieldAttrs {
 
     /// `#[field(sequence_within = "parent_fk_column")]` — assigns this
     /// column a monotonically-increasing sequence scoped to the
-    /// parent-FK column named in the attribute value. Phase 4 Task
+    /// parent-FK column named in the attribute value. Task
     /// 7.6.
-    ///
     /// At `create` time the macro wraps the INSERT in a counter
     /// upsert against `<table>_seq_<parent_fk_column>`, captures the
     /// returned `last_seq`, and assigns it to this field before the
     /// main INSERT emits. Rollback of the outer `atomic()` cleans
     /// both the counter increment and the main row.
-    ///
     /// Only one field per model may carry `sequence_within` today.
     /// Multiple-scope sequencing (two scoped counters on the same
     /// model) would require multiple companion tables and is a
     /// future extension.
-    ///
     /// The attribute value must be a plain ASCII identifier — it is
     /// embedded directly into the counter-upsert SQL. Byte-level
     /// validation per `feedback_no_regex_in_djogi`.
-    ///
-    /// The companion-table DDL emission is DEFERRED to Phase 7
+    /// The companion-table DDL emission is DEFERRED to
     /// (migration system). Until then, downstream crates hand-write
     /// the `<table>_seq_<parent_fk_column>` table alongside their
     /// own migrations using the shape documented on
@@ -1849,13 +1761,12 @@ pub struct FieldAttrs {
     /// `#[field(rationale = "...")]` — free-text justification for why this
     /// field carries a behaviour-modifying attribute such as
     /// `outbox = "ignore"`.
-    ///
     /// No validation is applied to the string value — it exists purely as
     /// in-source documentation that suppresses the advisory warning emitted
     /// when `outbox = "ignore"` is present without an accompanying
     /// `rationale`. Future attribute advisories (`lazy`, `partition_by`)
     /// will key off the same field once those attributes become functional
-    /// features (deferred; see Task 11 in the Phase 5 plan).
+    /// features (deferred; see Task 11 in the plan).
     #[darling(default)]
     pub rationale: Option<String>,
 
@@ -1866,11 +1777,9 @@ pub struct FieldAttrs {
     /// [`Self::expose`] is assembled in [`FieldAttrs::parse`] by folding
     /// this Vec (cross-attr duplicate detection + `none`/`internal`
     /// exclusivity run at merge time).
-    ///
     /// Without `#[darling(multiple)]`, darling would raise
     /// `Duplicate field \`expose\`` on the second occurrence — the
     /// multi-attr merge path needs this opt-in to exist at all.
-    ///
     /// Users never read this field; it is the darling landing site for
     /// the rename. Read [`Self::expose`] instead.
     #[darling(multiple, rename = "expose")]
@@ -1879,47 +1788,43 @@ pub struct FieldAttrs {
     /// Merged `expose(...)` spec across every `#[field(expose(...))]`
     /// attribute on this field — the single source of truth downstream
     /// code (descriptor emission, visage codegen) reads.
-    ///
     /// Grammar summary:
     /// - Scalar form: `expose(public, self_view, admin, export)` — the
     ///   field appears in each listed scope under its column name.
-    /// - Relation form (T6+): `expose(public -> UserPublic)` —
+    /// - Relation form: `expose(public -> UserPublic)`
     ///   narrow peer visage; `expose(public -> User)` — full peer model
     ///   embed; `expose(public -> User { manager_id -> ManagerPublic })`
-    ///   — nested traversal (structural metadata only at this time).
+    ///   nested traversal (structural metadata only at this time).
     /// - Deprecated relation form: `expose(public = "UserSummary", ...)`
-    ///   — string-literal shape kept for transitional backward compat.
+    ///   string-literal shape kept for transitional backward compat.
     /// - Sentinels: `expose(none)` / `expose(internal)` — accepted no-op
     ///   sentinels, identical to an absent `expose` annotation; mutually
     ///   exclusive with real scopes on the same field.
-    ///
-    /// `#[darling(skip)]` here is safe because users only ever write
-    /// `#[field(expose(...))]` (which lands in [`Self::expose_raw`] via
-    /// the rename above); nobody writes `#[field(expose = ...)]` as a
-    /// name-value targeting this field, so darling's "unknown field"
-    /// error path is never triggered.
+    ///   `#[darling(skip)]` here is safe because users only ever write
+    ///   `#[field(expose(...))]` (which lands in [`Self::expose_raw`] via
+    ///   the rename above); nobody writes `#[field(expose = ...)]` as a
+    ///   name-value targeting this field, so darling's "unknown field"
+    ///   error path is never triggered.
     #[darling(skip)]
     pub expose: ExposeSpec,
 
     /// `#[field(default = "<sql>")]` — column DEFAULT expression used
     /// at migration-emission time.
-    ///
-    /// Phase 7.5 T3 wires the *attribute slot* so [`Self::default_volatility`]
+    /// Wires the *attribute slot* so [`Self::default_volatility`]
     /// can validate "no default → meaningless override". The compose-side
     /// consumer (DDL emitter that surfaces the expression as a Postgres
-    /// column DEFAULT) lands in T6 / later; T3's job is the parsing
-    /// surface plus the cross-attribute validation. Until T6 ships,
-    /// a `default = "..."` attribute on a field has no other effect
+    /// column DEFAULT) is the parsing
+    /// surface plus the cross-attribute validation.
+    /// A `default = "..."` attribute on a field has no other effect
     /// beyond satisfying the `default_volatility` precondition.
     #[darling(default)]
     pub default: Option<String>,
 
     /// `#[field(default_volatility = "immutable" | "stable" | "volatile")]`
-    /// — adopter-supplied override for the Postgres volatility
+    /// adopter-supplied override for the Postgres volatility
     /// classification of this field's default expression.
-    ///
     /// `None` means "fall through to the static `pg_volatility.rs`
-    /// lookup at compose time" (T5 territory). Validated at parse time
+    /// lookup at compose time". Validated at parse time
     /// against the three documented choices; further cross-attr rules
     /// (must coexist with `default = ...`; redundant override warning)
     /// run in [`FieldAttrs::parse`] post-validation.
@@ -1928,10 +1833,9 @@ pub struct FieldAttrs {
 
     /// `#[field(protected(...))]` — parsed protected-field metadata.
     /// `None` for the common case (most fields are not protected).
-    ///
     /// Set entirely via raw attribute walking in
     /// [`crate::model::protected::parse_from_field`], not via darling
-    /// — the nested `protected(key = "value", ...)` grammar is
+    /// the nested `protected(key = "value", ...)` grammar is
     /// inspected for span-precise diagnostics that darling's
     /// declarative derive cannot express. The field is `#[darling(skip)]`
     /// so no name-value `protected = ...` declaration is accepted at
@@ -1939,8 +1843,7 @@ pub struct FieldAttrs {
     #[darling(skip)]
     pub protected: Option<crate::model::protected::ProtectedSpec>,
 
-    /// `#[field(generated = "<sql expr>")]` — Phase 7.5 PR 7.
-    ///
+    /// `#[field(generated = "<sql expr>")]` — PR 7.
     /// Marks this column as a Postgres generated column. Pg18 only
     /// supports `STORED`, so the descriptor's
     /// [`GeneratedColumnSpec::stored`](djogi::descriptor::GeneratedColumnSpec::stored)
@@ -1948,7 +1851,6 @@ pub struct FieldAttrs {
     /// `stored = ...` in the attribute syntax is rejected by
     /// [`FieldAttrs::parse`] — one less knob to maintain until Pg19+
     /// `VIRTUAL` support lands.
-    ///
     /// Set via raw attribute walking in [`FieldAttrs::parse`] (not via
     /// darling) so the parser can reject `stored = ...` co-occurring on
     /// the same field with a span-precise diagnostic. Empty-string
@@ -1956,14 +1858,12 @@ pub struct FieldAttrs {
     #[darling(skip)]
     pub generated: Option<syn::LitStr>,
 
-    /// `#[field(check = "<sql expr>")]` — Phase 8.5 djogi#105.
-    ///
+    /// `#[field(check = "<sql expr>")]` — .
     /// Adopter-supplied CHECK constraint expression. The string is
     /// emitted verbatim into both inline CREATE TABLE form
     /// (`CONSTRAINT <table>_<column>_check CHECK (<expr>)`) and the
     /// migration differ's ALTER TABLE form
     /// (`ALTER TABLE … ADD CONSTRAINT … CHECK (<expr>)`).
-    ///
     /// **Raw SQL escape.** The expression is treated identically to a
     /// raw SQL fragment — djogi performs **no parsing, no sanitization,
     /// and no semantic validation** beyond rejecting empty /
@@ -1973,7 +1873,6 @@ pub struct FieldAttrs {
     /// `now()` etc.). The same `unsafe`-style cultural posture from
     /// `docs/spec/raw-sql-escape-hatches.md` applies: every callsite
     /// should be reviewable as raw SQL.
-    ///
     /// **Combination with type-derived CHECKs.** When a column also
     /// receives a type-derived CHECK (e.g. an adopter `u32` field with
     /// `#[field(check = "port > 0")]`), the projection layer combines
@@ -1981,20 +1880,17 @@ pub struct FieldAttrs {
     /// (`<table>_<column>_check`). Both clauses must pass for an
     /// INSERT / UPDATE to land. The single constraint slot keeps the
     /// ADD / DROP / AMEND lifecycle in the differ unchanged.
-    ///
     /// Set via darling. `FieldAttrs::parse` post-validates non-empty.
     #[darling(default)]
     pub check: Option<String>,
 
-    /// `#[field(comment = "<text>")]` — Phase 8.5 djogi#217.
-    ///
+    /// `#[field(comment = "<text>")]` — .
     /// Adopter-supplied free-text column comment lowered by the
     /// migration composer to `COMMENT ON COLUMN <t>.<c> IS '<text>'`.
     /// The composer doubles single quotes inside the value at
     /// SQL-emission time (per the standard Postgres lexer rule under
     /// `standard_conforming_strings = on`, the PG 18 default that
     /// djogi requires), so adopters can write apostrophes verbatim.
-    ///
     /// Set via darling. `FieldAttrs::parse` post-validates non-empty
     /// (whitespace-only also rejected) so the descriptor never carries
     /// a meaningless comment that would lower to `COMMENT ON COLUMN
@@ -2002,16 +1898,14 @@ pub struct FieldAttrs {
     #[darling(default)]
     pub comment: Option<String>,
 
-    /// `#[field(strict_id_check)]` — Phase 8.5 djogi#189.
-    ///
+    /// `#[field(strict_id_check)]` — .
     /// Opts in to the structural CHECK constraint for this one
     /// HeerId / RanjId / FK column. Equivalent to enabling
     /// `#[model(strict_ids)]` model-wide but scoped to a single
     /// field — useful when an adopter wants to harden one external-
     /// writer-exposed FK without enforcing strict checks across the
     /// rest of the model.
-    ///
-    /// **Idiomatic form is the bare flag** — `#[field(strict_id_check)]` —
+    /// **Idiomatic form is the bare flag** — `#[field(strict_id_check)]`
     /// matching the convention every flag-style field attribute
     /// (`unique`, `lazy`, `version`, etc.) follows. Darling's
     /// `#[darling(default)]` lowering also accepts the explicit
@@ -2020,7 +1914,6 @@ pub struct FieldAttrs {
     /// `FieldAttrs` struct exposes); they are unidiomatic and lint
     /// against the rest of the codebase's spellings but neither
     /// darling nor the post-validation pass rejects them.
-    ///
     /// **Type validation.** `FieldAttrs::parse` rejects this attribute
     /// on a non-applicable field type (anything that is not HeerId,
     /// HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
@@ -2033,22 +1926,19 @@ pub struct FieldAttrs {
     #[darling(default)]
     pub strict_id_check: bool,
 
-    /// `#[field(type_change_using = "<sql expr>")]` — Phase 8.5 Cluster 4
-    /// djogi#220.
-    ///
+    /// `#[field(type_change_using = "<sql expr>")]`
+    /// .
     /// Adopter-supplied `USING` expression appended to the
     /// `ALTER TABLE … ALTER COLUMN … TYPE …` statement when the migration
     /// differ detects this column's SQL type changed. Unblocks non-default
     /// cast paths (e.g. `TEXT → UUID`, `TEXT → INTEGER`, custom-domain
     /// flips) that Postgres refuses to convert automatically.
-    ///
     /// Set via darling; `FieldAttrs::parse` post-validates non-empty /
     /// non-whitespace-only — an empty literal would emit
     /// `USING ()` which is invalid SQL and would surface only at apply
     /// time. The expression is otherwise emitted verbatim with no
     /// parsing or sanitisation — the same raw-SQL escape posture the
     /// adjacent `check` attribute uses.
-    ///
     /// **One-time directive.** The attribute is consulted only at the
     /// moment the differ emits a `ChangeType` for this column. The
     /// `ColumnSchema::type_change_using` slot is `#[serde(skip)]`, so
@@ -2058,48 +1948,42 @@ pub struct FieldAttrs {
     #[darling(default)]
     pub type_change_using: Option<String>,
 
-    /// `#[field(domain = "<name>")]` — Phase 8.5 djogi#216 Piece A.
-    ///
+    /// `#[field(domain = "<name>")]` — Piece A.
     /// References an adopter-managed Postgres `CREATE DOMAIN <name> AS
     /// <base>` type that already exists in the target database. The
     /// macro lowers this to [`FieldSqlType::Domain`](djogi::FieldSqlType::Domain)
     /// in the descriptor; the migration composer emits the bare domain
     /// name as the column type in `CREATE TABLE` / `ALTER TABLE` DDL.
-    ///
     /// **Adopter manages the domain.** Piece A does NOT emit
     /// `CREATE DOMAIN` DDL. The domain must already exist on the
     /// target database — typically via a hand-written `raw_ddl`
     /// invocation under `tests/` or an adopter-owned bootstrap
     /// migration. `#[model(domains = [...])]` and `CREATE DOMAIN`
     /// auto-emission are Piece B and deferred.
-    ///
     /// **Schema-qualified names are out of Piece A scope.** The macro
     /// validates the name via [`check_domain_name`](crate::ident::check_domain_name),
     /// which enforces the Postgres unquoted-identifier byte-shape rule
     /// (no dots, no quotes). Adopters needing `"public.positive_amount"`
     /// fall back to [`FieldSqlType::Custom`](djogi::FieldSqlType::Custom)
     /// until Piece B.
-    ///
     /// **Conflict guards** (rejected at parse time):
     /// - `domain + max_length` — the domain provides its own type
-    ///   constraints; layering `VARCHAR(N)` on top would emit
-    ///   contradictory DDL.
+    /// constraints; layering `VARCHAR(N)` on top would emit
+    /// contradictory DDL.
     /// - `domain` on a `ForeignKey<T>` / `OneToOneField<T>` field — FK
-    ///   column type is the target PK type; the adopter cannot override
-    ///   it with a domain.
+    /// column type is the target PK type; the adopter cannot override
+    /// it with a domain.
     /// - `domain + generated` — generated columns derive their stored
-    ///   type from the expression; combining with a domain type is
-    ///   technically valid SQL but out of Piece A scope. Adopters
-    ///   needing this hand-write the migration.
+    /// type from the expression; combining with a domain type is
+    /// technically valid SQL but out of Piece A scope. Adopters
+    /// needing this hand-write the migration.
     /// - `domain + strict_id_check` — domain columns are not HeerRanjID
-    ///   strict-id columns; the structural CHECK does not apply.
-    ///
+    /// strict-id columns; the structural CHECK does not apply.
     /// **Compatible** with `#[field(check = "...")]` (the adopter
     /// CHECK adds to whatever constraints the domain already provides)
     /// and with `#[field(type_change_using = "...")]` (the USING
     /// expression drives a one-time migration from another type to
     /// the domain).
-    ///
     /// Set via darling; `FieldAttrs::parse` post-validates non-empty
     /// via `check_domain_name` and the conflict guards above.
     #[darling(default)]
@@ -2107,25 +1991,21 @@ pub struct FieldAttrs {
 }
 
 /// Per-field visage exposure spec — parsed from `#[field(expose(...))]`.
-///
 /// See [`FieldAttrs::expose`] for the grammar summary. Scope names are
 /// order-insensitive (stored in a [`HashSet`]/[`HashMap`]); source order
 /// only matters for error-span recovery, which falls back to the enclosing
 /// attribute list span.
-///
 /// The parser stores BOTH the scalar set and the relation map because a
 /// field CAN carry both across multiple attrs — e.g.
 /// `#[field(expose(public))] #[field(expose(admin -> OwnerDetail))]` marks
 /// the field scalar in `public` and relation-nested in `admin`. At codegen
 /// time the emitter looks up the relation map to decide if the visage entry
 /// is a column name or a peer-visage type.
-///
 /// `none` / `internal` set [`Self::suppressed`] and are mutually exclusive
-/// with any other scope (per Q11 in the Phase 4.5 v3 plan). They mean
+/// with any other scope (per Q11 in the v3 plan). They mean
 /// "this field does not appear in any transport visage" — same
 /// semantics as omitting the `expose` annotation.
-///
-/// Phase 7-Zero-2 T6 introduced the `->` traversal grammar as the new canonical
+/// Introduced the `->` traversal grammar as the new canonical
 /// form; the prior `expose(scope = "Peer")` string-literal form continues to
 /// parse for backward compatibility (with a `#[deprecated]` advisory).
 #[derive(Debug, Default)]
@@ -2143,25 +2023,21 @@ pub struct ExposeSpec {
 
 /// One scope's relation-form exposure — parsed from
 /// `expose(scope -> Peer)` or `expose(scope -> Peer { nested -> ... })`.
-///
 /// `peer` is the full `syn::Path` the user wrote after `->`. The visage
 /// emitter inspects the path's last segment to decide between two embed
 /// shapes:
-///
 /// - **Narrow visage** — last segment looks like `<ModelIdent><Scope>` (e.g.
 ///   `DepartmentPublic`). The peer field in the visage is typed `peer` and
 ///   constructed via `<peer as TryFrom<&Target>>::try_from(...)`.
 /// - **Full peer model** — last segment equals the relation's target model
 ///   ident (e.g. `Department`). The peer field carries the full `Target`
 ///   value cloned out of the resolved relation.
-///
-/// The deprecated `expose(scope = "Peer")` string form lowers to the same
-/// `RelationExposure` with `peer` parsed from the literal and `nested = []`.
-///
-/// `nested` is recursive — each entry carries the same `peer + nested`
-/// shape rooted at a named field of the parent's peer model. Nested
-/// exposures are STRUCTURAL METADATA only at this point; query-surface
-/// machinery that consumes them lands in later T7+ work.
+///   The deprecated `expose(scope = "Peer")` string form lowers to the same
+///   `RelationExposure` with `peer` parsed from the literal and `nested = []`.
+///   `nested` is recursive — each entry carries the same `peer + nested`
+///   shape rooted at a named field of the parent's peer model. Nested
+///   exposures are STRUCTURAL METADATA only at this point; query-surface
+///   machinery that consumes them is in later work.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct RelationExposure {
@@ -2183,12 +2059,11 @@ pub struct RelationExposure {
 /// One nested-block entry — `field_ident -> Peer` or
 /// `field_ident -> Peer { ... }` inside an outer relation exposure's
 /// `{ ... }` group.
-///
 /// Carries the parent-side field identifier alongside the recursive
 /// [`RelationExposure`] payload. The field identifier is always a bare
 /// identifier (no path), naming a column / relation on the parent peer
 /// model. The visage emitter does not currently consume `nested`
-/// (T6 freezes the grammar without wiring nested embed); later tasks
+/// (the grammar exists without wiring nested embed); later tasks
 /// will lower it.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -2211,7 +2086,6 @@ impl ExposeSpec {
     }
 
     /// `true` when `name` matches one of [`Self::BUILTIN_SCOPES`].
-    ///
     /// Used by the visage emitter at expand time to validate that every
     /// user-declared `expose(scope)` either matches a built-in scope or
     /// matches a custom scope declared via
@@ -2227,8 +2101,7 @@ impl ExposeSpec {
     /// `#[field(expose(...))]` attribute. Returns a fresh [`ExposeSpec`]
     /// covering just that attribute's tokens; cross-attribute merging
     /// lives in [`FieldAttrs::parse`].
-    ///
-    /// Phase 7-Zero-2 T6 — the parser is hand-rolled over `ParseStream`
+    /// The parser is hand-rolled over `ParseStream`
     /// rather than going through `syn::Meta`, because the new arrow
     /// grammar (`scope -> PeerPath { nested -> ... }`) is not a valid
     /// `Meta` shape. The deprecated `scope = "Peer"` string-literal form
@@ -2249,14 +2122,12 @@ impl ExposeSpec {
 
     /// Hand-rolled parser for the `expose(...)` body. Accepts a
     /// comma-separated list of one of:
-    ///
     /// - bare scope ident → `expose(public, admin)`
     /// - suppressor `none` / `internal` (mutually exclusive with real scopes)
     /// - deprecated `scope = "Peer"` string-literal form
     /// - new `scope -> Peer` arrow form (with optional `{ nested }`)
-    ///
-    /// Per-attr duplicate detection runs here; cross-attr merge lives in
-    /// [`FieldAttrs::parse`].
+    ///   Per-attr duplicate detection runs here; cross-attr merge lives in
+    ///   [`FieldAttrs::parse`].
     fn parse_entries(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut spec = ExposeSpec::default();
         let mut suppressor_span: Option<syn::Ident> = None;
@@ -2292,7 +2163,7 @@ impl ExposeSpec {
                 continue;
             }
 
-            // GH #227 Stage 4 — custom-scope names declared via
+            // GH #227 — custom-scope names declared via
             // `#[model(visage_scopes(name = Suffix, ...))]` are not in
             // scope at field-attribute-parse time (the model attributes
             // have not been fully read by the time darling invokes
@@ -2326,9 +2197,9 @@ impl ExposeSpec {
             saw_real_scope = true;
 
             // Three follow-on forms:
-            //   1. `,` or end → bare-scope (scalar) form
-            //   2. `= "Peer"` → deprecated string-literal relation form
-            //   3. `-> Peer { nested? }` → new arrow relation form
+            // 1. `,` or end → bare-scope (scalar) form
+            // 2. `= "Peer"` → deprecated string-literal relation form
+            // 3. `-> Peer { nested? }` → new arrow relation form
             if input.peek(Token![=]) {
                 input.parse::<Token![=]>()?;
                 let peer_lit: syn::LitStr = input.parse()?;
@@ -2392,15 +2263,14 @@ impl ExposeSpec {
         _inside_nested_block: bool,
     ) -> syn::Result<RelationExposure> {
         let peer: syn::Path = input.parse()?;
-        // T6 fixup — the nested-brace grammar (`-> Peer { field -> Peer2 }`)
+        // The nested-brace grammar (`-> Peer { field -> Peer2 }`)
         // is parseable in principle and the structural types
         // (`NestedRelationExposure`, `Self::parse_nested_block`) are
-        // ready for a later task to consume, but T6 does not yet lower
-        // it into the visage emitter. Silently parsing and discarding
+        // ready for a later task to consume, but it is not yet lowered
+        // into the visage emitter. Silently parsing and discarding
         // nested traversal would be a partial-feature trap, so reject
         // any brace with an actionable compile error until the emitter
-        // consumes it. The T6 Codex review flagged the original
-        // parse-and-discard shape as a P0.
+        // consumes it.
         if input.peek(syn::token::Brace) {
             return Err(input.error(
                 "nested traversal `{ ... }` inside `expose(scope -> Peer { ... })` \
@@ -2418,11 +2288,10 @@ impl ExposeSpec {
     /// Parse the body of a nested `{ ... }` block — comma-separated
     /// `field_ident -> Peer` entries, each with an optional further
     /// `{ ... }` recursion.
-    ///
     /// Kept structurally alongside [`NestedRelationExposure`] even
-    /// though the T6 parser now rejects any brace at the entry site
+    /// though the parser now rejects any brace at the entry site
     /// (the emitter does not yet consume nested traversal — see the
-    /// T6 fixup rejection in `parse_relation_exposure`). The function
+    /// rejection in `parse_relation_exposure`). The function
     /// is unreachable from the current public parser; when a later
     /// task wires nested consumption through the visage emitter, the
     /// rejection falls away and this helper becomes live again.
@@ -2440,7 +2309,7 @@ impl ExposeSpec {
             first = false;
             let field: syn::Ident = input.parse()?;
             // Field name is followed by `->` Peer, with optional nested.
-            // A name-value `=` form is NOT supported inside nested blocks —
+            // A name-value `=` form is NOT supported inside nested blocks
             // the new grammar uses `->` exclusively at this level.
             input.parse::<Token![->]>()?;
             let exposure = Self::parse_relation_exposure(input, true)?;
@@ -2494,21 +2363,19 @@ impl FromMeta for ExposeSpec {
 
 impl FieldAttrs {
     /// Parse `#[field(...)]` from a struct field.
-    ///
     /// Returns an all-default instance if no `#[field]` attr is present
     /// (darling's `#[darling(default)]` container attr handles the no-attr
     /// case). Darling emits span-aware errors for:
     /// - Unknown attribute keys (e.g. `#[field(nonexistent)]`).
     /// - Type mismatches (e.g. `max_length = "x"` where an integer is required).
     /// - Duplicate keys across multiple `#[field(...)]` attrs.
-    ///
-    /// `on_delete` is a string with a constrained value set that darling's
-    /// type-level parsing cannot enforce. We post-validate the value below
-    /// and — when rejecting — walk the field's raw `#[field(...)]` attrs
-    /// to recover the literal's `Span`, so the error underlines the bad
-    /// value rather than the entire field declaration. Matches the pre-
-    /// darling hand-rolled behaviour; keeps the surface consistent with
-    /// how `pk = X` span-points at its own path in `ModelAttrs`.
+    ///   `on_delete` is a string with a constrained value set that darling's
+    ///   type-level parsing cannot enforce. We post-validate the value below
+    ///   and — when rejecting — walk the field's raw `#[field(...)]` attrs
+    ///   to recover the literal's `Span`, so the error underlines the bad
+    ///   value rather than the entire field declaration. Matches the pre-
+    ///   darling hand-rolled behaviour; keeps the surface consistent with
+    ///   how `pk = X` span-points at its own path in `ModelAttrs`.
     pub fn parse(field: &syn::Field) -> syn::Result<Self> {
         // `darling::Error` carries source spans from the originating
         // attribute tokens; `From<darling::Error> for syn::Error` preserves
@@ -2517,7 +2384,7 @@ impl FieldAttrs {
         let mut attrs =
             <Self as darling::FromField>::from_field(field).map_err(syn::Error::from)?;
 
-        // Phase 5 — manually parse index from raw attributes.
+        // Manually parse index from raw attributes.
         // Support both bare `#[field(index)]` and `#[field(index = "method")]`.
         // We do this entirely outside of darling to have fine-grained control over both forms.
         attrs.index = false;
@@ -2563,7 +2430,7 @@ impl FieldAttrs {
                             "`#[field(index)]` takes an optional string method (e.g. `index = \"gin\"`) or no value",
                         ));
                     }
-                    // Phase 7.5 PR 7 — `#[field(generated = "<expr>")]`.
+                    // PR 7 — `#[field(generated = "<expr>")]`.
                     // Marks the column as `GENERATED ALWAYS AS (<expr>)
                     // STORED`. The lit is stashed onto FieldAttrs so the
                     // descriptor emitter can lower it to a
@@ -2634,37 +2501,37 @@ impl FieldAttrs {
             "default",
             "default_volatility",
             "protected",
-            // Phase 7.5 PR 7 — `generated = "<expr>"` marks a Postgres
+            // PR 7 — `generated = "<expr>"` marks a Postgres
             // generated column. `stored` is intentionally NOT in this
             // list: the field-level redirect table below catches it
             // with a dedicated "implicit STORED" diagnostic.
             "generated",
-            // Phase 8.5 djogi#105 — adopter-supplied `#[field(check = "<expr>")]`
+            // Djogi#105 — adopter-supplied `#[field(check = "<expr>")]`
             // raw-SQL CHECK constraint. Validated as non-empty in
             // `FieldAttrs::parse`; emitted verbatim into descriptors,
             // snapshots, and migration SQL.
             "check",
-            // Phase 8.5 djogi#217 — adopter-supplied `#[field(comment = "<text>")]`
+            // Djogi#217 — adopter-supplied `#[field(comment = "<text>")]`
             // free-text column comment. Validated as non-empty /
             // non-whitespace-only in `FieldAttrs::parse`; emitted
             // verbatim into descriptors and snapshots. The composer
             // doubles single quotes at SQL-emission time.
             "comment",
-            // Phase 8.5 djogi#189 — adopter-supplied `#[field(strict_id_check)]`
+            // Djogi#189 — adopter-supplied `#[field(strict_id_check)]`
             // opt-in flag for the HeerId / RanjId structural CHECK on this
             // field. `FieldAttrs::parse` validates that the field's Rust
             // type is one of the applicable shapes (HeerId / RanjId
             // family, ForeignKey<T>, OneToOneField<T>, or their
             // Option<…> wraps).
             "strict_id_check",
-            // Phase 8.5 djogi#220 — adopter-supplied
+            // Djogi#220 — adopter-supplied
             // `#[field(type_change_using = "<sql expr>")]` USING clause
             // for non-default-cast column type changes. Validated as
             // non-empty / non-whitespace-only in `FieldAttrs::parse`;
             // emitted verbatim into the descriptor so the SQL emitter
             // can append `USING (<expr>)` to `ALTER COLUMN … TYPE`.
             "type_change_using",
-            // Phase 8.5 djogi#216 Piece A — adopter-supplied
+            // Djogi#216 Piece A — adopter-supplied
             // `#[field(domain = "<name>")]` reference to a
             // pre-existing Postgres domain. The macro lowers to
             // `FieldSqlType::Domain { name, base }`; the migration
@@ -2675,7 +2542,7 @@ impl FieldAttrs {
             // `max_length` / FK / O2O / `generated` / `strict_id_check`.
             "domain",
         ];
-        // Phase 7-Zero v3 T2 Q2/v2 #8 — `nulls_not_distinct` is deliberately
+        // Q2/v2 #8 — `nulls_not_distinct` is deliberately
         // out of scope at the field level. The feature lives on the model-
         // level `#[model(indexes(unique(...)))]` grammar where the full
         // opclass / predicate / multi-column surface is available. Catching
@@ -2693,7 +2560,7 @@ impl FieldAttrs {
              into a model-level unique index: \
              `#[model(indexes(unique(fields = [{field_name_for_redirect}], nulls_not_distinct = true)))]`."
         );
-        // Phase 7.5 PR 7 — `stored = ...` is rejected as a field-level
+        // PR 7 — `stored = ...` is rejected as a field-level
         // attribute. Pg18 only supports STORED generated columns, so
         // the macro hard-codes `stored: true` at lowering time; an
         // explicit `stored = ...` would imply user-controlled choice
@@ -2725,7 +2592,7 @@ impl FieldAttrs {
                     _ => None,
                 };
                 if let Some(key_str) = key.as_ref() {
-                    // Phase 7-Zero T2 redirects take priority over the
+                    // Redirects take priority over the
                     // generic "unknown field attribute" rejection so the
                     // error actively guides the user toward the right
                     // syntax.
@@ -2745,25 +2612,22 @@ impl FieldAttrs {
             }
         }
 
-        // Phase 7-Zero v3 T2 Q3 + Phase 8.5 #83 —
+        // Q3 + #83
         // `#[field(unique, index = "<non-btree>")]` is rejected.
-        //
         // Field-level `unique` is lowered to an inline `UNIQUE` column
         // constraint (btree-backed by PostgreSQL); field-level
         // `index = "<method>"` is lowered to a separate secondary index
         // of that method. Combining them in one `#[field(...)]` mixes two
         // distinct schema objects under one declaration and is ambiguous:
-        //
         // - Read as "a unique index using <method>" — impossible: PG
-        //   unique indexes are btree-only.
+        // unique indexes are btree-only.
         // - Read as "a unique column constraint plus a secondary <method>
-        //   index on the same column" — valid two-object intent, but
-        //   that intent is better expressed at the model level so the
-        //   two objects are spelled out explicitly:
-        //   `#[field(unique)]` + `#[model(indexes(index(fields = [col],
-        //   using = "<method>")))]`.
-        //
-        // The rejection is broader than the original Phase 7-Zero
+        // index on the same column" — valid two-object intent, but
+        // that intent is better expressed at the model level so the
+        // two objects are spelled out explicitly:
+        // `#[field(unique)]` + `#[model(indexes(index(fields = [col],
+        // using = "<method>")))]`.
+        // The rejection is broader than the original
         // hash-only rule. Hash was originally rejected on the theory
         // "hash indexes cannot enforce uniqueness" (true for
         // `CREATE UNIQUE INDEX … USING hash`, but field-level `unique`
@@ -2798,7 +2662,7 @@ impl FieldAttrs {
             ));
         }
 
-        // Phase 7-Zero v3 T2 Q4 — `#[field(index = "gin")]` is type-gated.
+        // Q4 — `#[field(index = "gin")]` is type-gated.
         // Accepted on `Jsonb<T>`, `Vec<T>` (Postgres array columns), and the
         // FTS `TsVector` column. Anything else must declare the index via
         // the model-level `#[model(indexes(...))]` syntax, where the opclass
@@ -2859,7 +2723,7 @@ impl FieldAttrs {
         }
 
         if let Some(outbox) = &attrs.outbox {
-            // Only `"ignore"` is accepted today; future Phase 6+ values
+            // Only `"ignore"` is accepted today; future + values
             // (`"encrypt"`, `"hash"`) would slot into this list without
             // reshaping the attr surface. Mirrors the on_delete span
             // recovery pattern so the error underlines the literal,
@@ -2878,12 +2742,10 @@ impl FieldAttrs {
         }
 
         // Validate `#[field(max_length = N)]`.
-        //
         // Postgres enforces:
         // - `VARCHAR(0)` is invalid (`length for type varchar must be at least 1`);
         // - `VARCHAR(N)` is bounded above by 10_485_760 (same as the
-        //   protocol row-size cap).
-        //
+        // protocol row-size cap).
         // The attribute is also only meaningful on `String` fields.
         // Any non-String type gets the explicit compile-time error instead of
         // being silently retained as metadata.
@@ -3083,14 +2945,13 @@ impl FieldAttrs {
             ));
         }
 
-        // Phase 8.5 djogi#105 — `#[field(check = "<expr>")]` raw-SQL CHECK
+        // Djogi#105 — `#[field(check = "<expr>")]` raw-SQL CHECK
         // expression validation. The string is treated as a raw SQL fragment
         // and emitted verbatim into migration DDL; djogi does NOT parse or
         // sanitize the SQL. The only parse-time guard is that the expression
         // must be non-empty / non-whitespace-only — an empty CHECK would
         // produce `CHECK ()` which is invalid SQL and would only surface as
         // an obscure failure at `cargo build` / migration apply time.
-        //
         // The span is recovered from the field's raw attribute tokens so the
         // diagnostic points at the offending literal rather than the whole
         // field declaration — mirrors the on_delete / outbox / generated
@@ -3109,7 +2970,7 @@ impl FieldAttrs {
             ));
         }
 
-        // Phase 8.5 djogi#217 — `#[field(comment = "<text>")]` free-text
+        // Djogi#217 — `#[field(comment = "<text>")]` free-text
         // column comment. Validated as non-empty / non-whitespace-only at
         // parse time. The composer accepts arbitrary glyphs (including
         // apostrophes) inside the value and doubles single quotes at
@@ -3132,33 +2993,30 @@ impl FieldAttrs {
             ));
         }
 
-        // Phase 8.5 Cluster 4 djogi#220 — `#[field(type_change_using = "<expr>")]`
+        // Djogi#220 — `#[field(type_change_using = "<expr>")]`
         // is a raw-SQL escape consumed by the SQL emitter when the column's
         // sql_type changes. djogi performs no parsing or sanitisation of
         // the expression — it is emitted verbatim into the migration's
         // `USING (<expr>)` clause; the adopter owns correctness. The
         // only parse-time guards are:
-        //
         // 1. Non-empty / non-whitespace-only literal — an empty
-        //    literal would lower to `USING ()` which is invalid SQL
-        //    and surfaces only at apply time.
+        // literal would lower to `USING ()` which is invalid SQL
+        // and surfaces only at apply time.
         // 2. Not paired with `#[field(generated = "...")]` — a stored
-        //    generated column derives its storage type from the
-        //    expression; an adopter USING cannot meaningfully drive
-        //    the resulting type, and Postgres semantics for
-        //    `ALTER COLUMN ... TYPE ... USING (<expr>)` on a stored
-        //    generated column are surprising at best.
+        // generated column derives its storage type from the
+        // expression; an adopter USING cannot meaningfully drive
+        // the resulting type, and Postgres semantics for
+        // `ALTER COLUMN ... TYPE ... USING (<expr>)` on a stored
+        // generated column are surprising at best.
         // 3. Not applied to a `ForeignKey<T>` / `OneToOneField<T>`
-        //    field — FK type changes flow through the Phase 7 PK-flip
-        //    orchestration on the parent model, not as direct column
-        //    type changes on the child. An adopter USING here cannot
-        //    drive the typed flip apparatus.
-        //
+        // field — FK type changes flow through the PK-flip
+        // orchestration on the parent model, not as direct column
+        // type changes on the child. An adopter USING here cannot
+        // drive the typed flip apparatus.
         // Field-level `#[field(identity)]` is not a user-facing
         // attribute (identity flows through the projection from
         // `pk = Serial`), so a `type_change_using` × identity
         // combination cannot arise here.
-        //
         // The span is recovered from the field's raw attribute tokens
         // so each diagnostic points at the offending literal /
         // attribute rather than the whole field — mirrors the
@@ -3181,7 +3039,7 @@ impl FieldAttrs {
         if attrs.type_change_using.is_some() && attrs.generated.is_some() {
             // The diagnostic points at the `type_change_using` literal
             // because that is the attribute the operator should remove
-            // — the `generated` expression is the column's defining
+            // the `generated` expression is the column's defining
             // contract, and an adopter who wants to flip a generated
             // column's storage type hand-writes the migration.
             let span =
@@ -3206,7 +3064,7 @@ impl FieldAttrs {
                 "`#[field(type_change_using = \"...\")]` is not allowed on a \
                  relation field (`ForeignKey<T>` / `OneToOneField<T>`, optionally \
                  wrapped in `Option<...>`). FK type changes flow through the \
-                 Phase 7 PK-flip orchestration on the parent model — the child \
+                 PK-flip orchestration on the parent model — the child \
                  column's storage type follows the parent's PK, and an adopter \
                  USING on the child cannot drive the typed flip apparatus. Drop \
                  the attribute; if the parent's PK shape is changing, the \
@@ -3215,7 +3073,7 @@ impl FieldAttrs {
             ));
         }
 
-        // Phase 8.5 djogi#189 — `#[field(strict_id_check)]` is only valid on
+        // Djogi#189 — `#[field(strict_id_check)]` is only valid on
         // HeerId / RanjId / FK / O2O fields. The projection layer would
         // silently drop the CHECK on a non-applicable column (resolved
         // SQL type ≠ BIGINT / UUID), but silent failure of an explicit
@@ -3243,40 +3101,37 @@ impl FieldAttrs {
             ));
         }
 
-        // Phase 8.5 djogi#216 Piece A — `#[field(domain = "<name>")]`
+        // Djogi#216 Piece A — `#[field(domain = "<name>")]`
         // post-validation. The attribute names a pre-existing Postgres
         // domain that the macro lowers to `FieldSqlType::Domain { name,
         // base: <inferred> }` for descriptor consumers. Validation:
-        //
         // 1. The name string must satisfy the Postgres unquoted-
-        //    identifier byte shape (`check_domain_name`). Reserved-
-        //    keyword and `__djogi_`-prefix checks are intentionally
-        //    skipped — domain names are SQL type names, not
-        //    column / table identifiers.
+        // identifier byte shape (`check_domain_name`). Reserved-
+        // keyword and `__djogi_`-prefix checks are intentionally
+        // skipped — domain names are SQL type names, not
+        // column / table identifiers.
         // 2. The attribute is rejected on relation fields (FK / O2O)
-        //    — the column's SQL type is the target model's PK type,
-        //    which the adopter cannot override with a domain
-        //    reference.
+        // the column's SQL type is the target model's PK type,
+        // which the adopter cannot override with a domain
+        // reference.
         // 3. The attribute is rejected when paired with `max_length`
-        //    — the domain provides its own column constraints; layering
-        //    `VARCHAR(N)` on top would emit contradictory DDL.
+        // the domain provides its own column constraints; layering
+        // `VARCHAR(N)` on top would emit contradictory DDL.
         // 4. The attribute is rejected when paired with `generated`
-        //    — generated columns derive their stored type from the
-        //    expression. Combining with a domain type is technically
-        //    valid SQL but out of Piece A scope; adopters needing
-        //    this hand-write the migration.
+        // generated columns derive their stored type from the
+        // expression. Combining with a domain type is technically
+        // valid SQL but out of Piece A scope; adopters needing
+        // this hand-write the migration.
         // 5. The attribute is rejected when paired with
-        //    `strict_id_check` — domain columns are not HeerRanjID
-        //    strict-id columns; the structural CHECK does not apply.
-        //
+        // `strict_id_check` — domain columns are not HeerRanjID
+        // strict-id columns; the structural CHECK does not apply.
         // Allowed pairings (deliberately not rejected):
         // - `domain + check` — the adopter CHECK adds to whatever
-        //   constraints the domain already provides; the projection
-        //   layer ANDs them into the single per-column constraint
-        //   slot.
+        // constraints the domain already provides; the projection
+        // layer ANDs them into the single per-column constraint
+        // slot.
         // - `domain + type_change_using` — the USING expression drives
-        //   a one-time migration from another type to the domain.
-        //
+        // a one-time migration from another type to the domain.
         // The span is recovered from the field's raw attribute tokens
         // so each diagnostic points at the offending literal /
         // attribute rather than the whole field — mirrors the
@@ -3349,7 +3204,6 @@ impl FieldAttrs {
 }
 
 /// Parse an index method string to validate it against known `IndexType` methods.
-///
 /// Valid methods: `btree`, `gin`, `gist`, `brin`, `hash`, `spgist`.
 /// Returns an error with a clean message listing all valid methods if the
 /// string does not match. The returned error's span points to the offending
@@ -3366,12 +3220,10 @@ fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
     }
 }
 
-/// Parse `#[model(visage_scopes(name = Suffix, ...))]` — GH #227 Stage 4.
-///
+/// Parse `#[model(visage_scopes(name = Suffix, ...))]` — GH #227.
 /// Returns the parsed `(scope_key, struct_suffix)` pairs in source order.
 /// Validation rules (all enforced here so the diagnostic anchors at the
 /// offending ident):
-///
 /// 1. Scope keys must not shadow [`ExposeSpec::BUILTIN_SCOPES`]. Shadowing
 ///    a built-in would attempt to emit two visage structs with the same
 ///    `{Model}{Suffix}` name (or with different suffixes for the same
@@ -3503,15 +3355,13 @@ fn parse_visage_scopes_list(list: &syn::MetaList) -> syn::Result<Vec<(String, St
 /// `Option<…>`, `Tracked<…>`, and combined `Tracked<Option<…>>` /
 /// `Option<Tracked<…>>` wrappers are all stripped to the underlying
 /// scalar before the family match runs.
-///
 /// Returns `false` for relation fields (`ForeignKey<T>` etc.) and for
 /// every non-HeerId / non-RanjId scalar. Used at descriptor-emit time
 /// by the `#[model(strict_ids)]` propagation logic to set
 /// `strict_id_check: true` on bare HeerId / RanjId user fields — the
 /// relation-field arm is handled by [`detect_relation`] one branch
 /// over.
-///
-/// djogi#189.
+/// .
 pub fn is_bare_heeranjid_family_type(ty: &syn::Type) -> bool {
     let (inner, _nullable) = unwrap_schema_type(ty);
     let s = quote::quote!(#inner).to_string().replace(' ', "");
@@ -3539,16 +3389,15 @@ pub fn is_bare_heeranjid_family_type(ty: &syn::Type) -> bool {
     )
 }
 
-/// `true` when `ty` is an accepted target for `#[field(strict_id_check)]` —
+/// `true` when `ty` is an accepted target for `#[field(strict_id_check)]`
 /// i.e. a bare HeerId / HeerIdDesc / HeerIdRecencyBiased / RanjId /
 /// RanjIdDesc / RanjIdRecencyBiased field, OR a relation field
 /// (`ForeignKey<T>` / `OneToOneField<T>`). `Option<…>` and `Tracked<…>`
 /// are unwrapped via [`unwrap_schema_type`] so nullable / dirty-tracked
 /// columns are accepted.
-///
 /// **Why FK / O2O are accepted without checking the target's PK type.**
 /// The macro cannot inspect the FK target's `pk` strategy at parse time
-/// — the target type may live in another crate or below the current
+/// the target type may live in another crate or below the current
 /// model in source order. The projection layer resolves the FK target's
 /// HeerRanjID semantic family at descriptor → snapshot lowering time
 /// (via `type_to_pk_family`) and silently drops the CHECK when the
@@ -3559,8 +3408,7 @@ pub fn is_bare_heeranjid_family_type(ty: &syn::Type) -> bool {
 /// parse-order between target and source models. The applicability
 /// filter is the projection's responsibility; the macro's job is the
 /// per-field opt-in surface.
-///
-/// **Family-based filter, not SQL-type-based filter (djogi#189
+/// **Family-based filter, not SQL-type-based filter (
 /// post-review hardening).** The projection layer dispatches the strict
 /// CHECK on the target's HeerRanjID semantic family ([`StrictIdFamily`]
 /// in `djogi/src/migrate/projection.rs`), not on the resolved SQL type
@@ -3568,7 +3416,6 @@ pub fn is_bare_heeranjid_family_type(ty: &syn::Type) -> bool {
 /// would have inherited the HeerId / RanjId CHECK under the earlier
 /// SQL-type-only dispatch by SQL-carrier collision; the family-based
 /// dispatch correctly maps it to `StrictIdFamily::None`.
-///
 /// Path forms accepted: bare identifier (after `use djogi::prelude::*;`),
 /// `djogi::HeerId`, `djogi::types::HeerId`, and equivalent shapes for
 /// every alias in the HeerId / RanjId family. The
@@ -3585,17 +3432,15 @@ fn is_strict_id_check_compatible(ty: &syn::Type) -> bool {
     is_bare_heeranjid_family_type(ty)
 }
 
-/// `true` when `ty` is an accepted target for `#[field(index = "gin")]` —
+/// `true` when `ty` is an accepted target for `#[field(index = "gin")]`
 /// i.e. `Jsonb<T>`, `MirJzSON`, `Vec<T>`, or `TsVector`, unwrapping one
 /// layer of `Option<…>` so nullable columns are accepted too.
-///
 /// Uses last-segment name matching so bare idents, `djogi::Jsonb<T>`,
 /// `djogi::jsonb::MirJzSON`, `djogi::fts::TsVector`, and similar qualified
-/// forms all resolve. Phase 7-Zero v3 T2 Q4 codifies this set; anything
+/// forms all resolve. Q4 codifies this set; anything
 /// outside it must declare the index at the model level where opclass
 /// can be specified.
-///
-/// Phase 8.5 #195 adds `MirJzSON` to the set — it is the raw-JSONB
+/// #195 adds `MirJzSON` to the set — it is the raw-JSONB
 /// sibling of `Jsonb<T>` and shares the same GIN-index suitability for
 /// containment / `jsonb_path_ops` lookups.
 fn is_gin_compatible_type(ty: &syn::Type) -> bool {
@@ -3616,7 +3461,6 @@ fn is_gin_compatible_type(ty: &syn::Type) -> bool {
 
 /// Walk the raw `#[field(...)]` attrs on `field` and return the `Span` of
 /// the literal bound to `on_delete`, if present.
-///
 /// Thin wrapper around [`find_named_str_lit_span`] kept for readability at
 /// the callsite.
 fn find_on_delete_lit_span(field: &syn::Field) -> Option<proc_macro2::Span> {
@@ -3644,7 +3488,6 @@ fn find_path_only_attr_span(field: &syn::Field, key: &str) -> Option<proc_macro2
 
 /// Walk the raw `#[field(...)]` attrs on `field` and return the `Span` of
 /// the string literal bound to `key`, if present.
-///
 /// Used by [`FieldAttrs::parse`] to recover the offending literal's span
 /// after darling has already reduced the attribute to a `String`. Returns
 /// `None` only if the attribute structure does not match the expected
@@ -3683,7 +3526,6 @@ fn find_named_str_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2:
 /// paired with `key = <integer>`. Used by post-parse validators to
 /// produce span-precise errors that underline the offending literal
 /// rather than the whole field.
-///
 /// Mirrors [`find_named_str_lit_span`] but matches integer literals
 /// (`Lit::Int`) instead of string literals (`Lit::Str`).
 fn find_named_int_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2::Span> {
@@ -3714,10 +3556,8 @@ fn find_named_int_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2:
 }
 
 /// The SQL column type for a Rust type string.
-///
 /// Returns `None` for `Option<T>` (handled by the caller via `unwrap_option`) and
 /// for unrecognized types (the caller should emit a compile error).
-///
 /// Called by `descriptor::expand` and `inject::expand` starting in Tasks 4–6.
 #[allow(dead_code)]
 pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
@@ -3728,9 +3568,8 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     // `super::Jsonb<T>`, `::djogi::Jsonb<T>`, etc. — anywhere the path's
     // last segment is `Jsonb` AND it carries angle-bracket generic
     // arguments.
-    //
-    // Codex T10 round-2 N-1: the previous string-prefix matcher only
-    // recognized three exact prefixes (`Jsonb<`, `djogi::Jsonb<`,
+    // The previous string-prefix matcher only recognized three exact
+    // prefixes (`Jsonb<`, `djogi::Jsonb<`,
     // `djogi::jsonb::Jsonb<`), silently mapping `crate::Jsonb<T>` /
     // `super::Jsonb<T>` to TEXT and producing INSERT failures on the
     // typed Jsonb round-trip. Switching to last-segment ident check
@@ -3743,13 +3582,12 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         return Some("JSONB");
     }
 
-    // Phase 8.5 #195 — `MirJzSON` (Djogi's raw / unschemed JSONB
+    // #195 — `MirJzSON` (Djogi's raw / unschemed JSONB
     // escape hatch) lowers to JSONB. Mirrors the `Jsonb<T>` matcher
     // shape: last-segment ident match, no generic arguments
     // (`MirJzSON` is nullary). Covers bare `MirJzSON`, `djogi::MirJzSON`,
     // `djogi::jsonb::MirJzSON`, `crate::MirJzSON`, `super::MirJzSON`,
     // and `::djogi::*::MirJzSON` path forms uniformly.
-    //
     // The macro-level `#[mirjzson(justification = "...")]` gate
     // (`super::mirjzson`) enforces the adopter-visible discipline; this
     // arm just maps the type to the right SQL column type so descriptor
@@ -3762,7 +3600,7 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         return Some("JSONB");
     }
 
-    // djogi#215 — runtime-backed
+    // runtime-backed
     // `djogi::Range<T>` wrappers lower to the matching Postgres range
     // type based on the element type. The outer wrapper intentionally
     // uses an explicit namespace policy instead of last-segment matching:
@@ -3770,13 +3608,11 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     // `djogi::Range` imports), `djogi::Range<T>`,
     // `djogi::types::Range<T>`, `::djogi::Range<T>`, and
     // `::djogi::types::Range<T>`.
-    //
     // Do not accept `std::ops::Range<T>`, `core::ops::Range<T>`,
     // `crate::Range<T>`, `self::Range<T>`, `super::Range<T>`, or
     // adopter-module `foo::Range<T>` lookalikes: those are not the
     // runtime codec type and must fall through to the caller's
     // `DjogiSqlType` field-site check.
-    //
     // Element-type mapping is deliberately narrower than
     // `rust_type_to_sql(inner)`: only the six element Rust types with a
     // matching `RangeSubtype` impl are accepted here. This avoids
@@ -3786,9 +3622,8 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     // the caller's `field_sql_type_tokens` fallback attempts
     // `<#ty as ::djogi::descriptor::DjogiSqlType>::SQL_TYPE` and rustc
     // reports the missing `DjogiSqlType` bound at the field site.
-    //
-    // Future siblings: djogi#148 (`btree_gist` EXCLUDE grammar) and
-    // djogi#150 (PG18 temporal DDL) build on top of this lowering.
+    // Future siblings: (`btree_gist` EXCLUDE grammar) and
+    // (PG18 temporal DDL) build on top of this lowering.
     if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty
         && is_djogi_range_outer_path(path)
         && let Some(last) = path.segments.last()
@@ -3820,20 +3655,17 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     let s = s.strip_prefix("::").unwrap_or(&s);
     match s {
         "String" => Some("TEXT"),
-        // Narrow / unsigned integer widening (djogi#186 + djogi#190).
-        //
+        // Narrow / unsigned integer widening (+ ).
         // Postgres has no native unsigned integer types, and its `i8`
         // column type (the `"char"` pseudo-type) is not suitable for
         // user-facing model fields. Djogi widens each type to the
         // smallest signed Postgres integer type whose positive range
         // covers the full Rust type range:
-        //
-        //   i8  → SMALLINT (INT2)       range: -128..=127
-        //   u8  → SMALLINT (INT2)       range: 0..=255
-        //   u16 → INTEGER  (INT4)       range: 0..=65535
-        //   u32 → BIGINT   (INT8)       range: 0..=4294967295
-        //   u64 → NUMERIC               range: 0..=18446744073709551615  (+ integrality CHECK)
-        //
+        // i8 → SMALLINT (INT2) range: -128..=127
+        // u8 → SMALLINT (INT2) range: 0..=255
+        // u16 → INTEGER (INT4) range: 0..=65535
+        // u32 → BIGINT (INT8) range: 0..=4294967295
+        // u64 → NUMERIC range: 0..=18446744073709551615 (+ integrality CHECK)
         // The macro emits bind shims (widen before binding to tokio-postgres)
         // and decode shims (narrow with a bounds-checked try_from). The
         // FieldDescriptor carries a `rust_source_type` discriminator so
@@ -3843,7 +3675,7 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "u8" => Some("SMALLINT"),
         "u16" => Some("INTEGER"),
         "u32" => Some("BIGINT"),
-        // djogi#190 — u64 uses bare NUMERIC (no precision/scale) so Postgres
+        // u64 uses bare NUMERIC (no precision/scale) so Postgres
         // does not silently round fractional inputs before the CHECK fires.
         // The CHECK emitted by the projection layer enforces integrality
         // (col = trunc(col)) in addition to the range bounds.
@@ -3854,8 +3686,8 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "f32" => Some("REAL"),
         "f64" => Some("DOUBLE PRECISION"),
         "bool" => Some("BOOLEAN"),
-        // Codex round-1 BLOCK (Cluster A finding 2 from #40 review) —
-        // the original arm matched only the bare `DateTime` and
+        // Regression guard: the original arm matched only the bare `DateTime`
+        // and
         // `time::*` short forms, so user fields spelled
         // `djogi::DateTime` / `djogi::types::DateTime` (the canonical
         // adopter spellings, since `pub use crate::types::DateTime`
@@ -3870,16 +3702,15 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "Date" | "time::Date" | "djogi::Date" | "djogi::types::Date" => Some("DATE"),
         "Decimal" | "rust_decimal::Decimal" => Some("NUMERIC"),
         "Uuid" | "uuid::Uuid" => Some("UUID"),
-        // djogi#212 — `Interval` from `djogi::prelude::*`, `djogi::Interval`
+        // `Interval` from `djogi::prelude::*`, `djogi::Interval`
         // (the canonical explicit spelling), and `djogi::types::Interval`
         // (the internal path) all lower to the typed descriptor variant.
         "Interval" | "djogi::Interval" | "djogi::types::Interval" => Some("INTERVAL"),
-        // djogi#213 — Postgres network family (`network` feature on the
+        // Postgres network family (`network` feature on the
         // runtime crate). The macro recognises type names unconditionally
         // (matching the spatial family pattern); if the user has the
         // feature off, the compile error surfaces at the model struct as
         // "unresolved type `MacAddr`" rather than from the macro.
-        //
         // INET routes through `std::net::IpAddr` — the postgres-types
         // crate ships the native ToSql/FromSql for INET already.
         // The path forms accepted here mirror the bare / std-qualified /
@@ -3898,7 +3729,7 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         // `[u8; 6]` with a hand-rolled codec — no `eui48` / `mac_address`
         // dependency).
         "MacAddr" | "djogi::MacAddr" | "djogi::types::MacAddr" => Some("MACADDR"),
-        // Phase 7-Zero-2 T4 — built-in PK types (HeerId / RanjId family) are
+        // Built-in PK types (HeerId / RanjId family) are
         // usable as ambient fields outside the framework-injected `id` slot.
         // Map each name (bare, `djogi::types::*`, and `djogi::*` forms) to the
         // column type the matching `PrimaryKey::SQL_TYPE` advertises.
@@ -3924,7 +3755,7 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         | "djogi::RanjIdDesc"
         | "djogi::RanjIdRecencyBiased" => Some("UUID"),
         "serde_json::Value" | "Value" => Some("JSONB"),
-        // djogi#369 — `Vec<u8>` is raw binary (BYTEA), NOT a `SMALLINT[]`
+        // `Vec<u8>` is raw binary (BYTEA), NOT a `SMALLINT[]`
         // array. This arm sits BEFORE the generic `Vec<T>` array arms so
         // the byte-vector shape wins: a scalar `u8` field lowers to
         // `SMALLINT`, but a `Vec<u8>` field is a binary blob, matching
@@ -3979,7 +3810,6 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         // descriptor regardless of feature state. If the user has the spatial
         // feature off, the compile error comes from "unresolved type" at the
         // struct definition, not from the macro.
-        //
         // Path forms accepted: bare ident, `geo::T`, `djogi::T`,
         // `djogi::geo::T`. The match strips the module prefix via the
         // `replace(' ', "")` normalization above, so e.g. `djogi :: geo ::
@@ -4031,7 +3861,6 @@ fn path_segments_eq(path: &syn::Path, expected: &[&str]) -> bool {
 
 /// Convert a pre-validated `on_delete` string into the matching
 /// `::djogi::OnDelete` token path.
-///
 /// Caller contract: `s` must be one of the six validated values — any other
 /// input is a bug in the caller, since [`FieldAttrs::parse`] has already
 /// rejected out-of-domain strings with a span-carrying error. The function
@@ -4039,7 +3868,6 @@ fn path_segments_eq(path: &syn::Path, expected: &[&str]) -> bool {
 /// skipping the validator does not produce a bogus token stream; that
 /// matches the framework's cascade-off-by-default posture and keeps the
 /// descriptor emitter total.
-///
 /// Lives here rather than in `descriptor.rs` because `descriptor.rs` can
 /// stay schema-focused: the attr crate owns the mapping between
 /// `#[field(on_delete = "...")]` string values and runtime enum variants,
@@ -4062,15 +3890,13 @@ pub fn on_delete_str_to_tokens(s: &str) -> proc_macro2::TokenStream {
 }
 
 /// Relation cardinality as seen from a Rust field type inside the macro crate.
-///
 /// This enum is the macro-crate mirror of `djogi::relation::RelationKind`:
 /// `djogi-macros` cannot depend on `djogi` (the macro is compiled first),
 /// so when the macro wants to *reason* about a relation shape before
 /// emitting tokens, it works with this local copy. The emitter converts to
 /// `::djogi::relation::RelationKind::…` token paths at code-generation
 /// time — the two enums only need to stay in sync on the set of variants.
-///
-/// Phase 3 Task 2 covers `ForeignKey<T>` and `OneToOneField<T>` (plus their
+/// Covers `ForeignKey<T>` and `OneToOneField<T>` (plus their
 /// `Option<…>` nullable forms). Task 7's `ManyToMany` variant is
 /// intentionally absent here: the M2M macro pipeline recognizes M2M
 /// through-models by a separate mechanism (a marker trait on the through
@@ -4085,12 +3911,10 @@ pub enum RelationKind {
 }
 
 /// Everything a macro caller needs to know about a detected relation field.
-///
 /// Returned by [`detect_relation`]. Two facets of the relation target are
 /// carried separately because they have different consumers:
-///
 /// - [`target_name`](Self::target_name) is a short, path-free string used
-///   only for the descriptor field `target_type_name` (Phase 6's migration
+///   only for the descriptor field `target_type_name` (the migration
 ///   emitter looks models up by this name against the `inventory`-registered
 ///   descriptors, so keeping it segmented matches that lookup key).
 /// - [`target_type`](Self::target_type) is the **full `syn::Type`** the user
@@ -4099,11 +3923,10 @@ pub enum RelationKind {
 ///   `RelationPath<#source, #target_type>` and `<#target_type as Model>::…`
 ///   so fully-qualified paths resolve at the user's macro-call site without
 ///   requiring an extra `use …;` import.
-///
-/// Splitting the two lets the emitter use the right form in the right place —
-/// collapsing down to just the last-segment ident (as the previous
-/// `(RelationKind, String, bool)` tuple did) silently broke codegen for any
-/// target type the user spelled with a path prefix.
+///   Splitting the two lets the emitter use the right form in the right place
+///   collapsing down to just the last-segment ident (as the previous
+///   `(RelationKind, String, bool)` tuple did) silently broke codegen for any
+///   target type the user spelled with a path prefix.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RelationInfo {
@@ -4112,7 +3935,7 @@ pub struct RelationInfo {
     pub kind: RelationKind,
     /// Short name for descriptor use (e.g. `"Owner"` from any of:
     /// `Owner`, `models::Owner`, `crate::models::Owner`). Always the last
-    /// segment ident of the inner type path — this is the name Phase 6's
+    /// segment ident of the inner type path — this is the name the
     /// migration differ matches against `ModelDescriptor::type_name`.
     pub target_name: String,
     /// Full target type preserved for codegen. Use in `quote! { #target_type }`
@@ -4127,30 +3950,24 @@ pub struct RelationInfo {
 
 /// Inspect a field's declared Rust type and decide whether it names a Djogi
 /// relation wrapper.
-///
 /// Returns [`Some(RelationInfo)`](RelationInfo) when the outermost
 /// (post-`Option<…>`-strip) type is one of the recognized relation wrappers:
-///
 /// - `ForeignKey<T>` → `Some(RelationInfo { kind: ForeignKey, …, nullable: false })`
 /// - `Option<ForeignKey<T>>` → `Some(RelationInfo { kind: ForeignKey, …, nullable: true })`
 /// - `OneToOneField<T>` → `Some(RelationInfo { kind: OneToOne, …, nullable: false })`
 /// - `Option<OneToOneField<T>>` → `Some(RelationInfo { kind: OneToOne, …, nullable: true })`
 /// - anything else → `None`
-///
 /// # Robustness
-///
 /// The check inspects the *last* path segment's ident, which makes it
 /// resilient to fully-qualified user spellings like
-/// `::djogi::relation::ForeignKey<Owner>` or `djogi::ForeignKey<Owner>` —
+/// `::djogi::relation::ForeignKey<Owner>` or `djogi::ForeignKey<Owner>`
 /// users who reach for an explicit path instead of `use djogi::prelude::*`
 /// still get the correct relation detection. The trade-off: a user-defined
 /// type with the literal name `ForeignKey` shadows the detection. That
 /// matches how `unwrap_option` already handles `Option`: the macro works
 /// from the spelling the user wrote, and the behaviour is consistent and
 /// easy to reason about.
-///
 /// # Target preservation
-///
 /// Both the short `target_name` and the full `target_type` are preserved.
 /// Consumers that emit `type`-position tokens (e.g. `relations::expand`)
 /// must use `target_type` so that `ForeignKey<crate::models::Owner>` still
@@ -4160,7 +3977,7 @@ pub struct RelationInfo {
 #[allow(dead_code)]
 pub fn detect_relation(ty: &syn::Type) -> Option<RelationInfo> {
     // First, strip one layer of `Option<…>` using the shared helper. The
-    // returned `nullable` flag propagates straight through to the caller —
+    // returned `nullable` flag propagates straight through to the caller
     // it's the same nullability semantic.
     let (stripped, nullable) = unwrap_option(ty);
 
@@ -4220,7 +4037,6 @@ pub fn detect_relation(ty: &syn::Type) -> Option<RelationInfo> {
 }
 
 /// Strip `Option<T>` → returns the inner type and `nullable = true`.
-///
 /// Only recognizes the prelude's `Option` — specifically the path forms
 /// `Option<T>`, `std::option::Option<T>`, and `core::option::Option<T>`. A user
 /// type that happens to be named `Option` in their own module (e.g.
@@ -4228,9 +4044,7 @@ pub fn detect_relation(ty: &syn::Type) -> Option<RelationInfo> {
 /// silently would produce wrong migrations. This matches how users actually
 /// read the type: `Option<T>` in the prelude means "SQL NULL allowed"; anything
 /// else is a user type that must map via `rust_type_to_sql`.
-///
 /// Non-`Option` types are returned unchanged with `nullable = false`.
-///
 /// Called by `inject::expand` and `descriptor::expand` starting in Tasks 4–6.
 #[allow(dead_code)]
 pub fn unwrap_option(ty: &syn::Type) -> (syn::Type, bool) {
@@ -4246,7 +4060,6 @@ pub fn unwrap_option(ty: &syn::Type) -> (syn::Type, bool) {
 }
 
 /// Strip `Tracked<T>` → returns the inner type.
-///
 /// Detection follows the same last-segment convention as relation wrappers:
 /// `Tracked<T>`, `djogi::Tracked<T>`, `::djogi::Tracked<T>`, and
 /// `djogi::prelude::Tracked<T>` all route through this helper. The caller is
@@ -4266,7 +4079,6 @@ pub fn unwrap_tracked(ty: &syn::Type) -> Option<syn::Type> {
 }
 
 /// Strip the transparent wrappers that affect schema shape.
-///
 /// `Option<T>` marks the SQL column nullable. `Tracked<T>` is a dirty-tracking
 /// wrapper whose storage type is `T`; it does not itself affect nullability.
 /// Both wrappers can appear together, so `Tracked<Option<String>>` projects as
@@ -4307,7 +4119,6 @@ fn is_prelude_option_path(path: &syn::Path) -> bool {
 }
 
 /// Simplified SQL type category for tenant-key cast selection in RLS DDL.
-///
 /// `rust_type_to_sql` returns a full SQL type string; this categorises the
 /// result into the three buckets the RLS `current_setting(...)::cast`
 /// expression needs. Types outside the accepted set are returned as
@@ -4328,17 +4139,13 @@ pub enum FieldSqlTypeCategory {
 }
 
 /// Derive the `FieldSqlTypeCategory` for a Rust field type.
-///
 /// Used by the RLS DDL emitter to pick the correct `current_setting(...)::cast`
 /// expression. `HeerId` → `BigInt`; `Uuid` / `RanjId` → `Uuid`; `String` →
 /// `Text`; `ForeignKey<T>` / `OneToOneField<T>` → `BigInt` (the framework
 /// default — see assumption note below); everything else → `Unsupported`.
-///
 /// One `Option<…>` layer is stripped first so nullable tenant columns
 /// (`Option<HeerId>`, `Option<ForeignKey<T>>`) are also accepted.
-///
 /// # FK assumption (GH issue #37)
-///
 /// When the tenant-key column is typed `ForeignKey<T>` or
 /// `OneToOneField<T>` (or a nullable variant), this function returns
 /// `BigInt` unconditionally. The macro cannot resolve `T::Pk` at
@@ -4348,7 +4155,6 @@ pub enum FieldSqlTypeCategory {
 /// (every model that uses the framework default `HeerId` PK), at the
 /// cost of producing a wrong RLS cast if the FK target opts into
 /// `RanjId` or a custom PK.
-///
 /// **Adopters whose FK target uses a non-default PK MUST declare
 /// `tenant_key` against a non-FK column** (a plain `tenant_id: HeerId`,
 /// `RanjId`, or `String` field). The pre-fix behaviour silently emitted
@@ -4392,13 +4198,12 @@ mod tests {
     use super::{rust_type_to_sql, unwrap_schema_type};
     use syn::parse_quote;
 
-    /// Phase 7 T10 — `Jsonb<T>` for any `T: JsonbSchema` must lower to
-    /// `JSONB`. Codex round-1 Concern 1 PARTIAL flagged that the three
-    /// substrate fixes T10 made (this one + framework-col defaults +
+    /// `Jsonb<T>` for any `T: JsonbSchema` must lower to
+    /// `JSONB`. The three substrate fixes (this one +
+    /// framework-col defaults +
     /// FK type substitution) only had indirect coverage through the
     /// live integration suite. Direct lock-in here so a regression
     /// surfaces without needing Postgres.
-    ///
     /// All three accepted path forms are covered: bare ident, the
     /// `djogi::Jsonb<T>` re-export, and the canonical
     /// `djogi::jsonb::Jsonb<T>` path. The leading `::` form rides on
@@ -4415,7 +4220,7 @@ mod tests {
         assert_eq!(rust_type_to_sql(&djogi_jsonb), Some("JSONB"));
     }
 
-    /// Phase 7 T10 — leading `::` absolute path forms must match the
+    /// Leading `::` absolute path forms must match the
     /// same arm as their relative counterparts. Locks in the structural
     /// last-segment matcher's path-walking semantics (the leading `::`
     /// only changes `path.leading_colon`, not the segment list, so the
@@ -4428,7 +4233,7 @@ mod tests {
         assert_eq!(rust_type_to_sql(&abs_jsonb), Some("JSONB"));
     }
 
-    /// Phase 7 T10 round-2 N-1 — `crate::Jsonb<T>` and `super::Jsonb<T>`
+    /// Round-2 `crate::Jsonb<T>` and `super::Jsonb<T>`
     /// path forms must also resolve to `JSONB`. The previous
     /// string-prefix matcher only recognized `Jsonb<` / `djogi::Jsonb<`
     /// / `djogi::jsonb::Jsonb<` and silently mapped these crate-relative
@@ -4452,7 +4257,6 @@ mod tests {
     /// aren't the wrapper must NOT fall into the JSONB arm. The
     /// structural matcher checks `path.segments.last().ident == "Jsonb"`
     /// AND that the last segment carries angle-bracket generics, so:
-    ///
     /// - `MyJsonb<T>` — last segment ident is `MyJsonb`, not `Jsonb` →
     ///   no match.
     /// - `Vec<Jsonb<T>>` — last segment ident is `Vec` (the inner
@@ -4471,7 +4275,7 @@ mod tests {
         assert_eq!(rust_type_to_sql(&no_generics), None);
     }
 
-    /// Phase 7 T10 round-2 N-1 — `Option<Jsonb<T>>` returns `None`
+    /// Round-2 `Option<Jsonb<T>>` returns `None`
     /// directly because callers strip the `Option<…>` wrapper via
     /// `unwrap_option` before calling `rust_type_to_sql`. This locks
     /// in the convention so a refactor that bypasses `unwrap_option`
@@ -4563,8 +4367,8 @@ mod tests {
         assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::Uuid);
     }
 
-    // Codex round-1 BLOCK (Cluster A finding 2 from #40 review) —
-    // `rust_type_to_sql` must accept the canonical djogi aliases for
+    // Regression guard: `rust_type_to_sql` must accept the canonical
+    // djogi aliases for
     // temporal types so user fields spelled `djogi::DateTime` /
     // `djogi::types::DateTime` (etc.) lower to `TIMESTAMPTZ` instead
     // of falling through to TEXT.
@@ -4604,7 +4408,7 @@ mod tests {
         assert_eq!(rust_type_to_sql(&absolute), Some("INTERVAL"));
     }
 
-    // ── Phase 8.5 Cluster 4 (djogi#213) — network family ─────────────────
+    // ── ) — network family ─────────────────
 
     #[test]
     fn ipaddr_alias_lowers_to_inet() {
@@ -4678,11 +4482,10 @@ mod tests {
         assert_eq!(rust_type_to_sql(&nested_adopter_module), None);
     }
 
-    // ── Phase 8-Zero Cluster B1 (T12) — `#[model(tree_edge = "...")]` ──
-    //
+    // ── `#[model(tree_edge = "...")]` ──
     // Parser-side coverage. Field-existence + self-FK validation runs
     // at descriptor-emit time (where the user-field list is in scope)
-    // and is exercised by Cluster B5's lihaaf compile-fail fixtures —
+    // and is exercised by 's lihaaf compile-fail fixtures
     // the parser itself only enforces the standard Djogi identifier
     // grammar.
     use super::ModelAttrs;
@@ -4860,7 +4663,7 @@ mod tests {
         );
     }
 
-    // ── Phase 8β T3.2 — proxy attribute parsing ─────────────────────────────
+    // ── 2 — proxy attribute parsing ─────────────────────────────
 
     /// `proxy_for = ParentType` populates the bare identifier on the
     /// returned `ModelAttrs`. Locks the bare-identifier convention; a
@@ -4957,9 +4760,7 @@ mod tests {
     /// unbalanced again (three opens, two closes), `syn::parse_str` will
     /// return `Err` and this test fails — catching the regression without
     /// needing a full `lihaaf` run or a compiler invocation.
-    ///
     /// Fixed substitutions used here: `field_name = "slug"`, `method = "gin"`.
-    ///
     /// `syn::Attribute` does not implement `Parse` in syn 2.x, so we append
     /// `" struct _DjogiSnippet;"` and parse the whole thing as
     /// `syn::ItemStruct`. The attribute's delimiter balance is fully validated
@@ -4974,8 +4775,7 @@ mod tests {
 
     /// Class-A regression guard for the adjacent gin-on-unsupported-type
     /// recommendation (attrs.rs ~2675). The `)))]` form was already correct
-    /// at the time of Phase 8.5 #83; this guard locks it in.
-    ///
+    /// at the time of #83; this guard locks it in.
     /// Uses the same `struct _DjogiSnippet;` wrapping as the sibling test
     /// above — `syn::Attribute` is not `Parse` in syn 2.x.
     #[test]
@@ -4987,8 +4787,7 @@ mod tests {
             .expect("gin-unsupported-type snippet must parse as a valid attribute (paren balance)");
     }
 
-    /// djogi#369 — `Vec<u8>` lowers to `BYTEA`, NOT to a `SMALLINT[]` array.
-    ///
+    /// `Vec<u8>` lowers to `BYTEA`, NOT to a `SMALLINT[]` array.
     /// The byte-vector arm must be reached *before* the generic `Vec<T>`
     /// array arms in `rust_type_to_sql`. This is the macro-unit regression
     /// guard for that ordering: it runs without a Postgres connection or a
@@ -5001,7 +4800,7 @@ mod tests {
         assert_eq!(rust_type_to_sql(&ty), Some("BYTEA"));
     }
 
-    /// djogi#369 — the byte-vector vs scalar-byte distinction must hold:
+    /// the byte-vector vs scalar-byte distinction must hold:
     /// a *scalar* `u8` field lowers to `SMALLINT` (widened, with a
     /// projection-side range CHECK), while a `Vec<u8>` is raw `BYTEA`.
     /// Pins both sides so a regression that conflated them — e.g. routing
@@ -5015,8 +4814,7 @@ mod tests {
         assert_ne!(rust_type_to_sql(&scalar), rust_type_to_sql(&vector));
     }
 
-    /// djogi#369 — `Option<Vec<u8>>` projects as a nullable `BYTEA` column.
-    ///
+    /// `Option<Vec<u8>>` projects as a nullable `BYTEA` column.
     /// The descriptor emitter strips `Option<…>` via `unwrap_schema_type`
     /// before calling `rust_type_to_sql`, so the inner `Vec<u8>` must
     /// resolve to `BYTEA` and the wrapper must mark the column nullable.

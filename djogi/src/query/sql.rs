@@ -1,14 +1,10 @@
 //! SQL emission — walks `Condition` + `QuerySet` state and populates a
 //! [`SqlAccumulator`] with correct positional binds.
-//!
 //! # What
-//!
 //! The public entry points are [`build_select`], [`build_count`], and
 //! [`build_exists`]. Each consumes a borrowed [`QuerySet<T>`] and returns a
 //! pre-populated [`SqlAccumulator`] ready for execution via `PgConnection`.
-//!
 //! # Why
-//!
 //! Every value flows through [`SqlAccumulator::push_bind`] — **never**
 //! string interpolation of user-controlled data. Table names and column
 //! names are the only items inserted as raw text, and both are
@@ -16,19 +12,15 @@
 //! `Model::table_name()`, column name via `FieldRef::column()`), so they are
 //! not user input. The emitter's job is therefore a straight enum-tree walk:
 //! one variant -> one operator token + zero-or-more `push_bind` calls.
-//!
 //! Pattern lookups (`ILIKE`) escape `%`, `_`, and `\\` in user input before
 //! wrapping with the appropriate prefix / suffix `%` — escaped input goes
 //! through `push_bind` so the wildcard-escape logic is independent of SQL
 //! parameter placement.
-//!
 //! `IN (...)` expands to exactly as many bind slots as the list has;
 //! empty lists short-circuit to `FALSE` (IN) / `TRUE` (NOT IN) rather than
 //! emitting the syntactically invalid `col IN ()`. This matches the contract
 //! documented on `FieldRef::in_list` / `not_in_list`.
-//!
 //! # Where
-//!
 //! Consumed by [`crate::query::terminal`], which wraps each accumulator in the
 //! appropriate execution call against the caller-provided `DjogiContext`. The
 //! emitter never executes SQL — that is the terminal layer's responsibility.
@@ -40,7 +32,7 @@ use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 use crate::query::q::{ArrayPredicate, CompoundOp, Q};
 use crate::query::queryset::{DistinctMode, QuerySet};
-// Phase 8.5 Issue #178 — typed MERGE types.
+// Typed MERGE types.
 use crate::query::merge::{
     MergeAction, MergeBranch, MergeMatchKind, MergeOnEq, MergeValue, SRC_ALIAS, TGT_ALIAS,
 };
@@ -66,7 +58,6 @@ fn escape_like(s: &str) -> String {
 /// parameter. `List` / `Pair` are compound and are handled at the operator
 /// level (`IN`, `NOT IN`, `BETWEEN`) — reaching this function with either
 /// variant is a framework bug, not a user error.
-///
 /// `Null` is emitted as the literal token `NULL`; it is never bound because
 /// Postgres distinguishes `col = $1 (NULL)` (always false) from `col IS NULL`
 /// at the SQL level. The typed `FieldRef::is_null` / `is_not_null` lookups
@@ -207,7 +198,6 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
             // These are handled at the operator level (see `emit_leaf`) and
             // never reach this function. Unreachable signals a Djogi
             // internal bug — user-facing `FieldRef` API blocks construction.
-            //
             // `FilterValue` is `#[non_exhaustive]` at the *crate boundary*,
             // but we're inside the same crate — so this match is already
             // exhaustive. New variants added here force a compile error in
@@ -221,8 +211,7 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
 /// Reference-borrowing counterpart of [`push_filter_value`]. Clones the
 /// individual scalar value into `push_bind` so the caller does not have
 /// to clone an entire `Condition` tree just to borrow-walk it.
-///
-/// Phase 8eta PR2b — `emit_condition` switched to borrow-walk so portable
+/// `emit_condition` switched to borrow-walk so portable
 /// predicate emission never has to construct a throw-away `Condition`
 /// shadow tree. This helper preserves the same bind shape the by-value
 /// helper produced; only the entry point differs.
@@ -364,15 +353,13 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
 }
 
 /// Emit a list element for `IN (...)` / `NOT IN (...)`.
-///
 /// Same binding behaviour as [`push_filter_value`] for scalar and array
 /// variants; rejects `Null`, `List`, and `Pair` (the typed `FieldRef::in_list`
 /// API prevents these by construction, so reaching them here is a framework
 /// bug). The reject branch is explicit so the caller cannot accidentally
 /// thread a `Null` through `IN ($1)` — Postgres `col IN (NULL)` is always
 /// `NULL`, never `TRUE`.
-///
-/// Phase 8eta PR2b kept the by-value form for parallelism with
+/// Kept the by-value form for parallelism with
 /// [`push_filter_value`], even though the production borrow-walker uses
 /// [`push_list_element_ref`] exclusively. The by-value form remains a
 /// thin convenience for legacy unit tests.
@@ -390,7 +377,6 @@ fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
 /// `&'static str` from the macro-baked `FieldRef::column()`, so it is safe
 /// to `acc.push_sql(col)` without quoting. The value always goes through
 /// `push_bind`.
-///
 /// When `parent_table` is `Some(table)`, the emitted column reference is
 /// prefixed as `{table}.{column}` so Postgres does not raise
 /// `42702 column reference "X" is ambiguous` on a query with
@@ -398,9 +384,8 @@ fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
 /// bare name (`id`, `created_at`, `updated_at`). Passed through by the
 /// join-aware helpers that wrap `build_select_joined`. The non-joined
 /// [`build_select`] path passes `None` and emits bare column names
-/// unchanged — byte-for-byte identical to the Phase 2 output.
+/// unchanged — byte-for-byte identical to the output.
 /// Emit `{table}.{col}` if `parent_table` is `Some`, otherwise just `{col}`.
-///
 /// Used by every leaf-emitter and array-op arm in this file to handle the
 /// join-aware qualifier prefix uniformly. `col` is always macro-baked
 /// (`&'static str` from `FieldRef::column()`); `parent_table` is `&'static str`
@@ -418,7 +403,7 @@ fn push_qualified_col(
     acc.push_sql(col);
 }
 
-/// Phase 8eta PR2b kept the by-value form alongside the new
+/// Kept the by-value form alongside the new
 /// [`emit_leaf_ref`] borrow-walker for parallelism with the rest of the
 /// pre-PR2b emitter helpers; the production path uses the borrow-walker
 /// exclusively. Annotated `dead_code` so removing the legacy emitter
@@ -532,7 +517,7 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
     }
 }
 
-/// Reference-borrowing counterpart of [`emit_leaf`]. Phase 8eta PR2b's
+/// Reference-borrowing counterpart of [`emit_leaf`]. 's
 /// [`emit_condition`] borrow-walks the `Condition` tree, so individual
 /// leaves enter through this helper rather than the by-value form. The
 /// list / pair / pattern arms clone the captured payload values into
@@ -666,8 +651,7 @@ mod phase85_array_in_regression_tests {
 }
 
 /// Walk a [`Condition`] borrow and emit the corresponding SQL fragment.
-///
-/// Phase 8eta PR2b — converted from by-value to by-reference (`&Condition`)
+/// Converted from by-value to by-reference (`&Condition`)
 /// and made fallible (`Result<(), PortablePredicateError>`). The
 /// expression-IR bridge calls into `expr::sql::emit_expr`, which itself
 /// returns `Result` after PR2b so portable predicates inside a subquery
@@ -675,13 +659,11 @@ mod phase85_array_in_regression_tests {
 /// payloads (strings, lists, pairs) clone into `push_bind` instead of
 /// being moved, so production SQL emission no longer requires cloning a
 /// whole `Condition` tree just to borrow-walk `Q<T>`.
-///
 /// `parent_table` threads through unchanged so every bare column reference
 /// in a joined-variant emission lands as `{table}.{column}`; the non-joined
 /// path passes `None` and gets bare names, preserving byte-for-byte parity
 /// with the pre-PR2b output.
-///
-/// `pub(crate)` because Phase 4 Task 5 needs this entry point to lower the
+/// `pub(crate)` because needs this entry point to lower the
 /// [`Condition`] tree that backs a subquery's `WHERE` clause (a
 /// [`SubqueryNode`](crate::expr::node::SubqueryNode) stores the parent
 /// queryset's predicate behind a type-erased emitter after PR2b — see
@@ -755,8 +737,7 @@ pub(crate) fn emit_condition(
             };
             crate::expr::sql::emit_expr(acc, &expr.node, ctx)
         }
-        // ── Array operators (Phase 5 Task 5) ─────────────────────────────
-        //
+        // ── Array operators ─────────────────────────────
         // All three operators take the form `col OP $n` where `$n` is a
         // bound Postgres array parameter. `parent_table` qualification is
         // intentionally forwarded for the column name but array operators
@@ -781,8 +762,7 @@ pub(crate) fn emit_condition(
             push_filter_value_ref(acc, &leaf.values);
             Ok(())
         }
-        // ── Range operators (djogi#215) ──────────────────────────────────
-        //
+        // ── Range operators ──────────────────────────────────
         // All range predicates emit `col OP $n`; the RHS bind is either a
         // range value or, for `contains(element)`, the range element type.
         Condition::RangePredicate(leaf) => {
@@ -795,8 +775,7 @@ pub(crate) fn emit_condition(
             }
             Ok(())
         }
-        // ── JSONB flat-path condition (Phase 5 Task 5) ───────────────────
-        //
+        // ── JSONB flat-path condition ───────────────────
         // `JsonbPathLeaf` stores the column + path + cast as structured
         // parts so the emitter can qualify the column reference with the
         // parent table name in joined-query contexts (via the module-level
@@ -806,8 +785,7 @@ pub(crate) fn emit_condition(
             emit_jsonb_path_leaf_ref(acc, leaf, parent_table);
             Ok(())
         }
-        // ── Raw SQL escape hatch (Phase 8β T3.4) ─────────────────────────
-        //
+        // ── Raw SQL escape hatch (4) ─────────────────────────
         // Macro-emitted-only path for proxy `default_filter` lowering.
         // The fragment is a `&'static str` baked at expand time from a
         // closed-grammar walker that rejects every runtime-bound value;
@@ -815,10 +793,9 @@ pub(crate) fn emit_condition(
         // `#[model(default_filter = |f| ...)]` attribute, which goes
         // through `lower_default_filter_to_sql` → descriptor → trait
         // override → here.
-        //
         // The fragment is wrapped in outer parens so further AND-
         // composition with user `.filter(...)` calls preserves operator
-        // precedence ( `(default_filter) AND (user_filter)` ). The
+        // precedence (`(default_filter) AND (user_filter)`). The
         // proxy-side lowering already wraps `and_with` / `or_with`
         // composites in their own parens; the leaf shape (`col = TRUE`)
         // does not, so the wrapper here is the universal safety net.
@@ -832,17 +809,15 @@ pub(crate) fn emit_condition(
 }
 
 /// Emit a [`crate::jsonb::path::JsonbPathLeaf`] — `(col->...'key')::cast op $n`.
-///
 /// SQL is rendered at emit time from the structured `column`, `path`, and
 /// `cast` fields rather than from a pre-rendered string. This lets the
 /// emitter qualify the column with the parent table name when inside a
 /// joined query (same `{table}.{column}` prefix logic as [`emit_leaf`]).
-///
 /// When `parent_table` is `Some(table)`, the emitted expression is
 /// `(table.col->'a'->>'b')::cast` — the Postgres JSONB navigation
 /// operators apply to the `table.col` expression, so parenthesisation
 /// wraps the qualified column reference correctly.
-/// Reference-borrowing counterpart of [`emit_jsonb_path_leaf`]. Phase 8eta
+/// Reference-borrowing counterpart of [`emit_jsonb_path_leaf`].
 /// PR2b — `emit_condition` borrow-walks the `Condition` tree, so JSONB
 /// path leaves enter through this helper rather than the by-value form.
 fn emit_jsonb_path_leaf_ref(
@@ -927,7 +902,7 @@ fn emit_jsonb_path_leaf_ref(
     }
 }
 
-/// Phase 8eta PR2b kept the by-value form alongside the new
+/// Kept the by-value form alongside the new
 /// [`emit_jsonb_path_leaf_ref`] borrow-walker for parallelism. The
 /// production borrow-walking path uses the `_ref` form exclusively.
 #[allow(dead_code)]
@@ -1020,7 +995,7 @@ fn emit_jsonb_path_leaf(
             acc.push_sql(")");
         }
         _ => {
-            // No other LookupOps are constructible from JsonbPathRef —
+            // No other LookupOps are constructible from JsonbPathRef
             // the typed surface only exposes eq/neq/gt/gte/lt/lte/in/is_null/is_not_null.
             unreachable!("unsupported LookupOp in JsonbPathLeaf: {:?}", leaf.op)
         }
@@ -1028,15 +1003,13 @@ fn emit_jsonb_path_leaf(
 }
 
 /// Walk a [`Q<T>`] borrow and emit the corresponding SQL fragment.
-///
-/// Phase 8eta PR2b — direct-`Q<T>` SQL emission. `Q::Portable(_)` arms
+/// Direct-`Q<T>` SQL emission. `Q::Portable(_)` arms
 /// route through [`crate::query::portable::emit_portable_predicate`]
 /// (which dispatches to `Model::__djogi_emit_field_predicate`) without
 /// ever building a `Condition` shadow tree. Other variants (`Ilike`,
 /// `Regex`, `JsonbPath`, `Expression`, `Array`, `Condition`, `Compound`,
 /// `Xor`, `Negated`) emit through the existing emitter machinery in
 /// this file.
-///
 /// `ctx` carries the parent-table qualifier so portable root-field
 /// predicates emitted under `build_select_joined` qualify as
 /// `<table>.<column>`. Non-joined builders pass `SqlEmitContext::root()`
@@ -1186,11 +1159,10 @@ pub(crate) fn q_is_vacuously_true<T: Model>(q: &Q<T>) -> bool {
 /// is omitted entirely rather than emitted as `WHERE TRUE` — same
 /// semantics, cleaner logs, and avoids touching the planner with a
 /// trivially-true predicate.
-///
 /// The non-joined path (every caller in this file except
 /// [`build_select_joined`]) uses this shim, which forwards to
 /// [`push_where_qualified`] with `parent_table = None` — bare column
-/// references are emitted exactly as Phase 2 shipped.
+/// references are emitted exactly as shipped.
 fn push_where<T: Model>(
     acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
@@ -1218,9 +1190,8 @@ pub(crate) fn push_where_with_ctx<T: Model>(
 /// clause is prefixed as `{table}.{column}` so Postgres does not raise
 /// `42702 column reference "X" is ambiguous` under `LEFT JOIN`-ed
 /// children that share the same column name (`id`, `created_at`,
-/// `updated_at`). `None` preserves Phase 2's bare-name emission.
-///
-/// Phase 8eta PR2b — direct-`Q<T>` emission via [`emit_q`]. The
+/// `updated_at`). `None` preserves the bare-name emission.
+/// Direct-`Q<T>` emission via [`emit_q`]. The
 /// `q_is_vacuously_true` short-circuit replaces the legacy
 /// `q_to_condition_ref(...).is_vacuously_true()` round-trip; the SQL
 /// emit path no longer builds a throw-away `Condition` shadow tree.
@@ -1239,11 +1210,9 @@ fn push_where_qualified<T: Model>(
 /// Shared tail emitted by SELECT variants: `ORDER BY ...`, `LIMIT $n`,
 /// `OFFSET $n`. `WHERE` is emitted separately so count/exists builders can
 /// reuse `push_where` without taking the ordering/limit tail.
-///
-/// Phase 8eta PR2b — fallible because the inner `WHERE` helper
+/// Fallible because the inner `WHERE` helper
 /// propagates `PortablePredicateError`. Callers `?` through to the
 /// builder's `Result<SqlAccumulator, _>` return.
-///
 /// Shim for the non-joined path — forwards to [`push_tail_qualified`]
 /// with `parent_table = None`.
 fn push_tail<T: Model>(
@@ -1315,7 +1284,6 @@ pub(crate) fn push_tail_qualified<T: Model>(
 /// `build_spatial_join_grouped_select`, `build_cluster_grouped_select`,
 /// `build_geohash_grouped_select`) used to inline this 25-line block verbatim;
 /// extracting it here keeps their phase ordering visible and removes the copy.
-///
 /// `OrderExpr::emit` is called with `parent_table = None` because grouped
 /// queries reference their own outer projection, not a joined parent table.
 fn push_grouped_tail(
@@ -1353,7 +1321,6 @@ fn push_grouped_tail(
 
 /// Build `SELECT [DISTINCT [ON (...)]] <COLUMN_LIST> FROM <table> [WHERE ...]
 /// [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
-///
 /// The queryset is borrowed, not consumed — terminal methods (`fetch_all`,
 /// `fetch_one`, `first`) may need to mutate the queryset (e.g. `fetch_one`
 /// overrides the user-set `limit` to 2 so it can distinguish single-row
@@ -1394,7 +1361,6 @@ pub(crate) fn build_select<T: Model + FromPgRow>(
 
 /// Build `SELECT {parent_cols} FROM <table> {left joins} [WHERE ...]
 /// [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the select_related variant.
-///
 /// Mirror of [`build_select`], but:
 /// 1. Replaces `*` in the projection with the aliased column list built
 ///    by [`crate::relation::select_related::select_columns`] — parent
@@ -1402,18 +1368,14 @@ pub(crate) fn build_select<T: Model + FromPgRow>(
 ///    a `"rel_{source_column}.{col}"` alias.
 /// 2. Appends one `LEFT JOIN` clause per registered path, via
 ///    [`crate::relation::select_related::push_joins`].
-///
 /// # Why a separate emitter
-///
 /// Keeping `build_select` unchanged means a queryset with no
-/// registered select_related paths still emits the exact SQL Phase 2
+/// registered select_related paths still emits the exact SQL
 /// shipped — no regression risk, no surprise `LEFT JOIN` on plain
 /// `fetch_all` call sites. The joined variant is reached only via
 /// [`QuerySet::fetch_all_joined`](crate::query::QuerySet::fetch_all_joined),
 /// which explicitly opts into the joined decode path.
-///
 /// # `DistinctMode` interaction
-///
 /// Whether the joined columns should participate in the distinct tuple
 /// is left to the caller. If the queryset has a non-`None`
 /// `DistinctMode`, the emitter preserves it exactly: `SELECT DISTINCT
@@ -1476,12 +1438,10 @@ pub(crate) fn build_select_joined<T: Model>(
 /// grouped-annotate paths — wraps the aggregate (plus the optional window
 /// clause) in parens when a narrowing `::CAST` is needed, then appends
 /// the cast.
-///
 /// `cast_to` is pulled from the [`crate::expr::node::ExprNode::Aggregate`]
 /// payload; `None` skips the cast entirely (used for `COUNT` /
 /// `MIN` / `MAX` where the Postgres return type already decodes into
 /// `Out` directly).
-///
 /// When the aggregate carries a user-set `window: Some(spec)` (from
 /// `.over(|w| ...)`), the `OVER (...)` clause is appended immediately
 /// after `emit_expr` returns — in the right position for Postgres
@@ -1489,7 +1449,6 @@ pub(crate) fn build_select_joined<T: Model>(
 /// is added when `window` is `None`: this path is used for both the
 /// scalar terminal and the grouped annotate SELECT list, neither of which
 /// should silently grow a window clause.
-///
 /// `default_window` controls fallback behaviour when the aggregate carries
 /// no `.over(|w| ...)` window spec:
 /// - `None` — emit no window clause at all (scalar terminal + grouped
@@ -1503,30 +1462,25 @@ fn emit_aggregate_inner(
     agg: &crate::expr::node::ExprNode,
     default_window: Option<&'static str>,
 ) -> Result<(), PortablePredicateError> {
-    // Codex T22 round-3 BLOCK-1 + round-4 refinement: spatial
-    // aggregates emit an outer scalar cast (e.g. `::geography`).
+    // Spatial aggregates emit an outer scalar cast (e.g. `::geography`).
     // When OVER is present, Postgres grammar places `OVER` on the
     // *aggregate* itself before any post-call scalar wrapper. Two
     // emission profiles cover the surface:
-    //
     // - **Unwrapped spatial** (collect, union, extent, line_agg,
-    //   cluster_intersecting, cluster_within, mem_union, polygonize):
-    //   emit `(AGG(...) OVER (...))::cast`. The cast attaches to the
-    //   paren-wrapped aggregate-with-OVER unit.
-    //
+    // cluster_intersecting, cluster_within, mem_union, polygonize):
+    // emit `(AGG(...) OVER (...))::cast`. The cast attaches to the
+    // paren-wrapped aggregate-with-OVER unit.
     // - **Wrapped spatial** (centroid, convex_hull): emit
-    //   `WRAP(AGG(...) OVER (...))::cast`. Here `WRAP` is a scalar
-    //   function (`ST_Centroid`, `ST_ConvexHull`); the *aggregate*
-    //   is the inner `ST_Collect`, so `OVER` must fall inside the
-    //   wrapper, between the inner-aggregate close and the wrapper
-    //   close. Pre-fix the OVER lived outside the wrapper, which
-    //   Postgres rejects with "OVER specified, but ST_Centroid is
-    //   not a window function nor an aggregate function".
-    //
+    // `WRAP(AGG(...) OVER (...))::cast`. Here `WRAP` is a scalar
+    // function (`ST_Centroid`, `ST_ConvexHull`); the *aggregate*
+    // is the inner `ST_Collect`, so `OVER` must fall inside the
+    // wrapper, between the inner-aggregate close and the wrapper
+    // close. Pre-fix the OVER lived outside the wrapper, which
+    // Postgres rejects with "OVER specified, but ST_Centroid is
+    // not a window function nor an aggregate function".
     // The shape detector below inspects `ExprNode::Aggregate` only;
     // every spatial aggregate (collect, centroid, convex_hull, …)
-    // routes through the `AggOp` envelope after the round-5 ConvexHull
-    // migration. See [`spatial_emission_shape`] for the wrapped vs
+    // routes through the `AggOp` envelope. See [`spatial_emission_shape`] for the wrapped vs
     // unwrapped distinction.
     let shape = spatial_emission_shape(agg);
     let (cast_to, window) = match agg {
@@ -1577,16 +1531,12 @@ fn emit_aggregate_inner(
             acc.push_sql(suffix);
         }
         // Spatial unwrapped WITH window — paren-wrap (AGG OVER), then cast.
-        //
-        // Cluster E round-5 BLOCK-1 closure: the bare emission of an
-        // unwrapped spatial WITH FILTER produces
-        // `(AGG(...) FILTER (...))::cast` — emit_spatial_unary_agg
-        // adds outer parens for cast attachment when filter is
-        // present. Naively adding another outer paren here gives
-        // `((AGG FILTER) OVER)::cast`, which Postgres rejects
-        // because OVER attaches to a parenthesized expression
-        // rather than the aggregate call itself.
-        //
+        // Regression guard: the bare emission of an unwrapped spatial WITH FILTER
+        // produces `(AGG(...) FILTER (...))::cast` — emit_spatial_unary_agg adds
+        // outer parens for cast attachment when filter is present. Naively adding
+        // another outer paren here gives `((AGG FILTER) OVER)::cast`, which Postgres
+        // rejects because OVER attaches to a parenthesized expression rather than
+        // the aggregate call itself.
         // Strategy: when filter is present, splice OVER INSIDE
         // the existing FILTER parens by popping the trailing `)`
         // after popping the cast. When no filter, the bare emission
@@ -1662,12 +1612,10 @@ fn emit_aggregate_inner(
 
 /// Emission profile for spatial aggregates. The two `wrapped` cases
 /// drive the OVER-splice strategy in [`emit_aggregate_inner`].
-///
 /// - `wrapped: true` — bare emission has the form `WRAP(AGG(...))::cast`.
 ///   `WRAP` is a scalar function (`ST_Centroid`, `ST_ConvexHull`); the
 ///   actual aggregate is `AGG` (`ST_Collect`). OVER must fall inside
 ///   the wrapper, between AGG's close paren and the wrapper's close.
-///
 /// - `wrapped: false` — bare emission has the form `AGG(...)::cast`.
 ///   No scalar wrapper; OVER attaches directly to the aggregate, then
 ///   the cast wraps the aggregate-with-OVER unit:
@@ -1681,24 +1629,20 @@ struct SpatialShape {
 /// `Some(SpatialShape)` for spatial aggregates whose bare emission
 /// ends with a scalar cast suffix (potentially preceded by a wrapper
 /// close), `None` for non-spatial aggregates.
-///
-/// Cluster E round-5 BLOCK-2 closure: ConvexHull migrated from
-/// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` to
-/// `AggOp::SpatialConvexHull`, so the entire spatial aggregate
-/// family now routes through a single `ExprNode::Aggregate`
-/// arm — modifiers (.distinct/.filter/.over/.order_by) compose
-/// uniformly.
+/// ConvexHull migrated from `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` to
+/// `AggOp::SpatialConvexHull`, so the entire spatial aggregate family now
+/// routes through a single `ExprNode::Aggregate` arm — modifiers
+/// (.distinct/.filter/.over/.order_by) compose uniformly.
 fn spatial_emission_shape(agg: &crate::expr::node::ExprNode) -> Option<SpatialShape> {
     use crate::expr::node::ExprNode;
     match agg {
         ExprNode::Aggregate { op, .. } => {
             let suffix = crate::expr::sql::outer_cast_suffix(op)?;
             // The wrapped vs unwrapped distinction is feature-gated
-            // because the wrapped variants live behind `spatial` —
+            // because the wrapped variants live behind `spatial`
             // outer_cast_suffix returns None when spatial is off,
             // so this branch is unreachable for unfeatured builds.
-            //
-            // Wrapped variants: SpatialCentroid, SpatialConvexHull —
+            // Wrapped variants: SpatialCentroid, SpatialConvexHull
             // both emit `WRAP(ST_Collect(...))::geography` where
             // ST_Collect is the actual aggregate and the wrapper is
             // a scalar function. OVER must splice inside the wrap.
@@ -1727,22 +1671,18 @@ pub(crate) fn emit_aggregate_with_cast(
 /// annotate-SELECT-list path — wraps a windowable aggregate in a window
 /// function so the SELECT list is valid without a `GROUP BY` clause, then
 /// applies the optional narrowing cast.
-///
 /// # Why `OVER ()` rather than explicit `GROUP BY`
-///
 /// `annotate(|f| f.col().sum())` on an ungrouped queryset has no natural
 /// grouping key — the main row's PK would give a one-row-per-group
 /// partition (every aggregate collapses to the per-row column value).
 /// An unbounded window function (`OVER ()`) produces the table-wide
 /// aggregate value on every returned row, which is the useful
 /// per-row-with-table-aggregate semantics annotate users expect.
-///
 /// This synthesized-window path is only legal for value aggregates. The
 /// public `QuerySet::annotate` builder requires `PlainAnnotationTuple`, so
 /// ordered-set, hypothetical-set, and metadata aggregate kinds cannot reach
 /// this helper through plain annotate; scalar `QuerySet::aggregate` and
 /// grouped annotate use the non-default-window emitter instead.
-///
 /// Reverse-relation aggregates (`f.orders.count()`) may need `OVER
 /// (PARTITION BY parent.id)` after a LATERAL join; that is a deliberate
 /// scope boundary handled by the user-supplied `.over(|w| ...)` spec.
@@ -1755,11 +1695,9 @@ pub(crate) fn emit_aggregate_with_window_and_cast(
 
 /// Build `SELECT <agg> FROM <table> [WHERE ...]` — the scalar-aggregate
 /// terminal for [`crate::query::aggregate::AggregateQuery::fetch_one`].
-///
 /// No `ORDER BY`, no `LIMIT`, no `OFFSET`, no `GROUP BY` — ungrouped
 /// aggregates collapse to exactly one result row regardless of the
 /// underlying cardinality, so those clauses would be meaningless.
-///
 /// The aggregate expression is emitted via [`emit_aggregate_with_cast`]
 /// so integer `SUM` / `AVG` results narrow back to the typed `Out`
 /// the decoder expects. `WHERE` uses the shared [`push_where`] helper so
@@ -1778,21 +1716,17 @@ pub(crate) fn build_aggregate_select<T: Model>(
 }
 
 /// Build `SELECT t.*, <agg_0> AS __djogi_agg_0, <agg_1> AS __djogi_agg_1
-/// FROM <table> [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]` —
+/// FROM <table> [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]`
 /// the annotation terminal for
 /// [`crate::query::annotate::AnnotatedQuerySet::fetch_all`].
-///
 /// # Why `t.*` plus aliased aggregates
-///
 /// The annotated row carries both the full `t.*`
 /// projection (decoded into `T`) and the aggregate columns under
 /// synthetic `__djogi_agg_N` aliases (decoded into the tuple slots).
 /// Each side reads its own column set; they never collide because
 /// model columns are user-chosen identifiers and the aggregate
 /// aliases use the framework-reserved `__djogi_agg_` prefix.
-///
 /// # Columns argument
-///
 /// `push_columns` is a closure the caller supplies so the SELECT-list
 /// emission can inspect the typed tuple shape at compile time. The
 /// annotate terminal's `IntoAggregateTuple::push_columns` impl pushes
@@ -1837,14 +1771,12 @@ where
 
 /// Build the annotated SELECT, optionally wrapping in a derived table so
 /// an outer `WHERE` can filter on a window-function alias.
-///
 /// PostgreSQL 18 has no `QUALIFY` clause, so a window-output filter has
 /// to live in an outer scope where the alias is in scope as a column
 /// reference. When `qualify` is `Some`, this emits:
 /// `SELECT * FROM (<inner annotated select>) AS __djogi_q WHERE
 /// <alias> <op> $N`. Bind ordering: inner-query binds first, qualify
 /// bind appended last.
-///
 /// When `qualify` is `None`, this is identical in output to
 /// [`build_select_with_annotations`] — no derived-table indirection.
 pub(crate) fn build_annotated_select_for_fetch<T, F>(
@@ -1870,7 +1802,6 @@ where
 
 /// Build the annotated SELECT used as the inner rowset for PostGIS
 /// row-shape encoders (`ST_AsMVT` / `ST_AsGeobuf`).
-///
 /// Djogi stores spatial model fields as PostGIS `geography(...)`, while
 /// both row encoders inspect a geometry-typed record column by name. The
 /// ordinary annotated fetch path must keep geography values untouched for
@@ -1940,17 +1871,13 @@ where
 /// Build `SELECT keys, aggregates FROM <table> [WHERE ...] GROUP BY keys
 /// [HAVING ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the terminal for
 /// [`crate::query::grouped::GroupedAnnotatedQuerySet::fetch_all`].
-///
 /// # SELECT list layout
-///
-/// Keys MUST be emitted first and in `push_group_by_columns` order —
+/// Keys MUST be emitted first and in `push_group_by_columns` order
 /// `K::decode_tuple` reads positionally (ordinals 0..N_keys). Aggregate
 /// columns follow, decoded by alias (`__djogi_agg_N`). If the key/aggregate
 /// order in the SELECT list ever changes, key decoding will silently read the
 /// wrong columns.
-///
 /// # Why `push_columns_bare` not plain-annotate column emission
-///
 /// Plain ungrouped annotate emits value aggregate slots with a synthesized
 /// `OVER ()` through the `PlainAnnotationTuple` path. A `GROUP BY` query must
 /// not use those synthesized windows in the SELECT list for its aggregate
@@ -1958,9 +1885,7 @@ where
 /// the aggregate with only the narrowing cast and no default window, which is
 /// why grouped annotate remains legal for metadata, ordered-set, and
 /// hypothetical-set aggregates.
-///
 /// # Spatial JOIN delegation
-///
 /// When the `spatial` feature is enabled and `gaq.spatial_source` is `Some`,
 /// this function delegates to the appropriate spatial builder so the caller
 /// does not need to be aware of which emission path to take.
@@ -2047,7 +1972,6 @@ where
 }
 
 /// Build the spatial-JOIN variant of the grouped-annotated SELECT:
-///
 /// ```sql
 /// SELECT r.<pk-col> AS rk0, <aggregates>
 /// FROM <t-table> AS t
@@ -2058,14 +1982,11 @@ where
 /// [ORDER BY ...]
 /// [LIMIT $n] [OFFSET $n]
 /// ```
-///
 /// Called by [`build_grouped_annotated_select`] when `gaq.spatial_source` is
 /// `Some(SpatialGroupSource::Join(_))`. All clause-ordering and bind-slot
 /// semantics are identical to the plain grouped path — the only difference is
 /// the FROM + LEFT JOIN instead of the bare `FROM <t-table> AS t`.
-///
 /// # Column name safety
-///
 /// `spec.t_geo_col`, `spec.r_geo_col`, `spec.r_pk_col`, and `spec.r_table`
 /// are all `&'static str` baked by the macro or read from `ModelDescriptor`
 /// field names. They are pushed as SQL text (not bound parameters) on the same
@@ -2096,27 +2017,22 @@ where
     acc.push_sql(" AS t");
 
     // LEFT JOIN <r-table> AS r ON ST_Covers(r.<r-geo-col>, t.<t-geo-col>)
-    //
     // LEFT JOIN so unmatched rows (no containing region) appear in the result
     // with r.<pk-col> = NULL rather than being silently dropped.
-    //
     // # ST_Covers vs ST_Contains
-    //
     // `ST_Covers` is used (not `ST_Contains`) because:
-    //
     // - `ST_Contains(geography, geography)` does **not** exist in PostGIS 3.x
-    //   — only the geometry overload is defined, and Djogi stores spatial
-    //   columns as `GEOGRAPHY(..., 4326)`. Using `ST_Contains` here forces
-    //   `::geometry` casts on both sides, which defeats GiST index usage on
-    //   the geography column.
+    // only the geometry overload is defined, and Djogi stores spatial
+    // columns as `GEOGRAPHY(..., 4326)`. Using `ST_Contains` here forces
+    // `::geometry` casts on both sides, which defeats GiST index usage on
+    // the geography column.
     // - `ST_Covers` has a native `geography` overload and gives the same
-    //   answer as `ST_Contains` for the point-in-polygon use case this JOIN
-    //   implements (a point is "covered by" a polygon iff it is "inside" the
-    //   polygon; the distinction between the two functions only matters when
-    //   the inner geometry touches the boundary of the outer one — and for
-    //   the scalar point case, being on the boundary is treated as inside
-    //   under both functions for geography inputs).
-    //
+    // answer as `ST_Contains` for the point-in-polygon use case this JOIN
+    // implements (a point is "covered by" a polygon iff it is "inside" the
+    // polygon; the distinction between the two functions only matters when
+    // the inner geometry touches the boundary of the outer one — and for
+    // the scalar point case, being on the boundary is treated as inside
+    // under both functions for geography inputs).
     // The geography-native form keeps GiST-indexed bbox prefiltering active
     // under the JOIN.
     acc.push_sql(" LEFT JOIN ");
@@ -2137,7 +2053,7 @@ where
         crate::query::grouped::GroupingMode::Plain => {
             gaq.keys.push_group_by_columns(&mut acc);
         }
-        // ROLLUP / CUBE / SETS are not meaningful for spatial region grouping —
+        // ROLLUP / CUBE / SETS are not meaningful for spatial region grouping
         // the key is derived from a JOIN condition, not a column value. Reaching
         // here indicates the user set the grouping mode manually, which is not
         // supported via the `group_by_region` entry point. Emit plain GROUP BY
@@ -2160,7 +2076,6 @@ where
 }
 
 /// Build the DBSCAN-clustering variant of the grouped-annotated SELECT:
-///
 /// ```sql
 /// SELECT cluster_id, <aggregates>
 /// FROM (
@@ -2174,28 +2089,21 @@ where
 /// [ORDER BY ...]
 /// [LIMIT $n] [OFFSET $n]
 /// ```
-///
 /// # Why the subquery
-///
 /// A flat `SELECT ST_ClusterDBSCAN(...) OVER () AS cluster_id ... GROUP BY
 /// cluster_id` query is rejected by Postgres with
-///
 /// ```text
 /// ERROR: window functions are not allowed in GROUP BY
 /// ```
-///
 /// because the GROUP BY references an alias whose defining expression is a
 /// window aggregate. Wrapping the window call in an inner subquery
 /// materialises `cluster_id` as a plain column in the outer query, so the
 /// outer `GROUP BY cluster_id` is valid.
-///
 /// The inner subquery projects `t.*` so any outer aggregate expression that
 /// references `t.<col>` continues to resolve — the outer subquery alias is
 /// also `t`, keeping the column-qualification pattern identical to every
 /// other query shape in this file.
-///
 /// # Clause placement under the subquery
-///
 /// - `WHERE` stays on the **inner** subquery — it prunes rows *before*
 ///   clustering, which is the only semantically meaningful position for a
 ///   filter that does not reference `cluster_id`.
@@ -2203,15 +2111,11 @@ where
 ///   groups.
 /// - `ORDER BY` / `LIMIT` / `OFFSET` stay on the **outer** query — they
 ///   paginate the aggregated result.
-///
 /// # Casts and binds
-///
 /// The `::geometry` cast is required because `ST_ClusterDBSCAN` does not
 /// accept the `geography` type directly in PostGIS 3.x.
-///
 /// `$eps` is bound as `f64`; `$minpoints` as `i32`. Both are positional
 /// parameters (no user-controlled SQL text).
-///
 /// Called by [`build_grouped_annotated_select`] when
 /// `gaq.spatial_source == Some(SpatialGroupSource::Cluster(_))`.
 #[cfg(feature = "spatial")]
@@ -2262,7 +2166,6 @@ where
 }
 
 /// Build the geohash-bucketing variant of the grouped-annotated SELECT:
-///
 /// ```sql
 /// SELECT ST_GeoHash(t.<col>::geometry, $precision) AS geohash, <aggregates>
 /// FROM <table> AS t
@@ -2272,12 +2175,9 @@ where
 /// [ORDER BY ...]
 /// [LIMIT $n] [OFFSET $n]
 /// ```
-///
-/// The `::geometry` cast is required for the same reason as DBSCAN —
+/// The `::geometry` cast is required for the same reason as DBSCAN
 /// `ST_GeoHash` accepts `geometry`, not `geography`, in PostGIS 3.x.
-///
 /// `$precision` is bound as `i32` from [`GeohashPrecision::as_i32`].
-///
 /// Called by [`build_grouped_annotated_select`] when
 /// `gaq.spatial_source == Some(SpatialGroupSource::Geohash(_))`.
 #[cfg(feature = "spatial")]
@@ -2311,7 +2211,7 @@ where
     // WHERE from the upstream queryset.
     push_where(&mut acc, &gaq.qs)?;
 
-    // GROUP BY geohash  (references the scalar-function alias)
+    // GROUP BY geohash (references the scalar-function alias)
     acc.push_sql(" GROUP BY geohash");
 
     push_grouped_tail(
@@ -2327,21 +2227,19 @@ where
 
 /// Build `SELECT COUNT(*) FROM <table> [WHERE ...]`, honoring
 /// [`DistinctMode`].
-///
 /// Shapes emitted per mode:
 /// - `DistinctMode::None` → `SELECT COUNT(*) FROM "table" [WHERE ...]`
 /// - `DistinctMode::Plain` → `SELECT COUNT(*) FROM (SELECT DISTINCT * FROM
-///   "table" [WHERE ...]) AS sub`
+/// "table" [WHERE ...]) AS sub`
 /// - `DistinctMode::On(cols)` → `SELECT COUNT(*) FROM (SELECT DISTINCT ON
-///   (cols) * FROM "table" [WHERE ...] ORDER BY cols [, user-ordering]) AS sub`
-///
-/// `ORDER BY` / `LIMIT` / `OFFSET` from the queryset are intentionally not
-/// emitted on the **outer** count — they don't affect total cardinality and
-/// including them only slows the query. For `DISTINCT ON` the inner ORDER
-/// BY is required by Postgres (the `ON` column list must be a prefix of
-/// `ORDER BY`); we prepend the distinct columns and then append any
-/// user-supplied ordering so the emitted SQL is syntactically valid and
-/// semantically stable.
+/// (cols) * FROM "table" [WHERE ...] ORDER BY cols [, user-ordering]) AS sub`
+///   `ORDER BY` / `LIMIT` / `OFFSET` from the queryset are intentionally not
+///   emitted on the **outer** count — they don't affect total cardinality and
+///   including them only slows the query. For `DISTINCT ON` the inner ORDER
+///   BY is required by Postgres (the `ON` column list must be a prefix of
+///   `ORDER BY`); we prepend the distinct columns and then append any
+///   user-supplied ordering so the emitted SQL is syntactically valid and
+///   semantically stable.
 pub(crate) fn build_count<T: Model>(
     qs: &QuerySet<T>,
 ) -> Result<SqlAccumulator, PortablePredicateError> {
@@ -2392,7 +2290,6 @@ pub(crate) fn build_count<T: Model>(
 }
 
 /// Build `SELECT EXISTS(SELECT 1 FROM <table> [WHERE ...] LIMIT 1)`.
-///
 /// `LIMIT 1` is inside the EXISTS subquery rather than being passed through
 /// the queryset's `limit` slot: EXISTS returns a single boolean regardless
 /// of how many rows match, so `LIMIT 1` here is a micro-optimization that
@@ -2409,23 +2306,19 @@ pub(crate) fn build_exists<T: Model>(
 
 /// Build `UPDATE <table> SET col = $1, col = $2, updated_at = now()
 /// [WHERE ...]`.
-///
 /// Every assignment's value flows through [`push_filter_value`] — i.e.
 /// `push_bind` — so the emitted SQL has one positional parameter per
 /// user-supplied value. The `updated_at = now()` tail is always appended,
 /// even when the caller's closure omitted it: parity with the single-row
 /// `save()` path, which also bumps `updated_at` on every write. Users who
 /// need to preserve `updated_at` across a bulk update reach for raw SQL
-/// via `ctx.raw_execute` (T5) — same as any other ORM layer that
+/// via `ctx.raw_execute` — same as any other ORM layer that
 /// treats the audit column as non-optional.
-///
 /// `WHERE` is emitted via the shared [`push_where`] helper, so
 /// `QuerySet::none()`-derived querysets (caught earlier in
 /// [`crate::query::update::UpdateStmt::execute`]) and vacuously-true
 /// condition trees are handled identically to the read terminals.
-///
 /// # Assignment list invariants
-///
 /// Callers must ensure `assignments` is non-empty — `UPDATE ... SET ` with
 /// an empty list is a Postgres syntax error. The public entry point
 /// ([`crate::query::update::UpdateStmt::execute`]) short-circuits on
@@ -2476,7 +2369,6 @@ pub(crate) fn build_update<T: Model>(
 }
 
 /// Build `DELETE FROM <table> [WHERE ...]`.
-///
 /// Plain DELETE — no RETURNING, no USING join. The `WHERE` clause uses
 /// the shared [`push_where`] helper so vacuously-true condition trees
 /// (e.g. `Condition::And(vec![])`) are omitted entirely rather than
@@ -2484,10 +2376,9 @@ pub(crate) fn build_update<T: Model>(
 /// `T::objects()`) deletes every row in the table — same semantics as
 /// raw SQL; callers who want extra safety wrap the call in a
 /// transaction and `ROLLBACK` if the row count looks wrong.
-///
 /// `updated_at = now()` stamping does **not** apply here — the row is
 /// being removed, so auditing the timestamp has no meaning. Audit of
-/// deletions lives in the Phase 1 `_logs` mirror tables (populated by
+/// deletions lives in the `_logs` mirror tables (populated by
 /// the `crud_log_url` pool).
 pub(crate) fn build_delete<T: Model>(
     qs: &QuerySet<T>,
@@ -2502,8 +2393,7 @@ pub(crate) fn build_delete<T: Model>(
 /// [WHEN MATCHED [AND ...] THEN UPDATE SET ... | DELETE]
 /// [WHEN NOT MATCHED [BY TARGET] [AND ...] THEN INSERT (...) VALUES (...)]
 /// [WHEN NOT MATCHED BY SOURCE [AND ...] THEN UPDATE SET ... | DELETE]`.
-///
-/// Phase 8.5 Issue #178 — typed MERGE query surface.
+/// Issue #178 — typed MERGE query surface.
 pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
     source: &QuerySet<S>,
     on: &[MergeOnEq<S, T>],
@@ -2522,7 +2412,7 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
     acc.push_sql("USING (");
     // Emit source QuerySet as a subquery.
     let source_acc = build_select(source)?;
-    // Class A-5: push_tail must be INSIDE the parentheses.
+    // Class push_tail must be INSIDE the parentheses.
     // build_select already calls push_tail.
     // Wait, build_select implementation:
     // let mut acc = build_select_list(qs)?;
@@ -2616,7 +2506,7 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
                             acc.push_sql(scol);
                         }
                         MergeValue::TargetExpr(node, _) => {
-                            // Class A-4: Source references in VALUES must be qualified
+                            // Class Source references in VALUES must be qualified
                             crate::expr::sql::emit_expr(
                                 &mut acc,
                                 node,
@@ -2634,19 +2524,16 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
     Ok(acc)
 }
 
-// ── Phase 8.5 djogi#180 — PG18 OLD/NEW RETURNING helpers ──────────────────
+// ── — PG18 OLD/NEW RETURNING helpers ──────────────────
 
 /// Append the `RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)`
 /// clause and the fully-aliased column projection for both sides to `acc`.
-///
 /// The table aliases (`__djogi_old` / `__djogi_new`) use Djogi's reserved
 /// namespace. Column aliases are short ordinals (`o0`, `o1`, ... and
 /// `n0`, `n1`, ...) so projection aliases stay safely below the 63-byte
 /// identifier limit while preserving a stable positional mapping.
-///
 /// Column names come from `T::COLUMNS`, which are macro-validated `&'static str`
 /// identifiers; `push_sql` is safe here because no user data flows in.
-///
 /// Called by [`build_update_returning_pairs`] and [`build_delete_returning`].
 fn push_old_new_returning_projection<T: FromPgRow>(acc: &mut SqlAccumulator, include_new: bool) {
     if include_new {
@@ -2686,19 +2573,15 @@ fn push_old_new_returning_projection<T: FromPgRow>(acc: &mut SqlAccumulator, inc
 /// Build `UPDATE <table> SET ... RETURNING WITH (OLD AS __djogi_old, NEW AS
 /// __djogi_new) __djogi_old.<col> AS "o{idx}", ...,
 /// __djogi_new.<col> AS "n{idx}", ...`.
-///
 /// This is the bulk-returning variant of [`build_update`]; the WHERE clause and
 /// SET assignments are identical. The RETURNING projection appends the full
 /// column list for both the pre-update (`OLD`) and post-update (`NEW`) row
 /// images using short ordinal aliases (`o{idx}` / `n{idx}`) to avoid
 /// PostgreSQL identifier truncation.
-///
 /// Callers must guarantee `assignments` is non-empty — the same contract as
 /// [`build_update`]. The callers in [`crate::query::update::UpdateStmt::execute_returning_pairs`]
 /// short-circuit on an empty assignment list before reaching this emitter.
-///
 /// # SQL injection guarantee
-///
 /// All column names come from `T::COLUMNS` (macro-validated `&'static str`).
 /// All values flow through `push_bind` via the shared [`build_update`] path.
 /// The `__djogi_old` / `__djogi_new` table aliases are framework-internal
@@ -2716,12 +2599,10 @@ where
 }
 
 /// Build `UPDATE <table> SET ... [WHERE ...] RETURNING <pk_column>`.
-///
-/// Issue #304 Stage 2 — bulk update cache invalidation SQL builder.
+/// Issue #304 — bulk update cache invalidation SQL builder.
 /// Emits the same UPDATE statement as [`build_update`] but appends a
 /// `RETURNING <pk_column>` clause so the caller can collect the primary-
 /// key IDs of every affected row for targeted cache eviction.
-///
 /// The PK column name comes from `T::descriptor().pk_column()`, which is
 /// a macro-baked `&'static str` — safe for direct `push_sql` insertion.
 /// All value binding follows the same [`build_update`] path, so assignment
@@ -2742,12 +2623,10 @@ pub(crate) fn build_update_returning_ids<T: Model>(
 
 /// Build `DELETE FROM <table> [WHERE ...] RETURNING WITH (OLD AS __djogi_old)
 /// __djogi_old.<col> AS "o{idx}", ...`.
-///
 /// The DELETE variant only has an `OLD` side — `NEW` is semantically absent for
 /// deleted rows. The projection aliases use the same short `o{idx}` pattern as
 /// the UPDATE variant so the `FromJoinedPgRow` path is identical
 /// (`from_joined_pg_row(row, "__djogi_old__")`).
-///
 /// Callers must guarantee the queryset is not `QuerySet::none()`-derived before
 /// reaching this emitter — same contract as [`build_delete`].
 pub(crate) fn build_delete_returning<T>(
@@ -2763,13 +2642,10 @@ where
 
 /// Build `INSERT INTO <target> (cols...) SELECT exprs... FROM <source>
 /// [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
-///
-/// Closes [djogi#106](https://github.com/TarunvirBains/djogi/issues/106) —
+/// Closes [](https://github.com/TarunvirBains/djogi/issues/106)
 /// the typed bulk-copy surface from one model's queryset into another
 /// model's table.
-///
 /// # Inputs
-///
 /// - `qs` — source queryset, contributes the source FROM table, the
 ///   WHERE clause, ordering, limit, and offset. All other source state
 ///   (`prefetch_paths`, `select_related_paths`, `cache_target`,
@@ -2781,9 +2657,7 @@ where
 ///   lockstep position. The column list and the SELECT projection are
 ///   emitted in the same order; per-column type alignment is enforced
 ///   at compile time by [`crate::query::FieldRef::copy_from`].
-///
 /// # Output shape
-///
 /// ```sql
 /// INSERT INTO target_table (target_col1, target_col2, ...)
 /// SELECT source_expr1, source_expr2, ...
@@ -2793,29 +2667,22 @@ where
 /// [LIMIT $n]
 /// [OFFSET $n]
 /// ```
-///
 /// Framework columns (`id`, `created_at`, `updated_at`) on the target
 /// are populated by their column-level `DEFAULT` clauses — the emitter
 /// never names them unless the closure explicitly maps them. This
 /// matches `Model::create`'s contract.
-///
 /// # Why not `RETURNING`
-///
-/// The terminal contract for djogi#106 returns the affected row count
+/// The terminal contract for returns the affected row count
 /// only — see the module docs on
 /// [`crate::query::insert_select`]. A `RETURNING`-bearing variant can
 /// be added in a follow-up issue without breaking the row-count
 /// terminal.
-///
 /// # Why not the joined-select tail
-///
 /// `select_related_paths` is rejected at the terminal layer, so the
 /// emitter takes the bare [`push_tail`] (not [`push_tail_qualified`])
 /// path. No `LEFT JOIN`s, no column qualification — matches the
 /// minimum coherent surface of the public API.
-///
 /// # Invariants
-///
 /// - `columns` is non-empty (the terminal's
 ///   [`crate::query::insert_select::InsertSelectStmt::execute`] returns
 ///   `DjogiError::Validation` before reaching here on empty input).
@@ -2826,9 +2693,7 @@ where
 ///   `&'static str` column names baked into `ExprNode::Field` flow
 ///   straight to `SqlAccumulator::push_sql`, matching the existing
 ///   bind-vs-text discipline.
-///
 /// # Source's `lock` is intentionally NOT emitted
-///
 /// Although [`push_tail`] would normally append `qs.lock`'s `FOR UPDATE`
 /// tail, the terminal rejects non-default `LockMode` upstream so the
 /// `LockMode::None` path is the only one this emitter sees. The tail
@@ -2875,16 +2740,12 @@ pub(crate) fn build_insert_select<S: Model, T: Model>(
 }
 
 /// Build `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE ...] RETURNING <column_list>`.
-///
 /// Identical to [`build_insert_select`] but appends ` RETURNING <column_list>` so the
 /// caller can decode the inserted rows via [`crate::pg::decode::FromPgRow`].
-///
 /// This uses the model's canonical projection (`T::COLUMN_LIST`) rather than
 /// physical `*`, so insert-select returning remains stable when table order and
 /// model decode order differ.
-///
 /// # Errors
-///
 /// Returns the same [`PortablePredicateError`] variants as
 /// [`build_insert_select`] — the additional SQL token is always trusted
 /// (`T::COLUMN_LIST` is crate-owned static SQL text).
@@ -2901,9 +2762,7 @@ pub(crate) fn build_insert_select_returning<S: Model, T: Model + FromPgRow>(
 /// Walk the emitted SELECT list and check that every column's alias (or
 /// plain column name if no `AS` alias) is unique. A collision would cause
 /// the terminal decoder to read the wrong value for one of the columns.
-///
 /// # Algorithm
-///
 /// 1. Find the substring between `SELECT ` and the next ` FROM ` (case
 ///    matters — emitters use uppercase keywords).
 /// 2. Split on commas at the top parenthesis level into logical columns.
@@ -2913,16 +2772,13 @@ pub(crate) fn build_insert_select_returning<S: Model, T: Model + FromPgRow>(
 ///    ` AS ` if present, otherwise the whole column text (trimmed).
 /// 4. Check uniqueness; return `Err(DjogiError::AliasCollision)` on
 ///    duplicate.
-///
 /// # Limitations
-///
 /// This is a best-effort string parse. It does not handle:
-/// - Nested subqueries in the SELECT list (not emitted by Phase 6.5).
+/// - Nested subqueries in the SELECT list (not emitted by).
 /// - Unparenthesised comma-separated arguments at the top level (our
 ///   emitter always parenthesises function args).
-///
-/// The check is defensive; failure means something has gone subtly wrong
-/// in the query builder, not that the user did something wrong.
+///   The check is defensive; failure means something has gone subtly wrong
+///   in the query builder, not that the user did something wrong.
 pub(crate) fn assert_no_alias_collision(sql: &str) -> Result<(), crate::DjogiError> {
     // Locate the SELECT keyword — accept leading text for safety.
     let after_select = if let Some(s) = sql.strip_prefix("SELECT ") {
@@ -2961,7 +2817,6 @@ pub(crate) fn assert_no_alias_collision(sql: &str) -> Result<(), crate::DjogiErr
 }
 
 /// Split a SQL fragment on commas that are at the top parenthesis level.
-///
 /// The grouped-emitter output uses simple function-call args, so a single
 /// paren counter suffices. No regex — depth is tracked byte by byte using
 /// `u8` comparison on `b'('` and `b')'`.
@@ -2991,8 +2846,7 @@ mod tests {
     //! touching a real database. These tests verify the shape of the output
     //! (token order, placeholder count) for each `Condition` / `QuerySet`
     //! state the emitter handles. Actual bind values are validated by the
-    //! integration tests in `tests/integration/phase2_queryset.rs`.
-    //!
+    //! integration tests in `tests/integration/queryset.rs`.
     //! We reach into the emitter using a minimal local `Model` impl (mirrors
     //! the `Fake` model used in `query::field`'s tests) so that unit tests
     //! remain independent of `#[model]` macro expansion.
@@ -3080,7 +2934,7 @@ mod tests {
         }
     }
 
-    // T3: the SQL emitter bounds on `T: FromPgRow` so it can interpolate
+    // the SQL emitter bounds on `T: FromPgRow` so it can interpolate
     // `COLUMN_LIST` into `SELECT` / `SELECT DISTINCT` shapes. The unit
     // tests below exercise SQL-text shape only (no row decode), so we
     // supply a stub impl with a single `id` column — enough for
@@ -3445,14 +3299,14 @@ mod tests {
         assert_eq!(sql, "SELECT id FROM fakes");
     }
 
-    /// Phase 8β T3.4 — `Condition::RawSql` emits the carried fragment
+    /// 4 — `Condition::RawSql` emits the carried fragment
     /// wrapped in outer parens so further AND-composition with user
     /// `.filter(...)` calls preserves operator precedence. Lock the
     /// shape against accidental drift in the emitter.
     #[test]
     fn raw_sql_condition_wraps_in_parens() {
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        // Cluster 8γ Stage 2 (T6.9): wrap the legacy `Condition` through
+        // wrap the legacy `Condition` through
         // `Q::Condition(_)` so `qs.condition`'s `Q<T>` substrate stays
         // honest. The direct-Q emitter delegates this arm to
         // `emit_condition`, so SQL parity with the pre-flip
@@ -3471,7 +3325,7 @@ mod tests {
     /// Proxy raw-SQL filter AND-composes with a user leaf filter: the
     /// emitted WHERE clause has both terms separated by AND inside the
     /// flattened `Condition::And` tree. End-to-end coverage that the
-    /// runtime wiring from T3.4 (`QuerySet::new()` seeding + `filter()`
+    /// runtime wiring (`QuerySet::new` seeding + `filter`
     /// AND-composition + `RawSql` emission) lines up.
     #[test]
     fn raw_sql_condition_ands_with_user_filter() {
@@ -3480,7 +3334,7 @@ mod tests {
         let raw = Condition::__from_raw_sql_fragment("active = TRUE");
         let user = Condition::Leaf(Leaf::eq_raw("price", FilterValue::I64(100)));
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        // Cluster 8γ Stage 2 (T6.9): wrap the composed legacy tree
+        // wrap the composed legacy tree
         // through `Q::Condition(_)` for the substrate flip. The direct-Q
         // emitter delegates this arm to `emit_condition`, so the
         // assertion on the emitted `WHERE ((active = TRUE) AND price = $1)`
@@ -3498,7 +3352,7 @@ mod tests {
 
     #[test]
     fn where_skipped_on_nested_vacuous_and() {
-        // Nested `And(vec![True, And(vec![])])` is also vacuously TRUE —
+        // Nested `And(vec![True, And(vec![])])` is also vacuously TRUE
         // `is_vacuously_true` walks the `And` subtree recursively. Same
         // cleanup as the flat empty-And case.
         let mut qs: QuerySet<Fake> = QuerySet::new();
@@ -3619,7 +3473,7 @@ mod tests {
         assert_eq!(sql, "DELETE FROM fakes");
     }
 
-    // ── Phase 8.5 Cluster 4B (djogi#106): INSERT...SELECT SQL shape ─────────
+    // ── ): INSERT...SELECT SQL shape ─────────
 
     /// A second `Model` impl so the INSERT...SELECT emitter tests can
     /// distinguish the source from the target by table name. Mirrors the
@@ -3793,7 +3647,7 @@ mod tests {
         // table, not the target. A swap would land rows from the
         // target's contents into the target, which is what the
         // bypass-pattern raw-SQL escape hatch did wrong in adopter code
-        // pre-djogi#106. Anchor the shape here.
+        // pre-. Anchor the shape here.
         let qs: QuerySet<Fake> = QuerySet::new();
         let cols = vec![col_copy::<Fake, FakeTarget>("view_count", "score")];
         let acc = build_insert_select::<Fake, FakeTarget>(&qs, &cols);
@@ -3809,8 +3663,7 @@ mod tests {
         );
     }
 
-    // ── Phase 3 Task 5 fix: parent-table qualification under select_related ──
-    //
+    // ── fix: parent-table qualification under select_related ──
     // When `.select_related(...)` is active, every bare column reference
     // emitted by the `WHERE` / `ORDER BY` / `DISTINCT ON` clauses must be
     // qualified with the parent table name so Postgres does not raise
@@ -3915,7 +3768,7 @@ mod tests {
     #[test]
     fn non_joined_select_leaves_column_refs_bare() {
         // Regression guard: the non-joined `build_select` path must not
-        // pick up the qualifier. Bare `WHERE id = $1` matches Phase 2's
+        // pick up the qualifier. Bare `WHERE id = $1` matches the
         // shipped SQL byte-for-byte.
         let qs: QuerySet<Fake> =
             QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("id", FilterValue::I64(42))));
@@ -3928,7 +3781,7 @@ mod tests {
         );
     }
 
-    // ── Phase 4 Task 7 — row-lock SQL tails ───────────────────────────
+    // ── — row-lock SQL tails ───────────────────────────
 
     #[test]
     fn select_for_update_appends_lock_tail() {
@@ -3999,7 +3852,7 @@ mod tests {
         );
     }
 
-    // ── djogi#104 — FOR SHARE row-lock SQL tails ──────────────────────
+    // ── — FOR SHARE row-lock SQL tails ──────────────────────
 
     #[test]
     fn select_for_share_appends_lock_tail() {
@@ -4102,13 +3955,12 @@ mod tests {
 
     #[test]
     fn nowait_after_select_for_share_promotes_to_for_update_nowait() {
-        // Documented chaining footgun (djogi#104): the historical
+        // Documented chaining footgun: the historical
         // `.nowait()` and `.skip_locked()` modifiers unconditionally
         // set the FOR UPDATE family. Calling them after
         // `.select_for_share()` silently swaps the base lock back to
         // FOR UPDATE. The rustdoc on `select_for_share` calls this
         // out as a footgun; this test pins the documented behaviour.
-        //
         // If a future change makes the contention modifiers
         // family-aware (e.g., preserve the base family), this test
         // surfaces the surface change loudly before it ships.
@@ -4145,7 +3997,7 @@ mod tests {
         );
     }
 
-    // ── T2 emitter: GROUPING SETS ─────────────────────────────────────────
+    // ── GROUPING SETS emitter ─────────────────────────────────────────
 
     #[test]
     fn build_grouped_annotated_select_emits_grouping_sets() {
@@ -4182,12 +4034,12 @@ mod tests {
         );
     }
 
-    // ── T1 emitter behavior: ROLLUP / CUBE ────────────────────────────────
-    //
-    // These tests document that the T1 emitter already handles ROLLUP and
-    // CUBE correctly. T2 adds the entry-point methods (.rollup, .cube) and
-    // the GROUPING SETS emitter arm; the tests below pin the existing
-    // emitter behavior so regressions surface before the new arms land.
+    // ── ROLLUP / CUBE emitter behavior ────────────────────────────────
+    // These tests document that the emitter already handles ROLLUP and
+    // CUBE correctly. The entry-point methods (.rollup, .cube) and
+    // the GROUPING SETS emitter arm build on this; the tests below pin
+    // the existing emitter behavior so regressions surface before the
+    // new arms land.
 
     #[test]
     fn build_grouped_annotated_select_emits_rollup() {
@@ -4245,7 +4097,7 @@ mod tests {
         );
     }
 
-    // T5 — alias-collision diagnostic
+    // alias-collision diagnostic
 
     #[test]
     fn alias_collision_detected_in_grouped_select() {
@@ -4309,8 +4161,7 @@ mod tests {
         );
     }
 
-    // ── T11: spatial JOIN grouped SELECT emitter ────────────────────────────
-    //
+    // ── spatial JOIN grouped SELECT emitter ────────────────────────────
     // These tests construct a `GroupedAnnotatedQuerySet` with a spatial join
     // spec and assert that the emitted SQL contains the expected LEFT JOIN,
     // ST_Covers call (the geography-native point-in-polygon function), and
@@ -4404,7 +4255,6 @@ mod tests {
     }
 
     /// The emitted SQL must contain `LEFT JOIN <r-table> AS r ON ST_Covers(…)`.
-    ///
     /// `ST_Covers` is used rather than `ST_Contains` because the former has a
     /// native `geography` overload in PostGIS 3.x; `ST_Contains(geography,
     /// geography)` does not exist. Semantics are equivalent for the
@@ -4502,7 +4352,7 @@ mod tests {
         );
     }
 
-    // ── T12: cluster_by_proximity SQL emission ────────────────────────────
+    // ── cluster_by_proximity SQL emission ────────────────────────────
 
     /// Helper: build a `GroupedAnnotatedQuerySet` with a cluster spec, bypassing
     /// the `cluster_by_proximity` entry point so we can test SQL emission in
@@ -4589,7 +4439,7 @@ mod tests {
         );
     }
 
-    /// Regression test for the pre-T14.5 shape `SELECT ST_ClusterDBSCAN(...)
+    /// Regression test for the prior shape `SELECT ST_ClusterDBSCAN(...)
     /// OVER () AS cluster_id ... GROUP BY cluster_id`, which Postgres rejects
     /// with `ERROR: window functions are not allowed in GROUP BY`. The
     /// emitter must wrap the window call in an inner subquery so the outer
@@ -4633,7 +4483,7 @@ mod tests {
         );
     }
 
-    // ── T12: bucket_by_cell SQL emission ─────────────────────────────────
+    // ── bucket_by_cell SQL emission ─────────────────────────────────
 
     /// Helper: build a `GroupedAnnotatedQuerySet` with a geohash spec.
     #[cfg(feature = "spatial")]
@@ -4717,7 +4567,7 @@ mod tests {
         );
     }
 
-    // ── djogi#180 — PG18 OLD/NEW RETURNING builder unit tests ────────────────
+    // ── — PG18 OLD/NEW RETURNING builder unit tests ────────────────
 
     fn build_update_returning_pairs<T: Model + FromPgRow + crate::pg::decode::FromJoinedPgRow>(
         qs: &QuerySet<T>,

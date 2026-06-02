@@ -1,0 +1,7 @@
+error: column `nonexistent_column` in `fields = [..]` is not declared on this struct
+ --> $DIR/model_indexes_unknown_column.rs:5:5
+  |
+5 |     index(fields = [nonexistent_column]),
+  |     ^^^^^
+
+error: aborting due to 1 previous error

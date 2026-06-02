@@ -1,25 +1,18 @@
-//! Delta-sync fetcher for `QuerySet::refresh_into` — Cluster 8δ T8.3 skeleton,
-//! T8.5 SQL implementation, T8.8 always-on LRU eviction warn.
-//!
+//! Delta-sync fetcher for `QuerySet::refresh_into`.
 //! # What
-//!
 //! `DjogiDeltaFetcher<T>` owns a snapshot of the substrate needed to issue
 //! delta queries against the source-of-truth Postgres pool: a `DjogiPool`
 //! clone, an `AuthContext` by value, a structural-empty flag, and a
 //! `BasicPredicate<T>` filter (optional). Each tick of
 //! `Punnu::start_delta_refresh(...)` calls `DeltaPunnuFetcher::fetch_delta`
 //! on this struct.
-//!
 //! # Why owned substrate
-//!
 //! Sassi's `DeltaPunnuFetcher<T>` is `Send + Sync + 'static`. The fetcher
 //! lives across ticks, threads, and beyond any single `DjogiContext`'s
 //! lifetime. Holding `&mut DjogiContext` or any borrowed substrate would
 //! defeat the bound. Each tick reconstructs a fresh `DjogiContext` from a
 //! freshly-acquired pool connection + a clone of the captured AuthContext.
-//!
 //! # Send + Sync auto-derivation
-//!
 //! No manual `unsafe impl Send` or `unsafe impl Sync` was required.
 //! `DjogiPool` and `AuthContext` are `Send + Sync + 'static` outright;
 //! `Option<BasicPredicate<T>>` is `Send + Sync` when `T: Send + Sync` (sassi
@@ -29,9 +22,7 @@
 //! holds for every well-formed `DjogiDeltaFetcher<T>`. Verified: compilation
 //! succeeds without manual impls. The const-fn-pointer assertion at the
 //! bottom of this file pins the contract at the type-system level.
-//!
-//! # T8.5 SQL path
-//!
+//! # SQL path
 //! `fetch_delta` issues real SQL on every non-empty tick. A
 //! `QuerySet::none()` refresh returns an empty delta without touching the
 //! source table:
@@ -40,8 +31,8 @@
 //!    captured `AuthContext` via `.with_auth(...)` — auth-locked-to-
 //!    subscription per spec §677.
 //! 3. Build SQL: `SELECT <COLUMN_LIST> FROM <table_name> WHERE
-//!    [<portable filter on full baseline> | <watermark_col> >= $1]
-//!    [OR id IN ($2, …)] ORDER BY <watermark_col>`.
+//! [<portable filter on full baseline> | <watermark_col> >= $1]
+//! [OR id IN ($2, …)] ORDER BY <watermark_col>`.
 //! 4. For filtered full-baseline ticks, also observe
 //!    `SELECT MAX(<watermark_col>) FROM <table_name>` inside the same
 //!    transaction so source progress advances even when the filter excludes
@@ -52,9 +43,7 @@
 //!    SoftDeletable-derived); return `DeltaResult::with_high_watermark(...)`
 //!    when a source watermark was observed.
 //! 7. Drop ctx (releases connection back to pool on drop).
-//!
 //! # Tombstone collection patterns
-//!
 //! - **Pattern 1 (SoftDeletable-derived):** per-row
 //!   `__delta_should_tombstone()` walks soft-deleted rows into the
 //!   tombstones set. Anti-regression: NO `deleted_at IS NULL` filter
@@ -69,37 +58,29 @@
 //!   at `emit_event`'s INSERT). The poll runs inside the same
 //!   `transaction::atomic` as the data SELECT so it inherits the
 //!   `auto_set_tenant` scope. Closes GH #128.
-//!
 //! # LRU eviction warn (spec §674 Knob 1)
-//!
 //! Always-on, one-shot per `(Punnu, Subscription)`: on the first observed
 //! `LruEvict` event, emit one `tracing::warn!` on the `djogi::cache`
-//! target. Implemented via `try_recv` per tick + `AtomicBool` flag —
+//! target. Implemented via `try_recv` per tick + `AtomicBool` flag
 //! drains the receiver inside `Mutex::try_lock` so a losing tick skips
 //! the check rather than blocking. Cost is dominated by the SQL
 //! round-trip; the drain loop is negligible.
-//!
 //! # Knobs 2 + 3 (recovery + periodic full refresh)
-//!
 //! Both `with_eviction_recovery(bool)` and
 //! `with_periodic_full_refresh(Option<NonZeroUsize>)` are sassi-native builder
 //! knobs on `DeltaRefreshHandle<T>`. Djogi's `refresh_into` returns
 //! `Result<sassi::DeltaRefreshHandle<T>, (QuerySet<T>, PortablePredicateError)>`
-//! — the portability gate runs first and the `Err` arm carries the queryset
+//! the portability gate runs first and the `Err` arm carries the queryset
 //! back for recovery. No djogi-side handle wrapper sits around the sassi type,
 //! so once the gate succeeds the chain is on the sassi handle itself:
-//!
 //! ```text
 //! let handle = MyModel::objects()
 //!     .refresh_into(&punnu, pool, auth)?
 //!     .with_eviction_recovery(true)
 //!     .with_periodic_full_refresh(NonZeroUsize::new(10));
 //! ```
-//!
 //! No djogi-side wrappers are needed.
-//!
 //! # Portable filter pushdown
-//!
 //! `QuerySet::refresh_into` rejects SQL-only filters before constructing this
 //! fetcher. When a trusted portable filter is present, this fetcher pushes it
 //! into SQL only on full-baseline ticks (`since = None` and no
@@ -129,7 +110,6 @@ use tokio_postgres::types::ToSql;
 /// Safety window subtracted from the server-side first-tick wall clock
 /// so the resulting watermark is guaranteed to be `<=` any concurrent
 /// delete transaction's `created_at` for that window's duration.
-///
 /// The race the window closes: a delete transaction `T_d` may start at
 /// time `A`, insert into `<table>_outbox` (Postgres `now()` returns
 /// `A`, the transaction-start time), and commit at time `B > A`. If
@@ -137,7 +117,6 @@ use tokio_postgres::types::ToSql;
 /// `A < C < B`, then `created_at = A < C = watermark`, and on every
 /// later tick the `created_at >= watermark` poll skips this delete,
 /// leaving a stale cache entry forever.
-///
 /// Setting `watermark = server_now() - WINDOW` widens the poll boundary
 /// far enough to catch any `T_d` whose `transaction_start` was within
 /// `WINDOW` of our snapshot. 60 seconds covers OLTP-shaped workloads;
@@ -315,20 +294,19 @@ where
         // RLS-backed tenant isolation would silently fail. The Pattern 2
         // outbox poll piggy-backs on the same transaction so it inherits
         // the same tenant scope.
-        //
         // The closure returns:
         // - `items` — live rows for the cache.
         // - `outbox_tombstones` — `(i64, OffsetDateTime)` pairs (raw
-        //   `row_id` bits + `created_at`). The caller decodes the raw
-        //   bits into `T::Id` via `cast_row_id_to_t_id`.
+        // `row_id` bits + `created_at`). The caller decodes the raw
+        // bits into `T::Id` via `cast_row_id_to_t_id`.
         // - `first_tick_server_now` — `Some(t)` when this is the first
-        //   tick and the watermark needs initialisation. Sampled
-        //   server-side via `SELECT NOW()` inside the same transaction
-        //   so any delete committed against this database from now on
-        //   has `created_at >= t`. The post-transaction merge subtracts
-        //   `FIRST_TICK_WATERMARK_SAFETY_WINDOW` to also cover concurrent
-        //   delete transactions whose `transaction_start` was before our
-        //   sample.
+        // tick and the watermark needs initialisation. Sampled
+        // server-side via `SELECT NOW()` inside the same transaction
+        // so any delete committed against this database from now on
+        // has `created_at >= t`. The post-transaction merge subtracts
+        // `FIRST_TICK_WATERMARK_SAFETY_WINDOW` to also cover concurrent
+        // delete transactions whose `transaction_start` was before our
+        // sample.
         let (items, outbox_tombstones, first_tick_server_now, source_high_watermark): (
             Vec<T>,
             Vec<(i64, OffsetDateTime)>,
@@ -445,7 +423,7 @@ where
                 let items: Vec<T> = ctx.raw_query::<T>(&sql, &params_refs).await?;
                 // Watermark merge for the filtered full-baseline path. Only
                 // overrides sassi's default `live_items.watermark().max()`
-                // inference when the MAX-from-source observation exists —
+                // inference when the MAX-from-source observation exists
                 // that is, when `push_filter == true`. On non-pushdown
                 // ticks we leave `source_high_watermark = None` and let
                 // sassi infer the watermark from the live items it

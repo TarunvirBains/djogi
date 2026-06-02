@@ -1,50 +1,43 @@
 //! Composition primitives — `Auditable` and `SoftDeletable`.
-//!
 //! These are the runtime trait surfaces a model picks up when adopters
-//! opt in via `#[model(auditable)]` (Phase 8 §T2.4 — supersedes T2.2's
+//! opt in via `#[model(auditable)]` (supersedes the legacy
 //! `#[derive(Auditable)]` per spec line 1037, locked 2026-05-03) or
-//! `#[model(soft_deletable)]` (Phase 8 §T2.6 — supersedes T2.3's
+//! `#[model(soft_deletable)]` (supersedes the legacy
 //! `#[derive(SoftDeletable)]` for symmetry with the auditable surface
-//! and to de-risk 8γ T6's automatic default-filter composition).
-//! Phase 8 §T2.1 landed the trait shapes only; T2.4 / T2.6 ship the
-//! macro emissions and are the source of truth for behavior.
+//! and to de-risk automatic default-filter composition).
+//! Initial landing covered trait shapes only; the full macro emissions
+//! are the source of truth for behavior.
 //! Downstream code that only needs to *bound a generic* on "models with
 //! audit fields" or "models with soft-delete semantics" can import
 //! these traits today.
-//!
 //! # Why two traits, no methods beyond the field accessors?
-//!
-//! Phase 8 §D6 (lines 149–157 of the v3 plan) settles the audit-field
+//! §D6 (lines 149–157 of the v3 plan) settles the audit-field
 //! shape: `created_by: Option<String>` populated from
 //! `AuthContext.user_id` at create time when `ctx.auth().is_some()`, and
 //! left as `None` otherwise (no warn-on-null). The trait exposes the
 //! getter as `Option<&str>` so callers do not pay a `String` clone to
 //! observe the audit user.
-//!
 //! `SoftDeletable` mirrors the same pattern for `deleted_at:
 //! Option<DateTime>`. Models implementing the trait acquire a default
 //! filter that excludes rows where `deleted_at IS NOT NULL`; adopter-side
 //! bypass goes through the `_insecurely()` audit-warning shape — same
-//! Phase 5 `set_tenant` precedent already in [`crate::DjogiContext`].
-//! That filter and bypass live in the Phase 8 query layer (T2.4 / T2.5);
+//! `set_tenant` precedent already in [`crate::DjogiContext`].
+//! That filter and bypass live in the query layer;
 //! this module is intentionally bound surface only.
-//!
 //! # Sealing model — convention-sealed, not compile-enforced
-//!
-//! Phase 8 v3 spec line 758 directs T2.1 to "convention-seal per
+//! V3 spec line 758 directs this module to "convention-seal per
 //! `decisions.md` row 78 pattern". The intent — per the explicit
-//! [CHECK] callout on v3 line 809: "convention-sealed = doc comment
+//! [CHECK] callout on : "convention-sealed = doc comment
 //! plus trait visibility, no compile-enforced seal" — is doc-only seal.
 //! No `private::Sealed` supertrait, no `__seal::Sealed` re-export. The
 //! reasons:
-//!
 //! 1. The traits are *user-implementable in shape* — adopter macros
-//!    (`#[model(auditable)]` T2.4 / `#[model(soft_deletable)]` T2.6)
+//!    (`#[model(auditable)]` / `#[model(soft_deletable)]`)
 //!    emit `impl Auditable for UserModel` / `impl SoftDeletable for
-//!    UserModel` directly. If we sealed them via a supertrait, the
+//! UserModel` directly. If we sealed them via a supertrait, the
 //!    macro emission would need to route through
 //!    `::djogi::__private::compose::Sealed` (the [`crate::hooks`]
-//!    precedent). T2.1 explicitly defers macro work, and threading a
+//!    precedent). This module explicitly defers macro work, and threading a
 //!    seal across two follow-up commits adds churn for no protection
 //!    benefit at this stage.
 //! 2. The framework's harder seals (`Model` via [`crate::model::__sealed`],
@@ -64,22 +57,19 @@
 //!    downstream-reachable too. The supertrait approach buys a cosmetic
 //!    barrier, not a real one. We document the convention here and move
 //!    on.
-//!
-//! If a future phase decides `Auditable` / `SoftDeletable` need
-//! compile-enforced seals (e.g. because a security review surfaces a
-//! threat the field-getter shape cannot mitigate), the upgrade path is
-//! straightforward: add a `pub(crate) mod private { pub trait Sealed
+//!    If a future phase decides `Auditable` / `SoftDeletable` need
+//!    compile-enforced seals (e.g. because a security review surfaces a
+//!    threat the field-getter shape cannot mitigate), the upgrade path is
+//!    straightforward: add a `pub(crate) mod private { pub trait Sealed
 //! {} }` supertrait, re-export through `crate::__private::compose` for
-//! macro emission, and follow the [`crate::hooks::HasHooks`] precedent
-//! at `djogi/src/hooks.rs:171`. Until then, the convention seal is
-//! load-bearing through doc comments alone.
-//!
+//!    macro emission, and follow the [`crate::hooks::HasHooks`] precedent
+//!    at `djogi/src/hooks.rs:171`. Until then, the convention seal is
+//!    load-bearing through doc comments alone.
 //! # Phase / spec anchors
-//!
-//! - Phase 8 v3 §T2 line 221 — "`djogi/src/compose.rs` — runtime helpers
+//! - line 221 — "`djogi/src/compose.rs` — runtime helpers
 //!   `Auditable` / `SoftDeletable` traits (sealed; convention-sealed per
 //!   `decisions.md` row 78 pattern)."
-//! - Phase 8 v3 §D6 lines 149–157 — `created_by` nullable, AuthContext-
+//! - v3 §D6 lines 149–157 — `created_by` nullable, AuthContext-
 //!   driven population, no warn on null.
 //! - `feedback_macro_path_routing.md` — runtime trait module routes
 //!   directly through `crate::types::DateTime`, **not** via
@@ -89,11 +79,10 @@
 use crate::model::Model;
 use crate::types::DateTime;
 
-/// Marker trait emitted by `#[model(auditable)]` (Phase 8 §T2.4 —
-/// supersedes T2.2's `#[derive(Auditable)]` per spec line 1037).
-///
+/// Marker trait emitted by `#[model(auditable)]`
+/// (supersedes the legacy `#[derive(Auditable)]` per spec line 1037).
 /// A model carrying this bound declares `created_by: Option<String>`
-/// itself (Path B per Phase 8 v3 line 866) and the
+/// itself (Path B per) and the
 /// `#[model(auditable)]` attribute emits the trait impl plus an
 /// inherent `__djogi_auditable_populate` helper invoked from
 /// [`Model::create`](crate::model::Model::create) before the user
@@ -101,20 +90,17 @@ use crate::types::DateTime;
 /// is `Some`, the helper captures `format!("{}", auth.user_id)`
 /// (Display, not Debug — Debug shape is unstable per spec line 1064)
 /// into the field unless the user already set a value; otherwise the
-/// field stays `None`. No warn-on-null per Phase 8 §D6.
-///
+/// field stays `None`. No warn-on-null per §D6.
 /// The single accessor returns a borrowed `&str` to keep audit reads
 /// allocation-free in hot paths (request-side rendering, audit-log
 /// emission).
-///
 /// # Example bound
-///
 /// ```ignore
 /// fn render_audit_line<M: djogi::Auditable>(m: &M) -> String {
-///     match m.created_by() {
-///         Some(user) => format!("created by {user}"),
-///         None       => "created by system".to_string(),
-///     }
+/// match m.created_by() {
+/// Some(user) => format!("created by {user}"),
+/// None       => "created by system".to_string(),
+/// }
 /// }
 /// ```
 pub trait Auditable: Model {
@@ -124,41 +110,36 @@ pub trait Auditable: Model {
     fn created_by(&self) -> Option<&str>;
 }
 
-/// Marker trait emitted by `#[model(soft_deletable)]` (Phase 8 §T2.6 —
-/// supersedes T2.3's `#[derive(SoftDeletable)]` for the same
+/// Marker trait emitted by `#[model(soft_deletable)]`
+/// (supersedes the legacy `#[derive(SoftDeletable)]` for the same
 /// proc-macros-cannot-observe-sibling-derives constraint that drove
-/// the T2.4 Auditable pivot).
-///
+/// the auditable pivot).
 /// A model carrying this bound declares `deleted_at: Option<DateTime>`
-/// itself (Path B per Phase 8 v3 line 866) and the
-/// `#[model(soft_deletable)]` attribute emits the trait impl. Phase 8γ
-/// T6 will land automatic default-filter composition once the `Q<T>`
-/// substrate is in place (spec line 971, RESOLVED 2026-05-03, lens,
-/// locked); T2.6 ships the trait impl plus the manual
+/// itself (Path B per) and the
+/// `#[model(soft_deletable)]` attribute emits the trait impl.
+/// Automatic default-filter composition uses the `Q<T>`
+/// substrate (spec line 971, RESOLVED 2026-05-03, lens,
+/// locked); this trait ships the surface plus the manual
 /// [`QuerySet::not_deleted()`](crate::query::QuerySet::not_deleted)
 /// helper that reads the column name through `<M as
 /// SoftDeletable>::COLUMN` rather than a hard-coded string.
-///
 /// This trait is the bound surface used by code that needs to talk
 /// generically about "models with soft-delete semantics" — for example,
-/// the Phase 8 visage layer's "include trashed rows" toggle.
-///
+/// the visage layer's "include trashed rows" toggle.
 /// # Example bound
-///
 /// ```ignore
 /// fn purge_window<M: djogi::SoftDeletable>(m: &M) -> Option<i64> {
-///     m.deleted_at()
-///         .map(|dt| (djogi::DateTime::now_utc() - dt).whole_seconds())
+/// m.deleted_at()
+/// .map(|dt| (djogi::DateTime::now_utc() - dt).whole_seconds())
 /// }
 /// ```
 pub trait SoftDeletable: Model {
     /// SQL column name for the soft-delete timestamp. Defaults to
     /// `"deleted_at"`.
-    ///
     /// Reading via `<M as SoftDeletable>::COLUMN` from generic code
     /// lets [`QuerySet::not_deleted()`](crate::query::QuerySet::not_deleted)
     /// and any future `SoftDeletable` consumer key off the trait
-    /// surface instead of a hard-coded string. Phase 8α T2.6 keeps the
+    /// surface instead of a hard-coded string. 6 keeps the
     /// canonical `"deleted_at"` value as the trait default so today's
     /// macro-emitted impls inherit it without per-model override
     /// emission. A future per-model column-rename path (e.g.
@@ -267,8 +248,7 @@ mod tests {
     /// reference `Self::Pk` in surprising ways and that a hand-written
     /// `impl Auditable` / `impl SoftDeletable` block satisfies the
     /// `crate::Model` super-bound when the model is otherwise inert.
-    ///
-    /// Required by Phase 8 v3 §T2.1 line 793.
+    /// Required by .1 line 793.
     #[test]
     fn traits_compile_with_dummy_models() {
         let a = DummyAuditable {

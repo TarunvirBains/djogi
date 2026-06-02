@@ -1,5 +1,4 @@
 //! `DjogiContext` extensions for auth integration.
-//!
 //! Adds builder-style and mutating methods for attaching an [`AuthContext`] to a
 //! context, plus the internal [`DjogiContext::ensure_tenant_set`] helper that
 //! wires auto-tenant-scope onto the existing `set_tenant`.
@@ -24,7 +23,6 @@ fn warn_auth_bypass(auth: &AuthContext, method: &'static str) {
 
 impl DjogiContext {
     /// Attach an [`AuthContext`] to this context (consuming builder).
-    ///
     /// When `auth.tenant_id.is_some()` AND the next CRUD/QuerySet operation
     /// targets a tenant-keyed model (per `ModelDescriptor::tenant_key`), the
     /// auto-`set_tenant` integration calls [`Self::ensure_tenant_set`]
@@ -42,12 +40,10 @@ impl DjogiContext {
     /// Attach an `AuthContext` while emitting a `tracing::warn!` at the
     /// call site (consuming builder). Bypass is searchable via the
     /// `_insecurely` suffix and the log message text.
-    ///
     /// `_insecurely` variants are intended only for code with manually-
     /// established safety invariants (tests, migrations, admin tooling,
     /// service-account flows). Calling this inside a request handler is a
     /// design smell.
-    ///
     #[track_caller]
     pub fn with_auth_insecurely(mut self, auth: AuthContext) -> Self {
         warn_auth_bypass(&auth, "with_auth_insecurely");
@@ -56,11 +52,9 @@ impl DjogiContext {
     }
 
     /// Attach an [`AuthContext`] by mutation (does not consume `self`).
-    ///
     /// Mirror of [`Self::with_auth`] for use inside
     /// [`crate::transaction::atomic`] closures, which expose a
     /// `&mut DjogiContext` rather than an owned context.
-    ///
     /// ```ignore
     /// djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
     ///     ctx.set_auth(AuthContext::new(user_id).with_tenant("org_a"));
@@ -82,14 +76,11 @@ impl DjogiContext {
 
     /// Explicitly opt out of the "cross-tenant context" warn emitted when
     /// `auth.tenant_id.is_none()` on a tenant-keyed model (consuming builder).
-    ///
     /// ```ignore
     /// let ctx = DjogiContext::from_pool(pool).with_no_tenant_scope();
     /// ```
-    ///
     /// For `atomic(&mut ctx, |ctx| ...)` closures where the closure has
     /// `&mut DjogiContext`, use [`Self::set_no_tenant_scope`] instead.
-    ///
     /// Intended for admin / batch / migration flows that legitimately want
     /// queries to span tenants without a `tenant_id` attached. A plain
     /// `.with_auth(AuthContext::new(uid))` on a tenant-keyed model without
@@ -110,11 +101,9 @@ impl DjogiContext {
     /// for the current context. No-op when the currently-applied tenant id
     /// already equals `tenant_id`; otherwise delegates to
     /// [`Self::set_tenant`] to re-issue `SET LOCAL`.
-    ///
     /// Invoked by the auto-tenant integration before every CRUD dispatch on
     /// a tenant-keyed model when
     /// `ctx.auth().and_then(|a| a.tenant_id.as_ref())` is `Some`.
-    ///
     /// **Why the per-tenant comparison, not a plain `tenant_set` bool:**
     /// `SET LOCAL app.tenant_id = 'org_a'` persists for the lifetime of the
     /// open transaction. If auth changes inside one `atomic()` scope from

@@ -1,10 +1,7 @@
 //! Spatial expression nodes — gated behind the `spatial` feature flag.
-//!
 //! # What
-//!
 //! [`SpatialExpr`] is an internal sub-IR that plugs into [`super::node::ExprNode`]
 //! via the `ExprNode::Spatial(SpatialExpr)` variant. It carries variants for:
-//!
 //! - [`SpatialExpr::Within`] — emits `ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)`
 //!   (radius-based predicate)
 //! - [`SpatialExpr::Distance`] — emits `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`
@@ -13,31 +10,23 @@
 //! - [`SpatialExpr::Touches`] — emits `ST_Touches(<col>::geometry, $1::bytea::geometry)`
 //! - [`SpatialExpr::WithinShape`] — emits `ST_Within(<col>::geometry, $1::bytea::geometry)`
 //! - [`SpatialExpr::BoundedBy`] — bbox prefilter using `ST_MakeEnvelope` + `&&`
-//!
 //! # Naming note for `WithinShape`
-//!
 //! The variant is named `WithinShape` internally to avoid a collision with the
 //! radius-based `Within` variant. The public method on
 //! `FieldRef<M, G: GeographyValue>` is still called `.within(&geom)` — the two
 //! methods coexist on different receivers (`.within_km` is `FieldRef<M, GeoPoint>`
 //! only; `.within` is generic over any `GeographyValue`) so there is no ambiguity.
-//!
 //! # Bind discipline
-//!
 //! All floating-point values (longitude, latitude, radius) and raw EWKB bytes
 //! flow through [`crate::pg::accumulator::SqlAccumulator::push_bind`]. Column
 //! names are `&'static str` values validated upstream by `assert_plain_ident` at
 //! `FieldRef` construction time — it is safe to push them via `push_sql`.
-//!
 //! # Why two separate variants rather than one with an optional radius?
-//!
 //! `Within` is a boolean predicate (`ST_DWithin` returns `bool`); `Distance` is
 //! a numeric expression (`ST_Distance` returns `float8`). The distinct variants
 //! let the typed [`super::Expr<T>`] wrapper carry the correct phantom type (`bool`
 //! vs `f64`) without any runtime type tag.
-//!
 //! # Where
-//!
 //! - [`crate::query::field`] is the only non-spatial module that produces these
 //!   nodes — `FieldRef<M, GeoPoint>::within_km` builds `Within`;
 //!   `FieldRef<M, GeoPoint>::distance_to` builds `Distance`;
@@ -55,11 +44,9 @@ use crate::geo::GeoPoint;
 use crate::pg::accumulator::SqlAccumulator;
 
 /// Spatial expression node — plugged into the query IR via `ExprNode::Spatial`.
-///
 /// Variants carry a `&'static str` column name (baked in by the `#[model]`
 /// macro, validated by `assert_plain_ident`) plus the query parameters needed
 /// for each PostGIS function call.
-///
 /// The emitter pushes all user-supplied values as bind parameters and embeds
 /// the column name as raw SQL.
 #[cfg(feature = "spatial")]
@@ -67,7 +54,6 @@ use crate::pg::accumulator::SqlAccumulator;
 #[non_exhaustive]
 pub enum SpatialExpr {
     /// `ST_DWithin(<field>, ST_Point($lon, $lat)::geography, $radius_m)`
-    ///
     /// Returns a boolean: `true` when `<field>` is within `radius_meters`
     /// meters of `center` using PostGIS's `GEOGRAPHY` distance model
     /// (great-circle distance, not Euclidean).
@@ -82,13 +68,11 @@ pub enum SpatialExpr {
     },
 
     /// `ST_Distance(<field>, ST_Point($lon, $lat)::geography)`
-    ///
     /// Returns a `float8` (Rust `f64`): the great-circle distance in meters
     /// between `<field>` and `center`. Exposed as a first-class composable
     /// expression method via [`crate::query::field::FieldRef::distance_to`],
     /// enabling `.filter`, `.annotate`, and `.order_by` composition with the
     /// distance expression.
-    ///
     /// The ordering path embeds `ST_Distance` SQL inline in
     /// `OrderExpr::SpatialDistance::emit` for performance, but this variant
     /// powers the expression-IR path that lets callers compose:
@@ -103,12 +87,10 @@ pub enum SpatialExpr {
 
     // ── Shape-based predicates ────────────────────────────────────────────────
     /// `ST_Contains(<col>::geometry, $1::bytea::geometry)`
-    ///
     /// Returns `true` when the geometry stored in `<col>` entirely contains
     /// the bound geometry. The bound geometry goes through `push_bind` as
     /// its EWKB byte representation; see [`emit_binary_predicate`] for the
     /// cast rationale.
-    ///
     /// Constructed by [`crate::query::field::FieldRef::contains`].
     Contains {
         /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
@@ -118,13 +100,11 @@ pub enum SpatialExpr {
     },
 
     /// `ST_Intersects(<col>, $1::bytea::geography)`
-    ///
     /// Returns `true` when the geometry stored in `<col>` and the bound
     /// geometry share at least one point. The bound geometry goes through
     /// `push_bind` as its EWKB byte representation. This is the only
     /// shape predicate with a native `geography` overload — see
     /// [`emit_binary_predicate`].
-    ///
     /// Constructed by [`crate::query::field::FieldRef::intersects`].
     Intersects {
         /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
@@ -134,12 +114,10 @@ pub enum SpatialExpr {
     },
 
     /// `ST_Touches(<col>::geometry, $1::bytea::geometry)`
-    ///
     /// Returns `true` when the geometry stored in `<col>` and the bound
     /// geometry share boundary points but no interior points (touch but do
     /// not overlap). The bound geometry goes through `push_bind`; see
     /// [`emit_binary_predicate`] for the cast rationale.
-    ///
     /// Constructed by [`crate::query::field::FieldRef::touches`].
     Touches {
         /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
@@ -149,13 +127,11 @@ pub enum SpatialExpr {
     },
 
     /// `ST_Within(<col>::geometry, $1::bytea::geometry)`
-    ///
     /// Returns `true` when the geometry stored in `<col>` is entirely within
     /// the bound geometry. Named `WithinShape` internally to avoid a
     /// variant-name collision with the radius-based [`SpatialExpr::Within`];
     /// the public method on `FieldRef` is still called `.within(&geom)`.
     /// See [`emit_binary_predicate`] for the cast rationale.
-    ///
     /// Constructed by [`crate::query::field::FieldRef::within`].
     WithinShape {
         /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
@@ -165,12 +141,10 @@ pub enum SpatialExpr {
     },
 
     /// `ST_MakeEnvelope($min_lon, $min_lat, $max_lon, $max_lat, 4326)::geography && <col>`
-    ///
     /// GiST-indexed bbox prefilter — returns `true` when the geometry stored
     /// in `<col>` overlaps the bounding box defined by the four coordinate
     /// bounds. Uses the `&&` operator so Postgres can use a GiST index for
     /// fast pre-filtering before more expensive shape predicates.
-    ///
     /// Constructed by [`crate::query::field::FieldRef::bounded_by`].
     /// The Rust API accepts `(min_lat, min_lon, max_lat, max_lon)` to match
     /// the `GeoPoint` (lat, lon) convention; the emitter reorders to
@@ -190,15 +164,13 @@ pub enum SpatialExpr {
 
     // Scalar geometry/area helpers
     /// `ST_Area($1::bytea::geography)`
-    ///
     /// Returns `f64` — the area in **square meters** of the bound geometry,
     /// computed on the spheroid via Postgres's `geography`-typed
     /// `ST_Area` overload (the geometry-typed overload returns square
     /// degrees, which is rarely what callers want). Mirrors the
     /// `::geography` cast convention used by [`Self::Within`] /
     /// [`Self::Distance`] so the meters-units invariant of the
-    /// Phase 6 spatial surface holds for T17 too.
-    ///
+    /// Spatial surface invariant (meters units) holds here too.
     /// Constructed by [`super::Expr::area_of`]. Composes with the
     /// `Expr<f64>` arithmetic IR for ratios such as
     /// `area_of_intersection(a, b) / area_of(a)`.
@@ -208,7 +180,6 @@ pub enum SpatialExpr {
     },
 
     /// `ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography`
-    ///
     /// Returns a geography-typed geometry — the spatial intersection of the
     /// two bound geometry inputs. The result is cast to `::geography` so
     /// [`crate::geo::Polygon`]'s `FromSql` implementation can decode it via
@@ -216,30 +187,24 @@ pub enum SpatialExpr {
     /// because PostGIS 3.x has no `geography` overload for `ST_Intersection`
     /// (matches the input-side discipline of the geometry-only shape predicates
     /// `ST_Contains` / `ST_Touches` / `ST_Within`).
-    ///
     /// # Output type and decode safety
-    ///
     /// The caller-facing constructor [`super::Expr::intersection_of`] returns
     /// `Expr<`[`crate::geo::Polygon`]`>`. Decode succeeds **only** when
     /// `ST_Intersection` returns a single `POLYGON`. Even when both inputs are
     /// polygonal and their interiors overlap, PostGIS may return a
     /// `MULTIPOLYGON` or `GEOMETRYCOLLECTION`. The following cases all
     /// decode-error as `Polygon`:
-    ///
     /// - **Disjoint inputs** — `ST_Intersection` returns an empty geometry.
     /// - **Boundary-only or point contact** — the result is a `LINESTRING` or
     ///   `POINT`.
     /// - **Multi-part or collection result** — even for genuinely overlapping
     ///   polygons, the result may be a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`.
-    ///
-    /// [`crate::query::field::FieldRef::intersects`] is **not** sufficient to
-    /// guarantee a single polygon; it only rules out the disjoint case.
-    ///
-    /// For queries that must survive any of these cases, prefer
-    /// [`super::Expr::area_of_intersection`] (wraps the result in `ST_Area`
-    /// and always returns `f64`, yielding `0.0` for non-overlapping pairs).
-    ///
-    /// Constructed by [`super::Expr::intersection_of`].
+    ///   [`crate::query::field::FieldRef::intersects`] is **not** sufficient to
+    ///   guarantee a single polygon; it only rules out the disjoint case.
+    ///   For queries that must survive any of these cases, prefer
+    ///   [`super::Expr::area_of_intersection`] (wraps the result in `ST_Area`
+    ///   and always returns `f64`, yielding `0.0` for non-overlapping pairs).
+    ///   Constructed by [`super::Expr::intersection_of`].
     Intersection {
         /// EWKB encoding of the first geometry argument.
         a_ewkb: Vec<u8>,
@@ -248,24 +213,20 @@ pub enum SpatialExpr {
     },
 
     /// `ST_Area(ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography)`
-    ///
     /// Composed shape — returns `f64` square meters of the intersection of
     /// two bound geometries. Emitted as a single inline form rather than
     /// nesting [`Self::Intersection`] inside [`Self::Area`] so that both
     /// the input geometry cast and the intermediate `::geography` cast are
     /// co-located in one arm, keeping the emitter readable and the SQL output
     /// predictable.
-    ///
     /// When the two inputs are disjoint `ST_Intersection` returns an empty
     /// geometry; `ST_Area` over an empty geography returns `0.0`, so the
     /// ratio `area_of_intersection(a, b) / area_of(a)` yields `0.0` for
     /// non-overlapping pairs without any guard.
-    ///
     /// This is the canonical territory-overlap-percentage expression: the
     /// demo uses it as the numerator of
     /// `area_of_intersection(a, b) / area_of(a)`. Constructed by
     /// [`super::Expr::area_of_intersection`].
-    ///
     /// For the raw intersection geometry without the area wrapper, use
     /// [`Self::Intersection`] (minted by [`super::Expr::intersection_of`]).
     AreaOfIntersection {
@@ -274,9 +235,9 @@ pub enum SpatialExpr {
         /// EWKB encoding of the second geometry argument.
         b_ewkb: Vec<u8>,
     },
-    // Cluster E round-5 BLOCK-2 closure: convex-hull was migrated
-    // out of this enum into `AggOp::SpatialConvexHull`. The old
-    // `SpatialExpr::ConvexHull{..}` variant silently dropped
+    // ConvexHull was migrated out of this enum into
+    // `AggOp::SpatialConvexHull`. The old `SpatialExpr::ConvexHull{..}`
+    // variant silently dropped
     // `AggregateExpr` modifiers (.distinct/.filter/.over/.order_by)
     // because those mutate `ExprNode::Aggregate` only. Routing
     // through `AggOp` puts ConvexHull on the same modifier substrate
@@ -286,51 +247,42 @@ pub enum SpatialExpr {
 #[cfg(feature = "spatial")]
 impl SpatialExpr {
     /// Emit the SQL fragment for this spatial expression onto `acc`.
-    ///
     /// - The column name is pushed via `push_sql` (trusted static identifier).
     /// - Longitude, latitude, radius, and EWKB bytes are pushed via
     ///   `push_bind` — no string interpolation of user-supplied values.
-    ///
     /// ## SQL shapes
-    ///
     /// `Within` emits:
     /// ```sql
     /// ST_DWithin(<col>, ST_Point($1, $2)::geography, $3)
     /// ```
     /// where `$1 = center.lon`, `$2 = center.lat`, `$3 = radius_meters`.
-    ///
     /// `Distance` emits:
     /// ```sql
     /// ST_Distance(<col>, ST_Point($1, $2)::geography)
     /// ```
     /// where `$1 = center.lon`, `$2 = center.lat`.
-    ///
     /// `Contains`, `Touches`, `WithinShape` emit:
     /// ```sql
     /// ST_<Function>(<col>::geometry, $1::bytea::geometry)
     /// ```
     /// because in PostGIS 3.x these three functions only have a `geometry`
     /// overload — `ST_Contains(geography, ...)` etc. do not exist.
-    ///
     /// `Intersects` emits:
     /// ```sql
     /// ST_Intersects(<col>, $1::bytea::geography)
     /// ```
     /// because `ST_Intersects` has a native `geography` overload.
-    ///
     /// In both cases `$1` is bound as raw EWKB `bytea` and cast at query
     /// time — `tokio_postgres` prepares the parameter as `bytea`
     /// (which matches `Vec<u8>: ToSql`) and Postgres performs the
     /// `bytea::geometry` / `bytea::geography` cast via the implicit
     /// PostGIS input functions.
-    ///
     /// `BoundedBy` emits:
     /// ```sql
     /// ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography && <col>
     /// ```
     /// where `$1 = min_lon`, `$2 = min_lat`, `$3 = max_lon`, `$4 = max_lat`.
     /// The `&&` operator enables GiST index usage for cheap bbox prefiltering.
-    ///
     /// `Intersection` emits:
     /// ```sql
     /// ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography
@@ -339,8 +291,7 @@ impl SpatialExpr {
     /// `ST_Intersection` in PostGIS 3.x). The result is cast `::geography`
     /// so `Polygon::FromSql` can decode it. Constructed by
     /// [`super::Expr::intersection_of`].
-    ///
-    /// The parameter numbers shown are relative to when `emit` is called —
+    /// The parameter numbers shown are relative to when `emit` is called
     /// the accumulator's global counter determines the actual `$n` values
     /// in context.
     pub(crate) fn emit(&self, acc: &mut SqlAccumulator) {
@@ -420,7 +371,7 @@ impl SpatialExpr {
                 acc.push_sql(", 4326)::geography && ");
                 acc.push_sql(field_column);
             }
-            // T17 scalar geometry / area helpers
+            // Scalar geometry / area helpers
             SpatialExpr::Area { geom_ewkb } => {
                 // ST_Area($n::bytea::geography) — geography overload returns
                 // square meters; the geometry overload returns square degrees
@@ -431,13 +382,11 @@ impl SpatialExpr {
             }
             SpatialExpr::Intersection { a_ewkb, b_ewkb } => {
                 // ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography
-                //
                 // Input args: PostGIS 3.x has no `geography` overload for
                 // ST_Intersection, so both args go through the `::geometry`
                 // cast pair — matches the discipline of `emit_binary_predicate`
                 // for the geometry-only shape predicates (Contains / Touches /
                 // WithinShape).
-                //
                 // Output cast: `::geography` so Postgres reports the result
                 // as the `geography` type and `Polygon::FromSql::accepts`
                 // returns `true`, enabling Djogi's typed codec to decode the
@@ -465,9 +414,8 @@ impl SpatialExpr {
 }
 
 /// PostGIS cast target for an EWKB bind argument.
-///
 /// Used by [`push_ewkb_arg`] to keep the per-arm emit bodies free of
-/// stringly-typed `"::bytea::geometry"` / `"::bytea::geography"` literals —
+/// stringly-typed `"::bytea::geometry"` / `"::bytea::geography"` literals
 /// the variants are the only two PostGIS overload directions a binary EWKB
 /// blob can flow into.
 #[cfg(feature = "spatial")]
@@ -478,9 +426,10 @@ enum EwkbCast {
 }
 
 /// Push `$N::bytea::<cast>` for an EWKB bind. Centralises the 3-step splice
-/// (`push_bind` + `::bytea` + `::geometry`/`::geography`) that every T17 arm
-/// repeats — without the helper, each emit body is `acc.push_bind(...);
-/// acc.push_sql("::bytea::geometry")` which a 4th arm would faithfully copy.
+/// (`push_bind` + `::bytea` + `::geometry`/`::geography`) that every
+/// spatial arm repeats — without the helper, each emit body is
+/// `acc.push_bind(...); acc.push_sql("::bytea::geometry")` which each
+/// arm would faithfully copy.
 #[cfg(feature = "spatial")]
 fn push_ewkb_arg(acc: &mut SqlAccumulator, ewkb: &[u8], cast: EwkbCast) {
     acc.push_bind(ewkb.to_vec());
@@ -491,7 +440,6 @@ fn push_ewkb_arg(acc: &mut SqlAccumulator, ewkb: &[u8], cast: EwkbCast) {
 }
 
 /// Which PostGIS shape predicate `emit_binary_predicate` should emit.
-///
 /// Replaces the previous stringly-typed `func: &'static str` parameter so a
 /// typo (`"ST_intersects"`) cannot silently flip the geometry-cast logic.
 /// The variant set is closed at compile time; adding a new predicate is a
@@ -518,7 +466,6 @@ impl ShapePredicate {
     }
 
     /// Whether this predicate needs a `::geometry` cast on both sides.
-    ///
     /// Only `ST_Intersects` has a native `geography(geography, geography)`
     /// overload in PostGIS 3.x; the other three are geometry-only and need
     /// both arguments coerced before the call.
@@ -528,11 +475,8 @@ impl ShapePredicate {
 }
 
 /// Emit a binary spatial predicate call.
-///
 /// # Cast selection
-///
 /// PostGIS 3.x splits these four functions across two type families:
-///
 /// - `ST_Intersects` has native `geography` overloads, so both the column
 ///   and the bind stay in the `geography` space. The column reference is
 ///   emitted unadorned (it already has the `geography` column type) and the
@@ -541,16 +485,13 @@ impl ShapePredicate {
 ///   `ST_Contains(geography, geography)` etc. do not exist. Both sides are
 ///   cast to `geometry` — the column via `::geometry`, the bind via
 ///   `::bytea::geometry`.
-///
 /// # Bind encoding
-///
 /// `Vec<u8>: ToSql` binds as Postgres `bytea`. The target parameter type
 /// registered at prepare time must therefore be `bytea`; the explicit
 /// `$n::bytea::<type>` double-cast forces that. A plain `$n::geography`
 /// (or `$n::geometry`) would make `tokio_postgres` prepare the parameter
 /// as `geography` and reject the `Vec<u8>` bind, because `Vec<u8>` cannot
 /// satisfy a `geography`-typed slot.
-///
 /// The column name flows through `push_sql` (already validated as a
 /// plain identifier by `assert_plain_ident`); the EWKB bytes flow through
 /// `push_bind`.
@@ -939,7 +880,7 @@ mod tests {
 
     // ── Sequential bind numbering when multiple expressions are emitted ───────
 
-    // ── T10: BoundedBy emission tests ────────────────────────────────────────
+    // ── BoundedBy emission tests ────────────────────────────────────────
 
     /// `BoundedBy` must emit `ST_MakeEnvelope(...)` using Postgres (x, y) =
     /// (lon, lat) order even though the Rust API accepts (lat, lon).
@@ -1044,7 +985,7 @@ mod tests {
         );
     }
 
-    // ── T10: Distance emission tests ─────────────────────────────────────────
+    // ── Distance emission tests ─────────────────────────────────────────
 
     /// `Distance` variant must emit `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`.
     /// Bind order: $1 = lon, $2 = lat.
@@ -1106,7 +1047,7 @@ mod tests {
         assert!(sql.contains("$2"), "second bind must be $2; got: {sql}");
     }
 
-    // ── Phase 8-Zero Cluster C C1 — T16 + T17 emission tests ─────────────────
+    // ── Spatial expression emission tests ────────────────────────
 
     /// `Area { geom_ewkb }` emits `ST_Area($1::bytea::geography)` — geography
     /// overload yields square meters; the geometry overload yields square
@@ -1134,7 +1075,6 @@ mod tests {
 
     /// `Intersection { a_ewkb, b_ewkb }` emits
     /// `ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography`:
-    ///
     /// - Input args: `::bytea::geometry` on each arg because PostGIS 3.x
     ///   has no `geography` input overload for `ST_Intersection`.
     /// - Output cast: `::geography` so `Polygon::FromSql` can decode the
@@ -1205,13 +1145,12 @@ mod tests {
         assert_eq!(acc.bind_count(), 2);
     }
 
-    // Cluster E round-5 BLOCK-2 closure: ConvexHull was migrated
-    // out of `SpatialExpr` into `AggOp::SpatialConvexHull`. The
-    // bare-emission test moved alongside, see
-    // `djogi/src/query/field.rs::convex_hull_emits_*` (added in
-    // round-4) for the new bare and windowed emission tests.
+    // ConvexHull was migrated out of `SpatialExpr` into
+    // `AggOp::SpatialConvexHull`. The bare-emission test moved alongside,
+    // see `djogi/src/query/field.rs::convex_hull_emits_*` for the new
+    // bare and windowed emission tests.
 
-    // ── Phase 8.5 Cluster 4D — Intersection public constructor tests ──────────
+    // ── Intersection public constructor tests ──────────
 
     /// The `Expr::intersection_of` constructor must build an `Intersection`
     /// node that emits the same SQL as the bare variant test above: both input

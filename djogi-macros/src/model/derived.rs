@@ -1,33 +1,26 @@
 //! Struct-level `#[derived(name, ty, scopes, sql, rust, doc)]` parser.
-//!
-//! Phase 8.5 issue #231 — visage-derived fields, Tier 1 (read-time
+//! #231 — visage-derived fields, Tier 1 (read-time
 //! projection). A derived field is a projection entry on a visage that
 //! does not correspond to a model column: it is computed from one or
 //! more model columns by a paired SQL expression (evaluated server-side
 //! at fetch time) and Rust expression (evaluated in-memory when
 //! constructing the visage from a `&Model` reference).
-//!
 //! Spec: `docs/spec/visage-derived-fields.md`. See [§Declaration] for
 //! why parsing lives in `#[model]` (not on `#[derive(Model)]`), and the
 //! [error taxonomy] for the `E_DJG_VDF_*` codes the validators emit.
-//!
 //! # Helper-attribute contract
-//!
-//! `#[derived(...)]` is a **helper attribute** on `#[derive(Model)]` —
+//! `#[derived(...)]` is a **helper attribute** on `#[derive(Model)]`
 //! it is not an independent attribute macro. `derive_model` registers
 //! the helper (`attributes(field, derived)`) so rustc accepts the
 //! token at parse time; `#[model(...)]` walks `item_struct.attrs` for
 //! every outer attribute whose `path()` is `derived`, parses the
 //! payload through this module, validates the captured state, and
 //! strips the attribute before re-emitting the struct.
-//!
 //! # No regex
-//!
 //! Per `feedback_no_regex_in_djogi`: every byte-level check below uses
 //! stdlib primitives (`u8::is_ascii_lowercase`, sorted-const-slice
 //! `binary_search`). No `regex` / `regex-lite` / `fancy-regex` /
 //! `regex-automata` dependency is added.
-//!
 //! [§Declaration]: ../docs/spec/visage-derived-fields.md#derived-is-a-helper-attribute-not-an-attribute-macro
 //! [error taxonomy]: ../docs/spec/visage-derived-fields.md#error-taxonomy
 
@@ -36,7 +29,6 @@ use syn::spanned::Spanned;
 use syn::{Expr, ExprLit, Lit, Meta, MetaNameValue, Token, punctuated::Punctuated};
 
 /// One parsed `#[derived(...)]` attribute.
-///
 /// Captured during `#[model(...)]` expansion, before the attribute is
 /// stripped from the re-emitted struct. The five required keys
 /// (`name`, `ty`, `scopes`, `sql`, `rust`) are present at this point;
@@ -63,7 +55,6 @@ pub struct DerivedAttr {
     /// Span of the SQL string literal — used to anchor SQL-validation
     /// diagnostics (statement separator, leading DDL, `$N` reservation,
     /// aggregate-keyword detection) at the offending source text.
-    ///
     /// Captured at parse time for the Tier-2 predicate-rendering
     /// path to anchor cross-attribute SQL-side diagnostics; the
     /// current Tier-1 emission renders the SQL fragment into
@@ -76,9 +67,8 @@ pub struct DerivedAttr {
     /// for the derived field with a `let model: &Self::Model = src;`
     /// rebind so the adopter writes against `model.<field>` syntax.
     pub rust: String,
-    /// Span of the Rust string literal — kept so future Stage 5
-    /// (codegen) can anchor parse-related diagnostics back to the
-    /// source span.
+    /// Span of the Rust string literal — kept so the codegen pass
+    /// can anchor parse-related diagnostics back to the source span.
     #[allow(dead_code)] // wired up in codegen pass below
     pub rust_span: Span,
     /// Optional rustdoc captured from `doc = "..."`. Attached to every
@@ -91,7 +81,6 @@ pub struct DerivedAttr {
 }
 
 /// One scope identifier captured from a `scopes = [...]` list.
-///
 /// Carries both the lowered string and the original span so the
 /// `E_DJG_VDF_013` duplicate diagnostic can anchor at the second
 /// occurrence rather than the attribute as a whole.
@@ -156,17 +145,14 @@ const AGGREGATE_KEYWORDS: &[&str] = &[
 
 /// Walk `struct_item.attrs` and collect every parsed
 /// `#[derived(...)]` attribute on the host struct.
-///
 /// Returns one `DerivedAttr` per attribute, in source order. Errors
 /// surface as `syn::Error` with span-precise diagnostics anchored
 /// at the offending token. Caller is responsible for stripping the
 /// attribute from the re-emitted struct (see
 /// `model::mod::expand_inner`).
-///
 /// The validations performed here are the structural and SQL-shape
 /// checks that do not require visibility of the model's column set
 /// or other derived attributes — namely:
-///
 /// - Required-key presence ([E_DJG_VDF_001]).
 /// - `name` identifier shape ([E_DJG_VDF_004], [E_DJG_VDF_005],
 ///   [E_DJG_VDF_012], [E_DJG_VDF_014]).
@@ -174,22 +160,20 @@ const AGGREGATE_KEYWORDS: &[&str] = &[
 ///   ([E_DJG_VDF_006], [E_DJG_VDF_013]).
 /// - SQL surface: statement separator, leading DDL/DML, `$N`
 ///   reservation, aggregate guard ([E_DJG_VDF_007]–[E_DJG_VDF_009]).
-///
-/// Cross-attribute checks (column collisions per scope, derived ↔
-/// derived collisions, model-level structural rules like `pk = None`
-/// incompatibility) run later in `cross_check` once the call site has
-/// the model's full attribute set in scope.
-///
-/// [E_DJG_VDF_001]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_004]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_005]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_006]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_007]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_008]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_009]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_012]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_013]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-/// [E_DJG_VDF_014]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   Cross-attribute checks (column collisions per scope, derived ↔
+///   derived collisions, model-level structural rules like `pk = None`
+///   incompatibility) run later in `cross_check` once the call site has
+///   the model's full attribute set in scope.
+///   [E_DJG_VDF_001]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_004]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_005]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_006]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_007]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_008]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_009]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_012]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_013]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+///   [E_DJG_VDF_014]: ../docs/spec/visage-derived-fields.md#error-taxonomy
 pub fn parse_derived_attrs(struct_item: &syn::ItemStruct) -> syn::Result<Vec<DerivedAttr>> {
     let mut out = Vec::new();
     for attr in &struct_item.attrs {
@@ -519,9 +503,7 @@ fn canonical_scope_key(raw: &str) -> Option<&'static str> {
 }
 
 /// Validate the identifier shape of `name`.
-///
 /// Rules enforced (E_DJG_VDF_004 / _005 / _012 / _014):
-///
 /// 1. Length 1..=63 bytes.
 /// 2. First byte is ASCII lowercase letter or `_`.
 /// 3. Every remaining byte is ASCII lowercase letter, digit, or `_`.
@@ -529,10 +511,9 @@ fn canonical_scope_key(raw: &str) -> Option<&'static str> {
 /// 5. Not a Postgres fully-reserved keyword (reuses the sorted const
 ///    slice in `crate::ident::RESERVED_KEYWORDS` via the existing
 ///    `crate::ident::check_one` helper for the keyword-only check).
-///
-/// Uppercase bytes have their own diagnostic (E_DJG_VDF_012) so an
-/// adopter who reaches for `camelCase` sees the precise rule and not
-/// the generic shape rule.
+///    Uppercase bytes have their own diagnostic (E_DJG_VDF_012) so an
+///    adopter who reaches for `camelCase` sees the precise rule and not
+///    the generic shape rule.
 fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
     let raw = name.to_string();
     // Strip the `r#` raw-identifier prefix when present (syn renders
@@ -644,8 +625,7 @@ fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
 }
 
 /// Case-insensitive Postgres reserved-keyword check.
-///
-/// Mirrors the contract used by `crate::ident::check_one` —
+/// Mirrors the contract used by `crate::ident::check_one`
 /// `binary_search` against a sorted lowercase const slice. The list
 /// lives in `crate::ident::RESERVED_KEYWORDS`; importing the same
 /// constant would couple this module to a `pub(crate)` symbol that
@@ -667,7 +647,6 @@ fn is_reserved_postgres_keyword(value: &str) -> bool {
 /// Validate the surface of the SQL string against the four parse-time
 /// guards in the spec (statement separators, leading DDL/DML keyword,
 /// reserved `$N` placeholders, aggregate/window guard).
-///
 /// The tokeniser is a single-pass byte walker that skips
 /// single-quoted strings and dollar-quoted bodies so embedded `;` /
 /// `count(` / `$1` inside string literals do not false-positive.
@@ -735,7 +714,6 @@ fn validate_sql_surface(sql: &str, span: Span) -> syn::Result<()> {
 
 /// Walk `sql` byte-by-byte and return `true` if `target` appears
 /// outside single-quoted strings and dollar-quoted string bodies.
-///
 /// Single-quote handling honours Postgres's `''` (two adjacent
 /// quotes) embedded-quote escape. Dollar-quoted bodies use the
 /// matching tag the opener declared (`$$` or `$tag$`).
@@ -900,7 +878,6 @@ enum SqlTok {
 
 /// Iterate over the bytes of `sql` outside single-quoted / dollar-
 /// quoted contexts and outside line / block comments.
-///
 /// Returns the byte at each non-quoted position. Used for the
 /// statement-separator check above; callers that need richer token
 /// shape should hand-roll their own walker (see
@@ -1005,9 +982,7 @@ fn skip_dollar_body(bytes: &[u8], body_start: usize, tag_bytes: &[u8]) -> usize 
 /// Cross-attribute validation pass — runs after every `#[derived(...)]`
 /// attribute has been individually parsed and after the model's column
 /// set is known to the caller.
-///
 /// Checks performed:
-///
 /// - **Per-scope column collision (E_DJG_VDF_002)** — for each derived
 ///   entry, every scope in `scopes = [...]` must not contain a model
 ///   column with the same name. The column set is supplied as a
@@ -1018,13 +993,12 @@ fn skip_dollar_body(bytes: &[u8], body_start: usize, tag_bytes: &[u8]) -> usize 
 /// - **Relation-form overlap (E_DJG_VDF_010)** — a derived entry
 ///   cannot target a scope that also embeds a peer visage via
 ///   `expose(scope -> Peer)`.
-/// - **Model-level pk = None incompatibility (E_DJG_VDF_015)** —
+/// - **Model-level pk = None incompatibility (E_DJG_VDF_015)**
 ///   the caller supplies the model's PK strategy; `pk = None` rejects
 ///   the entire attribute.
-///
-/// Returns `Ok(())` when every check passes; any failure returns a
-/// span-precise `syn::Error` pointing at the offending derived
-/// attribute.
+///   Returns `Ok(())` when every check passes; any failure returns a
+///   span-precise `syn::Error` pointing at the offending derived
+///   attribute.
 pub fn cross_check(
     derived: &[DerivedAttr],
     column_exposures: &[(String, Vec<&'static str>)],
@@ -1123,18 +1097,16 @@ pub fn cross_check(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Fallibility detection — Stage 5 (codegen) consumer
+// Fallibility detection — codegen consumer
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Syntactic shape recognised by [`detect_fallibility_shape`].
-///
 /// Matches the closed set documented in
 /// [§Fallibility detection]. Each shape determines the emission shape
 /// in the From/TryFrom body — Shape1 already contains the inner `?`,
 /// so the outer block is emitted without an additional `?`; the other
 /// fallible shapes evaluate to `Result<T, E>` and need the outer `?`
 /// to unwrap.
-///
 /// [§Fallibility detection]: ../docs/spec/visage-derived-fields.md#fallibility-detection-syntactic-tail-not-type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FallibilityShape {
@@ -1159,7 +1131,6 @@ impl FallibilityShape {
 /// Detect the fallibility shape of `rust_source` per the spec's closed
 /// set. Operates in token space — the macro cannot inspect type
 /// information, so the detector reads the expression's syntactic tail.
-///
 /// Returns `Err(syn::Error)` when the expression does not parse as a
 /// `syn::Expr`; the caller surfaces it as a span-anchored diagnostic
 /// pointing at the `rust = "..."` literal.
@@ -1590,7 +1561,7 @@ mod tests {
 
     #[test]
     fn cross_check_allows_column_collision_outside_overlapping_scope() {
-        // Column exposed only to `admin`; derived only in `public` —
+        // Column exposed only to `admin`; derived only in `public`
         // no overlap, no collision.
         let s = parse_struct(quote! {
             #[derived(
@@ -1655,7 +1626,6 @@ mod tests {
 
     // ──────────────────────────────────────────────────────────────
     // E_DJG_VDF_004 — general identifier-shape coverage.
-    //
     // The validator's three rejection arms (length cap, leading byte,
     // body byte) all anchor at E_DJG_VDF_004 in their diagnostic. The
     // length cap is reachable via a normal ASCII identifier longer
@@ -1666,7 +1636,6 @@ mod tests {
     // `syn::Ident` carrying non-ASCII bytes (Rust 1.53+ accepts
     // Unicode XID identifiers — `école` and `café` both parse as
     // valid `syn::Ident`s).
-    //
     // These tests exercise `validate_name_shape` directly. The
     // earlier `rejects_uppercase_name_byte`, `rejects_reserved_…`,
     // and similar tests cover the parser end-to-end via

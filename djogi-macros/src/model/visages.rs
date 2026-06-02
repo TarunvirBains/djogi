@@ -1,9 +1,7 @@
 //! Emit visage structs + conversion impls from `#[model]`.
-//!
 //! For each `#[model]` struct, generate four visage structs:
 //! `{Model}Public`, `{Model}SelfView`, `{Model}Admin`, `{Model}Export`.
 //! Each struct carries (in source order):
-//!
 //! 1. Framework columns (`id`, `created_at`, `updated_at`) — always
 //!    included in every visage, regardless of user annotations.
 //! 2. User fields annotated with `expose(scope)` (scalar) or
@@ -11,33 +9,26 @@
 //!    embed; see below). The deprecated `expose(scope = "Peer")`
 //!    string-literal form is still parsed for backward compat but
 //!    lowers to the same `RelationExposure` shape.
-//!
-//! Each visage derives `Debug`, `Clone`, `serde::Serialize`,
-//! `serde::Deserialize` unconditionally. Conversion impls:
-//!
+//!    Each visage derives `Debug`, `Clone`, `serde::Serialize`,
+//!    `serde::Deserialize` unconditionally. Conversion impls:
 //! - **Scalar-only** visage (no relation-form entries): `impl From<&Model>`
-//!   — infallible straight-line construction.
+//!   infallible straight-line construction.
 //! - **Relation-nesting** visage (at least one `expose(scope -> Peer)`
 //!   entry on a relation field): `impl TryFrom<&Model>` with
 //!   `Error = VisageError`. Optional FK relations emit
 //!   `Option<PeerVisage>` and route the resolved relation through
 //!   `<PeerVisage as TryFrom<&Target>>::try_from` only when `Some`.
-//!
 //! ## `expose(scope -> Peer)` grammar
-//!
 //! Selects one of two embed shapes based on the peer path's last segment:
-//!
 //! - **Narrow visage** — last segment is a `{Model}{Scope}` shape
 //!   (`DepartmentPublic`); peer constructed via fallible `TryFrom`.
 //! - **Full peer model** — last segment matches the relation target's
 //!   ident (`Department`); peer cloned out of the resolved relation,
 //!   serde derives delegate to the target's own (de)serialise impls.
-//!
-//! Optional FKs emit `Option<PeerVisage>` honestly at the type level.
-//!
-//! Path routing: every type reference in emitted code goes through
-//! `::djogi::*` so users never depend on `serde` / `time` / `heeranjid`
-//! directly.
+//!   Optional FKs emit `Option<PeerVisage>` honestly at the type level.
+//!   Path routing: every type reference in emitted code goes through
+//!   `::djogi::*` so users never depend on `serde` / `time` / `heeranjid`
+//!   directly.
 
 use crate::model::attrs::{ExposeSpec, FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
 use crate::model::derived::{DerivedAttr, FallibilityShape, detect_fallibility_shape};
@@ -67,8 +58,7 @@ pub fn expand(
 
     let n_framework = model_attrs.framework_field_count();
 
-    // GH #227 Stage 4 — expand-time scope-validation pass.
-    //
+    // GH #227 — expand-time scope-validation pass.
     // `ExposeSpec::parse_entries` accepts any identifier-shaped scope key
     // (the membership check is deferred to here because field-attribute
     // parsing happens before model-attribute parsing). Now that the full
@@ -117,8 +107,7 @@ pub fn expand(
 
 /// Walk every user field's parsed `expose(...)` declarations and confirm
 /// each declared scope key is either a built-in or appears in
-/// `model_attrs.visage_scopes` — GH #227 Stage 4.
-///
+/// `model_attrs.visage_scopes` — GH #227.
 /// Field-attribute parsing (`ExposeSpec::parse_entries`) is intentionally
 /// permissive because the model-level `visage_scopes(...)` block may
 /// follow the field declarations in source order, and darling invokes
@@ -161,7 +150,7 @@ fn validate_field_scope_membership(
         }
 
         if let Some(spec) = attrs.protected.as_ref() {
-            // GH #227 Cluster A F2 — `per_scope` codecs are scalar-only.
+            // GH #227 — `per_scope` codecs are scalar-only.
             // Relation fields already project through `expose(scope ->
             // Peer)` and the visage emitter never routes embedded peers
             // through presentation codecs. Reject the entire `per_scope`
@@ -209,7 +198,7 @@ fn validate_field_scope_membership(
                     ));
                 }
 
-                // GH #227 Cluster A F1 — every `per_scope` entry must
+                // GH #227 — every `per_scope` entry must
                 // target a scope the field itself exposes. Without this
                 // cross-check, a codec declaration for a non-exposed
                 // scope compiles but is dead: the visage emitter never
@@ -280,7 +269,6 @@ fn unknown_scope_error(
 }
 
 /// Emit `::std::any::type_name::<CodecTy>()` for a codec type path.
-///
 /// Used in non-const runtime code paths (e.g. `VisageError`) where the
 /// compiler can evaluate the fully resolved type identity at runtime.
 fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
@@ -288,13 +276,11 @@ fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
 }
 
 /// Emit a const-safe codec identity string for inventory submission.
-///
-/// GH #227 Cluster A NC5: the old segment-join strategy lost fidelity
+/// GH #227: the old segment-join strategy lost fidelity
 /// for single-segment imported paths (`MaskString`). The ideal fix is
 /// `type_name::<CodecTy>()`, but this toolchain does not yet permit it
 /// in the `inventory::submit!` static initializer. Use the next-best
 /// const-safe identity:
-///
 /// - multi-segment paths keep their canonical `a::b::c` spelling;
 /// - single-segment paths are prefixed with the model module's
 ///   `module_path!()` so the resulting string identifies the resolved
@@ -315,7 +301,6 @@ fn codec_inventory_identity_tokens(path: &syn::Path) -> TokenStream {
 
 /// Look up the per-scope presentation codec entry (if any) for the
 /// current scope on a field carrying `protected(per_scope = { ... })`.
-///
 /// Returns `Some` only when the field has a parsed `ProtectedSpec` whose
 /// `per_scope` Vec contains an entry whose `scope` matches the emitter's
 /// current scope. Otherwise returns `None`, signalling the scalar
@@ -343,7 +328,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let fw_fields = framework_field_decls(model_attrs);
     let fw_inits = framework_field_inits(model_attrs);
 
-    // Phase 8.5 #231 — pre-compute fallibility shape per scope-included
+    // #231 — pre-compute fallibility shape per scope-included
     // derived entry. The matched shape decides per-entry emission shape
     // (Shape1 propagates inner `?`; Shapes 2–5 add an outer `?`;
     // Infallible passes through unchanged). On parse failure of the
@@ -367,13 +352,13 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let mut user_fields: Vec<TokenStream> = Vec::new();
     let mut user_inits: Vec<TokenStream> = Vec::new();
     let mut has_relation_entry = false;
-    // GH #227 Stage 4 — track whether ANY user field in this scope
+    // GH #227 — track whether ANY user field in this scope
     // routes through a `try_presentation_codec` codec. A fallible codec
     // anywhere flips the visage's conversion impl from
     // `From<&Source>` to `TryFrom<&Source, Error = VisageError>` so
     // `?` propagation reaches the boxed codec error.
     let mut has_try_codec = false;
-    // GH #227 Stage 4 — accumulator for `inventory::submit!` blocks
+    // GH #227 — accumulator for `inventory::submit!` blocks
     // emitted alongside the struct + impl. Each scalar field with a
     // per-scope codec contributes one submission; relation-form fields
     // skip this path entirely (codecs apply to leaf scalar columns,
@@ -419,18 +404,17 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                 return syn::Error::new_spanned(field, msg).to_compile_error();
             }
 
-            // Scalar form on scalar field — happy path. GH #227 Stage 4
+            // Scalar form on scalar field — happy path. GH #227
             // splits this into two sub-paths:
-            //
             // - **No codec** (the existing case): field type and init
-            //   pass through unchanged.
+            // pass through unchanged.
             // - **Per-scope codec present**: the field type becomes the
-            //   codec's associated `Output` type, and the init dispatches
-            //   through `PresentationCodec::present` (infallible) or
-            //   `TryPresentationCodec::try_present` + `?` propagation
-            //   mapped to `VisageError::PresentationCodec` (fallible).
-            //   The dispatch routes through the trait so adopters can
-            //   define new codecs without changing the macro.
+            // codec's associated `Output` type, and the init dispatches
+            // through `PresentationCodec::present` (infallible) or
+            // `TryPresentationCodec::try_present` + `?` propagation
+            // mapped to `VisageError::PresentationCodec` (fallible).
+            // The dispatch routes through the trait so adopters can
+            // define new codecs without changing the macro.
             ScopeMembership::Scalar => {
                 if let Some(entry) = lookup_per_scope_codec(attrs, scope) {
                     let codec_ty = &entry.codec_type;
@@ -504,15 +488,13 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
             // `pub field: Option<PeerVisage>`, with the init match-folding
             // `src.field.resolved()` through the peer's fallible
             // `TryFrom<&Target>` impl.
-            //
             // Full-peer vs narrow embed:
-            //
             // - If the user wrote `expose(scope -> Department)` and the
-            //   relation's target ident is `Department`, embed the full
-            //   peer model (clone the resolved target).
+            // relation's target ident is `Department`, embed the full
+            // peer model (clone the resolved target).
             // - Otherwise (path's last segment doesn't match the target
-            //   ident), treat as a narrow visage and route through
-            //   `<Peer as TryFrom<&Target>>::try_from(resolved)?`.
+            // ident), treat as a narrow visage and route through
+            // `<Peer as TryFrom<&Target>>::try_from(resolved)?`.
             ScopeMembership::RelationEmbed { exposure, nullable } => {
                 has_relation_entry = true;
                 let relation_info = detect_relation(fty)
@@ -571,11 +553,9 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         }
     }
 
-    // Phase 8.5 #231 — append derived-field decls and inits AFTER all
+    // #231 — append derived-field decls and inits AFTER all
     // user column entries so the visage struct's field order is:
-    //
-    //     framework cols, user cols (in scope), derived entries.
-    //
+    // framework cols, user cols (in scope), derived entries.
     // The same order drives PROJECTION_LIST emission, FromPgRow
     // positional decode, and the From/TryFrom init body.
     let mut derived_field_decls: Vec<TokenStream> = Vec::new();
@@ -636,7 +616,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                     #expr_tokens
                 },
             },
-            // Visage is fallible, this entry returns `Result<T, E>` —
+            // Visage is fallible, this entry returns `Result<T, E>`
             // unwrap via outer `?`. The `?` desugars to
             // `Err(From::from(e))`, requiring `VisageError: From<E>`.
             (true, FallibilityShape::Shape2to5Result) => quote! {
@@ -672,24 +652,21 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     };
 
     // Dispatch on relation-nesting + derived-fallibility presence.
-    //
     // - **Scalar-only** visages with all-infallible derived entries
-    //   (or no derived entries at all) emit `impl From<&Source>`. The
-    //   stdlib provides a blanket `impl<T, U> TryFrom<U> for T where
-    //   U: Into<T>` (with `Error = Infallible`), so a scalar-only
-    //   visage automatically satisfies `TryFrom<&Source>` too.
-    //
-    //   Emitting an explicit `TryFrom<&Source, Error = VisageError>`
-    //   here would conflict with the stdlib blanket (E0119) — don't.
-    //
+    // (or no derived entries at all) emit `impl From<&Source>`. The
+    // stdlib provides a blanket `impl<T, U> TryFrom<U> for T where
+    // U: Into<T>` (with `Error = Infallible`), so a scalar-only
+    // visage automatically satisfies `TryFrom<&Source>` too.
+    // Emitting an explicit `TryFrom<&Source, Error = VisageError>`
+    // here would conflict with the stdlib blanket (E0119) — don't.
     // - **Relation-nesting** visages OR scalar-only visages with at
-    //   least one fallible derived entry emit
-    //   `impl TryFrom<&Source>` with `Error = VisageError`. Phase
-    //   8.5 #231 adds derived fallibility as a second trigger for
-    //   the TryFrom branch; the relation-nesting trigger is
-    //   unchanged. A scalar `From` is unsound when any of the
-    //   per-field init expressions may fail.
-    // GH #227 Stage 4 — a fallible presentation codec is the third
+    // least one fallible derived entry emit
+    // `impl TryFrom<&Source>` with `Error = VisageError`. Phase
+    // #231 adds derived fallibility as a second trigger for
+    // the TryFrom branch; the relation-nesting trigger is
+    // unchanged. A scalar `From` is unsound when any of the
+    // per-field init expressions may fail.
+    // GH #227 — a fallible presentation codec is the third
     // trigger for the `TryFrom` branch alongside relation-nesting and
     // derived-fallibility. Any one of the three forces the visage's
     // conversion impl to surface `Result<Self, VisageError>` so `?`
@@ -735,7 +712,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     // `Model::table_name()` to reach).
     let queryset_entry = crate::model::visage_query::expand(ctx);
 
-    // Phase 8.5 #231 — emit the `DjogiVisage` trait impl + the
+    // #231 — emit the `DjogiVisage` trait impl + the
     // `assert_derived_parity` inherent method, when applicable.
     let djogi_visage_impl = emit_djogi_visage_impl(ctx, &scoped_derived);
     let (parity_impl, visage_descriptor) = if scoped_derived.is_empty() {
@@ -767,7 +744,7 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
 
         #visage_descriptor
 
-        // GH #227 Stage 4 — `inventory::submit!` per
+        // GH #227 — `inventory::submit!` per
         // `(model, field, scope, codec)` usage. Emitted AFTER the
         // struct + impl block so the `inventory::submit!` macro sits
         // at item scope (where it must live) rather than inside the
@@ -778,14 +755,12 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
 }
 
 /// Compute the visage's projection-entry list: `(name, is_derived_alias)` pairs.
-///
 /// The order matches the visage struct's field order — framework
 /// columns first (`id`, `created_at`, `updated_at`), then user columns
 /// in declaration order (filtered to those exposed in the scope), then
 /// derived entries in attribute declaration order. The `is_derived`
 /// flag carries the discriminant the SELECT renderer uses to wrap
 /// derived entries with `(<sql>) AS <alias>`.
-///
 /// Relation-embed entries are intentionally excluded — the visage's
 /// SELECT projection cannot represent an embedded peer as a flat
 /// column. `emit_djogi_visage_impl` and `emit_projection_list_string`
@@ -920,12 +895,11 @@ fn emit_djogi_visage_impl(
 
     let source = ctx.source;
     quote! {
-        // Phase 8.5 #231 reconciliation — emit `type Model = #source`
+        // #231 reconciliation — emit `type Model = #source`
         // so generic `V: DjogiVisage` consumers reach the source model
         // (and the source table via `<V::Model as
         // ::djogi::prelude::Model>::table_name()`) without threading
         // the model in as a separate type parameter.
-        //
         // GPT seal blocker fix — emit `DjogiVisageSealed` alongside
         // the trait impl. The `DjogiVisageOf<Self::Model>` supertrait
         // is satisfied reflexively for any `M: Model` (via the
@@ -957,19 +931,15 @@ fn emit_djogi_visage_impl(
 /// `impl DerivedParity for {Visage}` trait impl on a visage. Both are
 /// only emitted when the visage has at least one derived entry in its
 /// scope.
-///
 /// Compares ONLY the derived fields between two pre-constructed
 /// visages; framework columns and storage columns are intentionally
 /// not compared (their round-trip lossy `DateTime` truncation would
 /// false-positive on high-precision timestamps regardless of any
 /// derived drift). Short-circuits at the first mismatch.
-///
 /// Emits a `where <Ty>: PartialEq` bound per distinct derived type so
 /// rustc's E0277 diagnostic anchors at the impl block (E_DJG_VDF_016
 /// per the spec) rather than at the inner `!=` token.
-///
 /// # Two surfaces, one body
-///
 /// - **Inherent method** — `visage.assert_derived_parity(&other)`
 ///   resolves via Rust's inherent-method-first method resolution. No
 ///   trait import required at the call site; this is the ergonomic
@@ -978,13 +948,12 @@ fn emit_djogi_visage_impl(
 ///   carries the same body. Reachable from generic code that bounds
 ///   `where V: DerivedParity` — required by the async
 ///   [`::djogi::testing::assert_derived_parity_fetched`] free helper
-///   (Phase 8.5 #231 reconciliation: CTO-required async convenience).
-///
-/// Method resolution in Rust prefers inherent methods over trait
-/// methods for unqualified calls (`v.foo()`); the trait method is
-/// reachable through generic bounds. Both surfaces share the same
-/// comparison body, so adopters never see different behaviour
-/// depending on which surface they reach.
+///   (#231 reconciliation: CTO-required async convenience).
+///   Method resolution in Rust prefers inherent methods over trait
+///   methods for unqualified calls (`v.foo()`); the trait method is
+///   reachable through generic bounds. Both surfaces share the same
+///   comparison body, so adopters never see different behaviour
+///   depending on which surface they reach.
 fn emit_assert_derived_parity(
     proj_name: &syn::Ident,
     scoped_derived: &[&DerivedAttr],
@@ -1041,11 +1010,11 @@ fn emit_assert_derived_parity(
          and storage columns are NEVER compared — only fields populated \
          from `#[derived(...)]` declarations whose `scopes = [...]` list \
          includes this visage's scope.\n\n\
-         Phase 8.5 issue #231 — see \
-         `docs/spec/visage-derived-fields.md` for the parity-helper \
-         design rationale (the per-visage emission is the macro's \
-         answer to round-trip-lossy timestamp false positives + the \
-         absence of an auto-derived `PartialEq` on visages)."
+         See `docs/spec/visage-derived-fields.md` (#231) for the \
+         parity-helper design rationale (the per-visage emission is \
+         the macro's answer to round-trip-lossy timestamp false \
+         positives + the absence of an auto-derived `PartialEq` on \
+         visages)."
     );
 
     // The seal-only supertrait impl carries no body; the constraint
@@ -1054,7 +1023,7 @@ fn emit_assert_derived_parity(
     // `where` bounds as the inherent so the `<Ty>: PartialEq`
     // diagnostic anchors at one stable site (E_DJG_VDF_016).
     quote! {
-        // Phase 8.5 #231 reconciliation — route the seal through
+        // #231 reconciliation — route the seal through
         // `::djogi::__private::DerivedParitySealed` per
         // `feedback_macro_path_routing.md` (macro paths route through
         // `::djogi::*` only; never through `::djogi::testing::*`
@@ -1088,9 +1057,8 @@ fn emit_assert_derived_parity(
 }
 
 /// Emit one `inventory::submit!(VisageDescriptor { ... })` block for the
-/// `(Source, Scope)` pair when at least one derived entry is in scope —
-/// Phase 8.5 issue #231 reconciliation (BLOCK-1).
-///
+/// `(Source, Scope)` pair when at least one derived entry is in scope
+/// #231 reconciliation .
 /// Structurally separate from the [`ModelDescriptor`] inventory the
 /// migration differ walks: registers against
 /// [`::djogi::descriptor::VisageDescriptor`]'s own
@@ -1098,9 +1066,7 @@ fn emit_assert_derived_parity(
 /// `build.rs` paths never iterate. The boundary mirrors the storage-
 /// vs-projection split the rest of the visage-derived-fields surface
 /// establishes.
-///
 /// # Per-entry contents
-///
 /// - `name` — derived field name (the `name = ...` key).
 /// - `ty_path` — token-string rendering of the entry's `ty = ...`,
 ///   captured via `quote! { #ty }.to_string()`. The exact text

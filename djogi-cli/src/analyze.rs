@@ -1,21 +1,17 @@
 //! Partition / vacuum analysis for adopter Postgres tables.
-//!
-//! `djogi analyze` (T10) inspects `pg_stat_user_tables` and (when the
+//! `djogi analyze` inspects `pg_stat_user_tables` and (when the
 //! extension is installed) `pg_partman` metadata to surface vacuum and
 //! partitioning recommendations to operators. The recommendation logic
 //! ([`recommend`]) is pure — no DB, no I/O, no global state — so it
 //! can be unit-tested against synthetic [`TableHealth`] inputs without
 //! a live database. The live-DB query path lives in
 //! [`fetch_table_health`]; the CLI dispatch entry point is [`run`].
-//!
 //! # Why a pure substrate
-//!
 //! `recommend()` is exposed as a free function taking only
 //! `&TableHealth` plus scalar threshold args. That shape is
 //! deliberately deterministic — the same inputs always produce the
 //! exact same output bytes. Two consequences fall out:
-//!
-//! 1. **Byte-stable JSON.** When T10.2 serialises a sorted
+//! 1. **Byte-stable JSON.** When the serialiser sorts a
 //!    `Vec<(table_name, Recommendation)>` to `serde_json`, the result
 //!    is reproducible across runs / hosts / Postgres restarts. CI
 //!    dashboards that diff yesterday's `analyze --format json` output
@@ -24,25 +20,13 @@
 //! 2. **Trivial unit-testability.** No `tokio` runtime, no fixture DB,
 //!    no temp dirs — every recommendation rule is exercised in-process
 //!    against hand-built `TableHealth` values.
-//!
 //! # Threshold rationale
-//!
 //! Both thresholds are runtime arguments rather than constants because
 //! healthy bloat / partition-row ceilings vary per workload. The
 //! defaults chosen by the CLI (`0.2` and `10_000_000`) are conservative
 //! middle-of-the-road values; OLTP-heavy tables typically tighten the
 //! vacuum threshold, while warehouse-style tables loosen the partition
 //! row count. Adopters override on the command line without recompiling.
-//!
-//! # Spec
-//!
-//! `docs/superpowers/plans/granular-phase8/cluster-8epsilon-granular.md`
-//! §T10.1.
-
-// T10.2 wires the substrate to the live-DB query path + CLI
-// dispatch. Every type and helper introduced in T10.1 is now
-// referenced from `fetch_table_health` / `run` / the renderers; the
-// file-scoped `#![allow(dead_code)]` from T10.1 is therefore gone.
 
 use std::io::Write;
 
@@ -56,9 +40,7 @@ use djogi::context::DjogiContext;
 use djogi::pg::pool::DjogiPool;
 
 /// Snapshot of a single table's vacuum / partition health.
-///
-/// Field provenance (per T10.2's planned query):
-///
+/// Field provenance (per the live-DB query plan):
 /// - `table_name` — `pg_stat_user_tables.relname`
 /// - `n_live_tup`, `n_dead_tup` — `pg_stat_user_tables` columns of the
 ///   same name; Postgres-maintained per-row visibility counters.
@@ -67,10 +49,9 @@ use djogi::pg::pool::DjogiPool;
 /// - `partition_count` — `0` for plain tables, `>= 1` for partitioned
 ///   parents (sourced via `pg_partitioned_table` join, with a
 ///   `pg_partman` fallback when the extension is installed).
-///
-/// `last_analyze` is intentionally `time::OffsetDateTime`, not
-/// `chrono::DateTime` — djogi forbids `chrono` workspace-wide
-/// (CLAUDE.md "Dependencies excluded").
+///   `last_analyze` is intentionally `time::OffsetDateTime`, not
+///   `chrono::DateTime` — djogi forbids `chrono` workspace-wide
+///   (CLAUDE.md "Dependencies excluded").
 #[derive(Debug, Clone, Serialize)]
 pub struct TableHealth {
     pub table_name: String,
@@ -81,12 +62,9 @@ pub struct TableHealth {
 }
 
 /// Recommendation produced by [`recommend`] for a single table.
-///
 /// # Precedence
-///
 /// When multiple rules would fire, [`recommend`] returns the
 /// highest-priority match per this strict ordering (highest first):
-///
 /// 1. [`Recommendation::VacuumNeeded`] — bloat dominates everything;
 ///    autovacuum lag is the most operationally urgent signal because
 ///    dead tuples block index health and inflate disk usage.
@@ -97,12 +75,10 @@ pub struct TableHealth {
 ///    but average row count per partition exceeds the threshold;
 ///    expanding the partition count is incremental tuning.
 /// 4. [`Recommendation::Healthy`] — no rule fires.
-///
 /// # JSON shape
-///
 /// The `#[serde(tag = "kind", rename_all = "snake_case")]` attribute
 /// produces internally-tagged JSON like
-/// `{"kind":"vacuum_needed","dead_tup_ratio":0.42}`. T10.2's
+/// `{"kind":"vacuum_needed","dead_tup_ratio":0.42}`. The
 /// `--format json` path serialises a sorted vector of
 /// `{table, recommendation}` pairs; the snake_case tag keeps the
 /// machine-readable output ergonomic for shell scripts and dashboards.
@@ -142,18 +118,14 @@ pub enum Recommendation {
 }
 
 /// Pure recommendation function for a single table.
-///
 /// # Determinism
-///
 /// `recommend` takes only the borrowed `TableHealth` and two scalar
 /// thresholds. It performs no I/O, reads no globals, allocates only
 /// the `String` inside `PartitionRecommended::reason` (when that arm
 /// fires), and traverses no unordered collections. Repeated invocation
 /// on byte-identical inputs returns byte-identical outputs — the
 /// `recommend_is_deterministic` test asserts this with 100 repetitions.
-///
 /// # Threshold semantics
-///
 /// - `threshold_vacuum`: dead-tuple ratio strictly above which
 ///   [`Recommendation::VacuumNeeded`] fires. Typical: `0.2` (20% bloat).
 ///   Higher values mean the operator tolerates more bloat before
@@ -163,9 +135,7 @@ pub enum Recommendation {
 ///   Typical: `10_000_000`. The same threshold is reused for the
 ///   per-partition row average that drives
 ///   [`Recommendation::PartitionCountIncrease`].
-///
 /// # Edge cases
-///
 /// - Empty table (`n_live_tup == 0 && n_dead_tup == 0`): vacuum check
 ///   is short-circuited (division-by-zero guard). Partition checks
 ///   still run but neither fires for an empty table.
@@ -173,9 +143,7 @@ pub enum Recommendation {
 ///   `PartitionRecommended` rule can fire.
 /// - `partition_count >= 1` but row count below threshold: falls
 ///   through to `Healthy`.
-///
 /// # See also
-///
 /// [`Recommendation`] for the precedence ordering.
 pub fn recommend(
     health: &TableHealth,
@@ -183,11 +151,11 @@ pub fn recommend(
     threshold_partition_rows: i64,
 ) -> Recommendation {
     // 1. VacuumNeeded — highest priority. Skipped on empty tables to
-    //    avoid 0/0; an empty table cannot be bloated by definition.
-    //    `saturating_add` caps at `i64::MAX` rather than panicking
-    //    (debug) or wrapping (release) when both counters approach
-    //    `i64::MAX` — pathological stats values still produce a valid
-    //    ratio in `[0.0, 1.0]`.
+    // avoid 0/0; an empty table cannot be bloated by definition.
+    // `saturating_add` caps at `i64::MAX` rather than panicking
+    // (debug) or wrapping (release) when both counters approach
+    // `i64::MAX` — pathological stats values still produce a valid
+    // ratio in `[0.0, 1.0]`.
     let total_tup = health.n_live_tup.saturating_add(health.n_dead_tup);
     if total_tup > 0 {
         let ratio = health.n_dead_tup as f64 / total_tup as f64;
@@ -199,7 +167,7 @@ pub fn recommend(
     }
 
     // 2. PartitionRecommended — unpartitioned table over the row
-    //    threshold. `partition_count == 0` is the unpartitioned signal.
+    // threshold. `partition_count == 0` is the unpartitioned signal.
     if health.partition_count == 0 && health.n_live_tup > threshold_partition_rows {
         return Recommendation::PartitionRecommended {
             reason: format!(
@@ -210,8 +178,8 @@ pub fn recommend(
     }
 
     // 3. PartitionCountIncrease — partitioned but undersized partitions.
-    //    Average is integer-divided; precision is irrelevant since the
-    //    threshold gate is also an integer comparison.
+    // Average is integer-divided; precision is irrelevant since the
+    // threshold gate is also an integer comparison.
     if health.partition_count > 0 {
         let avg_per_partition = health.n_live_tup / health.partition_count as i64;
         if avg_per_partition > threshold_partition_rows {
@@ -230,7 +198,6 @@ pub fn recommend(
 }
 
 /// Errors surfaced by [`run`] / [`fetch_table_health`].
-///
 /// Each variant carries operator-actionable context — the goal is that
 /// an `eprintln!("djogi analyze: {e}")` line is enough to diagnose
 /// without grepping source. Mirrors `verify::VerifyError`'s shape.
@@ -336,7 +303,6 @@ impl From<serde_json::Error> for AnalyzeError {
 }
 
 /// Output format selector — wired up to the CLI's `--format` flag.
-///
 /// `Human` is for direct operator reading; `Json` is for CI dashboards
 /// and other machine consumers. Both paths emit deterministic output
 /// (sorted by `table_name`, no `HashMap` iteration anywhere on the
@@ -354,14 +320,11 @@ pub enum AnalyzeFormat {
 
 /// Pull live-DB stats from `pg_stat_user_tables` and (optionally)
 /// `pg_partman.show_partitions(...)` for every user table.
-///
 /// # Query design
-///
 /// The primary query lists schema-qualified table names plus visibility
 /// counters and last-analyze timestamps from `pg_stat_user_tables`.
 /// That catalogue is part of every Postgres install, so this query is
 /// always available and never errors with `UNDEFINED_TABLE`.
-///
 /// The per-row partition lookup uses `partman.show_partitions($1)`
 /// which is part of the optional `pg_partman` extension. Many adopters
 /// will not have it installed; rather than refusing to run analyze on
@@ -373,15 +336,11 @@ pub enum AnalyzeFormat {
 /// because a table that pg_partman doesn't know about is, from
 /// analyze's perspective, indistinguishable from an unpartitioned
 /// table.
-///
 /// # Determinism
-///
 /// `ORDER BY table_name` in the primary query plus a defensive
 /// `Vec::sort_by` after collection (in [`run`]) means the output
 /// ordering does not depend on Postgres planner decisions.
-///
 /// # Read-only
-///
 /// Both queries are `SELECT`-only with positional binds. No DDL, no
 /// DML — analyze never writes.
 pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, AnalyzeError> {
@@ -391,11 +350,9 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
     // ONCE up-front rather than letting every per-table
     // `partman.show_partitions(...)` call discover the absence at
     // prepare time.
-    //
     // # Why probe up-front
-    //
     // `prepare_cached` (the path `raw_rows` routes through) maps
-    // tokio-postgres errors via `DbError::other(e.to_string())` —
+    // tokio-postgres errors via `DbError::other(e.to_string)`
     // which DROPS the SQLSTATE because the prepare-error path
     // collapses the `tokio_postgres::Error` into a message-only
     // `DbError` whose `code()` returns `None`. The original
@@ -403,9 +360,7 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
     // matches against a cluster without pg_partman, and every
     // analyze run on such a cluster fails with `AnalyzeError::Db`
     // even though the partman call should be a soft fallback.
-    //
     // # Why probe BOTH schema and function
-    //
     // A schema-only check (`pg_namespace.nspname = 'partman'`) is
     // insufficient: a partial install (e.g. the extension was
     // dropped but the schema was preserved by a CASCADE-less
@@ -416,7 +371,6 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
     // the function reference, fail with `UNDEFINED_FUNCTION`, and
     // hit the same SQLSTATE-dropping path described above — so the
     // soft fallback would never engage and analyze would fail.
-    //
     // Joining `pg_proc` against `pg_namespace.oid = pg_proc.pronamespace`
     // confirms the function we're about to call actually exists in
     // the partman schema. The probe returns true only when BOTH the
@@ -425,12 +379,10 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
     // entirely (`partition_count = 0` for every row — the same
     // outcome the SQLSTATE-fallback path would have produced for an
     // entirely-absent extension).
-    //
-    // Both `pg_namespace` and `pg_proc` are core system catalogues —
+    // Both `pg_namespace` and `pg_proc` are core system catalogues
     // the probe is always-prepareable, returns a clean
     // `Result<bool, _>`, and costs ONE query per analyze invocation
     // instead of N (one per user table).
-    //
     // The retained `query_partition_count` SQLSTATE classifier is a
     // belt-and-braces guard for execution-time partman failures: if
     // `show_partitions` exists at probe time but errors at runtime
@@ -534,7 +486,6 @@ enum PartmanError {
 
 /// Query the partition count for `table_name` via
 /// `partman.show_partitions($1)`.
-///
 /// **Parameter binding.** `$1` carries `table_name`; we never
 /// `format!()`-interpolate. The table name comes from
 /// `pg_stat_user_tables` (a system catalogue, so trusted), but the
@@ -542,10 +493,8 @@ enum PartmanError {
 /// which the cost of a parameter bind matters, and a stray code path
 /// that builds the table name from an untrusted source later cannot
 /// regress this query into an injection vector.
-///
 /// Returns `Err(PartmanError::Absent)` for the three SQLSTATEs that
 /// indicate "pg_partman not installed":
-///
 /// - `42883` `UNDEFINED_FUNCTION` — `partman` schema present but
 ///   `show_partitions` not (e.g. partial install).
 /// - `42P01` `UNDEFINED_TABLE` — `show_partitions` resolves but the
@@ -609,31 +558,24 @@ fn djogi_err_to_analyze(e: DjogiError) -> AnalyzeError {
 }
 
 /// `djogi analyze` entry point — consumed by `main.rs::TopCommand::Analyze`.
-///
 /// Orchestrates the live-DB pull, the pure recommendation pass, and
 /// the rendering. Splitting fetch / recommend / render this way means
 /// every test (unit, integration, regression) targets exactly the
 /// layer that interests it without dragging in the others.
-///
 /// # Workspace + config resolution
-///
 /// `workspace` is `None` by default — we resolve to
 /// `std::env::current_dir()` and then load `Djogi.toml` via
 /// `DjogiConfig::load_from_workspace`. Mirrors `verify::run`'s pattern.
-///
 /// # Pool lifecycle
-///
 /// One pool, one context, every per-table query runs through it.
 /// Built fresh on every invocation — analyze is a one-shot CLI command,
 /// not a long-lived process, so pool reuse across invocations is not a
 /// goal.
-///
 /// # Output destination
-///
 /// Both rendering paths write to a locked `stdout`. Locking once at
 /// the top means we don't pay the `Stdout::lock()` cost per row, and
 /// the renderers themselves take a generic `&mut W: Write` so the
-/// pure render-only tests (T10.2's `render_human_*` / `render_json_*`)
+/// pure render-only tests (`render_human_*` / `render_json_*`)
 /// can target a `Vec<u8>` without going through stdout.
 pub async fn run(
     workspace: Option<std::path::PathBuf>,
@@ -692,16 +634,13 @@ pub async fn run(
 }
 
 /// Render the human-readable ASCII table.
-///
 /// One header line plus one body line per table. Columns are padded so
 /// the visual alignment is stable across runs; the recommendation
 /// column carries a short tag (`vacuum`, `partition`, `parts++`,
 /// `healthy`) plus the structural detail. Empty input prints the
 /// header only — no "no rows" placeholder, so a downstream `wc -l`
 /// sees the row count directly.
-///
 /// # Determinism
-///
 /// The input is already sorted by `table_name` (see [`run`]); this
 /// renderer iterates in the input order. No `HashMap`, no
 /// `BTreeMap` — pure `Vec` iteration.
@@ -755,18 +694,14 @@ fn recommendation_human(r: &Recommendation) -> String {
 }
 
 /// Render the JSON array.
-///
-/// # Determinism contract (v3 §494, T10.1 review)
-///
+/// # Determinism contract
 /// We project through a named `Row` struct rather than a
 /// `HashMap<String, _>` — `serde`'s default behaviour preserves struct
 /// field declaration order, so the JSON output is byte-stable across
 /// runs. `serde_json::to_writer_pretty` is chosen over the compact
 /// form so dashboards can `git diff` two runs without reformatting
 /// first.
-///
 /// # Field order
-///
 /// `table_name` first (sort key), then the raw counters
 /// (`n_live_tup`, `n_dead_tup`), then `last_analyze`,
 /// `partition_count`, and finally the structured `recommendation`.
@@ -776,7 +711,6 @@ fn render_json<W: Write>(
     out: &mut W,
 ) -> Result<(), AnalyzeError> {
     /// Wire-format projection of one analyzed table.
-    ///
     /// Field declaration order IS the JSON field order — see the
     /// renderer's determinism contract above. Borrows from the
     /// in-memory `report` so the projection is allocation-free.
@@ -935,7 +869,7 @@ mod tests {
     #[test]
     fn recommend_is_deterministic() {
         // Build a single TableHealth and run recommend() 100 times;
-        // every result must equal the first. Covers the v3 §494
+        // every result must equal the first. Covers the
         // concern about HashMap-iteration nondeterminism — there is no
         // HashMap in `recommend`, but the test cements the contract so
         // future refactors don't sneak one in.
@@ -968,7 +902,6 @@ mod tests {
     fn recommend_vacuum_dominates_partition() {
         // Both VacuumNeeded AND PartitionRecommended would fire in
         // isolation — vacuum wins per precedence ordering.
-        //
         // Setup: 100M live + 50M dead → 33% dead ratio AND
         // unpartitioned over the 10M row threshold.
         let h = health(100_000_000, 50_000_000, 0);
@@ -989,7 +922,6 @@ mod tests {
         // ceiling falls into CountIncrease — there is no way for
         // PartitionRecommended to fire on a partitioned table by
         // construction.
-        //
         // Rule still under test: when both partition rules *could*
         // logically apply, PartitionRecommended only matches the
         // unpartitioned case (`partition_count == 0`).
@@ -1016,7 +948,7 @@ mod tests {
         // Both counters at `i64::MAX` would panic in debug or silently
         // wrap in release under unchecked addition. `saturating_add`
         // caps at `i64::MAX`, so the ratio is `i64::MAX / i64::MAX = 1.0`
-        // — well above the default 0.2 threshold, so VacuumNeeded fires.
+        // well above the default 0.2 threshold, so VacuumNeeded fires.
         // The test pins the contract: pathological stats values must NOT
         // panic and must still produce a deterministic recommendation.
         let h = TableHealth {

@@ -1,4 +1,4 @@
-// Under the default `pk = HeerIdRecencyBiased` strategy (Phase 7-Zero-2 T2
+// Under the default `pk = HeerIdRecencyBiased` strategy (T2
 // flip), the macro injects `id` as HeerIdDesc, so a user `id` field
 // collides and must be rejected with a targeted macro diagnostic that
 // points at the offending field. The same error also fires under

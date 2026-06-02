@@ -1,21 +1,15 @@
 //! `djogi::djogi_main!(Model1, Model2, …)` function-like proc macro.
-//!
 //! Generates a `fn main()` that references the listed model types to
 //! prevent the LTO linker from dropping their crates' inventory data,
 //! then delegates to `djogi_cli::run_from_env()`.
-//!
 //! The linker dead-stripping spike proved that referencing a single
 //! descriptor per crate forces ALL inventory from that crate. This macro
 //! makes that reference explicit and auditable at the binary entry point.
-//!
 //! # Usage
-//!
 //! ```ignore
 //! djogi::djogi_main!(tracker::Elephant, billing::Invoice);
 //! ```
-//!
 //! Expands to:
-//!
 //! ```ignore
 //! fn main() -> std::process::ExitCode {
 //!     let _ = <tracker::Elephant as ::djogi::model::Model>::descriptor();
@@ -30,9 +24,8 @@ use syn::Path;
 use syn::parse::{Parse, ParseStream};
 
 /// Parse a comma-separated list of type paths.
-///
 /// Accepts one or more paths separated by commas. Trailing commas
-/// are permitted so `djogi_main!(Elephant,)` is valid.
+/// are permitted so `djogi_main!(Elephant)` is valid.
 struct ModelPaths {
     paths: Vec<Path>,
 }

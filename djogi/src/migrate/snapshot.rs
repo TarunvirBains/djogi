@@ -2,31 +2,24 @@
 //! disk. The loader is the single gatekeeper for `format_version`
 //! compatibility; the saver writes pretty-printed, deterministic
 //! output with a trailing newline.
-//!
 //! # File shape
-//!
 //! Pretty-printed JSON, 2-space indentation, alphabetical keys
 //! within every object (deterministic via `BTreeMap` + alphabetical
 //! struct field declarations — see [`crate::migrate::schema`] module
 //! docs). Files end with a single trailing `\n`. The first
 //! `format_version` field in the JSON is checked on load.
-//!
 //! # `format_version` policy
-//!
 //! See [`crate::migrate::schema::SNAPSHOT_FORMAT_VERSION`]. Every
 //! snapshot struct carries `#[serde(deny_unknown_fields)]`, so any
 //! shape change (additive, subtractive, or rename) requires a
 //! `format_version` bump. There is no silently-additive path.
-//!
 //! [`parse_snapshot_bytes`] inspects `format_version` **before**
 //! attempting full deserialization. A version mismatch surfaces as
 //! [`SnapshotError::UnsupportedFormatVersion`] with an actionable
 //! upgrade message; this prevents the user from seeing a generic
 //! `unknown field` parse error when the real issue is a Djogi
 //! version skew.
-//!
 //! # Robustness
-//!
 //! - The loader strips a UTF-8 BOM if the file starts with one.
 //!   Some editors silently insert a BOM into JSON files; we tolerate
 //!   that on read but never emit one ourselves.
@@ -43,8 +36,8 @@ use super::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
 
 /// Errors surfaced by snapshot load / save. Distinct from
 /// [`crate::error::DjogiError`] because snapshot I/O happens both
-/// inside the runtime (T4 runner) and at build time (`build.rs`,
-/// T6) — `build.rs` cannot depend on the full `DjogiError` machinery.
+/// inside the runtime and at build time (`build.rs`)
+/// — `build.rs` cannot depend on the full `DjogiError` machinery.
 #[derive(Debug)]
 pub enum SnapshotError {
     /// File-system I/O error — read, write, create-dir-all.
@@ -116,7 +109,6 @@ impl std::error::Error for SnapshotError {
 }
 
 /// Save a snapshot to disk, creating parent directories as needed.
-///
 /// Output is pretty-printed JSON with a single trailing newline.
 /// Determinism is the caller's responsibility — see
 /// [`crate::migrate::schema`] module docs for the rules
@@ -179,7 +171,6 @@ pub fn load_snapshot(path: &Path) -> Result<AppliedSchema, SnapshotError> {
 /// error reporting; pass `None` when parsing in-memory data (tests,
 /// build-script usage) and the path-aware error variants degrade to
 /// path-less messages.
-///
 /// Strips a leading UTF-8 BOM if present. **Inspects
 /// `format_version` before full structural deserialization** so a
 /// newer snapshot read by an older Djogi surfaces
@@ -192,7 +183,7 @@ pub fn parse_snapshot_bytes(
 ) -> Result<AppliedSchema, SnapshotError> {
     let bytes = strip_utf8_bom(bytes);
 
-    // Stage 1 — peek at `format_version` only. Use a permissive
+    // Phase 1 — peek at `format_version` only. Use a permissive
     // `serde_json::Value` so the peek succeeds even when the rest of
     // the document carries fields the strict struct deserializer
     // doesn't recognise (the case that matters: an older Djogi
@@ -210,7 +201,7 @@ pub fn parse_snapshot_bytes(
         });
     }
 
-    // Stage 2 — full strict deserialize. Reaching here means
+    // Phase 2 — full strict deserialize. Reaching here means
     // `format_version` is either absent (will fail strict deserialize
     // because the field is required) or matches the expected
     // version.
@@ -579,7 +570,7 @@ mod tests {
         assert_alphabetical_keys(&value, "");
     }
 
-    // ── Phase 7.5 PR 7: EXCLUSION + stored-generated round-trip ──────
+    // ── PR 7: EXCLUSION + stored-generated round-trip ──────
 
     /// Build a minimal `TableSchema` carrying an `EXCLUDE` constraint
     /// plus a stored-generated column, so the round-trip exercises
@@ -650,7 +641,7 @@ mod tests {
                         with_operator: "&&".to_string(),
                     },
                 ],
-                // djogi#148 — `using = "gist"` with `=` operator
+                // `using = "gist"` with `=` operator
                 // auto-derives `btree_gist`. Pinning the value in this
                 // round-trip fixture proves the snapshot serializes,
                 // re-parses, and survives byte-for-byte.

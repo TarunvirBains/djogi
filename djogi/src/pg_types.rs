@@ -1,43 +1,35 @@
-//! Postgres typed-surface newtypes — Phase 8.5 Cluster 4 (djogi#170 umbrella).
-//!
+//! Postgres typed-surface newtypes —).
 //! This module owns the Rust newtypes that wrap Postgres column types
 //! `postgres-types` does not encode natively (or whose native encoding
 //! does not fit the typed surface djogi wants to expose). Each newtype
 //! ships its own `postgres_types::{ToSql, FromSql}` impl against the raw
 //! Postgres wire format — djogi pulls in no third-party crate to bridge
 //! these types.
-//!
 //! # Types
-//!
-//! | Type            | Postgres column                                | Feature flag | Issue                            |
+//! | Type | Postgres column | Feature flag | Issue |
 //! |-----------------|------------------------------------------------|--------------|----------------------------------|
-//! | [`Interval`]    | `INTERVAL`                                     | (always on)  | djogi#212                        |
-//! | [`Range<T>`]    | `int4range` / `int8range` / `numrange` /       | (always on)  | djogi#215                        |
-//! |                 | `tsrange` / `tstzrange` / `daterange`          |              |                                  |
-//! | `std::net::IpAddr` | `INET`                                      | `network`    | djogi#213                        |
-//! | [`CidrAddr`]    | `CIDR`                                         | `network`    | djogi#213                        |
-//! | [`MacAddr`]     | `MACADDR`                                      | `network`    | djogi#213                        |
-//!
+//! | [`Interval`] | `INTERVAL` | (always on) | |
+//! | [`Range<T>`] | `int4range` / `int8range` / `numrange` / | (always on) | |
+//! | | `tsrange` / `tstzrange` / `daterange` | | |
+//! | `std::net::IpAddr` | `INET` | `network` | |
+//! | [`CidrAddr`] | `CIDR` | `network` | |
+//! | [`MacAddr`] | `MACADDR` | `network` | |
 //! Additional newtypes (a typed `DOMAIN` discriminator and similar
-//! coverage gaps) ship in follow-on dispatches against the djogi#170
-//! umbrella. The module is structured so each newtype is
+//! coverage gaps) ship in follow-on dispatches. The module is
+//! structured so each newtype is
 //! independently `#[cfg]`-gateable when it lands; the Interval and
 //! Range newtypes are unconditional because the wire codecs depend
 //! only on stdlib byte primitives plus the element type's own `ToSql` /
 //! `FromSql` impl. The `network` family is feature-gated per the
-//! djogi#213 spec, matching the spatial-flag pattern: descriptor
+//! spec, matching the spatial-flag pattern: descriptor
 //! variants stay always-on, only the runtime surface is gated.
-//!
 //! # Why hand-rolled wire codecs?
-//!
 //! Pulling in third-party crates (`pg_interval`, `cidr`, `eui48`, …)
 //! would add transitive surface area for a few dozen lines of byte-level
 //! wire encoding. The Postgres wire formats are stable, narrow, and
 //! well-documented; reproducing them keeps djogi's dependency graph
 //! shallow.
-//!
 //! # Path routing
-//!
 //! Adopter code reaches these types through `djogi::Interval` (re-exported
 //! from `djogi::types`, also surfaced through `djogi::prelude::*`).
 //! Macro-emitted code routes through `::djogi::*` per
@@ -49,17 +41,13 @@ use std::error::Error;
 
 // ── Interval ────────────────────────────────────────────────────────────────
 
-/// A Postgres `INTERVAL` value — djogi#212.
-///
+/// A Postgres `INTERVAL` value — .
 /// Represents a calendar duration as three independent fields:
-///
 /// - `months` — calendar months (a year is 12 months).
 /// - `days` — calendar days (a day is NOT 24 hours; DST shifts move it
 ///   by an hour, leap seconds shift it by a fractional second).
 /// - `microseconds` — sub-day time component.
-///
 /// # Why three fields?
-///
 /// Postgres `INTERVAL` is intrinsically a tagged three-tuple, not a
 /// single duration. `2 days` and `48 hours` are NOT the same — adding
 /// `2 days` to a `TIMESTAMPTZ` straddling a DST boundary yields a
@@ -72,34 +60,26 @@ use std::error::Error;
 /// split; adopters who only ever use one component (e.g.
 /// `microseconds_only(1_500_000)` for a 1.5 s interval) construct it
 /// explicitly.
-///
 /// # Why not `time::Duration`?
-///
 /// `time::Duration` (from the `time` crate, djogi's pinned datetime
 /// library) is a fixed-microsecond duration. There is no way to
 /// encode `1 month` losslessly through it. Adopters who need a
 /// time-only interval can use the [`Interval::microseconds_only`]
 /// constructor.
-///
 /// # Wire format
-///
 /// Postgres `INTERVAL` is 16 bytes in binary wire format (see
 /// `src/backend/utils/adt/timestamp.c::interval_send` in the Postgres
 /// source — `pq_sendint64(time)` then `pq_sendint32(day)` then
 /// `pq_sendint32(month)`, all big-endian):
-///
-/// | Bytes  | Field          | Encoding |
+/// | Bytes | Field | Encoding |
 /// |--------|----------------|----------|
-/// | 0..8   | `microseconds` | `i64` big-endian (sub-day time component) |
-/// | 8..12  | `days`         | `i32` big-endian (whole days) |
-/// | 12..16 | `months`       | `i32` big-endian (calendar months) |
-///
+/// | 0..8 | `microseconds` | `i64` big-endian (sub-day time component) |
+/// | 8..12 | `days` | `i32` big-endian (whole days) |
+/// | 12..16 | `months` | `i32` big-endian (calendar months) |
 /// The order in the wire format is `(microseconds, days, months)`, but
 /// the Rust struct lists them in the order most adopters reach for them
 /// when reading code (`months`, then `days`, then `microseconds`).
-///
 /// # Construction
-///
 /// ```rust
 /// use djogi::Interval;
 ///
@@ -112,11 +92,8 @@ use std::error::Error;
 /// // 1.5 second time-only interval
 /// let one_and_a_half = Interval::microseconds_only(1_500_000);
 /// ```
-///
 /// # Equality and ordering
-///
 /// ## Rust structural equality vs Postgres SQL `=`
-///
 /// **Rust `PartialEq` / `Eq` / `Hash` on `Interval` are structural.**
 /// All three component fields must match byte-for-byte.
 /// `Interval::months_only(1) == Interval::days_only(30)` is `false`
@@ -126,7 +103,6 @@ use std::error::Error;
 /// values must hash equal, and only structurally identical values are
 /// equal here), so Rust-side hashmap keying is structural, never
 /// linearized.
-///
 /// **Postgres SQL `=` on `INTERVAL` columns linearizes.**
 /// Postgres converts each component before comparing: months are
 /// treated as 30 days, and days are treated as 24 hours (86,400
@@ -134,7 +110,6 @@ use std::error::Error;
 /// performed on the resulting total microsecond count. As a result,
 /// `INTERVAL '1 month' = INTERVAL '30 days'` is `true` in Postgres
 /// SQL.
-///
 /// **The practical implication for `QuerySet::filter`.** Calling
 /// `QuerySet::filter(|f| f.duration().eq(Interval::months_only(1)))`
 /// forwards to a Postgres `=` predicate, not to Rust `PartialEq`.
@@ -145,7 +120,6 @@ use std::error::Error;
 /// structurally identical rows to match must add a client-side filter
 /// after the fetch, or store the duration in a form that avoids
 /// cross-component ambiguity (e.g. always use `microseconds_only`).
-///
 /// `Interval` does NOT implement `Ord` / `PartialOrd`: comparing
 /// `1 month` against `30 days` is intrinsically ambiguous (depends on
 /// which month). Adopters who need ordering can derive it on a wrapper
@@ -206,11 +180,9 @@ impl ToSql for Interval {
         out: &mut BytesMut,
     ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
         // Postgres INTERVAL binary wire format: 16 bytes, big-endian.
-        //
-        //   bytes 0..8   microseconds : i64 (sub-day time)
-        //   bytes 8..12  days         : i32
-        //   bytes 12..16 months       : i32
-        //
+        // bytes 0..8 microseconds : i64 (sub-day time)
+        // bytes 8..12 days : i32
+        // bytes 12..16 months : i32
         // `BytesMut::put_i64` / `put_i32` write big-endian by default,
         // which matches the Postgres binary protocol.
         out.put_i64(self.microseconds);
@@ -254,41 +226,33 @@ impl crate::descriptor::DjogiSqlType for Interval {
     const SQL_TYPE: &'static str = "INTERVAL";
 }
 
-// ── Range / RangeBound (Phase 8.5 #215 typed surface) ─────────────────────
-//
+// ── Range / RangeBound (#215 typed surface) ─────────────────────
 // Postgres range types (`int4range`, `int8range`, `numrange`, `tsrange`,
 // `tstzrange`, `daterange`) carry a tagged bound shape: each side is
 // inclusive, exclusive, or unbounded, with a separate "empty range" sentinel
 // that has no bounds at all. The Rust type mirrors that shape exactly so
 // adopters never need to invent their own range encoding when declaring
 // `pub period: Range<DateTime>` on a `#[model]` struct.
-//
 // #215 ships the user-facing typed field and predicate surface. Two sibling
 // lanes remain explicitly out of scope here:
-//
-// * djogi#148 — `btree_gist` EXCLUDE constraint grammar (`#[model(exclude(
-//   ...))]`) and the `CREATE EXTENSION btree_gist` migration step.
-// * djogi#150 — PostgreSQL 18 temporal-constraint DDL (`WITHOUT OVERLAPS`,
-//   `PERIOD` foreign keys, `NOT ENFORCED`, named `NOT NULL`).
-//
+// * — `btree_gist` EXCLUDE constraint grammar (`#[model(exclude(
+// ...))]`) and the `CREATE EXTENSION btree_gist` migration step.
+// * — PostgreSQL 18 temporal-constraint DDL (`WITHOUT OVERLAPS`,
+// `PERIOD` foreign keys, `NOT ENFORCED`, named `NOT NULL`).
 // Both lanes consume range columns as their input. Centralizing the
 // `Range<T>` shape here keeps future lanes from diverging on
 // what "a range column" looks like.
-//
 // # No third-party crate
-//
 // `postgres-types` exports the range *type OIDs* as `Type::INT4_RANGE`,
 // `Type::TSTZ_RANGE`, etc. but does not provide a generic Rust `Range<T>`
 // codec. The published `postgres-range` crate is a third-party adapter,
 // pinned to its own type design, and unmaintained against the latest
-// `postgres-types` major. We hand-roll a 30-line wire codec instead —
+// `postgres-types` major. We hand-roll a 30-line wire codec instead
 // no transitive dependency surface, no version pin to worry about.
 
 /// One end of a [`Range`] — inclusive of the named value, exclusive of
 /// the named value, or unbounded on this side.
-///
 /// The variant set matches Postgres's range-bound semantics directly:
-///
 /// * `Inclusive(t)` — the bound value `t` is part of the range.
 ///   Renders as `[t,…]` (lower) or `[…,t]` (upper).
 /// * `Exclusive(t)` — the bound value `t` is *not* part of the range.
@@ -296,11 +260,10 @@ impl crate::descriptor::DjogiSqlType for Interval {
 /// * `Unbounded` — no bound on this side. Postgres terminology calls
 ///   this "infinite"; the wire format sets the `RANGE_LB_INF` /
 ///   `RANGE_UB_INF` flag and omits the bound bytes entirely.
-///
-/// The empty range is *not* a special `RangeBound` value — it is a
-/// separate state on the enclosing [`Range`]. Use [`Range::empty`] when
-/// you need the empty-range sentinel; an empty range carries no bound
-/// values regardless of which `RangeBound` variants you started with.
+///   The empty range is *not* a special `RangeBound` value — it is a
+///   separate state on the enclosing [`Range`]. Use [`Range::empty`] when
+///   you need the empty-range sentinel; an empty range carries no bound
+///   values regardless of which `RangeBound` variants you started with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RangeBound<T> {
     /// `[t,…]` / `[…,t]` — the bound value is part of the range.
@@ -312,17 +275,14 @@ pub enum RangeBound<T> {
 }
 
 /// A Postgres range value over an element type `T`.
-///
 /// Mirrors Postgres's tagged range layout: each side carries an
 /// inclusive / exclusive / unbounded bound, with a separate `empty`
 /// flag for the empty-range sentinel. A range with `empty = true`
-/// carries no bound values regardless of how it was constructed —
+/// carries no bound values regardless of how it was constructed
 /// [`Range::empty`] returns the canonical empty range, and the wire
 /// codec collapses any in-memory bound values when the empty flag is
 /// set.
-///
 /// # Construction
-///
 /// ```rust
 /// use djogi::{Range, RangeBound};
 ///
@@ -336,9 +296,7 @@ pub enum RangeBound<T> {
 /// // Empty range.
 /// let nothing: Range<i32> = Range::empty();
 /// ```
-///
 /// # Equality and ordering
-///
 /// `PartialEq` / `Eq` / `Hash` are structural — two `Range<T>` values
 /// compare equal only when their `empty` flag and bound shapes match
 /// byte-for-byte. Postgres `=` on range columns has different
@@ -347,48 +305,39 @@ pub enum RangeBound<T> {
 /// Rust structural comparison does *not* canonicalize. Adopters who
 /// need SQL-level equivalence should route through Postgres `=` via
 /// `QuerySet::filter`.
-///
 /// `Range` does not implement `Ord` / `PartialOrd` — comparing two
 /// ranges that overlap at one endpoint but differ in inclusivity is
 /// ambiguous, and the framework refuses to pick an interpretation on
 /// the adopter's behalf.
-///
 /// # Wire format
-///
 /// Postgres range binary wire format (see `range_send` in
 /// `src/backend/utils/adt/rangetypes.c`):
-///
-/// | Bytes               | Field        | Encoding |
+/// | Bytes | Field | Encoding |
 /// |---------------------|--------------|----------|
-/// | 0                   | flags        | `u8` — see [`RangeFlags`] private constants |
-/// | (if lower finite)   | lower length | `i32` big-endian, byte count of lower bound |
-/// | (if lower finite)   | lower bytes  | Postgres binary repr of `T` for the element type |
-/// | (if upper finite)   | upper length | `i32` big-endian, byte count of upper bound |
-/// | (if upper finite)   | upper bytes  | Postgres binary repr of `T` for the element type |
-///
+/// | 0 | flags | `u8` — see [`RangeFlags`] private constants |
+/// | (if lower finite) | lower length | `i32` big-endian, byte count of lower bound |
+/// | (if lower finite) | lower bytes | Postgres binary repr of `T` for the element type |
+/// | (if upper finite) | upper length | `i32` big-endian, byte count of upper bound |
+/// | (if upper finite) | upper bytes | Postgres binary repr of `T` for the element type |
 /// The empty range writes a single flag byte (`0x01`) and no bounds.
 /// Unbounded ends set the `RANGE_LB_INF` / `RANGE_UB_INF` flag and
 /// omit the bound bytes. The wire encoding for the element type `T`
-/// is whatever `T::to_sql` produces for the element-type `&Type` —
+/// is whatever `T::to_sql` produces for the element-type `&Type`
 /// e.g. `i32` writes 4 big-endian bytes for `INT4`, `OffsetDateTime`
 /// writes 8 big-endian microseconds-since-2000 bytes for `TIMESTAMPTZ`.
-///
 /// # Future siblings - DB-level no-overlap
-///
 /// `Range<T>` is also the substrate for two future DB-level no-overlap
 /// surfaces tracked separately:
-///
-/// * **djogi#148** — `btree_gist` EXCLUDE constraint grammar
+/// * **** — `btree_gist` EXCLUDE constraint grammar
 ///   (`#[model(exclude(...))]`) and `CREATE EXTENSION btree_gist`.
 ///   The general-purpose no-overlap mechanism that works on every
 ///   supported Postgres version.
-/// * **djogi#150** — PostgreSQL 18 temporal-constraint DDL
+/// * **** — PostgreSQL 18 temporal-constraint DDL
 ///   (`WITHOUT OVERLAPS`, `PERIOD` foreign keys, `NOT ENFORCED`,
 ///   named `NOT NULL`). The modern SQL-standard no-overlap mechanism
 ///   on PG18+.
-///
-/// Both lanes consume `Range<T>` columns as their inputs. Neither lane is
-/// part of #215.
+///   Both lanes consume `Range<T>` columns as their inputs. Neither lane is
+///   part of #215.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Range<T> {
     lower: RangeBound<T>,
@@ -399,11 +348,9 @@ pub struct Range<T> {
 impl<T> Range<T> {
     /// Construct the empty range — the Postgres `'empty'::<subtype>range`
     /// value.
-    ///
     /// The empty range has no bounds; both `lower` and `upper` are set
     /// to [`RangeBound::Unbounded`] for consistency, and the `empty`
     /// flag suppresses any bound serialization in the wire codec.
-    ///
     /// `Range::empty()` is the default value for `Range<T>` regardless
     /// of `T` — see the [`Default`] impl below.
     pub const fn empty() -> Self {
@@ -415,14 +362,12 @@ impl<T> Range<T> {
     }
 
     /// Construct a non-empty range from explicit bounds.
-    ///
     /// The framework does **not** validate that `lower <= upper`.
     /// Postgres rejects such ranges at write time with
     /// `ERROR: range lower bound must be less than or equal to range upper bound`;
     /// the Rust type defers ordering judgement to Postgres so it
     /// stays valid for adopter-defined element types whose ordering
     /// the framework cannot know.
-    ///
     /// Use [`Range::empty`] for the empty range — passing
     /// [`RangeBound::Unbounded`] for both sides produces `(-∞, +∞)`,
     /// **not** the empty range.
@@ -435,7 +380,6 @@ impl<T> Range<T> {
     }
 
     /// `true` if this range is the empty-range sentinel.
-    ///
     /// Empty ranges never carry bound values regardless of how they
     /// were constructed; an in-memory empty range with non-`Unbounded`
     /// bound variants is normalised to no-bounds when serialised.
@@ -458,15 +402,12 @@ impl<T> Range<T> {
 
 impl<T> Range<T> {
     /// `[lo, hi]` — both endpoints inclusive.
-    ///
     /// Postgres canonicalises discrete-subtype ranges (`int4range`,
     /// `int8range`, `daterange`) to lower-inclusive / upper-exclusive
     /// at storage time, so a stored `int4range '[1,9]'` is equal to
     /// `int4range '[1,10)'` at the SQL level. The Rust type preserves
     /// what you passed in; the canonicalisation happens server-side.
-    ///
     /// # Caveat — discrete upper-MAX bounds
-    ///
     /// For **discrete** subtypes (`int4range`, `int8range`, `daterange`)
     /// Postgres canonicalises `[lo, hi]` to `[lo, hi + 1)` at write
     /// time. When `hi` is at the element type's representable maximum
@@ -477,10 +418,8 @@ impl<T> Range<T> {
     /// `daterange '[..., 9999-12-31]'` canonicalises to an upper bound
     /// of `10000-01-01` that exceeds Djogi's `time::Date` upper-bound
     /// CHECK and is rejected at write time.
-    ///
     /// Prefer the [`Range::inclusive_exclusive`] form when reaching for
     /// the element type's maximum on a discrete range column:
-    ///
     /// ```rust,ignore
     /// // Avoid on discrete subtypes — Postgres rejects on canonicalisation:
     /// // let r = Range::inclusive(0_i32, i32::MAX);
@@ -488,7 +427,6 @@ impl<T> Range<T> {
     /// // Prefer — already in canonical form, no overflow on storage:
     /// let r = Range::inclusive_exclusive(0_i32, i32::MAX);
     /// ```
-    ///
     /// Continuous subtypes (`numrange`, `tstzrange`) are NOT
     /// canonicalised and accept `[..., MAX]` unchanged.
     pub fn inclusive(lo: T, hi: T) -> Self {
@@ -501,12 +439,10 @@ impl<T> Range<T> {
     }
 
     /// `[lo, hi)` — lower inclusive, upper exclusive.
-    ///
     /// The canonical "discrete" range shape. Postgres canonicalises
     /// every discrete range to this form at storage time, so adopters
     /// who want their in-memory `Range` shape to match what comes back
     /// out of a `SELECT` reach for this constructor.
-    ///
     /// This is also the safe form when reaching for the element type's
     /// maximum on a discrete range column — see the caveat on
     /// [`Range::inclusive`].
@@ -515,7 +451,6 @@ impl<T> Range<T> {
     }
 
     /// `(lo, hi]` — lower exclusive, upper inclusive.
-    ///
     /// On discrete subtypes (`int4range`, `int8range`, `daterange`) the
     /// upper-MAX caveat from [`Range::inclusive`] applies — Postgres
     /// canonicalises the upper inclusive bound to `hi + 1` exclusive,
@@ -537,22 +472,18 @@ impl<T> Default for Range<T> {
 
 /// Maps a Rust element type to the Postgres range type and bound
 /// element type used to serialise a [`Range`] of that element type.
-///
 /// One impl per supported subtype:
-///
-/// | Rust element type            | Postgres range type | Bound element type |
+/// | Rust element type | Postgres range type | Bound element type |
 /// |------------------------------|---------------------|--------------------|
-/// | `i32`                        | `int4range`         | `INT4`             |
-/// | `i64`                        | `int8range`         | `INT8`             |
-/// | `rust_decimal::Decimal`      | `numrange`          | `NUMERIC`          |
-/// | `time::PrimitiveDateTime`    | `tsrange`           | `TIMESTAMP`        |
-/// | `time::OffsetDateTime`       | `tstzrange`         | `TIMESTAMPTZ`      |
-/// | `time::Date`                 | `daterange`         | `DATE`             |
-///
+/// | `i32` | `int4range` | `INT4` |
+/// | `i64` | `int8range` | `INT8` |
+/// | `rust_decimal::Decimal` | `numrange` | `NUMERIC` |
+/// | `time::PrimitiveDateTime` | `tsrange` | `TIMESTAMP` |
+/// | `time::OffsetDateTime` | `tstzrange` | `TIMESTAMPTZ` |
+/// | `time::Date` | `daterange` | `DATE` |
 /// `tsrange` uses `time::PrimitiveDateTime` so timestamp-without-timezone
 /// semantics stay explicit. Djogi's `DateTime` alias remains
 /// timezone-aware and lowers to `tstzrange`.
-///
 /// The trait is open for future extensions but the only implementors
 /// shipping in #215 are the six rows above. Because `Range<T>` has a
 /// blanket `DjogiSqlType` impl for every `T: RangeSubtype`, adopters
@@ -642,8 +573,7 @@ impl<T: RangeSubtype> crate::descriptor::DjogiSqlType for Range<T> {
 }
 
 // ── Wire codec helpers ──────────────────────────────────────────────────────
-//
-// The flag bit layout matches Postgres's `rangetypes.h` definitions —
+// The flag bit layout matches Postgres's `rangetypes.h` definitions
 // see `RANGE_EMPTY`, `RANGE_LB_INC`, `RANGE_UB_INC`, `RANGE_LB_INF`,
 // `RANGE_UB_INF`. The `RANGE_LB_NULL` / `RANGE_UB_NULL` flags are
 // historical (Postgres deprecated NULL bounds long ago) and never set
@@ -863,29 +793,24 @@ where
     }
 }
 
-// ── Network types — MacAddr / CidrAddr (djogi#213, `network` feature) ────────
-//
+// ── Network types — MacAddr / CidrAddr (, `network` feature) ────────
 // Postgres ships three network-shaped column types — `INET`, `CIDR`, and
 // `MACADDR`. Djogi's coverage of them:
-//
 // * **`INET`**: `std::net::IpAddr` reuses the always-on `postgres-types`
-//   native `ToSql` / `FromSql` impls. The netmask defaults to /32 (IPv4)
-//   / /128 (IPv6) — host addresses without explicit network prefixes.
-//   Adopters who need a non-default netmask on an `INET` column reach
-//   for the same future-work direction that `CIDR` opens: a typed
-//   newtype carrying both address and prefix. Today, full-prefix INET
-//   carries the host-only adopter case; future-work follow-up adds
-//   `InetAddr { addr, prefix }` symmetric with `CidrAddr` once an
-//   adopter use case surfaces.
-//
+// native `ToSql` / `FromSql` impls. The netmask defaults to /32 (IPv4)
+// / /128 (IPv6) — host addresses without explicit network prefixes.
+// Adopters who need a non-default netmask on an `INET` column reach
+// for the same future-work direction that `CIDR` opens: a typed
+// newtype carrying both address and prefix. Today, full-prefix INET
+// carries the host-only adopter case; future-work follow-up adds
+// `InetAddr { addr, prefix }` symmetric with `CidrAddr` once an
+// adopter use case surfaces.
 // * **`CIDR`**: typed `CidrAddr { addr, prefix }` newtype below. The
-//   wire format is identical to INET (4-byte header + variable address
-//   bytes) but the Postgres type OID differs and the validator rejects
-//   non-network addresses (host bits past the prefix must be zero).
-//
+// wire format is identical to INET (4-byte header + variable address
+// bytes) but the Postgres type OID differs and the validator rejects
+// non-network addresses (host bits past the prefix must be zero).
 // * **`MACADDR`**: typed `MacAddr([u8; 6])` newtype below. The wire
-//   format is the bare 6-byte address with no header.
-//
+// format is the bare 6-byte address with no header.
 // All three column types are recognised behind the `network` Cargo
 // feature flag (see `djogi/Cargo.toml`). The descriptor enum variants
 // (`FieldSqlType::Inet` / `Cidr` / `Macaddr`) are always present so
@@ -894,9 +819,7 @@ where
 // paths are gated. Adopters with the feature off who declare a field
 // of type `MacAddr` or `CidrAddr` get an "unresolved type" compile
 // error at the model struct, matching the spatial flag's behaviour.
-//
 // # Why no third-party crate?
-//
 // The Postgres INET/CIDR/MACADDR wire formats are stable, documented,
 // and narrow. `postgres-protocol` ships its own `inet_to_sql` /
 // `inet_from_sql` helpers (which `postgres-types` reaches for
@@ -922,13 +845,10 @@ const PGSQL_AF_INET6: u8 = 3;
 
 // ── MacAddr ─────────────────────────────────────────────────────────────────
 
-/// A Postgres `MACADDR` value — djogi#213.
-///
+/// A Postgres `MACADDR` value — .
 /// A 6-byte EUI-48 MAC address. The wire encoding is the bare 6 bytes
 /// in network (big-endian) order with no header.
-///
 /// # Construction
-///
 /// ```rust,ignore
 /// use djogi::MacAddr;
 ///
@@ -938,26 +858,20 @@ const PGSQL_AF_INET6: u8 = 3;
 /// // Parse from the canonical colon-separated form.
 /// let mac = "aa:bb:cc:dd:ee:ff".parse::<MacAddr>().unwrap();
 /// ```
-///
 /// # Equality and ordering
-///
 /// `MacAddr` derives `PartialEq` / `Eq` / `Hash` / `PartialOrd` /
 /// `Ord` over the underlying 6-byte array. Rust structural equality
 /// matches Postgres `=` exactly — both compare bytes — so portable
 /// `eq` / `neq` predicates can route through `DjogiPortableEq` without
 /// an SQL-only escape hatch the way [`Interval`] requires.
-///
 /// # Wire format
-///
 /// Postgres binary `MACADDR` wire format: 6 bytes, oui first. See
 /// `pq_sendbytes(value->a, 6)` in `src/backend/utils/adt/mac.c`.
-///
 /// # `MACADDR8` (EUI-64) is intentionally out of scope
-///
-/// Postgres also ships `MACADDR8` (8-byte EUI-64). The djogi#213
+/// Postgres also ships `MACADDR8` (8-byte EUI-64). The
 /// surface targets the more common 6-byte EUI-48 form. Adopters with
 /// `MACADDR8` columns today use `Custom("MACADDR8")` + a hand-rolled
-/// newtype; the djogi#170 umbrella tracks future-work for full
+/// newtype; the tracks future-work for full
 /// EUI-64 coverage if adopter demand surfaces.
 #[cfg(feature = "network")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -978,9 +892,7 @@ impl MacAddr {
 
 /// Error returned by `MacAddr::from_str` when the input is not a valid
 /// canonical-form MAC address.
-///
 /// Three failure modes:
-///
 /// * `WrongLength { found }` — the input did not parse into exactly six
 ///   octets (typically because the wrong number of `:` / `-` separators
 ///   was present, or no separators at all).
@@ -989,10 +901,9 @@ impl MacAddr {
 ///   pair. The `index` is 0-based.
 /// * `MixedSeparators` — the input mixed `:` and `-` separators, which
 ///   is ambiguous. Pick one separator style.
-///
-/// The variant payloads are deliberately concrete (lengths, indexes,
-/// the offending octet) so adopters can compose richer error messages
-/// without re-parsing.
+///   The variant payloads are deliberately concrete (lengths, indexes,
+///   the offending octet) so adopters can compose richer error messages
+///   without re-parsing.
 #[cfg(feature = "network")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MacAddrParseError {
@@ -1043,7 +954,6 @@ impl std::str::FromStr for MacAddr {
     type Err = MacAddrParseError;
 
     /// Parse a colon- or hyphen-separated MAC address into a `MacAddr`.
-    ///
     /// Accepts the two most common canonical forms — `aa:bb:cc:dd:ee:ff`
     /// (Unix / Postgres default) and `aa-bb-cc-dd-ee-ff` (Windows
     /// default). Mixed-separator input (`aa:bb-cc:dd-ee:ff`) is
@@ -1122,8 +1032,7 @@ impl crate::descriptor::DjogiSqlType for MacAddr {
 
 // ── CidrAddr ────────────────────────────────────────────────────────────────
 
-/// A Postgres `CIDR` value — djogi#213.
-///
+/// A Postgres `CIDR` value — .
 /// Carries both an IP address and an explicit network prefix length.
 /// Postgres CIDR rejects values whose host bits past the prefix are
 /// non-zero (e.g., `192.168.1.5/24` is rejected because the trailing
@@ -1131,9 +1040,7 @@ impl crate::descriptor::DjogiSqlType for MacAddr {
 /// `.0.0.0.5` are non-zero), so `CidrAddr::new` performs the same
 /// check at construction time and returns an error rather than
 /// deferring to the database round-trip.
-///
 /// # Construction
-///
 /// ```rust,ignore
 /// use djogi::CidrAddr;
 /// use std::net::{IpAddr, Ipv4Addr};
@@ -1144,34 +1051,27 @@ impl crate::descriptor::DjogiSqlType for MacAddr {
 /// // 192.168.1.5/24 — rejected: host bits past the prefix are non-zero.
 /// assert!(CidrAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24).is_err());
 /// ```
-///
 /// # Equality and ordering
-///
 /// `CidrAddr` derives `PartialEq` / `Eq` / `Hash` over both the address
 /// and the prefix. Rust structural equality matches Postgres `=` on
 /// `CIDR` columns: two CIDR values are equal when their addresses and
 /// prefixes both match byte-for-byte.
-///
 /// # INET vs CIDR distinction
-///
 /// `std::net::IpAddr` maps to `INET` (always /32 or /128 — the host-
 /// address case). `CidrAddr` maps to `CIDR`. The two Rust types are
 /// distinct so the macro routes them to distinct column types without
 /// needing a `#[field(ip_type = "cidr")]` attribute; the type-driven
 /// dispatch matches djogi's `HeerId` vs `RanjId` pattern.
-///
 /// # Wire format
-///
 /// Postgres binary CIDR / INET wire format (identical layout; the type
 /// OID disambiguates):
-///
-/// | Bytes | Field        | Encoding |
+/// | Bytes | Field | Encoding |
 /// |-------|--------------|----------|
-/// | 0     | `family`     | `u8` — `PGSQL_AF_INET` (2) for IPv4, `PGSQL_AF_INET6` (3) for IPv6 |
-/// | 1     | `prefix`     | `u8` — 0..=32 for IPv4, 0..=128 for IPv6 |
-/// | 2     | `is_cidr`    | `u8` — 0 for INET, 1 for CIDR |
-/// | 3     | `len`        | `u8` — 4 for IPv4, 16 for IPv6 |
-/// | 4..   | `addr_bytes` | 4 or 16 octets, network (big-endian) order |
+/// | 0 | `family` | `u8` — `PGSQL_AF_INET` (2) for IPv4, `PGSQL_AF_INET6` (3) for IPv6 |
+/// | 1 | `prefix` | `u8` — 0..=32 for IPv4, 0..=128 for IPv6 |
+/// | 2 | `is_cidr` | `u8` — 0 for INET, 1 for CIDR |
+/// | 3 | `len` | `u8` — 4 for IPv4, 16 for IPv6 |
+/// | 4.. | `addr_bytes` | 4 or 16 octets, network (big-endian) order |
 #[cfg(feature = "network")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CidrAddr {
@@ -1218,7 +1118,6 @@ impl std::error::Error for CidrAddrError {}
 #[cfg(feature = "network")]
 impl CidrAddr {
     /// Construct a `CidrAddr` from an address and a prefix length.
-    ///
     /// Validates that the prefix is in range (0..=32 for IPv4,
     /// 0..=128 for IPv6) and that all bits past the prefix in the
     /// address are zero. The latter check matches Postgres's CIDR
@@ -1373,7 +1272,7 @@ fn write_inet_payload(addr: std::net::IpAddr, prefix: u8, is_cidr: u8, out: &mut
 }
 
 /// Shared INET/CIDR wire decoder. Returns `(addr, prefix)` and validates
-/// the four-byte header. The `is_cidr` byte is read but not consulted —
+/// the four-byte header. The `is_cidr` byte is read but not consulted
 /// Postgres tags the value with the column type, and the type OID
 /// already disambiguates INET from CIDR at the `accepts` boundary above.
 /// We accept either value of the byte to stay robust against future
@@ -1529,7 +1428,7 @@ mod tests {
         assert!(!<Interval as FromSql>::accepts(&Type::INT8));
     }
 
-    // ── Range / RangeBound (djogi#215) ──────────────────────────────────────
+    // ── Range / RangeBound ──────────────────────────────────────
 
     #[test]
     fn range_empty_constructor_carries_unbounded_sides_and_empty_flag() {
@@ -1907,7 +1806,7 @@ mod tests {
         );
     }
 
-    // ── MacAddr (Phase 8.5 Cluster 4 — djogi#213) ───────────────────────────
+    // ── MacAddr ───────────────────────────
 
     #[cfg(feature = "network")]
     #[test]
@@ -2002,7 +1901,7 @@ mod tests {
         assert!(!<MacAddr as FromSql>::accepts(&Type::BYTEA));
     }
 
-    // ── CidrAddr (Phase 8.5 Cluster 4 — djogi#213) ──────────────────────────
+    // ── CidrAddr ──────────────────────────
 
     #[cfg(feature = "network")]
     #[test]

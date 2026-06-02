@@ -1,11 +1,8 @@
 //! Public row-decode trait for the tokio-postgres runtime.
-//!
 //! # What
-//!
 //! [`FromPgRow`] is the canonical row-decode trait emitted by
 //! `#[model]` (see `djogi-macros/src/model/from_row.rs`). Every model
 //! gets:
-//!
 //! - [`FromPgRow::COLUMNS`] — a `&'static [&'static str]` listing the
 //!   column names the macro baked in, in canonical SELECT order
 //!   (framework fields first: `id`, `created_at`, `updated_at`, then
@@ -16,9 +13,7 @@
 //! - [`FromPgRow::from_pg_row`] — positional decode via
 //!   `row.try_get(0)`, `row.try_get(1)`, … matching the `COLUMNS`
 //!   order.
-//!
 //! # Why ordinal, not name-based
-//!
 //! Ordinal decode skips the per-call name-to-index hash table
 //! `tokio_postgres::Row::try_get::<_, &str>(col)` walks on every
 //! field. For a row with N columns, ordinal decode is one index read
@@ -26,22 +21,18 @@
 //! in N). The CRUD / QuerySet terminals emit `SELECT {COLUMN_LIST}`
 //! (baked at macro time) so the wire column order is always the
 //! struct-field order, and positional decode is sound.
-//!
 //! # Drift safeguard — debug-build name guard
-//!
 //! The macro emits `debug_assert_eq!(row.columns()[i].name(),
 //! Self::COLUMNS[i])` per column. Column-order drift (caller sends a
 //! SELECT that doesn't match `COLUMN_LIST`; a future refactor
 //! reshapes the builder; a test fixture hand-rolls the wrong SELECT)
-//! panics loudly under `cargo test`. Release builds drop the assert —
+//! panics loudly under `cargo test`. Release builds drop the assert
 //! ordinal decode stays a single `try_get(i)` call with no per-row
 //! overhead.
-//!
-//! Joined-row decode uses a different trait ([`FromJoinedPgRow`], T4)
+//! Joined-row decode uses a different trait ([`FromJoinedPgRow`])
 //! because `select_related` adds aliased child columns whose
 //! ordinal positions depend on the runtime prefetch graph, not the
 //! canonical struct shape.
-//!
 //! [`FromJoinedPgRow`]: crate::pg::decode::FromJoinedPgRow
 
 use crate::{DjogiError, VisageError};
@@ -49,13 +40,10 @@ use tokio_postgres::Row;
 use tokio_postgres::types::{FromSql, Type};
 
 /// Canonical row-decode trait for `#[model]`-annotated structs.
-///
 /// Do not implement this manually — `#[model]` emits the impl. Users
 /// can still bound generic code on `T: FromPgRow` (e.g. to accept any
 /// model in a helper function), which is the intended public shape.
-///
 /// # Contract
-///
 /// Implementors must guarantee that:
 /// 1. [`COLUMNS`](Self::COLUMNS) lists fields in the exact order
 ///    [`from_pg_row`](Self::from_pg_row) reads them from the row
@@ -71,7 +59,6 @@ use tokio_postgres::types::{FromSql, Type};
 pub trait FromPgRow: Sized {
     /// Column names in the canonical SELECT order (framework fields
     /// first, then user fields).
-    ///
     /// `COLUMNS[i]` is the name of the column decoded by
     /// `from_pg_row` at ordinal position `i`. The macro uses this
     /// slice both to emit the per-column `debug_assert_eq!` name
@@ -82,9 +69,7 @@ pub trait FromPgRow: Sized {
     /// Canonical column list for SQL emission — the same names as
     /// [`COLUMNS`](Self::COLUMNS), joined with `", "`. Baked at macro
     /// time so callers never need to allocate.
-    ///
     /// Interpolate directly into SQL text:
-    ///
     /// ```ignore
     /// let sql = format!("SELECT {} FROM {} WHERE id = $1",
     ///                   <User as FromPgRow>::COLUMN_LIST,
@@ -93,7 +78,6 @@ pub trait FromPgRow: Sized {
     const COLUMN_LIST: &'static str;
 
     /// Decode `Self` from a `tokio_postgres::Row` positionally.
-    ///
     /// Column ordinals are fixed at macro time and match
     /// [`COLUMNS`](Self::COLUMNS) index-for-index. Callers must
     /// supply a row produced by a SELECT whose projection matches
@@ -101,10 +85,8 @@ pub trait FromPgRow: Sized {
     /// terminals shipped by Djogi guarantee this; hand-rolled SELECTs
     /// must either interpolate `COLUMN_LIST` or supply columns in the
     /// same order.
-    ///
     /// Returns [`DjogiError::Decode`](crate::DjogiError::Decode) with
     /// the offending column name on wire-type mismatch.
-    ///
     /// In debug builds, a `debug_assert_eq!` on each
     /// `row.columns()[i].name()` panics if the wire shape drifts
     /// from [`COLUMNS`](Self::COLUMNS). Release builds skip the
@@ -113,21 +95,16 @@ pub trait FromPgRow: Sized {
 }
 
 /// Prefix-aware joined-row decoder for `#[model]` structs.
-///
 /// # What
-///
 /// [`FromJoinedPgRow`] is the sibling of [`FromPgRow`] for row shapes
 /// where a model's columns are available under a caller-supplied
 /// prefix. `select_related` uses this for child aliases such as
 /// `"rel_owner_id.name"`, but the trait works for any projection that
 /// follows the same `"{prefix}{field_name}"` convention.
-///
 /// # How
-///
 /// The `#[model]` macro emits one impl per model. Passing `""`
 /// decodes the model from bare column names; passing a non-empty prefix
 /// decodes the same model from aliased columns in a joined row.
-///
 /// `#[doc(hidden)]` — adopters do not implement this trait by hand; the
 /// macro emits the impl. The trait stays `pub` because cross-crate
 /// macro emission needs `::djogi::pg::decode::FromJoinedPgRow` to
@@ -140,7 +117,6 @@ pub trait FromJoinedPgRow: Sized {
 }
 
 /// Map a logical joined-field index to the SQL projection column name.
-///
 /// Most joined projections use `"{prefix}{field_name}"` naming.
 /// For OLD/NEW pair returning, Djogi emits compact aliases (`o0`, `o1`, `n0`,
 /// `n1`, ...) and keeps runtime decoding stable across PostgreSQL identifier
@@ -156,20 +132,17 @@ pub fn joined_alias_for_prefix(prefix: &str, idx: usize, col_name: &str) -> Stri
 
 /// Decode a column at a positional index, with a debug-build name
 /// guard and a column-name-tagged error.
-///
 /// Both the canonical `FromPgRow::from_pg_row` body emitted by
 /// `#[model]` and the visage `FromPgRow` body emitted per
 /// `#[model(visages = "...")]` route here. Centralises the
 /// column-order drift assertion (active only in debug builds) and the
 /// `tokio_postgres::Error → DjogiError::Decode` mapping that would
 /// otherwise duplicate at every macro-emitted column site.
-///
 /// `name` is the canonical SELECT-order column name baked in at macro
 /// time. In debug builds, a mismatch between `name` and
-/// `row.columns()[idx].name()` panics with the offending positions —
+/// `row.columns[idx].name` panics with the offending positions
 /// surfacing column-order drift loudly in `cargo test`. Release builds
 /// drop the assert; ordinal decode stays a single `try_get(idx)` call.
-///
 /// `#[doc(hidden)]` — emitted by `#[model]` and `#[derive(Visage)]`,
 /// not user-facing.
 #[doc(hidden)]
@@ -190,14 +163,12 @@ where
 }
 
 /// Decode a derived visage projection entry at a positional index.
-///
 /// Direct model columns keep using [`decode_at`] and therefore preserve the
 /// long-standing `DjogiError::Decode` contract. Derived entries are different:
 /// their SQL expression is adopter-declared computed data, and the public
 /// visage contract exposes dedicated error variants for NULL and runtime type
 /// mismatch. This helper carries the same debug-build name guard as
 /// [`decode_at`] but maps `tokio_postgres` decode failures into those variants.
-///
 /// `#[doc(hidden)]` — emitted only by `#[model]` for derived visage fields.
 #[doc(hidden)]
 pub fn decode_derived_at<'a, T>(
@@ -292,10 +263,8 @@ fn pg_type_name(ty: &Type) -> &'static str {
 }
 
 /// Decode one scalar value from a row by ordinal position.
-///
 /// Centralises the `tokio_postgres::Error -> DjogiError` conversion for
 /// scalar terminals and raw-row helpers.
-///
 /// `#[doc(hidden)]` — emitted by `djogi::primary_key!` for newtype-PK
 /// decode; not user-facing.
 #[doc(hidden)]
@@ -307,20 +276,17 @@ where
 }
 
 /// Decode a column stored as a wider type `W` and narrow it to target type `N`.
-///
 /// Used by `#[model]` for fields whose Rust source type is narrower than the
 /// SQL carrier: `i8 / u8 → SMALLINT (i16)`, `u16 → INTEGER (i32)`,
-/// `u32 → BIGINT (i64)`.  The debug-build column-name guard from
+/// `u32 → BIGINT (i64)`. The debug-build column-name guard from
 /// [`decode_at`] runs on the wide read; the subsequent narrowing applies
 /// `N::try_from(wide_value)`.
-///
 /// Returns `DjogiError::Decode` if the stored value is out of the narrow
 /// type's representable range. This is the second line of defence behind
-/// the type-derived CHECK that `#[model]` emits via the projection layer —
+/// the type-derived CHECK that `#[model]` emits via the projection layer
 /// it fires when a row lands without the CHECK in place (e.g. a schema
 /// snapshot reapplied before the migration ran, or a direct `COPY … FROM`
 /// that bypasses check constraints).
-///
 /// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
 #[doc(hidden)]
 pub fn decode_narrowed<'a, W, N>(
@@ -340,12 +306,10 @@ where
 }
 
 /// Decode a nullable column stored as a wider type `W` and narrow to `N`.
-///
 /// The `Option`-flavoured companion to [`decode_narrowed`] for nullable
 /// fields. Decodes `Option<W>` from the wire and maps the inner value
 /// through `N::try_from`, propagating `DjogiError::Decode` on
 /// out-of-range values.
-///
 /// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
 #[doc(hidden)]
 pub fn decode_narrowed_opt<'a, W, N>(
@@ -369,7 +333,6 @@ where
 
 /// Convert a `rust_decimal::Decimal` to `u64`, rejecting fractional and
 /// out-of-range values.
-///
 /// u64 columns use bare `NUMERIC` (no precision/scale) as their SQL carrier,
 /// which means Postgres stores values exactly as given without rounding. A
 /// direct `INSERT … NUMERIC '1.5'` can land a fractional value even if the
@@ -377,14 +340,12 @@ where
 /// or bypassed via `COPY`). `Decimal::to_u64()` via `ToPrimitive` silently
 /// truncates fractional parts (e.g. `1.5 → 1`), so we must explicitly reject
 /// fractional values before conversion.
-///
 /// Returns `DjogiError::Decode` for:
 /// - values with a non-zero fractional part (`1.5`, `-0.1`, …)
 /// - negative values (`-1`)
 /// - values exceeding `u64::MAX` (`18_446_744_073_709_551_616`)
-///
-/// Private helper — all four `decode_*_u64_from_decimal` variants delegate
-/// here so the rejection logic is in one place.
+///   Private helper — all four `decode_*_u64_from_decimal` variants delegate
+///   here so the rejection logic is in one place.
 fn decimal_to_u64(
     dec: rust_decimal::Decimal,
     col: impl std::fmt::Display,
@@ -404,21 +365,18 @@ fn decimal_to_u64(
 }
 
 /// Decode a `u64` field stored as bare `NUMERIC`.
-///
 /// `NUMERIC` (no precision/scale) is the SQL carrier for `u64` columns.
-/// Unlike `NUMERIC(20, 0)`, bare NUMERIC does NOT round fractional inputs —
+/// Unlike `NUMERIC(20, 0)`, bare NUMERIC does NOT round fractional inputs
 /// it stores exactly what is given. The migration projection layer emits a
 /// database-level CHECK (`col >= 0 AND col <= u64::MAX AND col = trunc(col)`)
 /// to reject fractional and out-of-range values at write time. This decode
 /// function adds a second line of defence on the Rust side via
 /// [`decimal_to_u64`], which explicitly rejects fractional values before
 /// conversion.
-///
 /// Returns `DjogiError::Decode` if the stored value does not fit in
 /// `u64` (fractional values, negative values, or values exceeding
 /// `u64::MAX` stored by an external writer that bypassed the type-derived
 /// CHECK).
-///
 /// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
 #[doc(hidden)]
 pub fn decode_u64_from_decimal(
@@ -431,11 +389,9 @@ pub fn decode_u64_from_decimal(
 }
 
 /// Decode a nullable `u64` field stored as bare `NUMERIC`.
-///
 /// The `Option`-flavoured companion to [`decode_u64_from_decimal`].
 /// Delegates to [`decimal_to_u64`] for the non-null case; see that
 /// function for the rejection contract (fractional values, out-of-range).
-///
 /// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
 #[doc(hidden)]
 pub fn decode_opt_u64_from_decimal(
@@ -448,12 +404,10 @@ pub fn decode_opt_u64_from_decimal(
 }
 
 /// Name-based variant of [`decode_narrowed`] for the `FromJoinedPgRow` path.
-///
 /// `FromJoinedPgRow` decodes columns by prefixed name rather than ordinal
 /// index. This helper decodes `W` by the given column name and narrows to `N`,
 /// matching the semantics of [`decode_narrowed`] but accepting a dynamically
 /// computed `&str` name instead of a `&'static str` ordinal-path name.
-///
 /// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
 #[doc(hidden)]
 pub fn decode_narrowed_by_name<'a, W, N>(row: &'a Row, col_name: &str) -> Result<N, DjogiError>
@@ -473,7 +427,6 @@ where
 }
 
 /// Nullable name-based variant of [`decode_narrowed_by_name`].
-///
 /// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
 #[doc(hidden)]
 pub fn decode_narrowed_opt_by_name<'a, W, N>(
@@ -497,10 +450,8 @@ where
 }
 
 /// Name-based variant of [`decode_u64_from_decimal`].
-///
 /// Delegates to [`decimal_to_u64`] for the conversion; see that function
 /// for the fractional-rejection and out-of-range contract.
-///
 /// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
 #[doc(hidden)]
 pub fn decode_u64_from_decimal_by_name(row: &Row, col_name: &str) -> Result<u64, DjogiError> {
@@ -511,10 +462,8 @@ pub fn decode_u64_from_decimal_by_name(row: &Row, col_name: &str) -> Result<u64,
 }
 
 /// Nullable name-based variant of [`decode_u64_from_decimal`].
-///
 /// Delegates to [`decimal_to_u64`] for the non-null case; see that function
 /// for the fractional-rejection and out-of-range contract.
-///
 /// `#[doc(hidden)]` — emitted by `#[model]`; not user-facing.
 #[doc(hidden)]
 pub fn decode_opt_u64_from_decimal_by_name(

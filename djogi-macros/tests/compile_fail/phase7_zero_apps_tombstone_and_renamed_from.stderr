@@ -1,7 +1,0 @@
-error: `tombstone` and `renamed_from` are mutually exclusive — a tombstoned app is being retired, not renamed
- --> $DIR/phase7_zero_apps_tombstone_and_renamed_from.rs:5:30
-  |
-5 |     #[app(database = "main", tombstone, renamed_from = "prior")]
-  |                              ^^^^^^^^^
-
-error: aborting due to 1 previous error

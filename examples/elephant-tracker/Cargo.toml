@@ -7,20 +7,16 @@ publish = false
 description = "Runnable Djogi example: tracking African elephant herds across borders."
 
 [dependencies]
-# Cluster D additions consume framework surfaces that are all in
-# djogi's core (no new feature flag): `Model::materialize_closure`
-# (Cluster B substrate), `tree_descendants(edge, root_id)` +
-# `search_breadth_first_by` / `search_depth_first_by` (Cluster B
-# typed walks), and the `ElephantAncestry` `ClosureModel` impl.
-# The mating-pairs demo's PostGIS calls (`ST_ConvexHull`,
+# Djogi core (no new feature flag needed): `Model::materialize_closure`,
+# `tree_descendants(edge, root_id)`, `search_breadth_first_by` /
+# `search_depth_first_by`, and the `ElephantAncestry` `ClosureModel`
+# impl. The mating-pairs demo's PostGIS calls (`ST_ConvexHull`,
 # `ST_Intersection`, `ST_Area`) reach the database directly via
-# `ctx.raw_rows`; the typed Cluster C surface emits the same SQL
+# `ctx.raw_rows`; the typed row-aggregate surface emits the same SQL
 # but is bolted to `AnnotatedQuerySet<T, A>` over a single Model
-# (#84) so the multi-CTE pair-shape mating-pairs query couldn't
-# use it. `spatial` is still required because `Sighting.location`
-# is a `GeoPoint` field and the GiST index is feature-gated; T26
-# verification confirmed the pre-Cluster-D feature set covers
-# everything Cluster D adds.
+# (#84) so the multi-CTE pair-shape query couldn't use it.
+# `spatial` is required because `Sighting.location` is a `GeoPoint`
+# field and the GiST index is feature-gated.
 djogi = { path = "../../djogi", features = ["spatial", "outbox"] }
 heeranjid = "0.4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

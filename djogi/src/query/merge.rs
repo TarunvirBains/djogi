@@ -1,20 +1,13 @@
 //! Typed `MERGE INTO ... USING ...` query surface.
-//!
 //! Djogi targets PostgreSQL 18+; the `WHEN NOT MATCHED BY SOURCE` form is
 //! available in PostgreSQL 17 and later.
-//!
 //! # What
-//!
 //! `MERGE` is a single statement that can perform `INSERT`, `UPDATE`, or `DELETE`
 //! operations on a target table based on whether rows match a source relation.
-//!
 //! # Why
-//!
 //! Adopters who need to perform upserts, "update if changed" guards, or
 //! soft-delete missing source rows previously had to drop to raw SQL.
-//!
 //! # How
-//!
 //! ```ignore
 //! use djogi::prelude::*;
 //!
@@ -53,7 +46,6 @@ pub(crate) const TGT_ALIAS: &str = "tgt";
 pub(crate) const SRC_ALIAS: &str = "__djogi_src";
 
 /// Result count for a `MERGE` operation.
-///
 /// PostgreSQL returns the total number of rows affected across all actions
 /// in the command tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -171,7 +163,6 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
     }
 
     /// Convenience for `WHEN MATCHED AND (tgt.col IS DISTINCT FROM __djogi_src.col OR ...) THEN UPDATE SET ...`.
-    ///
     /// Automatically builds a condition that only updates rows where at least one of the
     /// mapped columns has changed. Only columns mapped with `merge_copy_from` are
     /// included in the change check.
@@ -226,7 +217,6 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
         // 2. Short-circuit: structural-empty source.
         // If there are BY SOURCE branches, we cannot short-circuit because an empty
         // source means all target rows are NOT MATCHED BY SOURCE.
-        //
         // However, structural-empty source (`.none()`) with BY SOURCE branches is
         // rejected in validate() to prevent unintentional broad updates.
         if self.source.is_empty() {

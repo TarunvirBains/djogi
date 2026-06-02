@@ -1,0 +1,24 @@
+error[E0599]: the method `eq` exists for struct `DjogiField<Widget, Vec<f64>>`, but its trait bounds were not satisfied
+   --> $DIR/float_array_equality_not_portable.rs:22:57
+    |
+ 22 |     let _bad = Widget::objects().filter(|f| f.samples().eq(vec![1.0, f64::NAN]));
+    |                                                         ^^ method cannot be called on `DjogiField<Widget, Vec<f64>>` due to unsatisfied trait bounds
+    |
+   ::: djogi/src/query/field.rs:607:1
+    |
+607 | pub struct DjogiField<M: Model, V> {
+    | ---------------------------------- doesn't satisfy `DjogiField<Widget, Vec<f64>>: Iterator`
+    |
+   ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:438:1
+    |
+438 | pub struct Vec<T, #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global> {
+    | ------------------------------------------------------------------------------------------------ doesn't satisfy `Vec<f64>: DjogiPortableEq`
+    |
+    = note: the following trait bounds were not satisfied:
+            `Vec<f64>: DjogiPortableEq`
+            `DjogiField<Widget, Vec<f64>>: Iterator`
+            which is required by `&mut DjogiField<Widget, Vec<f64>>: Iterator`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

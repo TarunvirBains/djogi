@@ -1,5 +1,4 @@
 //! `djogi::link_anchor!()` per-crate linkage anchor (#370, branch b).
-//!
 //! When referencing ONE model's `descriptor()` does NOT retain a crate's
 //! sibling models under the CI release profile (`--gc-sections` + multiple
 //! codegen units split sibling `submit!` statics into objects the linker
@@ -9,15 +8,11 @@
 //! once per crate. Referencing that one symbol pulls the crate's rlib
 //! member into the binary, and `inventory`'s registration statics (already
 //! emitted by `#[derive(Model)]`) are collected for the whole linked crate.
-//!
 //! Takes NO arguments — it is a per-crate marker, not per-model. A non-empty
 //! invocation is a compile error.
-//!
 //! The expansion contains zero `unsafe` tokens — compatible with
 //! `#![forbid(unsafe_code)]` (category G6).
-//!
 //! # Usage
-//!
 //! ```ignore
 //! // In each model crate's lib.rs, once:
 //! djogi::link_anchor!();
@@ -34,7 +29,6 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 /// Expand `link_anchor!()` — emit one per-crate anchor symbol.
-///
 /// Takes NO arguments (it is a per-crate marker, not per-model — that is
 /// the whole point: ONE invocation covers all of a crate's models). A
 /// non-empty invocation is a compile error.
@@ -54,8 +48,7 @@ pub fn link_anchor(input: TokenStream) -> TokenStream {
     // member into the binary, and the crate's `inventory` statics (emitted
     // by #[derive(Model)] with #[used] + a linker section) are then
     // collected for the whole linked crate.
-    //
-    // `#[used]` lives on the STATIC `__DJOGI_LINK_ANCHOR`, not on the fn —
+    // `#[used]` lives on the STATIC `__DJOGI_LINK_ANCHOR`, not on the fn
     // `#[used]` is a static-only attribute (rustc rejects it on a fn,
     // E0518), and it is precisely how `inventory` itself defeats
     // `--gc-sections` (it tags its `static __CTOR` `#[used]`; see
@@ -64,7 +57,7 @@ pub fn link_anchor(input: TokenStream) -> TokenStream {
     // The fn returns a reference to the static so the static cannot be
     // dropped independently of a fn that is kept, and the fn's body forces
     // the `#[used]` static to participate. No `unsafe` tokens — the static
-    // is a plain `()` (G6 / forbid-unsafe-safe).
+    // is a plain `()` (forbid-unsafe-safe).
     // `#[doc(hidden)]` — adopters reference it only through the documented
     // glue, not as public API. `#[inline(never)]` keeps the fn a real
     // callable symbol the reference cannot be optimized away to nothing

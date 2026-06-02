@@ -1,7 +1,0 @@
-error: unsupported key in `#[mirjzson(...)]`; only `justification = "..."` is accepted
-  --> $DIR/phase85_195_mirjzson_unknown_key.rs:13:16
-   |
-13 |     #[mirjzson(reason = "payload is externally owned by partner API")]
-   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-error: aborting due to 1 previous error

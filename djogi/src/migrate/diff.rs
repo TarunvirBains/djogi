@@ -1,31 +1,24 @@
 //! Schema differ — compares two [`AppliedSchema`] values and emits
 //! a typed [`SchemaDelta`] of structural operations classified by
 //! reversibility / destructiveness.
-//!
 //! # Operation taxonomy
-//!
 //! Every difference between two schemas is encoded as one or more
 //! [`SchemaOperation`] entries with a stable shape so the SQL emitter
-//! (T3) can lower them deterministically. Operations come in three
+//! the SQL emitter can lower them deterministically. Operations come in three
 //! categories:
-//!
 //! - **Table-level**: `AddTable` / `DropTable` / `RenameTable` /
 //!   `MoveModelBetweenApps`.
 //! - **Column-level**: `AddColumn` / `DropColumn` / `RenameColumn` /
 //!   `AlterColumn` / `AddForeignKey` / `DropForeignKey`.
 //! - **Other**: `AddIndex` / `DropIndex` / `AddEnum` / `DropEnum` /
 //!   `AddEnumVariant` / `RenameApp` / `PkTypeFlip`.
-//!
-//! `RenameTable` and `RenameColumn` are emitted only when the new
-//! schema's `renamed_from` field flags the change as a rename. Without
-//! the annotation the differ emits a destructive `DropTable` +
-//! `AddTable` (or `DropColumn` + `AddColumn`) pair so unannotated
-//! "renames" cannot silently destroy data.
-//!
+//!   `RenameTable` and `RenameColumn` are emitted only when the new
+//!   schema's `renamed_from` field flags the change as a rename. Without
+//!   the annotation the differ emits a destructive `DropTable` +
+//!   `AddTable` (or `DropColumn` + `AddColumn`) pair so unannotated
+//!   "renames" cannot silently destroy data.
 //! # Classification
-//!
 //! Each [`SchemaDelta`] carries a [`Classification`]:
-//!
 //! - `NoOp` — schemas are equal (no operations).
 //! - `Additive` — every op is non-destructive: new tables, new
 //!   nullable columns, new indexes, new enum variants. Safe to ship.
@@ -47,14 +40,10 @@
 //!   the migration.
 //! - `PkTypeFlip` — at least one table changed its PK type variant
 //!   (HeerId ↔ HeerIdRecencyBiased, RanjId ↔ RanjIdRecencyBiased).
-//!   This is a **native Phase 7 classification** distinct from
-//!   `RequiresLivePlan` per OQ-09 ruling — Phase 7 owns the full
+//!   This is a **native classification** for PK type flips. It owns the full
 //!   expand/contract orchestration including FK cascade composition.
-//!   Phase 7.5 does not consume this; the migration engine handles
-//!   it directly via T9.
-//!
+//!   The migration engine handles it directly.
 //! # No-op detection
-//!
 //! [`diff_schemas`] returns a delta with `Classification::NoOp` and an
 //! empty operations vector when the two schemas compare equal. The
 //! runner short-circuits no-ops without touching the ledger.
@@ -69,7 +58,6 @@ use super::schema::{
 
 /// Typed delta between two [`AppliedSchema`] values, scoped to a
 /// single [`BucketKey`].
-///
 /// One [`SchemaDelta`] represents the migration for one `(database,
 /// app)` bucket. Multi-bucket migrations are a `Vec<SchemaDelta>`
 /// with deterministic bucket ordering — see
@@ -86,7 +74,7 @@ pub struct SchemaDelta {
     pub classification: Classification,
 }
 
-/// One structural change between two schemas. The SQL emitter (T3)
+/// One structural change between two schemas. The SQL emitter
 /// lowers each variant into one or more `up`/`down` statements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchemaOperation {
@@ -94,7 +82,7 @@ pub enum SchemaOperation {
     /// SQL emitter generates `CREATE TABLE` plus any column-level
     /// constraints; [`AddIndex`](Self::AddIndex) entries land
     /// separately so they can be batched into the
-    /// non-transactional segment per Phase 7-Zero §6.2.
+    /// non-transactional segment.
     AddTable(TableSchema),
 
     /// Existing table is gone from the new schema. **Destructive.**
@@ -120,7 +108,7 @@ pub enum SchemaOperation {
     },
 
     /// Column type / nullability / default changed. The differ
-    /// records the full new column shape so T3 can emit the right
+    /// records the full new column shape so the SQL emitter can produce the right
     /// `ALTER COLUMN` sequence.
     AlterColumn {
         table: String,
@@ -138,10 +126,10 @@ pub enum SchemaOperation {
     /// Foreign key dropped. The column may still exist; only the
     /// `REFERENCES` constraint is removed. The full
     /// [`ForeignKeySchema`] (including the cascade discipline that
-    /// existed on the old side) is carried so T3 can emit a
+    /// existed on the old side) is carried so the SQL emitter can produce a
     /// reversible rollback that restores the original `FOREIGN KEY
     /// ... REFERENCES ... ON DELETE ...` clause without operator
-    /// hand-edit. Codex T3 review B-3 fixed an earlier bug where the
+    /// hand-edit.
     /// drop carried only `(table, column)` and the rollback was a
     /// SQL comment.
     DropForeignKey {
@@ -153,12 +141,12 @@ pub enum SchemaOperation {
     /// Index added.
     AddIndex(IndexSchema),
 
-    /// Index dropped — carries the full [`IndexSchema`] so T3's
+    /// Index dropped — carries the full [`IndexSchema`] so the
     /// segment planner can preserve the old index's
     /// `requires_out_of_transaction`, `extension_dependency`, and
     /// uniqueness shape when laddering the drop into the right
     /// segment kind. Dropping just the name (the previous shape)
-    /// forced T3 to re-derive metadata it shouldn't need to recover.
+    /// forced the emitter to re-derive metadata it shouldn't need to recover.
     DropIndex(IndexSchema),
 
     /// Table-level `EXCLUDE` constraint added on an existing table.
@@ -168,7 +156,6 @@ pub enum SchemaOperation {
     /// staging pattern is structurally impossible. Empty-table
     /// additions still flow through this variant; the classifier
     /// gates on the row-count probe.
-    ///
     /// `EXCLUDE` constraints declared at table-creation time are
     /// emitted inside the [`AddTable`](Self::AddTable) operation's
     /// inline DDL, never as a separate `AddExclusionConstraint`.
@@ -201,7 +188,6 @@ pub enum SchemaOperation {
         /// Anchor for the `BEFORE` / `AFTER` placement clause. `None`
         /// means "append at the tail" (no positional clause). The
         /// differ chooses, in priority order:
-        ///
         /// 1. `Some(EnumVariantAnchor { kind: Before, variant: post })`
         ///    when there is a post-anchor variant in the new list
         ///    that already existed in the old list. This places the
@@ -212,11 +198,11 @@ pub enum SchemaOperation {
         ///    a tail-append onto an enum that already has variants
         ///    from the old list — the new variant lands `AFTER` the
         ///    last existing one. (`ALTER TYPE ... ADD VALUE 'x' AFTER
-        ///    'y'` is deterministic Postgres DDL, so anchoring beats
+        /// 'y'` is deterministic Postgres DDL, so anchoring beats
         ///    bare append even though both produce the same physical
         ///    ordering.)
         /// 3. `None` only on degenerate or malformed inputs where no
-        ///    anchor exists in the old list in either direction —
+        ///    anchor exists in the old list in either direction
         ///    e.g. every old variant has been concurrently dropped
         ///    (`Unsupported` upstream) OR a malformed snapshot where
         ///    the existing enum's variant list is empty (Postgres
@@ -226,31 +212,28 @@ pub enum SchemaOperation {
         ///    [`pick_enum_variant_anchor`] returns `None` only on
         ///    these inputs; tail-appends with prior real variants
         ///    always land in case (2).
-        ///
-        /// Codex T3 review B-2 fixed an earlier bug where the
-        /// emitter unconditionally appended (no `BEFORE`/`AFTER`
-        /// clause) regardless of where the differ placed the variant.
-        /// Carrying an anchor variant name (rather than a positional
-        /// integer) makes the emission self-contained — the emitter
-        /// no longer needs the full new-variant list to resolve a
-        /// position. Codex T3 round-2 review N-1 tightened the
-        /// description here to match the helper's actual behaviour
-        /// for tail-appends onto a non-empty enum.
+        ///    emitter unconditionally appended (no `BEFORE`/`AFTER`
+        ///    clause) regardless of where the differ placed the variant.
+        ///    Carrying an anchor variant name (rather than a positional
+        ///    integer) makes the emission self-contained — the emitter
+        ///    no longer needs the full new-variant list to resolve a
+        ///    position.
+        ///    description here to match the helper's actual behaviour
+        ///    for tail-appends onto a non-empty enum.
         anchor: Option<EnumVariantAnchor>,
     },
 
     /// PK type changed within the supported flip pairs (HeerId ↔
     /// HeerIdRecencyBiased, RanjId ↔ RanjIdRecencyBiased). Triggers
-    /// `Classification::PkTypeFlip` and is the entry point for T9's
-    /// expand/contract orchestration.
-    ///
+    /// `Classification::PkTypeFlip` and is the entry point for the
+    /// PK-flip expand/contract orchestration.
     /// **Production lifecycle.** The per-table flip op is emitted by
     /// the per-table differ ([`diff_pk_in_table`]). At the bucket-walk
     /// finalisation step ([`diff_bucket_maps`]) every per-table
     /// `PkTypeFlip` is **promoted** into a single
     /// [`SchemaOperation::PkTypeFlipGroup`] for that bucket — the
     /// group payload carries the parent table plus every dependent
-    /// child / self-FK / join-table / partitioned-parent shape so T9's
+    /// child / self-FK / join-table / partitioned-parent shape so the
     /// segment planner has the full transitive closure available
     /// without re-walking the schema. The standalone `PkTypeFlip`
     /// variant survives for unit-test reach-in fixtures and for
@@ -266,17 +249,15 @@ pub enum SchemaOperation {
     /// Aggregated PK-type flip across one parent table and every
     /// dependent child whose FK references the parent's PK. Emitted
     /// by [`diff_bucket_maps`] from per-table [`PkTypeFlip`] ops at
-    /// finalisation time. T9's segment planner consumes this single
+    /// finalisation time. The segment planner consumes this single
     /// op to emit the multi-stage flip plan (preparation, autofill
     /// trigger install, backfill, concurrent unique index, NOT NULL
     /// proof, cutover) verbatim from the HeeRanjID playbook.
-    ///
     /// **Why a group, not per-table.** The cutover transaction in
     /// the playbook (§4 / §6 / §7 / §9) is **one atomic Postgres
     /// transaction across parent and every child**. Without the
     /// grouping the segment planner would emit one isolated cutover
     /// per table and the shared atomic invariant would not hold.
-    ///
     /// **Cycles + self-FK + join-table + partitioned** — the group
     /// records each via a typed sub-shape so the planner can switch
     /// on the playbook section that applies. A single delta typically
@@ -297,7 +278,6 @@ pub enum SchemaOperation {
     /// proof in one segment, and **one** atomic cutover transaction
     /// re-points every FK column on the join table at the new
     /// `id_desc` columns of every parent.
-    ///
     /// **Why not just emit several `PkTypeFlipGroup`s back-to-back.**
     /// The segment planner used to lower each `PkTypeFlipGroup` as a
     /// full 5-segment plan and concatenate them. With a cross-
@@ -307,7 +287,6 @@ pub enum SchemaOperation {
     /// the loser's segment 1 has not yet created. Postgres rejects
     /// the migration mid-apply. This multi-parent variant is the
     /// structural fix.
-    ///
     /// **Construction.** [`apply_pk_flip_join_table_option`] under
     /// Option A merges every cross-flipping cluster of single-parent
     /// `PkTypeFlipGroup` ops into one `PkTypeFlipMultiGroup` carrying
@@ -319,7 +298,6 @@ pub enum SchemaOperation {
     /// installed once, not twice). Non-cross-flipping flips (no
     /// shared join table, or Option B) remain plain
     /// `PkTypeFlipGroup` ops.
-    ///
     /// **Lowering.** [`crate::migrate::pk_flip::build_segments_multi`]
     /// builds a single 5-segment (or 7-segment when partitioned or
     /// FK-cascading) plan that, at each stage, emits every parent's
@@ -339,7 +317,7 @@ pub enum SchemaOperation {
     /// Model moved from one app to another via
     /// `#[model(moved_from_app = OldApp)]`. SQL is a no-op; only the
     /// per-app folder placement and the `app_label` UPDATE differ
-    /// (per OQ-11 ruling).
+    /// (per ruling).
     MoveModelBetweenApps {
         model: String,
         from_app: String,
@@ -347,8 +325,7 @@ pub enum SchemaOperation {
     },
 
     /// Set / change / clear the table-level `COMMENT ON TABLE`
-    /// metadata for `table`. Phase 8.5 Cluster 4 (djogi#217).
-    ///
+    /// metadata for `table`.
     /// Carries both `from` and `to` so the SQL emitter renders a
     /// fully reversible down side — `from = Some(prev)` restores the
     /// pre-operation comment, `from = None` rolls back to the
@@ -368,16 +345,14 @@ pub enum SchemaOperation {
         to: Option<String>,
     },
 
-    /// Set / change / clear table storage parameters. Phase 8.5
-    /// Cluster 4 (djogi#218).
+    /// Set / change / clear table storage parameters.
     SetStorageParams {
         table: String,
         from: Option<String>,
         to: Option<String>,
     },
 
-    /// Set / change / clear the explicit table tablespace. Phase 8.5
-    /// Cluster 4 (djogi#219).
+    /// Set / change / clear the explicit table tablespace.
     SetTablespace {
         table: String,
         from: Option<String>,
@@ -393,9 +368,8 @@ pub enum SchemaOperation {
 }
 
 /// Detailed shape of a column-level alteration.
-///
 /// Keeps the differ's [`SchemaOperation::AlterColumn`] entry compact
-/// while letting T3 dispatch on a typed enum rather than diffing
+/// while letting the SQL emitter dispatch on a typed enum rather than diffing
 /// the full [`ColumnSchema`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ColumnChange {
@@ -408,8 +382,7 @@ pub enum ColumnChange {
     /// `ALTER COLUMN ... TYPE <new>`. Carries both old and new
     /// rendered SQL types so the emitter can decide whether a `USING`
     /// clause is needed, plus the optional adopter-supplied `using`
-    /// expression for non-default cast paths (djogi#220).
-    ///
+    /// expression for non-default cast paths.
     /// **`using` semantics.** `Some(expr)` is sourced from the AFTER
     /// column's `#[field(type_change_using = "<expr>")]`; the SQL
     /// emitter inlines the expression verbatim into the emitted
@@ -433,21 +406,18 @@ pub enum ColumnChange {
     },
 
     /// `SET / DROP CHECK` constraint at the column level.
-    ///
     /// Carries **both** the prior CHECK expression (`from`) and the new
     /// CHECK expression (`to`) so the SQL emitter can render a fully
     /// reversible down-migration. Without `from`, a `DROP CHECK`
     /// rollback would have no way to restore the original constraint
-    /// — the same lossy-rollback gap GPT-5.5 review flagged for type
+    /// the same lossy-rollback gap
     /// migrations on checked columns.
-    ///
     /// Variant semantics — `(from, to)` pair:
-    ///
     /// - `(None, None)` — never emitted; the differ filters no-op.
     /// - `(Some(b), Some(a))` with `b == a` — never emitted; differ
     ///   filters identical.
     /// - `(None, Some(expr))` — ADD CHECK. Up: `ADD CONSTRAINT ...
-    ///   CHECK (expr)`. Down: `DROP CONSTRAINT ...`.
+    /// CHECK (expr)`. Down: `DROP CONSTRAINT ...`.
     /// - `(Some(prior), None)` — DROP CHECK. Up: `DROP CONSTRAINT ...`.
     ///   Down: `ADD CONSTRAINT ... CHECK (prior)` — fully recoverable.
     /// - `(Some(b), Some(a))` with `b != a` — currently the differ
@@ -468,7 +438,6 @@ pub enum ColumnChange {
     SetUnique(bool),
 
     /// `#[field(index)]` flag flipped (column-level implicit index).
-    ///
     /// **Deprecated path (backward-compat only).** The differ no longer
     /// emits this variant — field-level indexed columns are now projected
     /// into `AppliedSchema::indexes` as full `IndexSchema` entries, and
@@ -491,8 +460,7 @@ pub enum ColumnChange {
     },
 
     /// Set / change / clear the column-level `COMMENT ON COLUMN`
-    /// metadata. djogi#217.
-    ///
+    /// metadata. .
     /// Carries both `from` and `to` so the SQL emitter renders a
     /// fully reversible down side — `from = Some(prev)` restores the
     /// pre-operation comment, `from = None` rolls back to the
@@ -509,9 +477,7 @@ pub enum ColumnChange {
     },
 
     /// Identity-column declaration changed
-    /// (`GENERATED BY DEFAULT / ALWAYS AS IDENTITY`). Cluster E #86
-    /// fix + Codex T22 BLOCK-3 closure.
-    ///
+    /// (`GENERATED BY DEFAULT / ALWAYS AS IDENTITY`).
     /// Transitions:
     /// - `from = None, to = Some(kind)` — add identity to existing
     ///   column. Lowered to
@@ -521,11 +487,10 @@ pub enum ColumnChange {
     /// - `from = Some(a), to = Some(b)` (a ≠ b) — kind change
     ///   (BY DEFAULT ↔ ALWAYS). Lowered to
     ///   `ALTER TABLE t ALTER COLUMN c SET GENERATED <kind>`.
-    ///
-    /// Identity columns are sequence-backed at the Postgres level;
-    /// the ADD migration triggers Postgres's own sequence allocation
-    /// and starts the sequence after MAX(c) for existing rows. No
-    /// Djogi-side backfill needed.
+    ///   Identity columns are sequence-backed at the Postgres level;
+    ///   the ADD migration triggers Postgres's own sequence allocation
+    ///   and starts the sequence after MAX(c) for existing rows. No
+    ///   Djogi-side backfill needed.
     SetIdentity {
         from: Option<crate::migrate::schema::IdentityKindSchema>,
         to: Option<crate::migrate::schema::IdentityKindSchema>,
@@ -533,7 +498,6 @@ pub enum ColumnChange {
 }
 
 /// Anchor variant for an [`SchemaOperation::AddEnumVariant`] insertion.
-///
 /// Postgres `ALTER TYPE ... ADD VALUE 'new' [BEFORE|AFTER 'anchor']`
 /// requires a real existing variant as the anchor. The differ
 /// picks the anchor by walking the new variant list around the
@@ -563,7 +527,6 @@ pub enum EnumVariantAnchorKind {
 
 /// Aggregated PK-type-flip group payload — see
 /// [`SchemaOperation::PkTypeFlipGroup`] for the lifecycle contract.
-///
 /// **Determinism.** Every collection inside this struct is sorted
 /// (table names alphabetically; column pairs by source column name)
 /// so two runs of the differ produce byte-identical output. The
@@ -596,7 +559,7 @@ pub struct PkTypeFlipGroup {
     /// self-FK column in alphabetical order.
     pub self_fk: Option<PkFlipSelfFk>,
     /// Join tables — junction tables whose `is_through` flag is set
-    /// AND whose two FK columns both point at this parent (rare —
+    /// AND whose two FK columns both point at this parent (rare
     /// most join tables span two parents) OR participate via
     /// `join_table_partner`. Drives §7 of the playbook.
     pub join_tables: Vec<PkFlipJoinTable>,
@@ -673,14 +636,11 @@ impl PkFlipJoinTableOption {
 /// Walk a list of [`SchemaDelta`]s and overwrite every emitted
 /// [`PkTypeFlipGroup`]'s `join_table_option` with the operator-
 /// configured value.
-///
 /// **When to call.** After [`diff_bucket_maps`] has produced the
 /// per-bucket deltas and before the segment planner is invoked.
 /// The compose pipeline + `db reset` replay both call this helper
 /// so the operator's TOML choice reaches the planner.
-///
 /// **Idempotent.** Calling twice with the same option is a no-op.
-///
 /// **Multi-parent merge.** Under
 /// [`PkFlipJoinTableOption::OptionA`] the function does more than
 /// stamp the option — it MERGES every cluster of cross-flipping
@@ -855,20 +815,14 @@ fn reject_partitioned_multi_parent_clusters(ops: &[SchemaOperation]) -> Result<(
 }
 
 /// Errors the differ surfaces.
-///
 /// Distinct from [`super::sql::SqlEmitError`] — `DiffError`
 /// reports failures that occur BEFORE SQL emission, during the
 /// per-bucket walk and the PK-flip group promotion. Every variant
 /// carries enough context for an actionable operator message.
-///
-/// # B-4r — panic → Result migration (Codex round-3)
-///
-/// [`promote_pk_flips_to_groups`] previously panicked on the
-/// depth-65 contract violation. The panic prevented compose / build
-/// from surfacing a structured error to the operator and broke the
-/// general principle that the differ never panics on user-shaped
-/// input. This enum carries the chain of tables that drove the
-/// blow-out so the operator can identify the offending FK cycle.
+/// Errors that can surface during PK-flip group promotion.
+/// [`promote_pk_flips_to_groups`] returns structured errors instead of
+/// panicking on contract violations. This enum carries context so the
+/// operator can identify the offending structure (cycle, depth overflow, etc.).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffError {
     /// The PK-flip transitive FK closure walked more levels than
@@ -893,8 +847,8 @@ pub enum DiffError {
         max_depth: u32,
     },
     /// A cross-flipping cluster includes one or more partitioned
-    /// parents. Phase 7 rejects this shape because the multi-parent
-    /// lowerer cannot safely interleave partitioned cutovers with
+    /// parents. This is rejected because the multi-parent lowerer
+    /// cannot safely interleave partitioned cutovers with
     /// partner-referencing join-table work.
     PartitionedMultiParentClusterUnsupported {
         /// Every partitioned parent in the cluster.
@@ -903,10 +857,9 @@ pub enum DiffError {
         cross_flipping_partners: Vec<String>,
     },
     /// A `PkTypeFlipGroup` reached the lowering path with malformed
-    /// self-FK metadata (sidecar vector lengths out of sync). Codex
-    /// round-7 BLOCK 3: surface the underlying [`PkFlipError`] so the
-    /// segment planner and `build_segments_multi` single-member
-    /// fallback never bypass `validate_group`.
+    /// self-FK metadata (sidecar vector lengths out of sync). This
+    /// surfaces the underlying [`PkFlipError`] so the segment planner
+    /// and related code never bypass validation.
     PkFlipMalformedSelfFkMetadata(super::pk_flip::PkFlipError),
 }
 
@@ -939,7 +892,7 @@ impl std::fmt::Display for DiffError {
                 f,
                 "PK-flip cross-flipping cluster mixes partitioned parents \
                  {partitioned_parents:?} with partners {cross_flipping_partners:?}; \
-                 Phase 7 rejects this unsupported multi-parent partitioned shape",
+                 this unsupported multi-parent partitioned shape is rejected",
             ),
         }
     }
@@ -947,18 +900,15 @@ impl std::fmt::Display for DiffError {
 
 impl std::error::Error for DiffError {}
 
-/// Codex round-4 B-15 — merge every cross-flipping cluster of
-/// `PkTypeFlipGroup` ops in a single delta into one
-/// [`SchemaOperation::PkTypeFlipMultiGroup`].
-///
+/// Merge every cross-flipping cluster of `PkTypeFlipGroup` ops in a
+/// single delta into one [`SchemaOperation::PkTypeFlipMultiGroup`].
 /// **What "cross-flipping" means.** A pair `(A, B)` of
 /// `PkTypeFlipGroup`s is cross-flipping when at least one
 /// `PkFlipJoinTable` entry in EITHER group records the other parent
 /// via `fk_to_partner_table = Some(<peer>)` AND
-/// `fk_to_partner_column = Some(_)`. The partner-table field was
-/// added in Codex round-3 B-12 specifically so the planner can
-/// resolve the cross-flipping shape without re-walking the schema.
-///
+/// `fk_to_partner_column = Some(_)`. The partner-table field is
+/// recorded so the planner can resolve the cross-flipping shape
+/// without re-walking the schema.
 /// **Cluster construction (Union-Find).** Cross-flipping is
 /// transitive — if A↔B share a join table and B↔C share a different
 /// join table, the SQL emission needs ALL THREE in one mega-tx
@@ -970,11 +920,10 @@ impl std::error::Error for DiffError {}
 /// `PkTypeFlipGroup` op; clusters of size 2+ are replaced by ONE
 /// `PkTypeFlipMultiGroup` carrying the cluster's groups in
 /// alphabetical-by-parent order.
-///
 /// **Winner-takes-all on join_tables.** Inside a merged cluster the
 /// alphabetically smallest parent retains every cross-flipping
 /// `PkFlipJoinTable` entry; the other members' `join_tables` are
-/// emptied of cross-flipping entries (single-parent join tables —
+/// emptied of cross-flipping entries (single-parent join tables
 /// `fk_to_partner_column = None` — survive on whichever group owns
 /// them). The lowering walks the multi-group's groups in order and
 /// emits each member's stage-N statements at stage N; the winner's
@@ -983,7 +932,6 @@ impl std::error::Error for DiffError {}
 /// SQL is emitted exactly once per stage and references both
 /// parents' `id_desc` columns that exist by the time stage-3b runs
 /// (because every parent prepared in stage 1).
-///
 /// **Determinism.** Cluster ordering is deterministic — alphabetical
 /// by the smallest parent in the cluster. Within a cluster, member
 /// groups are alphabetical by `parent_table`. The same input
@@ -1028,7 +976,7 @@ fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) -> Result<(),
                 _ => None,
             })
             .collect();
-        // Sort the cluster's groups alphabetically by parent_table —
+        // Sort the cluster's groups alphabetically by parent_table
         // the lowering depends on this for deterministic stage-N
         // emission order.
         cluster_groups.sort_by(|a, b| a.parent_table.cmp(&b.parent_table));
@@ -1094,7 +1042,7 @@ fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) -> Result<(),
         for jt_name in &cross_flipping_jt_names {
             if !winner_existing.contains(jt_name) {
                 // Differ produced an asymmetric cross-flipping pair
-                // — one side recorded the partner, the other did
+                // one side recorded the partner, the other did
                 // not. Defensive: skip the graft (the planner emits
                 // the half it can see) rather than panic. Future
                 // hardening: a `DiffError` for this case.
@@ -1125,7 +1073,7 @@ pub enum PkFlipDirection {
     AscToDesc,
     /// Descending → ascending. Uses `heerid_to_asc` / `ranjid_to_asc`
     /// and `heerid_next()` / `ranjid_next()` as the new column
-    /// DEFAULT. The autofill trigger SQL is the symmetric mirror —
+    /// DEFAULT. The autofill trigger SQL is the symmetric mirror
     /// `IdKind::Heer.flip_fn()` always returns `heerid_to_desc` so
     /// the reverse-direction emitter substitutes `heerid_to_asc`
     /// directly in the trigger body it generates.
@@ -1167,7 +1115,7 @@ pub struct PkFlipChild {
     /// Original FK deferrability flags. Preserved through the
     /// cutover so a deferrable source FK recreates as deferrable on
     /// the post-cutover column. Cycle peers force `deferrable = true,
-    /// initially_deferred = true` regardless of descriptor input —
+    /// initially_deferred = true` regardless of descriptor input
     /// see [`PkTypeFlipGroup`] docs and playbook §8.
     pub fk_deferrable: bool,
     /// `true` iff the original FK was `INITIALLY DEFERRED`. Only
@@ -1249,7 +1197,7 @@ pub struct PkFlipJoinTable {
     pub fk_to_partner_constraint: Option<String>,
     /// Postgres table name the partner FK column references.
     /// `Some(_)` exactly when `fk_to_partner_column` is `Some(_)`
-    /// — the differ records both fields atomically so the planner
+    /// the differ records both fields atomically so the planner
     /// can re-emit the partner's FK constraint targeting the
     /// correct parent table during the cutover. Required under
     /// Option A so the cutover's `ADD CONSTRAINT` statement points
@@ -1286,17 +1234,15 @@ pub struct PkFlipPartitionedMeta {
 }
 
 /// Aggregate flavour of a [`SchemaDelta`].
-///
 /// Computed from the operations in the delta. Severity ladder:
 /// `NoOp` < `Additive` < `Reversible` < `Destructive` < `Lossy` <
 /// `Unsupported`. `PkTypeFlip` is orthogonal: any delta carrying a
 /// `PkTypeFlip` operation classifies as `PkTypeFlip`, but the
 /// `co_destructive` / `co_lossy` flags surface co-existing severity
-/// so T9's orchestration knows whether the delta also drops a
+/// so the PK-flip orchestration knows whether the delta also drops a
 /// column / index / FK or tightens a nullability — letting the
 /// `--allow-destructive` gate fire even when the headline
 /// classification is the flip.
-///
 /// `Destructive` no longer carries the runner-side
 /// `allow_destructive` flag — that's a `djogi migrations apply`
 /// argument, not a differ property. The runner reads its own opt-in
@@ -1320,7 +1266,7 @@ pub enum Classification {
     /// Runner rejects until `--allow-destructive` is passed.
     Destructive,
 
-    /// Destructive operation that loses row data with no fallback —
+    /// Destructive operation that loses row data with no fallback
     /// e.g. dropping a non-nullable, non-default column. Stricter
     /// than `Destructive`; runner rejects regardless of flag.
     Lossy,
@@ -1329,12 +1275,11 @@ pub enum Classification {
     /// edit the migration.
     Unsupported { reason: String },
 
-    /// At least one PK-type flip. Routes through T9's
+    /// At least one PK-type flip. Routes through the PK-flip
     /// expand/contract orchestration rather than the standard
     /// transactional apply.
-    ///
     /// `co_destructive` / `co_lossy` surface co-existing severity so
-    /// T9's gate logic can apply `--allow-destructive` semantics
+    /// the gate logic can apply `--allow-destructive` semantics
     /// even when the headline classification is the flip. Without
     /// these flags a delta containing both `PkTypeFlip` and
     /// `DropColumn` would silently bypass the destructive gate.
@@ -1345,13 +1290,11 @@ pub enum Classification {
 }
 
 /// Diff two snapshots within the same `(database, app)` bucket.
-///
 /// Returns `Classification::NoOp` with an empty operations vector
 /// when the two schemas compare equal. The output's `bucket` is
 /// taken verbatim — both `before` and `after` are expected to belong
 /// to the same bucket; multi-bucket diffing is
 /// [`diff_bucket_maps`]'s job.
-///
 /// `pub(crate)` because external consumers should always go through
 /// [`diff_bucket_maps`] (which handles cross-bucket moves
 /// correctly). `diff_schemas` is exposed within the crate for tests
@@ -1425,7 +1368,7 @@ pub fn diff_bucket_maps(
     before: &BTreeMap<BucketKey, AppliedSchema>,
     after: &BTreeMap<BucketKey, AppliedSchema>,
 ) -> Result<Vec<SchemaDelta>, DiffError> {
-    // Stage 1 — pre-scan for cross-bucket moves driven by
+    // Phase 1 — pre-scan for cross-bucket moves driven by
     // `TableSchema.moved_from_app`. A model with `moved_from_app =
     // Some("billing")` in the after-schema, whose table name was
     // present in the before-schema's `(database, "billing")` bucket,
@@ -1496,7 +1439,7 @@ pub fn diff_bucket_maps(
         });
 
         // Emit `MoveModelBetweenApps` on the DESTINATION bucket so the
-        // operation lands once and on the side T6's compose anchors
+        // operation lands once and on the side compose anchors
         // its `git mv` against.
         for (src_bucket, dest_bucket, model) in &moves {
             if dest_bucket == &bucket {
@@ -1510,7 +1453,7 @@ pub fn diff_bucket_maps(
             }
         }
 
-        // T9 finalisation: aggregate every per-table `PkTypeFlip` op
+        // PK-flip finalisation: aggregate every per-table `PkTypeFlip` op
         // into a `PkTypeFlipGroup` enriched with FK cascade /
         // self-FK / join-table / cycle / partition metadata. The
         // grouping uses the new schema (`a`) as the source of truth
@@ -1518,10 +1461,9 @@ pub fn diff_bucket_maps(
         // every child has to align with — pulling FK metadata from
         // `before` would miss children that gained their FK in this
         // same migration (rare but legal).
-        // B-4r (Codex round-3): closure depth blow-out propagates
-        // as a structured `DiffError` rather than panicking — the
-        // caller (compose / build) renders the chain in the
-        // operator-facing error message.
+        // Closure depth blow-out propagates as a structured
+        // `DiffError` rather than panicking — the caller
+        // (compose / build) renders the chain in the operator message.
         promote_pk_flips_to_groups(a, &mut delta.operations)?;
         reject_partitioned_multi_parent_clusters(&delta.operations)?;
 
@@ -1536,14 +1478,12 @@ pub fn diff_bucket_maps(
 /// [`SchemaOperation::PkTypeFlip`], and promote them to
 /// [`SchemaOperation::PkTypeFlipGroup`] with full FK cascade /
 /// self-FK / join-table / cycle / partition metadata.
-///
 /// **In-place rewrite.** The per-table flip op is removed; the new
 /// group op is pushed onto the operation list (after every other op
 /// to preserve the existing ordering invariants — the segment
 /// planner will hoist the group into its own dedicated multi-segment
 /// plan regardless of position). When no flip is present the fn is a
 /// pure no-op.
-///
 /// **Determinism.** Children, self-FK columns, join tables, and
 /// cycles are sorted alphabetically before being attached to the
 /// group so the byte-equality regression tests against the playbook
@@ -1579,14 +1519,12 @@ fn promote_pk_flips_to_groups(
         }
     }
 
-    // B-4: transitive FK closure.
-    //
+    // Transitive FK closure.
     // For each migrating parent we collect every table whose FK
     // (directly or transitively) ranges over the parent's `id`
     // column's value space. The closure terminates because the FK
     // graph is finite and the worklist only ever grows by direct
     // children of an already-collected table.
-    //
     // **Why fixed-point is conservative for asc↔desc flips.** The
     // asc↔desc value distribution shift only re-keys the parent's
     // own PK column. A grandchild that points at a CHILD's `id` is
@@ -1595,7 +1533,6 @@ fn promote_pk_flips_to_groups(
     // asc↔desc; the loop is here so future PK-type variants that
     // DO require transitive shadow columns (e.g., a hypothetical
     // BIGINT → TEXT key migration) inherit the closure for free.
-    //
     // **Cycle protection.** The worklist tracks visited tables in a
     // `BTreeSet` so a cycle of arbitrary length cannot loop the
     // closure indefinitely.
@@ -1624,10 +1561,9 @@ fn promote_pk_flips_to_groups(
         let mut children: Vec<PkFlipChild> = Vec::new();
         let mut self_fk_cols: Vec<String> = Vec::new();
         let mut self_fk_constraints: Vec<String> = Vec::new();
-        // Codex round-4 B-16: per-self-FK deferrability flags
-        // populated index-for-index alongside `self_fk_cols` /
-        // `self_fk_constraints`. Cycle path forces both to `true`
-        // — see the conditional at the end of the population loop.
+        // Per-self-FK deferrability flags populated index-for-index
+        // alongside `self_fk_cols` / `self_fk_constraints`.
+        // Cycle path forces both to `true`.
         let mut self_fk_deferrable: Vec<bool> = Vec::new();
         let mut self_fk_initially_deferred: Vec<bool> = Vec::new();
         let mut join_tables: Vec<PkFlipJoinTable> = Vec::new();
@@ -1670,39 +1606,30 @@ fn promote_pk_flips_to_groups(
                         peer_fk_column: col.name.clone(),
                         self_fk_column: self_fk_col,
                     });
-                    // B-13 (Codex round-3): cycle peers are FIRST-CLASS
-                    // children. The peer's FK column needs the same
-                    // shadow-column orchestration as any other child
-                    // (preparation, backfill, concurrent index, NOT
-                    // NULL proof, cutover finalisation) — without it
-                    // the cutover SQL references a `_desc` column
-                    // that was never created. The `cycle_flag = true`
-                    // marker tells the segment-3b FK emitter to attach
-                    // `DEFERRABLE INITIALLY DEFERRED` to the
-                    // constraint, and the cutover-level
-                    // `SET CONSTRAINTS ALL DEFERRED` (gated on
-                    // `!cycles.is_empty()`) tolerates mid-transaction
-                    // FK states until COMMIT. Together these reproduce
-                    // the playbook §8 deferred-constraints pattern.
+                    // Cycle peers are first-class children. The peer's
+                    // FK column needs the same shadow-column orchestration
+                    // as any other child (preparation, backfill, index,
+                    // NOT NULL proof, cutover) — without it the cutover
+                    // SQL references a `_desc` column that was never
+                    // created. The `cycle_flag = true` marker tells the
+                    // segment FK emitter to attach `DEFERRABLE INITIALLY
+                    // DEFERRED`, and the cutover `SET CONSTRAINTS ALL
+                    // DEFERRED` tolerates mid-transaction FK states.
+                    // Together these enforce deferred-constraints behavior.
                     children.push(PkFlipChild {
                         table: other_table_name.clone(),
                         fk_column: col.name.clone(),
                         fk_constraint_name: constraint_name,
                         on_delete: fk.on_delete,
-                        // Codex round-4 B-16: cycle peers force
-                        // deferrable + initially_deferred regardless
-                        // of descriptor-side knobs. The cutover
-                        // emits `SET CONSTRAINTS ALL DEFERRED` once
-                        // at the top, but the recreated FK on the
-                        // post-cutover column must ALSO be marked
-                        // `DEFERRABLE INITIALLY DEFERRED` so future
-                        // operator-driven deferred-FK use still
-                        // works post-flip. Without this the cutover
-                        // silently downgrades the cycle to
-                        // non-deferrable; mid-tx FK violations on
-                        // post-flip workloads then trip
-                        // unconditionally even though the operator
-                        // declared the cycle as deferrable.
+                        // Cycle peers force deferrable +
+                        // initially_deferred regardless of
+                        // descriptor-side knobs. The cutover emits
+                        // `SET CONSTRAINTS ALL DEFERRED` once at the
+                        // top, but the recreated FK must ALSO be
+                        // marked `DEFERRABLE INITIALLY DEFERRED` so
+                        // future deferred-FK use still works post-flip.
+                        // Without this the cycle downgrades to
+                        // non-deferrable post-cutover.
                         fk_deferrable: true,
                         fk_initially_deferred: true,
                         fk_nullable: col.nullable,
@@ -1734,7 +1661,7 @@ fn promote_pk_flips_to_groups(
                         Some((pcol, partner_target))
                             if migrating_parents.contains(&partner_target) =>
                         {
-                            // The other parent is also migrating —
+                            // The other parent is also migrating
                             // join-table participates in both
                             // migrations. Recorded with `Some(...)`.
                             let pcons = format!("{}_{}_fkey", other_table_name, pcol);
@@ -1742,11 +1669,10 @@ fn promote_pk_flips_to_groups(
                         }
                         _ => (None, None, None),
                     };
-                    // Codex round-4 B-16: extract partner-side
-                    // FK deferrability from the partner column
-                    // (when present). Without this lookup the
-                    // cutover can't preserve a deferrable partner
-                    // FK across the recreate boundary.
+                    // Extract partner-side FK deferrability from the
+                    // partner column (when present). Without this
+                    // lookup the cutover can't preserve deferrable
+                    // partner FKs.
                     let (partner_def, partner_init_def) =
                         if let Some(partner_col_name) = partner_col.as_deref() {
                             other_table
@@ -1780,8 +1706,8 @@ fn promote_pk_flips_to_groups(
                     fk_column: col.name.clone(),
                     fk_constraint_name: constraint_name,
                     on_delete: fk.on_delete,
-                    // Codex round-4 B-16: preserve descriptor-
-                    // declared deferrability through the cutover.
+                    // Preserve descriptor-declared deferrability
+                    // through the cutover.
                     fk_deferrable: fk.deferrable,
                     fk_initially_deferred: fk.initially_deferred,
                     fk_nullable: col.nullable,
@@ -1792,13 +1718,11 @@ fn promote_pk_flips_to_groups(
             }
         }
 
-        // B-4r transitive FK closure (real, non-placeholder).
-        //
+        // Transitive FK closure (real, non-placeholder).
         // Walk the FK graph rooted at `parent_table` via BFS so the
         // visited-set grows to include indirect descendants. The
         // closure is bounded by `MAX_CLOSURE_DEPTH` and protected
         // against cycles by the visited-set itself.
-        //
         // **What `visited_tables` records.** Every table reachable
         // from `parent_table` via at least one FK that points at a
         // PK column of an already-visited table. For asc↔desc the
@@ -1807,18 +1731,16 @@ fn promote_pk_flips_to_groups(
         // grandchild's FK column points at a CHILD's `id`, and the
         // child's `id` is itself a HeerId whose value space does NOT
         // re-key when the parent flips. The closure exists to:
-        //
-        //   1. Detect cycles defensively (a real-world cycle of
-        //      arbitrary length cannot infinite-loop the differ).
-        //   2. Terminate cleanly on a pathological graph
-        //      (`MAX_CLOSURE_DEPTH = 65`).
-        //   3. Reserve the structural plumbing for a future PK-type
-        //      flip variant that DOES re-key grandchildren (e.g. a
-        //      hypothetical TEXT key change). Such a variant would
-        //      promote `visited_tables` membership to shadow-column
-        //      orchestration by extending this body — no rewrite of
-        //      the closure shape needed.
-        //
+        // 1. Detect cycles defensively (a real-world cycle of
+        // arbitrary length cannot infinite-loop the differ).
+        // 2. Terminate cleanly on a pathological graph
+        // (`MAX_CLOSURE_DEPTH = 65`).
+        // 3. Reserve the structural plumbing for a future PK-type
+        // flip variant that DOES re-key grandchildren (e.g. a
+        // hypothetical TEXT key change). Such a variant would
+        // promote `visited_tables` membership to shadow-column
+        // orchestration by extending this body — no rewrite of
+        // the closure shape needed.
         // **Cascade-depth panic.** At depth > 65 the closure panics
         // with the chain of tables that drove the depth blow-out so
         // tests can detect the contract violation deterministically.
@@ -1880,11 +1802,10 @@ fn promote_pk_flips_to_groups(
                 visited_tables.insert(t.clone());
             }
             frontier = next_frontier;
-            // B-4r (Codex round-3): the depth-65 contract returns
-            // a structured error rather than panicking. The
-            // operator-facing message renders the chain so the
-            // offending FK shape is identifiable; compose / build
-            // surface the error verbatim instead of unwinding.
+            // The depth-65 contract returns a structured error
+            // rather than panicking. The operator-facing message
+            // renders the chain so the offending FK shape is
+            // identifiable; compose / build surface the error.
             if depth == MAX_CLOSURE_DEPTH {
                 return Err(DiffError::PkFlipCascadeDepthExceeded {
                     parent_table: parent_table.clone(),
@@ -1903,12 +1824,9 @@ fn promote_pk_flips_to_groups(
         });
         cycles.sort_by(|a, b| a.peer_table.cmp(&b.peer_table));
         // Self-FK: pair the cols/constraints/deferrability flags in
-        // alphabetical order. Codex round-4 B-16 widens the zipped
-        // tuple to carry the per-FK deferrability — `(col, cons,
-        // deferrable, initially_deferred)`. The cycle path forces
-        // both flags to `true` further down, after this sort, so we
-        // stay within the "data first, semantics second" ordering
-        // the rest of the differ uses.
+        // alphabetical order. The zipped tuple carries per-FK
+        // deferrability — `(col, cons, deferrable, initially_deferred)`.
+        // The cycle path forces both flags to `true` further down.
         let mut self_fk_zipped: Vec<(String, String, bool, bool)> = self_fk_cols
             .into_iter()
             .zip(self_fk_constraints)
@@ -2075,21 +1993,19 @@ fn diff_tables(
 }
 
 /// Detect changes to table-level DDL metadata between two snapshots of
-/// the same table. Phase 8.5 Cluster 4 (djogi#172 umbrella).
-///
+/// the same table.
 /// Currently handles:
-/// - `table_comment` → [`SchemaOperation::SetTableComment`] (djogi#217)
-/// - `storage_params` → [`SchemaOperation::SetStorageParams`] (djogi#218)
-/// - `tablespace` → [`SchemaOperation::SetTablespace`] (djogi#219)
-///
-/// Each slot emits one `SchemaOperation` when the before / after
-/// values diverge; identical values produce no operation.
+/// - `table_comment` → [`SchemaOperation::SetTableComment`]
+/// - `storage_params` → [`SchemaOperation::SetStorageParams`]
+/// - `tablespace` → [`SchemaOperation::SetTablespace`]
+///   Each slot emits one `SchemaOperation` when the before / after
+///   values diverge; identical values produce no operation.
 fn diff_table_metadata_in_table(
     before: &TableSchema,
     after: &TableSchema,
     ops: &mut Vec<SchemaOperation>,
 ) {
-    // djogi#217 — table comment. Only emit when the value actually
+    // table comment. Only emit when the value actually
     // changes so two consecutive differ runs against the same source
     // produce byte-identical output.
     if before.table_comment != after.table_comment {
@@ -2250,7 +2166,7 @@ fn diff_columns_in_table<'a>(
     }
 
     // Return the rename map so the PK differ can normalise column
-    // names before flip-pair detection — addresses Codex review's
+    // names before flip-pair detection — addresses
     // "PK column rename + flip" edge case.
     column_rename_targets
 }
@@ -2277,7 +2193,7 @@ fn emit_alter_column(
             // it against the new type shape. The `from` carries the prior
             // expression so rollback can ADD it back after rolling the
             // type change back — without this, the down-side rollback
-            // would leave the column un-checked (the bug GPT-5.5 review
+            // would leave the column un-checked (the bug
             // flagged: lossy CHECK rollback on type-changed columns).
             push(ColumnChange::SetCheck {
                 from: before.check.clone(),
@@ -2285,7 +2201,7 @@ fn emit_alter_column(
             });
         }
         if type_changed {
-            // djogi#220 — pull the adopter-supplied USING expression
+            // pull the adopter-supplied USING expression
             // from the AFTER column. The `type_change_using` slot is
             // `#[serde(skip)]` on `ColumnSchema`, so the BEFORE
             // (loaded-from-disk) side always carries `None`; only the
@@ -2304,22 +2220,18 @@ fn emit_alter_column(
         if before.default_sql != after.default_sql {
             push(ColumnChange::SetDefault(after.default_sql.clone()));
         }
-        // CHECK constraint transitions — djogi#186 (Phase 8.5 v3 Cluster 2),
-        // GPT-5.5 review (non-lossy rollback).
-        //
+        // CHECK constraint transitions — (non-lossy rollback).
         // Each emitted `SetCheck` carries both `from` (the CHECK on the
         // column at the start of this operation) and `to` (the CHECK
         // after this operation). The SQL emitter uses `from` for the
         // down-side, so rollback restores the prior CHECK rather than
         // leaving a comment-only placeholder.
-        //
         // The AMEND case stays as a two-step DROP+ADD pair so each
         // step maps cleanly to one `OperationSql` (one up, one down).
         // Composing the down file in reverse order (per
         // `compose::compose_down_text`) gives the operator:
-        //   step 2 down (DROP new), then step 1 down (ADD old) —
+        // step 2 down (DROP new), then step 1 down (ADD old)
         // returning the column to its prior CHECK shape.
-        //
         // For the type-change path, the post-type CHECK re-add carries
         // `from: None` because the prior `SetCheck { from: before.check,
         // to: None }` already dropped the original constraint at the
@@ -2389,7 +2301,6 @@ fn emit_alter_column(
                 to: after.generated.clone(),
             });
         }
-        // Codex T22 BLOCK-3: detect IDENTITY transitions so old
         // snapshots (where `identity: None`) projected against new
         // schemas (where `identity: Some(ByDefault)` for Serial PKs)
         // emit the correct `ALTER COLUMN ADD GENERATED ... AS IDENTITY`
@@ -2402,12 +2313,11 @@ fn emit_alter_column(
                 to: after.identity,
             });
         }
-        // Phase 8.5 djogi#217 — `#[field(comment)]` transitions
-        // surface as a single `SetComment { from, to }` that the
-        // emitter lowers to one `COMMENT ON COLUMN <t>.<c> IS …`
-        // statement (or `IS NULL` when clearing). Only emit when the
-        // value actually changes so two consecutive differ runs
-        // produce byte-identical output.
+        // `#[field(comment)]` transitions surface as a single
+        // `SetComment { from, to }` that the emitter lowers to one
+        // `COMMENT ON COLUMN <t>.<c> IS …` statement. Only emit when
+        // the value actually changes so consecutive differ runs produce
+        // byte-identical output.
         if before.comment != after.comment {
             push(ColumnChange::SetComment {
                 from: before.comment.clone(),
@@ -2450,33 +2360,30 @@ fn emit_alter_column(
 /// pairs emit `PkTypeFlip`; every other non-equal PK transition
 /// emits `Unsupported` with a specific reason so `classify()` can
 /// surface it cleanly. Non-flip transitions handled here include:
-///
 /// - kind changes outside the flip pairs (e.g. `HeerId → Serial`)
 /// - column-set changes (composite ↔ single, or composite reshape
 ///   that survives column-rename normalisation)
 /// - custom PK shape changes (any transition involving
 ///   `PkKindSchema::Custom` on either side; see
 ///   [`custom_pk_unsupported_reason`] for the typed diagnostic shape)
-///
-/// **Custom PK transitions (djogi#165).** A model declared with a
-/// `djogi::primary_key!` newtype on either side of the diff is rejected
-/// with a dedicated message that names which side carries the custom
-/// kind, the inner SQL types, and the type names. The stock
-/// `pk_flip` family routes (`PkFlipFamily::Heer` / `Ranj`) only know
-/// how to migrate the four built-in asc↔desc pairs — no playbook
-/// exists for arbitrary `Custom → Custom`, `Custom → built-in`, or
-/// `built-in → Custom` shape changes, and quietly emitting a generic
-/// `ALTER COLUMN TYPE` would risk silent data loss when the inner SQL
-/// types differ. See `docs/spec/migrations.md` §10.10a for the v0.1.0
-/// support matrix.
-///
-/// **PK column rename + supported flip** is recognised as a flip:
-/// the `column_renames` map is applied to `before.primary_key.columns`
-/// before comparing against `after.primary_key.columns`, so a single
-/// `RenameColumn` op + a kind flip together still produce
-/// `SchemaOperation::PkTypeFlip` rather than `Unsupported`. The
-/// `RenameColumn` was already emitted by `diff_columns_in_table`
-/// before this fn runs.
+///   **Custom PK transitions.** A model declared with a
+///   `djogi::primary_key!` newtype on either side of the diff is rejected
+///   with a dedicated message that names which side carries the custom
+///   kind, the inner SQL types, and the type names. The stock
+///   `pk_flip` family routes (`PkFlipFamily::Heer` / `Ranj`) only know
+///   how to migrate the four built-in asc↔desc pairs — no playbook
+///   exists for arbitrary `Custom → Custom`, `Custom → built-in`, or
+///   `built-in → Custom` shape changes, and quietly emitting a generic
+///   `ALTER COLUMN TYPE` would risk silent data loss when the inner SQL
+///   types differ. See `docs/spec/migrations.md` §10.10a for the v0.1.0
+///   support matrix.
+///   **PK column rename + supported flip** is recognised as a flip:
+///   the `column_renames` map is applied to `before.primary_key.columns`
+///   before comparing against `after.primary_key.columns`, so a single
+///   `RenameColumn` op + a kind flip together still produce
+///   `SchemaOperation::PkTypeFlip` rather than `Unsupported`. The
+///   `RenameColumn` was already emitted by `diff_columns_in_table`
+///   before this fn runs.
 fn diff_pk_in_table(
     before: &TableSchema,
     after: &TableSchema,
@@ -2516,7 +2423,7 @@ fn diff_pk_in_table(
         });
         return;
     }
-    // djogi#165 — route any transition that involves a custom-PK
+    // route any transition that involves a custom-PK
     // newtype on either side to its own diagnostic instead of the
     // generic debug-dump fallback. Rationale in the docstring above
     // and in `custom_pk_unsupported_reason`.
@@ -2533,7 +2440,7 @@ fn diff_pk_in_table(
         return;
     }
     // Anything else in the PK changed — surface as Unsupported so
-    // the operator hand-rolls a migration. T9's expand/contract
+    // the operator hand-rolls a migration. The PK-flip expand/contract
     // playbook only covers the asc↔desc flips today; other PK
     // transitions don't have a generated playbook.
     ops.push(SchemaOperation::Unsupported {
@@ -2549,8 +2456,7 @@ fn diff_pk_in_table(
 
 /// Format the v0.1.0 reject diagnostic for a primary-key transition
 /// that involves a `djogi::primary_key!` custom newtype on at least
-/// one side (djogi#165).
-///
+/// one side.
 /// The message names the table, classifies the transition into one
 /// of three buckets (`custom-to-custom`, `custom-to-built-in`,
 /// `built-in-to-custom`), surfaces the full `type_name` / `sql_type` /
@@ -2646,7 +2552,7 @@ fn diff_indexes(
             Some(bi) => {
                 // Resolve the table name through the rename map to
                 // detect "logical-equivalent under a table rename"
-                // — the index's `table` field changed only because
+                // the index's `table` field changed only because
                 // the table itself was renamed, not because the
                 // index was retargeted. The map is keyed
                 // `old → new`, so look up `bi.table` (the OLD table
@@ -2669,7 +2575,7 @@ fn diff_indexes(
                     && bi.extension_dependency == ai.extension_dependency;
                 if !logical_eq {
                     // Drop + Add carries the full IndexSchema for both
-                    // sides so T3's segment planner knows whether the
+                    // sides so the segment planner knows whether the
                     // dropped index was non-transactional, unique,
                     // constraint-backed, or carried an extension
                     // dependency — without that metadata the planner
@@ -2738,7 +2644,6 @@ fn diff_enums(before: &AppliedSchema, after: &AppliedSchema, ops: &mut Vec<Schem
 }
 
 /// Pick the BEFORE/AFTER anchor for a newly-inserted enum variant.
-///
 /// Walks `new_variants` outward from `pos` and returns the first
 /// neighbour that already exists in `before_set` (i.e. lives in the
 /// old enum). The post-anchor (next index) wins over the pre-anchor
@@ -2747,7 +2652,6 @@ fn diff_enums(before: &AppliedSchema, after: &AppliedSchema, ops: &mut Vec<Schem
 /// chained inserts of multiple new variants in one delta produce a
 /// stable, readable migration where each insert anchors against an
 /// already-existing variant rather than another freshly-added one.
-///
 /// Returns `None` when no anchor in `before_set` exists in either
 /// direction — that case is "first variants of a brand new enum",
 /// which the caller already routes through [`SchemaOperation::AddEnum`]
@@ -2782,7 +2686,6 @@ fn pick_enum_variant_anchor(
 }
 
 /// Compute the aggregate [`Classification`] for an operation list.
-///
 /// Severity ladder: `NoOp` < `Additive` < `Reversible` <
 /// `Destructive` < `Lossy` < `Unsupported`. `PkTypeFlip` is
 /// orthogonal: when present, it wins as the headline classification,
@@ -2790,9 +2693,7 @@ fn pick_enum_variant_anchor(
 /// destructive or lossy ops still surface to the runner gate.
 /// `Unsupported` always wins, even over `PkTypeFlip`, because an
 /// unsupported transition has no executable plan at all.
-///
 /// `AddColumn` is classified per the column's actual shape:
-///
 /// - nullable, OR has a default → Additive
 /// - non-nullable + no default → Lossy (existing rows would violate
 ///   the constraint immediately on apply)
@@ -2825,9 +2726,9 @@ fn severity_of(op: &SchemaOperation) -> Severity {
         SchemaOperation::AddColumn { column, .. } => {
             // A column is Lossy on add only if Postgres has no value
             // source for existing rows. Three sources are recognised:
-            //   1. nullable column → NULL fills existing rows
-            //   2. default_sql → DEFAULT expression fills existing rows
-            //   3. generated → GENERATED ALWAYS expression fills rows
+            // 1. nullable column → NULL fills existing rows
+            // 2. default_sql → DEFAULT expression fills existing rows
+            // 3. generated → GENERATED ALWAYS expression fills rows
             // Only when none of these are set is the add Lossy.
             if !column.nullable && column.default_sql.is_none() && column.generated.is_none() {
                 Severity::Lossy
@@ -3132,22 +3033,19 @@ mod tests {
         ));
     }
 
-    // ── djogi#165 — custom-PK newtype shape flips ─────────────────
-    //
+    // ── — custom-PK newtype shape flips ─────────────────
     // Every transition involving a `djogi::primary_key!`-declared
     // custom newtype on either side gets the typed reject diagnostic
     // from `custom_pk_unsupported_reason`. We pin the bucket label
     // and the type-name surfacing so operators see WHICH custom kind
     // changed, not a generic `PrimaryKeySchema { ... }` debug dump.
-    //
     // The four cases below cover the matrix the issue calls out:
-    //   1. same inner SQL type, different Rust newtype name
-    //   2. same Rust newtype name, different inner SQL type
-    //   3. built-in → custom transition
-    //   4. custom → built-in transition
-    //
+    // 1. same inner SQL type, different Rust newtype name
+    // 2. same Rust newtype name, different inner SQL type
+    // 3. built-in → custom transition
+    // 4. custom → built-in transition
     // The tests build descriptors directly via `PkType::Custom(...)`
-    // — the same `CustomPrimaryKeyKind` shape the `primary_key!` macro
+    // the same `CustomPrimaryKeyKind` shape the `primary_key!` macro
     // emits via inventory at adopter-build time — so we exercise the
     // exact projection / diff path the runtime takes without needing
     // the macro fixture to live under `djogi/src/`.
@@ -3259,7 +3157,6 @@ mod tests {
         // three identity fields, so a generator rotation (sequence
         // bump, shard split, new ID minting service) still fails the
         // equality check and routes through the custom-PK reject.
-        //
         // The diagnostic MUST include both `default_sql` strings — without
         // them the operator would see two identical-looking `Custom(...)`
         // arms in the surfaced `ComposeError::UnsupportedDelta` and have
@@ -3280,7 +3177,7 @@ mod tests {
     fn pk_builtin_to_custom_is_unsupported() {
         // Migrating a model from the default HeerId to a custom
         // newtype lands here. No playbook exists for this transition
-        // — both the column DEFAULT generator (heerid_next() →
+        // both the column DEFAULT generator (heerid_next →
         // user_id_next()) and the FK cascade strategy depend on the
         // adopter's intent, so we reject and let them hand-write it.
         let reason = unsupported_pk_reason(PkType::HeerId, CUSTOM_USER_ID);
@@ -3530,21 +3427,16 @@ mod tests {
         )));
     }
 
-    // ── djogi#186 — CHECK constraint AMEND-replace lifecycle ───────────────
-    //
-    // The differ at this site (line ~2128) detects CHECK transitions
-    // and emits ColumnChange::SetCheck variants. The AMEND case
-    // (`Some(old) → Some(new)` with `old != new`) was originally lowered
-    // as a single `ADD CONSTRAINT` against the existing constraint name,
-    // which Postgres rejects because the name already exists from the
-    // prior projection. The fix emits two `SetCheck` entries — first
-    // `{ from: Some(old), to: None }` (drop) followed by
+    // ── — CHECK constraint AMEND-replace lifecycle ───────────────
+    // The differ detects CHECK transitions and emits
+    // ColumnChange::SetCheck variants. The AMEND case (`Some(old) →
+    // Some(new)` with `old != new`) emits two `SetCheck` entries
+    // first `{ from: Some(old), to: None }` (drop) followed by
     // `{ from: None, to: Some(new) }` (add) — so the SQL pair is
-    // `DROP CONSTRAINT` then `ADD CONSTRAINT`. GPT-5.5 review extended
-    // the variant to carry `from` so each step's rollback restores the
-    // pre-step state symmetrically. These tests pin all four cells of
-    // the CHECK transition matrix so a future refactor cannot silently
-    // regress any direction.
+    // `DROP CONSTRAINT` then `ADD CONSTRAINT`. Each variant carries
+    // `from` so each step's rollback restores the pre-step state
+    // symmetrically. These tests pin all four cells of the CHECK
+    // transition matrix so a future refactor cannot silently regress.
 
     fn build_table_with_check(check: Option<&str>) -> crate::migrate::schema::AppliedSchema {
         build_table_with_check_and_type(check, "BIGINT")
@@ -3775,17 +3667,17 @@ mod tests {
 
     #[test]
     fn check_amend_emits_drop_then_add() {
-        // AMEND scenario — the central djogi#186 lifecycle case.
+        // AMEND scenario — the central lifecycle case.
         // Descriptor evolves from u32 → u64 (or any other CHECK
         // expression change). The differ MUST emit two ColumnChange
         // entries in order:
-        //   SetCheck { from: Some(b), to: None }
-        //   SetCheck { from: None, to: Some(a) }
+        // SetCheck { from: Some(b), to: None }
+        // SetCheck { from: None, to: Some(a) }
         // The SQL emitter renders these as `DROP CONSTRAINT …; ADD
         // CONSTRAINT … CHECK (…);` — two separate ALTERs against the
         // same constraint name slot, which Postgres accepts cleanly.
         // Each step now carries its own (from, to) so the down side
-        // restores the previous state symmetrically (GPT-5.5 fix).
+        // restores the previous state symmetrically (.
         let before_expr = "\"amount\" >= 0 AND \"amount\" <= 4294967295";
         let after_expr = "\"amount\" >= 0 AND \"amount\" <= 18446744073709551615";
         let before = build_table_with_check(Some(before_expr));
@@ -3893,17 +3785,14 @@ mod tests {
         );
     }
 
-    // ── T22 round-3 BLOCK-2 / GAP-3 — SetIdentity diff regression ──
+    // ── SetIdentity diff regression test ────────────────────────────
 
     #[test]
     fn diff_detects_identity_none_to_some_by_default_as_set_identity() {
-        // Codex T22 round-3 GAP-3: a snapshot predating the
-        // `identity` field (which deserialises as `None` via
-        // `#[serde(default)]`) projected against a fresh schema
-        // (Serial PKs project `identity = Some(ByDefault)`) must
+        // A snapshot predating the `identity` field (which deserialises
+        // as `None` via `#[serde(default)]`) projected against a fresh
+        // schema (Serial PKs project `identity = Some(ByDefault)`) must
         // surface a SetIdentity AlterColumn, not silently no-op.
-        // Without this regression test, a sibling-site bug where
-        // the identity comparison is omitted would slip past CI.
         use crate::migrate::schema::{
             AppliedSchema, ColumnSchema, IdentityKindSchema, PkKindSchema, PrimaryKeySchema,
             TableSchema,
@@ -3990,13 +3879,13 @@ mod tests {
         );
     }
 
-    // ── T2 fixup tests (added 2026-04-25) ───────────────────────────
+    // ── Classification accuracy tests ───────────────────────────────
 
     #[test]
     fn add_not_null_column_without_default_classifies_lossy() {
-        // Codex T2 review B-1: AddColumn must inspect the column's
-        // shape. NOT NULL without a default = Lossy because existing
-        // rows would immediately violate the constraint on apply.
+        // AddColumn must inspect the column's shape. NOT NULL without
+        // a default = Lossy because existing rows would immediately
+        // violate the constraint on apply.
         const NOT_NULL: FieldDescriptor = field_descriptor("required", FieldSqlType::Text, false);
         static FIELDS: &[FieldDescriptor] = &[NOT_NULL];
         let bare = synth_model("widgets", "Widget");
@@ -4012,8 +3901,8 @@ mod tests {
 
     #[test]
     fn pk_flip_with_concurrent_drop_surfaces_co_destructive_flag() {
-        // Codex T2 review B-1: PkTypeFlip must NOT mask co-existing
-        // destructive ops. A flip + DropTable in the same delta
+        // PkTypeFlip must NOT mask co-existing destructive ops.
+        // A flip + DropTable in the same delta
         // classifies as PkTypeFlip { co_destructive: true } so the
         // runner's --allow-destructive gate still fires.
         let asc = ModelDescriptor {
@@ -4066,13 +3955,12 @@ mod tests {
     #[test]
     fn pk_flip_with_lossy_only_op_does_not_claim_co_destructive() {
         // Regression: classify() previously computed
-        //     co_destructive: max >= Severity::Destructive
+        // co_destructive: max >= Severity::Destructive
         // which is true whenever max == Lossy because Lossy > Destructive
         // in the severity ordering. That conflated the two flags so a
         // delta carrying ONLY a Lossy op (no Destructive op) wrongly
         // surfaced co_destructive=true and tripped the
         // --allow-destructive gate.
-        //
         // The fix scans ops independently: co_destructive only when
         // some op classifies as Destructive, co_lossy only when some op
         // classifies as Lossy. This test pins both flags to their
@@ -4112,9 +4000,9 @@ mod tests {
 
     #[test]
     fn drop_index_carries_full_metadata() {
-        // Codex T2 review B-4: DropIndex must carry IndexSchema, not
-        // just the name, so T3's segment planner knows the dropped
-        // index's `requires_out_of_transaction`, kind, etc.
+        // DropIndex must carry IndexSchema, not just the name, so the
+        // segment planner knows the dropped index's
+        // `requires_out_of_transaction`, kind, etc.
         static IDX_SLICE: &[IndexSpec] = &[IndexSpec {
             name: "widgets_name_idx",
             target: IndexTarget::Columns(&[IndexColumnSpec::simple("name")]),
@@ -4150,11 +4038,10 @@ mod tests {
 
     #[test]
     fn cross_bucket_move_via_moved_from_app_emits_move_not_drop_add() {
-        // Codex T2 review B-5: a model with `moved_from_app =
-        // "billing"` whose table existed in the before-billing-bucket
-        // must produce a single MoveModelBetweenApps op on the
-        // destination bucket — NOT a spurious DropTable on billing
-        // and AddTable on the new bucket.
+        // A model with `moved_from_app = "billing"` whose table existed
+        // in the before-billing-bucket must produce a single
+        // MoveModelBetweenApps op on the destination bucket — NOT a
+        // spurious DropTable and AddTable on other buckets.
         let billing = synth_app("billing", "main");
         let users = synth_app("users", "main");
 
@@ -4226,14 +4113,12 @@ mod tests {
 
     #[test]
     fn pk_column_rename_normalises_under_kind_flip() {
-        // Codex T2 review B-2 + fixup advisory: a PK column rename
-        // concurrent with a kind flip must be recognised as a
-        // PkTypeFlip, not Unsupported. The differ runs
+        // A PK column rename concurrent with a kind flip must be
+        // recognised as a PkTypeFlip, not Unsupported. The differ runs
         // `diff_columns_in_table` first (which emits `RenameColumn`
         // and returns the rename map) and then `diff_pk_in_table`
         // with that map, normalising the before-PK columns through
         // the rename so the column-list comparison succeeds.
-        //
         // We construct two synthetic schemas DIRECTLY (bypassing
         // `project_*`) so we can pin a `Composite(["old_id"])` PK
         // shape on the before side and `Composite(["new_id"])` on
@@ -4357,7 +4242,7 @@ mod tests {
         ));
     }
 
-    // ── AddEnumVariant anchor (Codex T3 review B-2) ──────────────────
+    // ── AddEnumVariant anchor tests ──────────────────────────────────
 
     /// Build an `AppliedSchema` with a single enum and no models.
     fn schema_with_enum(name: &str, variants: &[&str]) -> AppliedSchema {
@@ -4441,10 +4326,7 @@ mod tests {
         // the helper falls back to the nearest pre-anchor — "b", the
         // immediate predecessor that is also in the old set. The
         // emitted DDL is `ALTER TYPE "status" ADD VALUE 'c' AFTER 'b'`.
-        //
-        // Codex T3 round-2 review N-1: the previous test name
-        // (`..._carries_no_anchor`) contradicted the assertion. Pinned
-        // the test name to the helper's actual contract — see the
+        // The test name matches the helper's actual contract — see the
         // doc-comment on `SchemaOperation::AddEnumVariant.anchor`.
         let before = schema_with_enum("status", &["a", "b"]);
         let after = schema_with_enum("status", &["a", "b", "c"]);
@@ -4512,11 +4394,10 @@ mod tests {
         );
     }
 
-    // ── B-4r: transitive FK closure unit tests ────────────────────────────
+    // ── Transitive FK closure unit tests ─────────────────────────────
 
     /// Build a minimal `TableSchema` with the given name, a HeerId
     /// PK column called `id`, and the supplied FK columns.
-    ///
     /// Each `(col_name, ref_table)` entry becomes a `BIGINT NOT NULL`
     /// column with an FK pointing at `ref_table.id`.
     fn synth_table_with_fks(
@@ -4854,11 +4735,10 @@ mod tests {
     /// recorded BOTH as a [`PkFlipCycle`] (drives cutover-level
     /// `SET CONSTRAINTS ALL DEFERRED`) AND as a [`PkFlipChild`] with
     /// `cycle_flag = true` (drives shadow-column orchestration plus
-    /// per-FK `DEFERRABLE INITIALLY DEFERRED`). B-13 (Codex round-3)
-    /// promoted cycle peers from cycle-only metadata to first-class
-    /// children so every segment emitter (preparation, backfill,
-    /// concurrent index, NOT NULL proof, cutover) iterates them
-    /// uniformly with the rest of the cascade.
+    /// per-FK `DEFERRABLE INITIALLY DEFERRED`). Cycle peers are
+    /// first-class children so every segment emitter (preparation,
+    /// backfill, concurrent index, NOT NULL proof, cutover) iterates
+    /// them uniformly with the rest of the cascade.
     #[test]
     fn transitive_fk_closure_terminates_on_cycle() {
         use crate::migrate::schema::PkKindSchema;
@@ -4885,9 +4765,8 @@ mod tests {
             .expect("PkTypeFlipGroup emitted");
         assert_eq!(group.cycles.len(), 1, "cycle peer detected");
         assert_eq!(group.cycles[0].peer_table, "b");
-        // B-13: peer also lands in `children` with cycle_flag = true
-        // so segments 1 / 2 / 3 / 3b / 4 / 5 emit the b.a_id_desc
-        // shadow-column orchestration.
+        // Peer also lands in `children` with cycle_flag = true
+        // so each segment emits the b.a_id_desc shadow-column work.
         let cycle_children: Vec<_> = group
             .children
             .iter()
@@ -4925,33 +4804,22 @@ mod tests {
         assert_eq!(group.children[0].table, "c1");
     }
 
-    /// B-4r (Codex round-3): a chain longer than the closure's
-    /// `MAX_CLOSURE_DEPTH` returns a structured
-    /// [`DiffError::PkFlipCascadeDepthExceeded`] rather than
-    /// panicking.
-    ///
-    /// **Codex round-4 B-4r PARTIAL — depth test routes through
-    /// `diff_bucket_maps`.** Round-3's test invoked
-    /// `promote_pk_flips_to_groups` directly. Codex round-4
-    /// flagged this as a missed round-trip: the differ's
-    /// `diff_bucket_maps` is the only call path production
-    /// callers (compose / build / runner) ever take. Routing the
-    /// test through that path proves the depth-65 contract holds
-    /// when the differ owns op promotion (it does: the per-bucket
-    /// finalisation step in `diff_bucket_maps` calls
-    /// `promote_pk_flips_to_groups` with `?` propagation, so the
-    /// `DiffError` surfaces unchanged).
-    ///
+    /// A chain longer than the closure's `MAX_CLOSURE_DEPTH` returns
+    /// a structured [`DiffError::PkFlipCascadeDepthExceeded`] rather
+    /// than panicking. The test routes through `diff_bucket_maps`, the
+    /// call path that production callers (compose / build / runner) use,
+    /// proving the depth-65 contract holds when the differ owns op
+    /// promotion.
     /// Test setup:
-    ///   * `before`: 70-level FK chain (P → T1 → ... → T70) with
-    ///     P's PK kind set to `HeerId`.
-    ///   * `after`: SAME 70-level chain with P's PK kind flipped
-    ///     to `HeerIdRecencyBiased`. The differ emits one
-    ///     `PkTypeFlip` op for `p` and the closure walks the
-    ///     chain.
-    ///   * Assert `diff_bucket_maps` returns
-    ///     `Err(DiffError::PkFlipCascadeDepthExceeded { ... })`
-    ///     with the chain populated.
+    /// * `before`: 70-level FK chain (P → T1 → ... → T70) with
+    ///   P's PK kind set to `HeerId`.
+    /// * `after`: SAME 70-level chain with P's PK kind flipped
+    ///   to `HeerIdRecencyBiased`. The differ emits one
+    ///   `PkTypeFlip` op for `p` and the closure walks the
+    ///   chain.
+    /// * Assert `diff_bucket_maps` returns
+    ///   `Err(DiffError::PkFlipCascadeDepthExceeded { ... })`
+    ///   with the chain populated.
     #[test]
     fn diff_bucket_maps_emits_pk_flip_cascade_depth_exceeded_on_deep_graph() {
         use crate::migrate::projection::BucketKey;
@@ -5062,7 +4930,7 @@ mod tests {
     }
 
     /// Display rendering of `DiffError::PkFlipCascadeDepthExceeded`
-    /// — the operator-facing message identifies the chain root,
+    /// the operator-facing message identifies the chain root,
     /// reports the contract limit, and prints the trail. Pure
     /// formatting test, no differ invocation needed.
     #[test]
@@ -5080,7 +4948,7 @@ mod tests {
         assert!(display.contains("table_chain"));
     }
 
-    // ── djogi#297 — VARCHAR(n) type-change detection ──────────────────────
+    // ── VARCHAR(n) type-change detection tests ──────────────────────
 
     #[test]
     fn text_to_varchar_emits_change_type() {
