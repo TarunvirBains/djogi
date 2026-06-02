@@ -2288,7 +2288,7 @@ impl_into_distinct_columns_djogi_tuple!(A, B, C, D, E, F);
 // through Q::Condition(_) to preserve byte-for-byte SQL parity. A freshly
 // constructed QuerySet<T>::new starts with Q::Portable(True). Ordinary
 // closure filters whose field accessors return `PortablePredicate<T>` now
-// preserve Q::Portable / Q::Compound / Q::Negated reducible forms, so PR4
+// preserve Q::Portable / Q::Compound / Q::Negated reducible forms, so
 // cache and refresh gates accept them.
 // Path-routing note (non-emitted code):
 // Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
@@ -3238,7 +3238,7 @@ mod tests {
     // These tests confirm the entry-point signatures compile and return the
     // expected type shapes. The SQL emission shape is tested in sql.rs.
 
-    // ── P1-2 once-warn counter test ───────────────────────────────────────────
+    // ── once-warn counter test ────────────────────────────────────────────────
     // Verifies that calling `group_by_region` against an unindexed region model
     // emits at most one `tracing::warn!` regardless of how many times the method
     // is called. The guard uses `std::sync::Once` which is process-wide; the
