@@ -491,7 +491,7 @@ impl<'a> tokio_postgres::types::FromSql<'a> for HmacSha256Hex {
 /// is called. Mixed-case is rejected — only `0`–`9` and `a`–`f` are valid.
 /// # Startup validation
 /// Validated by [`validate_startup_inventory`](super::super::validate_startup_inventory).
-/// Pool construction calls this automatically (Stage 3). Apps without a pool
+/// Pool construction calls this automatically. Apps without a pool
 /// must call it explicitly.
 /// # Fallibility
 /// This codec uses `TryPresentationCodec`. If startup validation was

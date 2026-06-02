@@ -39,7 +39,7 @@
 //! startup work. If a crate that defines `protected(per_scope = ...)` models is
 //! not linked, its presentation usages are absent from inventory and are not
 //! checked. `DjogiPool::connect` / `DjogiPoolBuilder::build` call this
-//! automatically (Stage 3). Apps that construct visages without a pool must call
+//! automatically. Apps that construct visages without a pool must call
 //! it explicitly, and test binaries should include a linked test model when
 //! asserting startup-failure paths.
 //! # Example — adopter-defined codec

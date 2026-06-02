@@ -92,7 +92,7 @@ impl ProtectedPresentationScopeMetadata {
 /// `protected(per_scope = { ... })` block.
 /// # Inventory semantics
 /// `ProtectedPresentationFieldMetadata` is a per-field aggregate for future
-/// tooling. Stage 4+ does not currently emit this type with
+/// tooling. The current implementation does not emit this type with
 /// `inventory::submit!`, so startup validation iterates
 /// `inventory::iter::<PresentationCodecUsage>` instead. The public record still
 /// exists for future extensions and richer tooling.
