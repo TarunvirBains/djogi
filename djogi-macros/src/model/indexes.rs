@@ -789,8 +789,7 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
     // "access method does not support unique indexes" error.
     // Hash is included in the rejection set: hash is non-btree, and a
     // unique hash index has the same impossibility as a unique gin / gist /
-    // brin / spgist index. The original §5 Q3 hash-only carve-out (Phase
-    // 7-Zero) is subsumed by this rule. Below, the hash-specific rejection
+    // brin / spgist index. The original §5 Q3 hash-only carve-out is subsumed by this rule. Below, the hash-specific rejection
     // of multi-column / where / include / expression combinations is
     // retained, because those combinations are hash-incompatible
     // independently of unique.

@@ -160,7 +160,7 @@ fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
 /// Sentinel values:
 /// - `HeerId` / `HeerIdDesc` / `RanjId` / `RanjIdDesc` →
 ///   `<T as ::djogi::primary_key::PrimaryKey>::sentinel` — zero-valued
-///   instance the trait factory produces. Replaces the pre-Phase-7-Zero-2
+///   instance the trait factory produces. Replaces the legacy
 ///   `::djogi::types::__*_default` hidden helpers.
 /// - `i32` (serial) → `0i32` (matches `<i32 as PrimaryKey>::sentinel`)
 /// - `created_at` / `updated_at` → `::djogi::types::DateTime::UNIX_EPOCH`
