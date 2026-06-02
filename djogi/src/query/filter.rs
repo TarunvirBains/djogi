@@ -323,8 +323,8 @@ pub trait ModelFilter {
 /// `pub` on the symbol but routed through `::djogi::__private::query`
 /// in the public path tree, so adopter code reaching for it crosses
 /// the framework boundary into the unstable `__private` namespace.
-/// Macro-emitted `IntoQ<#model>` impls for `{Model}Filter` (Cluster
-/// 8γ Stage 2 — T6.7) need to call this from the adopter crate; the
+/// Macro-emitted `IntoQ<#model>` impls for `{Model}Filter`
+/// need to call this from the adopter crate; the
 /// `pub(crate)` shape blocks that, while `pub` + `__private`-only
 /// re-export preserves the same "internal" contract every other
 /// `__private` helper carries (see `feedback_macro_path_routing.md`).

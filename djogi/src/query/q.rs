@@ -187,7 +187,7 @@ pub enum Q<T: Model> {
     /// - The [`crate::query::filter::ModelFilter`] programmatic
     ///   builder uses this variant for clauses that cannot be safely
     ///   reconstructed as portable Q leaves.
-    /// - Sister clusters (8β `default_filter_condition`, etc.) that
+    /// - Other subsystems (`default_filter_condition`, etc.) that
     ///   still produce `Condition` can compose with `Q<T>` without a
     ///   parallel rewrite.
     ///   The variant is `pub` for cross-crate macro emission but is
@@ -216,7 +216,7 @@ pub enum Q<T: Model> {
     /// `BasicPredicate::Xor(Box, Box)` shape. The general-form SQL
     /// emit is `(NOT a AND b) OR (a AND NOT b)`; a boolean fast-path
     /// (`a <> b` when both operands are pre-evaluated booleans) is
-    /// deferred to T11 per deliverables bullet 3.
+    /// deferred to a future pass (see deliverables bullet 3).
     Xor(Box<Q<T>>, Box<Q<T>>),
 
     /// SQL `NOT (...)` over a non-Portable Q. Pure-Portable negation
@@ -429,7 +429,7 @@ impl<T: Model> From<crate::array::ArrayOverlapLeaf> for Q<T> {
 }
 
 // ── `IntoQ<T>` — sealed trait for `filter_struct` / `exclude_struct` ─────────
-// T6.7 (Stage 2). Anything convertible into a `Q<T>` for
+// Anything convertible into a `Q<T>` for
 // `QuerySet::filter_struct` / `QuerySet::exclude_struct` implements
 // this trait. The sealing is the load-bearing piece: only djogi (and
 // macro-emitted code in adopter crates) may extend the surface, so a
@@ -621,8 +621,8 @@ impl<T: Model> BitXor for Q<T> {
     /// **Operator precedence reminder.** Rust binds `&` tighter than
     /// `^`, and `^` tighter than `|`. So
     /// `Q::Portable(...) ^ Q::Ilike(...) | Q::Expression(...)` parses as
-    /// `(Q::Portable(...) ^ Q::Ilike(...)) | Q::Expression(...)`. T6.11
-    /// lihaaf compile-pass fixture locks this at the type level.
+    /// `(Q::Portable(...) ^ Q::Ilike(...)) | Q::Expression(...)`.
+    /// A lihaaf compile-pass fixture locks this at the type level.
     fn bitxor(self, rhs: Self) -> Q<T> {
         match (self, rhs) {
             (Q::Portable(a), Q::Portable(b)) => Q::Portable(a ^ b),
@@ -729,8 +729,8 @@ where
 /// that pre-date the direct walker).
 /// # XOR general form
 /// `Q::Xor(a, b)` lowers to `(NOT a AND b) OR (a AND NOT b)` — the
-/// boolean fast-path (`a <> b`) is deferred to T11 per
-/// deliverables bullet 3 / `cluster-8gamma-granular.md` §"Out-of-scope".
+/// boolean fast-path (`a <> b`) is deferred to a future pass
+/// (see deliverables §"Out-of-scope").
 /// Same identity Sassi's `BasicPredicate::Xor` carries; the lowering
 /// is identical whether the XOR rides `Q::Xor(_, _)` directly or
 /// `Q::Portable(PortablePredicate::Xor(_, _))`.
@@ -806,7 +806,7 @@ pub(crate) fn q_to_condition<T: Model>(q: Q<T>) -> Condition {
 ///    `(field_name, op, value_as<V>)` reconstruction.
 ///    Today the arm logs a debug-only warning and lowers to
 ///    `Condition::True` (vacuous-truth identity). The SQL-parity
-///    guarantee at T6.9 is unaffected because no shipped code path
+///    SQL-parity guarantee is unaffected because no shipped code path
 ///    produces a `BasicPredicate::Field(_)` that flows through this
 ///    bridge.
 fn basic_predicate_to_condition<T: Model>(bp: BasicPredicate<T>) -> Condition {
@@ -1284,7 +1284,7 @@ mod tests {
     /// Operator precedence runtime check. Locks Rust's table:
     /// `&` > `^` > `|`. So `Q::Portable(_) ^ Q::Negated(...) | Q::Negated(...)`
     /// parses as `(Q::Portable(_) ^ Q::Negated(...)) | Q::Negated(...)`.
-    /// Lihaaf compile-pass at T6.11 doubles this with a
+    /// A lihaaf compile-pass doubles this with a
     /// type-level lock; this runtime test validates the resulting
     /// `Q` shape.
     #[test]
@@ -1361,7 +1361,7 @@ mod tests {
     /// Exhaustive match over `ArrayPredicate<TestModel>` covers all
     /// three variants today. Locks the variant set against accidental
     /// drift; new variants added under `#[non_exhaustive]` will need
-    /// to extend this match (and the SQL emitter at T6.6/T6.9).
+    /// to extend this match (and the SQL emitter).
     #[test]
     fn q_array_three_variants_exhaust() {
         use crate::array::{ArrayContainedByLeaf, ArrayContainsLeaf, ArrayOverlapLeaf};
@@ -1539,11 +1539,11 @@ mod tests {
         }
     }
 
-    // ── T6.6 lowering bridge tests ────────────────────────────────────────────
+    // ── Q→Condition lowering bridge tests ────────────────────────────────────────────
     // These tests lock the `Q<T> → Condition` lowering at every variant.
     // Together with the integration suite, they guarantee character-for-
-    // character SQL parity at the T6.9 substrate flip: every variant the
-    // pre-flip `Condition` path could carry round-trips through
+    // character SQL parity at the substrate flip: every variant the
+    // legacy `Condition` path could carry round-trips through
     // `q_to_condition` to the same shape the SQL emitter consumed before.
 
     /// `Q::Portable(PortablePredicate::True)` lowers to `Condition::True`
@@ -1624,7 +1624,7 @@ mod tests {
 
     /// `Q::Xor(a, b)` lowers to the general form
     /// `(NOT a AND b) OR (a AND NOT b)` — Sassi's identity, no
-    /// boolean fast-path (deferred to T11).
+    /// boolean fast-path (deferred to a future pass).
     #[test]
     fn q_xor_lowers_to_general_form() {
         let a = portable_true::<TestModel>();
@@ -1715,7 +1715,7 @@ mod tests {
     }
 
     /// `Q::Condition(c)` round-trips as the identity — load-bearing
-    /// for character-for-character SQL parity at T6.9. Every legacy
+    /// for character-for-character SQL parity. Every legacy
     /// `Condition` lifted through this variant produces the **same**
     /// SQL the pre-flip code path produced.
     #[test]

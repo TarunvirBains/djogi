@@ -3,8 +3,8 @@
 //! users write `use djogi::prelude::*;` and get `QuerySet`, `FieldRef`,
 //! `Lookup`, `Q`, etc. without a second import.
 //! Internally: `queryset` holds the builder state, `condition` the filter
-//! tree (the legacy substrate, retired by 9), `q` the
-//! public Q-algebra (the post-8γ substrate), `field` the typed column
+//! tree (the legacy substrate, retired in favour of `Q<T>`), `q` the
+//! public Q-algebra, `field` the typed column
 //! handles, `order` ordering expressions, `filter` the programmatic-builder
 //! types, `update` bulk-update assignments, `sql` the `ConditionBuilder` +
 //! SQL emitters, and `terminal` the `fetch_*` methods. Splitting by
@@ -19,15 +19,14 @@
 //! not peer public API with `Q` / `FieldRef`. Treat paths inside
 //! `internal` as unstable — variant names, payload shapes, and the
 //! module layout can shift across phases without a semver bump.
-//! # Substrate — Q<T> alongside Condition during the 8γ transition
-//! `Condition` is the pre-8γ filter tree; `Q<T>` is the post-8γ
+//! # Substrate — Q<T> alongside Condition
+//! `Condition` is the legacy filter tree; `Q<T>` is the
 //! public algebra. The refactor introduces `Q<T>` as an
-//! additive surface first (T6.1–T6.5 + T6.10–T6.13) so adopters and
-//! sister clusters (8β / 8δ / 8ε) can compose against the new shape
-//! without waiting for the substrate swap. T6.6–T6.9 then retire the
-//! internal `Condition` enum and route every `QuerySet<T>::filter`
-//! through `Q<T>`. Both types remain reachable through this stage of
-//! the work; `pub use condition::Condition` stays in place so existing
+//! additive surface first so adopters can compose against the new shape
+//! while the substrate swap completes. The internal `Condition` enum
+//! is retired and every `QuerySet<T>::filter` routes through `Q<T>`.
+//! Both types remain reachable; `pub use condition::Condition` stays in
+//! place so existing
 //! `FieldRef::eq` / `gt` / `ilike` etc. callers continue compiling.
 
 pub mod aggregate;
@@ -206,8 +205,8 @@ pub use row_aggregate_terminal::{AsGeobufTerminal, AsMvtTerminal, EmptyAnnotatio
 pub use set_op::{IntoSetOpArm, SetOpKind, SetOpQuerySet};
 // `BasicPredicate<T>` is sassi's universal Rust-evaluable predicate algebra.
 // Re-exported here so adopters reach it as `djogi::query::BasicPredicate`
-// without depending on sassi directly. The refactor (T6) lifts
-// the 15 Rust-evaluable `LookupOp` variants into `sassi::BasicPredicate`
+// without depending on sassi directly. The 15 Rust-evaluable
+// `LookupOp` variants lift into `sassi::BasicPredicate`
 // while keeping the 2 SQL-only ops (`Regex`, `IRegex`) on the djogi side
 // (`Q::Regex`) — see spec §8e bullet 6 and `decisions.md` row 107 + 108.
 pub use sassi::BasicPredicate;
@@ -242,7 +241,7 @@ pub use visage_queryset::VisageQuerySet;
 /// items** in this module, and its path, may change across phases. Pin
 /// your own type aliases if you depend on them.
 pub mod internal {
-    // (T6.9b): `Condition` graduates from peer
+    // `Condition` graduates from peer
     // public API (it was `pub use condition::Condition` at module
     // root pre-flip) into the unstable internal namespace alongside
     // `Leaf` / `FilterValue` / `LookupOp`. The

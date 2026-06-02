@@ -83,8 +83,8 @@ pub enum Condition {
     /// # Why an escape-hatch variant rather than a full IR lowering
     /// Per the lens (`feedback_decision_priorities.md`, plan §7 #5
     /// resolved 2026-05-03): macro-only constructor + a sealed inner
-    /// payload for 8β. T6 Stage 2 will migrate this to the typed
-    /// `Q<T>` IR; migrating callers is a semver-minor change at the
+    /// payload for the initial landing. Migration to the typed
+    /// `Q<T>` IR is a semver-minor change at the
     /// enum-variant level. Constructing one outside the crate goes
     /// through
     /// [`Condition::__from_raw_sql_fragment`], which is
@@ -139,8 +139,8 @@ impl RawSqlFragment {
 }
 
 impl Condition {
-    /// Macro-only constructor for the raw-SQL escape hatch
-    /// T3.4. Routes through a `#[doc(hidden)]` public surface so
+    /// Macro-only constructor for the raw-SQL escape hatch.
+    /// Routes through a `#[doc(hidden)]` public surface so
     /// `djogi-macros`'s emitted code (in adopter crates) can construct
     /// one without naming the sealed [`RawSqlFragment`] newtype's
     /// `pub(crate)` field. Not part of the user-facing API; the
@@ -482,13 +482,13 @@ impl LookupOp {
     /// optimises into a single jump table at the same compile-time
     /// cost without sacrificing the type-level partition guarantee.
     // `#[allow(dead_code)]` — no production path consumes
-    // `source_class` today (the pre-T6.9 `Condition`-based emission
+    // `source_class` today (the legacy `Condition`-based emission
     // is still the SQL path). The classification is consumed by the
     // partition test in the `tests` module and by future cluster
     // integrations that need the source-side tag (e.g. Punnu
     // cache eligibility checks). Keeping the API loaded but
     // dormant per `feedback_atomic_commits.md` — the §660 split
-    // documentation ships at T6.8; the consumers land later.
+    // documentation ships in a later commit; the consumers land later.
     #[allow(dead_code)]
     pub(crate) fn source_class(self) -> LookupOpSourceClass {
         // Exhaustive — no `_` arm. New variants land in the right
@@ -781,7 +781,7 @@ mod tests {
         assert!(matches!(empty, Condition::Or(ref v) if v.is_empty()));
     }
 
-    // ── T6.8 — §660 partition test ────────────────────────────────────────
+    // ── §660 partition test ────────────────────────────────────────
     // Locks the Rust-evaluable vs SQL-only split documented on
     // [`LookupOp`]. Every shipped variant is tagged via
     // `source_class` and the test verifies the exact 15-vs-2 partition.
