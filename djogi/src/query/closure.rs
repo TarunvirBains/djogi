@@ -1,5 +1,5 @@
 //! `Model::materialize_closure` — populate a transitive-closure table for
-//! a self-referential model. (T13b).
+//! a self-referential model.
 //! # What
 //! A *closure table* stores `(source, ancestor, depth, path_count)` triples
 //! pre-computed from a self-referential edge graph. It is the production-

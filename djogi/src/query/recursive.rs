@@ -30,8 +30,8 @@
 //!   `select_for_share` / `for_share_nowait` / `for_share_skip_locked`
 //!   row locks on a recursive walk acquire one lock per visited row
 //!   in walk order. Pre-1.0 we ban this until we have a clear "lock
-//!   the whole subtree atomically" story (out of scope for Phase
-//!   8-Zero). The FOR SHARE family inherits the same
+//!   the whole subtree atomically" story (out of scope for the current
+//!   release). The FOR SHARE family inherits the same
 //!   exclusion.
 //! - `prefetch` / `select_related` — fan-out over a tree multiplies the
 //!   round trips by the size of the subtree; the right shape is a single
@@ -63,7 +63,7 @@
 //! For `tree_ancestors` the join condition flips to
 //! `parent.<edge_col> = child.id` — child walks up, parent has the FK
 //! pointing at child.
-//! For `full_ancestors` (B3 — T13a) the recursive term consolidates
+//! For `full_ancestors` the recursive term consolidates
 //! every self-FK edge into a single recursive SELECT and fans the
 //! per-edge alternatives out through a non-recursive
 //! `JOIN LATERAL (... UNION ALL ...) child ON TRUE` subquery. Each
@@ -332,7 +332,7 @@ impl<T: Model> RecursiveQuerySet<T> {
 
     /// Multi-edge constructor — the
     /// [`Model::full_ancestors`](crate::model::Model::full_ancestors)
-    /// entry point. (T13a).
+    /// entry point.
     /// One [`RelationPath<T, T>`] per self-FK edge declared on `T`;
     /// the SQL emitter then produces a single recursive SELECT that
     /// fans the per-edge alternatives out through a non-recursive
@@ -1035,7 +1035,6 @@ where
 /// `.with_max_depth(...)` / `.fetch_all(...)` chain still type-checks.
 /// At terminal time we surface the misuse as a descriptive
 /// [`DjogiError::Query`] before any SQL is built.
-/// (T13a).
 /// The error message names the model and points at the requirement
 /// callers either declare a self-FK or fall back to
 /// [`Model::tree_descendants`] / [`Model::tree_ancestors`] which
