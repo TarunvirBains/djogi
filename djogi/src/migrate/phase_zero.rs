@@ -450,7 +450,10 @@ mod tests {
 
     // ── Statement-level classifier tests ───────────────────────────────
 
-    use super::{classify_phase_zero_statement, require_current_phase_zero_statement, PhaseZeroStatementClass};
+    use super::{
+        PhaseZeroStatementClass, classify_phase_zero_statement,
+        require_current_phase_zero_statement,
+    };
 
     #[test]
     fn classify_literal_database_default_as_generated_stale() {

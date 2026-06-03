@@ -4735,7 +4735,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-   use crate::config::MigrateConfig;
+    use crate::config::MigrateConfig;
     use crate::migrate::bootstrap::PHASE_ZERO_VERSION;
     use crate::migrate::diff::Classification;
     use crate::migrate::projection::BucketKey;
@@ -6216,7 +6216,10 @@ mod tests {
         // The artifact classifier looks at banner/section markers, so a bare
         // ALTER DATABASE without markers is classified as Ambiguous (not a
         // recognized generated artifact). This still triggers refusal.
-        assert_ne!(state, crate::migrate::phase_zero::PhaseZeroArtifactState::Current);
+        assert_ne!(
+            state,
+            crate::migrate::phase_zero::PhaseZeroArtifactState::Current
+        );
     }
 
     #[test]
@@ -6235,7 +6238,10 @@ mod tests {
              ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';",
         );
         let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
-        assert_eq!(state, crate::migrate::phase_zero::PhaseZeroArtifactState::GeneratedStale);
+        assert_eq!(
+            state,
+            crate::migrate::phase_zero::PhaseZeroArtifactState::GeneratedStale
+        );
     }
 
     #[test]
@@ -6247,7 +6253,10 @@ mod tests {
         // No generated markers → classified as Ambiguous (not a generated artifact).
         // This still triggers refusal in the rollback guard, which is correct:
         // the guard refuses anything that's not Current.
-        assert_ne!(state, crate::migrate::phase_zero::PhaseZeroArtifactState::Current);
+        assert_ne!(
+            state,
+            crate::migrate::phase_zero::PhaseZeroArtifactState::Current
+        );
     }
 
     #[test]
@@ -6257,7 +6266,10 @@ mod tests {
         let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
         // No generated markers → Ambiguous, which refuses in the guard.
         // This is correct: the rollback guard requires Current classification.
-        assert_ne!(state, crate::migrate::phase_zero::PhaseZeroArtifactState::Current);
+        assert_ne!(
+            state,
+            crate::migrate::phase_zero::PhaseZeroArtifactState::Current
+        );
     }
 
     #[test]
@@ -6331,7 +6343,10 @@ mod tests {
             .expect("count ledger rows")
             .try_get(0)
             .expect("count column");
-        assert_eq!(count, 0, "no ledger row should be inserted before the G-gate refusal");
+        assert_eq!(
+            count, 0,
+            "no ledger row should be inserted before the G-gate refusal"
+        );
     }
 
     /// G-gate test: non-Phase-0 fake apply with `runner_identity: None` must
@@ -6340,11 +6355,7 @@ mod tests {
     async fn fake_apply_no_identity_non_phase_zero_refused(mut ctx: DjogiContext) {
         ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
 
-        let plan = single_segment_plan(
-            SegmentKind::Transactional,
-            "G-gate fake-apply",
-            "SELECT 1",
-        );
+        let plan = single_segment_plan(SegmentKind::Transactional, "G-gate fake-apply", "SELECT 1");
         let runner_ctx = RunnerCtx {
             bucket: plan.bucket.clone(),
             version: "V20260601000001__g_gate_fake".to_string(),
@@ -6377,7 +6388,10 @@ mod tests {
             .expect("count ledger rows")
             .try_get(0)
             .expect("count column");
-        assert_eq!(count, 0, "no ledger row should be inserted before the G-gate refusal");
+        assert_eq!(
+            count, 0,
+            "no ledger row should be inserted before the G-gate refusal"
+        );
     }
 
     /// G-gate test: non-Phase-0 baseline with `runner_identity: None` must
@@ -6392,10 +6406,7 @@ mod tests {
         let plan = single_table_plan("g_gate_baseline_no_id");
         // Baseline needs a populated DB — create the table so projection succeeds.
         ctx.raw_execute(
-            &format!(
-                "CREATE TABLE {} (id bigint)",
-                "g_gate_baseline_no_id"
-            ),
+            &format!("CREATE TABLE {} (id bigint)", "g_gate_baseline_no_id"),
             &[],
         )
         .await
@@ -6434,7 +6445,10 @@ mod tests {
             .expect("count ledger rows")
             .try_get(0)
             .expect("count column");
-        assert_eq!(count, 0, "no ledger row should be inserted before the G-gate refusal");
+        assert_eq!(
+            count, 0,
+            "no ledger row should be inserted before the G-gate refusal"
+        );
     }
 
     /// G-gate test: non-Phase-0 apply with `IdentityFree` must also refuse.
@@ -6475,7 +6489,10 @@ mod tests {
             .expect("count ledger rows")
             .try_get(0)
             .expect("count column");
-        assert_eq!(count, 0, "no ledger row should be inserted before the G-gate refusal");
+        assert_eq!(
+            count, 0,
+            "no ledger row should be inserted before the G-gate refusal"
+        );
     }
 
     /// G-gate carve-out: Phase 0 apply with `runner_identity: None` must

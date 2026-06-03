@@ -993,7 +993,11 @@ fn dispatch_command(
                 node_id,
                 single_node_dev,
             } => migrations::apply_cmd(
-                workspace.clone(), *fake, reason.clone(), *node_id, *single_node_dev,
+                workspace.clone(),
+                *fake,
+                reason.clone(),
+                *node_id,
+                *single_node_dev,
             ),
             MigrationsCommand::Repair { command } => migrations::repair_cmd(command.clone()),
             MigrationsCommand::Baseline {
@@ -1006,8 +1010,14 @@ fn dispatch_command(
                 node_id,
                 single_node_dev,
             } => migrations::baseline_cmd(
-                version, description, reason, app.as_deref(), database.as_deref(),
-                workspace.clone(), *node_id, *single_node_dev,
+                version,
+                description,
+                reason,
+                app.as_deref(),
+                database.as_deref(),
+                workspace.clone(),
+                *node_id,
+                *single_node_dev,
             ),
         },
         TopCommand::Migrate { command } => match command {
@@ -1018,7 +1028,11 @@ fn dispatch_command(
                 node_id,
                 single_node_dev,
             } => migrations::apply_cmd(
-                workspace.clone(), *fake, reason.clone(), *node_id, *single_node_dev,
+                workspace.clone(),
+                *fake,
+                reason.clone(),
+                *node_id,
+                *single_node_dev,
             ),
         },
     }

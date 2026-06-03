@@ -301,9 +301,7 @@ fn classify_phase_zero_bytes(bytes: &[u8]) -> Option<String> {
         djogi::migrate::PhaseZeroArtifactState::Incomplete => {
             Some("incomplete artifact (truncated generation)".to_string())
         }
-        djogi::migrate::PhaseZeroArtifactState::Missing => {
-            Some("missing artifact".to_string())
-        }
+        djogi::migrate::PhaseZeroArtifactState::Missing => Some("missing artifact".to_string()),
     }
 }
 
@@ -826,9 +824,8 @@ pub fn apply_cmd(
         }
     };
 
-    let exit = runtime.block_on(async {
-        run_apply(&workspace, &mode, node_id, single_node_dev).await
-    });
+    let exit =
+        runtime.block_on(async { run_apply(&workspace, &mode, node_id, single_node_dev).await });
     ExitCode::from(exit as u8)
 }
 
@@ -881,7 +878,10 @@ async fn run_apply(
     // 3. Resolve node identity for identity-bearing operations (only when work exists).
     // Both real apply and fake-apply are identity-bearing (run-id generation + ledger).
     let runner_identity = match crate::identity::resolve_identity(
-        node_id, single_node_dev, &config.profile, action_verb,
+        node_id,
+        single_node_dev,
+        &config.profile,
+        action_verb,
     ) {
         Ok(resolved) => Some(resolved.into_runner_identity()),
         Err(e) => {
@@ -2372,8 +2372,8 @@ pub fn repair_resume_partial_apply_cmd(
         }
     };
     let exit = runtime.block_on(async {
-        run_repair_resume_partial(&workspace, version, app, database,
-                                   node_id, single_node_dev).await
+        run_repair_resume_partial(&workspace, version, app, database, node_id, single_node_dev)
+            .await
     });
     ExitCode::from(exit as u8)
 }
@@ -2399,7 +2399,10 @@ async fn run_repair_resume_partial(
 
     // Resolve node identity before any DB work.
     let runner_identity = match crate::identity::resolve_identity(
-        node_id, single_node_dev, &config.profile, "repair resume-partial",
+        node_id,
+        single_node_dev,
+        &config.profile,
+        "repair resume-partial",
     ) {
         Ok(resolved) => Some(resolved.into_runner_identity()),
         Err(e) => {
@@ -2702,8 +2705,17 @@ pub fn baseline_cmd(
         }
     };
     let exit = runtime.block_on(async {
-        run_baseline(&workspace, version, description, reason, app, database,
-                     node_id, single_node_dev).await
+        run_baseline(
+            &workspace,
+            version,
+            description,
+            reason,
+            app,
+            database,
+            node_id,
+            single_node_dev,
+        )
+        .await
     });
     ExitCode::from(exit as u8)
 }
@@ -2740,7 +2752,10 @@ async fn run_baseline(
 
     // Resolve node identity before any DB work.
     let runner_identity = match crate::identity::resolve_identity(
-        node_id, single_node_dev, &config.profile, "baseline",
+        node_id,
+        single_node_dev,
+        &config.profile,
+        "baseline",
     ) {
         Ok(resolved) => Some(resolved.into_runner_identity()),
         Err(e) => {
@@ -3252,7 +3267,7 @@ mod tests {
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
-            None, // node_id
+            None,  // node_id
             false, // single_node_dev
         );
         assert_eq!(
@@ -3271,7 +3286,7 @@ mod tests {
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
-            None, // node_id
+            None,  // node_id
             false, // single_node_dev
         );
         assert_eq!(
@@ -3367,7 +3382,7 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             true,
             None,
-            None, // node_id
+            None,  // node_id
             false, // single_node_dev
         );
         assert_eq!(
@@ -3384,7 +3399,7 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             true,
             Some(String::new()),
-            None, // node_id
+            None,  // node_id
             false, // single_node_dev
         );
         assert_eq!(
@@ -3401,7 +3416,7 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             true,
             Some("   ".to_string()),
-            None, // node_id
+            None,  // node_id
             false, // single_node_dev
         );
         assert_eq!(
@@ -3784,8 +3799,10 @@ mod tests {
                    -- ╰───────────────────────────────────────────────────────────────╯\n\n\
                    -- HeeRanjID base schema + functions (idempotent).\n\
                    CREATE SCHEMA IF NOT EXISTS heer;\n";
-        assert!(classify_phase_zero_bytes(sql.as_bytes()).is_none(),
-                "production Phase 0 should be classified as Current (no refusal)");
+        assert!(
+            classify_phase_zero_bytes(sql.as_bytes()).is_none(),
+            "production Phase 0 should be classified as Current (no refusal)"
+        );
     }
 
     #[test]
@@ -3802,7 +3819,10 @@ mod tests {
                    SET heer.node_id = '1';\n\
                    SET heer.ranj_node_id = '1';\n";
         let refusal = classify_phase_zero_bytes(sql.as_bytes());
-        assert!(refusal.is_some(), "generated-stale Phase 0 should be refused");
+        assert!(
+            refusal.is_some(),
+            "generated-stale Phase 0 should be refused"
+        );
         assert!(refusal.unwrap().contains("generated-stale"));
     }
 
@@ -3848,7 +3868,8 @@ mod tests {
                         ALTER DATABASE \"stale_db\" SET heer.node_id = '1';\n\
                         ALTER DATABASE \"stale_db\" SET heer.ranj_node_id = '1';\n\
                         SET heer.node_id = '1';\n\
-                        SET heer.ranj_node_id = '1';\n".to_string(),
+                        SET heer.ranj_node_id = '1';\n"
+                        .to_string(),
                     down: String::new(),
                 }],
             }],
@@ -3856,7 +3877,8 @@ mod tests {
         fs::write(
             bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
             serde_json::to_string(&replay).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -3869,8 +3891,10 @@ mod tests {
             "V1:aabbccdd",
             None,
         );
-        assert!(refusal.is_some(),
-                "stale Phase 0 replay plan should be refused by cleanup guard");
+        assert!(
+            refusal.is_some(),
+            "stale Phase 0 replay plan should be refused by cleanup guard"
+        );
         let msg = refusal.unwrap();
         assert!(msg.contains("generated-stale"), "refusal reason: {msg}");
 
@@ -3898,7 +3922,8 @@ mod tests {
                         -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
                         -- ╰───────────────────────────────────────────────────────────────╯\n\n\
                         -- HeeRanjID base schema + functions (idempotent).\n\
-                        CREATE SCHEMA IF NOT EXISTS heer;\n".to_string(),
+                        CREATE SCHEMA IF NOT EXISTS heer;\n"
+                        .to_string(),
                     down: String::new(),
                 }],
             }],
@@ -3906,7 +3931,8 @@ mod tests {
         fs::write(
             bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
             serde_json::to_string(&replay).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -3919,8 +3945,10 @@ mod tests {
             "V1:eeff0011",
             None,
         );
-        assert!(refusal.is_none(),
-                "current Phase 0 should be allowed by cleanup guard; got: {refusal:?}");
+        assert!(
+            refusal.is_none(),
+            "current Phase 0 should be allowed by cleanup guard; got: {refusal:?}"
+        );
 
         let _ = fs::remove_dir_all(&work);
     }
@@ -3952,8 +3980,10 @@ mod tests {
             "V1:anychecksum",
             None,
         );
-        assert!(refusal.is_none(),
-                "current Phase 0 fallback SQL should be allowed; got: {refusal:?}");
+        assert!(
+            refusal.is_none(),
+            "current Phase 0 fallback SQL should be allowed; got: {refusal:?}"
+        );
 
         let _ = fs::remove_dir_all(&work);
     }

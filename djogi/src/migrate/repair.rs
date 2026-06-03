@@ -65,7 +65,7 @@ use super::ledger::{
 };
 use super::projection::BucketKey;
 use super::runner::{
-    PartitionExpansionMode, RunnerError, RunnerIdentity, RunReport, acquire_advisory_lock,
+    PartitionExpansionMode, RunReport, RunnerError, RunnerIdentity, acquire_advisory_lock,
     advisory_lock_key, bind_runner_node_identity, compute_leaf_identity_cache,
     materialize_execution_plan, release_advisory_lock, serialize_leaf_identity,
 };
@@ -660,11 +660,11 @@ fn check_phase_zero_repair(
     let state = super::phase_zero::classify_phase_zero_artifact(&bytes);
     match state {
         super::phase_zero::PhaseZeroArtifactState::GeneratedStale
-        | super::phase_zero::PhaseZeroArtifactState::Ambiguous => Err(
-            RepairError::PhaseZeroArtifactRefused {
+        | super::phase_zero::PhaseZeroArtifactState::Ambiguous => {
+            Err(RepairError::PhaseZeroArtifactRefused {
                 version: version.to_string(),
-            },
-        ),
+            })
+        }
         // Current, Missing (empty file), Incomplete — proceed.
         // These are either valid or will fail at a later validation step.
         _ => Ok(()),
@@ -1086,12 +1086,10 @@ pub async fn repair_resume_partial_apply(
             ),
         )
         .await
-        .map_err(|e| {
-            RepairError::LedgerIo {
-                source: crate::DjogiError::Db(crate::DbError::other(format!(
-                    "bind runner node identity: {e}"
-                ))),
-            }
+        .map_err(|e| RepairError::LedgerIo {
+            source: crate::DjogiError::Db(crate::DbError::other(format!(
+                "bind runner node identity: {e}"
+            ))),
         })?;
     }
 

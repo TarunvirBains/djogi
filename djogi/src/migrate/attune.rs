@@ -84,18 +84,18 @@ use std::path::{Path, PathBuf};
 use crate::context::DjogiContext;
 use crate::error::DjogiError;
 
+use super::bootstrap::PHASE_ZERO_VERSION;
 use super::guard::WorkspaceGuard;
 use super::ledger::{
     self, ExecutionMode, LedgerRow, LedgerStatus, SHA256_HEX_LEN, compute_checksum,
 };
 use super::naming::{down_filename, up_filename};
+use super::phase_zero::{PhaseZeroArtifactState, classify_phase_zero_artifact};
 use super::projection::BucketKey;
 use super::replay_plan::committed_replay_plan_filename;
 use super::reset::{
     ResetSqlSide, compute_committed_down_sql_checksum, compute_committed_sql_checksum,
 };
-use super::bootstrap::PHASE_ZERO_VERSION;
-use super::phase_zero::{classify_phase_zero_artifact, PhaseZeroArtifactState};
 use super::schema::SNAPSHOT_FORMAT_VERSION;
 use super::target::bucket_dir;
 
@@ -1200,21 +1200,23 @@ fn check_phase_zero_attune_entry(up_path: &Path, version: &str) -> Result<(), At
         source: e,
     })?;
     match classify_phase_zero_artifact(&bytes) {
-        PhaseZeroArtifactState::GeneratedStale => Err(AttuneError::Refused(
-            AttuneRefusal::StalePhaseZero {
+        PhaseZeroArtifactState::GeneratedStale => {
+            Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero {
                 version: version.to_string(),
-            },
-        )),
-        PhaseZeroArtifactState::Ambiguous => Err(AttuneError::Refused(
-            AttuneRefusal::StalePhaseZero {
+            }))
+        }
+        PhaseZeroArtifactState::Ambiguous => {
+            Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero {
                 version: version.to_string(),
-            },
-        )),
+            }))
+        }
         // Missing, Incomplete, Current are OK for attune purposes.
         // Missing/Incomplete means the file exists but has no content;
         // the attune flow will handle empty files normally.
         // Current is the success path.
-        PhaseZeroArtifactState::Missing | PhaseZeroArtifactState::Incomplete | PhaseZeroArtifactState::Current => Ok(()),
+        PhaseZeroArtifactState::Missing
+        | PhaseZeroArtifactState::Incomplete
+        | PhaseZeroArtifactState::Current => Ok(()),
     }
 }
 
@@ -2361,7 +2363,11 @@ mod tests {
         let root = temp_root("record_non_p0");
         let dir = root.join("migrations/main/billing");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("V20260101000001__init.sdjql"), "CREATE TABLE foo();").unwrap();
+        fs::write(
+            dir.join("V20260101000001__init.sdjql"),
+            "CREATE TABLE foo();",
+        )
+        .unwrap();
 
         let up_path = dir.join("V20260101000001__init.sdjql");
         let result = check_phase_zero_attune_entry(&up_path, "V20260101000001__init");

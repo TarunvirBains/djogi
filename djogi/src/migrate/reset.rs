@@ -347,9 +347,7 @@ pub enum ResetRefusal {
     /// permanently lose registered state. Only single-node-dev mode
     /// is permitted for destructive reset; the operator should not
     /// pass `--node-id` when resetting locally.
-    SelectedNodeRefused {
-        node_id: i32,
-    },
+    SelectedNodeRefused { node_id: i32 },
     /// Identity-free mode is refused for destructive reset.
     /// `IdentityFree` carries no session binding or node identity
     /// tracking, so a drop/recreate replay cannot be attributed to
@@ -481,7 +479,7 @@ impl std::fmt::Display for ResetRefusal {
             ResetRefusal::IdentityFreeRefused => f.write_str(
                 "db reset with identity-free mode is refused — IdentityFree carries \
                  no session binding or node identity, so destructive drop/recreate \
-                 replay cannot be attributed to a specific node; use `--single-node-dev`"
+                 replay cannot be attributed to a specific node; use `--single-node-dev`",
             ),
         }
     }
@@ -1869,9 +1867,7 @@ mod tests {
             Err(ResetError::Refused(ResetRefusal::NotLocalhost { .. })) => {
                 // Identity gate passed — refused at localhost gate instead
             }
-            other => panic!(
-                "expected NotLocalhost after identity gate passes, got {other:?}"
-            ),
+            other => panic!("expected NotLocalhost after identity gate passes, got {other:?}"),
         }
         let _ = fs::remove_dir_all(&work);
     }
@@ -1882,21 +1878,14 @@ mod tests {
         use crate::migrate::runner::RunnerIdentity;
         let work = temp_root("identity_free");
         // Use localhost URL so we pass the localhost gate and reach the identity gate.
-        let mut r = req(
-            &work,
-            "postgres://localhost/main",
-            "development",
-            true,
-        );
+        let mut r = req(&work, "postgres://localhost/main", "development", true);
         r.runner_identity = Some(RunnerIdentity::IdentityFree);
         let res = reset_app_database(r).await;
         match res {
             Err(ResetError::Refused(ResetRefusal::IdentityFreeRefused)) => {
                 // Expected — IdentityFree refused by identity gate
             }
-            other => panic!(
-                "expected IdentityFreeRefused, got {other:?}"
-            ),
+            other => panic!("expected IdentityFreeRefused, got {other:?}"),
         }
         let _ = fs::remove_dir_all(&work);
     }

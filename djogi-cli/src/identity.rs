@@ -239,41 +239,57 @@ mod tests {
     #[test]
     fn resolve_missing_identity() {
         // Make sure HEER_NODE_ID is not set.
-        unsafe { std::env::remove_var("HEER_NODE_ID"); }
+        unsafe {
+            std::env::remove_var("HEER_NODE_ID");
+        }
         let result = resolve_identity(None, false, "development", "apply");
         assert_eq!(result, Err(CliIdentityResolveError::MissingNodeIdentity));
     }
 
     #[test]
     fn resolve_env_var_fallback() {
-        unsafe { std::env::set_var("HEER_NODE_ID", "42"); }
+        unsafe {
+            std::env::set_var("HEER_NODE_ID", "42");
+        }
         let result = resolve_identity(None, false, "development", "apply");
         assert_eq!(result, Ok(CliResolvedIdentity::Selected(42)));
-        unsafe { std::env::remove_var("HEER_NODE_ID"); }
+        unsafe {
+            std::env::remove_var("HEER_NODE_ID");
+        }
     }
 
     #[test]
     fn resolve_explicit_wins_over_env() {
-        unsafe { std::env::set_var("HEER_NODE_ID", "99"); }
+        unsafe {
+            std::env::set_var("HEER_NODE_ID", "99");
+        }
         let result = resolve_identity(Some(7), false, "development", "apply");
         assert_eq!(result, Ok(CliResolvedIdentity::Selected(7)));
-        unsafe { std::env::remove_var("HEER_NODE_ID"); }
+        unsafe {
+            std::env::remove_var("HEER_NODE_ID");
+        }
     }
 
     #[test]
     fn resolve_env_var_out_of_range() {
-        unsafe { std::env::set_var("HEER_NODE_ID", "9999"); }
+        unsafe {
+            std::env::set_var("HEER_NODE_ID", "9999");
+        }
         let result = resolve_identity(None, false, "development", "apply");
         assert_eq!(
             result,
             Err(CliIdentityResolveError::NodeIdOutOfRange { value: 9999 })
         );
-        unsafe { std::env::remove_var("HEER_NODE_ID"); }
+        unsafe {
+            std::env::remove_var("HEER_NODE_ID");
+        }
     }
 
     #[test]
     fn resolve_env_var_unparseable() {
-        unsafe { std::env::set_var("HEER_NODE_ID", "not-a-number"); }
+        unsafe {
+            std::env::set_var("HEER_NODE_ID", "not-a-number");
+        }
         let result = resolve_identity(None, false, "development", "apply");
         // Unparseable env var returns InvalidEnvFormat, not MissingNodeIdentity.
         assert_eq!(
@@ -282,7 +298,9 @@ mod tests {
                 value: "not-a-number".to_string()
             })
         );
-        unsafe { std::env::remove_var("HEER_NODE_ID"); }
+        unsafe {
+            std::env::remove_var("HEER_NODE_ID");
+        }
     }
 
     #[test]
@@ -297,20 +315,28 @@ mod tests {
 
     #[test]
     fn resolve_single_node_dev_refused_in_djogi_env_production() {
-        unsafe { std::env::set_var("DJOGI_ENV", "production"); }
+        unsafe {
+            std::env::set_var("DJOGI_ENV", "production");
+        }
         let result = resolve_identity(None, true, "development", "apply");
         assert_eq!(
             result,
             Err(CliIdentityResolveError::SingleNodeDevRefusedInProduction)
         );
-        unsafe { std::env::remove_var("DJOGI_ENV"); }
+        unsafe {
+            std::env::remove_var("DJOGI_ENV");
+        }
     }
 
     #[test]
     fn resolve_single_node_dev_allowed_in_djogi_env_development() {
-        unsafe { std::env::set_var("DJOGI_ENV", "development"); }
+        unsafe {
+            std::env::set_var("DJOGI_ENV", "development");
+        }
         let result = resolve_identity(None, true, "development", "apply");
         assert_eq!(result, Ok(CliResolvedIdentity::SingleNodeDev));
-        unsafe { std::env::remove_var("DJOGI_ENV"); }
+        unsafe {
+            std::env::remove_var("DJOGI_ENV");
+        }
     }
 }
