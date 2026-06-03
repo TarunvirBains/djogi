@@ -2595,6 +2595,7 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
         &_guard,
         &runner_ctx.version,
         &plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2716,6 +2717,7 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
         &_guard,
         &runner_ctx.version,
         &plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2768,6 +2770,7 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
         &_guard,
         &runner_ctx.version,
         &plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2827,6 +2830,7 @@ async fn repair_resume_rejects_plan_checksum_mismatch(mut ctx: djogi::DjogiConte
         &_guard,
         version,
         &plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -3536,6 +3540,7 @@ async fn apply_waits_while_repair_resume_holds_same_bucket_lock(mut ctx: djogi::
         &_guard,
         &resume_ctx.version,
         &resume_plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     );
 
@@ -3952,6 +3957,7 @@ async fn repair_resume_partial_apply_refuses_when_replay_stream_is_shorter_than_
         &_guard,
         &runner_ctx.version,
         &plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await

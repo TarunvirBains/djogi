@@ -33,7 +33,7 @@ use crate::{PartialApplyResolutionCli, RepairSubcommand};
 /// `migrations/<database>/<app>/<version>.plan.json`. This struct
 /// allows the CLI to parse it and construct a proper [`MigrationPlan`]
 /// with correct segment structure and checksums.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct CliReplayPlan {
     format_version: String,
     checksum_up: String,
@@ -42,7 +42,7 @@ struct CliReplayPlan {
     segments: Vec<CliReplaySegment>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum CliClassification {
     NoOp,
@@ -59,13 +59,13 @@ enum CliClassification {
     },
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct CliReplaySegment {
     kind: CliSegmentKind,
     statements: Vec<CliReplayStatement>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum CliSegmentKind {
     Transactional,
@@ -73,7 +73,7 @@ enum CliSegmentKind {
     MetadataOnly,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct CliReplayStatement {
     label: String,
     up: String,
@@ -228,6 +228,84 @@ impl std::fmt::Display for ApplyReplayPlanError {
 }
 
 impl std::error::Error for ApplyReplayPlanError {}
+
+/// Classify a Phase 0 artifact for the CLI cleanup path (#386).
+/// Loads the committed replay plan JSON or falls back to the SQL file,
+/// classifies the up SQL using [`djogi::migrate::classify_phase_zero_artifact`],
+/// and returns `Some(reason)` if the artifact is not Current.
+/// Returns `None` when the artifact is classified as Current (safe to proceed).
+fn classify_phase_zero_for_cleanup(
+    workspace: &Path,
+    bucket: &djogi::migrate::BucketKey,
+    version: &str,
+    pending_checksum_up: &str,
+    pending_checksum_down: Option<&str>,
+) -> Option<String> {
+    // Try to load the committed replay plan JSON first.
+    let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
+    let replay_plan_path = bucket_dir.join(format!("{version}.plan.json"));
+
+    if let Ok(bytes) = std::fs::read(&replay_plan_path) {
+        let stored: CliReplayPlan = match serde_json::from_slice(&bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                return Some(format!("parse replay plan: {e}"));
+            }
+        };
+
+        if stored.format_version != CLI_REPLAY_PLAN_FORMAT_VERSION {
+            return Some(format!(
+                "replay plan format version mismatch: expected {}, found {}",
+                CLI_REPLAY_PLAN_FORMAT_VERSION, stored.format_version
+            ));
+        }
+
+        // Verify checksums match the pending plan.
+        if stored.checksum_up != pending_checksum_up
+            || stored.checksum_down.as_deref() != pending_checksum_down
+        {
+            return Some("checksum mismatch between pending JSON and replay plan".to_string());
+        }
+
+        // Reconstruct the up SQL from the replay plan segments for classification.
+        let up_sql: String = stored
+            .segments
+            .iter()
+            .flat_map(|seg| seg.statements.iter())
+            .map(|stmt| stmt.up.as_str())
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        return classify_phase_zero_bytes(up_sql.as_bytes());
+    }
+
+    // Fallback: read the up SQL file directly.
+    let up_filename = djogi::migrate::up_filename(version);
+    let up_path = bucket_dir.join(&up_filename);
+    match std::fs::read_to_string(&up_path) {
+        Ok(up_sql) => classify_phase_zero_bytes(up_sql.as_bytes()),
+        Err(e) => Some(format!("read up SQL file {}: {e}", up_path.display())),
+    }
+}
+
+/// Classify raw bytes as Phase 0 artifact and return refusal reason if not Current.
+fn classify_phase_zero_bytes(bytes: &[u8]) -> Option<String> {
+    match djogi::migrate::classify_phase_zero_artifact(bytes) {
+        djogi::migrate::PhaseZeroArtifactState::Current => None,
+        djogi::migrate::PhaseZeroArtifactState::GeneratedStale => {
+            Some("generated-stale artifact detected".to_string())
+        }
+        djogi::migrate::PhaseZeroArtifactState::Ambiguous => {
+            Some("ambiguous or hand-edited artifact detected".to_string())
+        }
+        djogi::migrate::PhaseZeroArtifactState::Incomplete => {
+            Some("incomplete artifact (truncated generation)".to_string())
+        }
+        djogi::migrate::PhaseZeroArtifactState::Missing => {
+            Some("missing artifact".to_string())
+        }
+    }
+}
 
 // ── Type conversions from CLI-local types to library types ────────────────
 
@@ -1043,6 +1121,28 @@ async fn apply_one_pending(
             if existing_status == LedgerStatus::Failed
                 || existing_status == LedgerStatus::RolledBack
             {
+                // #386: Phase 0 cleanup must classify before deleting.
+                // Load the committed replay plan or fallback SQL first,
+                // refuse stale/ambiguous Phase 0 before removing the
+                // failed/rolled_back row. This applies to both real apply
+                // and fake apply paths.
+                if pending.version == djogi::migrate::PHASE_ZERO_VERSION {
+                    let cleanup_refusal = classify_phase_zero_for_cleanup(
+                        workspace,
+                        &bucket,
+                        &pending.version,
+                        &pending.checksum_up,
+                        pending.checksum_down.as_deref(),
+                    );
+                    if let Some(reason) = cleanup_refusal {
+                        return ApplyResult::Refused(format!(
+                            "Phase 0 cleanup refused: {reason}; \
+                             refusing before deleting {} row to prevent stale replay",
+                            existing_status.as_db_str()
+                        ));
+                    }
+                }
+
                 // Both Failed and RolledBack rows are non-terminal stale rows
                 // that block re-apply. delete_failed_ledger_row is a status-
                 // agnostic DELETE by version; the name reflects the original
@@ -3667,5 +3767,190 @@ mod tests {
             Some("postgres://localhost"),
             "main returns the app URL verbatim regardless of path"
         );
+    }
+
+    // ── Stage 4D: CLI cleanup stale Phase 0 guard ──────────────────────
+
+    #[test]
+    fn classify_phase_zero_bytes_current_production_is_ok() {
+        // Production Phase 0: banner + base schema, no node seed.
+        let sql = "-- ╭───────────────────────────────────────────────────────────────╮\n\
+                   -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
+                   -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
+                   -- ╰───────────────────────────────────────────────────────────────╯\n\n\
+                   -- HeeRanjID base schema + functions (idempotent).\n\
+                   CREATE SCHEMA IF NOT EXISTS heer;\n";
+        assert!(classify_phase_zero_bytes(sql.as_bytes()).is_none(),
+                "production Phase 0 should be classified as Current (no refusal)");
+    }
+
+    #[test]
+    fn classify_phase_zero_bytes_generated_stale_is_refused() {
+        // Generated-stale Phase 0: literal database defaults.
+        let sql = "-- ╭───────────────────────────────────────────────────────────────╮\n\
+                   -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
+                   -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
+                   -- ╰───────────────────────────────────────────────────────────────╯\n\n\
+                   -- HeeRanjID base schema + functions (idempotent).\n\
+                   CREATE SCHEMA IF NOT EXISTS heer;\n\
+                   ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
+                   ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';\n\
+                   SET heer.node_id = '1';\n\
+                   SET heer.ranj_node_id = '1';\n";
+        let refusal = classify_phase_zero_bytes(sql.as_bytes());
+        assert!(refusal.is_some(), "generated-stale Phase 0 should be refused");
+        assert!(refusal.unwrap().contains("generated-stale"));
+    }
+
+    #[test]
+    fn classify_phase_zero_bytes_ambiguous_is_refused() {
+        // Hand-edited or ambiguous Phase 0.
+        let sql = "CREATE SCHEMA IF NOT EXISTS heer;\n\
+                   ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n";
+        let refusal = classify_phase_zero_bytes(sql.as_bytes());
+        assert!(refusal.is_some(), "ambiguous Phase 0 should be refused");
+        assert!(refusal.unwrap().contains("ambiguous"));
+    }
+
+    #[test]
+    fn classify_phase_zero_bytes_missing_is_refused() {
+        let refusal = classify_phase_zero_bytes(b"  \n\t  ");
+        assert!(refusal.is_some(), "missing Phase 0 should be refused");
+        assert!(refusal.unwrap().contains("missing"));
+    }
+
+    #[test]
+    fn classify_phase_zero_for_cleanup_refuses_stale_replay_plan() {
+        let work = temp_workspace("stale_cleanup");
+        let bucket_dir = work.join("migrations/main/_global_");
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        // Write a stale replay plan JSON.
+        let replay = CliReplayPlan {
+            format_version: CLI_REPLAY_PLAN_FORMAT_VERSION.to_string(),
+            classification: CliClassification::Additive,
+            checksum_up: "V1:aabbccdd".to_string(),
+            checksum_down: None,
+            segments: vec![CliSegment {
+                kind: CliSegmentKind::Transactional,
+                statements: vec![CliOperationSql {
+                    label: "phase_zero_bootstrap".to_string(),
+                    up: "-- ╭───────────────────────────────────────────────────────────────╮\n\
+                        -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
+                        -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
+                        -- ╰───────────────────────────────────────────────────────────────╯\n\n\
+                        -- HeeRanjID base schema + functions (idempotent).\n\
+                        CREATE SCHEMA IF NOT EXISTS heer;\n\
+                        ALTER DATABASE \"stale_db\" SET heer.node_id = '1';\n\
+                        ALTER DATABASE \"stale_db\" SET heer.ranj_node_id = '1';\n\
+                        SET heer.node_id = '1';\n\
+                        SET heer.ranj_node_id = '1';\n".to_string(),
+                    down: String::new(),
+                }],
+            }],
+        };
+        fs::write(
+            bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
+            serde_json::to_string(&replay).unwrap(),
+        ).unwrap();
+
+        let bucket = djogi::migrate::BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let refusal = classify_phase_zero_for_cleanup(
+            &work,
+            &bucket,
+            djogi::migrate::PHASE_ZERO_VERSION,
+            "V1:aabbccdd",
+            None,
+        );
+        assert!(refusal.is_some(),
+                "stale Phase 0 replay plan should be refused by cleanup guard");
+        let msg = refusal.unwrap();
+        assert!(msg.contains("generated-stale"), "refusal reason: {msg}");
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn classify_phase_zero_for_cleanup_allows_current_replay_plan() {
+        let work = temp_workspace("current_cleanup");
+        let bucket_dir = work.join("migrations/main/_global_");
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        // Write a current (production) replay plan JSON.
+        let replay = CliReplayPlan {
+            format_version: CLI_REPLAY_PLAN_FORMAT_VERSION.to_string(),
+            classification: CliClassification::Additive,
+            checksum_up: "V1:eeff0011".to_string(),
+            checksum_down: None,
+            segments: vec![CliSegment {
+                kind: CliSegmentKind::Transactional,
+                statements: vec![CliOperationSql {
+                    label: "phase_zero_bootstrap".to_string(),
+                    up: "-- ╭───────────────────────────────────────────────────────────────╮\n\
+                        -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
+                        -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
+                        -- ╰───────────────────────────────────────────────────────────────╯\n\n\
+                        -- HeeRanjID base schema + functions (idempotent).\n\
+                        CREATE SCHEMA IF NOT EXISTS heer;\n".to_string(),
+                    down: String::new(),
+                }],
+            }],
+        };
+        fs::write(
+            bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
+            serde_json::to_string(&replay).unwrap(),
+        ).unwrap();
+
+        let bucket = djogi::migrate::BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let refusal = classify_phase_zero_for_cleanup(
+            &work,
+            &bucket,
+            djogi::migrate::PHASE_ZERO_VERSION,
+            "V1:eeff0011",
+            None,
+        );
+        assert!(refusal.is_none(),
+                "current Phase 0 should be allowed by cleanup guard; got: {refusal:?}");
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn classify_phase_zero_for_cleanup_fallback_sql_file() {
+        let work = temp_workspace("fallback_cleanup");
+        let bucket_dir = work.join("migrations/main/_global_");
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        // Write a current up SQL file (no replay plan JSON).
+        let up_sql = "-- ╭───────────────────────────────────────────────────────────────╮\n\
+                      -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
+                      -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
+                      -- ╰───────────────────────────────────────────────────────────────╯\n\n\
+                      -- HeeRanjID base schema + functions (idempotent).\n\
+                      CREATE SCHEMA IF NOT EXISTS heer;\n";
+        let up_filename = djogi::migrate::up_filename(djogi::migrate::PHASE_ZERO_VERSION);
+        fs::write(bucket_dir.join(&up_filename), up_sql).unwrap();
+
+        let bucket = djogi::migrate::BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let refusal = classify_phase_zero_for_cleanup(
+            &work,
+            &bucket,
+            djogi::migrate::PHASE_ZERO_VERSION,
+            "V1:anychecksum",
+            None,
+        );
+        assert!(refusal.is_none(),
+                "current Phase 0 fallback SQL should be allowed; got: {refusal:?}");
+
+        let _ = fs::remove_dir_all(&work);
     }
 }
