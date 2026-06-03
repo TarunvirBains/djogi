@@ -350,6 +350,12 @@ pub enum ResetRefusal {
     SelectedNodeRefused {
         node_id: i32,
     },
+    /// Identity-free mode is refused for destructive reset.
+    /// `IdentityFree` carries no session binding or node identity
+    /// tracking, so a drop/recreate replay cannot be attributed to
+    /// a specific node. Only `--single-node-dev` is permitted for
+    /// destructive local reset.
+    IdentityFreeRefused,
 }
 
 impl std::fmt::Display for ResetError {
@@ -472,6 +478,11 @@ impl std::fmt::Display for ResetRefusal {
                  drop/recreate on an identity-bearing node could permanently lose \
                  registered state; use `--single-node-dev` instead of `--node-id`"
             ),
+            ResetRefusal::IdentityFreeRefused => f.write_str(
+                "db reset with identity-free mode is refused — IdentityFree carries \
+                 no session binding or node identity, so destructive drop/recreate \
+                 replay cannot be attributed to a specific node; use `--single-node-dev`"
+            ),
         }
     }
 }
@@ -539,8 +550,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
             // This path proceeds to the database derivation below.
         }
         Some(RunnerIdentity::IdentityFree) => {
-            // Identity-free mode is allowed for reset — no session binding
-            // or node identity tracking needed during replay.
+            return Err(ResetError::Refused(ResetRefusal::IdentityFreeRefused));
         }
     }
 
@@ -1483,9 +1493,8 @@ async fn replay_one_migration(
         // stance documented on `record_ddl_audit_for_plan`.
         audit_pool: audit_pool.cloned(),
         // Reset replay inherits the identity from ResetRequest.
-        // The pre-drop identity gate ensures only SingleNodeDev or
-        // IdentityFree reach this code path (Selected and None are
-        // refused earlier).
+        // The pre-drop identity gate ensures only SingleNodeDev reaches
+        // this code path (None, Selected, and IdentityFree are refused earlier).
         runner_identity,
     };
 
@@ -1867,26 +1876,26 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
-    /// Identity gate 4 — identity-free mode passes the identity gate.
+    /// Identity gate 4 — identity-free mode is refused by the identity gate.
     #[tokio::test]
-    async fn identity_free_passes_identity_gate() {
+    async fn identity_free_refused_by_identity_gate() {
         use crate::migrate::runner::RunnerIdentity;
         let work = temp_root("identity_free");
-        // Use non-localhost URL to verify we pass the identity gate.
+        // Use localhost URL so we pass the localhost gate and reach the identity gate.
         let mut r = req(
             &work,
-            "postgres://prod.example.com/main",
+            "postgres://localhost/main",
             "development",
             true,
         );
         r.runner_identity = Some(RunnerIdentity::IdentityFree);
         let res = reset_app_database(r).await;
         match res {
-            Err(ResetError::Refused(ResetRefusal::NotLocalhost { .. })) => {
-                // Identity gate passed — refused at localhost gate instead
+            Err(ResetError::Refused(ResetRefusal::IdentityFreeRefused)) => {
+                // Expected — IdentityFree refused by identity gate
             }
             other => panic!(
-                "expected NotLocalhost after identity gate passes, got {other:?}"
+                "expected IdentityFreeRefused, got {other:?}"
             ),
         }
         let _ = fs::remove_dir_all(&work);

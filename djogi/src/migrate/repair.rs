@@ -51,12 +51,13 @@
 //!    changed, so the operator can audit (and replay-via-shell-history
 //!    when needed).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::__bypass::guarded_batch_execute;
 use crate::context::{DjogiContext, PinnedCtx};
 use crate::error::DjogiError;
 
+use super::bootstrap::PHASE_ZERO_VERSION;
 use super::guard::WorkspaceGuard;
 use super::ledger::{
     self, ChecksumFormatErrorKind, LedgerRow, LedgerStatus, compute_checksum,
@@ -352,6 +353,16 @@ pub enum RepairError {
         expected_step_count: usize,
         actual_step_count: usize,
     },
+
+    /// **#386** — The repair target is a Phase 0 migration whose on-disk
+    /// artifact was classified as stale (generated with hardcoded defaults)
+    /// or ambiguous (hand-edited). Repair refuses to operate on stale
+    /// Phase 0 artifacts; the operator must replace the file with a
+    /// current Phase 0 artifact before repairing.
+    PhaseZeroArtifactRefused {
+        /// The migration version that was refused (Phase 0 version label).
+        version: String,
+    },
 }
 
 impl std::fmt::Display for RepairError {
@@ -520,6 +531,11 @@ impl std::fmt::Display for RepairError {
                 f,
                 "[D623] repair refused: partition leaf identity mismatch for `{version}`",
             ),
+            RepairError::PhaseZeroArtifactRefused { version } => write!(
+                f,
+                "repair refused: Phase 0 artifact for `{version}` is stale or ambiguous; \
+                 replace with a current Phase 0 artifact before repairing"
+            ),
         }
     }
 }
@@ -600,6 +616,45 @@ fn handle_repair_release<T>(
 
 // ── Public entry points ───────────────────────────────────────────────────
 
+/// #386 — Classify the Phase 0 migration artifact on disk and refuse
+/// repair if the file is stale or ambiguous.
+///
+/// Only checks when `version` matches [`PHASE_ZERO_VERSION`]. Non-Phase-0
+/// versions pass through without loading any files. On I/O failure (file not
+/// found, read error) returns [`RepairError::LedgerIo`] rather than silently
+/// skipping the guard — a missing Phase 0 up-file is an environment problem,
+/// not a "safe to proceed" signal.
+fn check_phase_zero_repair(
+    workspace: &Path,
+    bucket: &BucketKey,
+    version: &str,
+) -> Result<(), RepairError> {
+    if version != PHASE_ZERO_VERSION {
+        return Ok(());
+    }
+    // Resolve the up-file path for this bucket + version.
+    let bucket_dir = super::target::bucket_dir(workspace, bucket);
+    let up_path = bucket_dir.join(super::naming::up_filename(version));
+    let bytes = std::fs::read(&up_path).map_err(|e| RepairError::LedgerIo {
+        source: DjogiError::Db(crate::error::DbError::other(format!(
+            "read Phase 0 up-file at {}: {e}",
+            up_path.display()
+        ))),
+    })?;
+    let state = super::phase_zero::classify_phase_zero_artifact(&bytes);
+    match state {
+        super::phase_zero::PhaseZeroArtifactState::GeneratedStale
+        | super::phase_zero::PhaseZeroArtifactState::Ambiguous => Err(
+            RepairError::PhaseZeroArtifactRefused {
+                version: version.to_string(),
+            },
+        ),
+        // Current, Missing (empty file), Incomplete — proceed.
+        // These are either valid or will fail at a later validation step.
+        _ => Ok(()),
+    }
+}
+
 /// Repair a checksum-drift between the stored ledger row and
 /// freshly-computed checksums.
 /// **Both `checksum_up` and `checksum_down` are repaired in one
@@ -628,11 +683,18 @@ fn handle_repair_release<T>(
 /// `SELECT current_database()` inside repair was wrong: the runner
 /// stores the logical database name from `plan.bucket.database`, not
 /// the physical database name from the connected session (GH #274).
+///
+/// **Phase 0 guard (#386).** If `version` matches the Phase 0 bootstrap
+/// version, the repair function loads the on-disk migration file and
+/// classifies it. Stale or ambiguous Phase 0 artifacts are refused
+/// with [`RepairError::PhaseZeroArtifactRefused`] before any ledger
+/// mutation occurs.
 pub async fn repair_checksum_drift(
     ctx: &mut DjogiContext,
     _guard: &WorkspaceGuard,
     bucket: &BucketKey,
     version: &str,
+    workspace: &Path,
     new_checksum_up: &str,
     new_checksum_down: Option<&str>,
     confirmation: RepairConfirmation,
@@ -640,6 +702,9 @@ pub async fn repair_checksum_drift(
     if confirmation != RepairConfirmation::OperatorAcknowledged {
         return Err(RepairError::InsufficientConfirmation);
     }
+
+    // #386: refuse repair on stale Phase 0 artifacts.
+    check_phase_zero_repair(workspace, bucket, version)?;
 
     if let Err(kind) = validate_checksum_format(new_checksum_up) {
         return Err(RepairError::InvalidChecksum {
@@ -790,11 +855,18 @@ pub enum PartialApplyResolution {
 /// row that is already `applied`).
 /// **Caller supplies the bucket.** See [`repair_checksum_drift`] for
 /// the rationale — same `(database, app)` requirement (GH #274).
+///
+/// **Phase 0 guard (#386).** If `version` matches the Phase 0 bootstrap
+/// version, the repair function loads the on-disk migration file and
+/// classifies it. Stale or ambiguous Phase 0 artifacts are refused
+/// with [`RepairError::PhaseZeroArtifactRefused`] before any ledger
+/// mutation occurs.
 pub async fn repair_partial_apply(
     ctx: &mut DjogiContext,
     _guard: &WorkspaceGuard,
     bucket: &BucketKey,
     version: &str,
+    workspace: &Path,
     resolution: PartialApplyResolution,
     note: &str,
     confirmation: RepairConfirmation,
@@ -802,6 +874,9 @@ pub async fn repair_partial_apply(
     if confirmation != RepairConfirmation::OperatorAcknowledged {
         return Err(RepairError::InsufficientConfirmation);
     }
+
+    // #386: refuse repair on stale Phase 0 artifacts.
+    check_phase_zero_repair(workspace, bucket, version)?;
 
     // GH #274: pin one physical session. The ledger row load and status
     // check both happen INSIDE the lock in the pinned helper to prevent

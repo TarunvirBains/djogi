@@ -2009,6 +2009,7 @@ fn repair_error_exit_code(err: &RepairError) -> i32 {
         | RepairError::AdvisoryUnlockReturnedFalse { .. } // session-pinning correctness failure — not a blind retry
         | RepairError::ResumePlanShapeMismatch { .. }
         | RepairError::ReplayPlanShapeMismatch { .. }
+        | RepairError::PhaseZeroArtifactRefused { .. } // #386: refusal — operator must replace the stale file
         => 2,
     }
 }
@@ -2214,6 +2215,7 @@ async fn run_repair_checksum_drift(
         &guard,
         &bucket,
         version,
+        workspace,
         &new_checksum_up,
         resolved_checksum_down.as_deref(),
         RepairConfirmation::OperatorAcknowledged,
@@ -2326,6 +2328,7 @@ async fn run_repair_partial_apply(
         &guard,
         &bucket,
         version,
+        workspace,
         resolution,
         note,
         RepairConfirmation::OperatorAcknowledged,

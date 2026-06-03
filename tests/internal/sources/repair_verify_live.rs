@@ -969,6 +969,7 @@ async fn repair_checksum_drift_updates_row(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &new_checksum,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -1014,6 +1015,7 @@ async fn repair_checksum_drift_rejects_invalid_checksum(mut ctx: djogi::DjogiCon
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         "V1:not_lowercase_hex_at_all_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -1171,6 +1173,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkRolledBack,
         "manual rollback completed by ops",
         RepairConfirmation::OperatorAcknowledged,
@@ -1232,6 +1235,7 @@ async fn repair_partial_apply_marks_faked(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkFaked,
         "out-of-band fix already in place",
         RepairConfirmation::OperatorAcknowledged,
@@ -1272,6 +1276,7 @@ async fn repair_partial_apply_marks_applied(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkApplied,
         "manually completed remaining steps",
         RepairConfirmation::OperatorAcknowledged,
@@ -1305,6 +1310,7 @@ async fn repair_partial_apply_rejects_already_applied(mut ctx: djogi::DjogiConte
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkRolledBack,
         "test",
         RepairConfirmation::OperatorAcknowledged,
@@ -2483,6 +2489,7 @@ async fn repair_checksum_drift_repairs_both_up_and_down(mut ctx: djogi::DjogiCon
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &new_up,
         Some(&new_down),
         RepairConfirmation::OperatorAcknowledged,
@@ -3190,6 +3197,7 @@ async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djog
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         new_checksum,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -3338,6 +3346,7 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
                 &_guard,
                 &other_seed_plan.bucket,
                 &other_seed_ctx.version,
+                &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
                 &other_checksum,
                 None,
                 RepairConfirmation::OperatorAcknowledged,
@@ -3359,6 +3368,7 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
                 &_guard,
                 &same_seed_plan.bucket,
                 &same_seed_ctx.version,
+                &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
                 &same_checksum,
                 None,
                 RepairConfirmation::OperatorAcknowledged,
@@ -3376,6 +3386,7 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
             &_guard,
             &same_seed_plan.bucket,
             &same_seed_ctx.version,
+            &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
             &same_checksum,
             None,
             RepairConfirmation::OperatorAcknowledged,
@@ -3432,6 +3443,7 @@ async fn repair_checksum_drift_reports_advisory_lock_budget_exhaustion(
             &_guard,
             &plan.bucket,
             &runner_ctx.version,
+            &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
             &new_checksum,
             None,
             RepairConfirmation::OperatorAcknowledged,
@@ -3629,6 +3641,7 @@ async fn repair_checksum_drift_rejects_wrong_bucket_app_and_releases_lock(
         &_guard,
         &wrong_bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &runner_ctx.checksum_up,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -3698,6 +3711,7 @@ async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
         &_guard,
         &wrong_bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkRolledBack,
         "test note",
         RepairConfirmation::OperatorAcknowledged,
@@ -3870,6 +3884,7 @@ async fn repair_checksum_drift_pool_backed_context_pins_session(
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &fresh_checksum,
         None,
         RepairConfirmation::OperatorAcknowledged,
