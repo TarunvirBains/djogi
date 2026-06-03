@@ -1,4 +1,4 @@
-// T8 — live-PG integration tests for the seed runner +
+//  — live-PG integration tests for the seed runner +
 // deterministic docs generation.
 //
 // # What these tests prove
@@ -102,13 +102,13 @@ async fn seed_runner_applies_seeds_and_records_in_ledger(mut ctx: djogi::DjogiCo
     // reference table; we cleanly assert post-state.
     fs::write(
         seeds_dir.join("01_init.sql"),
-        "CREATE TABLE t8_seed_widgets (id BIGINT PRIMARY KEY, name TEXT NOT NULL);\n\
-         INSERT INTO t8_seed_widgets (id, name) VALUES (1, 'alpha');\n",
+        "CREATE TABLE seed_widgets (id BIGINT PRIMARY KEY, name TEXT NOT NULL);\n\
+         INSERT INTO seed_widgets (id, name) VALUES (1, 'alpha');\n",
     )
     .unwrap();
     fs::write(
         seeds_dir.join("02_data.sql"),
-        "INSERT INTO t8_seed_widgets (id, name) VALUES (2, 'beta');\n",
+        "INSERT INTO seed_widgets (id, name) VALUES (2, 'beta');\n",
     )
     .unwrap();
 
@@ -127,7 +127,7 @@ async fn seed_runner_applies_seeds_and_records_in_ledger(mut ctx: djogi::DjogiCo
 
     // The data must have landed.
     let count: i64 = ctx
-        .raw_scalar("SELECT COUNT(*)::bigint FROM t8_seed_widgets", &[])
+        .raw_scalar("SELECT COUNT(*)::bigint FROM seed_widgets", &[])
         .await
         .expect("count");
     assert_eq!(count, 2);
@@ -170,7 +170,7 @@ async fn seed_runner_applies_seeds_and_records_in_ledger(mut ctx: djogi::DjogiCo
     // INSERT (the unique key on the table would have surfaced as an
     // error).
     let count: i64 = ctx
-        .raw_scalar("SELECT COUNT(*)::bigint FROM t8_seed_widgets", &[])
+        .raw_scalar("SELECT COUNT(*)::bigint FROM seed_widgets", &[])
         .await
         .expect("count");
     assert_eq!(count, 2, "no duplicate INSERTs after second run");
@@ -193,8 +193,8 @@ async fn seed_runner_refuses_on_checksum_drift(mut ctx: djogi::DjogiContext) {
     let seed_path = seeds_dir.join("01_init.sql");
     fs::write(
         &seed_path,
-        "CREATE TABLE t8_seed_drift (id BIGINT PRIMARY KEY);\n\
-         INSERT INTO t8_seed_drift (id) VALUES (1);\n",
+        "CREATE TABLE seed_drift (id BIGINT PRIMARY KEY);\n\
+         INSERT INTO seed_drift (id) VALUES (1);\n",
     )
     .unwrap();
     run_seeds(
@@ -211,8 +211,8 @@ async fn seed_runner_refuses_on_checksum_drift(mut ctx: djogi::DjogiContext) {
     // bytes flips the checksum.
     fs::write(
         &seed_path,
-        "CREATE TABLE t8_seed_drift (id BIGINT PRIMARY KEY);\n\
-         INSERT INTO t8_seed_drift (id) VALUES (1);\n\
+        "CREATE TABLE seed_drift (id BIGINT PRIMARY KEY);\n\
+         INSERT INTO seed_drift (id) VALUES (1);\n\
          -- drift comment\n",
     )
     .unwrap();
@@ -292,13 +292,13 @@ async fn seed_runner_rejects_concurrent_first_run(mut ctx: djogi::DjogiContext) 
     let seeds_dir = work.join("seeds").join(&database);
     fs::create_dir_all(&seeds_dir).unwrap();
 
-    ctx.raw_ddl("CREATE TABLE t8_seed_concurrent (id BIGINT NOT NULL)")
+    ctx.raw_ddl("CREATE TABLE seed_concurrent (id BIGINT NOT NULL)")
         .await
         .expect("create target table");
     fs::write(
         seeds_dir.join("01_non_idempotent.sql"),
         "SELECT pg_sleep(0.25);\n\
-         INSERT INTO t8_seed_concurrent (id) VALUES (1);\n",
+         INSERT INTO seed_concurrent (id) VALUES (1);\n",
     )
     .unwrap();
 
@@ -334,7 +334,7 @@ async fn seed_runner_rejects_concurrent_first_run(mut ctx: djogi::DjogiContext) 
     }
 
     let count: i64 = ctx
-        .raw_scalar("SELECT COUNT(*)::bigint FROM t8_seed_concurrent", &[])
+        .raw_scalar("SELECT COUNT(*)::bigint FROM seed_concurrent", &[])
         .await
         .expect("count seeded rows");
     assert_eq!(
@@ -351,12 +351,12 @@ async fn seed_runner_leaves_stale_claim_on_finalize_failure(mut ctx: djogi::Djog
     let seeds_dir = work.join("seeds").join(&database);
     fs::create_dir_all(&seeds_dir).unwrap();
 
-    ctx.raw_ddl("CREATE TABLE t8_seed_stale_claim (id BIGINT NOT NULL)")
+    ctx.raw_ddl("CREATE TABLE seed_stale_claim (id BIGINT NOT NULL)")
         .await
         .expect("create target table");
     fs::write(
         seeds_dir.join("01_finalize_gap.sql"),
-        "INSERT INTO t8_seed_stale_claim (id) VALUES (1);\n",
+        "INSERT INTO seed_stale_claim (id) VALUES (1);\n",
     )
     .unwrap();
 
@@ -380,7 +380,7 @@ async fn seed_runner_leaves_stale_claim_on_finalize_failure(mut ctx: djogi::Djog
     );
 
     let seeded_rows: i64 = ctx
-        .raw_scalar("SELECT COUNT(*)::bigint FROM t8_seed_stale_claim", &[])
+        .raw_scalar("SELECT COUNT(*)::bigint FROM seed_stale_claim", &[])
         .await
         .expect("count seeded rows");
     assert_eq!(seeded_rows, 1, "seed SQL must have committed before finalize failed");
@@ -415,7 +415,7 @@ async fn seed_runner_leaves_stale_claim_on_finalize_failure(mut ctx: djogi::Djog
     }
 
     let rerun_count: i64 = ctx
-        .raw_scalar("SELECT COUNT(*)::bigint FROM t8_seed_stale_claim", &[])
+        .raw_scalar("SELECT COUNT(*)::bigint FROM seed_stale_claim", &[])
         .await
         .expect("count seeded rows after stale claim rerun");
     assert_eq!(rerun_count, 1, "stale claim must prevent silent re-execution");
@@ -431,7 +431,7 @@ async fn seed_runner_marks_failed_claim_and_refuses_retry(mut ctx: djogi::DjogiC
 
     fs::write(
         seeds_dir.join("01_broken.sql"),
-        "INSERT INTO t8_seed_missing_target (id) VALUES (1);\n",
+        "INSERT INTO seed_missing_target (id) VALUES (1);\n",
     )
     .unwrap();
 
@@ -491,8 +491,8 @@ async fn seed_runner_explicit_transaction_failure_surfaces_failed_claim_on_rerun
     fs::write(
         seeds_dir.join("01_explicit_tx_broken.sql"),
         "BEGIN;\n\
-         CREATE TABLE t8_seed_explicit_tx_probe (id BIGINT PRIMARY KEY);\n\
-         INSERT INTO t8_seed_missing_target (id) VALUES (1);\n\
+         CREATE TABLE seed_explicit_tx_probe (id BIGINT PRIMARY KEY);\n\
+         INSERT INTO seed_missing_target (id) VALUES (1);\n\
          COMMIT;\n",
     )
     .unwrap();
@@ -558,7 +558,7 @@ async fn seed_runner_explicit_transaction_failure_surfaces_failed_claim_on_rerun
 // `inventory::iter::<ModelDescriptor>` may carry the framework's
 // own internal fixtures).
 
-// ── Codex round-1 B-1: per-database URL routing ──────────────────────────
+// ── Codex round B-1: per-database URL routing ──────────────────────────
 //
 // `db seed --database crud_log` must execute SQL against `crud_log`,
 // NOT against the application database. The CLI uses
@@ -622,7 +622,7 @@ async fn docs_generate_produces_readme_under_arbitrary_root(mut _ctx: djogi::Djo
 
 /// Codex umbrella U-4 (BLOCK): `db reset` must replay migrations in
 /// HISTORICAL apply order (`applied_at ASC`), NOT lexical version-string
-/// order. T7's out-of-order policy allows a hotfix to apply AFTER a
+/// order. 's out-of-order policy allows a hotfix to apply AFTER a
 /// later migration; lexical replay would re-order them.
 ///
 /// **What this test pins.** We populate the ledger with three rows
@@ -719,9 +719,9 @@ async fn u4_reset_captures_historical_order_not_lexical(mut ctx: djogi::DjogiCon
 
 /// Codex umbrella PARTIAL: prove that `db seed --database <other_db>`
 /// actually runs SQL against `<other_db>`, NOT the application
-/// database. Pre-T8-Round-2 the `--database` flag selected the seed
+/// database. Pre--Round-2 the `--database` flag selected the seed
 /// directory but every seed ran against `database.url` regardless;
-/// T8 Round 2 added `derive_per_database_url` to splice the name into
+///  Round 2 added `derive_per_database_url` to splice the name into
 /// the URL path. The integration test at lines 266-304 of this file
 /// exercises the helper itself but cannot prove the live SQL route
 /// because the harness owns the DB lifecycle. This test fills the gap:

@@ -24,7 +24,7 @@
 // ## Running
 //
 // ```bash
-// cargo test --test phase8_zero_cluster_c_bench -p djogi --all-features \
+// cargo test --test zero_cluster_c_bench -p djogi --all-features \
 //     --release -- --test-threads=1 --nocapture
 // ```
 //
@@ -33,7 +33,7 @@
 //
 // ## Why `tests/`, not `benches/`
 //
-// Same rationale as `phase8_zero_pool_bench` and `phase8_zero_tree_query_bench`:
+// Same rationale as `zero_pool_bench` and `zero_tree_query_bench`:
 // cargo's `[[bench]]` harness pulls in nightly criterion-style infra we don't
 // want for v0.1.0 smoke checks. Stuffing the timing logic into ordinary
 // `#[djogi_test]` bodies keeps the test surface single-tracked and reuses
@@ -54,14 +54,14 @@ use djogi::prelude::*;
 
 // ── Models ──────────────────────────────────────────────────────────────────
 
-#[model(table = "phase8c_bench_points", pk = HeerId, no_default)]
+#[model(table = "bench_points", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct BenchPoint {
     pub herd_id: i64,
     pub location: GeoPoint,
 }
 
-#[model(table = "phase8c_bench_window", pk = HeerId, no_default)]
+#[model(table = "bench_window", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct BenchWindowRow {
     pub herd_id: i64,
@@ -102,15 +102,15 @@ async fn bench_convex_hull_aggregate_1000_points(mut ctx: djogi::DjogiContext) {
     let n_points = (n_herds * per_herd) as usize;
 
     ctx.raw_ddl(
-        "CREATE TABLE phase8c_bench_points (
+        "CREATE TABLE bench_points (
              id         BIGINT      PRIMARY KEY DEFAULT generate_id(),
              created_at TIMESTAMPTZ NOT NULL    DEFAULT now(),
              updated_at TIMESTAMPTZ NOT NULL    DEFAULT now(),
              herd_id    BIGINT      NOT NULL,
              location   GEOGRAPHY(Point, 4326) NOT NULL
          );
-         CREATE INDEX phase8c_bench_points_loc_gix
-             ON phase8c_bench_points USING GIST(location);",
+         CREATE INDEX bench_points_loc_gix
+             ON bench_points USING GIST(location);",
     )
     .await
     .expect("DDL must succeed");
@@ -126,7 +126,7 @@ async fn bench_convex_hull_aggregate_1000_points(mut ctx: djogi::DjogiContext) {
     // lat is shifted into a safe band well inside [-90, 90]; lon stays
     // inside [-180, 180] for any reasonable n_herds.
     ctx.raw_execute(
-        "INSERT INTO phase8c_bench_points (herd_id, location)
+        "INSERT INTO bench_points (herd_id, location)
          SELECT
              (h - 1)::bigint AS herd_id,
              ST_SetSRID(
@@ -144,12 +144,12 @@ async fn bench_convex_hull_aggregate_1000_points(mut ctx: djogi::DjogiContext) {
     .expect("seed points");
 
     // ANALYZE so the planner has stats before the timed query.
-    ctx.raw_ddl("ANALYZE phase8c_bench_points")
+    ctx.raw_ddl("ANALYZE bench_points")
         .await
         .expect("analyze must succeed");
 
     let total: i64 = ctx
-        .raw_scalar("SELECT COUNT(*)::bigint FROM phase8c_bench_points", &[])
+        .raw_scalar("SELECT COUNT(*)::bigint FROM bench_points", &[])
         .await
         .expect("count seeded");
     println!("seeded {total} points across {n_herds} herds");
@@ -190,7 +190,7 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
     let n_rows = (n_herds * per_herd) as usize;
 
     ctx.raw_ddl(
-        "CREATE TABLE phase8c_bench_window (
+        "CREATE TABLE bench_window (
              id         BIGINT      PRIMARY KEY DEFAULT generate_id(),
              created_at TIMESTAMPTZ NOT NULL    DEFAULT now(),
              updated_at TIMESTAMPTZ NOT NULL    DEFAULT now(),
@@ -207,7 +207,7 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
     // the bench is reproducible across runs (random() would re-roll on
     // each invocation and add noise to ratio comparisons).
     ctx.raw_execute(
-        "INSERT INTO phase8c_bench_window (herd_id, score, label)
+        "INSERT INTO bench_window (herd_id, score, label)
          SELECT
              (g % $1::int)::bigint                                   AS herd_id,
              ((g * 2654435761)::bigint % 1000000)::bigint            AS score,
@@ -218,12 +218,12 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
     .await
     .expect("seed window rows");
 
-    ctx.raw_ddl("ANALYZE phase8c_bench_window")
+    ctx.raw_ddl("ANALYZE bench_window")
         .await
         .expect("analyze must succeed");
 
     let total: i64 = ctx
-        .raw_scalar("SELECT COUNT(*)::bigint FROM phase8c_bench_window", &[])
+        .raw_scalar("SELECT COUNT(*)::bigint FROM bench_window", &[])
         .await
         .expect("count seeded");
     println!("seeded {total} rows across {n_herds} herds");
@@ -278,7 +278,7 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
              FROM (
                  SELECT id, created_at, updated_at, herd_id, score, label,
                         ROW_NUMBER() OVER (PARTITION BY herd_id ORDER BY score DESC) AS rn
-                 FROM phase8c_bench_window
+                 FROM bench_window
              ) AS sub
              WHERE rn <= 3",
             &[],

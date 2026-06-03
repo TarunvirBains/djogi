@@ -1,4 +1,4 @@
--- Phase 3 integration fixture: `persons_p3` — one side of the Task 6
+--  integration fixture: `persons_p3` — one side of the Task 6
 -- many-to-many pair.
 --
 -- The M2M suite exercises the explicit-through-model design: `Person`
@@ -10,7 +10,7 @@
 --
 -- Scoping note: same test-schema scoping as `001_owners.sql` /
 -- `002_fuel_types.sql` / `003_vehicles.sql` — issued via the shared
--- `setup_phase3` helper, not via `sqlx::test(migrations = "...")`.
+-- `setup_` helper, not via `sqlx::test(migrations = "...")`.
 
 CREATE TABLE IF NOT EXISTS persons_p3 (
     id BIGINT PRIMARY KEY DEFAULT generate_id(),

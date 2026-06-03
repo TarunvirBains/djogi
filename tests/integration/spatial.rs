@@ -1,7 +1,7 @@
-// Integration tests — descriptor population (T2) and query-surface
-// IR shape (T3).
+// Integration tests — descriptor population () and query-surface
+// IR shape ().
 //
-// ## T2: Descriptor population for GeoPoint fields
+// ## : Descriptor population for GeoPoint fields
 //
 // Verifies that the `#[derive(Model)]` / `#[model]` macro pair correctly
 // populates the `ModelDescriptor` when a model declares a `GeoPoint` field:
@@ -16,7 +16,7 @@
 // 4. `non_spatial_model_has_empty_indexes` — a plain non-spatial model has no
 //    entries in `ModelDescriptor::indexes` (regression guard).
 //
-// ## T3: Spatial query-surface IR shape
+// ## : Spatial query-surface IR shape
 //
 // Verifies the Condition / OrderExpr routing without a live database:
 //
@@ -25,7 +25,7 @@
 // 6. `order_by_distance_returns_order_expr` — `order_by_distance` returns an
 //    `OrderExpr` that the `order_by` closure accepts.
 //
-// All T2 and T3 tests are DB-free. Live-PostGIS CRUD tests are T4's scope.
+// All  and  tests are DB-free. Live-PostGIS CRUD tests are 's scope.
 
 use djogi::prelude::*;
 
@@ -42,7 +42,7 @@ use djogi::prelude::*;
 /// test that never constructs instances.
 #[cfg(feature = "spatial")]
 #[allow(dead_code)]
-// T2 default flip — pin HeerId so the `order_by_distance`
+//  default flip — pin HeerId so the `order_by_distance`
 // + `within_km` tests keep their ascending-HeerId tiebreak semantics.
 #[model(table = "places", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
@@ -162,7 +162,7 @@ fn gist_index_name_follows_convention() {
 }
 
 /// A non-spatial model must have an empty `indexes` slice — regression guard
-/// ensuring T2's index-building logic does not accidentally emit entries for
+/// ensuring 's index-building logic does not accidentally emit entries for
 /// models with no GeoPoint fields.
 #[test]
 fn non_spatial_model_has_empty_indexes() {
@@ -175,7 +175,7 @@ fn non_spatial_model_has_empty_indexes() {
 }
 
 // ---------------------------------------------------------------------------
-// T3: Spatial query-surface IR shape (DB-free)
+// : Spatial query-surface IR shape (DB-free)
 // ---------------------------------------------------------------------------
 
 /// `FieldRef<Place, GeoPoint>::within_km(center, km)` must return
@@ -224,7 +224,7 @@ fn order_by_distance_returns_order_expr() {
 ///
 /// This is the IR composition smoke test: it exercises the full path from
 /// `FieldRef` method → `Condition::Expr(ExprNode::Spatial)` → `QuerySet`
-/// accumulation. SQL text assertion is T4's scope (requires a live PostGIS
+/// accumulation. SQL text assertion is 's scope (requires a live PostGIS
 /// instance for the full SELECT round-trip); here we verify the IR composes
 /// without panics.
 #[cfg(feature = "spatial")]
@@ -240,7 +240,7 @@ fn queryset_with_spatial_filter_and_ordering_composes_without_panic() {
 }
 
 // ---------------------------------------------------------------------------
-// T4: Live PostGIS CRUD and query semantics
+// : Live PostGIS CRUD and query semantics
 // ---------------------------------------------------------------------------
 //
 // These tests require a live PostgreSQL 18 instance with the PostGIS 3.x
@@ -434,7 +434,7 @@ async fn order_by_distance_is_deterministic(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// T5: IndexSpec migration-policy fields (DB-free descriptor inspection)
+// : IndexSpec migration-policy fields (DB-free descriptor inspection)
 // ---------------------------------------------------------------------------
 
 /// The macro-emitted GiST index for `Place.location` must set
@@ -496,7 +496,7 @@ fn non_spatial_indexes_default_benignly() {
 }
 
 // ---------------------------------------------------------------------------
-// T6: MigrationShape contract-validation (DB-free)
+// : MigrationShape contract-validation (DB-free)
 // ---------------------------------------------------------------------------
 //
 // These four tests prove that `ModelDescriptor` encodes enough information

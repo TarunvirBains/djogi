@@ -1,4 +1,4 @@
-//! T10 — two-app integration tests.
+//! Two-app integration tests.
 //!
 //! Pure descriptor tests: exercise the apps subsystem end-to-end
 //! without a database. Verifies:
@@ -35,13 +35,13 @@ djogi::apps! {
     pub struct OldBilling;
 }
 
-#[model(table = "t10_users", app = Users)]
+#[model(table = "users", app = Users)]
 #[derive(Debug, Clone)]
 pub struct User {
     pub email: String,
 }
 
-#[model(table = "t10_invoices", app = Billing, no_default)]
+#[model(table = "invoices", app = Billing, no_default)]
 #[derive(Debug, Clone)]
 pub struct Invoice {
     pub customer: ForeignKey<User>,
@@ -50,7 +50,7 @@ pub struct Invoice {
 
 // Intra-app FK: LineItem → Invoice, both in Billing. Must NOT
 // appear in cross_app_edges.
-#[model(table = "t10_line_items", app = Billing, no_default)]
+#[model(table = "line_items", app = Billing, no_default)]
 #[derive(Debug, Clone)]
 pub struct LineItem {
     pub invoice: ForeignKey<Invoice>,
@@ -60,7 +60,7 @@ pub struct LineItem {
 // Move scenario: active model in Billing, historical reference to
 // the tombstoned OldBilling via moved_from_app. This is legal
 // (tombstoned apps are valid `moved_from_app` targets).
-#[model(table = "t10_subscriptions", app = Subscription, moved_from_app = OldBilling, no_default)]
+#[model(table = "subscriptions", app = Subscription, moved_from_app = OldBilling, no_default)]
 #[derive(Debug, Clone)]
 pub struct Sub {
     pub subscriber: ForeignKey<User>,
@@ -166,7 +166,7 @@ fn sub_to_user_is_cross_app() {
 
 #[test]
 fn cross_app_edges_carry_database_fields() {
-    // OldBilling lives in `crud_log`, every other T10 app lives in
+    // OldBilling lives in `crud_log`, every other app lives in
     // `main`. The graph has no FK into OldBilling (tombstoned, no
     // active models), so every cross-app edge is within `main`:
     let edges = AppRegistry::cross_app_edges();
@@ -188,9 +188,10 @@ fn cross_app_edges_carry_database_fields() {
 #[test]
 fn cross_app_cycles_empty_for_acyclic_graph() {
     // Each integration-test binary has isolated inventory, so we
-    // can assert the *global* cycle result is empty — the T10
+    // can assert the *global* cycle result is empty — the
     // graph is billing→users, subscription→users, both pointing at
     // Users which has no outgoing edges. Acyclic.
     let cycles = AppRegistry::cross_app_cycles();
     assert!(cycles.is_empty(), "expected zero cycles; got {cycles:?}");
 }
+

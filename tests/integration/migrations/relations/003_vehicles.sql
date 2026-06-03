@@ -1,4 +1,4 @@
--- Phase 3 integration fixture: `vehicles_p3` table with two FK columns.
+--  integration fixture: `vehicles_p3` table with two FK columns.
 --
 -- This is the anchor table for Task 3's `.fetch()` / `.resolved()`
 -- integration tests. Two FK shapes are deliberately exercised:
@@ -10,13 +10,13 @@
 --     macro-generated `FromRow` and the sqlx Decode impls from Task 1.
 --
 -- The two distinct `ON DELETE` actions (`CASCADE` vs `RESTRICT`) are
--- documentary for Phase 6's migration-emitter tests; Phase 3 doesn't
+-- documentary for 's migration-emitter tests;  doesn't
 -- assert cascade behavior itself. `RESTRICT` on the nullable FK also
 -- guards against a surprise cross-test cascade bleed if some future
 -- test deletes a fuel-type row that a live vehicle still references.
 --
 -- Scoping note: same as `001_owners.sql` / `002_fuel_types.sql` — this
--- is *test* schema, issued via the shared `setup_phase3` helper per
+-- is *test* schema, issued via the shared `setup_` helper per
 -- the plan's Q10 resolution (shared helpers over `sqlx::test` migration
 -- attribute).
 

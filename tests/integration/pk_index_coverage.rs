@@ -44,7 +44,7 @@ fn global_key() -> BucketKey {
 /// `#[model(indexes(...))]`.  After the djogi#83 descriptor fix, the
 /// macro emits `indexed: false` for the framework `id` field, so the
 /// projection must produce zero synthetic indexes for this table.
-#[model(table = "phase85_pk_no_id_tiny", pk = HeerId)]
+#[model(table = "pk_no_id_tiny", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct PkNoIdTiny {
     /// Lone user field — satisfies the "at least one user field"
@@ -55,13 +55,13 @@ pub struct PkNoIdTiny {
 /// Tiny model with one `#[field(index)]` on a plain `String` field and
 /// no explicit `#[model(indexes(...))]`.  The projection must synthesise
 /// exactly one `IndexSchema` for this table, named
-/// `phase85_field_idx_tiny_label_idx` (canonical `<table>_<col>_idx`).
-#[model(table = "phase85_field_idx_tiny", pk = HeerId)]
+/// `field_idx_tiny_label_idx` (canonical `<table>_<col>_idx`).
+#[model(table = "field_idx_tiny", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct FieldIdxTiny {
     /// The `#[field(index)]` attribute sets `indexed: true` in the
     /// emitted `FieldDescriptor`, which the projection converts into a
-    /// synthetic BTree index named `phase85_field_idx_tiny_label_idx`.
+    /// synthetic BTree index named `field_idx_tiny_label_idx`.
     #[field(index)]
     pub label: String,
 }
@@ -77,7 +77,7 @@ pub struct FieldIdxTiny {
 ///
 /// This test detects drift in `framework_field_descriptor` at the macro
 /// layer — if any PK strategy arm is changed to emit `indexed: true`,
-/// the projection will synthesise a `phase85_pk_no_id_tiny_id_idx`
+/// the projection will synthesise a `pk_no_id_tiny_id_idx`
 /// entry and this assertion will fire.  The companion projection unit
 /// test (`framework_pk_does_not_synthesize_id_idx_on_fresh_addtable`)
 /// pins the projection-layer behaviour against a manually constructed
@@ -98,13 +98,13 @@ async fn pk_no_id_idx_macro_path(_ctx: djogi::DjogiContext) {
     let table_indexes: Vec<&str> = global
         .indexes
         .iter()
-        .filter(|i| i.table == "phase85_pk_no_id_tiny")
+        .filter(|i| i.table == "pk_no_id_tiny")
         .map(|i| i.name.as_str())
         .collect();
 
     assert!(
         table_indexes.is_empty(),
-        "expected no synthetic indexes for `phase85_pk_no_id_tiny` \
+        "expected no synthetic indexes for `pk_no_id_tiny` \
          (framework PK carries indexed: false, user field `name` has no \
          #[field(index)]); got: {:?}",
         table_indexes,
@@ -118,7 +118,7 @@ async fn pk_no_id_idx_macro_path(_ctx: djogi::DjogiContext) {
 /// Macro-path field-level synthesis coverage (djogi#83 sweep CLASS B
 /// adjacent): a real `#[field(index)]` annotation on a `String` field
 /// must produce exactly one `IndexSchema` in `project_from_inventory()`,
-/// named `phase85_field_idx_tiny_label_idx` (canonical
+/// named `field_idx_tiny_label_idx` (canonical
 /// `<table>_<col>_idx`).
 ///
 /// This exercises the end-to-end path: proc-macro sets `indexed: true`
@@ -140,19 +140,19 @@ async fn field_index_emitted_macro_path(_ctx: djogi::DjogiContext) {
     let table_indexes: Vec<(&str, &str)> = global
         .indexes
         .iter()
-        .filter(|i| i.table == "phase85_field_idx_tiny")
+        .filter(|i| i.table == "field_idx_tiny")
         .map(|i| (i.table.as_str(), i.name.as_str()))
         .collect();
 
     assert_eq!(
         table_indexes.len(),
         1,
-        "expected exactly one synthetic index for `phase85_field_idx_tiny` \
+        "expected exactly one synthetic index for `field_idx_tiny` \
          (#[field(index)] on `label`); got: {:?}",
         table_indexes,
     );
     assert_eq!(
-        table_indexes[0].1, "phase85_field_idx_tiny_label_idx",
+        table_indexes[0].1, "field_idx_tiny_label_idx",
         "synthetic field-level index must follow the <table>_<col>_idx \
          naming convention; got `{}`",
         table_indexes[0].1,

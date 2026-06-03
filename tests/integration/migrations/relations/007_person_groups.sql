@@ -1,4 +1,4 @@
--- Phase 3 integration fixture: `person_groups_p3` — the through model
+--  integration fixture: `person_groups_p3` — the through model
 -- for the Task 6 M2M pair of `persons_p3` ↔ `groups_p3`.
 --
 -- Djogi's M2M design is **explicit through models**: the junction is a
@@ -17,7 +17,7 @@
 -- silent duplicate.
 --
 -- Scoping note: same test-schema scoping as `001_owners.sql` through
--- `006_groups.sql` — issued via the shared `setup_phase3` helper.
+-- `006_groups.sql` — issued via the shared `setup_` helper.
 
 CREATE TABLE IF NOT EXISTS person_groups_p3 (
     id BIGINT PRIMARY KEY DEFAULT generate_id(),

@@ -1,4 +1,4 @@
-// T7 — live-PG integration tests for the out-of-order policy
+//  — live-PG integration tests for the out-of-order policy
 // gate, multi-DB guardrails, and the `attune` reconciliation
 // command.
 //
@@ -57,7 +57,7 @@ fn empty_snapshot() -> AppliedSchema {
         djogi_version: "0.1.0".to_string(),
         enums: BTreeMap::new(),
         format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
-        generated_at: "2026-04-25T00:00:00Z".to_string(),
+        generated_at: "2026-04-25:00:00Z".to_string(),
         indexes: Vec::new(),
         models: BTreeMap::new(),
         registered_apps: vec!["".to_string()],
@@ -154,9 +154,9 @@ async fn ooo_allow_with_diagnostic_records_flag_and_note(mut ctx: djogi::DjogiCo
     let plan_late = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_late",
-            "CREATE TABLE \"t7_ooo_allow_late\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_ooo_allow_late\"",
+            "AddTable late",
+            "CREATE TABLE \"ooo_allow_late\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"ooo_allow_late\"",
         )],
     );
     let runner_ctx_late = make_runner_ctx(
@@ -172,9 +172,9 @@ async fn ooo_allow_with_diagnostic_records_flag_and_note(mut ctx: djogi::DjogiCo
     let plan_early = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_early",
-            "CREATE TABLE \"t7_ooo_allow_early\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_ooo_allow_early\"",
+            "AddTable early",
+            "CREATE TABLE \"ooo_allow_early\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"ooo_allow_early\"",
         )],
     );
     let runner_ctx_early = make_runner_ctx(
@@ -213,7 +213,7 @@ async fn ooo_allow_with_diagnostic_records_flag_and_note(mut ctx: djogi::DjogiCo
     // Both tables must exist (apply happened end-to-end).
     let tables_exist: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 't7_ooo_allow_early' AND relkind = 'r')",
+            "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'ooo_allow_early' AND relkind = 'r')",
             &[],
         )
         .await
@@ -230,9 +230,9 @@ async fn ooo_reject_refuses_before_ledger_insert(mut ctx: djogi::DjogiContext) {
     let plan_late = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_reject_late",
-            "CREATE TABLE \"t7_ooo_reject_late\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_ooo_reject_late\"",
+            "AddTable reject_late",
+            "CREATE TABLE \"ooo_reject_late\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"ooo_reject_late\"",
         )],
     );
     let runner_ctx_late = make_runner_ctx(
@@ -248,9 +248,9 @@ async fn ooo_reject_refuses_before_ledger_insert(mut ctx: djogi::DjogiContext) {
     let plan_early = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_reject_early",
-            "CREATE TABLE \"t7_ooo_reject_early\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_ooo_reject_early\"",
+            "AddTable reject_early",
+            "CREATE TABLE \"ooo_reject_early\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"ooo_reject_early\"",
         )],
     );
     let runner_ctx_early = make_runner_ctx(
@@ -290,7 +290,7 @@ async fn ooo_reject_refuses_before_ledger_insert(mut ctx: djogi::DjogiContext) {
     // The early table must NOT have been created either.
     let exists: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 't7_ooo_reject_early' AND relkind = 'r')",
+            "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'ooo_reject_early' AND relkind = 'r')",
             &[],
         )
         .await
@@ -306,9 +306,9 @@ async fn ooo_allow_explicit_records_override_reason(mut ctx: djogi::DjogiContext
     let plan_late = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_exp_late",
-            "CREATE TABLE \"t7_ooo_exp_late\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_ooo_exp_late\"",
+            "AddTable exp_late",
+            "CREATE TABLE \"ooo_exp_late\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"ooo_exp_late\"",
         )],
     );
     let runner_ctx_late = make_runner_ctx(
@@ -323,9 +323,9 @@ async fn ooo_allow_explicit_records_override_reason(mut ctx: djogi::DjogiContext
     let plan_early = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_exp_early",
-            "CREATE TABLE \"t7_ooo_exp_early\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_ooo_exp_early\"",
+            "AddTable exp_early",
+            "CREATE TABLE \"ooo_exp_early\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"ooo_exp_early\"",
         )],
     );
     let override_reason = "cherry-picking from main into the dev branch".to_string();
@@ -372,9 +372,9 @@ async fn in_order_apply_does_not_set_ooo_flag(mut ctx: djogi::DjogiContext) {
     let plan_a = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_io_a",
-            "CREATE TABLE \"t7_io_a\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_io_a\"",
+            "AddTable io_a",
+            "CREATE TABLE \"io_a\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"io_a\"",
         )],
     );
     let runner_ctx_a = make_runner_ctx(
@@ -389,9 +389,9 @@ async fn in_order_apply_does_not_set_ooo_flag(mut ctx: djogi::DjogiContext) {
     let plan_b = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_io_b",
-            "CREATE TABLE \"t7_io_b\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_io_b\"",
+            "AddTable io_b",
+            "CREATE TABLE \"io_b\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"io_b\"",
         )],
     );
     let runner_ctx_b = make_runner_ctx(&plan_b, "V20260201000000__b", OutOfOrderPolicy::Reject);
@@ -565,9 +565,9 @@ async fn verify_d622_warning_default_policy(mut ctx: djogi::DjogiContext) {
     let plan_late = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_d622_late",
-            "CREATE TABLE \"t7_d622_late\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_d622_late\"",
+            "AddTable d622_late",
+            "CREATE TABLE \"d622_late\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"d622_late\"",
         )],
     );
     let ctx_late = make_runner_ctx(
@@ -581,9 +581,9 @@ async fn verify_d622_warning_default_policy(mut ctx: djogi::DjogiContext) {
     let plan_early = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_d622_early",
-            "CREATE TABLE \"t7_d622_early\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_d622_early\"",
+            "AddTable d622_early",
+            "CREATE TABLE \"d622_early\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"d622_early\"",
         )],
     );
     let ctx_early = make_runner_ctx(
@@ -619,9 +619,9 @@ async fn verify_d622_strict_mode_is_error(mut ctx: djogi::DjogiContext) {
     let plan_late = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_strict_late",
-            "CREATE TABLE \"t7_d622_strict_late\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_d622_strict_late\"",
+            "AddTable strict_late",
+            "CREATE TABLE \"d622_strict_late\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"d622_strict_late\"",
         )],
     );
     let ctx_late = make_runner_ctx(
@@ -635,9 +635,9 @@ async fn verify_d622_strict_mode_is_error(mut ctx: djogi::DjogiContext) {
     let plan_early = transactional_plan(
         "",
         vec![op(
-            "AddTable t7_strict_early",
-            "CREATE TABLE \"t7_d622_strict_early\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t7_d622_strict_early\"",
+            "AddTable strict_early",
+            "CREATE TABLE \"d622_strict_early\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"d622_strict_early\"",
         )],
     );
     let ctx_early = make_runner_ctx(
@@ -742,7 +742,7 @@ async fn attune_record_inserts_row_without_running_sql(mut ctx: djogi::DjogiCont
     // would exist after.
     std::fs::write(
         bucket_dir.join("V20260101000002__record.sdjql"),
-        "CREATE TABLE t7_attune_must_not_run_this_table(id INT);",
+        "CREATE TABLE attune_must_not_run_this_table(id INT);",
     )
     .unwrap();
 
@@ -786,7 +786,7 @@ async fn attune_record_inserts_row_without_running_sql(mut ctx: djogi::DjogiCont
     // exist.
     let exists: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 't7_attune_must_not_run_this_table' AND relkind = 'r')",
+            "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'attune_must_not_run_this_table' AND relkind = 'r')",
             &[],
         )
         .await
@@ -1302,7 +1302,7 @@ async fn attune_record_filters_disk_scan_by_active_database(mut ctx: djogi::Djog
     std::fs::create_dir_all(&active_dir).unwrap();
     std::fs::write(
         active_dir.join("V20260101000001__active.sdjql"),
-        "CREATE TABLE t7_b2_active(id INT);",
+        "CREATE TABLE b2_active(id INT);",
     )
     .unwrap();
 
@@ -1310,7 +1310,7 @@ async fn attune_record_filters_disk_scan_by_active_database(mut ctx: djogi::Djog
     std::fs::create_dir_all(&other_dir).unwrap();
     std::fs::write(
         other_dir.join("V20260101000002__other.sdjql"),
-        "CREATE TABLE t7_b2_other(id INT);",
+        "CREATE TABLE b2_other(id INT);",
     )
     .unwrap();
 
@@ -2321,7 +2321,7 @@ async fn u1_attune_record_without_apply_does_not_touch_parent(mut ctx: djogi::Dj
 /// without `--apply` MUST NOT create `djogi_schema_migrations` on a
 /// fresh database. Pre-fix the bootstrap call sat OUTSIDE the
 /// `--apply` gate, so the dry-run silently created the ledger table —
-/// an out-of-contract mutation that the umbrella round-2 review
+/// an out-of-contract mutation that the umbrella round review
 /// caught.
 ///
 /// We exercise the load-bearing invariant by:
@@ -2543,7 +2543,7 @@ async fn u5_attune_squash_dry_run_does_not_bootstrap_ledger(mut ctx: djogi::Djog
 
 // ── Codex umbrella U-7: --squash implies recording ───────────────────────
 
-/// Codex umbrella round-2 U-7: `--squash` clearly implies
+/// Codex umbrella round U-7: `--squash` clearly implies
 /// `--record` per `docs/spec/configuration.md` §15 ("parent-repo
 /// submodule-pointer changes are explicit via `--record` or options
 /// that clearly imply recording, such as `--squash`") and
@@ -2662,7 +2662,7 @@ async fn u7_attune_squash_implies_recording_without_explicit_flag(mut ctx: djogi
     let _ = std::fs::remove_dir_all(&work);
 }
 
-/// Codex umbrella round-2 U-7: the dry-run side of the auto-imply
+/// Codex umbrella round U-7: the dry-run side of the auto-imply
 /// fires too — `attune --squash --target <ref>` (NO --apply, NO
 /// --record) surfaces the `DryRunRecordSkipped` diagnostic. Pre-U-7
 /// the diagnostic only surfaced when the operator typed `--record`

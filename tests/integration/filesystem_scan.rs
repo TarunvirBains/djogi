@@ -1,4 +1,4 @@
-//! T6 — filesystem scan + D004 round-trip integration.
+//!  — filesystem scan + D004 round-trip integration.
 //!
 //! Exercises the public `djogi::migrate::scan_filesystem` and
 //! `djogi::migrate::classify_filesystem_drift` pipeline against a
@@ -32,7 +32,7 @@ fn empty_snapshot(registered: Vec<String>) -> AppliedSchema {
         djogi_version: env!("CARGO_PKG_VERSION").to_string(),
         enums: BTreeMap::new(),
         format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
-        generated_at: "2026-04-25T00:00:00Z".to_string(),
+        generated_at: "2026-04-25:00:00Z".to_string(),
         indexes: Vec::new(),
         models: BTreeMap::new(),
         registered_apps: registered,

@@ -1,4 +1,4 @@
-//! T2.5 descriptor-shape tests — composition-derive
+//! Descriptor-shape tests — composition-derive
 //! provenance.
 //!
 //! Pins the new `FieldDescriptor::composed_via: Option<&'static str>`
@@ -18,7 +18,7 @@
 //!
 //! # Why provenance is metadata-only
 //!
-//! Per spec line 1124, the migration differ does **not** key off
+//! The migration differ does **not** key off
 //! `composed_via` — a column flagged `Some("Auditable")` compares
 //! identically to a hand-declared `created_by: Option<String>`. The
 //! field is consumed by `djogi docs` and admin-UI surfaces
@@ -33,11 +33,10 @@
 //!
 //! # `_insecurely` deferral
 //!
-//! Spec line 1102 calls out a fourth test
+//! Spec calls out a fourth test
 //! (`_insecurely_warn_track_caller_source`) for the visage-bypass
-//! audit warn. That helper itself is deferred to T6 — the
-//! test cannot exist until the helper does. Re-add the assertion at
-//! 8γ T6 alongside the helper's first commit.
+//! audit warn. That helper itself is deferred — the
+//! test cannot exist until the helper does.
 
 use djogi::prelude::*;
 
@@ -81,9 +80,9 @@ fn auditable_field_descriptor_carries_composed_via() {
 // Test 2 — `#[model(soft_deletable)]` tags `deleted_at` with
 // `composed_via: Some("SoftDeletable")`.
 //
-// T2.6 tightened detection from field-name-only to
-// field-name-plus-flag, eliminating the false-positive risk that
-// motivated round-1 Gemini BLOCK-1: an adopter who declares a
+// Detection was tightened from field-name-only to
+// field-name-plus-flag, eliminating the false-positive risk: 
+// an adopter who declares a
 // `deleted_at` column without opting into the composition no longer
 // sees the (informational) tag on that column. Counter-test 3a below
 // pins that tightening.
@@ -147,12 +146,12 @@ fn regular_field_composed_via_none() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3a — T2.6 tightening counter-test.
+// Test 3a — Tightening counter-test.
 //
 // A model that declares a `deleted_at: Option<DateTime>` field
 // WITHOUT `#[model(soft_deletable)]` must NOT carry the
-// `composed_via: Some("SoftDeletable")` tag. T2.5's original detection
-// was field-name-only; T2.6 tightened it to field-name-plus-flag,
+// `composed_via: Some("SoftDeletable")` tag. Original detection
+// was field-name-only; it was tightened to field-name-plus-flag,
 // eliminating the false-positive risk. This test pins the tightening
 // so a regression that drops the flag check fires loudly.
 // ---------------------------------------------------------------------------
@@ -176,7 +175,7 @@ fn deleted_at_without_opt_in_keeps_composed_via_none() {
         deleted_at.composed_via.is_none(),
         "a `deleted_at` column on a model that does NOT opt into \
          #[model(soft_deletable)] must keep composed_via = None; \
-         T2.6 tightened detection from field-name-only to \
+         detection was tightened from field-name-only to \
          field-name-plus-flag. got {:?}",
         deleted_at.composed_via,
     );

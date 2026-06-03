@@ -2,7 +2,7 @@ use djogi::auth::AuthContext;
 use djogi::prelude::*;
 
 #[model(
-    table = "phase5_5_tenant_hook_posts",
+    table = "tenant_hook_posts",
     pk = HeerId,
     tenant_key = "org_id",
     hooks

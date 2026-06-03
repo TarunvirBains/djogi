@@ -1,6 +1,6 @@
 // #101 — typed set operations: live Postgres tests.
 //
-// Pairs with the SQL-shape-only `phase8_5_c4b_set_op_sql_shape` test by
+// Pairs with the SQL-shape-only `c4b_set_op_sql_shape` test by
 // proving the four set operators produce the row sets Postgres
 // semantics promise, against a real database:
 //
@@ -23,7 +23,7 @@
 use djogi::auth::AuthContext;
 use djogi::prelude::*;
 
-#[model(table = "phase8_5_c4b_set_op_animals", pk = HeerId)]
+#[model(table = "c4b_set_op_animals", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Animal {
     pub name: String,
@@ -40,7 +40,7 @@ pub struct Animal {
 // Used exclusively by `set_op_invalid_arm_rejects_before_tenant_set`
 // to pin that an invalid arm short-circuits BEFORE `auto_set_tenant`
 // could issue any GUC SET statement.
-#[model(table = "phase8_5_c4b_set_op_tenant_widgets", pk = HeerId, tenant_key = "org_id")]
+#[model(table = "c4b_set_op_tenant_widgets", pk = HeerId, tenant_key = "org_id")]
 #[derive(Debug, Clone)]
 pub struct TenantWidget {
     pub org_id: String,
@@ -425,7 +425,7 @@ async fn set_op_invalid_arm_rejects_before_tenant_set(mut ctx: djogi::DjogiConte
     // an `atomic()` lets us attach an auth context (`set_auth`) and
     // observe the connection's `applied_tenant_id` without polluting
     // the pool's connection state. The exact pattern matches the
-    // `phase5_5_auth` tenant-roundtrip tests.
+    // `auth` tenant-roundtrip tests.
     let mut tx = ctx.begin().await.expect("begin transaction");
     tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
 

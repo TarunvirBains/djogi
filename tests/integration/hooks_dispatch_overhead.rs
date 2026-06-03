@@ -1,4 +1,4 @@
-//! T1.8 — Zero-overhead-claim verification (compile-only).
+//! .8 — Zero-overhead-claim verification (compile-only).
 //!
 //! Two models live here side-by-side:
 //!
@@ -24,7 +24,7 @@
 //! The reproducible `cargo asm` capture lives at:
 //!
 //! ```text
-//! docs/superpowers/artefacts/phase8_hooks_dispatch_overhead.txt
+//! docs/superpowers/artefacts/hooks_dispatch_overhead.txt
 //! ```
 //!
 //! Regenerate it from a clean checkout via:
@@ -33,12 +33,12 @@
 //! cargo install cargo-asm   # or `cargo install cargo-show-asm --locked`
 //!
 //! cargo asm --release -p djogi --lib \
-//!   '<phase8_hooks_dispatch_overhead::NoHooksModel as djogi::model::Model>::create' \
-//!   > docs/superpowers/artefacts/phase8_hooks_dispatch_overhead.txt
+//!   '<hooks_dispatch_overhead::NoHooksModel as djogi::model::Model>::create' \
+//!   > docs/superpowers/artefacts/hooks_dispatch_overhead.txt
 //!
 //! cargo asm --release -p djogi --lib \
-//!   '<phase8_hooks_dispatch_overhead::WithHooksModel as djogi::model::Model>::create' \
-//!   >> docs/superpowers/artefacts/phase8_hooks_dispatch_overhead.txt
+//!   '<hooks_dispatch_overhead::WithHooksModel as djogi::model::Model>::create' \
+//!   >> docs/superpowers/artefacts/hooks_dispatch_overhead.txt
 //! ```
 //!
 //! (The exact mangled symbol path is documented in the artefact's
@@ -57,7 +57,7 @@
 //!
 //! # Important constraint — no `#[inline(always)]`
 //!
-//! Per cluster-8alpha-granular.md line 725: the hook impl on
+//! Per .md line 725: the hook impl on
 //! `WithHooksModel` must NOT carry `#[inline(always)]`. That attribute
 //! tells LLVM to inline the call into the `create` site, eliminating
 //! the discrete `call` instruction that the artefact relies on for the
@@ -72,7 +72,7 @@ use std::sync::{Mutex, OnceLock};
 // the optimiser must elide the no-op default-method calls.
 // ---------------------------------------------------------------------------
 
-#[model(table = "phase8_hooks_overhead_no_hooks", pk = HeerId)]
+#[model(table = "hooks_overhead_no_hooks", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct NoHooksModel {
     pub value: i32,
@@ -85,7 +85,7 @@ pub struct NoHooksModel {
 
 static HOOK_FIRED: OnceLock<Mutex<u64>> = OnceLock::new();
 
-#[model(table = "phase8_hooks_overhead_with_hooks", pk = HeerId, hooks)]
+#[model(table = "hooks_overhead_with_hooks", pk = HeerId, hooks)]
 #[derive(Debug, Clone)]
 pub struct WithHooksModel {
     pub value: i32,
@@ -100,7 +100,7 @@ impl djogi::hooks::ModelHooks for WithHooksModel {
     // performance, but it obscures the dispatch *symbol* from a reader
     // (human or Codex) auditing the artefact for the §D2 invariant.
     //
-    // Per cluster-8alpha-granular.md line 725 the FORBIDDEN attribute is
+    // Per .md line 725 the FORBIDDEN attribute is
     // `#[inline(always)]` (which would also obscure dispatch by inlining
     // unconditionally). `#[inline(never)]` is the symmetric opposite —
     // it preserves the dispatch symbol the artefact reader looks for.
@@ -207,7 +207,7 @@ pub fn anchor_with_hooks_save<'a>(
 #[test]
 fn release_build_compiles() {
     // Compile-only test. The verification artefact lives at
-    //   docs/superpowers/artefacts/phase8_hooks_dispatch_overhead.txt
+    //   docs/superpowers/artefacts/hooks_dispatch_overhead.txt
     // and is regenerated via the `cargo asm` commands documented in
     // the module header above.
     //

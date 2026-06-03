@@ -44,23 +44,23 @@
 
 use djogi::prelude::*;
 
-#[model(table = "phase8_5_c2_187_temporal_rows", pk = HeerId, no_default)]
+#[model(table = "c2_187_temporal_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2187TemporalRow {
+pub struct C2187TemporalRow {
     pub event_on: ::time::Date,
     pub recorded_at: ::time::OffsetDateTime,
     pub label: String,
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2187TemporalRow])]
+#[djogi::djogi_test(sync_models = [C2187TemporalRow])]
 async fn temporal_year_check_in_range_round_trip(mut ctx: djogi::DjogiContext) {
     // ── Behaviour 1: valid year round-trips end-to-end ───────────────────
     //
     // Year 2026 is well inside ±9999 — CHECK passes, INSERT succeeds,
     // and the typed `Model::create` returns the persisted row.
-    let row = Phase85C2187TemporalRow::create(
+    let row = C2187TemporalRow::create(
         &mut ctx,
-        Phase85C2187TemporalRow {
+        C2187TemporalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -74,7 +74,7 @@ async fn temporal_year_check_in_range_round_trip(mut ctx: djogi::DjogiContext) {
 
     // Sanity: refetch via Model::get exercises the FromPgRow decode path
     // which would otherwise surface OOB-year poisoning as DjogiError::Decode.
-    let fetched = Phase85C2187TemporalRow::get(&mut ctx, row.id)
+    let fetched = C2187TemporalRow::get(&mut ctx, row.id)
         .await
         .expect("get should round-trip");
     assert_eq!(fetched.label, "djogi#187 in-range");
@@ -84,7 +84,7 @@ async fn temporal_year_check_in_range_round_trip(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2187TemporalRow])]
+#[djogi::djogi_test(sync_models = [C2187TemporalRow])]
 async fn temporal_year_check_rejects_oob_date(mut ctx: djogi::DjogiContext) {
     // ── Behaviour 2: year > 9999 on Date column is rejected ──────────────
     //
@@ -98,7 +98,7 @@ async fn temporal_year_check_rejects_oob_date(mut ctx: djogi::DjogiContext) {
     //
     // With the CHECK in place, Postgres rejects the INSERT at write
     // time with a `check constraint
-    // "phase8_5_c2_187_temporal_rows_event_on_check"` violation. The
+    // "c2_187_temporal_rows_event_on_check"` violation. The
     // constraint name comes from
     // `migrate::sql::check_constraint_name(table, column)`, emitted
     // inline on CREATE TABLE via the `CONSTRAINT <name> CHECK (...)`
@@ -108,7 +108,7 @@ async fn temporal_year_check_rejects_oob_date(mut ctx: djogi::DjogiContext) {
     // path).
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_187_temporal_rows \
+            "INSERT INTO c2_187_temporal_rows \
              (event_on, recorded_at, label) \
              VALUES (DATE '12000-01-01', now(), 'oob date')",
             &[],
@@ -122,13 +122,13 @@ async fn temporal_year_check_rejects_oob_date(mut ctx: djogi::DjogiContext) {
     // otherwise either the CHECK is missing or the naming convention
     // drifted from `migrate::sql::check_constraint_name`.
     assert!(
-        msg.contains("phase8_5_c2_187_temporal_rows_event_on_check"),
+        msg.contains("c2_187_temporal_rows_event_on_check"),
         "OOB Date INSERT error must reference the type-derived CHECK \
          constraint name (got: {msg})"
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2187TemporalRow])]
+#[djogi::djogi_test(sync_models = [C2187TemporalRow])]
 async fn temporal_year_check_rejects_oob_timestamptz(mut ctx: djogi::DjogiContext) {
     // ── Behaviour 3: year > 9999 on Timestamptz column is rejected ───────
     //
@@ -138,7 +138,7 @@ async fn temporal_year_check_rejects_oob_timestamptz(mut ctx: djogi::DjogiContex
     // year 12000 is a valid Postgres literal without the CHECK.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_187_temporal_rows \
+            "INSERT INTO c2_187_temporal_rows \
              (event_on, recorded_at, label) \
              VALUES (DATE '2026-05-15', TIMESTAMP '12000-01-01 00:00:00', 'oob ts')",
             &[],
@@ -150,13 +150,13 @@ async fn temporal_year_check_rejects_oob_timestamptz(mut ctx: djogi::DjogiContex
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_187_temporal_rows_recorded_at_check"),
+        msg.contains("c2_187_temporal_rows_recorded_at_check"),
         "OOB Timestamptz INSERT error must reference the type-derived CHECK \
          constraint name (got: {msg})"
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2187TemporalRow])]
+#[djogi::djogi_test(sync_models = [C2187TemporalRow])]
 async fn timestamptz_check_is_utc_invariant_under_non_utc_session_timezone(
     mut ctx: djogi::DjogiContext,
 ) {
@@ -187,7 +187,7 @@ async fn timestamptz_check_is_utc_invariant_under_non_utc_session_timezone(
 
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_187_temporal_rows \
+            "INSERT INTO c2_187_temporal_rows \
              (event_on, recorded_at, label) \
              VALUES (DATE '2026-05-15', TIMESTAMPTZ '10000-01-01 00:00:00+00', 'tz-boundary')",
             &[],
@@ -200,7 +200,7 @@ async fn timestamptz_check_is_utc_invariant_under_non_utc_session_timezone(
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_187_temporal_rows_recorded_at_check"),
+        msg.contains("c2_187_temporal_rows_recorded_at_check"),
         "OOB Timestamptz INSERT under non-UTC session timezone must reference the \
          type-derived CHECK constraint name (got: {msg})"
     );

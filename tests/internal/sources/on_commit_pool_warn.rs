@@ -1,12 +1,12 @@
-// T2.7 — `on_commit` on a pool-backed `DjogiContext` is an
+// .7 — `on_commit` on a pool-backed `DjogiContext` is an
 // audit-warn no-op rather than a silent drop.
 //
-// Closes T2 cluster counter-signal #3 surfaced by Codex T1 round-1
+// Closes  cluster counter-signal #3 surfaced by Codex  round
 // WARN-1: queued `on_commit` callbacks were silently dropped on
 // pool-backed contexts because no `commit()` ever runs to drain them.
 // The §D3 canonical sequence (`before → DB → outbox → after →
 // on_commit drain`) only fires inside `atomic()` (or an explicit
-// `commit()` on a transaction-backed context). T2.7 mirrors the
+// `commit()` on a transaction-backed context). .7 mirrors the
 // `_insecurely` audit-warn pattern: pool-backed callers emit
 // a `#[track_caller] tracing::warn!` with the grep-able token
 // `djogi::on_commit::pool_backed_drop` and the callback is dropped;
@@ -126,7 +126,7 @@ async fn on_commit_pool_backed_warn_per_call(mut ctx: djogi::DjogiContext) {
 
 /// `on_commit` inside `atomic()` (transaction-backed) MUST NOT emit the
 /// pool-backed warn, AND the callback MUST run after the outer commit.
-/// This pins the existing behavior so the T2.7 audit-warn does
+/// This pins the existing behavior so the .7 audit-warn does
 /// not regress the transactional path.
 #[djogi::djogi_test]
 async fn on_commit_inside_atomic_no_warn_and_callback_runs(mut ctx: djogi::DjogiContext) {

@@ -19,7 +19,7 @@
 // ## Running
 //
 // ```bash
-// cargo test --test phase8_zero_pool_bench -p djogi --all-features \
+// cargo test --test zero_pool_bench -p djogi --all-features \
 //     --release -- --test-threads=1 --nocapture
 // ```
 //

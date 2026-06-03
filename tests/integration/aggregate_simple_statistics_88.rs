@@ -7,7 +7,7 @@
 
 use djogi::prelude::*;
 
-#[model(table = "phase85_agg_simple_stats_probe", pk = HeerId)]
+#[model(table = "agg_simple_stats_probe", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct AggregateProbe {
     pub active: bool,

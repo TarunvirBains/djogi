@@ -31,7 +31,7 @@ use djogi::prelude::*;
 
 // ── Fixture model ─────────────────────────────────────────────────────────
 
-#[model(table = "phase8_5_trgm_users")]
+#[model(table = "trgm_users")]
 #[derive(Debug, Clone)]
 pub struct User {
     pub bio: String,
@@ -229,7 +229,7 @@ fn gin_trgm_ops_index_spec_preserves_opclass_and_extension_dependency() {
     };
 
     let spec = IndexSpec {
-        name: "phase8_5_trgm_users_bio_trgm_idx",
+        name: "trgm_users_bio_trgm_idx",
         target: IndexTarget::Columns(&[IndexColumnSpec {
             name: "bio",
             opclass: Some("gin_trgm_ops"),
@@ -281,7 +281,7 @@ fn gist_trgm_ops_index_spec_is_also_representable() {
     };
 
     let spec = IndexSpec {
-        name: "phase8_5_trgm_users_name_trgm_gist_idx",
+        name: "trgm_users_name_trgm_gist_idx",
         target: IndexTarget::Columns(&[IndexColumnSpec {
             name: "name",
             opclass: Some("gist_trgm_ops"),

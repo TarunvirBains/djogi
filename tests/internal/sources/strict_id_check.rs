@@ -73,43 +73,43 @@ use djogi::prelude::*;
 
 // ── (1) Default-off model — should carry no strict-ID CHECK ──────────────────
 
-#[model(table = "phase8_5_c2_189_default_off", pk = HeerId, no_default)]
+#[model(table = "c2_189_default_off", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189DefaultOff {
+pub struct C2189DefaultOff {
     pub label: String,
 }
 
 // ── (2) Model-wide opt-in on a HeerId-PK model ───────────────────────────────
 
 #[model(
-    table = "phase8_5_c2_189_strict_heer",
+    table = "c2_189_strict_heer",
     pk = HeerId,
     strict_ids,
     no_default,
 )]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189StrictHeer {
+pub struct C2189StrictHeer {
     pub label: String,
 }
 
 // ── (3) Model-wide opt-in on a RanjId-PK model ───────────────────────────────
 
 #[model(
-    table = "phase8_5_c2_189_strict_ranj",
+    table = "c2_189_strict_ranj",
     pk = RanjId,
     strict_ids,
     no_default,
 )]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189StrictRanj {
+pub struct C2189StrictRanj {
     pub label: String,
 }
 
 // ── (4) Field-level opt-in on a bare HeerId user column ──────────────────────
 
-#[model(table = "phase8_5_c2_189_field_optin", pk = HeerId, no_default)]
+#[model(table = "c2_189_field_optin", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189FieldOptin {
+pub struct C2189FieldOptin {
     /// Explicit per-field opt-in — equivalent to `#[model(strict_ids)]`
     /// but scoped to this one column. Hardens externally-written
     /// reference IDs without affecting the rest of the table.
@@ -120,27 +120,27 @@ pub struct Phase85C2189FieldOptin {
 
 // ── (5) FK propagation under model-wide opt-in ───────────────────────────────
 
-#[model(table = "phase8_5_c2_189_fk_target", pk = HeerId, no_default)]
+#[model(table = "c2_189_fk_target", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189FkTarget {
+pub struct C2189FkTarget {
     pub label: String,
 }
 
 #[model(
-    table = "phase8_5_c2_189_fk_source",
+    table = "c2_189_fk_source",
     pk = HeerId,
     strict_ids,
     no_default,
 )]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189FkSource {
+pub struct C2189FkSource {
     /// FK to a HeerId-PK target. `#[model(strict_ids)]` propagates the
     /// opt-in to every FK column; the projection resolves the FK
     /// target's semantic family to HeerId and emits the structural
     /// CHECK. Column name is `owner_id` per the djogi convention
     /// (`{target}_id` for FK columns; `Related::owner()` method strips
     /// the suffix).
-    pub owner_id: ForeignKey<Phase85C2189FkTarget>,
+    pub owner_id: ForeignKey<C2189FkTarget>,
     pub label: String,
 }
 
@@ -154,7 +154,7 @@ pub struct Phase85C2189FkSource {
 // The projection layer's family-based dispatch (`type_to_pk_family`)
 // catches this case and silently skips the CHECK.
 
-// `Phase85C2189CustomBigintId` — custom BIGINT-shaped PK simulating an
+// `C2189CustomBigintId` — custom BIGINT-shaped PK simulating an
 // adopter Snowflake-style or app-scoped ID. `default_sql` is the Postgres
 // builtin `txid_current()` (returns `BIGINT`, exists in every Postgres
 // install Djogi targets) so `sync_models` can CREATE TABLE without
@@ -163,25 +163,25 @@ pub struct Phase85C2189FkSource {
 // values across rows are irrelevant. The production adopter would
 // supply a real bulk-allocator here.
 djogi::primary_key! {
-    pub struct Phase85C2189CustomBigintId(i64);
+    pub struct C2189CustomBigintId(i64);
     sql_type = "BIGINT";
     default_sql = "txid_current()";
 }
 
-#[model(table = "phase8_5_c2_189_custom_bigint_target", pk = Phase85C2189CustomBigintId, no_default)]
+#[model(table = "c2_189_custom_bigint_target", pk = C2189CustomBigintId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189CustomBigintTarget {
+pub struct C2189CustomBigintTarget {
     pub label: String,
 }
 
 #[model(
-    table = "phase8_5_c2_189_custom_bigint_fk_source",
+    table = "c2_189_custom_bigint_fk_source",
     pk = HeerId,
     strict_ids,
     no_default,
 )]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189CustomBigintFkSource {
+pub struct C2189CustomBigintFkSource {
     /// FK to a Custom-BIGINT PK target. `#[model(strict_ids)]`
     /// propagates the opt-in flag to this FK at the macro layer, but
     /// the projection layer's family-based dispatch resolves the
@@ -189,7 +189,7 @@ pub struct Phase85C2189CustomBigintFkSource {
     /// HeerRanjID) and silently skips the CHECK. The FK reference
     /// itself still works (the column SQL type is BIGINT, matching the
     /// target's PK).
-    pub owner_id: ForeignKey<Phase85C2189CustomBigintTarget>,
+    pub owner_id: ForeignKey<C2189CustomBigintTarget>,
     pub label: String,
 }
 
@@ -208,30 +208,30 @@ pub struct Phase85C2189CustomBigintFkSource {
 // the UUIDv4-producing default does not conflict with the RanjId structural
 // semantics pinned elsewhere in this file.
 djogi::primary_key! {
-    pub struct Phase85C2189CustomUuidId(::uuid::Uuid);
+    pub struct C2189CustomUuidId(::uuid::Uuid);
     sql_type = "UUID";
     default_sql = "gen_random_uuid()";
 }
 
-#[model(table = "phase8_5_c2_189_custom_uuid_target", pk = Phase85C2189CustomUuidId, no_default)]
+#[model(table = "c2_189_custom_uuid_target", pk = C2189CustomUuidId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189CustomUuidTarget {
+pub struct C2189CustomUuidTarget {
     pub label: String,
 }
 
 #[model(
-    table = "phase8_5_c2_189_custom_uuid_fk_source",
+    table = "c2_189_custom_uuid_fk_source",
     pk = HeerId,
     strict_ids,
     no_default,
 )]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189CustomUuidFkSource {
+pub struct C2189CustomUuidFkSource {
     /// FK to a Custom-UUID PK target under model-wide `#[model(strict_ids)]`.
     /// The projection resolves the target's PK family to `StrictIdFamily::None`
     /// (Custom — not HeerRanjID) and emits no UUIDv8 + RFC 4122 CHECK on this
     /// FK column, even though the carrier SQL type is UUID.
-    pub owner_id: ForeignKey<Phase85C2189CustomUuidTarget>,
+    pub owner_id: ForeignKey<C2189CustomUuidTarget>,
     pub label: String,
 }
 
@@ -244,34 +244,34 @@ pub struct Phase85C2189CustomUuidFkSource {
 // time (FK is a relation field, whitelisted by the macro) but the projection
 // silently skips the CHECK — same behaviour as the model-wide propagation.
 
-#[model(table = "phase8_5_c2_189_field_fk_custom_bigint_src", pk = HeerId, no_default)]
+#[model(table = "c2_189_field_fk_custom_bigint_src", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189FieldFkCustomBigintSource {
+pub struct C2189FieldFkCustomBigintSource {
     /// Field-level `#[field(strict_id_check)]` on FK to a Custom-BIGINT PK
     /// target; no model-wide `#[model(strict_ids)]`. The macro accepts the
     /// attribute (FK is a relation field); at projection time the target's
     /// family resolves to `StrictIdFamily::None` and no `>= 0` CHECK is
     /// emitted.
     #[field(strict_id_check)]
-    pub owner_id: ForeignKey<Phase85C2189CustomBigintTarget>,
+    pub owner_id: ForeignKey<C2189CustomBigintTarget>,
     pub label: String,
 }
 
-#[model(table = "phase8_5_c2_189_field_fk_custom_uuid_src", pk = HeerId, no_default)]
+#[model(table = "c2_189_field_fk_custom_uuid_src", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2189FieldFkCustomUuidSource {
+pub struct C2189FieldFkCustomUuidSource {
     /// Field-level `#[field(strict_id_check)]` on FK to a Custom-UUID PK
     /// target; no model-wide `#[model(strict_ids)]`. Same dispatch path as the
     /// BIGINT case — family resolves to `StrictIdFamily::None` and no UUIDv8 +
     /// RFC 4122 CHECK is emitted.
     #[field(strict_id_check)]
-    pub owner_id: ForeignKey<Phase85C2189CustomUuidTarget>,
+    pub owner_id: ForeignKey<C2189CustomUuidTarget>,
     pub label: String,
 }
 
 // ── Catalog assertions — default-off baseline ─────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2189DefaultOff])]
+#[djogi::djogi_test(sync_models = [C2189DefaultOff])]
 async fn default_off_emits_no_strict_id_check(mut ctx: djogi::DjogiContext) {
     // Pre-189 backward-compat invariant: a HeerId-PK model without any
     // opt-in carries no CHECK on the `id` column. The pg_constraint
@@ -280,9 +280,9 @@ async fn default_off_emits_no_strict_id_check(mut ctx: djogi::DjogiContext) {
     let id_checks: Vec<String> = ctx
         .raw_rows(
             "SELECT conname::text FROM pg_constraint \
-             WHERE conrelid = 'phase8_5_c2_189_default_off'::regclass \
+             WHERE conrelid = 'c2_189_default_off'::regclass \
              AND contype = 'c' \
-             AND conname LIKE 'phase8_5_c2_189_default_off_id%' \
+             AND conname LIKE 'c2_189_default_off_id%' \
              ORDER BY conname",
             &[],
         )
@@ -299,7 +299,7 @@ async fn default_off_emits_no_strict_id_check(mut ctx: djogi::DjogiContext) {
 
 // ── Catalog assertions — model-wide opt-in ────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2189StrictHeer])]
+#[djogi::djogi_test(sync_models = [C2189StrictHeer])]
 async fn strict_heer_id_has_nonneg_check(mut ctx: djogi::DjogiContext) {
     // The model-wide `#[model(strict_ids)]` sets `strict_id_check: true`
     // on the framework `id` column. The projection layer resolves
@@ -307,9 +307,9 @@ async fn strict_heer_id_has_nonneg_check(mut ctx: djogi::DjogiContext) {
     let defs: Vec<String> = ctx
         .raw_rows(
             "SELECT pg_get_constraintdef(oid)::text FROM pg_constraint \
-             WHERE conrelid = 'phase8_5_c2_189_strict_heer'::regclass \
+             WHERE conrelid = 'c2_189_strict_heer'::regclass \
              AND contype = 'c' \
-             AND conname = 'phase8_5_c2_189_strict_heer_id_check'",
+             AND conname = 'c2_189_strict_heer_id_check'",
             &[],
         )
         .await
@@ -329,7 +329,7 @@ async fn strict_heer_id_has_nonneg_check(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2189StrictRanj])]
+#[djogi::djogi_test(sync_models = [C2189StrictRanj])]
 async fn strict_ranj_id_has_uuidv8_check(mut ctx: djogi::DjogiContext) {
     // RanjId is UUIDv8 + RFC 4122 variant. The projection emits a CHECK
     // that extracts position 15 (version nibble) and position 20
@@ -339,9 +339,9 @@ async fn strict_ranj_id_has_uuidv8_check(mut ctx: djogi::DjogiContext) {
     let defs: Vec<String> = ctx
         .raw_rows(
             "SELECT pg_get_constraintdef(oid)::text FROM pg_constraint \
-             WHERE conrelid = 'phase8_5_c2_189_strict_ranj'::regclass \
+             WHERE conrelid = 'c2_189_strict_ranj'::regclass \
              AND contype = 'c' \
-             AND conname = 'phase8_5_c2_189_strict_ranj_id_check'",
+             AND conname = 'c2_189_strict_ranj_id_check'",
             &[],
         )
         .await
@@ -384,7 +384,7 @@ async fn strict_ranj_id_has_uuidv8_check(mut ctx: djogi::DjogiContext) {
 
 // ── Catalog assertions — field-level opt-in ───────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2189FieldOptin])]
+#[djogi::djogi_test(sync_models = [C2189FieldOptin])]
 async fn field_optin_emits_check_only_on_marked_column(mut ctx: djogi::DjogiContext) {
     // `#[field(strict_id_check)]` on `external_owner` (HeerId) must
     // project a `<table>_external_owner_check`. The `id` column (also
@@ -392,7 +392,7 @@ async fn field_optin_emits_check_only_on_marked_column(mut ctx: djogi::DjogiCont
     let constraint_names: Vec<String> = ctx
         .raw_rows(
             "SELECT conname::text FROM pg_constraint \
-             WHERE conrelid = 'phase8_5_c2_189_field_optin'::regclass \
+             WHERE conrelid = 'c2_189_field_optin'::regclass \
              AND contype = 'c' \
              ORDER BY conname",
             &[],
@@ -403,18 +403,18 @@ async fn field_optin_emits_check_only_on_marked_column(mut ctx: djogi::DjogiCont
         .map(|row| row.try_get::<_, String>(0).unwrap())
         .collect();
     assert!(
-        constraint_names.contains(&"phase8_5_c2_189_field_optin_external_owner_check".to_string()),
+        constraint_names.contains(&"c2_189_field_optin_external_owner_check".to_string()),
         "field-level opt-in must emit CHECK on `external_owner`; got: {constraint_names:?}"
     );
     assert!(
-        !constraint_names.contains(&"phase8_5_c2_189_field_optin_id_check".to_string()),
+        !constraint_names.contains(&"c2_189_field_optin_id_check".to_string()),
         "field-level opt-in must NOT emit CHECK on the unmarked `id` column; got: {constraint_names:?}"
     );
 }
 
 // ── Catalog assertions — FK propagation ───────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2189FkTarget, Phase85C2189FkSource])]
+#[djogi::djogi_test(sync_models = [C2189FkTarget, C2189FkSource])]
 async fn fk_propagation_emits_check_on_fk_column(mut ctx: djogi::DjogiContext) {
     // The fk-source model has `#[model(strict_ids)]`. Every FK column
     // gets the opt-in flag at descriptor emit time; the projection
@@ -423,9 +423,9 @@ async fn fk_propagation_emits_check_on_fk_column(mut ctx: djogi::DjogiContext) {
     let defs: Vec<String> = ctx
         .raw_rows(
             "SELECT pg_get_constraintdef(oid)::text FROM pg_constraint \
-             WHERE conrelid = 'phase8_5_c2_189_fk_source'::regclass \
+             WHERE conrelid = 'c2_189_fk_source'::regclass \
              AND contype = 'c' \
-             AND conname = 'phase8_5_c2_189_fk_source_owner_id_check'",
+             AND conname = 'c2_189_fk_source_owner_id_check'",
             &[],
         )
         .await
@@ -447,14 +447,14 @@ async fn fk_propagation_emits_check_on_fk_column(mut ctx: djogi::DjogiContext) {
 
 // ── Round-trip — valid IDs survive the CHECK ──────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2189StrictHeer])]
+#[djogi::djogi_test(sync_models = [C2189StrictHeer])]
 async fn strict_heer_id_valid_round_trip(mut ctx: djogi::DjogiContext) {
     // A valid HeerId (non-negative BIGINT) round-trips cleanly through
     // the typed surface even with `strict_id_check` on the `id` column.
     // The CHECK doesn't change behaviour for well-formed IDs.
-    let row = Phase85C2189StrictHeer::create(
+    let row = C2189StrictHeer::create(
         &mut ctx,
-        Phase85C2189StrictHeer {
+        C2189StrictHeer {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -465,17 +465,17 @@ async fn strict_heer_id_valid_round_trip(mut ctx: djogi::DjogiContext) {
     .expect("create with valid HeerId must succeed");
     assert!(row.id.as_i64() > 0, "DB-generated HeerId must be positive");
 
-    let fetched = Phase85C2189StrictHeer::get(&mut ctx, row.id)
+    let fetched = C2189StrictHeer::get(&mut ctx, row.id)
         .await
         .expect("get with valid HeerId must succeed");
     assert_eq!(fetched.label, "valid");
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2189StrictRanj])]
+#[djogi::djogi_test(sync_models = [C2189StrictRanj])]
 async fn strict_ranj_id_valid_round_trip(mut ctx: djogi::DjogiContext) {
-    let row = Phase85C2189StrictRanj::create(
+    let row = C2189StrictRanj::create(
         &mut ctx,
-        Phase85C2189StrictRanj {
+        C2189StrictRanj {
             id: <::djogi::types::RanjId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -485,7 +485,7 @@ async fn strict_ranj_id_valid_round_trip(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create with valid RanjId must succeed");
 
-    let fetched = Phase85C2189StrictRanj::get(&mut ctx, row.id)
+    let fetched = C2189StrictRanj::get(&mut ctx, row.id)
         .await
         .expect("get with valid RanjId must succeed");
     assert_eq!(fetched.label, "valid");
@@ -493,7 +493,7 @@ async fn strict_ranj_id_valid_round_trip(mut ctx: djogi::DjogiContext) {
 
 // ── OOB rejection (raw bypass) — negative HeerId rejected ─────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2189StrictHeer])]
+#[djogi::djogi_test(sync_models = [C2189StrictHeer])]
 async fn strict_heer_check_rejects_negative_id(mut ctx: djogi::DjogiContext) {
     // -1 is an externally-injected garbage HeerId — bit 63 = 1 (i.e.
     // the i64 carrier is negative). `HeerId::from_i64` would reject
@@ -502,7 +502,7 @@ async fn strict_heer_check_rejects_negative_id(mut ctx: djogi::DjogiContext) {
     // `Model::create` would reject the value before it hits Postgres.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_189_strict_heer (id, created_at, updated_at, label) \
+            "INSERT INTO c2_189_strict_heer (id, created_at, updated_at, label) \
              VALUES (-1, now(), now(), 'evil')",
             &[],
         )
@@ -511,14 +511,14 @@ async fn strict_heer_check_rejects_negative_id(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_189_strict_heer_id_check"),
+        msg.contains("c2_189_strict_heer_id_check"),
         "rejection must cite the strict_id_check constraint: {msg}"
     );
 }
 
 // ── OOB rejection (raw bypass) — non-UUIDv8 RanjId rejected ──────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2189StrictRanj])]
+#[djogi::djogi_test(sync_models = [C2189StrictRanj])]
 async fn strict_ranj_check_rejects_uuid_v4(mut ctx: djogi::DjogiContext) {
     // A UUIDv4 carries version=4 at the version nibble, which the
     // strict RanjId CHECK rejects (it requires version=8). The
@@ -527,7 +527,7 @@ async fn strict_ranj_check_rejects_uuid_v4(mut ctx: djogi::DjogiContext) {
     // canonical text form.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_189_strict_ranj (id, created_at, updated_at, label) \
+            "INSERT INTO c2_189_strict_ranj (id, created_at, updated_at, label) \
              VALUES ('00000000-0000-4000-8000-000000000000', now(), now(), 'v4')",
             &[],
         )
@@ -536,12 +536,12 @@ async fn strict_ranj_check_rejects_uuid_v4(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_189_strict_ranj_id_check"),
+        msg.contains("c2_189_strict_ranj_id_check"),
         "rejection must cite the strict_id_check constraint: {msg}"
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2189StrictRanj])]
+#[djogi::djogi_test(sync_models = [C2189StrictRanj])]
 async fn strict_ranj_check_rejects_uuid_v7(mut ctx: djogi::DjogiContext) {
     // UUIDv7 is also time-ordered but is a distinct standard. RanjId
     // requires version=8 (UUIDv8 with the HeeRanjID-specific layout).
@@ -549,7 +549,7 @@ async fn strict_ranj_check_rejects_uuid_v7(mut ctx: djogi::DjogiContext) {
     // suite — closes the same external-writer hole at the DB layer.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_189_strict_ranj (id, created_at, updated_at, label) \
+            "INSERT INTO c2_189_strict_ranj (id, created_at, updated_at, label) \
              VALUES ('00000000-0000-7000-8000-000000000000', now(), now(), 'v7')",
             &[],
         )
@@ -558,12 +558,12 @@ async fn strict_ranj_check_rejects_uuid_v7(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_189_strict_ranj_id_check"),
+        msg.contains("c2_189_strict_ranj_id_check"),
         "rejection must cite the strict_id_check constraint: {msg}"
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2189StrictRanj])]
+#[djogi::djogi_test(sync_models = [C2189StrictRanj])]
 async fn strict_ranj_check_rejects_non_rfc4122_variant(mut ctx: djogi::DjogiContext) {
     // A UUID with version=8 but variant high bits != 10 is structurally
     // invalid — `RanjId::from_uuid` would reject it. The CHECK's variant
@@ -572,7 +572,7 @@ async fn strict_ranj_check_rejects_non_rfc4122_variant(mut ctx: djogi::DjogiCont
     // bits = 00 (NCS variant), not RFC 4122.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_189_strict_ranj (id, created_at, updated_at, label) \
+            "INSERT INTO c2_189_strict_ranj (id, created_at, updated_at, label) \
              VALUES ('00000000-0000-8000-0000-000000000000', now(), now(), 'wrong-variant')",
             &[],
         )
@@ -581,14 +581,14 @@ async fn strict_ranj_check_rejects_non_rfc4122_variant(mut ctx: djogi::DjogiCont
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_189_strict_ranj_id_check"),
+        msg.contains("c2_189_strict_ranj_id_check"),
         "rejection must cite the strict_id_check constraint: {msg}"
     );
 }
 
 // ── OOB rejection (raw bypass) — FK column propagation ────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2189FkTarget, Phase85C2189FkSource])]
+#[djogi::djogi_test(sync_models = [C2189FkTarget, C2189FkSource])]
 async fn strict_fk_rejects_negative_owner_id(mut ctx: djogi::DjogiContext) {
     // Negative BIGINT into the FK column. The FK reference is satisfied
     // by inserting a parent row first, but the FK column carries the
@@ -604,7 +604,7 @@ async fn strict_fk_rejects_negative_owner_id(mut ctx: djogi::DjogiContext) {
     // verifies the CHECK is the proximate cause.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_189_fk_source (id, created_at, updated_at, owner_id, label) \
+            "INSERT INTO c2_189_fk_source (id, created_at, updated_at, owner_id, label) \
              VALUES (1, now(), now(), -1, 'evil')",
             &[],
         )
@@ -613,7 +613,7 @@ async fn strict_fk_rejects_negative_owner_id(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_189_fk_source_owner_id_check"),
+        msg.contains("c2_189_fk_source_owner_id_check"),
         "rejection must cite the FK column's strict_id_check constraint: {msg}"
     );
 }
@@ -621,7 +621,7 @@ async fn strict_fk_rejects_negative_owner_id(mut ctx: djogi::DjogiContext) {
 // ── Catalog assertion — Custom-PK target FK skip ─────────────────────────────
 
 #[djogi::djogi_test(
-    sync_models = [Phase85C2189CustomBigintTarget, Phase85C2189CustomBigintFkSource]
+    sync_models = [C2189CustomBigintTarget, C2189CustomBigintFkSource]
 )]
 async fn fk_to_custom_bigint_target_skips_strict_check(mut ctx: djogi::DjogiContext) {
     // djogi#189 (post-review hardening). The source model has
@@ -632,15 +632,15 @@ async fn fk_to_custom_bigint_target_skips_strict_check(mut ctx: djogi::DjogiCont
     // (Custom) and emits NO CHECK on the FK column. The catalog walk
     // confirms the constraint does not exist.
     //
-    // The `sync_models` macro stubs the `phase8_5_c2_189_custom_bigint_id_next`
+    // The `sync_models` macro stubs the `c2_189_custom_bigint_id_next`
     // function via the typed surface; we only assert the constraint
     // catalog state here, not the function existence.
     let id_checks: Vec<String> = ctx
         .raw_rows(
             "SELECT conname::text FROM pg_constraint \
-             WHERE conrelid = 'phase8_5_c2_189_custom_bigint_fk_source'::regclass \
+             WHERE conrelid = 'c2_189_custom_bigint_fk_source'::regclass \
              AND contype = 'c' \
-             AND conname LIKE 'phase8_5_c2_189_custom_bigint_fk_source_owner_id%' \
+             AND conname LIKE 'c2_189_custom_bigint_fk_source_owner_id%' \
              ORDER BY conname",
             &[],
         )
@@ -661,7 +661,7 @@ async fn fk_to_custom_bigint_target_skips_strict_check(mut ctx: djogi::DjogiCont
         .raw_rows(
             "SELECT format_type(atttypid, atttypmod)::text \
              FROM pg_attribute \
-             WHERE attrelid = 'phase8_5_c2_189_custom_bigint_fk_source'::regclass \
+             WHERE attrelid = 'c2_189_custom_bigint_fk_source'::regclass \
              AND attname = 'owner_id'",
             &[],
         )
@@ -682,7 +682,7 @@ async fn fk_to_custom_bigint_target_skips_strict_check(mut ctx: djogi::DjogiCont
 // ── Catalog assertion — Custom-UUID FK skip (model-wide strict_ids) ───────────
 
 #[djogi::djogi_test(
-    sync_models = [Phase85C2189CustomUuidTarget, Phase85C2189CustomUuidFkSource]
+    sync_models = [C2189CustomUuidTarget, C2189CustomUuidFkSource]
 )]
 async fn fk_to_custom_uuid_target_skips_strict_check(mut ctx: djogi::DjogiContext) {
     // djogi#189 (coverage extension). Model-wide `#[model(strict_ids)]` on
@@ -693,9 +693,9 @@ async fn fk_to_custom_uuid_target_skips_strict_check(mut ctx: djogi::DjogiContex
     let id_checks: Vec<String> = ctx
         .raw_rows(
             "SELECT conname::text FROM pg_constraint \
-             WHERE conrelid = 'phase8_5_c2_189_custom_uuid_fk_source'::regclass \
+             WHERE conrelid = 'c2_189_custom_uuid_fk_source'::regclass \
              AND contype = 'c' \
-             AND conname LIKE 'phase8_5_c2_189_custom_uuid_fk_source_owner_id%' \
+             AND conname LIKE 'c2_189_custom_uuid_fk_source_owner_id%' \
              ORDER BY conname",
             &[],
         )
@@ -717,7 +717,7 @@ async fn fk_to_custom_uuid_target_skips_strict_check(mut ctx: djogi::DjogiContex
         .raw_rows(
             "SELECT format_type(atttypid, atttypmod)::text \
              FROM pg_attribute \
-             WHERE attrelid = 'phase8_5_c2_189_custom_uuid_fk_source'::regclass \
+             WHERE attrelid = 'c2_189_custom_uuid_fk_source'::regclass \
              AND attname = 'owner_id'",
             &[],
         )
@@ -738,7 +738,7 @@ async fn fk_to_custom_uuid_target_skips_strict_check(mut ctx: djogi::DjogiContex
 // ── Catalog assertions — field-level FK opt-in to Custom-PK targets ──────────
 
 #[djogi::djogi_test(
-    sync_models = [Phase85C2189CustomBigintTarget, Phase85C2189FieldFkCustomBigintSource]
+    sync_models = [C2189CustomBigintTarget, C2189FieldFkCustomBigintSource]
 )]
 async fn field_level_fk_to_custom_bigint_skips_strict_check(mut ctx: djogi::DjogiContext) {
     // djogi#189 coverage gap (item 8). Field-level `#[field(strict_id_check)]`
@@ -748,9 +748,9 @@ async fn field_level_fk_to_custom_bigint_skips_strict_check(mut ctx: djogi::Djog
     let id_checks: Vec<String> = ctx
         .raw_rows(
             "SELECT conname::text FROM pg_constraint \
-             WHERE conrelid = 'phase8_5_c2_189_field_fk_custom_bigint_src'::regclass \
+             WHERE conrelid = 'c2_189_field_fk_custom_bigint_src'::regclass \
              AND contype = 'c' \
-             AND conname LIKE 'phase8_5_c2_189_field_fk_custom_bigint_src_owner_id%' \
+             AND conname LIKE 'c2_189_field_fk_custom_bigint_src_owner_id%' \
              ORDER BY conname",
             &[],
         )
@@ -767,7 +767,7 @@ async fn field_level_fk_to_custom_bigint_skips_strict_check(mut ctx: djogi::Djog
 }
 
 #[djogi::djogi_test(
-    sync_models = [Phase85C2189CustomUuidTarget, Phase85C2189FieldFkCustomUuidSource]
+    sync_models = [C2189CustomUuidTarget, C2189FieldFkCustomUuidSource]
 )]
 async fn field_level_fk_to_custom_uuid_skips_strict_check(mut ctx: djogi::DjogiContext) {
     // djogi#189 coverage gap (item 8). Field-level `#[field(strict_id_check)]`
@@ -777,9 +777,9 @@ async fn field_level_fk_to_custom_uuid_skips_strict_check(mut ctx: djogi::DjogiC
     let id_checks: Vec<String> = ctx
         .raw_rows(
             "SELECT conname::text FROM pg_constraint \
-             WHERE conrelid = 'phase8_5_c2_189_field_fk_custom_uuid_src'::regclass \
+             WHERE conrelid = 'c2_189_field_fk_custom_uuid_src'::regclass \
              AND contype = 'c' \
-             AND conname LIKE 'phase8_5_c2_189_field_fk_custom_uuid_src_owner_id%' \
+             AND conname LIKE 'c2_189_field_fk_custom_uuid_src_owner_id%' \
              ORDER BY conname",
             &[],
         )

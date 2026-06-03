@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 // Test models — HeerId (default PK)
 // ---------------------------------------------------------------------------
 
-// T2 flipped the default `pk` to `HeerIdRecencyBiased`
+//  flipped the default `pk` to `HeerIdRecencyBiased`
 // (internal `HeerIdDesc`). This test exercises the ascending-HeerId path
 // explicitly — it asserts `PkType::HeerId`, `id sql_type == BigInt`, and
 // `row.id.as_i64() > 0`. Pin the declaration so the flip doesn't silently
@@ -22,10 +22,10 @@ pub struct Post {
 }
 
 // ---------------------------------------------------------------------------
-// FromPgRow test (T3)
+// FromPgRow test ()
 // ---------------------------------------------------------------------------
 //
-// T3 replaced the macro-emitted `sqlx::FromRow` impl with
+//  replaced the macro-emitted `sqlx::FromRow` impl with
 // `FromPgRow` (ordinal decode + debug-build column-name guard). This
 // test round-trips a row through `Post::create` so it exercises the
 // full path (INSERT + `RETURNING <COLUMN_LIST>` + positional decode)
@@ -304,7 +304,7 @@ async fn create_with_id_is_idempotent(mut ctx: djogi::DjogiContext) {
     // Limitation: when the conflict fires, RETURNING * returns no rows,
     // and the method falls back to returning the caller-supplied value with the
     // given id (not the original row's data). Full idempotent fetch is deferred
-    // to a later phase — see the DONE_WITH_CONCERNS note in crud.rs.
+    // — see the DONE_WITH_CONCERNS note in crud.rs.
     let second = Post::create_with_id(
         &mut ctx,
         pre_generated_id,
@@ -546,7 +546,7 @@ pub struct Product {
     pub description: Option<String>,
 }
 
-#[model(table = "phase1_returning_pair_long_aliases", pk = HeerId)]
+#[model(table = "returning_pair_long_aliases", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct ReturningPairLongAliasSingle {
     // 50 chars: below Postgres boundary when prefixed.

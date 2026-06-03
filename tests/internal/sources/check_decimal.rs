@@ -53,18 +53,18 @@ use rust_decimal_macros::dec;
 
 /// Decimal column with no adopter CHECK — exercises the type-derived
 /// structural bound only (djogi#188).
-#[model(table = "phase8_5_c2_188_decimal_rows", pk = HeerId, no_default)]
+#[model(table = "c2_188_decimal_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2188DecimalRow {
+pub struct C2188DecimalRow {
     pub amount: Decimal,
     pub label: String,
 }
 
 /// Adopter CHECK on a String column — exercises the djogi#105 path with
 /// no type-derived CHECK to combine.
-#[model(table = "phase8_5_c2_105_check_rows", pk = HeerId, no_default)]
+#[model(table = "c2_105_check_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2105CheckRow {
+pub struct C2105CheckRow {
     pub name: String,
     /// Adopter CHECK: weight must be positive. The Rust source type
     /// `f64` lowers to `DOUBLE PRECISION` with no type-derived CHECK,
@@ -75,9 +75,9 @@ pub struct Phase85C2105CheckRow {
 
 /// Combined type-derived (u32 range) + adopter CHECK — exercises the
 /// projection layer's AND-merge contract.
-#[model(table = "phase8_5_c2_105_combined_rows", pk = HeerId, no_default)]
+#[model(table = "c2_105_combined_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C2105CombinedRow {
+pub struct C2105CombinedRow {
     /// `u32` projects `port >= 0 AND port <= 4294967295` (djogi#190).
     /// Adopter overlay: `port > 0` (no port 0 — zero is the
     /// "no preference" sentinel in some networking APIs, but the
@@ -89,7 +89,7 @@ pub struct Phase85C2105CombinedRow {
 
 // ── (1) — Decimal round-trip across the representable range ──────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2188DecimalRow])]
+#[djogi::djogi_test(sync_models = [C2188DecimalRow])]
 async fn decimal_check_accepts_full_representable_range(mut ctx: djogi::DjogiContext) {
     // Sample values across the rust_decimal representable range:
     //   - Zero
@@ -106,9 +106,9 @@ async fn decimal_check_accepts_full_representable_range(mut ctx: djogi::DjogiCon
         ("max-magnitude", Decimal::MAX),
     ];
     for (label, value) in samples {
-        let row = Phase85C2188DecimalRow::create(
+        let row = C2188DecimalRow::create(
             &mut ctx,
-            Phase85C2188DecimalRow {
+            C2188DecimalRow {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -123,7 +123,7 @@ async fn decimal_check_accepts_full_representable_range(mut ctx: djogi::DjogiCon
         assert_eq!(row.amount, value, "{label} value round-trip");
 
         // Re-fetch to exercise FromPgRow decode through the structural CHECK.
-        let fetched = Phase85C2188DecimalRow::get(&mut ctx, row.id)
+        let fetched = C2188DecimalRow::get(&mut ctx, row.id)
             .await
             .expect("get must succeed");
         assert_eq!(fetched.amount, value, "{label} value re-fetch");
@@ -132,7 +132,7 @@ async fn decimal_check_accepts_full_representable_range(mut ctx: djogi::DjogiCon
 
 // ── (2) — Decimal scale OOB rejection ────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2188DecimalRow])]
+#[djogi::djogi_test(sync_models = [C2188DecimalRow])]
 async fn decimal_check_rejects_scale_above_28(mut ctx: djogi::DjogiContext) {
     // Raw NUMERIC literal with scale 30 — rust_decimal cannot construct
     // this (Decimal's scale field is capped at 28), so the only way to
@@ -140,7 +140,7 @@ async fn decimal_check_rejects_scale_above_28(mut ctx: djogi::DjogiContext) {
     // `scale(amount) <= 28` rejects this at write time.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_188_decimal_rows (amount, label) \
+            "INSERT INTO c2_188_decimal_rows (amount, label) \
              VALUES (NUMERIC '0.123456789012345678901234567890', 'oob-scale')",
             &[],
         )
@@ -149,14 +149,14 @@ async fn decimal_check_rejects_scale_above_28(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_188_decimal_rows_amount_check"),
+        msg.contains("c2_188_decimal_rows_amount_check"),
         "scale-OOB error must reference the structural CHECK constraint name: {msg}"
     );
 }
 
 // ── (3) — Decimal magnitude OOB rejection ────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2188DecimalRow])]
+#[djogi::djogi_test(sync_models = [C2188DecimalRow])]
 async fn decimal_check_rejects_coefficient_above_2pow96(mut ctx: djogi::DjogiContext) {
     // Raw NUMERIC literal with 30 integer digits — coefficient is
     // 100_000_000_000_000_000_000_000_000_000 (10^29), which exceeds
@@ -167,7 +167,7 @@ async fn decimal_check_rejects_coefficient_above_2pow96(mut ctx: djogi::DjogiCon
     // rejects it.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_188_decimal_rows (amount, label) \
+            "INSERT INTO c2_188_decimal_rows (amount, label) \
              VALUES (NUMERIC '100000000000000000000000000000', 'oob-mag')",
             &[],
         )
@@ -176,19 +176,19 @@ async fn decimal_check_rejects_coefficient_above_2pow96(mut ctx: djogi::DjogiCon
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_188_decimal_rows_amount_check"),
+        msg.contains("c2_188_decimal_rows_amount_check"),
         "magnitude-OOB error must reference the structural CHECK constraint name: {msg}"
     );
 }
 
 // ── (4) — Adopter CHECK pass + reject through the typed surface ──────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2105CheckRow])]
+#[djogi::djogi_test(sync_models = [C2105CheckRow])]
 async fn field_check_passes_on_valid_data(mut ctx: djogi::DjogiContext) {
     // `weight_kg > 0` permits any positive value.
-    let row = Phase85C2105CheckRow::create(
+    let row = C2105CheckRow::create(
         &mut ctx,
-        Phase85C2105CheckRow {
+        C2105CheckRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -201,7 +201,7 @@ async fn field_check_passes_on_valid_data(mut ctx: djogi::DjogiContext) {
     assert_eq!(row.weight_kg, 4.5);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2105CheckRow])]
+#[djogi::djogi_test(sync_models = [C2105CheckRow])]
 async fn field_check_rejects_invalid_data_through_typed_surface(mut ctx: djogi::DjogiContext) {
     // `weight_kg > 0` rejects zero and negative values. The typed
     // `Model::create` path can produce these values (f64 is the
@@ -209,9 +209,9 @@ async fn field_check_rejects_invalid_data_through_typed_surface(mut ctx: djogi::
     // adopter CHECK is the only line of defence against invalid
     // input — and it fires at the DB layer rather than burying the
     // problem in application code.
-    let err = Phase85C2105CheckRow::create(
+    let err = C2105CheckRow::create(
         &mut ctx,
-        Phase85C2105CheckRow {
+        C2105CheckRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -224,20 +224,20 @@ async fn field_check_rejects_invalid_data_through_typed_surface(mut ctx: djogi::
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_105_check_rows_weight_kg_check"),
+        msg.contains("c2_105_check_rows_weight_kg_check"),
         "adopter CHECK violation must reference the constraint name: {msg}"
     );
 }
 
 // ── (5) — Combined type-derived + adopter CHECK ──────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2105CombinedRow])]
+#[djogi::djogi_test(sync_models = [C2105CombinedRow])]
 async fn combined_check_accepts_value_satisfying_both_clauses(mut ctx: djogi::DjogiContext) {
     // 8080 satisfies BOTH the u32 range (0..=4294967295) AND the
     // adopter clause (port > 0).
-    let row = Phase85C2105CombinedRow::create(
+    let row = C2105CombinedRow::create(
         &mut ctx,
-        Phase85C2105CombinedRow {
+        C2105CombinedRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -250,15 +250,15 @@ async fn combined_check_accepts_value_satisfying_both_clauses(mut ctx: djogi::Dj
     assert_eq!(row.port, 8080);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2105CombinedRow])]
+#[djogi::djogi_test(sync_models = [C2105CombinedRow])]
 async fn combined_check_rejects_violation_of_adopter_clause(mut ctx: djogi::DjogiContext) {
     // 0 satisfies the u32 range (0 is the lower bound) but VIOLATES
     // the adopter clause (port > 0). The combined `(<u32 range>) AND
     // (<adopter>)` constraint rejects the write because the second
     // clause fails.
-    let err = Phase85C2105CombinedRow::create(
+    let err = C2105CombinedRow::create(
         &mut ctx,
-        Phase85C2105CombinedRow {
+        C2105CombinedRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -271,12 +271,12 @@ async fn combined_check_rejects_violation_of_adopter_clause(mut ctx: djogi::Djog
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_105_combined_rows_port_check"),
+        msg.contains("c2_105_combined_rows_port_check"),
         "combined CHECK violation must reference the single constraint name: {msg}"
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2105CombinedRow])]
+#[djogi::djogi_test(sync_models = [C2105CombinedRow])]
 async fn combined_check_rejects_violation_of_type_clause(mut ctx: djogi::DjogiContext) {
     // 4294967296 (u32::MAX + 1) VIOLATES the type-derived range but the
     // typed Rust surface can't reach it (`u32` is bounded). We must use
@@ -285,7 +285,7 @@ async fn combined_check_rejects_violation_of_type_clause(mut ctx: djogi::DjogiCo
     // clause fails.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_c2_105_combined_rows (port, label) \
+            "INSERT INTO c2_105_combined_rows (port, label) \
              VALUES (4294967296, 'overflow')",
             &[],
         )
@@ -294,21 +294,21 @@ async fn combined_check_rejects_violation_of_type_clause(mut ctx: djogi::DjogiCo
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_c2_105_combined_rows_port_check"),
+        msg.contains("c2_105_combined_rows_port_check"),
         "combined CHECK violation (type clause) must reference the single constraint name: {msg}"
     );
 }
 
 // ── (6) — Catalog assertions ─────────────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C2188DecimalRow, Phase85C2105CheckRow, Phase85C2105CombinedRow])]
+#[djogi::djogi_test(sync_models = [C2188DecimalRow, C2105CheckRow, C2105CombinedRow])]
 async fn catalog_has_expected_check_constraints(mut ctx: djogi::DjogiContext) {
     // Decimal row: one CHECK on `amount`.
     let amount_check = ctx
         .raw_rows(
             "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c \
-             WHERE c.conrelid = 'phase8_5_c2_188_decimal_rows'::regclass \
-             AND c.contype = 'c' AND c.conname = 'phase8_5_c2_188_decimal_rows_amount_check'",
+             WHERE c.conrelid = 'c2_188_decimal_rows'::regclass \
+             AND c.contype = 'c' AND c.conname = 'c2_188_decimal_rows_amount_check'",
             &[],
         )
         .await
@@ -330,8 +330,8 @@ async fn catalog_has_expected_check_constraints(mut ctx: djogi::DjogiContext) {
     let weight_check = ctx
         .raw_rows(
             "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c \
-             WHERE c.conrelid = 'phase8_5_c2_105_check_rows'::regclass \
-             AND c.contype = 'c' AND c.conname = 'phase8_5_c2_105_check_rows_weight_kg_check'",
+             WHERE c.conrelid = 'c2_105_check_rows'::regclass \
+             AND c.contype = 'c' AND c.conname = 'c2_105_check_rows_weight_kg_check'",
             &[],
         )
         .await
@@ -349,8 +349,8 @@ async fn catalog_has_expected_check_constraints(mut ctx: djogi::DjogiContext) {
     let port_check = ctx
         .raw_rows(
             "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c \
-             WHERE c.conrelid = 'phase8_5_c2_105_combined_rows'::regclass \
-             AND c.contype = 'c' AND c.conname = 'phase8_5_c2_105_combined_rows_port_check'",
+             WHERE c.conrelid = 'c2_105_combined_rows'::regclass \
+             AND c.contype = 'c' AND c.conname = 'c2_105_combined_rows_port_check'",
             &[],
         )
         .await

@@ -1,4 +1,4 @@
-//! T9.7 — snapshot signing round-trip integration tests.
+//! Snapshot signing round-trip integration tests.
 //!
 //! # Scope
 //!
@@ -30,9 +30,8 @@
 //!
 //! # Spec / memory anchors
 //!
-//! - v3 plan §452 (snapshot signing surface), §456–462 (T9 cluster
-//!   contract), §710–712, §729 — T9.7 brief.
-//! - Plan §T9.7 (`docs/superpowers/plans/granular-phase8/cluster-8epsilon-granular.md`).
+//! - v3 plan §452 (snapshot signing surface), §456–462, §710–712, §729.
+//! - Plan specs for snapshot signing.
 
 use djogi::snapshot::sign::{sign_snapshot, verify_snapshot};
 
@@ -45,11 +44,11 @@ fn fixture_snapshot_bytes() -> Vec<u8> {
     let payload = br#"{
   "snapshot": {
     "version": 1,
-    "generated_at": "2026-05-05T00:00:00Z"
+    "generated_at": "2026-05-05:00:00Z"
   },
   "models": [
     {
-      "table": "phase8_widgets",
+      "table": "widgets",
       "fields": [
         {"name": "id", "ty": "BIGINT", "nullable": false},
         {"name": "name", "ty": "TEXT", "nullable": false},
@@ -57,7 +56,7 @@ fn fixture_snapshot_bytes() -> Vec<u8> {
       ]
     },
     {
-      "table": "phase8_categories",
+      "table": "categories",
       "fields": [
         {"name": "id", "ty": "BIGINT", "nullable": false},
         {"name": "label", "ty": "TEXT", "nullable": false}

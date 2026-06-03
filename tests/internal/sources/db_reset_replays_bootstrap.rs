@@ -38,7 +38,7 @@ fn temp_workspace(label: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("djogi-phase0-replay-{label}-{stamp}"));
+    let path = std::env::temp_dir().join(format!("djogi-bootstrap-replay-{label}-{stamp}"));
     fs::create_dir_all(&path).expect("create workspace root");
     path
 }
@@ -53,7 +53,7 @@ fn empty_schema_for(bucket: &BucketKey) -> AppliedSchema {
         djogi_version: "0.1.0".to_string(),
         enums: BTreeMap::new(),
         format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
-        generated_at: "2026-05-04T00:00:00Z".to_string(),
+        generated_at: "2026-05-04:00:00Z".to_string(),
         indexes: Vec::new(),
         models: BTreeMap::new(),
         registered_apps: vec![bucket.app.clone()],
@@ -118,7 +118,7 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let virgin_db = format!("djogi_phase0_replay_{stamp}");
+    let virgin_db = format!("djogi_replay_{stamp}");
 
     {
         let (admin_client, admin_conn) = tokio_postgres::connect(&admin_url, NoTls)
@@ -126,7 +126,7 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
             .expect("admin connect");
         let admin_driver = tokio::spawn(async move {
             if let Err(e) = admin_conn.await {
-                eprintln!("[phase0 replay] admin driver: {e}");
+                eprintln!("[bootstrap replay] admin driver: {e}");
             }
         });
         admin_client
@@ -198,7 +198,7 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
         migrate_config: MigrateConfig::default(),
         // Replay coverage does not assert audit-row behaviour;
         // dedicated coverage lives in
-        // `tests/internal/sources/phase8_5_c2_118_*` per issue #118.
+        // `tests/internal/sources/c2_118_*` per issue #118.
         audit_pool: None,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
@@ -222,7 +222,7 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
         .expect("connect to bootstrapped DB");
     let driver = tokio::spawn(async move {
         if let Err(e) = conn.await {
-            eprintln!("[phase0 replay] post-reset driver: {e}");
+            eprintln!("[bootstrap replay] post-reset driver: {e}");
         }
     });
 
@@ -277,7 +277,7 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
         .expect("admin teardown connect");
     let teardown_driver = tokio::spawn(async move {
         if let Err(e) = admin_conn.await {
-            eprintln!("[phase0 replay] teardown driver: {e}");
+            eprintln!("[bootstrap replay] teardown driver: {e}");
         }
     });
     let _ = admin_client
@@ -304,7 +304,7 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let virgin_db = format!("djogi_phase0_drift_{stamp}");
+    let virgin_db = format!("djogi_drift_{stamp}");
 
     {
         let (admin_client, admin_conn) = tokio_postgres::connect(&admin_url, NoTls)
@@ -312,7 +312,7 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
             .expect("admin connect");
         let admin_driver = tokio::spawn(async move {
             if let Err(e) = admin_conn.await {
-                eprintln!("[phase0 drift] admin driver: {e}");
+                eprintln!("[bootstrap drift] admin driver: {e}");
             }
         });
         admin_client
@@ -384,7 +384,7 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
         .expect("connect to bootstrapped DB");
     let driver = tokio::spawn(async move {
         if let Err(e) = conn.await {
-            eprintln!("[phase0 drift] post-reset driver: {e}");
+            eprintln!("[bootstrap drift] post-reset driver: {e}");
         }
     });
 
@@ -403,9 +403,9 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
     let phase_zero_path = work.join(format!(
         "migrations/{virgin_db}/_global_/{PHASE_ZERO_VERSION}.sdjql"
     ));
-    let original_sql = fs::read_to_string(&phase_zero_path).expect("read phase zero SQL");
+    let original_sql = fs::read_to_string(&phase_zero_path).expect("read bootstrap SQL");
     fs::write(&phase_zero_path, format!("{original_sql}\n-- checksum drift for #275\n"))
-        .expect("mutate phase zero SQL");
+        .expect("mutate bootstrap SQL");
 
     let err = reset_app_database(ResetRequest {
         database_url: &virgin_url,
@@ -426,7 +426,7 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
             let phase_zero_issue = issues
                 .iter()
                 .find(|issue| issue.version == PHASE_ZERO_VERSION)
-                .expect("phase zero drift issue must be reported");
+                .expect("bootstrap drift issue must be reported");
             assert_eq!(phase_zero_issue.bucket.database, virgin_db);
             assert_eq!(phase_zero_issue.bucket.app, "");
             assert_eq!(phase_zero_issue.sql_side, ResetSqlSide::Up);
@@ -444,7 +444,7 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
         .expect("reconnect after refusal");
     let driver = tokio::spawn(async move {
         if let Err(e) = conn.await {
-            eprintln!("[phase0 drift] refusal driver: {e}");
+            eprintln!("[bootstrap drift] refusal driver: {e}");
         }
     });
 
@@ -482,7 +482,7 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
         .expect("admin teardown connect");
     let teardown_driver = tokio::spawn(async move {
         if let Err(e) = admin_conn.await {
-            eprintln!("[phase0 drift] teardown driver: {e}");
+            eprintln!("[bootstrap drift] teardown driver: {e}");
         }
     });
     let _ = admin_client

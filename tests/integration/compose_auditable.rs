@@ -1,4 +1,4 @@
-// T2.4 integration tests: `#[model(auditable)]` opt-in.
+// Integration tests: `#[model(auditable)]` opt-in.
 //
 // What this file pins:
 //
@@ -6,25 +6,23 @@
 //    block whose `created_by()` getter returns `Option<&str>` borrowed
 //    from the adopter-declared `created_by: Option<String>` field.
 // 2. The attribute does **not** inject the field — the adopter declares
-//    it explicitly (Path B per v3 line 866; preserved across
-//    the T2.2→T2.4 surface pivot).
+//    it explicitly (preserved across the surface pivot).
 // 3. The `Auditable` trait is convention-sealed only; the macro routes
 //    the impl through the public `::djogi::Auditable` re-export, not
 //    through `::djogi::__private::*`.
 // 4. The macro-emitted `__djogi_auditable_populate` helper runs from
 //    `Model::create` between `auto_set_tenant` and the user
-//    `before_create` hook (spec lines 1032 / 990). It captures
+//    `before_create` hook. It captures
 //    `format!("{}", ctx.auth().user_id)` (Display, not Debug) when
 //    auth is present; leaves `created_by = None` when auth is absent
-//    (no warn-on-null per spec line 1049); never clobbers a user-set
-//    value (`if self.created_by.is_none()` guard, spec line 1062).
+//    (no warn-on-null); never clobbers a user-set
+//    value (`if self.created_by.is_none()` guard).
 //
-// # 2026-05-03 surface pivot
+// # Surface pivot
 //
-// T2.2 (commit 939b9ab) shipped `#[derive(Auditable)]` as the opt-in;
-// T2.4 supersedes it with `#[model(auditable)]` per spec line 1037
-// (locked 2026-05-03, lens). Tests 1+2 below port the T2.2 success
-// cases to the new attribute surface; tests 3-5 are new for T2.4.
+// `#[model(auditable)]` is the opt-in.
+// Tests 1+2 below exercise the success
+// cases; tests 3-5 are new.
 //
 // # One model per test — coherence
 //
@@ -45,8 +43,7 @@ use djogi::prelude::*;
 // Test 1 — `created_by()` returns `Some(&str)` borrowed from the
 // in-memory `created_by: Option<String>` field.
 //
-// Ported from T2.2; the attribute is now `#[model(auditable)]` instead
-// of `#[derive(Auditable)]`.
+// The attribute is `#[model(auditable)]`.
 // ---------------------------------------------------------------------------
 
 #[model(table = "audit_present", auditable)]
@@ -95,7 +92,7 @@ async fn auditable_getter_returns_created_by(mut ctx: djogi::DjogiContext) {
 // Test 2 — `created_by()` returns `None` when the field is `None` AND
 // no `AuthContext` is attached.
 //
-// Ported from T2.2: this is the pure getter test (no auth attached, no
+// This is the pure getter test (no auth attached, no
 // user-set value, populator's `is_none()` branch fires but ctx.auth()
 // returns None so the field stays None).
 // ---------------------------------------------------------------------------
@@ -132,9 +129,9 @@ async fn created_by_returns_none_when_unset(mut ctx: djogi::DjogiContext) {
 // Test 3 — `created_by` populated from `AuthContext.user_id` when auth
 // is attached.
 //
-// New for T2.4: exercises the `__djogi_auditable_populate` helper. The
+// Exercises the `__djogi_auditable_populate` helper. The
 // populator uses `Display`, not `Debug`, so the captured string is the
-// canonical HeerId format (i64 decimal). Spec line 1064.
+// canonical HeerId format (i64 decimal).
 // ---------------------------------------------------------------------------
 
 #[model(table = "audit_with_auth", auditable)]
@@ -178,9 +175,8 @@ async fn created_by_populated_with_auth(mut ctx: djogi::DjogiContext) {
 // Test 4 — `created_by` stays `None` when no auth is attached AND no
 // `tracing::warn!` is emitted.
 //
-// New for T2.4: framework-internal contexts (seeds, migrations) run
-// without auth and the populator must not emit operational noise. Spec
-// line 1049.
+// Framework-internal contexts (seeds, migrations) run
+// without auth and the populator must not emit operational noise.
 // ---------------------------------------------------------------------------
 
 #[model(table = "audit_no_auth", auditable)]
@@ -238,25 +234,23 @@ async fn created_by_null_without_auth(mut ctx: djogi::DjogiContext) {
     );
 
     // Verify no `tracing::warn!` was emitted by the populator path.
-    // Spec line 1049: warning would be operational noise on every seed
-    // and migration. The check is substring-based: any warn-level event
+    // The check is substring-based: any warn-level event
     // emitted by tracing_test serializes a `WARN` level marker into the
     // mock writer's buffer.
     let new_logs = logs_since(since);
     assert!(
         !new_logs.contains("WARN"),
-        "populator must not emit tracing::warn! when auth is absent — \
-         spec line 1049 (production-stability axis); got logs: {new_logs}",
+        "populator must not emit tracing::warn! when auth is absent; got logs: {new_logs}",
     );
 }
 
 // ---------------------------------------------------------------------------
 // Test 5 — user-set `created_by` is preserved (`is_none()` guard).
 //
-// New for T2.4: when the adopter constructs the model with
+// When the adopter constructs the model with
 // `created_by: Some("override".into())`, the populator's `if
 // self.created_by.is_none()` guard short-circuits and the user value
-// survives even when auth is attached. Spec line 1062.
+// survives even when auth is attached.
 // ---------------------------------------------------------------------------
 
 #[model(table = "audit_override", auditable)]
@@ -290,6 +284,6 @@ async fn created_by_user_override_wins(mut ctx: djogi::DjogiContext) {
         row.created_by(),
         Some("override"),
         "populator's `if self.created_by.is_none()` guard is load-bearing — \
-         a user-set value must never be clobbered (spec line 1062)",
+         a user-set value must never be clobbered",
     );
 }

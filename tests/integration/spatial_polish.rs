@@ -1,11 +1,11 @@
 // Live-Postgres integration tests for the spatial-polish
-// surface (T9 / T10 / T11 / T12).
+// surface ( /  /  / ).
 //
 // # Scope
 //
 // Each test is annotated `#[djogi_test(extensions = ["postgis"])]` so the
 // per-test database is auto-provisioned with PostGIS 3.x. All eleven
-// scenarios are live under T14.5 after the four emitter fixes described
+// scenarios are live under .5 after the four emitter fixes described
 // below.
 //
 // ## Scenarios
@@ -33,24 +33,24 @@
 // 10. **`bucket_by_cell_p5_tight_cluster_single_bucket`** — geohash
 //     bucketing at `P5` collapses 5 tightly-clustered points into one cell.
 //
-// # T14.5 emitter fixes (landed before these tests ran green)
+// # .5 emitter fixes (landed before these tests ran green)
 //
-// The initial T14 run surfaced four pre-existing emitter defects; all four
-// were fixed in the T14.5 follow-up commit so every scenario above now
+// The initial  run surfaced four pre-existing emitter defects; all four
+// were fixed in the .5 follow-up commit so every scenario above now
 // runs end-to-end. The defects and their fixes:
 //
-// - **T9 `$1::geography` bind mismatch** → `$n::bytea::geography` double
+// - ** `$1::geography` bind mismatch** → `$n::bytea::geography` double
 //   cast so bound EWKB bytes are prepared as `bytea` and Postgres casts to
 //   `geography` at query time.
-// - **T9 `ST_Contains` / `ST_Touches` / `ST_Within` wrong argument type**
+// - ** `ST_Contains` / `ST_Touches` / `ST_Within` wrong argument type**
 //   → `emit_binary_predicate` now casts both the column and the bind to
 //   `::geometry` for these three functions, keeping `::geography` only for
 //   `ST_Intersects` (which has a native geography overload).
-// - **T11 `ST_Contains(geography, geography)` in the JOIN** →
+// - ** `ST_Contains(geography, geography)` in the JOIN** →
 //   `build_spatial_join_grouped_select` now emits `ST_Covers(...)` instead,
 //   which has a native `geography` overload and identical semantics for
 //   the point-in-polygon use case.
-// - **T12 window-function in GROUP BY** → `build_cluster_grouped_select`
+// - ** window-function in GROUP BY** → `build_cluster_grouped_select`
 //   now wraps the `ST_ClusterDBSCAN(...) OVER ()` call in an inner subquery
 //   so the outer `GROUP BY cluster_id` references a materialised column.
 //
@@ -75,7 +75,7 @@ use djogi::query::spatial_grouping::{
 
 /// Store with a single-point `location` — used as the "data" side in all
 /// group-by-region / cluster / bucket tests.
-// T2 default flip — every model in this file is pinned to
+//  default flip — every model in this file is pinned to
 // ascending HeerId so the explicit `djogi::HeerId::from_i64(0)` sentinels
 // in the seed helpers and per-test constructions stay type-compatible
 // with the injected `id` field.

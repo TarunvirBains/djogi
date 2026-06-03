@@ -28,7 +28,7 @@
 // where the overlap values are inputs to a composite score, not the
 // regression target. A purpose-built fixture with controlled polygon
 // inputs gives the deterministic ground truth — the same role
-// `phase8_5_c4a_mating_pairs_correctness` plays for the Wright F
+// `c4a_mating_pairs_correctness` plays for the Wright F
 // closure self-join.
 
 #![cfg(feature = "spatial")]
@@ -43,7 +43,7 @@ use std::collections::HashMap;
 /// Minimal territory model: each row carries a name and an optional
 /// polygon. Optional so the NULL-geography path can be exercised by
 /// inserting a row whose `boundary` is `None`.
-#[model(table = "phase8_5_c4a_overlap_zones", pk = HeerId)]
+#[model(table = "c4a_overlap_zones", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Zone {
     pub label: String,

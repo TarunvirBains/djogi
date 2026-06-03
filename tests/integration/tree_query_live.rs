@@ -21,8 +21,8 @@
 // raw session-role and catalog setup outside the ordinary typed test surface.
 //
 // The model fixtures intentionally use distinct table names per test
-// file group (`phase8_tree_*`) so a future combined run with
-// `phase8_zero_materialize_closure_live` does not collide on table
+// file group (`tree_*`) so a future combined run with
+// `zero_materialize_closure_live` does not collide on table
 // definitions inside the inventory.
 
 use djogi::prelude::*;
@@ -33,7 +33,7 @@ use djogi::prelude::*;
 /// activates the inherent `Model::tree_descendants` / `tree_ancestors`
 /// sugar; tests confirm both the sugar path and the explicit-path API
 /// behave identically when only one edge exists.
-#[model(table = "phase8_tree_node", pk = HeerId, tree_edge = "parent_id")]
+#[model(table = "tree_node", pk = HeerId, tree_edge = "parent_id")]
 #[derive(Debug, Clone)]
 pub struct TreeNode {
     pub name: String,
@@ -46,7 +46,7 @@ pub struct TreeNode {
 /// `Model::tree_descendants(id)` should fail with a runtime
 /// `DjogiError::Validation`, while `Model::full_ancestors(id)` walks
 /// every declared edge via UNION ALL.
-#[model(table = "phase8_tree_pedigree", pk = HeerId)]
+#[model(table = "tree_pedigree", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct PedigreeNode {
     pub name: String,
@@ -59,7 +59,7 @@ pub struct PedigreeNode {
 /// Carries no self-FK at all; serves the negative-case test that
 /// `full_ancestors` returns a descriptive `DjogiError::Validation`
 /// at terminal time when `self_fk_count() == 0`.
-#[model(table = "phase8_tree_orphan", pk = HeerId)]
+#[model(table = "tree_orphan", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct OrphanNode {
     pub name: String,
@@ -601,7 +601,7 @@ async fn full_ancestors_zero_self_fks_errors(mut ctx: DjogiContext) {
     let err = result.expect_err("zero self-FKs must error");
     let msg = err.to_string();
     assert!(
-        msg.contains("phase8_tree_orphan"),
+        msg.contains("tree_orphan"),
         "error must name the model's table: {msg}"
     );
     assert!(

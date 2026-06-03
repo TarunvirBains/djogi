@@ -1,6 +1,6 @@
 -- Phase 4 integration fixture: minimal `accounts` table.
 --
--- Consumed by `tests/integration/phase4_transactions_expressions.rs` to
+-- Consumed by `tests/integration/transactions_expressions.rs` to
 -- exercise `atomic()` / savepoints / on_commit drain semantics against
 -- live Postgres, plus the Task 3a field-vs-field expression test
 -- (`balance < overdraft_limit` as an `Expr<bool>` predicate) and the
@@ -22,8 +22,8 @@
 --
 -- `generate_id()` is provided by `heeranjid_sqlx::install_schema`, which
 -- the Phase 4 test setup helper calls before applying this file, matching
--- the pattern already established by `phase1_model`, `phase2_queryset`,
--- and `phase3_relations`.
+-- the pattern already established by `model`, `queryset`,
+-- and `relations`.
 
 CREATE TABLE IF NOT EXISTS accounts (
     id              BIGINT PRIMARY KEY DEFAULT generate_id(),

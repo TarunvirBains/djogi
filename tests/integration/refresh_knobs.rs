@@ -1,4 +1,4 @@
-// T8.8 integration tests: `DeltaRefreshHandle` knobs — always-on
+// .8 integration tests: `DeltaRefreshHandle` knobs — always-on
 // LRU eviction warn and adopter reachability of `with_eviction_recovery` /
 // `with_periodic_full_refresh`.
 //
@@ -52,11 +52,11 @@ use std::num::NonZeroUsize;
 
 // ── Fixture model ─────────────────────────────────────────────────────────────
 //
-// Separate table from T8.5/T8.6 fixtures for test isolation. `lru_size` is
+// Separate table from .5/.6 fixtures for test isolation. `lru_size` is
 // deliberately small in Test 1 to force evictions without inserting thousands
 // of rows.
 
-#[model(table = "phase8_t8_8_knob_row", pk = HeerId)]
+#[model(table = "knob_row", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct KnobRow {
     pub label: String,

@@ -9,14 +9,14 @@ use djogi::query::MergeWhenCondition;
 use std::time::Duration;
 use tokio::time::sleep;
 
-#[model(table = "phase8_5_merge_sources", pk = HeerIdRecencyBiased)]
+#[model(table = "merge_sources", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct MergeSource {
     pub external_id: String,
     pub payload: String,
 }
 
-#[model(table = "phase8_5_merge_targets", pk = HeerIdRecencyBiased)]
+#[model(table = "merge_targets", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct MergeTarget {
     pub external_id: String,

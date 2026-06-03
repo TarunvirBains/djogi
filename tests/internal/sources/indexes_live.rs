@@ -1,4 +1,4 @@
-// V3 T6 — integration tests for the `#[model(indexes(...))]`
+// V3  — integration tests for the `#[model(indexes(...))]`
 // grammar against live Postgres 18.
 //
 // # What this file proves
@@ -57,11 +57,11 @@ use djogi::prelude::*;
 
 /// Plain composite index on `(tenant_id, created_at)`.
 /// §5 simple-ident form — no per-column knobs, no uniqueness.
-#[model(table = "t6_events", no_default, indexes(
+#[model(table = "events", no_default, indexes(
     index(fields = [tenant_id, created_at_evt]),
 ))]
 #[derive(Debug, Clone)]
-pub struct T6Event {
+pub struct Event {
     pub tenant_id: HeerId,
     pub created_at_evt: DateTime,
     pub payload: String,
@@ -70,42 +70,42 @@ pub struct T6Event {
 /// Simple `unique(fields = [...])` — lowers to a `UniqueConstraint` because
 /// every v3 constraint-adoptable property (predicate / include /
 /// nulls_not_distinct / expression / concurrently) is absent.
-#[model(table = "t6_simple_unique", indexes(
+#[model(table = "simple_unique", indexes(
     unique(fields = [email]),
 ))]
 #[derive(Debug, Clone)]
-pub struct T6SimpleUnique {
+pub struct SimpleUnique {
     pub email: String,
 }
 
 /// Partial unique — `where = "deleted_at IS NULL"` forces `UniqueIndex`
 /// because `ADD CONSTRAINT` has no partial-predicate form.
-#[model(table = "t6_partial_unique", no_default, indexes(
+#[model(table = "partial_unique", no_default, indexes(
     unique(fields = [email], where = "deleted_at IS NULL"),
 ))]
 #[derive(Debug, Clone)]
-pub struct T6PartialUnique {
+pub struct PartialUnique {
     pub email: String,
     pub deleted_at: Option<DateTime>,
 }
 
 /// `NULLS NOT DISTINCT` unique — Q2 — forces `UniqueIndex` because
 /// `ADD CONSTRAINT ... UNIQUE` has no nulls-distinct knob.
-#[model(table = "t6_nnd_unique", no_default, indexes(
+#[model(table = "nnd_unique", no_default, indexes(
     unique(fields = [tenant_id, slug], nulls_not_distinct = true),
 ))]
 #[derive(Debug, Clone)]
-pub struct T6NndUnique {
+pub struct NndUnique {
     pub tenant_id: HeerId,
     pub slug: Option<String>,
 }
 
 /// Covering index with `INCLUDE` payload columns.
-#[model(table = "t6_covering", no_default, indexes(
+#[model(table = "covering", no_default, indexes(
     index(fields = [created_at_c], include = [status, priority]),
 ))]
 #[derive(Debug, Clone)]
-pub struct T6Covering {
+pub struct Covering {
     pub created_at_c: DateTime,
     pub status: String,
     pub priority: i32,
@@ -113,23 +113,23 @@ pub struct T6Covering {
 
 /// Expression index — `lower(email)` must show up as a functional index
 /// in `pg_index.indexprs` (non-null).
-#[model(table = "t6_expression", indexes(index(expr = "lower(email)"),))]
+#[model(table = "expression", indexes(index(expr = "lower(email)"),))]
 #[derive(Debug, Clone)]
-pub struct T6Expression {
+pub struct Expression {
     pub email: String,
 }
 
 /// Per-column record form — one column is `DESC NULLS FIRST`, another
 /// carries a custom opclass. The column-order (indkey) and descending
 /// direction (indoption bit 0) must round-trip through `pg_index`.
-#[model(table = "t6_per_column", no_default, indexes(
+#[model(table = "per_column", no_default, indexes(
     index(fields = [
         (col = created_at_pc, order = desc, nulls = first),
         (col = status, opclass = "text_pattern_ops"),
     ]),
 ))]
 #[derive(Debug, Clone)]
-pub struct T6PerColumn {
+pub struct PerColumn {
     pub created_at_pc: DateTime,
     pub status: String,
 }
@@ -137,11 +137,11 @@ pub struct T6PerColumn {
 /// `unique(fields = [...], concurrently = true)` — §6.2 escalation.
 /// Must land as `UniqueIndex` (no `pg_constraint` row) with name stem
 /// `_uidx`.
-#[model(table = "t6_unique_concurrent", no_default, indexes(
+#[model(table = "unique_concurrent", no_default, indexes(
     unique(fields = [tenant_id, email], concurrently = true),
 ))]
 #[derive(Debug, Clone)]
-pub struct T6UniqueConcurrent {
+pub struct UniqueConcurrent {
     pub tenant_id: HeerId,
     pub email: String,
 }
@@ -152,11 +152,11 @@ pub struct T6UniqueConcurrent {
 /// macro must emit `IndexKind::UniqueIndex` (not `UniqueConstraint`).
 /// Regression guard for `forces_unique_index` dropping the
 /// `!body.include.is_empty()` clause.
-#[model(table = "t6_unique_include", no_default, indexes(
+#[model(table = "unique_include", no_default, indexes(
     unique(fields = [email], include = [display_name]),
 ))]
 #[derive(Debug, Clone)]
-pub struct T6UniqueInclude {
+pub struct UniqueInclude {
     pub email: String,
     pub display_name: String,
 }
@@ -165,12 +165,12 @@ pub struct T6UniqueInclude {
 /// uniqueness is also a unique-index-only feature. Regression guard for
 /// `forces_unique_index` dropping the `IndexDeclTarget::Expr` clause.
 #[model(
-    table = "t6_unique_expr",
+    table = "unique_expr",
     no_default,
     indexes(unique(expr = "lower(email)"),)
 )]
 #[derive(Debug, Clone)]
-pub struct T6UniqueExpr {
+pub struct UniqueExpr {
     pub email: String,
 }
 
@@ -178,9 +178,9 @@ pub struct T6UniqueExpr {
 /// must still emit exactly one GiST `IndexSpec` on the geography column,
 /// and that index must land in `pg_am.amname = 'gist'`.
 #[cfg(feature = "spatial")]
-#[model(table = "t6_places", no_default)]
+#[model(table = "places", no_default)]
 #[derive(Debug, Clone)]
-pub struct T6Place {
+pub struct Place {
     pub name: String,
     pub location: djogi::GeoPoint,
 }
@@ -453,7 +453,7 @@ async fn has_unique_constraint(ctx: &mut djogi::DjogiContext, name: &str) -> boo
 
 #[test]
 fn descriptor_composite_index() {
-    let e = T6Event::descriptor();
+    let e = Event::descriptor();
     assert_eq!(e.indexes.len(), 1);
     assert!(matches!(e.indexes[0].kind, IndexKind::NonUnique));
     assert!(matches!(e.indexes[0].index_type, IndexType::BTree));
@@ -470,7 +470,7 @@ fn descriptor_composite_index() {
 
 #[test]
 fn descriptor_simple_unique_lowers_to_constraint() {
-    let s = T6SimpleUnique::descriptor();
+    let s = SimpleUnique::descriptor();
     assert_eq!(s.indexes.len(), 1);
     assert!(matches!(s.indexes[0].kind, IndexKind::UniqueConstraint));
     assert!(s.indexes[0].name.ends_with("_key"));
@@ -478,7 +478,7 @@ fn descriptor_simple_unique_lowers_to_constraint() {
 
 #[test]
 fn descriptor_partial_unique_escalates_to_index() {
-    let p = T6PartialUnique::descriptor();
+    let p = PartialUnique::descriptor();
     assert!(matches!(p.indexes[0].kind, IndexKind::UniqueIndex));
     assert!(p.indexes[0].name.ends_with("_uidx"));
     assert_eq!(p.indexes[0].predicate, Some("deleted_at IS NULL"));
@@ -486,7 +486,7 @@ fn descriptor_partial_unique_escalates_to_index() {
 
 #[test]
 fn descriptor_nnd_unique_escalates_to_index() {
-    let n = T6NndUnique::descriptor();
+    let n = NndUnique::descriptor();
     assert!(matches!(n.indexes[0].kind, IndexKind::UniqueIndex));
     assert!(n.indexes[0].nulls_not_distinct);
     assert!(n.indexes[0].name.ends_with("_uidx"));
@@ -494,14 +494,14 @@ fn descriptor_nnd_unique_escalates_to_index() {
 
 #[test]
 fn descriptor_covering_index_carries_include_columns() {
-    let c = T6Covering::descriptor();
+    let c = Covering::descriptor();
     assert!(matches!(c.indexes[0].kind, IndexKind::NonUnique));
     assert_eq!(c.indexes[0].include, &["status", "priority"][..]);
 }
 
 #[test]
 fn descriptor_expression_index_uses_expression_target() {
-    let x = T6Expression::descriptor();
+    let x = Expression::descriptor();
     assert!(matches!(x.indexes[0].kind, IndexKind::NonUnique));
     assert!(matches!(x.indexes[0].target, IndexTarget::Expression(_)));
     assert!(x.indexes[0].name.ends_with("_expr_idx"));
@@ -509,7 +509,7 @@ fn descriptor_expression_index_uses_expression_target() {
 
 #[test]
 fn descriptor_per_column_record_carries_order_and_opclass() {
-    let pc = T6PerColumn::descriptor();
+    let pc = PerColumn::descriptor();
     let cols = match pc.indexes[0].target {
         IndexTarget::Columns(cs) => cs,
         _ => panic!("expected Columns target"),
@@ -527,7 +527,7 @@ fn descriptor_per_column_record_carries_order_and_opclass() {
 /// anchored on.
 #[test]
 fn descriptor_unique_concurrent_escalates_to_unique_index() {
-    let uc = T6UniqueConcurrent::descriptor();
+    let uc = UniqueConcurrent::descriptor();
     assert!(matches!(uc.indexes[0].kind, IndexKind::UniqueIndex));
     assert!(uc.indexes[0].requires_out_of_transaction);
     assert!(uc.indexes[0].name.ends_with("_uidx"));
@@ -537,7 +537,7 @@ fn descriptor_unique_concurrent_escalates_to_unique_index() {
 /// `ADD CONSTRAINT` cannot express the covering payload.
 #[test]
 fn descriptor_unique_with_include_escalates_to_unique_index() {
-    let ui = T6UniqueInclude::descriptor();
+    let ui = UniqueInclude::descriptor();
     assert!(matches!(ui.indexes[0].kind, IndexKind::UniqueIndex));
     assert_eq!(ui.indexes[0].include, &["display_name"][..]);
     assert!(ui.indexes[0].name.ends_with("_uidx"));
@@ -547,25 +547,25 @@ fn descriptor_unique_with_include_escalates_to_unique_index() {
 /// `ADD CONSTRAINT` cannot express an expression target.
 #[test]
 fn descriptor_unique_expression_escalates_to_unique_index() {
-    let ux = T6UniqueExpr::descriptor();
+    let ux = UniqueExpr::descriptor();
     assert!(matches!(ux.indexes[0].kind, IndexKind::UniqueIndex));
     assert!(matches!(ux.indexes[0].target, IndexTarget::Expression(_)));
     assert!(ux.indexes[0].name.ends_with("_expr_uidx"));
 }
 
 /// Regression guard — a `#[model]` with a `GeoPoint` field still emits
-/// exactly one GiST `IndexSpec` on the geography column (T2).
+/// exactly one GiST `IndexSpec` on the geography column ().
 /// This repeats the spatial.rs assertion here so a refactor that breaks the GiST auto-emission fails this file too.
 #[cfg(feature = "spatial")]
 #[test]
 fn geopoint_still_emits_one_gist_index() {
-    let desc = T6Place::descriptor();
+    let desc = Place::descriptor();
     let gist: Vec<_> = desc
         .indexes
         .iter()
         .filter(|i| matches!(i.index_type, IndexType::Gist))
         .collect();
-    assert_eq!(gist.len(), 1, "expected one GiST index on T6Place");
+    assert_eq!(gist.len(), 1, "expected one GiST index on Place");
     assert_eq!(gist[0].extension_dependency, Some("postgis"));
     assert!(gist[0].requires_out_of_transaction);
 }
@@ -577,8 +577,8 @@ fn geopoint_still_emits_one_gist_index() {
 
 #[djogi::djogi_test]
 async fn composite_index_preserves_column_order_in_pg_index(mut ctx: djogi::DjogiContext) {
-    setup_schema_for::<T6Event>(&mut ctx).await;
-    let desc = T6Event::descriptor();
+    setup_schema_for::<Event>(&mut ctx).await;
+    let desc = Event::descriptor();
     let name = desc.indexes[0].name;
 
     let (is_unique, is_primary, nnd, has_pred, has_expr, am, natts, nkey) =
@@ -601,8 +601,8 @@ async fn composite_index_preserves_column_order_in_pg_index(mut ctx: djogi::Djog
 
 #[djogi::djogi_test]
 async fn simple_unique_lands_as_pg_constraint(mut ctx: djogi::DjogiContext) {
-    setup_schema_for::<T6SimpleUnique>(&mut ctx).await;
-    let desc = T6SimpleUnique::descriptor();
+    setup_schema_for::<SimpleUnique>(&mut ctx).await;
+    let desc = SimpleUnique::descriptor();
     let name = desc.indexes[0].name;
 
     // UniqueConstraint lands as both a pg_index row AND a pg_constraint row.
@@ -617,8 +617,8 @@ async fn simple_unique_lands_as_pg_constraint(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test]
 async fn partial_unique_is_index_not_constraint(mut ctx: djogi::DjogiContext) {
-    setup_schema_for::<T6PartialUnique>(&mut ctx).await;
-    let desc = T6PartialUnique::descriptor();
+    setup_schema_for::<PartialUnique>(&mut ctx).await;
+    let desc = PartialUnique::descriptor();
     let name = desc.indexes[0].name;
 
     let (is_unique, _, _, has_pred, _, _, _, _) = read_pg_index(&mut ctx, name).await;
@@ -632,8 +632,8 @@ async fn partial_unique_is_index_not_constraint(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test]
 async fn nulls_not_distinct_round_trips_through_pg_index(mut ctx: djogi::DjogiContext) {
-    setup_schema_for::<T6NndUnique>(&mut ctx).await;
-    let desc = T6NndUnique::descriptor();
+    setup_schema_for::<NndUnique>(&mut ctx).await;
+    let desc = NndUnique::descriptor();
     let name = desc.indexes[0].name;
 
     let (is_unique, _, nnd, _, _, _, _, _) = read_pg_index(&mut ctx, name).await;
@@ -644,8 +644,8 @@ async fn nulls_not_distinct_round_trips_through_pg_index(mut ctx: djogi::DjogiCo
 
 #[djogi::djogi_test]
 async fn covering_index_has_include_columns(mut ctx: djogi::DjogiContext) {
-    setup_schema_for::<T6Covering>(&mut ctx).await;
-    let desc = T6Covering::descriptor();
+    setup_schema_for::<Covering>(&mut ctx).await;
+    let desc = Covering::descriptor();
     let name = desc.indexes[0].name;
 
     let (_, _, _, _, _, _, natts, nkey) = read_pg_index(&mut ctx, name).await;
@@ -669,8 +669,8 @@ async fn covering_index_has_include_columns(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test]
 async fn expression_index_shows_indexprs(mut ctx: djogi::DjogiContext) {
-    setup_schema_for::<T6Expression>(&mut ctx).await;
-    let desc = T6Expression::descriptor();
+    setup_schema_for::<Expression>(&mut ctx).await;
+    let desc = Expression::descriptor();
     let name = desc.indexes[0].name;
 
     let (_, _, _, _, has_expr, _, natts, _) = read_pg_index(&mut ctx, name).await;
@@ -684,8 +684,8 @@ async fn expression_index_shows_indexprs(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test]
 async fn per_column_record_round_trips_desc_and_opclass(mut ctx: djogi::DjogiContext) {
-    setup_schema_for::<T6PerColumn>(&mut ctx).await;
-    let desc = T6PerColumn::descriptor();
+    setup_schema_for::<PerColumn>(&mut ctx).await;
+    let desc = PerColumn::descriptor();
     let name = desc.indexes[0].name;
 
     // Column order preserved: created_at_pc first (DESC), status second.
@@ -729,7 +729,7 @@ async fn per_column_record_round_trips_desc_and_opclass(mut ctx: djogi::DjogiCon
 /// UniqueIndex (no pg_constraint row) with a `_uidx` name stem.
 #[djogi::djogi_test]
 async fn unique_concurrent_lands_as_unique_index_not_constraint(mut ctx: djogi::DjogiContext) {
-    let ddl = setup_schema_for::<T6UniqueConcurrent>(&mut ctx).await;
+    let ddl = setup_schema_for::<UniqueConcurrent>(&mut ctx).await;
     // DDL string must carry CONCURRENTLY and land on the CREATE UNIQUE
     // INDEX form, not ALTER TABLE.
     assert_eq!(ddl.len(), 1);
@@ -739,7 +739,7 @@ async fn unique_concurrent_lands_as_unique_index_not_constraint(mut ctx: djogi::
         ddl[0]
     );
 
-    let desc = T6UniqueConcurrent::descriptor();
+    let desc = UniqueConcurrent::descriptor();
     let name = desc.indexes[0].name;
     assert!(
         name.ends_with("_uidx"),
@@ -760,14 +760,14 @@ async fn unique_concurrent_lands_as_unique_index_not_constraint(mut ctx: djogi::
 /// a unique-index-only feature.
 #[djogi::djogi_test]
 async fn unique_with_include_lands_as_unique_index_not_constraint(mut ctx: djogi::DjogiContext) {
-    let ddl = setup_schema_for::<T6UniqueInclude>(&mut ctx).await;
+    let ddl = setup_schema_for::<UniqueInclude>(&mut ctx).await;
     assert!(
         ddl[0].contains("CREATE UNIQUE INDEX") && ddl[0].contains("INCLUDE (display_name)"),
         "expected CREATE UNIQUE INDEX with INCLUDE, got: {}",
         ddl[0]
     );
 
-    let desc = T6UniqueInclude::descriptor();
+    let desc = UniqueInclude::descriptor();
     let name = desc.indexes[0].name;
 
     let (is_unique, _, _, _, _, _, natts, nkey) = read_pg_index(&mut ctx, name).await;
@@ -785,14 +785,14 @@ async fn unique_with_include_lands_as_unique_index_not_constraint(mut ctx: djogi
 /// an `ADD CONSTRAINT ... UNIQUE` statement.
 #[djogi::djogi_test]
 async fn unique_expression_lands_as_unique_index_not_constraint(mut ctx: djogi::DjogiContext) {
-    let ddl = setup_schema_for::<T6UniqueExpr>(&mut ctx).await;
+    let ddl = setup_schema_for::<UniqueExpr>(&mut ctx).await;
     assert!(
         ddl[0].contains("CREATE UNIQUE INDEX"),
         "expected CREATE UNIQUE INDEX on expression, got: {}",
         ddl[0]
     );
 
-    let desc = T6UniqueExpr::descriptor();
+    let desc = UniqueExpr::descriptor();
     let name = desc.indexes[0].name;
 
     let (is_unique, _, _, _, has_expr, _, _, _) = read_pg_index(&mut ctx, name).await;
@@ -809,13 +809,13 @@ async fn unique_expression_lands_as_unique_index_not_constraint(mut ctx: djogi::
 #[cfg(feature = "spatial")]
 #[djogi::djogi_test(extensions = ["postgis"])]
 async fn geopoint_gist_index_round_trips(mut ctx: djogi::DjogiContext) {
-    setup_schema_for::<T6Place>(&mut ctx).await;
-    let desc = T6Place::descriptor();
+    setup_schema_for::<Place>(&mut ctx).await;
+    let desc = Place::descriptor();
     let gist = desc
         .indexes
         .iter()
         .find(|i| matches!(i.index_type, IndexType::Gist))
-        .expect("T6Place must have a GiST index");
+        .expect("Place must have a GiST index");
 
     let (_, _, _, _, _, am, _, _) = read_pg_index(&mut ctx, gist.name).await;
     assert_eq!(am, "gist");

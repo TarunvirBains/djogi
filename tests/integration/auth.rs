@@ -8,7 +8,7 @@ pub struct PasswordUser {
     pub password_hash: djogi::auth::PasswordHash,
 }
 
-#[model(table = "phase5_5_tenant_posts", pk = HeerId, tenant_key = "org_id")]
+#[model(table = "tenant_posts", pk = HeerId, tenant_key = "org_id")]
 #[derive(Debug, Clone)]
 pub struct TenantPost {
     pub org_id: String,

@@ -1,4 +1,4 @@
-// T7.4 integration tests: `DjogiContext::punnu<T>()` boot-time
+// integration tests: `DjogiContext::punnu<T>()` boot-time
 // inventory registration.
 //
 // What this file pins:
@@ -24,8 +24,7 @@
 //
 // # Spec anchor
 //
-// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-// §3 commit T7.4.
+// §3 commit .4.
 //
 // # Fixture strategy
 //
@@ -36,7 +35,7 @@
 //
 // # Why these tests live in `tests/integration/`
 //
-// Per the workspace convention (every other `phase{N}_*` integration
+// Per the workspace convention (every other integration
 // test sits here, registered through `djogi/Cargo.toml`'s `[[test]]`
 // blocks). The `punnu()` surface is reachable through the public
 // `djogi` crate API, exactly as adopters consume it.
@@ -48,7 +47,7 @@ use djogi::prelude::*;
 // `#[derive(Clone)]` is required by `Cacheable` + `Punnu<T>`.
 // ---------------------------------------------------------------------------
 
-#[model(table = "phase8_t7_4_punnu_boot_rows", pk = HeerId)]
+#[model(table = "punnu_boot_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct PunnuBootRow {
     pub label: String,

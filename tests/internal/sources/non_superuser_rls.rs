@@ -4,7 +4,7 @@
 // # What this file pins
 //
 // **`non_superuser_rls_filters_typed_fetch_and_refresh`** —
-// the cluster-exit RLS proof that closes the `phase8_t8_10_refresh_e2e`
+// the  RLS proof that closes the `refresh_e2e`
 // deferred Option-B gap (see GH #129). Two tenants are seeded by an
 // admin (superuser) connection that bypasses RLS; the same per-test
 // database is then re-opened through
@@ -18,8 +18,8 @@
 // 2. The same model's `refresh_into` handle, constructed against the
 //    non-superuser pool with the same tenant-locked `AuthContext`,
 //    populates the bound `Punnu<T>` with tenant-1000 ids and excludes
-//    every tenant-2000 id — exercising the cluster-8δ delta-sync path
-//    that `phase8_t8_10_refresh_e2e::refresh_into_auth_locked_to_subscription`
+//    every tenant-2000 id — exercising the δ delta-sync path
+//    that `refresh_e2e::refresh_into_auth_locked_to_subscription`
 //    can only prove structurally because it runs as a superuser.
 //
 // # Why a manual `#[test]` and not `#[djogi::djogi_test]`
@@ -49,7 +49,7 @@
 //
 // # Fixture model
 //
-// `Phase85C2129RlsRow` carries a BIGINT `tenant_id` (so the macro routes
+// `C2129RlsRow` carries a BIGINT `tenant_id` (so the macro routes
 // the policy cast to `::bigint`) and an opaque `label` for assertion
 // readability. `pk = Serial` keeps the PK independent of HeeRanjID
 // generator naming churn — the row id is a plain `i32` from a sequence,
@@ -65,9 +65,9 @@ use djogi::testing::{
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 
-#[model(table = "phase8_5_c2_129_rls_rows", pk = Serial, tenant_key = "tenant_id")]
+#[model(table = "c2_129_rls_rows", pk = Serial, tenant_key = "tenant_id")]
 #[derive(Debug, Clone)]
-pub struct Phase85C2129RlsRow {
+pub struct C2129RlsRow {
     pub tenant_id: i64,
     pub label: String,
 }
@@ -79,21 +79,21 @@ pub struct Phase85C2129RlsRow {
 /// superuser bypass, which is why the assertions below reconnect as
 /// `djogi_test_user` rather than relying on the admin setup context.
 /// The `USING` clause carries the `::bigint` cast that matches the
-/// `i64`-typed `tenant_id` column. Adopters typically rely on the
-/// macro-emitted side-channel SQL at `target/djogi_rls/{table}_rls.sql`
-/// (T9), but the migration differ that consumes those files
-/// is still phase-gated; emitting the policy directly here keeps the
-/// test self-contained.
+// `i64`-typed `tenant_id` column. Adopters typically rely on the
+// macro-emitted side-channel SQL at `target/djogi_rls/{table}_rls.sql`,
+// but the migration differ that consumes those files
+// is still being implemented; emitting the policy directly here keeps the
+// test self-contained.
 async fn install_rls_policy(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_ddl("ALTER TABLE phase8_5_c2_129_rls_rows ENABLE ROW LEVEL SECURITY")
+    ctx.raw_ddl("ALTER TABLE c2_129_rls_rows ENABLE ROW LEVEL SECURITY")
         .await
         .expect("ENABLE RLS must succeed against a freshly-created table");
-    ctx.raw_ddl("ALTER TABLE phase8_5_c2_129_rls_rows FORCE ROW LEVEL SECURITY")
+    ctx.raw_ddl("ALTER TABLE c2_129_rls_rows FORCE ROW LEVEL SECURITY")
         .await
         .expect("FORCE RLS must succeed against a freshly-created table");
     ctx.raw_ddl(
-        "CREATE POLICY phase8_5_c2_129_rls_rows_tenant_isolation \
-         ON phase8_5_c2_129_rls_rows \
+        "CREATE POLICY c2_129_rls_rows_tenant_isolation \
+         ON c2_129_rls_rows \
          USING (tenant_id = current_setting('app.tenant_id', true)::bigint)",
     )
     .await
@@ -106,9 +106,9 @@ async fn install_rls_policy(ctx: &mut djogi::DjogiContext) {
 async fn seed_two_tenants(ctx: &mut djogi::DjogiContext) -> SeededRows {
     let mut tenant_1000_ids = Vec::with_capacity(3);
     for i in 1i64..=3 {
-        let row = Phase85C2129RlsRow::create(
+        let row = C2129RlsRow::create(
             ctx,
-            Phase85C2129RlsRow {
+            C2129RlsRow {
                 tenant_id: 1000,
                 label: format!("tenant1000-row{i}"),
                 ..Default::default()
@@ -121,9 +121,9 @@ async fn seed_two_tenants(ctx: &mut djogi::DjogiContext) -> SeededRows {
 
     let mut tenant_2000_ids = Vec::with_capacity(2);
     for i in 1i64..=2 {
-        let row = Phase85C2129RlsRow::create(
+        let row = C2129RlsRow::create(
             ctx,
-            Phase85C2129RlsRow {
+            C2129RlsRow {
                 tenant_id: 2000,
                 label: format!("tenant2000-row{i}"),
                 ..Default::default()
@@ -163,7 +163,7 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
         let outcome = AssertUnwindSafe(async {
             djogi::testing::sync_models(
                 &mut admin_ctx,
-                &[<Phase85C2129RlsRow as Model>::descriptor()],
+                &[<C2129RlsRow as Model>::descriptor()],
             )
             .await
             .expect("sync_models must materialise the fixture table");
@@ -202,7 +202,7 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
                         // auto_set_tenant fires inside fetch_all and applies
                         // `app.tenant_id = '1000'` for the duration of the
                         // transaction.
-                        let rows = Phase85C2129RlsRow::objects()
+                        let rows = C2129RlsRow::objects()
                             .fetch_all(tx)
                             .await?;
                         Ok::<_, djogi::DjogiError>(
@@ -239,7 +239,7 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
                             )
                             .with_tenant("2000"),
                         );
-                        let rows = Phase85C2129RlsRow::objects()
+                        let rows = C2129RlsRow::objects()
                             .fetch_all(tx)
                             .await?;
                         Ok::<_, djogi::DjogiError>(
@@ -281,7 +281,7 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
                             )
                             .with_tenant("9999"),
                         );
-                        let rows = Phase85C2129RlsRow::objects()
+                        let rows = C2129RlsRow::objects()
                             .fetch_all(tx)
                             .await?;
                         Ok::<_, djogi::DjogiError>(
@@ -300,15 +300,15 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
 
             // 4. Refresh path under non-superuser + tenant-locked auth.
             //
-            // This is the cluster-8δ proof that
-            // `phase8_t8_10_refresh_e2e::refresh_into_auth_locked_to_subscription`
+            // This is the δ proof that
+            // `refresh_e2e::refresh_into_auth_locked_to_subscription`
             // can only do structurally. The fetcher opens its own
             // `transaction::atomic` per tick, calls `auto_set_tenant::<T>`,
             // and runs the SELECT under the tenant-1000 GUC. With the
             // non-superuser role, RLS filters the rows server-side.
             let punnu = non_super_ctx
-                .punnu::<Phase85C2129RlsRow>()
-                .expect("Punnu must be registered for Phase85C2129RlsRow");
+                .punnu::<C2129RlsRow>()
+                .expect("Punnu must be registered for C2129RlsRow");
             let pool_for_refresh = non_super_ctx
                 .share_pool()
                 .expect("non-superuser ctx must be pool-backed");
@@ -317,7 +317,7 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
             )
             .with_tenant("1000");
 
-            let handle = Phase85C2129RlsRow::objects()
+            let handle = C2129RlsRow::objects()
                 .refresh_into(&punnu, pool_for_refresh, refresh_auth)
                 .expect("unfiltered queryset must satisfy the portable refresh gate");
 

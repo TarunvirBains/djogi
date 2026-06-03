@@ -18,7 +18,7 @@
 // metadata so `materialize_closure` can exercise its typed `ON CONFLICT`
 // contract without setup DDL in the test body.
 //
-// # Why `phase8_closure_*` and not `phase8_tree_*`
+// # Why `closure_*` and not `tree_*`
 //
 // The closure source-models intentionally use a different table-name
 // prefix from the tree-query live tests. Each `#[djogi_test]` gets a
@@ -32,7 +32,7 @@ use djogi::prelude::*;
 
 // ── Single-edge tree (parent_id) ────────────────────────────────────────────
 
-#[model(table = "phase8_closure_tree_node", pk = HeerId, tree_edge = "parent_id")]
+#[model(table = "closure_tree_node", pk = HeerId, tree_edge = "parent_id")]
 #[derive(Debug, Clone)]
 pub struct ClosureTreeNode {
     pub name: String,
@@ -40,7 +40,7 @@ pub struct ClosureTreeNode {
 }
 
 #[model(
-    table = "phase8_closure_tree_node_closure",
+    table = "closure_tree_node_closure",
     pk = HeerId,
     no_default,
     indexes(unique(fields = [tree_node_id, ancestor_id, depth]))
@@ -71,7 +71,7 @@ impl djogi::query::ClosureModel for ClosureTreeNodeAncestry {
 
 // ── Multi-edge pedigree (mother_id + father_id) ────────────────────────────
 
-#[model(table = "phase8_closure_pedigree", pk = HeerId)]
+#[model(table = "closure_pedigree", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct ClosurePedigree {
     pub name: String,
@@ -80,7 +80,7 @@ pub struct ClosurePedigree {
 }
 
 #[model(
-    table = "phase8_closure_pedigree_ancestry",
+    table = "closure_pedigree_ancestry",
     pk = HeerId,
     no_default,
     indexes(unique(fields = [pedigree_id, ancestor_id, depth]))
@@ -111,14 +111,14 @@ impl djogi::query::ClosureModel for ClosurePedigreeAncestry {
 
 // ── Zero-self-FK source (negative case) ────────────────────────────────────
 
-#[model(table = "phase8_closure_orphan", pk = HeerId)]
+#[model(table = "closure_orphan", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct ClosureOrphan {
     pub name: String,
 }
 
 #[model(
-    table = "phase8_closure_orphan_ancestry",
+    table = "closure_orphan_ancestry",
     pk = HeerId,
     no_default,
     indexes(unique(fields = [orphan_id, ancestor_id, depth]))
@@ -189,7 +189,7 @@ async fn seed_pedigree_node(
     .expect("seed_pedigree")
 }
 
-/// Fetch every row of the closure table for `phase8_closure_tree_node`,
+/// Fetch every row of the closure table for `closure_tree_node`,
 /// returning `(tree_node_id, ancestor_id, depth, path_count)` tuples
 /// sorted for deterministic comparison.
 async fn closure_rows_tree(ctx: &mut DjogiContext) -> Vec<(i64, i64, i32, i64)> {
@@ -422,7 +422,7 @@ async fn closure_zero_edges_errors_descriptively(mut ctx: DjogiContext) {
     let err = result.expect_err("zero self-FKs must error");
     let msg = err.to_string();
     assert!(
-        msg.contains("phase8_closure_orphan"),
+        msg.contains("closure_orphan"),
         "error must name the source model's table: {msg}"
     );
     assert!(

@@ -1,4 +1,4 @@
-// T8.4 integration tests: `QuerySet::into_basic_predicate` —
+// .4 integration tests: `QuerySet::into_basic_predicate` —
 // conservative Q<T>→BasicPredicate<T> extraction for `refresh_into`.
 //
 // # What this file pins
@@ -22,8 +22,8 @@
 // The ordinary `.filter(|f| f.field().eq(...))` path now produces Djogi-owned
 // portable predicates and can be used with cache / refresh. Legacy
 // `Q::Condition` paths remain unreducible because they would require
-// re-parsing type-erased SQL payloads. Raw Sassi ingress was removed in Phase
-// 8eta PR2b because it can forge a SQL column/extractor mismatch.
+// re-parsing type-erased SQL payloads. Raw Sassi ingress was removed
+// because it can forge a SQL column/extractor mismatch.
 //
 // # Why `into_basic_predicate` is `pub`
 //
@@ -37,8 +37,7 @@
 //
 // # Spec anchor
 //
-// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-// §3 commit T8.4.
+// §3 commit .4.
 //
 // # Fixture strategy
 //
@@ -54,14 +53,14 @@ use djogi::prelude::*;
 // `#[derive(Clone)]` is required for Cacheable + Punnu<T>.
 // ---------------------------------------------------------------------------
 
-#[model(table = "phase8_t8_4_extract_rows", pk = HeerId)]
+#[model(table = "extract_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct ExtractRow {
     pub label: String,
     pub active: bool,
 }
 
-#[model(table = "phase8_t8_4_filter_bridge_wrap_rows", pk = HeerId)]
+#[model(table = "filter_bridge_wrap_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct FilterBridgeWrapRow {
     pub tracked_active: Tracked<bool>,
@@ -259,7 +258,7 @@ fn filter_struct_bridge_compiles_with_tracked_and_option_bool_string_fields() {
 // Test 5 — refresh_into compiles and returns a handle for unfiltered queryset.
 //
 // Verifies the end-to-end type signature. The handle is dropped immediately;
-// runtime SQL behavior is covered by the later T8.5 / PR4 integration tests.
+// runtime SQL behavior is covered by the later .5 / PR4 integration tests.
 // `ctx.share_pool()` produces the `DjogiPool` value `refresh_into` consumes.
 // ---------------------------------------------------------------------------
 

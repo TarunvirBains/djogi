@@ -1,6 +1,6 @@
 -- Phase 5 integration fixture: accounts table with Tracked columns.
 --
--- Consumed by tests/integration/phase5_postgres_native.rs across Task 1
+-- Consumed by tests/integration/postgres_native.rs across Task 1
 -- (Tracked<T> round-trip), Task 2 (dirty-aware save), and Task 3
 -- (optimistic locking via #[field(version)]).
 --

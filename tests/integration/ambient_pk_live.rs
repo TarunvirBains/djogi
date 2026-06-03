@@ -10,7 +10,7 @@
 //    run purely off `Model::descriptor()` and do not touch the database
 //    (the `#[djogi::djogi_test]` harness still spins up a database so
 //    the assertions live next to the live round-trip test below — this
-//    keeps every T4 check in one file and matches the
+//    keeps every  check in one file and matches the
 //    `custom_pk_live.rs` layout).
 //
 // 2. **Live round-trip.** A model with one ambient `HeerId` column and
@@ -23,11 +23,11 @@
 use djogi::prelude::*;
 use djogi::types::{HeerId, HeerIdRecencyBiased, RanjId, RanjIdRecencyBiased};
 
-// A model whose `id` is the default `HeerIdRecencyBiased` (post-T2) and
+// A model whose `id` is the default `HeerIdRecencyBiased` (post-) and
 // whose four user columns each exercise one built-in PK family in the
 // ambient-field position. The descriptor-only tests below walk this
 // struct's emitted `ModelDescriptor::fields` to assert `sql_type`.
-#[model(table = "phase7_zero2_t4_descriptor_ambient_pk")]
+#[model(table = "descriptor_ambient_pk")]
 #[derive(Debug, Clone)]
 pub struct DescriptorAmbient {
     pub heerid_col: HeerId,
@@ -87,9 +87,9 @@ fn ranjid_recency_biased_ambient_field_lowers_to_uuid() {
 }
 
 // A model with one ambient `HeerId` column and one ambient `RanjId`
-// column, used for the live round-trip. `id` keeps the post-T2 default
+// column, used for the live round-trip. `id` keeps the post- default
 // (`HeerIdRecencyBiased`).
-#[model(table = "phase7_zero2_t4_live_ambient_pk")]
+#[model(table = "live_ambient_pk")]
 #[derive(Debug, Clone)]
 pub struct LiveAmbient {
     pub from_heerid: HeerId,

@@ -1,4 +1,4 @@
-// T1.4 integration tests: `before_create` + `after_create`
+// .4 integration tests: `before_create` + `after_create`
 // dispatch around the macro-emitted `Model::create()` body.
 //
 // What this file pins:
@@ -14,7 +14,7 @@
 //
 // §D3 lines 118-129 fix the canonical sequence as
 // `before_create -> INSERT -> outbox -> after_create -> on_commit drain`.
-// Order is load-bearing: T1.7 will add the events-model variant that
+// Order is load-bearing: .7 will add the events-model variant that
 // also asserts the outbox row exists by the time `after_create` runs.
 //
 // # One model per test — coherence
@@ -227,7 +227,7 @@ async fn before_create_err_aborts_no_row(mut ctx: djogi::DjogiContext) {
 // Test 4 — before_create runs BEFORE any DB write, including the
 // `#[field(sequence_within = ...)]` counter upsert.
 //
-// Adversarial-review counter-signal (T1 cluster review,
+// Adversarial-review counter-signal ( cluster review,
 // Codex 2026-05-04 BLOCK-1): the macro previously emitted the
 // sequence-counter upsert AHEAD of `before_create`, so an aborted
 // hook on the test context would still increment

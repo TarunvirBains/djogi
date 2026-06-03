@@ -44,9 +44,9 @@ use djogi::prelude::*;
 
 // ── Test model — one Interval column + one nullable Interval column ──────────
 
-#[model(table = "phase8_5_c4_212_interval_rows", pk = HeerId, no_default)]
+#[model(table = "c4_212_interval_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85C4212IntervalRow {
+pub struct C4212IntervalRow {
     pub duration: Interval,
     pub maybe_duration: Option<Interval>,
     pub label: String,
@@ -54,16 +54,16 @@ pub struct Phase85C4212IntervalRow {
 
 // ── Round-trip tests ─────────────────────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+#[djogi::djogi_test(sync_models = [C4212IntervalRow])]
 async fn interval_mixed_components_round_trip(mut ctx: djogi::DjogiContext) {
     // Mixed components: 1 month + 2 days + 3.5 seconds. The Postgres
     // wire format carries the three fields as separate ints, so the
     // round-trip must preserve every one — a buggy codec that
     // conflated `microseconds` with `days * 86_400_000_000` would
     // surface here.
-    let row = Phase85C4212IntervalRow::create(
+    let row = C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -92,22 +92,22 @@ async fn interval_mixed_components_round_trip(mut ctx: djogi::DjogiContext) {
     );
 
     // Re-fetch through Model::get to exercise the full decode path.
-    let fetched = Phase85C4212IntervalRow::get(&mut ctx, row.id)
+    let fetched = C4212IntervalRow::get(&mut ctx, row.id)
         .await
         .expect("Model::get round-trip");
     assert_eq!(fetched.duration, row.duration);
     assert_eq!(fetched.maybe_duration, row.maybe_duration);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+#[djogi::djogi_test(sync_models = [C4212IntervalRow])]
 async fn interval_independent_components_round_trip(mut ctx: djogi::DjogiContext) {
     // Three separate rows, each with exactly one component populated.
     // A codec bug that swapped or reordered the wire fields would
     // surface as one of the rows decoding back with the wrong
     // component carrying the value.
-    let months_row = Phase85C4212IntervalRow::create(
+    let months_row = C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -122,9 +122,9 @@ async fn interval_independent_components_round_trip(mut ctx: djogi::DjogiContext
     assert_eq!(months_row.duration.days, 0);
     assert_eq!(months_row.duration.microseconds, 0);
 
-    let days_row = Phase85C4212IntervalRow::create(
+    let days_row = C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -139,9 +139,9 @@ async fn interval_independent_components_round_trip(mut ctx: djogi::DjogiContext
     assert_eq!(days_row.duration.days, 42);
     assert_eq!(days_row.duration.microseconds, 0);
 
-    let us_row = Phase85C4212IntervalRow::create(
+    let us_row = C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -157,15 +157,15 @@ async fn interval_independent_components_round_trip(mut ctx: djogi::DjogiContext
     assert_eq!(us_row.duration.microseconds, 1_500_000);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+#[djogi::djogi_test(sync_models = [C4212IntervalRow])]
 async fn interval_signed_components_round_trip(mut ctx: djogi::DjogiContext) {
     // Postgres INTERVAL admits negative components (`INTERVAL '-3
     // months -42 days -999_999 microseconds'`). The Rust newtype
     // mirrors this with signed `i32` / `i64` fields; the wire codec
     // must preserve the sign bit on every component.
-    let row = Phase85C4212IntervalRow::create(
+    let row = C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -185,15 +185,15 @@ async fn interval_signed_components_round_trip(mut ctx: djogi::DjogiContext) {
     assert_eq!(row.duration.microseconds, -999_999);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+#[djogi::djogi_test(sync_models = [C4212IntervalRow])]
 async fn interval_null_round_trips_as_none(mut ctx: djogi::DjogiContext) {
     // `Option<Interval>` column carrying `None` must round-trip as
     // SQL NULL — the postgres-types `Option<T>` ToSql impl handles
     // the IsNull::Yes path; the test pins that the typed surface
     // composes cleanly with the Interval codec.
-    let row = Phase85C4212IntervalRow::create(
+    let row = C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -206,17 +206,17 @@ async fn interval_null_round_trips_as_none(mut ctx: djogi::DjogiContext) {
     .expect("nullable Interval column with None must round-trip");
     assert_eq!(row.maybe_duration, None);
 
-    let fetched = Phase85C4212IntervalRow::get(&mut ctx, row.id)
+    let fetched = C4212IntervalRow::get(&mut ctx, row.id)
         .await
         .expect("Model::get on nullable Interval");
     assert_eq!(fetched.maybe_duration, None);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+#[djogi::djogi_test(sync_models = [C4212IntervalRow])]
 async fn interval_present_not_in_empty_excludes_null_rows(mut ctx: djogi::DjogiContext) {
-    Phase85C4212IntervalRow::create(
+    C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -228,9 +228,9 @@ async fn interval_present_not_in_empty_excludes_null_rows(mut ctx: djogi::DjogiC
     .await
     .expect("create present nullable Interval row");
 
-    Phase85C4212IntervalRow::create(
+    C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -242,7 +242,7 @@ async fn interval_present_not_in_empty_excludes_null_rows(mut ctx: djogi::DjogiC
     .await
     .expect("create null nullable Interval row");
 
-    let results = Phase85C4212IntervalRow::objects()
+    let results = C4212IntervalRow::objects()
         .filter(|f| f.maybe_duration().some().not_in(Vec::<Interval>::new()))
         .fetch_all(&mut ctx)
         .await
@@ -256,11 +256,11 @@ async fn interval_present_not_in_empty_excludes_null_rows(mut ctx: djogi::DjogiC
     assert_eq!(results[0].label, "present-duration");
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+#[djogi::djogi_test(sync_models = [C4212IntervalRow])]
 async fn interval_boundary_components_round_trip(mut ctx: djogi::DjogiContext) {
-    let min_row = Phase85C4212IntervalRow::create(
+    let min_row = C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -279,9 +279,9 @@ async fn interval_boundary_components_round_trip(mut ctx: djogi::DjogiContext) {
     assert_eq!(min_row.duration.days, i32::MIN);
     assert_eq!(min_row.duration.microseconds, i64::MIN);
 
-    let max_row = Phase85C4212IntervalRow::create(
+    let max_row = C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -321,16 +321,16 @@ async fn interval_boundary_components_round_trip(mut ctx: djogi::DjogiContext) {
 // surface type-checks; these tests prove it executes correctly against a live
 // Postgres INTERVAL column.
 
-#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+#[djogi::djogi_test(sync_models = [C4212IntervalRow])]
 async fn interval_filter_eq_returns_matching_row(mut ctx: djogi::DjogiContext) {
     // Two rows with distinct durations. Only the one matching the filter
     // predicate must come back from `fetch_all`.
     let target_duration = Interval::days_only(7);
     let other_duration = Interval::months_only(3);
 
-    Phase85C4212IntervalRow::create(
+    C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -342,9 +342,9 @@ async fn interval_filter_eq_returns_matching_row(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create filter-target row");
 
-    Phase85C4212IntervalRow::create(
+    C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -356,7 +356,7 @@ async fn interval_filter_eq_returns_matching_row(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create filter-other row");
 
-    let results = Phase85C4212IntervalRow::objects()
+    let results = C4212IntervalRow::objects()
         .filter(|f| f.duration().eq(target_duration))
         .fetch_all(&mut ctx)
         .await
@@ -371,16 +371,16 @@ async fn interval_filter_eq_returns_matching_row(mut ctx: djogi::DjogiContext) {
     assert_eq!(results[0].duration, target_duration);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+#[djogi::djogi_test(sync_models = [C4212IntervalRow])]
 async fn interval_bulk_update_sets_duration(mut ctx: djogi::DjogiContext) {
     // Create a row, bulk-update its `duration` through the typed SET path,
     // then re-fetch to confirm the new value persisted in the DB.
     let initial = Interval::days_only(10);
     let updated = Interval::microseconds_only(500_000);
 
-    let row = Phase85C4212IntervalRow::create(
+    let row = C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -392,7 +392,7 @@ async fn interval_bulk_update_sets_duration(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create row for bulk update");
 
-    let n = Phase85C4212IntervalRow::objects()
+    let n = C4212IntervalRow::objects()
         .filter(|f| f.duration().eq(initial))
         .update(|f| f.duration().set(updated))
         .execute(&mut ctx)
@@ -401,7 +401,7 @@ async fn interval_bulk_update_sets_duration(mut ctx: djogi::DjogiContext) {
 
     assert_eq!(n, 1, "exactly one row should be updated");
 
-    let fetched = Phase85C4212IntervalRow::get(&mut ctx, row.id)
+    let fetched = C4212IntervalRow::get(&mut ctx, row.id)
         .await
         .expect("re-fetch after bulk update");
 
@@ -411,11 +411,11 @@ async fn interval_bulk_update_sets_duration(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+#[djogi::djogi_test(sync_models = [C4212IntervalRow])]
 async fn interval_bulk_update_increments_and_decrements_duration(mut ctx: djogi::DjogiContext) {
-    let row = Phase85C4212IntervalRow::create(
+    let row = C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -427,7 +427,7 @@ async fn interval_bulk_update_increments_and_decrements_duration(mut ctx: djogi:
     .await
     .expect("create row for bulk interval arithmetic update");
 
-    let incremented = Phase85C4212IntervalRow::objects()
+    let incremented = C4212IntervalRow::objects()
         .filter(|f| f.id().eq(row.id))
         .update(|f| f.duration().increment(Interval::days_only(4)))
         .execute(&mut ctx)
@@ -435,7 +435,7 @@ async fn interval_bulk_update_increments_and_decrements_duration(mut ctx: djogi:
         .expect("interval increment update must execute");
     assert_eq!(incremented, 1, "exactly one row should be incremented");
 
-    let current = Phase85C4212IntervalRow::get(&mut ctx, row.id)
+    let current = C4212IntervalRow::get(&mut ctx, row.id)
         .await
         .expect("re-fetch after interval increment");
     assert_eq!(
@@ -444,7 +444,7 @@ async fn interval_bulk_update_increments_and_decrements_duration(mut ctx: djogi:
         "duration must reflect interval increment"
     );
 
-    let decremented = Phase85C4212IntervalRow::objects()
+    let decremented = C4212IntervalRow::objects()
         .filter(|f| f.id().eq(row.id))
         .update(|f| f.duration().decrement(Interval::days_only(2)))
         .execute(&mut ctx)
@@ -452,7 +452,7 @@ async fn interval_bulk_update_increments_and_decrements_duration(mut ctx: djogi:
         .expect("interval decrement update must execute");
     assert_eq!(decremented, 1, "exactly one row should be decremented");
 
-    let updated = Phase85C4212IntervalRow::get(&mut ctx, row.id)
+    let updated = C4212IntervalRow::get(&mut ctx, row.id)
         .await
         .expect("re-fetch after interval decrement");
     assert_eq!(
@@ -462,7 +462,7 @@ async fn interval_bulk_update_increments_and_decrements_duration(mut ctx: djogi:
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4212IntervalRow])]
+#[djogi::djogi_test(sync_models = [C4212IntervalRow])]
 async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext) {
     // This test pins the deliberate divergence between Rust structural
     // `PartialEq` on `Interval` and Postgres SQL `=` on INTERVAL columns.
@@ -478,9 +478,9 @@ async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext
     // Rust-side structural inequality to make the divergence test-visible.
 
     // Row A: stored as "1 month" in the months component.
-    Phase85C4212IntervalRow::create(
+    C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -493,9 +493,9 @@ async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext
     .expect("create one-month-row");
 
     // Row B: stored as "30 days" in the days component.
-    Phase85C4212IntervalRow::create(
+    C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -510,9 +510,9 @@ async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext
     // Row C: control row with a clearly distinct duration (500 ms).
     // Its presence ensures the queries below would fail if they returned
     // "everything" instead of the linearization-matched rows only.
-    Phase85C4212IntervalRow::create(
+    C4212IntervalRow::create(
         &mut ctx,
-        Phase85C4212IntervalRow {
+        C4212IntervalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -527,7 +527,7 @@ async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext
     // Query 1: filter by Interval::months_only(1).
     // Postgres SQL `=` linearizes 1 month → 30 days, so both "one-month-row"
     // and "thirty-days-row" must match.
-    let results_by_month = Phase85C4212IntervalRow::objects()
+    let results_by_month = C4212IntervalRow::objects()
         .filter(|f| f.duration().eq(Interval::months_only(1)))
         .fetch_all(&mut ctx)
         .await
@@ -547,7 +547,7 @@ async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext
 
     // Query 2: filter by Interval::days_only(30).
     // Symmetric: 30 days linearizes identically, so the same two rows match.
-    let results_by_days = Phase85C4212IntervalRow::objects()
+    let results_by_days = C4212IntervalRow::objects()
         .filter(|f| f.duration().eq(Interval::days_only(30)))
         .fetch_all(&mut ctx)
         .await
@@ -567,7 +567,7 @@ async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext
 
     // Query 3: filter by Interval::days_only(31).
     // 31 days does not linearize to 30 days, so neither row matches.
-    let results_thirty_one = Phase85C4212IntervalRow::objects()
+    let results_thirty_one = C4212IntervalRow::objects()
         .filter(|f| f.duration().eq(Interval::days_only(31)))
         .fetch_all(&mut ctx)
         .await

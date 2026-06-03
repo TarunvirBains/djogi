@@ -93,7 +93,7 @@ fn build_fixture_djogi(fixture: &str, target_subdir: &str) -> PathBuf {
 /// `schema` / `compose` (no DB) a dummy URL suffices — neither opens a
 /// Postgres connection.
 fn tempdir_with_djogi_toml() -> PathBuf {
-    let dir = temp_workspace("370-adopter");
+    let dir = temp_workspace("adopter-fixture");
     write_minimal_djogi_toml(&dir, "postgres://localhost/none");
     dir
 }
@@ -286,7 +286,7 @@ fn write_billing_snapshot_with_table(work: &Path) {
         djogi_version: "0.1.0".to_string(),
         enums: BTreeMap::new(),
         format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
-        generated_at: "2026-04-25T00:00:00Z".to_string(),
+        generated_at: "2026-04-25:00:00Z".to_string(),
         indexes: Vec::new(),
         models,
         registered_apps: vec!["billing".to_string()],
@@ -296,7 +296,7 @@ fn write_billing_snapshot_with_table(work: &Path) {
     djogi::migrate::save_snapshot(&snapshot, &path).expect("write billing schema_snapshot.json");
 }
 
-// ── T-POS: compose + schema discover all models from the provider ────────────
+// ── POS: compose + schema discover all models from the provider ────────────
 
 #[test]
 fn adopter_binary_discovers_all_models() {
@@ -336,7 +336,7 @@ fn adopter_binary_discovers_all_models() {
     }
 }
 
-// ── T-NAME: command-name contract ────────────────────────────────────────────
+// ── NAME: command-name contract ────────────────────────────────────────────
 
 #[test]
 fn binary_is_named_djogi_and_surface_matches() {
@@ -364,10 +364,10 @@ fn binary_is_named_djogi_and_surface_matches() {
     );
 }
 
-// ── T-LINK: force vs no-force visibility (cross-crate dead-strip) ─────────────
+// ── LINK: force vs no-force visibility (cross-crate dead-strip) ─────────────
 
 #[test]
-fn t_link_unforced_crate_is_invisible_forced_is_visible() {
+fn link_unforced_crate_is_invisible_forced_is_visible() {
     let forced = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     let unforced = build_fixture_djogi("adopter_app_unforced", "adopter_app_unforced_fixture");
     let work = tempdir_with_djogi_toml();
@@ -389,18 +389,18 @@ fn t_link_unforced_crate_is_invisible_forced_is_visible() {
     );
     // Load-bearing assertion: `billing` is a SEPARATE crate the unforced
     // bin references nothing from, so the linker drops it whole — the
-    // §5.5 partial-miss hazard. Robust regardless of the intra-crate
+    // partial-miss hazard. Robust regardless of the intra-crate
     // sibling-strip question (which the spike settled).
     assert!(
         !unforced_json.contains("invoices"),
-        "billing UNFORCED ⇒ Invoice invisible (the §5.5 partial-miss hazard): {unforced_json}"
+        "billing UNFORCED ⇒ Invoice invisible (the partial-miss hazard): {unforced_json}"
     );
 }
 
-// ── T-DROPGUARD: linkage guard fires with --allow-destructive, zero DROPs ─────
+// ── DROPGUARD: linkage guard fires with --allow-destructive, zero DROPs ─────
 
 #[test]
-fn t_dropguard_unlinked_app_refuses_even_with_allow_destructive() {
+fn dropguard_unlinked_app_refuses_even_with_allow_destructive() {
     let unforced = build_fixture_djogi("adopter_app_unforced", "adopter_app_unforced_fixture");
     let work = tempdir_with_djogi_toml();
     // Seed a committed snapshot for the `billing` app with one table +
@@ -472,10 +472,10 @@ fn t_dropguard_unlinked_app_refuses_even_with_allow_destructive() {
     );
 }
 
-// ── T-PARITY: schema and compose see the same models (compose output) ────────
+// ── PARITY: schema and compose see the same models (compose output) ────────
 
 #[test]
-fn t_parity_schema_and_compose_see_same_models() {
+fn parity_schema_and_compose_see_same_models() {
     // Parity is proven on COMPOSE output, not just schema output — schema
     // and compose could diverge if only one reads the provider. Run BOTH
     // and assert the same three tables appear in schema JSON AND in the
@@ -512,7 +512,7 @@ fn t_parity_schema_and_compose_see_same_models() {
     }
 }
 
-// ── T-VERIFY-DEGRADE: zero-descriptor verify degrades to snapshot-only ───────
+// ── VERIFY-DEGRADE: zero-descriptor verify degrades to snapshot-only ───────
 
 /// The model whose live table the degrade test seeds via the typed
 /// surface. Identical shape to the `billing` fixture crate's `Invoice`
@@ -631,7 +631,7 @@ async fn t_verify_degrade_snapshot_only_against_valid_db(mut ctx: djogi::DjogiCo
     let _ = &mut ctx; // sync_models already ran via the macro; ctx kept for the URL splice below.
 
     let bin = djogi_binary_path();
-    let work = temp_workspace("370-verify-degrade");
+    let work = temp_workspace("verify-degrade");
 
     // Per-test DB URL: splice the provisioned DB NAME into the harness
     // DATABASE_URL (current_database returns a bare name, not a URL). This
@@ -779,7 +779,7 @@ fn t_nocargo_compose_without_cargo_or_source() {
     let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
 
     // Copy binary + config to an isolated temp dir (no source code there).
-    let runtime_dir = temp_workspace("370-nocargo");
+    let runtime_dir = temp_workspace("nocargo");
     let copied_bin = runtime_dir.join("djogi");
     std::fs::copy(&bin, &copied_bin).expect("copy djogi binary");
     #[cfg(unix)]
@@ -794,7 +794,7 @@ fn t_nocargo_compose_without_cargo_or_source() {
     write_minimal_djogi_toml(&runtime_dir, "postgres://localhost/none");
 
     // Run compose with a PATH that contains NO cargo/toolchain.
-    let empty_path = temp_workspace("370-nocargo-path");
+    let empty_path = temp_workspace("nocargo-path");
     let out = Command::new(&copied_bin)
         .args(["migrations", "compose", "--name", "init"])
         .current_dir(&runtime_dir)
@@ -824,7 +824,7 @@ async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     let db_url = splice_database_name(&database_url(), &current_database(&mut ctx).await);
 
     let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
-    let runtime_dir = temp_workspace("370-container");
+    let runtime_dir = temp_workspace("container-apply");
     let copied = runtime_dir.join("djogi");
     std::fs::copy(&bin, &copied).unwrap();
 
@@ -837,7 +837,7 @@ async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     }
 
     write_minimal_djogi_toml(&runtime_dir, &db_url);
-    let empty_path = temp_workspace("370-container-path");
+    let empty_path = temp_workspace("container-path");
 
     // Compose writes pending artifacts (including the Phase-0 bootstrap that
     // installs heerid_next()).
@@ -902,7 +902,7 @@ async fn apply_with_pending_artifacts(mut ctx: djogi::DjogiContext) {
     let adopter = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     let standalone = djogi_binary_path();
 
-    let runtime_dir = temp_workspace("370-standalone-apply");
+    let runtime_dir = temp_workspace("standalone-apply");
     let db_url = splice_database_name(&database_url(), &current_database(&mut ctx).await);
     write_minimal_djogi_toml(&runtime_dir, &db_url);
 

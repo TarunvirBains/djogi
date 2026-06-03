@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Separate table name (`posts_p2`) so this integration test can share a DB
 // with `model.rs` without DDL collisions.
-// T2 default flip — pin ascending HeerId so existing
+//  default flip — pin ascending HeerId so existing
 // HeerId-typed construction and assertions keep working.
 #[model(table = "posts_p2", pk = HeerId)]
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ pub struct Post {
     pub score: Option<i32>,
 }
 
-#[model(table = "phase2_returning_pair_long_aliases", pk = HeerId)]
+#[model(table = "returning_pair_long_aliases", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct ReturningPairLongAliasBulk {
     // 50 chars: below Postgres boundary when prefixed.
@@ -34,20 +34,20 @@ pub struct ReturningPairLongAliasBulk {
     pub xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb: i32,
 }
 
-#[model(table = "phase2_bulk_outbox_evt_row", pk = HeerId, events)]
+#[model(table = "bulk_outbox_evt_row", pk = HeerId, events)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BulkOutboxEvtRow {
     pub tag: String,
     pub score: i32,
 }
 
-#[model(table = "phase2_bulk_outbox_no_evt_row", pk = HeerId)]
+#[model(table = "bulk_outbox_no_evt_row", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct BulkOutboxNoEvtRow {
     pub score: i32,
 }
 
-#[model(table = "phase2_bulk_hooks_row", pk = HeerId, hooks)]
+#[model(table = "bulk_hooks_row", pk = HeerId, hooks)]
 #[derive(Debug, Clone)]
 pub struct BulkHooksRow {
     pub score: i32,
@@ -1149,7 +1149,7 @@ async fn execute_returning_pairs_events_model_emits_save_outbox_per_pair(
         .await
         .expect("seed bulk outbox events rows");
 
-    djogi::testing::clear_outbox_for_test(&mut ctx, "phase2_bulk_outbox_evt_row_outbox")
+    djogi::testing::clear_outbox_for_test(&mut ctx, "bulk_outbox_evt_row_outbox")
         .await
         .expect("clear outbox rows");
 
@@ -1162,9 +1162,9 @@ async fn execute_returning_pairs_events_model_emits_save_outbox_per_pair(
     assert_eq!(pairs.len(), rows.len(), "one pair per updated row");
 
     let outbox_rows =
-        djogi::testing::outbox_rows_for_test(&mut ctx, "phase2_bulk_outbox_evt_row_outbox")
+        djogi::testing::outbox_rows_for_test(&mut ctx, "bulk_outbox_evt_row_outbox")
             .await
-            .expect("read phase2_bulk_outbox_evt_row_outbox rows");
+            .expect("read bulk_outbox_evt_row_outbox rows");
 
     assert_eq!(
         outbox_rows.len(),

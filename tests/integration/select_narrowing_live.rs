@@ -1,4 +1,4 @@
-// T10 — visage queryset entry live test.
+//  — visage queryset entry live test.
 //
 // Asserts that `{Visage}::filter(...)` is a working queryset entry point and
 // The typed end-to-end assertion (`fetch_all` returns rows decoded into
@@ -9,7 +9,7 @@
 
 use djogi::prelude::*;
 
-#[model(table = "phase7_zero2_t10_users_narrow")]
+#[model(table = "zero2_t10_users_narrow")]
 #[derive(Debug, Clone)]
 pub struct User {
     #[field(expose(public))]

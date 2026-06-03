@@ -1,10 +1,10 @@
-// T10 — live-PG integration tests for
+//  — live-PG integration tests for
 // `#[djogi_test(sync_models = [...])]` (closes #18).
 //
 // Each test provisions a fresh `djogi_test_<uuid>` database via the
 // Harness (`#[djogi_test]`), opts into `sync_models`
 // to auto-create the listed tables through the migration
-// engine (T1 projection → T2 diff → T3 SQL emit + segment plan),
+// engine ( projection →  diff →  SQL emit + segment plan),
 // then exercises the resulting schema with typed CRUD/query round-trips.
 //
 // # What these tests prove
@@ -56,7 +56,7 @@ fn sentinel_dt() -> DateTime {
 /// Postgres creates an implicit unique BTree index for the `PRIMARY
 /// KEY` constraint automatically — Djogi's projection does not emit
 /// a redundant `CREATE INDEX` for the PK column.
-#[model(table = "t10_widgets_solo", pk = HeerId, indexes(
+#[model(table = "widgets_solo", pk = HeerId, indexes(
     index(fields = [name]),
 ))]
 #[derive(Debug, Clone)]
@@ -114,7 +114,7 @@ async fn single_model_sync_creates_table_and_supports_crud(mut ctx: djogi::Djogi
 // Scenario 2 — multi-model with FK; parent before child via topo-sort
 // ───────────────────────────────────────────────────────────────────
 
-#[model(table = "t10_categories", pk = HeerId)]
+#[model(table = "categories", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Category {
     pub name: String,
@@ -123,9 +123,9 @@ pub struct Category {
 /// `Widget` references `Category` via FK. The attribute order in
 /// `sync_models = [...]` is Widget first, Category second —
 /// purposefully reversed from the FK dependency. The migration
-/// engine's topo-sort must reorder these so `t10_categories`
-/// emits before `t10_widgets`.
-#[model(table = "t10_widgets", pk = HeerId, no_default)]
+/// engine's topo-sort must reorder these so `categories`
+/// emits before `widgets`.
+#[model(table = "widgets", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Widget {
     pub category_id: ForeignKey<Category>,
@@ -181,7 +181,7 @@ pub struct UserPrefs {
     pub notifications_enabled: bool,
 }
 
-#[model(table = "t10_users_prefs", pk = HeerId)]
+#[model(table = "users_prefs", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct UserWithPrefs {
     pub email: String,
@@ -220,7 +220,7 @@ async fn jsonb_field_lowers_to_jsonb_column(mut ctx: djogi::DjogiContext) {
 // ───────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "spatial")]
-#[model(table = "t10_places", pk = HeerId, no_default)]
+#[model(table = "places", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Place {
     pub name: String,
@@ -262,13 +262,13 @@ async fn spatial_field_extension_provisioned_first(mut ctx: djogi::DjogiContext)
 // Scenario 5 — M2M through-model included in sync_models
 // ───────────────────────────────────────────────────────────────────
 
-#[model(table = "t10_tags", pk = HeerId)]
+#[model(table = "tags", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Tag {
     pub label: String,
 }
 
-#[model(table = "t10_posts", pk = HeerId)]
+#[model(table = "posts", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Post {
     pub title: String,
@@ -278,7 +278,7 @@ pub struct Post {
 /// table. Both FKs target the M2M endpoints — descriptor projection
 /// emits both, and `sync_models`'s pre-flight FK check accepts the
 /// pair because both endpoints are in the supplied list.
-#[model(table = "t10_post_tags", pk = HeerId, through, no_default)]
+#[model(table = "post_tags", pk = HeerId, through, no_default)]
 #[derive(Debug, Clone)]
 pub struct PostTag {
     pub post_id: ForeignKey<Post>,
@@ -359,14 +359,14 @@ async fn m2m_through_model_materialises_all_three_tables(mut ctx: djogi::DjogiCo
 /// `Option<...>` so the first-side row can INSERT with NULL and the
 /// second-side row populates the back-pointer; this exercises the
 /// cycle-breaking path without needing `SET CONSTRAINTS DEFERRED`.
-#[model(table = "t10_users_cycle", pk = HeerId, no_default)]
+#[model(table = "users_cycle", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct CycleUser {
     pub name: String,
     pub team_id: Option<ForeignKey<CycleTeam>>,
 }
 
-#[model(table = "t10_teams_cycle", pk = HeerId, no_default)]
+#[model(table = "teams_cycle", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct CycleTeam {
     pub name: String,
@@ -435,13 +435,13 @@ async fn fk_cycle_breaks_via_followup_constraint(mut ctx: djogi::DjogiContext) {
 // Scenario 7 — FK target NOT in sync_models — clean runtime error
 // ───────────────────────────────────────────────────────────────────
 
-#[model(table = "t10_categories_orphan", pk = HeerId)]
+#[model(table = "categories_orphan", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct OrphanCategory {
     pub name: String,
 }
 
-#[model(table = "t10_widgets_orphan", pk = HeerId, no_default)]
+#[model(table = "widgets_orphan", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct OrphanWidget {
     pub category_id: ForeignKey<OrphanCategory>,
@@ -482,7 +482,7 @@ async fn fk_target_missing_returns_named_runtime_error(mut ctx: djogi::DjogiCont
 }
 
 // ───────────────────────────────────────────────────────────────────
-// Scenario 8 — index emission on sync_models'd table (T3 IndexSpec)
+// Scenario 8 — index emission on sync_models'd table ( IndexSpec)
 // ───────────────────────────────────────────────────────────────────
 
 /// One model with a model-level GIN index expressed via
@@ -490,7 +490,7 @@ async fn fk_target_missing_returns_named_runtime_error(mut ctx: djogi::DjogiCont
 /// (`pg_am.amname`) matches the descriptor — proves
 /// `sync_models` routes through the same SQL emitter the migration
 /// engine uses for `IndexSpec`, not a parallel index emitter.
-#[model(table = "t10_documents", pk = HeerId, indexes(
+#[model(table = "documents", pk = HeerId, indexes(
     index(fields = [tags], using = "gin"),
 ))]
 #[derive(Debug, Clone)]

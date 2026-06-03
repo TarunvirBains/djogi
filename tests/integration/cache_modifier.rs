@@ -1,5 +1,4 @@
-// T7.3 integration tests: `QuerySet::cache(&punnu)` opt-in
-// modifier.
+// Cache modifier integration tests.
 //
 // What this file pins:
 //
@@ -14,12 +13,6 @@
 //    a queryset with `.cache(&p)` renders the same SELECT SQL as the
 //    same chain without `.cache(&p)`.
 //
-// # Spec anchor
-//
-// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-// §3 commit T7.3 ("Test names + assertions" bullet, lines 141–144).
-// Spec §664 — `.cache(&punnu)` modifier is opt-in. plan §374.
-//
 // # Fixture strategy
 //
 // Tables are provisioned via `#[djogi_test(sync_models = [CacheRow])]`
@@ -29,7 +22,7 @@
 //
 // # Why these tests live in `tests/integration/`
 //
-// Per the workspace convention (every other `phase{N}_*` integration
+// Per the workspace convention (every other integration
 // test sits here, registered through `djogi/Cargo.toml`'s `[[test]]`
 // blocks). The cache modifier surface is reachable through the
 // public `djogi` crate API, exactly as adopters consume it.
@@ -53,7 +46,7 @@ use djogi::prelude::*;
 // the test would compile under either. But a future default flip
 // would silently change which Cacheable variant this fixture
 // exercises. Anchor on `pk = "heerid"` so the variant is named.
-#[model(table = "phase8_t7_3_cache_rows", pk = HeerId)]
+#[model(table = "cache_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct CacheRow {
     pub note: String,
@@ -192,7 +185,7 @@ async fn cache_modifier_does_not_change_sql_emit(mut ctx: djogi::DjogiContext) {
     // Sanity: the rendered SQL is non-trivial and includes the structural
     // clauses this test built above.
     assert!(
-        plain_sql.contains("phase8_t7_3_cache_rows")
+        plain_sql.contains("cache_rows")
             && plain_sql.contains("ORDER BY")
             && plain_sql.contains("LIMIT"),
         "testing SQL renderer lost structural clauses; got {plain_sql}",

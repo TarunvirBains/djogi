@@ -110,7 +110,7 @@ async fn seed_fuel_type(ctx: &mut djogi::DjogiContext, name: &str) -> FuelType {
 
 /// Build a `Vehicle` value suitable for `Vehicle::create`. Framework
 /// fields use the same sentinel pattern as
-/// `phase1_model::rich_field_types_roundtrip` — the DB defaults
+/// `model::rich_field_types_roundtrip` — the DB defaults
 /// overwrite them via `RETURNING *` on the insert. Extracted into a
 /// helper because `no_default` on `Vehicle` forbids
 /// `..Default::default()` and the sentinel construction would

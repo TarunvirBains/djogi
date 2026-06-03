@@ -10,24 +10,24 @@
 // composition, the `none()` short-circuit, validation rejections, and
 // ORDER-BY+LIMIT chunking.
 //
-// Two models — `Phase85C4bSource` and `Phase85C4bArchive` — share
+// Two models — `C4bSource` and `C4bArchive` — share
 // shape so the column mapping is unambiguous. The archive carries an
 // `original_id` column so the source's id is copied without colliding
 // with the framework `id` slot on the target.
 
 use djogi::prelude::*;
 
-#[model(table = "phase8_5_c4b_sources", pk = HeerIdRecencyBiased)]
+#[model(table = "c4b_sources", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
-pub struct Phase85C4bSource {
+pub struct C4bSource {
     pub label: String,
     pub published: bool,
     pub view_count: i32,
 }
 
-#[model(table = "phase8_5_c4b_archives", pk = HeerIdRecencyBiased)]
+#[model(table = "c4b_archives", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
-pub struct Phase85C4bArchive {
+pub struct C4bArchive {
     /// Source row's id, preserved as a user column rather than the
     /// framework `id` slot on the archive (the archive's `id` is
     /// generated fresh per archive row, matching `Model::create`'s
@@ -44,7 +44,7 @@ pub struct Phase85C4bArchive {
     pub view_count: i32,
 }
 
-async fn seed_sources(ctx: &mut djogi::DjogiContext) -> Vec<Phase85C4bSource> {
+async fn seed_sources(ctx: &mut djogi::DjogiContext) -> Vec<C4bSource> {
     let mut out = Vec::new();
     for (label, published, view_count) in [
         ("alpha", true, 100i32),
@@ -52,9 +52,9 @@ async fn seed_sources(ctx: &mut djogi::DjogiContext) -> Vec<Phase85C4bSource> {
         ("gamma", false, 200),
         ("delta", true, 25),
     ] {
-        let row = Phase85C4bSource::create(
+        let row = C4bSource::create(
             ctx,
-            Phase85C4bSource {
+            C4bSource {
                 label: label.to_string(),
                 published,
                 view_count,
@@ -70,7 +70,7 @@ async fn seed_sources(ctx: &mut djogi::DjogiContext) -> Vec<Phase85C4bSource> {
 
 // ── Happy path ────────────────────────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_copies_all_rows_no_filter(mut ctx: djogi::DjogiContext) {
     // No WHERE filter on the source — every row in the source table
     // lands in the archive. Affected-row count matches the source
@@ -78,8 +78,8 @@ async fn insert_select_copies_all_rows_no_filter(mut ctx: djogi::DjogiContext) {
     // `updated_at`) come from column defaults.
     let _seeded = seed_sources(&mut ctx).await;
 
-    let n = Phase85C4bSource::objects()
-        .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
+    let n = C4bSource::objects()
+        .insert_into::<C4bArchive, _, _>(|t, s| {
             vec![
                 t.original_id().copy_from(s.id().as_insert_source()),
                 t.label().copy_from(s.label().as_insert_source()),
@@ -92,19 +92,19 @@ async fn insert_select_copies_all_rows_no_filter(mut ctx: djogi::DjogiContext) {
         .unwrap();
     assert_eq!(n, 4, "expected 4 source rows to be copied into the archive");
 
-    let archived = Phase85C4bArchive::objects().count(&mut ctx).await.unwrap();
+    let archived = C4bArchive::objects().count(&mut ctx).await.unwrap();
     assert_eq!(archived, 4);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_with_filter_copies_subset(mut ctx: djogi::DjogiContext) {
     // WHERE clause narrows the source set. Only published rows land
     // in the archive — three of the four seeded rows.
     let _seeded = seed_sources(&mut ctx).await;
 
-    let n = Phase85C4bSource::objects()
+    let n = C4bSource::objects()
         .filter(|f| f.published().eq(true))
-        .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
+        .insert_into::<C4bArchive, _, _>(|t, s| {
             vec![
                 t.original_id().copy_from(s.id().as_insert_source()),
                 t.label().copy_from(s.label().as_insert_source()),
@@ -117,14 +117,14 @@ async fn insert_select_with_filter_copies_subset(mut ctx: djogi::DjogiContext) {
         .unwrap();
     assert_eq!(n, 3);
 
-    let archived_published = Phase85C4bArchive::objects()
+    let archived_published = C4bArchive::objects()
         .filter(|f| f.published().eq(true))
         .count(&mut ctx)
         .await
         .unwrap();
     assert_eq!(archived_published, 3);
 
-    let archived_unpublished = Phase85C4bArchive::objects()
+    let archived_unpublished = C4bArchive::objects()
         .filter(|f| f.published().eq(false))
         .count(&mut ctx)
         .await
@@ -135,15 +135,15 @@ async fn insert_select_with_filter_copies_subset(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_with_literal_source_emits_constant(mut ctx: djogi::DjogiContext) {
     // Source operand is `InsertSelectSource::literal(...)` — every
     // archived row gets the same constant value for that column.
     // Useful for archival markers ("status = ARCHIVED for every row").
     let _seeded = seed_sources(&mut ctx).await;
 
-    let n = Phase85C4bSource::objects()
-        .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
+    let n = C4bSource::objects()
+        .insert_into::<C4bArchive, _, _>(|t, s| {
             vec![
                 t.original_id().copy_from(s.id().as_insert_source()),
                 t.label().copy_from(s.label().as_insert_source()),
@@ -152,7 +152,7 @@ async fn insert_select_with_literal_source_emits_constant(mut ctx: djogi::DjogiC
                 // `InsertSelectSource::literal` is polymorphic in the
                 // source model; `S` is inferred from the closure's
                 // return type as the enclosing source model
-                // (`Phase85C4bSource`).
+                // (`C4bSource`).
                 t.view_count().copy_from(InsertSelectSource::literal(0i32)),
             ]
         })
@@ -161,7 +161,7 @@ async fn insert_select_with_literal_source_emits_constant(mut ctx: djogi::DjogiC
         .unwrap();
     assert_eq!(n, 4);
 
-    let all_zero = Phase85C4bArchive::objects()
+    let all_zero = C4bArchive::objects()
         .filter(|f| f.view_count().eq(0i32))
         .count(&mut ctx)
         .await
@@ -169,7 +169,7 @@ async fn insert_select_with_literal_source_emits_constant(mut ctx: djogi::DjogiC
     assert_eq!(all_zero, 4, "literal source must apply to every row");
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_framework_columns_populated_by_defaults(mut ctx: djogi::DjogiContext) {
     // Pin the framework-column contract: archive rows get fresh `id`,
     // `created_at`, `updated_at` from the target's column defaults —
@@ -180,8 +180,8 @@ async fn insert_select_framework_columns_populated_by_defaults(mut ctx: djogi::D
     // heeranjid/src/heer_desc.rs.
     let source_ids: Vec<i64> = seeded.iter().map(|r| r.id.as_i64()).collect();
 
-    let _n = Phase85C4bSource::objects()
-        .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
+    let _n = C4bSource::objects()
+        .insert_into::<C4bArchive, _, _>(|t, s| {
             vec![
                 t.original_id().copy_from(s.id().as_insert_source()),
                 t.label().copy_from(s.label().as_insert_source()),
@@ -195,7 +195,7 @@ async fn insert_select_framework_columns_populated_by_defaults(mut ctx: djogi::D
 
     // Archive ids are FRESH (not the source ids). Convert HeerIdDesc
     // values into the raw i64 backing them for the comparison.
-    let archives = Phase85C4bArchive::objects()
+    let archives = C4bArchive::objects()
         .fetch_all(&mut ctx)
         .await
         .unwrap();
@@ -221,17 +221,17 @@ async fn insert_select_framework_columns_populated_by_defaults(mut ctx: djogi::D
     assert_eq!(original_ids, expected_source_ids);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_with_order_by_and_limit_chunks_oldest_first(mut ctx: djogi::DjogiContext) {
     // ORDER BY + LIMIT compose with INSERT...SELECT — pick the two
     // rows with the LOWEST `view_count` and copy only them. Useful for
     // chunked archival ("archive 100 rows at a time, oldest first").
     let _seeded = seed_sources(&mut ctx).await;
 
-    let n = Phase85C4bSource::objects()
+    let n = C4bSource::objects()
         .order_by(|f| f.view_count().asc())
         .limit(2)
-        .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
+        .insert_into::<C4bArchive, _, _>(|t, s| {
             vec![
                 t.original_id().copy_from(s.id().as_insert_source()),
                 t.label().copy_from(s.label().as_insert_source()),
@@ -246,7 +246,7 @@ async fn insert_select_with_order_by_and_limit_chunks_oldest_first(mut ctx: djog
 
     // The two archived rows are the ones with the lowest view_count
     // (delta=25, beta=50).
-    let archive_view_counts: std::collections::HashSet<i32> = Phase85C4bArchive::objects()
+    let archive_view_counts: std::collections::HashSet<i32> = C4bArchive::objects()
         .fetch_all(&mut ctx)
         .await
         .unwrap()
@@ -262,16 +262,16 @@ async fn insert_select_with_order_by_and_limit_chunks_oldest_first(mut ctx: djog
 
 // ── Short-circuit ──────────────────────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_none_short_circuits(mut ctx: djogi::DjogiContext) {
     // Source is `QuerySet::none()`-derived — terminal returns 0 without
     // touching the database. Pin the empty-contract behaviour matches
     // bulk update / bulk delete.
     let _seeded = seed_sources(&mut ctx).await;
 
-    let n = Phase85C4bSource::objects()
+    let n = C4bSource::objects()
         .none()
-        .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
+        .insert_into::<C4bArchive, _, _>(|t, s| {
             vec![
                 t.original_id().copy_from(s.id().as_insert_source()),
                 t.label().copy_from(s.label().as_insert_source()),
@@ -284,29 +284,29 @@ async fn insert_select_none_short_circuits(mut ctx: djogi::DjogiContext) {
         .unwrap();
     assert_eq!(n, 0);
 
-    let archive_count = Phase85C4bArchive::objects().count(&mut ctx).await.unwrap();
+    let archive_count = C4bArchive::objects().count(&mut ctx).await.unwrap();
     assert_eq!(
         archive_count, 0,
         "none().insert_into() must not touch any row"
     );
 
     // Source table is unchanged.
-    let source_count = Phase85C4bSource::objects().count(&mut ctx).await.unwrap();
+    let source_count = C4bSource::objects().count(&mut ctx).await.unwrap();
     assert_eq!(source_count, 4);
 }
 
 // ── Validation rejections ──────────────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_rejects_empty_column_mapping(mut ctx: djogi::DjogiContext) {
     // Empty Vec — INSERT INTO target () SELECT FROM source is invalid
     // SQL. The terminal pre-validates and returns DjogiError::Validation
     // before the SQL leaves the framework.
     let _seeded = seed_sources(&mut ctx).await;
 
-    let err = Phase85C4bSource::objects()
-        .insert_into::<Phase85C4bArchive, _, _>(|_t, _s| {
-            Vec::<InsertSelectColumn<Phase85C4bSource, Phase85C4bArchive>>::new()
+    let err = C4bSource::objects()
+        .insert_into::<C4bArchive, _, _>(|_t, _s| {
+            Vec::<InsertSelectColumn<C4bSource, C4bArchive>>::new()
         })
         .execute(&mut ctx)
         .await
@@ -318,19 +318,19 @@ async fn insert_select_rejects_empty_column_mapping(mut ctx: djogi::DjogiContext
 
     // No row landed in the archive — pre-flight rejection means the
     // SQL never ran.
-    let archive_count = Phase85C4bArchive::objects().count(&mut ctx).await.unwrap();
+    let archive_count = C4bArchive::objects().count(&mut ctx).await.unwrap();
     assert_eq!(archive_count, 0);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_rejects_duplicate_target_columns(mut ctx: djogi::DjogiContext) {
     // Map two different source expressions to the same target column.
     // Postgres would reject with SQLSTATE 42701; djogi pre-validates so
     // the diagnostic carries the target column name.
     let _seeded = seed_sources(&mut ctx).await;
 
-    let err = Phase85C4bSource::objects()
-        .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
+    let err = C4bSource::objects()
+        .insert_into::<C4bArchive, _, _>(|t, s| {
             vec![
                 t.label().copy_from(s.label().as_insert_source()),
                 // Duplicate — same target column.
@@ -347,15 +347,15 @@ async fn insert_select_rejects_duplicate_target_columns(mut ctx: djogi::DjogiCon
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_rejects_distinct_source(mut ctx: djogi::DjogiContext) {
     // `.distinct()` on the source — rejected by the v0.1 surface.
     // Future work can lift this with an explicit opt-in.
     let _seeded = seed_sources(&mut ctx).await;
 
-    let err = Phase85C4bSource::objects()
+    let err = C4bSource::objects()
         .distinct()
-        .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
+        .insert_into::<C4bArchive, _, _>(|t, s| {
             vec![t.label().copy_from(s.label().as_insert_source())]
         })
         .execute(&mut ctx)
@@ -376,17 +376,17 @@ async fn insert_select_rejects_distinct_source(mut ctx: djogi::DjogiContext) {
 // at which point the same SQL the framework would have rejected here
 // would surface as a live Postgres syntax error.
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_none_with_empty_mapping_still_rejects(mut ctx: djogi::DjogiContext) {
     // `.none()` + empty column mapping: validation runs first, so the
     // empty-mapping diagnostic surfaces rather than the structural-empty
     // short-circuit silently returning `Ok(0)`.
     let _seeded = seed_sources(&mut ctx).await;
 
-    let err = Phase85C4bSource::objects()
+    let err = C4bSource::objects()
         .none()
-        .insert_into::<Phase85C4bArchive, _, _>(|_t, _s| {
-            Vec::<InsertSelectColumn<Phase85C4bSource, Phase85C4bArchive>>::new()
+        .insert_into::<C4bArchive, _, _>(|_t, _s| {
+            Vec::<InsertSelectColumn<C4bSource, C4bArchive>>::new()
         })
         .execute(&mut ctx)
         .await
@@ -398,11 +398,11 @@ async fn insert_select_none_with_empty_mapping_still_rejects(mut ctx: djogi::Djo
 
     // Archive still empty — no row landed, but for the right reason
     // (validation rejection, not a silent zero-row short-circuit).
-    let archive_count = Phase85C4bArchive::objects().count(&mut ctx).await.unwrap();
+    let archive_count = C4bArchive::objects().count(&mut ctx).await.unwrap();
     assert_eq!(archive_count, 0);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C4bSource, Phase85C4bArchive])]
+#[djogi::djogi_test(sync_models = [C4bSource, C4bArchive])]
 async fn insert_select_none_with_duplicate_target_columns_still_rejects(
     mut ctx: djogi::DjogiContext,
 ) {
@@ -411,9 +411,9 @@ async fn insert_select_none_with_duplicate_target_columns_still_rejects(
     // structural-empty short-circuit silently returning `Ok(0)`.
     let _seeded = seed_sources(&mut ctx).await;
 
-    let err = Phase85C4bSource::objects()
+    let err = C4bSource::objects()
         .none()
-        .insert_into::<Phase85C4bArchive, _, _>(|t, s| {
+        .insert_into::<C4bArchive, _, _>(|t, s| {
             vec![
                 t.label().copy_from(s.label().as_insert_source()),
                 // Duplicate — same target column.

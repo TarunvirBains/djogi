@@ -1,4 +1,4 @@
-// T8.9 integration tests: `DeltaRefreshHandle<T>` lifetime audit —
+// .9 integration tests: `DeltaRefreshHandle<T>` lifetime audit —
 // owned substrate captures across thread boundary.
 //
 // # What this file pins
@@ -24,9 +24,9 @@
 // # Why these three tests belong together
 //
 // Together they form the "lifetime audit" for the owned-substrate invariant
-// landed in T8.3: a `DjogiDeltaFetcher<T>` holds no borrowed references —
+// landed in .3: a `DjogiDeltaFetcher<T>` holds no borrowed references —
 // only owned, `'static` values — so `DeltaRefreshHandle<T>` can freely cross
-// thread and lifetime boundaries. If T8.3's invariant were accidentally broken
+// thread and lifetime boundaries. If .3's invariant were accidentally broken
 // (e.g. a borrowed `DjogiContext` added to the fetcher), Test 1 and Test 3
 // would fail to compile, surfacing the regression before it reaches production.
 //
@@ -38,8 +38,7 @@
 //
 // # Spec anchor
 //
-// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-// §3 commit T8.9.
+// §3 commit .9.
 //
 // # Fixture strategy
 //
@@ -56,7 +55,7 @@ use djogi::prelude::*;
 // `Cacheable + Punnu<T>`. `pk = HeerId` pins the PK strategy to the standard
 // ascending BIGINT so the test is independent of any future default-PK change.
 
-#[model(table = "phase8_t8_9_lifetime_rows", pk = HeerId)]
+#[model(table = "lifetime_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct LifetimeRow {
     pub label: String,
@@ -144,7 +143,7 @@ async fn refresh_handle_survives_tokio_spawn(mut ctx: djogi::DjogiContext) {
 /// this test, not before.
 ///
 /// This test is a runtime pin for the "fetcher owns the pool" contract from
-/// T8.3. A regression that stored a raw pointer or a borrowed reference to
+/// .3. A regression that stored a raw pointer or a borrowed reference to
 /// the pool would cause a use-after-free or borrow-check error here.
 ///
 #[djogi::djogi_test(sync_models = [LifetimeRow])]

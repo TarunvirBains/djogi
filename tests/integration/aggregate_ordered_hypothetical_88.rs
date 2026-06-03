@@ -8,7 +8,7 @@
 
 use djogi::prelude::*;
 
-#[model(table = "phase85_agg_ordered_hypothetical_probe", pk = HeerId)]
+#[model(table = "agg_ordered_hypothetical_probe", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct OrderedHypotheticalProbe {
     pub bucket: String,
