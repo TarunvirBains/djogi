@@ -34,6 +34,8 @@ pub enum CliIdentityResolveError {
     /// `--single-node-dev` is not permitted in production profile or
     /// when `DJOGI_ENV=production`.
     SingleNodeDevRefusedInProduction,
+    /// `HEER_NODE_ID` env var is set but cannot be parsed as a node ID.
+    InvalidEnvFormat { value: String },
 }
 
 impl std::fmt::Display for CliIdentityResolveError {
@@ -58,6 +60,12 @@ impl std::fmt::Display for CliIdentityResolveError {
                 f,
                 "--single-node-dev is not permitted in production; \
                  use --node-id with a registered cluster node identity"
+            ),
+            Self::InvalidEnvFormat { value } => write!(
+                f,
+                "HEER_NODE_ID value {:?} is not a valid integer; \
+                 supply a numeric node ID or unset the variable",
+                value
             ),
         }
     }
@@ -123,14 +131,18 @@ pub fn resolve_identity(
 
     // 4. Fall back to HEER_NODE_ID env var.
     if let Ok(env_val) = std::env::var("HEER_NODE_ID") {
-        if let Ok(id) = env_val.parse::<i32>() {
-            if validate_node_id_range(id) {
+        match env_val.parse::<i32>() {
+            Ok(id) if validate_node_id_range(id) => {
                 return Ok(CliResolvedIdentity::Selected(id));
-            } else {
+            }
+            Ok(id) => {
                 return Err(CliIdentityResolveError::NodeIdOutOfRange { value: id });
             }
+            Err(_) => {
+                // Env var exists but is not a valid integer.
+                return Err(CliIdentityResolveError::InvalidEnvFormat { value: env_val });
+            }
         }
-        // Unparseable env var — fall through to missing.
     }
 
     // 5. No identity resolved.
@@ -263,8 +275,13 @@ mod tests {
     fn resolve_env_var_unparseable() {
         unsafe { std::env::set_var("HEER_NODE_ID", "not-a-number"); }
         let result = resolve_identity(None, false, "development", "apply");
-        // Unparseable env var falls through to missing.
-        assert_eq!(result, Err(CliIdentityResolveError::MissingNodeIdentity));
+        // Unparseable env var returns InvalidEnvFormat, not MissingNodeIdentity.
+        assert_eq!(
+            result,
+            Err(CliIdentityResolveError::InvalidEnvFormat {
+                value: "not-a-number".to_string()
+            })
+        );
         unsafe { std::env::remove_var("HEER_NODE_ID"); }
     }
 

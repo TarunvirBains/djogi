@@ -1048,7 +1048,10 @@ pub async fn repair_resume_partial_apply(
         if identity.requires_binding() {
             super::runner::bind_runner_node_identity(
                 &mut pinned,
-                identity.node_id().unwrap_or(1),
+                identity.node_id().expect(
+                    "INVARIANT: node_id is Some when requires_binding is true; \
+                     IdentityFree ruled out by gate above",
+                ),
             )
             .await
             .map_err(|e| {

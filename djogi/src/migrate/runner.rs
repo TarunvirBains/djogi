@@ -1153,8 +1153,14 @@ async fn apply_plan_inner(
     if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
         if let Some(identity) = runner_ctx.runner_identity {
             if identity.requires_binding() {
-                bind_runner_node_identity(ctx, identity.node_id().unwrap_or(1))
-                    .await?;
+                bind_runner_node_identity(
+                    ctx,
+                    identity.node_id().expect(
+                        "INVARIANT: node_id is Some when requires_binding is true; \
+                         IdentityFree ruled out by gate above",
+                    ),
+                )
+                .await?;
             }
         }
     }
@@ -2085,9 +2091,15 @@ async fn rollback_plan_pinned(
 
         // Bind the selected node identity on the pinned rollback
         // connection before down SQL execution.
-        bind_runner_node_identity(ctx, identity.node_id().unwrap_or(1))
-            .await
-            .map_err(RollbackError::Runner)?;
+        bind_runner_node_identity(
+            ctx,
+            identity.node_id().expect(
+                "INVARIANT: node_id is Some when requires_binding is true; \
+                 IdentityFree ruled out by refusal gate above",
+            ),
+        )
+        .await
+        .map_err(RollbackError::Runner)?;
     }
 
     let result = rollback_inner(ctx, &replay_plan, runner_ctx, prior_snapshot, allow_reason).await;
@@ -2422,8 +2434,14 @@ async fn fake_apply_inner(
     if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
         if let Some(identity) = runner_ctx.runner_identity {
             if identity.requires_binding() {
-                bind_runner_node_identity(ctx, identity.node_id().unwrap_or(1))
-                    .await?;
+                bind_runner_node_identity(
+                    ctx,
+                    identity.node_id().expect(
+                        "INVARIANT: node_id is Some when requires_binding is true; \
+                         IdentityFree ruled out by gate above",
+                    ),
+                )
+                .await?;
             }
         }
     }
@@ -2605,8 +2623,14 @@ async fn baseline_inner(
     if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
         if let Some(identity) = runner_ctx.runner_identity {
             if identity.requires_binding() {
-                bind_runner_node_identity(ctx, identity.node_id().unwrap_or(1))
-                    .await?;
+                bind_runner_node_identity(
+                    ctx,
+                    identity.node_id().expect(
+                        "INVARIANT: node_id is Some when requires_binding is true; \
+                         IdentityFree ruled out by gate above",
+                    ),
+                )
+                .await?;
             }
         }
     }
