@@ -170,7 +170,7 @@ fn cross_app_edges_carry_database_fields() {
     // `main`. The graph has no FK into OldBilling (tombstoned, no
     // active models), so every cross-app edge is within `main`:
     let edges = AppRegistry::cross_app_edges();
-    assert!(!edges.is_empty(), "T10 declares cross-app FKs");
+    assert!(!edges.is_empty(), "AppRegistry declares cross-app FKs");
     for edge in edges {
         assert_eq!(edge.source_database, "main", "{edge:?}");
         assert_eq!(edge.target_database, "main", "{edge:?}");

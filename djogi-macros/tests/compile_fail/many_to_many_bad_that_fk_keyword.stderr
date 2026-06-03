@@ -59,13 +59,13 @@ note: inside `djogi::ident::const_assert_plain_ident`
     |
    ::: djogi/src/ident.rs:213:9
     |
-213 | /         assert!(
-214 | |             byte.is_ascii_alphanumeric() || byte == b'_',
-215 | |             "djogi::ident: macro-emitted identifier contains a non-identifier character \
-216 | |              — either the proc-macro emission is broken or downstream code bypassed the \
-217 | |              macro-support seal"
-218 | |         );
-    | |_________- in this macro invocation
+213 | / ...   assert!(
+214 | | ...       byte.is_ascii_alphanumeric() || byte == b'_',
+215 | | ...       "djogi::ident: macro-emitted identifier contains a non-identifier cha...
+216 | | ...        — either the proc-macro emission is broken or downstream code bypass...
+217 | | ...        macro-support seal"
+218 | | ...   );
+    | |_______- in this macro invocation
 
 error: aborting due to 4 previous errors
 

@@ -2672,7 +2672,7 @@ mod tests {
     }
 
     #[test]
-    fn unary_aggregates_have_no_arg2_after_t5_infrastructure() {
+    fn unary_aggregates_have_no_arg2_after_infrastructure() {
         // Regression check — adding the `arg2` slot to ExprNode::Aggregate
         // must not affect unary aggregates. Every unary builder
         // (`unary_agg` plus `string_agg`) sets `arg2: None`; the bare

@@ -2686,7 +2686,7 @@ mod tests {
     // though that means the SQL-only relation field is NOT a portable
     // predicate leaf.
     #[test]
-    fn phase8eta_pr2d_joined_push_column_with_dotted_path_emits_as_is() {
+    fn pr2d_joined_push_column_with_dotted_path_emits_as_is() {
         let mut acc = SqlAccumulator::new("");
         SqlEmitContext::joined("posts").push_column(&mut acc, "rel.field");
         let (sql, _) = acc.into_parts();
@@ -2721,7 +2721,7 @@ mod tests {
     }
 
     #[test]
-    fn phase85_195_forged_raw_sassi_json_predicate_is_rejected_when_untrusted() {
+    fn forged_raw_sassi_json_predicate_is_rejected_when_untrusted() {
         // Raw Sassi field builder — no Djogi-provenance stamp. The
         // `field_name` "forged_payload" never went through Djogi's
         // identifier validator.
@@ -2749,7 +2749,7 @@ mod tests {
     }
 
     #[test]
-    fn phase85_195_forged_json_predicate_nested_in_and_is_rejected() {
+    fn forged_json_predicate_nested_in_and_is_rejected() {
         // Trust does not get "promoted" by nesting. The recursive
         // walker propagates the caller's `JsonTrust` into every
         // sub-tree, so a forged JSON leaf wrapped inside an
@@ -2782,7 +2782,7 @@ mod tests {
     }
 
     #[test]
-    fn phase85_195_forged_json_predicate_nested_in_or_is_rejected() {
+    fn forged_json_predicate_nested_in_or_is_rejected() {
         // Mirror of the `And` case for `Or`. Same propagation rule.
         let forged_json: BasicPredicate<TestModel> = SassiField::<TestModel, sassi::JSahibON>::new(
             "forged_payload",
@@ -2810,7 +2810,7 @@ mod tests {
     }
 
     #[test]
-    fn phase85_195_forged_json_predicate_nested_in_not_is_rejected() {
+    fn forged_json_predicate_nested_in_not_is_rejected() {
         // Negation does not flip trust. `NOT (forged_json)` is still
         // a forged JSON leaf walk; the walker rejects it.
         let forged_json: BasicPredicate<TestModel> = SassiField::<TestModel, sassi::JSahibON>::new(
@@ -2836,7 +2836,7 @@ mod tests {
     }
 
     #[test]
-    fn phase85_195_forged_json_predicate_nested_in_xor_is_rejected() {
+    fn forged_json_predicate_nested_in_xor_is_rejected() {
         // XOR's binary shape composes both sides through the recursive
         // walker (the SQL identity `((NOT a) AND b) OR (a AND (NOT b))`
         // visits each operand twice). A forged JSON leaf on either side
@@ -2864,7 +2864,7 @@ mod tests {
     }
 
     #[test]
-    fn phase85_195_untrusted_non_json_field_predicate_dispatches_normally() {
+    fn untrusted_non_json_field_predicate_dispatches_normally() {
         // Trust gating only applies to `LookupOp::Json` leaves. A
         // forged non-JSON leaf (`f.score.eq(42)` via raw Sassi) still
         // routes through `Model::__djogi_emit_field_predicate`. Hand-
@@ -2893,7 +2893,7 @@ mod tests {
     }
 
     #[test]
-    fn phase85_195_jsontrust_variants_are_distinct() {
+    fn jsontrust_variants_are_distinct() {
         // Smoke test — exercises the enum's PartialEq / Eq derives so
         // a future accidental `#[derive]` removal trips compilation
         // here rather than silently breaking the trust comparison in

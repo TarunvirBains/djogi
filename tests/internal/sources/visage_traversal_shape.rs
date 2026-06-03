@@ -114,7 +114,7 @@ fn visage_traversal_composes_dot_qualified_path_shape() {
     assert_eq!(
         leaf_column_of(&cond),
         "department.name",
-        "T8 traversal must thread the FK column name as SQL-alias prefix"
+        "traversal must thread the FK column name as SQL-alias prefix"
     );
 }
 

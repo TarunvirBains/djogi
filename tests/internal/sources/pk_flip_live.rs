@@ -81,7 +81,7 @@ fn make_runner_ctx(plan: &MigrationPlan, version: &str) -> RunnerCtx {
     RunnerCtx {
         bucket: plan.bucket.clone(),
         version: version.to_string(),
-        description: format!("T9 PK flip {version}"),
+        description: format!("PK flip {version}"),
         checksum_up,
         checksum_down: None,
         snapshot: None,

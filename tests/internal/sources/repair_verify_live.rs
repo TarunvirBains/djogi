@@ -3412,7 +3412,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         named_snap.models.keys().map(String::as_str).collect();
     assert_ne!(
         global_set, named_set,
-        "round-3 A-1: global and named buckets must produce DIFFERENT \
+        "global and named buckets must produce DIFFERENT \
          projections; got identical model sets {global_set:?}"
     );
 

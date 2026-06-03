@@ -273,7 +273,7 @@ mod tests {
     /// reach these names through `crate::query::*`. Compile-only — every
     /// `use` line is the contract.
     #[test]
-    fn phase8eta_pr2a_predicate_substrate_reachable_from_djogi_query() {
+    fn pr2a_predicate_substrate_reachable_from_djogi_query() {
         #[allow(unused_imports)]
         use crate::query::{
             DjogiField, DjogiPortableEq, DjogiPortableOrd, DjogiPresentField,
@@ -298,7 +298,7 @@ mod tests {
     /// `::djogi::__private::query` from generated `impl Model` blocks; this
     /// test covers the in-crate path.
     #[test]
-    fn phase8eta_pr2a_hidden_emit_context_reachable() {
+    fn pr2a_hidden_emit_context_reachable() {
         let _: crate::query::SqlEmitContext = crate::query::SqlEmitContext::root();
         let _: crate::query::SqlEmitContext = crate::query::SqlEmitContext::joined("posts");
         // Compile-only: variant exists.

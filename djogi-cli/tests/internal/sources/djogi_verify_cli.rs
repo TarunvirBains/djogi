@@ -39,7 +39,7 @@
 // # Spec / memory anchors
 //
 // - v3 plan §452, §459–460, §470, §824 — verify CLI semantics.
-// - Plan §T9.7 (`docs/superpowers/plans/granular-phase8/cluster-8epsilon-granular.md`).
+// - Plan specs for verify CLI semantics.
 // - `djogi-cli/src/verify.rs` — the implementation under test.
 
 use std::fs;
@@ -116,7 +116,7 @@ async fn seed_audit_row(
         ctx,
         database,
         app,
-        "-- T9.7 fixture DDL",
+        "-- verify fixture DDL",
         signature_hex,
     )
     .await

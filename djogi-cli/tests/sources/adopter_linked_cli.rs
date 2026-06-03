@@ -299,7 +299,7 @@ fn write_billing_snapshot_with_table(work: &Path) {
 // ── T-POS: compose + schema discover all models from the provider ────────────
 
 #[test]
-fn t_pos_adopter_binary_discovers_all_models() {
+fn adopter_binary_discovers_all_models() {
     let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     let work = tempdir_with_djogi_toml();
 
@@ -339,7 +339,7 @@ fn t_pos_adopter_binary_discovers_all_models() {
 // ── T-NAME: command-name contract ────────────────────────────────────────────
 
 #[test]
-fn t_name_binary_is_named_djogi_and_surface_matches() {
+fn binary_is_named_djogi_and_surface_matches() {
     let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     assert_eq!(
         bin.file_name().expect("fixture bin has a file name"),
@@ -893,7 +893,7 @@ async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
 // ── T-STANDALONE-APPLY: standalone binary applies pending artifacts ──────────
 
 #[djogi::djogi_test]
-async fn t_standalone_apply_with_pending_artifacts(mut ctx: djogi::DjogiContext) {
+async fn apply_with_pending_artifacts(mut ctx: djogi::DjogiContext) {
     // Use the adopter binary to compose (produces pending artifacts with live
     // descriptors), then use the standalone published djogi (zero descriptors)
     // to apply those artifacts — proving apply needs no live descriptors even
@@ -961,5 +961,8 @@ fn t_forbid_unsafe_build_succeeds() {
     assert!(
         bin.exists(),
         "forbid_unsafe binary should exist after a successful build"
+    );
+}
+"
     );
 }
