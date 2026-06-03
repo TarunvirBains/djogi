@@ -963,6 +963,3 @@ fn t_forbid_unsafe_build_succeeds() {
         "forbid_unsafe binary should exist after a successful build"
     );
 }
-"
-    );
-}
