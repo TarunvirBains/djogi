@@ -869,10 +869,17 @@ async fn run_apply(
         }
     };
 
-    // 1b. Resolve node identity for identity-bearing operations.
+    // 2. Discover pending JSONs before resolving identity or connecting to DB.
     // No-pending apply (zero pending files) is an identity-free inverse —
-    // skip the resolver entirely when no pending plans exist. Both real
-    // apply and fake-apply are identity-bearing (run-id generation + ledger).
+    // skip the resolver and pool connection entirely when no pending plans exist.
+    let pending_files = discover_pending_plans(workspace);
+    if pending_files.is_empty() {
+        println!("No pending migrations to {action_verb}.");
+        return 0;
+    }
+
+    // 3. Resolve node identity for identity-bearing operations (only when work exists).
+    // Both real apply and fake-apply are identity-bearing (run-id generation + ledger).
     let runner_identity = match crate::identity::resolve_identity(
         node_id, single_node_dev, &config.profile, action_verb,
     ) {
@@ -883,7 +890,7 @@ async fn run_apply(
         }
     };
 
-    // 2. Build pool and check PG version preflight.
+    // 4. Build pool and check PG version preflight.
     let pool = match djogi::pg::pool::DjogiPool::connect(&config.database.url).await {
         Ok(p) => p,
         Err(e) => {
@@ -896,14 +903,7 @@ async fn run_apply(
         return 2;
     }
 
-    // 3. Discover pending JSONs.
-    let pending_files = discover_pending_plans(workspace);
-    if pending_files.is_empty() {
-        println!("No pending migrations to {action_verb}.");
-        return 0;
-    }
-
-    // 4. Acquire workspace lock.
+    // 5. Acquire workspace lock.
     let lock_path = workspace.join(LOCK_FILE_NAME);
     let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
         Ok(g) => g,
@@ -913,16 +913,16 @@ async fn run_apply(
         }
     };
 
-    // 5. Build audit pool (optional — silently skipped if unavailable).
+    // 6. Build audit pool (optional — silently skipped if unavailable).
     let audit_pool = match djogi::migrate::resolve_audit_url(&config) {
         Ok(url) => djogi::migrate::build_audit_pool(&url).await.ok(),
         Err(_) => None,
     };
 
-    // 6. Build context from pool (not pinned yet — apply_plan pins internally).
+    // 7. Build context from pool (not pinned yet — apply_plan pins internally).
     let mut ctx = djogi::context::DjogiContext::from_pool(pool);
 
-    // 7. Apply each pending migration in order.
+    // 8. Apply each pending migration in order.
     for (pending_path, bucket_database, app_label) in &pending_files {
         println!("  {progress_verb} {bucket_database}/{app_label}...");
         let result = apply_one_pending(
@@ -2009,7 +2009,8 @@ fn repair_error_exit_code(err: &RepairError) -> i32 {
         | RepairError::AdvisoryUnlockReturnedFalse { .. } // session-pinning correctness failure — not a blind retry
         | RepairError::ResumePlanShapeMismatch { .. }
         | RepairError::ReplayPlanShapeMismatch { .. }
-        | RepairError::PhaseZeroArtifactRefused { .. } // #386: refusal — operator must replace the stale file
+        | RepairError::PhaseZeroArtifactRefused { .. }  // #386: refusal — operator must replace the stale file
+        | RepairError::MissingResumeIdentity { .. }     // #386: refusal — operator must supply identity for resume
         => 2,
     }
 }

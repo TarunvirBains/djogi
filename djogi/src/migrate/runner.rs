@@ -3854,18 +3854,34 @@ pub(crate) async fn bind_runner_node_identity(
     ctx: &mut DjogiContext,
     node_id: i32,
 ) -> Result<(), RunnerError> {
-    // Both GUCs bind to the same value unless a future design
-    // explains why they should differ.
-    ctx.batch_execute(&format!(
-        "SELECT set_heer_node_id({node_id}); SELECT set_heer_ranj_node_id({node_id})"
-    ))
-    .await
-    .map_err(|source| RunnerError::NodeIdentityBindingFailed {
-        node_id,
-        source: crate::DjogiError::Db(crate::DbError::other(format!(
-            "bind runner node identity: {source}"
-        ))),
-    })?;
+    // Bind heer.node_id first. Both GUCs bind to the same value unless
+    // a future design explains why they should differ.
+    // Uses parameterized execute ($1) for defense-in-depth: no string
+    // interpolation of caller-supplied values into SQL. The $1 parameter
+    // maps to i32 → PostgreSQL INTEGER via tokio-postgres type coercion.
+    ctx.execute("SELECT set_heer_node_id($1)", &[&node_id])
+        .await
+        .map_err(|source| RunnerError::NodeIdentityBindingFailed {
+            node_id,
+            source: crate::DjogiError::Db(crate::DbError::other(format!(
+                "bind heer.node_id: {source}"
+            ))),
+        })?;
+
+    // Bind heer.ranj_node_id second. If this fails after the first GUC
+    // succeeds, the pinned connection has partial GUC state (heer.node_id
+    // set but heer.ranj_node_id not). However, the error prevents generate_run_id
+    // and user SQL from executing, and the pinned connection is released with
+    // transactional state cleaned up by the existing reconcile/release pattern.
+    ctx.execute("SELECT set_heer_ranj_node_id($1)", &[&node_id])
+        .await
+        .map_err(|source| RunnerError::NodeIdentityBindingFailed {
+            node_id,
+            source: crate::DjogiError::Db(crate::DbError::other(format!(
+                "bind heer.ranj_node_id: {source}"
+            ))),
+        })?;
+
     Ok(())
 }
 
@@ -6505,5 +6521,61 @@ mod tests {
             .try_get(0)
             .expect("count column");
         assert_eq!(count, 1, "Phase 0 apply should insert a ledger row");
+    }
+
+    /// C1/L test: verify dual-GUC split produces distinct error messages.
+    /// When the second GUC (set_heer_ranj_node_id) fails after the first
+    /// succeeds, the error source must reference "bind heer.ranj_node_id"
+    /// and NOT "bind heer.node_id".
+    #[djogi_test]
+    async fn bind_runner_node_identity_second_guc_failure(mut ctx: DjogiContext) {
+        // The #[djogi_test] harness seeds node_id = 1 in heer_nodes.
+        // We use node_id = 1 so the first GUC (set_heer_node_id) passes
+        // its validation, then we replace the second GUC with a wrapper
+        // that raises — exercising the dual-execute split in
+        // bind_runner_node_identity.
+        const TEST_NODE_ID: i32 = 1;
+
+        // Replace set_heer_ranj_node_id(INTEGER) with a wrapper that raises,
+        // so the second execute call fails after the first succeeds. The
+        // HeeRanjID bootstrap installs functions in the current schema
+        // (public), not a "heer" schema — the "heer." prefix is used only
+        // for the GUC names (heer.node_id, heer.ranj_node_id).
+        ctx.execute(
+            "DROP FUNCTION IF EXISTS set_heer_ranj_node_id(INTEGER)",
+            &[],
+        )
+        .await
+        .expect("drop original second GUC function");
+        ctx.execute(
+            "CREATE FUNCTION set_heer_ranj_node_id(INTEGER) RETURNS void AS $$ \
+             BEGIN RAISE EXCEPTION 'simulated second GUC failure'; END; $$ LANGUAGE plpgsql",
+            &[],
+        )
+        .await
+        .expect("create failing wrapper for second GUC");
+
+        let result = super::bind_runner_node_identity(&mut ctx, TEST_NODE_ID).await;
+
+        // The first GUC (set_heer_node_id) should succeed with node_id=1;
+        // the second (our wrapper that raises) should fail. The error must
+        // identify the SECOND call site, not the first.
+        assert!(
+            matches!(&result, Err(RunnerError::NodeIdentityBindingFailed { node_id, .. }) if *node_id == TEST_NODE_ID),
+            "expected NodeIdentityBindingFailed for node_id={TEST_NODE_ID}, got: {result:?}",
+        );
+
+        let source = std::error::Error::source(&result.expect_err("should be error"))
+            .expect("NodeIdentityBindingFailed should have a source")
+            .to_string();
+        assert!(
+            source.contains("bind heer.ranj_node_id"),
+            "error source should identify the second GUC, got: {source}",
+        );
+        // Verify it does NOT contain the first GUC label.
+        assert!(
+            !source.contains("bind heer.node_id"),
+            "error source should not reference the first GUC (that one succeeded), got: {source}",
+        );
     }
 }
