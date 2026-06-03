@@ -952,6 +952,7 @@ pub async fn repair_resume_partial_apply(
     _guard: &WorkspaceGuard,
     version: &str,
     plan: &MigrationPlan,
+    runner_identity: Option<super::runner::RunnerIdentity>,
     confirmation: RepairConfirmation,
 ) -> Result<RepairReport, RepairError> {
     if confirmation != RepairConfirmation::OperatorAcknowledged {
@@ -966,6 +967,25 @@ pub async fn repair_resume_partial_apply(
         .pin_for_migration()
         .await
         .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+
+    // Bind node identity on the pinned connection before replaying SQL.
+    if let Some(identity) = runner_identity {
+        if identity.requires_binding() {
+            super::runner::bind_runner_node_identity(
+                &mut pinned,
+                identity.node_id().unwrap_or(1),
+            )
+            .await
+            .map_err(|e| {
+                RepairError::LedgerIo {
+                    source: crate::DjogiError::Db(crate::DbError::other(format!(
+                        "bind runner node identity: {e}"
+                    ))),
+                }
+            })?;
+        }
+    }
+
     repair_resume_pinned(&mut pinned, version, plan, &plan.bucket, lock_key).await
 }
 

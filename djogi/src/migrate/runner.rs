@@ -3642,7 +3642,7 @@ fn note_for_failed_transactional_segment(seg_idx: usize, e: &RunnerError) -> Str
 /// `generate_run_id` / `HeerId::generate`, user migration SQL, or
 /// any ledger/progress/terminal/snapshot mutation that depends on
 /// the current node identity.
-async fn bind_runner_node_identity(
+pub(crate) async fn bind_runner_node_identity(
     ctx: &mut DjogiContext,
     node_id: i32,
 ) -> Result<(), RunnerError> {

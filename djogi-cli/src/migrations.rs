@@ -702,7 +702,13 @@ fn resolve_bucket_url(db_config: &djogi::config::DatabaseConfig, database: &str)
 /// committed replay plan for each, and drives [`djogi::migrate::apply_plan`]
 /// through the library runner with full crash recovery via the ledger state
 /// machine.
-pub fn apply_cmd(workspace: Option<PathBuf>, fake: bool, reason: Option<String>) -> ExitCode {
+pub fn apply_cmd(
+    workspace: Option<PathBuf>,
+    fake: bool,
+    reason: Option<String>,
+    node_id: Option<u32>,
+    single_node_dev: bool,
+) -> ExitCode {
     let workspace = resolve_workspace(workspace);
 
     // Validate --fake / --reason pairing before doing any expensive work.
@@ -742,7 +748,9 @@ pub fn apply_cmd(workspace: Option<PathBuf>, fake: bool, reason: Option<String>)
         }
     };
 
-    let exit = runtime.block_on(async { run_apply(&workspace, &mode).await });
+    let exit = runtime.block_on(async {
+        run_apply(&workspace, &mode, node_id, single_node_dev).await
+    });
     ExitCode::from(exit as u8)
 }
 
@@ -757,7 +765,12 @@ enum FakeMode {
 }
 
 /// Async body of [`apply_cmd`]. Returns the desired exit code.
-async fn run_apply(workspace: &Path, mode: &FakeMode) -> i32 {
+async fn run_apply(
+    workspace: &Path,
+    mode: &FakeMode,
+    node_id: Option<u32>,
+    single_node_dev: bool,
+) -> i32 {
     use djogi::config::DjogiConfig;
 
     let action_verb = match mode {
@@ -774,6 +787,20 @@ async fn run_apply(workspace: &Path, mode: &FakeMode) -> i32 {
         Ok(c) => c,
         Err(e) => {
             eprintln!("djogi migrations {action_verb}: config load: {e}");
+            return 2;
+        }
+    };
+
+    // 1b. Resolve node identity for identity-bearing operations.
+    // No-pending apply (zero pending files) is an identity-free inverse —
+    // skip the resolver entirely when no pending plans exist. Both real
+    // apply and fake-apply are identity-bearing (run-id generation + ledger).
+    let runner_identity = match crate::identity::resolve_identity(
+        node_id, single_node_dev, &config.profile, action_verb,
+    ) {
+        Ok(resolved) => Some(resolved.into_runner_identity()),
+        Err(e) => {
+            eprintln!("djogi migrations {action_verb}: refused — {e}");
             return 2;
         }
     };
@@ -830,6 +857,7 @@ async fn run_apply(workspace: &Path, mode: &FakeMode) -> i32 {
             &guard,
             audit_pool.as_ref(),
             mode,
+            runner_identity,
         )
         .await;
 
@@ -973,6 +1001,7 @@ async fn apply_one_pending(
     guard: &djogi::migrate::WorkspaceGuard,
     audit_pool: Option<&deadpool_postgres::Pool>,
     mode: &FakeMode,
+    runner_identity: Option<djogi::migrate::RunnerIdentity>,
 ) -> ApplyResult {
     // 1. Parse pending JSON to get bucket + version + checksums.
     let pending_bytes = match std::fs::read(pending_path) {
@@ -1066,7 +1095,7 @@ async fn apply_one_pending(
         },
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::default_for_config(config),
         audit_pool: audit_pool.cloned(),
-        runner_identity: None, // TODO: resolve from --node-id / HEER_NODE_ID / --single-node-dev
+        runner_identity,
     };
 
     // 5. Apply (or fake-apply) the plan through the library runner.
@@ -1788,11 +1817,15 @@ pub fn repair_cmd(command: RepairSubcommand) -> ExitCode {
             app,
             database,
             workspace,
+            node_id,
+            single_node_dev,
         } => repair_resume_partial_apply_cmd(
             &version,
             app.as_deref(),
             database.as_deref(),
             workspace,
+            node_id,
+            single_node_dev,
         ),
         RepairSubcommand::SnapshotRebuild {
             app,
@@ -2220,6 +2253,8 @@ pub fn repair_resume_partial_apply_cmd(
     app: Option<&str>,
     database: Option<&str>,
     workspace: Option<PathBuf>,
+    node_id: Option<u32>,
+    single_node_dev: bool,
 ) -> ExitCode {
     let workspace = resolve_workspace(workspace);
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -2232,8 +2267,10 @@ pub fn repair_resume_partial_apply_cmd(
             return ExitCode::from(1);
         }
     };
-    let exit = runtime
-        .block_on(async { run_repair_resume_partial(&workspace, version, app, database).await });
+    let exit = runtime.block_on(async {
+        run_repair_resume_partial(&workspace, version, app, database,
+                                   node_id, single_node_dev).await
+    });
     ExitCode::from(exit as u8)
 }
 
@@ -2243,6 +2280,8 @@ async fn run_repair_resume_partial(
     version: &str,
     app: Option<&str>,
     database: Option<&str>,
+    node_id: Option<u32>,
+    single_node_dev: bool,
 ) -> i32 {
     use djogi::config::DjogiConfig;
 
@@ -2251,6 +2290,17 @@ async fn run_repair_resume_partial(
         Err(e) => {
             eprintln!("djogi migrations repair resume-partial: config load: {e}");
             return 1;
+        }
+    };
+
+    // Resolve node identity before any DB work.
+    let runner_identity = match crate::identity::resolve_identity(
+        node_id, single_node_dev, &config.profile, "repair resume-partial",
+    ) {
+        Ok(resolved) => Some(resolved.into_runner_identity()),
+        Err(e) => {
+            eprintln!("djogi migrations repair resume-partial: refused — {e}");
+            return 2;
         }
     };
 
@@ -2314,6 +2364,7 @@ async fn run_repair_resume_partial(
         &guard,
         version,
         &plan,
+        runner_identity,
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2518,6 +2569,8 @@ pub fn baseline_cmd(
     app: Option<&str>,
     database: Option<&str>,
     workspace: Option<PathBuf>,
+    node_id: Option<u32>,
+    single_node_dev: bool,
 ) -> ExitCode {
     // Validate --reason before any expensive work, mirroring the
     // `apply --fake --reason` empty-reason gate. The library's
@@ -2545,7 +2598,8 @@ pub fn baseline_cmd(
         }
     };
     let exit = runtime.block_on(async {
-        run_baseline(&workspace, version, description, reason, app, database).await
+        run_baseline(&workspace, version, description, reason, app, database,
+                     node_id, single_node_dev).await
     });
     ExitCode::from(exit as u8)
 }
@@ -2567,6 +2621,8 @@ async fn run_baseline(
     reason: &str,
     app: Option<&str>,
     database: Option<&str>,
+    node_id: Option<u32>,
+    single_node_dev: bool,
 ) -> i32 {
     use djogi::config::DjogiConfig;
 
@@ -2575,6 +2631,17 @@ async fn run_baseline(
         Err(e) => {
             eprintln!("djogi migrations baseline: config load: {e}");
             return 1;
+        }
+    };
+
+    // Resolve node identity before any DB work.
+    let runner_identity = match crate::identity::resolve_identity(
+        node_id, single_node_dev, &config.profile, "baseline",
+    ) {
+        Ok(resolved) => Some(resolved.into_runner_identity()),
+        Err(e) => {
+            eprintln!("djogi migrations baseline: refused — {e}");
+            return 2;
         }
     };
 
@@ -2644,7 +2711,7 @@ async fn run_baseline(
             Ok(url) => djogi::migrate::build_audit_pool(&url).await.ok(),
             Err(_) => None,
         },
-        runner_identity: None, // TODO: resolve from --node-id / HEER_NODE_ID / --single-node-dev
+        runner_identity,
     };
 
     match baseline_plan(&mut ctx, &bucket, &runner_ctx, &guard, reason).await {
