@@ -439,6 +439,18 @@ pub enum RunnerError {
         parent: String,
         statement_label: String,
     },
+
+    /// Non-Phase-0 apply/fake/baseline refused: the runner was called
+    /// without a binding-capable [`RunnerIdentity`], so the process
+    /// cannot bind node identity before `generate_run_id()` or user
+    /// SQL execution. Phase 0 is exempt (uses wall-clock run-id).
+    /// This gate mirrors the rollback inverse at [`rollback_handle_lock`]
+    /// so the apply-family paths refuse missing identity like rollback
+    /// already does.
+    MissingApplyIdentity {
+        /// The migration version that was refused.
+        version: String,
+    },
 }
 
 impl std::fmt::Display for RunnerError {
@@ -744,6 +756,11 @@ impl std::fmt::Display for RunnerError {
                 f,
                 "partition expansion for `{statement_label}` refused: \
                  partitioned parent `{parent}` has 0 leaves in replay-strict mode",
+            ),
+            RunnerError::MissingApplyIdentity { version } => write!(
+                f,
+                "apply refused: version '{version}' requires a binding-capable runner identity \
+                 (not Phase 0, no runner_identity set)",
             ),
         }
     }
@@ -1147,22 +1164,34 @@ async fn apply_plan_inner(
         ExecutionMode::Transactional
     };
 
-    // 5. Bind runner identity on the pinned connection before run-id
-    // generation (non-Phase-0 only — Phase 0 uses wall-clock id
-    // because HeeRanjID is not yet installed).
+    // 5. Gate: non-Phase-0 apply requires a binding-capable runner
+    // identity before `generate_run_id()` (which invokes HeeRanjID-
+    // backed SQL). Mirrors the rollback inverse refusal at
+    // [`rollback_handle_lock`]. Phase 0 remains exempt.
     if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
-        if let Some(identity) = runner_ctx.runner_identity {
-            if identity.requires_binding() {
-                bind_runner_node_identity(
-                    ctx,
-                    identity.node_id().expect(
-                        "INVARIANT: node_id is Some when requires_binding is true; \
-                         IdentityFree ruled out by gate above",
-                    ),
-                )
-                .await?;
+        let identity = match runner_ctx.runner_identity {
+            Some(id) => id,
+            None => {
+                return Err(RunnerError::MissingApplyIdentity {
+                    version: runner_ctx.version.clone(),
+                });
             }
+        };
+        if !identity.requires_binding() {
+            return Err(RunnerError::MissingApplyIdentity {
+                version: runner_ctx.version.clone(),
+            });
         }
+
+        // Bind the selected node identity on the pinned connection.
+        bind_runner_node_identity(
+            ctx,
+            identity.node_id().expect(
+                "INVARIANT: node_id is Some when requires_binding is true; \
+                 IdentityFree ruled out by refusal gate above",
+            ),
+        )
+        .await?;
     }
 
     // 5b. Insert pending ledger row. Generate a fresh run_id.
@@ -2430,20 +2459,33 @@ async fn fake_apply_inner(
         None => fake_note,
     };
 
-    // Bind runner identity before run-id generation (non-Phase-0 only).
+    // Gate: non-Phase-0 fake-apply requires a binding-capable runner
+    // identity before `generate_run_id()`. Mirrors the apply_gate
+    // and rollback inverse. Phase 0 remains exempt.
     if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
-        if let Some(identity) = runner_ctx.runner_identity {
-            if identity.requires_binding() {
-                bind_runner_node_identity(
-                    ctx,
-                    identity.node_id().expect(
-                        "INVARIANT: node_id is Some when requires_binding is true; \
-                         IdentityFree ruled out by gate above",
-                    ),
-                )
-                .await?;
+        let identity = match runner_ctx.runner_identity {
+            Some(id) => id,
+            None => {
+                return Err(RunnerError::MissingApplyIdentity {
+                    version: runner_ctx.version.clone(),
+                });
             }
+        };
+        if !identity.requires_binding() {
+            return Err(RunnerError::MissingApplyIdentity {
+                version: runner_ctx.version.clone(),
+            });
         }
+
+        // Bind the selected node identity on the pinned connection.
+        bind_runner_node_identity(
+            ctx,
+            identity.node_id().expect(
+                "INVARIANT: node_id is Some when requires_binding is true; \
+                 IdentityFree ruled out by refusal gate above",
+            ),
+        )
+        .await?;
     }
 
     let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
@@ -2619,20 +2661,33 @@ async fn baseline_inner(
         app = bucket.app,
     );
 
-    // Bind runner identity before run-id generation (non-Phase-0 only).
+    // Gate: non-Phase-0 baseline requires a binding-capable runner
+    // identity before `generate_run_id()`. Mirrors the apply_gate
+    // and rollback inverse. Phase 0 remains exempt.
     if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
-        if let Some(identity) = runner_ctx.runner_identity {
-            if identity.requires_binding() {
-                bind_runner_node_identity(
-                    ctx,
-                    identity.node_id().expect(
-                        "INVARIANT: node_id is Some when requires_binding is true; \
-                         IdentityFree ruled out by gate above",
-                    ),
-                )
-                .await?;
+        let identity = match runner_ctx.runner_identity {
+            Some(id) => id,
+            None => {
+                return Err(RunnerError::MissingApplyIdentity {
+                    version: runner_ctx.version.clone(),
+                });
             }
+        };
+        if !identity.requires_binding() {
+            return Err(RunnerError::MissingApplyIdentity {
+                version: runner_ctx.version.clone(),
+            });
         }
+
+        // Bind the selected node identity on the pinned connection.
+        bind_runner_node_identity(
+            ctx,
+            identity.node_id().expect(
+                "INVARIANT: node_id is Some when requires_binding is true; \
+                 IdentityFree ruled out by refusal gate above",
+            ),
+        )
+        .await?;
     }
 
     let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
@@ -4664,7 +4719,8 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use crate::config::MigrateConfig;
+   use crate::config::MigrateConfig;
+    use crate::migrate::bootstrap::PHASE_ZERO_VERSION;
     use crate::migrate::diff::Classification;
     use crate::migrate::projection::BucketKey;
     use crate::migrate::schema::AppliedSchema;
@@ -4768,7 +4824,7 @@ mod tests {
             config: MigrateConfig::default(),
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool,
-            runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
+            runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
         }
     }
 
@@ -5507,7 +5563,7 @@ mod tests {
             config: MigrateConfig::default(),
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: Some(audit_pool),
-            runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
+            runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
         };
         let guard = acquire_test_workspace_guard();
 
@@ -5726,7 +5782,7 @@ mod tests {
             },
             out_of_order_policy: crate::migrate::OutOfOrderPolicy::Reject,
             audit_pool: None,
-            runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
+            runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
         };
 
         let guard = acquire_test_workspace_guard();
@@ -5782,7 +5838,7 @@ mod tests {
             },
             out_of_order_policy: crate::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
-            runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
+            runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
         };
 
         let guard = acquire_test_workspace_guard();
@@ -5857,7 +5913,7 @@ mod tests {
                 override_reason: "merge window".to_string(),
             },
             audit_pool: None,
-            runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
+            runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
         };
 
         let guard = acquire_test_workspace_guard();
@@ -6216,5 +6272,238 @@ mod tests {
     #[test]
     fn runner_identity_free_returns_none() {
         assert_eq!(RunnerIdentity::IdentityFree.node_id(), None);
+    }
+
+    // ── Class G: identity gate tests on apply/fake/baseline paths ──
+
+    /// G-gate test: non-Phase-0 apply with `runner_identity: None` must
+    /// refuse with `MissingApplyIdentity` before reaching `generate_run_id`.
+    #[djogi_test]
+    async fn apply_plan_no_identity_non_phase_zero_refused(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        let plan = single_table_plan("g_gate_apply_no_id");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260601000000__g_gate_apply".to_string(),
+            description: "G-gate apply test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None, // intentionally missing — should be refused for non-P0
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "non-P0 apply with no identity should refuse with MissingApplyIdentity, got: {result:?}",
+        );
+
+        // Verify no ledger row was inserted (refusal is before insert).
+        let count: i64 = ctx
+            .query_one(
+                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000000__g_gate_apply'",
+                &[],
+            )
+            .await
+            .expect("count ledger rows")
+            .try_get(0)
+            .expect("count column");
+        assert_eq!(count, 0, "no ledger row should be inserted before the G-gate refusal");
+    }
+
+    /// G-gate test: non-Phase-0 fake apply with `runner_identity: None` must
+    /// refuse with `MissingApplyIdentity` before reaching `generate_run_id`.
+    #[djogi_test]
+    async fn fake_apply_no_identity_non_phase_zero_refused(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        let plan = single_segment_plan(
+            SegmentKind::Transactional,
+            "G-gate fake-apply",
+            "SELECT 1",
+        );
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260601000001__g_gate_fake".to_string(),
+            description: "G-gate fake-apply test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None, // intentionally missing — should be refused for non-P0
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "G-gate test").await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "non-P0 fake-apply with no identity should refuse with MissingApplyIdentity, got: {result:?}",
+        );
+
+        // Verify no ledger row was inserted.
+        let count: i64 = ctx
+            .query_one(
+                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000001__g_gate_fake'",
+                &[],
+            )
+            .await
+            .expect("count ledger rows")
+            .try_get(0)
+            .expect("count column");
+        assert_eq!(count, 0, "no ledger row should be inserted before the G-gate refusal");
+    }
+
+    /// G-gate test: non-Phase-0 baseline with `runner_identity: None` must
+    /// refuse with `MissingApplyIdentity` before reaching `generate_run_id`.
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (PIN): Create a table so the live-DB projection
+    // succeeds and the test can reach the G-gate refusal point.
+    #[djogi_test]
+    async fn baseline_no_identity_non_phase_zero_refused(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        let plan = single_table_plan("g_gate_baseline_no_id");
+        // Baseline needs a populated DB — create the table so projection succeeds.
+        ctx.raw_execute(
+            &format!(
+                "CREATE TABLE {} (id bigint)",
+                "g_gate_baseline_no_id"
+            ),
+            &[],
+        )
+        .await
+        .expect("create table for baseline test");
+
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260601000002__g_gate_baseline".to_string(),
+            description: "G-gate baseline test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None, // baseline requires None
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None, // intentionally missing — should be refused for non-P0
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let bucket = plan.bucket.clone();
+        let result = baseline_plan(&mut ctx, &bucket, &runner_ctx, &guard, "G-gate test").await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "non-P0 baseline with no identity should refuse with MissingApplyIdentity, got: {result:?}",
+        );
+
+        // Verify no ledger row was inserted.
+        let count: i64 = ctx
+            .query_one(
+                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000002__g_gate_baseline'",
+                &[],
+            )
+            .await
+            .expect("count ledger rows")
+            .try_get(0)
+            .expect("count column");
+        assert_eq!(count, 0, "no ledger row should be inserted before the G-gate refusal");
+    }
+
+    /// G-gate test: non-Phase-0 apply with `IdentityFree` must also refuse.
+    #[djogi_test]
+    async fn apply_plan_identity_free_non_phase_zero_refused(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        let plan = single_table_plan("g_gate_apply_idfree");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260601000003__g_gate_idfree".to_string(),
+            description: "G-gate IdentityFree test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: Some(RunnerIdentity::IdentityFree), // IdentityFree — should be refused for non-P0
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "non-P0 apply with IdentityFree should refuse with MissingApplyIdentity, got: {result:?}",
+        );
+
+        // Verify no ledger row was inserted.
+        let count: i64 = ctx
+            .query_one(
+                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000003__g_gate_idfree'",
+                &[],
+            )
+            .await
+            .expect("count ledger rows")
+            .try_get(0)
+            .expect("count column");
+        assert_eq!(count, 0, "no ledger row should be inserted before the G-gate refusal");
+    }
+
+    /// G-gate carve-out: Phase 0 apply with `runner_identity: None` must
+    /// succeed — Phase 0 uses wall-clock run-id and is exempt from identity binding.
+    #[djogi_test]
+    async fn apply_phase_zero_no_identity_allowed(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        let plan = single_table_plan("g_gate_p0_apply");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            description: "G-gate Phase 0 carve-out test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None, // Phase 0 — should NOT be refused
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            result.is_ok(),
+            "Phase 0 apply with no identity should succeed (carve-out), got: {result:?}",
+        );
+
+        // Verify the ledger row was inserted.
+        let count: i64 = ctx
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = '{}'",
+                    PHASE_ZERO_VERSION
+                ),
+                &[],
+            )
+            .await
+            .expect("count ledger rows")
+            .try_get(0)
+            .expect("count column");
+        assert_eq!(count, 1, "Phase 0 apply should insert a ledger row");
     }
 }

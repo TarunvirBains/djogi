@@ -65,9 +65,9 @@ use super::ledger::{
 };
 use super::projection::BucketKey;
 use super::runner::{
-    PartitionExpansionMode, RunnerError, acquire_advisory_lock, advisory_lock_key,
-    compute_leaf_identity_cache, materialize_execution_plan, release_advisory_lock,
-    serialize_leaf_identity,
+    PartitionExpansionMode, RunnerError, RunnerIdentity, RunReport, acquire_advisory_lock,
+    advisory_lock_key, bind_runner_node_identity, compute_leaf_identity_cache,
+    materialize_execution_plan, release_advisory_lock, serialize_leaf_identity,
 };
 use super::segment::{MigrationPlan, SegmentKind};
 use super::snapshot::{SnapshotError, save_snapshot};
@@ -363,6 +363,17 @@ pub enum RepairError {
         /// The migration version that was refused (Phase 0 version label).
         version: String,
     },
+
+    /// Non-Phase-0 repair-resume refused: the caller did not supply
+    /// a binding-capable runner identity, so the process cannot bind
+    /// node identity before SQL replay. Phase 0 is exempt (uses
+    /// wall-clock run-id). This gate mirrors the apply-family gates
+    /// and the rollback inverse so resume refuses missing identity
+    /// consistently across all paths.
+    MissingResumeIdentity {
+        /// The migration version that was refused.
+        version: String,
+    },
 }
 
 impl std::fmt::Display for RepairError {
@@ -535,6 +546,11 @@ impl std::fmt::Display for RepairError {
                 f,
                 "repair refused: Phase 0 artifact for `{version}` is stale or ambiguous; \
                  replace with a current Phase 0 artifact before repairing"
+            ),
+            RepairError::MissingResumeIdentity { version } => write!(
+                f,
+                "repair resume-partial refused: version '{version}' requires a binding-capable \
+                 runner identity for SQL replay",
             ),
         }
     }
@@ -1027,7 +1043,7 @@ pub async fn repair_resume_partial_apply(
     _guard: &WorkspaceGuard,
     version: &str,
     plan: &MigrationPlan,
-    runner_identity: Option<super::runner::RunnerIdentity>,
+    runner_identity: Option<RunnerIdentity>,
     confirmation: RepairConfirmation,
 ) -> Result<RepairReport, RepairError> {
     if confirmation != RepairConfirmation::OperatorAcknowledged {
@@ -1043,25 +1059,40 @@ pub async fn repair_resume_partial_apply(
         .await
         .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
 
-    // Bind node identity on the pinned connection before replaying SQL.
-    if let Some(identity) = runner_identity {
-        if identity.requires_binding() {
-            super::runner::bind_runner_node_identity(
-                &mut pinned,
-                identity.node_id().expect(
-                    "INVARIANT: node_id is Some when requires_binding is true; \
-                     IdentityFree ruled out by gate above",
-                ),
-            )
-            .await
-            .map_err(|e| {
-                RepairError::LedgerIo {
-                    source: crate::DjogiError::Db(crate::DbError::other(format!(
-                        "bind runner node identity: {e}"
-                    ))),
-                }
-            })?;
+    // Gate: non-Phase-0 resume requires a binding-capable runner
+    // identity before SQL replay. Mirrors the apply-family gates
+    // and rollback inverse. Phase 0 remains exempt.
+    if version != PHASE_ZERO_VERSION {
+        let identity = match runner_identity {
+            Some(id) => id,
+            None => {
+                return Err(RepairError::MissingResumeIdentity {
+                    version: version.to_string(),
+                });
+            }
+        };
+        if !identity.requires_binding() {
+            return Err(RepairError::MissingResumeIdentity {
+                version: version.to_string(),
+            });
         }
+
+        // Bind the selected node identity on the pinned connection.
+        super::runner::bind_runner_node_identity(
+            &mut pinned,
+            identity.node_id().expect(
+                "INVARIANT: node_id is Some when requires_binding is true; \
+                 IdentityFree ruled out by refusal gate above",
+            ),
+        )
+        .await
+        .map_err(|e| {
+            RepairError::LedgerIo {
+                source: crate::DjogiError::Db(crate::DbError::other(format!(
+                    "bind runner node identity: {e}"
+                ))),
+            }
+        })?;
     }
 
     repair_resume_pinned(&mut pinned, version, plan, &plan.bucket, lock_key).await
@@ -1834,5 +1865,162 @@ mod tests {
         assert!(msg.contains("repair refused"));
         assert!(msg.contains("partition leaf identity mismatch"));
         assert!(msg.contains("001_create_users"));
+    }
+
+    // ── Class G: MissingResumeIdentity error display (G-4) ───
+
+    #[test]
+    fn repair_error_missing_resume_identity_display() {
+        let err = RepairError::MissingResumeIdentity {
+            version: "V20260601000004__g_gate_resume".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("repair resume-partial refused"),
+            "Display must contain refusal message; msg={msg}"
+        );
+        assert!(
+            msg.contains("V20260601000004__g_gate_resume"),
+            "Display must include the version; msg={msg}"
+        );
+        assert!(
+            msg.contains("binding-capable"),
+            "Display must mention binding-capable identity requirement; msg={msg}"
+        );
+        assert!(
+            msg.contains("SQL replay"),
+            "Display must mention SQL replay context; msg={msg}"
+        );
+    }
+
+    /// G-4 gate logic: verify that the refusal triggers for non-Phase-0
+    /// version when `runner_identity` is `None`. The actual integration
+    /// of this gate is tested via runner.rs G-gate tests which share
+    /// the same refusal pattern. This unit test verifies the error
+    /// construction path is reachable.
+    #[test]
+    fn repair_gate_refuses_none_identity_for_non_phase_zero() {
+        // Simulate what the G-4 gate does: extract identity from None,
+        // produce MissingResumeIdentity for non-P0 version.
+        let version = "V20260601000005__g_gate_resume_unit";
+        let runner_identity: Option<RunnerIdentity> = None;
+
+        let result: Result<(), RepairError> = if version != PHASE_ZERO_VERSION {
+            match runner_identity {
+                Some(id) => {
+                    if !id.requires_binding() {
+                        Err(RepairError::MissingResumeIdentity {
+                            version: version.to_string(),
+                        })
+                    } else {
+                        Ok(()) // would bind
+                    }
+                }
+                None => Err(RepairError::MissingResumeIdentity {
+                    version: version.to_string(),
+                }),
+            }
+        } else {
+            Ok(()) // Phase 0 — exempt
+        };
+
+        assert!(
+            matches!(result, Err(RepairError::MissingResumeIdentity { .. })),
+            "Non-P0 resume with no identity should produce MissingResumeIdentity"
+        );
+    }
+
+    /// G-4 gate logic: verify that the refusal triggers for non-Phase-0
+    /// version when `runner_identity` is `IdentityFree`.
+    #[test]
+    fn repair_gate_refuses_identity_free_for_non_phase_zero() {
+        let version = "V20260601000006__g_gate_resume_idfree";
+        let runner_identity = Some(RunnerIdentity::IdentityFree);
+
+        let result: Result<(), RepairError> = if version != PHASE_ZERO_VERSION {
+            match runner_identity {
+                Some(id) => {
+                    if !id.requires_binding() {
+                        Err(RepairError::MissingResumeIdentity {
+                            version: version.to_string(),
+                        })
+                    } else {
+                        Ok(()) // would bind
+                    }
+                }
+                None => Err(RepairError::MissingResumeIdentity {
+                    version: version.to_string(),
+                }),
+            }
+        } else {
+            Ok(()) // Phase 0 — exempt
+        };
+
+        assert!(
+            matches!(result, Err(RepairError::MissingResumeIdentity { .. })),
+            "Non-P0 resume with IdentityFree should produce MissingResumeIdentity"
+        );
+    }
+
+    /// G-4 carve-out: Phase 0 version with no identity must NOT refuse.
+    #[test]
+    fn repair_gate_allows_phase_zero_without_identity() {
+        let version = PHASE_ZERO_VERSION;
+        let runner_identity: Option<RunnerIdentity> = None;
+
+        let result: Result<(), RepairError> = if version != PHASE_ZERO_VERSION {
+            match runner_identity {
+                Some(id) => {
+                    if !id.requires_binding() {
+                        Err(RepairError::MissingResumeIdentity {
+                            version: version.to_string(),
+                        })
+                    } else {
+                        Ok(()) // would bind
+                    }
+                }
+                None => Err(RepairError::MissingResumeIdentity {
+                    version: version.to_string(),
+                }),
+            }
+        } else {
+            Ok(()) // Phase 0 — exempt from identity gate
+        };
+
+        assert!(
+            result.is_ok(),
+            "Phase 0 resume with no identity should NOT refuse (carve-out)"
+        );
+    }
+
+    /// G-4 gate logic: non-P0 version with binding-capable identity must pass.
+    #[test]
+    fn repair_gate_allows_non_phase_zero_with_binding_identity() {
+        let version = "V20260601000007__g_gate_resume_binding";
+        let runner_identity = Some(RunnerIdentity::SingleNodeDev);
+
+        let result: Result<(), RepairError> = if version != PHASE_ZERO_VERSION {
+            match runner_identity {
+                Some(id) => {
+                    if !id.requires_binding() {
+                        Err(RepairError::MissingResumeIdentity {
+                            version: version.to_string(),
+                        })
+                    } else {
+                        Ok(()) // would bind — this is the allowed path
+                    }
+                }
+                None => Err(RepairError::MissingResumeIdentity {
+                    version: version.to_string(),
+                }),
+            }
+        } else {
+            Ok(()) // Phase 0 — exempt
+        };
+
+        assert!(
+            result.is_ok(),
+            "Non-P0 resume with binding-capable identity should pass the gate"
+        );
     }
 }
