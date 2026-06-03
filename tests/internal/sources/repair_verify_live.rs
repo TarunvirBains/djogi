@@ -294,6 +294,7 @@ fn make_runner_ctx(
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         // T9.4 audit-pool plumbing: not exercised in T5 paths.
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     }
 }
 
@@ -968,6 +969,7 @@ async fn repair_checksum_drift_updates_row(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &new_checksum,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -1013,6 +1015,7 @@ async fn repair_checksum_drift_rejects_invalid_checksum(mut ctx: djogi::DjogiCon
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         "V1:not_lowercase_hex_at_all_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -1170,6 +1173,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkRolledBack,
         "manual rollback completed by ops",
         RepairConfirmation::OperatorAcknowledged,
@@ -1231,6 +1235,7 @@ async fn repair_partial_apply_marks_faked(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkFaked,
         "out-of-band fix already in place",
         RepairConfirmation::OperatorAcknowledged,
@@ -1271,6 +1276,7 @@ async fn repair_partial_apply_marks_applied(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkApplied,
         "manually completed remaining steps",
         RepairConfirmation::OperatorAcknowledged,
@@ -1304,6 +1310,7 @@ async fn repair_partial_apply_rejects_already_applied(mut ctx: djogi::DjogiConte
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkRolledBack,
         "test",
         RepairConfirmation::OperatorAcknowledged,
@@ -2482,6 +2489,7 @@ async fn repair_checksum_drift_repairs_both_up_and_down(mut ctx: djogi::DjogiCon
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &new_up,
         Some(&new_down),
         RepairConfirmation::OperatorAcknowledged,
@@ -2594,6 +2602,7 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
         &_guard,
         &runner_ctx.version,
         &plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2715,6 +2724,7 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
         &_guard,
         &runner_ctx.version,
         &plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2767,6 +2777,7 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
         &_guard,
         &runner_ctx.version,
         &plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2826,6 +2837,7 @@ async fn repair_resume_rejects_plan_checksum_mismatch(mut ctx: djogi::DjogiConte
         &_guard,
         version,
         &plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2871,6 +2883,7 @@ async fn baseline_projects_live_database_into_snapshot(mut ctx: djogi::DjogiCont
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     };
     let _plan = plan; // unused — baseline does not consume the plan SQL
 
@@ -2919,6 +2932,7 @@ async fn baseline_rejects_caller_supplied_snapshot(mut ctx: djogi::DjogiContext)
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     };
     let _plan = plan;
 
@@ -2988,6 +3002,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     };
     baseline_plan(
         &mut ctx,
@@ -3021,6 +3036,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     };
     baseline_plan(
         &mut ctx,
@@ -3181,6 +3197,7 @@ async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djog
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         new_checksum,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -3329,6 +3346,7 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
                 &_guard,
                 &other_seed_plan.bucket,
                 &other_seed_ctx.version,
+                &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
                 &other_checksum,
                 None,
                 RepairConfirmation::OperatorAcknowledged,
@@ -3350,6 +3368,7 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
                 &_guard,
                 &same_seed_plan.bucket,
                 &same_seed_ctx.version,
+                &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
                 &same_checksum,
                 None,
                 RepairConfirmation::OperatorAcknowledged,
@@ -3367,6 +3386,7 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
             &_guard,
             &same_seed_plan.bucket,
             &same_seed_ctx.version,
+            &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
             &same_checksum,
             None,
             RepairConfirmation::OperatorAcknowledged,
@@ -3423,6 +3443,7 @@ async fn repair_checksum_drift_reports_advisory_lock_budget_exhaustion(
             &_guard,
             &plan.bucket,
             &runner_ctx.version,
+            &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
             &new_checksum,
             None,
             RepairConfirmation::OperatorAcknowledged,
@@ -3531,6 +3552,7 @@ async fn apply_waits_while_repair_resume_holds_same_bucket_lock(mut ctx: djogi::
         &_guard,
         &resume_ctx.version,
         &resume_plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     );
 
@@ -3619,6 +3641,7 @@ async fn repair_checksum_drift_rejects_wrong_bucket_app_and_releases_lock(
         &_guard,
         &wrong_bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &runner_ctx.checksum_up,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -3688,6 +3711,7 @@ async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
         &_guard,
         &wrong_bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkRolledBack,
         "test note",
         RepairConfirmation::OperatorAcknowledged,
@@ -3860,6 +3884,7 @@ async fn repair_checksum_drift_pool_backed_context_pins_session(
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        &std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &fresh_checksum,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -3947,6 +3972,7 @@ async fn repair_resume_partial_apply_refuses_when_replay_stream_is_shorter_than_
         &_guard,
         &runner_ctx.version,
         &plan,
+        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await

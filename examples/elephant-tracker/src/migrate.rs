@@ -257,6 +257,7 @@ async fn apply_descriptor_schema(
             config: MigrateConfig::default(),
             out_of_order_policy: OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
+            runner_identity: None, // example does not use runner identity
         };
 
         apply_plan(ctx, &plan, &runner_ctx, guard)

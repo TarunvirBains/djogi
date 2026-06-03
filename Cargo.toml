@@ -9,7 +9,7 @@ exclude = ["sassi-reference"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/TarunvirBains/djogi"
@@ -123,5 +123,5 @@ phf = { version = "0.13", features = ["macros"] }
 # path; published tarballs use the version. The cyclic dev-dep from djogi-macros
 # back to djogi is handled by overriding to path-only in djogi-macros's
 # `[dev-dependencies]` (dev-deps are stripped from published tarballs anyway).
-djogi = { path = "djogi", version = "0.1.0-alpha.0" }
-djogi-macros = { path = "djogi-macros", version = "0.1.0-alpha.0" }
+djogi = { path = "djogi", version = "0.1.0-alpha.9" }
+djogi-macros = { path = "djogi-macros", version = "0.1.0-alpha.9" }
