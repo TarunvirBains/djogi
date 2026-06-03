@@ -195,10 +195,7 @@ async fn insert_select_framework_columns_populated_by_defaults(mut ctx: djogi::D
 
     // Archive ids are FRESH (not the source ids). Convert HeerIdDesc
     // values into the raw i64 backing them for the comparison.
-    let archives = C4bArchive::objects()
-        .fetch_all(&mut ctx)
-        .await
-        .unwrap();
+    let archives = C4bArchive::objects().fetch_all(&mut ctx).await.unwrap();
     assert_eq!(archives.len(), 4);
     for archive in &archives {
         let archive_id: i64 = archive.id.as_i64();

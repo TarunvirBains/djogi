@@ -4,7 +4,8 @@ error[E0599]: no method named `distinct` found for struct `AggregateExpr<f64, Or
 14 |         f.score().percentile_disc(0.5).distinct()
    |                                        ^^^^^^^^ method not found in `AggregateExpr<f64, OrderedSetAgg>`
    |
-   = note: the method was found for `AggregateExpr<Out>`
+   = note: the method was found for
+           - `AggregateExpr<Out>`
 
 error: aborting due to 1 previous error
 

@@ -4,7 +4,8 @@ error[E0599]: no method named `distinct` found for struct `AggregateExpr<i32, Me
 4 |     let _ = djogi::grouping_of(&["region", "dept"]).distinct();
   |                                                     ^^^^^^^^ method not found in `AggregateExpr<i32, MetadataAgg>`
   |
-  = note: the method was found for `AggregateExpr<Out>`
+  = note: the method was found for
+          - `AggregateExpr<Out>`
 
 error: aborting due to 1 previous error
 

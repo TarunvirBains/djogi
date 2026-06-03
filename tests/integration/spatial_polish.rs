@@ -79,7 +79,7 @@ use djogi::query::spatial_grouping::{
 // ascending HeerId so the explicit `djogi::HeerId::from_i64(0)` sentinels
 // in the seed helpers and per-test constructions stay type-compatible
 // with the injected `id` field.
-#[model(table = "stores_p65", pk = HeerId, no_default)]
+#[model(table = "stores_polish", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Store {
     pub name: String,
@@ -87,7 +87,7 @@ pub struct Store {
 }
 
 /// Neighborhood polygon — the "region" side for `group_by_region` tests.
-#[model(table = "neighborhoods_p65", pk = HeerId, no_default)]
+#[model(table = "neighborhoods_polish", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Neighborhood {
     pub name: String,
@@ -95,7 +95,7 @@ pub struct Neighborhood {
 }
 
 /// Route linestring — exercises the linestring–polygon `intersects` test.
-#[model(table = "routes_p65", pk = HeerId, no_default)]
+#[model(table = "routes_polish", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Route {
     pub name: String,
@@ -103,7 +103,7 @@ pub struct Route {
 }
 
 /// Coverage MultiPolygon — exercises the MultiPolygon containment test.
-#[model(table = "coverage_p65", pk = HeerId, no_default)]
+#[model(table = "coverage_polish", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Coverage {
     pub name: String,
@@ -111,7 +111,7 @@ pub struct Coverage {
 }
 
 /// Parcel Polygon used as the "touches" adjacency fixture.
-#[model(table = "parcels_p65", pk = HeerId, no_default)]
+#[model(table = "parcels_polish", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Parcel {
     pub name: String,

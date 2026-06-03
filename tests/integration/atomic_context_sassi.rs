@@ -216,4 +216,3 @@ async fn pool_backed_context_atomic_rolls_back_on_panic(mut ctx: djogi::DjogiCon
         "pool-backed context atomic must roll back before resuming panic"
     );
 }
-

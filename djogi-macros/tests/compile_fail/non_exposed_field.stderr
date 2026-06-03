@@ -1,11 +1,11 @@
-error[E0599]: no associated function or constant named `email` found for struct `UserPublicFields<RootModel>` in the current scope
+error[E0599]: no function or associated item named `email` found for struct `UserPublicFields<RootModel>` in the current scope
   --> $DIR/non_exposed_field.rs:21:34
    |
 10 | #[model(table = "users_t7_non_exposed_field")]
-   | ---------------------------------------------- associated function or constant `email` not found for this struct
+   | ---------------------------------------------- function or associated item `email` not found for this struct
 ...
 21 |     let _bad = UserPublicFields::email();
-   |                                  ^^^^^ associated function or constant not found in `UserPublicFields<_>`
+   |                                  ^^^^^ function or associated item not found in `UserPublicFields<_>`
    |
 note: if you're trying to build a new `UserPublicFields<_>` consider using one of the following associated functions:
       UserPublicFields::<RootModel>::new

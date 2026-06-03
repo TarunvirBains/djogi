@@ -67,7 +67,7 @@ pub struct Order {
 /// `partition_id` groups rows into partitions; `seq` is the in-partition
 /// ordering key (integer monotone — avoids the flakiness that would come
 /// from relying on `created_at` millisecond resolution).
-#[model(table = "runs_p65", pk = HeerId)]
+#[model(table = "runs_aggregate", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Run {
     pub partition_id: i64,

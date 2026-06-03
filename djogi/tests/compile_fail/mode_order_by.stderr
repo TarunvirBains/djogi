@@ -4,7 +4,8 @@ error[E0599]: no method named `order_by` found for struct `AggregateExpr<i64, Or
 13 |         f.payment_method().mode().order_by(f.payment_method().asc())
    |                                   ^^^^^^^^ method not found in `AggregateExpr<i64, OrderedSetAgg>`
    |
-   = note: the method was found for `AggregateExpr<Out>`
+   = note: the method was found for
+           - `AggregateExpr<Out>`
 
 error: aborting due to 1 previous error
 

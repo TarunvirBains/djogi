@@ -1,11 +1,11 @@
-error[E0599]: no associated function or constant named `get_insecurely` found for struct `Plain` in the current scope
+error[E0599]: no function or associated item named `get_insecurely` found for struct `Plain` in the current scope
   --> $DIR/insecurely_not_on_plain_model.rs:20:20
    |
 13 | pub struct Plain {
-   | ---------------- associated function or constant `get_insecurely` not found for this struct
+   | ---------------- function or associated item `get_insecurely` not found for this struct
 ...
 20 |     let _ = Plain::get_insecurely;
-   |                    ^^^^^^^^^^^^^^ associated function or constant not found in `Plain`
+   |                    ^^^^^^^^^^^^^^ function or associated item not found in `Plain`
 
 error: aborting due to 1 previous error
 

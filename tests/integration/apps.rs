@@ -194,4 +194,3 @@ fn cross_app_cycles_empty_for_acyclic_graph() {
     let cycles = AppRegistry::cross_app_cycles();
     assert!(cycles.is_empty(), "expected zero cycles; got {cycles:?}");
 }
-

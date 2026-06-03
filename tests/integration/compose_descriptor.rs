@@ -81,7 +81,7 @@ fn auditable_field_descriptor_carries_composed_via() {
 // `composed_via: Some("SoftDeletable")`.
 //
 // Detection was tightened from field-name-only to
-// field-name-plus-flag, eliminating the false-positive risk: 
+// field-name-plus-flag, eliminating the false-positive risk:
 // an adopter who declares a
 // `deleted_at` column without opting into the composition no longer
 // sees the (informational) tag on that column. Counter-test 3a below

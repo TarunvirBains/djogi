@@ -1161,10 +1161,9 @@ async fn execute_returning_pairs_events_model_emits_save_outbox_per_pair(
 
     assert_eq!(pairs.len(), rows.len(), "one pair per updated row");
 
-    let outbox_rows =
-        djogi::testing::outbox_rows_for_test(&mut ctx, "bulk_outbox_evt_row_outbox")
-            .await
-            .expect("read bulk_outbox_evt_row_outbox rows");
+    let outbox_rows = djogi::testing::outbox_rows_for_test(&mut ctx, "bulk_outbox_evt_row_outbox")
+        .await
+        .expect("read bulk_outbox_evt_row_outbox rows");
 
     assert_eq!(
         outbox_rows.len(),

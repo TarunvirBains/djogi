@@ -9,7 +9,8 @@ error[E0599]: no method named `left_join_closure_pair` found for struct `djogi::
    | |_________|
    |
    |
-   = note: the method was found for `djogi::JoinedQuerySet<L, L>`
+   = note: the method was found for
+           - `djogi::JoinedQuerySet<L, L>`
 
 error: aborting due to 1 previous error
 

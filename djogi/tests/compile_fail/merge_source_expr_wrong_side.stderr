@@ -1,4 +1,4 @@
-error[E0277]: the trait bound `Expr<String>: IntoMergeTargetExpr<..., ...>` is not satisfied
+error[E0277]: the trait bound `Expr<String>: IntoMergeTargetExpr<SourceExprTarget, String>` is not satisfied
     --> $DIR/merge_source_expr_wrong_side.rs:34:33
      |
   34 |                 .merge_set_expr(SourceExprSource::fields().label().as_expr()),
@@ -21,7 +21,7 @@ help: the following other types implement trait `IntoMergeTargetExpr<T, V>`
 note: required by a bound in `merge::<impl DjogiField<T, V>>::merge_set_expr`
     --> djogi/src/query/merge.rs:1291:12
      |
-1289 |     pub fn merge_set_expr<S: Model, E>(self, value: E) -> MergeUpdateAssignment<...
+1289 |     pub fn merge_set_expr<S: Model, E>(self, value: E) -> MergeUpdateAssignment<S, T>
      |            -------------- required by a bound in this associated function
 1290 |     where
 1291 |         E: IntoMergeTargetExpr<T, V>,

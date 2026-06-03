@@ -53,12 +53,11 @@ async fn cross_join_values_basic_cartesian_product(mut ctx: DjogiContext) {
     )
     .expect("valid InlineValues");
 
-    let pairs: Vec<(C4bValuesCrossAnimal, (String,))> =
-        C4bValuesCrossAnimal::objects()
-            .cross_join_values(labels)
-            .fetch_all(&mut ctx)
-            .await
-            .expect("fetch_all");
+    let pairs: Vec<(C4bValuesCrossAnimal, (String,))> = C4bValuesCrossAnimal::objects()
+        .cross_join_values(labels)
+        .fetch_all(&mut ctx)
+        .await
+        .expect("fetch_all");
 
     // 2 model rows × 2 VALUES rows = 4 pairs.
     assert_eq!(pairs.len(), 4, "2 × 2 = 4 Cartesian pairs expected");
@@ -95,12 +94,11 @@ async fn cross_join_values_empty_values_returns_empty(mut ctx: DjogiContext) {
     let empty: InlineValues<(String,)> =
         InlineValues::new(vec![], "lbl", ("tag",)).expect("valid empty InlineValues");
 
-    let pairs: Vec<(C4bValuesCrossAnimal, (String,))> =
-        C4bValuesCrossAnimal::objects()
-            .cross_join_values(empty)
-            .fetch_all(&mut ctx)
-            .await
-            .expect("fetch_all");
+    let pairs: Vec<(C4bValuesCrossAnimal, (String,))> = C4bValuesCrossAnimal::objects()
+        .cross_join_values(empty)
+        .fetch_all(&mut ctx)
+        .await
+        .expect("fetch_all");
 
     assert!(
         pairs.is_empty(),
@@ -116,13 +114,12 @@ async fn cross_join_values_none_queryset_returns_empty(mut ctx: DjogiContext) {
     let labels: InlineValues<(String,)> =
         InlineValues::new(vec![("a".to_string(),)], "lbl", ("tag",)).expect("valid");
 
-    let pairs: Vec<(C4bValuesCrossAnimal, (String,))> =
-        C4bValuesCrossAnimal::objects()
-            .none()
-            .cross_join_values(labels)
-            .fetch_all(&mut ctx)
-            .await
-            .expect("fetch_all");
+    let pairs: Vec<(C4bValuesCrossAnimal, (String,))> = C4bValuesCrossAnimal::objects()
+        .none()
+        .cross_join_values(labels)
+        .fetch_all(&mut ctx)
+        .await
+        .expect("fetch_all");
 
     assert!(pairs.is_empty(), "none() queryset → zero Cartesian pairs");
 }
