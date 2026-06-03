@@ -41,7 +41,7 @@
 // test is using. We follow the established
 // `zero_db_reset_replays_phase_zero` pattern: open an
 // independent admin connection, `CREATE DATABASE` a sibling
-// `djogi_c2_118_replay_<stamp>`, run reset against it, then
+// `replay_<stamp>`, run reset against it, then
 // drop the virgin DB in cleanup.
 //
 // # Single-DB simplification (vs. the spec's two-DB model)

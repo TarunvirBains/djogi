@@ -9,7 +9,7 @@
 
 use djogi::prelude::*;
 
-#[model(table = "zero2_t10_users_narrow")]
+#[model(table = "users_narrow")]
 #[derive(Debug, Clone)]
 pub struct User {
     #[field(expose(public))]

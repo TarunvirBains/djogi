@@ -1,10 +1,10 @@
--- Phase 4 Task 6 — outbox companion for `notifications`.
+-- Integration fixture: outbox companion for `notifications`.
 --
 -- `#[field(outbox = "ignore")]` is applied to `internal_notes` on the
 -- `Notification` model; the payload-shaping helper in
 -- `djogi/src/outbox.rs` strips that column from the JSONB emitted
 -- into this table. Macro-side DDL emission is deferred (intended
--- for Phase 7); this file stands in until then.
+-- for later development); this file stands in until then.
 
 CREATE TABLE IF NOT EXISTS notifications_outbox (
     id         BIGINT      PRIMARY KEY DEFAULT generate_id(),

@@ -3683,7 +3683,7 @@ mod tests {
     static OWNERS_JOIN_DESC: ModelDescriptor = ModelDescriptor {
         ..model_descriptor(
             "Owner",
-            "owners_p3",
+            "owners",
             PkType::HeerId,
             &[FieldDescriptor {
                 unique: true,
@@ -3708,7 +3708,7 @@ mod tests {
     fn owner_path() -> ErasedSelectRelated {
         ErasedSelectRelated {
             source_column: "owner_id",
-            child_table: "owners_p3",
+            child_table: "owners",
             decoder: dummy_join_decoder,
             child_descriptor: owners_join_descriptor,
         }
@@ -3718,7 +3718,7 @@ mod tests {
     fn joined_select_qualifies_where_column_refs_with_parent_table() {
         // `.select_related(owner).filter(|f| f.id.eq(x))` must emit
         // `WHERE fakes.id = $1`, not `WHERE id = $1`. Live Postgres
-        // raises 42702 on the bare form because `owners_p3.id` is
+        // raises 42702 on the bare form because `owners.id` is
         // simultaneously in scope via the LEFT JOIN.
         let mut qs: QuerySet<Fake> =
             QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("id", FilterValue::I64(42))));
@@ -3729,7 +3729,7 @@ mod tests {
         // And the LEFT JOIN stays in place — the fix must not drop the
         // join clause while qualifying the where.
         assert!(
-            sql.contains("LEFT JOIN owners_p3 rel_owner_id"),
+            sql.contains("LEFT JOIN owners rel_owner_id"),
             "LEFT JOIN missing, got: {sql}"
         );
     }

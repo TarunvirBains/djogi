@@ -1,4 +1,4 @@
--- Phase 5 Task 5 fixup: typed_posts table for Jsonb<T> round-trip tests.
+-- typed_posts table for Jsonb<T> round-trip tests.
 --
 -- Uses the same schema as `posts` but the Rust model declares `specs` as
 -- `Jsonb<PostSpec>` (typed schema) rather than `Jsonb<serde_json::Value>`.

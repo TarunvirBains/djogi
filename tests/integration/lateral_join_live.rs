@@ -107,7 +107,7 @@ async fn test_left_lateral_join_live(mut ctx: djogi::DjogiContext) {
     )
     .await
     .unwrap();
-    let _p2 = Project::create(
+    let _project2 = Project::create(
         &mut ctx,
         Project {
             name: "P2".into(),
@@ -235,7 +235,7 @@ async fn test_lateral_count_live(mut ctx: djogi::DjogiContext) {
     )
     .await
     .unwrap();
-    let _p2 = Project::create(
+    let _project2 = Project::create(
         &mut ctx,
         Project {
             name: "P2".into(),
@@ -291,7 +291,7 @@ async fn test_outer_limit_applies_before_lateral_fan_out(mut ctx: djogi::DjogiCo
     )
     .await
     .unwrap();
-    let _p2 = Project::create(
+    let _project2 = Project::create(
         &mut ctx,
         Project {
             name: "B".into(),

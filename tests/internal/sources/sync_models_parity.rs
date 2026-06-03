@@ -76,7 +76,7 @@ fn acquire_test_workspace_guard() -> WorkspaceGuard {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("djogi-t10-01-parity-{stamp}.lock"));
+    let path = std::env::temp_dir().join(format!("djogi-parity-{stamp}.lock"));
     acquire_workspace_lock(&path, Duration::from_secs(2)).expect("acquire workspace lock")
 }
 
@@ -285,7 +285,7 @@ async fn sync_models_and_apply_plan_produce_identical_pg_class() {
             .collect();
         let runner_ctx = RunnerCtx {
             bucket: plan.bucket.clone(),
-            version: format!("V20260428000000_t10_01_parity_{idx}"),
+            version: format!("V20260428000000_parity_{idx}"),
             description: "-01 sync_models <-> apply_plan parity test".to_string(),
             checksum_up: compute_checksum(up_frags),
             checksum_down: None,

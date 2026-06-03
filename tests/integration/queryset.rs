@@ -3,11 +3,11 @@
 use djogi::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// Separate table name (`posts_p2`) so this integration test can share a DB
+// Separate table name (`queryset_posts`) so this integration test can share a DB
 // with `model.rs` without DDL collisions.
 //  default flip — pin ascending HeerId so existing
 // HeerId-typed construction and assertions keep working.
-#[model(table = "posts_p2", pk = HeerId)]
+#[model(table = "queryset_posts", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Post {
     pub title: String,
@@ -389,7 +389,7 @@ async fn limit_offset_paginate(mut ctx: djogi::DjogiContext) {
 async fn nested_and_or(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
     let rows = Post::objects()
-        // PR3: portable predicates (`PortablePredicate<T>`) compose via
+        // Portable predicates (`PortablePredicate<T>`) compose via
         // `&` from the operator matrix instead of the legacy
         // `Condition::and_with` fluent helper. Same SQL shape, same
         // operator precedence; the closure receives the `DjogiField`
@@ -407,7 +407,7 @@ async fn nested_and_or(mut ctx: djogi::DjogiContext) {
 async fn in_list_and_between(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
-    // PR3: portable IN takes any `IntoIterator<Item = V>` and is named
+    // Portable IN takes any `IntoIterator<Item = V>` and is named
     // `in_` (not `in_list`) on `DjogiField`. SQL parity is preserved
     // through the portable lowering helpers.
     let by_title = Post::objects()
@@ -436,7 +436,7 @@ async fn filter_struct_matches_closure_results(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
     let closure_rows = Post::objects()
-        // PR3: portable predicates (`PortablePredicate<T>`) compose via
+        // Portable predicates (`PortablePredicate<T>`) compose via
         // `&` from the operator matrix instead of the legacy
         // `Condition::and_with` fluent helper. Same SQL shape, same
         // operator precedence; the closure receives the `DjogiField`
@@ -1012,7 +1012,7 @@ async fn bulk_update_order_by_is_rejected_with_validation_error(mut ctx: djogi::
     assert_eq!(bumped, 0, "rejected update must not mutate any row");
 }
 
-// ── djogi#180 — PG18 OLD/NEW bulk RETURNING integration tests ──
+// ── PG18 OLD/NEW bulk RETURNING integration tests ──
 
 #[djogi::djogi_test(sync_models = [Post])]
 async fn execute_returning_pairs_returns_old_and_new_for_each_row(mut ctx: djogi::DjogiContext) {

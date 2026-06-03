@@ -1,4 +1,4 @@
--- Phase 5 Task 14 — Full-Text Search: book table.
+-- Full-Text Search: book table.
 --
 -- The `search` column is a GENERATED ALWAYS AS tsvector formed by
 -- concatenating `title` and `body` through the `english` dictionary.

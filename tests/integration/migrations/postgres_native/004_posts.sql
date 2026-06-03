@@ -1,4 +1,4 @@
--- Phase 5 Task 5: posts table with array columns and JSONB column.
+-- posts table with array columns and JSONB column.
 --
 -- Columns:
 -- - `title`       — plain TEXT, required.

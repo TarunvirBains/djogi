@@ -3,15 +3,15 @@
 //
 // # What this test does
 //
-// 1. () Creates two tables with an FK relationship (`emps → depts`).
-// 2. () Inserts fixtures so one department has a known name and the
+// 1. Creates two tables with an FK relationship (`emps → depts`).
+// 2. Inserts fixtures so one department has a known name and the
 //    employees that point at it form a witness set.
-// 3. () Runs a typed model queryset over the same fixtures to confirm the
+// 3. Runs a typed model queryset over the same fixtures to confirm the
 //    FK relationship returns the expected rows.
-// 4. () Exercises the visage-scoped reverse-FK accessor — a
+// 4. Exercises the visage-scoped reverse-FK accessor — a
 //    `DeptPublic::employees(ctx)` call that returns `Vec<EmpPublic>`
 //    end-to-end against the live Postgres database.
-// 5. () Exercises the visage-scoped M2M accessor — a
+// 5. Exercises the visage-scoped M2M accessor — a
 //    `PersonPublic::groups(ctx)` call that returns `Vec<GroupPublic>`
 //    walking through a junction table.
 //
@@ -21,7 +21,7 @@
 // `tests/internal/visage_traversal_shape.rs`. This ordinary live
 // target stays on public typed APIs.
 //
-// # Why the reverse/M2M live tests ()
+// # Why the reverse/M2M live tests.
 //
 //  is exactly the surface where `{Visage}::fetch` DOES work today
 // — the visage-scoped method goes model-scoped query → TryFrom
@@ -35,14 +35,14 @@ fn sentinel_id() -> djogi::types::HeerIdDesc {
     <djogi::types::HeerIdDesc as djogi::PrimaryKey>::sentinel()
 }
 
-#[model(table = "zero2_t8_live_depts")]
+#[model(table = "live_depts")]
 #[derive(Debug, Clone)]
 pub struct Dept {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "zero2_t8_live_emps", no_default)]
+#[model(table = "live_emps", no_default)]
 #[derive(Debug, Clone)]
 pub struct Emp {
     #[field(expose(public))]
@@ -105,14 +105,14 @@ async fn typed_fk_filter_returns_related_rows(mut ctx: DjogiContext) {
 
 // ---  — reverse-FK visage boundary live coverage ---
 
-#[model(table = "zero2_t9_live_depts")]
+#[model(table = "live_v9_depts")]
 #[derive(Debug, Clone)]
 pub struct RevDept {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "zero2_t9_live_emps", no_default)]
+#[model(table = "live_v9_emps", no_default)]
 #[derive(Debug, Clone)]
 pub struct RevEmp {
     #[field(expose(public))]
@@ -186,21 +186,21 @@ async fn reverse_fk_visage_accessor_projects_to_peer_visage(mut ctx: DjogiContex
 
 // ---  — M2M visage boundary live coverage ---
 
-#[model(table = "zero2_t9_live_m2m_persons")]
+#[model(table = "live_v9_m2m_persons")]
 #[derive(Debug, Clone)]
 pub struct M2mPerson {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "zero2_t9_live_m2m_groups")]
+#[model(table = "live_v9_m2m_groups")]
 #[derive(Debug, Clone)]
 pub struct M2mGroup {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "zero2_t9_live_m2m_person_groups", through, no_default)]
+#[model(table = "live_v9_m2m_person_groups", through, no_default)]
 #[derive(Debug, Clone)]
 pub struct M2mPersonGroup {
     pub person_id: ForeignKey<M2mPerson>,

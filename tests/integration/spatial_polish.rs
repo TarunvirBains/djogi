@@ -30,7 +30,7 @@
 // 9. **`cluster_by_proximity_dbscan_three_clusters_plus_noise`** — DBSCAN
 //    over 3 tight clusters + 1 outlier yields exactly 3 non-null cluster
 //    ids and one noise bucket.
-// 10. **`bucket_by_cell_p5_tight_cluster_single_bucket`** — geohash
+// 10. **`bucket_by_cell_tight_cluster_single_bucket`** — geohash
 //     bucketing at `P5` collapses 5 tightly-clustered points into one cell.
 //
 // # .5 emitter fixes (landed before these tests ran green)
@@ -703,7 +703,7 @@ async fn cluster_by_proximity_dbscan_three_clusters_plus_noise(mut ctx: djogi::D
 /// cell of ~4.9 km × 4.9 km) must all land in the same bucket. A single
 /// point in a far-away region lands in its own bucket.
 #[djogi::djogi_test(extensions = ["postgis"], sync_models = [Store])]
-async fn bucket_by_cell_p5_tight_cluster_single_bucket(mut ctx: djogi::DjogiContext) {
+async fn bucket_by_cell_tight_cluster_single_bucket(mut ctx: djogi::DjogiContext) {
     // Five points clustered inside one square km near SFO (37.618, -122.375).
     // The jitter magnitude (0.0001° ≈ 11 m) is well inside a P5 cell.
     for k in 0..5 {

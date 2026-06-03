@@ -1,4 +1,4 @@
--- Phase 5 Task 4: vehicles table — uses the vehicle_status Postgres enum.
+-- vehicles table — uses the vehicle_status Postgres enum.
 -- Depends on 002_vehicle_status_enum.sql being applied first.
 CREATE TABLE IF NOT EXISTS vehicles (
     id         BIGINT PRIMARY KEY DEFAULT generate_id(),

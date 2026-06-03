@@ -1,9 +1,9 @@
--- Phase 5 Task 11.5 — outbox worker test table.
+-- outbox worker test table.
 --
 -- A standalone `worker_outbox` table that exercises the full worker-side
 -- schema (state machine columns, lease, retry tracking). This is a fresh
--- test fixture rather than altering the Phase 4 `notifications_outbox`
--- table so the Phase 4 integration behavior is preserved unchanged.
+-- test fixture rather than altering the `notifications_outbox`
+-- table so the integration behavior is preserved unchanged.
 --
 -- State machine: pending → processing → (published | failed).
 --   - published: terminal success.

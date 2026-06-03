@@ -72,15 +72,15 @@ pub struct Account {
     pub status: String,
 }
 
-// Parent / child pair for the prefetch-inside-atomic test. The `_p4`
-// suffix keeps these isolated from the prefetch fixtures.
-#[model(table = "ledgers_p4", pk = HeerId)]
+// Parent / child pair for the prefetch-inside-atomic test. The suffix
+// keeps these isolated from the prefetch fixtures.
+#[model(table = "ledgers", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Ledger {
     pub name: String,
 }
 
-#[model(table = "entries_p4", pk = HeerId, no_default)]
+#[model(table = "entries", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub ledger_id: ForeignKey<Ledger>,
@@ -1623,8 +1623,8 @@ async fn exists_correlated_subquery(mut ctx: djogi::DjogiContext) {
             // Seed two ledgers with distinct names, and one entry
             // whose memo matches only the first ledger's name. The
             // correlated EXISTS predicate uses the outer-scope
-            // `name` column (only `ledgers_p4` has a `name` column —
-            // `entries_p4` does not, so there is no same-named
+            // `name` column (only `ledgers` has a `name` column —
+            // `entries` does not, so there is no same-named
             // collision for Postgres to resolve inward). That lets
             // the unqualified outer-ref emission work correctly here
             // without the qualified-column-ref extension deferred to
@@ -1662,13 +1662,13 @@ async fn exists_correlated_subquery(mut ctx: djogi::DjogiContext) {
             //     ).as_expr())
             //
             // Renders approximately:
-            //   SELECT * FROM ledgers_p4
+            //   SELECT * FROM ledgers
             //   WHERE EXISTS (
-            //     SELECT 1 FROM entries_p4 WHERE memo = name
+            //     SELECT 1 FROM entries WHERE memo = name
             //   )
             //
             // The unqualified `name` resolves against the outer
-            // ledger scope because `entries_p4` has no `name` column
+            // ledger scope because `entries` has no `name` column
             // — Postgres' implicit correlation picks up the outer
             // reference. This matches the rustdoc note on
             // `OuterRef::as_expr` about when unqualified emission is
@@ -1795,8 +1795,8 @@ async fn scalar_subquery_in_filter(mut ctx: djogi::DjogiContext) {
             )
             .await?;
 
-            // SELECT * FROM ledgers_p4
-            //   WHERE id = (SELECT id FROM ledgers_p4 WHERE name = $1)
+            // SELECT * FROM ledgers
+            //   WHERE id = (SELECT id FROM ledgers WHERE name = $1)
             //
             // The inner queryset projects `id` via the default
             // `LedgerFields::default().id()` handle; the outer
