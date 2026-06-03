@@ -9,7 +9,7 @@ const DYNAMIC_RANJ_DEFAULT_MARKER: &str = "ALTER DATABASE %I SET heer.ranj_node_
 
 /// Classification of a persisted or in-memory Phase 0 SQL artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PhaseZeroArtifactState {
+pub enum PhaseZeroArtifactState {
     Missing,
     Incomplete,
     Current,
@@ -121,7 +121,11 @@ impl PhaseZeroShape {
 
 /// Classify a Phase 0 artifact from raw bytes. Invalid UTF-8 is treated as an
 /// ambiguous/manual artifact so later stages fail closed.
-pub(crate) fn classify_phase_zero_artifact(bytes: &[u8]) -> PhaseZeroArtifactState {
+///
+/// Exposed publicly for CLI cleanup: the `apply_one_pending` path loads
+/// and classifies Phase 0 artifacts before deleting failed/rolled_back
+/// ledger rows, preventing stale artifacts from being silently replayed.
+pub fn classify_phase_zero_artifact(bytes: &[u8]) -> PhaseZeroArtifactState {
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return PhaseZeroArtifactState::Missing;
     }

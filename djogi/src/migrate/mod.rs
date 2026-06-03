@@ -126,9 +126,13 @@ pub use naming::{
 };
 pub use pg_volatility::{Volatility, classify_default_expression};
 pub(crate) use phase_zero::{
-    PhaseZeroArtifactState, PhaseZeroRefusal, classify_phase_zero_artifact,
-    classify_phase_zero_sql, require_current_phase_zero_artifact, require_current_phase_zero_sql,
+    PhaseZeroRefusal, classify_phase_zero_sql, require_current_phase_zero_artifact,
+    require_current_phase_zero_sql,
 };
+// Exposed for CLI cleanup: classify Phase 0 artifacts before deleting
+// failed/rolled_back rows. The full classifier and artifact state enum
+// are public so the CLI can refuse stale Phase 0 without executing SQL.
+pub use phase_zero::{PhaseZeroArtifactState, classify_phase_zero_artifact};
 pub use pk_flip::{PkFlipError, lower_pk_flip_group};
 pub use policy::{OutOfOrderPolicy, is_localhost_connection};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory, project_from_provider};

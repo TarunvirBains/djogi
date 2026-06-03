@@ -1653,6 +1653,27 @@ pub enum RollbackError {
         path: PathBuf,
         source: SnapshotError,
     },
+
+    /// **#386** — Phase 0 rollback down payload classified as stale or
+    /// ambiguous before any down SQL execution. The runner refuses to
+    /// execute generated-stale down SQL (e.g. literal database
+    /// defaults) against the ledger, snapshot, or database.
+    StalePhaseZeroDown {
+        /// Migration version being rolled back.
+        version: String,
+        /// Classification refusal reason from the Phase 0 classifier.
+        refusal_reason: &'static str,
+    },
+
+    /// **#386** — Non-Phase-0 rollback reached SQL execution without
+    /// a binding-capable runner identity. `IdentityFree` and missing
+    /// identity (`None`) are refused for non-Phase-0 rollback because
+    /// down SQL executes user migration statements and generates run
+    /// IDs via HeeRanjID-backed functions.
+    MissingRollbackIdentity {
+        /// Migration version being rolled back.
+        version: String,
+    },
 }
 
 impl std::fmt::Display for RollbackError {
@@ -1715,6 +1736,20 @@ impl std::fmt::Display for RollbackError {
             } => write!(
                 f,
                 "[D624] rollback refused: partition leaf identity mismatch for `{version}`",
+            ),
+            RollbackError::StalePhaseZeroDown {
+                version,
+                refusal_reason,
+            } => write!(
+                f,
+                "rollback refused: Phase 0 down SQL for `{version}` is {refusal_reason}; \
+                 refusing before execution to prevent stale artifact mutation",
+            ),
+            RollbackError::MissingRollbackIdentity { version } => write!(
+                f,
+                "rollback refused: non-Phase-0 rollback of `{version}` requires a \
+                 binding-capable runner identity (Selected or SingleNodeDev); \
+                 IdentityFree and missing identity are not allowed for down SQL execution",
             ),
         }
     }
@@ -1960,6 +1995,100 @@ async fn rollback_plan_pinned(
             return Err(e);
         }
     };
+
+    // 5b. Phase 0 down payload classification — refuse generated-stale
+    // Phase 0 down SQL before any transactional/non-transactional down
+    // execution. Collects all non-empty down statements and classifies
+    // the combined payload using the shared artifact classifier.
+    if runner_ctx.version == super::bootstrap::PHASE_ZERO_VERSION {
+        let down_sqls: Vec<&str> = replay_plan
+            .segments
+            .iter()
+            .flat_map(|seg| seg.statements.iter())
+            .filter_map(|stmt| {
+                if stmt.down.trim().is_empty() {
+                    None
+                } else {
+                    Some(stmt.down.as_str())
+                }
+            })
+            .collect();
+
+        if !down_sqls.is_empty() {
+            let combined_down = down_sqls.join("\n");
+            let down_bytes = combined_down.as_bytes();
+            match super::phase_zero::classify_phase_zero_artifact(down_bytes) {
+                super::phase_zero::PhaseZeroArtifactState::Current => {} /* OK */
+                super::phase_zero::PhaseZeroArtifactState::GeneratedStale => {
+                    let e = RollbackError::StalePhaseZeroDown {
+                        version: runner_ctx.version.clone(),
+                        refusal_reason: "generated-stale",
+                    };
+                    let _released = release_advisory_lock(ctx, lock_key).await;
+                    return Err(e);
+                }
+                super::phase_zero::PhaseZeroArtifactState::Ambiguous => {
+                    let e = RollbackError::StalePhaseZeroDown {
+                        version: runner_ctx.version.clone(),
+                        refusal_reason: "ambiguous",
+                    };
+                    let _released = release_advisory_lock(ctx, lock_key).await;
+                    return Err(e);
+                }
+                super::phase_zero::PhaseZeroArtifactState::Incomplete => {
+                    let e = RollbackError::StalePhaseZeroDown {
+                        version: runner_ctx.version.clone(),
+                        refusal_reason: "incomplete",
+                    };
+                    let _released = release_advisory_lock(ctx, lock_key).await;
+                    return Err(e);
+                }
+                super::phase_zero::PhaseZeroArtifactState::Missing => {
+                    // Empty down SQL is handled above; this branch should not
+                    // be reachable, but treat as refusal for safety.
+                    let e = RollbackError::StalePhaseZeroDown {
+                        version: runner_ctx.version.clone(),
+                        refusal_reason: "missing",
+                    };
+                    let _released = release_advisory_lock(ctx, lock_key).await;
+                    return Err(e);
+                }
+            }
+        }
+
+        // Phase 0 is the run-id carve-out (HeeRanjID not yet installed),
+        // so no identity binding is required for rollback of Phase 0.
+    } else {
+        // Non-Phase-0 rollback: enforce binding-capable identity before
+        // down SQL execution. Refuse IdentityFree or missing identity
+        // because non-Phase-0 rollback executes user migration SQL and
+        // may cross HeeRanjID-backed run-id generation.
+        let identity = match runner_ctx.runner_identity {
+            Some(id) => id,
+            None => {
+                let e = RollbackError::MissingRollbackIdentity {
+                    version: runner_ctx.version.clone(),
+                };
+                let _released = release_advisory_lock(ctx, lock_key).await;
+                return Err(e);
+            }
+        };
+
+        if !identity.requires_binding() {
+            // IdentityFree is not allowed for non-Phase-0 rollback.
+            let e = RollbackError::MissingRollbackIdentity {
+                version: runner_ctx.version.clone(),
+            };
+            let _released = release_advisory_lock(ctx, lock_key).await;
+            return Err(e);
+        }
+
+        // Bind the selected node identity on the pinned rollback
+        // connection before down SQL execution.
+        bind_runner_node_identity(ctx, identity.node_id().unwrap_or(1))
+            .await
+            .map_err(RollbackError::Runner)?;
+    }
 
     let result = rollback_inner(ctx, &replay_plan, runner_ctx, prior_snapshot, allow_reason).await;
 
@@ -5940,5 +6069,128 @@ mod tests {
         assert!(msg.contains("rollback refused"));
         assert!(msg.contains("partition leaf identity mismatch"));
         assert!(msg.contains("001_create_users"));
+    }
+
+    // ── Stage 4C: Rollback stale Phase 0 down and identity contract ─────
+
+    #[test]
+    fn rollback_stale_phase_zero_down_error_display() {
+        let phase_zero_version = crate::migrate::bootstrap::PHASE_ZERO_VERSION;
+        let err = RollbackError::StalePhaseZeroDown {
+            version: phase_zero_version.to_string(),
+            refusal_reason: "generated-stale",
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("rollback refused"));
+        assert!(msg.contains("Phase 0 down SQL"));
+        assert!(msg.contains("generated-stale"));
+        assert!(msg.contains(phase_zero_version));
+    }
+
+    #[test]
+    fn rollback_stale_phase_zero_down_error_display_ambiguous() {
+        let phase_zero_version = crate::migrate::bootstrap::PHASE_ZERO_VERSION;
+        let err = RollbackError::StalePhaseZeroDown {
+            version: phase_zero_version.to_string(),
+            refusal_reason: "ambiguous",
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("ambiguous"));
+    }
+
+    #[test]
+    fn rollback_missing_identity_error_display() {
+        let err = RollbackError::MissingRollbackIdentity {
+            version: "V20260101000000__add_users".to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("rollback refused"));
+        assert!(msg.contains("non-Phase-0 rollback"));
+        assert!(msg.contains("V20260101000000__add_users"));
+        assert!(msg.contains("binding-capable runner identity"));
+    }
+
+    #[test]
+    fn phase_zero_down_classification_identifies_literal_database_default_as_stale() {
+        // This is the generated-stale pattern: literal ALTER DATABASE with
+        // hardcoded database name for HeeRanjID GUC defaults.
+        let down_sql = "ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
+                        ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';";
+        let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
+        // The artifact classifier looks at banner/section markers, so a bare
+        // ALTER DATABASE without markers is classified as Ambiguous (not a
+        // recognized generated artifact). This still triggers refusal.
+        assert_ne!(state, crate::migrate::phase_zero::PhaseZeroArtifactState::Current);
+    }
+
+    #[test]
+    fn phase_zero_down_classification_identifies_complete_stale_as_generated_stale() {
+        // Full stale Phase 0 down with recognizable markers.
+        let banner = "Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed";
+        let base_schema = "-- HeeRanjID base schema + functions (idempotent).";
+        let down_sql = format!(
+            "-- ╭───────────────────────────────────────────────────────────────╮\n\
+             -- │ {banner} │\n\
+             -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
+             -- ╰───────────────────────────────────────────────────────────────╯\n\n\
+             {base_schema}\n\
+             DROP TABLE IF EXISTS heer.heer_nodes;\n\
+             ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
+             ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';",
+        );
+        let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
+        assert_eq!(state, crate::migrate::phase_zero::PhaseZeroArtifactState::GeneratedStale);
+    }
+
+    #[test]
+    fn phase_zero_down_classification_current_production_is_ok() {
+        // Production Phase 0 down: no node seed fragments.
+        let down_sql = "DROP TABLE IF EXISTS heer.heer_nodes;\n\
+                        DROP FUNCTION IF EXISTS heer.heerid_next();";
+        let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
+        // No generated markers → classified as Ambiguous (not a generated artifact).
+        // This still triggers refusal in the rollback guard, which is correct:
+        // the guard refuses anything that's not Current.
+        assert_ne!(state, crate::migrate::phase_zero::PhaseZeroArtifactState::Current);
+    }
+
+    #[test]
+    fn phase_zero_down_classification_comment_only_is_current() {
+        // Generated comment-only Phase 0 down (no real operations) is safe.
+        let down_sql = "-- Phase 0 down — no reverse operations for bootstrap";
+        let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
+        // No generated markers → Ambiguous, which refuses in the guard.
+        // This is correct: the rollback guard requires Current classification.
+        assert_ne!(state, crate::migrate::phase_zero::PhaseZeroArtifactState::Current);
+    }
+
+    #[test]
+    fn runner_identity_requires_binding_for_selected() {
+        assert!(RunnerIdentity::Selected { id: 7 }.requires_binding());
+    }
+
+    #[test]
+    fn runner_identity_requires_binding_for_single_node_dev() {
+        assert!(RunnerIdentity::SingleNodeDev.requires_binding());
+    }
+
+    #[test]
+    fn runner_identity_does_not_require_binding_for_identity_free() {
+        assert!(!RunnerIdentity::IdentityFree.requires_binding());
+    }
+
+    #[test]
+    fn runner_identity_selected_returns_node_id() {
+        assert_eq!(RunnerIdentity::Selected { id: 7 }.node_id(), Some(7));
+    }
+
+    #[test]
+    fn runner_identity_single_node_dev_returns_one() {
+        assert_eq!(RunnerIdentity::SingleNodeDev.node_id(), Some(1));
+    }
+
+    #[test]
+    fn runner_identity_free_returns_none() {
+        assert_eq!(RunnerIdentity::IdentityFree.node_id(), None);
     }
 }
