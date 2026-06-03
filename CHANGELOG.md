@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.9] - 2026-06-02
+
+### Added
+
+- feat(#381,#386): Phase Zero node identity hardening — production/cluster Phase 0 bootstrap installs HeeRanjID schema/functions without node seed or database-level GUC defaults; explicit `--single-node-dev` is the only mode that may seed node 1 with dynamic `current_database()` database defaults. Migration CLI commands (`apply`, `baseline`, `reset`, `resume-partial`) support `--node-id <id>` and `--single-node-dev` flags. Shared Phase 0 artifact classifier refuses generated-stale artifacts at every mutation boundary (apply, rollback, fake apply, baseline, reset replay, repair resume, attune Record/Squash, CLI cleanup). Runtime application pools remain caller-owned via `post_connect` and do NOT read `HEER_NODE_ID`.
+
+### Changed
+
+- migration: Phase 0 bootstrap SQL no longer contains literal `ALTER DATABASE` GUC defaults; production node identity is runner-owned through per-session binding on the pinned migration connection
+- migration: selected-node reset (`--node-id` / `HEER_NODE_ID`) refuses before destructive operations because drop/create removes the old `heer_nodes` registration
+
 ## [0.1.0-alpha.8] - 2026-06-01
 
 ### Changed

@@ -30,6 +30,7 @@ docs/superpowers/
 .codex
 early-edge-cases.md
 docs/codex-blank-response-debugging.md
+dev_journal.jsonl
 
 # Git worktrees (local-only isolated workspaces)
 .worktrees/

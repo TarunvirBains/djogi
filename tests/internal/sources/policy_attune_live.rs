@@ -140,6 +140,7 @@ fn make_runner_ctx(plan: &MigrationPlan, version: &str, policy: OutOfOrderPolicy
         config: MigrateConfig::default(),
         out_of_order_policy: policy,
         audit_pool: None,
+        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     }
 }
 
