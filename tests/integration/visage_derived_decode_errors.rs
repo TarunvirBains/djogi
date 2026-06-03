@@ -69,7 +69,7 @@ async fn derived_type_mismatch_maps_to_visage_error(mut ctx: DjogiContext) {
     let err = DerivedTypeRowPublic::limit(1)
         .fetch_one(&mut ctx)
         .await
-        .expect_err("derived IN must not decode as ty = String");
+        .expect_err("derived INT4 must not decode as ty = String");
 
     match err {
         DjogiError::Visage(VisageError::DbComputedTypeMismatch {
@@ -81,7 +81,7 @@ async fn derived_type_mismatch_maps_to_visage_error(mut ctx: DjogiContext) {
             assert_eq!(visage, "DerivedTypeRowPublic");
             assert_eq!(field, "computed_label");
             assert!(expected.contains("String"), "expected type was {expected}");
-            assert_eq!(actual, "IN");
+            assert_eq!(actual, "INT4");
         }
         other => panic!("expected derived type-mismatch visage error, got {other:?}"),
     }
