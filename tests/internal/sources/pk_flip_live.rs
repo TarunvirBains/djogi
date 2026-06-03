@@ -89,7 +89,6 @@ fn make_runner_ctx(plan: &MigrationPlan, version: &str) -> RunnerCtx {
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
-        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     }
 }
 
@@ -1842,7 +1841,6 @@ async fn flip_partial_apply_resume_via_repair(mut ctx: djogi::DjogiContext) {
         &_guard,
         &runner_ctx.version,
         &plan,
-        None, // runner_identity — not testing identity boundary here
         djogi::migrate::RepairConfirmation::OperatorAcknowledged,
     )
     .await;
@@ -3692,7 +3690,6 @@ async fn flip_partitioned_parent_partial_apply_resume_uses_expanded_leaf_steps(
         &_guard,
         &runner_ctx.version,
         &plan,
-        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -4007,7 +4004,6 @@ async fn repair_refuses_on_leaf_topology_drift(mut ctx: djogi::DjogiContext) {
         &_guard,
         &runner_ctx.version,
         &plan,
-        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -4151,7 +4147,6 @@ async fn repair_refuses_on_zero_leaf_drift(mut ctx: djogi::DjogiContext) {
         &_guard,
         &runner_ctx.version,
         &plan,
-        None, // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await

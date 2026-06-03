@@ -208,7 +208,6 @@ fn make_runner_ctx(
         // audit DB. T9.7 owns the integration coverage that flips
         // this to `Some`.
         audit_pool: None,
-        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
     }
 }
 

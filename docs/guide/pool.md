@@ -397,14 +397,11 @@ Production deployments that previously hard-coded
 `DjogiPool::from_database_config` to size against their actual
 concurrency budget.
 
-That `post_connect` block is a single-node example. The pool does NOT read
-`HEER_NODE_ID` automatically — node identity is caller-owned through explicit
-`post_connect` wiring. For multi-node deployments, register each node in
-HeeRanjID first, then set both HeeRanjID session GUCs from the deployment-selected
-value in your `post_connect` hook. Migration-runner CLI commands have a separate
-identity resolver (`--node-id` / `HEER_NODE_ID` at the CLI boundary only);
-runtime application pools remain caller-owned.
-
+That `post_connect` block is a single-node example when both
+`SET heer.node_id = '1'` and `SET heer.ranj_node_id = '1'` are present. For
+multi-node deployments, register each node in HeeRanjID first, then set the
+service-specific `HEER_NODE_ID` before startup and migrations; the pool should
+set both HeeRanjID session GUCs only from that deployment-selected value.
 See https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md and
 https://github.com/TarunvirBains/HeeRanjID/issues/49.
 

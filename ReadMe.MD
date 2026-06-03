@@ -24,7 +24,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 
 ## Status
 
-**Current release:** `v0.1.0-alpha.9` (public alpha; API may change before v0.1.0 stable)
+**Current release:** `v0.1.0-alpha.8` (public alpha; API may change before v0.1.0 stable)
 
 **Shipped & usable today:**
 
@@ -56,7 +56,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 
 - **Migrations** — Build-time schema differ and deterministic SQL emitter. Advisory-locked runner with transactional and non-transactional segment dispatch. Checksummed ledger (`djogi_schema_migrations`) with `apply` / `verify` / `repair` / `baseline` / `fake` library APIs. CLI: `djogi migrations apply` (+ `--fake` / `--reason` flags), `compose`, `status`, `verify`, `repair`, `baseline`, `attune` (with `--squash` / `--record` / `--publish` for offline work). `djogi db reset` (triple-gated for safety), `djogi db seed`, and `djogi docs` (auto-generate Markdown reference). Crash recovery and existing-database adoption workflows documented. See the [migrations guide](https://github.com/TarunvirBains/djogi/blob/main/docs/guide/migrations.md) and [migrations spec](https://github.com/TarunvirBains/djogi/blob/main/docs/spec/migrations.md).
 
-- **Live-migration infrastructure** — Substrate for safe online schema changes. `OnlineSafetyClassification` enum routes changes to transactional fast-path or offline-only. Protected-field attributes (`#[field(protect = "...")]`) for audit and RLS. Exclusion constraints and generated columns supported. (CLI commands `djogi live ...` are not yet released in v0.1.0-alpha.9.)
+- **Live-migration infrastructure** — Substrate for safe online schema changes. `OnlineSafetyClassification` enum routes changes to transactional fast-path or offline-only. Protected-field attributes (`#[field(protect = "...")]`) for audit and RLS. Exclusion constraints and generated columns supported. (CLI commands `djogi live ...` are not yet released in v0.1.0-alpha.8.)
 
 **Planned — not yet shipped:**
 

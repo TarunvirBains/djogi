@@ -57,7 +57,6 @@ pub mod guard;
 pub mod ledger;
 pub mod naming;
 pub mod pg_volatility;
-pub(crate) mod phase_zero;
 pub mod pk_flip;
 pub mod policy;
 pub mod projection;
@@ -125,14 +124,6 @@ pub use naming::{
     version_prefix,
 };
 pub use pg_volatility::{Volatility, classify_default_expression};
-pub(crate) use phase_zero::{
-    PhaseZeroRefusal, classify_phase_zero_sql, require_current_phase_zero_artifact,
-    require_current_phase_zero_sql,
-};
-// Exposed for CLI cleanup: classify Phase 0 artifacts before deleting
-// failed/rolled_back rows. The full classifier and artifact state enum
-// are public so the CLI can refuse stale Phase 0 without executing SQL.
-pub use phase_zero::{PhaseZeroArtifactState, classify_phase_zero_artifact};
 pub use pk_flip::{PkFlipError, lower_pk_flip_group};
 pub use policy::{OutOfOrderPolicy, is_localhost_connection};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory, project_from_provider};
@@ -149,7 +140,7 @@ pub use reset::{
 };
 pub use runner::{
     LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx, RunnerError,
-    RunnerIdentity, advisory_lock_key, apply_plan, baseline_plan, fake_apply_plan, rollback_plan,
+    advisory_lock_key, apply_plan, baseline_plan, fake_apply_plan, rollback_plan,
 };
 pub use schema::{
     AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,

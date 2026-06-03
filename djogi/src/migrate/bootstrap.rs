@@ -198,18 +198,8 @@ impl std::error::Error for BootstrapError {
 /// Includes the base `INSTALL_SQL` (schema + session helpers +
 /// `generate_id` + `generate_ranj_id`), the v0.3 desc-support
 /// primitives (`heerid_to_desc`, `*_next_desc`, bulk backfill), and
-/// optionally the default-node seed when `include_seed` is `true`.
-/// All of these are idempotent — re-running against an already-
-/// installed database is a no-op.
-///
-/// **Seed inclusion.** Production/cluster Phase 0 should NOT
-/// unconditionally seed node 1 into `heer_nodes`; node registration
-/// is an operator provisioning step. Pass `include_seed: false` for
-/// production emit. Explicit `--single-node-dev` may pass
-/// `include_seed: true` so that a default node 1 row exists and the
-/// database-level GUC defaults in [`compose_node_seed`] can work
-/// without requiring an active registration first.
-///
+/// the default-node seed. All of these are idempotent — re-running
+/// against an already-installed database is a no-op.
 /// Returns an owned `String` so the caller can hash it into the
 /// migration's checksum, write it to disk verbatim, or feed it to
 /// `client.batch_execute` directly.
@@ -220,24 +210,20 @@ impl std::error::Error for BootstrapError {
 /// file. The runtime test-harness path also benefits — a single
 /// composed blob means one `batch_execute` call with one round-trip,
 /// instead of four.
-pub(crate) fn compose_heeranjid_install(include_seed: bool) -> String {
+pub(crate) fn compose_heeranjid_install() -> String {
     // The order here mirrors what the test harness ran pre-Track-0:
-    // base install, desc-support primitives, seed (optional).
+    // base install, desc-support primitives, seed.
     // Each blob from heeranjid is already a self-contained CREATE
     // OR REPLACE / CREATE IF NOT EXISTS / ON CONFLICT DO NOTHING
     // sequence. We concatenate with explicit blank lines + section
     // comments so the on-disk migration file is readable.
-    let seed_len = if include_seed {
-        heeranjid::postgres_schema::SEED_SQL.len() + 80
-    } else {
-        0
-    };
     let mut out = String::with_capacity(
         heeranjid::postgres_schema::INSTALL_SQL.len()
             + heeranjid::postgres_schema::DESC_FLIP_SQL.len()
             + heeranjid::postgres_schema::DESC_GENERATORS_SQL.len()
             + heeranjid::postgres_schema::BULK_BACKFILL_SQL.len()
-            + seed_len,
+            + heeranjid::postgres_schema::SEED_SQL.len()
+            + 512,
     );
     out.push_str("-- HeeRanjID base schema + functions (idempotent).\n");
     out.push_str(heeranjid::postgres_schema::INSTALL_SQL);
@@ -247,10 +233,8 @@ pub(crate) fn compose_heeranjid_install(include_seed: bool) -> String {
     out.push_str(heeranjid::postgres_schema::DESC_GENERATORS_SQL);
     out.push_str("\n\n-- HeeRanjID migration-support procedures (bulk backfill).\n");
     out.push_str(heeranjid::postgres_schema::BULK_BACKFILL_SQL);
-    if include_seed {
-        out.push_str("\n\n-- HeeRanjID default-node seed (node_id = 1, ON CONFLICT DO NOTHING).\n");
-        out.push_str(heeranjid::postgres_schema::SEED_SQL);
-    }
+    out.push_str("\n\n-- HeeRanjID default-node seed (node_id = 1, ON CONFLICT DO NOTHING).\n");
+    out.push_str(heeranjid::postgres_schema::SEED_SQL);
     out
 }
 
@@ -296,10 +280,10 @@ pub(crate) fn compose_extension_installs(
     Ok(out)
 }
 
-/// Compose the node-id seed SQL — runtime database-level defaults for
-/// new connections plus session-level `SET`s so the applying
-/// connection sees the value immediately.
-///
+/// Compose the node-id seed SQL — the `ALTER DATABASE` (database-level
+/// GUC for new connections) and a session-level `SET` (so the running
+/// connection that just executed sees the value immediately,
+/// without needing to drop and re-establish).
 /// Seeds **both** `heer.node_id` (consumed by `heerid_next()` via
 /// `current_heer_node_id()`) and `heer.ranj_node_id` (consumed by
 /// `ranjid_next()` via `current_heer_ranj_node_id()`). HeeRanjID
@@ -310,54 +294,59 @@ pub(crate) fn compose_extension_installs(
 /// `heer_node_state` and `heer_ranj_node_state` for that node id, so
 /// pointing both GUCs at it is the only way `ranjid_next()` works out
 /// of the box. Multi-node operators that want different ids per
-/// generator must override the Phase 0 SQL.
-///
-/// The emitted batch is idempotent: re-running with the same value is
-/// a metadata-only no-op on the database side and a session-write
+/// generator must override the SQL.
+/// All four statements are idempotent: re-running with the same value
+/// is a metadata-only no-op on the database side and a session-write
 /// no-op on the client side.
-///
-/// **Why both** runtime `ALTER DATABASE` and a session SET: the Phase 0
-/// SQL runs through the current runner connection. The runtime
-/// `ALTER DATABASE` persists the default for whichever physical
-/// database is currently connected, without baking a logical or
-/// physical name into the persisted SQL. The session-level SET covers
-/// the running connection itself — without it, an additive migration
-/// applied immediately after Phase 0 in the same `apply` run would
-/// lack the GUC and
-/// `current_heer_node_id()` / `current_heer_ranj_node_id()` would
-/// raise.
-///
+/// **Why both** an ALTER DATABASE and a session SET: the SQL
+/// runs through whatever connection the runner has — typically a
+/// pool-backed `tokio_postgres::Client`. The pool's `post_connect`
+/// hook (set in `pg::pool`) sets `heer.node_id` per-connection for
+/// every NEW connection it opens. The ALTER DATABASE persists the
+/// default so freshly-opened connections inherit it without needing
+/// the post-connect hook (belt-and-braces). The session-level SET
+/// covers the running connection itself — without it, an additive
+/// migration applied immediately after in the same `apply`
+/// run would lack the GUC and `current_heer_node_id()` /
+/// `current_heer_ranj_node_id()` would raise.
 /// `node_id` must be a non-negative `i32`; the SQL uses the raw
 /// integer (no quoting) which is safe because the type is integer-
 /// only. HeeRanjID's `set_heer_node_id` / `set_heer_ranj_node_id`
 /// enforce per-generator range bounds at the SQL layer if a caller
 /// passes the value out of range later; the seed here only writes
 /// the GUC literal.
-///
-/// The `database` argument is retained for surrounding composition
-/// compatibility, but the node-seed SQL never splices it into
-/// persisted `ALTER DATABASE` statements.
-pub(crate) fn compose_node_seed(_database: &str, node_id: i32) -> Result<String, BootstrapError> {
+/// **Why an unquoted database name** is acceptable here: the
+/// production caller passes the database name from
+/// `extract_database_from_url`, which round-trips through
+/// `is_valid_pg_identifier` (ASCII letter or underscore followed by
+/// ASCII alphanumerics or underscores, 1-63 bytes). The bootstrap
+/// composer re-validates as defence-in-depth so a future caller that
+/// skips the URL helper still gets a typed error rather than an SQL
+/// injection.
+pub(crate) fn compose_node_seed(database: &str, node_id: i32) -> Result<String, BootstrapError> {
+    // Re-validate the database identifier even though production
+    // callers pre-validate via `extract_database_from_url` +
+    // `is_valid_pg_identifier`. Defence-in-depth — a mis-routed
+    // caller still gets a typed error rather than an SQL injection.
+    validate_extension_name(database)?;
     let node_id_str = node_id.to_string();
-    let mut out = String::with_capacity(node_id_str.len() * 6 + 384);
+    // Two GUCs × two scopes = four statements. Pre-size for the worst
+    // case (database name appears twice, node id appears four times).
+    let mut out = String::with_capacity(database.len() * 2 + node_id_str.len() * 4 + 256);
     out.push_str("-- HeeRanjID node-id GUC seed (database-level + session-level).\n");
     out.push_str(
         "-- `heer.node_id` powers heerid_next(); `heer.ranj_node_id` powers ranjid_next().\n",
     );
-    out.push_str("DO $djogi$\n");
-    out.push_str("BEGIN\n");
-    out.push_str(
-        "    EXECUTE format('ALTER DATABASE %I SET heer.node_id = %L', current_database(), '",
-    );
+    out.push_str("ALTER DATABASE \"");
+    out.push_str(database);
+    out.push_str("\" SET heer.node_id = '");
     out.push_str(&node_id_str);
-    out.push_str("');\n");
-    out.push_str(
-        "    EXECUTE format('ALTER DATABASE %I SET heer.ranj_node_id = %L', current_database(), '",
-    );
+    out.push_str("';\n");
+    out.push_str("ALTER DATABASE \"");
+    out.push_str(database);
+    out.push_str("\" SET heer.ranj_node_id = '");
     out.push_str(&node_id_str);
-    out.push_str("');\n");
-    out.push_str("END\n");
-    out.push_str("$djogi$;\n");
+    out.push_str("';\n");
     out.push_str("SET heer.node_id = '");
     out.push_str(&node_id_str);
     out.push_str("';\n");
@@ -367,8 +356,8 @@ pub(crate) fn compose_node_seed(_database: &str, node_id: i32) -> Result<String,
     Ok(out)
 }
 
-/// Compose the complete Phase 0 SQL — HeeRanjID install + extensions
-/// + optionally node seed, in dependency order.
+/// Compose the complete SQL — HeeRanjID install + extensions
+/// + node seed, in dependency order.
 ///   Consumers:
 /// - `migrations compose` writes this to
 ///   `<workspace>/migrations/<db>/<app>/V00000000000000__phase_zero_bootstrap.sdjql`
@@ -380,60 +369,34 @@ pub(crate) fn compose_node_seed(_database: &str, node_id: i32) -> Result<String,
 ///   install runs (in case an extension's setup script touches the
 ///   `heer` schema), and both must exist before the node seed runs (in
 ///   case the seed relies on extension-provided types).
-///
-/// **Node seed inclusion.** Production/cluster Phase 0 should NOT
-/// include a node seed. Pass `include_node_seed: false` for production
-/// emit — the resulting on-disk SQL installs only the HeeRanjID schema,
-/// functions, and extensions without baking any node identity into the
-/// persisted file.
-///
-/// Explicit `--single-node-dev` may pass `include_node_seed: true`; this
-/// includes both the `heer_nodes` seed row (from [`compose_heeranjid_install`])
-/// and the database-level GUC defaults + session SETs (from
-/// [`compose_node_seed`]). The dev mode uses runtime `current_database()` for
-/// the ALTER DATABASE statements, preventing logical/physical database-name drift.
-///
 ///   Returns owned bytes so the caller can hash, write, or execute
 ///   directly.
 pub(crate) fn compose_phase_zero(
     database: &str,
     extensions: &BTreeSet<String>,
     node_id: i32,
-    include_node_seed: bool,
 ) -> Result<String, BootstrapError> {
-    let heeranjid = compose_heeranjid_install(include_node_seed);
+    let heeranjid = compose_heeranjid_install();
     let exts = compose_extension_installs(extensions)?;
-    let mut out = String::with_capacity(heeranjid.len() + exts.len() + 256);
-
-    // Banner text depends on whether node seed is included.
-    if include_node_seed {
-        out.push_str("-- ╭────────────────────────────────────────────────────────────────╮\n");
-        out.push_str("-- │ Djogi bootstrap migration — HeeRanjID + extensions + node seed │\n");
-        out.push_str("-- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n");
-        out.push_str("-- ╰────────────────────────────────────────────────────────────────╯\n\n");
-    } else {
-        out.push_str("-- ╭───────────────────────────────────────────────────────────────╮\n");
-        out.push_str("-- │ Djogi bootstrap migration — HeeRanjID + extensions            │\n");
-        out.push_str("-- │ Auto-emitted by `djogi migrations compose`. Idempotent.       │\n");
-        out.push_str("-- ╰───────────────────────────────────────────────────────────────╯\n\n");
-    }
-
+    let node = compose_node_seed(database, node_id)?;
+    let mut out = String::with_capacity(heeranjid.len() + exts.len() + node.len() + 256);
+    out.push_str("-- ╭────────────────────────────────────────────────────────────────╮\n");
+    out.push_str("-- │ Djogi bootstrap migration — HeeRanjID + extensions + node seed │\n");
+    out.push_str("-- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n");
+    out.push_str("-- ╰────────────────────────────────────────────────────────────────╯\n\n");
     out.push_str(&heeranjid);
     if !exts.is_empty() {
         out.push_str("\n\n");
         out.push_str(&exts);
     }
-    if include_node_seed {
-        let node = compose_node_seed(database, node_id)?;
-        out.push_str("\n\n");
-        out.push_str(&node);
-    }
+    out.push_str("\n\n");
+    out.push_str(&node);
     Ok(out)
 }
 
 // ── Runtime driver ────────────────────────────────────────────────────────
 
-/// Execute Phase 0 SQL against a live Postgres connection.
+/// Execute SQL against a live Postgres connection.
 /// Used by the test harness (sub-step 0.4) and any production caller
 /// that wants to bring a fresh database to a Phase-0 state without
 /// going through the on-disk migration ledger (e.g. one-shot
@@ -447,17 +410,8 @@ pub(crate) fn compose_phase_zero(
 /// statement uses `CREATE OR REPLACE`, `IF NOT EXISTS`, or
 /// `ON CONFLICT DO NOTHING` so re-running against an already-
 /// bootstrapped database is a no-op.
-///
-/// **Node seed inclusion.** When `include_node_seed` is `true`, the
-/// composed SQL includes both the HeeRanjID default-node seed row
-/// and the database-level GUC defaults + session SETs from
-/// [`compose_node_seed`]. This is appropriate only for explicit
-/// `--single-node-dev` mode. Production/cluster callers should pass
-/// `include_node_seed: false` so that node registration remains an
-/// operator provisioning step.
-///
-/// `node_id` is only used when `include_node_seed` is `true`; it
-/// defaults to [`DEFAULT_NODE_ID`] (1) for single-node deployments.
+/// `node_id` defaults to [`DEFAULT_NODE_ID`] (1) for single-node
+/// deployments. Multi-node operators pass their own value.
 /// # Errors
 /// - [`BootstrapError::InvalidExtensionName`] when an extension name
 ///   does not match the Postgres-identifier grammar — surfaced
@@ -471,12 +425,11 @@ pub async fn run_phase_zero<C>(
     database: &str,
     extensions: &BTreeSet<String>,
     node_id: i32,
-    include_node_seed: bool,
 ) -> Result<(), BootstrapError>
 where
     C: GenericClient + ?Sized,
 {
-    let sql = compose_phase_zero(database, extensions, node_id, include_node_seed)?;
+    let sql = compose_phase_zero(database, extensions, node_id)?;
     client
         .batch_execute(&sql)
         .await
@@ -689,11 +642,7 @@ pub fn ensure_phase_zero_emitted(
         // Postgres-cluster-level concept and PostGIS-on-billing is
         // the same install as PostGIS-on-shipping).
         let extensions = extensions_for_database(models, database);
-        // Production emit: no node seed. The on-disk Phase 0 SQL
-        // installs only HeeRanjID schema/functions/extensions without
-        // baking any node identity. Node seeding is handled at runtime
-        // by the runner for explicit --single-node-dev mode.
-        let up_sql = compose_phase_zero(database, &extensions, DEFAULT_NODE_ID, false)?;
+        let up_sql = compose_phase_zero(database, &extensions, DEFAULT_NODE_ID)?;
         let down_sql = compose_phase_zero_down_text();
 
         // 4. Build the pending JSON. `model_snapshot` is empty
@@ -883,8 +832,7 @@ fn format_rfc3339_seconds(instant: OffsetDateTime) -> String {
 
 /// Validate that `name` is a plain Postgres identifier safe to
 /// interpolate into a `CREATE EXTENSION IF NOT EXISTS "<name>"`
-/// statement.
-///
+/// statement (or to splice into `ALTER DATABASE "<name>"`).
 /// Rules (byte-level, no regex per the Djogi-wide no-regex policy):
 /// - Length between 1 and 63 bytes inclusive (Postgres `NAMEDATALEN`
 ///   minus the trailing `NUL`).
@@ -984,28 +932,31 @@ mod tests {
     }
 
     #[test]
-    fn compose_node_seed_uses_current_database_for_defaults_and_keeps_session_set() {
+    fn compose_node_seed_emits_alter_and_session_set() {
         let sql = compose_node_seed("djogi_test_abc", 7).unwrap();
         // Both GUCs are seeded at both scopes: HeerId path (heer.node_id)
         // and RanjId path (heer.ranj_node_id) need separate session
         // variables. See compose_node_seed for the per-generator
         // rationale.
-        assert!(sql.contains("current_database()"));
-        assert!(!sql.contains("ALTER DATABASE \"djogi_test_abc\""));
+        assert!(sql.contains("ALTER DATABASE \"djogi_test_abc\" SET heer.node_id = '7'"));
+        assert!(sql.contains("ALTER DATABASE \"djogi_test_abc\" SET heer.ranj_node_id = '7'"));
         assert!(sql.contains("SET heer.node_id = '7'"));
         assert!(sql.contains("SET heer.ranj_node_id = '7'"));
     }
 
     #[test]
-    fn compose_node_seed_does_not_splice_the_database_argument() {
-        let sql = compose_node_seed("bad name", 1).unwrap();
-        assert!(sql.contains("current_database()"));
-        assert!(!sql.contains("bad name"));
+    fn compose_node_seed_rejects_bad_database_name() {
+        match compose_node_seed("bad name", 1) {
+            Err(BootstrapError::InvalidExtensionName { name }) => {
+                assert_eq!(name, "bad name");
+            }
+            other => panic!("expected InvalidExtensionName, got {other:?}"),
+        }
     }
 
     #[test]
-    fn compose_heeranjid_install_includes_all_blobs_with_seed() {
-        let sql = compose_heeranjid_install(true);
+    fn compose_heeranjid_install_includes_all_blobs() {
+        let sql = compose_heeranjid_install();
         // Sanity: every section header is present.
         assert!(sql.contains("HeeRanjID base schema"));
         assert!(sql.contains("desc-flip primitives"));
@@ -1017,51 +968,23 @@ mod tests {
     }
 
     #[test]
-    fn compose_heeranjid_install_omits_seed_for_production() {
-        let sql = compose_heeranjid_install(false);
-        // Core sections are always present.
-        assert!(sql.contains("HeeRanjID base schema"));
-        assert!(sql.contains("desc-flip primitives"));
-        assert!(sql.contains("single-row generators"));
-        assert!(sql.contains("bulk backfill"));
-        // Seed section is absent in production mode.
-        assert!(!sql.contains("default-node seed"));
-        assert!(!sql.contains(heeranjid::postgres_schema::SEED_SQL));
-    }
-
-    #[test]
     fn compose_phase_zero_orders_install_then_extensions_then_seed() {
         let mut exts = BTreeSet::new();
         exts.insert("postgis".to_string());
-        // Dev mode: seed is included and ordered after extensions.
-        let sql = compose_phase_zero("djogi_test_db", &exts, 1, true).unwrap();
+        let sql = compose_phase_zero("djogi_test_db", &exts, 1).unwrap();
         let install_idx = sql.find("HeeRanjID base schema").expect("install present");
         let ext_idx = sql.find("CREATE EXTENSION").expect("extension present");
-        let seed_idx = sql.find("current_database()").expect("seed present");
+        let seed_idx = sql.find("ALTER DATABASE").expect("seed present");
         assert!(install_idx < ext_idx, "install must precede extensions");
         assert!(ext_idx < seed_idx, "extensions must precede node seed");
     }
 
     #[test]
-    fn compose_phase_zero_production_omits_node_seed() {
-        let mut exts = BTreeSet::new();
-        exts.insert("postgis".to_string());
-        let sql = compose_phase_zero("djogi_test_db", &exts, 1, false).unwrap();
-        // Core sections present.
-        assert!(sql.contains("HeeRanjID base schema"));
-        assert!(sql.contains("CREATE EXTENSION"));
-        // No node seed in production mode.
-        assert!(!sql.contains("current_database()"));
-        assert!(!sql.contains("SET heer.node_id"));
-        assert!(!sql.contains("default-node seed"));
-    }
-
-    #[test]
     fn compose_phase_zero_omits_extension_section_when_empty() {
         let exts = BTreeSet::new();
-        let sql = compose_phase_zero("djogi_test_db", &exts, 1, true).unwrap();
+        let sql = compose_phase_zero("djogi_test_db", &exts, 1).unwrap();
         assert!(!sql.contains("CREATE EXTENSION"));
-        assert!(sql.contains("current_database()"));
+        assert!(sql.contains("ALTER DATABASE"));
     }
 
     #[test]
@@ -1357,13 +1280,10 @@ mod tests {
         assert!(emitted[0].up_sql_path.exists());
         assert!(emitted[0].down_sql_path.exists());
         assert!(emitted[0].pending_json_path.exists());
-        // Up SQL contains HeeRanjID install; no node seed in production emit.
+        // Up SQL contains HeeRanjID install + node seed; no extension section.
         let up = fs::read_to_string(&emitted[0].up_sql_path).unwrap();
         assert!(up.contains("HeeRanjID base schema"));
-        // Production emit: no node-seed section, no database-level defaults.
-        assert!(!up.contains("current_database()"));
-        assert!(!up.contains("SET heer.node_id"));
-        assert!(!up.contains("default-node seed"));
+        assert!(up.contains("ALTER DATABASE \"main\" SET heer.node_id"));
         assert!(!up.contains("CREATE EXTENSION"));
         // Down SQL is comment-only.
         let down = fs::read_to_string(&emitted[0].down_sql_path).unwrap();

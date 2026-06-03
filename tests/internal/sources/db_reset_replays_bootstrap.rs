@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use djogi::config::MigrateConfig;
 use djogi::migrate::{
     AppLifecycle, AppliedSchema, BucketKey, ComposeRequest, GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME,
-    PHASE_ZERO_VERSION, ResetError, ResetRefusal, ResetRequest, ResetSqlSide, RunnerIdentity,
+    PHASE_ZERO_VERSION, ResetError, ResetRefusal, ResetRequest, ResetSqlSide,
     SNAPSHOT_FORMAT_VERSION, WorkspaceGuard, acquire_workspace_lock, compose, reset_app_database,
 };
 use tokio_postgres::NoTls;
@@ -199,7 +199,6 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
         // dedicated coverage lives in
         // `tests/internal/sources/phase8_5_c2_118_*` per issue #118.
         audit_pool: None,
-        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     let reset_report = reset_app_database(req)
         .await
@@ -364,7 +363,6 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
         allow_checksum_drift_reset: false,
         migrate_config: MigrateConfig::default(),
         audit_pool: None,
-        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     let first_reset = reset_app_database(reset_req)
         .await
@@ -413,7 +411,6 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
         allow_checksum_drift_reset: false,
         migrate_config: MigrateConfig::default(),
         audit_pool: None,
-        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     })
     .await
     .expect_err("drifted file must refuse before destructive reset");

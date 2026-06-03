@@ -168,51 +168,6 @@ All apply paths require a `WorkspaceGuard` — a typed witness that the caller h
 
 **Snapshot failure recovery:** If `fake_apply_plan` reports a snapshot persistence error, the migration was successfully recorded in the ledger as `faked`. Run `djogi migrations compose` to regenerate the snapshot from the descriptor inventory.
 
-## Node Identity for Migration Commands
-
-Djogi migration commands that execute user SQL or generate run IDs require an explicit node identity. There are four separate identity boundaries:
-
-1. **Runtime application pools** — caller-owned via `post_connect`. The Djogi runtime library and pool constructors (`DjogiPool::connect`, `from_database_config`) do NOT read `HEER_NODE_ID` automatically. Wire node GUCs explicitly in your `post_connect` hook.
-2. **Migration CLI resolver** — identity-bearing CLI commands (`migrations apply`, `migrations baseline`, `db reset`, `repair resume-partial`) support `--node-id <id>` and `--single-node-dev` flags. The resolver selects explicit `--node-id` over `HEER_NODE_ID` env var. Values outside `0..=511` refuse with exit code 2 before database work.
-3. **Migration runner library** — the runner binds the selected node on the pinned migration session before non-Phase-0 `generate_run_id` / `HeeRanjID` calls and before user SQL execution. Missing identity is refused before pool construction or ledger mutation.
-4. **Phase 0 bootstrap** — production/cluster Phase 0 installs HeeRanjID schema/functions without node seed or database-level defaults. Explicit `--single-node-dev` may include node-1 seed with dynamic `current_database()` database defaults.
-
-### CLI Identity Flags
-
-```bash
-# Selected-node mode (requires pre-registered active node in heer_nodes)
-djogi migrations apply --node-id 7
-
-# Single-node development mode (seeds node 1, uses database-level fallbacks)
-djogi migrations apply --single-node-dev
-
-# Environment fallback (explicit --node-id wins over HEER_NODE_ID)
-HEER_NODE_ID=3 djogi migrations apply
-
-# Refused: conflicting flags
-djogi migrations apply --node-id 7 --single-node-dev  # error
-
-# Refused: missing identity for non-dev mode (exit code 2)
-djogi migrations apply  # error — requires --node-id, HEER_NODE_ID, or --single-node-dev
-
-# Refused: single-node-dev in production (exit code 2)
-DJOGI_ENV=production djogi migrations apply --single-node-dev  # error
-```
-
-### Identity-Free Paths
-
-These paths do NOT require node identity because they neither execute user migration SQL nor call non-Phase-0 run ID generation: `migrations status`, `migrations verify`, `migrations attune` (sentinel record mode, squash checksum/description refresh), `repair checksum-drift`, `repair partial-apply` status updates, and `repair snapshot-rebuild`. When no pending migrations exist, `migrations apply` prints a no-op message without identity resolution.
-
-### Phase 0 Bootstrap Modes
-
-Production/cluster Phase 0 installs HeeRanjID schema, functions, and required extensions only — no node seed, no database-level GUC defaults. The migration runner binds the selected node on the pinned session after Phase 0 completes.
-
-Explicit `--single-node-dev` Phase 0 may include default node-1 seed with dynamic `current_database()` in database defaults, ensuring generated SQL works regardless of the physical database name.
-
-### Stale Phase 0 Protection
-
-The migration runner classifies Phase 0 artifacts before mutation. Generated-stale Phase 0 (containing literal `ALTER DATABASE` GUC defaults) is refused at every boundary: apply, rollback, fake apply, baseline, reset replay, repair resume, attune Record/Squash, and CLI cleanup. Hand-edited or ambiguous Phase 0 refuses by default without silent remediation.
-
 ## Repair Commands
 
 `djogi migrations repair <subcommand>` exposes the four operator-confirmed
@@ -350,12 +305,10 @@ This preserves the original version-to-schema-operation binding without requirin
 ## `djogi db reset`
 
 ```
-djogi db reset --yes [--single-node-dev] [--allow-checksum-drift-reset] [--maintenance-database <name>]
+djogi db reset --yes [--allow-checksum-drift-reset] [--maintenance-database <name>]
 ```
 
-Drops, recreates, and replays every committed migration against the application database. **Requires explicit `--single-node-dev`** — selected-node reset (`--node-id` or `HEER_NODE_ID`) refuses before destructive operations because drop/create removes the old `heer_nodes` registration.
-
-**Triple-gated**:
+Drops, recreates, and replays every committed migration against the application database. **Triple-gated**:
 
 1. `DATABASE_URL` resolves to a localhost connection (`127.0.0.1` / `::1` / `localhost`).
 2. `Djogi.toml::profile != "production"`.

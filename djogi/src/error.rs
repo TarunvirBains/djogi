@@ -1091,36 +1091,6 @@ pub enum DjogiError {
         detected_minor: u32,
         minimum_major: u32,
     },
-
-    /// A Phase 0 migration statement was classified as stale at the deepest
-    /// execution boundary (immediately before raw `batch_execute`).
-    /// This variant is the statement-level safety net in
-    /// [`migrate::runner::execute_runner_statement`] — the runner's carve-out
-    /// for Phase 0 version allows raw `batch_execute` to bypass the
-    /// session-statement guard, so this classifier catches stale artifacts
-    /// that somehow evaded the pre-bootstrap artifact checks.
-    ///
-    /// **What triggers this.** Generated-stale Phase 0 artifacts contain
-    /// `ALTER DATABASE "<hardcoded_name>" SET heer.node_id` or
-    /// `heer.ranj_node_id` with literal database names instead of dynamic
-    /// defaults like `current_database()`. Current production Phase 0 omits
-    /// node seeding entirely; single-node-dev current uses dynamic
-    /// `EXECUTE format('ALTER DATABASE %I ...', current_database(), ...)`.
-    ///
-    /// `statement` carries the offending SQL prefix so log lines can
-    /// identify what was rejected. Classified as **terminal** — a stale
-    /// statement against the same database cannot succeed on retry.
-    #[error(
-        "stale Phase 0 statement refused: {refusal_reason} — \
-         offending SQL: {statement}"
-    )]
-    #[non_exhaustive]
-    StalePhaseZeroStatement {
-        /// Short refusal reason tag (`"generated-stale"` or `"ambiguous"`).
-        refusal_reason: &'static str,
-        /// Offending SQL statement (truncated for log safety).
-        statement: String,
-    },
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.

@@ -71,7 +71,7 @@ use std::path::{Path, PathBuf};
 use djogi::config::MigrateConfig;
 use djogi::migrate::{
     AppLifecycle, AppliedSchema, BucketKey, ComposeRequest, GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME,
-    PHASE_ZERO_VERSION, ResetRequest, RunnerIdentity, SNAPSHOT_FORMAT_VERSION, WorkspaceGuard,
+    PHASE_ZERO_VERSION, ResetRequest, SNAPSHOT_FORMAT_VERSION, WorkspaceGuard,
     acquire_workspace_lock, build_audit_pool, compose, reset_app_database,
 };
 use tokio_postgres::NoTls;
@@ -275,7 +275,6 @@ async fn db_reset_with_audit_pool_writes_djogi_ddl_audit_rows() {
         allow_checksum_drift_reset: false,
         migrate_config: MigrateConfig::default(),
         audit_pool: Some(audit_pool),
-        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     let reset_report = reset_app_database(req)
         .await
@@ -384,7 +383,6 @@ async fn db_reset_without_audit_pool_leaves_audit_table_absent() {
         allow_checksum_drift_reset: false,
         migrate_config: MigrateConfig::default(),
         audit_pool: None,
-        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     let _reset_report = reset_app_database(req)
         .await

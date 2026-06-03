@@ -426,7 +426,6 @@ pub async fn setup_test_db_with_extensions(
         &db_name,
         &extension_set,
         crate::migrate::bootstrap::DEFAULT_NODE_ID,
-        /* include_node_seed = */ true,
     )
     .await
     .map_err(|e| DjogiError::Db(DbError::other(format!("bootstrap migration failed: {e}"))))?;

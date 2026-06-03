@@ -33,7 +33,7 @@ use crate::{PartialApplyResolutionCli, RepairSubcommand};
 /// `migrations/<database>/<app>/<version>.plan.json`. This struct
 /// allows the CLI to parse it and construct a proper [`MigrationPlan`]
 /// with correct segment structure and checksums.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 struct CliReplayPlan {
     format_version: String,
     checksum_up: String,
@@ -42,7 +42,7 @@ struct CliReplayPlan {
     segments: Vec<CliReplaySegment>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum CliClassification {
     NoOp,
@@ -59,13 +59,13 @@ enum CliClassification {
     },
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 struct CliReplaySegment {
     kind: CliSegmentKind,
     statements: Vec<CliReplayStatement>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum CliSegmentKind {
     Transactional,
@@ -73,7 +73,7 @@ enum CliSegmentKind {
     MetadataOnly,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 struct CliReplayStatement {
     label: String,
     up: String,
@@ -228,82 +228,6 @@ impl std::fmt::Display for ApplyReplayPlanError {
 }
 
 impl std::error::Error for ApplyReplayPlanError {}
-
-/// Classify a Phase 0 artifact for the CLI cleanup path (#386).
-/// Loads the committed replay plan JSON or falls back to the SQL file,
-/// classifies the up SQL using [`djogi::migrate::classify_phase_zero_artifact`],
-/// and returns `Some(reason)` if the artifact is not Current.
-/// Returns `None` when the artifact is classified as Current (safe to proceed).
-fn classify_phase_zero_for_cleanup(
-    workspace: &Path,
-    bucket: &djogi::migrate::BucketKey,
-    version: &str,
-    pending_checksum_up: &str,
-    pending_checksum_down: Option<&str>,
-) -> Option<String> {
-    // Try to load the committed replay plan JSON first.
-    let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
-    let replay_plan_path = bucket_dir.join(format!("{version}.plan.json"));
-
-    if let Ok(bytes) = std::fs::read(&replay_plan_path) {
-        let stored: CliReplayPlan = match serde_json::from_slice(&bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                return Some(format!("parse replay plan: {e}"));
-            }
-        };
-
-        if stored.format_version != CLI_REPLAY_PLAN_FORMAT_VERSION {
-            return Some(format!(
-                "replay plan format version mismatch: expected {}, found {}",
-                CLI_REPLAY_PLAN_FORMAT_VERSION, stored.format_version
-            ));
-        }
-
-        // Verify checksums match the pending plan.
-        if stored.checksum_up != pending_checksum_up
-            || stored.checksum_down.as_deref() != pending_checksum_down
-        {
-            return Some("checksum mismatch between pending JSON and replay plan".to_string());
-        }
-
-        // Reconstruct the up SQL from the replay plan segments for classification.
-        let up_sql: String = stored
-            .segments
-            .iter()
-            .flat_map(|seg| seg.statements.iter())
-            .map(|stmt| stmt.up.as_str())
-            .collect::<Vec<&str>>()
-            .join("\n");
-
-        return classify_phase_zero_bytes(up_sql.as_bytes());
-    }
-
-    // Fallback: read the up SQL file directly.
-    let up_filename = djogi::migrate::up_filename(version);
-    let up_path = bucket_dir.join(&up_filename);
-    match std::fs::read_to_string(&up_path) {
-        Ok(up_sql) => classify_phase_zero_bytes(up_sql.as_bytes()),
-        Err(e) => Some(format!("read up SQL file {}: {e}", up_path.display())),
-    }
-}
-
-/// Classify raw bytes as Phase 0 artifact and return refusal reason if not Current.
-fn classify_phase_zero_bytes(bytes: &[u8]) -> Option<String> {
-    match djogi::migrate::classify_phase_zero_artifact(bytes) {
-        djogi::migrate::PhaseZeroArtifactState::Current => None,
-        djogi::migrate::PhaseZeroArtifactState::GeneratedStale => {
-            Some("generated-stale artifact detected".to_string())
-        }
-        djogi::migrate::PhaseZeroArtifactState::Ambiguous => {
-            Some("ambiguous or hand-edited artifact detected".to_string())
-        }
-        djogi::migrate::PhaseZeroArtifactState::Incomplete => {
-            Some("incomplete artifact (truncated generation)".to_string())
-        }
-        djogi::migrate::PhaseZeroArtifactState::Missing => Some("missing artifact".to_string()),
-    }
-}
 
 // ── Type conversions from CLI-local types to library types ────────────────
 
@@ -778,13 +702,7 @@ fn resolve_bucket_url(db_config: &djogi::config::DatabaseConfig, database: &str)
 /// committed replay plan for each, and drives [`djogi::migrate::apply_plan`]
 /// through the library runner with full crash recovery via the ledger state
 /// machine.
-pub fn apply_cmd(
-    workspace: Option<PathBuf>,
-    fake: bool,
-    reason: Option<String>,
-    node_id: Option<u32>,
-    single_node_dev: bool,
-) -> ExitCode {
+pub fn apply_cmd(workspace: Option<PathBuf>, fake: bool, reason: Option<String>) -> ExitCode {
     let workspace = resolve_workspace(workspace);
 
     // Validate --fake / --reason pairing before doing any expensive work.
@@ -824,8 +742,7 @@ pub fn apply_cmd(
         }
     };
 
-    let exit =
-        runtime.block_on(async { run_apply(&workspace, &mode, node_id, single_node_dev).await });
+    let exit = runtime.block_on(async { run_apply(&workspace, &mode).await });
     ExitCode::from(exit as u8)
 }
 
@@ -840,12 +757,7 @@ enum FakeMode {
 }
 
 /// Async body of [`apply_cmd`]. Returns the desired exit code.
-async fn run_apply(
-    workspace: &Path,
-    mode: &FakeMode,
-    node_id: Option<u32>,
-    single_node_dev: bool,
-) -> i32 {
+async fn run_apply(workspace: &Path, mode: &FakeMode) -> i32 {
     use djogi::config::DjogiConfig;
 
     let action_verb = match mode {
@@ -866,31 +778,7 @@ async fn run_apply(
         }
     };
 
-    // 2. Discover pending JSONs before resolving identity or connecting to DB.
-    // No-pending apply (zero pending files) is an identity-free inverse —
-    // skip the resolver and pool connection entirely when no pending plans exist.
-    let pending_files = discover_pending_plans(workspace);
-    if pending_files.is_empty() {
-        println!("No pending migrations to {action_verb}.");
-        return 0;
-    }
-
-    // 3. Resolve node identity for identity-bearing operations (only when work exists).
-    // Both real apply and fake-apply are identity-bearing (run-id generation + ledger).
-    let runner_identity = match crate::identity::resolve_identity(
-        node_id,
-        single_node_dev,
-        &config.profile,
-        action_verb,
-    ) {
-        Ok(resolved) => Some(resolved.into_runner_identity()),
-        Err(e) => {
-            eprintln!("djogi migrations {action_verb}: refused — {e}");
-            return 2;
-        }
-    };
-
-    // 4. Build pool and check PG version preflight.
+    // 2. Build pool and check PG version preflight.
     let pool = match djogi::pg::pool::DjogiPool::connect(&config.database.url).await {
         Ok(p) => p,
         Err(e) => {
@@ -903,7 +791,14 @@ async fn run_apply(
         return 2;
     }
 
-    // 5. Acquire workspace lock.
+    // 3. Discover pending JSONs.
+    let pending_files = discover_pending_plans(workspace);
+    if pending_files.is_empty() {
+        println!("No pending migrations to {action_verb}.");
+        return 0;
+    }
+
+    // 4. Acquire workspace lock.
     let lock_path = workspace.join(LOCK_FILE_NAME);
     let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
         Ok(g) => g,
@@ -913,16 +808,16 @@ async fn run_apply(
         }
     };
 
-    // 6. Build audit pool (optional — silently skipped if unavailable).
+    // 5. Build audit pool (optional — silently skipped if unavailable).
     let audit_pool = match djogi::migrate::resolve_audit_url(&config) {
         Ok(url) => djogi::migrate::build_audit_pool(&url).await.ok(),
         Err(_) => None,
     };
 
-    // 7. Build context from pool (not pinned yet — apply_plan pins internally).
+    // 6. Build context from pool (not pinned yet — apply_plan pins internally).
     let mut ctx = djogi::context::DjogiContext::from_pool(pool);
 
-    // 8. Apply each pending migration in order.
+    // 7. Apply each pending migration in order.
     for (pending_path, bucket_database, app_label) in &pending_files {
         println!("  {progress_verb} {bucket_database}/{app_label}...");
         let result = apply_one_pending(
@@ -935,7 +830,6 @@ async fn run_apply(
             &guard,
             audit_pool.as_ref(),
             mode,
-            runner_identity,
         )
         .await;
 
@@ -1079,7 +973,6 @@ async fn apply_one_pending(
     guard: &djogi::migrate::WorkspaceGuard,
     audit_pool: Option<&deadpool_postgres::Pool>,
     mode: &FakeMode,
-    runner_identity: Option<djogi::migrate::RunnerIdentity>,
 ) -> ApplyResult {
     // 1. Parse pending JSON to get bucket + version + checksums.
     let pending_bytes = match std::fs::read(pending_path) {
@@ -1121,28 +1014,6 @@ async fn apply_one_pending(
             if existing_status == LedgerStatus::Failed
                 || existing_status == LedgerStatus::RolledBack
             {
-                // #386: Phase 0 cleanup must classify before deleting.
-                // Load the committed replay plan or fallback SQL first,
-                // refuse stale/ambiguous Phase 0 before removing the
-                // failed/rolled_back row. This applies to both real apply
-                // and fake apply paths.
-                if pending.version == djogi::migrate::PHASE_ZERO_VERSION {
-                    let cleanup_refusal = classify_phase_zero_for_cleanup(
-                        workspace,
-                        &bucket,
-                        &pending.version,
-                        &pending.checksum_up,
-                        pending.checksum_down.as_deref(),
-                    );
-                    if let Some(reason) = cleanup_refusal {
-                        return ApplyResult::Refused(format!(
-                            "Phase 0 cleanup refused: {reason}; \
-                             refusing before deleting {} row to prevent stale replay",
-                            existing_status.as_db_str()
-                        ));
-                    }
-                }
-
                 // Both Failed and RolledBack rows are non-terminal stale rows
                 // that block re-apply. delete_failed_ledger_row is a status-
                 // agnostic DELETE by version; the name reflects the original
@@ -1195,7 +1066,6 @@ async fn apply_one_pending(
         },
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::default_for_config(config),
         audit_pool: audit_pool.cloned(),
-        runner_identity,
     };
 
     // 5. Apply (or fake-apply) the plan through the library runner.
@@ -1917,15 +1787,11 @@ pub fn repair_cmd(command: RepairSubcommand) -> ExitCode {
             app,
             database,
             workspace,
-            node_id,
-            single_node_dev,
         } => repair_resume_partial_apply_cmd(
             &version,
             app.as_deref(),
             database.as_deref(),
             workspace,
-            node_id,
-            single_node_dev,
         ),
         RepairSubcommand::SnapshotRebuild {
             app,
@@ -2009,8 +1875,6 @@ fn repair_error_exit_code(err: &RepairError) -> i32 {
         | RepairError::AdvisoryUnlockReturnedFalse { .. } // session-pinning correctness failure — not a blind retry
         | RepairError::ResumePlanShapeMismatch { .. }
         | RepairError::ReplayPlanShapeMismatch { .. }
-        | RepairError::PhaseZeroArtifactRefused { .. }  // #386: refusal — operator must replace the stale file
-        | RepairError::MissingResumeIdentity { .. }     // #386: refusal — operator must supply identity for resume
         => 2,
     }
 }
@@ -2216,7 +2080,6 @@ async fn run_repair_checksum_drift(
         &guard,
         &bucket,
         version,
-        workspace,
         &new_checksum_up,
         resolved_checksum_down.as_deref(),
         RepairConfirmation::OperatorAcknowledged,
@@ -2329,7 +2192,6 @@ async fn run_repair_partial_apply(
         &guard,
         &bucket,
         version,
-        workspace,
         resolution,
         note,
         RepairConfirmation::OperatorAcknowledged,
@@ -2357,8 +2219,6 @@ pub fn repair_resume_partial_apply_cmd(
     app: Option<&str>,
     database: Option<&str>,
     workspace: Option<PathBuf>,
-    node_id: Option<u32>,
-    single_node_dev: bool,
 ) -> ExitCode {
     let workspace = resolve_workspace(workspace);
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -2371,10 +2231,8 @@ pub fn repair_resume_partial_apply_cmd(
             return ExitCode::from(1);
         }
     };
-    let exit = runtime.block_on(async {
-        run_repair_resume_partial(&workspace, version, app, database, node_id, single_node_dev)
-            .await
-    });
+    let exit = runtime
+        .block_on(async { run_repair_resume_partial(&workspace, version, app, database).await });
     ExitCode::from(exit as u8)
 }
 
@@ -2384,8 +2242,6 @@ async fn run_repair_resume_partial(
     version: &str,
     app: Option<&str>,
     database: Option<&str>,
-    node_id: Option<u32>,
-    single_node_dev: bool,
 ) -> i32 {
     use djogi::config::DjogiConfig;
 
@@ -2394,20 +2250,6 @@ async fn run_repair_resume_partial(
         Err(e) => {
             eprintln!("djogi migrations repair resume-partial: config load: {e}");
             return 1;
-        }
-    };
-
-    // Resolve node identity before any DB work.
-    let runner_identity = match crate::identity::resolve_identity(
-        node_id,
-        single_node_dev,
-        &config.profile,
-        "repair resume-partial",
-    ) {
-        Ok(resolved) => Some(resolved.into_runner_identity()),
-        Err(e) => {
-            eprintln!("djogi migrations repair resume-partial: refused — {e}");
-            return 2;
         }
     };
 
@@ -2471,7 +2313,6 @@ async fn run_repair_resume_partial(
         &guard,
         version,
         &plan,
-        runner_identity,
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2676,8 +2517,6 @@ pub fn baseline_cmd(
     app: Option<&str>,
     database: Option<&str>,
     workspace: Option<PathBuf>,
-    node_id: Option<u32>,
-    single_node_dev: bool,
 ) -> ExitCode {
     // Validate --reason before any expensive work, mirroring the
     // `apply --fake --reason` empty-reason gate. The library's
@@ -2705,17 +2544,7 @@ pub fn baseline_cmd(
         }
     };
     let exit = runtime.block_on(async {
-        run_baseline(
-            &workspace,
-            version,
-            description,
-            reason,
-            app,
-            database,
-            node_id,
-            single_node_dev,
-        )
-        .await
+        run_baseline(&workspace, version, description, reason, app, database).await
     });
     ExitCode::from(exit as u8)
 }
@@ -2737,8 +2566,6 @@ async fn run_baseline(
     reason: &str,
     app: Option<&str>,
     database: Option<&str>,
-    node_id: Option<u32>,
-    single_node_dev: bool,
 ) -> i32 {
     use djogi::config::DjogiConfig;
 
@@ -2747,20 +2574,6 @@ async fn run_baseline(
         Err(e) => {
             eprintln!("djogi migrations baseline: config load: {e}");
             return 1;
-        }
-    };
-
-    // Resolve node identity before any DB work.
-    let runner_identity = match crate::identity::resolve_identity(
-        node_id,
-        single_node_dev,
-        &config.profile,
-        "baseline",
-    ) {
-        Ok(resolved) => Some(resolved.into_runner_identity()),
-        Err(e) => {
-            eprintln!("djogi migrations baseline: refused — {e}");
-            return 2;
         }
     };
 
@@ -2830,7 +2643,6 @@ async fn run_baseline(
             Ok(url) => djogi::migrate::build_audit_pool(&url).await.ok(),
             Err(_) => None,
         },
-        runner_identity,
     };
 
     match baseline_plan(&mut ctx, &bucket, &runner_ctx, &guard, reason).await {
@@ -3267,8 +3079,6 @@ mod tests {
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
-            None,  // node_id
-            false, // single_node_dev
         );
         assert_eq!(
             result,
@@ -3286,8 +3096,6 @@ mod tests {
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
-            None,  // node_id
-            false, // single_node_dev
         );
         assert_eq!(
             result,
@@ -3382,8 +3190,6 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             true,
             None,
-            None,  // node_id
-            false, // single_node_dev
         );
         assert_eq!(
             result,
@@ -3399,8 +3205,6 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             true,
             Some(String::new()),
-            None,  // node_id
-            false, // single_node_dev
         );
         assert_eq!(
             result,
@@ -3416,8 +3220,6 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             true,
             Some("   ".to_string()),
-            None,  // node_id
-            false, // single_node_dev
         );
         assert_eq!(
             result,
@@ -3436,8 +3238,6 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             false, // NOT fake
             Some("test reason".to_string()),
-            None, // node_id — identity resolution is tested separately;
-            true, // single_node_dev — provide explicit dev mode to bypass resolver
         );
         // Should be 1 (config error) not 2 (refusal)
         assert_ne!(
@@ -3786,205 +3586,5 @@ mod tests {
             Some("postgres://localhost"),
             "main returns the app URL verbatim regardless of path"
         );
-    }
-
-    // ── Stage 4D: CLI cleanup stale Phase 0 guard ──────────────────────
-
-    #[test]
-    fn classify_phase_zero_bytes_current_production_is_ok() {
-        // Production Phase 0: banner + base schema, no node seed.
-        let sql = "-- ╭───────────────────────────────────────────────────────────────╮\n\
-                   -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
-                   -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
-                   -- ╰───────────────────────────────────────────────────────────────╯\n\n\
-                   -- HeeRanjID base schema + functions (idempotent).\n\
-                   CREATE SCHEMA IF NOT EXISTS heer;\n";
-        assert!(
-            classify_phase_zero_bytes(sql.as_bytes()).is_none(),
-            "production Phase 0 should be classified as Current (no refusal)"
-        );
-    }
-
-    #[test]
-    fn classify_phase_zero_bytes_generated_stale_is_refused() {
-        // Generated-stale Phase 0: literal database defaults.
-        let sql = "-- ╭───────────────────────────────────────────────────────────────╮\n\
-                   -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
-                   -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
-                   -- ╰───────────────────────────────────────────────────────────────╯\n\n\
-                   -- HeeRanjID base schema + functions (idempotent).\n\
-                   CREATE SCHEMA IF NOT EXISTS heer;\n\
-                   ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
-                   ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';\n\
-                   SET heer.node_id = '1';\n\
-                   SET heer.ranj_node_id = '1';\n";
-        let refusal = classify_phase_zero_bytes(sql.as_bytes());
-        assert!(
-            refusal.is_some(),
-            "generated-stale Phase 0 should be refused"
-        );
-        assert!(refusal.unwrap().contains("generated-stale"));
-    }
-
-    #[test]
-    fn classify_phase_zero_bytes_ambiguous_is_refused() {
-        // Hand-edited or ambiguous Phase 0.
-        let sql = "CREATE SCHEMA IF NOT EXISTS heer;\n\
-                   ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n";
-        let refusal = classify_phase_zero_bytes(sql.as_bytes());
-        assert!(refusal.is_some(), "ambiguous Phase 0 should be refused");
-        assert!(refusal.unwrap().contains("ambiguous"));
-    }
-
-    #[test]
-    fn classify_phase_zero_bytes_missing_is_refused() {
-        let refusal = classify_phase_zero_bytes(b"  \n\t  ");
-        assert!(refusal.is_some(), "missing Phase 0 should be refused");
-        assert!(refusal.unwrap().contains("missing"));
-    }
-
-    #[test]
-    fn classify_phase_zero_for_cleanup_refuses_stale_replay_plan() {
-        let work = temp_workspace("stale_cleanup");
-        let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
-
-        // Write a stale replay plan JSON.
-        let replay = CliReplayPlan {
-            format_version: CLI_REPLAY_PLAN_FORMAT_VERSION.to_string(),
-            classification: CliClassification::Additive,
-            checksum_up: "V1:aabbccdd".to_string(),
-            checksum_down: None,
-            segments: vec![CliSegment {
-                kind: CliSegmentKind::Transactional,
-                statements: vec![CliOperationSql {
-                    label: "phase_zero_bootstrap".to_string(),
-                    up: "-- ╭───────────────────────────────────────────────────────────────╮\n\
-                        -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
-                        -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
-                        -- ╰───────────────────────────────────────────────────────────────╯\n\n\
-                        -- HeeRanjID base schema + functions (idempotent).\n\
-                        CREATE SCHEMA IF NOT EXISTS heer;\n\
-                        ALTER DATABASE \"stale_db\" SET heer.node_id = '1';\n\
-                        ALTER DATABASE \"stale_db\" SET heer.ranj_node_id = '1';\n\
-                        SET heer.node_id = '1';\n\
-                        SET heer.ranj_node_id = '1';\n"
-                        .to_string(),
-                    down: String::new(),
-                }],
-            }],
-        };
-        fs::write(
-            bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
-            serde_json::to_string(&replay).unwrap(),
-        )
-        .unwrap();
-
-        let bucket = djogi::migrate::BucketKey {
-            database: "main".to_string(),
-            app: String::new(),
-        };
-        let refusal = classify_phase_zero_for_cleanup(
-            &work,
-            &bucket,
-            djogi::migrate::PHASE_ZERO_VERSION,
-            "V1:aabbccdd",
-            None,
-        );
-        assert!(
-            refusal.is_some(),
-            "stale Phase 0 replay plan should be refused by cleanup guard"
-        );
-        let msg = refusal.unwrap();
-        assert!(msg.contains("generated-stale"), "refusal reason: {msg}");
-
-        let _ = fs::remove_dir_all(&work);
-    }
-
-    #[test]
-    fn classify_phase_zero_for_cleanup_allows_current_replay_plan() {
-        let work = temp_workspace("current_cleanup");
-        let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
-
-        // Write a current (production) replay plan JSON.
-        let replay = CliReplayPlan {
-            format_version: CLI_REPLAY_PLAN_FORMAT_VERSION.to_string(),
-            classification: CliClassification::Additive,
-            checksum_up: "V1:eeff0011".to_string(),
-            checksum_down: None,
-            segments: vec![CliSegment {
-                kind: CliSegmentKind::Transactional,
-                statements: vec![CliOperationSql {
-                    label: "phase_zero_bootstrap".to_string(),
-                    up: "-- ╭───────────────────────────────────────────────────────────────╮\n\
-                        -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
-                        -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
-                        -- ╰───────────────────────────────────────────────────────────────╯\n\n\
-                        -- HeeRanjID base schema + functions (idempotent).\n\
-                        CREATE SCHEMA IF NOT EXISTS heer;\n"
-                        .to_string(),
-                    down: String::new(),
-                }],
-            }],
-        };
-        fs::write(
-            bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
-            serde_json::to_string(&replay).unwrap(),
-        )
-        .unwrap();
-
-        let bucket = djogi::migrate::BucketKey {
-            database: "main".to_string(),
-            app: String::new(),
-        };
-        let refusal = classify_phase_zero_for_cleanup(
-            &work,
-            &bucket,
-            djogi::migrate::PHASE_ZERO_VERSION,
-            "V1:eeff0011",
-            None,
-        );
-        assert!(
-            refusal.is_none(),
-            "current Phase 0 should be allowed by cleanup guard; got: {refusal:?}"
-        );
-
-        let _ = fs::remove_dir_all(&work);
-    }
-
-    #[test]
-    fn classify_phase_zero_for_cleanup_fallback_sql_file() {
-        let work = temp_workspace("fallback_cleanup");
-        let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
-
-        // Write a current up SQL file (no replay plan JSON).
-        let up_sql = "-- ╭───────────────────────────────────────────────────────────────╮\n\
-                      -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
-                      -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
-                      -- ╰───────────────────────────────────────────────────────────────╯\n\n\
-                      -- HeeRanjID base schema + functions (idempotent).\n\
-                      CREATE SCHEMA IF NOT EXISTS heer;\n";
-        let up_filename = djogi::migrate::up_filename(djogi::migrate::PHASE_ZERO_VERSION);
-        fs::write(bucket_dir.join(&up_filename), up_sql).unwrap();
-
-        let bucket = djogi::migrate::BucketKey {
-            database: "main".to_string(),
-            app: String::new(),
-        };
-        let refusal = classify_phase_zero_for_cleanup(
-            &work,
-            &bucket,
-            djogi::migrate::PHASE_ZERO_VERSION,
-            "V1:anychecksum",
-            None,
-        );
-        assert!(
-            refusal.is_none(),
-            "current Phase 0 fallback SQL should be allowed; got: {refusal:?}"
-        );
-
-        let _ = fs::remove_dir_all(&work);
     }
 }

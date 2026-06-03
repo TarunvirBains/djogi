@@ -12,7 +12,6 @@ use clap::{Parser, Subcommand};
 
 mod analyze;
 mod db;
-mod identity;
 mod live;
 mod migrations;
 mod schema;
@@ -273,16 +272,6 @@ pub enum DbCommand {
         /// Workspace root override.
         #[arg(long)]
         workspace: Option<PathBuf>,
-        /// Explicit cluster node identity (0..=511). Mutually exclusive
-        /// with `--single-node-dev`. Selected-node reset is refused —
-        /// use `--single-node-dev` for destructive local reset.
-        #[arg(long, conflicts_with = "single_node_dev")]
-        node_id: Option<u32>,
-        /// Single-node development mode — the only permitted node
-        /// identity for destructive reset. Refused in production
-        /// profile or `DJOGI_ENV=production`.
-        #[arg(long, default_value_t = false)]
-        single_node_dev: bool,
     },
     /// Run operator-authored SQL seed files in `seeds/<database>/`.
     /// Idempotent — re-runs skip seeds whose `V1:<sha256>` checksum
@@ -369,16 +358,6 @@ pub enum MigrateCommand {
 
         #[arg(long)]
         reason: Option<String>,
-
-        /// Explicit cluster node identity (0..=511). See
-        /// `djogi migrations apply --help` for details.
-        #[arg(long, conflicts_with = "single_node_dev")]
-        node_id: Option<u32>,
-
-        /// Single-node development mode. See
-        /// `djogi migrations apply --help` for details.
-        #[arg(long, default_value_t = false)]
-        single_node_dev: bool,
     },
 }
 
@@ -527,11 +506,6 @@ pub enum MigrationsCommand {
     /// before faking. The `--fake` flag respects the same out-of-order
     /// policy as real apply; if CI/prod policy is `Reject`, fake-apply
     /// on an out-of-order version is also rejected.
-    /// **Node identity:** for operations that execute SQL, supply
-    /// `--node-id <id>` (explicit cluster node) or
-    /// `--single-node-dev` (dev mode, binds node 1). Mutually exclusive.
-    /// Falls back to `HEER_NODE_ID` env var when neither flag is set.
-    /// Refuses without identity for non-dev operations (exit 2).
     /// For previewing pending work without executing it, use
     /// `djogi migrations status`.
     /// If the command is interrupted after recording a ledger row with
@@ -562,19 +536,6 @@ pub enum MigrationsCommand {
         /// apply.
         #[arg(long)]
         reason: Option<String>,
-
-        /// Explicit cluster node identity (0..=511). Wins over
-        /// `HEER_NODE_ID` env var. Mutually exclusive with
-        /// `--single-node-dev`. Required for identity-bearing operations
-        /// unless `--single-node-dev` is supplied or `HEER_NODE_ID` is set.
-        #[arg(long, conflicts_with = "single_node_dev")]
-        node_id: Option<u32>,
-
-        /// Single-node development mode — binds node 1 for the duration
-        /// of this operation. Mutually exclusive with `--node-id`.
-        /// Refused in production profile or `DJOGI_ENV=production`.
-        #[arg(long, default_value_t = false)]
-        single_node_dev: bool,
     },
     /// Operator-confirmed repair flows for ledger drift, partial
     /// applies, and missing snapshots. Every subcommand requires
@@ -620,14 +581,6 @@ pub enum MigrationsCommand {
         /// Workspace root override.
         #[arg(long)]
         workspace: Option<PathBuf>,
-        /// Explicit cluster node identity (0..=511). Required for
-        /// baseline unless `--single-node-dev` is supplied.
-        #[arg(long, conflicts_with = "single_node_dev")]
-        node_id: Option<u32>,
-        /// Single-node development mode — binds node 1 for baseline.
-        /// Refused in production profile or `DJOGI_ENV=production`.
-        #[arg(long, default_value_t = false)]
-        single_node_dev: bool,
     },
 }
 
@@ -706,14 +659,6 @@ pub enum RepairSubcommand {
         /// Workspace root override.
         #[arg(long)]
         workspace: Option<PathBuf>,
-        /// Explicit cluster node identity (0..=511). Required for
-        /// SQL-executing resume unless `--single-node-dev` is supplied.
-        #[arg(long, conflicts_with = "single_node_dev")]
-        node_id: Option<u32>,
-        /// Single-node development mode — binds node 1 for resume.
-        /// Refused in production profile or `DJOGI_ENV=production`.
-        #[arg(long, default_value_t = false)]
-        single_node_dev: bool,
     },
 
     /// Rebuild the schema snapshot for a bucket by walking the
@@ -841,15 +786,11 @@ fn dispatch_command(
                 allow_checksum_drift_reset,
                 maintenance_database,
                 workspace,
-                node_id,
-                single_node_dev,
             } => db::reset_cmd(
                 *yes,
                 *allow_checksum_drift_reset,
                 maintenance_database.clone(),
                 workspace.clone(),
-                *node_id,
-                *single_node_dev,
             ),
             DbCommand::Seed {
                 database,
@@ -990,15 +931,7 @@ fn dispatch_command(
                 workspace,
                 fake,
                 reason,
-                node_id,
-                single_node_dev,
-            } => migrations::apply_cmd(
-                workspace.clone(),
-                *fake,
-                reason.clone(),
-                *node_id,
-                *single_node_dev,
-            ),
+            } => migrations::apply_cmd(workspace.clone(), *fake, reason.clone()),
             MigrationsCommand::Repair { command } => migrations::repair_cmd(command.clone()),
             MigrationsCommand::Baseline {
                 version,
@@ -1007,8 +940,6 @@ fn dispatch_command(
                 app,
                 database,
                 workspace,
-                node_id,
-                single_node_dev,
             } => migrations::baseline_cmd(
                 version,
                 description,
@@ -1016,8 +947,6 @@ fn dispatch_command(
                 app.as_deref(),
                 database.as_deref(),
                 workspace.clone(),
-                *node_id,
-                *single_node_dev,
             ),
         },
         TopCommand::Migrate { command } => match command {
@@ -1025,15 +954,7 @@ fn dispatch_command(
                 workspace,
                 fake,
                 reason,
-                node_id,
-                single_node_dev,
-            } => migrations::apply_cmd(
-                workspace.clone(),
-                *fake,
-                reason.clone(),
-                *node_id,
-                *single_node_dev,
-            ),
+            } => migrations::apply_cmd(workspace.clone(), *fake, reason.clone()),
         },
     }
 }

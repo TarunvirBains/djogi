@@ -77,8 +77,6 @@ pub fn reset_cmd(
     allow_checksum_drift_reset: bool,
     maintenance_database: String,
     workspace: Option<PathBuf>,
-    node_id: Option<u32>,
-    single_node_dev: bool,
 ) -> ExitCode {
     let workspace = resolve_workspace(workspace);
     let config = match DjogiConfig::load_from_workspace(&workspace) {
@@ -86,37 +84,6 @@ pub fn reset_cmd(
         Err(e) => {
             eprintln!("djogi db reset: config load: {e}");
             return ExitCode::from(1);
-        }
-    };
-
-    // Resolve node identity before the interactive prompt.
-    // Reset requires explicit single-node-dev mode — selected-node is refused
-    // because destructive drop/recreate on an identity-bearing node could
-    // permanently lose registered state.
-    let runner_identity = match crate::identity::resolve_identity(
-        node_id,
-        single_node_dev,
-        &config.profile,
-        "db reset",
-    ) {
-        Ok(resolved) => {
-            // Selected-node reset is refused — only --single-node-dev is permitted.
-            match resolved {
-                crate::identity::CliResolvedIdentity::SingleNodeDev => {
-                    Some(djogi::migrate::RunnerIdentity::SingleNodeDev)
-                }
-                crate::identity::CliResolvedIdentity::Selected(id) => {
-                    eprintln!(
-                        "djogi db reset: refused — selected node {id} is not \
-                         permitted for destructive reset; use --single-node-dev"
-                    );
-                    return ExitCode::from(2);
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("djogi db reset: refused — {e}");
-            return ExitCode::from(2);
         }
     };
 
@@ -151,7 +118,6 @@ pub fn reset_cmd(
             &maintenance_database,
             confirmed,
             allow_checksum_drift_reset,
-            runner_identity,
         )
         .await
     });
@@ -180,7 +146,6 @@ async fn run_reset(
     maintenance_database: &str,
     confirmed: bool,
     allow_checksum_drift_reset: bool,
-    runner_identity: Option<djogi::migrate::RunnerIdentity>,
 ) -> i32 {
     // Version preflight — verify PostgreSQL >= 18 on the target cluster
     // before any destructive work.
@@ -219,7 +184,6 @@ async fn run_reset(
             pk_flip_join_table_option: config.migrate.pk_flip_join_table_option,
         },
         audit_pool,
-        runner_identity,
     };
     match reset_app_database(req).await {
         Ok(report) => {
@@ -757,14 +721,7 @@ mod tests {
 
         // `yes = true` skips the interactive prompt; we expect the
         // localhost gate to refuse and exit code 2.
-        let exit = reset_cmd(
-            true,
-            false,
-            "postgres".to_string(),
-            Some(work.clone()),
-            None,
-            false,
-        );
+        let exit = reset_cmd(true, false, "postgres".to_string(), Some(work.clone()));
         assert_eq!(exit, ExitCode::from(2), "remote URL must hit refusal exit");
 
         match prior {
@@ -787,14 +744,7 @@ mod tests {
         let prior = std::env::var("DATABASE_URL").ok();
         unsafe { std::env::remove_var("DATABASE_URL") };
 
-        let exit = reset_cmd(
-            true,
-            false,
-            "postgres".to_string(),
-            Some(work.clone()),
-            None,
-            false,
-        );
+        let exit = reset_cmd(true, false, "postgres".to_string(), Some(work.clone()));
         assert_eq!(exit, ExitCode::from(2), "production must refuse");
 
         match prior {
