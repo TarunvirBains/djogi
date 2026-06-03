@@ -3148,6 +3148,8 @@ mod tests {
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            None, // node_id
+            false, // single_node_dev
         );
         assert_eq!(
             result,
@@ -3165,6 +3167,8 @@ mod tests {
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            None, // node_id
+            false, // single_node_dev
         );
         assert_eq!(
             result,
@@ -3259,6 +3263,8 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             true,
             None,
+            None, // node_id
+            false, // single_node_dev
         );
         assert_eq!(
             result,
@@ -3274,6 +3280,8 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             true,
             Some(String::new()),
+            None, // node_id
+            false, // single_node_dev
         );
         assert_eq!(
             result,
@@ -3289,6 +3297,8 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             true,
             Some("   ".to_string()),
+            None, // node_id
+            false, // single_node_dev
         );
         assert_eq!(
             result,
@@ -3307,6 +3317,8 @@ mod tests {
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             false, // NOT fake
             Some("test reason".to_string()),
+            None, // node_id — identity resolution is tested separately;
+            true, // single_node_dev — provide explicit dev mode to bypass resolver
         );
         // Should be 1 (config error) not 2 (refusal)
         assert_ne!(

@@ -94,6 +94,8 @@ use super::replay_plan::committed_replay_plan_filename;
 use super::reset::{
     ResetSqlSide, compute_committed_down_sql_checksum, compute_committed_sql_checksum,
 };
+use super::bootstrap::PHASE_ZERO_VERSION;
+use super::phase_zero::{classify_phase_zero_artifact, PhaseZeroArtifactState};
 use super::schema::SNAPSHOT_FORMAT_VERSION;
 use super::target::bucket_dir;
 
@@ -436,6 +438,13 @@ pub enum AttuneRefusal {
         version: String,
         buckets: Vec<String>,
     },
+    /// A Phase 0 migration artifact (`V00000000000000__phase_zero_bootstrap`)
+    /// was detected as generated-stale (contains literal `ALTER DATABASE
+    /// "<name>" SET heer.node_id` / `heer.ranj_node_id`). Attune refuses
+    /// to record, insert ledger rows, rewrite files, or update parent
+    /// pointers for stale Phase 0 artifacts. The operator must regenerate
+    /// the Phase 0 file from a corrected descriptor set before retrying.
+    StalePhaseZero { version: String },
 }
 
 impl std::fmt::Display for AttuneError {
@@ -567,6 +576,12 @@ impl std::fmt::Display for AttuneRefusal {
                  independent. Disambiguate by passing `--app <app_label>` to scope the \
                  squash to a single bucket",
                 buckets.join(", ")
+            ),
+            AttuneRefusal::StalePhaseZero { version } => write!(
+                f,
+                "attune refused — Phase 0 artifact `{version}` is generated-stale \
+                 (contains literal ALTER DATABASE defaults); regenerate the Phase 0 \
+                 file from a corrected descriptor set before retrying"
             ),
         }
     }
@@ -927,6 +942,8 @@ pub async fn attune(
                             .cloned();
                         if let Some(path) = path {
                             if apply {
+                                // Stale Phase 0 guard: classify before ledger INSERT.
+                                check_phase_zero_attune_entry(&path, &entry.version)?;
                                 insert_recorded_row(
                                     ctx,
                                     &entry.bucket,
@@ -1169,6 +1186,38 @@ async fn ledger_table_exists(ctx: &mut DjogiContext) -> Result<bool, AttuneError
 
 // ── Record mode ───────────────────────────────────────────────────────────
 
+/// Check whether a Phase 0 candidate file is stale and refuse before
+/// any attune mutation (bootstrap, ledger INSERT, parent pointer).
+/// Returns `Ok(())` when the version is not Phase 0 or when Phase 0
+/// is classified as current/non-stale.
+fn check_phase_zero_attune_entry(up_path: &Path, version: &str) -> Result<(), AttuneError> {
+    // Only check files that are Phase 0 candidates.
+    if version != PHASE_ZERO_VERSION {
+        return Ok(());
+    }
+    let bytes = std::fs::read(up_path).map_err(|e| AttuneError::SqlReadFailed {
+        path: up_path.to_path_buf(),
+        source: e,
+    })?;
+    match classify_phase_zero_artifact(&bytes) {
+        PhaseZeroArtifactState::GeneratedStale => Err(AttuneError::Refused(
+            AttuneRefusal::StalePhaseZero {
+                version: version.to_string(),
+            },
+        )),
+        PhaseZeroArtifactState::Ambiguous => Err(AttuneError::Refused(
+            AttuneRefusal::StalePhaseZero {
+                version: version.to_string(),
+            },
+        )),
+        // Missing, Incomplete, Current are OK for attune purposes.
+        // Missing/Incomplete means the file exists but has no content;
+        // the attune flow will handle empty files normally.
+        // Current is the success path.
+        PhaseZeroArtifactState::Missing | PhaseZeroArtifactState::Incomplete | PhaseZeroArtifactState::Current => Ok(()),
+    }
+}
+
 /// Insert a `status='applied'` ledger row for an unrecorded SQL file.
 /// The note carries the operator-supplied reason verbatim.
 async fn insert_recorded_row(
@@ -1274,6 +1323,13 @@ async fn run_squash(
 
     let bucket = locate_squash_target(disk, from, app_filter)?.clone();
     let versions = disk.get(&bucket).expect("target_bucket came from disk map");
+
+    // Stale Phase 0 guard: classify the retained file before any squash
+    // mutation (retained rewrite, down rewrite, sidecar delete, subsumed
+    // delete, ledger update, parent pointer, publish).
+    if let Some(from_path) = versions.get(&from.to_string()) {
+        check_phase_zero_attune_entry(from_path, from)?;
+    }
 
     // Lexical compare = chronological because version_prefix is `V<14 digits>`.
     let to_squash: Vec<(&String, &PathBuf)> = versions
@@ -2212,5 +2268,185 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
             None => unsafe { std::env::remove_var("DJOGI_ENV") },
         }
+    }
+
+    // ── Stale Phase 0 attune guards ────────────────────────────────────
+
+    /// Helper to generate a generated-stale Phase 0 file for testing.
+    fn write_generated_stale_phase_zero(dir: &Path) {
+        fs::write(
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+            concat!(
+                "-- ╭───────────────────────────────────────────────────────────────╮\n",
+                "-- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n",
+                "-- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n",
+                "-- ╰───────────────────────────────────────────────────────────────╯\n\n",
+                "-- HeeRanjID base schema + functions (idempotent).\n",
+                "SELECT 1;\n\n",
+                "-- HeeRanjID node-id GUC seed (database-level + session-level).\n",
+                "-- `heer.node_id` powers heerid_next(); `heer.ranj_node_id` powers ranjid_next().\n",
+                "ALTER DATABASE \"main\" SET heer.node_id = '1';\n",
+                "ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
+                "SET heer.node_id = '1';\n",
+                "SET heer.ranj_node_id = '1';\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Helper to generate a current production Phase 0 file for testing.
+    fn write_current_production_phase_zero(dir: &Path) {
+        fs::write(
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+            concat!(
+                "-- ╭───────────────────────────────────────────────────────────────╮\n",
+                "-- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n",
+                "-- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n",
+                "-- ╰───────────────────────────────────────────────────────────────╯\n\n",
+                "-- HeeRanjID base schema + functions (idempotent).\n",
+                "SELECT 1;\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Stale Phase 0 attune Record refusal: generated-stale file should be
+    /// refused before ledger INSERT. This test exercises the guard directly
+    /// via check_phase_zero_attune_entry.
+    #[test]
+    fn record_refuses_generated_stale_phase_zero() {
+        let root = temp_root("record_stale_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_generated_stale_phase_zero(&dir);
+
+        let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        assert!(
+            result.is_err(),
+            "Record must refuse generated-stale Phase 0; got Ok"
+        );
+        if let Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero { version })) = result {
+            assert_eq!(version, PHASE_ZERO_VERSION);
+        } else {
+            panic!("Expected StalePhaseZero refusal, got: {:?}", result);
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Current production Phase 0 attune Record passes: should not be
+    /// refused when the artifact is classified as current.
+    #[test]
+    fn record_accepts_current_production_phase_zero() {
+        let root = temp_root("record_current_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_current_production_phase_zero(&dir);
+
+        let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        assert!(
+            result.is_ok(),
+            "Record must accept current Phase 0; got Err: {:?}",
+            result
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Non-Phase 0 files should always pass the attune Phase 0 guard.
+    #[test]
+    fn record_skips_phase_zero_check_for_non_phase_zero_version() {
+        let root = temp_root("record_non_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("V20260101000001__init.sdjql"), "CREATE TABLE foo();").unwrap();
+
+        let up_path = dir.join("V20260101000001__init.sdjql");
+        let result = check_phase_zero_attune_entry(&up_path, "V20260101000001__init");
+        assert!(
+            result.is_ok(),
+            "Non-Phase 0 files should pass the guard; got Err: {:?}",
+            result
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Stale Phase 0 attune Squash refusal: generated-stale file as
+    /// squash target should be refused before retained rewrite.
+    #[test]
+    fn squash_refuses_generated_stale_phase_zero_as_from() {
+        let root = temp_root("squash_stale_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_generated_stale_phase_zero(&dir);
+
+        // Add a later migration so squash would have multiple files.
+        fs::write(
+            dir.join("V20260101000001__init.sdjql"),
+            "CREATE TABLE bar();",
+        )
+        .unwrap();
+
+        let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+        assert!(
+            result.is_err(),
+            "Squash must refuse generated-stale Phase 0 as --from; got Ok"
+        );
+        if let Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero { version })) = result {
+            assert_eq!(version, PHASE_ZERO_VERSION);
+        } else {
+            panic!("Expected StalePhaseZero refusal, got: {:?}", result);
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Current production Phase 0 attune Squash passes: should not be
+    /// refused when the retained artifact is classified as current.
+    #[test]
+    fn squash_accepts_current_production_phase_zero_as_from() {
+        let root = temp_root("squash_current_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_current_production_phase_zero(&dir);
+
+        // Add a later migration so squash would have multiple files.
+        fs::write(
+            dir.join("V20260101000001__init.sdjql"),
+            "CREATE TABLE bar();",
+        )
+        .unwrap();
+
+        let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+        assert!(
+            result.is_ok(),
+            "Squash must accept current Phase 0 as --from; got Err: {:?}",
+            result
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// StalePhaseZero refusal message is actionable and names the version.
+    #[test]
+    fn u3_stale_phase_zero_refusal_message_names_version() {
+        let r = AttuneRefusal::StalePhaseZero {
+            version: PHASE_ZERO_VERSION.to_string(),
+        };
+        let s = format!("{r}");
+        assert!(s.contains(PHASE_ZERO_VERSION), "must name the version: {s}");
+        assert!(
+            s.contains("generated-stale") || s.contains("stale"),
+            "must describe the staleness: {s}"
+        );
+        assert!(
+            s.contains("regenerate") || s.contains("corrected"),
+            "must suggest remediation: {s}"
+        );
     }
 }

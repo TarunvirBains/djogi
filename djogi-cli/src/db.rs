@@ -754,7 +754,7 @@ mod tests {
 
         // `yes = true` skips the interactive prompt; we expect the
         // localhost gate to refuse and exit code 2.
-        let exit = reset_cmd(true, false, "postgres".to_string(), Some(work.clone()));
+        let exit = reset_cmd(true, false, "postgres".to_string(), Some(work.clone()), None, false);
         assert_eq!(exit, ExitCode::from(2), "remote URL must hit refusal exit");
 
         match prior {
@@ -777,7 +777,7 @@ mod tests {
         let prior = std::env::var("DATABASE_URL").ok();
         unsafe { std::env::remove_var("DATABASE_URL") };
 
-        let exit = reset_cmd(true, false, "postgres".to_string(), Some(work.clone()));
+        let exit = reset_cmd(true, false, "postgres".to_string(), Some(work.clone()), None, false);
         assert_eq!(exit, ExitCode::from(2), "production must refuse");
 
         match prior {
