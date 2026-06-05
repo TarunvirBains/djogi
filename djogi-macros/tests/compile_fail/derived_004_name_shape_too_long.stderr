@@ -1,7 +1,7 @@
 error: `#[derived]` `name` `facility_site_with_a_very_long_name_that_exceeds_the_sixty_three_byte_cap` is 73 bytes, exceeding the 63-byte Postgres unquoted-identifier cap (E_DJG_VDF_004)
   --> $DIR/derived_004_name_shape_too_long.rs:21:14
    |
-21 |     name   = facility_site_with_a_very_long_name_that_exceeds_the_sixty_three_byte_cap,
-   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+21 | ... = facility_site_with_a_very_long_name_that_exceeds_the_sixty_three_byte_cap,
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 1 previous error

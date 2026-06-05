@@ -21,7 +21,7 @@ help: the trait `IntoMergeUpdates<WrongSideSource, WrongSideTarget>` is not impl
 note: required by a bound in `MergeStmt::<S, T>::when_matched_and_update`
    --> djogi/src/query/merge.rs:97:12
     |
- 94 |     pub fn when_matched_and_update<C, U>(mut self, condition: Option<C>, updates: U) -> Self
+ 94 |     pub fn when_matched_and_update<C, U>(mut self, condition: Option<C>, updates:...
     |            ----------------------- required by a bound in this associated function
 ...
  97 |         U: IntoMergeUpdates<S, T>,

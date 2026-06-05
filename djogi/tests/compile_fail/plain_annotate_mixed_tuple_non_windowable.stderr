@@ -1,4 +1,4 @@
-error[E0277]: the trait bound `(AggregateExpr<f64>, ...): PlainAnnotationTuple` is not satisfied
+error[E0277]: the trait bound `(..., ...): PlainAnnotationTuple` is not satisfied
     --> $DIR/plain_annotate_mixed_tuple_non_windowable.rs:14:10
      |
   14 |         .annotate(|f| (f.score().sum(), f.score().percentile_cont(0.5)));

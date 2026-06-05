@@ -9,6 +9,11 @@ error[E0599]: the method `eq` exists for struct `DjogiField<Widget, Vec<f64>>`, 
 607 | pub struct DjogiField<M: Model, V> {
     | ---------------------------------- doesn't satisfy `DjogiField<Widget, Vec<f64>>: Iterator`
     |
+   ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:438:1
+    |
+438 | pub struct Vec<T, #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global> {
+    | ------------------------------------------------------------------------------------------------ doesn't satisfy `Vec<f64>: DjogiPortableEq`
+    |
     = note: the following trait bounds were not satisfied:
             `Vec<f64>: DjogiPortableEq`
             `DjogiField<Widget, Vec<f64>>: Iterator`
