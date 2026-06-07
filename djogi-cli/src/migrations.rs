@@ -908,17 +908,32 @@ async fn run_apply(
         }
     };
 
-    // 4. Build pool and check PG version preflight.
-    let pool = match djogi::pg::pool::DjogiPool::connect(&config.database.url).await {
-        Ok(p) => p,
+    // 4. Resolve one URL per pending database target, then connect and
+    // preflight a dedicated context for each database before taking the
+    // workspace lock. The runner routes queries through the supplied
+    // context pool, so apply must bind one context per bucket.database.
+    let target_urls = match resolve_apply_target_urls(&pending_files, &config.database) {
+        Ok(urls) => urls,
         Err(e) => {
-            eprintln!("djogi migrations {action_verb}: pool connect: {e}");
-            return 1;
+            eprintln!("djogi migrations {action_verb}: target routing: {e}");
+            return 2;
         }
     };
-    if let Err(e) = djogi::pg::preflight::check_postgres_version(&pool).await {
-        crate::print_support_boundary_error("migrations apply", &e);
-        return 2;
+    let mut contexts = std::collections::BTreeMap::<String, djogi::context::DjogiContext>::new();
+    for (database, url) in &target_urls {
+        match connect_and_check(url).await {
+            ContextOutcome::Ready(ctx) => {
+                contexts.insert(database.clone(), ctx);
+            }
+            ContextOutcome::UnsupportedVersion(e) => {
+                crate::print_support_boundary_error("migrations apply", &e);
+                return 2;
+            }
+            ContextOutcome::RuntimeError(msg) => {
+                eprintln!("djogi migrations {action_verb}: pool for '{database}': {msg}");
+                return 1;
+            }
+        }
     }
 
     // 5. Acquire workspace lock.
@@ -946,16 +961,21 @@ async fn run_apply(
         Err(_) => None,
     };
 
-    // 8. Build context from pool (not pinned yet — apply_plan pins internally).
-    let mut ctx = djogi::context::DjogiContext::from_pool(pool);
-
-    // 9. Apply each pending migration in order.
+    // 8. Apply each pending migration through the context for its
+    // bucket database. The pending discovery sweep already deduped and
+    // preflighted the target database set above.
     for pending_file in &pending_files {
         let bucket_database = &pending_file.bucket.database;
         let app_label = &pending_file.bucket.app;
+        let Some(ctx) = contexts.get_mut(bucket_database) else {
+            eprintln!(
+                "djogi migrations {action_verb}: internal error: missing context for database '{bucket_database}'"
+            );
+            return 1;
+        };
         println!("  {progress_verb} {bucket_database}/{app_label}...");
         let result = apply_one_pending(
-            &mut ctx,
+            ctx,
             workspace,
             pending_file,
             &config,
@@ -1302,6 +1322,24 @@ fn load_verified_pending_for_apply(
         ));
     }
     Ok(pending)
+}
+
+fn resolve_apply_target_urls(
+    pending_files: &[DiscoveredPendingPlan],
+    db_config: &djogi::config::DatabaseConfig,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut urls = std::collections::BTreeMap::new();
+    for pending_file in pending_files {
+        let database = &pending_file.bucket.database;
+        if urls.contains_key(database) {
+            continue;
+        }
+        let Some(url) = resolve_bucket_url(db_config, database) else {
+            return Err(format!("cannot derive a database URL for `{database}`"));
+        };
+        urls.insert(database.clone(), url);
+    }
+    Ok(urls)
 }
 
 fn reconcile_pending_plans_after_lock(
@@ -4496,6 +4534,84 @@ mod tests {
             Some("postgres://localhost"),
             "main returns the app URL verbatim regardless of path"
         );
+    }
+
+    #[test]
+    fn resolve_apply_target_urls_uses_pending_bucket_databases() {
+        let work = temp_workspace("apply_target_urls");
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: String::new(),
+                },
+            ),
+            "main",
+            "",
+            "V20260607010101__main_global",
+        );
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "crud_log".to_string(),
+                    app: "audit".to_string(),
+                },
+            ),
+            "crud_log",
+            "audit",
+            "V20260607010102__crud_log_audit",
+        );
+
+        let discovered = discover_pending_plans(&work).expect("discover");
+        let cfg = db_config(
+            "postgres://user:pass@localhost:5432/myapp_prod",
+            Some("postgres://user:pass@localhost:5432/myapp_crud"),
+            None,
+        );
+
+        let urls = resolve_apply_target_urls(&discovered, &cfg).expect("resolve");
+        assert_eq!(
+            urls.len(),
+            2,
+            "apply must preserve distinct target databases"
+        );
+        assert_eq!(
+            urls.get("main").map(String::as_str),
+            Some("postgres://user:pass@localhost:5432/myapp_prod"),
+            "main pending plans must keep the app database URL"
+        );
+        assert_eq!(
+            urls.get("crud_log").map(String::as_str),
+            Some("postgres://user:pass@localhost:5432/myapp_crud"),
+            "crud_log pending plans must route through the crud_log database URL"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn resolve_apply_target_urls_refuses_unresolvable_pending_database() {
+        let work = temp_workspace("apply_target_urls_unresolvable");
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "analytics".to_string(),
+                    app: String::new(),
+                },
+            ),
+            "analytics",
+            "",
+            "V20260607010103__analytics_global",
+        );
+
+        let discovered = discover_pending_plans(&work).expect("discover");
+        let cfg = db_config("postgres://localhost", None, None);
+        let err = resolve_apply_target_urls(&discovered, &cfg)
+            .expect_err("pathless app URL must refuse a derived pending database");
+        assert!(err.contains("analytics"), "unexpected error: {err}");
+        let _ = fs::remove_dir_all(&work);
     }
 
     // ── Stage 4D: CLI cleanup identity-free Phase 0 guard ─────────────

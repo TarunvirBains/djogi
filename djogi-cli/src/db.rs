@@ -798,12 +798,12 @@ mod tests {
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let exit = without_database_url(|| {
             reset_cmd(
-                true,                 // yes
-                false,                // allow_checksum_drift_reset
+                true,                   // yes
+                false,                  // allow_checksum_drift_reset
                 "postgres".to_string(), // maintenance_database
-                Some(work.clone()),   // workspace
-                None,                 // node_id
-                false,                // single_node_dev
+                Some(work.clone()),     // workspace
+                None,                   // node_id
+                false,                  // single_node_dev
             )
         });
         assert_eq!(
@@ -827,12 +827,12 @@ mod tests {
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let exit = without_database_url(|| {
             reset_cmd(
-                true,                 // yes
-                false,                // allow_checksum_drift_reset
+                true,                   // yes
+                false,                  // allow_checksum_drift_reset
                 "postgres".to_string(), // maintenance_database
-                Some(work.clone()),   // workspace
-                None,                 // node_id
-                true,                 // single_node_dev
+                Some(work.clone()),     // workspace
+                None,                   // node_id
+                true,                   // single_node_dev
             )
         });
         assert_eq!(
