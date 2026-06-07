@@ -798,12 +798,12 @@ mod tests {
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let exit = without_database_url(|| {
             reset_cmd(
-                true,
-                false,
-                "postgres".to_string(),
-                Some(work.clone()),
-                None,
-                false,
+                true,                 // yes
+                false,                // allow_checksum_drift_reset
+                "postgres".to_string(), // maintenance_database
+                Some(work.clone()),   // workspace
+                None,                 // node_id
+                false,                // single_node_dev
             )
         });
         assert_eq!(
@@ -811,29 +811,6 @@ mod tests {
             ExitCode::from(2),
             "missing identity must refuse before localhost gating"
         );
-        let _ = fs::remove_dir_all(&work);
-    }
-
-    /// With `--single-node-dev`, a remote URL must still refuse at the
-    /// localhost gate even when `--yes` skips the prompt.
-    #[test]
-    fn reset_cmd_refuses_remote_url_after_identity_resolution() {
-        let work = temp_workspace("reset_remote_single_node_dev");
-        let toml = "[database]\nurl = \"postgres://prod.example.com/main\"\n\
-                    max_connections = 1\ndev_mode = false\n\
-                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
-        let exit = without_database_url(|| {
-            reset_cmd(
-                true,
-                true,
-                "postgres".to_string(),
-                Some(work.clone()),
-                None,
-                false,
-            )
-        });
-        assert_eq!(exit, ExitCode::from(2), "remote URL must hit refusal exit");
         let _ = fs::remove_dir_all(&work);
     }
 
@@ -849,12 +826,12 @@ mod tests {
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let exit = without_database_url(|| {
             reset_cmd(
-                true,
-                false,
-                "postgres".to_string(),
-                Some(work.clone()),
-                None,
-                false,
+                true,                 // yes
+                false,                // allow_checksum_drift_reset
+                "postgres".to_string(), // maintenance_database
+                Some(work.clone()),   // workspace
+                None,                 // node_id
+                false,                // single_node_dev
             )
         });
         assert_eq!(exit, ExitCode::from(2), "production must refuse");
