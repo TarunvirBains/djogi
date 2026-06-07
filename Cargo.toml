@@ -130,7 +130,7 @@ djogi-macros = { path = "djogi-macros", version = "0.1.0-alpha.9" }
 # `aes-gcm` provides AES-256-GCM authenticated encryption; `getrandom` supplies
 # cryptographically secure nonce generation; `hex` is the wire-format encoder
 # for stored ciphertext payloads.
-aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 getrandom = "0.3"
 hex = "0.4"
 
