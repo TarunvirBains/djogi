@@ -7,10 +7,12 @@
 //! - `compose` writes the up SQL, down SQL, and pending JSON
 //!   files at the canonical
 //!   `migrations/<db>/_global_/V00000000000000__phase_zero_bootstrap.sdjql`
-//!   path on first invocation.
+//!   and
+//!   `target/djogi_pending/<db>/.phase_zero/V00000000000000__phase_zero_bootstrap.json`
+//!   paths on first invocation.
 //! - The composed up SQL contains the HeeRanjID install, every
-//!   declared extension's `CREATE EXTENSION IF NOT EXISTS`, and the
-//!   node-id GUC seed.
+//!   declared extension's `CREATE EXTENSION IF NOT EXISTS`, and no
+//!   production node-id seed.
 //! - A second compose call (already on disk) does not re-emit
 //!   the file and leaves the on-disk bytes byte-for-byte unchanged.
 //! - Extension declarations from the descriptor inventory propagate
@@ -146,11 +148,8 @@ fn compose_auto_emits_phase_zero_with_postgis_dependency_on_first_run() {
     let phase_zero_dir = work.join("migrations").join("main").join("_global_");
     let up_path = phase_zero_dir.join(format!("{PHASE_ZERO_VERSION}.sdjql"));
     let down_path = phase_zero_dir.join(format!("{PHASE_ZERO_VERSION}.down.sdjql"));
-    let pending_path = work
-        .join("target")
-        .join("djogi_pending")
-        .join("main")
-        .join("_global_.json");
+    let pending_path =
+        djogi::migrate::phase_zero_pending_json_path(&work, "main", PHASE_ZERO_VERSION);
     assert!(
         up_path.exists(),
         "up SQL must exist at {}",
@@ -159,7 +158,8 @@ fn compose_auto_emits_phase_zero_with_postgis_dependency_on_first_run() {
     assert!(down_path.exists(), "down SQL must exist");
     assert!(pending_path.exists(), "pending JSON must exist");
 
-    // Up SQL inspection: HeeRanjID install + PostGIS extension + ALTER DATABASE.
+    // Up SQL inspection: HeeRanjID install + PostGIS extension, with
+    // no production node-id seed/defaults.
     let up_sql = fs::read_to_string(&up_path).expect("read up");
     assert!(
         up_sql.contains("HeeRanjID base schema"),
@@ -170,12 +170,24 @@ fn compose_auto_emits_phase_zero_with_postgis_dependency_on_first_run() {
         "up SQL must include PostGIS install (got: {up_sql})"
     );
     assert!(
-        up_sql.contains("ALTER DATABASE \"main\" SET heer.node_id = '1'"),
-        "up SQL must include heer.node_id GUC seed"
+        !up_sql.contains("ALTER DATABASE"),
+        "up SQL must not include production ALTER DATABASE seed statements"
     );
     assert!(
-        up_sql.contains("ALTER DATABASE \"main\" SET heer.ranj_node_id = '1'"),
-        "up SQL must include heer.ranj_node_id GUC seed (powers ranjid_next())"
+        !up_sql.contains("SET heer.node_id"),
+        "up SQL must not include production heer.node_id GUC seed"
+    );
+    assert!(
+        !up_sql.contains("SET heer.ranj_node_id"),
+        "up SQL must not include production heer.ranj_node_id GUC seed"
+    );
+    assert!(
+        !up_sql.contains("current_database()"),
+        "up SQL must not include dev-mode runtime ALTER DATABASE seed SQL"
+    );
+    assert!(
+        !up_sql.contains("default-node seed"),
+        "up SQL must not include the default-node seed section"
     );
 
     // Down SQL is comment-only.

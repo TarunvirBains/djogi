@@ -439,11 +439,11 @@ pub enum AttuneRefusal {
         buckets: Vec<String>,
     },
     /// A Phase 0 migration artifact (`V00000000000000__phase_zero_bootstrap`)
-    /// was detected as generated-stale (contains literal `ALTER DATABASE
-    /// "<name>" SET heer.node_id` / `heer.ranj_node_id`). Attune refuses
-    /// to record, insert ledger rows, rewrite files, or update parent
-    /// pointers for stale Phase 0 artifacts. The operator must regenerate
-    /// the Phase 0 file from a corrected descriptor set before retrying.
+    /// was classified as seed-capable runtime-only, seed-DML non-runtime,
+    /// generated-stale, or ambiguous. Attune refuses to record, insert ledger
+    /// rows, rewrite files, or update parent pointers for stale Phase 0
+    /// artifacts. The operator must regenerate the Phase 0 file from the
+    /// canonical composer before retrying.
     StalePhaseZero { version: String },
 }
 
@@ -579,9 +579,9 @@ impl std::fmt::Display for AttuneRefusal {
             ),
             AttuneRefusal::StalePhaseZero { version } => write!(
                 f,
-                "attune refused — Phase 0 artifact `{version}` is generated-stale \
-                 (contains literal ALTER DATABASE defaults); regenerate the Phase 0 \
-                 file from a corrected descriptor set before retrying"
+                "attune refused — Phase 0 artifact `{version}` is seed-capable, \
+                 seed-DML non-runtime, generated-stale, or ambiguous; \
+                 regenerate the Phase 0 file from the canonical composer before retrying"
             ),
         }
     }
@@ -784,32 +784,9 @@ pub async fn attune(
     // table when the operator only asked for a diff.
     let active_database = active_database_name(ctx).await?;
 
-    // Mode dispatch for ledger bootstrap:
-    // DiffOnly is read-only and must NEVER create
-    // `djogi_schema_migrations` on a fresh DB. Record + Squash bootstrap
-    // ledger state up-front via an idempotent CREATE TABLE IF NOT EXISTS
-    // but ONLY when `--apply` is set. Without `--apply`, Record /
-    // Squash are dry-runs and the read-only contract extends to the
-    // ledger table itself: a dry-run on a fresh database must not create
-    // the ledger table as a side effect of the diff display. If we
-    // bootstrapped here unconditionally, `attune --record-ledger` (no --apply)
-    // on a fresh DB would still execute the CREATE TABLE — an out-of-contract
-    // mutation. So we probe `ledger_table_exists` for every dry-run path
-    // (DiffOnly, Record-without-apply, Squash-without-apply) and only
-    // bootstrap on the apply path.
-    let ledger_exists = match (&req.mode, req.apply) {
-        // Dry-run paths — probe only.
-        (AttuneMode::DiffOnly, _)
-        | (AttuneMode::Record { .. }, false)
-        | (AttuneMode::Squash { .. }, false) => ledger_table_exists(ctx).await?,
-        // Apply paths — Record / Squash bootstrap before any insert.
-        (AttuneMode::Record { .. }, true) | (AttuneMode::Squash { .. }, true) => {
-            ledger::bootstrap(ctx)
-                .await
-                .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
-            true
-        }
-    };
+    // Probe ledger existence without mutating. Apply-mode Record/Squash paths
+    // bootstrap later, after Phase 0 stale-artifact preflight has passed.
+    let ledger_exists = ledger_table_exists(ctx).await?;
 
     // Walk disk + ledger. Disk scan is filtered to ONLY the active
     // database's bucket directories: if `migrations/main/...`
@@ -928,6 +905,25 @@ pub async fn attune(
             Ok(report)
         }
         AttuneMode::Record { reason } => {
+            if requires_phase_zero_attune_preflight(&req.mode, apply) {
+                let mut will_insert = false;
+                for entry in entries
+                    .iter()
+                    .filter(|entry| entry.kind == AttuneEntryKind::Unrecorded)
+                {
+                    if let Some(path) = disk.get(&entry.bucket).and_then(|m| m.get(&entry.version))
+                    {
+                        check_phase_zero_attune_entry(path, &entry.version)?;
+                        will_insert = true;
+                    }
+                }
+                if will_insert {
+                    ledger::bootstrap(ctx)
+                        .await
+                        .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
+                }
+            }
+
             // Reuse the diff entries but split: every Unrecorded gets
             // an INSERT + flips to Recorded; Orphaned passes through
             // unchanged. The INSERT only fires when `--apply` is set;
@@ -942,8 +938,6 @@ pub async fn attune(
                             .cloned();
                         if let Some(path) = path {
                             if apply {
-                                // Stale Phase 0 guard: classify before ledger INSERT.
-                                check_phase_zero_attune_entry(&path, &entry.version)?;
                                 insert_recorded_row(
                                     ctx,
                                     &entry.bucket,
@@ -1019,6 +1013,17 @@ pub async fn attune(
                 }
                 return Ok(report);
             }
+            let bucket = locate_squash_target(&disk, from, app.as_deref())?.clone();
+            if requires_phase_zero_attune_preflight(&req.mode, apply)
+                && let Some(from_path) = disk
+                    .get(&bucket)
+                    .and_then(|versions| versions.get(&from.to_string()))
+            {
+                check_phase_zero_attune_entry(from_path, from)?;
+            }
+            ledger::bootstrap(ctx)
+                .await
+                .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
             run_squash(
                 ctx,
                 req.workspace_root,
@@ -1186,10 +1191,14 @@ async fn ledger_table_exists(ctx: &mut DjogiContext) -> Result<bool, AttuneError
 
 // ── Record mode ───────────────────────────────────────────────────────────
 
+fn requires_phase_zero_attune_preflight(mode: &AttuneMode, apply: bool) -> bool {
+    apply && matches!(mode, AttuneMode::Record { .. } | AttuneMode::Squash { .. })
+}
+
 /// Check whether a Phase 0 candidate file is stale and refuse before
 /// any attune mutation (bootstrap, ledger INSERT, parent pointer).
 /// Returns `Ok(())` when the version is not Phase 0 or when Phase 0
-/// is classified as current/non-stale.
+/// is identity-free replay-current, missing, or incomplete.
 fn check_phase_zero_attune_entry(up_path: &Path, version: &str) -> Result<(), AttuneError> {
     // Only check files that are Phase 0 candidates.
     if version != PHASE_ZERO_VERSION {
@@ -1200,23 +1209,17 @@ fn check_phase_zero_attune_entry(up_path: &Path, version: &str) -> Result<(), At
         source: e,
     })?;
     match classify_phase_zero_artifact(&bytes) {
-        PhaseZeroArtifactState::GeneratedStale => {
+        PhaseZeroArtifactState::IdentityFreeCurrent
+        | PhaseZeroArtifactState::Missing
+        | PhaseZeroArtifactState::Incomplete => Ok(()),
+        PhaseZeroArtifactState::SeedCapableRuntimeCurrent
+        | PhaseZeroArtifactState::SeedDmlNotRuntimeCurrent
+        | PhaseZeroArtifactState::GeneratedStale
+        | PhaseZeroArtifactState::Ambiguous => {
             Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero {
                 version: version.to_string(),
             }))
         }
-        PhaseZeroArtifactState::Ambiguous => {
-            Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero {
-                version: version.to_string(),
-            }))
-        }
-        // Missing, Incomplete, Current are OK for attune purposes.
-        // Missing/Incomplete means the file exists but has no content;
-        // the attune flow will handle empty files normally.
-        // Current is the success path.
-        PhaseZeroArtifactState::Missing
-        | PhaseZeroArtifactState::Incomplete
-        | PhaseZeroArtifactState::Current => Ok(()),
     }
 }
 
@@ -1881,6 +1884,7 @@ fn sort_key(e: &AttuneEntry) -> (String, String, String, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1894,6 +1898,85 @@ mod tests {
         let p = std::env::temp_dir().join(format!("djogi-attune-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    fn current_production_phase_zero_sql() -> String {
+        super::super::bootstrap::compose_phase_zero(
+            "main",
+            &BTreeSet::new(),
+            super::super::bootstrap::DEFAULT_NODE_ID,
+            false,
+        )
+        .expect("compose production Phase 0")
+    }
+
+    fn markerless_seed_phase_zero_sql() -> String {
+        phase_zero_with_seed_statement("INSERT INTO heer.heer_nodes (id) VALUES (1);")
+    }
+
+    fn phase_zero_with_seed_statement(statement: &str) -> String {
+        let mut sql = current_production_phase_zero_sql();
+        sql.push('\n');
+        sql.push_str(statement);
+        sql.push('\n');
+        sql
+    }
+
+    fn extended_seed_statement_cases() -> [(&'static str, &'static str); 4] {
+        [
+            (
+                "cte_insert",
+                "WITH rows AS (SELECT 1) INSERT INTO heer.heer_nodes (id) VALUES (1);",
+            ),
+            (
+                "cte_delete",
+                "WITH moved AS (DELETE FROM heer.heer_node_state RETURNING *) SELECT 1;",
+            ),
+            (
+                "merge",
+                "MERGE INTO heer.heer_nodes AS target USING incoming ON false WHEN NOT MATCHED THEN INSERT (id) VALUES (1);",
+            ),
+            (
+                "copy_from",
+                "COPY \"heer\".\"heer_ranj_node_state\" (\"node_id\") FROM STDIN;",
+            ),
+        ]
+    }
+
+    fn current_single_node_dev_phase_zero_sql() -> String {
+        super::super::bootstrap::compose_phase_zero("main", &BTreeSet::new(), 1, true)
+            .expect("compose single-node-dev Phase 0")
+    }
+
+    fn legacy_seeded_banner(sql: &str) -> String {
+        sql.replace(
+            "Djogi bootstrap migration — HeeRanjID + extensions + node seed",
+            "Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed",
+        )
+    }
+
+    fn generated_stale_phase_zero_sql() -> String {
+        let mut sql = current_single_node_dev_phase_zero_sql();
+        let start = sql.find("DO $djogi$").expect("dynamic defaults block");
+        let end = sql[start..]
+            .find("SET heer.node_id = '1';")
+            .map(|offset| start + offset)
+            .expect("session SET after dynamic defaults");
+        sql.replace_range(
+            start..end,
+            "ALTER DATABASE \"main\" SET heer.node_id = '1';\n\
+             ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
+        );
+        sql
+    }
+
+    fn legacy_generated_stale_phase_zero_sql() -> String {
+        legacy_seeded_banner(&generated_stale_phase_zero_sql())
+    }
+
+    fn incomplete_phase_zero_sql() -> String {
+        current_production_phase_zero_sql()
+            .replace("-- HeeRanjID base schema + functions (idempotent).\n", "")
     }
 
     #[test]
@@ -2278,36 +2361,60 @@ mod tests {
     fn write_generated_stale_phase_zero(dir: &Path) {
         fs::write(
             dir.join(up_filename(PHASE_ZERO_VERSION)),
-            concat!(
-                "-- ╭───────────────────────────────────────────────────────────────╮\n",
-                "-- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n",
-                "-- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n",
-                "-- ╰───────────────────────────────────────────────────────────────╯\n\n",
-                "-- HeeRanjID base schema + functions (idempotent).\n",
-                "SELECT 1;\n\n",
-                "-- HeeRanjID node-id GUC seed (database-level + session-level).\n",
-                "-- `heer.node_id` powers heerid_next(); `heer.ranj_node_id` powers ranjid_next().\n",
-                "ALTER DATABASE \"main\" SET heer.node_id = '1';\n",
-                "ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
-                "SET heer.node_id = '1';\n",
-                "SET heer.ranj_node_id = '1';\n"
-            ),
+            generated_stale_phase_zero_sql(),
         )
         .unwrap();
     }
 
-    /// Helper to generate a current production Phase 0 file for testing.
+    fn write_legacy_generated_stale_phase_zero(dir: &Path) {
+        fs::write(
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+            legacy_generated_stale_phase_zero_sql(),
+        )
+        .unwrap();
+    }
+
+    /// Helper to generate an identity-free production Phase 0 file for testing.
     fn write_current_production_phase_zero(dir: &Path) {
         fs::write(
             dir.join(up_filename(PHASE_ZERO_VERSION)),
-            concat!(
-                "-- ╭───────────────────────────────────────────────────────────────╮\n",
-                "-- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n",
-                "-- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n",
-                "-- ╰───────────────────────────────────────────────────────────────╯\n\n",
-                "-- HeeRanjID base schema + functions (idempotent).\n",
-                "SELECT 1;\n"
-            ),
+            current_production_phase_zero_sql(),
+        )
+        .unwrap();
+    }
+
+    fn write_seed_capable_phase_zero(dir: &Path) {
+        fs::write(
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+            current_single_node_dev_phase_zero_sql(),
+        )
+        .unwrap();
+    }
+
+    fn write_markerless_seed_phase_zero(dir: &Path) {
+        fs::write(
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+            markerless_seed_phase_zero_sql(),
+        )
+        .unwrap();
+    }
+
+    fn write_phase_zero_with_seed_statement(dir: &Path, statement: &str) {
+        fs::write(
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+            phase_zero_with_seed_statement(statement),
+        )
+        .unwrap();
+    }
+
+    fn write_missing_phase_zero(dir: &Path) {
+        fs::write(dir.join(up_filename(PHASE_ZERO_VERSION)), " \n\t ").unwrap();
+    }
+
+    fn write_incomplete_phase_zero(dir: &Path) {
+        fs::write(
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+            incomplete_phase_zero_sql(),
         )
         .unwrap();
     }
@@ -2337,10 +2444,93 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// Current production Phase 0 attune Record passes: should not be
-    /// refused when the artifact is classified as current.
     #[test]
-    fn record_accepts_current_production_phase_zero() {
+    fn record_refuses_legacy_generated_stale_phase_zero() {
+        let root = temp_root("record_legacy_stale_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_legacy_generated_stale_phase_zero(&dir);
+
+        let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        assert!(
+            result.is_err(),
+            "Record must refuse legacy generated-stale Phase 0; got Ok"
+        );
+        if let Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero { version })) = result {
+            assert_eq!(version, PHASE_ZERO_VERSION);
+        } else {
+            panic!("Expected StalePhaseZero refusal, got: {:?}", result);
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn record_refuses_seed_capable_phase_zero() {
+        let root = temp_root("record_seed_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_seed_capable_phase_zero(&dir);
+
+        let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        assert!(
+            matches!(
+                result,
+                Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero { .. }))
+            ),
+            "Record must refuse seed-capable Phase 0; got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn record_refuses_markerless_seed_phase_zero() {
+        let root = temp_root("record_markerless_seed_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_markerless_seed_phase_zero(&dir);
+
+        let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        assert!(
+            matches!(
+                result,
+                Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero { .. }))
+            ),
+            "Record must refuse markerless seed Phase 0; got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn record_refuses_extended_seed_phase_zero() {
+        for (name, statement) in extended_seed_statement_cases() {
+            let root = temp_root(&format!("record_extended_seed_p0_{name}"));
+            let dir = root.join("migrations/main/billing");
+            fs::create_dir_all(&dir).unwrap();
+            write_phase_zero_with_seed_statement(&dir, statement);
+
+            let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+            let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+            assert!(
+                matches!(
+                    result,
+                    Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero { .. }))
+                ),
+                "Record must refuse extended seed Phase 0 {name}; got {result:?}"
+            );
+
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+
+    /// Identity-free production Phase 0 attune Record passes.
+    #[test]
+    fn record_accepts_identity_free_production_phase_zero() {
         let root = temp_root("record_current_p0");
         let dir = root.join("migrations/main/billing");
         fs::create_dir_all(&dir).unwrap();
@@ -2350,11 +2540,97 @@ mod tests {
         let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
         assert!(
             result.is_ok(),
-            "Record must accept current Phase 0; got Err: {:?}",
+            "Record must accept identity-free Phase 0; got Err: {:?}",
             result
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn attune_does_not_broaden_missing_phase_zero_into_stale_refusal() {
+        let root = temp_root("attune_missing_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_missing_phase_zero(&dir);
+
+        let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        assert!(
+            result.is_ok(),
+            "attune must not broaden missing Phase 0 artifacts into stale refusal; got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn attune_does_not_broaden_incomplete_phase_zero_into_stale_refusal() {
+        let root = temp_root("attune_incomplete_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_incomplete_phase_zero(&dir);
+
+        let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        assert!(
+            result.is_ok(),
+            "attune must not broaden incomplete Phase 0 artifacts into stale refusal; got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn phase_zero_attune_preflight_is_record_squash_apply_only() {
+        assert!(
+            !requires_phase_zero_attune_preflight(&AttuneMode::DiffOnly, false),
+            "DiffOnly dry-run must not run stale Phase 0 preflight"
+        );
+        assert!(
+            !requires_phase_zero_attune_preflight(&AttuneMode::DiffOnly, true),
+            "DiffOnly with --apply/--record may update a pointer but must not preflight Phase 0 SQL"
+        );
+        assert!(
+            !requires_phase_zero_attune_preflight(
+                &AttuneMode::Record {
+                    reason: "out-of-band".to_string()
+                },
+                false
+            ),
+            "Record dry-run must report diff without stale Phase 0 refusal"
+        );
+        assert!(
+            !requires_phase_zero_attune_preflight(
+                &AttuneMode::Squash {
+                    from: PHASE_ZERO_VERSION.to_string(),
+                    publish: false,
+                    app: None
+                },
+                false
+            ),
+            "Squash dry-run must report diff without stale Phase 0 refusal"
+        );
+        assert!(
+            requires_phase_zero_attune_preflight(
+                &AttuneMode::Record {
+                    reason: "out-of-band".to_string()
+                },
+                true
+            ),
+            "Record --apply must preflight stale Phase 0 before ledger mutation"
+        );
+        assert!(
+            requires_phase_zero_attune_preflight(
+                &AttuneMode::Squash {
+                    from: PHASE_ZERO_VERSION.to_string(),
+                    publish: false,
+                    app: None
+                },
+                true
+            ),
+            "Squash --apply must preflight stale Phase 0 before file/ledger mutation"
+        );
     }
 
     /// Non-Phase 0 files should always pass the attune Phase 0 guard.
@@ -2411,10 +2687,117 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// Current production Phase 0 attune Squash passes: should not be
-    /// refused when the retained artifact is classified as current.
     #[test]
-    fn squash_accepts_current_production_phase_zero_as_from() {
+    fn squash_refuses_legacy_generated_stale_phase_zero_as_from() {
+        let root = temp_root("squash_legacy_stale_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_legacy_generated_stale_phase_zero(&dir);
+
+        fs::write(
+            dir.join("V20260101000001__init.sdjql"),
+            "CREATE TABLE bar();",
+        )
+        .unwrap();
+
+        let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+        assert!(
+            result.is_err(),
+            "Squash must refuse legacy generated-stale Phase 0 as --from; got Ok"
+        );
+        if let Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero { version })) = result {
+            assert_eq!(version, PHASE_ZERO_VERSION);
+        } else {
+            panic!("Expected StalePhaseZero refusal, got: {:?}", result);
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn squash_refuses_seed_capable_phase_zero_as_from() {
+        let root = temp_root("squash_seed_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_seed_capable_phase_zero(&dir);
+
+        fs::write(
+            dir.join("V20260101000001__init.sdjql"),
+            "CREATE TABLE bar();",
+        )
+        .unwrap();
+
+        let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+        assert!(
+            matches!(
+                result,
+                Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero { .. }))
+            ),
+            "Squash must refuse seed-capable Phase 0 as --from; got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn squash_refuses_markerless_seed_phase_zero_as_from() {
+        let root = temp_root("squash_markerless_seed_p0");
+        let dir = root.join("migrations/main/billing");
+        fs::create_dir_all(&dir).unwrap();
+        write_markerless_seed_phase_zero(&dir);
+
+        fs::write(
+            dir.join("V20260101000001__init.sdjql"),
+            "CREATE TABLE bar();",
+        )
+        .unwrap();
+
+        let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+        assert!(
+            matches!(
+                result,
+                Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero { .. }))
+            ),
+            "Squash must refuse markerless seed Phase 0 as --from; got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn squash_refuses_extended_seed_phase_zero_as_from() {
+        for (name, statement) in extended_seed_statement_cases() {
+            let root = temp_root(&format!("squash_extended_seed_p0_{name}"));
+            let dir = root.join("migrations/main/billing");
+            fs::create_dir_all(&dir).unwrap();
+            write_phase_zero_with_seed_statement(&dir, statement);
+
+            fs::write(
+                dir.join("V20260101000001__init.sdjql"),
+                "CREATE TABLE bar();",
+            )
+            .unwrap();
+
+            let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+            let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+            assert!(
+                matches!(
+                    result,
+                    Err(AttuneError::Refused(AttuneRefusal::StalePhaseZero { .. }))
+                ),
+                "Squash must refuse extended seed Phase 0 {name} as --from; got {result:?}"
+            );
+
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+
+    /// Identity-free production Phase 0 attune Squash passes.
+    #[test]
+    fn squash_accepts_identity_free_production_phase_zero_as_from() {
         let root = temp_root("squash_current_p0");
         let dir = root.join("migrations/main/billing");
         fs::create_dir_all(&dir).unwrap();
@@ -2431,7 +2814,7 @@ mod tests {
         let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
         assert!(
             result.is_ok(),
-            "Squash must accept current Phase 0 as --from; got Err: {:?}",
+            "Squash must accept identity-free Phase 0 as --from; got Err: {:?}",
             result
         );
 
@@ -2447,11 +2830,11 @@ mod tests {
         let s = format!("{r}");
         assert!(s.contains(PHASE_ZERO_VERSION), "must name the version: {s}");
         assert!(
-            s.contains("generated-stale") || s.contains("stale"),
-            "must describe the staleness: {s}"
+            s.contains("seed-DML") && s.contains("generated-stale"),
+            "must describe the stale-artifact contract: {s}"
         );
         assert!(
-            s.contains("regenerate") || s.contains("corrected"),
+            s.contains("regenerate") || s.contains("composer"),
             "must suggest remediation: {s}"
         );
     }

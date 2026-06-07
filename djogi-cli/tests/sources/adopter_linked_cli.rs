@@ -450,7 +450,8 @@ fn t_dropguard_unlinked_app_refuses_even_with_allow_destructive() {
     //     contains `DROP TABLE`, so a guard that leaked past step 3 would
     //     trip this assertion. That makes the check non-tautological;
     //   * no billing pending JSON was staged. (Phase-0's own
-    //     `target/djogi_pending/main/_global_.json` legitimately exists —
+    //     `target/djogi_pending/main/.phase_zero/`
+    //     `V00000000000000__phase_zero_bootstrap.json` legitimately exists —
     //     Phase-0 emission precedes the guard — so the bare directory's
     //     existence is NOT a refusal violation; the billing-specific pending
     //     artifact is.)
@@ -853,8 +854,10 @@ async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     );
 
     // Apply with no cargo, no source — just binary + config + artifacts + DB.
+    // Apply is descriptor-free here, but still identity-bearing; on a fresh
+    // test database we use single-node-dev provisioning.
     let apply_out = Command::new(&copied)
-        .args(["migrations", "apply"])
+        .args(["migrations", "apply", "--single-node-dev"])
         .current_dir(&runtime_dir)
         .env("PATH", &empty_path)
         .env("DATABASE_URL", &db_url)
@@ -893,7 +896,9 @@ async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
 async fn t_standalone_apply_with_pending_artifacts(mut ctx: djogi::DjogiContext) {
     // Use the adopter binary to compose (produces pending artifacts with live
     // descriptors), then use the standalone published djogi (zero descriptors)
-    // to apply those artifacts — proving apply needs no live descriptors.
+    // to apply those artifacts — proving apply needs no live descriptors even
+    // though it still requires node identity. This fresh test database uses
+    // single-node-dev provisioning.
     let adopter = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     let standalone = djogi_binary_path();
 
@@ -914,9 +919,9 @@ async fn t_standalone_apply_with_pending_artifacts(mut ctx: djogi::DjogiContext)
         String::from_utf8_lossy(&compose_out.stderr)
     );
 
-    // Standalone applies (no descriptors — reads pending artifacts only).
+    // Standalone applies with single-node-dev identity and no descriptors.
     let apply_out = Command::new(&standalone)
-        .args(["migrations", "apply"])
+        .args(["migrations", "apply", "--single-node-dev"])
         .current_dir(&runtime_dir)
         .env("DATABASE_URL", &db_url)
         .output()

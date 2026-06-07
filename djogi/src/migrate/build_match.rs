@@ -11,10 +11,15 @@
 //!    on every `cargo build`. In the build.rs caller this is parsed
 //!    fresh every build; here we accept it as an `Option<&AppliedSchema>`
 //!    keyed per-bucket.
-//! 2. **`pending`** — the most recent composed (but not yet applied)
-//!    delta. Source: `target/djogi_pending/<database>/<app>.json`
-//!    written by `migrations compose`. `None` when no compose is
-//!    pending.
+//! 2. **`pending`** — a composed (but not yet applied) delta selected
+//!    for the public bucket. Source:
+//!    `target/djogi_pending/<database>/<app>.json` plus the hidden
+//!    Phase 0 namespace
+//!    `target/djogi_pending/<database>/.phase_zero/<version>.json`
+//!    written by `migrations compose`. Build-side ingestion keeps
+//!    those two source kinds distinct before selecting one pending
+//!    artifact for the `(database, app)` outcome. `None` when no
+//!    compose is pending.
 //! 3. **`snapshot`** — the last successfully-applied schema. Source:
 //!    `migrations/<database>/<app>/schema_snapshot.json` committed
 //!    to the migrations submodule. `None` for a fresh
@@ -116,6 +121,125 @@ impl DriftKind {
     }
 }
 
+/// Source kind for a pending artifact loaded before build-match
+/// classification. Hidden Phase 0 and normal global pending can share
+/// the same public `(database, app)` bucket while remaining distinct
+/// ingestion identities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingArtifactKind {
+    /// `target/djogi_pending/<database>/<app>.json`.
+    Normal,
+    /// `target/djogi_pending/<database>/.phase_zero/<version>.json`.
+    HiddenPhaseZero,
+}
+
+/// Pending artifact input for callers that need to preserve the
+/// source kind through selection before classifying one public bucket.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingArtifact<'a> {
+    /// Where this pending artifact came from.
+    pub kind: PendingArtifactKind,
+    /// Snapshot embedded in the pending JSON.
+    pub schema: &'a AppliedSchema,
+    /// Pending migration version, used for Outcome 2 wording.
+    pub version: Option<&'a str>,
+}
+
+/// State of the descriptor inventory (`target/djogi_models.json`) for
+/// a single classification pass.
+///
+/// # Why this exists
+///
+/// The three-way match in [`classify_bucket_with_pending_artifact`]
+/// compares `models` against the pending plan and the committed
+/// snapshot. Those comparisons are only meaningful when the inventory
+/// is actually available. Representing "the inventory file is missing"
+/// with a per-bucket `models: None` conflates two genuinely different
+/// situations:
+///
+/// - **Inventory present, this bucket declares no models** — a real,
+///   model-relative `None` the classifier can reason about.
+/// - **Inventory unavailable for the whole build** — there is no basis
+///   for *any* model-relative assertion, so emitting Outcome 3 / 4
+///   ("drift" / "stale pending") would misdirect the operator.
+///
+/// `ModelInventory` makes that distinction a first-class input so the
+/// classifier never launders an unavailable inventory into a confident
+/// model-relative verdict.
+///
+/// # When to reach for it
+///
+/// Use [`classify_bucket_with_inventory`] with this enum when the
+/// caller knows whether the inventory file was readable as a whole
+/// (e.g. `build.rs`, which reads `target/djogi_models.json` once per
+/// build). Callers that always have a present inventory (e.g.
+/// `migrations status`, which projects the live `inventory` registry)
+/// can keep using [`classify_bucket`] and friends, which thread
+/// [`ModelInventory::Present`] for them.
+///
+/// # Example
+///
+/// ```
+/// use djogi::migrate::build_match::{
+///     ModelInventory, PendingArtifact, PendingArtifactKind,
+///     classify_bucket_with_inventory,
+/// };
+/// use djogi::migrate::projection::BucketKey;
+/// use djogi::migrate::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
+/// use std::collections::BTreeMap;
+///
+/// fn schema(tag: &str) -> AppliedSchema {
+///     AppliedSchema {
+///         djogi_version: tag.to_string(),
+///         enums: BTreeMap::new(),
+///         format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+///         generated_at: "2026-04-25T00:00:00Z".to_string(),
+///         indexes: Vec::new(),
+///         models: BTreeMap::new(),
+///         registered_apps: vec![String::new()],
+///     }
+/// }
+///
+/// let bucket = BucketKey { database: "main".into(), app: String::new() };
+/// let pending = schema("pending");
+/// let snapshot = schema("snapshot");
+/// let artifact = PendingArtifact {
+///     kind: PendingArtifactKind::HiddenPhaseZero,
+///     schema: &pending,
+///     version: Some("V00000000000000__phase_zero_bootstrap"),
+/// };
+///
+/// // Inventory unavailable: a composed-but-unapplied pending must read
+/// // as "apply me", never as "stale / drift".
+/// let diag = classify_bucket_with_inventory(
+///     &bucket,
+///     ModelInventory::Absent,
+///     Some(artifact),
+///     Some(&snapshot),
+/// )
+/// .expect("composed-not-applied diagnostic");
+/// assert!(diag.text.contains("composed migration not yet applied"));
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub enum ModelInventory<'a> {
+    /// The inventory file is unavailable for this build — either
+    /// legitimately missing (the typical fresh-adoption state) or
+    /// malformed (unreadable / not a valid JSON object / carrying a
+    /// malformed bucket key). Either way there is no trustworthy model
+    /// state, so only the pending↔snapshot relationship is classified.
+    ///
+    /// The *missing* vs *malformed* distinction is a read-site I/O
+    /// concern (whether to emit a loud warning), not a per-bucket
+    /// classification concern, so it is kept out of this enum and owned
+    /// by the caller that performed the read.
+    Absent,
+    /// The inventory file is present and valid. The wrapped
+    /// `Option<&AppliedSchema>` is this bucket's model state — `Some`
+    /// when the bucket declares models, `None` when a present inventory
+    /// simply has no entry for the bucket.
+    Present(Option<&'a AppliedSchema>),
+}
+
 /// Compute the three-way match outcome for one bucket.
 /// `models`, `pending`, `snapshot` are the three inputs described in
 /// the module-level docs. Returns `None` for Outcome 1 (synced)
@@ -163,11 +287,113 @@ pub fn classify_bucket_with_pending(
     snapshot: Option<&AppliedSchema>,
     pending_version: Option<&str>,
 ) -> Option<DriftDiagnostic> {
+    let pending = pending.map(|schema| PendingArtifact {
+        kind: PendingArtifactKind::Normal,
+        schema,
+        version: pending_version,
+    });
+    classify_bucket_with_pending_artifact(bucket, models, pending, snapshot)
+}
+
+/// Inventory-aware classification entry point.
+///
+/// This is the canonical classifier: it threads an explicit
+/// [`ModelInventory`] so an *unavailable* inventory (file missing or
+/// malformed) cannot be silently treated as a confident model-relative
+/// verdict. [`classify_bucket`], [`classify_bucket_with_pending`], and
+/// [`classify_bucket_with_pending_artifact`] are
+/// [`ModelInventory::Present`] wrappers around this function, so their
+/// behaviour — and every pinned warning string — is unchanged.
+///
+/// # Behaviour
+///
+/// - [`ModelInventory::Present`] runs the full three-way match
+///   (Outcomes 1–4) exactly as [`classify_bucket_with_pending_artifact`]
+///   always has.
+/// - [`ModelInventory::Absent`] runs the **reduced** classification:
+///   the model-vs-* legs are skipped (there is no trustworthy model
+///   state), and only the pending↔snapshot relationship is reported:
+///   - pending present and `pending != snapshot` →
+///     [`DriftKind::Outcome2ComposedNotApplied`] (apply the composed
+///     migration);
+///   - pending present and `pending == snapshot` → `None` (synced);
+///   - no pending → `None` (the snapshot↔filesystem D004 leg owns any
+///     remaining signal).
+///
+/// Returns `None` whenever there is nothing to warn about.
+///
+/// # Example
+///
+/// See [`ModelInventory`] for a runnable example.
+pub fn classify_bucket_with_inventory(
+    bucket: &BucketKey,
+    inventory: ModelInventory<'_>,
+    pending: Option<PendingArtifact<'_>>,
+    snapshot: Option<&AppliedSchema>,
+) -> Option<DriftDiagnostic> {
+    match inventory {
+        ModelInventory::Present(models) => {
+            classify_bucket_with_pending_artifact(bucket, models, pending, snapshot)
+        }
+        ModelInventory::Absent => classify_inventory_absent(bucket, pending, snapshot),
+    }
+}
+
+/// Reduced classification used when the model inventory is unavailable
+/// ([`ModelInventory::Absent`]).
+///
+/// Without a trustworthy model state the model-vs-pending and
+/// model-vs-snapshot legs are meaningless, so this only inspects the
+/// pending↔snapshot relationship. A composed-but-unapplied pending must
+/// read as "apply me" (Outcome 2), never as drift / stale-pending,
+/// which would misdirect a fresh compose/apply workflow.
+fn classify_inventory_absent(
+    bucket: &BucketKey,
+    pending: Option<PendingArtifact<'_>>,
+    snapshot: Option<&AppliedSchema>,
+) -> Option<DriftDiagnostic> {
+    let Some(artifact) = pending else {
+        // No composed delta pending — the snapshot↔filesystem (D004)
+        // leg owns any remaining signal; nothing model-relative here.
+        return None;
+    };
+    let pending_eq_snapshot = match snapshot {
+        Some(s) => schema_equiv(artifact.schema, s),
+        None => false,
+    };
+    if pending_eq_snapshot {
+        // Composed delta already equals the applied snapshot — synced.
+        return None;
+    }
+    Some(DriftDiagnostic {
+        bucket: bucket.clone(),
+        kind: DriftKind::Outcome2ComposedNotApplied,
+        text: format_warning_outcome2(bucket, artifact.version),
+    })
+}
+
+/// Same classifier as [`classify_bucket_with_pending`], but carries a
+/// kind-aware pending artifact chosen by the caller. This keeps the
+/// build-side hidden Phase 0 identity internal while preserving one
+/// diagnostic outcome per public `(database, app)` bucket.
+///
+/// This is the [`ModelInventory::Present`] implementation;
+/// [`classify_bucket_with_inventory`] is the inventory-aware entry
+/// point that also handles [`ModelInventory::Absent`].
+pub fn classify_bucket_with_pending_artifact(
+    bucket: &BucketKey,
+    models: Option<&AppliedSchema>,
+    pending: Option<PendingArtifact<'_>>,
+    snapshot: Option<&AppliedSchema>,
+) -> Option<DriftDiagnostic> {
+    let pending_schema = pending.map(|artifact| artifact.schema);
+    let pending_version = pending.and_then(|artifact| artifact.version);
+
     // The three-way comparison ignores `generated_at` because every
     // run regenerates the timestamp; comparing it would always trip
     // drift on a fresh build. The comparator here masks the field on
     // both sides.
-    let models_eq_pending = match (models, pending) {
+    let models_eq_pending = match (models, pending_schema) {
         (Some(m), Some(p)) => schema_equiv(m, p),
         (None, None) => true,
         _ => false,
@@ -177,7 +403,7 @@ pub fn classify_bucket_with_pending(
         (None, None) => true,
         _ => false,
     };
-    let pending_eq_snapshot = match (pending, snapshot) {
+    let pending_eq_snapshot = match (pending_schema, snapshot) {
         (Some(p), Some(s)) => schema_equiv(p, s),
         (None, None) => true,
         _ => false,
@@ -186,16 +412,16 @@ pub fn classify_bucket_with_pending(
     // Outcome 1 — fully synced. Two valid shapes:
     // (a) no pending, models == snapshot.
     // (b) pending present, models == pending == snapshot.
-    if pending.is_none() && models_eq_snapshot {
+    if pending_schema.is_none() && models_eq_snapshot {
         return None;
     }
-    if pending.is_some() && models_eq_pending && models_eq_snapshot {
+    if pending_schema.is_some() && models_eq_pending && models_eq_snapshot {
         return None;
     }
 
     // Outcome 2 — composed not yet applied. models == pending,
     // snapshot != models.
-    if pending.is_some() && models_eq_pending && !models_eq_snapshot {
+    if pending_schema.is_some() && models_eq_pending && !models_eq_snapshot {
         return Some(DriftDiagnostic {
             bucket: bucket.clone(),
             kind: DriftKind::Outcome2ComposedNotApplied,
@@ -207,7 +433,7 @@ pub fn classify_bucket_with_pending(
     // and snapshot. (Per amendment: "pending diverges from
     // models, but snapshot != pending too".) Models also diverges
     // from snapshot — otherwise the Outcome-3 case would fire instead.
-    if pending.is_some() && !models_eq_pending && !pending_eq_snapshot {
+    if pending_schema.is_some() && !models_eq_pending && !pending_eq_snapshot {
         return Some(DriftDiagnostic {
             bucket: bucket.clone(),
             kind: DriftKind::Outcome4PendingInvalid,
@@ -219,7 +445,7 @@ pub fn classify_bucket_with_pending(
     // snapshot. Reaching this branch means: pending is None (the
     // typical fresh-drift case) OR pending equals snapshot (compose
     // already ran but models has since drifted further).
-    if !models_eq_snapshot && (pending.is_none() || pending_eq_snapshot) {
+    if !models_eq_snapshot && (pending_schema.is_none() || pending_eq_snapshot) {
         return Some(DriftDiagnostic {
             bucket: bucket.clone(),
             kind: DriftKind::Outcome3Drift,
@@ -380,6 +606,51 @@ pub fn format_warning_d004_missing(bucket: &BucketKey) -> String {
     )
 }
 
+/// Malformed model-inventory warning (frozen).
+///
+/// # What
+///
+/// One loud, file-level warning emitted when `target/djogi_models.json`
+/// exists but cannot be trusted: it is unreadable, is not valid JSON,
+/// is not a JSON object, or carries a bucket key that is not in
+/// `<database>/<app>` form. `path` names the offending file and
+/// `detail` names the specific failure shape
+/// (e.g. `"not a JSON object"`, `"invalid JSON: …"`,
+/// `"unreadable: …"`, `` "bucket key \"x\" is not in <database>/<app> form" ``).
+///
+/// # Why
+///
+/// A *missing* inventory is the legitimate fresh-adoption state and is
+/// silent. A *malformed* inventory is a broken file: silently treating
+/// it as missing would launder an error into the legitimate skip path.
+/// The build still completes — model state is treated as unavailable
+/// and the model-vs-snapshot checks degrade to the same reduced
+/// pending↔snapshot classification as [`ModelInventory::Absent`] — but
+/// this warning makes the degradation explicit rather than silent.
+///
+/// # Where
+///
+/// Emitted once per build by `build.rs` as a `cargo:warning=` line.
+/// This is the single source of truth for the wording; the build
+/// script mirrors the same template byte-for-byte, pinned by the
+/// `phase7_t6_build_warning_agreement` integration test.
+///
+/// # Example
+///
+/// ```
+/// use djogi::migrate::build_match::format_warning_inventory_malformed;
+///
+/// let text =
+///     format_warning_inventory_malformed("target/djogi_models.json", "not a JSON object");
+/// assert!(text.contains("target/djogi_models.json"));
+/// assert!(text.contains("not a JSON object"));
+/// ```
+pub fn format_warning_inventory_malformed(path: &str, detail: &str) -> String {
+    format!(
+        "descriptor inventory at {path} is malformed ({detail}); model state is treated as unavailable, so model-vs-snapshot checks are skipped for this build"
+    )
+}
+
 /// Equality between two snapshots, modulo the `generated_at` field.
 /// `generated_at` carries the wall-clock time at projection; comparing
 /// it across runs would always show drift on a clean build. We
@@ -485,6 +756,62 @@ mod tests {
     }
 
     #[test]
+    fn outcome2_composed_not_applied_with_kind_aware_pending_artifact() {
+        let m = drifted_schema();
+        let p = drifted_schema();
+        let s = empty_schema();
+        let pending = PendingArtifact {
+            kind: PendingArtifactKind::HiddenPhaseZero,
+            schema: &p,
+            version: Some("V00000000000000__phase_zero_bootstrap"),
+        };
+
+        let diag = classify_bucket_with_pending_artifact(
+            &global_bucket(),
+            Some(&m),
+            Some(pending),
+            Some(&s),
+        )
+        .expect("diag");
+
+        assert_eq!(diag.kind, DriftKind::Outcome2ComposedNotApplied);
+        assert_eq!(
+            diag.text,
+            "composed migration not yet applied: V00000000000000__phase_zero_bootstrap.sdjql \
+              (version V00000000000000__phase_zero_bootstrap; bucket main/_global_)"
+        );
+    }
+
+    #[test]
+    fn classify_bucket_with_pending_remains_compatibility_wrapper() {
+        let m = drifted_schema();
+        let p = drifted_schema();
+        let s = empty_schema();
+
+        let wrapper = classify_bucket_with_pending(
+            &global_bucket(),
+            Some(&m),
+            Some(&p),
+            Some(&s),
+            Some("V20260425010203__add_widgets"),
+        )
+        .expect("wrapper diag");
+        let kind_aware = classify_bucket_with_pending_artifact(
+            &global_bucket(),
+            Some(&m),
+            Some(PendingArtifact {
+                kind: PendingArtifactKind::Normal,
+                schema: &p,
+                version: Some("V20260425010203__add_widgets"),
+            }),
+            Some(&s),
+        )
+        .expect("kind-aware diag");
+
+        assert_eq!(wrapper, kind_aware);
+    }
+
+    #[test]
     fn outcome3_drift_no_pending() {
         let m = drifted_schema();
         let s = empty_schema();
@@ -582,5 +909,149 @@ mod tests {
         // pending, nothing in the snapshot. Should be Outcome 1.
         let diag = classify_bucket(&global_bucket(), None, None, None);
         assert!(diag.is_none());
+    }
+
+    fn pending_artifact<'a>(
+        schema: &'a AppliedSchema,
+        version: &'static str,
+    ) -> PendingArtifact<'a> {
+        PendingArtifact {
+            kind: PendingArtifactKind::HiddenPhaseZero,
+            schema,
+            version: Some(version),
+        }
+    }
+
+    #[test]
+    fn classify_inventory_absent_with_pending_is_composed_not_applied() {
+        // Inventory unavailable + a composed pending that diverges from
+        // the snapshot must read as Outcome 2 ("apply me"), NOT Outcome
+        // 4 ("stale / re-run compose"). This is the fresh compose/apply
+        // workflow the missing-inventory bug used to misdirect.
+        let pending = drifted_schema();
+        let snapshot = empty_schema();
+        let diag = classify_bucket_with_inventory(
+            &global_bucket(),
+            ModelInventory::Absent,
+            Some(pending_artifact(
+                &pending,
+                "V00000000000000__phase_zero_bootstrap",
+            )),
+            Some(&snapshot),
+        )
+        .expect("composed-not-applied diagnostic");
+        assert_eq!(diag.kind, DriftKind::Outcome2ComposedNotApplied);
+        assert_eq!(
+            diag.text,
+            "composed migration not yet applied: V00000000000000__phase_zero_bootstrap.sdjql \
+             (version V00000000000000__phase_zero_bootstrap; bucket main/_global_)"
+        );
+    }
+
+    #[test]
+    fn classify_inventory_absent_pending_equals_snapshot_is_synced() {
+        // Inventory unavailable but the composed pending already equals
+        // the applied snapshot → nothing to apply → silent.
+        let pending = empty_schema();
+        let snapshot = empty_schema();
+        let diag = classify_bucket_with_inventory(
+            &global_bucket(),
+            ModelInventory::Absent,
+            Some(pending_artifact(
+                &pending,
+                "V00000000000000__phase_zero_bootstrap",
+            )),
+            Some(&snapshot),
+        );
+        assert!(
+            diag.is_none(),
+            "pending == snapshot must be synced: {diag:?}"
+        );
+    }
+
+    #[test]
+    fn classify_inventory_absent_no_pending_is_silent() {
+        // Inventory unavailable and no pending compose: the D004
+        // snapshot↔filesystem leg owns any remaining signal — nothing
+        // model-relative to report here.
+        let snapshot = empty_schema();
+        let diag = classify_bucket_with_inventory(
+            &global_bucket(),
+            ModelInventory::Absent,
+            None,
+            Some(&snapshot),
+        );
+        assert!(
+            diag.is_none(),
+            "absent inventory + no pending must be silent: {diag:?}"
+        );
+    }
+
+    #[test]
+    fn classify_inventory_absent_no_pending_no_snapshot_is_silent() {
+        // The truly-empty fresh project under an unavailable inventory.
+        let diag =
+            classify_bucket_with_inventory(&global_bucket(), ModelInventory::Absent, None, None);
+        assert!(diag.is_none());
+    }
+
+    #[test]
+    fn classify_inventory_present_empty_bucket_unchanged() {
+        // INVERSE GUARD: a *present* inventory that simply has no entry
+        // for this bucket (`Present(None)`) must keep its legacy
+        // semantics — a diverging pending here is still Outcome 4. Only
+        // the file-level Absent case moves off Outcome 4; per-bucket
+        // `None` under a present inventory is untouched.
+        let pending = drifted_schema();
+        let snapshot = empty_schema();
+        let diag = classify_bucket_with_inventory(
+            &global_bucket(),
+            ModelInventory::Present(None),
+            Some(pending_artifact(
+                &pending,
+                "V00000000000000__phase_zero_bootstrap",
+            )),
+            Some(&snapshot),
+        )
+        .expect("present-empty bucket diagnostic");
+        assert_eq!(
+            diag.kind,
+            DriftKind::Outcome4PendingInvalid,
+            "Present(None) must preserve legacy Outcome 4, not be reclassified as absent: {diag:?}"
+        );
+    }
+
+    #[test]
+    fn classify_inventory_present_forwards_to_legacy_classifier() {
+        // The Present arm must be byte-identical to the legacy
+        // kind-aware classifier — the wrappers cannot drift.
+        let m = drifted_schema();
+        let p = drifted_schema();
+        let s = empty_schema();
+        let via_inventory = classify_bucket_with_inventory(
+            &global_bucket(),
+            ModelInventory::Present(Some(&m)),
+            Some(pending_artifact(&p, "V20260425010203__add_widgets")),
+            Some(&s),
+        );
+        let via_legacy = classify_bucket_with_pending_artifact(
+            &global_bucket(),
+            Some(&m),
+            Some(pending_artifact(&p, "V20260425010203__add_widgets")),
+            Some(&s),
+        );
+        assert_eq!(via_inventory, via_legacy);
+    }
+
+    #[test]
+    fn inventory_malformed_warning_text_is_frozen() {
+        // RED-A5 — the malformed-inventory warning is a frozen contract,
+        // blessed once. The build.rs mirror is pinned against this exact
+        // template by `phase7_t6_build_warning_agreement`.
+        assert_eq!(
+            format_warning_inventory_malformed("target/djogi_models.json", "not a JSON object"),
+            "descriptor inventory at target/djogi_models.json is malformed (not a JSON object); \
+             model state is treated as unavailable, so model-vs-snapshot checks are skipped for this build"
+        );
     }
 }

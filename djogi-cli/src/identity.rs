@@ -77,9 +77,12 @@ pub fn validate_node_id_range(node_id: i32) -> bool {
 }
 
 /// Check whether the current environment is considered production.
-/// Returns `true` when `DJOGI_ENV` equals `"production"` (case-sensitive).
+/// Returns `true` when `DJOGI_ENV` equals `"production"` (ASCII
+/// case-insensitive).
 fn is_production_env() -> bool {
-    std::env::var("DJOGI_ENV").as_deref() == Ok("production")
+    std::env::var("DJOGI_ENV")
+        .map(|value| value.eq_ignore_ascii_case("production"))
+        .unwrap_or(false)
 }
 
 /// Resolve the CLI node identity from flags and environment.
@@ -172,6 +175,47 @@ pub fn print_identity_error(operation: &str, err: &CliIdentityResolveError) -> E
 mod tests {
     use super::*;
 
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prior_heer_node_id: Option<String>,
+        prior_djogi_env: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self {
+                _lock: crate::test_env_lock(),
+                prior_heer_node_id: std::env::var("HEER_NODE_ID").ok(),
+                prior_djogi_env: std::env::var("DJOGI_ENV").ok(),
+            }
+        }
+
+        fn set_heer_node_id(&self, value: &str) {
+            unsafe { std::env::set_var("HEER_NODE_ID", value) };
+        }
+
+        fn remove_heer_node_id(&self) {
+            unsafe { std::env::remove_var("HEER_NODE_ID") };
+        }
+
+        fn set_djogi_env(&self, value: &str) {
+            unsafe { std::env::set_var("DJOGI_ENV", value) };
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prior_heer_node_id {
+                Some(value) => unsafe { std::env::set_var("HEER_NODE_ID", value) },
+                None => unsafe { std::env::remove_var("HEER_NODE_ID") },
+            }
+            match &self.prior_djogi_env {
+                Some(value) => unsafe { std::env::set_var("DJOGI_ENV", value) },
+                None => unsafe { std::env::remove_var("DJOGI_ENV") },
+            }
+        }
+    }
+
     #[test]
     fn resolve_explicit_node_id_selected() {
         // Explicit --node-id wins.
@@ -217,6 +261,8 @@ mod tests {
 
     #[test]
     fn resolve_single_node_dev_allowed_in_dev() {
+        let env = EnvGuard::new();
+        env.set_djogi_env("development");
         let result = resolve_identity(None, true, "development", "apply");
         assert_eq!(result, Ok(CliResolvedIdentity::SingleNodeDev));
     }
@@ -238,58 +284,43 @@ mod tests {
 
     #[test]
     fn resolve_missing_identity() {
-        // Make sure HEER_NODE_ID is not set.
-        unsafe {
-            std::env::remove_var("HEER_NODE_ID");
-        }
+        let env = EnvGuard::new();
+        env.remove_heer_node_id();
         let result = resolve_identity(None, false, "development", "apply");
         assert_eq!(result, Err(CliIdentityResolveError::MissingNodeIdentity));
     }
 
     #[test]
     fn resolve_env_var_fallback() {
-        unsafe {
-            std::env::set_var("HEER_NODE_ID", "42");
-        }
+        let env = EnvGuard::new();
+        env.set_heer_node_id("42");
         let result = resolve_identity(None, false, "development", "apply");
         assert_eq!(result, Ok(CliResolvedIdentity::Selected(42)));
-        unsafe {
-            std::env::remove_var("HEER_NODE_ID");
-        }
     }
 
     #[test]
     fn resolve_explicit_wins_over_env() {
-        unsafe {
-            std::env::set_var("HEER_NODE_ID", "99");
-        }
+        let env = EnvGuard::new();
+        env.set_heer_node_id("99");
         let result = resolve_identity(Some(7), false, "development", "apply");
         assert_eq!(result, Ok(CliResolvedIdentity::Selected(7)));
-        unsafe {
-            std::env::remove_var("HEER_NODE_ID");
-        }
     }
 
     #[test]
     fn resolve_env_var_out_of_range() {
-        unsafe {
-            std::env::set_var("HEER_NODE_ID", "9999");
-        }
+        let env = EnvGuard::new();
+        env.set_heer_node_id("9999");
         let result = resolve_identity(None, false, "development", "apply");
         assert_eq!(
             result,
             Err(CliIdentityResolveError::NodeIdOutOfRange { value: 9999 })
         );
-        unsafe {
-            std::env::remove_var("HEER_NODE_ID");
-        }
     }
 
     #[test]
     fn resolve_env_var_unparseable() {
-        unsafe {
-            std::env::set_var("HEER_NODE_ID", "not-a-number");
-        }
+        let env = EnvGuard::new();
+        env.set_heer_node_id("not-a-number");
         let result = resolve_identity(None, false, "development", "apply");
         // Unparseable env var returns InvalidEnvFormat, not MissingNodeIdentity.
         assert_eq!(
@@ -298,9 +329,6 @@ mod tests {
                 value: "not-a-number".to_string()
             })
         );
-        unsafe {
-            std::env::remove_var("HEER_NODE_ID");
-        }
     }
 
     #[test]
@@ -315,28 +343,53 @@ mod tests {
 
     #[test]
     fn resolve_single_node_dev_refused_in_djogi_env_production() {
-        unsafe {
-            std::env::set_var("DJOGI_ENV", "production");
-        }
+        let env = EnvGuard::new();
+        env.set_djogi_env("production");
         let result = resolve_identity(None, true, "development", "apply");
         assert_eq!(
             result,
             Err(CliIdentityResolveError::SingleNodeDevRefusedInProduction)
         );
-        unsafe {
-            std::env::remove_var("DJOGI_ENV");
-        }
     }
 
     #[test]
     fn resolve_single_node_dev_allowed_in_djogi_env_development() {
-        unsafe {
-            std::env::set_var("DJOGI_ENV", "development");
-        }
+        let env = EnvGuard::new();
+        env.set_djogi_env("development");
         let result = resolve_identity(None, true, "development", "apply");
         assert_eq!(result, Ok(CliResolvedIdentity::SingleNodeDev));
-        unsafe {
-            std::env::remove_var("DJOGI_ENV");
-        }
+    }
+
+    #[test]
+    fn resolve_single_node_dev_refused_in_mixed_case_djogi_env_production() {
+        let env = EnvGuard::new();
+        env.set_djogi_env("Production");
+        let result = resolve_identity(None, true, "development", "apply");
+        assert_eq!(
+            result,
+            Err(CliIdentityResolveError::SingleNodeDevRefusedInProduction)
+        );
+    }
+
+    #[test]
+    fn env_guard_restores_prior_values() {
+        let env = EnvGuard::new();
+        let expected_heer_node_id = env.prior_heer_node_id.clone();
+        let expected_djogi_env = env.prior_djogi_env.clone();
+        let next_heer_node_id = if expected_heer_node_id.as_deref() == Some("42") {
+            "7"
+        } else {
+            "42"
+        };
+        let next_djogi_env = if expected_djogi_env.as_deref() == Some("Production") {
+            "development"
+        } else {
+            "Production"
+        };
+        env.set_heer_node_id(next_heer_node_id);
+        env.set_djogi_env(next_djogi_env);
+        drop(env);
+        assert_eq!(std::env::var("HEER_NODE_ID").ok(), expected_heer_node_id);
+        assert_eq!(std::env::var("DJOGI_ENV").ok(), expected_djogi_env);
     }
 }

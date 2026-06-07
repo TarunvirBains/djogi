@@ -1100,11 +1100,13 @@ pub enum DjogiError {
     /// session-statement guard, so this classifier catches stale artifacts
     /// that somehow evaded the pre-bootstrap artifact checks.
     ///
-    /// **What triggers this.** Generated-stale Phase 0 artifacts contain
+    /// **What triggers this.** The statement-level guard emits `seed-dml`
+    /// for top-level HeeRanjID seed-table mutations and `generated-stale`
+    /// for literal database-default statements such as
     /// `ALTER DATABASE "<hardcoded_name>" SET heer.node_id` or
-    /// `heer.ranj_node_id` with literal database names instead of dynamic
-    /// defaults like `current_database()`. Current production Phase 0 omits
-    /// node seeding entirely; single-node-dev current uses dynamic
+    /// `heer.ranj_node_id` instead of dynamic defaults like
+    /// `current_database()`. Current production Phase 0 omits node seeding
+    /// entirely; single-node-dev current uses dynamic
     /// `EXECUTE format('ALTER DATABASE %I ...', current_database(), ...)`.
     ///
     /// `statement` carries the offending SQL prefix so log lines can
@@ -1116,7 +1118,7 @@ pub enum DjogiError {
     )]
     #[non_exhaustive]
     StalePhaseZeroStatement {
-        /// Short refusal reason tag (`"generated-stale"` or `"ambiguous"`).
+        /// Short refusal reason tag (`"seed-dml"` or `"generated-stale"`).
         refusal_reason: &'static str,
         /// Offending SQL statement (truncated for log safety).
         statement: String,

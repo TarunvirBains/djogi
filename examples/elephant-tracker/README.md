@@ -191,7 +191,8 @@ Available format matrix:
 This example is part of pre-v0.1.0 publish prep. The model definitions
 target Djogi `0.1.0`. The `migrate` subcommand applies the example's
 schema through the same descriptor-driven pipeline that `djogi
-migrations compose` + `djogi migrations apply` uses in production:
+migrations compose` + `djogi migrations apply` with node identity
+(`--node-id`, `HEER_NODE_ID`, or `--single-node-dev`) uses in production:
 `project_from_inventory()` → `diff_bucket_maps()` → `plan_delta()` →
 `apply_plan()`. No `CREATE TABLE`, `CREATE INDEX`, or `ALTER TABLE ADD
 CONSTRAINT` DDL is hand-written in the example codebase — the framework
@@ -229,8 +230,10 @@ the original handwritten DDL in a few places; this is intentional:
 Two raw-DDL paths remain in this example:
 
 - **Phase 0 bootstrap** (`install_phase_zero`) — installs HeeRanjID SQL
-  functions and the PostGIS extension. Legitimately raw: no typed
-  migration surface exists for database-level extension installation.
+  functions, example-runtime default-node seed SQL, and the PostGIS
+  extension. Legitimately raw: no typed migration surface exists for
+  database-level extension installation, and this bootstrap is not a
+  persisted Phase 0 migration replay artifact.
 - **`drop_all`** — issues a single `batch_execute` of `DROP TABLE IF
   EXISTS … CASCADE` statements (names derived from the descriptor
   projection) plus the migration ledger. This is a dev-mode wipe; no

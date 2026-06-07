@@ -2,7 +2,7 @@
 
 # Migration System — Team Review Proposal
 
-> **Historical — superseded 2026-04-23.** This proposal fed into the Phase 7 v3 and Phase 7-Zero v3 synthesis. Examples in this document (notably the `djogi::apps!` bare-label syntax and the single-level `migrations/<app>/schema_snapshot.json` path shape) predate the current rulings. For authoritative syntax and paths, see `docs/spec/decisions.md` (rows dated 2026-04-23), `docs/spec/apps-and-database-domains.md`, and `docs/spec/migrations.md`. Kept as a design-history record; do not implement against examples here.
+> **Historical — superseded 2026-04-23.** This proposal fed into the Phase 7 v3 and Phase 7-Zero v3 synthesis. Examples in this document (notably the `djogi::apps!` bare-label syntax, the single-level `migrations/<app>/schema_snapshot.json` path shape, the old `schema drift detected` warning text, and legacy `_up.sql` / `_down.sql` filename examples) predate the current rulings. For authoritative syntax and paths, see `docs/spec/decisions.md` (rows dated 2026-04-23), `docs/spec/apps-and-database-domains.md`, and `docs/spec/migrations.md`. Kept as a design-history record; do not implement against examples here.
 
 **Date:** 2026-04-22
 **Status:** Proposal for team review — historical

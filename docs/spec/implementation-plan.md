@@ -21,7 +21,7 @@
 1. **Each phase produces a usable, testable crate** — not a waterfall of unshippable code
 2. **The model macro system (`djogi-macros`) is the foundation** — descriptor generation and model metadata land before higher-level APIs
 3. **Raw SQL escape hatch ships in Phase 1** — the framework must never trap the developer
-4. **Tests against real Postgres** — no mocking the database; use the `#[djogi_test]` harness (which spins up a per-test database, runs HeeRanjId schema install + node seed, and resets `heer.node_id` per test). The earlier-phase mention of `sqlx::test` is historical — `sqlx` was retired in Phase 5-Zero.
+4. **Tests against real Postgres** — no mocking the database; use the `#[djogi_test]` harness (which spins up a per-test database and runs the runtime helper Phase 0 install with the default node seed/GUCs). The earlier-phase mention of `sqlx::test` is historical — `sqlx` was retired in Phase 5-Zero.
 5. **Postgres-only from day one** — every SQL string targets Postgres directly
 6. **Efficient Postgres forms belong in-framework for common work** — raw SQL is for unusual SQL shape, not for recovering performance lost to the ORM
 
@@ -491,7 +491,7 @@ Phase 7 shipped 2026-04-25 as task chain T1–T8 against the v3 plan:
 - T7 — out-of-order policy + multi-DB guardrails + `attune` (`--record` / `--squash --from <ver>` with `--publish`).
 - T8 — `db reset`, `db seed`, `djogi docs`, spec cleanup.
 
-Filenames are `V<YYYYMMDDHHMMSS>__<slug>.sql` plus `.down.sql`. Every Phase 7 path keys per `(database, app)` bucket. SQL seeds (not Rhai) — the Rhai shell is a separate phase.
+Filenames are `V<YYYYMMDDHHMMSS>__<slug>.sdjql` plus `.down.sdjql`. Every Phase 7 path keys per `(database, app)` bucket. SQL seeds (not Rhai) — the Rhai shell is a separate phase.
 
 ### 7a: Schema Differ
 

@@ -69,8 +69,9 @@
 //! - [`DEFAULT_NODE_ID`] — the default node id for single-node
 //!   deployments, passed to [`run_phase_zero`] by most callers.
 //! - [`run_phase_zero`] — runtime driver that installs HeeRanjID,
-//!   required extensions, and the node-id GUC in one batch. The only
-//!   entry point adopters and the test harness need.
+//!   required extensions, and, for seed-capable callers, the node-id
+//!   GUC in one batch. The only entry point adopters and the test
+//!   harness need.
 //! - [`BootstrapError`] — error variants surfaced by the runtime
 //!   driver.
 //! - [`ensure_phase_zero_emitted`] — idempotent per-database
@@ -89,13 +90,15 @@ use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 use tokio_postgres::GenericClient;
 
-use super::compose::{AppLifecycle, PENDING_FORMAT_VERSION, PendingPlan};
+use super::compose::{AppLifecycle, PENDING_FORMAT_VERSION, PendingPlan, load_pending};
 use super::guard::WorkspaceGuard;
 use super::ledger::compute_checksum;
 use super::naming::{down_filename, up_filename};
 use super::projection::BucketKey;
 use super::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
-use super::target::{bucket_dir, pending_database_dir, pending_json_path};
+use super::target::{
+    bucket_dir, pending_database_dir, pending_json_path, phase_zero_pending_json_path,
+};
 
 /// Default node id used by single-node deployments.
 /// Matches the value `heeranjid::postgres_schema::seed_default_node`
@@ -115,6 +118,16 @@ pub const DEFAULT_NODE_ID: i32 = 1;
 /// because the version-prefix grammar requires `version_prefix(now)`
 /// which always reflects a wall-clock instant.
 pub const PHASE_ZERO_VERSION: &str = "V00000000000000__phase_zero_bootstrap";
+pub(crate) const PHASE_ZERO_PRODUCTION_BANNER_MARKER: &str =
+    "Djogi bootstrap migration — HeeRanjID + extensions";
+pub(crate) const PHASE_ZERO_SEEDED_BANNER_MARKER: &str =
+    "Djogi bootstrap migration — HeeRanjID + extensions + node seed";
+pub(crate) const PHASE_ZERO_BASE_SCHEMA_MARKER: &str =
+    "-- HeeRanjID base schema + functions (idempotent).";
+pub(crate) const PHASE_ZERO_DEFAULT_NODE_ROW_SEED_MARKER: &str =
+    "-- HeeRanjID default-node seed (node_id = 1, ON CONFLICT DO NOTHING).";
+pub(crate) const PHASE_ZERO_NODE_SEED_MARKER: &str =
+    "-- HeeRanjID node-id GUC seed (database-level + session-level).";
 
 /// Sorted allowlist of Postgres extensions Djogi knows how to install.
 /// Validated via `binary_search` in [`compose_extension_installs`]
@@ -204,11 +217,11 @@ impl std::error::Error for BootstrapError {
 ///
 /// **Seed inclusion.** Production/cluster Phase 0 should NOT
 /// unconditionally seed node 1 into `heer_nodes`; node registration
-/// is an operator provisioning step. Pass `include_seed: false` for
-/// production emit. Explicit `--single-node-dev` may pass
-/// `include_seed: true` so that a default node 1 row exists and the
-/// database-level GUC defaults in [`compose_node_seed`] can work
-/// without requiring an active registration first.
+/// is an operator provisioning step. Migration-file emit passes
+/// `include_seed: false` so the canonical Phase 0 SQL stays
+/// identity-free. Seed-capable direct callers and tests can pass
+/// `include_seed: true` when they intentionally want the helper to
+/// install the default node row in the same batch.
 ///
 /// Returns an owned `String` so the caller can hash it into the
 /// migration's checksum, write it to disk verbatim, or feed it to
@@ -239,7 +252,8 @@ pub(crate) fn compose_heeranjid_install(include_seed: bool) -> String {
             + heeranjid::postgres_schema::BULK_BACKFILL_SQL.len()
             + seed_len,
     );
-    out.push_str("-- HeeRanjID base schema + functions (idempotent).\n");
+    out.push_str(PHASE_ZERO_BASE_SCHEMA_MARKER);
+    out.push('\n');
     out.push_str(heeranjid::postgres_schema::INSTALL_SQL);
     out.push_str("\n\n-- HeeRanjID desc-flip primitives (heerid_to_desc / ranjid_to_desc / heerid_flip_mask).\n");
     out.push_str(heeranjid::postgres_schema::DESC_FLIP_SQL);
@@ -248,7 +262,9 @@ pub(crate) fn compose_heeranjid_install(include_seed: bool) -> String {
     out.push_str("\n\n-- HeeRanjID migration-support procedures (bulk backfill).\n");
     out.push_str(heeranjid::postgres_schema::BULK_BACKFILL_SQL);
     if include_seed {
-        out.push_str("\n\n-- HeeRanjID default-node seed (node_id = 1, ON CONFLICT DO NOTHING).\n");
+        out.push_str("\n\n");
+        out.push_str(PHASE_ZERO_DEFAULT_NODE_ROW_SEED_MARKER);
+        out.push('\n');
         out.push_str(heeranjid::postgres_schema::SEED_SQL);
     }
     out
@@ -340,7 +356,8 @@ pub(crate) fn compose_extension_installs(
 pub(crate) fn compose_node_seed(_database: &str, node_id: i32) -> Result<String, BootstrapError> {
     let node_id_str = node_id.to_string();
     let mut out = String::with_capacity(node_id_str.len() * 6 + 384);
-    out.push_str("-- HeeRanjID node-id GUC seed (database-level + session-level).\n");
+    out.push_str(PHASE_ZERO_NODE_SEED_MARKER);
+    out.push('\n');
     out.push_str(
         "-- `heer.node_id` powers heerid_next(); `heer.ranj_node_id` powers ranjid_next().\n",
     );
@@ -387,11 +404,12 @@ pub(crate) fn compose_node_seed(_database: &str, node_id: i32) -> Result<String,
 /// functions, and extensions without baking any node identity into the
 /// persisted file.
 ///
-/// Explicit `--single-node-dev` may pass `include_node_seed: true`; this
+/// Seed-capable direct callers can pass `include_node_seed: true`; this
 /// includes both the `heer_nodes` seed row (from [`compose_heeranjid_install`])
 /// and the database-level GUC defaults + session SETs (from
-/// [`compose_node_seed`]). The dev mode uses runtime `current_database()` for
-/// the ALTER DATABASE statements, preventing logical/physical database-name drift.
+/// [`compose_node_seed`]). Migration-file emit keeps this `false` for
+/// both production and `--single-node-dev`; the runner performs explicit
+/// dev provisioning after Phase 0 SQL succeeds.
 ///
 ///   Returns owned bytes so the caller can hash, write, or execute
 ///   directly.
@@ -408,12 +426,16 @@ pub(crate) fn compose_phase_zero(
     // Banner text depends on whether node seed is included.
     if include_node_seed {
         out.push_str("-- ╭────────────────────────────────────────────────────────────────╮\n");
-        out.push_str("-- │ Djogi bootstrap migration — HeeRanjID + extensions + node seed │\n");
+        out.push_str("-- │ ");
+        out.push_str(PHASE_ZERO_SEEDED_BANNER_MARKER);
+        out.push_str(" │\n");
         out.push_str("-- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n");
         out.push_str("-- ╰────────────────────────────────────────────────────────────────╯\n\n");
     } else {
         out.push_str("-- ╭───────────────────────────────────────────────────────────────╮\n");
-        out.push_str("-- │ Djogi bootstrap migration — HeeRanjID + extensions            │\n");
+        out.push_str("-- │ ");
+        out.push_str(PHASE_ZERO_PRODUCTION_BANNER_MARKER);
+        out.push_str("            │\n");
         out.push_str("-- │ Auto-emitted by `djogi migrations compose`. Idempotent.       │\n");
         out.push_str("-- ╰───────────────────────────────────────────────────────────────╯\n\n");
     }
@@ -451,10 +473,10 @@ pub(crate) fn compose_phase_zero(
 /// **Node seed inclusion.** When `include_node_seed` is `true`, the
 /// composed SQL includes both the HeeRanjID default-node seed row
 /// and the database-level GUC defaults + session SETs from
-/// [`compose_node_seed`]. This is appropriate only for explicit
-/// `--single-node-dev` mode. Production/cluster callers should pass
+/// [`compose_node_seed`]. Migration runner callers should pass
 /// `include_node_seed: false` so that node registration remains an
-/// operator provisioning step.
+/// explicit provisioning step; `SingleNodeDev` provisioning runs
+/// after Phase 0 SQL succeeds.
 ///
 /// `node_id` is only used when `include_node_seed` is `true`; it
 /// defaults to [`DEFAULT_NODE_ID`] (1) for single-node deployments.
@@ -673,13 +695,27 @@ pub fn ensure_phase_zero_emitted(
         let dir = bucket_dir(workspace_root, &bucket);
         let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
         let down_path = dir.join(down_filename(PHASE_ZERO_VERSION));
-        let pending_path = pending_json_path(workspace_root, &bucket);
+        let pending_path =
+            phase_zero_pending_json_path(workspace_root, database, PHASE_ZERO_VERSION);
+        let legacy_pending_path = pending_json_path(workspace_root, &bucket);
+        let hidden_pending_exists = pending_path.exists();
 
-        // All three artifacts must be present for the emit to be
-        // considered complete. Checking only `up_path` would skip
-        // re-emission on a partial write (e.g. crash after up.sdjql but
-        // before pending.json), leaving a stale disk state forever.
-        if up_path.exists() && down_path.exists() && pending_path.exists() {
+        // All three artifacts must be present and the pending JSON must
+        // parse as a Phase 0 witness before the emit is considered
+        // complete. Checking only path existence would let partial or
+        // foreign pending files suppress re-emission forever.
+        let phase_zero_complete = up_path.exists()
+            && down_path.exists()
+            && load_pending(&pending_path)
+                .ok()
+                .is_some_and(|plan| phase_zero_pending_matches(&plan, database));
+        let legacy_phase_zero_complete = !hidden_pending_exists
+            && up_path.exists()
+            && down_path.exists()
+            && load_pending(&legacy_pending_path)
+                .ok()
+                .is_some_and(|plan| phase_zero_pending_matches(&plan, database));
+        if phase_zero_complete || legacy_phase_zero_complete {
             continue;
         }
 
@@ -753,6 +789,12 @@ pub fn ensure_phase_zero_emitted(
     Ok(emitted)
 }
 
+fn phase_zero_pending_matches(plan: &PendingPlan, database: &str) -> bool {
+    plan.bucket_database == database
+        && plan.bucket_app.is_empty()
+        && plan.version == PHASE_ZERO_VERSION
+}
+
 /// Slug component of [`PHASE_ZERO_VERSION`]. Exposed so consumers
 /// that need to construct the version string from parts (rare) can
 /// stay aligned with the canonical label.
@@ -775,7 +817,7 @@ fn compose_phase_zero_down_text() -> String {
     out.push_str(
         "-- The bootstrap migration installs framework dependencies (HeeRanjID schema +\n",
     );
-    out.push_str("-- Postgres extensions + node-id GUC) that every subsequent\n");
+    out.push_str("-- Postgres extensions) that every subsequent\n");
     out.push_str("-- migration depends on. Rolling those back would invalidate the\n");
     out.push_str("-- entire schema, so the bootstrap migration has no meaningful down side.\n");
     out.push_str("--\n");
@@ -1588,7 +1630,23 @@ mod tests {
             "-- existing bootstrap-migration down",
         )
         .unwrap();
-        fs::write(pending_json_path(&work, &bucket), b"{}").unwrap();
+        let legacy_pending = PendingPlan {
+            format_version: PENDING_FORMAT_VERSION.to_string(),
+            bucket_database: "main".to_string(),
+            bucket_app: String::new(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            slug: PHASE_ZERO_SLUG.to_string(),
+            model_snapshot: empty_schema_for(&bucket),
+            checksum_up: "V1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            checksum_down: None,
+            composed_at: format_rfc3339_seconds(fixed_now()),
+        };
+        fs::write(
+            pending_json_path(&work, &bucket),
+            serde_json::to_vec_pretty(&legacy_pending).unwrap(),
+        )
+        .unwrap();
 
         let emitted =
             ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");
@@ -1600,6 +1658,67 @@ mod tests {
         // Confirm the existing up-sql was NOT overwritten.
         let content = fs::read_to_string(dir.join(up_filename(PHASE_ZERO_VERSION))).unwrap();
         assert_eq!(content, "-- existing bootstrap-migration up");
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn ensure_phase_zero_does_not_use_legacy_pending_fallback_when_hidden_exists() {
+        let (work, guard) = temp_workspace_with_guard("auto_hidden_wins");
+        let apps = vec![AppLifecycle {
+            label: String::new(),
+            database: "main".to_string(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+        let models = BTreeMap::new();
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let dir = bucket_dir(&work, &bucket);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(up_filename(PHASE_ZERO_VERSION)), "-- old up").unwrap();
+        fs::write(dir.join(down_filename(PHASE_ZERO_VERSION)), "-- old down").unwrap();
+
+        let valid_legacy_pending = PendingPlan {
+            format_version: PENDING_FORMAT_VERSION.to_string(),
+            bucket_database: "main".to_string(),
+            bucket_app: String::new(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            slug: PHASE_ZERO_SLUG.to_string(),
+            model_snapshot: empty_schema_for(&bucket),
+            checksum_up: "V1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            checksum_down: None,
+            composed_at: format_rfc3339_seconds(fixed_now()),
+        };
+        let legacy_path = pending_json_path(&work, &bucket);
+        ensure_parent(&legacy_path).unwrap();
+        fs::write(
+            &legacy_path,
+            serde_json::to_vec_pretty(&valid_legacy_pending).unwrap(),
+        )
+        .unwrap();
+
+        let hidden_path = phase_zero_pending_json_path(&work, "main", PHASE_ZERO_VERSION);
+        let mut invalid_hidden_pending = valid_legacy_pending.clone();
+        invalid_hidden_pending.version = "V00000000000001__wrong_phase_zero".to_string();
+        ensure_parent(&hidden_path).unwrap();
+        fs::write(
+            &hidden_path,
+            serde_json::to_vec_pretty(&invalid_hidden_pending).unwrap(),
+        )
+        .unwrap();
+
+        let emitted =
+            ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");
+        assert_eq!(
+            emitted.len(),
+            1,
+            "legacy pending fallback must not suppress repair when hidden pending exists"
+        );
+        assert_eq!(emitted[0].pending_json_path, hidden_path);
+
         let _ = std::fs::remove_dir_all(&work);
     }
 }

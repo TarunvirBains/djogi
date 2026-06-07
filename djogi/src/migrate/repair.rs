@@ -65,9 +65,9 @@ use super::ledger::{
 };
 use super::projection::BucketKey;
 use super::runner::{
-    PartitionExpansionMode, RunReport, RunnerError, RunnerIdentity, acquire_advisory_lock,
-    advisory_lock_key, bind_runner_node_identity, compute_leaf_identity_cache,
-    materialize_execution_plan, release_advisory_lock, serialize_leaf_identity,
+    PartitionExpansionMode, RunnerError, RunnerIdentity, acquire_advisory_lock, advisory_lock_key,
+    compute_leaf_identity_cache, materialize_execution_plan, release_advisory_lock,
+    serialize_leaf_identity,
 };
 use super::segment::{MigrationPlan, SegmentKind};
 use super::snapshot::{SnapshotError, save_snapshot};
@@ -355,10 +355,11 @@ pub enum RepairError {
     },
 
     /// **#386** — The repair target is a Phase 0 migration whose on-disk
-    /// artifact was classified as stale (generated with hardcoded defaults)
-    /// or ambiguous (hand-edited). Repair refuses to operate on stale
-    /// Phase 0 artifacts; the operator must replace the file with a
-    /// current Phase 0 artifact before repairing.
+    /// artifact was not classified as identity-free replay-current. Repair
+    /// refuses to operate on seed-capable runtime, seed-DML non-runtime,
+    /// missing, incomplete, generated-stale, or ambiguous Phase 0 artifacts;
+    /// the operator must replace the file with an identity-free Phase 0
+    /// artifact before repairing.
     PhaseZeroArtifactRefused {
         /// The migration version that was refused (Phase 0 version label).
         version: String,
@@ -544,8 +545,8 @@ impl std::fmt::Display for RepairError {
             ),
             RepairError::PhaseZeroArtifactRefused { version } => write!(
                 f,
-                "repair refused: Phase 0 artifact for `{version}` is stale or ambiguous; \
-                 replace with a current Phase 0 artifact before repairing"
+                "repair refused: Phase 0 artifact for `{version}` is not identity-free \
+                 replay-current; replace with an identity-free Phase 0 artifact before repairing"
             ),
             RepairError::MissingResumeIdentity { version } => write!(
                 f,
@@ -633,13 +634,17 @@ fn handle_repair_release<T>(
 // ── Public entry points ───────────────────────────────────────────────────
 
 /// #386 — Classify the Phase 0 migration artifact on disk and refuse
-/// repair if the file is stale or ambiguous.
+/// repair unless the file is identity-free replay-current.
 ///
 /// Only checks when `version` matches [`PHASE_ZERO_VERSION`]. Non-Phase-0
 /// versions pass through without loading any files. On I/O failure (file not
 /// found, read error) returns [`RepairError::LedgerIo`] rather than silently
 /// skipping the guard — a missing Phase 0 up-file is an environment problem,
 /// not a "safe to proceed" signal.
+#[expect(
+    clippy::result_large_err,
+    reason = "repair guard returns the public RepairError enum unchanged"
+)]
 fn check_phase_zero_repair(
     workspace: &Path,
     bucket: &BucketKey,
@@ -657,18 +662,36 @@ fn check_phase_zero_repair(
             up_path.display()
         ))),
     })?;
-    let state = super::phase_zero::classify_phase_zero_artifact(&bytes);
-    match state {
-        super::phase_zero::PhaseZeroArtifactState::GeneratedStale
-        | super::phase_zero::PhaseZeroArtifactState::Ambiguous => {
-            Err(RepairError::PhaseZeroArtifactRefused {
-                version: version.to_string(),
-            })
+    super::phase_zero::require_identity_free_phase_zero_migration_artifact(&bytes).map_err(|_| {
+        RepairError::PhaseZeroArtifactRefused {
+            version: version.to_string(),
         }
-        // Current, Missing (empty file), Incomplete — proceed.
-        // These are either valid or will fail at a later validation step.
-        _ => Ok(()),
+    })
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "repair guard returns the public RepairError enum unchanged"
+)]
+fn check_phase_zero_materialized_resume_stream(
+    version: &str,
+    plan: &MigrationPlan,
+) -> Result<(), RepairError> {
+    if version != PHASE_ZERO_VERSION {
+        return Ok(());
     }
+
+    let combined_up = plan
+        .segments
+        .iter()
+        .flat_map(|seg| seg.statements.iter())
+        .map(|stmt| stmt.up.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    super::phase_zero::require_identity_free_phase_zero_migration_artifact(combined_up.as_bytes())
+        .map_err(|_| RepairError::PhaseZeroArtifactRefused {
+            version: version.to_string(),
+        })
 }
 
 /// Repair a checksum-drift between the stored ledger row and
@@ -702,9 +725,12 @@ fn check_phase_zero_repair(
 ///
 /// **Phase 0 guard (#386).** If `version` matches the Phase 0 bootstrap
 /// version, the repair function loads the on-disk migration file and
-/// classifies it. Stale or ambiguous Phase 0 artifacts are refused
-/// with [`RepairError::PhaseZeroArtifactRefused`] before any ledger
-/// mutation occurs.
+/// classifies it. Any non-identity-free Phase 0 artifact is refused with
+/// [`RepairError::PhaseZeroArtifactRefused`] before any ledger mutation occurs.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "public repair API keeps explicit bucket, workspace, checksum, and confirmation inputs"
+)]
 pub async fn repair_checksum_drift(
     ctx: &mut DjogiContext,
     _guard: &WorkspaceGuard,
@@ -874,9 +900,12 @@ pub enum PartialApplyResolution {
 ///
 /// **Phase 0 guard (#386).** If `version` matches the Phase 0 bootstrap
 /// version, the repair function loads the on-disk migration file and
-/// classifies it. Stale or ambiguous Phase 0 artifacts are refused
-/// with [`RepairError::PhaseZeroArtifactRefused`] before any ledger
-/// mutation occurs.
+/// classifies it. Any non-identity-free Phase 0 artifact is refused with
+/// [`RepairError::PhaseZeroArtifactRefused`] before any ledger mutation occurs.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "public repair API keeps explicit bucket, workspace, resolution, note, and confirmation inputs"
+)]
 pub async fn repair_partial_apply(
     ctx: &mut DjogiContext,
     _guard: &WorkspaceGuard,
@@ -1041,6 +1070,7 @@ async fn repair_partial_apply_pinned(
 pub async fn repair_resume_partial_apply(
     ctx: &mut DjogiContext,
     _guard: &WorkspaceGuard,
+    workspace: &Path,
     version: &str,
     plan: &MigrationPlan,
     runner_identity: Option<RunnerIdentity>,
@@ -1050,18 +1080,13 @@ pub async fn repair_resume_partial_apply(
         return Err(RepairError::InsufficientConfirmation);
     }
 
-    // GH #274: pin one physical session. All ledger reads, validation,
-    // and mutations run INSIDE the advisory lock in repair_resume_pinned
-    // so the entire resume window is atomic from the lock's perspective.
-    let lock_key = advisory_lock_key(&plan.bucket);
-    let mut pinned = ctx
-        .pin_for_migration()
-        .await
-        .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+    // #386: refuse repair-resume on non-identity-free Phase 0 artifacts before
+    // pinning a database session or touching the ledger.
+    check_phase_zero_repair(workspace, &plan.bucket, version)?;
 
     // Gate: non-Phase-0 resume requires a binding-capable runner
-    // identity before SQL replay. Mirrors the apply-family gates
-    // and rollback inverse. Phase 0 remains exempt.
+    // identity before pinning or SQL replay. Mirrors the apply-family
+    // gates and rollback inverse. Phase 0 remains exempt.
     if version != PHASE_ZERO_VERSION {
         let identity = match runner_identity {
             Some(id) => id,
@@ -1076,8 +1101,20 @@ pub async fn repair_resume_partial_apply(
                 version: version.to_string(),
             });
         }
+    }
 
-        // Bind the selected node identity on the pinned connection.
+    // GH #274: pin one physical session. All ledger reads, validation,
+    // and mutations run INSIDE the advisory lock in repair_resume_pinned
+    // so the entire resume window is atomic from the lock's perspective.
+    let lock_key = advisory_lock_key(&plan.bucket);
+    let mut pinned = ctx
+        .pin_for_migration()
+        .await
+        .map_err(|e| RepairError::PinnedSessionCheckoutFailed { source: e })?;
+
+    if version != PHASE_ZERO_VERSION {
+        let identity = runner_identity
+            .expect("INVARIANT: non-Phase-0 runner identity was validated before pinning");
         super::runner::bind_runner_node_identity(
             &mut pinned,
             identity.node_id().expect(
@@ -1231,6 +1268,8 @@ async fn repair_resume_body(
                     ))),
                 },
             })?;
+
+    check_phase_zero_materialized_resume_stream(version, &materialized_plan)?;
 
     // #356: Compare stored leaf identity against freshly materialized leaves.
     // If topology changed since original apply (partition added/dropped), refuse
@@ -1594,6 +1633,157 @@ async fn count_applied_for_app(ctx: &mut DjogiContext, app_label: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    fn temp_root(tag: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let p = std::env::temp_dir().join(format!("djogi-repair-{tag}-{nanos}-{n}"));
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn phase_zero_bucket() -> BucketKey {
+        BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        }
+    }
+
+    async fn unreachable_pool_context() -> DjogiContext {
+        let pool = crate::pg::pool::DjogiPool::builder("postgres://localhost:1/djogi_unreachable")
+            .timeout(Duration::from_millis(1))
+            .build()
+            .await
+            .expect("construct lazy unreachable pool");
+        DjogiContext::from_pool(pool)
+    }
+
+    fn acquire_test_workspace_guard() -> WorkspaceGuard {
+        crate::migrate::acquire_workspace_lock(
+            &temp_root("repair-lock").join("djogi.lock"),
+            Duration::from_secs(2),
+        )
+        .expect("acquire workspace lock")
+    }
+
+    fn resume_plan(bucket: BucketKey) -> MigrationPlan {
+        MigrationPlan {
+            bucket,
+            classification: super::super::diff::Classification::Additive,
+            segments: vec![super::super::segment::Segment {
+                kind: SegmentKind::NonTransactional,
+                statements: vec![super::super::sql::OperationSql {
+                    label: "resume step".to_string(),
+                    up: "SELECT 1".to_string(),
+                    down: String::new(),
+                    lossy: None,
+                }],
+            }],
+        }
+    }
+
+    fn current_production_phase_zero_sql() -> String {
+        super::super::bootstrap::compose_phase_zero(
+            "main",
+            &BTreeSet::new(),
+            super::super::bootstrap::DEFAULT_NODE_ID,
+            false,
+        )
+        .expect("compose production Phase 0")
+    }
+
+    fn markerless_seed_phase_zero_sql() -> String {
+        phase_zero_with_seed_statement("INSERT INTO heer.heer_nodes (id) VALUES (1);")
+    }
+
+    fn phase_zero_with_seed_statement(statement: &str) -> String {
+        let mut sql = current_production_phase_zero_sql();
+        sql.push('\n');
+        sql.push_str(statement);
+        sql.push('\n');
+        sql
+    }
+
+    fn extended_seed_statement_cases() -> [(&'static str, &'static str); 4] {
+        [
+            (
+                "cte_insert",
+                "WITH rows AS (SELECT 1) INSERT INTO heer.heer_nodes (id) VALUES (1);",
+            ),
+            (
+                "cte_delete",
+                "WITH moved AS (DELETE FROM heer.heer_node_state RETURNING *) SELECT 1;",
+            ),
+            (
+                "merge",
+                "MERGE INTO heer.heer_nodes AS target USING incoming ON false WHEN NOT MATCHED THEN INSERT (id) VALUES (1);",
+            ),
+            (
+                "copy_from",
+                "COPY \"heer\".\"heer_ranj_node_state\" (\"node_id\") FROM STDIN;",
+            ),
+        ]
+    }
+
+    fn incomplete_phase_zero_sql() -> String {
+        current_production_phase_zero_sql()
+            .replace("-- HeeRanjID base schema + functions (idempotent).\n", "")
+    }
+
+    fn generated_stale_phase_zero_sql() -> String {
+        let mut sql = super::super::bootstrap::compose_phase_zero(
+            "main",
+            &BTreeSet::new(),
+            super::super::bootstrap::DEFAULT_NODE_ID,
+            true,
+        )
+        .expect("compose seed-capable Phase 0");
+        let start = sql.find("DO $djogi$").expect("dynamic defaults block");
+        let end = sql[start..]
+            .find("SET heer.node_id = '1';")
+            .map(|offset| start + offset)
+            .expect("session SET after dynamic defaults");
+        sql.replace_range(
+            start..end,
+            "ALTER DATABASE \"main\" SET heer.node_id = '1';\n\
+             ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
+        );
+        sql
+    }
+
+    fn write_phase_zero_artifact(root: &Path, bucket: &BucketKey, sql: &str) {
+        let dir = super::super::target::bucket_dir(root, bucket);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(super::super::naming::up_filename(PHASE_ZERO_VERSION)),
+            sql,
+        )
+        .unwrap();
+    }
+
+    fn phase_zero_resume_plan_with_up(up: &str) -> MigrationPlan {
+        MigrationPlan {
+            bucket: phase_zero_bucket(),
+            classification: super::super::diff::Classification::Additive,
+            segments: vec![super::super::segment::Segment {
+                kind: SegmentKind::NonTransactional,
+                statements: vec![super::super::sql::OperationSql {
+                    label: "resume Phase 0 step".to_string(),
+                    up: up.to_string(),
+                    down: String::new(),
+                    lossy: None,
+                }],
+            }],
+        }
+    }
 
     // ── Witness type can only be constructed via the variant name ────────
 
@@ -1670,6 +1860,180 @@ mod tests {
             ChecksumFormatErrorKind::WrongPrefix
             | ChecksumFormatErrorKind::WrongLength { .. }
             | ChecksumFormatErrorKind::NonLowercaseHex { .. } => (),
+        }
+    }
+
+    #[test]
+    fn repair_refuses_missing_phase_zero_artifact() {
+        let root = temp_root("missing_p0");
+        let bucket = phase_zero_bucket();
+        write_phase_zero_artifact(&root, &bucket, " \n\t ");
+
+        let result = check_phase_zero_repair(&root, &bucket, PHASE_ZERO_VERSION);
+        assert!(
+            matches!(result, Err(RepairError::PhaseZeroArtifactRefused { .. })),
+            "repair must refuse missing Phase 0 artifacts; got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repair_refuses_incomplete_phase_zero_artifact() {
+        let root = temp_root("incomplete_p0");
+        let bucket = phase_zero_bucket();
+        write_phase_zero_artifact(&root, &bucket, &incomplete_phase_zero_sql());
+
+        let result = check_phase_zero_repair(&root, &bucket, PHASE_ZERO_VERSION);
+        assert!(
+            matches!(result, Err(RepairError::PhaseZeroArtifactRefused { .. })),
+            "repair must refuse incomplete Phase 0 artifacts; got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repair_refuses_markerless_seed_phase_zero_artifact() {
+        let root = temp_root("markerless_seed_p0");
+        let bucket = phase_zero_bucket();
+        write_phase_zero_artifact(&root, &bucket, &markerless_seed_phase_zero_sql());
+
+        let result = check_phase_zero_repair(&root, &bucket, PHASE_ZERO_VERSION);
+        assert!(
+            matches!(result, Err(RepairError::PhaseZeroArtifactRefused { .. })),
+            "repair must refuse markerless seed Phase 0 artifacts; got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repair_refuses_extended_seed_phase_zero_artifacts() {
+        for (name, statement) in extended_seed_statement_cases() {
+            let root = temp_root(&format!("extended_seed_p0_{name}"));
+            let bucket = phase_zero_bucket();
+            write_phase_zero_artifact(&root, &bucket, &phase_zero_with_seed_statement(statement));
+
+            let result = check_phase_zero_repair(&root, &bucket, PHASE_ZERO_VERSION);
+            assert!(
+                matches!(result, Err(RepairError::PhaseZeroArtifactRefused { .. })),
+                "repair must refuse extended seed Phase 0 artifact {name}; got {result:?}"
+            );
+
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn repair_materialized_resume_stream_refuses_markerless_seed_phase_zero() {
+        let plan = phase_zero_resume_plan_with_up(&markerless_seed_phase_zero_sql());
+
+        let result = check_phase_zero_materialized_resume_stream(PHASE_ZERO_VERSION, &plan);
+
+        assert!(
+            matches!(result, Err(RepairError::PhaseZeroArtifactRefused { .. })),
+            "repair materialized resume stream must refuse markerless seed Phase 0, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn repair_materialized_resume_stream_refuses_extended_seed_phase_zero() {
+        for (name, statement) in extended_seed_statement_cases() {
+            let plan = phase_zero_resume_plan_with_up(&phase_zero_with_seed_statement(statement));
+
+            let result = check_phase_zero_materialized_resume_stream(PHASE_ZERO_VERSION, &plan);
+
+            assert!(
+                matches!(result, Err(RepairError::PhaseZeroArtifactRefused { .. })),
+                "repair materialized resume stream must refuse extended seed Phase 0 {name}, got {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn repair_resume_missing_identity_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let root = temp_root("resume_no_identity");
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let plan = resume_plan(bucket);
+        let guard = acquire_test_workspace_guard();
+
+        let result = repair_resume_partial_apply(
+            &mut ctx,
+            &guard,
+            &root,
+            "V20260602000008__resume_no_identity",
+            &plan,
+            None,
+            RepairConfirmation::OperatorAcknowledged,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(RepairError::MissingResumeIdentity { .. })),
+            "missing resume identity must refuse before pin/connection checkout, got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn repair_resume_phase_zero_artifact_preflight_refuses_before_pin() {
+        let cases = [
+            ("generated_stale", generated_stale_phase_zero_sql()),
+            ("markerless_seed", markerless_seed_phase_zero_sql()),
+            (
+                "cte_seed",
+                phase_zero_with_seed_statement(
+                    "WITH rows AS (SELECT 1) INSERT INTO heer.heer_nodes (id) VALUES (1);",
+                ),
+            ),
+            (
+                "merge_seed",
+                phase_zero_with_seed_statement(
+                    "MERGE INTO heer.heer_nodes AS target USING incoming ON false WHEN NOT MATCHED THEN INSERT (id) VALUES (1);",
+                ),
+            ),
+            (
+                "copy_seed",
+                phase_zero_with_seed_statement(
+                    "COPY \"heer\".\"heer_ranj_node_state\" (\"node_id\") FROM STDIN;",
+                ),
+            ),
+            ("missing", " \n\t ".to_string()),
+            ("incomplete", incomplete_phase_zero_sql()),
+            ("ambiguous", "SELECT 1".to_string()),
+        ];
+
+        for (name, sql) in cases {
+            let mut ctx = unreachable_pool_context().await;
+            let root = temp_root(&format!("resume_p0_{name}"));
+            let bucket = phase_zero_bucket();
+            write_phase_zero_artifact(&root, &bucket, &sql);
+            let plan = resume_plan(bucket);
+            let guard = acquire_test_workspace_guard();
+
+            let result = repair_resume_partial_apply(
+                &mut ctx,
+                &guard,
+                &root,
+                PHASE_ZERO_VERSION,
+                &plan,
+                None,
+                RepairConfirmation::OperatorAcknowledged,
+            )
+            .await;
+
+            assert!(
+                matches!(result, Err(RepairError::PhaseZeroArtifactRefused { .. })),
+                "{name} Phase 0 artifact must refuse before resume pins, got {result:?}"
+            );
+
+            let _ = fs::remove_dir_all(&root);
         }
     }
 

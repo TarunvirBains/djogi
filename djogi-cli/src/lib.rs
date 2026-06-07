@@ -1076,6 +1076,18 @@ pub(crate) fn print_zero_descriptor_diagnostic(command: &str) {
 }
 
 #[cfg(test)]
+/// Single process-wide lock for tests that mutate process env vars.
+/// `std::sync::Mutex` is non-reentrant: do not hold two env guards on
+/// the same thread or the second lock attempt will deadlock.
+pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    ENV_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     //! CLI-level argument-parsing tests. These exercise the `value_parser`
     //! attached to `--threshold-vacuum` directly; the goal is to pin the

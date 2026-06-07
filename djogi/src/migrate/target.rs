@@ -143,12 +143,28 @@ pub fn pending_database_dir(workspace_root: &Path, database: &str) -> PathBuf {
     pending_root(workspace_root).join(database)
 }
 
+/// Resolve the dedicated Phase 0 pending namespace for a database.
+pub fn phase_zero_pending_dir(workspace_root: &Path, database: &str) -> PathBuf {
+    pending_database_dir(workspace_root, database).join(".phase_zero")
+}
+
 /// Resolve the per-bucket pending JSON path
 /// `target/djogi_pending/<database>/<app>.json`. The app component
 /// uses the same global-bucket mapping as the snapshot path.
 pub fn pending_json_path(workspace_root: &Path, bucket: &BucketKey) -> PathBuf {
     pending_database_dir(workspace_root, &bucket.database)
         .join(super::naming::pending_json_filename(&bucket.app))
+}
+
+/// Resolve the dedicated Phase 0 pending JSON path
+/// `target/djogi_pending/<database>/.phase_zero/<version>.json`.
+pub fn phase_zero_pending_json_path(
+    workspace_root: &Path,
+    database: &str,
+    version: &str,
+) -> PathBuf {
+    phase_zero_pending_dir(workspace_root, database)
+        .join(super::naming::phase_zero_pending_json_filename(version))
 }
 
 /// One `(database, app)` pair discovered on disk by [`scan_filesystem`].
@@ -487,6 +503,17 @@ mod tests {
         assert_eq!(
             pending_json_path(root, &bucket),
             Path::new("/work/target/djogi_pending/main/_global_.json")
+        );
+    }
+
+    #[test]
+    fn phase_zero_pending_json_path_uses_hidden_namespace() {
+        let root = Path::new("/work");
+        assert_eq!(
+            phase_zero_pending_json_path(root, "main", "V00000000000000__phase_zero_bootstrap"),
+            Path::new(
+                "/work/target/djogi_pending/main/.phase_zero/V00000000000000__phase_zero_bootstrap.json"
+            )
         );
     }
 

@@ -724,6 +724,57 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    struct DatabaseUrlEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prior: Option<String>,
+    }
+
+    impl DatabaseUrlEnvGuard {
+        fn new() -> Self {
+            Self {
+                _lock: crate::test_env_lock(),
+                prior: std::env::var("DATABASE_URL").ok(),
+            }
+        }
+
+        fn set(&self, value: &str) {
+            unsafe { std::env::set_var("DATABASE_URL", value) };
+        }
+
+        fn remove(&self) {
+            unsafe { std::env::remove_var("DATABASE_URL") };
+        }
+    }
+
+    impl Drop for DatabaseUrlEnvGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(value) => unsafe { std::env::set_var("DATABASE_URL", value) },
+                None => unsafe { std::env::remove_var("DATABASE_URL") },
+            }
+        }
+    }
+
+    fn without_database_url<T>(f: impl FnOnce() -> T) -> T {
+        let env_guard = DatabaseUrlEnvGuard::new();
+        env_guard.remove();
+        f()
+    }
+
+    #[test]
+    fn database_url_env_guard_restores_prior_value() {
+        let env_guard = DatabaseUrlEnvGuard::new();
+        let expected = env_guard.prior.clone();
+        let next = if expected.as_deref() == Some("postgres://temporary/test") {
+            "postgres://temporary/other"
+        } else {
+            "postgres://temporary/test"
+        };
+        env_guard.set(next);
+        drop(env_guard);
+        assert_eq!(std::env::var("DATABASE_URL").ok(), expected);
+    }
+
     fn temp_workspace(tag: &str) -> PathBuf {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -736,41 +787,53 @@ mod tests {
         p
     }
 
-    /// `db reset` without `--yes` and without an interactive answer
-    /// must refuse before any I/O.
+    /// `db reset` without node identity must refuse before any prompt,
+    /// connection, or destructive I/O.
     #[test]
-    fn reset_cmd_refuses_when_not_confirmed_and_url_remote() {
-        // We can't easily inject stdin through the public `reset_cmd`
-        // entry, but we can verify that a remote URL refuses with the
-        // localhost gate even when `yes = true` — proving the gate
-        // chain is wired through the CLI.
+    fn reset_cmd_refuses_when_identity_is_missing() {
         let work = temp_workspace("reset_remote");
         let toml = "[database]\nurl = \"postgres://prod.example.com/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
-        // Save and clear DATABASE_URL so the env override doesn't
-        // mask the file value during this test.
-        let prior = std::env::var("DATABASE_URL").ok();
-        // SAFETY: tests run with --test-threads=1.
-        unsafe { std::env::remove_var("DATABASE_URL") };
-
-        // `yes = true` skips the interactive prompt; we expect the
-        // localhost gate to refuse and exit code 2.
-        let exit = reset_cmd(
-            true,
-            false,
-            "postgres".to_string(),
-            Some(work.clone()),
-            None,
-            false,
+        let exit = without_database_url(|| {
+            reset_cmd(
+                true,
+                false,
+                "postgres".to_string(),
+                Some(work.clone()),
+                None,
+                false,
+            )
+        });
+        assert_eq!(
+            exit,
+            ExitCode::from(2),
+            "missing identity must refuse before localhost gating"
         );
-        assert_eq!(exit, ExitCode::from(2), "remote URL must hit refusal exit");
+        let _ = fs::remove_dir_all(&work);
+    }
 
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
-            None => unsafe { std::env::remove_var("DATABASE_URL") },
-        }
+    /// With `--single-node-dev`, a remote URL must still refuse at the
+    /// localhost gate even when `--yes` skips the prompt.
+    #[test]
+    fn reset_cmd_refuses_remote_url_after_identity_resolution() {
+        let work = temp_workspace("reset_remote_single_node_dev");
+        let toml = "[database]\nurl = \"postgres://prod.example.com/main\"\n\
+                    max_connections = 1\ndev_mode = false\n\
+                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        let exit = without_database_url(|| {
+            reset_cmd(
+                true,
+                true,
+                "postgres".to_string(),
+                Some(work.clone()),
+                None,
+                false,
+            )
+        });
+        assert_eq!(exit, ExitCode::from(2), "remote URL must hit refusal exit");
         let _ = fs::remove_dir_all(&work);
     }
 
@@ -784,23 +847,17 @@ mod tests {
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
-        let prior = std::env::var("DATABASE_URL").ok();
-        unsafe { std::env::remove_var("DATABASE_URL") };
-
-        let exit = reset_cmd(
-            true,
-            false,
-            "postgres".to_string(),
-            Some(work.clone()),
-            None,
-            false,
-        );
+        let exit = without_database_url(|| {
+            reset_cmd(
+                true,
+                false,
+                "postgres".to_string(),
+                Some(work.clone()),
+                None,
+                false,
+            )
+        });
         assert_eq!(exit, ExitCode::from(2), "production must refuse");
-
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
-            None => unsafe { std::env::remove_var("DATABASE_URL") },
-        }
         let _ = fs::remove_dir_all(&work);
     }
 
@@ -816,29 +873,22 @@ mod tests {
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
-        let prior = std::env::var("DATABASE_URL").ok();
-        // SAFETY: tests run with --test-threads=1.
-        unsafe { std::env::remove_var("DATABASE_URL") };
-
         // `--yes` set, `--allow-non-localhost` NOT set, `--dry-run`
         // NOT set — localhost gate must refuse first.
-        let exit = cleanup_test_dbs_cmd(
-            false,
-            true,
-            "postgres".to_string(),
-            false,
-            Some(work.clone()),
-        );
+        let exit = without_database_url(|| {
+            cleanup_test_dbs_cmd(
+                false,
+                true,
+                "postgres".to_string(),
+                false,
+                Some(work.clone()),
+            )
+        });
         assert_eq!(
             exit,
             ExitCode::from(2),
             "non-localhost without override must refuse"
         );
-
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
-            None => unsafe { std::env::remove_var("DATABASE_URL") },
-        }
         let _ = fs::remove_dir_all(&work);
     }
 
@@ -852,22 +902,16 @@ mod tests {
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
-        let prior = std::env::var("DATABASE_URL").ok();
-        unsafe { std::env::remove_var("DATABASE_URL") };
-
-        let exit = cleanup_test_dbs_cmd(
-            false,
-            true,
-            "postgres".to_string(),
-            false,
-            Some(work.clone()),
-        );
+        let exit = without_database_url(|| {
+            cleanup_test_dbs_cmd(
+                false,
+                true,
+                "postgres".to_string(),
+                false,
+                Some(work.clone()),
+            )
+        });
         assert_eq!(exit, ExitCode::from(2), "production must refuse");
-
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
-            None => unsafe { std::env::remove_var("DATABASE_URL") },
-        }
         let _ = fs::remove_dir_all(&work);
     }
 
@@ -880,26 +924,20 @@ mod tests {
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
-        let prior = std::env::var("DATABASE_URL").ok();
-        unsafe { std::env::remove_var("DATABASE_URL") };
-
-        let exit = cleanup_test_dbs_cmd(
-            false,
-            false,
-            "postgres".to_string(),
-            false,
-            Some(work.clone()),
-        );
+        let exit = without_database_url(|| {
+            cleanup_test_dbs_cmd(
+                false,
+                false,
+                "postgres".to_string(),
+                false,
+                Some(work.clone()),
+            )
+        });
         assert_eq!(
             exit,
             ExitCode::from(2),
             "missing --yes without --dry-run must refuse"
         );
-
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
-            None => unsafe { std::env::remove_var("DATABASE_URL") },
-        }
         let _ = fs::remove_dir_all(&work);
     }
 
@@ -914,26 +952,20 @@ mod tests {
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
-        let prior = std::env::var("DATABASE_URL").ok();
-        unsafe { std::env::remove_var("DATABASE_URL") };
-
-        let exit = cleanup_test_dbs_cmd(
-            false,
-            true,
-            "'; DROP DATABASE main; --".to_string(),
-            false,
-            Some(work.clone()),
-        );
+        let exit = without_database_url(|| {
+            cleanup_test_dbs_cmd(
+                false,
+                true,
+                "'; DROP DATABASE main; --".to_string(),
+                false,
+                Some(work.clone()),
+            )
+        });
         assert_eq!(
             exit,
             ExitCode::from(1),
             "invalid maintenance DB name must reject"
         );
-
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
-            None => unsafe { std::env::remove_var("DATABASE_URL") },
-        }
         let _ = fs::remove_dir_all(&work);
     }
 

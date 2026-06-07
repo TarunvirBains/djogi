@@ -154,14 +154,15 @@ pub struct ResetRequest<'a> {
     pub audit_pool: Option<deadpool_postgres::Pool>,
     /// Runner node identity for identity-bearing replay operations.
     /// When `Some(RunnerIdentity::SingleNodeDev)`, the reset is
-    /// allowed to proceed with dynamic defaults and session binding.
-    /// When `Some(RunnerIdentity::Selected { id })`, the selected
-    /// node identity is used for session binding during replay (but
-    /// reset refuses if a selected node is set — destructive reset
-    /// requires either no identity or single-node-dev mode).
+    /// allowed to proceed; Phase 0 replay provisions node 1 after
+    /// the identity-free bootstrap SQL succeeds, and later replayed
+    /// migrations bind that node on the pinned runner session.
+    /// When `Some(RunnerIdentity::Selected { id })`, reset refuses
+    /// before destructive work because drop/recreate removes the old
+    /// node registration.
     /// When `None` and not production profile, reset refuses with
     /// `ResetRefusal::MissingNodeIdentity` — the operator must pass
-    /// `--single-node-dev` or explicitly supply `--node-id`.
+    /// `--single-node-dev`.
     pub runner_identity: Option<RunnerIdentity>,
 }
 
@@ -659,7 +660,7 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
             &req.migrate_config,
             &_guard,
             req.audit_pool.as_ref(),
-            req.runner_identity.clone(),
+            req.runner_identity,
         )
         .await?;
         replayed.push(ReplayedMigration {
@@ -1426,6 +1427,10 @@ fn read_replay_sql_files(
 /// transactional segment. In both paths, the runner receives the same
 /// canonical operation-fragment checksum domain that compose records
 /// in the ledger.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "reset replay bridges committed-file context into the runner without hiding ownership"
+)]
 async fn replay_one_migration(
     ctx: &mut DjogiContext,
     workspace_root: &Path,
@@ -1493,6 +1498,9 @@ async fn replay_one_migration(
         // Reset replay inherits the identity from ResetRequest.
         // The pre-drop identity gate ensures only SingleNodeDev reaches
         // this code path (None, Selected, and IdentityFree are refused earlier).
+        // Phase 0 replay uses that identity to provision node 1 before
+        // marking the bootstrap row applied; later replayed migrations
+        // bind the provisioned node normally.
         runner_identity,
     };
 

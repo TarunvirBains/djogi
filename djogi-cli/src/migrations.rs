@@ -232,8 +232,9 @@ impl std::error::Error for ApplyReplayPlanError {}
 /// Classify a Phase 0 artifact for the CLI cleanup path (#386).
 /// Loads the committed replay plan JSON or falls back to the SQL file,
 /// classifies the up SQL using [`djogi::migrate::classify_phase_zero_artifact`],
-/// and returns `Some(reason)` if the artifact is not Current.
-/// Returns `None` when the artifact is classified as Current (safe to proceed).
+/// and returns `Some(reason)` unless the artifact is identity-free
+/// replay-current.
+/// Returns `None` when the artifact is safe for migration replay.
 fn classify_phase_zero_for_cleanup(
     workspace: &Path,
     bucket: &djogi::migrate::BucketKey,
@@ -288,10 +289,17 @@ fn classify_phase_zero_for_cleanup(
     }
 }
 
-/// Classify raw bytes as Phase 0 artifact and return refusal reason if not Current.
+/// Classify raw bytes as Phase 0 artifact and return refusal reason unless it
+/// is identity-free replay-current.
 fn classify_phase_zero_bytes(bytes: &[u8]) -> Option<String> {
     match djogi::migrate::classify_phase_zero_artifact(bytes) {
-        djogi::migrate::PhaseZeroArtifactState::Current => None,
+        djogi::migrate::PhaseZeroArtifactState::IdentityFreeCurrent => None,
+        djogi::migrate::PhaseZeroArtifactState::SeedCapableRuntimeCurrent => {
+            Some("seed-capable runtime-only artifact detected".to_string())
+        }
+        djogi::migrate::PhaseZeroArtifactState::SeedDmlNotRuntimeCurrent => {
+            Some("seed-dml non-runtime-current artifact detected".to_string())
+        }
         djogi::migrate::PhaseZeroArtifactState::GeneratedStale => {
             Some("generated-stale artifact detected".to_string())
         }
@@ -776,8 +784,12 @@ fn resolve_bucket_url(db_config: &djogi::config::DatabaseConfig, database: &str)
 /// `djogi migrations apply` entry point.
 /// Discovers pending JSON files under `target/djogi_pending/`, loads the
 /// committed replay plan for each, and drives [`djogi::migrate::apply_plan`]
-/// through the library runner with full crash recovery via the ledger state
-/// machine.
+/// through the library runner after CLI-side ledger-state classification.
+/// `Pending` rows require operator resolution. Caller-gated `Failed`/`RolledBack`
+/// rows are reapply-blocking cleanup candidates before runner invocation. Phase
+/// 0 cleanup is identity-free replay-current-only: seed-capable runtime,
+/// seed-DML non-runtime-current, missing, incomplete, generated-stale, or
+/// ambiguous artifacts refuse before delete.
 pub fn apply_cmd(
     workspace: Option<PathBuf>,
     fake: bool,
@@ -869,7 +881,13 @@ async fn run_apply(
     // 2. Discover pending JSONs before resolving identity or connecting to DB.
     // No-pending apply (zero pending files) is an identity-free inverse —
     // skip the resolver and pool connection entirely when no pending plans exist.
-    let pending_files = discover_pending_plans(workspace);
+    let pending_files = match discover_pending_plans(workspace) {
+        Ok(pending_files) => pending_files,
+        Err(e) => {
+            eprintln!("djogi migrations {action_verb}: pending discovery: {e}");
+            return 2;
+        }
+    };
     if pending_files.is_empty() {
         println!("No pending migrations to {action_verb}.");
         return 0;
@@ -885,7 +903,7 @@ async fn run_apply(
     ) {
         Ok(resolved) => Some(resolved.into_runner_identity()),
         Err(e) => {
-            eprintln!("djogi migrations {action_verb}: refused — {e}");
+            let _ = crate::identity::print_identity_error(action_verb, &e);
             return 2;
         }
     };
@@ -913,24 +931,33 @@ async fn run_apply(
         }
     };
 
-    // 6. Build audit pool (optional — silently skipped if unavailable).
+    // 6. Reconcile the pending set under the lock before any cleanup/apply work.
+    let pending_files = match reconcile_pending_plans_after_lock(workspace, &pending_files) {
+        Ok(pending_files) => pending_files,
+        Err(e) => {
+            eprintln!("djogi migrations {action_verb}: pending discovery: {e}");
+            return 2;
+        }
+    };
+
+    // 7. Build audit pool (optional — silently skipped if unavailable).
     let audit_pool = match djogi::migrate::resolve_audit_url(&config) {
         Ok(url) => djogi::migrate::build_audit_pool(&url).await.ok(),
         Err(_) => None,
     };
 
-    // 7. Build context from pool (not pinned yet — apply_plan pins internally).
+    // 8. Build context from pool (not pinned yet — apply_plan pins internally).
     let mut ctx = djogi::context::DjogiContext::from_pool(pool);
 
-    // 8. Apply each pending migration in order.
-    for (pending_path, bucket_database, app_label) in &pending_files {
+    // 9. Apply each pending migration in order.
+    for pending_file in &pending_files {
+        let bucket_database = &pending_file.bucket.database;
+        let app_label = &pending_file.bucket.app;
         println!("  {progress_verb} {bucket_database}/{app_label}...");
         let result = apply_one_pending(
             &mut ctx,
             workspace,
-            pending_path,
-            bucket_database.clone(),
-            app_label.clone(),
+            pending_file,
             &config,
             &guard,
             audit_pool.as_ref(),
@@ -990,16 +1017,175 @@ enum ApplyResult {
     RunnerError(RunnerError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscoveredPendingPlan {
+    path: PathBuf,
+    bucket: BucketKey,
+    plan: PendingPlan,
+    is_phase_zero: bool,
+}
+
+fn is_acceptable_pending_path_component(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.len() > 63 {
+        return false;
+    }
+    if bytes[0] == b'.' {
+        return false;
+    }
+    let first = bytes[0];
+    if first != b'_' && !first.is_ascii_alphabetic() {
+        return false;
+    }
+    for &b in &bytes[1..] {
+        if b != b'_' && !b.is_ascii_alphanumeric() {
+            return false;
+        }
+    }
+    true
+}
+
+fn canonical_pending_filename(app_label: &str) -> String {
+    format!("{}.json", djogi::migrate::app_dirname(app_label))
+}
+
+fn validate_hidden_phase_zero_pending(
+    path: PathBuf,
+    database: &str,
+) -> Result<DiscoveredPendingPlan, String> {
+    let filename = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or_else(|| format!("non-utf8 Phase 0 pending path {}", path.display()))?;
+    let expected_filename = format!("{}.json", djogi::migrate::PHASE_ZERO_VERSION);
+    if filename != expected_filename {
+        return Err(format!(
+            "hidden Phase 0 pending path {} must use canonical filename {}",
+            path.display(),
+            expected_filename
+        ));
+    }
+    let plan = djogi::migrate::load_pending(&path)
+        .map_err(|e| format!("parse pending JSON {}: {e}", path.display()))?;
+    if plan.bucket_database != database {
+        return Err(format!(
+            "pending JSON {} has bucket database {}, expected {} from path",
+            path.display(),
+            plan.bucket_database,
+            database
+        ));
+    }
+    if !plan.bucket_app.is_empty() {
+        return Err(format!(
+            "pending JSON {} must target the global bucket in hidden Phase 0 namespace",
+            path.display()
+        ));
+    }
+    if plan.version != djogi::migrate::PHASE_ZERO_VERSION {
+        return Err(format!(
+            "pending JSON {} must use Phase 0 version {}, found {}",
+            path.display(),
+            djogi::migrate::PHASE_ZERO_VERSION,
+            plan.version
+        ));
+    }
+    Ok(DiscoveredPendingPlan {
+        path,
+        bucket: BucketKey {
+            database: database.to_string(),
+            app: String::new(),
+        },
+        plan,
+        is_phase_zero: true,
+    })
+}
+
+fn validate_normal_pending(
+    path: PathBuf,
+    database: &str,
+    filename: &str,
+) -> Result<DiscoveredPendingPlan, String> {
+    let Some(stem) = filename.strip_suffix(".json") else {
+        return Err(format!(
+            "pending path {} must end with .json",
+            path.display()
+        ));
+    };
+    let app = if stem == "_global_" {
+        String::new()
+    } else {
+        if !is_acceptable_pending_path_component(stem.as_bytes()) {
+            return Err(format!(
+                "pending path {} uses non-canonical app filename {}",
+                path.display(),
+                filename
+            ));
+        }
+        stem.to_string()
+    };
+    let expected_filename = canonical_pending_filename(&app);
+    if filename != expected_filename {
+        return Err(format!(
+            "pending path {} must use canonical filename {}",
+            path.display(),
+            expected_filename
+        ));
+    }
+    let plan = djogi::migrate::load_pending(&path)
+        .map_err(|e| format!("parse pending JSON {}: {e}", path.display()))?;
+    if plan.bucket_database != database {
+        return Err(format!(
+            "pending JSON {} has bucket database {}, expected {} from path",
+            path.display(),
+            plan.bucket_database,
+            database
+        ));
+    }
+    if plan.bucket_app != app {
+        let expected_app = if app.is_empty() {
+            "_global_"
+        } else {
+            app.as_str()
+        };
+        let found_app = if plan.bucket_app.is_empty() {
+            "_global_"
+        } else {
+            plan.bucket_app.as_str()
+        };
+        return Err(format!(
+            "pending JSON {} has bucket app {}, expected {} from path",
+            path.display(),
+            found_app,
+            expected_app
+        ));
+    }
+    if plan.version == djogi::migrate::PHASE_ZERO_VERSION {
+        return Err(format!(
+            "pending JSON {} must use the hidden .phase_zero namespace for Phase 0",
+            path.display()
+        ));
+    }
+    Ok(DiscoveredPendingPlan {
+        path,
+        bucket: BucketKey {
+            database: database.to_string(),
+            app,
+        },
+        is_phase_zero: false,
+        plan,
+    })
+}
+
 /// Scan `target/djogi_pending/` for pending JSON files.
-/// Returns a list of `(path, database, app)` tuples sorted by file
-/// name so the apply order is deterministic. Each path points to a
-/// valid JSON file that was discovered on disk.
-fn discover_pending_plans(workspace: &Path) -> Vec<(PathBuf, String, String)> {
+/// Returns parsed pending plans sorted by version so Phase 0 runs
+/// before later normal-global work. Malformed or duplicate pending
+/// identities refuse rather than being guessed from filenames.
+fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>, String> {
     let pending_root = djogi::migrate::pending_root(workspace);
     let mut out = Vec::new();
+    let mut seen_identities = std::collections::BTreeSet::new();
 
     let Ok(db_entries) = std::fs::read_dir(&pending_root) else {
-        return out;
+        return Ok(out);
     };
 
     for db_entry in db_entries.flatten() {
@@ -1007,7 +1193,7 @@ fn discover_pending_plans(workspace: &Path) -> Vec<(PathBuf, String, String)> {
             Some(n) => n,
             None => continue,
         };
-        if db_name.starts_with('.') {
+        if !is_acceptable_pending_path_component(db_name.as_bytes()) {
             continue;
         }
 
@@ -1022,41 +1208,128 @@ fn discover_pending_plans(workspace: &Path) -> Vec<(PathBuf, String, String)> {
 
         for app_entry in app_entries.flatten() {
             let path = app_entry.path();
-            if !path.is_file() {
+            let file_type = match app_entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            if file_type.is_dir() {
+                if app_entry.file_name().to_str() == Some(".phase_zero") {
+                    let Ok(phase_zero_entries) = std::fs::read_dir(&path) else {
+                        continue;
+                    };
+                    for phase_zero_entry in phase_zero_entries.flatten() {
+                        let phase_zero_path = phase_zero_entry.path();
+                        if !phase_zero_path.is_file() {
+                            continue;
+                        }
+                        let discovered =
+                            validate_hidden_phase_zero_pending(phase_zero_path, &db_name)?;
+                        let identity = (
+                            discovered.bucket.database.clone(),
+                            discovered.bucket.app.clone(),
+                            discovered.plan.version.clone(),
+                        );
+                        if !seen_identities.insert(identity.clone()) {
+                            return Err(format!(
+                                "duplicate pending identity discovered for {}/{}/{}",
+                                identity.0,
+                                if identity.1.is_empty() {
+                                    "_global_"
+                                } else {
+                                    identity.1.as_str()
+                                },
+                                identity.2
+                            ));
+                        }
+                        out.push(discovered);
+                    }
+                }
+                continue;
+            }
+            if !file_type.is_file() {
                 continue;
             }
             let filename = match path.file_name().and_then(|f| f.to_str()) {
-                Some(f) => f,
+                Some(f) => f.to_string(),
                 None => continue,
             };
-            // Filter: must be a .json file, not the special _global_.json
-            // pattern which is handled correctly by the naming function.
             if !filename.ends_with(".json") {
                 continue;
             }
-            // Extract app label from filename by stripping .json extension.
-            // The pending JSON filename is `<app>.json` or `_global_.json`.
-            let app_label = if let Some(stripped) = filename.strip_suffix(".json") {
-                stripped.to_string()
-            } else {
-                continue;
-            };
-
-            out.push((path, db_name.clone(), app_label));
+            let discovered = validate_normal_pending(path, &db_name, &filename)?;
+            let identity = (
+                discovered.bucket.database.clone(),
+                discovered.bucket.app.clone(),
+                discovered.plan.version.clone(),
+            );
+            if !seen_identities.insert(identity.clone()) {
+                return Err(format!(
+                    "duplicate pending identity discovered for {}/{}/{}",
+                    identity.0,
+                    if identity.1.is_empty() {
+                        "_global_"
+                    } else {
+                        identity.1.as_str()
+                    },
+                    identity.2
+                ));
+            }
+            out.push(discovered);
         }
     }
 
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
+    out.sort_by(|a, b| {
+        a.plan
+            .version
+            .cmp(&b.plan.version)
+            .then_with(|| b.is_phase_zero.cmp(&a.is_phase_zero))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    Ok(out)
+}
+
+fn load_verified_pending_for_apply(
+    pending_file: &DiscoveredPendingPlan,
+) -> Result<PendingPlan, String> {
+    let pending_bytes =
+        std::fs::read(&pending_file.path).map_err(|e| format!("read pending JSON: {e}"))?;
+    let pending: PendingPlan =
+        serde_json::from_slice(&pending_bytes).map_err(|e| format!("parse pending JSON: {e}"))?;
+    if pending != pending_file.plan {
+        return Err(format!(
+            "pending JSON changed after discovery at {}; rerun the command",
+            pending_file.path.display()
+        ));
+    }
+    Ok(pending)
+}
+
+fn reconcile_pending_plans_after_lock(
+    workspace: &Path,
+    pre_lock_pending_files: &[DiscoveredPendingPlan],
+) -> Result<Vec<DiscoveredPendingPlan>, String> {
+    let locked_pending_files = discover_pending_plans(workspace)?;
+    if locked_pending_files != pre_lock_pending_files {
+        return Err(
+            "pending migration set changed while waiting for the workspace lock; rerun the command"
+                .to_string(),
+        );
+    }
+    Ok(locked_pending_files)
 }
 
 /// Apply a single pending migration.
-/// Loads the pending JSON to recover bucket and version, checks the
-/// ledger state machine for crash recovery, loads the committed replay
-/// plan (or falls back to a single-segment plan from the SQL file), and
-/// drives [`djogi::migrate::apply_plan`].
-/// Uses the bypass attribute because deleting failed ledger rows requires
-/// raw SQL that is not exposed through the public typed API.
+/// Re-loads the pending JSON after discovery and refuses if the bytes no
+/// longer match the path-verified artifact, then checks the ledger-state
+/// classification, loads the committed replay plan (or falls back to a
+/// single-segment plan from the SQL file), and drives
+/// [`djogi::migrate::apply_plan`]. `Pending` rows require operator resolution;
+/// caller-gated `Failed`/`RolledBack` rows are reapply-blocking cleanup
+/// candidates before runner invocation. Phase 0 cleanup refuses anything other
+/// than identity-free replay-current before delete.
+/// Uses the bypass attribute because deleting reapply-blocking
+/// Failed/RolledBack ledger rows requires raw SQL that is not exposed through
+/// the public typed API.
 // apply_one_pending carries 9 arguments because it sits at the bridge
 // between the CLI dispatch (workspace, path, bucket info) and the
 // library runner (config, guard, audit pool, mode). Folding these into a
@@ -1064,17 +1337,16 @@ fn discover_pending_plans(workspace: &Path) -> Vec<(PathBuf, String, String)> {
 // no clarity gain — the pattern matches compose_with_inputs and attune.
 #[allow(clippy::too_many_arguments)]
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (PIN): apply_one_pending needs to delete stale failed
-// ledger rows via `DELETE FROM djogi_schema_migrations WHERE version = $1`.
-// The public API has no delete operation — `select_all_ledger_rows` is read-only and
-// `insert_pending` is write-only. This is the minimal raw SQL surface
-// required for crash recovery.
+// JUSTIFICATION (PIN): apply_one_pending owns the shared cleanup path for
+// caller-gated Failed/RolledBack rows via
+// `DELETE FROM djogi_schema_migrations WHERE version = $1`. The public API has
+// no delete operation — `select_all_ledger_rows` is read-only and
+// `insert_pending` is write-only. This is the minimal raw SQL surface for
+// reapply-blocking ledger-row cleanup.
 async fn apply_one_pending(
     ctx: &mut djogi::context::DjogiContext,
     workspace: &Path,
-    pending_path: &Path,
-    bucket_database: String,
-    app_label: String,
+    pending_file: &DiscoveredPendingPlan,
     config: &djogi::config::DjogiConfig,
     guard: &djogi::migrate::WorkspaceGuard,
     audit_pool: Option<&deadpool_postgres::Pool>,
@@ -1082,30 +1354,12 @@ async fn apply_one_pending(
     runner_identity: Option<djogi::migrate::RunnerIdentity>,
 ) -> ApplyResult {
     // 1. Parse pending JSON to get bucket + version + checksums.
-    let pending_bytes = match std::fs::read(pending_path) {
-        Ok(b) => b,
-        Err(e) => {
-            return ApplyResult::Refused(format!("read pending JSON: {e}"));
-        }
-    };
-    let pending: PendingPlan = match serde_json::from_slice(&pending_bytes) {
-        Ok(p) => p,
-        Err(e) => {
-            return ApplyResult::Refused(format!("parse pending JSON: {e}"));
-        }
+    let pending = match load_verified_pending_for_apply(pending_file) {
+        Ok(pending) => pending,
+        Err(e) => return ApplyResult::Refused(e),
     };
 
-    // Resolve bucket key from pending plan fields. The `_global_` app
-    // maps to empty string (synthetic global bucket).
-    let resolved_app = if app_label == "_global_" {
-        String::new()
-    } else {
-        app_label.clone()
-    };
-    let bucket = djogi::migrate::BucketKey {
-        database: bucket_database,
-        app: resolved_app,
-    };
+    let bucket = pending_file.bucket.clone();
 
     // 2. Check ledger state machine for this version.
     match check_ledger_state(ctx, &pending.version).await {
@@ -1114,18 +1368,17 @@ async fn apply_one_pending(
             return ApplyResult::Skipped("already applied".to_string());
         }
         LedgerState::PendingOrPartial(existing_status) => {
-            // Pending or partial state from a previous interrupted run.
-            // Failed and RolledBack are non-terminal stale rows that block
-            // re-apply — delete them and proceed. Pending rows require
-            // explicit operator resolution.
+            // Pending rows require explicit operator resolution.
+            // Caller-gated Failed and RolledBack rows are reapply-blocking
+            // cleanup candidates before runner invocation.
             if existing_status == LedgerStatus::Failed
                 || existing_status == LedgerStatus::RolledBack
             {
                 // #386: Phase 0 cleanup must classify before deleting.
                 // Load the committed replay plan or fallback SQL first,
-                // refuse stale/ambiguous Phase 0 before removing the
-                // failed/rolled_back row. This applies to both real apply
-                // and fake apply paths.
+                // and refuse any non-identity-free Phase 0 artifact before
+                // removing the failed/rolled_back row. This applies to both
+                // real apply and fake apply paths.
                 if pending.version == djogi::migrate::PHASE_ZERO_VERSION {
                     let cleanup_refusal = classify_phase_zero_for_cleanup(
                         workspace,
@@ -1143,12 +1396,10 @@ async fn apply_one_pending(
                     }
                 }
 
-                // Both Failed and RolledBack rows are non-terminal stale rows
-                // that block re-apply. delete_failed_ledger_row is a status-
-                // agnostic DELETE by version; the name reflects the original
-                // crash-recovery use case but the operation applies equally to
-                // rolled-back rows.
-                if let Err(e) = delete_failed_ledger_row(ctx, &pending.version).await {
+                // Failed and RolledBack rows both block re-apply, but callers
+                // gate which statuses may be cleaned before reaching this
+                // status-agnostic DELETE helper.
+                if let Err(e) = delete_reapply_blocking_ledger_row(ctx, &pending.version).await {
                     return ApplyResult::Refused(format!(
                         "clean {} ledger row: {e}",
                         existing_status.as_db_str()
@@ -1251,11 +1502,12 @@ fn runner_error_exit_code(_error: &RunnerError) -> i32 {
 }
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION (PIN): delete_failed_ledger_row removes a stale Failed
-// row so the migration can be retried. The public API has no delete
-// operation for ledger rows — only select_all_ledger_rows and insert_pending
-// are exposed. This DELETE is the minimal raw SQL required for crash recovery.
-async fn delete_failed_ledger_row(
+// JUSTIFICATION (PIN): delete_reapply_blocking_ledger_row removes a caller-
+// gated Failed or RolledBack row so the migration can be retried. The public
+// API has no delete operation for ledger rows — only select_all_ledger_rows
+// and insert_pending are exposed. This DELETE is the minimal raw SQL for
+// reapply-blocking ledger-row cleanup.
+async fn delete_reapply_blocking_ledger_row(
     ctx: &mut djogi::context::DjogiContext,
     version: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -2406,7 +2658,7 @@ async fn run_repair_resume_partial(
     ) {
         Ok(resolved) => Some(resolved.into_runner_identity()),
         Err(e) => {
-            eprintln!("djogi migrations repair resume-partial: refused — {e}");
+            let _ = crate::identity::print_identity_error("repair resume-partial", &e);
             return 2;
         }
     };
@@ -2469,6 +2721,7 @@ async fn run_repair_resume_partial(
     match repair_resume_partial_apply(
         &mut ctx,
         &guard,
+        workspace,
         version,
         &plan,
         runner_identity,
@@ -2669,6 +2922,10 @@ async fn run_repair_snapshot_rebuild(
 /// failure), `2` refusal (empty `--reason`, unresolvable database URL,
 /// duplicate version collision, snapshot-persist failure after ledger
 /// insert, session-pinning correctness failure, or below PG 18).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CLI command entry point mirrors clap arguments explicitly"
+)]
 pub fn baseline_cmd(
     version: &str,
     description: &str,
@@ -2730,6 +2987,10 @@ pub fn baseline_cmd(
 /// `RunnerCtx` is constructed with `snapshot: None` (requires the
 /// caller NOT supply a snapshot) and an empty `checksum_up` (the
 /// baseline path never reads it).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "baseline async body keeps CLI arguments explicit through validation and connection setup"
+)]
 async fn run_baseline(
     workspace: &Path,
     version: &str,
@@ -2759,7 +3020,7 @@ async fn run_baseline(
     ) {
         Ok(resolved) => Some(resolved.into_runner_identity()),
         Err(e) => {
-            eprintln!("djogi migrations baseline: refused — {e}");
+            let _ = crate::identity::print_identity_error("baseline", &e);
             return 2;
         }
     };
@@ -2909,6 +3170,37 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    struct DatabaseUrlEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prior: Option<String>,
+    }
+
+    impl DatabaseUrlEnvGuard {
+        fn new() -> Self {
+            Self {
+                _lock: crate::test_env_lock(),
+                prior: std::env::var("DATABASE_URL").ok(),
+            }
+        }
+
+        fn set(&self, value: &str) {
+            unsafe { std::env::set_var("DATABASE_URL", value) };
+        }
+
+        fn remove(&self) {
+            unsafe { std::env::remove_var("DATABASE_URL") };
+        }
+    }
+
+    impl Drop for DatabaseUrlEnvGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(value) => unsafe { std::env::set_var("DATABASE_URL", value) },
+                None => unsafe { std::env::remove_var("DATABASE_URL") },
+            }
+        }
+    }
+
     fn temp_workspace(tag: &str) -> std::path::PathBuf {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -2919,6 +3211,139 @@ mod tests {
         let p = std::env::temp_dir().join(format!("djogi-cli-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    fn write_unreachable_config(work: &std::path::Path) {
+        let toml = "[database]\nurl = \"postgres://localhost:1/djogi_unreachable\"\n\
+                    max_connections = 1\ndev_mode = false\n\
+                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+        fs::write(work.join("Djogi.toml"), toml).unwrap();
+    }
+
+    fn without_database_url<T>(f: impl FnOnce() -> T) -> T {
+        let env_guard = DatabaseUrlEnvGuard::new();
+        env_guard.remove();
+        f()
+    }
+
+    #[test]
+    fn database_url_env_guard_restores_prior_value() {
+        let env_guard = DatabaseUrlEnvGuard::new();
+        let expected = env_guard.prior.clone();
+        let next = if expected.as_deref() == Some("postgres://from-env/test") {
+            "postgres://temporary/test"
+        } else {
+            "postgres://from-env/test"
+        };
+        env_guard.set(next);
+        drop(env_guard);
+        assert_eq!(std::env::var("DATABASE_URL").ok(), expected);
+    }
+
+    fn current_production_phase_zero_sql(tag: &str) -> String {
+        let work = temp_workspace(tag);
+        let lock_path = work.join(LOCK_FILE_NAME);
+        let guard = acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT).expect("lock");
+        let models: std::collections::BTreeMap<
+            djogi::migrate::BucketKey,
+            djogi::migrate::AppliedSchema,
+        > = std::collections::BTreeMap::new();
+        let apps = vec![AppLifecycle {
+            label: "billing".to_string(),
+            database: "main".to_string(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+        let emitted = djogi::migrate::ensure_phase_zero_emitted(
+            &work,
+            &models,
+            &apps,
+            time::OffsetDateTime::now_utc(),
+            &guard,
+        )
+        .expect("auto-emit Phase 0");
+        let sql = fs::read_to_string(&emitted[0].up_sql_path).expect("read emitted Phase 0");
+        drop(guard);
+        let _ = fs::remove_dir_all(&work);
+        sql
+    }
+
+    fn markerless_seed_phase_zero_sql(tag: &str) -> String {
+        let mut sql = current_production_phase_zero_sql(tag);
+        sql.push_str("\nINSERT INTO heer.heer_nodes (id) VALUES (1);\n");
+        sql
+    }
+
+    fn phase_zero_with_seed_statement(tag: &str, statement: &str) -> String {
+        let mut sql = current_production_phase_zero_sql(tag);
+        sql.push('\n');
+        sql.push_str(statement);
+        sql.push('\n');
+        sql
+    }
+
+    fn extended_seed_statement_cases() -> [(&'static str, &'static str); 4] {
+        [
+            (
+                "cte_insert",
+                "WITH rows AS (SELECT 1) INSERT INTO heer.heer_nodes (id) VALUES (1);",
+            ),
+            (
+                "cte_delete",
+                "WITH moved AS (DELETE FROM heer.heer_node_state RETURNING *) SELECT 1;",
+            ),
+            (
+                "merge",
+                "MERGE INTO heer.heer_nodes AS target USING incoming ON false WHEN NOT MATCHED THEN INSERT (id) VALUES (1);",
+            ),
+            (
+                "copy_from",
+                "COPY \"heer\".\"heer_ranj_node_state\" (\"node_id\") FROM STDIN;",
+            ),
+        ]
+    }
+
+    fn generated_stale_phase_zero_sql(tag: &str) -> String {
+        let mut sql = current_production_phase_zero_sql(tag);
+        sql.push_str(
+            "\nALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
+             ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';\n\
+             SET heer.node_id = '1';\n\
+             SET heer.ranj_node_id = '1';\n",
+        );
+        sql
+    }
+
+    fn seed_capable_phase_zero_sql() -> String {
+        djogi::testing::phase_zero_sql_for_testing("main", true)
+            .expect("compose seed-capable Phase 0")
+    }
+
+    fn write_pending_json(path: &Path, database: &str, app: &str, version: &str) {
+        let pending = PendingPlan {
+            format_version: "1".to_string(),
+            bucket_database: database.to_string(),
+            bucket_app: app.to_string(),
+            version: version.to_string(),
+            slug: "test".to_string(),
+            model_snapshot: djogi::migrate::AppliedSchema {
+                djogi_version: "0.1.0".to_string(),
+                enums: std::collections::BTreeMap::new(),
+                format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                generated_at: "2026-06-06T00:00:00Z".to_string(),
+                indexes: Vec::new(),
+                models: std::collections::BTreeMap::new(),
+                registered_apps: vec![app.to_string()],
+            },
+            checksum_up: "V1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            checksum_down: None,
+            composed_at: "2026-06-06T00:00:00Z".to_string(),
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, serde_json::to_vec_pretty(&pending).unwrap()).unwrap();
     }
 
     /// The CLI's bucket-discovery walk must include directories that exist
@@ -2974,22 +3399,14 @@ mod tests {
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
-        // Save and clear DATABASE_URL so the env override doesn't
-        // mask the file value during this test.
-        let prior = std::env::var("DATABASE_URL").ok();
-        // SAFETY: tests run with --test-threads=1 per the project's
-        // pre-commit policy, so concurrent env mutation is not a
-        // concern in this configuration.
-        unsafe { std::env::remove_var("DATABASE_URL") };
+        let env_guard = DatabaseUrlEnvGuard::new();
+        env_guard.remove();
         let config = djogi::config::DjogiConfig::load_from_workspace(&work).expect("load");
         assert_eq!(
             config.database.url,
             "postgres://discovered-by-workspace-flag/test"
         );
         assert_eq!(config.server.port, 1234);
-        if let Some(v) = prior {
-            unsafe { std::env::set_var("DATABASE_URL", v) };
-        }
         let _ = fs::remove_dir_all(&work);
     }
 
@@ -3004,18 +3421,311 @@ mod tests {
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
-        let prior = std::env::var("DATABASE_URL").ok();
-        // SAFETY: --test-threads=1; no concurrent env mutation.
-        unsafe { std::env::set_var("DATABASE_URL", "postgres://from-env/test") };
+        let env_guard = DatabaseUrlEnvGuard::new();
+        env_guard.set("postgres://from-env/test");
         let config = djogi::config::DjogiConfig::load_from_workspace(&work).expect("load");
         assert_eq!(
             config.database.url, "postgres://from-env/test",
             "env DATABASE_URL must win over workspace Djogi.toml"
         );
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
-            None => unsafe { std::env::remove_var("DATABASE_URL") },
-        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn apply_no_pending_is_identity_free_and_skips_pool_connect() {
+        let work = temp_workspace("apply_no_pending");
+        write_unreachable_config(&work);
+
+        let exit = without_database_url(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(run_apply(&work, &FakeMode::Real, None, false))
+        });
+
+        assert_eq!(
+            exit, 0,
+            "no-pending apply must return before identity resolution or pool checkout"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn discover_pending_plans_orders_phase_zero_before_normal_global() {
+        let work = temp_workspace("discover_pending_phase_zero_first");
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: String::new(),
+                },
+            ),
+            "main",
+            "",
+            "V20260606010101__later_global",
+        );
+        write_pending_json(
+            &djogi::migrate::phase_zero_pending_json_path(
+                &work,
+                "main",
+                djogi::migrate::PHASE_ZERO_VERSION,
+            ),
+            "main",
+            "",
+            djogi::migrate::PHASE_ZERO_VERSION,
+        );
+
+        let discovered = discover_pending_plans(&work).expect("discover");
+        assert_eq!(discovered.len(), 2);
+        assert_eq!(
+            discovered[0].plan.version,
+            djogi::migrate::PHASE_ZERO_VERSION
+        );
+        assert!(discovered[0].is_phase_zero);
+        assert_eq!(discovered[1].plan.version, "V20260606010101__later_global");
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn discover_pending_plans_refuses_malformed_pending_json() {
+        let work = temp_workspace("discover_pending_malformed");
+        let path = djogi::migrate::pending_json_path(
+            &work,
+            &BucketKey {
+                database: "main".to_string(),
+                app: String::new(),
+            },
+        );
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"{ not json").unwrap();
+
+        let err = discover_pending_plans(&work).expect_err("malformed pending must refuse");
+        assert!(err.contains("parse pending JSON"));
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn discover_pending_plans_refuses_hidden_phase_zero_database_mismatch() {
+        let work = temp_workspace("discover_pending_phase_zero_db_mismatch");
+        write_pending_json(
+            &djogi::migrate::phase_zero_pending_json_path(
+                &work,
+                "main",
+                djogi::migrate::PHASE_ZERO_VERSION,
+            ),
+            "other_db",
+            "",
+            djogi::migrate::PHASE_ZERO_VERSION,
+        );
+
+        let err = discover_pending_plans(&work).expect_err("hidden Phase 0 mismatch must refuse");
+        assert!(
+            err.contains("expected main from path"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn discover_pending_plans_refuses_normal_global_phase_zero_pending() {
+        let work = temp_workspace("discover_pending_normal_global_phase_zero");
+        let path = djogi::migrate::pending_json_path(
+            &work,
+            &BucketKey {
+                database: "main".to_string(),
+                app: String::new(),
+            },
+        );
+        write_pending_json(&path, "main", "", djogi::migrate::PHASE_ZERO_VERSION);
+
+        let err = discover_pending_plans(&work).expect_err("normal-global Phase 0 must refuse");
+        assert!(
+            err.contains("Phase 0") && err.contains(".phase_zero"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn discover_pending_plans_refuses_normal_pending_app_mismatch() {
+        let work = temp_workspace("discover_pending_normal_app_mismatch");
+        let path = djogi::migrate::pending_json_path(
+            &work,
+            &BucketKey {
+                database: "main".to_string(),
+                app: "billing".to_string(),
+            },
+        );
+        write_pending_json(&path, "main", "audit", "V20260606010101__mismatch");
+
+        let err = discover_pending_plans(&work).expect_err("normal app mismatch must refuse");
+        assert!(
+            err.contains("expected billing from path"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn discover_pending_plans_refuses_noncanonical_normal_pending_filename() {
+        let work = temp_workspace("discover_pending_noncanonical_filename");
+        let path = work.join("target/djogi_pending/main/bad-name.json");
+        write_pending_json(&path, "main", "bad-name", "V20260606010101__bad_name");
+
+        let err = discover_pending_plans(&work).expect_err("non-canonical filename must refuse");
+        assert!(
+            err.contains("non-canonical app filename"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn load_verified_pending_for_apply_refuses_changed_artifact() {
+        let work = temp_workspace("apply_pending_changed_after_discovery");
+        let path = djogi::migrate::pending_json_path(
+            &work,
+            &BucketKey {
+                database: "main".to_string(),
+                app: String::new(),
+            },
+        );
+        write_pending_json(&path, "main", "", "V20260606010101__stable");
+        let discovered = discover_pending_plans(&work).expect("discover");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&PendingPlan {
+                version: "V20260606010102__changed".to_string(),
+                ..discovered[0].plan.clone()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let err = load_verified_pending_for_apply(&discovered[0])
+            .expect_err("apply must refuse a changed pending artifact");
+        assert!(
+            err.contains("changed after discovery"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn reconcile_pending_plans_after_lock_refuses_added_artifact() {
+        let work = temp_workspace("apply_pending_added_before_lock");
+        let path = djogi::migrate::pending_json_path(
+            &work,
+            &BucketKey {
+                database: "main".to_string(),
+                app: String::new(),
+            },
+        );
+        write_pending_json(&path, "main", "", "V20260606010101__stable");
+        let discovered = discover_pending_plans(&work).expect("discover");
+        write_pending_json(
+            &djogi::migrate::phase_zero_pending_json_path(
+                &work,
+                "main",
+                djogi::migrate::PHASE_ZERO_VERSION,
+            ),
+            "main",
+            "",
+            djogi::migrate::PHASE_ZERO_VERSION,
+        );
+
+        let err = reconcile_pending_plans_after_lock(&work, &discovered)
+            .expect_err("locked reconciliation must refuse a changed pending set");
+        assert!(
+            err.contains("changed while waiting for the workspace lock"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn reconcile_pending_plans_after_lock_accepts_unchanged_set() {
+        let work = temp_workspace("apply_pending_stable_under_lock");
+        let path = djogi::migrate::pending_json_path(
+            &work,
+            &BucketKey {
+                database: "main".to_string(),
+                app: String::new(),
+            },
+        );
+        write_pending_json(&path, "main", "", "V20260606010101__stable");
+        let discovered = discover_pending_plans(&work).expect("discover");
+
+        let locked = reconcile_pending_plans_after_lock(&work, &discovered)
+            .expect("unchanged set must reconcile");
+        assert_eq!(locked, discovered);
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn repair_checksum_drift_is_identity_free() {
+        let work = temp_workspace("repair_checksum_identity_free");
+        write_unreachable_config(&work);
+
+        let exit = without_database_url(|| {
+            repair_checksum_drift_cmd(
+                "V20260601000000__repair_checksum",
+                None,
+                None,
+                Some("V1:0000000000000000000000000000000000000000000000000000000000000000"),
+                None,
+                Some(work.clone()),
+            )
+        });
+
+        assert_eq!(
+            exit,
+            ExitCode::from(1),
+            "checksum-drift should reach pool connection without shared identity validation"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn repair_partial_apply_is_identity_free() {
+        let work = temp_workspace("repair_partial_identity_free");
+        write_unreachable_config(&work);
+
+        let exit = without_database_url(|| {
+            repair_partial_apply_cmd(
+                "V20260601000000__repair_partial",
+                PartialApplyResolution::MarkRolledBack,
+                "operator confirmed rollback",
+                None,
+                None,
+                Some(work.clone()),
+            )
+        });
+
+        assert_eq!(
+            exit,
+            ExitCode::from(1),
+            "partial-apply should reach pool connection without shared identity validation"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn repair_snapshot_rebuild_is_identity_free() {
+        let work = temp_workspace("repair_snapshot_identity_free");
+        write_unreachable_config(&work);
+
+        let exit = without_database_url(|| {
+            repair_snapshot_rebuild_cmd(None, None, None, Some(work.clone()))
+        });
+
+        assert_eq!(
+            exit,
+            ExitCode::from(1),
+            "snapshot-rebuild should reach pool connection without shared identity validation"
+        );
         let _ = fs::remove_dir_all(&work);
     }
 
@@ -3788,42 +4498,59 @@ mod tests {
         );
     }
 
-    // ── Stage 4D: CLI cleanup stale Phase 0 guard ──────────────────────
+    // ── Stage 4D: CLI cleanup identity-free Phase 0 guard ─────────────
 
     #[test]
-    fn classify_phase_zero_bytes_current_production_is_ok() {
-        // Production Phase 0: banner + base schema, no node seed.
-        let sql = "-- ╭───────────────────────────────────────────────────────────────╮\n\
-                   -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
-                   -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
-                   -- ╰───────────────────────────────────────────────────────────────╯\n\n\
-                   -- HeeRanjID base schema + functions (idempotent).\n\
-                   CREATE SCHEMA IF NOT EXISTS heer;\n";
+    fn classify_phase_zero_bytes_identity_free_production_is_ok() {
+        let sql = current_production_phase_zero_sql("current_bytes");
         assert!(
             classify_phase_zero_bytes(sql.as_bytes()).is_none(),
-            "production Phase 0 should be classified as Current (no refusal)"
+            "production Phase 0 should be identity-free replay-current (no refusal)"
         );
     }
 
     #[test]
+    fn classify_phase_zero_bytes_seed_capable_is_refused() {
+        let sql = seed_capable_phase_zero_sql();
+        let refusal = classify_phase_zero_bytes(sql.as_bytes());
+        assert!(
+            refusal.is_some(),
+            "seed-capable Phase 0 should be refused by cleanup guard"
+        );
+        assert!(refusal.unwrap().contains("seed-capable"));
+    }
+
+    #[test]
     fn classify_phase_zero_bytes_generated_stale_is_refused() {
-        // Generated-stale Phase 0: literal database defaults.
-        let sql = "-- ╭───────────────────────────────────────────────────────────────╮\n\
-                   -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
-                   -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
-                   -- ╰───────────────────────────────────────────────────────────────╯\n\n\
-                   -- HeeRanjID base schema + functions (idempotent).\n\
-                   CREATE SCHEMA IF NOT EXISTS heer;\n\
-                   ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
-                   ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';\n\
-                   SET heer.node_id = '1';\n\
-                   SET heer.ranj_node_id = '1';\n";
+        let sql = generated_stale_phase_zero_sql("stale_bytes");
         let refusal = classify_phase_zero_bytes(sql.as_bytes());
         assert!(
             refusal.is_some(),
             "generated-stale Phase 0 should be refused"
         );
         assert!(refusal.unwrap().contains("generated-stale"));
+    }
+
+    #[test]
+    fn classify_phase_zero_bytes_markerless_seed_is_refused() {
+        let sql = markerless_seed_phase_zero_sql("markerless_seed_bytes");
+        let refusal = classify_phase_zero_bytes(sql.as_bytes());
+        assert!(
+            refusal.is_some(),
+            "markerless seed Phase 0 should be refused by cleanup guard"
+        );
+        assert!(refusal.unwrap().contains("seed-dml"));
+    }
+
+    #[test]
+    fn classify_phase_zero_bytes_extended_seed_dml_forms_are_refused() {
+        for (name, statement) in extended_seed_statement_cases() {
+            let sql =
+                phase_zero_with_seed_statement(&format!("extended_seed_bytes_{name}"), statement);
+            let refusal = classify_phase_zero_bytes(sql.as_bytes());
+            let msg = refusal.expect("extended seed Phase 0 should be refused");
+            assert!(msg.contains("seed-dml"), "refusal reason: {msg}");
+        }
     }
 
     #[test]
@@ -3855,22 +4582,11 @@ mod tests {
             classification: CliClassification::Additive,
             checksum_up: "V1:aabbccdd".to_string(),
             checksum_down: None,
-            segments: vec![CliSegment {
+            segments: vec![CliReplaySegment {
                 kind: CliSegmentKind::Transactional,
-                statements: vec![CliOperationSql {
+                statements: vec![CliReplayStatement {
                     label: "phase_zero_bootstrap".to_string(),
-                    up: "-- ╭───────────────────────────────────────────────────────────────╮\n\
-                        -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
-                        -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
-                        -- ╰───────────────────────────────────────────────────────────────╯\n\n\
-                        -- HeeRanjID base schema + functions (idempotent).\n\
-                        CREATE SCHEMA IF NOT EXISTS heer;\n\
-                        ALTER DATABASE \"stale_db\" SET heer.node_id = '1';\n\
-                        ALTER DATABASE \"stale_db\" SET heer.ranj_node_id = '1';\n\
-                        SET heer.node_id = '1';\n\
-                        SET heer.ranj_node_id = '1';\n"
-                        .to_string(),
-                    down: String::new(),
+                    up: generated_stale_phase_zero_sql("stale_replay"),
                 }],
             }],
         };
@@ -3913,18 +4629,11 @@ mod tests {
             classification: CliClassification::Additive,
             checksum_up: "V1:eeff0011".to_string(),
             checksum_down: None,
-            segments: vec![CliSegment {
+            segments: vec![CliReplaySegment {
                 kind: CliSegmentKind::Transactional,
-                statements: vec![CliOperationSql {
+                statements: vec![CliReplayStatement {
                     label: "phase_zero_bootstrap".to_string(),
-                    up: "-- ╭───────────────────────────────────────────────────────────────╮\n\
-                        -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
-                        -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
-                        -- ╰───────────────────────────────────────────────────────────────╯\n\n\
-                        -- HeeRanjID base schema + functions (idempotent).\n\
-                        CREATE SCHEMA IF NOT EXISTS heer;\n"
-                        .to_string(),
-                    down: String::new(),
+                    up: current_production_phase_zero_sql("current_replay"),
                 }],
             }],
         };
@@ -3947,8 +4656,137 @@ mod tests {
         );
         assert!(
             refusal.is_none(),
-            "current Phase 0 should be allowed by cleanup guard; got: {refusal:?}"
+            "identity-free Phase 0 should be allowed by cleanup guard; got: {refusal:?}"
         );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn classify_phase_zero_for_cleanup_refuses_seed_capable_replay_plan() {
+        let work = temp_workspace("seed_cleanup_replay_plan");
+        let bucket_dir = work.join("migrations/main/_global_");
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        let replay = CliReplayPlan {
+            format_version: CLI_REPLAY_PLAN_FORMAT_VERSION.to_string(),
+            classification: CliClassification::Additive,
+            checksum_up: "V1:11223344".to_string(),
+            checksum_down: None,
+            segments: vec![CliReplaySegment {
+                kind: CliSegmentKind::Transactional,
+                statements: vec![CliReplayStatement {
+                    label: "phase_zero_bootstrap".to_string(),
+                    up: seed_capable_phase_zero_sql(),
+                }],
+            }],
+        };
+        fs::write(
+            bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
+            serde_json::to_string(&replay).unwrap(),
+        )
+        .unwrap();
+
+        let bucket = djogi::migrate::BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let refusal = classify_phase_zero_for_cleanup(
+            &work,
+            &bucket,
+            djogi::migrate::PHASE_ZERO_VERSION,
+            "V1:11223344",
+            None,
+        );
+        let msg = refusal.expect("seed-capable replay plan must refuse");
+        assert!(msg.contains("seed-capable"), "refusal reason: {msg}");
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn classify_phase_zero_for_cleanup_refuses_markerless_seed_replay_plan() {
+        let work = temp_workspace("markerless_seed_cleanup_replay_plan");
+        let bucket_dir = work.join("migrations/main/_global_");
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        let replay = CliReplayPlan {
+            format_version: CLI_REPLAY_PLAN_FORMAT_VERSION.to_string(),
+            classification: CliClassification::Additive,
+            checksum_up: "V1:55667788".to_string(),
+            checksum_down: None,
+            segments: vec![CliReplaySegment {
+                kind: CliSegmentKind::Transactional,
+                statements: vec![CliReplayStatement {
+                    label: "phase_zero_bootstrap".to_string(),
+                    up: markerless_seed_phase_zero_sql("markerless_seed_replay"),
+                }],
+            }],
+        };
+        fs::write(
+            bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
+            serde_json::to_string(&replay).unwrap(),
+        )
+        .unwrap();
+
+        let bucket = djogi::migrate::BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let refusal = classify_phase_zero_for_cleanup(
+            &work,
+            &bucket,
+            djogi::migrate::PHASE_ZERO_VERSION,
+            "V1:55667788",
+            None,
+        );
+        let msg = refusal.expect("markerless seed replay plan must refuse");
+        assert!(msg.contains("seed-dml"), "refusal reason: {msg}");
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn classify_phase_zero_for_cleanup_refuses_cte_seed_dml_replay_plan() {
+        let work = temp_workspace("cte_seed_cleanup_replay_plan");
+        let bucket_dir = work.join("migrations/main/_global_");
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        let replay = CliReplayPlan {
+            format_version: CLI_REPLAY_PLAN_FORMAT_VERSION.to_string(),
+            classification: CliClassification::Additive,
+            checksum_up: "V1:66778899".to_string(),
+            checksum_down: None,
+            segments: vec![CliReplaySegment {
+                kind: CliSegmentKind::Transactional,
+                statements: vec![CliReplayStatement {
+                    label: "phase_zero_bootstrap".to_string(),
+                    up: phase_zero_with_seed_statement(
+                        "cte_seed_cleanup_replay",
+                        "WITH rows AS (SELECT 1) INSERT INTO heer.heer_nodes (id) VALUES (1);",
+                    ),
+                }],
+            }],
+        };
+        fs::write(
+            bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
+            serde_json::to_string(&replay).unwrap(),
+        )
+        .unwrap();
+
+        let bucket = djogi::migrate::BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let refusal = classify_phase_zero_for_cleanup(
+            &work,
+            &bucket,
+            djogi::migrate::PHASE_ZERO_VERSION,
+            "V1:66778899",
+            None,
+        );
+        let msg = refusal.expect("CTE seed replay plan must refuse");
+        assert!(msg.contains("seed-dml"), "refusal reason: {msg}");
 
         let _ = fs::remove_dir_all(&work);
     }
@@ -3959,13 +4797,7 @@ mod tests {
         let bucket_dir = work.join("migrations/main/_global_");
         fs::create_dir_all(&bucket_dir).unwrap();
 
-        // Write a current up SQL file (no replay plan JSON).
-        let up_sql = "-- ╭───────────────────────────────────────────────────────────────╮\n\
-                      -- │ Djogi Phase 0 bootstrap — HeeRanjID + extensions + node seed │\n\
-                      -- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n\
-                      -- ╰───────────────────────────────────────────────────────────────╯\n\n\
-                      -- HeeRanjID base schema + functions (idempotent).\n\
-                      CREATE SCHEMA IF NOT EXISTS heer;\n";
+        let up_sql = current_production_phase_zero_sql("fallback_sql");
         let up_filename = djogi::migrate::up_filename(djogi::migrate::PHASE_ZERO_VERSION);
         fs::write(bucket_dir.join(&up_filename), up_sql).unwrap();
 
@@ -3982,8 +4814,97 @@ mod tests {
         );
         assert!(
             refusal.is_none(),
-            "current Phase 0 fallback SQL should be allowed; got: {refusal:?}"
+            "identity-free Phase 0 fallback SQL should be allowed; got: {refusal:?}"
         );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn classify_phase_zero_for_cleanup_refuses_seed_capable_fallback_sql_file() {
+        let work = temp_workspace("seed_cleanup_fallback");
+        let bucket_dir = work.join("migrations/main/_global_");
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        let up_filename = djogi::migrate::up_filename(djogi::migrate::PHASE_ZERO_VERSION);
+        fs::write(bucket_dir.join(&up_filename), seed_capable_phase_zero_sql()).unwrap();
+
+        let bucket = djogi::migrate::BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let refusal = classify_phase_zero_for_cleanup(
+            &work,
+            &bucket,
+            djogi::migrate::PHASE_ZERO_VERSION,
+            "V1:anychecksum",
+            None,
+        );
+        let msg = refusal.expect("seed-capable fallback SQL must refuse");
+        assert!(msg.contains("seed-capable"), "refusal reason: {msg}");
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn classify_phase_zero_for_cleanup_refuses_markerless_seed_fallback_sql_file() {
+        let work = temp_workspace("markerless_seed_cleanup_fallback");
+        let bucket_dir = work.join("migrations/main/_global_");
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        let up_filename = djogi::migrate::up_filename(djogi::migrate::PHASE_ZERO_VERSION);
+        fs::write(
+            bucket_dir.join(&up_filename),
+            markerless_seed_phase_zero_sql("markerless_seed_fallback"),
+        )
+        .unwrap();
+
+        let bucket = djogi::migrate::BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let refusal = classify_phase_zero_for_cleanup(
+            &work,
+            &bucket,
+            djogi::migrate::PHASE_ZERO_VERSION,
+            "V1:anychecksum",
+            None,
+        );
+        let msg = refusal.expect("markerless seed fallback SQL must refuse");
+        assert!(msg.contains("seed-dml"), "refusal reason: {msg}");
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn classify_phase_zero_for_cleanup_refuses_copy_from_seed_fallback_sql_file() {
+        let work = temp_workspace("copy_seed_cleanup_fallback");
+        let bucket_dir = work.join("migrations/main/_global_");
+        fs::create_dir_all(&bucket_dir).unwrap();
+
+        let up_filename = djogi::migrate::up_filename(djogi::migrate::PHASE_ZERO_VERSION);
+        fs::write(
+            bucket_dir.join(&up_filename),
+            phase_zero_with_seed_statement(
+                "copy_seed_cleanup_fallback",
+                "COPY \"heer\".\"heer_ranj_node_state\" (\"node_id\") FROM STDIN;",
+            ),
+        )
+        .unwrap();
+
+        let bucket = djogi::migrate::BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let refusal = classify_phase_zero_for_cleanup(
+            &work,
+            &bucket,
+            djogi::migrate::PHASE_ZERO_VERSION,
+            "V1:anychecksum",
+            None,
+        );
+        let msg = refusal.expect("COPY FROM seed fallback SQL must refuse");
+        assert!(msg.contains("seed-dml"), "refusal reason: {msg}");
 
         let _ = fs::remove_dir_all(&work);
     }

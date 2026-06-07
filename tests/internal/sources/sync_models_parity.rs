@@ -39,7 +39,8 @@ use std::time::Duration;
 
 use djogi::descriptor::ModelDescriptor;
 use djogi::migrate::{
-    RunnerCtx, WorkspaceGuard, acquire_workspace_lock, apply_plan, compute_checksum,
+    RunnerCtx, RunnerIdentity, WorkspaceGuard, acquire_workspace_lock, apply_plan,
+    compute_checksum,
 };
 use djogi::prelude::*;
 use djogi::relation::ForeignKey;
@@ -297,7 +298,7 @@ async fn sync_models_and_apply_plan_produce_identical_pg_class() {
                 &djogi::config::DjogiConfig::default(),
             ),
             audit_pool: None,
-            runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
+            runner_identity: Some(RunnerIdentity::SingleNodeDev),
         };
         apply_plan(&mut ctx_b, plan, &runner_ctx, &guard)
             .await

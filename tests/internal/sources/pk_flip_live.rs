@@ -38,7 +38,7 @@ use djogi::migrate::{
     AppliedSchema, BucketKey, Classification, ColumnSchema, ForeignKeySchema, LossyRollbackPolicy,
     MigrationPlan, OnDeleteSchema, OperationSql, PkFlipChild, PkFlipDirection, PkFlipFamily,
     PkTypeFlipGroup, PrimaryKeySchema, RepairConfirmation, RelationKindSchema,
-    RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, TableSchema,
+    RunnerCtx, RunnerError, RunnerIdentity, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, TableSchema,
     WorkspaceGuard, acquire_workspace_lock, apply_plan, bootstrap_ledger, compute_checksum,
     diff_bucket_maps, lower_pk_flip_group as lower_pk_flip_group_checked, plan_delta,
     repair_resume_partial_apply, rollback_plan,
@@ -89,7 +89,7 @@ fn make_runner_ctx(plan: &MigrationPlan, version: &str) -> RunnerCtx {
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
-        runner_identity: None, // test fixture — identity not needed for Phase 0 carve-out path
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     }
 }
 
@@ -1840,9 +1840,10 @@ async fn flip_partial_apply_resume_via_repair(mut ctx: djogi::DjogiContext) {
     let resume_result = djogi::migrate::repair_resume_partial_apply(
         &mut ctx,
         &_guard,
+        std::path::Path::new("/tmp"),
         &runner_ctx.version,
         &plan,
-        None, // runner_identity — not testing identity boundary here
+        Some(djogi::migrate::RunnerIdentity::SingleNodeDev), // runner_identity — not testing identity boundary here
         djogi::migrate::RepairConfirmation::OperatorAcknowledged,
     )
     .await;
@@ -3690,9 +3691,10 @@ async fn flip_partitioned_parent_partial_apply_resume_uses_expanded_leaf_steps(
     let report = repair_resume_partial_apply(
         &mut ctx,
         &_guard,
+        std::path::Path::new("/tmp"),
         &runner_ctx.version,
         &plan,
-        None, // runner_identity — not testing identity boundary here
+        Some(djogi::migrate::RunnerIdentity::SingleNodeDev), // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -4005,9 +4007,10 @@ async fn repair_refuses_on_leaf_topology_drift(mut ctx: djogi::DjogiContext) {
     let err = repair_resume_partial_apply(
         &mut ctx,
         &_guard,
+        std::path::Path::new("/tmp"),
         &runner_ctx.version,
         &plan,
-        None, // runner_identity — not testing identity boundary here
+        Some(djogi::migrate::RunnerIdentity::SingleNodeDev), // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -4149,9 +4152,10 @@ async fn repair_refuses_on_zero_leaf_drift(mut ctx: djogi::DjogiContext) {
     let err = repair_resume_partial_apply(
         &mut ctx,
         &_guard,
+        std::path::Path::new("/tmp"),
         &runner_ctx.version,
         &plan,
-        None, // runner_identity — not testing identity boundary here
+        Some(djogi::migrate::RunnerIdentity::SingleNodeDev), // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await

@@ -308,6 +308,11 @@ pub enum ComposeError {
         /// edited.
         text: String,
     },
+    /// The destination pending JSON path already exists but its
+    /// contents do not represent a compatible pending authority for the
+    /// bucket being composed. We refuse rather than silently overwrite
+    /// malformed, foreign, or legacy-Phase-0 content.
+    PendingJsonWouldBeOverwritten { path: PathBuf, text: String },
     /// `rename_old_bucket_folder` would have to merge the OLD app's
     /// directory into a NEW directory that already contains conflicting
     /// entries. The old shape attempted a non-atomic merge loop; we now
@@ -363,6 +368,7 @@ impl std::fmt::Display for ComposeError {
             Self::Io { path, source } => write!(f, "I/O at {}: {source}", path.display()),
             Self::SerializeFailed(e) => write!(f, "serialize failed: {e}"),
             Self::HandEditedMigrationWouldBeOverwritten { text, .. } => f.write_str(text),
+            Self::PendingJsonWouldBeOverwritten { text, .. } => f.write_str(text),
             Self::FolderRenameTargetCollision {
                 from,
                 to,
@@ -677,7 +683,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     // emit one. This runs BEFORE the tombstone / differ /
     // classification / write logic because bootstrap is independent
     // of the descriptor delta — it's framework bootstrap (HeeRanjID
-    // schema + Postgres extensions + node-id GUC) that every
+    // schema + Postgres extensions) that every
     // subsequent migration depends on.
     // Idempotent — emits nothing when the marker file already
     // exists. Once emitted, bootstrap is a regular committed
@@ -1053,6 +1059,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                     &delta.bucket,
                 )?;
             }
+            check_pending_path_compatible(&pending_path, &delta.bucket)?;
 
             // Stage tmp siblings.
             ensure_parent(&up_path)?;
@@ -1825,6 +1832,36 @@ pub fn prepare_pending_dirs(workspace_root: &Path, bucket: &BucketKey) -> Result
     fs::create_dir_all(&dir).map_err(|e| ComposeError::Io {
         path: dir,
         source: e,
+    })
+}
+
+fn check_pending_path_compatible(
+    pending_path: &Path,
+    bucket: &BucketKey,
+) -> Result<(), ComposeError> {
+    if !pending_path.exists() {
+        return Ok(());
+    }
+    let pending = load_pending(pending_path).map_err(|e| ComposeError::PendingJsonWouldBeOverwritten {
+        path: pending_path.to_path_buf(),
+        text: format!(
+            "pending JSON would be overwritten at {}: existing file is not a compatible pending artifact ({e})",
+            pending_path.display()
+        ),
+    })?;
+    let same_bucket =
+        pending.bucket_database == bucket.database && pending.bucket_app == bucket.app;
+    let is_legacy_phase_zero =
+        bucket.app.is_empty() && pending.version == super::bootstrap::PHASE_ZERO_VERSION;
+    if same_bucket && !is_legacy_phase_zero {
+        return Ok(());
+    }
+    Err(ComposeError::PendingJsonWouldBeOverwritten {
+        path: pending_path.to_path_buf(),
+        text: format!(
+            "pending JSON would be overwritten at {}: existing file belongs to a different pending authority",
+            pending_path.display()
+        ),
     })
 }
 
@@ -3238,18 +3275,17 @@ mod tests {
     /// the down promote fails so only the up rollback is tested.
     /// This sibling test stresses the LIFO unwind in
     /// [`WriteRollback::drop`]: it forces the failure at the THIRD
-    /// promote (pending JSON), so up + down promotes have already
+    /// promote (replay plan), so up + down promotes have already
     /// captured backups and the rollback must restore each in reverse
     /// order.
     /// Strategy:
     /// 1. Pre-create up SQL with "operator up content".
     /// 2. Pre-create down SQL with "operator down content".
-    /// 3. Block the pending JSON promote by creating its target as a
+    /// 3. Block the replay-plan promote by creating its target as a
     ///    NON-EMPTY directory (so `fs::rename(<file>, <non-empty-dir>)`
-    ///    fails with a kernel-level error). The `pending_path` lives
-    ///    under `target/djogi_pending/<db>/<app>.json` — a different
-    ///    parent from up/down — so blocking it does not interfere with
-    ///    the bucket directory writes.
+    ///    fails with a kernel-level error). The replay-plan sidecar
+    ///    lives alongside the SQL files, after the up/down promotes,
+    ///    and is not preflighted by the pending-authority guard.
     ///    Asserts:
     /// - The error variant matches `ComposeError::Io { .. }`.
     /// - BOTH up and down files are restored to their original
@@ -3282,17 +3318,11 @@ mod tests {
         fs::write(&up_path, original_up).unwrap();
         fs::write(&down_path, original_down).unwrap();
 
-        // (3) — block the THIRD promote (pending JSON) by pre-creating
-        // its destination as a non-empty directory. The pending path
-        // lives under `target/djogi_pending/<db>/<app>.json` so we
-        // need to fabricate the parent and the colliding directory
-        // ourselves.
-        let pending_path = pending_json_path(&work, &bucket);
-        if let Some(parent) = pending_path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::create_dir_all(&pending_path).unwrap();
-        fs::write(pending_path.join("sentinel"), b"keep").unwrap();
+        // (3) — block the THIRD promote (replay-plan sidecar) by
+        // pre-creating its destination as a non-empty directory.
+        let replay_plan_path = committed_replay_plan_path(&work, &bucket, &version);
+        fs::create_dir_all(&replay_plan_path).unwrap();
+        fs::write(replay_plan_path.join("sentinel"), b"keep").unwrap();
 
         let req = ComposeRequest {
             workspace_root: &work,
@@ -3317,7 +3347,7 @@ mod tests {
             // tight to what these tests actually verify.
             skip_phase_zero_auto_emit: true,
         };
-        let err = compose(req).expect_err("pending promote must fail");
+        let err = compose(req).expect_err("replay-plan promote must fail");
         assert!(
             matches!(err, ComposeError::Io { .. }),
             "must surface a typed I/O error: {err:?}"

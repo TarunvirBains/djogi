@@ -3,7 +3,8 @@
 //! plain-`#[test]` runnable by wrapping it with a per-test Tokio runtime and
 //! database lifecycle:
 //! 1. `CREATE DATABASE djogi_test_<uuid>`.
-//! 2. HeeRanjID schema + default node installed in the fresh DB.
+//! 2. HeeRanjID schema + default node installed in the fresh DB via
+//!    the test harness's explicit seed-capable bootstrap path.
 //! 3. Optional Postgres extensions (e.g. `postgis`) auto-provisioned via
 //!    `CREATE EXTENSION IF NOT EXISTS` — the list comes from the
 //!    `extensions = [...]` attribute argument.
@@ -14,8 +15,10 @@
 //! `::djogi::testing::setup_test_db_with_extensions(&["postgis", ...])`,
 //! which uses `tokio_postgres` directly for bootstrap (no sqlx) and routes
 //! the HeeRanjID schema install + extension provisioning + node-id GUC seed
-//! through `djogi::migrate::bootstrap::run_phase_zero` — the SAME bootstrap
-//! surface adopters hit via `migrations compose` + `db reset`.
+//! through `djogi::migrate::bootstrap::run_phase_zero` with
+//! `include_node_seed = true` — the SAME bootstrap surface adopters hit via
+//! `migrations compose` + `db reset`, where production auto-emit stays
+//! node-seed-free.
 //! (strategic lockdown) eliminated every parallel install path; there is
 //! exactly ONE bootstrap surface across the whole codebase.
 //! # Usage
