@@ -814,10 +814,11 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
-    /// `db reset` against a production profile (even with localhost +
-    /// `--yes`) must refuse with the production-profile gate.
+    /// `db reset --single-node-dev` against a production profile must
+    /// refuse during CLI identity resolution before any runtime or SQL
+    /// work starts.
     #[test]
-    fn reset_cmd_refuses_on_production_profile() {
+    fn reset_cmd_refuses_single_node_dev_in_production_profile() {
         let work = temp_workspace("reset_prod");
         let toml = "profile = \"production\"\n\
                     [database]\nurl = \"postgres://localhost/main\"\n\
@@ -831,10 +832,14 @@ mod tests {
                 "postgres".to_string(), // maintenance_database
                 Some(work.clone()),   // workspace
                 None,                 // node_id
-                false,                // single_node_dev
+                true,                 // single_node_dev
             )
         });
-        assert_eq!(exit, ExitCode::from(2), "production must refuse");
+        assert_eq!(
+            exit,
+            ExitCode::from(2),
+            "production profile must refuse single-node-dev during identity resolution"
+        );
         let _ = fs::remove_dir_all(&work);
     }
 
