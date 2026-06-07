@@ -62,8 +62,8 @@ use djogi::DjogiContext;
 use djogi::config::MigrateConfig;
 use djogi::migrate::{
     AppliedSchema, BucketKey, GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, OutOfOrderPolicy, RunnerCtx,
-    WorkspaceGuard, acquire_workspace_lock, apply_plan, compute_checksum, diff_bucket_maps,
-    plan_delta, project_from_inventory, version_id, version_prefix,
+    RunnerIdentity, WorkspaceGuard, acquire_workspace_lock, apply_plan, compute_checksum,
+    diff_bucket_maps, plan_delta, project_from_inventory, version_id, version_prefix,
 };
 
 /// Run the migration.
@@ -110,9 +110,10 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 /// `bootstrap::run_phase_zero` so it avoids the database-level
 /// `ALTER DATABASE ... SET ...` part; runnable examples should work for
 /// roles that can create schema objects and extensions in a sandbox but
-/// do not own the database. The pool's `post_connect` hook in `main.rs`
-/// is the public per-connection setup surface and sets both HeeRanjID
-/// GUCs for every connection.
+/// do not own the database. Its raw seed SQL is example-runtime setup,
+/// not a persisted Phase 0 migration replay artifact. The pool's
+/// `post_connect` hook in `main.rs` is the public per-connection setup
+/// surface and sets both HeeRanjID GUCs for every connection.
 ///
 /// `DjogiContext::raw_ddl` is the bridge:
 /// `phase_zero_sql_without_database_guc()` builds a raw SQL batch and
@@ -257,6 +258,7 @@ async fn apply_descriptor_schema(
             config: MigrateConfig::default(),
             out_of_order_policy: OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
+            runner_identity: Some(RunnerIdentity::SingleNodeDev),
         };
 
         apply_plan(ctx, &plan, &runner_ctx, guard)

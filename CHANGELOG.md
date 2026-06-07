@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.9] - 2026-06-02
+
+### Added
+
+- feat(#381,#386): Phase Zero node identity hardening — production/cluster Phase 0 bootstrap installs HeeRanjID schema/functions without node seed or database-level GUC defaults; explicit `--single-node-dev` provisions node 1 after identity-free Phase 0 SQL succeeds. Migration CLI commands (`apply`, `baseline`, `reset`, `resume-partial`) support `--node-id <id>` and `--single-node-dev` flags. Shared Phase 0 artifact preflight allows only identity-free replay-current artifacts before replay or record paths (apply, rollback, fake apply, reset replay, repair resume, CLI cleanup); seed-capable runtime helper SQL and non-runtime top-level HeeRanjID seed-table mutations (`INSERT`/`UPDATE`/`DELETE`, CTE-led data mutations, `MERGE INTO`, `COPY ... FROM`) are refused for replay. Attune remains identity-free and refuses seed-capable, seed-DML non-runtime, ambiguous, or generated-stale Phase 0 files only for Record/Squash `--apply`. Runtime application pools remain caller-owned via `post_connect` and do NOT read `HEER_NODE_ID`.
+
+### Changed
+
+- migration: Phase 0 bootstrap SQL no longer contains literal `ALTER DATABASE` GUC defaults; production node identity is runner-owned through per-session binding on the pinned migration connection
+- migration: selected-node reset (`--node-id` / `HEER_NODE_ID`) refuses before destructive operations because drop/create removes the old `heer_nodes` registration
+
 ## [0.1.0-alpha.8] - 2026-06-01
 
 ### Changed

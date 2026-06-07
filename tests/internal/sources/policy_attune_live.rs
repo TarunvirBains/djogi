@@ -44,6 +44,7 @@ use djogi::config::MigrateConfig;
 use djogi::migrate::{
     AppliedSchema, AttuneEntryKind, AttuneError, AttuneMode, AttuneRefusal, AttuneRequest,
     BucketKey, Classification, MigrationPlan, OperationSql, OutOfOrderPolicy, RunnerCtx,
+    RunnerIdentity,
     RunnerError, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, VerifySeverity, WorkspaceGuard,
     acquire_workspace_lock, advisory_lock_key, apply_plan, attune, compute_checksum,
     is_localhost_connection, verify_with_policy,
@@ -140,6 +141,7 @@ fn make_runner_ctx(plan: &MigrationPlan, version: &str, policy: OutOfOrderPolicy
         config: MigrateConfig::default(),
         out_of_order_policy: policy,
         audit_pool: None,
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     }
 }
 

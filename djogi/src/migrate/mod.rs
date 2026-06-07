@@ -57,6 +57,7 @@ pub mod guard;
 pub mod ledger;
 pub mod naming;
 pub mod pg_volatility;
+pub(crate) mod phase_zero;
 pub mod pk_flip;
 pub mod policy;
 pub mod projection;
@@ -88,8 +89,10 @@ pub use bootstrap::{
     ensure_phase_zero_emitted, run_phase_zero,
 };
 pub use build_match::{
-    DriftDiagnostic, DriftKind, classify_bucket as build_classify_bucket,
+    DriftDiagnostic, DriftKind, ModelInventory, PendingArtifact, PendingArtifactKind,
+    classify_bucket as build_classify_bucket,
     classify_bucket_with_pending as build_classify_bucket_with_pending, classify_filesystem_drift,
+    format_warning_inventory_malformed,
 };
 pub use compose::{
     AppLifecycle, ComposeError, ComposeReport, ComposeRequest, ComposedBucket,
@@ -120,10 +123,15 @@ pub use ledger::{
     validate_checksum_format, verify_checksum,
 };
 pub use naming::{
-    MAX_SLUG_LEN, down_filename, pending_json_filename, sanitize_slug, up_filename, version_id,
-    version_prefix,
+    MAX_SLUG_LEN, down_filename, pending_json_filename, phase_zero_pending_json_filename,
+    sanitize_slug, up_filename, version_id, version_prefix,
 };
 pub use pg_volatility::{Volatility, classify_default_expression};
+// Exposed for CLI cleanup: classify Phase 0 artifacts before deleting
+// failed/rolled_back rows. The full classifier and artifact state enum
+// are public so the CLI can distinguish identity-free replay SQL from
+// seed-capable runtime helper SQL before executing anything.
+pub use phase_zero::{PhaseZeroArtifactState, classify_phase_zero_artifact};
 pub use pk_flip::{PkFlipError, lower_pk_flip_group};
 pub use policy::{OutOfOrderPolicy, is_localhost_connection};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory, project_from_provider};
@@ -140,7 +148,7 @@ pub use reset::{
 };
 pub use runner::{
     LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx, RunnerError,
-    advisory_lock_key, apply_plan, baseline_plan, fake_apply_plan, rollback_plan,
+    RunnerIdentity, advisory_lock_key, apply_plan, baseline_plan, fake_apply_plan, rollback_plan,
 };
 pub use schema::{
     AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,
@@ -178,8 +186,8 @@ pub use status::{
 pub use target::{
     FilesystemBucket, GLOBAL_BUCKET_DIRNAME, MIGRATIONS_DIR, MODELS_INVENTORY_FILENAME,
     PENDING_DIR, SNAPSHOT_FILENAME, app_dirname, app_label_from_dirname, bucket_dir, database_dir,
-    migrations_root, pending_database_dir, pending_json_path, pending_root, scan_filesystem,
-    snapshot_path,
+    migrations_root, pending_database_dir, pending_json_path, pending_root, phase_zero_pending_dir,
+    phase_zero_pending_json_path, scan_filesystem, snapshot_path,
 };
 pub use verify::{
     VerifyDiagnostic, VerifyReport, VerifyRunError, VerifySeverity, verify, verify_bucket,

@@ -17,7 +17,9 @@
 cargo install djogi-cli
 ```
 
-All subcommands run from the project root (the directory containing `Djogi.toml`). The CLI reads `Djogi.toml` and the `DATABASE_URL`, `DJOGI_ENV` environment variables; `HEER_NODE_ID` and `HEER_RANJ_NODE_ID` are infrastructure config for HeeRanjID node selection — wire them into the pool's `post_connect` hook; Djogi does not read them at the CLI layer.
+All subcommands run from the project root (the directory containing `Djogi.toml`). The CLI reads `Djogi.toml` and the `DATABASE_URL`, `DJOGI_ENV` environment variables.
+
+**Migration-runner identity.** Identity-bearing commands (`migrations apply`, `migrations baseline`, `db reset`, `repair resume-partial`) support `--node-id <id>` and `--single-node-dev` flags. The CLI resolver selects explicit `--node-id` over `HEER_NODE_ID`; values outside `0..=511` refuse with exit code 2. `--single-node-dev` is refused under production profile (`DJOGI_ENV=production`). Runtime application pools remain caller-owned via `post_connect` and do NOT read `HEER_NODE_ID`.
 
 ---
 
@@ -537,8 +539,7 @@ Project created. Next steps:
   cd my-project
   docker compose up -d
   export DATABASE_URL="postgres://djogi:djogi@localhost/my_project"
-  export HEER_NODE_ID=1
-  djogi db reset --seed
+  djogi db reset --single-node-dev --seed
 ```
 
 ### `djogi init`

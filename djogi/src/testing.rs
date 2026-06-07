@@ -330,20 +330,20 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
 /// 4. Connect to the new database via `tokio_postgres`.
 /// 5. Run [`crate::migrate::bootstrap::run_phase_zero`] against the
 ///    new connection. This is the SAME bootstrap surface
-///    `migrations compose` writes to disk and `db reset` replays
-///    no parallel install path. installs HeeRanjID, every
-///    requested extension, and seeds both the `heer.node_id` and
-///    `heer.ranj_node_id` GUCs at both the database (`ALTER DATABASE`)
-///    and session (`SET`) levels.
+///    `migrations compose` writes to disk and `db reset` replays.
+///    The test harness uses `include_node_seed = true`, so it installs
+///    HeeRanjID, every requested extension, and seeds both the
+///    `heer.node_id` and `heer.ranj_node_id` GUCs at both the
+///    database (`ALTER DATABASE`) and session (`SET`) levels.
 /// 6. Open a `DjogiPool` (deadpool-postgres) and return it as a
 ///    `DjogiContext`.
 /// # Strategic lockdown invariant
 /// Pre-Track-0, this function had its own SQL-by-hand install path
 /// for HeeRanjID + extensions + node-id GUC. That meant `#[djogi_test]`
 /// was the ONLY surface that exercised bootstrap; the production CLI
-/// / `db reset` paths were uncovered. closes that gap by
-/// routing every test through `bootstrap::run_phase_zero` — the same
-/// code path adopters hit. There is exactly ONE bootstrap path now.
+/// / `db reset` paths were uncovered. This now routes every test
+/// through `bootstrap::run_phase_zero` — the same code path adopters
+/// hit, with `include_node_seed = true` only for the test harness.
 /// # Errors
 /// Returns `DjogiError::Db` on all setup failures. Failure modes that
 /// mention the offending extension by name:
@@ -426,6 +426,7 @@ pub async fn setup_test_db_with_extensions(
         &db_name,
         &extension_set,
         crate::migrate::bootstrap::DEFAULT_NODE_ID,
+        /* include_node_seed = */ true,
     )
     .await
     .map_err(|e| DjogiError::Db(DbError::other(format!("bootstrap migration failed: {e}"))))?;
@@ -498,6 +499,22 @@ pub const TEST_NON_SUPERUSER_ROLE: &str = "djogi_test_user";
 /// handle the SQL identifier / literal escaping so the constant body
 /// itself never needs to be sanitised at the call site.
 pub const TEST_NON_SUPERUSER_PASSWORD: &str = "djogi_test_user";
+
+/// Compose canonical Phase 0 SQL through the migration bootstrap composer.
+///
+/// Integration tests use this to build replay fixtures from the same SQL
+/// shapes the runtime and auto-emit paths classify.
+pub fn phase_zero_sql_for_testing(
+    database: &str,
+    include_node_seed: bool,
+) -> Result<String, crate::migrate::BootstrapError> {
+    crate::migrate::bootstrap::compose_phase_zero(
+        database,
+        &std::collections::BTreeSet::new(),
+        crate::migrate::bootstrap::DEFAULT_NODE_ID,
+        include_node_seed,
+    )
+}
 
 /// Open a [`DjogiContext`] backed by a pool that authenticates as a
 /// non-superuser cluster role on the per-test database carried by

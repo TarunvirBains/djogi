@@ -201,6 +201,13 @@ pub fn pending_json_filename(app_label: &str) -> String {
     }
 }
 
+/// Filename for the Phase 0 pending JSON — `<version>.json`.
+/// Phase 0 uses its own namespace so it cannot collide with the normal
+/// global bucket's `_global_.json` pending file.
+pub fn phase_zero_pending_json_filename(version: &str) -> String {
+    format!("{version}.json")
+}
+
 fn push_pad4(s: &mut String, n: u32) {
     let _ = std::fmt::Write::write_fmt(s, format_args!("{n:04}"));
 }
@@ -359,6 +366,14 @@ mod tests {
     fn pending_json_global_bucket_uses_stable_token() {
         assert_eq!(pending_json_filename(""), "_global_.json");
         assert_eq!(pending_json_filename("billing"), "billing.json");
+    }
+
+    #[test]
+    fn phase_zero_pending_json_uses_version_filename() {
+        assert_eq!(
+            phase_zero_pending_json_filename("V00000000000000__phase_zero_bootstrap"),
+            "V00000000000000__phase_zero_bootstrap.json"
+        );
     }
 
     #[test]

@@ -201,8 +201,8 @@ migrations/
 ├── main/
 │   ├── vehicles/
 │   │   ├── schema_snapshot.json
-│   │   ├── 0001_initial_up.sql
-│   │   ├── 0001_initial_down.sql
+│   │   ├── V20260425010203__initial.sdjql
+│   │   ├── V20260425010203__initial.down.sdjql
 │   │   └── ...
 │   ├── users/
 │   │   ├── schema_snapshot.json
@@ -218,7 +218,7 @@ migrations/
 
 Granularity differs by artifact:
 
-- **Per `(target, app)` pair:** directory, snapshot (`migrations/<target>/<app>/schema_snapshot.json`), pending build-artifact (`target/djogi_pending/<target>/<app>.json`), the migration SQL files within each app directory (Phase 7 v3 OQ-10 ruling 2026-04-23), and the advisory-lock namespace — keys are derived from `SHA-256("djogi:advisory_lock:" || database || "\0" || app)` (first 8 digest bytes as a big-endian signed 64-bit integer). Independent `(database, app)` buckets hash to distinct keys, so apps within the same target do not contend on a shared lock. (See `docs/spec/decisions.md` row "Migration advisory lock key".)
+- **Per `(target, app)` pair:** directory, snapshot (`migrations/<target>/<app>/schema_snapshot.json`), pending build-artifact (`target/djogi_pending/<target>/<app>.json`) for normal buckets, the migration SQL files within each app directory (Phase 7 v3 OQ-10 ruling 2026-04-23), and the advisory-lock namespace — keys are derived from `SHA-256("djogi:advisory_lock:" || database || "\0" || app)` (first 8 digest bytes as a big-endian signed 64-bit integer). Independent `(database, app)` buckets hash to distinct keys, so apps within the same target do not contend on a shared lock. Auto-emitted Phase 0 uses a separate hidden pending namespace at `target/djogi_pending/<target>/.phase_zero/<version>.json` so it can coexist with normal global pending; build diagnostics preserve that hidden path instead of reporting it as `_global_.json`. (See `docs/spec/decisions.md` row "Migration advisory lock key".)
 - **Per `target`:** the `djogi_schema_migrations` ledger table — one per database target, shared across all apps in that target. (See `docs/spec/decisions.md` row "Multi-database migration contract.")
 
 Each `(database, app)` bucket is serialized by its own advisory-lock key, and cross-target migrations run independently with their own locks; independent buckets within one target do not block one another.

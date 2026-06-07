@@ -31,14 +31,16 @@
 // database directly; cleanup is automatic.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use djogi::config::MigrateConfig;
 use djogi::migrate::{
-    AppliedSchema, BucketKey, Classification, LedgerStatus, LossyRollbackPolicy, MigrationPlan,
-    RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, WorkspaceGuard,
-    acquire_workspace_lock, advisory_lock_key, apply_plan, bootstrap_ledger, compute_checksum,
+    AppLifecycle, AppliedSchema, BucketKey, Classification, LedgerStatus, LossyRollbackPolicy,
+    MigrationPlan, PHASE_ZERO_VERSION, RollbackError, RunnerCtx, RunnerError, RunnerIdentity,
+    SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, WorkspaceGuard, acquire_workspace_lock,
+    advisory_lock_key, apply_plan, bootstrap_ledger, compute_checksum, ensure_phase_zero_emitted,
     load_snapshot, rollback_plan,
 };
 
@@ -72,6 +74,16 @@ fn temp_workspace_lock_path() -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("djogi-runner-test-{stamp}.lock"))
+}
+
+fn temp_workspace_root() -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("djogi-runner-workspace-{stamp}"));
+    fs::create_dir_all(&path).expect("create temp workspace root");
+    path
 }
 
 /// Acquire a per-test workspace `WorkspaceGuard`, satisfying the
@@ -136,10 +148,17 @@ async fn install_progress_ack_failure_trigger(
 }
 
 fn transactional_plan(stmts: Vec<djogi::migrate::OperationSql>) -> MigrationPlan {
+    transactional_plan_for_app("", stmts)
+}
+
+fn transactional_plan_for_app(
+    app: &str,
+    stmts: Vec<djogi::migrate::OperationSql>,
+) -> MigrationPlan {
     MigrationPlan {
         bucket: BucketKey {
             database: "main".to_string(),
-            app: "".to_string(),
+            app: app.to_string(),
         },
         classification: Classification::Additive,
         segments: vec![Segment {
@@ -147,6 +166,27 @@ fn transactional_plan(stmts: Vec<djogi::migrate::OperationSql>) -> MigrationPlan
             statements: stmts,
         }],
     }
+}
+
+fn canonical_identity_free_phase_zero_sql(guard: &WorkspaceGuard) -> String {
+    let workspace = temp_workspace_root();
+    let apps = vec![AppLifecycle {
+        label: "test_app".to_string(),
+        database: "main".to_string(),
+        renamed_from: None,
+        tombstone: false,
+    }];
+    let emitted = ensure_phase_zero_emitted(
+        &workspace,
+        &BTreeMap::new(),
+        &apps,
+        time::OffsetDateTime::now_utc(),
+        guard,
+    )
+    .expect("emit canonical identity-free Phase 0");
+    let sql = fs::read_to_string(&emitted[0].up_sql_path).expect("read emitted Phase 0 up SQL");
+    let _ = fs::remove_dir_all(&workspace);
+    sql
 }
 
 fn split_plan(
@@ -208,6 +248,7 @@ fn make_runner_ctx(
         // audit DB. T9.7 owns the integration coverage that flips
         // this to `Some`.
         audit_pool: None,
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     }
 }
 
@@ -343,6 +384,94 @@ async fn transactional_apply_failure_rolls_back_and_skips_snapshot(mut ctx: djog
         !snapshot_path.exists(),
         "snapshot file must NOT be written on failure"
     );
+}
+
+#[djogi::djogi_test]
+async fn phase_zero_single_node_dev_provisioning_failure_marks_failed(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let snapshot_path = temp_snapshot_path();
+    ctx.raw_ddl(
+        "TRUNCATE TABLE heer_node_state, heer_ranj_node_state, heer_nodes, heer_config \
+         RESTART IDENTITY CASCADE",
+    )
+    .await
+    .expect("clear harness single-node seed");
+
+    let mut up_sql = canonical_identity_free_phase_zero_sql(&_guard);
+    up_sql.push_str(
+        "\nALTER TABLE heer_nodes \
+         ADD CONSTRAINT djogi_test_reject_single_node_dev_seed CHECK (node_id <> 1);\n",
+    );
+    let plan = transactional_plan(vec![op(
+        "Phase 0 bootstrap with injected single-node-dev seed failure",
+        &up_sql,
+        "-- Phase 0 down has no reverse operations",
+    )]);
+    let mut runner_ctx = make_runner_ctx(
+        &plan,
+        PHASE_ZERO_VERSION,
+        Some(empty_snapshot()),
+        Some(snapshot_path.clone()),
+        MigrateConfig::default(),
+    );
+    runner_ctx.runner_identity = Some(RunnerIdentity::SingleNodeDev);
+
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect_err("Phase 0 single-node-dev provisioning must fail before mark_applied");
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("single-node-dev") && err_msg.contains("provision"),
+        "error must name the provisioning phase: {err_msg}"
+    );
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("ledger select");
+    assert_eq!(status, "failed");
+
+    let execution_time_ms: i64 = ctx
+        .raw_scalar(
+            "SELECT execution_time_ms FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("execution_time_ms select");
+    assert_eq!(
+        execution_time_ms, 0,
+        "Phase 0 provisioning failure must occur before mark_applied"
+    );
+
+    let note: Option<String> = ctx
+        .raw_scalar(
+            "SELECT partial_apply_note FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("note select");
+    let note = note.expect("failed row must carry provisioning note");
+    assert!(
+        note.contains("single-node-dev provisioning failed"),
+        "note: {note}"
+    );
+
+    let node_count: i64 = ctx
+        .raw_scalar("SELECT COUNT(*)::bigint FROM heer_nodes WHERE node_id = 1", &[])
+        .await
+        .expect("node count after failed provisioning");
+    assert_eq!(node_count, 0, "node 1 must not be partially provisioned");
+
+    assert!(
+        !snapshot_path.exists(),
+        "snapshot file must NOT be written on Phase 0 provisioning failure"
+    );
+    let _ = std::fs::remove_file(&snapshot_path);
 }
 
 // ── Split apply: tx + non-tx success ──────────────────────────────────────
@@ -918,16 +1047,21 @@ async fn checksum_mismatch_aborts_before_apply(mut ctx: djogi::DjogiContext) {
         .expect("exists");
     assert!(!exists);
 
-    // Ledger row must NOT exist either — the runner aborts before
-    // inserting the pending row when the checksum is bad.
-    let count: i64 = ctx
+    // Ledger side effects must also be absent. The public apply entry point
+    // rejects checksum drift before pinning or bootstrapping the ledger, so a
+    // fresh per-test DB must still have no ledger table at all.
+    let ledger_exists: bool = ctx
         .raw_scalar(
-            "SELECT COUNT(*)::bigint FROM djogi_schema_migrations WHERE version = $1",
-            &[&runner_ctx.version],
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+            &[],
         )
         .await
-        .expect("count");
-    assert_eq!(count, 0, "no ledger row on checksum mismatch");
+        .expect("ledger probe");
+    assert!(
+        !ledger_exists,
+        "checksum mismatch must refuse before ledger bootstrap on a fresh DB"
+    );
 }
 
 // ── MetadataOnly segment accounting (live PG) ─────────────────────────────
@@ -1201,8 +1335,9 @@ async fn duplicate_version_surfaces_non_terminal_collision_statuses(mut ctx: djo
 
         if seed_status == LedgerStatus::RolledBack {
             // RolledBack rows are not repair targets; the message tells the
-            // operator to re-run `apply`, not to use the repair flow.
-            assert!(msg.contains("re-running `djogi migrations apply` will remove the rolled-back row"));
+            // operator the row is retained as audit history, not to use
+            // the repair flow.
+            assert!(msg.contains("the rolled_back row is retained as audit history"));
             assert!(!msg.contains("repair_partial_apply"));
         }
     }
@@ -1251,7 +1386,7 @@ async fn advisory_lock_key_is_stable_across_processes(mut ctx: djogi::DjogiConte
 async fn apply_plan_advisory_lock_not_held_after_success(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
 
-    let plan = transactional_plan(vec![op(
+    let plan = transactional_plan_for_app("runner_274_lock_release", vec![op(
         "AddTable t4_274_lock_release",
         "CREATE TABLE \"t4_274_lock_release\" (\"id\" BIGINT PRIMARY KEY)",
         "DROP TABLE \"t4_274_lock_release\"",
@@ -1317,7 +1452,7 @@ async fn advisory_unlock_false_variant_exists_and_is_not_triggered_on_clean_appl
 ) {
     let _guard = acquire_test_workspace_guard();
 
-    let plan = transactional_plan(vec![op(
+    let plan = transactional_plan_for_app("runner_274_unlock_variant", vec![op(
         "AddTable t4_274_unlock_variant",
         "CREATE TABLE \"t4_274_unlock_variant\" (\"id\" BIGINT PRIMARY KEY)",
         "DROP TABLE \"t4_274_unlock_variant\"",
@@ -1370,7 +1505,7 @@ async fn apply_plan_pool_backed_context_pins_session_for_advisory_lock(
         .await
         .expect("pg_backend_pid before apply_plan");
 
-    let plan = transactional_plan(vec![op(
+    let plan = transactional_plan_for_app("runner_331_pool_pin", vec![op(
         "AddTable t4_331_pool_pin",
         "CREATE TABLE \"t4_331_pool_pin\" (\"id\" BIGINT PRIMARY KEY)",
         "DROP TABLE \"t4_331_pool_pin\"",
@@ -1443,7 +1578,7 @@ async fn rollback_plan_pool_backed_context_pins_session_for_advisory_lock(
     assert!(ctx.is_pool_backed(), "must be pool-backed");
 
     // Apply first so there's something to roll back
-    let plan = transactional_plan(vec![op(
+    let plan = transactional_plan_for_app("runner_331_rollback_pin", vec![op(
         "AddTable t4_331_rollback_pin",
         "CREATE TABLE \"t4_331_rollback_pin\" (\"id\" BIGINT PRIMARY KEY)",
         "DROP TABLE \"t4_331_rollback_pin\"",
@@ -1502,6 +1637,76 @@ async fn rollback_plan_pool_backed_context_pins_session_for_advisory_lock(
     assert_eq!(still_held, 0, "advisory lock must be released after rollback on pool-backed context (GH #331)");
 }
 
+#[djogi::djogi_test]
+async fn rollback_bind_failure_releases_advisory_lock(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+
+    let plan = transactional_plan_for_app("runner_331_rollback_bind", vec![op(
+        "AddTable t4_331_rollback_bind",
+        "CREATE TABLE \"t4_331_rollback_bind\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"t4_331_rollback_bind\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260607000001__331_rollback_bind",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    let mut rollback_ctx = make_runner_ctx(
+        &plan,
+        &runner_ctx.version,
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    rollback_ctx.runner_identity = Some(RunnerIdentity::Selected { id: 7 });
+
+    let result = rollback_plan(
+        &mut ctx,
+        &plan,
+        &rollback_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            &result,
+            Err(RollbackError::Runner(RunnerError::NodeIdentityBindingFailed {
+                node_id: 7,
+                ..
+            }))
+        ),
+        "rollback must fail at selected-node binding for unregistered node 7: {result:?}",
+    );
+
+    let lock_key = advisory_lock_key(&plan.bucket);
+    let still_held: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) FROM pg_locks \
+             WHERE locktype = 'advisory' \
+               AND classid = (($1::bigint >> 32) & 4294967295)::oid \
+               AND objid   = ($1::bigint & 4294967295)::oid \
+               AND mode    = 'ExclusiveLock'",
+            &[&lock_key],
+        )
+        .await
+        .expect("pg_locks query");
+
+    assert_eq!(
+        still_held,
+        0,
+        "advisory lock must be released after rollback bind failure (key=0x{lock_key:016x})",
+    );
+}
+
 // ── #331 Early-error lock release via session drop ────────────────────
 // Verifies that when apply_plan errors after acquiring the advisory lock
 // but before releasing it, the PinnedCtx drops and the session closes,
@@ -1516,7 +1721,7 @@ async fn apply_plan_early_error_releases_lock_via_session_drop(
     assert!(ctx.is_pool_backed(), "must be pool-backed");
 
     // Plan with invalid SQL that fails during DDL execution (after lock acquire)
-    let plan = transactional_plan(vec![op(
+    let plan = transactional_plan_for_app("runner_331_early_error", vec![op(
         "AddTable t4_331_early_error",
         "CREATE TABLE \"t4_331_early_error\" (\"id\" INVALID_TYPE PRIMARY KEY)",
         "DROP TABLE \"t4_331_early_error\"",

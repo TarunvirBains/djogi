@@ -39,8 +39,8 @@ It may:
 
 1. read model descriptors from `target/djogi_models.json`
 2. read committed snapshots from `migrations/<target>/<app>/schema_snapshot.json`
-3. read pending target-state files from `target/djogi_pending/<target>/<app>.json`
-4. emit a plain cargo warning when drift is detected
+3. read pending target-state files from `target/djogi_pending/<target>/<app>.json` and the auto-emitted Phase 0 namespace `target/djogi_pending/<target>/.phase_zero/<version>.json`
+4. emit a plain cargo warning when drift is detected, or when the descriptor inventory is malformed and build.rs has to degrade to the reduced pending-vs-snapshot path
 
 It must **not**:
 
@@ -60,16 +60,18 @@ djogi migrations compose --name add_vehicle_horsepower
 
 Descriptors are submitted via `inventory::submit!` and collected through the **`DescriptorProvider` trait** boundary — the abstraction that separates framework projection from adopter model registration. The **linkage-aware drop guard** prevents silent data loss: if an app registered in `schema_snapshot.json` has zero models in the current projection (indicating its inventory symbols were not linked), `compose` refuses with a targeted diagnostic even when `--allow-destructive` is set.
 
-Three-way match logic, run per `(target, app)` pair:
+Three-way match logic, run per `(target, app)` pair. Pending ingestion is kind-aware inside the global bucket so hidden Phase 0 and normal `_global_.json` pending can coexist without label collapse:
 
 1. `djogi_models.json == schema_snapshot.json` for every `(target, app)` pair → silent
-2. descriptor/snapshot mismatch, but matching `target/djogi_pending/<target>/<app>.json` exists → warn that a migration is pending apply
-3. descriptor/snapshot mismatch and no matching pending file exists → warn that schema drift exists and `migrations compose` should be run
+2. descriptor/snapshot mismatch, but matching pending exists under `target/djogi_pending/<target>/<app>.json` or the hidden Phase 0 side-channel `target/djogi_pending/<target>/.phase_zero/<version>.json` → warn that a migration is pending apply
+3. descriptor/snapshot mismatch and no matching pending file exists → warn that model drift was detected for the bucket and `migrations compose` should be run
+4. if `target/djogi_models.json` is missing, skip the model-vs-* legs silently but still classify pending-vs-snapshot so composed-not-applied surfaces truthfully
+5. if `target/djogi_models.json` is present but malformed, emit one loud warning naming the file/cause, then degrade to the same reduced pending-vs-snapshot path
 
 Example build warning:
 
 ```text
-warning: djogi: schema drift detected — run `djogi migrations compose`
+warning: model drift detected for main/_global_; run `djogi migrations compose` to stage the delta
 ```
 
 ### 10.3 Snapshot Model
@@ -79,7 +81,8 @@ Djogi uses three file roles:
 | File | Location | Role | Committed? |
 |---|---|---|---|
 | `target/djogi_models.json` | build artifact | what Rust source currently declares | no |
-| `target/djogi_pending/<target>/<app>.json` | build artifact | generated target state waiting to be applied | no |
+| `target/djogi_pending/<target>/<app>.json` | build artifact | generated target state waiting to be applied for normal buckets | no |
+| `target/djogi_pending/<target>/.phase_zero/<version>.json` | build artifact | generated target state waiting to be applied for auto-emitted Phase 0 | no |
 | `migrations/<target>/<app>/schema_snapshot.json` | migrations submodule | last known applied schema shape for that `(target, app)` pair | yes |
 
 `schema_snapshot.json` is updated exactly once per successful apply flow, via atomic file replacement (`tmp -> fsync -> rename`). It is never updated by `build.rs`.
@@ -125,13 +128,13 @@ The same `version` stays occupied in the ledger until repair resolves the row in
 
 Migration files are plain SQL and always generated as a pair:
 
-- up file: `V<YYYYMMDDHHMMSS>__<slug>.sql`
-- down file: `V<YYYYMMDDHHMMSS>__<slug>.down.sql`
+- up file: `V<YYYYMMDDHHMMSS>__<slug>.sdjql`
+- down file: `V<YYYYMMDDHHMMSS>__<slug>.down.sdjql`
 
 The leading `V` plus 14-digit UTC timestamp gives lexical = chronological ordering across versions; the slug is operator-supplied (sanitised through the byte-level rules documented in `djogi::migrate::naming::sanitize_slug`). Example pair:
 
-- `V20260425010203__add_vehicle_horsepower.sql`
-- `V20260425010203__add_vehicle_horsepower.down.sql`
+- `V20260425010203__add_vehicle_horsepower.sdjql`
+- `V20260425010203__add_vehicle_horsepower.down.sdjql`
 
 Example UP file:
 
@@ -912,7 +915,7 @@ Out-of-order state is never silent.
 - **1** — a runtime error (config load failure, pool connection failure, snapshot read failure, or at least one error-level diagnostic in a report); see also the full exit-code matrix in the configuration reference.
 - **2** — the connected Postgres server is below the support floor (PG 18). Verify refuses before reading any catalog data.
 
-**Missing snapshot:** A registered bucket (present in the descriptor inventory) that has declared models but no `schema_snapshot.json` on disk is treated as an **unverified** state — there is no recorded baseline to compare the live catalog against. Verify exits 1 and emits a message directing the operator to run `djogi migrations compose` and `djogi migrations apply` to record a baseline. A registered bucket with zero declared models and no snapshot is informational (exit 0) — nothing to verify.
+**Missing snapshot:** A registered bucket (present in the descriptor inventory) that has declared models but no `schema_snapshot.json` on disk is treated as an **unverified** state — there is no recorded baseline to compare the live catalog against. Verify exits 1 and emits a message directing the operator to run `djogi migrations compose`, then `djogi migrations apply` with node identity (`--node-id`, `HEER_NODE_ID`, or `--single-node-dev`) to record a baseline. A registered bucket with zero declared models and no snapshot is informational (exit 0) — nothing to verify.
 
 **Orphaned snapshots:** When an app is removed from the descriptor inventory, its `schema_snapshot.json` may remain on disk. Verify includes these orphaned snapshots in its bucket set (unioning the inventory with on-disk discovered buckets) and reports any drift — tables recorded in the snapshot but absent from the live DB surface as D601 errors. The D699 "ledger applied but live DB empty" diagnostic is suppressed for orphan-only databases because D601 is the actionable signal for removed apps.
 

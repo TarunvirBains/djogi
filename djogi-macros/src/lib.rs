@@ -312,9 +312,10 @@ pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
 /// Transforms an `async fn my_test(ctx: DjogiContext)` into a
 /// plain `#[test]` wrapper that builds a Tokio runtime through `djogi` and:
 /// 1. Creates a fresh `djogi_test_<uuid>` Postgres database.
-/// 2. Installs the HeeRanjID schema and seeds the default node.
+/// 2. Installs the HeeRanjID schema and seeds the default node via the
+///    test harness's explicit seed-capable bootstrap path.
 /// 3. Sets `heer.node_id = '1'` at the database level so all connections
-///    inherit the node ID without per-connection setup.
+///    inherit the node ID without per-connection setup in the test harness.
 /// 4. Constructs a `DjogiContext` from a deadpool-postgres pool.
 /// 5. Passes the context to the test body.
 /// 6. Drops the database when the body returns — whether normally or via panic.

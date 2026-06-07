@@ -25,12 +25,13 @@ use djogi::config::MigrateConfig;
 use djogi::migrate::{
     AppliedSchema, BucketKey, Classification, LedgerStatus, LossyRollbackKind,
     LossyRollbackPolicy, LossyRollbackWarning, MigrationPlan, OperationSql,
-    PartialApplyResolution, RepairConfirmation, RepairError, RollbackError, RunnerCtx,
-    RunnerError, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, VerifySeverity,
+    PHASE_ZERO_VERSION, PartialApplyResolution, RepairConfirmation, RepairError, RollbackError,
+    RunnerCtx, RunnerError, RunnerIdentity, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind,
+    VerifySeverity,
     WorkspaceGuard, acquire_workspace_lock, advisory_lock_key, apply_plan, baseline_plan,
     bootstrap_ledger, compute_checksum, fake_apply_plan, repair_checksum_drift,
     repair_partial_apply, repair_resume_partial_apply, repair_snapshot_rebuild, rollback_plan,
-    verify,
+    up_filename, verify, bucket_dir,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -53,6 +54,16 @@ fn temp_path(stub: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("djogi-{stub}-{stamp}.json"))
+}
+
+fn temp_workspace_root(stub: &str) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("djogi-{stub}-{stamp}"));
+    std::fs::create_dir_all(&path).expect("create temp workspace root");
+    path
 }
 
 fn temp_lock() -> PathBuf {
@@ -294,6 +305,7 @@ fn make_runner_ctx(
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         // T9.4 audit-pool plumbing: not exercised in T5 paths.
         audit_pool: None,
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     }
 }
 
@@ -968,6 +980,7 @@ async fn repair_checksum_drift_updates_row(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &new_checksum,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -1013,6 +1026,7 @@ async fn repair_checksum_drift_rejects_invalid_checksum(mut ctx: djogi::DjogiCon
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         "V1:not_lowercase_hex_at_all_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -1170,6 +1184,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkRolledBack,
         "manual rollback completed by ops",
         RepairConfirmation::OperatorAcknowledged,
@@ -1231,6 +1246,7 @@ async fn repair_partial_apply_marks_faked(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkFaked,
         "out-of-band fix already in place",
         RepairConfirmation::OperatorAcknowledged,
@@ -1271,6 +1287,7 @@ async fn repair_partial_apply_marks_applied(mut ctx: djogi::DjogiContext) {
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkApplied,
         "manually completed remaining steps",
         RepairConfirmation::OperatorAcknowledged,
@@ -1304,6 +1321,7 @@ async fn repair_partial_apply_rejects_already_applied(mut ctx: djogi::DjogiConte
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkRolledBack,
         "test",
         RepairConfirmation::OperatorAcknowledged,
@@ -1912,6 +1930,74 @@ async fn rollback_prior_snapshot_missing_does_not_mutate(mut ctx: djogi::DjogiCo
     let _ = std::fs::remove_file(&snapshot_path);
 }
 
+#[djogi::djogi_test]
+async fn phase_zero_rollback_comment_only_down_refuses_without_mutation(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let mut phase_zero_up = concat!(
+        "-- Djogi bootstrap migration — HeeRanjID + extensions\n",
+        "-- HeeRanjID base schema + functions (idempotent).\n"
+    )
+    .to_string();
+    phase_zero_up.push_str("\nCREATE TABLE \"t5_phase0_rollback_guard\" (\"id\" BIGINT);\n");
+    let plan = transactional_plan(vec![op(
+        "Phase 0 rollback guard table",
+        &phase_zero_up,
+        "-- Phase 0 down - no reverse operations for bootstrap",
+    )]);
+    let runner_ctx = make_runner_ctx(&plan, PHASE_ZERO_VERSION, None, None);
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("phase zero apply ok");
+
+    let err = rollback_plan(
+        &mut ctx,
+        &plan,
+        &runner_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await
+    .expect_err("comment-only Phase 0 rollback must refuse");
+    match err {
+        RollbackError::StalePhaseZeroDown {
+            version,
+            refusal_reason,
+        } => {
+            assert_eq!(version, PHASE_ZERO_VERSION);
+            assert_eq!(refusal_reason, "ambiguous");
+        }
+        other => panic!("expected Phase 0 rollback refusal, got {other:?}"),
+    }
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("status");
+    assert_eq!(
+        status, "applied",
+        "comment-only Phase 0 rollback refusal must not mutate ledger status"
+    );
+
+    let table_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class \
+             WHERE relname = 't5_phase0_rollback_guard' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("table exists");
+    assert!(
+        table_exists,
+        "comment-only Phase 0 rollback refusal must not run down-side mutation"
+    );
+}
+
 // ── B-4: fake_apply leaves status='faked', not 'pending' ─────────────────
 
 #[djogi::djogi_test]
@@ -2482,6 +2568,7 @@ async fn repair_checksum_drift_repairs_both_up_and_down(mut ctx: djogi::DjogiCon
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &new_up,
         Some(&new_down),
         RepairConfirmation::OperatorAcknowledged,
@@ -2592,8 +2679,10 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
     let report = repair_resume_partial_apply(
         &mut ctx,
         &_guard,
+        std::path::Path::new("/tmp"),
         &runner_ctx.version,
         &plan,
+        Some(djogi::migrate::RunnerIdentity::SingleNodeDev), // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2645,6 +2734,246 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
         .raw_ddl("DROP INDEX IF EXISTS t5_b10_resume_b_idx")
         .await;
     let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_b10_resume").await;
+}
+
+#[djogi::djogi_test]
+async fn repair_resume_phase_zero_refuses_seed_capable_materialized_stream_even_when_disk_file_is_identity_free(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let workspace = temp_workspace_root("p0-resume-seed-refusal");
+    let bucket = BucketKey {
+        database: "main".to_string(),
+        app: "".to_string(),
+    };
+    let bucket_directory = bucket_dir(&workspace, &bucket);
+    std::fs::create_dir_all(&bucket_directory).expect("create Phase 0 bucket dir");
+
+    let identity_free_sql =
+        djogi::testing::phase_zero_sql_for_testing("main", false).expect("identity-free Phase 0");
+    std::fs::write(
+        bucket_directory.join(up_filename(PHASE_ZERO_VERSION)),
+        &identity_free_sql,
+    )
+    .expect("write identity-free Phase 0 disk file");
+
+    let sentinel = "djogi_p0_resume_seed_refusal_sentinel";
+    ctx.raw_ddl(&format!("DROP TABLE IF EXISTS {sentinel}"))
+        .await
+        .expect("clean sentinel");
+    let seed_capable_sql =
+        djogi::testing::phase_zero_sql_for_testing("main", true).expect("seed-capable Phase 0");
+    let plan = MigrationPlan {
+        bucket: bucket.clone(),
+        classification: Classification::Additive,
+        segments: vec![Segment {
+            kind: SegmentKind::NonTransactional,
+            statements: vec![op(
+                "Phase 0 seed-capable resume sentinel",
+                &format!("{seed_capable_sql}\nCREATE TABLE {sentinel}(id int);"),
+                &format!("DROP TABLE IF EXISTS {sentinel};"),
+            )],
+        }],
+    };
+    let runner_ctx = make_runner_ctx(&plan, PHASE_ZERO_VERSION, None, None);
+
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    let run_id: i64 = 39101;
+    ctx.raw_execute(
+        "INSERT INTO djogi_schema_migrations \
+         (version, description, checksum_up, execution_mode, status, \
+          applied_steps_count, total_steps, run_id, snapshot_version, app_label) \
+         VALUES ($1, $2, $3, 'non_transactional', 'failed', \
+                 0, 1, $4, '1', '')",
+        &[
+            &runner_ctx.version,
+            &runner_ctx.description,
+            &runner_ctx.checksum_up,
+            &run_id,
+        ],
+    )
+    .await
+    .expect("seed failed Phase 0 row");
+
+    let err = repair_resume_partial_apply(
+        &mut ctx,
+        &_guard,
+        &workspace,
+        PHASE_ZERO_VERSION,
+        &plan,
+        None,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect_err("seed-capable materialized Phase 0 stream must refuse");
+    assert!(
+        matches!(err, RepairError::PhaseZeroArtifactRefused { .. }),
+        "expected PhaseZeroArtifactRefused, got {err:?}"
+    );
+
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'r')",
+            &[&sentinel],
+        )
+        .await
+        .expect("sentinel exists");
+    assert!(!exists, "seed-capable sentinel must not execute");
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read Phase 0 status");
+    let applied_steps: i32 = ctx
+        .raw_scalar(
+            "SELECT applied_steps_count FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read Phase 0 applied steps");
+    let note: Option<String> = ctx
+        .raw_scalar(
+            "SELECT partial_apply_note FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read Phase 0 note");
+    assert_eq!(status, "failed");
+    assert_eq!(applied_steps, 0);
+    assert!(
+        note.as_deref()
+            .is_none_or(|n| !n.contains("non-tx progress claim")),
+        "refusal must happen before non-tx progress claim, note={note:?}"
+    );
+
+    let _ = ctx.raw_ddl(&format!("DROP TABLE IF EXISTS {sentinel}")).await;
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[djogi::djogi_test]
+async fn repair_resume_phase_zero_allows_identity_free_materialized_stream(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let workspace = temp_workspace_root("p0-resume-identity-free");
+    let bucket = BucketKey {
+        database: "main".to_string(),
+        app: "".to_string(),
+    };
+    let bucket_directory = bucket_dir(&workspace, &bucket);
+    std::fs::create_dir_all(&bucket_directory).expect("create Phase 0 bucket dir");
+
+    let identity_free_sql =
+        djogi::testing::phase_zero_sql_for_testing("main", false).expect("identity-free Phase 0");
+    std::fs::write(
+        bucket_directory.join(up_filename(PHASE_ZERO_VERSION)),
+        &identity_free_sql,
+    )
+    .expect("write identity-free Phase 0 disk file");
+
+    let sentinel = "djogi_p0_resume_identity_free_sentinel";
+    ctx.raw_ddl(&format!("DROP TABLE IF EXISTS {sentinel}"))
+        .await
+        .expect("clean sentinel");
+    let plan = MigrationPlan {
+        bucket: bucket.clone(),
+        classification: Classification::Additive,
+        segments: vec![Segment {
+            kind: SegmentKind::NonTransactional,
+            statements: vec![op(
+                "Phase 0 identity-free resume sentinel",
+                &format!("{identity_free_sql}\nCREATE TABLE {sentinel}(id int);"),
+                &format!("DROP TABLE IF EXISTS {sentinel};"),
+            )],
+        }],
+    };
+    let runner_ctx = make_runner_ctx(&plan, PHASE_ZERO_VERSION, None, None);
+
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    let run_id: i64 = 39102;
+    ctx.raw_execute(
+        "INSERT INTO djogi_schema_migrations \
+         (version, description, checksum_up, execution_mode, status, \
+          applied_steps_count, total_steps, run_id, snapshot_version, app_label) \
+         VALUES ($1, $2, $3, 'non_transactional', 'failed', \
+                 0, 1, $4, '1', '')",
+        &[
+            &runner_ctx.version,
+            &runner_ctx.description,
+            &runner_ctx.checksum_up,
+            &run_id,
+        ],
+    )
+    .await
+    .expect("seed failed Phase 0 row");
+
+    let report = repair_resume_partial_apply(
+        &mut ctx,
+        &_guard,
+        &workspace,
+        PHASE_ZERO_VERSION,
+        &plan,
+        None,
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect("identity-free materialized Phase 0 stream must resume");
+    assert!(
+        report
+            .actions_taken
+            .iter()
+            .any(|action| action.contains("Phase 0 identity-free resume sentinel")),
+        "actions: {:?}",
+        report.actions_taken
+    );
+
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'r')",
+            &[&sentinel],
+        )
+        .await
+        .expect("sentinel exists");
+    assert!(exists, "identity-free sentinel must execute");
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read Phase 0 status");
+    let applied_steps: i32 = ctx
+        .raw_scalar(
+            "SELECT applied_steps_count FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read Phase 0 applied steps");
+    let total_steps: Option<i32> = ctx
+        .raw_scalar(
+            "SELECT total_steps FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read Phase 0 total steps");
+    let note: Option<String> = ctx
+        .raw_scalar(
+            "SELECT partial_apply_note FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read Phase 0 note");
+    assert_eq!(status, "applied");
+    assert_eq!(applied_steps, 1);
+    assert_eq!(total_steps, Some(1));
+    assert_eq!(note, None);
+
+    let _ = ctx.raw_ddl(&format!("DROP TABLE IF EXISTS {sentinel}")).await;
+    let _ = std::fs::remove_dir_all(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -2713,8 +3042,10 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
     repair_resume_partial_apply(
         &mut ctx,
         &_guard,
+        std::path::Path::new("/tmp"),
         &runner_ctx.version,
         &plan,
+        Some(djogi::migrate::RunnerIdentity::SingleNodeDev), // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2765,8 +3096,10 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
     repair_resume_partial_apply(
         &mut ctx,
         &_guard,
+        std::path::Path::new("/tmp"),
         &runner_ctx.version,
         &plan,
+        Some(djogi::migrate::RunnerIdentity::SingleNodeDev), // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2824,8 +3157,10 @@ async fn repair_resume_rejects_plan_checksum_mismatch(mut ctx: djogi::DjogiConte
     let err = repair_resume_partial_apply(
         &mut ctx,
         &_guard,
+        std::path::Path::new("/tmp"),
         version,
         &plan,
+        Some(djogi::migrate::RunnerIdentity::SingleNodeDev), // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await
@@ -2871,6 +3206,7 @@ async fn baseline_projects_live_database_into_snapshot(mut ctx: djogi::DjogiCont
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     let _plan = plan; // unused — baseline does not consume the plan SQL
 
@@ -2919,6 +3255,7 @@ async fn baseline_rejects_caller_supplied_snapshot(mut ctx: djogi::DjogiContext)
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     let _plan = plan;
 
@@ -2988,6 +3325,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     baseline_plan(
         &mut ctx,
@@ -3021,6 +3359,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     baseline_plan(
         &mut ctx,
@@ -3163,7 +3502,7 @@ async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djog
     let _guard = acquire_test_workspace_guard();
 
     // Apply a migration so we have a ledger row to repair.
-    let plan = transactional_plan(vec![op(
+    let plan = transactional_plan_for_app("repair_274_lock_release", vec![op(
         "AddTable t5_274_repair_lock",
         "CREATE TABLE \"t5_274_repair_lock\" (\"id\" BIGINT PRIMARY KEY)",
         "DROP TABLE \"t5_274_repair_lock\"",
@@ -3181,6 +3520,7 @@ async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djog
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         new_checksum,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -3208,9 +3548,9 @@ async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djog
     assert!(result.is_ok(), "repair_checksum_drift must succeed");
 
     // After repair completes, the advisory lock for the repair bucket must be
-    // released cluster-wide. The repair uses plan.bucket (database="main",
-    // app="") so the runner-side and repair-side advisory-lock keys are
-    // identical — both call advisory_lock_key(&plan.bucket).
+    // released cluster-wide. The repair uses the same explicit plan.bucket
+    // the runner used, so the runner-side and repair-side advisory-lock keys
+    // are identical — both call advisory_lock_key(&plan.bucket).
     //
     // This is the critical correctness check: before the GH #274 fix,
     // derive_bucket() used current_database() which returned the per-test
@@ -3329,6 +3669,7 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
                 &_guard,
                 &other_seed_plan.bucket,
                 &other_seed_ctx.version,
+                std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
                 &other_checksum,
                 None,
                 RepairConfirmation::OperatorAcknowledged,
@@ -3350,6 +3691,7 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
                 &_guard,
                 &same_seed_plan.bucket,
                 &same_seed_ctx.version,
+                std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
                 &same_checksum,
                 None,
                 RepairConfirmation::OperatorAcknowledged,
@@ -3367,6 +3709,7 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
             &_guard,
             &same_seed_plan.bucket,
             &same_seed_ctx.version,
+            std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
             &same_checksum,
             None,
             RepairConfirmation::OperatorAcknowledged,
@@ -3423,6 +3766,7 @@ async fn repair_checksum_drift_reports_advisory_lock_budget_exhaustion(
             &_guard,
             &plan.bucket,
             &runner_ctx.version,
+            std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
             &new_checksum,
             None,
             RepairConfirmation::OperatorAcknowledged,
@@ -3529,8 +3873,10 @@ async fn apply_waits_while_repair_resume_holds_same_bucket_lock(mut ctx: djogi::
     let repair_future = repair_resume_partial_apply(
         &mut repair_ctx,
         &_guard,
+        std::path::Path::new("/tmp"),
         &resume_ctx.version,
         &resume_plan,
+        Some(djogi::migrate::RunnerIdentity::SingleNodeDev), // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     );
 
@@ -3619,6 +3965,7 @@ async fn repair_checksum_drift_rejects_wrong_bucket_app_and_releases_lock(
         &_guard,
         &wrong_bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &runner_ctx.checksum_up,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -3688,6 +4035,7 @@ async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
         &_guard,
         &wrong_bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         PartialApplyResolution::MarkRolledBack,
         "test note",
         RepairConfirmation::OperatorAcknowledged,
@@ -3860,6 +4208,7 @@ async fn repair_checksum_drift_pool_backed_context_pins_session(
         &_guard,
         &plan.bucket,
         &runner_ctx.version,
+        std::path::Path::new("/tmp"), // workspace — Phase 0 guard is version-gated
         &fresh_checksum,
         None,
         RepairConfirmation::OperatorAcknowledged,
@@ -3945,8 +4294,10 @@ async fn repair_resume_partial_apply_refuses_when_replay_stream_is_shorter_than_
     let err = repair_resume_partial_apply(
         &mut ctx,
         &_guard,
+        std::path::Path::new("/tmp"),
         &runner_ctx.version,
         &plan,
+        Some(djogi::migrate::RunnerIdentity::SingleNodeDev), // runner_identity — not testing identity boundary here
         RepairConfirmation::OperatorAcknowledged,
     )
     .await

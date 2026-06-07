@@ -165,6 +165,7 @@ WORKDIR /app
 
 # No Cargo, Rust toolchain, or source needed at runtime
 ENV DATABASE_URL=${DATABASE_URL}
+ENV HEER_NODE_ID=7
 CMD ["djogi", "migrations", "apply"]
 ```
 
@@ -173,20 +174,26 @@ The binary contains all model descriptors baked in via link-time inventory. At r
 - `Djogi.toml` configuration
 - Pending artifacts (for `apply`) or snapshot files (for `verify`)
 - `DATABASE_URL` environment variable
+- Node identity for apply (`--node-id`, `HEER_NODE_ID`, or `--single-node-dev`)
 
 ### Production Apply: Standalone Binary
 
-The **published standalone** `djogi` binary can still run `migrations apply` against already-composed pending artifacts. This is useful for production environments where you compose migrations in CI (using the adopter-linked binary) and only ship the pending artifacts + standalone binary to production:
+The **published standalone** `djogi` binary can still run `migrations apply` against already-composed pending artifacts. This is useful when you compose migrations in CI (using the adopter-linked binary) and later ship only the pending artifacts + standalone binary. This path is descriptor-free, not identity-free: `apply` still requires `--node-id <id>`, `HEER_NODE_ID`, or `--single-node-dev`.
 
 ```bash
 # In CI — compose with adopter-linked binary
 cargo run --bin djogi -- migrations compose
 
-# In production — apply with standalone binary (no model crates needed)
-djogi migrations apply
+# On a fresh local/ephemeral database — apply with standalone binary
+djogi migrations apply --single-node-dev
+
+# In a registered cluster/prod environment — bind an existing node identity
+HEER_NODE_ID=7 djogi migrations apply
 ```
 
-`apply` reads pre-composed JSON from `target/djogi_pending/<db>/<app>.json` and requires no descriptor discovery. The standalone binary is sufficient for this path.
+Selected-node apply (`--node-id` or `HEER_NODE_ID`) binds an already-registered cluster node. On a virgin database, use `--single-node-dev` for local provisioning; production profile refuses that mode.
+
+`apply` reads pre-composed JSON from `target/djogi_pending/<db>/<app>.json` and, for auto-emitted Phase 0, `target/djogi_pending/<db>/.phase_zero/<version>.json`. Ship the entire `target/djogi_pending` tree, including the hidden `.phase_zero` subtree. No descriptor discovery is required at apply time.
 
 ---
 
@@ -196,7 +203,7 @@ djogi migrations apply
 
 This is the exact first line the CLI prints (`error: no djogi models are registered in this binary (djogi <command>).`) when a descriptor-dependent command (`compose`, `verify`, `schema`, or `docs`) resolves zero model descriptors. The full message names both causes below. Causes:
 
-**You ran the standalone published `djogi` binary.** That binary links no application models. Build an adopter-linked binary (see [Minimal Adopter Setup](#2-minimal-adopter-setup)) and run the command from it. The standalone binary can still run `djogi migrations apply` against already-composed artifacts.
+**You ran the standalone published `djogi` binary.** That binary links no application models. Build an adopter-linked binary (see [Minimal Adopter Setup](#2-minimal-adopter-setup)) and run the command from it. The standalone binary can still run `djogi migrations apply` against already-composed artifacts, but it still needs node identity (`--node-id`, `HEER_NODE_ID`, or `--single-node-dev`), and selected-node apply expects an already-registered cluster node.
 
 **You ran your adopter-linked binary but forgot to link a model crate.** Ensure `link_models()` references every crate defining `#[model]` structs, or that `djogi_main!` lists at least one type from each model crate. If a crate is not referenced by any symbol in the binary, the linker may drop its `inventory` statics entirely.
 

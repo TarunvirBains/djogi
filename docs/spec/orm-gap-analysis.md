@@ -410,7 +410,7 @@ Benefits:
 
 | Django Weakness | Djogi Opportunity |
 |---|---|
-| Migrations are Python files with operation objects — heavy, hard to review | Djogi: **plain SQL files**. Readable, editable, reviewable. No framework-specific format. |
+| Migrations are Python files with operation objects — heavy, hard to review | Djogi: **plain `.sdjql` schema files** plus explicit raw-SQL seed/data surfaces where needed. Readable, editable, reviewable without opaque framework codegen. |
 | Django's autodetector is ~2000 lines of Python running 27 detection steps | Djogi: **build-time Rust code** comparing typed `ModelDescriptor` structs. Faster, more reliable, no runtime reflection. |
 | Squashing is complex (replacement graph, partial application detection) | Djogi: **SQL files can be manually concatenated**. Or provide `djogi migrations squash 0001..0010` that merges SQL files. Simpler than Django's replacement system. |
 | `RunPython` data migrations can't be represented as SQL | Djogi: data migrations are **Rhai scripts** or **raw SQL** — both are inspectable, no opaque Python. |
@@ -437,7 +437,7 @@ Django has `RunPython(code, reverse_code)` for data migrations. Djogi needs an e
 
 **Option A — SQL-only data migrations:**
 ```sql
--- migrations/0005_backfill_slugs_up.sql
+-- migrations/V20260425010203__backfill_slugs.sdjql
 -- djogi:data
 UPDATE vehicles SET slug = lower(replace(make || '-' || model_name, ' ', '-'))
 WHERE slug IS NULL;

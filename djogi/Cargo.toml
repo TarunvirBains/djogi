@@ -458,6 +458,11 @@ path = "../tests/integration/build_warning_agreement.rs"
 harness = true
 
 [[test]]
+name = "build_pending_authority"
+path = "../tests/integration/build_pending_authority.rs"
+harness = true
+
+[[test]]
 name = "filesystem_scan"
 path = "../tests/integration/filesystem_scan.rs"
 harness = true

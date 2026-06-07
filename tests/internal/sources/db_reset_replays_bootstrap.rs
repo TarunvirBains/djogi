@@ -9,14 +9,15 @@
 //   virgin database via `reset_app_database` — without manual
 //   HeeRanjID schema install, without manual `CREATE EXTENSION`,
 //   without any other side-channel install path.
-// - Post-replay, `generate_id()` is callable + the
-//   `current_heer_node_id()` GUC reader returns the seeded value (1).
+// - Post-replay, explicit `SingleNodeDev` reset replay provisions
+//   node 1 and `generate_id()` is callable on a new connection.
 // - The `djogi_schema_migrations` ledger carries the //   version row marked `applied`.
 //
 // Together these prove the lockdown contract: production `db reset`
-// brings a virgin DB to a HeeRanjID-ready state through the
-// auto-emitted migration alone — no parallel install path
-// needed.
+// replays the identity-free auto-emitted migration on a virgin DB
+// with no parallel install path needed, while the explicit
+// `SingleNodeDev` reset identity provisions node 1 after Phase 0 SQL
+// succeeds.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -25,7 +26,7 @@ use std::path::{Path, PathBuf};
 use djogi::config::MigrateConfig;
 use djogi::migrate::{
     AppLifecycle, AppliedSchema, BucketKey, ComposeRequest, GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME,
-    PHASE_ZERO_VERSION, ResetError, ResetRefusal, ResetRequest, ResetSqlSide,
+    PHASE_ZERO_VERSION, ResetError, ResetRefusal, ResetRequest, ResetSqlSide, RunnerIdentity,
     SNAPSHOT_FORMAT_VERSION, WorkspaceGuard, acquire_workspace_lock, compose, reset_app_database,
 };
 use tokio_postgres::NoTls;
@@ -199,6 +200,7 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
         // dedicated coverage lives in
         // `tests/internal/sources/phase8_5_c2_118_*` per issue #118.
         audit_pool: None,
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     let reset_report = reset_app_database(req)
         .await
@@ -213,7 +215,8 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
     );
 
     // 4. Connect to the freshly-bootstrapped DB and assert the
-    //    HeeRanjID schema is present + functional.
+    //    HeeRanjID schema is present, node 1 is provisioned, and
+    //    generated IDs work on a new connection.
     let (client, conn) = tokio_postgres::connect(&virgin_url, NoTls)
         .await
         .expect("connect to bootstrapped DB");
@@ -237,19 +240,20 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
         "bootstrap migration must have created `heer_nodes` table"
     );
 
-    // 4b. The default node row was seeded.
+    // 4b. The explicit SingleNodeDev replay provisions node 1.
     let seeded_node: i32 = client
         .query_one("SELECT node_id FROM heer_nodes WHERE node_id = 1", &[])
         .await
         .expect("seeded node query")
         .get(0);
-    assert_eq!(seeded_node, 1, "default node must be seeded with id 1");
+    assert_eq!(seeded_node, 1, "SingleNodeDev reset must provision node 1");
 
-    // 4c. `generate_id()` is callable.
+    // 4c. `generate_id()` is callable because reset replay persisted
+    //     the SingleNodeDev database defaults.
     let row = client
         .query_one("SELECT generate_id() AS id", &[])
         .await
-        .expect("generate_id() must be callable after bootstrap migration");
+        .expect("generate_id() must be callable after SingleNodeDev reset replay");
     let id: i64 = row.get(0);
     assert!(id > 0, "generate_id() must return a positive HeerId");
 
@@ -363,6 +367,7 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
         allow_checksum_drift_reset: false,
         migrate_config: MigrateConfig::default(),
         audit_pool: None,
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     let first_reset = reset_app_database(reset_req)
         .await
@@ -411,6 +416,7 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
         allow_checksum_drift_reset: false,
         migrate_config: MigrateConfig::default(),
         audit_pool: None,
+        runner_identity: Some(RunnerIdentity::SingleNodeDev),
     })
     .await
     .expect_err("drifted file must refuse before destructive reset");

@@ -139,6 +139,26 @@ fn d004_missing_wording_matches_build_rs() {
     );
 }
 
+#[test]
+fn malformed_inventory_wording_matches_build_rs() {
+    let lib = djogi::migrate::build_match::format_warning_inventory_malformed(
+        "target/djogi_models.json",
+        "not a JSON object",
+    );
+    assert_eq!(
+        lib,
+        "descriptor inventory at target/djogi_models.json is malformed (not a JSON object); \
+         model state is treated as unavailable, so model-vs-snapshot checks are skipped for this build"
+    );
+    let text = build_rs_text();
+    assert!(
+        text.contains(
+            "descriptor inventory at {path} is malformed ({detail}); model state is treated as unavailable, so model-vs-snapshot checks are skipped for this build"
+        ),
+        "build.rs must carry the same malformed-inventory wording as build_match::format_warning_inventory_malformed"
+    );
+}
+
 /// Codex round-2 B-6 — the suppression flag must only mute Outcome 3
 /// (model drift). D004 mismatches, Outcome 2 (composed-not-applied),
 /// and Outcome 4 (stale pending) ALWAYS print regardless of the

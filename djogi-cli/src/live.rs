@@ -1181,6 +1181,35 @@ fn interactive_confirm_abandon(plan_id: HeerId) -> std::io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prior_hostname: Option<String>,
+        prior_djogi_env: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self {
+                _lock: crate::test_env_lock(),
+                prior_hostname: std::env::var("HOSTNAME").ok(),
+                prior_djogi_env: std::env::var("DJOGI_ENV").ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prior_hostname {
+                Some(value) => unsafe { std::env::set_var("HOSTNAME", value) },
+                None => unsafe { std::env::remove_var("HOSTNAME") },
+            }
+            match &self.prior_djogi_env {
+                Some(value) => unsafe { std::env::set_var("DJOGI_ENV", value) },
+                None => unsafe { std::env::remove_var("DJOGI_ENV") },
+            }
+        }
+    }
     use clap::Parser;
 
     /// Test driver — clap derive macros emit a parser per top-level
@@ -1506,16 +1535,33 @@ mod tests {
 
     #[test]
     fn hostname_for_claim_falls_back_to_unknown() {
-        // SAFETY: tests run with --test-threads=1.
-        let prior = std::env::var("HOSTNAME").ok();
+        let _env_guard = EnvGuard::new();
         unsafe { std::env::remove_var("HOSTNAME") };
         assert_eq!(hostname_for_claim(), "unknown");
         unsafe { std::env::set_var("HOSTNAME", "ci-runner-7") };
         assert_eq!(hostname_for_claim(), "ci-runner-7");
-        match prior {
-            Some(v) => unsafe { std::env::set_var("HOSTNAME", v) },
-            None => unsafe { std::env::remove_var("HOSTNAME") },
-        }
+    }
+
+    #[test]
+    fn env_guard_restores_prior_values() {
+        let env_guard = EnvGuard::new();
+        let expected_hostname = env_guard.prior_hostname.clone();
+        let expected_djogi_env = env_guard.prior_djogi_env.clone();
+        let next_hostname = if expected_hostname.as_deref() == Some("ci-runner-7") {
+            "ci-runner-8"
+        } else {
+            "ci-runner-7"
+        };
+        let next_djogi_env = if expected_djogi_env.as_deref() == Some("staging") {
+            "production"
+        } else {
+            "staging"
+        };
+        unsafe { std::env::set_var("HOSTNAME", next_hostname) };
+        unsafe { std::env::set_var("DJOGI_ENV", next_djogi_env) };
+        drop(env_guard);
+        assert_eq!(std::env::var("HOSTNAME").ok(), expected_hostname);
+        assert_eq!(std::env::var("DJOGI_ENV").ok(), expected_djogi_env);
     }
 
     // ── helpers ──────────────────────────────────────────────────────
@@ -1783,8 +1829,7 @@ mod tests {
 
     #[test]
     fn force_allowed_when_djogi_env_unset() {
-        // SAFETY: tests run with --test-threads=1.
-        let prior = std::env::var("DJOGI_ENV").ok();
+        let _env_guard = EnvGuard::new();
         unsafe { std::env::remove_var("DJOGI_ENV") };
         assert!(force_allowed_in_env());
         unsafe { std::env::set_var("DJOGI_ENV", "development") };
@@ -1796,11 +1841,6 @@ mod tests {
         );
         unsafe { std::env::set_var("DJOGI_ENV", "production") };
         assert!(!force_allowed_in_env());
-        // Restore.
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
-            None => unsafe { std::env::remove_var("DJOGI_ENV") },
-        }
     }
 
     // ── PlanFileError → LiveCmdError mapping ─────────────────────────

@@ -98,7 +98,7 @@ Composes a new migration from descriptor diff against the last committed snapsho
 - `--allow-destructive` — required when the diff produces drops or touches a tombstoned app. Without this flag, destructive deltas refuse with a structural error.
 - `--force-overwrite` — discards hand-edits to existing migration files (D013 override). The byte-equality check that gates this flag is purely structural — the deterministic emitter produces identical bytes on identical inputs, so any manual edit shows up as a difference.
 
-Output: `V<timestamp>__<slug>.sdjql` + `.down.sdjql` per affected bucket, plus a per-bucket `target/djogi_pending/<database>/<app>.json` staging file.
+Output: `V<timestamp>__<slug>.sdjql` + `.down.sdjql` per affected bucket, plus per-bucket pending staging under `target/djogi_pending/<database>/<app>.json`. Auto-emitted Phase 0 uses the hidden namespace `target/djogi_pending/<database>/.phase_zero/<version>.json` so it can coexist with normal global pending and diagnostics can name the hidden artifact distinctly from `_global_.json`. New compose output never writes Phase 0 to `_global_.json`; legacy normal-global Phase 0 pending is read only by the bootstrap emitter as a compatibility fallback when the hidden file is absent.
 
 ### `djogi migrations status`
 
@@ -155,8 +155,8 @@ use djogi::migrate::repair::{
 
 | API | What it does |
 |---|---|
-| `apply_plan(ctx, plan, runner_ctx, guard)` | Acquires advisory lock, inserts pending ledger row, dispatches segments transactionally / non-transactionally per `Classification`, persists snapshot, marks ledger `applied`. |
-| `rollback_plan(ctx, plan, runner_ctx, guard, lossy_policy, prior_snapshot)` | Replays the down-side SQL in reverse segment order, marks ledger row removed, and applies the caller-selected `LossyRollbackPolicy` for ops that cannot be cleanly reversed. |
+| `apply_plan(ctx, plan, runner_ctx, guard)` | Acquires advisory lock, inserts pending ledger row, dispatches segments transactionally / non-transactionally per `Classification`, marks the ledger row `applied`, then persists the snapshot. Snapshot persistence failure is post-`applied`: the row remains applied and the operator repairs the snapshot separately. |
+| `rollback_plan(ctx, plan, runner_ctx, guard, lossy_policy, prior_snapshot)` | Replays the down-side SQL in reverse segment order, marks the ledger row `rolled_back`, and applies the caller-selected `LossyRollbackPolicy` for ops that cannot be cleanly reversed. |
 | `fake_apply_plan(ctx, plan, runner_ctx, guard, reason)` | Inserts the ledger row WITHOUT executing SQL — for migrations applied out-of-band (e.g. via a hot-fix `psql` script). Equivalent to `attune --record-ledger` for one version, with the operator reason persisted in the ledger note. |
 | `baseline_plan(ctx, bucket, runner_ctx, guard, reason)` | Projects the bucket's live database catalog into a single `baseline` ledger row (no SQL runs against user tables; `checksum_up` is content-addressed over the projection) and persists that projection as the bucket's canonical snapshot. Used when adopting Djogi against a pre-existing database whose schema already exists. Refuses a caller-supplied `runner_ctx.snapshot` (it always projects fresh, so a stale snapshot cannot poison future diffs). Exposed on the CLI as `djogi migrations baseline`. |
 | `verify(ctx, snapshot)` | Compares live `pg_catalog` shape against the snapshot. Returns a `VerifyReport` with per-diagnostic severity. |
@@ -167,6 +167,53 @@ All apply paths require a `WorkspaceGuard` — a typed witness that the caller h
 **Out-of-order policy enforcement:** `fake_apply_plan` enforces the same out-of-order policy gate as `apply_plan`. A faked row with a suppressed `out_of_order_flag` would misrepresent the version-ordering state. If the policy is `Reject`, fake-apply on an out-of-order version is rejected.
 
 **Snapshot failure recovery:** If `fake_apply_plan` reports a snapshot persistence error, the migration was successfully recorded in the ledger as `faked`. Run `djogi migrations compose` to regenerate the snapshot from the descriptor inventory.
+
+## Node Identity for Migration Commands
+
+Djogi migration commands that execute user SQL or generate run IDs require an explicit node identity. There are four separate identity boundaries:
+
+1. **Runtime application pools** — caller-owned via `post_connect`. The Djogi runtime library and pool constructors (`DjogiPool::connect`, `from_database_config`) do NOT read `HEER_NODE_ID` automatically. Wire node GUCs explicitly in your `post_connect` hook.
+2. **Migration CLI resolver** — identity-bearing CLI commands (`migrations apply`, `migrations baseline`, `db reset`, `repair resume-partial`) support `--node-id <id>` and `--single-node-dev` flags. The resolver selects explicit `--node-id` over `HEER_NODE_ID` env var. Values outside `0..=511` refuse with exit code 2 before database work.
+3. **Migration runner library** — the runner binds the selected node on the pinned migration session before non-Phase-0 `generate_run_id` / `HeeRanjID` calls and before user SQL execution. Missing identity is refused before session pinning or ledger mutation.
+4. **Phase 0 bootstrap** — production/cluster Phase 0 installs HeeRanjID schema/functions without node seed or database-level defaults. The canonical Phase 0 SQL remains identity-free; explicit `--single-node-dev` provisions node 1 after Phase 0 SQL succeeds and before the ledger row is marked applied.
+
+### CLI Identity Flags
+
+```bash
+# Selected-node mode (requires pre-registered active node in heer_nodes)
+djogi migrations apply --node-id 7
+
+# Single-node development mode (provisions node 1, uses database-level fallbacks)
+djogi migrations apply --single-node-dev
+
+# Environment fallback (explicit --node-id wins over HEER_NODE_ID)
+HEER_NODE_ID=3 djogi migrations apply
+
+# Refused: conflicting flags
+djogi migrations apply --node-id 7 --single-node-dev  # error
+
+# Refused: missing identity for non-dev mode (exit code 2)
+djogi migrations apply  # error — requires --node-id, HEER_NODE_ID, or --single-node-dev
+
+# Refused: single-node-dev in production (exit code 2)
+DJOGI_ENV=production djogi migrations apply --single-node-dev  # error
+```
+
+### Identity-Free Paths
+
+These paths do NOT require node identity because they neither execute user migration SQL nor call non-Phase-0 run ID generation: `migrations status`, `migrations verify`, all `migrations attune` modes, `repair checksum-drift`, `repair partial-apply` status updates, and `repair snapshot-rebuild`. When no pending migrations exist, `migrations apply` prints a no-op message without identity resolution.
+
+### Phase 0 Bootstrap Modes
+
+Production/cluster Phase 0 installs HeeRanjID schema, functions, and required extensions only — no node seed, no database-level GUC defaults.
+
+Explicit `--single-node-dev` keeps the on-disk Phase 0 SQL identity-free, then the runner provisions node 1 with dynamic `current_database()` database defaults after Phase 0 SQL succeeds and before `mark_applied`. If that provisioning fails, the ledger row is marked `failed` and the snapshot is not written. `db reset --single-node-dev` inherits the same replay behavior, leaving node 1 usable after reset.
+
+### Stale Phase 0 Protection
+
+Phase 0 artifact preflight is scoped to paths that would replay or record Phase 0 SQL. `apply`, `fake apply`, `repair resume`, reset replay, and CLI reapply cleanup allow only identity-free replay-current Phase 0 artifacts before mutation; seed-capable runtime helper SQL and seed-DML non-runtime artifacts are refused for replay. `rollback` preflights the authoritative materialized down SQL before changing ledger status or running down-side SQL, so seed-capable, seed-DML non-runtime, ambiguous/comment-only, and generated-stale Phase 0 down payloads refuse early. `migrations attune` remains identity-free; only Record/Squash with `--apply` refuse seed-capable, seed-DML non-runtime, ambiguous, or generated-stale Phase 0 files before ledger/file mutation. `baseline` does not broaden into Phase 0 artifact preflight; it keeps its snapshot refusal and identity checks.
+
+The Phase 0 classifier recognizes only exact banner lines for the current and legacy production/seeded banners. Identity-free production artifacts are the only replay-current shape; seeded current artifacts are runtime-only. Banner text embedded in SQL literals, suffixed banner strings, mixed literal/dynamic database defaults, seed-free incomplete generation, generated-stale literal database defaults, and non-runtime top-level seed-table mutation against HeeRanjID seed tables all fail closed on replay paths. The seed mutation scanner covers direct `INSERT`/`UPDATE`/`DELETE`, CTE-led data mutations, `MERGE INTO`, and `COPY ... FROM`, while skipping comments, strings, quoted identifiers, and dollar-quoted bodies. Rollback is stricter still: Phase 0 rollback requires a non-empty down payload that classifies as identity-free replay-current before any transactional or non-transactional down SQL or ledger mutation begins.
 
 ## Repair Commands
 
@@ -295,20 +342,22 @@ The policy lives in `RunnerCtx::out_of_order_policy` and defaults from `Djogi.to
 
 After a migration is rolled back, the ledger row has status `rolled_back`. This is a non-terminal status — the DDL effects are gone from the database, but the audit trail remains.
 
-To re-apply a rolled-back migration, run `djogi migrations apply` again. The runner:
+To re-apply a rolled-back migration, run `djogi migrations apply` again. The CLI apply path:
 1. Detects the existing `rolled_back` row for the version
-2. Deletes the stale row
-3. Re-applies the migration SQL and creates a new `applied` ledger row
+2. Deletes the reapply-blocking row as cleanup before invoking the runner
+3. Invokes the runner to apply the migration SQL and create a new `applied` ledger row
 
 This preserves the original version-to-schema-operation binding without requiring the operator to invent a new version string.
 
 ## `djogi db reset`
 
 ```
-djogi db reset --yes [--allow-checksum-drift-reset] [--maintenance-database <name>]
+djogi db reset --yes [--single-node-dev] [--allow-checksum-drift-reset] [--maintenance-database <name>]
 ```
 
-Drops, recreates, and replays every committed migration against the application database. **Triple-gated**:
+Drops, recreates, and replays every committed migration against the application database. **Requires explicit `--single-node-dev`** — selected-node reset (`--node-id` or `HEER_NODE_ID`) refuses before destructive operations because drop/create removes the old `heer_nodes` registration.
+
+**Triple-gated**:
 
 1. `DATABASE_URL` resolves to a localhost connection (`127.0.0.1` / `::1` / `localhost`).
 2. `Djogi.toml::profile != "production"`.

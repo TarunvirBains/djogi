@@ -12,10 +12,12 @@
 //! - Transactional → BEGIN; statements; COMMIT.
 //! - NonTransactional → autocommit each statement; update progress.
 //! - MetadataOnly → no SQL runs; metadata path is `compose`'s job.
-//! 7. On success: mark_applied + persist snapshot.
-//! 8. On failure: mark_failed (or mark_partial for split-apply)
+//! 7. Phase 0 + `SingleNodeDev` only: provision node 1 after SQL and
+//!    before terminal ledger status.
+//! 8. On success: mark_applied + persist snapshot.
+//! 9. On failure: mark_failed (or mark_partial for split-apply)
 //! and propagate. Snapshot is NOT moved forward.
-//! 9. Always: release pg_advisory_lock and workspace file lock.
+//! 10. Always: release pg_advisory_lock and workspace file lock.
 //! ```
 //! # Snapshot persistence invariant
 //! The snapshot file at `migrations/<target>/<app>/schema_snapshot.json`
@@ -162,6 +164,31 @@ pub enum RunnerError {
     /// recovery and must abort the run before it begins.
     RunIdGenerationFailed { source: DjogiError },
 
+    /// Node identity binding on the pinned migration connection
+    /// failed. For non-Phase-0 apply this occurs before run-id
+    /// generation, user SQL, or ledger insertion. For Phase 0
+    /// `SingleNodeDev`, binding is part of the post-SQL provisioning
+    /// step covered by [`RunnerError::SingleNodeDevProvisioningFailed`].
+    NodeIdentityBindingFailed {
+        /// The node ID that was attempted.
+        node_id: i32,
+        /// Source error from the binding SQL execution.
+        source: DjogiError,
+    },
+
+    /// Phase 0 SQL succeeded, but explicit `SingleNodeDev`
+    /// provisioning of node 1 failed before `mark_applied`. The
+    /// runner marks the already-inserted pending ledger row `failed`
+    /// and does not persist a snapshot.
+    SingleNodeDevProvisioningFailed {
+        /// The node ID that was being provisioned.
+        node_id: i32,
+        /// Which provisioning sub-step failed.
+        step: &'static str,
+        /// Source error from the provisioning SQL execution.
+        source: DjogiError,
+    },
+
     /// `ledger::bootstrap` failed — the ledger table's
     /// `CREATE TABLE IF NOT EXISTS` DDL could not run. Distinct from
     /// [`RunnerError::LedgerWriteFailed`] (row CRUD: INSERT/UPDATE)
@@ -277,6 +304,17 @@ pub enum RunnerError {
     /// up-front to prevent stale-snapshot baselines from poisoning
     /// future diffs.
     BaselineSnapshotShouldNotBeProvided,
+
+    /// Phase 0 up-side artifact was classified as unsafe before the
+    /// runner pinned a database session or touched the ledger.
+    StalePhaseZeroArtifact {
+        /// The Phase 0 migration version being refused.
+        version: String,
+        /// Classifier reason: `seed-capable-runtime-only`,
+        /// `seed-dml-not-runtime-current`, `generated-stale`, `ambiguous`,
+        /// `incomplete`, or `missing`.
+        refusal_reason: &'static str,
+    },
 
     /// The candidate version applies out-of-order (it sorts before
     /// some already-applied row in the same `(database, app)` bucket)
@@ -425,6 +463,18 @@ pub enum RunnerError {
         parent: String,
         statement_label: String,
     },
+
+    /// Non-Phase-0 apply/fake/baseline refused: the runner was called
+    /// without a binding-capable [`RunnerIdentity`], so the process
+    /// cannot bind node identity before `generate_run_id()` or user
+    /// SQL execution. Phase 0 is exempt (uses wall-clock run-id).
+    /// This gate mirrors the rollback inverse at [`rollback_handle_lock`]
+    /// so the apply-family paths refuse missing identity like rollback
+    /// already does.
+    MissingApplyIdentity {
+        /// The migration version that was refused.
+        version: String,
+    },
 }
 
 impl std::fmt::Display for RunnerError {
@@ -477,6 +527,19 @@ impl std::fmt::Display for RunnerError {
                 "run_id generation via `SELECT heerid_next()` failed before any \
                  migration ran: {source}",
             ),
+            RunnerError::NodeIdentityBindingFailed { node_id, source } => write!(
+                f,
+                "runner node identity binding failed for node {node_id} \
+                 (unregistered/inactive or SQL error): {source}",
+            ),
+            RunnerError::SingleNodeDevProvisioningFailed {
+                node_id,
+                step,
+                source,
+            } => write!(
+                f,
+                "single-node-dev provisioning failed for node {node_id} during {step}: {source}",
+            ),
             RunnerError::LedgerBootstrapFailed { source } => write!(
                 f,
                 "ledger bootstrap (CREATE TABLE IF NOT EXISTS djogi_schema_migrations) \
@@ -510,7 +573,7 @@ impl std::fmt::Display for RunnerError {
                         "use `djogi migrations status` to inspect it, then `repair_resume_partial_apply` if it is still resumable or `repair_partial_apply` otherwise"
                     }
                     LedgerStatus::RolledBack => {
-                        "use `djogi migrations status` to inspect it; re-running `djogi migrations apply` will remove the rolled-back row and re-apply the migration"
+                        "use `djogi migrations status` to inspect it; the rolled_back row is retained as audit history, so use a new migration version or an explicit operator cleanup before re-applying"
                     }
                     LedgerStatus::Applied | LedgerStatus::Baseline | LedgerStatus::Faked => {
                         unreachable!(
@@ -622,6 +685,13 @@ impl std::fmt::Display for RunnerError {
                 "baseline_plan rejects caller-supplied snapshots: baseline projects the \
                  live database itself; pass `runner_ctx.snapshot = None`",
             ),
+            RunnerError::StalePhaseZeroArtifact {
+                version,
+                refusal_reason,
+            } => write!(
+                f,
+                "Phase 0 artifact `{version}` refused before migration apply: {refusal_reason}",
+            ),
             RunnerError::BaselineProjectionFailed { source } => write!(
                 f,
                 "baseline live-DB projection failed before ledger insert: {source}",
@@ -726,6 +796,11 @@ impl std::fmt::Display for RunnerError {
                 "partition expansion for `{statement_label}` refused: \
                  partitioned parent `{parent}` has 0 leaves in replay-strict mode",
             ),
+            RunnerError::MissingApplyIdentity { version } => write!(
+                f,
+                "apply refused: version '{version}' requires a binding-capable runner identity \
+                 (not Phase 0, no runner_identity set)",
+            ),
         }
     }
 }
@@ -744,15 +819,82 @@ impl std::error::Error for RunnerError {
             RunnerError::NonTransactionalProgressAckFailed { source, .. } => Some(source),
             RunnerError::ConfigLoadFailed { source } => Some(source),
             RunnerError::SnapshotPersistFailed { source, .. } => Some(source),
+            RunnerError::StalePhaseZeroArtifact { .. } => None,
             RunnerError::BaselineProjectionFailed { source } => Some(source.as_ref()),
             RunnerError::CatalogQueryFailed { source, .. } => Some(source),
             RunnerError::LedgerQueryFailed { source, .. } => Some(source),
             RunnerError::RunIdGenerationFailed { source } => Some(source),
+            RunnerError::NodeIdentityBindingFailed { source, .. } => Some(source),
+            RunnerError::SingleNodeDevProvisioningFailed { source, .. } => Some(source),
             RunnerError::LedgerBootstrapFailed { source } => Some(source),
             RunnerError::PinnedSessionCheckoutFailed { source } => Some(source),
             RunnerError::VersionCollisionNonTerminal { .. } => None,
             _ => None,
         }
+    }
+}
+
+/// Runner identity mode for identity-bearing migration execution.
+///
+/// The runner uses this to determine whether and how to bind node
+/// identity on the pinned migration connection before non-Phase-0
+/// `generate_run_id` / `HeerId::generate`, user SQL, and ledger
+/// mutations.
+///
+/// **Three modes:**
+/// 1. **`Selected { id }`** — Production/cluster mode with explicit
+///    node ID selected by the operator (via CLI `--node-id` or env
+///    `HEER_NODE_ID`). The runner binds this identity on the pinned
+///    connection after Phase 0 installs HeeRanjID, and validates
+///    active registration against `heer_nodes`.
+/// 2. **`SingleNodeDev`** — Explicit dev/single-node mode (CLI
+///    `--single-node-dev`). The runner provisions node 1 immediately
+///    after Phase 0 SQL succeeds, then binds node 1 on the pinned
+///    connection. Non-Phase-0 migrations only bind the already-
+///    provisioned node.
+/// 3. **`IdentityFree`** — Source-proven inverse path: no user
+///    migration SQL and no non-Phase-0 `generate_run_id` /
+///    `HeerId::generate`. The runner does not attempt any node
+///    binding. Status, verify, attune record sentinel, squash
+///    checksum refresh, repair checksum, repair partial status
+///    updates, and snapshot rebuild fall here.
+///
+/// **Library contract.** The Djogi runtime library and pool must NOT
+/// read `HEER_NODE_ID` or `HEER_RANJ_NODE_ID`. Identity resolution
+/// is a CLI migration-runner resolver concern only. Library callers
+/// pass explicit `RunnerIdentity` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerIdentity {
+    /// Production/cluster: explicit node ID selected by the operator.
+    Selected { id: i32 },
+    /// Explicit dev/single-node: binds node 1.
+    SingleNodeDev,
+    /// Source-proven inverse: no user SQL and no non-Phase-0 run-id generation.
+    IdentityFree,
+}
+
+impl RunnerIdentity {
+    /// Return the concrete node ID for modes that carry one.
+    /// `IdentityFree` returns `None`.
+    pub(crate) fn node_id(self) -> Option<i32> {
+        match self {
+            Self::Selected { id } => Some(id),
+            Self::SingleNodeDev => Some(1),
+            Self::IdentityFree => None,
+        }
+    }
+
+    /// Return `true` when this mode requires node binding on the
+    /// pinned migration connection before non-Phase-0 run-id
+    /// generation or user SQL.
+    pub(crate) fn requires_binding(self) -> bool {
+        !matches!(self, Self::IdentityFree)
+    }
+
+    /// Return `true` when Phase 0 should run post-SQL node-1
+    /// provisioning for dev mode.
+    pub(crate) fn provisions_phase_zero_single_node_dev(self) -> bool {
+        matches!(self, Self::SingleNodeDev)
     }
 }
 
@@ -825,6 +967,24 @@ pub struct RunnerCtx {
     ///   status reporting) out of `RunnerCtx`'s shape — those are
     ///   app-side concerns that do not apply to the audit DB.
     pub audit_pool: Option<deadpool_postgres::Pool>,
+    /// Runner identity mode for this invocation. Controls whether
+    /// and how node identity is bound on the pinned migration
+    /// connection before non-Phase-0 run-id generation, user SQL,
+    /// and ledger mutations.
+    ///
+    /// Library callers must pass an explicit value; the runtime
+    /// library and pool constructors do not read `HEER_NODE_ID`.
+    /// CLI callers resolve identity from `--node-id`, env
+    /// `HEER_NODE_ID`, or `--single-node-dev` before constructing
+    /// this context.
+    ///
+    /// **Legacy default.** When `None`, the runner treats this as
+    /// `IdentityFree` for backward compatibility with existing test
+    /// fixtures and library callers that have not yet migrated to
+    /// explicit identity. New code should always pass a concrete
+    /// value; the runner will validate identity-bearing operations
+    /// refuse when no binding-capable mode is present.
+    pub runner_identity: Option<RunnerIdentity>,
 }
 
 /// Successful-apply report. The runner returns this on a clean
@@ -845,6 +1005,89 @@ pub struct RunReport {
     pub metadata_segments: usize,
     /// Wall-clock elapsed time in milliseconds.
     pub execution_time_ms: i64,
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "runner guard helpers return the public RunnerError enum unchanged"
+)]
+fn preflight_phase_zero_apply_artifact(
+    plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+) -> Result<(), RunnerError> {
+    if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
+        return Ok(());
+    }
+
+    let combined_up = plan
+        .segments
+        .iter()
+        .flat_map(|seg| seg.statements.iter())
+        .map(|stmt| stmt.up.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Err(refusal_reason) =
+        super::phase_zero::require_identity_free_phase_zero_migration_artifact(
+            combined_up.as_bytes(),
+        )
+    {
+        return Err(RunnerError::StalePhaseZeroArtifact {
+            version: runner_ctx.version.clone(),
+            refusal_reason,
+        });
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "runner guard helpers return the public RunnerError enum unchanged"
+)]
+fn verify_plan_checksum(plan: &MigrationPlan, runner_ctx: &RunnerCtx) -> Result<(), RunnerError> {
+    let computed_up = compute_checksum_for_plan_up(plan);
+    if let Err(e) =
+        ledger::verify_checksum(&runner_ctx.version, &runner_ctx.checksum_up, &computed_up)
+    {
+        return Err(match e {
+            VerifyError::Mismatch(m) => RunnerError::ChecksumMismatch(m),
+            VerifyError::Format(f) => RunnerError::ChecksumFormat(f),
+        });
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "runner guard helpers return the public RunnerError enum unchanged"
+)]
+fn validate_apply_identity(runner_ctx: &RunnerCtx) -> Result<(), RunnerError> {
+    if runner_ctx.version == super::bootstrap::PHASE_ZERO_VERSION {
+        return Ok(());
+    }
+
+    match runner_ctx.runner_identity {
+        Some(identity) if identity.requires_binding() => Ok(()),
+        _ => Err(RunnerError::MissingApplyIdentity {
+            version: runner_ctx.version.clone(),
+        }),
+    }
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "rollback guard helpers return the public RollbackError enum unchanged"
+)]
+fn validate_rollback_identity(runner_ctx: &RunnerCtx) -> Result<(), RollbackError> {
+    if runner_ctx.version == super::bootstrap::PHASE_ZERO_VERSION {
+        return Ok(());
+    }
+
+    match runner_ctx.runner_identity {
+        Some(identity) if identity.requires_binding() => Ok(()),
+        _ => Err(RollbackError::MissingRollbackIdentity {
+            version: runner_ctx.version.clone(),
+        }),
+    }
 }
 
 // ── Public entry point ────────────────────────────────────────────────────
@@ -883,6 +1126,10 @@ pub async fn apply_plan(
     runner_ctx: &RunnerCtx,
     _guard: &WorkspaceGuard,
 ) -> Result<RunReport, RunnerError> {
+    preflight_phase_zero_apply_artifact(plan, runner_ctx)?;
+    verify_plan_checksum(plan, runner_ctx)?;
+    validate_apply_identity(runner_ctx)?;
+
     // GH #274 / #331 — pin one physical Postgres session for the
     // entire operation window so the advisory lock, DDL, ledger
     // writes, and lock release all run on the same backend.
@@ -1046,7 +1293,37 @@ async fn apply_plan_inner(
         ExecutionMode::Transactional
     };
 
-    // 5. Insert pending ledger row. Generate a fresh run_id.
+    // 5. Gate: non-Phase-0 apply requires a binding-capable runner
+    // identity before `generate_run_id()` (which invokes HeeRanjID-
+    // backed SQL). Mirrors the rollback inverse refusal at
+    // [`rollback_handle_lock`]. Phase 0 remains exempt.
+    if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
+        let identity = match runner_ctx.runner_identity {
+            Some(id) => id,
+            None => {
+                return Err(RunnerError::MissingApplyIdentity {
+                    version: runner_ctx.version.clone(),
+                });
+            }
+        };
+        if !identity.requires_binding() {
+            return Err(RunnerError::MissingApplyIdentity {
+                version: runner_ctx.version.clone(),
+            });
+        }
+
+        // Bind the selected node identity on the pinned connection.
+        bind_runner_node_identity(
+            ctx,
+            identity.node_id().expect(
+                "INVARIANT: node_id is Some when requires_binding is true; \
+                 IdentityFree ruled out by refusal gate above",
+            ),
+        )
+        .await?;
+    }
+
+    // 5b. Insert pending ledger row. Generate a fresh run_id.
     let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
     let ledger_row = LedgerRow {
         version: runner_ctx.version.clone(),
@@ -1152,7 +1429,21 @@ async fn apply_plan_inner(
         }
     }
 
-    // 7. Mark applied + persist snapshot. The order is:
+    if runner_ctx.version == super::bootstrap::PHASE_ZERO_VERSION
+        && runner_ctx
+            .runner_identity
+            .is_some_and(RunnerIdentity::provisions_phase_zero_single_node_dev)
+    {
+        let node_id = super::bootstrap::DEFAULT_NODE_ID;
+        if let Err(e) = provision_phase_zero_single_node_dev(ctx, node_id).await {
+            let note = format!("single-node-dev provisioning failed before mark_applied: {e}");
+            let _ = ledger::mark_failed(ctx, ledger_id, &note).await;
+            return Err(e);
+        }
+    }
+
+    // 7. Mark applied + persist snapshot. Phase 0 SingleNodeDev
+    // provisioning has already succeeded if it was required. The order is:
     // a. Write the snapshot file.
     // b. Mark the ledger row applied.
     // If (a) fails, the ledger stays `pending` and the operator can
@@ -1540,6 +1831,29 @@ pub enum RollbackError {
         path: PathBuf,
         source: SnapshotError,
     },
+
+    /// **#386** — Phase 0 rollback down payload was not classified as
+    /// identity-free replay-current before any down SQL execution. The
+    /// runner refuses `seed-capable-runtime-only`,
+    /// `seed-dml-not-runtime-current`, `generated-stale`, `ambiguous`,
+    /// `incomplete`, or `missing` down payloads before touching the
+    /// ledger, snapshot, or database.
+    StalePhaseZeroDown {
+        /// Migration version being rolled back.
+        version: String,
+        /// Classification refusal reason from the Phase 0 classifier.
+        refusal_reason: &'static str,
+    },
+
+    /// **#386** — Non-Phase-0 rollback reached SQL execution without
+    /// a binding-capable runner identity. `IdentityFree` and missing
+    /// identity (`None`) are refused for non-Phase-0 rollback because
+    /// down SQL executes user migration statements and generates run
+    /// IDs via HeeRanjID-backed functions.
+    MissingRollbackIdentity {
+        /// Migration version being rolled back.
+        version: String,
+    },
 }
 
 impl std::fmt::Display for RollbackError {
@@ -1603,6 +1917,20 @@ impl std::fmt::Display for RollbackError {
                 f,
                 "[D624] rollback refused: partition leaf identity mismatch for `{version}`",
             ),
+            RollbackError::StalePhaseZeroDown {
+                version,
+                refusal_reason,
+            } => write!(
+                f,
+                "rollback refused: Phase 0 down SQL for `{version}` is {refusal_reason}; \
+                 refusing before execution to prevent stale artifact mutation",
+            ),
+            RollbackError::MissingRollbackIdentity { version } => write!(
+                f,
+                "rollback refused: non-Phase-0 rollback of `{version}` requires a \
+                 binding-capable runner identity (Selected or SingleNodeDev); \
+                 IdentityFree and missing identity are not allowed for down SQL execution",
+            ),
         }
     }
 }
@@ -1664,6 +1992,7 @@ pub async fn rollback_plan(
     if prior_snapshot.is_none() && runner_ctx.snapshot_path.is_some() {
         return Err(RollbackError::PriorSnapshotMissing);
     }
+    validate_rollback_identity(runner_ctx)?;
 
     // GH #274 / #331 — pin one physical Postgres session for the
     // entire rollback window (same contract as apply_plan).
@@ -1706,6 +2035,35 @@ fn rollback_lossy_allow_reason(
     }
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "rollback guard helpers return the public RollbackError enum unchanged"
+)]
+fn preflight_phase_zero_down_payload(
+    replay_plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+) -> Result<(), RollbackError> {
+    if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
+        return Ok(());
+    }
+
+    let down_sqls = replay_plan
+        .segments
+        .iter()
+        .flat_map(|seg| seg.statements.iter())
+        .map(|stmt| stmt.down.as_str());
+
+    if let Err(refusal_reason) =
+        super::phase_zero::require_identity_free_phase_zero_down_payload(down_sqls)
+    {
+        return Err(RollbackError::StalePhaseZeroDown {
+            version: runner_ctx.version.clone(),
+            refusal_reason,
+        });
+    }
+    Ok(())
+}
+
 /// Internal rollback path that runs on an already-pinned context.
 /// Materializes the strict replay plan inside the advisory lock before
 /// scanning lossy markers or executing down SQL. Partition-expanded
@@ -1735,120 +2093,7 @@ async fn rollback_plan_pinned(
         .await
         .map_err(RollbackError::Runner)?;
 
-    // 3. Confirm the row exists and is in a rollbackable status — inside
-    // the lock so the status read is atomic with the subsequent write.
-    let row_result = load_ledger_row_for_version(ctx, &runner_ctx.version)
-        .await
-        .map_err(|e| {
-            RollbackError::Runner(RunnerError::LedgerQueryFailed {
-                query_label: "load_row_for_version",
-                source: e,
-            })
-        });
-    let row_opt = match row_result {
-        Ok(r) => r,
-        Err(e) => {
-            let _released = release_advisory_lock(ctx, lock_key).await;
-            return Err(e);
-        }
-    };
-    let row = match row_opt {
-        Some(r) => r,
-        None => {
-            let _released = release_advisory_lock(ctx, lock_key).await;
-            return Err(RollbackError::VersionNotFound {
-                version: runner_ctx.version.clone(),
-            });
-        }
-    };
-    // 3a. Verify the ledger row belongs to the same logical app bucket
-    // that owns the advisory lock. An operator-constructed or stale
-    // MigrationPlan whose bucket.app differs from the row's
-    // app_label would mutate the row while holding a lock for the
-    // wrong bucket — the same hazard the repair flow guards
-    // (GH #274 hardening).
-    if row.app_label != plan.bucket.app {
-        let e = RollbackError::BucketAppMismatch {
-            version: runner_ctx.version.clone(),
-            row_app_label: row.app_label.clone(),
-            supplied_app: plan.bucket.app.clone(),
-        };
-        let _released = release_advisory_lock(ctx, lock_key).await;
-        return Err(e);
-    }
-
-    if !matches!(row.status, LedgerStatus::Applied | LedgerStatus::Faked) {
-        let current_status = row.status;
-        let _released = release_advisory_lock(ctx, lock_key).await;
-        return Err(RollbackError::VersionNotRollbackable {
-            version: runner_ctx.version.clone(),
-            current_status,
-        });
-    }
-
-    // #366: Pre-strict leaf-identity check — zero-leaf↔non-empty drift.
-    if let Some(ref stored_identity) = row.leaf_identity {
-        let pre_cache = match compute_leaf_identity_cache(ctx, plan).await {
-            Ok(c) => c,
-            Err(e) => {
-                let _released = release_advisory_lock(ctx, lock_key).await;
-                return Err(RollbackError::Runner(e));
-            }
-        };
-        let pre_identity = serialize_leaf_identity(&pre_cache).unwrap_or_default();
-        if pre_identity != *stored_identity {
-            let e = RollbackError::LeafIdentityMismatch {
-                version: runner_ctx.version.clone(),
-                stored_leaf_identity: stored_identity.clone(),
-                current_leaf_identity: pre_identity,
-            };
-            let _released = release_advisory_lock(ctx, lock_key).await;
-            return Err(e);
-        }
-    }
-
-    // 5. Materialize strict replay plan inside advisory lock. Partition-expanded
-    // statements are rematerialized from the same execution stream used by apply;
-    // rollback replays reverse down SQL against the expanded stream. Lossy
-    // scanning operates on the materialized plan, not the original unexpanded
-    // plan, so per-leaf lossy markers are properly detected (GH #317).
-    let (replay_plan, leaves_cache_rollback) =
-        match materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict).await {
-            Ok((p, cache)) => (p, cache),
-            Err(e) => {
-                let _released = release_advisory_lock(ctx, lock_key).await;
-                return Err(RollbackError::Runner(e));
-            }
-        };
-
-    // #356: Compare stored leaf identity against freshly materialized leaves.
-    let current_rollback_identity =
-        serialize_leaf_identity(&leaves_cache_rollback).unwrap_or_default();
-    let rollback_leaf_mismatch = if let Some(ref stored_identity) = row.leaf_identity {
-        current_rollback_identity != *stored_identity
-    } else {
-        false
-    };
-    if rollback_leaf_mismatch {
-        let e = RollbackError::LeafIdentityMismatch {
-            version: runner_ctx.version.clone(),
-            stored_leaf_identity: row.leaf_identity.clone().unwrap(),
-            current_leaf_identity: current_rollback_identity,
-        };
-        let _released = release_advisory_lock(ctx, lock_key).await;
-        return Err(e);
-    }
-
-    // 5a. Lossy scanning against the materialized (expanded) plan.
-    let allow_reason = match rollback_lossy_allow_reason(&replay_plan, &lossy_policy) {
-        Ok(r) => r,
-        Err(e) => {
-            let _released = release_advisory_lock(ctx, lock_key).await;
-            return Err(e);
-        }
-    };
-
-    let result = rollback_inner(ctx, &replay_plan, runner_ctx, prior_snapshot, allow_reason).await;
+    let result = rollback_handle_lock(ctx, plan, runner_ctx, lossy_policy, prior_snapshot).await;
 
     let released = release_advisory_lock(ctx, lock_key).await;
 
@@ -1866,6 +2111,138 @@ async fn rollback_plan_pinned(
         )),
         (Err(e), _) => Err(e),
     }
+}
+
+async fn rollback_handle_lock(
+    ctx: &mut PinnedCtx<'_>,
+    plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+    lossy_policy: LossyRollbackPolicy,
+    prior_snapshot: Option<&super::schema::AppliedSchema>,
+) -> Result<RollbackReport, RollbackError> {
+    // 3. Confirm the row exists and is in a rollbackable status — inside
+    // the lock so the status read is atomic with the subsequent write.
+    let row = load_ledger_row_for_version(ctx, &runner_ctx.version)
+        .await
+        .map_err(|e| {
+            RollbackError::Runner(RunnerError::LedgerQueryFailed {
+                query_label: "load_row_for_version",
+                source: e,
+            })
+        })?
+        .ok_or_else(|| RollbackError::VersionNotFound {
+            version: runner_ctx.version.clone(),
+        })?;
+    // 3a. Verify the ledger row belongs to the same logical app bucket
+    // that owns the advisory lock. An operator-constructed or stale
+    // MigrationPlan whose bucket.app differs from the row's
+    // app_label would mutate the row while holding a lock for the
+    // wrong bucket — the same hazard the repair flow guards
+    // (GH #274 hardening).
+    if row.app_label != plan.bucket.app {
+        return Err(RollbackError::BucketAppMismatch {
+            version: runner_ctx.version.clone(),
+            row_app_label: row.app_label.clone(),
+            supplied_app: plan.bucket.app.clone(),
+        });
+    }
+
+    if !matches!(row.status, LedgerStatus::Applied | LedgerStatus::Faked) {
+        return Err(RollbackError::VersionNotRollbackable {
+            version: runner_ctx.version.clone(),
+            current_status: row.status,
+        });
+    }
+
+    // #366: Pre-strict leaf-identity check — zero-leaf↔non-empty drift.
+    if let Some(ref stored_identity) = row.leaf_identity {
+        let pre_cache = compute_leaf_identity_cache(ctx, plan)
+            .await
+            .map_err(RollbackError::Runner)?;
+        let pre_identity = serialize_leaf_identity(&pre_cache).unwrap_or_default();
+        if pre_identity != *stored_identity {
+            return Err(RollbackError::LeafIdentityMismatch {
+                version: runner_ctx.version.clone(),
+                stored_leaf_identity: stored_identity.clone(),
+                current_leaf_identity: pre_identity,
+            });
+        }
+    }
+
+    // 5. Materialize strict replay plan inside advisory lock. Partition-expanded
+    // statements are rematerialized from the same execution stream used by apply;
+    // rollback replays reverse down SQL against the expanded stream. Lossy
+    // scanning operates on the materialized plan, not the original unexpanded
+    // plan, so per-leaf lossy markers are properly detected (GH #317).
+    let (replay_plan, leaves_cache_rollback) =
+        materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict)
+            .await
+            .map_err(RollbackError::Runner)?;
+
+    // #356: Compare stored leaf identity against freshly materialized leaves.
+    let current_rollback_identity =
+        serialize_leaf_identity(&leaves_cache_rollback).unwrap_or_default();
+    let rollback_leaf_mismatch = if let Some(ref stored_identity) = row.leaf_identity {
+        current_rollback_identity != *stored_identity
+    } else {
+        false
+    };
+    if rollback_leaf_mismatch {
+        return Err(RollbackError::LeafIdentityMismatch {
+            version: runner_ctx.version.clone(),
+            stored_leaf_identity: row.leaf_identity.clone().unwrap(),
+            current_leaf_identity: current_rollback_identity,
+        });
+    }
+
+    // 5a. Lossy scanning against the materialized (expanded) plan.
+    let allow_reason = rollback_lossy_allow_reason(&replay_plan, &lossy_policy)?;
+
+    // 5b. Phase 0 down payload classification — refuse seed-capable runtime,
+    // seed-DML non-runtime, generated-stale, ambiguous, incomplete, or missing
+    // Phase 0 down SQL before any transactional/non-transactional down
+    // execution. The helper consumes the already-materialized ReplayStrict
+    // plan, so rollback checks the same authoritative stream it would execute.
+    preflight_phase_zero_down_payload(&replay_plan, runner_ctx)?;
+
+    if runner_ctx.version == super::bootstrap::PHASE_ZERO_VERSION {
+        // Phase 0 is the run-id carve-out (HeeRanjID not yet installed),
+        // so no identity binding is required for rollback of Phase 0.
+    } else {
+        // Non-Phase-0 rollback: enforce binding-capable identity before
+        // down SQL execution. Refuse IdentityFree or missing identity
+        // because non-Phase-0 rollback executes user migration SQL and
+        // may cross HeeRanjID-backed run-id generation.
+        let identity = match runner_ctx.runner_identity {
+            Some(id) => id,
+            None => {
+                return Err(RollbackError::MissingRollbackIdentity {
+                    version: runner_ctx.version.clone(),
+                });
+            }
+        };
+
+        if !identity.requires_binding() {
+            // IdentityFree is not allowed for non-Phase-0 rollback.
+            return Err(RollbackError::MissingRollbackIdentity {
+                version: runner_ctx.version.clone(),
+            });
+        }
+
+        // Bind the selected node identity on the pinned rollback
+        // connection before down SQL execution.
+        bind_runner_node_identity(
+            ctx,
+            identity.node_id().expect(
+                "INVARIANT: node_id is Some when requires_binding is true; \
+                 IdentityFree ruled out by refusal gate above",
+            ),
+        )
+        .await
+        .map_err(RollbackError::Runner)?;
+    }
+
+    rollback_inner(ctx, &replay_plan, runner_ctx, prior_snapshot, allow_reason).await
 }
 
 /// Internal rollback core logic — split out so the advisory-lock release
@@ -2070,6 +2447,10 @@ pub async fn fake_apply_plan(
     _guard: &WorkspaceGuard,
     reason: &str,
 ) -> Result<RunReport, RunnerError> {
+    preflight_phase_zero_apply_artifact(plan, runner_ctx)?;
+    verify_plan_checksum(plan, runner_ctx)?;
+    validate_apply_identity(runner_ctx)?;
+
     // GH #274 / #331 — pin one physical Postgres session (same contract as apply_plan).
     let mut pinned = ctx
         .pin_for_migration()
@@ -2175,6 +2556,36 @@ async fn fake_apply_inner(
         Some(note_str) => format!("{fake_note}; {note_str}"),
         None => fake_note,
     };
+
+    // Gate: non-Phase-0 fake-apply requires a binding-capable runner
+    // identity before `generate_run_id()`. Mirrors the apply_gate
+    // and rollback inverse. Phase 0 remains exempt.
+    if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
+        let identity = match runner_ctx.runner_identity {
+            Some(id) => id,
+            None => {
+                return Err(RunnerError::MissingApplyIdentity {
+                    version: runner_ctx.version.clone(),
+                });
+            }
+        };
+        if !identity.requires_binding() {
+            return Err(RunnerError::MissingApplyIdentity {
+                version: runner_ctx.version.clone(),
+            });
+        }
+
+        // Bind the selected node identity on the pinned connection.
+        bind_runner_node_identity(
+            ctx,
+            identity.node_id().expect(
+                "INVARIANT: node_id is Some when requires_binding is true; \
+                 IdentityFree ruled out by refusal gate above",
+            ),
+        )
+        .await?;
+    }
+
     let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
     // `insert_pending` binds `row.status.as_db_str()` directly, so
     // constructing the row with `LedgerStatus::Faked` writes the
@@ -2275,6 +2686,7 @@ pub async fn baseline_plan(
     if runner_ctx.snapshot.is_some() {
         return Err(RunnerError::BaselineSnapshotShouldNotBeProvided);
     }
+    validate_apply_identity(runner_ctx)?;
 
     // GH #274 / #331 — pin one physical Postgres session (same contract as apply_plan).
     let mut pinned = ctx
@@ -2347,6 +2759,36 @@ async fn baseline_inner(
         db = bucket.database,
         app = bucket.app,
     );
+
+    // Gate: non-Phase-0 baseline requires a binding-capable runner
+    // identity before `generate_run_id()`. Mirrors the apply_gate
+    // and rollback inverse. Phase 0 remains exempt.
+    if runner_ctx.version != super::bootstrap::PHASE_ZERO_VERSION {
+        let identity = match runner_ctx.runner_identity {
+            Some(id) => id,
+            None => {
+                return Err(RunnerError::MissingApplyIdentity {
+                    version: runner_ctx.version.clone(),
+                });
+            }
+        };
+        if !identity.requires_binding() {
+            return Err(RunnerError::MissingApplyIdentity {
+                version: runner_ctx.version.clone(),
+            });
+        }
+
+        // Bind the selected node identity on the pinned connection.
+        bind_runner_node_identity(
+            ctx,
+            identity.node_id().expect(
+                "INVARIANT: node_id is Some when requires_binding is true; \
+                 IdentityFree ruled out by refusal gate above",
+            ),
+        )
+        .await?;
+    }
+
     let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
     let row = LedgerRow {
         version: runner_ctx.version.clone(),
@@ -2443,9 +2885,44 @@ async fn execute_runner_statement(
     // canonical framework migration; adopter migrations still route
     // through the session-statement guard.
     if runner_ctx.version == super::bootstrap::PHASE_ZERO_VERSION {
+        // Deepest statement-level guard: classify Phase 0 payloads
+        // immediately before raw batch_execute. The pre-bootstrap
+        // artifact checks are the primary gate, but this catches
+        // stale statements that somehow evaded the artifact-level
+        // classification (e.g. hand-edited migration files or
+        // partial regeneration). Refuses top-level seed-DML statements and
+        // generated-stale patterns like
+        // ALTER DATABASE "hardcoded_db" SET heer.node_id.
+        if let Err(reason) = super::phase_zero::require_current_phase_zero_statement(sql) {
+            return Err(DjogiError::StalePhaseZeroStatement {
+                refusal_reason: reason,
+                statement: truncate_for_log(sql),
+            });
+        }
         ctx.batch_execute(sql).await
     } else {
         guarded_batch_execute(ctx, sql).await
+    }
+}
+
+/// Truncate a SQL statement for safe inclusion in error messages.
+/// Keeps the first 256 characters (enough to identify the pattern)
+/// and appends an ellipsis if truncated.
+fn truncate_for_log(sql: &str) -> String {
+    const MAX_LEN: usize = 256;
+    let trimmed = sql.trim();
+    if trimmed.len() <= MAX_LEN {
+        trimmed.to_string()
+    } else {
+        let mut end = 0;
+        for (idx, ch) in trimmed.char_indices() {
+            let next = idx + ch.len_utf8();
+            if next > MAX_LEN {
+                break;
+            }
+            end = next;
+        }
+        format!("{}...", &trimmed[..end])
     }
 }
 
@@ -3470,6 +3947,95 @@ fn note_for_failed_transactional_segment(seg_idx: usize, e: &RunnerError) -> Str
     }
 }
 
+/// Bind both `heer.node_id` and `heer.ranj_node_id` on the pinned
+/// migration connection using validation-backed SQL. This calls
+/// HeeRanjID's `set_heer_node_id(<id>)` and `set_heer_ranj_node_id(<id>)`
+/// functions, which validate that the node is registered and active
+/// in `heer_nodes` before setting the session GUCs.
+///
+/// This must be called after Phase 0 installs HeeRanjID functions
+/// (so `set_heer_node_id` exists) and before non-Phase-0
+/// `generate_run_id` / `HeerId::generate`, user migration SQL, or
+/// any ledger/progress/terminal/snapshot mutation that depends on
+/// the current node identity.
+pub(crate) async fn bind_runner_node_identity(
+    ctx: &mut DjogiContext,
+    node_id: i32,
+) -> Result<(), RunnerError> {
+    bind_runner_node_identity_steps(ctx, node_id)
+        .await
+        .map_err(|source| RunnerError::NodeIdentityBindingFailed { node_id, source })
+}
+
+async fn bind_runner_node_identity_steps(
+    ctx: &mut DjogiContext,
+    node_id: i32,
+) -> Result<(), DjogiError> {
+    // Bind heer.node_id first. Both GUCs bind to the same value unless
+    // a future design explains why they should differ.
+    // Uses parameterized execute ($1) for defense-in-depth: no string
+    // interpolation of caller-supplied values into SQL. The $1 parameter
+    // maps to i32 → PostgreSQL INTEGER via tokio-postgres type coercion.
+    ctx.execute("SELECT set_heer_node_id($1)", &[&node_id])
+        .await
+        .map_err(|source| {
+            crate::DjogiError::Db(crate::DbError::other(format!(
+                "bind heer.node_id: {source}"
+            )))
+        })?;
+
+    // Bind heer.ranj_node_id second. If this fails after the first GUC
+    // succeeds, the pinned connection has partial GUC state (heer.node_id
+    // set but heer.ranj_node_id not). However, the error prevents generate_run_id
+    // and user SQL from executing, and the pinned connection is released with
+    // transactional state cleaned up by the existing reconcile/release pattern.
+    ctx.execute("SELECT set_heer_ranj_node_id($1)", &[&node_id])
+        .await
+        .map_err(|source| {
+            crate::DjogiError::Db(crate::DbError::other(format!(
+                "bind heer.ranj_node_id: {source}"
+            )))
+        })?;
+
+    Ok(())
+}
+
+async fn provision_phase_zero_single_node_dev(
+    ctx: &mut DjogiContext,
+    node_id: i32,
+) -> Result<(), RunnerError> {
+    ctx.batch_execute(heeranjid::postgres_schema::SEED_SQL)
+        .await
+        .map_err(|source| RunnerError::SingleNodeDevProvisioningFailed {
+            node_id,
+            step: "seed node rows",
+            source,
+        })?;
+
+    let node_seed_sql = super::bootstrap::compose_node_seed("", node_id).map_err(|source| {
+        RunnerError::SingleNodeDevProvisioningFailed {
+            node_id,
+            step: "compose node GUC defaults",
+            source: DjogiError::Db(DbError::other(source.to_string())),
+        }
+    })?;
+    ctx.batch_execute(&node_seed_sql).await.map_err(|source| {
+        RunnerError::SingleNodeDevProvisioningFailed {
+            node_id,
+            step: "set node GUC defaults",
+            source,
+        }
+    })?;
+
+    bind_runner_node_identity_steps(ctx, node_id)
+        .await
+        .map_err(|source| RunnerError::SingleNodeDevProvisioningFailed {
+            node_id,
+            step: "bind node identity",
+            source,
+        })
+}
+
 /// Generate a fresh `run_id` via the HeerId default-allocation path.
 /// HeerId is a 64-bit time-ordered ID — perfect for the per-runner
 /// invocation key, which we want to be unique, sortable, and stable
@@ -4316,11 +4882,12 @@ mod tests {
     #![allow(clippy::await_holding_lock)]
 
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
     use std::time::Duration;
 
     use crate::config::MigrateConfig;
+    use crate::migrate::bootstrap::PHASE_ZERO_VERSION;
     use crate::migrate::diff::Classification;
     use crate::migrate::projection::BucketKey;
     use crate::migrate::schema::AppliedSchema;
@@ -4424,6 +4991,7 @@ mod tests {
             config: MigrateConfig::default(),
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool,
+            runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
         }
     }
 
@@ -4441,6 +5009,97 @@ mod tests {
             Duration::from_secs(2),
         )
         .expect("acquire workspace lock")
+    }
+
+    async fn unreachable_pool_context() -> DjogiContext {
+        let pool = crate::pg::pool::DjogiPool::builder("postgres://localhost:1/djogi_unreachable")
+            .timeout(Duration::from_millis(1))
+            .build()
+            .await
+            .expect("construct lazy unreachable pool");
+        DjogiContext::from_pool(pool)
+    }
+
+    fn generated_stale_phase_zero_plan() -> MigrationPlan {
+        let mut sql = crate::migrate::bootstrap::compose_phase_zero(
+            "main",
+            &BTreeSet::new(),
+            crate::migrate::bootstrap::DEFAULT_NODE_ID,
+            true,
+        )
+        .expect("compose seed-capable Phase 0");
+        let start = sql.find("DO $djogi$").expect("dynamic defaults block");
+        let end = sql[start..]
+            .find("SET heer.node_id = '1';")
+            .map(|offset| start + offset)
+            .expect("session SET after dynamic defaults");
+        sql.replace_range(
+            start..end,
+            "ALTER DATABASE \"main\" SET heer.node_id = '1';\n\
+             ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
+        );
+        single_segment_plan(SegmentKind::Transactional, "Phase 0 bootstrap", &sql)
+    }
+
+    fn current_phase_zero_plan() -> MigrationPlan {
+        let sql = crate::migrate::bootstrap::compose_phase_zero(
+            "main",
+            &BTreeSet::new(),
+            crate::migrate::bootstrap::DEFAULT_NODE_ID,
+            false,
+        )
+        .expect("compose identity-free Phase 0");
+        single_segment_plan(SegmentKind::Transactional, "Phase 0 bootstrap", &sql)
+    }
+
+    fn markerless_seed_phase_zero_plan() -> MigrationPlan {
+        phase_zero_plan_with_seed_statement("INSERT INTO heer.heer_nodes (id) VALUES (1);")
+    }
+
+    fn phase_zero_plan_with_seed_statement(statement: &str) -> MigrationPlan {
+        let mut sql = crate::migrate::bootstrap::compose_phase_zero(
+            "main",
+            &BTreeSet::new(),
+            crate::migrate::bootstrap::DEFAULT_NODE_ID,
+            false,
+        )
+        .expect("compose identity-free Phase 0");
+        sql.push('\n');
+        sql.push_str(statement);
+        sql.push('\n');
+        single_segment_plan(SegmentKind::Transactional, "Phase 0 bootstrap", &sql)
+    }
+
+    fn extended_seed_statement_cases() -> [(&'static str, &'static str); 4] {
+        [
+            (
+                "cte_insert",
+                "WITH rows AS (SELECT 1) INSERT INTO heer.heer_nodes (id) VALUES (1);",
+            ),
+            (
+                "cte_delete",
+                "WITH moved AS (DELETE FROM heer.heer_node_state RETURNING *) SELECT 1;",
+            ),
+            (
+                "merge",
+                "MERGE INTO heer.heer_nodes AS target USING incoming ON false WHEN NOT MATCHED THEN INSERT (id) VALUES (1);",
+            ),
+            (
+                "copy_from",
+                "COPY \"heer\".\"heer_ranj_node_state\" (\"node_id\") FROM STDIN;",
+            ),
+        ]
+    }
+
+    fn seed_capable_phase_zero_plan() -> MigrationPlan {
+        let sql = crate::migrate::bootstrap::compose_phase_zero(
+            "main",
+            &BTreeSet::new(),
+            crate::migrate::bootstrap::DEFAULT_NODE_ID,
+            true,
+        )
+        .expect("compose seed-capable Phase 0");
+        single_segment_plan(SegmentKind::Transactional, "Phase 0 bootstrap", &sql)
     }
 
     struct SigningKeyEnvUnsetGuard {
@@ -4958,7 +5617,7 @@ mod tests {
             ),
             (
                 LedgerStatus::RolledBack,
-                "re-running `djogi migrations apply` will remove the rolled-back row and re-apply the migration",
+                "the rolled_back row is retained as audit history",
             ),
         ] {
             let e = RunnerError::VersionCollisionNonTerminal {
@@ -5162,6 +5821,7 @@ mod tests {
             config: MigrateConfig::default(),
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: Some(audit_pool),
+            runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
         };
         let guard = acquire_test_workspace_guard();
 
@@ -5380,6 +6040,7 @@ mod tests {
             },
             out_of_order_policy: crate::migrate::OutOfOrderPolicy::Reject,
             audit_pool: None,
+            runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
         };
 
         let guard = acquire_test_workspace_guard();
@@ -5435,6 +6096,7 @@ mod tests {
             },
             out_of_order_policy: crate::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
+            runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
         };
 
         let guard = acquire_test_workspace_guard();
@@ -5509,6 +6171,7 @@ mod tests {
                 override_reason: "merge window".to_string(),
             },
             audit_pool: None,
+            runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
         };
 
         let guard = acquire_test_workspace_guard();
@@ -5744,5 +6407,1090 @@ mod tests {
         assert!(msg.contains("rollback refused"));
         assert!(msg.contains("partition leaf identity mismatch"));
         assert!(msg.contains("001_create_users"));
+    }
+
+    // ── Stage 4C: Rollback stale Phase 0 down and identity contract ─────
+
+    #[test]
+    fn rollback_stale_phase_zero_down_error_display() {
+        let phase_zero_version = crate::migrate::bootstrap::PHASE_ZERO_VERSION;
+        let err = RollbackError::StalePhaseZeroDown {
+            version: phase_zero_version.to_string(),
+            refusal_reason: "generated-stale",
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("rollback refused"));
+        assert!(msg.contains("Phase 0 down SQL"));
+        assert!(msg.contains("generated-stale"));
+        assert!(msg.contains(phase_zero_version));
+    }
+
+    #[test]
+    fn rollback_stale_phase_zero_down_error_display_ambiguous() {
+        let phase_zero_version = crate::migrate::bootstrap::PHASE_ZERO_VERSION;
+        let err = RollbackError::StalePhaseZeroDown {
+            version: phase_zero_version.to_string(),
+            refusal_reason: "ambiguous",
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("ambiguous"));
+    }
+
+    #[test]
+    fn rollback_missing_identity_error_display() {
+        let err = RollbackError::MissingRollbackIdentity {
+            version: "V20260101000000__add_users".to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("rollback refused"));
+        assert!(msg.contains("non-Phase-0 rollback"));
+        assert!(msg.contains("V20260101000000__add_users"));
+        assert!(msg.contains("binding-capable runner identity"));
+    }
+
+    #[test]
+    fn phase_zero_down_classification_identifies_literal_database_default_as_stale() {
+        // This is the generated-stale pattern: literal ALTER DATABASE with
+        // hardcoded database name for HeeRanjID GUC defaults.
+        let down_sql = "ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
+                        ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';";
+        let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
+        // The artifact classifier looks at banner/section markers, so a bare
+        // ALTER DATABASE without markers is classified as Ambiguous (not a
+        // recognized generated artifact). This still triggers refusal.
+        assert_ne!(
+            state,
+            crate::migrate::phase_zero::PhaseZeroArtifactState::IdentityFreeCurrent
+        );
+    }
+
+    #[test]
+    fn phase_zero_down_classification_identifies_complete_stale_as_generated_stale() {
+        let mut down_sql =
+            crate::migrate::bootstrap::compose_phase_zero("mydb", &BTreeSet::new(), 1, true)
+                .expect("compose seed-capable Phase 0");
+        let start = down_sql.find("DO $djogi$").expect("dynamic defaults");
+        let end = down_sql[start..]
+            .find("SET heer.node_id = '1';")
+            .map(|offset| start + offset)
+            .expect("session SET after dynamic defaults");
+        down_sql.replace_range(
+            start..end,
+            "ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
+             ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';\n",
+        );
+        let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
+        assert_eq!(
+            state,
+            crate::migrate::phase_zero::PhaseZeroArtifactState::GeneratedStale
+        );
+    }
+
+    #[test]
+    fn phase_zero_down_classification_identity_free_production_is_ok() {
+        // Production Phase 0 down: no node seed fragments.
+        let down_sql = "DROP TABLE IF EXISTS heer.heer_nodes;\n\
+                        DROP FUNCTION IF EXISTS heer.heerid_next();";
+        let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
+        // No generated markers → classified as Ambiguous (not a generated artifact).
+        // This still triggers refusal in the rollback guard, which is correct:
+        // the guard refuses anything that's not identity-free replay-current.
+        assert_ne!(
+            state,
+            crate::migrate::phase_zero::PhaseZeroArtifactState::IdentityFreeCurrent
+        );
+    }
+
+    #[test]
+    fn phase_zero_down_classification_comment_only_is_not_current() {
+        // Comment-only Phase 0 down has no generated markers, so the
+        // rollback guard refuses it instead of treating it as a supported
+        // rollback payload.
+        let down_sql = "-- Phase 0 down — no reverse operations for bootstrap";
+        let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
+        // No generated markers → Ambiguous, which refuses in the guard.
+        // This is correct: the rollback guard requires identity-free
+        // replay-current classification.
+        assert_ne!(
+            state,
+            crate::migrate::phase_zero::PhaseZeroArtifactState::IdentityFreeCurrent
+        );
+    }
+
+    fn phase_zero_plan_with_down_payload(down: &str) -> MigrationPlan {
+        MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![OperationSql {
+                    label: "Phase 0 rollback payload".to_string(),
+                    up: String::new(),
+                    down: down.to_string(),
+                    lossy: None,
+                }],
+            }],
+        }
+    }
+
+    fn phase_zero_runner_ctx_for(plan: &MigrationPlan) -> RunnerCtx {
+        RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            description: "Phase 0 rollback preflight".to_string(),
+            checksum_up: compute_checksum_for_plan_up(plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        }
+    }
+
+    #[test]
+    fn phase_zero_down_missing_payload_refuses_before_execution() {
+        for down in ["", " \n\t "] {
+            let plan = phase_zero_plan_with_down_payload(down);
+            let runner_ctx = phase_zero_runner_ctx_for(&plan);
+
+            let result = preflight_phase_zero_down_payload(&plan, &runner_ctx);
+
+            assert!(
+                matches!(
+                    result,
+                    Err(RollbackError::StalePhaseZeroDown {
+                        refusal_reason: "missing",
+                        ..
+                    })
+                ),
+                "missing/whitespace Phase 0 down payload must refuse, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase_zero_down_seed_capable_payload_refuses_before_execution() {
+        let down_sql = crate::migrate::bootstrap::compose_phase_zero(
+            "main",
+            &BTreeSet::new(),
+            crate::migrate::bootstrap::DEFAULT_NODE_ID,
+            true,
+        )
+        .expect("compose seed-capable Phase 0");
+        let plan = phase_zero_plan_with_down_payload(&down_sql);
+        let runner_ctx = phase_zero_runner_ctx_for(&plan);
+
+        let result = preflight_phase_zero_down_payload(&plan, &runner_ctx);
+
+        assert!(
+            matches!(
+                result,
+                Err(RollbackError::StalePhaseZeroDown {
+                    refusal_reason: "seed-capable-runtime-only",
+                    ..
+                })
+            ),
+            "seed-capable Phase 0 down payload must refuse before execution, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn phase_zero_down_markerless_seed_payload_refuses_before_execution() {
+        let mut down_sql = crate::migrate::bootstrap::compose_phase_zero(
+            "main",
+            &BTreeSet::new(),
+            crate::migrate::bootstrap::DEFAULT_NODE_ID,
+            false,
+        )
+        .expect("compose identity-free Phase 0");
+        down_sql.push_str("\nINSERT INTO heer.heer_nodes (id) VALUES (1);\n");
+        let plan = phase_zero_plan_with_down_payload(&down_sql);
+        let runner_ctx = phase_zero_runner_ctx_for(&plan);
+
+        let result = preflight_phase_zero_down_payload(&plan, &runner_ctx);
+
+        assert!(
+            matches!(
+                result,
+                Err(RollbackError::StalePhaseZeroDown {
+                    refusal_reason: "seed-dml-not-runtime-current",
+                    ..
+                })
+            ),
+            "markerless seed Phase 0 down payload must refuse before execution, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn phase_zero_down_extended_seed_payloads_refuse_before_execution() {
+        for (name, statement) in extended_seed_statement_cases() {
+            let mut down_sql = crate::migrate::bootstrap::compose_phase_zero(
+                "main",
+                &BTreeSet::new(),
+                crate::migrate::bootstrap::DEFAULT_NODE_ID,
+                false,
+            )
+            .expect("compose identity-free Phase 0");
+            down_sql.push('\n');
+            down_sql.push_str(statement);
+            down_sql.push('\n');
+            let plan = phase_zero_plan_with_down_payload(&down_sql);
+            let runner_ctx = phase_zero_runner_ctx_for(&plan);
+
+            let result = preflight_phase_zero_down_payload(&plan, &runner_ctx);
+
+            assert!(
+                matches!(
+                    result,
+                    Err(RollbackError::StalePhaseZeroDown {
+                        refusal_reason: "seed-dml-not-runtime-current",
+                        ..
+                    })
+                ),
+                "extended seed Phase 0 down payload {name} must refuse before execution, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn runner_identity_requires_binding_for_selected() {
+        assert!(RunnerIdentity::Selected { id: 7 }.requires_binding());
+    }
+
+    #[test]
+    fn runner_identity_requires_binding_for_single_node_dev() {
+        assert!(RunnerIdentity::SingleNodeDev.requires_binding());
+    }
+
+    #[test]
+    fn runner_identity_does_not_require_binding_for_identity_free() {
+        assert!(!RunnerIdentity::IdentityFree.requires_binding());
+    }
+
+    #[test]
+    fn runner_identity_selected_returns_node_id() {
+        assert_eq!(RunnerIdentity::Selected { id: 7 }.node_id(), Some(7));
+    }
+
+    #[test]
+    fn runner_identity_single_node_dev_returns_one() {
+        assert_eq!(RunnerIdentity::SingleNodeDev.node_id(), Some(1));
+    }
+
+    #[test]
+    fn runner_identity_free_returns_none() {
+        assert_eq!(RunnerIdentity::IdentityFree.node_id(), None);
+    }
+
+    // ── Pre-pin validation ordering ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn apply_plan_missing_identity_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = single_table_plan("pre_pin_apply_no_identity");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260602000000__pre_pin_apply_no_identity".to_string(),
+            description: "pre-pin apply identity test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "missing identity must refuse before pin/connection checkout, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_apply_plan_missing_identity_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = single_segment_plan(SegmentKind::Transactional, "fake", "SELECT 1");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260602000001__pre_pin_fake_no_identity".to_string(),
+            description: "pre-pin fake identity test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "pre-pin").await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "missing identity must refuse before fake-apply pins, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_plan_missing_identity_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = single_table_plan("pre_pin_baseline_no_identity");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260602000002__pre_pin_baseline_no_identity".to_string(),
+            description: "pre-pin baseline identity test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = baseline_plan(&mut ctx, &plan.bucket, &runner_ctx, &guard, "pre-pin").await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "missing identity must refuse before baseline pins, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_plan_missing_identity_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = single_table_plan("pre_pin_rollback_no_identity");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260602000003__pre_pin_rollback_no_identity".to_string(),
+            description: "pre-pin rollback identity test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = rollback_plan(
+            &mut ctx,
+            &plan,
+            &runner_ctx,
+            &guard,
+            LossyRollbackPolicy::Refuse,
+            None,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(RollbackError::MissingRollbackIdentity { .. })),
+            "missing identity must refuse before rollback pins, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_plan_checksum_mismatch_precedes_missing_identity_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = single_table_plan("pre_pin_apply_bad_checksum");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260602000004__pre_pin_apply_bad_checksum".to_string(),
+            description: "pre-pin apply checksum precedence test".to_string(),
+            checksum_up: compute_checksum(["different sql"]),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            matches!(result, Err(RunnerError::ChecksumMismatch(_))),
+            "checksum mismatch must precede missing identity and pin, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_apply_plan_checksum_mismatch_precedes_missing_identity_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = single_segment_plan(SegmentKind::Transactional, "fake", "SELECT 1");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260602000005__pre_pin_fake_bad_checksum".to_string(),
+            description: "pre-pin fake checksum precedence test".to_string(),
+            checksum_up: compute_checksum(["different sql"]),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "pre-pin").await;
+
+        assert!(
+            matches!(result, Err(RunnerError::ChecksumMismatch(_))),
+            "fake checksum mismatch must precede missing identity and pin, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_snapshot_refusal_precedes_missing_identity_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = single_table_plan("pre_pin_baseline_snapshot");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260602000006__pre_pin_baseline_snapshot".to_string(),
+            description: "pre-pin baseline snapshot precedence test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = baseline_plan(&mut ctx, &plan.bucket, &runner_ctx, &guard, "pre-pin").await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RunnerError::BaselineSnapshotShouldNotBeProvided)
+            ),
+            "snapshot refusal must precede missing identity and pin, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_prior_snapshot_refusal_precedes_missing_identity_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = single_table_plan("pre_pin_rollback_prior_snapshot");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260602000007__pre_pin_rollback_prior_snapshot".to_string(),
+            description: "pre-pin rollback prior snapshot precedence test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: Some(unique_temp_path("pre-pin-prior", "json")),
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = rollback_plan(
+            &mut ctx,
+            &plan,
+            &runner_ctx,
+            &guard,
+            LossyRollbackPolicy::Refuse,
+            None,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(RollbackError::PriorSnapshotMissing)),
+            "prior snapshot refusal must precede missing identity and pin, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_plan_stale_phase_zero_artifact_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = generated_stale_phase_zero_plan();
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            description: "pre-pin Phase 0 stale artifact test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RunnerError::StalePhaseZeroArtifact {
+                    refusal_reason: "generated-stale",
+                    ..
+                })
+            ),
+            "stale Phase 0 artifact must refuse before apply pins, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_plan_seed_capable_phase_zero_artifact_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = seed_capable_phase_zero_plan();
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            description: "pre-pin Phase 0 seed-capable artifact test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RunnerError::StalePhaseZeroArtifact {
+                    refusal_reason: "seed-capable-runtime-only",
+                    ..
+                })
+            ),
+            "seed-capable Phase 0 artifact must refuse before apply pins, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_plan_markerless_seed_phase_zero_artifact_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = markerless_seed_phase_zero_plan();
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            description: "pre-pin Phase 0 markerless seed artifact test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RunnerError::StalePhaseZeroArtifact {
+                    refusal_reason: "seed-dml-not-runtime-current",
+                    ..
+                })
+            ),
+            "markerless seed Phase 0 artifact must refuse before apply pins, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_plan_extended_seed_phase_zero_artifacts_refuse_before_pin() {
+        for (name, statement) in extended_seed_statement_cases() {
+            let mut ctx = unreachable_pool_context().await;
+            let plan = phase_zero_plan_with_seed_statement(statement);
+            let runner_ctx = RunnerCtx {
+                bucket: plan.bucket.clone(),
+                version: PHASE_ZERO_VERSION.to_string(),
+                description: format!("pre-pin Phase 0 extended seed artifact test: {name}"),
+                checksum_up: compute_checksum_for_plan_up(&plan),
+                checksum_down: None,
+                snapshot: Some(empty_snapshot()),
+                snapshot_path: None,
+                config: MigrateConfig::default(),
+                out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+                audit_pool: None,
+                runner_identity: None,
+            };
+            let guard = acquire_test_workspace_guard();
+
+            let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+            assert!(
+                matches!(
+                    result,
+                    Err(RunnerError::StalePhaseZeroArtifact {
+                        refusal_reason: "seed-dml-not-runtime-current",
+                        ..
+                    })
+                ),
+                "extended seed Phase 0 artifact {name} must refuse before apply pins, got {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_apply_plan_stale_phase_zero_artifact_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = generated_stale_phase_zero_plan();
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            description: "pre-pin Phase 0 fake stale artifact test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "pre-pin").await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RunnerError::StalePhaseZeroArtifact {
+                    refusal_reason: "generated-stale",
+                    ..
+                })
+            ),
+            "stale Phase 0 artifact must refuse before fake-apply pins, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_apply_plan_seed_capable_phase_zero_artifact_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = seed_capable_phase_zero_plan();
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            description: "pre-pin Phase 0 fake seed-capable artifact test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "pre-pin").await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RunnerError::StalePhaseZeroArtifact {
+                    refusal_reason: "seed-capable-runtime-only",
+                    ..
+                })
+            ),
+            "seed-capable Phase 0 artifact must refuse before fake-apply pins, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_apply_plan_markerless_seed_phase_zero_artifact_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = markerless_seed_phase_zero_plan();
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            description: "pre-pin Phase 0 fake markerless seed artifact test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "pre-pin").await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RunnerError::StalePhaseZeroArtifact {
+                    refusal_reason: "seed-dml-not-runtime-current",
+                    ..
+                })
+            ),
+            "markerless seed Phase 0 artifact must refuse before fake-apply pins, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_apply_plan_copy_from_seed_phase_zero_artifact_refuses_before_pin() {
+        let mut ctx = unreachable_pool_context().await;
+        let plan = phase_zero_plan_with_seed_statement(
+            "COPY \"heer\".\"heer_ranj_node_state\" (\"node_id\") FROM STDIN;",
+        );
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            description: "pre-pin Phase 0 fake COPY FROM seed artifact test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None,
+        };
+        let guard = acquire_test_workspace_guard();
+
+        let result = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "pre-pin").await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RunnerError::StalePhaseZeroArtifact {
+                    refusal_reason: "seed-dml-not-runtime-current",
+                    ..
+                })
+            ),
+            "COPY FROM seed Phase 0 artifact must refuse before fake-apply pins, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn truncate_for_log_handles_multibyte_boundary() {
+        let sql = format!("{}{}", "é".repeat(200), " SELECT 1");
+        let truncated = truncate_for_log(&sql);
+        assert!(truncated.ends_with("..."));
+        assert!(
+            truncated.len() <= 259,
+            "truncated message should keep the 256-byte budget plus ellipsis"
+        );
+    }
+
+    // ── Class G: identity gate tests on apply/fake/baseline paths ──
+
+    /// G-gate test: non-Phase-0 apply with `runner_identity: None` must
+    /// refuse with `MissingApplyIdentity` before reaching `generate_run_id`.
+    #[djogi_test]
+    async fn apply_plan_no_identity_non_phase_zero_refused(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        let plan = single_table_plan("g_gate_apply_no_id");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260601000000__g_gate_apply".to_string(),
+            description: "G-gate apply test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None, // intentionally missing — should be refused for non-P0
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "non-P0 apply with no identity should refuse with MissingApplyIdentity, got: {result:?}",
+        );
+
+        // Verify no ledger row was inserted (refusal is before insert).
+        let count: i64 = ctx
+            .query_one(
+                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000000__g_gate_apply'",
+                &[],
+            )
+            .await
+            .expect("count ledger rows")
+            .try_get(0)
+            .expect("count column");
+        assert_eq!(
+            count, 0,
+            "no ledger row should be inserted before the G-gate refusal"
+        );
+    }
+
+    /// G-gate test: non-Phase-0 fake apply with `runner_identity: None` must
+    /// refuse with `MissingApplyIdentity` before reaching `generate_run_id`.
+    #[djogi_test]
+    async fn fake_apply_no_identity_non_phase_zero_refused(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        let plan = single_segment_plan(SegmentKind::Transactional, "G-gate fake-apply", "SELECT 1");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260601000001__g_gate_fake".to_string(),
+            description: "G-gate fake-apply test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None, // intentionally missing — should be refused for non-P0
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result = fake_apply_plan(&mut ctx, &plan, &runner_ctx, &guard, "G-gate test").await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "non-P0 fake-apply with no identity should refuse with MissingApplyIdentity, got: {result:?}",
+        );
+
+        // Verify no ledger row was inserted.
+        let count: i64 = ctx
+            .query_one(
+                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000001__g_gate_fake'",
+                &[],
+            )
+            .await
+            .expect("count ledger rows")
+            .try_get(0)
+            .expect("count column");
+        assert_eq!(
+            count, 0,
+            "no ledger row should be inserted before the G-gate refusal"
+        );
+    }
+
+    /// G-gate test: non-Phase-0 baseline with `runner_identity: None` must
+    /// refuse with `MissingApplyIdentity` before reaching `generate_run_id`.
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (PIN): Create a table so the live-DB projection
+    // succeeds and the test can reach the G-gate refusal point.
+    #[djogi_test]
+    async fn baseline_no_identity_non_phase_zero_refused(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        let plan = single_table_plan("g_gate_baseline_no_id");
+        // Baseline needs a populated DB — create the table so projection succeeds.
+        ctx.raw_execute(
+            &format!("CREATE TABLE {} (id bigint)", "g_gate_baseline_no_id"),
+            &[],
+        )
+        .await
+        .expect("create table for baseline test");
+
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260601000002__g_gate_baseline".to_string(),
+            description: "G-gate baseline test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: None, // baseline requires None
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None, // intentionally missing — should be refused for non-P0
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let bucket = plan.bucket.clone();
+        let result = baseline_plan(&mut ctx, &bucket, &runner_ctx, &guard, "G-gate test").await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "non-P0 baseline with no identity should refuse with MissingApplyIdentity, got: {result:?}",
+        );
+
+        // Verify no ledger row was inserted.
+        let count: i64 = ctx
+            .query_one(
+                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000002__g_gate_baseline'",
+                &[],
+            )
+            .await
+            .expect("count ledger rows")
+            .try_get(0)
+            .expect("count column");
+        assert_eq!(
+            count, 0,
+            "no ledger row should be inserted before the G-gate refusal"
+        );
+    }
+
+    /// G-gate test: non-Phase-0 apply with `IdentityFree` must also refuse.
+    #[djogi_test]
+    async fn apply_plan_identity_free_non_phase_zero_refused(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        let plan = single_table_plan("g_gate_apply_idfree");
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: "V20260601000003__g_gate_idfree".to_string(),
+            description: "G-gate IdentityFree test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: Some(RunnerIdentity::IdentityFree), // IdentityFree — should be refused for non-P0
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            matches!(result, Err(RunnerError::MissingApplyIdentity { .. })),
+            "non-P0 apply with IdentityFree should refuse with MissingApplyIdentity, got: {result:?}",
+        );
+
+        // Verify no ledger row was inserted.
+        let count: i64 = ctx
+            .query_one(
+                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000003__g_gate_idfree'",
+                &[],
+            )
+            .await
+            .expect("count ledger rows")
+            .try_get(0)
+            .expect("count column");
+        assert_eq!(
+            count, 0,
+            "no ledger row should be inserted before the G-gate refusal"
+        );
+    }
+
+    /// G-gate carve-out: Phase 0 apply with `runner_identity: None` must
+    /// succeed — Phase 0 uses wall-clock run-id and is exempt from identity binding.
+    #[djogi_test]
+    async fn apply_phase_zero_no_identity_allowed(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        let plan = current_phase_zero_plan();
+        let runner_ctx = RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            description: "G-gate Phase 0 carve-out test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: None, // Phase 0 — should NOT be refused
+        };
+
+        let guard = acquire_test_workspace_guard();
+        let result = apply_plan(&mut ctx, &plan, &runner_ctx, &guard).await;
+
+        assert!(
+            result.is_ok(),
+            "Phase 0 apply with no identity should succeed (carve-out), got: {result:?}",
+        );
+
+        // Verify the ledger row was inserted.
+        let count: i64 = ctx
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = '{}'",
+                    PHASE_ZERO_VERSION
+                ),
+                &[],
+            )
+            .await
+            .expect("count ledger rows")
+            .try_get(0)
+            .expect("count column");
+        assert_eq!(count, 1, "Phase 0 apply should insert a ledger row");
+    }
+
+    /// C1/L test: verify dual-GUC split produces distinct error messages.
+    /// When the second GUC (set_heer_ranj_node_id) fails after the first
+    /// succeeds, the error source must reference "bind heer.ranj_node_id"
+    /// and NOT "bind heer.node_id".
+    #[djogi_test]
+    async fn bind_runner_node_identity_second_guc_failure(mut ctx: DjogiContext) {
+        // The #[djogi_test] harness seeds node_id = 1 in heer_nodes.
+        // We use node_id = 1 so the first GUC (set_heer_node_id) passes
+        // its validation, then we replace the second GUC with a wrapper
+        // that raises — exercising the dual-execute split in
+        // bind_runner_node_identity.
+        const TEST_NODE_ID: i32 = 1;
+
+        // Replace set_heer_ranj_node_id(INTEGER) with a wrapper that raises,
+        // so the second execute call fails after the first succeeds. The
+        // HeeRanjID bootstrap installs functions in the current schema
+        // (public), not a "heer" schema — the "heer." prefix is used only
+        // for the GUC names (heer.node_id, heer.ranj_node_id).
+        ctx.execute(
+            "DROP FUNCTION IF EXISTS set_heer_ranj_node_id(INTEGER)",
+            &[],
+        )
+        .await
+        .expect("drop original second GUC function");
+        ctx.execute(
+            "CREATE FUNCTION set_heer_ranj_node_id(INTEGER) RETURNS void AS $$ \
+             BEGIN RAISE EXCEPTION 'simulated second GUC failure'; END; $$ LANGUAGE plpgsql",
+            &[],
+        )
+        .await
+        .expect("create failing wrapper for second GUC");
+
+        let result = super::bind_runner_node_identity(&mut ctx, TEST_NODE_ID).await;
+
+        // The first GUC (set_heer_node_id) should succeed with node_id=1;
+        // the second (our wrapper that raises) should fail. The error must
+        // identify the SECOND call site, not the first.
+        assert!(
+            matches!(&result, Err(RunnerError::NodeIdentityBindingFailed { node_id, .. }) if *node_id == TEST_NODE_ID),
+            "expected NodeIdentityBindingFailed for node_id={TEST_NODE_ID}, got: {result:?}",
+        );
+
+        let source = std::error::Error::source(&result.expect_err("should be error"))
+            .expect("NodeIdentityBindingFailed should have a source")
+            .to_string();
+        assert!(
+            source.contains("bind heer.ranj_node_id"),
+            "error source should identify the second GUC, got: {source}",
+        );
+        // Verify it does NOT contain the first GUC label.
+        assert!(
+            !source.contains("bind heer.node_id"),
+            "error source should not reference the first GUC (that one succeeded), got: {source}",
+        );
     }
 }
