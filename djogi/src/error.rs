@@ -62,6 +62,20 @@ fn presentation_startup_error_summary(
         .join("; ")
 }
 
+#[cfg(feature = "aes-codec")]
+fn field_codec_startup_error_summary(errors: &[crate::field_codec::CodecStartupError]) -> String {
+    if errors.is_empty() {
+        return "no individual codec startup errors were collected".to_owned();
+    }
+
+    errors
+        .iter()
+        .enumerate()
+        .map(|(idx, error)| format!("{}. {}", idx + 1, error))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Public wrapper for database-driver failures surfaced through Djogi.
 /// Djogi stores the real `tokio_postgres::Error` when one exists, but also
 /// needs a local message path for framework-generated database/runtime misuse
@@ -1076,6 +1090,48 @@ pub enum DjogiError {
     )]
     PresentationStartup(Vec<crate::presentation::PresentationStartupError>),
 
+    /// Field codec startup validation failed (missing key, malformed env var).
+    /// Aggregates errors from all codec startup validators via
+    /// [`validate_codec_startup_inventory`](crate::field_codec::validate_codec_startup_inventory);
+    /// matches the [`PresentationStartup`](Self::PresentationStartup) pattern
+    /// for multi-error collection.
+    /// Classified as **terminal** — a codec with a missing or invalid key
+    /// cannot serve traffic until the environment variable is fixed.
+    #[cfg(feature = "aes-codec")]
+    #[error(
+        "field codec startup validation failed ({} error(s)): {}",
+        .0.len(),
+        crate::error::field_codec_startup_error_summary(&.0)
+    )]
+    #[non_exhaustive]
+    FieldCodecStartup(Vec<crate::field_codec::CodecStartupError>),
+
+    /// Field codec encode failed during CRUD write.
+    /// Carries the model, field, and codec ID so operators can identify which
+    /// protected field failed from log output. Terminal — not retryable.
+    #[cfg(feature = "aes-codec")]
+    #[error("field codec encode error on `{model}`.{field} (codec={codec_id}): {error}")]
+    #[non_exhaustive]
+    FieldCodecEncode {
+        model: &'static str,
+        field: &'static str,
+        codec_id: &'static str,
+        error: String,
+    },
+
+    /// Field codec decode failed during CRUD read.
+    /// Carries the model, field, and codec ID so operators can identify which
+    /// protected field failed from log output. Terminal — not retryable.
+    #[cfg(feature = "aes-codec")]
+    #[error("field codec decode error on `{model}`.{field} (codec={codec_id}): {error}")]
+    #[non_exhaustive]
+    FieldCodecDecode {
+        model: &'static str,
+        field: &'static str,
+        codec_id: &'static str,
+        error: String,
+    },
+
     /// Connected PostgreSQL server version is below Djogi's minimum supported
     /// version. Raised by [`check_postgres_version`](crate::pg::preflight::check_postgres_version)
     /// preflight when the detected major version is less than 18.
@@ -1212,6 +1268,48 @@ impl DjogiError {
             detected_major,
             detected_minor,
             minimum_major,
+        }
+    }
+
+    /// Construct a `FieldCodecStartup` error. Called by startup validation when
+    /// codec key is missing or malformed. Accepts a Vec of errors (collected
+    /// from all validators), matching the [`PresentationStartup`](Self::PresentationStartup) pattern.
+    #[cfg(feature = "aes-codec")]
+    pub fn field_codec_startup(errors: Vec<crate::field_codec::CodecStartupError>) -> Self {
+        Self::FieldCodecStartup(errors)
+    }
+
+    /// Construct a `FieldCodecEncode` error. Called by macro-emitted write-path
+    /// code when codec encode fails. The `error` string wraps `CodecError` via `.to_string()`.
+    #[cfg(feature = "aes-codec")]
+    pub fn field_codec_encode(
+        model: &'static str,
+        field: &'static str,
+        codec_id: &'static str,
+        error: String,
+    ) -> Self {
+        Self::FieldCodecEncode {
+            model,
+            field,
+            codec_id,
+            error,
+        }
+    }
+
+    /// Construct a `FieldCodecDecode` error. Called by macro-emitted read-path
+    /// code when codec decode fails. The `error` string wraps `CodecError` via `.to_string()`.
+    #[cfg(feature = "aes-codec")]
+    pub fn field_codec_decode(
+        model: &'static str,
+        field: &'static str,
+        codec_id: &'static str,
+        error: String,
+    ) -> Self {
+        Self::FieldCodecDecode {
+            model,
+            field,
+            codec_id,
+            error,
         }
     }
 
@@ -1442,6 +1540,27 @@ mod tests {
             DjogiError::PresentationStartup(vec![]).is_terminal(),
             "PresentationStartup must be terminal — missing startup prerequisites need operator action"
         );
+
+        // Field codec errors are terminal: startup failures require operator action,
+        // encode/decode failures indicate key mismatch or tampered data.
+        #[cfg(feature = "aes-codec")]
+        {
+            assert!(
+                DjogiError::field_codec_startup(vec![]).is_terminal(),
+                "FieldCodecStartup must be terminal — missing codec key requires operator action"
+            );
+            assert!(
+                DjogiError::field_codec_encode("M", "f", "aes256_gcm_v1", "detail".into())
+                    .is_terminal(),
+                "FieldCodecEncode must be terminal — encode failures don't resolve on retry"
+            );
+            assert!(
+                DjogiError::field_codec_decode("M", "f", "aes256_gcm_v1", "detail".into())
+                    .is_terminal(),
+                "FieldCodecDecode must be terminal — decode failures don't resolve on retry"
+            );
+        }
+
         let presentation_startup_msg = DjogiError::PresentationStartup(vec![
             crate::presentation::PresentationStartupError::MissingEnvVar {
                 name: "DJOGI_PRESENTATION_HMAC_KEY",

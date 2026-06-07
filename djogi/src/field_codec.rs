@@ -26,11 +26,98 @@
 //! [`OnlineSafetyClassification::ExpandContract`] hands the migration
 //! over to 's live-plan layer per the boundary contract
 //! frozen in [`crate::migrate::OnlineSafetyClassification`].
-//! # V1 registry contents
-//! V1 ships an empty registry. Real codecs (the AEAD / blind-index
-//! pair the spec mentions, etc.) land in later releases.
+//! # AES-256-GCM codec (feature `aes-codec`)
+//! When the `aes-codec` feature is enabled, the [`aes`] submodule provides
+//! [`aes::Aes256GcmV1`], an AEAD codec that encrypts `String` fields into
+//! `Vec<u8>` ciphertext using AES-256-GCM. The codec ID
+//! `"aes256_gcm_v1"` is registered in the runtime [`REGISTRY`] and the
+//! macro-side [`crate::__private::protected::KNOWN_CODEC_IDS`] slice.
 
 use crate::migrate::OnlineSafetyClassification;
+
+// ── Error types (feature-gated with aes-codec) ─────────────────────────────
+// `CodecError` references `aes_gcm::Error`, which only exists when the
+// optional `aes-gcm` dependency is compiled. Both error types are gated
+// so they compile cleanly without the feature and are available when codecs
+// are wired in.
+
+#[cfg(feature = "aes-codec")]
+mod error_types {
+    /// Errors produced by field codec operations.
+    /// Error messages are hygiene-safe: they carry structural information
+    /// (lengths, codec IDs) but never plaintext, key material, nonce values,
+    /// or ciphertext bytes.
+    #[derive(Debug)]
+    pub enum CodecError {
+        /// The codec key was not configured or could not be parsed.
+        MissingKey,
+        /// Stored ciphertext is too short to contain a valid nonce + tag.
+        CiphertextTooShort { got: usize },
+        /// AES-GCM authentication or decryption failure.
+        AeadError(aes_gcm::Error),
+        /// Decrypted bytes are not valid UTF-8.
+        Utf8Error(std::string::FromUtf8Error),
+    }
+
+    impl std::fmt::Display for CodecError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                CodecError::MissingKey => write!(f, "field codec key not configured"),
+                CodecError::CiphertextTooShort { got } => write!(
+                    f,
+                    "ciphertext too short: expected at least 28 bytes, got {got}"
+                ),
+                CodecError::AeadError(_) => f.write_str("generic AEAD error"),
+                CodecError::Utf8Error(e) => write!(f, "decoded bytes are not valid UTF-8: {e}"),
+            }
+        }
+    }
+
+    impl std::error::Error for CodecError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                // aes_gcm::aead::Error is an opaque single-byte type that does not
+                // implement std::error::Error, so we cannot chain it as a source.
+                CodecError::AeadError(_) => None,
+                CodecError::Utf8Error(e) => Some(e),
+                _ => None,
+            }
+        }
+    }
+
+    /// Individual codec startup validation error.
+    /// Aggregated into [`crate::DjogiError::FieldCodecStartup`] so the operator
+    /// can see every misconfigured codec in one pass.
+    #[derive(Debug)]
+    pub struct CodecStartupError {
+        /// The codec ID (e.g., `"aes256_gcm_v1"`).
+        pub codec_id: &'static str,
+        /// The required environment variable name.
+        pub env_var: &'static str,
+        /// Human-readable description of the failure.
+        pub error: String,
+    }
+
+    impl std::fmt::Display for CodecStartupError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "{} requires {}: {}",
+                self.codec_id, self.env_var, self.error
+            )
+        }
+    }
+
+    impl std::error::Error for CodecStartupError {}
+}
+
+#[cfg(feature = "aes-codec")]
+pub use error_types::{CodecError, CodecStartupError};
+
+// ── AES-256-GCM submodule (feature-gated) ──────────────────────────────────
+
+#[cfg(feature = "aes-codec")]
+pub(crate) mod aes;
 
 /// Trait implemented by every field-level codec.
 /// Implementors are zero-sized marker types (a codec is *code*, not a
@@ -75,12 +162,20 @@ pub trait FieldCodec: Send + Sync + 'static {
     /// identifier so AEAD codecs can bind them as AAD (additional authenticated
     /// data), ensuring ciphertext cannot be replayed across different fields or
     /// models even with the same key.
-    fn encode(model: &'static str, field: &'static str, value: &Self::Decoded) -> Result<Self::Encoded, Self::Error>;
+    fn encode(
+        model: &'static str,
+        field: &'static str,
+        value: &Self::Decoded,
+    ) -> Result<Self::Encoded, Self::Error>;
 
     /// Convert an at-rest value back into its decoded form.
     /// The `model` and `field` parameters supply the AAD binding for AEAD codecs;
     /// non-AEAD implementations may ignore them.
-    fn decode(model: &'static str, field: &'static str, stored: &Self::Encoded) -> Result<Self::Decoded, Self::Error>;
+    fn decode(
+        model: &'static str,
+        field: &'static str,
+        stored: &Self::Encoded,
+    ) -> Result<Self::Decoded, Self::Error>;
 
     /// Classify the migration from `Self` to `Other`.
     /// - [`OnlineSafetyClassification::OnlineSafe`] is the convention
@@ -97,11 +192,84 @@ pub trait FieldCodec: Send + Sync + 'static {
     fn classify_transition<Other: FieldCodec>() -> OnlineSafetyClassification;
 }
 
+/// Startup requirement for a field codec: codec ID, required environment
+/// variable, and validation function pointer. Submitted via
+/// `inventory::submit!` by macro-generated code; collected and iterated
+/// at startup by the djogi crate through
+/// [`validate_codec_startup_inventory`].
+/// Follows the existing [`crate::presentation::inventory::PresentationCodecUsage`]
+/// pattern for linked-inventory-based startup validation.
+#[cfg(feature = "aes-codec")]
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
+#[doc(hidden)]
+pub struct FieldCodecStartupRequirement {
+    /// The codec ID (e.g., `"aes256_gcm_v1"`).
+    pub codec_id: &'static str,
+    /// The environment variable name required for this codec.
+    pub env_var: &'static str,
+    /// Validation function that populates the OnceLock cache on success.
+    /// MUST be `load_key` (or equivalent codec init), not a separate validate function.
+    pub validate: fn() -> Result<[u8; 32], CodecError>,
+}
+
+#[cfg(feature = "aes-codec")]
+impl FieldCodecStartupRequirement {
+    /// Construct a `FieldCodecStartupRequirement` from macro-emitted code.
+    /// Required because the struct is `#[non_exhaustive]`, which blocks
+    /// struct-literal construction from external crates (including adopter
+    /// crate macro expansions). Matches the [`crate::presentation::inventory::PresentationCodecUsage::const_new`] pattern.
+    #[doc(hidden)]
+    pub const fn const_new(
+        codec_id: &'static str,
+        env_var: &'static str,
+        validate: fn() -> Result<[u8; 32], CodecError>,
+    ) -> Self {
+        Self {
+            codec_id,
+            env_var,
+            validate,
+        }
+    }
+}
+
+#[cfg(feature = "aes-codec")]
+inventory::collect!(FieldCodecStartupRequirement);
+
+/// Iterate all registered field codec startup requirements and call each
+/// validator. On success returns `Ok(())`; on failure collects all errors
+/// into a `Vec<CodecStartupError>` so the operator can fix every misconfigured
+/// codec in one pass — matching the presentation startup pattern from
+/// [`crate::presentation::validate_startup_inventory`].
+///
+/// The `validate` pointer IS the codec's `load_key` function (not a separate
+/// validator), so startup success implies the OnceLock cache is populated.
+/// After successful validation, every subsequent `load_key()` returns `Ok`,
+/// making decode-time `MissingKey` impossible — the side-channel prevention
+/// property holds when startup validation runs before CRUD calls.
+#[cfg(feature = "aes-codec")]
+pub fn validate_codec_startup_inventory() -> Result<(), Vec<CodecStartupError>> {
+    let mut errors: Vec<CodecStartupError> = Vec::new();
+    for req in ::inventory::iter::<FieldCodecStartupRequirement> {
+        if let Err(e) = (req.validate)() {
+            errors.push(CodecStartupError {
+                codec_id: req.codec_id,
+                env_var: req.env_var,
+                error: e.to_string(),
+            });
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 /// Registry of every codec identifier known to the framework at
 /// compile time.
 /// Built with [`phf::phf_set!`] so [`is_registered`] resolves to a
-/// constant-time perfect-hash lookup. V1 is empty — real codecs land
-/// in later tasks. The set is `pub(crate)` because adopters
+/// constant-time perfect-hash lookup. The set is `pub(crate)` because adopters
 /// query it through [`is_registered`] rather than reaching for the
 /// underlying container; that indirection lets future phases swap the
 /// representation without breaking downstream code.
@@ -120,6 +288,12 @@ pub trait FieldCodec: Send + Sync + 'static {
 /// generic "assertion failed" instead of listing valid IDs. Future
 /// framework-internal codec additions are rare; the duplicate is the
 /// explicit cost of compile-time validation with span-precise errors.
+#[cfg(feature = "aes-codec")]
+pub(crate) static REGISTRY: phf::Set<&'static str> = phf::phf_set! {
+    "aes256_gcm_v1",
+};
+
+#[cfg(not(feature = "aes-codec"))]
 pub(crate) static REGISTRY: phf::Set<&'static str> = phf::phf_set! {};
 
 /// Returns `true` iff `id` is the compile-time identifier of a codec
@@ -168,11 +342,19 @@ mod tests {
         type Encoded = Vec<u8>;
         type Error = Utf8RoundtripError;
 
-        fn encode(_model: &'static str, _field: &'static str, value: &Self::Decoded) -> Result<Self::Encoded, Self::Error> {
+        fn encode(
+            _model: &'static str,
+            _field: &'static str,
+            value: &Self::Decoded,
+        ) -> Result<Self::Encoded, Self::Error> {
             Ok(value.as_bytes().to_vec())
         }
 
-        fn decode(_model: &'static str, _field: &'static str, stored: &Self::Encoded) -> Result<Self::Decoded, Self::Error> {
+        fn decode(
+            _model: &'static str,
+            _field: &'static str,
+            stored: &Self::Encoded,
+        ) -> Result<Self::Decoded, Self::Error> {
             std::str::from_utf8(stored)
                 .map(|s| s.to_owned())
                 .map_err(|_| Utf8RoundtripError)
@@ -203,11 +385,19 @@ mod tests {
         type Encoded = Vec<u8>;
         type Error = Utf8RoundtripError;
 
-        fn encode(_model: &'static str, _field: &'static str, value: &Self::Decoded) -> Result<Self::Encoded, Self::Error> {
+        fn encode(
+            _model: &'static str,
+            _field: &'static str,
+            value: &Self::Decoded,
+        ) -> Result<Self::Encoded, Self::Error> {
             Ok(value.as_bytes().to_vec())
         }
 
-        fn decode(_model: &'static str, _field: &'static str, stored: &Self::Encoded) -> Result<Self::Decoded, Self::Error> {
+        fn decode(
+            _model: &'static str,
+            _field: &'static str,
+            stored: &Self::Encoded,
+        ) -> Result<Self::Decoded, Self::Error> {
             std::str::from_utf8(stored)
                 .map(|s| s.to_owned())
                 .map_err(|_| Utf8RoundtripError)
@@ -230,12 +420,18 @@ mod tests {
         assert_eq!(decoded, original);
     }
 
+    #[cfg(not(feature = "aes-codec"))]
     #[test]
-    fn registry_does_not_contain_unshipped_codec_id() {
-        // Real codecs (the AEAD pair the spec gestures at) are
-        // framework-shipped, not adopter-declared; the registry is
-        // currently empty.
+    fn registry_empty_without_aes_codec_feature() {
+        // Without the aes-codec feature, the registry should be empty.
         assert!(!is_registered("aes256_gcm_v1"));
+    }
+
+    #[cfg(feature = "aes-codec")]
+    #[test]
+    fn registry_contains_aes_codec_when_feature_enabled() {
+        // With the aes-codec feature, aes256_gcm_v1 should be registered.
+        assert!(is_registered("aes256_gcm_v1"));
     }
 
     #[test]
