@@ -89,6 +89,23 @@ pub fn is_tracked_inner(ty: &Type) -> bool {
     inner_is_tracked(&after_option)
 }
 
+/// Map a codec ID string to the fully-qualified type path of the
+/// corresponding [`FieldCodec`](::djogi::field_codec::FieldCodec) impl.
+///
+/// This is the macro-side mirror of `::djogi::field_codec::REGISTRY`.
+/// The returned path is `::djogi::field_codec::aes::Aes256GcmV1` for
+/// the `"aes256_gcm_v1"` codec — always prefixed with `::djogi` so
+/// it resolves from the adopter crate without a `use` statement.
+pub fn codec_id_to_type_path(codec_id: &str) -> TokenStream {
+    match codec_id {
+        "aes256_gcm_v1" => quote! { ::djogi::field_codec::aes::Aes256GcmV1 },
+        _ => unreachable!(
+            "codec_id_to_type_path called with unknown codec \"{codec_id}\"; \
+             the macro should have validated this against KNOWN_CODEC_IDS at parse time"
+        ),
+    }
+}
+
 /// Emit `push_bind(...)` tokens for a `SqlAccumulator` bind site.
 /// `field_expr` is the token stream that evaluates to the field's Rust value
 /// an **owned** value of the field's declared Rust type (e.g. `row.count`
@@ -98,16 +115,77 @@ pub fn is_tracked_inner(ty: &Type) -> bool {
 /// code extracts the inner value via `(*field_expr).clone()` before widening.
 /// For direct types, `Tracked<T>` implements `ToSql where T: ToSql`, so no
 /// extraction is needed.
+///
+/// When `codec` is `Some((codec_id, model_name, field_name))`, the field has a
+/// `#[field(protected(codec = "..."))]` annotation. The emitted code calls
+/// `CodecType::encode(model_name, field_name, &value)?` to produce an encoded
+/// at-rest representation before binding. The model and field names supply
+/// AAD (additional authenticated data) for AEAD codecs, preventing ciphertext
+/// replay across different fields or models.
+///
 /// For widened types the emitted tokens perform the widening conversion before
 /// calling `push_bind`. For direct types the field expression is passed
-/// through unchanged.
+/// through unchanged (unless a codec intercepts it).
 pub fn push_bind_tokens(
     kind: &BindKind,
     nullable: bool,
     tracked: bool,
     field_expr: TokenStream,
+    codec: Option<(String, String, String)>,
 ) -> TokenStream {
-    // For direct types, Tracked<T>: ToSql handles the wrapping automatically.
+    // Codec path: encode before binding. The codec output type is Vec<u8>
+    // (or Option<Vec<u8>> for nullable), which is BindKind::Direct, so widening
+    // logic is irrelevant when a codec is present.
+    // Tuple is (codec_id, model_name, field_name) — all owned Strings.
+    if let Some((codec_id, model_name, field_name)) = codec {
+        let codec_ty = codec_id_to_type_path(&codec_id);
+        let model_lit = syn::LitStr::new(&model_name, proc_macro2::Span::call_site());
+        let field_lit = syn::LitStr::new(&field_name, proc_macro2::Span::call_site());
+
+        if nullable {
+            // Option<T> with codec: map through the Option, encode each Some.
+            return quote! {
+                __acc.push_bind(
+                    #field_expr.map(|__v| {
+                        <#codec_ty as ::djogi::field_codec::FieldCodec>::encode(
+                            #model_lit,
+                            #field_lit,
+                            &__v,
+                        )
+                        .map_err(|__e| {
+                            ::djogi::DjogiError::field_codec_encode(
+                                #model_lit,
+                                #field_lit,
+                                <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+                                __e,
+                            )
+                        })?
+                    })
+                )
+            };
+        } else {
+            // Non-nullable with codec: encode then bind.
+            return quote! {
+                __acc.push_bind({
+                    <#codec_ty as ::djogi::field_codec::FieldCodec>::encode(
+                        #model_lit,
+                        #field_lit,
+                        &#field_expr,
+                    )
+                    .map_err(|__e| {
+                        ::djogi::DjogiError::field_codec_encode(
+                            #model_lit,
+                            #field_lit,
+                            <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+                            __e,
+                        )
+                    })?
+                })
+            };
+        }
+    }
+
+    // For direct types (no codec), Tracked<T>: ToSql handles the wrapping automatically.
     if matches!(kind, BindKind::Direct) {
         return quote! { __acc.push_bind(#field_expr) };
     }
