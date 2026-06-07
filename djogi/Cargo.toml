@@ -124,6 +124,12 @@ testing = []
 # signing module also uses HMAC-SHA256 independently of presentation codecs.
 hmac-codec = []
 
+# aes-codec — gates the AES-256-GCM field-level AEAD codec for encrypted-at-rest
+# protected fields. Pulls in `aes-gcm`, `getrandom`, and `hex` as optional
+# dependencies; the codec implementation lives behind this feature so builds
+# without at-rest encryption skip the crypto dependency tree entirely.
+aes-codec = ["dep:aes-gcm", "dep:getrandom", "dep:hex"]
+
 [dependencies]
 argon2 = { version = "0.5", optional = true, features = ["std"] }
 # password-hash is an indirect dep of argon2. Listing it here so we can enable
@@ -170,11 +176,17 @@ libc.workspace = true
 phf.workspace = true
 trait-variant.workspace = true
 
+# aes-codec feature — optional dependencies for AES-256-GCM field codec
+aes-gcm = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 figment = { workspace = true, features = ["test"] }
 rust_decimal_macros.workspace = true
 tracing-test = "0.2"
+serial_test = { workspace = true }
 
 # Lihaaf v0.1 — the raw SQL bypass compile-fail fixtures
 # (`djogi/tests/compile_fail/*.rs`) prove that the `pool()`, `conn()`,

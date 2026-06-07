@@ -125,3 +125,16 @@ phf = { version = "0.13", features = ["macros"] }
 # `[dev-dependencies]` (dev-deps are stripped from published tarballs anyway).
 djogi = { path = "djogi", version = "0.1.0-alpha.9" }
 djogi-macros = { path = "djogi-macros", version = "0.1.0-alpha.9" }
+
+# Encrypted at rest — AEAD codec dependencies (gate: `aes-codec` feature).
+# `aes-gcm` provides AES-256-GCM authenticated encryption; `getrandom` supplies
+# cryptographically secure nonce generation; `hex` is the wire-format encoder
+# for stored ciphertext payloads.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
+getrandom = "0.3"
+hex = "0.4"
+
+# Testing — serial test execution for integration tests that share mutable state
+# (e.g., a single Postgres database). Prevents flaky race conditions when
+# multiple tests concurrently modify the same schema or fixture data.
+serial_test = { version = "3", default-features = false }

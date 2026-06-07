@@ -71,10 +71,16 @@ pub trait FieldCodec: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Convert a decoded value into its at-rest form.
-    fn encode(value: &Self::Decoded) -> Result<Self::Encoded, Self::Error>;
+    /// The `model` and `field` parameters carry the owning model name and field
+    /// identifier so AEAD codecs can bind them as AAD (additional authenticated
+    /// data), ensuring ciphertext cannot be replayed across different fields or
+    /// models even with the same key.
+    fn encode(model: &'static str, field: &'static str, value: &Self::Decoded) -> Result<Self::Encoded, Self::Error>;
 
     /// Convert an at-rest value back into its decoded form.
-    fn decode(stored: &Self::Encoded) -> Result<Self::Decoded, Self::Error>;
+    /// The `model` and `field` parameters supply the AAD binding for AEAD codecs;
+    /// non-AEAD implementations may ignore them.
+    fn decode(model: &'static str, field: &'static str, stored: &Self::Encoded) -> Result<Self::Decoded, Self::Error>;
 
     /// Classify the migration from `Self` to `Other`.
     /// - [`OnlineSafetyClassification::OnlineSafe`] is the convention
@@ -162,11 +168,11 @@ mod tests {
         type Encoded = Vec<u8>;
         type Error = Utf8RoundtripError;
 
-        fn encode(value: &Self::Decoded) -> Result<Self::Encoded, Self::Error> {
+        fn encode(_model: &'static str, _field: &'static str, value: &Self::Decoded) -> Result<Self::Encoded, Self::Error> {
             Ok(value.as_bytes().to_vec())
         }
 
-        fn decode(stored: &Self::Encoded) -> Result<Self::Decoded, Self::Error> {
+        fn decode(_model: &'static str, _field: &'static str, stored: &Self::Encoded) -> Result<Self::Decoded, Self::Error> {
             std::str::from_utf8(stored)
                 .map(|s| s.to_owned())
                 .map_err(|_| Utf8RoundtripError)
@@ -197,11 +203,11 @@ mod tests {
         type Encoded = Vec<u8>;
         type Error = Utf8RoundtripError;
 
-        fn encode(value: &Self::Decoded) -> Result<Self::Encoded, Self::Error> {
+        fn encode(_model: &'static str, _field: &'static str, value: &Self::Decoded) -> Result<Self::Encoded, Self::Error> {
             Ok(value.as_bytes().to_vec())
         }
 
-        fn decode(stored: &Self::Encoded) -> Result<Self::Decoded, Self::Error> {
+        fn decode(_model: &'static str, _field: &'static str, stored: &Self::Encoded) -> Result<Self::Decoded, Self::Error> {
             std::str::from_utf8(stored)
                 .map(|s| s.to_owned())
                 .map_err(|_| Utf8RoundtripError)
@@ -219,8 +225,8 @@ mod tests {
     #[test]
     fn encode_decode_round_trips() {
         let original = String::from("djogi field codec round-trip");
-        let encoded = Utf8Roundtrip::encode(&original).expect("encode");
-        let decoded = Utf8Roundtrip::decode(&encoded).expect("decode");
+        let encoded = Utf8Roundtrip::encode("TestModel", "name", &original).expect("encode");
+        let decoded = Utf8Roundtrip::decode("TestModel", "name", &encoded).expect("decode");
         assert_eq!(decoded, original);
     }
 
