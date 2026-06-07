@@ -367,10 +367,18 @@ pub fn create_param_tokens(
 }
 
 /// Emit the decode tokens for a single field in `FromPgRow::from_pg_row`.
-/// For direct types, delegates to `::djogi::__private::pg::decode_at::<_>`
-/// (the existing helper). For widened types, delegates to the appropriate
+/// For direct types without a codec, delegates to
+/// `::djogi::__private::pg::decode_at::<_>` (the existing helper).
+/// For widened types without a codec, delegates to the appropriate
 /// `decode_narrowed` / `decode_u64_from_decimal` variant — all live in
 /// `::djogi::__private::pg`.
+/// When `codec` is `Some((codec_id, model_name, field_name))`, the field has
+/// a `#[field(protected(codec = "..."))]` annotation. The emitted code reads
+/// the stored bytes (`Vec<u8>`) from Postgres and calls
+/// `CodecType::decode(model_name, field_name, &bytes)?` to produce the
+/// decoded in-memory value. The codec's `Encoded` type is always `Vec<u8>`;
+/// widening logic is irrelevant when a codec is present (codec overrides
+/// the bind kind).
 /// The `tracked` flag controls whether the decoded value is wrapped in
 /// `::djogi::Tracked::new(...)`:
 /// - `tracked=false, nullable=false` → value directly (e.g. `u8`)
@@ -385,8 +393,83 @@ pub fn decode_field_tokens(
     tracked: bool,
     col_idx: usize,
     col_name: &str,
+    codec: Option<(String, String, String)>,
 ) -> TokenStream {
-    let col_name_lit = col_name;
+    // Codec path: read stored bytes and decode via the codec.
+    // The codec's `Encoded` type is always `Vec<u8>` (BYTEA in Postgres),
+    // so widening logic is irrelevant — codec always reads as BYTEA regardless
+    // of the original Rust field type.
+    if let Some((codec_id, model_name, field_name)) = codec {
+        let codec_ty = codec_id_to_type_path(&codec_id);
+        let model_lit = syn::LitStr::new(&model_name, proc_macro2::Span::call_site());
+        let field_lit = syn::LitStr::new(&field_name, proc_macro2::Span::call_site());
+        let col_name_lit = syn::LitStr::new(col_name, proc_macro2::Span::call_site());
+
+        // Helper to wrap raw postgres decode errors into DjogiError::Decode.
+        let decode_err_wrap = quote! {
+            |__e| ::djogi::DjogiError::Decode(
+                ::std::format!("column `{}`: {}", #col_name_lit, __e)
+            )
+        };
+
+        let decoded = if nullable {
+            // Option<T> with codec: read Option<Vec<u8>>, map through decode.
+            quote! {
+                row.try_get::<_, ::std::option::Option<Vec<u8>>>(#col_idx)
+                    .map_err(#decode_err_wrap)?
+                    .map(|__bytes| {
+                        <#codec_ty as ::djogi::field_codec::FieldCodec>::decode(
+                            #model_lit,
+                            #field_lit,
+                            &__bytes,
+                        )
+                    })
+                    .transpose()
+                    .map_err(|__e| {
+                        ::djogi::DjogiError::field_codec_decode(
+                            #model_lit,
+                            #field_lit,
+                            <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+                            __e.to_string(),
+                        )
+                    })?
+            }
+        } else {
+            // Non-nullable with codec: read Vec<u8>, decode.
+            quote! {
+                <#codec_ty as ::djogi::field_codec::FieldCodec>::decode(
+                    #model_lit,
+                    #field_lit,
+                    &row.try_get::<_, Vec<u8>>(#col_idx)
+                        .map_err(#decode_err_wrap)?,
+                )
+                .map_err(|__e| {
+                    ::djogi::DjogiError::field_codec_decode(
+                        #model_lit,
+                        #field_lit,
+                        <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+                        __e.to_string(),
+                    )
+                })?
+            }
+        };
+
+        // Codec decode always returns `Codec::Decoded` (not Tracked<Decoded>).
+        // Wrap in Tracked::new when the field is tracked.
+        if tracked {
+            if nullable {
+                return quote! {
+                    { let __v = #decoded; __v.map(::djogi::Tracked::new) }
+                };
+            } else {
+                return quote! { ::djogi::Tracked::new(#decoded) };
+            }
+        }
+        return decoded;
+    }
+
+    // No codec — emit the standard widened/direct decode path.
+    let col_name_lit = syn::LitStr::new(col_name, proc_macro2::Span::call_site());
 
     // Emit the raw decode expression (without Tracked wrapping).
     let raw = match (kind, nullable) {

@@ -46,13 +46,13 @@ use super::sql_bind::{bind_kind, decode_field_tokens, is_nullable, is_tracked_in
 
 /// Emit `impl FromPgRow for <Struct>` — the canonical row-decode
 /// contract used by every CRUD terminal and QuerySet terminal.
-/// `model_attrs` and `field_attrs` are accepted for API consistency
-/// with other `expand` functions and for future use (e.g.
-/// `#[field(column = "…")]` column-name overrides).
+/// `model_attrs` is accepted for API consistency with other `expand`
+/// functions. `field_attrs` carries per-field metadata including
+/// codec information for protected fields with encryption.
 pub fn expand(
     struct_item: &ItemStruct,
     _model_attrs: &ModelAttrs,
-    _field_attrs: &[FieldAttrs],
+    field_attrs: &[FieldAttrs],
 ) -> TokenStream {
     let name = &struct_item.ident;
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
@@ -82,13 +82,17 @@ pub fn expand(
         .fields
         .iter()
         .zip(col_names.iter())
+        .zip(field_attrs.iter())
         .enumerate()
-        .map(|(i, (field, col_name))| {
+        .map(|(i, ((field, col_name), fa))| {
             let fname = field.ident.as_ref().expect("only named structs supported");
             let kind = bind_kind(&field.ty);
             let nullable = is_nullable(&field.ty);
             let tracked = is_tracked_inner(&field.ty);
-            let decode_expr = decode_field_tokens(&kind, nullable, tracked, i, col_name);
+            let codec = fa.protected.as_ref()
+                .and_then(|p| p.codec.clone())
+                .map(|codec_id| (codec_id, name.to_string(), col_name.clone()));
+            let decode_expr = decode_field_tokens(&kind, nullable, tracked, i, col_name, codec);
             quote! {
                 #fname: #decode_expr
             }
