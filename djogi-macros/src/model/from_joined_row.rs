@@ -30,25 +30,53 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ItemStruct;
 
-use super::attrs::{FieldAttrs, ModelAttrs};
+use super::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
 use super::sql_bind::{bind_kind, decode_joined_field_tokens, is_nullable, is_tracked_inner};
 
 /// Generate the `FromJoinedPgRow` impl for `struct_item`.
-/// `model_attrs` and `field_attrs` are accepted for API consistency with the
-/// sibling `from_row::expand` and for future use (e.g. `column` overrides).
+/// `model_attrs` provides pk strategy info for framework field count.
+/// `field_attrs` carries per-field metadata including codec information
+/// for protected fields with encryption.
 pub fn expand(
     struct_item: &ItemStruct,
-    _model_attrs: &ModelAttrs,
-    _field_attrs: &[FieldAttrs],
+    model_attrs: &ModelAttrs,
+    field_attrs: &[FieldAttrs],
 ) -> TokenStream {
     let name = &struct_item.ident;
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
+
+    // Build a codec vector aligned with ALL struct fields (None for framework,
+    // Some/None for users). `field_attrs` is user-only but `struct_item.fields`
+    // includes framework fields at the front, so we can't zip them directly.
+    let n_framework = match model_attrs.pk {
+        PkStrategy::None => 2, // created_at, updated_at only
+        _ => 3,                // id, created_at, updated_at
+    };
+    let codec_vec: Vec<Option<(String, String, String)>> = struct_item
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(idx, field)| {
+            if idx < n_framework {
+                None // Framework fields have no codec.
+            } else {
+                let fa_idx = idx - n_framework;
+                field_attrs.get(fa_idx)
+                    .and_then(|fa| fa.protected.as_ref().and_then(|p| p.codec.clone()))
+                    .map(|codec_id| {
+                        let col_name = crate::syn_util::column_name_from_field(field);
+                        (codec_id, name.to_string(), col_name)
+                    })
+            }
+        })
+        .collect();
 
     // One prefix-aware decode per field. For direct types, uses
     // `row.try_get::<_, _>` (same as before). For widened types
     // (i8/u8/u16/u32/u64), delegates to the appropriate
     // `decode_narrowed_by_name` / `decode_u64_from_decimal_by_name` variant
     // so the narrowing conversion is applied after the wide-type read.
+    // For protected fields, reads Vec<u8> by name and calls codec decode.
     let field_assignments: Vec<TokenStream> = struct_item
         .fields
         .iter()
@@ -61,6 +89,7 @@ pub fn expand(
             let kind = bind_kind(&f.ty);
             let nullable = is_nullable(&f.ty);
             let tracked = is_tracked_inner(&f.ty);
+            let codec = codec_vec[idx].clone();
             let col_name_expr = quote! {
                 &::djogi::__private::pg::joined_alias_for_prefix(
                     prefix,
@@ -68,7 +97,7 @@ pub fn expand(
                     #col_name,
                 ) as &str
             };
-            let decode_expr = decode_joined_field_tokens(&kind, nullable, tracked, col_name_expr);
+            let decode_expr = decode_joined_field_tokens(&kind, nullable, tracked, col_name_expr, codec);
             quote! {
                 #fname: #decode_expr
             }

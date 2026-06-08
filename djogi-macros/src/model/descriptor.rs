@@ -790,6 +790,38 @@ fn try_expand(
         })
         .collect();
 
+    // Codec startup submissions — one per unique codec used by protected
+    // fields. Each submission registers a FieldCodecStartupRequirement so
+    // pool startup validation will call the codec's validate function
+    // before any CRUD operations. This replaces the unconditional
+    // inventory::submit! in aes.rs so binaries with no encrypted fields
+    // start without DJOGI_FIELD_CODEC_KEY. Deduplicated per codec_id
+    // so multiple encrypted fields on the same model emit only one
+    // registration per codec type.
+    let mut seen_codecs: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let codec_startup_submits: Vec<TokenStream> = user_fields
+        .iter()
+        .filter_map(|(_, fa)| {
+            let codec_id = fa.protected.as_ref()
+                .and_then(|p| p.codec.as_deref())?;
+            if !seen_codecs.insert(codec_id) {
+                return None; // Already emitted for this codec.
+            }
+            match codec_id {
+                "aes256_gcm_v1" => Some(quote! {
+                    ::djogi::__private::inventory::submit! {
+                        ::djogi::field_codec::FieldCodecStartupRequirement::const_new(
+                            "aes256_gcm_v1",
+                            ::djogi::field_codec::aes::ENV_VAR,
+                            ::djogi::field_codec::aes::load_key,
+                        )
+                    }
+                }),
+                _ => None, // Unknown codec — already rejected by rule (c) at parse time.
+            }
+        })
+        .collect();
+
     // Combine in injection order: id (if any), created_at, updated_at, then
     // user fields in source order. This is the complete schema contract.
     let mut all_field_descriptors: Vec<TokenStream> = Vec::new();
@@ -1164,6 +1196,7 @@ fn try_expand(
             }
         }
         #(#deferrability_submits)*
+        #(#codec_startup_submits)*
     })
 }
 

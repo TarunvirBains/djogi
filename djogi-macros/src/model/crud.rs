@@ -2061,14 +2061,15 @@ pub fn expand(
         let field_bind_stmts: Vec<TokenStream> = user_fields
             .iter()
             .zip(user_field_types.iter())
+            .zip(field_attrs.iter())
             .enumerate()
-            .map(|(i, (f, ty))| {
+            .map(|(i, ((f, ty), fa))| {
                 let kind = bind_kind(ty);
                 let nullable = is_nullable(ty);
                 let tracked = is_tracked_inner(ty);
                 let field_expr = quote! { row.#f };
                 let col_str = crate::syn_util::column_name_from_ident(f);
-                let codec = field_attrs[i + n_framework].protected.as_ref()
+                let codec = fa.protected.as_ref()
                     .and_then(|p| p.codec.clone())
                     .map(|codec_id| (codec_id, name.to_string(), col_str));
                 let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
@@ -2226,14 +2227,14 @@ pub fn expand(
         let user_field_bind_stmts: Vec<TokenStream> = user_fields
             .iter()
             .zip(user_field_types.iter())
-            .enumerate()
-            .map(|(i, (f, ty))| {
+            .zip(field_attrs.iter())
+            .map(|((f, ty), fa)| {
                 let kind = bind_kind(ty);
                 let nullable = is_nullable(ty);
                 let tracked = is_tracked_inner(ty);
                 let field_expr = quote! { row.#f };
                 let col_str = crate::syn_util::column_name_from_ident(f);
-                let codec = field_attrs[i + n_framework].protected.as_ref()
+                let codec = fa.protected.as_ref()
                     .and_then(|p| p.codec.clone())
                     .map(|codec_id| (codec_id, name.to_string(), col_str));
                 let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
@@ -2982,14 +2983,14 @@ pub fn expand(
                 let uf_bind_stmts: Vec<TokenStream> = user_fields
                     .iter()
                     .zip(user_field_types.iter())
-                    .enumerate()
-                    .map(|(i, (f, ty))| {
+                    .zip(field_attrs.iter())
+                    .map(|((f, ty), fa)| {
                         let kind = bind_kind(ty);
                         let nullable = is_nullable(ty);
                         let tracked = is_tracked_inner(ty);
                         let field_expr = quote! { row.#f };
                         let col_str = crate::syn_util::column_name_from_ident(f);
-                        let codec = field_attrs[i + n_framework].protected.as_ref()
+                        let codec = fa.protected.as_ref()
                             .and_then(|p| p.codec.clone())
                             .map(|codec_id| (codec_id, name.to_string(), col_str));
                         let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr, codec);

@@ -1,3 +1,7 @@
+// Library APIs consumed by macro-generated code at consumer sites, not
+// within djogi itself — suppress expected dead_code warnings.
+#![allow(dead_code)]
+
 //! AES-256-GCM field codec for encrypted-at-rest protected fields.
 //!
 //! Provides authenticated encryption (confidentiality + integrity) for
@@ -37,7 +41,7 @@ use aes_gcm::{Aes256Gcm, Key, KeyInit};
 
 type AesNonce = aes_gcm::aead::generic_array::GenericArray<u8, <Aes256Gcm as AeadCore>::NonceSize>;
 
-use super::{CodecError, FieldCodec, FieldCodecStartupRequirement};
+use super::{CodecError, FieldCodec};
 use crate::migrate::OnlineSafetyClassification;
 
 /// The environment variable name for the codec key.
@@ -186,17 +190,6 @@ impl FieldCodec for Aes256GcmV1 {
             OnlineSafetyClassification::ExpandContract
         }
     }
-}
-
-// Register the AES-256-GCM codec startup requirement via linked inventory.
-// This submission ensures that pool startup validation will call load_key()
-// before any CRUD operations, populating the CODEC_KEY cache.
-inventory::submit! {
-    FieldCodecStartupRequirement::const_new(
-        Aes256GcmV1::ID,
-        ENV_VAR,
-        load_key,
-    )
 }
 
 /// Run `f` with a specific codec key active. Acquires [`TEST_CODEC_ENV_MUTEX`] to

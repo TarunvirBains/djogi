@@ -946,7 +946,8 @@ mod tests {
 
     #[test]
     fn empty_registry_rejects_every_codec_id() {
-        assert!(!is_known_codec("aes256_gcm_v1"));
+        // `aes256_gcm_v1` is in KNOWN_CODEC_IDS, so it should be recognized.
+        assert!(is_known_codec("aes256_gcm_v1"));
         assert!(!is_known_codec(""));
     }
 
@@ -1098,15 +1099,16 @@ mod tests {
             #[field(protected(
                 sensitivity = "pii",
                 rationale = "GDPR",
-                codec = "aes256_gcm_v1"
+                codec = "unknown_codec_v1"
             ))]
             pub email: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         let err = validate(&spec, &f).expect_err("rule (c)");
         let msg = err.to_string();
+        assert!(msg.contains("unknown_codec_v1"), "got: {msg}");
+        // Error message lists the valid codec IDs available in this build.
         assert!(msg.contains("aes256_gcm_v1"), "got: {msg}");
-        assert!(msg.contains("(none)"), "got: {msg}");
     }
 
     #[test]
