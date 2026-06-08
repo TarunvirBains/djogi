@@ -1703,6 +1703,121 @@ impl<M: Model> DjogiPresentField<M, crate::MacAddr> {
     }
 }
 
+// ── DjogiField — SQL-only BYTEA equality/membership ───────────────────────
+// `Vec<u8>` columns lower to Postgres `BYTEA`. Rust structural `PartialEq`
+// on `Vec<u8>` is byte-lexicographic and matches Postgres `=` for BYTEA,
+// but the portable predicate path is deliberately disabled: enabling it
+// would require the macro classifier in `portable_field_emit.rs` to
+// recognise `Vec<u8>` as `Scalar`, which would cascade into macro-emitted
+// `where V: DjogiPortableEq` bounds. The explicit SQL-only impls below
+// keep the model expansion working regardless of feature state.
+// Ordering predicates are non-goal for binary data (GH #372).
+
+impl<M: Model> DjogiField<M, Vec<u8>> {
+    /// `bytea_column = value` using PostgreSQL `BYTEA` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: Vec<u8>) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// `bytea_column <> value` using PostgreSQL `BYTEA` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: Vec<u8>) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// `bytea_column IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = Vec<u8>>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// `bytea_column NOT IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = Vec<u8>>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+impl<M: Model> DjogiField<M, Option<Vec<u8>>> {
+    /// Nullable `BYTEA` equality. NULL rows follow SQL three-valued
+    /// logic; use [`DjogiField::is_null`] for an explicit NULL test.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: Vec<u8>) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Nullable `BYTEA` inequality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: Vec<u8>) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Nullable `BYTEA IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = Vec<u8>>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Nullable `BYTEA NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = Vec<u8>>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+// ── DjogiPresentField — present-only nullable BYTEA ──────────────────────
+
+impl<M: Model> DjogiPresentField<M, Vec<u8>> {
+    /// Present-only nullable `BYTEA = value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: Vec<u8>) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Present-only nullable `BYTEA <> value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: Vec<u8>) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Present-only nullable `BYTEA IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = Vec<u8>>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Present-only nullable `BYTEA NOT IN (...)`. Empty list falls back
+    /// to `IS NOT NULL` (every present row is not-in an empty set).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = Vec<u8>>,
+    {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
+            self.sql.is_not_null()
+        } else {
+            self.sql.not_in_list(values)
+        }
+    }
+}
+
 // ── DjogiField — ordering predicates (DjogiPortableOrd opt-in) ────────────
 // Ordering is exposed only on types that opted into `DjogiPortableOrd`. The
 // trait is sealed by absence of a blanket impl + the explicit per-type list
@@ -3276,6 +3391,13 @@ impl IntoFilterValue for crate::MacAddr {
         FilterValue::Macaddr(self)
     }
 }
+
+impl IntoFilterValue for Vec<u8> {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::Bytea(self)
+    }
+}
+
 impl<V> IntoFilterValue for Vec<V>
 where
     V: IntoArrayFilterValue,

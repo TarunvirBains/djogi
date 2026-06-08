@@ -1,4 +1,4 @@
-// djogi#369 — first-class `Vec<u8>` / Postgres `BYTEA` model field support.
+// djogi#369, djogi#372 — first-class `Vec<u8>` / Postgres `BYTEA` model field support.
 //
 // Verifies that `#[derive(Model)]` accepts a `Vec<u8>` field and that the
 // full derivation chain (the `Model` trait impl, `{Model}Fields`,
@@ -12,15 +12,12 @@
 // (write bytes, read them back unchanged) is exercised by the live
 // integration suite, which needs a Postgres connection unavailable here.
 //
-// Filter surface: `Vec<u8>` is intentionally classified `Unsupported` by the
-// portable-predicate emitter (`portable_field_emit::classify_inner`), the
-// same posture as float arrays, `Jsonb`, spatial, and the network family —
-// raw-binary equality is not parity-checked between Rust/Punnu and Postgres,
-// so the closure filter does not expose `.eq` on a BYTEA field. The model
-// still compiles fully; the field is a first-class storage column. A
-// regression that accidentally routed `Vec<u8>` through the `u8` scalar path
-// (widening the inner byte to `SMALLINT`) would either change the column type
-// or break this fixture's `&Vec<u8>` type assertion.
+// SQL predicates: `eq`, `neq`, `in_`, `not_in` are available via the explicit
+// `DjogiField<M, Vec<u8>>` impl (djogi#372). Portable/closure equality remains
+// unavailable — raw-binary comparison is not portable to in-memory evaluation.
+// The field is classified `Unsupported` by the portable-predicate emitter
+// (`portable_field_emit::classify_inner`), so the closure filter does not
+// expose `.eq` on a BYTEA field through the generic path.
 //
 // `tokio-postgres` ships the native `ToSql`/`FromSql` codec for `Vec<u8>` ↔
 // BYTEA, so the macro-generated bind path (`push_bind`) and decode path
@@ -51,6 +48,18 @@ fn _check_field_types(blob: &Blob) {
 // the descriptor all generated successfully even with a BYTEA field present.
 fn _check_model_surface() {
     let _qs = Blob::objects();
+}
+
+// djogi#372 — verify SQL filter predicates compile on the BYTEA field.
+fn _check_bytea_filter_surface() {
+    let _ = Blob::objects()
+        .filter(|f| f.payload().eq(vec![1, 2, 3]));
+    let _ = Blob::objects()
+        .filter(|f| f.payload().neq(vec![0]));
+    let _ = Blob::objects()
+        .filter(|f| f.payload().in_(vec![vec![1], vec![2]]));
+    let _ = Blob::objects()
+        .filter(|f| f.payload().not_in(vec![vec![3]]));
 }
 
 fn main() {}

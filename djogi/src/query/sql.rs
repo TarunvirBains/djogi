@@ -116,6 +116,9 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
         FilterValue::Interval(i) => {
             acc.push_bind(i);
         }
+        FilterValue::Bytea(v) => {
+            acc.push_bind(v);
+        }
         #[cfg(feature = "network")]
         FilterValue::Inet(addr) => {
             acc.push_bind(addr);
@@ -267,6 +270,9 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
         }
         FilterValue::Interval(i) => {
             acc.push_bind(*i);
+        }
+        FilterValue::Bytea(v) => {
+            acc.push_bind(v.clone());
         }
         #[cfg(feature = "network")]
         FilterValue::Inet(addr) => {

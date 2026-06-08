@@ -248,7 +248,7 @@ Phase 1 maps these Rust types to SQL column types:
 | `uuid::Uuid` | `UUID` | |
 | `serde_json::Value` | `JSONB` | untyped JSON — typed `Jsonb<T>` covers the schema-validated case |
 | `Jsonb<T>` | `JSONB` | typed JSONB with unknown-field preservation — see [JSONB guide](./jsonb.md) |
-| `Vec<u8>` | `BYTEA` | raw binary blob, NOT a `SMALLINT[]` array — a scalar `u8` field lowers to `SMALLINT`, but `Vec<u8>` is recognised first as bytes (tokio-postgres native `ToSql`/`FromSql`). Closure-filter equality is not exposed on BYTEA (binary equality is not portable to in-memory evaluation); reach for the raw SQL escape hatch if you need to filter on byte content. djogi#369 |
+| `Vec<u8>` | `BYTEA` | Raw binary blob, NOT a `SMALLINT[]` array. SQL query predicates: `eq`, `neq`, `in_`, `not_in` (via explicit `DjogiField` impl — ordering is non-goal for binary data). Closure-filter portable equality is not exposed (binary comparison is not portable to in-memory evaluation). `Option<Vec<u8>>` adds `is_null`/`is_not_null` (generic on all `Option<U>`) and `.some().eq(...)` for present-only comparisons. djogi#369, djogi#372 |
 | `Vec<String>` | `TEXT[]` | |
 | `Vec<i32>` | `INTEGER[]` | |
 | `Vec<i64>` | `BIGINT[]` | |
