@@ -45,7 +45,8 @@ use super::{CodecError, FieldCodec};
 use crate::migrate::OnlineSafetyClassification;
 
 /// The environment variable name for the codec key.
-const ENV_VAR: &str = "DJOGI_FIELD_CODEC_KEY";
+#[doc(hidden)]
+pub const ENV_VAR: &str = "DJOGI_FIELD_CODEC_KEY";
 
 /// Cached codec key. Populated by [`load_key`] at startup validation time
 /// (or on first encode/decode call if startup validation is bypassed).

@@ -93,12 +93,13 @@ pub fn is_tracked_inner(ty: &Type) -> bool {
 /// corresponding [`FieldCodec`](::djogi::field_codec::FieldCodec) impl.
 ///
 /// This is the macro-side mirror of `::djogi::field_codec::REGISTRY`.
-/// The returned path is `::djogi::field_codec::aes::Aes256GcmV1` for
-/// the `"aes256_gcm_v1"` codec — always prefixed with `::djogi` so
-/// it resolves from the adopter crate without a `use` statement.
+/// The returned path routes through `::djogi::__private::field_codec_aes`
+/// so it resolves from the adopter crate (the `aes` submodule is
+/// `pub(crate)` and invisible to external crates). Always prefixed with
+/// `::djogi` so it resolves without a `use` statement.
 pub fn codec_id_to_type_path(codec_id: &str) -> TokenStream {
     match codec_id {
-        "aes256_gcm_v1" => quote! { ::djogi::field_codec::aes::Aes256GcmV1 },
+        "aes256_gcm_v1" => quote! { ::djogi::__private::field_codec_aes::Aes256GcmV1 },
         _ => unreachable!(
             "codec_id_to_type_path called with unknown codec \"{codec_id}\"; \
              the macro should have validated this against KNOWN_CODEC_IDS at parse time"

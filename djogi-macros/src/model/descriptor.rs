@@ -812,8 +812,8 @@ fn try_expand(
                     ::djogi::__private::inventory::submit! {
                         ::djogi::field_codec::FieldCodecStartupRequirement::const_new(
                             "aes256_gcm_v1",
-                            ::djogi::field_codec::aes::ENV_VAR,
-                            ::djogi::field_codec::aes::load_key,
+                            ::djogi::__private::field_codec_aes::ENV_VAR,
+                            ::djogi::__private::field_codec_aes::load_key,
                         )
                     }
                 }),
