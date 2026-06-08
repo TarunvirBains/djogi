@@ -12,9 +12,9 @@ help: the trait `queryset::distinct_seal::Sealed` is not implemented for `Hostil
      = help: the following other types implement trait `queryset::distinct_seal::Sealed`:
                (DjogiField<M, A>, DjogiField<M, B>)
                (DjogiField<M, A>, DjogiField<M, B>, DjogiField<M, C>)
-               (DjogiField<M, A>, ..., ..., ...)
-               (DjogiField<M, A>, ..., ..., ..., ...)
-               (DjogiField<M, A>, ..., ..., ..., ..., ...)
+               (DjogiField<M, A>, DjogiField<M, B>, DjogiField<M, C>, DjogiField<M, D>)
+               (DjogiField<M, A>, DjogiField<M, B>, DjogiField<M, C>, DjogiField<M, D>, DjogiField<M, E>)
+               (DjogiField<M, A>, DjogiField<M, B>, DjogiField<M, C>, ..., ..., ...)
                (DjogiField<M, A>,)
                (FieldRef<M, A>, FieldRef<M, B>)
                (FieldRef<M, A>, FieldRef<M, B>, FieldRef<M, C>)

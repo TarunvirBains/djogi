@@ -1,10 +1,9 @@
-error[E0277]: the trait bound `AggregateExpr<f64, ...>: PlainAnnotationTuple` is not satisfied
+error[E0277]: the trait bound `AggregateExpr<f64, OrderedSetAgg>: djogi::query::annotate::PlainAnnotationTuple` is not satisfied
     --> $DIR/plain_annotate_percentile_disc.rs:13:49
      |
-  13 | ...eDiscModel::objects().annotate(|f| f.score().percentile_disc(0.5));
-     |                          ^^^^^^^^ unsatisfied trait bound
+  13 |     let _ = PlainPercentileDiscModel::objects().annotate(|f| f.score().percentile_disc(0.5));
+     |                                                 ^^^^^^^^ the trait `djogi::query::annotate::PlainAnnotationSlot` is not implemented for `AggregateExpr<f64, OrderedSetAgg>`
      |
-     = help: the trait `djogi::query::annotate::PlainAnnotationSlot` is not implemented for `AggregateExpr<f64, OrderedSetAgg>`
 help: the trait `djogi::query::annotate::PlainAnnotationSlot` is implemented for `AggregateExpr<V>`
     --> djogi/src/query/annotate.rs:548:1
      |
@@ -20,8 +19,6 @@ note: required by a bound in `annotate::<impl QuerySet<T>>::annotate`
 ...
 1236 |         A: PlainAnnotationTuple,
      |            ^^^^^^^^^^^^^^^^^^^^ required by this bound in `annotate::<impl QuerySet<T>>::annotate`
-     = note: the full name for the type has been written to '$LONGTYPE_FILE'
-     = note: consider using `--verbose` to print the full type name to the console
 
 error: aborting due to 1 previous error
 

@@ -152,7 +152,7 @@ help: the trait `djogi::__private::postgres_types::FromSql<'_>` is not implement
 note: required by a bound in `djogi::pg::decode::decode_at`
    --> djogi/src/pg/decode.rs:151:8
     |
-149 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T...
+149 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
     |        --------- required by a bound in this function
 150 | where
 151 |     T: FromSql<'a>,
@@ -258,7 +258,7 @@ help: the trait `djogi::__private::postgres_types::FromSql<'_>` is not implement
 note: required by a bound in `djogi::pg::decode::decode_at`
    --> djogi/src/pg/decode.rs:151:8
     |
-149 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T...
+149 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
     |        --------- required by a bound in this function
 150 | where
 151 |     T: FromSql<'a>,
