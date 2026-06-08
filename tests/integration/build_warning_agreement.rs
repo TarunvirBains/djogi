@@ -200,7 +200,7 @@ fn b6_suppression_only_mutes_outcome3() {
             djogi_version: "0.1.0".to_string(),
             enums: BTreeMap::new(),
             format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
-            generated_at: "2026-04-25:00:00Z".to_string(),
+            generated_at: "2026-04-25T00:00:00Z".to_string(),
             indexes: Vec::new(),
             models: BTreeMap::new(),
             registered_apps: vec!["".to_string()],

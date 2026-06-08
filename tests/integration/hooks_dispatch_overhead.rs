@@ -24,7 +24,7 @@
 //! The reproducible `cargo asm` capture lives at:
 //!
 //! ```text
-//! docs/superpowers/artefacts/hooks_dispatch_overhead.txt
+//! the hooks dispatch overhead benchmark assembly snapshot
 //! ```
 //!
 //! Regenerate it from a clean checkout via:
@@ -34,11 +34,11 @@
 //!
 //! cargo asm --release -p djogi --lib \
 //!   '<hooks_dispatch_overhead::NoHooksModel as djogi::model::Model>::create' \
-//!   > docs/superpowers/artefacts/hooks_dispatch_overhead.txt
+//!   > the hooks dispatch overhead benchmark assembly snapshot
 //!
 //! cargo asm --release -p djogi --lib \
 //!   '<hooks_dispatch_overhead::WithHooksModel as djogi::model::Model>::create' \
-//!   >> docs/superpowers/artefacts/hooks_dispatch_overhead.txt
+//!   >> the hooks dispatch overhead benchmark assembly snapshot
 //! ```
 //!
 //! (The exact mangled symbol path is documented in the artefact's
@@ -207,7 +207,7 @@ pub fn anchor_with_hooks_save<'a>(
 #[test]
 fn release_build_compiles() {
     // Compile-only test. The verification artefact lives at
-    //   docs/superpowers/artefacts/hooks_dispatch_overhead.txt
+    //   the hooks dispatch overhead benchmark assembly snapshot
     // and is regenerated via the `cargo asm` commands documented in
     // the module header above.
     //

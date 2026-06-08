@@ -53,7 +53,7 @@ fn empty_schema_for(bucket: &BucketKey) -> AppliedSchema {
         djogi_version: "0.1.0".to_string(),
         enums: BTreeMap::new(),
         format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
-        generated_at: "2026-05-04:00:00Z".to_string(),
+        generated_at: "2026-05-04T00:00:00Z".to_string(),
         indexes: Vec::new(),
         models: BTreeMap::new(),
         registered_apps: vec![bucket.app.clone()],

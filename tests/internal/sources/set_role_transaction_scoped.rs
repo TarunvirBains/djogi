@@ -35,7 +35,7 @@
 // # Spec / memory anchors
 //
 // - v3 plan brief.
-// - Plan (`docs/superpowers/plans/granular.md`).
+// - Implementation plan (see the project's granular plan document).
 // - `feedback_djogi_local_postgres.md` — `#[djogi_test]` provisions a
 //   fresh DB per test.
 

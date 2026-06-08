@@ -286,7 +286,7 @@ fn write_billing_snapshot_with_table(work: &Path) {
         djogi_version: "0.1.0".to_string(),
         enums: BTreeMap::new(),
         format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
-        generated_at: "2026-04-25:00:00Z".to_string(),
+        generated_at: "2026-04-25T00:00:00Z".to_string(),
         indexes: Vec::new(),
         models,
         registered_apps: vec!["billing".to_string()],
@@ -611,7 +611,7 @@ fn write_billing_snapshot_projected_from_model(work: &Path) {
 }
 
 #[djogi::djogi_test(sync_models = [DegradeInvoice])]
-async fn t_verify_degrade_snapshot_only_against_valid_db(mut ctx: djogi::DjogiContext) {
+async fn verify_degrade_snapshot_only_against_valid_db(mut ctx: djogi::DjogiContext) {
     // The standalone published `djogi` links zero models. With an on-disk
     // NAMED-bucket snapshot present and a reachable DB that ACTUALLY HAS the
     // snapshot's table, verify must:
@@ -774,7 +774,7 @@ fn t_nologic_fixture_has_no_custom_migration_code() {
 // ── T-NOCARGO: compose works with no Cargo on PATH and no source ─────────────
 
 #[test]
-fn t_nocargo_compose_without_cargo_or_source() {
+fn nocargo_compose_without_cargo_or_source() {
     // Build the adopter fixture binary (links model crates via inventory).
     let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
 
@@ -818,7 +818,7 @@ fn t_nocargo_compose_without_cargo_or_source() {
 // ── T-CONTAINER-APPLY: apply from prebuilt binary (no source, no Cargo) ──────
 
 #[djogi::djogi_test]
-async fn t_container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
+async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     // Derive the per-test DB URL by splicing the test database name into the
     // harness DATABASE_URL.
     let db_url = splice_database_name(&database_url(), &current_database(&mut ctx).await);

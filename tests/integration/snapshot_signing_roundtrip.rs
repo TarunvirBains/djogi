@@ -44,7 +44,7 @@ fn fixture_snapshot_bytes() -> Vec<u8> {
     let payload = br#"{
   "snapshot": {
     "version": 1,
-    "generated_at": "2026-05-05:00:00Z"
+    "generated_at": "2026-05-05T00:00:00Z"
   },
   "models": [
     {
