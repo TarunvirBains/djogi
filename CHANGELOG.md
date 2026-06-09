@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.10] - 2026-06-08
+
+### Changed
+
+- Removed build-milestone scaffolding tokens from test function names, assertion
+  string literals, fixture file names, and SQL migration comments across
+  `djogi-cli/tests/`, `tests/integration/`, and `tests/internal/`.
+- Reblessed `lihaaf` compile-fixture `.stderr` snapshots to align with the
+  current stable Rust toolchain's diagnostic format.
+
 ## [0.1.0-alpha.9] - 2026-06-02
 
 ### Added
