@@ -7493,4 +7493,82 @@ mod tests {
             "error source should not reference the first GUC (that one succeeded), got: {source}",
         );
     }
+
+    // ── per-app version-stream tests ────────────────────────────────
+
+    fn single_statement_plan_for_bucket(
+        bucket_key: &BucketKey,
+        version: &str,
+        label: &str,
+        sql: &str,
+    ) -> (MigrationPlan, RunnerCtx) {
+        let plan = MigrationPlan {
+            bucket: bucket_key.clone(),
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![op(label, sql)],
+            }],
+        };
+        let runner_ctx = RunnerCtx {
+            bucket: bucket_key.clone(),
+            version: version.to_string(),
+            description: "per-app version stream test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(&plan),
+            checksum_down: None,
+            snapshot: Some(empty_snapshot()),
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: Some(RunnerIdentity::SingleNodeDev),
+        };
+        (plan, runner_ctx)
+    }
+
+    /// Two buckets in one database legitimately share a version string
+    /// (compose stamps one version per run). Each (version, app_label)
+    /// stream must apply independently.
+    #[djogi_test]
+    async fn same_version_applies_once_per_app_label(mut ctx: DjogiContext) {
+        let guard = acquire_test_workspace_guard();
+
+        let version = "V20260609000000__t397";
+        let bucket_a = BucketKey { database: "main".into(), app: "users".into() };
+        let bucket_b = BucketKey { database: "main".into(), app: "system".into() };
+
+        // Clean up any leftover tables from prior runs.
+        let _ = ctx.execute("DROP TABLE IF EXISTS t397_users", &[]).await;
+        let _ = ctx.execute("DROP TABLE IF EXISTS t397_system", &[]).await;
+
+        let (plan_a, runner_ctx_a) = single_statement_plan_for_bucket(
+            &bucket_a,
+            version,
+            "AddTable t397_users",
+            "CREATE TABLE t397_users (id BIGINT PRIMARY KEY)",
+        );
+        let (plan_b, runner_ctx_b) = single_statement_plan_for_bucket(
+            &bucket_b,
+            version,
+            "AddTable t397_system",
+            "CREATE TABLE t397_system (id BIGINT PRIMARY KEY)",
+        );
+
+        apply_plan(&mut ctx, &plan_a, &runner_ctx_a, &guard)
+            .await
+            .expect("bucket A applies");
+
+        // Before the per-app version-stream fix, this returns
+        // Err(VersionAlreadyApplied) — bucket B is shadowed by
+        // bucket A's ledger row at the same version.
+        apply_plan(&mut ctx, &plan_b, &runner_ctx_b, &guard)
+            .await
+            .expect("bucket B must apply on its own (version, app_label) stream");
+
+        let rows = super::ledger::select_all(&mut ctx).await.expect("ledger readable");
+        let same_version: Vec<_> = rows.iter().filter(|r| r.version == version).collect();
+        assert_eq!(same_version.len(), 2, "one ledger row per app stream");
+        assert!(same_version.iter().any(|r| r.app_label == "users"));
+        assert!(same_version.iter().any(|r| r.app_label == "system"));
+    }
 }

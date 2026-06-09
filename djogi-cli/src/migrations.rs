@@ -5024,4 +5024,26 @@ mod tests {
 
         let _ = fs::remove_dir_all(&work);
     }
+
+    // ── per-app version-stream test ─────────────────────────────────
+
+    // Enable after check_ledger_state gains the app_label parameter.
+    // Currently takes (ctx, version); post-change signature: (ctx, version, app_label).
+    // #[djogi_test]
+    // async fn check_ledger_state_is_app_scoped(mut ctx: djogi::context::DjogiContext) {
+    //     // Seed one applied row for app "users" at version V via the library
+    //     // insert + mark helpers the adjacent tests use.
+    //     seed_applied_row(&mut ctx, "V20260609000000__t397", "users").await;
+    //
+    //     let state = check_ledger_state(
+    //         &mut ctx,
+    //         "V20260609000000__t397",
+    //         "system",
+    //     )
+    //     .await;
+    //     assert!(
+    //         matches!(state, LedgerState::NotPresent),
+    //         "different app stream must be NotPresent, got {state:?}",
+    //     );
+    // }
 }
