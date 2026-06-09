@@ -2,7 +2,7 @@
 //
 // Methodology: write small adopter-shape scenarios across six categories and
 // compile them. Compile-fails / awkward shapes / clean compiles each map to a
-// verdict the round-2 summary comment on #110 reports.
+// verdict the round summary comment on #110 reports.
 //
 // Lifecycle of a scenario:
 //   - When discovery surfaces a gap, the scenario carries a `// GAP(<id>)`
@@ -172,7 +172,7 @@ async fn cat1_a_tracked_string_filter_regression(mut ctx: djogi::DjogiContext) {
 // VERDICT: COMPILES CLEANLY — the portable `DjogiField::in_` surface accepts
 // any `IntoIterator<Item = P>` where `P: IntoPortableFieldValue<HeerId>`, and
 // `HeerId` satisfies the identity blanket `IntoPortableFieldValue<HeerId> for
-// HeerId`. False positive from the round-2 brainstorm — kept as a positive
+// HeerId`. False positive from the round brainstorm — kept as a positive
 // sanity check that the portable HeerId IN-list surface stays healthy.
 #[djogi::djogi_test(sync_models = [DogfoodWidget])]
 async fn cat1_b_heerid_in_list_compiles(mut ctx: djogi::DjogiContext) {

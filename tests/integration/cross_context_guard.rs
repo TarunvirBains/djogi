@@ -1,4 +1,4 @@
-// T7.6 integration tests: `DjogiContext::use_punnu` cross-context guard.
+// .6 integration tests: `DjogiContext::use_punnu` cross-context guard.
 //
 // What this file pins:
 //
@@ -32,26 +32,25 @@
 //
 // # Fixture strategy
 //
-// Tables are provisioned via `#[djogi_test(sync_models = [Phase8T76GuardRow])]`.
+// Tables are provisioned via `#[djogi_test(sync_models = [GuardRow])]`.
 // Tests 2 and 3 additionally need two sibling DjogiContext instances backed
 // by the same pool. This requires `ctx.share_pool()` — a genuine typed-surface
 // tests do not need the bypass). Tests 1 is fully typed.
 //
 // # Spec anchor
 //
-// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-// §3 commit T7.6.
+// §3 commit .6.
 
 use djogi::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Fixture model — a unique type name avoids descriptor-inventory conflicts
-// with T7.4/T7.5 fixtures that live in separate test binaries.
+// with .4/.5 fixtures that live in separate test binaries.
 // ---------------------------------------------------------------------------
 
-#[model(table = "phase8_t7_6_guard_rows", pk = HeerId)]
+#[model(table = "guard_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
-pub struct Phase8T76GuardRow {
+pub struct GuardRow {
     pub label: String,
 }
 
@@ -60,11 +59,11 @@ pub struct Phase8T76GuardRow {
 // this context's Sassi.
 // ---------------------------------------------------------------------------
 
-#[djogi::djogi_test(sync_models = [Phase8T76GuardRow])]
+#[djogi::djogi_test(sync_models = [GuardRow])]
 async fn use_punnu_passes_when_same_context(mut ctx: djogi::DjogiContext) {
     let p = ctx
-        .punnu::<Phase8T76GuardRow>()
-        .expect("Phase8T76GuardRow must be registered via boot hook");
+        .punnu::<GuardRow>()
+        .expect("GuardRow must be registered via boot hook");
 
     let result = ctx.use_punnu(&p);
 
@@ -79,16 +78,16 @@ async fn use_punnu_passes_when_same_context(mut ctx: djogi::DjogiContext) {
 // ---------------------------------------------------------------------------
 // Test 2 — `use_punnu` panics in debug builds when a Punnu from ctx_a is
 // passed to ctx_b.use_punnu(). The two contexts have independent Sassi
-// registries (T7.4 Path X), so ptr_eq returns false.
+// registries (.4 Path X), so ptr_eq returns false.
 //
 // ---------------------------------------------------------------------------
 
 #[cfg(debug_assertions)]
-#[djogi::djogi_test(sync_models = [Phase8T76GuardRow])]
+#[djogi::djogi_test(sync_models = [GuardRow])]
 #[should_panic(expected = "cross-context Punnu access")]
 async fn use_punnu_panics_in_debug_on_mismatch(mut ctx: djogi::DjogiContext) {
     // Build two fresh top-level contexts from the same pool — each gets
-    // its own Arc<Sassi> with an independent Punnu<Phase8T76GuardRow>.
+    // its own Arc<Sassi> with an independent Punnu<GuardRow>.
     let pool = ctx
         .share_pool()
         .expect("djogi_test harness produces a pool-backed context");
@@ -97,8 +96,8 @@ async fn use_punnu_panics_in_debug_on_mismatch(mut ctx: djogi::DjogiContext) {
     let ctx_b = djogi::DjogiContext::from_pool(pool.clone());
 
     let p_a = ctx_a
-        .punnu::<Phase8T76GuardRow>()
-        .expect("ctx_a.punnu::<Phase8T76GuardRow>() must return Some");
+        .punnu::<GuardRow>()
+        .expect("ctx_a.punnu::<GuardRow>() must return Some");
 
     // Passing ctx_a's Punnu to ctx_b.use_punnu must panic in debug mode.
     let _ = ctx_b.use_punnu(&p_a);
@@ -112,7 +111,7 @@ async fn use_punnu_panics_in_debug_on_mismatch(mut ctx: djogi::DjogiContext) {
 // ---------------------------------------------------------------------------
 
 #[cfg(not(debug_assertions))]
-#[djogi::djogi_test(sync_models = [Phase8T76GuardRow])]
+#[djogi::djogi_test(sync_models = [GuardRow])]
 async fn use_punnu_returns_empty_in_release(mut ctx: djogi::DjogiContext) {
     let pool = ctx
         .share_pool()
@@ -122,11 +121,11 @@ async fn use_punnu_returns_empty_in_release(mut ctx: djogi::DjogiContext) {
     let ctx_b = djogi::DjogiContext::from_pool(pool.clone());
 
     let p_a = ctx_a
-        .punnu::<Phase8T76GuardRow>()
-        .expect("ctx_a.punnu::<Phase8T76GuardRow>() must return Some");
+        .punnu::<GuardRow>()
+        .expect("ctx_a.punnu::<GuardRow>() must return Some");
     let p_b = ctx_b
-        .punnu::<Phase8T76GuardRow>()
-        .expect("ctx_b.punnu::<Phase8T76GuardRow>() must return Some");
+        .punnu::<GuardRow>()
+        .expect("ctx_b.punnu::<GuardRow>() must return Some");
 
     // In release mode this must NOT panic; it returns a fresh empty Punnu.
     let result = ctx_b.use_punnu(&p_a);

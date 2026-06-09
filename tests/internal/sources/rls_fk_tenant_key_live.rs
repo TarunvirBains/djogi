@@ -1,8 +1,8 @@
-// / T11.1 — Live integration test: tenant_key + ForeignKey<T> RLS
+// / .1 — Live integration test: tenant_key + ForeignKey<T> RLS
 //
 // Regression test for [GH issue #37]. / already cover
 // tenant isolation when `tenant_key` names a plain `i64` column (see
-// `phase5_postgres_native::set_tenant_rls_isolates_tenants`). What that
+// `postgres_native::set_tenant_rls_isolates_tenants`). What that
 // test does NOT cover is the case where `tenant_key` names a
 // `ForeignKey<Owner>`-typed column — the surface where #37 originally
 // manifested.
@@ -39,8 +39,8 @@
 //
 // Both tests run in `#[djogi::djogi_test]` which provisions a per-test
 // database, so they are mutually independent and parallel-safe. The
-// restricted role `djogi_rls_test_user` is cluster-scoped and shared
-// with `phase5_postgres_native::set_tenant_rls_isolates_tenants` —
+// restricted role `djogi_rls_test_user` is  and shared
+// with `postgres_native::set_tenant_rls_isolates_tenants` —
 // the idempotent CREATE ROLE pattern from that test is replicated
 // here so the suites can run in any order.
 //
@@ -49,7 +49,7 @@
 use djogi::prelude::*;
 use djogi_macros::model;
 
-#[model(table = "phase7_5_t111_owners", pk = HeerId)]
+#[model(table = "owners", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Owner {
     pub name: String,
@@ -60,7 +60,7 @@ pub struct Owner {
 /// `::cast` suffix; post-fix it routes through `BigInt` and emits
 /// `::bigint`.
 #[model(
-    table = "phase7_5_t111_documents",
+    table = "documents",
     pk = HeerId,
     tenant_key = "owner_id",
     no_default
@@ -73,15 +73,15 @@ pub struct Document {
 
 /// Idempotent table + policy + restricted-role bootstrap.
 ///
-/// The role `djogi_rls_test_user` is cluster-scoped (Postgres roles are
+/// The role `djogi_rls_test_user` is  (Postgres roles are
 /// not per-database). Repeated test runs across the same cluster reuse
 /// it; the existence-then-create idiom matches the pattern in
-/// `phase5_postgres_native::set_tenant_rls_isolates_tenants`.
+/// `postgres_native::set_tenant_rls_isolates_tenants`.
 async fn setup(ctx: &mut djogi::DjogiContext) {
     // `#[djogi_test]` provisions a fresh DB, so no DROP guards needed.
 
     ctx.raw_execute(
-        "CREATE TABLE phase7_5_t111_owners (
+        "CREATE TABLE owners (
              id          BIGINT PRIMARY KEY DEFAULT generate_id(),
              created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
              updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -93,11 +93,11 @@ async fn setup(ctx: &mut djogi::DjogiContext) {
     .expect("create owners");
 
     ctx.raw_execute(
-        "CREATE TABLE phase7_5_t111_documents (
+        "CREATE TABLE documents (
              id          BIGINT PRIMARY KEY DEFAULT generate_id(),
              created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
              updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-             owner_id    BIGINT NOT NULL REFERENCES phase7_5_t111_owners(id),
+             owner_id    BIGINT NOT NULL REFERENCES owners(id),
              title       TEXT   NOT NULL
          )",
         &[],
@@ -106,7 +106,7 @@ async fn setup(ctx: &mut djogi::DjogiContext) {
     .expect("create documents");
 
     ctx.raw_execute(
-        "ALTER TABLE phase7_5_t111_documents ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE documents ENABLE ROW LEVEL SECURITY",
         &[],
     )
     .await
@@ -116,7 +116,7 @@ async fn setup(ctx: &mut djogi::DjogiContext) {
     // SET LOCAL ROLE below switches to a restricted role anyway, since
     // superusers always bypass RLS regardless of FORCE.
     ctx.raw_execute(
-        "ALTER TABLE phase7_5_t111_documents FORCE ROW LEVEL SECURITY",
+        "ALTER TABLE documents FORCE ROW LEVEL SECURITY",
         &[],
     )
     .await
@@ -128,7 +128,7 @@ async fn setup(ctx: &mut djogi::DjogiContext) {
     // companion test `rls_policy_ddl_uses_bigint_cast` verifies the
     // emitted file matches.
     ctx.raw_execute(
-        "CREATE POLICY phase7_5_t111_documents_tenant_isolation ON phase7_5_t111_documents \
+        "CREATE POLICY documents_tenant_isolation ON documents \
          USING (owner_id = current_setting('app.tenant_id', true)::bigint)",
         &[],
     )
@@ -153,13 +153,13 @@ async fn setup(ctx: &mut djogi::DjogiContext) {
     // existence check during INSERT), and SELECT on documents to
     // exercise the policy.
     ctx.raw_execute(
-        "GRANT SELECT ON phase7_5_t111_owners TO djogi_rls_test_user",
+        "GRANT SELECT ON owners TO djogi_rls_test_user",
         &[],
     )
     .await
     .expect("grant owners");
     ctx.raw_execute(
-        "GRANT SELECT ON phase7_5_t111_documents TO djogi_rls_test_user",
+        "GRANT SELECT ON documents TO djogi_rls_test_user",
         &[],
     )
     .await
@@ -202,14 +202,14 @@ async fn rls_with_fk_tenant_key_filters_correctly(mut ctx: djogi::DjogiContext) 
     // Owner ids are deterministic so the cross-tenant assertions can
     // compare against fixed values.
     ctx.raw_execute(
-        "INSERT INTO phase7_5_t111_owners (id, name) VALUES \
+        "INSERT INTO owners (id, name) VALUES \
          (1000, 'org-a'), (2000, 'org-b')",
         &[],
     )
     .await
     .expect("seed owners");
     ctx.raw_execute(
-        "INSERT INTO phase7_5_t111_documents (owner_id, title) VALUES \
+        "INSERT INTO documents (owner_id, title) VALUES \
          (1000, 'org-a-doc'), (2000, 'org-b-doc')",
         &[],
     )
@@ -268,7 +268,7 @@ async fn rls_policy_ddl_uses_bigint_cast(_ctx: djogi::DjogiContext) {
     let path = std::path::Path::new(&manifest_dir)
         .join("target")
         .join("djogi_rls")
-        .join("phase7_5_t111_documents_rls.sql");
+        .join("documents_rls.sql");
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read RLS side-channel at {}: {e}", path.display()));
     assert!(

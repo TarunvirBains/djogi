@@ -1,4 +1,4 @@
--- Phase 5 Task 7 fixup: camel_posts table for container-level serde rename_all tests.
+-- camel_posts table for container-level serde rename_all tests.
 --
 -- Uses a JSONB spec column whose Rust schema is CamelSpec
 -- (engine_type: i32, weight_kg: f32) with #[serde(rename_all = "camelCase")].

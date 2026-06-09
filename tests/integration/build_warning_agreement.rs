@@ -1,4 +1,4 @@
-//! T6 — build.rs warning text agreement test.
+//!  — build.rs warning text agreement test.
 //!
 //! Two independent code paths emit the exact same warning text:
 //!
@@ -102,7 +102,7 @@ fn outcome4_wording_matches_build_rs() {
 }
 
 #[test]
-fn d004_unregistered_wording_matches_build_rs() {
+fn unregistered_app_warning_matches_build_rs() {
     let bucket = djogi::migrate::projection::BucketKey {
         database: "main".into(),
         app: "ghost".into(),
@@ -122,7 +122,7 @@ fn d004_unregistered_wording_matches_build_rs() {
 }
 
 #[test]
-fn d004_missing_wording_matches_build_rs() {
+fn missing_app_warning_matches_build_rs() {
     let bucket = djogi::migrate::projection::BucketKey {
         database: "main".into(),
         app: "billing".into(),
@@ -159,7 +159,7 @@ fn malformed_inventory_wording_matches_build_rs() {
     );
 }
 
-/// Codex round-2 B-6 — the suppression flag must only mute Outcome 3
+/// B-6 — the suppression flag must only mute Outcome 3
 /// (model drift). D004 mismatches, Outcome 2 (composed-not-applied),
 /// and Outcome 4 (stale pending) ALWAYS print regardless of the
 /// `suppress_drift_warning` setting.
@@ -212,7 +212,7 @@ fn b6_suppression_only_mutes_outcome3() {
         app: "".into(),
     };
 
-    // Codex round-3 B-6 — Outcome 1 (synced). When models == pending
+    // Codex round B-6 — Outcome 1 (synced). When models == pending
     // == snapshot, the classifier returns `None` (silent — no
     // diagnostic). This is the path build.rs walks on a clean tree;
     // any regression that returns `Some(..)` would fire a spurious
@@ -245,7 +245,7 @@ fn b6_suppression_only_mutes_outcome3() {
     .expect("outcome 2");
     assert_eq!(outcome2.kind, DriftKind::Outcome2ComposedNotApplied);
     assert!(!outcome2.kind.is_outcome3_drift());
-    // Codex round-3 B-6 — exact-string equality. Built from the
+    // Codex round B-6 — exact-string equality. Built from the
     // frozen format string in `build_match::format_warning_outcome2`
     // (no pending version → `<unknown>` placeholder; bucket main /
     // global → `_global_` via `app_dirname`).
@@ -327,7 +327,7 @@ fn b6_suppression_only_mutes_outcome3() {
         1,
         "only bucket B's outcome2 must emit under suppression: {emitted:?}"
     );
-    // Codex round-3 B-6 — exact-string equality on the multi-bucket
+    // Codex round B-6 — exact-string equality on the multi-bucket
     // emitted text. Built from the v3-frozen Outcome 2 format string
     // with the explicit pending version threaded through.
     assert_eq!(

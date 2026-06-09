@@ -51,7 +51,7 @@ fn temp_workspace(label: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("djogi-phase0-emit-{label}-{stamp}"));
+    let path = std::env::temp_dir().join(format!("djogi-bootstrap-emit-{label}-{stamp}"));
     fs::create_dir_all(&path).expect("create workspace root");
     path
 }
@@ -100,7 +100,7 @@ fn at(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> time::
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn compose_auto_emits_phase_zero_with_postgis_dependency_on_first_run() {
+fn compose_auto_emits_bootstrap_with_postgis_dependency_on_first_run() {
     let work = temp_workspace("auto_emit_postgis");
     let guard = lock_for(&work);
 
@@ -145,9 +145,9 @@ fn compose_auto_emits_phase_zero_with_postgis_dependency_on_first_run() {
     );
 
     // On disk: SQL pair + pending JSON at the canonical paths.
-    let phase_zero_dir = work.join("migrations").join("main").join("_global_");
-    let up_path = phase_zero_dir.join(format!("{PHASE_ZERO_VERSION}.sdjql"));
-    let down_path = phase_zero_dir.join(format!("{PHASE_ZERO_VERSION}.down.sdjql"));
+    let bootstrap_dir = work.join("migrations").join("main").join("_global_");
+    let up_path = bootstrap_dir.join(format!("{PHASE_ZERO_VERSION}.sdjql"));
+    let down_path = bootstrap_dir.join(format!("{PHASE_ZERO_VERSION}.down.sdjql"));
     let pending_path =
         djogi::migrate::phase_zero_pending_json_path(&work, "main", PHASE_ZERO_VERSION);
     assert!(
@@ -279,7 +279,7 @@ fn compose_auto_emit_returns_emissions_in_report() {
         models: &models,
         snapshots: &snapshots,
         apps: &apps,
-        name: "phase_zero_emit_test",
+        name: "bootstrap_emit_test",
         allow_destructive: false,
         force_overwrite: false,
         now: at(2026, 5, 4, 12, 0, 0),
@@ -304,7 +304,7 @@ fn compose_auto_emit_returns_emissions_in_report() {
         models: &models,
         snapshots: &snapshots,
         apps: &apps,
-        name: "phase_zero_emit_test2",
+        name: "bootstrap_emit_test2",
         allow_destructive: false,
         force_overwrite: false,
         now: at(2026, 5, 4, 12, 0, 1),

@@ -78,7 +78,7 @@ use djogi::prelude::*;
 
 /// Scalar `time::Date` column — exercises the inline `date_range_expr`
 /// CHECK directly on the column value.
-#[model(table = "phase8_5_g0_temporal_inf_date_scalar", pk = HeerId, no_default)]
+#[model(table = "g0_temporal_inf_date_scalar", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemporalInfDateScalarRow {
     pub event_on: ::time::Date,
@@ -87,7 +87,7 @@ pub struct TemporalInfDateScalarRow {
 
 /// Scalar `time::OffsetDateTime` column — exercises the inline
 /// `timestamptz_range_expr` CHECK directly on the column value.
-#[model(table = "phase8_5_g0_temporal_inf_tstz_scalar", pk = HeerId, no_default)]
+#[model(table = "g0_temporal_inf_tstz_scalar", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemporalInfTstzScalarRow {
     pub recorded_at: ::time::OffsetDateTime,
@@ -98,7 +98,7 @@ pub struct TemporalInfTstzScalarRow {
 /// CHECKs. The descriptor lowers to `daterange`, and the projection
 /// emits the same `date_range_expr` on `lower(<col>)` / `upper(<col>)`
 /// via `range_endpoint_checks`.
-#[model(table = "phase8_5_g0_temporal_inf_date_range", pk = HeerId, no_default)]
+#[model(table = "g0_temporal_inf_date_range", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemporalInfDateRangeRow {
     pub validity: Range<::time::Date>,
@@ -107,7 +107,7 @@ pub struct TemporalInfDateRangeRow {
 
 /// `Range<time::OffsetDateTime>` column — exercises the TSTZRANGE
 /// endpoint CHECKs.
-#[model(table = "phase8_5_g0_temporal_inf_tstz_range", pk = HeerId, no_default)]
+#[model(table = "g0_temporal_inf_tstz_range", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemporalInfTstzRangeRow {
     pub booking: Range<::time::OffsetDateTime>,
@@ -125,7 +125,7 @@ async fn scalar_date_check_rejects_positive_infinity(mut ctx: djogi::DjogiContex
     // value the Rust type has no constructor for.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_date_scalar (event_on, label) \
+            "INSERT INTO g0_temporal_inf_date_scalar (event_on, label) \
              VALUES (DATE 'infinity', 'scalar-pos-inf')",
             &[],
         )
@@ -134,7 +134,7 @@ async fn scalar_date_check_rejects_positive_infinity(mut ctx: djogi::DjogiContex
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_date_scalar_event_on_check"),
+        msg.contains("g0_temporal_inf_date_scalar_event_on_check"),
         "+infinity Date INSERT error must reference the structural CHECK constraint name: {msg}"
     );
 }
@@ -143,7 +143,7 @@ async fn scalar_date_check_rejects_positive_infinity(mut ctx: djogi::DjogiContex
 async fn scalar_date_check_rejects_negative_infinity(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_date_scalar (event_on, label) \
+            "INSERT INTO g0_temporal_inf_date_scalar (event_on, label) \
              VALUES (DATE '-infinity', 'scalar-neg-inf')",
             &[],
         )
@@ -152,7 +152,7 @@ async fn scalar_date_check_rejects_negative_infinity(mut ctx: djogi::DjogiContex
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_date_scalar_event_on_check"),
+        msg.contains("g0_temporal_inf_date_scalar_event_on_check"),
         "-infinity Date INSERT error must reference the structural CHECK constraint name: {msg}"
     );
 }
@@ -190,7 +190,7 @@ async fn scalar_date_check_accepts_finite_value_round_trip(mut ctx: djogi::Djogi
 async fn scalar_tstz_check_rejects_positive_infinity(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_tstz_scalar (recorded_at, label) \
+            "INSERT INTO g0_temporal_inf_tstz_scalar (recorded_at, label) \
              VALUES (TIMESTAMPTZ 'infinity', 'scalar-pos-inf')",
             &[],
         )
@@ -199,7 +199,7 @@ async fn scalar_tstz_check_rejects_positive_infinity(mut ctx: djogi::DjogiContex
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_tstz_scalar_recorded_at_check"),
+        msg.contains("g0_temporal_inf_tstz_scalar_recorded_at_check"),
         "+infinity Timestamptz INSERT error must reference the structural CHECK constraint \
          name: {msg}"
     );
@@ -209,7 +209,7 @@ async fn scalar_tstz_check_rejects_positive_infinity(mut ctx: djogi::DjogiContex
 async fn scalar_tstz_check_rejects_negative_infinity(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_tstz_scalar (recorded_at, label) \
+            "INSERT INTO g0_temporal_inf_tstz_scalar (recorded_at, label) \
              VALUES (TIMESTAMPTZ '-infinity', 'scalar-neg-inf')",
             &[],
         )
@@ -218,7 +218,7 @@ async fn scalar_tstz_check_rejects_negative_infinity(mut ctx: djogi::DjogiContex
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_tstz_scalar_recorded_at_check"),
+        msg.contains("g0_temporal_inf_tstz_scalar_recorded_at_check"),
         "-infinity Timestamptz INSERT error must reference the structural CHECK constraint \
          name: {msg}"
     );
@@ -262,7 +262,7 @@ async fn daterange_check_rejects_negative_infinity_in_lower_endpoint(
     // surface cannot hold a non-finite value.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_date_range (validity, label) \
+            "INSERT INTO g0_temporal_inf_date_range (validity, label) \
              VALUES (daterange('-infinity'::date, DATE '2026-12-31', '[)'), \
                      'range-lower-neg-inf')",
             &[],
@@ -272,7 +272,7 @@ async fn daterange_check_rejects_negative_infinity_in_lower_endpoint(
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_date_range_validity_check"),
+        msg.contains("g0_temporal_inf_date_range_validity_check"),
         "-infinity lower-endpoint error must reference the structural CHECK constraint name: \
          {msg}"
     );
@@ -284,7 +284,7 @@ async fn daterange_check_rejects_positive_infinity_in_upper_endpoint(
 ) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_date_range (validity, label) \
+            "INSERT INTO g0_temporal_inf_date_range (validity, label) \
              VALUES (daterange(DATE '2026-01-01', 'infinity'::date, '[]'), \
                      'range-upper-pos-inf')",
             &[],
@@ -294,7 +294,7 @@ async fn daterange_check_rejects_positive_infinity_in_upper_endpoint(
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_date_range_validity_check"),
+        msg.contains("g0_temporal_inf_date_range_validity_check"),
         "+infinity upper-endpoint error must reference the structural CHECK constraint name: \
          {msg}"
     );
@@ -359,7 +359,7 @@ async fn tstzrange_check_rejects_negative_infinity_in_lower_endpoint(
 ) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_tstz_range (booking, label) \
+            "INSERT INTO g0_temporal_inf_tstz_range (booking, label) \
              VALUES (tstzrange('-infinity'::timestamptz, \
                                TIMESTAMPTZ '2026-12-31 23:59:59+00', '[)'), \
                      'range-lower-neg-inf')",
@@ -370,7 +370,7 @@ async fn tstzrange_check_rejects_negative_infinity_in_lower_endpoint(
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_tstz_range_booking_check"),
+        msg.contains("g0_temporal_inf_tstz_range_booking_check"),
         "-infinity lower-endpoint error must reference the structural CHECK constraint name: \
          {msg}"
     );
@@ -382,7 +382,7 @@ async fn tstzrange_check_rejects_positive_infinity_in_upper_endpoint(
 ) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_tstz_range (booking, label) \
+            "INSERT INTO g0_temporal_inf_tstz_range (booking, label) \
              VALUES (tstzrange(TIMESTAMPTZ '2026-01-01 00:00:00+00', \
                                'infinity'::timestamptz, '[]'), \
                      'range-upper-pos-inf')",
@@ -393,7 +393,7 @@ async fn tstzrange_check_rejects_positive_infinity_in_upper_endpoint(
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_tstz_range_booking_check"),
+        msg.contains("g0_temporal_inf_tstz_range_booking_check"),
         "+infinity upper-endpoint error must reference the structural CHECK constraint name: \
          {msg}"
     );
@@ -454,7 +454,7 @@ async fn tstzrange_check_accepts_unbounded_upper_range(mut ctx: djogi::DjogiCont
 /// `Vec<Date>` column — exercises `date_array_is_finite_check` which
 /// projects to `<col> IS NULL OR djogi.__djogi_date_array_is_finite_v1(<col>)`.
 /// Uses `Date` (from `djogi::prelude::*`) to match the macro's recognized path forms.
-#[model(table = "phase8_5_g0_temporal_inf_date_array", pk = HeerId, no_default)]
+#[model(table = "g0_temporal_inf_date_array", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemporalInfDateArrayRow {
     pub dates: Vec<Date>,
@@ -468,7 +468,7 @@ async fn date_array_check_rejects_negative_infinity_element(mut ctx: djogi::Djog
     // old `ALL(col)` check admitted it. The `isfinite`-backed helper rejects it.
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_date_array (dates, label) \
+            "INSERT INTO g0_temporal_inf_date_array (dates, label) \
              VALUES (ARRAY['-infinity'::date], 'date-arr-neg-inf')",
             &[],
         )
@@ -477,7 +477,7 @@ async fn date_array_check_rejects_negative_infinity_element(mut ctx: djogi::Djog
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_date_array_dates_check"),
+        msg.contains("g0_temporal_inf_date_array_dates_check"),
         "-infinity DATE element error must reference the structural CHECK: {msg}"
     );
 }
@@ -486,7 +486,7 @@ async fn date_array_check_rejects_negative_infinity_element(mut ctx: djogi::Djog
 async fn date_array_check_rejects_positive_infinity_element(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_date_array (dates, label) \
+            "INSERT INTO g0_temporal_inf_date_array (dates, label) \
              VALUES (ARRAY['infinity'::date], 'date-arr-pos-inf')",
             &[],
         )
@@ -495,7 +495,7 @@ async fn date_array_check_rejects_positive_infinity_element(mut ctx: djogi::Djog
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_date_array_dates_check"),
+        msg.contains("g0_temporal_inf_date_array_dates_check"),
         "+infinity DATE element error must reference the structural CHECK: {msg}"
     );
 }
@@ -555,7 +555,7 @@ async fn date_array_check_accepts_empty_array(mut ctx: djogi::DjogiContext) {
 
 /// `Vec<DateTime>` column — exercises `tstz_array_is_finite_check`.
 /// Uses `DateTime` (from `djogi::prelude::*`) to match the macro's recognized path forms.
-#[model(table = "phase8_5_g0_temporal_inf_tstz_array", pk = HeerId, no_default)]
+#[model(table = "g0_temporal_inf_tstz_array", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemporalInfTstzArrayRow {
     pub timestamps: Vec<DateTime>,
@@ -566,7 +566,7 @@ pub struct TemporalInfTstzArrayRow {
 async fn tstz_array_check_rejects_negative_infinity_element(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_tstz_array (timestamps, label) \
+            "INSERT INTO g0_temporal_inf_tstz_array (timestamps, label) \
              VALUES (ARRAY['-infinity'::timestamptz], 'tstz-arr-neg-inf')",
             &[],
         )
@@ -575,7 +575,7 @@ async fn tstz_array_check_rejects_negative_infinity_element(mut ctx: djogi::Djog
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_tstz_array_timestamps_check"),
+        msg.contains("g0_temporal_inf_tstz_array_timestamps_check"),
         "-infinity TIMESTAMPTZ element error must reference the structural CHECK: {msg}"
     );
 }
@@ -584,7 +584,7 @@ async fn tstz_array_check_rejects_negative_infinity_element(mut ctx: djogi::Djog
 async fn tstz_array_check_rejects_positive_infinity_element(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO phase8_5_g0_temporal_inf_tstz_array (timestamps, label) \
+            "INSERT INTO g0_temporal_inf_tstz_array (timestamps, label) \
              VALUES (ARRAY['infinity'::timestamptz], 'tstz-arr-pos-inf')",
             &[],
         )
@@ -593,7 +593,7 @@ async fn tstz_array_check_rejects_positive_infinity_element(mut ctx: djogi::Djog
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("phase8_5_g0_temporal_inf_tstz_array_timestamps_check"),
+        msg.contains("g0_temporal_inf_tstz_array_timestamps_check"),
         "+infinity TIMESTAMPTZ element error must reference the structural CHECK: {msg}"
     );
 }

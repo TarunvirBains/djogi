@@ -1,4 +1,4 @@
-// T1.7 — Canonical-sequence integration test.
+// .7 — Canonical-sequence integration test.
 //
 // Pins the full six-hook ordering through a single create → save →
 // delete pipeline:
@@ -7,7 +7,7 @@
 //     before_save   → UPDATE  → after_save
 //     before_delete → DELETE  → after_delete
 //
-// T1.4 / T1.5 / T1.6 each pin one CRUD terminal in isolation. This
+// .4 / .5 / .6 each pin one CRUD terminal in isolation. This
 // file proves the three terminals cooperate — that no rebinding,
 // shadowing, or branch-folding regression in any one of them
 // disturbs the relative ordering when all six hooks fire across one
@@ -17,19 +17,19 @@
 // `before_<verb> → SQL → outbox → after_<verb> → on_commit drain`
 // for each of {create, save, delete}. The vec assertion below pins
 // the verb-level interleaving without depending on the inter-step
-// outbox / on_commit framing (those are pinned by T1.4–T1.6
+// outbox / on_commit framing (those are pinned by .4–.6
 // individually).
 //
 // # Why `OnceLock<Mutex<Vec<&'static str>>>`
 //
-// Per the spec (cluster-8alpha-granular.md lines 549–599) and the
+// Per the spec (.md lines 549–599) and the
 // `feedback_log_codex_findings.md` design, the recorder is
 // `static ORDER: OnceLock<Mutex<Vec<&'static str>>>`. `OnceLock` gives
 // us safe lazy init, `Mutex` makes the push interior-mutable across
 // the six `&self` / `&mut self` hook bodies, and the contained
 // `Vec<&'static str>` is the simplest possible append-only log.
 //
-// `static mut` would be UB; `tokio::task_local!` (used by T1.5 / T1.6)
+// `static mut` would be UB; `tokio::task_local!` (used by .5 / .6)
 // is overkill for a single-test file with no shared model. If a
 // future test in this file declares a second model, the recorder
 // must be scoped via separate `OnceLock`s or via `task_local!` to
@@ -49,7 +49,7 @@ fn record(s: &'static str) {
         .push(s);
 }
 
-#[model(table = "phase8_hooks_canonical_probes", pk = HeerId, hooks)]
+#[model(table = "hooks_canonical_probes", pk = HeerId, hooks)]
 #[derive(Debug, Clone)]
 pub struct Probe {
     pub value: i32,

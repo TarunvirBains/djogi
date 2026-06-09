@@ -1,4 +1,4 @@
-// T7.5 integration tests: `on_commit` cache invalidation hooks.
+// `on_commit` cache invalidation hooks.
 //
 // What this file pins:
 //
@@ -31,15 +31,10 @@
 //
 // # Why these tests live in `tests/integration/`
 //
-// Per the workspace convention: every other `phase{N}_*` integration test
+// Per the workspace convention: every other integration test
 // sits here, registered through `djogi/Cargo.toml`'s `[[test]]` blocks.
 // The cache invalidation surface is reachable through the public `djogi`
 // crate API, exactly as adopters consume it.
-//
-// # Spec anchor
-//
-// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-// §3 commit T7.5.
 
 use djogi::DjogiError;
 use djogi::prelude::*;
@@ -50,7 +45,7 @@ use std::sync::{Arc, Mutex};
 // Fixture model — a tiny table for the on_commit invalidation tests.
 // ---------------------------------------------------------------------------
 
-#[model(table = "phase8_t7_5_inval_rows", pk = HeerId)]
+#[model(table = "inval_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct InvalRow {
     pub note: String,

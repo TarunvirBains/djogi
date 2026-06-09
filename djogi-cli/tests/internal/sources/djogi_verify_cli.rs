@@ -1,4 +1,4 @@
-// T9.7 — `djogi verify` CLI end-to-end integration tests.
+// `djogi verify` CLI end-to-end integration tests.
 //
 // # What these tests cover
 //
@@ -17,8 +17,7 @@
 // out from `database.url` so `djogi db reset` cannot erase the
 // audit trail. The `#[djogi_test]` harness provisions ONE per-test
 // database; provisioning a sibling audit DB would require either a
-// second admin URL (operationally fragile) or a harness extension
-// (out-of-scope for T9.7).
+// second admin URL (operationally fragile) or a harness extension.
 //
 // The test works around this by pointing both the application URL and the
 // `DJOGI_CRUD_LOG_URL` override at the SAME per-test database.
@@ -39,7 +38,7 @@
 // # Spec / memory anchors
 //
 // - v3 plan §452, §459–460, §470, §824 — verify CLI semantics.
-// - Plan §T9.7 (`docs/superpowers/plans/granular-phase8/cluster-8epsilon-granular.md`).
+// - Plan specs for verify CLI semantics.
 // - `djogi-cli/src/verify.rs` — the implementation under test.
 
 use std::fs;
@@ -116,7 +115,7 @@ async fn seed_audit_row(
         ctx,
         database,
         app,
-        "-- T9.7 fixture DDL",
+        "-- verify fixture DDL",
         signature_hex,
     )
     .await
@@ -129,7 +128,7 @@ async fn verify_clean_workspace_exits_zero(mut ctx: djogi::DjogiContext) {
     let app = ""; // global bucket — `_global_/` on disk
 
     // Workspace setup: temp dir + minimal Djogi.toml + snapshot file.
-    let workspace = temp_workspace("t9-7-verify-clean");
+    let workspace = temp_workspace("verify-clean");
     let (snapshot_path, snapshot_bytes) = write_fixture_snapshot(&workspace, &database, app);
 
     // Build the per-test URL the test context is bound to by preserving
@@ -188,7 +187,7 @@ async fn verify_mismatched_snapshot_exits_one(mut ctx: djogi::DjogiContext) {
     let database = current_database(&mut ctx).await;
     let app = "";
 
-    let workspace = temp_workspace("t9-7-verify-mismatch");
+    let workspace = temp_workspace("verify-mismatch");
     let (snapshot_path, snapshot_bytes) = write_fixture_snapshot(&workspace, &database, app);
 
     let test_url = test_database_url(&database);

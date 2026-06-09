@@ -1,4 +1,4 @@
-// T1.5 integration tests: `before_save` + `after_save` dispatch
+// .5 integration tests: `before_save` + `after_save` dispatch
 // around the macro-emitted `Model::save()` body.
 //
 // What this file pins:
@@ -19,7 +19,7 @@
 //
 // §D3 lines 118-129 fix the canonical sequence as
 // `before_save -> UPDATE -> outbox -> after_save -> on_commit drain`.
-// Order is load-bearing: T1.7 will add the events-model variant that
+// Order is load-bearing: .7 will add the events-model variant that
 // also asserts the outbox row exists by the time `after_save` runs.
 //
 // # One model per test — coherence

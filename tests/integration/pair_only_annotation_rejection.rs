@@ -47,7 +47,7 @@ use djogi::query::{PairAreaOverlapRatio, PairClosureKinshipSum};
 
 // ── Models ──────────────────────────────────────────────────────────
 
-#[model(table = "phase8_5_c4a_rejected_minis", pk = HeerId)]
+#[model(table = "c4a_rejected_minis", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Mini {
     pub label: String,
@@ -61,7 +61,7 @@ pub struct Mini {
 }
 
 #[model(
-    table = "phase8_5_c4a_rejected_mini_ancestries",
+    table = "c4a_rejected_mini_ancestries",
     pk = HeerId,
     no_default,
     indexes(unique(fields = [node_id, ancestor_id, depth]))

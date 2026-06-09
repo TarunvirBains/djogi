@@ -1,4 +1,4 @@
--- Phase 4 Task 6 (fixup) — attach the BEFORE UPDATE trigger to
+-- Integration fixture: attach the BEFORE UPDATE trigger to
 -- `notifications`. Requires 006 (function definition) to land first.
 --
 -- No DROP TRIGGER IF EXISTS because sqlx::migrate applies each file

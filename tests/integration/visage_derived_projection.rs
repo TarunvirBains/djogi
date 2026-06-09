@@ -38,7 +38,7 @@ use djogi::testing::{DerivedParityError, assert_derived_parity_fetched};
 /// Consignment model — the canonical motivating scenario from the
 /// spec. Three storage columns + one derived projection that picks
 /// between `inbound_site` and `outbound_site` based on `direction`.
-#[model(table = "phase85_visage_derived_projection_consignments")]
+#[model(table = "visage_derived_projection_consignments")]
 #[derive(Model, Debug, Clone, PartialEq)]
 #[derived(
     name   = facility_site,
@@ -372,7 +372,7 @@ fn djogi_visage_model_assoc_recovers_source_table() {
         <<V as DjogiVisage>::Model as Model>::table_name()
     }
 
-    let expected = "phase85_visage_derived_projection_consignments";
+    let expected = "visage_derived_projection_consignments";
     assert_eq!(source_table_for::<ConsignmentPublic>(), expected);
     assert_eq!(source_table_for::<ConsignmentAdmin>(), expected);
     assert_eq!(source_table_for::<ConsignmentExport>(), expected);

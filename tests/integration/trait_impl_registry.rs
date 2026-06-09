@@ -1,4 +1,4 @@
-//! T5.6 — Integration test for the trait_registry registration path.
+//! .6 — Integration test for the trait_registry registration path.
 //!
 //! Exercises the end-to-end pipeline through `#[djogi::trait_impl]`:
 //!
@@ -10,7 +10,7 @@
 //! 3. `djogi::trait_registry::iter_for_trait::<dyn Trait>()` walks
 //!    the registry, filters by the trait's `TypeId`, yields the
 //!    matching `&'static TraitRegistration` entries.
-//! 4. The caster (T5.3 safe carrier pattern) round-trips an
+//! 4. The caster (.3 safe carrier pattern) round-trips an
 //!    `Arc<Vehicle>` through `Arc<dyn Any + Send + Sync>` ↔
 //!    `Arc<TraitImplCarrier<dyn Searchable>>` and recovers a working
 //!    `Arc<dyn Searchable + Send + Sync>` for adopter use.
@@ -27,7 +27,7 @@ use std::any::TypeId;
 use std::sync::Arc;
 
 trait Searchable {
-    #[allow(dead_code)] // Method exercised through `Arc<dyn Searchable>` round-trip in T5.3 caster path.
+    #[allow(dead_code)] // Method exercised through `Arc<dyn Searchable>` round-trip in .3 caster path.
     fn searchable_columns(&self) -> &'static [&'static str];
 }
 
@@ -106,7 +106,7 @@ fn caster_round_trips_arc_to_trait_object() {
     // expansion — we cannot reach it directly. But we CAN verify the
     // caster returns Some(_) for the matching type and None for a
     // mismatched type. The full round-trip-to-trait-object path is
-    // deferred to 8δ T7 (it goes through `Sassi::all_impl::<dyn T>()`,
+    // deferred to 8δ  (it goes through `Sassi::all_impl::<dyn T>()`,
     // which has the type-aware downcast helper threaded through).
     let vehicle: Vehicle = Vehicle {
         title: "Fast One".to_string(),

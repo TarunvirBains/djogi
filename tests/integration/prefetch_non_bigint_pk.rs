@@ -1,6 +1,6 @@
-// T3 fixup: prefetch null-probe type safety for non-BIGINT PKs.
+//  fixup: prefetch null-probe type safety for non-BIGINT PKs.
 //
-// Regression coverage for a Codex-flagged blocker in the T3 landing:
+// Regression coverage for a Codex-flagged blocker in the  landing:
 // `prefetch_loader` decoded the target's `id` column as `Option<i64>`
 // to distinguish a LEFT JOIN miss from a real row. That probe works
 // for the default `HeerId` (BIGINT) but silently fails for
@@ -31,7 +31,7 @@ use djogi::prelude::*;
 // null-probe must handle the non-BIGINT column type correctly. Before
 // the fixup, the probe's `Option<i64>` decode failed and the
 // `.unwrap_or(true)` path dropped every real row.
-#[model(table = "t3_fixup_categories", pk = Serial)]
+#[model(table = "fixup_categories", pk = Serial)]
 #[derive(Debug, Clone)]
 pub struct Category {
     pub name: String,
@@ -42,9 +42,9 @@ pub struct Category {
 // (`secondary_category_id`) exercises the LEFT JOIN miss branch on
 // a NULL source column, which is the other way a prefetch slot can
 // end up `None`.
-// T2 default flip — this model carries the HeerId-typed
+//  default flip — this model carries the HeerId-typed
 // FK key back into the prefetch loader, so pin `pk = HeerId` explicitly.
-#[model(table = "t3_fixup_items", pk = HeerId, no_default)]
+#[model(table = "fixup_items", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Item {
     pub label: String,

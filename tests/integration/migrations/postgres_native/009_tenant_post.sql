@@ -1,8 +1,7 @@
--- Phase 5 Task 9 fixture: tenant_post table with RLS policy for tenant isolation.
+-- tenant_post table with RLS policy for tenant isolation.
 --
--- This migration is applied by hand in the integration test because the Phase 7
--- DDL emission pipeline (which will consume target/djogi_rls/*.sql) has not
--- landed yet. Phase 5 Task 9 only emits the side-channel file; the policy is
+-- This migration is applied by hand in the integration test because the
+-- DDL emission pipeline has not landed yet. The policy is
 -- hand-applied here to exercise the runtime isolation contract.
 --
 -- The `true` second argument to `current_setting` makes missing-variable

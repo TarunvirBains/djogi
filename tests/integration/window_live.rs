@@ -3,7 +3,7 @@
 
 use djogi::prelude::*;
 
-#[model(table = "window_elephants_p8c", pk = HeerId, no_default)]
+#[model(table = "window_elephants", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct WindowElephant {
     pub herd_id: i64,

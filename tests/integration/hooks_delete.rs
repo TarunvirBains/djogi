@@ -1,4 +1,4 @@
-// T1.6 integration tests: `before_delete` + `after_delete`
+// .6 integration tests: `before_delete` + `after_delete`
 // dispatch around the macro-emitted `Model::delete()` body.
 //
 // What this file pins:

@@ -3,7 +3,7 @@
 // Exercises the full `InlineValues` / `ValuesJoinedQuerySet` /
 // `LeftValuesJoinedQuerySet` surface against a real Postgres.
 //
-// Test model: `Phase85C4bValuesAnimal` — deliberately minimal so the JOIN
+// Test model: `C4bValuesAnimal` — deliberately minimal so the JOIN
 // logic is easy to follow.  Each test seeds rows via `Model::create`, then
 // asserts on the result of a VALUES join.
 
@@ -11,9 +11,9 @@ use djogi::prelude::*;
 
 // ── Model ─────────────────────────────────────────────────────────────────────
 
-#[model(table = "phase8_5_c4b_values_animals", pk = HeerIdRecencyBiased)]
+#[model(table = "c4b_values_animals", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
-pub struct Phase85C4bValuesAnimal {
+pub struct C4bValuesAnimal {
     pub name: String,
     pub active: bool,
     pub score: i32,
@@ -21,13 +21,13 @@ pub struct Phase85C4bValuesAnimal {
 
 // ── Seed helper ───────────────────────────────────────────────────────────────
 
-async fn seed(ctx: &mut DjogiContext, rows: &[(&str, bool, i32)]) -> Vec<Phase85C4bValuesAnimal> {
+async fn seed(ctx: &mut DjogiContext, rows: &[(&str, bool, i32)]) -> Vec<C4bValuesAnimal> {
     let mut out = Vec::new();
     for (name, active, score) in rows {
         out.push(
-            Phase85C4bValuesAnimal::create(
+            C4bValuesAnimal::create(
                 ctx,
-                Phase85C4bValuesAnimal {
+                C4bValuesAnimal {
                     name: name.to_string(),
                     active: *active,
                     score: *score,
@@ -44,7 +44,7 @@ async fn seed(ctx: &mut DjogiContext, rows: &[(&str, bool, i32)]) -> Vec<Phase85
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// Inner join: paired result rows decode correctly.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_basic_pairs_decode(mut ctx: DjogiContext) {
     let animals = seed(
         &mut ctx,
@@ -64,7 +64,7 @@ async fn join_values_basic_pairs_decode(mut ctx: DjogiContext) {
     )
     .expect("valid InlineValues");
 
-    let pairs: Vec<(Phase85C4bValuesAnimal, (HeerIdDesc, f64))> = Phase85C4bValuesAnimal::objects()
+    let pairs: Vec<(C4bValuesAnimal, (HeerIdDesc, f64))> = C4bValuesAnimal::objects()
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)
         .await
@@ -81,7 +81,7 @@ async fn join_values_basic_pairs_decode(mut ctx: DjogiContext) {
 }
 
 /// Inner join: ON filter excludes VALUES rows with no model match.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_on_filters_non_matching_rows(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10)]).await;
 
@@ -97,7 +97,7 @@ async fn join_values_on_filters_non_matching_rows(mut ctx: DjogiContext) {
     )
     .expect("valid");
 
-    let pairs = Phase85C4bValuesAnimal::objects()
+    let pairs = C4bValuesAnimal::objects()
         .filter(|f| f.active().eq(true))
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)
@@ -111,14 +111,14 @@ async fn join_values_on_filters_non_matching_rows(mut ctx: DjogiContext) {
 }
 
 /// Empty InlineValues inner join → zero result rows (short-circuit).
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_empty_inner_returns_empty(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true, 10)]).await;
 
     let empty: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![], "w", ("animal_id", "score")).expect("valid");
 
-    let pairs: Vec<(Phase85C4bValuesAnimal, (HeerIdDesc, f64))> = Phase85C4bValuesAnimal::objects()
+    let pairs: Vec<(C4bValuesAnimal, (HeerIdDesc, f64))> = C4bValuesAnimal::objects()
         .join_values(empty, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)
         .await
@@ -131,14 +131,14 @@ async fn join_values_empty_inner_returns_empty(mut ctx: DjogiContext) {
 }
 
 /// `QuerySet::none()` short-circuit for inner join.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_none_queryset_returns_empty(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10)]).await;
 
     let weights: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![(animals[0].id, 0.5)], "w", ("animal_id", "score")).expect("valid");
 
-    let pairs: Vec<(Phase85C4bValuesAnimal, (HeerIdDesc, f64))> = Phase85C4bValuesAnimal::objects()
+    let pairs: Vec<(C4bValuesAnimal, (HeerIdDesc, f64))> = C4bValuesAnimal::objects()
         .none()
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)
@@ -149,7 +149,7 @@ async fn join_values_none_queryset_returns_empty(mut ctx: DjogiContext) {
 }
 
 /// `count` terminal for inner join.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_count_matches_fetch_len(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10), ("lion", true, 20)]).await;
 
@@ -160,13 +160,13 @@ async fn join_values_count_matches_fetch_len(mut ctx: DjogiContext) {
     )
     .expect("valid");
 
-    let count = Phase85C4bValuesAnimal::objects()
+    let count = C4bValuesAnimal::objects()
         .join_values(weights.clone(), |a, v| a.id().eq_values(v.col0()))
         .count(&mut ctx)
         .await
         .expect("count");
 
-    let fetched = Phase85C4bValuesAnimal::objects()
+    let fetched = C4bValuesAnimal::objects()
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)
         .await
@@ -176,14 +176,14 @@ async fn join_values_count_matches_fetch_len(mut ctx: DjogiContext) {
 }
 
 /// `exists` terminal for inner join.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_exists_true_when_matching(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10)]).await;
 
     let weights: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![(animals[0].id, 0.5)], "w", ("animal_id", "score")).expect("valid");
 
-    let exists = Phase85C4bValuesAnimal::objects()
+    let exists = C4bValuesAnimal::objects()
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .exists(&mut ctx)
         .await
@@ -193,14 +193,14 @@ async fn join_values_exists_true_when_matching(mut ctx: DjogiContext) {
 }
 
 /// `exists` is false when VALUES is empty.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_exists_false_when_empty(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true, 10)]).await;
 
     let empty: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![], "w", ("animal_id", "score")).expect("valid");
 
-    let exists = Phase85C4bValuesAnimal::objects()
+    let exists = C4bValuesAnimal::objects()
         .join_values(empty, |a, v| a.id().eq_values(v.col0()))
         .exists(&mut ctx)
         .await
@@ -210,7 +210,7 @@ async fn join_values_exists_false_when_empty(mut ctx: DjogiContext) {
 }
 
 /// `fetch_one` returns the single pair.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_fetch_one_exact_match(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10), ("lion", true, 20)]).await;
 
@@ -221,7 +221,7 @@ async fn join_values_fetch_one_exact_match(mut ctx: DjogiContext) {
     )
     .expect("valid");
 
-    let (animal, (_, score)) = Phase85C4bValuesAnimal::objects()
+    let (animal, (_, score)) = C4bValuesAnimal::objects()
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_one(&mut ctx)
         .await
@@ -232,7 +232,7 @@ async fn join_values_fetch_one_exact_match(mut ctx: DjogiContext) {
 }
 
 /// Compound ON predicates require every clause to match.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_compound_on_requires_both_columns(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10), ("lion", true, 20)]).await;
 
@@ -247,7 +247,7 @@ async fn join_values_compound_on_requires_both_columns(mut ctx: DjogiContext) {
     )
     .expect("valid");
 
-    let pairs = Phase85C4bValuesAnimal::objects()
+    let pairs = C4bValuesAnimal::objects()
         .join_values(rows, |a, v| {
             a.id().eq_values(v.col0()) & a.score().eq_values(v.col1())
         })
@@ -261,14 +261,14 @@ async fn join_values_compound_on_requires_both_columns(mut ctx: DjogiContext) {
 }
 
 /// `fetch_one` returns NotFound on empty VALUES.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_fetch_one_empty_values_returns_not_found(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true, 10)]).await;
 
     let empty: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![], "w", ("animal_id", "score")).expect("valid");
 
-    let err = Phase85C4bValuesAnimal::objects()
+    let err = C4bValuesAnimal::objects()
         .join_values(empty, |a, v| a.id().eq_values(v.col0()))
         .fetch_one(&mut ctx)
         .await
@@ -281,7 +281,7 @@ async fn join_values_fetch_one_empty_values_returns_not_found(mut ctx: DjogiCont
 }
 
 /// Left-query filter + VALUES binds produce correct results; bind order is lexical.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_left_filter_and_values_binds_correct(mut ctx: DjogiContext) {
     let animals = seed(
         &mut ctx,
@@ -304,7 +304,7 @@ async fn join_values_left_filter_and_values_binds_correct(mut ctx: DjogiContext)
     .expect("valid");
 
     // Filter: active = true.  Should match elephant and tiger (lion is inactive).
-    let pairs = Phase85C4bValuesAnimal::objects()
+    let pairs = C4bValuesAnimal::objects()
         .filter(|f| f.active().eq(true))
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)
@@ -318,7 +318,7 @@ async fn join_values_left_filter_and_values_binds_correct(mut ctx: DjogiContext)
 }
 
 /// Model column names that overlap VALUES column names do not create ambiguity.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_no_column_name_ambiguity(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10)]).await;
 
@@ -331,7 +331,7 @@ async fn join_values_no_column_name_ambiguity(mut ctx: DjogiContext) {
     .expect("valid");
 
     // Filter on model name to confirm the model predicate is qualified correctly.
-    let pairs = Phase85C4bValuesAnimal::objects()
+    let pairs = C4bValuesAnimal::objects()
         .filter(|f| f.name().eq("elephant".to_string()))
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)
@@ -344,7 +344,7 @@ async fn join_values_no_column_name_ambiguity(mut ctx: DjogiContext) {
 }
 
 /// Invalid alias returns validation before database round-trip.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_invalid_alias_returns_validation_error(_ctx: DjogiContext) {
     let err = InlineValues::<(HeerIdDesc,)>::new(
         vec![],
@@ -359,14 +359,14 @@ async fn join_values_invalid_alias_returns_validation_error(_ctx: DjogiContext) 
 /// Validates the "validation runs before short-circuit" ordering: the filter
 /// is valid state (allowed), so the `none()` short-circuit fires and returns
 /// an empty result without a database round-trip.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_none_qs_with_filter_short_circuits(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10)]).await;
 
     let weights: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![(animals[0].id, 0.5)], "w", ("animal_id", "score")).expect("valid");
 
-    let result = Phase85C4bValuesAnimal::objects()
+    let result = C4bValuesAnimal::objects()
         .none()
         .filter(|f| f.active().eq(true))
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))
@@ -377,7 +377,7 @@ async fn join_values_none_qs_with_filter_short_circuits(mut ctx: DjogiContext) {
 }
 
 /// Left join: all model rows returned; matched rows have Some(values).
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn left_join_values_all_model_rows_returned(mut ctx: DjogiContext) {
     let animals = seed(
         &mut ctx,
@@ -397,7 +397,7 @@ async fn left_join_values_all_model_rows_returned(mut ctx: DjogiContext) {
     )
     .expect("valid");
 
-    let mut pairs = Phase85C4bValuesAnimal::objects()
+    let mut pairs = C4bValuesAnimal::objects()
         .order_by(|f| f.name().asc())
         .left_join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)
@@ -428,14 +428,14 @@ async fn left_join_values_all_model_rows_returned(mut ctx: DjogiContext) {
 }
 
 /// Left join with empty VALUES: all model rows returned with None.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn left_join_values_empty_values_all_rows_with_none(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true, 10), ("lion", true, 20)]).await;
 
     let empty: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![], "w", ("animal_id", "score")).expect("valid");
 
-    let pairs = Phase85C4bValuesAnimal::objects()
+    let pairs = C4bValuesAnimal::objects()
         .order_by(|f| f.name().asc())
         .left_join_values(empty, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)
@@ -450,7 +450,7 @@ async fn left_join_values_empty_values_all_rows_with_none(mut ctx: DjogiContext)
 }
 
 /// Left join with duplicate VALUES rows counts joined pairs, not distinct left rows.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn left_join_values_duplicate_matches_count_pairs(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10)]).await;
 
@@ -461,7 +461,7 @@ async fn left_join_values_duplicate_matches_count_pairs(mut ctx: DjogiContext) {
     )
     .expect("valid");
 
-    let count = Phase85C4bValuesAnimal::objects()
+    let count = C4bValuesAnimal::objects()
         .left_join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .count(&mut ctx)
         .await
@@ -471,7 +471,7 @@ async fn left_join_values_duplicate_matches_count_pairs(mut ctx: DjogiContext) {
 }
 
 /// Left join `fetch_one` errors when multiple VALUES rows match the same left row.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn left_join_values_duplicate_matches_fetch_one_is_multiple(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10)]).await;
 
@@ -482,7 +482,7 @@ async fn left_join_values_duplicate_matches_fetch_one_is_multiple(mut ctx: Djogi
     )
     .expect("valid");
 
-    let err = Phase85C4bValuesAnimal::objects()
+    let err = C4bValuesAnimal::objects()
         .left_join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_one(&mut ctx)
         .await
@@ -495,14 +495,14 @@ async fn left_join_values_duplicate_matches_fetch_one_is_multiple(mut ctx: Djogi
 }
 
 /// Left join with empty VALUES counts filtered left rows because there are no duplicate matches.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn left_join_values_empty_values_count_equals_filtered_left_rows(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true, 10), ("lion", false, 20)]).await;
 
     let weights: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![], "w", ("animal_id", "score")).expect("valid");
 
-    let count = Phase85C4bValuesAnimal::objects()
+    let count = C4bValuesAnimal::objects()
         .filter(|f| f.active().eq(true))
         .left_join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .count(&mut ctx)
@@ -513,14 +513,14 @@ async fn left_join_values_empty_values_count_equals_filtered_left_rows(mut ctx: 
 }
 
 /// Left join `exists()` depends on the left queryset, not on whether VALUES matches.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn left_join_values_exists_true_when_left_row_has_no_match(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10), ("lion", true, 20)]).await;
 
     let weights: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![(animals[1].id, 0.5)], "w", ("animal_id", "score")).expect("valid");
 
-    let exists = Phase85C4bValuesAnimal::objects()
+    let exists = C4bValuesAnimal::objects()
         .filter(|f| f.name().eq("elephant"))
         .left_join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .exists(&mut ctx)
@@ -531,14 +531,14 @@ async fn left_join_values_exists_true_when_left_row_has_no_match(mut ctx: DjogiC
 }
 
 /// Left join `none()` queryset → empty result.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn left_join_values_none_queryset_returns_empty(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true, 10)]).await;
 
     let weights: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![], "w", ("animal_id", "score")).expect("valid");
 
-    let pairs = Phase85C4bValuesAnimal::objects()
+    let pairs = C4bValuesAnimal::objects()
         .none()
         .left_join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)
@@ -549,14 +549,14 @@ async fn left_join_values_none_queryset_returns_empty(mut ctx: DjogiContext) {
 }
 
 /// Unsupported left state (`.distinct()`) on inner join → Validation error.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesAnimal])]
 async fn join_values_rejects_distinct_state(mut ctx: DjogiContext) {
     let animals = seed(&mut ctx, &[("elephant", true, 10)]).await;
 
     let weights: InlineValues<(HeerIdDesc, f64)> =
         InlineValues::new(vec![(animals[0].id, 0.5)], "w", ("animal_id", "score")).expect("valid");
 
-    let err = Phase85C4bValuesAnimal::objects()
+    let err = C4bValuesAnimal::objects()
         .distinct()
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))
         .fetch_all(&mut ctx)

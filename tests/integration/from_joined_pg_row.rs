@@ -1,25 +1,25 @@
-// T4 — joined-row decode through the typed `select_related`
+//  — joined-row decode through the typed `select_related`
 // surface on a foreign-key chain.
 
 use djogi::prelude::*;
 
-// T2 default flip — pin HeerId across the three linked
+//  default flip — pin HeerId across the three linked
 // models; the joined-decode test uses BIGINT `generate_id()` DDL and
 // explicit HeerId wiring through FK columns.
-#[model(table = "t4_chain_c", pk = HeerId)]
+#[model(table = "chain_c", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct ChainC {
     pub label: String,
 }
 
-#[model(table = "t4_chain_b", pk = HeerId, no_default)]
+#[model(table = "chain_b", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct ChainB {
     pub label: String,
     pub chain_c_id: ForeignKey<ChainC>,
 }
 
-#[model(table = "t4_chain_a", pk = HeerId, no_default)]
+#[model(table = "chain_a", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct ChainA {
     pub label: String,

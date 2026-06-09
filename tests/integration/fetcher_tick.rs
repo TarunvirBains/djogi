@@ -1,4 +1,4 @@
-// T8.5 integration tests: `DjogiDeltaFetcher::fetch_delta` — real
+// .5 integration tests: `DjogiDeltaFetcher::fetch_delta` — real
 // SQL path with watermark filter.
 //
 // # What this file pins
@@ -27,8 +27,7 @@
 //
 // # Spec anchor
 //
-// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-// §3 commit T8.5.
+// §3 commit .5.
 //
 // # Fixture strategy
 //
@@ -47,7 +46,7 @@ use djogi::prelude::*;
 // `pk = HeerId` fixes the PK strategy to standard ascending HeerId so the test
 // is independent of any future default-PK-strategy change.
 
-#[model(table = "phase8_t8_5_fetcher_rows", pk = HeerId)]
+#[model(table = "fetcher_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct FetcherTickRow {
     pub label: String,

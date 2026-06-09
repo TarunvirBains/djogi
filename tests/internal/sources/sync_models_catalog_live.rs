@@ -12,27 +12,27 @@ pub struct CatalogPrefs {
     pub theme: String,
 }
 
-#[model(table = "t10_catalog_widgets_solo", pk = HeerId, indexes(index(fields = [name])))]
+#[model(table = "catalog_widgets_solo", pk = HeerId, indexes(index(fields = [name])))]
 #[derive(Debug, Clone)]
 pub struct CatalogWidgetSolo {
     pub name: String,
     pub price_cents: i32,
 }
 
-#[model(table = "t10_catalog_categories", pk = HeerId)]
+#[model(table = "catalog_categories", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct CatalogCategory {
     pub name: String,
 }
 
-#[model(table = "t10_catalog_widgets", pk = HeerId, no_default)]
+#[model(table = "catalog_widgets", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct CatalogWidget {
     pub category_id: ForeignKey<CatalogCategory>,
     pub name: String,
 }
 
-#[model(table = "t10_catalog_users_prefs", pk = HeerId)]
+#[model(table = "catalog_users_prefs", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct CatalogUserWithPrefs {
     pub email: String,
@@ -40,26 +40,26 @@ pub struct CatalogUserWithPrefs {
 }
 
 #[cfg(feature = "spatial")]
-#[model(table = "t10_catalog_places", pk = HeerId, no_default)]
+#[model(table = "catalog_places", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct CatalogPlace {
     pub name: String,
     pub location: djogi::GeoPoint,
 }
 
-#[model(table = "t10_catalog_tags", pk = HeerId)]
+#[model(table = "catalog_tags", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct CatalogTag {
     pub label: String,
 }
 
-#[model(table = "t10_catalog_posts", pk = HeerId)]
+#[model(table = "catalog_posts", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct CatalogPost {
     pub title: String,
 }
 
-#[model(table = "t10_catalog_post_tags", pk = HeerId, through, no_default)]
+#[model(table = "catalog_post_tags", pk = HeerId, through, no_default)]
 #[derive(Debug, Clone)]
 pub struct CatalogPostTag {
     pub post_id: ForeignKey<CatalogPost>,
@@ -80,7 +80,7 @@ async fn single_model_sync_catalog_has_table_and_declared_index(mut ctx: DjogiCo
     let table_count: i64 = ctx
         .raw_scalar(
             "SELECT count(*)::bigint FROM pg_class \
-             WHERE relname = 't10_catalog_widgets_solo' AND relkind = 'r'",
+             WHERE relname = 'catalog_widgets_solo' AND relkind = 'r'",
             &[],
         )
         .await
@@ -90,7 +90,7 @@ async fn single_model_sync_catalog_has_table_and_declared_index(mut ctx: DjogiCo
     let idx_count: i64 = ctx
         .raw_scalar(
             "SELECT count(*)::bigint FROM pg_indexes \
-             WHERE tablename = 't10_catalog_widgets_solo'",
+             WHERE tablename = 'catalog_widgets_solo'",
             &[],
         )
         .await
@@ -111,15 +111,15 @@ async fn fk_dependency_sync_catalog_has_referential_constraint(mut ctx: DjogiCon
              JOIN pg_class src ON src.oid = c.conrelid \
              JOIN pg_class tgt ON tgt.oid = c.confrelid \
              WHERE c.contype = 'f' \
-               AND src.relname = 't10_catalog_widgets' \
-               AND tgt.relname = 't10_catalog_categories'",
+               AND src.relname = 'catalog_widgets' \
+               AND tgt.relname = 'catalog_categories'",
             &[],
         )
         .await
         .expect("pg_constraint lookup");
     assert_eq!(
         fk_count, 1,
-        "expected one FK from t10_catalog_widgets to t10_catalog_categories",
+        "expected one FK from catalog_widgets to catalog_categories",
     );
 }
 
@@ -128,7 +128,7 @@ async fn jsonb_field_sync_catalog_has_jsonb_column(mut ctx: DjogiContext) {
     let column_type: String = ctx
         .raw_scalar(
             "SELECT data_type FROM information_schema.columns \
-             WHERE table_name = 't10_catalog_users_prefs' AND column_name = 'prefs'",
+             WHERE table_name = 'catalog_users_prefs' AND column_name = 'prefs'",
             &[],
         )
         .await
@@ -142,7 +142,7 @@ async fn spatial_field_sync_catalog_has_geography_column(mut ctx: DjogiContext) 
     let udt: String = ctx
         .raw_scalar(
             "SELECT udt_name FROM information_schema.columns \
-             WHERE table_name = 't10_catalog_places' AND column_name = 'location'",
+             WHERE table_name = 'catalog_places' AND column_name = 'location'",
             &[],
         )
         .await
@@ -153,9 +153,9 @@ async fn spatial_field_sync_catalog_has_geography_column(mut ctx: DjogiContext) 
 #[djogi::djogi_test(sync_models = [CatalogTag, CatalogPost, CatalogPostTag])]
 async fn m2m_through_sync_catalog_has_two_endpoint_fks(mut ctx: DjogiContext) {
     for table in [
-        "t10_catalog_tags",
-        "t10_catalog_posts",
-        "t10_catalog_post_tags",
+        "catalog_tags",
+        "catalog_posts",
+        "catalog_post_tags",
     ] {
         let exists: i64 = ctx
             .raw_scalar(
@@ -172,7 +172,7 @@ async fn m2m_through_sync_catalog_has_two_endpoint_fks(mut ctx: DjogiContext) {
         .raw_scalar(
             "SELECT count(*)::bigint FROM pg_constraint c \
              JOIN pg_class src ON src.oid = c.conrelid \
-             WHERE c.contype = 'f' AND src.relname = 't10_catalog_post_tags'",
+             WHERE c.contype = 'f' AND src.relname = 'catalog_post_tags'",
             &[],
         )
         .await

@@ -17,7 +17,7 @@
 use djogi::prelude::*;
 
 // ── Fixture model 1 — events-enabled, hard-delete tombstone source ──────────
-#[model(table = "phase8_t8_7_evt_row", pk = HeerId, events)]
+#[model(table = "evt_row", pk = HeerId, events)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EventRow {
     pub label: String,
@@ -26,14 +26,14 @@ pub struct EventRow {
 // Fixture 1b — events-enabled with the default PK (HeerIdDesc).
 // Pinned because the gate previously only accepted ascending HeerId,
 // so the recency-biased default-PK case never polled the outbox.
-#[model(table = "phase8_t8_7_evt_desc_row", events)]
+#[model(table = "evt_desc_row", events)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EventDescRow {
     pub label: String,
 }
 
 // ── Fixture model 2 — non-events, backward-compat sentinel ──────────────────
-#[model(table = "phase8_t8_7_plain_row", pk = HeerId)]
+#[model(table = "plain_row", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct PlainRow {
     pub label: String,
@@ -98,7 +98,7 @@ async fn hard_delete_propagates_via_outbox_to_tombstone(mut ctx: djogi::DjogiCon
     .await
     .expect("delete EventRow + outbox emit");
 
-    let outbox_rows = djogi::testing::outbox_rows_for_test(&mut ctx, "phase8_t8_7_evt_row_outbox")
+    let outbox_rows = djogi::testing::outbox_rows_for_test(&mut ctx, "evt_row_outbox")
         .await
         .expect("read EventRow outbox rows");
     let outbox_delete_count = outbox_rows
@@ -224,7 +224,7 @@ async fn non_events_model_no_outbox_poll(mut ctx: djogi::DjogiContext) {
     // Run a second tick. With no outbox table for this model, the
     // outbox-poll branch is gated off (`T::descriptor().has_outbox`
     // is `false`); a regression that ran the poll anyway would error
-    // on the missing `phase8_t8_7_plain_row_outbox` table.
+    // on the missing `plain_row_outbox` table.
     let _tick_2 = handle
         .update()
         .await

@@ -1,4 +1,4 @@
-//! T6 — filesystem scan + D004 round-trip integration.
+//!  — filesystem scan + D004 round-trip integration.
 //!
 //! Exercises the public `djogi::migrate::scan_filesystem` and
 //! `djogi::migrate::classify_filesystem_drift` pipeline against a

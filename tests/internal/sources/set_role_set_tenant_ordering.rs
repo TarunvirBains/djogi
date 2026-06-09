@@ -1,4 +1,4 @@
-// T9.7 — D7 `set_tenant` / `set_role` ordering integration test.
+// .7 — D7 `set_tenant` / `set_role` ordering integration test.
 //
 // # D7 in plain English
 //
@@ -61,7 +61,7 @@
 // # Spec / memory anchors
 //
 // - v3 plan §159–166 (D7 documented orderings).
-// - v3 plan §456–462, §710–712, §729 — T9.7 brief.
+// - v3 plan §456–462, §710–712, §729 — .7 brief.
 // - The set-role / tenant-ordering design notes.
 
 /// Idempotently create the test role on the cluster. See sibling
@@ -83,7 +83,7 @@ async fn ensure_test_role(ctx: &mut djogi::DjogiContext, role: &str) {
 
 #[djogi::djogi_test]
 async fn tenant_first_then_role_succeeds(mut ctx: djogi::DjogiContext) {
-    let role = "djogi_t9_7_ordering_role";
+    let role = "ordering_role";
     let tenant_id = "t1";
     ensure_test_role(&mut ctx, role).await;
 
@@ -133,7 +133,7 @@ async fn role_first_then_tenant_documented_failure_mode(mut ctx: djogi::DjogiCon
     // Pinned vanilla behaviour: `Ok((role, tenant_id))`. Any `Err`
     // is a regression — see the module-level doc comment for the
     // re-pinning workflow.
-    let role = "djogi_t9_7_ordering_role";
+    let role = "ordering_role";
     let tenant_id = "t1";
     ensure_test_role(&mut ctx, role).await;
 

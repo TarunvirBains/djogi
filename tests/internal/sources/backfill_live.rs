@@ -1,4 +1,4 @@
-// T12 — Live integration tests for chunked backfill execute,
+//  — Live integration tests for chunked backfill execute,
 // resume, and chunk-boundary behavior under a real Postgres 18.
 //
 // Drives the public `live_migrate::backfill` API end-to-end:
@@ -27,7 +27,7 @@
 //
 // # Why one combined file
 //
-// v3 §T12 lists four separate buckets — interrupted-backfill resume,
+// v3 § lists four separate buckets — interrupted-backfill resume,
 // cutover/finalize gating, chunk-boundary tests, resume idempotency.
 // In the public API today (ships only `execute_backfill`
 // and `resume_backfill`; full-pipeline orchestration is CLI-internal),
@@ -44,7 +44,7 @@ use djogi::prelude::*;
 
 // Source table — a pretend `users` model gaining a `email_lower`
 // column populated from `email` via the nullable_not_null pattern.
-const SOURCE_TABLE: &str = "phase7_5_backfill_users";
+const SOURCE_TABLE: &str = "backfill_users";
 
 /// Idempotent install + clean-slate re-create of the source table.
 async fn setup_source_table(ctx: &mut DjogiContext) {
@@ -88,7 +88,7 @@ async fn seed_rows(ctx: &mut DjogiContext, n: i64) {
 async fn insert_running_plan(ctx: &mut DjogiContext, plan_id: HeerId) {
     let row = LivePlanRow {
         plan_id,
-        slug: "phase7_5_backfill_test".to_string(),
+        slug: "backfill_test".to_string(),
         plan_file_checksum: "V1:0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
         classification: PlanClassification::ExpandContract,
@@ -101,7 +101,7 @@ async fn insert_running_plan(ctx: &mut DjogiContext, plan_id: HeerId) {
         last_progress_at: None,
         completed_at: None,
         last_error: None,
-        originating_migration: "phase7_5_test_migration".to_string(),
+        originating_migration: "test_migration".to_string(),
         target_database: "main".to_string(),
         app_label: String::new(),
         daemon_session_token: None,

@@ -1,4 +1,4 @@
-// T4 — live-PG integration tests for the migration runner.
+//  — live-PG integration tests for the migration runner.
 //
 // # What these tests prove
 //
@@ -240,12 +240,12 @@ fn make_runner_ctx(
         snapshot,
         snapshot_path,
         config,
-        // T4 tests do not exercise out-of-order policy; pick the
+        //  tests do not exercise out-of-order policy; pick the
         // permissive default so existing assertions are unaffected.
-        // The dedicated phase7_t7_*.rs tests cover the policy paths.
+        // The dedicated *.rs tests cover the policy paths.
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
-        // T9.4 audit-pool plumbing: tests do not provision the
-        // audit DB. T9.7 owns the integration coverage that flips
+        // .4 audit-pool plumbing: tests do not provision the
+        // audit DB. .7 owns the integration coverage that flips
         // this to `Some`.
         audit_pool: None,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
@@ -273,9 +273,9 @@ async fn transactional_apply_records_applied_status(mut ctx: djogi::DjogiContext
     let _guard = acquire_test_workspace_guard();
     let snapshot_path = temp_snapshot_path();
     let plan = transactional_plan(vec![op(
-        "AddTable t4_users",
-        "CREATE TABLE \"t4_users\" (\"id\" BIGINT PRIMARY KEY)",
-        "DROP TABLE \"t4_users\"",
+        "AddTable users",
+        "CREATE TABLE \"users\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"users\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -322,14 +322,14 @@ async fn transactional_apply_failure_rolls_back_and_skips_snapshot(mut ctx: djog
     // be written.
     let plan = transactional_plan(vec![
         op(
-            "AddTable t4_widgets",
-            "CREATE TABLE \"t4_widgets\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t4_widgets\"",
+            "AddTable widgets",
+            "CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"widgets\"",
         ),
         op(
-            "AddTable t4_broken",
-            "CREATE TABLE \"t4_broken\" (\"id\" THIS_IS_NOT_A_TYPE)",
-            "DROP TABLE \"t4_broken\"",
+            "AddTable broken",
+            "CREATE TABLE \"broken\" (\"id\" THIS_IS_NOT_A_TYPE)",
+            "DROP TABLE \"broken\"",
         ),
     ]);
     let runner_ctx = make_runner_ctx(
@@ -351,12 +351,12 @@ async fn transactional_apply_failure_rolls_back_and_skips_snapshot(mut ctx: djog
     let exists: bool = ctx
         .raw_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_class \
-             WHERE relname = 't4_widgets' AND relkind = 'r')",
+             WHERE relname = 'widgets' AND relkind = 'r')",
             &[],
         )
         .await
         .expect("exists check");
-    assert!(!exists, "t4_widgets must not exist after rollback");
+    assert!(!exists, "widgets must not exist after rollback");
 
     // Ledger row must be `failed`.
     let status: String = ctx
@@ -492,22 +492,22 @@ async fn split_apply_records_non_tx_progress(mut ctx: djogi::DjogiContext) {
     // tokio-postgres autocommit honours.
     let plan = split_plan(
         vec![op(
-            "AddTable t4_split_users",
-            "CREATE TABLE \"t4_split_users\" (\"id\" BIGINT, \"email\" TEXT, \"name\" TEXT)",
-            "DROP TABLE \"t4_split_users\"",
+            "AddTable split_users",
+            "CREATE TABLE \"split_users\" (\"id\" BIGINT, \"email\" TEXT, \"name\" TEXT)",
+            "DROP TABLE \"split_users\"",
         )],
         vec![
             op(
-                "AddIndex t4_split_users_email_idx",
-                "CREATE INDEX CONCURRENTLY \"t4_split_users_email_idx\" \
-                 ON \"t4_split_users\" (\"email\")",
-                "DROP INDEX CONCURRENTLY \"t4_split_users_email_idx\"",
+                "AddIndex split_users_email_idx",
+                "CREATE INDEX CONCURRENTLY \"split_users_email_idx\" \
+                 ON \"split_users\" (\"email\")",
+                "DROP INDEX CONCURRENTLY \"split_users_email_idx\"",
             ),
             op(
-                "AddIndex t4_split_users_name_idx",
-                "CREATE INDEX CONCURRENTLY \"t4_split_users_name_idx\" \
-                 ON \"t4_split_users\" (\"name\")",
-                "DROP INDEX CONCURRENTLY \"t4_split_users_name_idx\"",
+                "AddIndex split_users_name_idx",
+                "CREATE INDEX CONCURRENTLY \"split_users_name_idx\" \
+                 ON \"split_users\" (\"name\")",
+                "DROP INDEX CONCURRENTLY \"split_users_name_idx\"",
             ),
         ],
     );
@@ -572,22 +572,22 @@ async fn split_apply_non_tx_failure_records_partial_state(mut ctx: djogi::DjogiC
     // partial_apply_note describing the step.
     let plan = split_plan(
         vec![op(
-            "AddTable t4_split_fail",
-            "CREATE TABLE \"t4_split_fail\" (\"id\" BIGINT, \"email\" TEXT)",
-            "DROP TABLE \"t4_split_fail\"",
+            "AddTable split_fail",
+            "CREATE TABLE \"split_fail\" (\"id\" BIGINT, \"email\" TEXT)",
+            "DROP TABLE \"split_fail\"",
         )],
         vec![
             op(
-                "AddIndex t4_split_fail_email_idx",
-                "CREATE INDEX CONCURRENTLY \"t4_split_fail_email_idx\" \
-                 ON \"t4_split_fail\" (\"email\")",
-                "DROP INDEX CONCURRENTLY \"t4_split_fail_email_idx\"",
+                "AddIndex split_fail_email_idx",
+                "CREATE INDEX CONCURRENTLY \"split_fail_email_idx\" \
+                 ON \"split_fail\" (\"email\")",
+                "DROP INDEX CONCURRENTLY \"split_fail_email_idx\"",
             ),
             op(
-                "AddIndex t4_split_fail_missing_idx",
-                "CREATE INDEX CONCURRENTLY \"t4_split_fail_missing_idx\" \
-                 ON \"t4_split_fail\" (\"missing_col\")",
-                "DROP INDEX CONCURRENTLY \"t4_split_fail_missing_idx\"",
+                "AddIndex split_fail_missing_idx",
+                "CREATE INDEX CONCURRENTLY \"split_fail_missing_idx\" \
+                 ON \"split_fail\" (\"missing_col\")",
+                "DROP INDEX CONCURRENTLY \"split_fail_missing_idx\"",
             ),
         ],
     );
@@ -664,22 +664,22 @@ async fn split_apply_progress_ack_failure_blocks_duplicate_resume(mut ctx: djogi
 
     let plan = split_plan(
         vec![op(
-            "AddTable t4_split_ack",
-            "CREATE TABLE \"t4_split_ack\" (\"id\" BIGINT, \"email\" TEXT, \"name\" TEXT)",
-            "DROP TABLE \"t4_split_ack\"",
+            "AddTable split_ack",
+            "CREATE TABLE \"split_ack\" (\"id\" BIGINT, \"email\" TEXT, \"name\" TEXT)",
+            "DROP TABLE \"split_ack\"",
         )],
         vec![
             op(
-                "AddIndex t4_split_ack_email_idx",
-                "CREATE INDEX CONCURRENTLY \"t4_split_ack_email_idx\" \
-                 ON \"t4_split_ack\" (\"email\")",
-                "DROP INDEX CONCURRENTLY \"t4_split_ack_email_idx\"",
+                "AddIndex split_ack_email_idx",
+                "CREATE INDEX CONCURRENTLY \"split_ack_email_idx\" \
+                 ON \"split_ack\" (\"email\")",
+                "DROP INDEX CONCURRENTLY \"split_ack_email_idx\"",
             ),
             op(
-                "AddIndex t4_split_ack_name_idx",
-                "CREATE INDEX CONCURRENTLY \"t4_split_ack_name_idx\" \
-                 ON \"t4_split_ack\" (\"name\")",
-                "DROP INDEX CONCURRENTLY \"t4_split_ack_name_idx\"",
+                "AddIndex split_ack_name_idx",
+                "CREATE INDEX CONCURRENTLY \"split_ack_name_idx\" \
+                 ON \"split_ack\" (\"name\")",
+                "DROP INDEX CONCURRENTLY \"split_ack_name_idx\"",
             ),
         ],
     );
@@ -733,11 +733,11 @@ async fn split_apply_progress_ack_failure_blocks_duplicate_resume(mut ctx: djogi
     );
 
     assert!(
-        index_exists(&mut ctx, "t4_split_ack_email_idx").await,
+        index_exists(&mut ctx, "split_ack_email_idx").await,
         "the committed first step must still exist"
     );
     assert!(
-        !index_exists(&mut ctx, "t4_split_ack_name_idx").await,
+        !index_exists(&mut ctx, "split_ack_name_idx").await,
         "the second step must not run after the first ack failure"
     );
 
@@ -767,25 +767,25 @@ async fn relpages_probe_warns_when_threshold_exceeded(mut ctx: djogi::DjogiConte
     // — but we can side-step that by setting threshold=0 so any
     // non-zero relpages triggers the warn. To get a non-zero
     // relpages we INSERT a few rows and ANALYZE.
-    ctx.raw_ddl("CREATE TABLE t4_relpages_warn (id BIGINT, val TEXT)")
+    ctx.raw_ddl("CREATE TABLE relpages_warn (id BIGINT, val TEXT)")
         .await
         .expect("create table");
     for i in 0..50i64 {
         ctx.raw_execute(
-            "INSERT INTO t4_relpages_warn (id, val) VALUES ($1, $2)",
+            "INSERT INTO relpages_warn (id, val) VALUES ($1, $2)",
             &[&i, &format!("row-{i}")],
         )
         .await
         .expect("insert");
     }
-    ctx.raw_ddl("ANALYZE t4_relpages_warn")
+    ctx.raw_ddl("ANALYZE relpages_warn")
         .await
         .expect("analyze");
 
     let plan = transactional_plan(vec![op(
-        "AddIndex t4_relpages_warn_val_idx",
-        "CREATE INDEX \"t4_relpages_warn_val_idx\" ON \"t4_relpages_warn\" (\"val\")",
-        "DROP INDEX \"t4_relpages_warn_val_idx\"",
+        "AddIndex relpages_warn_val_idx",
+        "CREATE INDEX \"relpages_warn_val_idx\" ON \"relpages_warn\" (\"val\")",
+        "DROP INDEX \"relpages_warn_val_idx\"",
     )]);
     let config = MigrateConfig {
         concurrent_warn_relpages: 0, // anything > 0 triggers
@@ -805,25 +805,25 @@ async fn relpages_probe_warns_when_threshold_exceeded(mut ctx: djogi::DjogiConte
 #[djogi::djogi_test]
 async fn relpages_probe_aborts_in_strict_mode(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
-    ctx.raw_ddl("CREATE TABLE t4_relpages_strict (id BIGINT, val TEXT)")
+    ctx.raw_ddl("CREATE TABLE relpages_strict (id BIGINT, val TEXT)")
         .await
         .expect("create table");
     for i in 0..50i64 {
         ctx.raw_execute(
-            "INSERT INTO t4_relpages_strict (id, val) VALUES ($1, $2)",
+            "INSERT INTO relpages_strict (id, val) VALUES ($1, $2)",
             &[&i, &format!("row-{i}")],
         )
         .await
         .expect("insert");
     }
-    ctx.raw_ddl("ANALYZE t4_relpages_strict")
+    ctx.raw_ddl("ANALYZE relpages_strict")
         .await
         .expect("analyze");
 
     let plan = transactional_plan(vec![op(
-        "AddIndex t4_relpages_strict_val_idx",
-        "CREATE INDEX \"t4_relpages_strict_val_idx\" ON \"t4_relpages_strict\" (\"val\")",
-        "DROP INDEX \"t4_relpages_strict_val_idx\"",
+        "AddIndex relpages_strict_val_idx",
+        "CREATE INDEX \"relpages_strict_val_idx\" ON \"relpages_strict\" (\"val\")",
+        "DROP INDEX \"relpages_strict_val_idx\"",
     )]);
     let config = MigrateConfig {
         concurrent_warn_relpages: 0,
@@ -848,8 +848,8 @@ async fn relpages_probe_aborts_in_strict_mode(mut ctx: djogi::DjogiContext) {
             threshold,
             ..
         } => {
-            assert_eq!(index_name, "t4_relpages_strict_val_idx");
-            assert_eq!(target_table, "t4_relpages_strict");
+            assert_eq!(index_name, "relpages_strict_val_idx");
+            assert_eq!(target_table, "relpages_strict");
             assert!(relpages > 0);
             assert_eq!(threshold, 0);
         }
@@ -860,7 +860,7 @@ async fn relpages_probe_aborts_in_strict_mode(mut ctx: djogi::DjogiContext) {
     let exists: bool = ctx
         .raw_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_class \
-             WHERE relname = 't4_relpages_strict_val_idx' AND relkind = 'i')",
+             WHERE relname = 'relpages_strict_val_idx' AND relkind = 'i')",
             &[],
         )
         .await
@@ -883,15 +883,15 @@ async fn relpages_probe_aborts_in_strict_mode(mut ctx: djogi::DjogiContext) {
 #[djogi::djogi_test]
 async fn relpages_probe_silent_for_small_table(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
-    ctx.raw_ddl("CREATE TABLE t4_relpages_small (id BIGINT, val TEXT)")
+    ctx.raw_ddl("CREATE TABLE relpages_small (id BIGINT, val TEXT)")
         .await
         .expect("create table");
     // Empty table — relpages = 0, threshold default 128, so probe is silent.
 
     let plan = transactional_plan(vec![op(
-        "AddIndex t4_relpages_small_val_idx",
-        "CREATE INDEX \"t4_relpages_small_val_idx\" ON \"t4_relpages_small\" (\"val\")",
-        "DROP INDEX \"t4_relpages_small_val_idx\"",
+        "AddIndex relpages_small_val_idx",
+        "CREATE INDEX \"relpages_small_val_idx\" ON \"relpages_small\" (\"val\")",
+        "DROP INDEX \"relpages_small_val_idx\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -907,7 +907,7 @@ async fn relpages_probe_silent_for_small_table(mut ctx: djogi::DjogiContext) {
 
 // ── Relpages probe: target table missing AND not in plan's AddTable set ───
 //
-// Codex round-2 A-2 polish: the probe's `None` branch must hard-error
+// Codex round A-2 polish: the probe's `None` branch must hard-error
 // when the target_table doesn't exist in pg_class AND isn't being
 // created by the same plan. The unit tests cover the predicate
 // (`collect_add_table_targets`); this live test exercises the full
@@ -921,9 +921,9 @@ async fn relpages_probe_hard_errors_when_target_missing(mut ctx: djogi::DjogiCon
     // and is NOT in the plan's AddTable set. The relpages probe must
     // surface `TargetTableNotFound` before any segment runs.
     let plan = transactional_plan(vec![op(
-        "AddIndex t4_relpages_missing_idx",
-        "CREATE INDEX \"t4_relpages_missing_idx\" ON \"t4_relpages_missing_table\" (\"val\")",
-        "DROP INDEX \"t4_relpages_missing_idx\"",
+        "AddIndex relpages_missing_idx",
+        "CREATE INDEX \"relpages_missing_idx\" ON \"relpages_missing_table\" (\"val\")",
+        "DROP INDEX \"relpages_missing_idx\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -941,8 +941,8 @@ async fn relpages_probe_hard_errors_when_target_missing(mut ctx: djogi::DjogiCon
             target_table,
             ..
         } => {
-            assert_eq!(index_name, "t4_relpages_missing_idx");
-            assert_eq!(target_table, "t4_relpages_missing_table");
+            assert_eq!(index_name, "relpages_missing_idx");
+            assert_eq!(target_table, "relpages_missing_table");
         }
         other => panic!("expected TargetTableNotFound, got {other:?}"),
     }
@@ -951,7 +951,7 @@ async fn relpages_probe_hard_errors_when_target_missing(mut ctx: djogi::DjogiCon
     let exists: bool = ctx
         .raw_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_class \
-             WHERE relname = 't4_relpages_missing_idx' AND relkind = 'i')",
+             WHERE relname = 'relpages_missing_idx' AND relkind = 'i')",
             &[],
         )
         .await
@@ -976,14 +976,14 @@ async fn relpages_probe_hard_errors_when_target_missing(mut ctx: djogi::DjogiCon
 async fn run_id_is_unique_per_invocation(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let plan_a = transactional_plan(vec![op(
-        "AddTable t4_run_id_a",
-        "CREATE TABLE \"t4_run_id_a\" (\"id\" BIGINT)",
-        "DROP TABLE \"t4_run_id_a\"",
+        "AddTable run_id_a",
+        "CREATE TABLE \"run_id_a\" (\"id\" BIGINT)",
+        "DROP TABLE \"run_id_a\"",
     )]);
     let plan_b = transactional_plan(vec![op(
-        "AddTable t4_run_id_b",
-        "CREATE TABLE \"t4_run_id_b\" (\"id\" BIGINT)",
-        "DROP TABLE \"t4_run_id_b\"",
+        "AddTable run_id_b",
+        "CREATE TABLE \"run_id_b\" (\"id\" BIGINT)",
+        "DROP TABLE \"run_id_b\"",
     )]);
     let ctx_a = make_runner_ctx(
         &plan_a,
@@ -1014,9 +1014,9 @@ async fn run_id_is_unique_per_invocation(mut ctx: djogi::DjogiContext) {
 async fn checksum_mismatch_aborts_before_apply(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
-        "AddTable t4_checksum",
-        "CREATE TABLE \"t4_checksum\" (\"id\" BIGINT)",
-        "DROP TABLE \"t4_checksum\"",
+        "AddTable checksum",
+        "CREATE TABLE \"checksum\" (\"id\" BIGINT)",
+        "DROP TABLE \"checksum\"",
     )]);
     // Tamper with the runner_ctx's checksum_up so it does not match
     // a freshly-computed one.
@@ -1040,7 +1040,7 @@ async fn checksum_mismatch_aborts_before_apply(mut ctx: djogi::DjogiContext) {
     // Table must NOT exist — apply aborted before any SQL ran.
     let exists: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 't4_checksum' AND relkind = 'r')",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'checksum' AND relkind = 'r')",
             &[],
         )
         .await
@@ -1077,8 +1077,8 @@ async fn metadata_only_segment_accounted_in_run_report(mut ctx: djogi::DjogiCont
     //   - record `applied_steps_count` correctly (0, since
     //     metadata-only segments produce no non-transactional steps),
     //   - mark the ledger row applied.
-    // Codex round-2 A-5 polish: the metadata segment's `up` SQL is a
-    // *real DDL canary* — `CREATE TABLE "t4_metadata_canary"`. If the
+    // Codex round A-5 polish: the metadata segment's `up` SQL is a
+    // *real DDL canary* — `CREATE TABLE "metadata_canary"`. If the
     // runner accidentally executes a metadata segment (the regression
     // we are guarding against), the canary table will exist after the
     // apply. A SQL-comment placeholder cannot detect that regression
@@ -1094,17 +1094,17 @@ async fn metadata_only_segment_accounted_in_run_report(mut ctx: djogi::DjogiCont
             Segment {
                 kind: SegmentKind::Transactional,
                 statements: vec![op(
-                    "AddTable t4_metadata_table",
-                    "CREATE TABLE \"t4_metadata_table\" (\"id\" BIGINT PRIMARY KEY)",
-                    "DROP TABLE \"t4_metadata_table\"",
+                    "AddTable metadata_table",
+                    "CREATE TABLE \"metadata_table\" (\"id\" BIGINT PRIMARY KEY)",
+                    "DROP TABLE \"metadata_table\"",
                 )],
             },
             Segment {
                 kind: SegmentKind::MetadataOnly,
                 statements: vec![op(
                     "RenameApp old_app -> new_app",
-                    "CREATE TABLE \"t4_metadata_canary\" (\"id\" BIGINT PRIMARY KEY)",
-                    "DROP TABLE \"t4_metadata_canary\"",
+                    "CREATE TABLE \"metadata_canary\" (\"id\" BIGINT PRIMARY KEY)",
+                    "DROP TABLE \"metadata_canary\"",
                 )],
             },
         ],
@@ -1150,7 +1150,7 @@ async fn metadata_only_segment_accounted_in_run_report(mut ctx: djogi::DjogiCont
     let table_exists: bool = ctx
         .raw_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_class \
-             WHERE relname = 't4_metadata_table' AND relkind = 'r')",
+             WHERE relname = 'metadata_table' AND relkind = 'r')",
             &[],
         )
         .await
@@ -1159,13 +1159,13 @@ async fn metadata_only_segment_accounted_in_run_report(mut ctx: djogi::DjogiCont
 
     // The metadata segment's canary CREATE TABLE must NOT have run —
     // metadata segments are filesystem + ledger-row mutations only
-    // (RenameApp / MoveModelBetweenApps per T6). If the canary table
+    // (RenameApp / MoveModelBetweenApps per ). If the canary table
     // exists, the runner accidentally executed metadata-segment DDL,
     // which is the bug A-5 is guarding against.
     let canary_exists: bool = ctx
         .raw_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_class \
-             WHERE relname = 't4_metadata_canary' AND relkind = 'r')",
+             WHERE relname = 'metadata_canary' AND relkind = 'r')",
             &[],
         )
         .await
@@ -1183,9 +1183,9 @@ async fn duplicate_version_surfaces_typed_error(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     // Apply once successfully.
     let plan = transactional_plan(vec![op(
-        "AddTable t4_dup",
-        "CREATE TABLE \"t4_dup\" (\"id\" BIGINT PRIMARY KEY)",
-        "DROP TABLE \"t4_dup\"",
+        "AddTable dup",
+        "CREATE TABLE \"dup\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"dup\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -1202,9 +1202,9 @@ async fn duplicate_version_surfaces_typed_error(mut ctx: djogi::DjogiContext) {
     // label must surface `VersionAlreadyApplied`. The unique-violation
     // is on `version`, independent of the SQL contents.
     let plan2 = transactional_plan(vec![op(
-        "DropTable t4_dup",
-        "DROP TABLE \"t4_dup\"",
-        "CREATE TABLE \"t4_dup\" (\"id\" BIGINT PRIMARY KEY)",
+        "DropTable dup",
+        "DROP TABLE \"dup\"",
+        "CREATE TABLE \"dup\" (\"id\" BIGINT PRIMARY KEY)",
     )]);
     let mut runner_ctx2 = make_runner_ctx(
         &plan2,
@@ -1253,7 +1253,7 @@ async fn duplicate_version_surfaces_typed_error(mut ctx: djogi::DjogiContext) {
     let exists: bool = ctx
         .raw_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_class \
-             WHERE relname = 't4_dup' AND relkind = 'r')",
+             WHERE relname = 'dup' AND relkind = 'r')",
             &[],
     )
     .await
@@ -1284,9 +1284,9 @@ async fn duplicate_version_surfaces_non_terminal_collision_statuses(mut ctx: djo
         ),
     ] {
         let plan = transactional_plan(vec![op(
-            "AddTable t4_dup_non_terminal",
-            "CREATE TABLE \"t4_dup_non_terminal\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t4_dup_non_terminal\"",
+            "AddTable dup_non_terminal",
+            "CREATE TABLE \"dup_non_terminal\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"dup_non_terminal\"",
         )]);
         let runner_ctx = make_runner_ctx(
             &plan,
@@ -1376,7 +1376,7 @@ async fn advisory_lock_key_is_stable_across_processes(mut ctx: djogi::DjogiConte
 // After the fix, apply_plan pins ONE physical Postgres session for the entire
 // operation window. We verify through pg_locks:
 //
-// pg_locks shows advisory locks held by ALL sessions cluster-wide. If the pre-fix
+// pg_locks shows advisory locks held by ALL sessions . If the pre-fix
 // bug occurs (lock acquired on session A, release attempted on session B → false
 // ignored → lock stays on A), the lock appears in pg_locks after apply_plan returns.
 // With the fix, the lock is properly released on the same pinned session and
@@ -1386,10 +1386,10 @@ async fn advisory_lock_key_is_stable_across_processes(mut ctx: djogi::DjogiConte
 async fn apply_plan_advisory_lock_not_held_after_success(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
 
-    let plan = transactional_plan_for_app("runner_274_lock_release", vec![op(
-        "AddTable t4_274_lock_release",
-        "CREATE TABLE \"t4_274_lock_release\" (\"id\" BIGINT PRIMARY KEY)",
-        "DROP TABLE \"t4_274_lock_release\"",
+    let plan = transactional_plan(vec![op(
+        "AddTable lock_release",
+        "CREATE TABLE \"lock_release\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"lock_release\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -1403,7 +1403,7 @@ async fn apply_plan_advisory_lock_not_held_after_success(mut ctx: djogi::DjogiCo
         .await
         .expect("apply ok");
 
-    // After apply_plan the advisory lock must be fully released cluster-wide.
+    // After apply_plan the advisory lock must be fully released .
     // pg_locks surfaces advisory locks held by ANY backend, so this query
     // detects the pre-fix bug (lock leaked on the acquirer's session) regardless
     // of which pool connection the query itself uses.
@@ -1452,10 +1452,10 @@ async fn advisory_unlock_false_variant_exists_and_is_not_triggered_on_clean_appl
 ) {
     let _guard = acquire_test_workspace_guard();
 
-    let plan = transactional_plan_for_app("runner_274_unlock_variant", vec![op(
-        "AddTable t4_274_unlock_variant",
-        "CREATE TABLE \"t4_274_unlock_variant\" (\"id\" BIGINT PRIMARY KEY)",
-        "DROP TABLE \"t4_274_unlock_variant\"",
+    let plan = transactional_plan(vec![op(
+        "AddTable unlock_variant",
+        "CREATE TABLE \"unlock_variant\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"unlock_variant\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -1505,10 +1505,10 @@ async fn apply_plan_pool_backed_context_pins_session_for_advisory_lock(
         .await
         .expect("pg_backend_pid before apply_plan");
 
-    let plan = transactional_plan_for_app("runner_331_pool_pin", vec![op(
-        "AddTable t4_331_pool_pin",
-        "CREATE TABLE \"t4_331_pool_pin\" (\"id\" BIGINT PRIMARY KEY)",
-        "DROP TABLE \"t4_331_pool_pin\"",
+    let plan = transactional_plan(vec![op(
+        "AddTable pool_pin",
+        "CREATE TABLE \"pool_pin\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"pool_pin\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -1539,7 +1539,7 @@ async fn apply_plan_pool_backed_context_pins_session_for_advisory_lock(
 
     tracing::debug!(pid_before, pid_after, "outer context backend PIDs (may differ)");
 
-    // pg_locks must show zero advisory locks for this key cluster-wide
+    // pg_locks must show zero advisory locks for this key 
     let lock_key = advisory_lock_key(&plan.bucket);
     let still_held: i64 = ctx
         .raw_scalar(
@@ -1578,10 +1578,10 @@ async fn rollback_plan_pool_backed_context_pins_session_for_advisory_lock(
     assert!(ctx.is_pool_backed(), "must be pool-backed");
 
     // Apply first so there's something to roll back
-    let plan = transactional_plan_for_app("runner_331_rollback_pin", vec![op(
-        "AddTable t4_331_rollback_pin",
-        "CREATE TABLE \"t4_331_rollback_pin\" (\"id\" BIGINT PRIMARY KEY)",
-        "DROP TABLE \"t4_331_rollback_pin\"",
+    let plan = transactional_plan(vec![op(
+        "AddTable rollback_pin",
+        "CREATE TABLE \"rollback_pin\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"rollback_pin\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -1721,10 +1721,10 @@ async fn apply_plan_early_error_releases_lock_via_session_drop(
     assert!(ctx.is_pool_backed(), "must be pool-backed");
 
     // Plan with invalid SQL that fails during DDL execution (after lock acquire)
-    let plan = transactional_plan_for_app("runner_331_early_error", vec![op(
-        "AddTable t4_331_early_error",
-        "CREATE TABLE \"t4_331_early_error\" (\"id\" INVALID_TYPE PRIMARY KEY)",
-        "DROP TABLE \"t4_331_early_error\"",
+    let plan = transactional_plan(vec![op(
+        "AddTable early_error",
+        "CREATE TABLE \"early_error\" (\"id\" INVALID_TYPE PRIMARY KEY)",
+        "DROP TABLE \"early_error\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,

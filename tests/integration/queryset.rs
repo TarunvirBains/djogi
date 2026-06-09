@@ -3,11 +3,11 @@
 use djogi::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// Separate table name (`posts_p2`) so this integration test can share a DB
+// Separate table name (`queryset_posts`) so this integration test can share a DB
 // with `model.rs` without DDL collisions.
-// T2 default flip — pin ascending HeerId so existing
+//  default flip — pin ascending HeerId so existing
 // HeerId-typed construction and assertions keep working.
-#[model(table = "posts_p2", pk = HeerId)]
+#[model(table = "queryset_posts", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Post {
     pub title: String,
@@ -22,7 +22,7 @@ pub struct Post {
     pub score: Option<i32>,
 }
 
-#[model(table = "phase2_returning_pair_long_aliases", pk = HeerId)]
+#[model(table = "returning_pair_long_aliases", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct ReturningPairLongAliasBulk {
     // 50 chars: below Postgres boundary when prefixed.
@@ -34,20 +34,20 @@ pub struct ReturningPairLongAliasBulk {
     pub xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxb: i32,
 }
 
-#[model(table = "phase2_bulk_outbox_evt_row", pk = HeerId, events)]
+#[model(table = "bulk_outbox_evt_row", pk = HeerId, events)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BulkOutboxEvtRow {
     pub tag: String,
     pub score: i32,
 }
 
-#[model(table = "phase2_bulk_outbox_no_evt_row", pk = HeerId)]
+#[model(table = "bulk_outbox_no_evt_row", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct BulkOutboxNoEvtRow {
     pub score: i32,
 }
 
-#[model(table = "phase2_bulk_hooks_row", pk = HeerId, hooks)]
+#[model(table = "bulk_hooks_row", pk = HeerId, hooks)]
 #[derive(Debug, Clone)]
 pub struct BulkHooksRow {
     pub score: i32,
@@ -389,7 +389,7 @@ async fn limit_offset_paginate(mut ctx: djogi::DjogiContext) {
 async fn nested_and_or(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
     let rows = Post::objects()
-        // PR3: portable predicates (`PortablePredicate<T>`) compose via
+        // Portable predicates (`PortablePredicate<T>`) compose via
         // `&` from the operator matrix instead of the legacy
         // `Condition::and_with` fluent helper. Same SQL shape, same
         // operator precedence; the closure receives the `DjogiField`
@@ -407,7 +407,7 @@ async fn nested_and_or(mut ctx: djogi::DjogiContext) {
 async fn in_list_and_between(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
-    // PR3: portable IN takes any `IntoIterator<Item = V>` and is named
+    // Portable IN takes any `IntoIterator<Item = V>` and is named
     // `in_` (not `in_list`) on `DjogiField`. SQL parity is preserved
     // through the portable lowering helpers.
     let by_title = Post::objects()
@@ -436,7 +436,7 @@ async fn filter_struct_matches_closure_results(mut ctx: djogi::DjogiContext) {
     seed_posts(&mut ctx).await;
 
     let closure_rows = Post::objects()
-        // PR3: portable predicates (`PortablePredicate<T>`) compose via
+        // Portable predicates (`PortablePredicate<T>`) compose via
         // `&` from the operator matrix instead of the legacy
         // `Condition::and_with` fluent helper. Same SQL shape, same
         // operator precedence; the closure receives the `DjogiField`
@@ -1012,7 +1012,7 @@ async fn bulk_update_order_by_is_rejected_with_validation_error(mut ctx: djogi::
     assert_eq!(bumped, 0, "rejected update must not mutate any row");
 }
 
-// ── djogi#180 — PG18 OLD/NEW bulk RETURNING integration tests ──
+// ── PG18 OLD/NEW bulk RETURNING integration tests ──
 
 #[djogi::djogi_test(sync_models = [Post])]
 async fn execute_returning_pairs_returns_old_and_new_for_each_row(mut ctx: djogi::DjogiContext) {
@@ -1149,7 +1149,7 @@ async fn execute_returning_pairs_events_model_emits_save_outbox_per_pair(
         .await
         .expect("seed bulk outbox events rows");
 
-    djogi::testing::clear_outbox_for_test(&mut ctx, "phase2_bulk_outbox_evt_row_outbox")
+    djogi::testing::clear_outbox_for_test(&mut ctx, "bulk_outbox_evt_row_outbox")
         .await
         .expect("clear outbox rows");
 
@@ -1161,10 +1161,9 @@ async fn execute_returning_pairs_events_model_emits_save_outbox_per_pair(
 
     assert_eq!(pairs.len(), rows.len(), "one pair per updated row");
 
-    let outbox_rows =
-        djogi::testing::outbox_rows_for_test(&mut ctx, "phase2_bulk_outbox_evt_row_outbox")
-            .await
-            .expect("read phase2_bulk_outbox_evt_row_outbox rows");
+    let outbox_rows = djogi::testing::outbox_rows_for_test(&mut ctx, "bulk_outbox_evt_row_outbox")
+        .await
+        .expect("read bulk_outbox_evt_row_outbox rows");
 
     assert_eq!(
         outbox_rows.len(),

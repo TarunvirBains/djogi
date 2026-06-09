@@ -2,7 +2,7 @@ use djogi::auth::AuthContext;
 use djogi::prelude::*;
 
 #[model(
-    table = "phase5_5_tenant_hook_posts",
+    table = "tenant_hook_posts",
     pk = HeerId,
     tenant_key = "org_id",
     hooks
@@ -19,7 +19,7 @@ impl djogi::hooks::ModelHooks for TenantHookPost {
         _ctx: &mut djogi::DjogiContext,
     ) -> Result<(), djogi::DjogiError> {
         Err(djogi::DjogiError::Validation(
-            "phase5_5: before_save abort".to_string(),
+            "before_save abort".to_string(),
         ))
     }
 
@@ -28,7 +28,7 @@ impl djogi::hooks::ModelHooks for TenantHookPost {
         _ctx: &mut djogi::DjogiContext,
     ) -> Result<(), djogi::DjogiError> {
         Err(djogi::DjogiError::Validation(
-            "phase5_5: before_delete abort".to_string(),
+            "before_delete abort".to_string(),
         ))
     }
 }
@@ -76,7 +76,7 @@ async fn update_returning_pair_hook_err_restores_pre_hook_tenant_scope(
     let Err(djogi::DjogiError::Validation(msg)) = res else {
         panic!("expected Err(DjogiError::Validation(_)), got {res:?}");
     };
-    assert_eq!(msg, "phase5_5: before_save abort");
+    assert_eq!(msg, "before_save abort");
     assert_eq!(tx.applied_tenant_id(), Some("org_a"));
     assert_eq!(current_tenant_guc(&mut tx).await.as_deref(), Some("org_a"));
 
@@ -115,7 +115,7 @@ async fn delete_returning_hook_err_restores_pre_hook_tenant_scope(mut ctx: djogi
     let Err(djogi::DjogiError::Validation(msg)) = res else {
         panic!("expected Err(DjogiError::Validation(_)), got {res:?}");
     };
-    assert_eq!(msg, "phase5_5: before_delete abort");
+    assert_eq!(msg, "before_delete abort");
     assert_eq!(tx.applied_tenant_id(), Some("org_a"));
     assert_eq!(current_tenant_guc(&mut tx).await.as_deref(), Some("org_a"));
 

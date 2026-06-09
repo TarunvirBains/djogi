@@ -1,4 +1,4 @@
-// PR4 integration coverage for the portable cache/refresh gate.
+// Integration coverage for the portable cache/refresh gate.
 //
 // These tests pin the boundary introduced after the raw-Sassi ingress removal:
 // cache and refresh may only accept querysets whose complete Q<T> tree reduces
@@ -8,7 +8,7 @@
 use djogi::prelude::*;
 use djogi::query::PortablePredicateError;
 
-#[model(table = "phase8eta_pr4_cache_refresh_rows", pk = HeerId)]
+#[model(table = "cache_refresh_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct CacheRefreshGateRow {
     pub label: String,

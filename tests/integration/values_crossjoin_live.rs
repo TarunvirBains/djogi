@@ -4,29 +4,29 @@
 // surface against a real Postgres.  Each test seeds rows via `Model::create`,
 // then asserts on the Cartesian product produced by `cross_join_values`.
 //
-// Test model: `Phase85C4bValuesCrossAnimal` — deliberately minimal so the
+// Test model: `C4bValuesCrossAnimal` — deliberately minimal so the
 // CROSS JOIN logic is easy to follow.
 
 use djogi::prelude::*;
 
 // ── Model ─────────────────────────────────────────────────────────────────────
 
-#[model(table = "phase8_5_c4b_cross_animals", pk = HeerIdRecencyBiased)]
+#[model(table = "c4b_cross_animals", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
-pub struct Phase85C4bValuesCrossAnimal {
+pub struct C4bValuesCrossAnimal {
     pub name: String,
     pub active: bool,
 }
 
 // ── Seed helper ───────────────────────────────────────────────────────────────
 
-async fn seed(ctx: &mut DjogiContext, rows: &[(&str, bool)]) -> Vec<Phase85C4bValuesCrossAnimal> {
+async fn seed(ctx: &mut DjogiContext, rows: &[(&str, bool)]) -> Vec<C4bValuesCrossAnimal> {
     let mut out = Vec::new();
     for (name, active) in rows {
         out.push(
-            Phase85C4bValuesCrossAnimal::create(
+            C4bValuesCrossAnimal::create(
                 ctx,
-                Phase85C4bValuesCrossAnimal {
+                C4bValuesCrossAnimal {
                     name: name.to_string(),
                     active: *active,
                     ..Default::default()
@@ -42,7 +42,7 @@ async fn seed(ctx: &mut DjogiContext, rows: &[(&str, bool)]) -> Vec<Phase85C4bVa
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// Basic 2-row model × 2-row VALUES → 4 result rows (Cartesian product).
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesCrossAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesCrossAnimal])]
 async fn cross_join_values_basic_cartesian_product(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true), ("lion", true)]).await;
 
@@ -53,12 +53,11 @@ async fn cross_join_values_basic_cartesian_product(mut ctx: DjogiContext) {
     )
     .expect("valid InlineValues");
 
-    let pairs: Vec<(Phase85C4bValuesCrossAnimal, (String,))> =
-        Phase85C4bValuesCrossAnimal::objects()
-            .cross_join_values(labels)
-            .fetch_all(&mut ctx)
-            .await
-            .expect("fetch_all");
+    let pairs: Vec<(C4bValuesCrossAnimal, (String,))> = C4bValuesCrossAnimal::objects()
+        .cross_join_values(labels)
+        .fetch_all(&mut ctx)
+        .await
+        .expect("fetch_all");
 
     // 2 model rows × 2 VALUES rows = 4 pairs.
     assert_eq!(pairs.len(), 4, "2 × 2 = 4 Cartesian pairs expected");
@@ -88,19 +87,18 @@ async fn cross_join_values_basic_cartesian_product(mut ctx: DjogiContext) {
 }
 
 /// Empty VALUES → empty result (short-circuit, no DB round-trip needed).
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesCrossAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesCrossAnimal])]
 async fn cross_join_values_empty_values_returns_empty(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true)]).await;
 
     let empty: InlineValues<(String,)> =
         InlineValues::new(vec![], "lbl", ("tag",)).expect("valid empty InlineValues");
 
-    let pairs: Vec<(Phase85C4bValuesCrossAnimal, (String,))> =
-        Phase85C4bValuesCrossAnimal::objects()
-            .cross_join_values(empty)
-            .fetch_all(&mut ctx)
-            .await
-            .expect("fetch_all");
+    let pairs: Vec<(C4bValuesCrossAnimal, (String,))> = C4bValuesCrossAnimal::objects()
+        .cross_join_values(empty)
+        .fetch_all(&mut ctx)
+        .await
+        .expect("fetch_all");
 
     assert!(
         pairs.is_empty(),
@@ -109,26 +107,25 @@ async fn cross_join_values_empty_values_returns_empty(mut ctx: DjogiContext) {
 }
 
 /// Empty queryset (none()) → empty result (short-circuit).
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesCrossAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesCrossAnimal])]
 async fn cross_join_values_none_queryset_returns_empty(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true)]).await;
 
     let labels: InlineValues<(String,)> =
         InlineValues::new(vec![("a".to_string(),)], "lbl", ("tag",)).expect("valid");
 
-    let pairs: Vec<(Phase85C4bValuesCrossAnimal, (String,))> =
-        Phase85C4bValuesCrossAnimal::objects()
-            .none()
-            .cross_join_values(labels)
-            .fetch_all(&mut ctx)
-            .await
-            .expect("fetch_all");
+    let pairs: Vec<(C4bValuesCrossAnimal, (String,))> = C4bValuesCrossAnimal::objects()
+        .none()
+        .cross_join_values(labels)
+        .fetch_all(&mut ctx)
+        .await
+        .expect("fetch_all");
 
     assert!(pairs.is_empty(), "none() queryset → zero Cartesian pairs");
 }
 
 /// count() on a Cartesian product equals model_rows × values_rows.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesCrossAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesCrossAnimal])]
 async fn cross_join_values_count_equals_cartesian_product(mut ctx: DjogiContext) {
     seed(
         &mut ctx,
@@ -143,7 +140,7 @@ async fn cross_join_values_count_equals_cartesian_product(mut ctx: DjogiContext)
     )
     .expect("valid");
 
-    let count = Phase85C4bValuesCrossAnimal::objects()
+    let count = C4bValuesCrossAnimal::objects()
         .cross_join_values(labels)
         .count(&mut ctx)
         .await
@@ -154,13 +151,13 @@ async fn cross_join_values_count_equals_cartesian_product(mut ctx: DjogiContext)
 }
 
 /// count() short-circuits to 0 when VALUES is empty.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesCrossAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesCrossAnimal])]
 async fn cross_join_values_count_empty_values_is_zero(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true)]).await;
 
     let empty: InlineValues<(String,)> = InlineValues::new(vec![], "lbl", ("tag",)).expect("valid");
 
-    let count = Phase85C4bValuesCrossAnimal::objects()
+    let count = C4bValuesCrossAnimal::objects()
         .cross_join_values(empty)
         .count(&mut ctx)
         .await
@@ -170,7 +167,7 @@ async fn cross_join_values_count_empty_values_is_zero(mut ctx: DjogiContext) {
 }
 
 /// A WHERE filter on the model side reduces the Cartesian product correctly.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesCrossAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesCrossAnimal])]
 async fn cross_join_values_model_filter_reduces_product(mut ctx: DjogiContext) {
     // Seed 2 active + 1 inactive.
     seed(
@@ -186,7 +183,7 @@ async fn cross_join_values_model_filter_reduces_product(mut ctx: DjogiContext) {
     )
     .expect("valid");
 
-    let pairs = Phase85C4bValuesCrossAnimal::objects()
+    let pairs = C4bValuesCrossAnimal::objects()
         .filter(|f| f.active().eq(true))
         .cross_join_values(labels)
         .fetch_all(&mut ctx)
@@ -203,14 +200,14 @@ async fn cross_join_values_model_filter_reduces_product(mut ctx: DjogiContext) {
 }
 
 /// exists() is true when the product is non-empty.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesCrossAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesCrossAnimal])]
 async fn cross_join_values_exists_true_when_non_empty(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true)]).await;
 
     let labels: InlineValues<(String,)> =
         InlineValues::new(vec![("a".to_string(),)], "lbl", ("tag",)).expect("valid");
 
-    let exists = Phase85C4bValuesCrossAnimal::objects()
+    let exists = C4bValuesCrossAnimal::objects()
         .cross_join_values(labels)
         .exists(&mut ctx)
         .await
@@ -220,13 +217,13 @@ async fn cross_join_values_exists_true_when_non_empty(mut ctx: DjogiContext) {
 }
 
 /// exists() is false when VALUES is empty.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesCrossAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesCrossAnimal])]
 async fn cross_join_values_exists_false_when_empty_values(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true)]).await;
 
     let empty: InlineValues<(String,)> = InlineValues::new(vec![], "lbl", ("tag",)).expect("valid");
 
-    let exists = Phase85C4bValuesCrossAnimal::objects()
+    let exists = C4bValuesCrossAnimal::objects()
         .cross_join_values(empty)
         .exists(&mut ctx)
         .await
@@ -236,14 +233,14 @@ async fn cross_join_values_exists_false_when_empty_values(mut ctx: DjogiContext)
 }
 
 /// Unsupported left state (`.distinct()`) → Validation error at terminal.
-#[djogi::djogi_test(sync_models = [Phase85C4bValuesCrossAnimal])]
+#[djogi::djogi_test(sync_models = [C4bValuesCrossAnimal])]
 async fn cross_join_values_rejects_distinct_state(mut ctx: DjogiContext) {
     seed(&mut ctx, &[("elephant", true)]).await;
 
     let labels: InlineValues<(String,)> =
         InlineValues::new(vec![("a".to_string(),)], "lbl", ("tag",)).expect("valid");
 
-    let err = Phase85C4bValuesCrossAnimal::objects()
+    let err = C4bValuesCrossAnimal::objects()
         .distinct()
         .cross_join_values(labels)
         .fetch_all(&mut ctx)

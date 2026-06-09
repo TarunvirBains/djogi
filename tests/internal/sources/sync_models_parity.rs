@@ -1,17 +1,17 @@
-// T10-01 — assert that the two table-creation paths produce
+// -01 — assert that the two table-creation paths produce
 // byte-identical schema state.
 //
 // # What this proves
 //
 // Djogi has two ways to materialise a model set into a live database:
 //
-// - **Path A — `sync_models`** (T10): the test-time helper
+// - **Path A — `sync_models`** (): the test-time helper
 //   the `#[djogi_test(sync_models = [...])]` macro emits a call to.
 //   It projects descriptors, diffs against an empty source, and
 //   calls `execute_plan` to run the resulting SQL directly — no
 //   ledger, no advisory lock, no classification gate.
 //
-// - **Path B — `apply_plan`** (T4): the production migration
+// - **Path B — `apply_plan`** (): the production migration
 //   runner. It takes the same `MigrationPlan` `sync_models` would
 //   build, then routes it through `apply_plan_inner` which inserts
 //   a pending ledger row, acquires a Postgres advisory lock for
@@ -53,14 +53,14 @@ use djogi::testing::{build_sync_plans, setup_test_db, teardown_test_db};
 // either path emits operations in the wrong order, the FK
 // constraint creation fails on Path B and pg_class diverges.
 
-#[model(table = "t10_01_parity_categories", pk = HeerId)]
+#[model(table = "parity_categories", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct ParityCategory {
     pub name: String,
     pub display_order: i32,
 }
 
-#[model(table = "t10_01_parity_widgets", pk = HeerId, no_default)]
+#[model(table = "parity_widgets", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct ParityWidget {
     pub category_id: ForeignKey<ParityCategory>,
@@ -76,7 +76,7 @@ fn acquire_test_workspace_guard() -> WorkspaceGuard {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("djogi-t10-01-parity-{stamp}.lock"));
+    let path = std::env::temp_dir().join(format!("djogi-parity-{stamp}.lock"));
     acquire_workspace_lock(&path, Duration::from_secs(2)).expect("acquire workspace lock")
 }
 
@@ -285,8 +285,8 @@ async fn sync_models_and_apply_plan_produce_identical_pg_class() {
             .collect();
         let runner_ctx = RunnerCtx {
             bucket: plan.bucket.clone(),
-            version: format!("V20260428000000_t10_01_parity_{idx}"),
-            description: "T10-01 sync_models <-> apply_plan parity test".to_string(),
+            version: format!("V20260428000000_parity_{idx}"),
+            description: "-01 sync_models <-> apply_plan parity test".to_string(),
             checksum_up: compute_checksum(up_frags),
             checksum_down: None,
             // Snapshot persistence intentionally disabled — we compare

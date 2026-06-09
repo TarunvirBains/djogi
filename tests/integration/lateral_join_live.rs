@@ -1,12 +1,12 @@
 use djogi::prelude::*;
 
-#[model(table = "phase8_5_c4b_lateral_live_projects", pk = HeerId)]
+#[model(table = "c4b_lateral_live_projects", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Project {
     pub name: String,
 }
 
-#[model(table = "phase8_5_c4b_lateral_live_tasks", pk = HeerId)]
+#[model(table = "c4b_lateral_live_tasks", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Task {
     pub project_id: HeerId,
@@ -39,7 +39,7 @@ async fn test_lateral_join_live(mut ctx: djogi::DjogiContext) {
         &mut ctx,
         Task {
             project_id: p1.id,
-            name: "T1.1".into(),
+            name: ".1".into(),
             priority: 1,
             ..Default::default()
         },
@@ -50,7 +50,7 @@ async fn test_lateral_join_live(mut ctx: djogi::DjogiContext) {
         &mut ctx,
         Task {
             project_id: p1.id,
-            name: "T1.2".into(),
+            name: ".2".into(),
             priority: 2,
             ..Default::default()
         },
@@ -61,7 +61,7 @@ async fn test_lateral_join_live(mut ctx: djogi::DjogiContext) {
         &mut ctx,
         Task {
             project_id: p2.id,
-            name: "T2.1".into(),
+            name: ".1".into(),
             priority: 3,
             ..Default::default()
         },
@@ -91,9 +91,9 @@ async fn test_lateral_join_live(mut ctx: djogi::DjogiContext) {
     rows.sort_by(|(p_a, _), (p_b, _)| p_a.name.cmp(&p_b.name));
 
     assert_eq!(rows[0].0.name, "P1");
-    assert_eq!(rows[0].1.name, "T1.2");
+    assert_eq!(rows[0].1.name, ".2");
     assert_eq!(rows[1].0.name, "P2");
-    assert_eq!(rows[1].1.name, "T2.1");
+    assert_eq!(rows[1].1.name, ".1");
 }
 
 #[djogi::djogi_test(sync_models = [Project, Task])]
@@ -107,7 +107,7 @@ async fn test_left_lateral_join_live(mut ctx: djogi::DjogiContext) {
     )
     .await
     .unwrap();
-    let _p2 = Project::create(
+    let _project2 = Project::create(
         &mut ctx,
         Project {
             name: "P2".into(),
@@ -121,7 +121,7 @@ async fn test_left_lateral_join_live(mut ctx: djogi::DjogiContext) {
         &mut ctx,
         Task {
             project_id: p1.id,
-            name: "T1.1".into(),
+            name: ".1".into(),
             priority: 1,
             ..Default::default()
         },
@@ -179,7 +179,7 @@ async fn test_left_lateral_join_none_keeps_outer_rows(mut ctx: djogi::DjogiConte
         &mut ctx,
         Task {
             project_id: p1.id,
-            name: "T1.1".into(),
+            name: ".1".into(),
             priority: 1,
             ..Default::default()
         },
@@ -190,7 +190,7 @@ async fn test_left_lateral_join_none_keeps_outer_rows(mut ctx: djogi::DjogiConte
         &mut ctx,
         Task {
             project_id: p2.id,
-            name: "T2.1".into(),
+            name: ".1".into(),
             priority: 2,
             ..Default::default()
         },
@@ -235,7 +235,7 @@ async fn test_lateral_count_live(mut ctx: djogi::DjogiContext) {
     )
     .await
     .unwrap();
-    let _p2 = Project::create(
+    let _project2 = Project::create(
         &mut ctx,
         Project {
             name: "P2".into(),
@@ -249,7 +249,7 @@ async fn test_lateral_count_live(mut ctx: djogi::DjogiContext) {
         &mut ctx,
         Task {
             project_id: p1.id,
-            name: "T1.1".into(),
+            name: ".1".into(),
             priority: 1,
             ..Default::default()
         },
@@ -291,7 +291,7 @@ async fn test_outer_limit_applies_before_lateral_fan_out(mut ctx: djogi::DjogiCo
     )
     .await
     .unwrap();
-    let _p2 = Project::create(
+    let _project2 = Project::create(
         &mut ctx,
         Project {
             name: "B".into(),

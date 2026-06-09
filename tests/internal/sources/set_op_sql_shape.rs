@@ -31,7 +31,7 @@
 
 use djogi::prelude::*;
 
-#[model(table = "phase8_5_c4b_set_op_widgets")]
+#[model(table = "c4b_set_op_widgets")]
 #[derive(Debug, Clone)]
 pub struct Widget {
     pub name: String,
@@ -45,7 +45,7 @@ pub struct Widget {
 // relation path. The `Author` model itself plays no role in the
 // validation tests beyond being the FK target — its rows are never
 // created or fetched in this DB-free fixture.
-#[model(table = "phase8_5_c4b_set_op_authors", pk = HeerId)]
+#[model(table = "c4b_set_op_authors", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Author {
     pub name: String,
@@ -55,7 +55,7 @@ pub struct Author {
 // `ForeignKey<T>` does not implement `Default`. The fixture never
 // constructs a `Book` value; only `Book::objects()` for the queryset
 // chain is exercised.
-#[model(table = "phase8_5_c4b_set_op_books", pk = HeerId, no_default)]
+#[model(table = "c4b_set_op_books", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Book {
     pub title: String,
@@ -67,7 +67,7 @@ pub struct Book {
 // the suite remains feature-agnostic.
 #[cfg(feature = "spatial")]
 #[allow(dead_code)] // the fixture never constructs `Place` values.
-#[model(table = "phase8_5_c4b_set_op_places", pk = HeerId, no_default)]
+#[model(table = "c4b_set_op_places", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Place {
     pub name: String,
@@ -215,7 +215,7 @@ fn set_op_none_arm_short_circuits_to_where_false() {
     // The right-arm SELECT explicitly names the table; the empty
     // queryset must not collapse to bare parens.
     assert!(
-        sql.contains("FROM phase8_5_c4b_set_op_widgets WHERE FALSE"),
+        sql.contains("FROM c4b_set_op_widgets WHERE FALSE"),
         "WHERE FALSE arm must still name the table: {sql}"
     );
 }
@@ -554,7 +554,7 @@ fn set_op_outer_spatial_order_by_distance_is_rejected_for_fetch_path() {
         matches!(
             err,
             djogi::DjogiError::SetOpOuterOrderingInvalid { table, .. }
-                if table == "phase8_5_c4b_set_op_places"
+                if table == "c4b_set_op_places"
         ),
         "spatial outer ORDER BY must surface as SetOpOuterOrderingInvalid: {err:?}"
     );

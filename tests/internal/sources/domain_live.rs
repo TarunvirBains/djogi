@@ -4,7 +4,7 @@
 // # What this file pins
 //
 // 1. **Descriptor projection.** A model field carrying
-//    `#[field(domain = "phase8_5_c4_216_positive_amount")]` lowers to
+//    `#[field(domain = "c4_216_positive_amount")]` lowers to
 //    `FieldSqlType::Domain { name, base: &FieldSqlType::Numeric }` in
 //    the descriptor; the rendered `Display` output is the bare domain
 //    name. (Doesn't need a live DB but lives here so the scope
@@ -94,23 +94,23 @@ use djogi::prelude::*;
 /// `raw_ddl` in the test setup because djogi#216 Piece A only
 /// references domains; the `CREATE DOMAIN` emission lives in Piece B
 /// (deferred).
-const DOMAIN_NAME: &str = "phase8_5_c4_216_positive_amount";
+const DOMAIN_NAME: &str = "c4_216_positive_amount";
 
-const TABLE_NAME: &str = "phase8_5_c4_216_orders";
+const TABLE_NAME: &str = "c4_216_orders";
 
 #[model(
-    table = "phase8_5_c4_216_orders",
+    table = "c4_216_orders",
     pk = HeerId,
     no_default
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Order216Live {
     /// Domain-typed column. The macro lowers this to
-    /// `FieldSqlType::Domain { name: "phase8_5_c4_216_positive_amount",
+    /// `FieldSqlType::Domain { name: "c4_216_positive_amount",
     /// base: &FieldSqlType::Numeric }`. The migration composer emits
     /// the bare domain name in the column-type slot, so adopter
     /// domain constraints fire on every INSERT / UPDATE.
-    #[field(domain = "phase8_5_c4_216_positive_amount")]
+    #[field(domain = "c4_216_positive_amount")]
     pub amount: rust_decimal::Decimal,
     pub label: String,
 }

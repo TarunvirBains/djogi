@@ -39,7 +39,7 @@
 
 use djogi::prelude::*;
 
-#[model(table = "phase8eta_filter_preservation_widgets")]
+#[model(table = "filter_preservation_widgets")]
 #[derive(Debug, Clone)]
 pub struct Widget {
     pub name: String,

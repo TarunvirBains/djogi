@@ -10,7 +10,7 @@ use djogi::prelude::*;
 use std::time::Duration;
 use tokio::time::timeout;
 
-#[model(table = "phase8_t11_evt", pk = HeerId, events)]
+#[model(table = "evt", pk = HeerId, events)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EvtRow {
     pub label: String,
@@ -218,7 +218,7 @@ async fn listener_hot_reload_after_last_subscriber_drops(mut ctx: djogi::DjogiCo
                         id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                         created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                         updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
-                        label: "round-1".to_string(),
+                        label: "round".to_string(),
                     },
                 )
                 .await
@@ -229,8 +229,8 @@ async fn listener_hot_reload_after_last_subscriber_drops(mut ctx: djogi::DjogiCo
 
         let event = timeout(RECV_TIMEOUT, rx.recv())
             .await
-            .expect("round-1 recv must arrive")
-            .expect("round-1 decode");
+            .expect("round recv must arrive")
+            .expect("round decode");
         assert_eq!(event.kind, EventKind::Created);
         assert_eq!(event.id, row.id);
         // `rx` drops at end of this block → listener strong count → 0.
@@ -248,7 +248,7 @@ async fn listener_hot_reload_after_last_subscriber_drops(mut ctx: djogi::DjogiCo
                     id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                     created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                     updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
-                    label: "round-2".to_string(),
+                    label: "round".to_string(),
                 },
             )
             .await
@@ -259,8 +259,8 @@ async fn listener_hot_reload_after_last_subscriber_drops(mut ctx: djogi::DjogiCo
 
     let event = timeout(RECV_TIMEOUT, rx.recv())
         .await
-        .expect("round-2 recv must arrive on the freshly-spawned listener")
-        .expect("round-2 decode");
+        .expect("round recv must arrive on the freshly-spawned listener")
+        .expect("round decode");
     assert_eq!(event.kind, EventKind::Created);
     assert_eq!(event.id, row.id);
 }

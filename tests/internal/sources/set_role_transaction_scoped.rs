@@ -1,4 +1,4 @@
-// T9.7 — `DjogiContext::set_role` transaction-scoping integration tests.
+// `DjogiContext::set_role` transaction-scoping integration tests.
 //
 // # Scope
 //
@@ -26,16 +26,16 @@
 // handles parallel test runs without flaking on "role already
 // exists".
 //
-// Roles are cluster-scoped on Postgres, so the role outlives the
+// Roles are  on Postgres, so the role outlives the
 // per-test database. That is acceptable: the role name is unique
-// enough (`djogi_t9_7_test_role`) that parallel CI runs don't
+// enough (`djogi_test_role`) that parallel CI runs don't
 // collide on each other, and a leftover role on the cluster is
 // benign — it grants no privileges by default.
 //
 // # Spec / memory anchors
 //
-// - v3 plan §456–462, §710–712, §729 — T9.7 brief.
-// - Plan §T9.7 (`docs/superpowers/plans/granular-phase8/cluster-8epsilon-granular.md`).
+// - v3 plan brief.
+// - Implementation plan (see the project's granular plan document).
 // - `feedback_djogi_local_postgres.md` — `#[djogi_test]` provisions a
 //   fresh DB per test.
 
@@ -55,7 +55,7 @@ async fn ensure_test_role(ctx: &mut djogi::DjogiContext, role: &str) {
     // shape. The identifier is also embedded inside a SQL string
     // literal that closes a `$$`-delimited dollar-quoted block —
     // any embedded `$$` would terminate the block early. The
-    // hard-coded role name (`djogi_t9_7_test_role`) cannot contain
+    // hard-coded role name (`djogi_test_role`) cannot contain
     // `$$`, so this is safe.
     let sql = format!(
         "DO $$ BEGIN \
@@ -70,7 +70,7 @@ async fn ensure_test_role(ctx: &mut djogi::DjogiContext, role: &str) {
 
 #[djogi::djogi_test]
 async fn set_role_inside_atomic_succeeds(mut ctx: djogi::DjogiContext) {
-    let role = "djogi_t9_7_test_role";
+    let role = "djogi_test_role";
     ensure_test_role(&mut ctx, role).await;
 
     let pool = ctx.raw_pool().expect("test ctx must be pool-backed").clone();
@@ -126,10 +126,11 @@ async fn set_role_outside_atomic_returns_error(mut ctx: djogi::DjogiContext) {
     // Both facts let us isolate the discriminant arm — we are
     // testing the pool-vs-transaction guard, not validation, and
     // not a missing-role error.
-    match ctx.set_role("djogi_t9_7_test_role").await {
+    match ctx.set_role("djogi_test_role").await {
         Err(DjogiError::SetRoleOutsideTransaction) => {}
         other => panic!(
             "expected DjogiError::SetRoleOutsideTransaction on pool-backed ctx, got {other:?}",
         ),
     }
 }
+

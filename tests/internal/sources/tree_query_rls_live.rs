@@ -4,7 +4,7 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "phase8_tree_tenant_node",
+    table = "tree_tenant_node",
     pk = HeerId,
     tree_edge = "parent_id",
     tenant_key = "org_id"
@@ -18,19 +18,19 @@ pub struct TenantTreeNode {
 
 async fn setup_tenant_tree_node(ctx: &mut DjogiContext) {
     ctx.raw_execute(
-        "ALTER TABLE phase8_tree_tenant_node ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE tree_tenant_node ENABLE ROW LEVEL SECURITY",
         &[],
     )
     .await
     .expect("enable RLS");
     ctx.raw_execute(
-        "ALTER TABLE phase8_tree_tenant_node FORCE ROW LEVEL SECURITY",
+        "ALTER TABLE tree_tenant_node FORCE ROW LEVEL SECURITY",
         &[],
     )
     .await
     .expect("force RLS");
     ctx.raw_execute(
-        "CREATE POLICY phase8_tree_tenant_iso ON phase8_tree_tenant_node \
+        "CREATE POLICY tree_tenant_iso ON tree_tenant_node \
          USING (org_id = current_setting('app.tenant_id', true)::bigint)",
         &[],
     )
@@ -50,7 +50,7 @@ async fn setup_tenant_tree_node(ctx: &mut DjogiContext) {
             .expect("create role");
     }
     ctx.raw_execute(
-        "GRANT SELECT, INSERT ON phase8_tree_tenant_node TO djogi_rls_test_user",
+        "GRANT SELECT, INSERT ON tree_tenant_node TO djogi_rls_test_user",
         &[],
     )
     .await

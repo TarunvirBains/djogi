@@ -1,4 +1,4 @@
-// T10.3 — `djogi analyze` end-to-end integration tests.
+// `djogi analyze` end-to-end integration tests.
 //
 // # What these tests cover
 //
@@ -18,10 +18,10 @@
 //
 // # `--threshold-partition-rows` override (200-row fixture)
 //
-// The plan §T10.3 calls for a "> 10M-row unpartitioned" table to
+// The plan calls for a "> 10M-row unpartitioned" table to
 // trigger `PartitionRecommended`. Seeding 10M rows on every CI run
-// would dominate the test budget. T10.2 lifted the partition-rows
-// threshold onto the CLI flag specifically so the test can drop it
+// would dominate the test budget. The partition-rows
+// threshold was lifted onto the CLI flag specifically so the test can drop it
 // to 100 — the rule is "live-row count strictly above the
 // threshold", and 200 > 100 exercises the same code path with a
 // 0.04% of the rows. The semantic equivalence is mechanical: there
@@ -30,12 +30,12 @@
 //
 // # Single-DB simplification
 //
-// Mirrors the T9.7 verify-CLI test (`djogi_verify_cli`).
+// Mirrors the verify-CLI test (`djogi_verify_cli`).
 // The `#[djogi_test]` harness provisions ONE per-test database; we
 // point `DATABASE_URL` (and the audit-DB env override) at the same
 // database so the spawned `djogi analyze` binary connects to the
 // same Postgres state we just seeded. The fixture tables share the
-// `t10_3_` prefix so we can filter the output by that substring and
+// `analyze_fixture_` prefix so we can filter the output by that substring and
 // ignore any framework tables (e.g. `_djogi_seed_runs`) the harness
 // creates as part of provisioning.
 //
@@ -59,8 +59,8 @@
 //
 // # Spec / memory anchors
 //
-// - v3 plan §487 — single integration test against a real DB.
-// - Plan §T10.3 (`docs/superpowers/plans/granular-phase8/cluster-8epsilon-granular.md`).
+// - v3 plan — single integration test against a real DB.
+// - Plan specs for analyze CLI recommendations.
 // - `djogi-cli/src/analyze.rs` — the implementation under test.
 
 use std::fs;
@@ -75,7 +75,7 @@ use djogi::testing::cli::{
 /// filter the analyze output so framework-managed tables provisioned
 /// by `#[djogi_test]` (e.g. `_djogi_seed_runs`) cannot cause
 /// false-positive matches when we walk the JSON array.
-const FIXTURE_PREFIX: &str = "t10_3_";
+const FIXTURE_PREFIX: &str = "analyze_fixture_";
 
 fn test_database_url(database: &str) -> String {
     let admin_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
@@ -199,7 +199,7 @@ async fn wait_for_live_tuples(ctx: &mut djogi::DjogiContext, table: &str, min_co
 ///
 /// Threads the per-test DB URL through both `DATABASE_URL` (read by
 /// adopters who set `database.url = "${DATABASE_URL}"`) and as the
-/// raw `database.url` in the temp `Djogi.toml`, mirroring the T9.7
+/// raw `database.url` in the temp `Djogi.toml`, mirroring the
 /// verify-CLI test. The audit-DB env override points at the same DB
 /// per the single-DB simplification documented in the module header.
 fn run_analyze_json(
@@ -244,7 +244,7 @@ fn run_analyze_json(
 
 /// Find the analyze row whose `table_name` ends with the supplied
 /// suffix. The full table name is `schemaname.relname` (e.g.
-/// `public.t10_3_healthy_<n>`); seeding always lands in `public`,
+/// `public.analyze_fixture_healthy_<n>`); seeding always lands in `public`,
 /// so suffix-matching keeps the assertion robust against schema
 /// changes without coupling to the literal `public.` prefix.
 fn find_row_by_suffix<'a>(rows: &'a [serde_json::Value], suffix: &str) -> &'a serde_json::Value {
@@ -300,7 +300,7 @@ async fn analyze_healthy_small_table_returns_healthy(mut ctx: djogi::DjogiContex
 
     let database = current_database(&mut ctx).await;
     let test_url = test_database_url(&database);
-    let workspace = temp_workspace("t10-3-analyze-healthy");
+    let workspace = temp_workspace("analyze-healthy");
     write_minimal_djogi_toml(&workspace, &test_url);
 
     // 1_000_000 keeps the partition rule far away from a 50-row
@@ -321,7 +321,7 @@ async fn analyze_healthy_small_table_returns_healthy(mut ctx: djogi::DjogiContex
     assert_eq!(
         fixture_rows.len(),
         1,
-        "expected exactly one t10_3_-prefixed row; saw: {fixture_rows:?}",
+        "expected exactly one analyze_fixture_-prefixed row; saw: {fixture_rows:?}",
     );
     let row = find_row_by_suffix(&rows, &table);
     assert_eq!(
@@ -374,7 +374,7 @@ async fn analyze_high_dead_tuple_ratio_returns_vacuum_needed(mut ctx: djogi::Djo
 
     let database = current_database(&mut ctx).await;
     let test_url = test_database_url(&database);
-    let workspace = temp_workspace("t10-3-analyze-vacuum");
+    let workspace = temp_workspace("analyze-vacuum");
     write_minimal_djogi_toml(&workspace, &test_url);
 
     // Keep partition rule out of the way (1M >> 50 live rows).
@@ -440,7 +440,7 @@ async fn analyze_large_unpartitioned_returns_partition_recommended(mut ctx: djog
 
     let database = current_database(&mut ctx).await;
     let test_url = test_database_url(&database);
-    let workspace = temp_workspace("t10-3-analyze-partition");
+    let workspace = temp_workspace("analyze-partition");
     write_minimal_djogi_toml(&workspace, &test_url);
 
     // Threshold of 100 with 200 seeded rows → strictly greater

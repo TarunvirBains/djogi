@@ -1,4 +1,4 @@
--- Phase 4 Task 6 — primary `notifications` table for the
+-- Integration fixture: primary `notifications` table for the
 -- `#[model(events)]` outbox integration tests. The companion outbox
 -- table and trigger live in separate migration files (005, 006, 007)
 -- because sqlx::migrate prepares each file as a single statement —

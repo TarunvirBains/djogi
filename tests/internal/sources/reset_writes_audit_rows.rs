@@ -25,7 +25,7 @@
 // This test exercises the library wiring end-to-end: it provisions a
 // virgin DB, composes a bootstrap migration, calls `reset_app_database`
 // with `audit_pool: Some(pool_to_same_db)` (single-DB simplification
-// mirroring the T9.7 verify CLI integration test), and then asserts
+// mirroring the .7 verify CLI integration test), and then asserts
 // that `djogi_ddl_audit` exists post-reset and carries at least one
 // row pointing at the replayed migration. It also verifies the
 // negative case: passing `audit_pool: None` (the pre-fix shape) leaves
@@ -39,9 +39,9 @@
 // harness's `#[djogi_test]` per-test DB lives at `djogi_test_<uuid>`
 // — dropping it from inside the test would yank the connection the
 // test is using. We follow the established
-// `phase8_zero_db_reset_replays_phase_zero` pattern: open an
+// `zero_db_reset_replays_phase_zero` pattern: open an
 // independent admin connection, `CREATE DATABASE` a sibling
-// `djogi_phase8_5_c2_118_replay_<stamp>`, run reset against it, then
+// `replay_<stamp>`, run reset against it, then
 // drop the virgin DB in cleanup.
 //
 // # Single-DB simplification (vs. the spec's two-DB model)
@@ -50,7 +50,7 @@
 // `db reset` (which targets the app DB) cannot erase the audit trail.
 // Provisioning a sibling audit DB inside this test would require a
 // second admin URL OR a harness extension; the verify CLI integration
-// test (`phase8_djogi_verify_cli`) made the same call and pointed both
+// test (`djogi_verify_cli`) made the same call and pointed both
 // URLs at the same per-test database. We follow that precedent: the
 // audit pool here points at the SAME virgin DB the reset replays
 // against. `djogi_ddl_audit` is a namespaced table inside that DB so
@@ -60,9 +60,9 @@
 //
 // # Spec / memory anchors
 //
-// - GH issue #118 (cluster 8.5 c2 production CLI wire-up).
+// - GH issue #118.
 // - CLAUDE.md "Three-Database Architecture".
-// - v3 plan §453 (audit table schema), §469 (T9 cluster boundary).
+// - v3 plan §453 (audit table schema), §469.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -83,7 +83,7 @@ fn temp_workspace(label: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("djogi-phase8-5-c2-118-{label}-{stamp}"));
+    let path = std::env::temp_dir().join(format!("djogi-audit-replay-{label}-{stamp}"));
     fs::create_dir_all(&path).expect("create workspace root");
     path
 }
@@ -113,7 +113,7 @@ fn at(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> time::
 }
 
 /// Replace the database name in a Postgres URL — duplicated from
-/// the sibling `phase8_zero_db_reset_replays_phase_zero` test so this
+/// the sibling reset replay test so this
 /// fixture does not reach into pub(crate) helpers.
 fn replace_db_in_url(url: &str, new_db: &str) -> String {
     let body = url
@@ -147,7 +147,7 @@ async fn provision_virgin_db(label: &str) -> (String, String) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let virgin_db = format!("djogi_p85_c2_118_{label}_{stamp}");
+    let virgin_db = format!("djogi_audit_replay_{label}_{stamp}");
 
     let (admin_client, admin_conn) = tokio_postgres::connect(&admin_url, NoTls)
         .await
@@ -199,7 +199,7 @@ async fn drop_virgin_db(virgin_db: &str) {
 
 /// Compose against `virgin_db` so the workspace carries one
 /// committed migration the reset path can replay.
-fn compose_phase_zero(work: &Path, virgin_db: &str) {
+fn compose_test_schema(work: &Path, virgin_db: &str) {
     let guard = lock_for(work);
     let bucket = BucketKey {
         database: virgin_db.to_string(),
@@ -221,7 +221,7 @@ fn compose_phase_zero(work: &Path, virgin_db: &str) {
         models: &models,
         snapshots: &snapshots,
         apps: &apps,
-        name: "phase_zero_for_audit_wire_up",
+        name: "test_schema_for_audit_wire_up",
         allow_destructive: false,
         force_overwrite: false,
         now: at(2026, 5, 9, 12, 0, 0),
@@ -252,7 +252,7 @@ async fn db_reset_with_audit_pool_writes_djogi_ddl_audit_rows() {
 
     // 2. Build a workspace and compose for that virgin DB.
     let work = temp_workspace("with_pool");
-    compose_phase_zero(&work, &virgin_db);
+    compose_test_schema(&work, &virgin_db);
 
     // 3. Build the audit pool against the SAME per-test DB
     //    (single-DB simplification — see the module-level comment).
@@ -285,8 +285,7 @@ async fn db_reset_with_audit_pool_writes_djogi_ddl_audit_rows() {
             .replayed_versions
             .iter()
             .any(|v| v.version == PHASE_ZERO_VERSION),
-        "bootstrap migration must be replayed (control: same shape as the existing \
-         zero_db_reset_replays_phase_zero test)"
+        "bootstrap migration must be replayed"
     );
 
     // 5. Assert the audit table was bootstrapped + populated.
@@ -373,7 +372,7 @@ async fn db_reset_with_audit_pool_writes_djogi_ddl_audit_rows() {
 async fn db_reset_without_audit_pool_leaves_audit_table_absent() {
     let (virgin_db, virgin_url) = provision_virgin_db("no_pool").await;
     let work = temp_workspace("no_pool");
-    compose_phase_zero(&work, &virgin_db);
+    compose_test_schema(&work, &virgin_db);
 
     let req = ResetRequest {
         database_url: &virgin_url,
@@ -416,3 +415,4 @@ async fn db_reset_without_audit_pool_leaves_audit_table_absent() {
     drop_virgin_db(&virgin_db).await;
     let _ = fs::remove_dir_all(&work);
 }
+

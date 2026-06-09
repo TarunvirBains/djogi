@@ -1,4 +1,4 @@
-// T8.6 integration tests: SoftDeletable-derived tombstones in
+// .6 integration tests: SoftDeletable-derived tombstones in
 // the delta-sync fetcher.
 //
 // # What this file pins
@@ -26,8 +26,8 @@
 //    for integration tests. What this test DOES pin is the structural
 //    contract: the deleted row reaches the fetcher's output (as a
 //    tombstone, not a live item) — a regression that completely dropped
-//    the row at SQL would also break Pattern 2/3 paths landing in T8.7
-//    and T8.8 (those tombstones merge with Pattern 1's into the same
+//    the row at SQL would also break Pattern 2/3 paths landing in .7
+//    and .8 (those tombstones merge with Pattern 1's into the same
 //    `HashSet` before `DeltaResult::new`), so this test serves as a
 //    forward-compat guard rail for the merge contract too.
 //
@@ -38,7 +38,7 @@
 //
 // # Granular-plan reframing
 //
-// The granular plan §3 T8.6 calls this "tombstone Pattern 1 — Tracked-
+// The granular plan §3 .6 calls this "tombstone Pattern 1 — Tracked-
 // derived". That name is wrong for djogi's surface: `Tracked<T>` is a per-
 // field dirty wrapper (partial UPDATE emission). The actual soft-delete trait
 // is `SoftDeletable: Model` (`djogi/src/compose.rs`). This commit reframes
@@ -47,8 +47,7 @@
 //
 // # Spec anchor
 //
-// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-// §3 T8.6.
+// §3 .6.
 //
 // # Fixture strategy
 //
@@ -66,7 +65,7 @@ use time::OffsetDateTime;
 // Used by tests 1 and 2. Declares `deleted_at: Option<djogi::DateTime>`
 // (Path B per v3 line 866 — adopter declares the field).
 
-#[model(table = "phase8_t8_6_sd_row", soft_deletable, pk = HeerId)]
+#[model(table = "sd_row", soft_deletable, pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct SoftDeleteRow {
     pub label: String,
@@ -75,12 +74,12 @@ pub struct SoftDeleteRow {
 
 // ── Fixture model 2 — non-soft-deletable (backward compat) ───────────────────
 //
-// Reuses the FetcherTickRow table from T8.5. Defining a new model here over
+// Reuses the FetcherTickRow table from .5. Defining a new model here over
 // the same table would cause a coherence conflict (two `impl Model for T` for
 // distinct types over the same table is fine, but both need to be registered
 // separately). We use a distinct table to keep test isolation clean.
 
-#[model(table = "phase8_t8_6_plain_row", pk = HeerId)]
+#[model(table = "plain_row", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct PlainRow {
     pub label: String,

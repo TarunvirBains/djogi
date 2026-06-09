@@ -1,17 +1,17 @@
-// T8.10 integration tests: cluster-exit integration — auth locked to
+// .10 integration tests:  integration — auth locked to
 // subscription + end-to-end happy-path.
 //
 // # What this file pins
 //
 // 1. **`refresh_into_e2e_happy_path`** — full insert / save / soft-delete
-//    cycle through real refresh ticks. Pins the complete cluster-8δ contract:
+//    cycle through real refresh ticks. Pins the complete δ contract:
 //    full-scan tick returns all live rows; delta tick applies new inserts and
 //    routes soft-deleted rows to tombstones.
 //
 // 2. **`refresh_into_auth_locked_to_subscription`** — structural proof that
 //    the `AuthContext` captured at `refresh_into` time is the auth used
 //    per-tick (not whatever caller-side auth holds at tick time). Closes the
-//    gap that T8.5 test 4 admitted.
+//    gap that .5 test 4 admitted.
 //
 //    **Option C** is used here rather than Option B (RLS-backed filtering).
 //    The `djogi` test role is a Postgres superuser; Postgres superusers
@@ -22,7 +22,7 @@
 //    `djogi` superuser, RLS-based row-count filtering cannot be observed at
 //    integration-test level without switching to a restricted role inside the
 //    fetch transaction — which would require production-code changes outside
-//    T8.10 scope.
+//    .10 scope.
 //
 //    **What Option C proves instead:** two handles constructed with different
 //    `AuthContext` values each complete ticks successfully, and the auth set
@@ -31,7 +31,7 @@
 //    `ctx.applied_tenant_id()`). The structural proof that auth IS captured by
 //    value (not by reference) is the `'static` bound on `DeltaPunnuFetcher<T>`
 //    and the `DjogiDeltaFetcher::auth: AuthContext` owned field verified in
-//    T8.3–T8.5.
+//    .3–.5.
 //
 //    **Companion full-RLS test:** the row-count proof under a real
 //    non-superuser pool now lives in
@@ -56,7 +56,7 @@
 // - spec §677 — auth-locked-to-subscription contract (Test 2)
 // - spec §430 — acceptance criterion: delta tick applies incremental changes
 //   after a full-scan baseline (Test 1)
-// - `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md` §3 T8.10
+// - §3 .10
 //
 // # RLS setup choice
 //
@@ -85,9 +85,9 @@ use time::OffsetDateTime;
 // ── Fixture model 1 — soft-deletable, happy-path ─────────────────────────────
 //
 // `E2ERow` is soft-deletable so Test 1 can exercise the tombstone path in
-// the delta tick. Separate table from all other T8.x models.
+// the delta tick. Separate table from all other .x models.
 
-#[model(table = "phase8_t8_10_e2e_rows", soft_deletable, pk = HeerId)]
+#[model(table = "e2e_rows", soft_deletable, pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct E2ERow {
     pub label: String,
@@ -102,7 +102,7 @@ pub struct E2ERow {
 // auto_set_tenant no-op for plain models = no interference). For the RLS-backed
 // proof, see GH issue filed in the module doc.
 
-#[model(table = "phase8_t8_10_auth_rows", pk = HeerId)]
+#[model(table = "auth_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct AuthRow {
     pub owner_uid: i64,
@@ -111,7 +111,7 @@ pub struct AuthRow {
 
 // ── Fixture model 3 — plain model for cancel test ────────────────────────────
 
-#[model(table = "phase8_t8_10_cancel_rows", pk = HeerId)]
+#[model(table = "cancel_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct CancelRow {
     pub label: String,
@@ -119,7 +119,7 @@ pub struct CancelRow {
 
 // ── Test 1 — full insert / save / soft-delete end-to-end ────────────────────
 
-/// Full cluster-8δ cycle through real refresh ticks:
+/// Full δ cycle through real refresh ticks:
 ///
 /// 1. Insert 3 active, non-deleted rows via `Model::create`.
 /// 2. Tick 1 (full scan / `since = None`): `applied == 3`; all 3 rows resident
@@ -139,7 +139,7 @@ pub struct CancelRow {
 ///      narrower than the full table) and the soft-deleted row is evicted.
 ///
 /// Pins spec §430 (incremental delta applies after a full-scan baseline) and
-/// the full cluster-exit contract.
+/// the full  contract.
 ///
 #[djogi::djogi_test(sync_models = [E2ERow])]
 async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
@@ -346,7 +346,7 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
     // Neither carries a tenant_id (plain model, no tenant_key → auto_set_tenant
     // is a no-op). The auth is captured by value via Clone in
     // `DjogiDeltaFetcher::auth: AuthContext` — proven by the `'static` bound
-    // on `DeltaPunnuFetcher<T>` and the owned-field layout verified in T8.3.
+    // on `DeltaPunnuFetcher<T>` and the owned-field layout verified in .3.
     let auth_a =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
     let auth_b =

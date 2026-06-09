@@ -1,6 +1,6 @@
 use djogi::prelude::*;
 
-#[model(table = "phase85_predicate_probe", pk = HeerId)]
+#[model(table = "predicate_probe", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct PredicateProbe {
     pub label: String,

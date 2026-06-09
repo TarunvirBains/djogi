@@ -1,4 +1,4 @@
--- Phase 5 Task 6: vehicles_deep table for typed JSONB deep-path filter tests.
+-- vehicles_deep table for typed JSONB deep-path filter tests.
 --
 -- The `specs` column holds a JSONB object that maps to `VehicleSpecs` /
 -- `VehicleDeepSpecs` (containing a nested `EngineSpecs` struct). Tests exercise

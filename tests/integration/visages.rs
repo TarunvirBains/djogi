@@ -12,9 +12,9 @@
 
 use djogi::prelude::*;
 
-// T2 default flip — pin HeerId for the visage-roundtrip
+//  default flip — pin HeerId for the visage-roundtrip
 // tests that construct `User` instances with explicit HeerId values.
-#[model(table = "users_phase4_5_task3", pk = HeerId)]
+#[model(table = "users_task3", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct User {
     #[field(expose(public, self_view, admin, export))]
@@ -170,14 +170,14 @@ fn descriptor_projection_map_scalar_entries() {
 // Relation-nesting visages
 // ─────────────────────────────────────────────────────────────────
 
-#[model(table = "owners_phase4_5_task5", pk = HeerId)]
+#[model(table = "owners_task5", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Owner {
     #[field(expose(public, self_view, admin, export))]
     pub name: String,
 }
 
-#[model(table = "vehicles_phase4_5_task5", pk = HeerId, no_default)]
+#[model(table = "vehicles_task5", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
     #[field(expose(public, self_view, admin, export))]
@@ -199,7 +199,7 @@ fn relation_nesting_tryfrom_fails_when_unresolved() {
     };
     let err = VehiclePublic::try_from(&v).expect_err("expected UnresolvedRelation");
     // VisageError is #[non_exhaustive]; match must carry a wildcard
-    // to stay forward-compatible with later phases adding variants.
+    // to stay forward-compatible with future additions.
     match err {
         ::djogi::VisageError::UnresolvedRelation {
             model,

@@ -1,4 +1,4 @@
--- Phase 4 Task 6 (fixup) — `BEFORE UPDATE` trigger function that
+-- Integration fixture: `BEFORE UPDATE` trigger function that
 -- appends " (db-rewritten)" to `notifications.kind` on every UPDATE.
 --
 -- The `outbox_save_writes_refreshed_payload` integration test relies

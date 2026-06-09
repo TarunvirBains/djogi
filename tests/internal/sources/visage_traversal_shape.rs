@@ -1,4 +1,4 @@
-// Internal shape assertions for T8/T9 visage traversal.
+// Internal shape assertions for / visage traversal.
 //
 // The ordinary live test exercises the public typed surface against Postgres.
 // These assertions intentionally inspect Djogi's lowered condition tree and
@@ -15,14 +15,14 @@ fn sentinel_dt() -> time::OffsetDateTime {
     time::OffsetDateTime::now_utc()
 }
 
-#[model(table = "phase7_zero2_t8_shape_depts")]
+#[model(table = "shape_depts")]
 #[derive(Debug, Clone)]
 pub struct Dept {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "phase7_zero2_t8_shape_emps", no_default)]
+#[model(table = "shape_emps", no_default)]
 #[derive(Debug, Clone)]
 pub struct Emp {
     #[field(expose(public))]
@@ -31,14 +31,14 @@ pub struct Emp {
     pub department: ForeignKey<Dept>,
 }
 
-#[model(table = "phase7_zero2_t8_shape_opt_users")]
+#[model(table = "shape_opt_users")]
 #[derive(Debug, Clone)]
 pub struct OptUser {
     #[field(expose(public))]
     pub display_name: String,
 }
 
-#[model(table = "phase7_zero2_t8_shape_opt_posts", no_default)]
+#[model(table = "shape_opt_posts", no_default)]
 #[derive(Debug, Clone)]
 pub struct OptPost {
     #[field(expose(public))]
@@ -47,14 +47,14 @@ pub struct OptPost {
     pub author: Option<ForeignKey<OptUser>>,
 }
 
-#[model(table = "phase7_zero2_t9_shape_depts")]
+#[model(table = "shape_v9_depts")]
 #[derive(Debug, Clone)]
 pub struct RevDept {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "phase7_zero2_t9_shape_emps", no_default)]
+#[model(table = "shape_v9_emps", no_default)]
 #[derive(Debug, Clone)]
 pub struct RevEmp {
     #[field(expose(public))]
@@ -67,21 +67,21 @@ djogi::reverse_one_to_many!(
     expose(public -> RevEmpPublic)
 );
 
-#[model(table = "phase7_zero2_t9_shape_m2m_persons")]
+#[model(table = "shape_v9_m2m_persons")]
 #[derive(Debug, Clone)]
 pub struct M2mPerson {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "phase7_zero2_t9_shape_m2m_groups")]
+#[model(table = "shape_v9_m2m_groups")]
 #[derive(Debug, Clone)]
 pub struct M2mGroup {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "phase7_zero2_t9_shape_m2m_person_groups", through, no_default)]
+#[model(table = "shape_v9_m2m_person_groups", through, no_default)]
 #[derive(Debug, Clone)]
 pub struct M2mPersonGroup {
     pub person_id: ForeignKey<M2mPerson>,
@@ -114,7 +114,7 @@ fn visage_traversal_composes_dot_qualified_path_shape() {
     assert_eq!(
         leaf_column_of(&cond),
         "department.name",
-        "T8 traversal must thread the FK column name as SQL-alias prefix"
+        "traversal must thread the FK column name as SQL-alias prefix"
     );
 }
 
@@ -161,7 +161,7 @@ fn m2m_visage_accessor_uses_exists_without_widening_projection_shape() {
         "M2M predicate must lower to an EXISTS correlated subquery; got: {sql}",
     );
     assert!(
-        sql.contains("phase7_zero2_t9_shape_m2m_groups.id"),
+        sql.contains("shape_v9_m2m_groups.id"),
         "EXISTS predicate must qualify the outer table reference; got: {sql}",
     );
 }

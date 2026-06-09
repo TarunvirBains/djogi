@@ -51,7 +51,7 @@ use tokio::sync::oneshot;
 // Test models
 // ---------------------------------------------------------------------------
 
-// T2 default flip — pin ascending HeerId across these
+//  default flip — pin ascending HeerId across these
 // models so HeerId-typed construction and cross-model FK relations
 // (`ledger_id: ForeignKey<Ledger>` etc.) stay homogeneous.
 #[model(table = "accounts", pk = HeerId)]
@@ -72,15 +72,15 @@ pub struct Account {
     pub status: String,
 }
 
-// Parent / child pair for the prefetch-inside-atomic test. The `_p4`
-// suffix keeps these isolated from the prefetch fixtures.
-#[model(table = "ledgers_p4", pk = HeerId)]
+// Parent / child pair for the prefetch-inside-atomic test. The suffix
+// keeps these isolated from the prefetch fixtures.
+#[model(table = "ledgers", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Ledger {
     pub name: String,
 }
 
-#[model(table = "entries_p4", pk = HeerId, no_default)]
+#[model(table = "entries", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub ledger_id: ForeignKey<Ledger>,
@@ -152,14 +152,14 @@ where
     }
 }
 
-async fn run_single_connection_phase4_fixture<F, Fut>(test: F)
+async fn run_single_connection_fixture<F, Fut>(test: F)
 where
     F: FnOnce(djogi::pg::pool::DjogiPool, djogi::DjogiContext) -> Fut,
     Fut: Future<Output = ()>,
 {
     let (cleanup, mut setup_ctx) = djogi::testing::setup_test_db()
         .await
-        .expect("setup_test_db must provision a phase4 cancellation fixture");
+        .expect("setup_test_db must provision a cancellation fixture");
     djogi::testing::sync_models(
         &mut setup_ctx,
         &[
@@ -170,7 +170,7 @@ where
         ],
     )
     .await
-    .expect("sync phase4 models");
+    .expect("sync models");
     let test_url = cleanup
         .test_url()
         .expect("cleanup token must produce a per-test database URL");
@@ -180,7 +180,7 @@ where
         .max_size(1)
         .build()
         .await
-        .expect("single-connection phase4 pool must build");
+        .expect("single-connection pool must build");
     let ctx = djogi::DjogiContext::from_pool(pool.clone());
 
     let outcome = AssertUnwindSafe(test(pool, ctx)).catch_unwind().await;
@@ -190,14 +190,14 @@ where
     }
 }
 
-async fn run_single_connection_phase4_fixture_with_timeout<F, Fut>(timeout: Duration, test: F)
+async fn run_single_connection_fixture_with_timeout<F, Fut>(timeout: Duration, test: F)
 where
     F: FnOnce(djogi::pg::pool::DjogiPool, djogi::DjogiContext) -> Fut,
     Fut: Future<Output = ()>,
 {
     let (cleanup, mut setup_ctx) = djogi::testing::setup_test_db()
         .await
-        .expect("setup_test_db must provision a phase4 cancellation fixture");
+        .expect("setup_test_db must provision a cancellation fixture");
     djogi::testing::sync_models(
         &mut setup_ctx,
         &[
@@ -208,7 +208,7 @@ where
         ],
     )
     .await
-    .expect("sync phase4 models");
+    .expect("sync models");
     let test_url = cleanup
         .test_url()
         .expect("cleanup token must produce a per-test database URL");
@@ -219,7 +219,7 @@ where
         .timeout(timeout)
         .build()
         .await
-        .expect("single-connection phase4 pool with timeout must build");
+        .expect("single-connection pool with timeout must build");
     let ctx = djogi::DjogiContext::from_pool(pool.clone());
 
     let outcome = AssertUnwindSafe(test(pool, ctx)).catch_unwind().await;
@@ -279,7 +279,7 @@ async fn atomic_rolls_back_on_err(mut ctx: djogi::DjogiContext) {
 
 #[tokio::test]
 async fn atomic_pool_context_cancellation_detaches_dirty_connection() {
-    run_single_connection_phase4_fixture(|pool, mut ctx| async move {
+    run_single_connection_fixture(|pool, mut ctx| async move {
         ctx.set_auth(
             AuthContext::new(djogi::HeerId::from_i64(7).expect("HeerId(7) is valid"))
                 .with_tenant("1000"),
@@ -410,7 +410,7 @@ async fn atomic_pool_context_cancellation_detaches_dirty_connection() {
 
 #[tokio::test]
 async fn atomic_pool_reference_cancellation_detaches_dirty_connection() {
-    run_single_connection_phase4_fixture(|pool, mut ctx| async move {
+    run_single_connection_fixture(|pool, mut ctx| async move {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
         {
             let fut = atomic(&pool, |tx| {
@@ -1112,7 +1112,7 @@ async fn retry_on_conflict_with_backoff_retries_pool_timeout_and_recovers(
     mut ctx: djogi::DjogiContext,
 ) {
     let _ = &mut ctx;
-    run_single_connection_phase4_fixture_with_timeout(
+    run_single_connection_fixture_with_timeout(
         Duration::from_millis(50),
         |pool, mut retry_ctx| async move {
             let (ready_tx, ready_rx) = oneshot::channel::<()>();
@@ -1623,8 +1623,8 @@ async fn exists_correlated_subquery(mut ctx: djogi::DjogiContext) {
             // Seed two ledgers with distinct names, and one entry
             // whose memo matches only the first ledger's name. The
             // correlated EXISTS predicate uses the outer-scope
-            // `name` column (only `ledgers_p4` has a `name` column —
-            // `entries_p4` does not, so there is no same-named
+            // `name` column (only `ledgers` has a `name` column —
+            // `entries` does not, so there is no same-named
             // collision for Postgres to resolve inward). That lets
             // the unqualified outer-ref emission work correctly here
             // without the qualified-column-ref extension deferred to
@@ -1662,13 +1662,13 @@ async fn exists_correlated_subquery(mut ctx: djogi::DjogiContext) {
             //     ).as_expr())
             //
             // Renders approximately:
-            //   SELECT * FROM ledgers_p4
+            //   SELECT * FROM ledgers
             //   WHERE EXISTS (
-            //     SELECT 1 FROM entries_p4 WHERE memo = name
+            //     SELECT 1 FROM entries WHERE memo = name
             //   )
             //
             // The unqualified `name` resolves against the outer
-            // ledger scope because `entries_p4` has no `name` column
+            // ledger scope because `entries` has no `name` column
             // — Postgres' implicit correlation picks up the outer
             // reference. This matches the rustdoc note on
             // `OuterRef::as_expr` about when unqualified emission is
@@ -1795,8 +1795,8 @@ async fn scalar_subquery_in_filter(mut ctx: djogi::DjogiContext) {
             )
             .await?;
 
-            // SELECT * FROM ledgers_p4
-            //   WHERE id = (SELECT id FROM ledgers_p4 WHERE name = $1)
+            // SELECT * FROM ledgers
+            //   WHERE id = (SELECT id FROM ledgers WHERE name = $1)
             //
             // The inner queryset projects `id` via the default
             // `LedgerFields::default().id()` handle; the outer

@@ -1,5 +1,5 @@
-// T2.6 integration tests: `#[model(soft_deletable)]` opt-in
-// (supersedes T2.3's `#[derive(SoftDeletable)]`) + manual
+// .6 integration tests: `#[model(soft_deletable)]` opt-in
+// (supersedes .3's `#[derive(SoftDeletable)]`) + manual
 // `QuerySet::not_deleted()` helper.
 //
 // What this file pins:
@@ -16,8 +16,8 @@
 // 3. **Counter-test:** the default `objects()` chain (without
 //    `.not_deleted()`) returns trashed rows alongside live ones.
 //    This pins the spec-locked deferral at line 971 — automatic
-//    default-filter composition is deferred to T6 once the
-//    `Q<T>` substrate lands. When 8γ T6 ships, this test breaks
+//    default-filter composition is deferred to  once the
+//    `Q<T>` substrate lands. When 8γ  ships, this test breaks
 //    loudly so the implementer can flip the assertion (to one row)
 //    instead of silently changing the framework's default behaviour.
 //
@@ -129,7 +129,7 @@ async fn softdeletable_not_deleted_filter_excludes_deleted(mut ctx: djogi::Djogi
     .await
     .expect("create trashed row should succeed");
 
-    // Manual exclusion via the T2.3 helper. In T6 this
+    // Manual exclusion via the .3 helper. In  this
     // call site will become redundant once auto-composition lands;
     // until then the helper is the only path that excludes
     // soft-deleted rows.
@@ -159,11 +159,11 @@ async fn softdeletable_not_deleted_filter_excludes_deleted(mut ctx: djogi::Djogi
 // `.not_deleted()`) STILL returns trashed rows.
 //
 // **This test pins the spec-locked deferral at line 971
-// (RESOLVED 2026-05-03, lens, locked).** When T6 lands
+// (RESOLVED 2026-05-03, lens, locked).** When  lands
 // automatic default-filter composition under the new `Q<T>`
 // substrate, this assertion will start failing — at which point the
 // implementer must flip the count from 2 to 1 and add a comment that
-// 8γ T6 made auto-composition active. Failing loudly is the whole
+// 8γ  made auto-composition active. Failing loudly is the whole
 // point: the tripwire ensures default-query semantics never change
 // silently.
 // ---------------------------------------------------------------------------
@@ -204,7 +204,7 @@ async fn softdeletable_default_query_includes_deleted_pre_8gamma(mut ctx: djogi:
     // default-filter composition lands, this expectation
     // changes to 1 row (the live one). The failure on this
     // assertion is the tripwire: it forces an explicit acknowledgment
-    // that default-query semantics are about to change cluster-wide.
+    // that default-query semantics are about to change .
     let rows = SoftDefault::objects()
         .fetch_all(&mut ctx)
         .await
@@ -214,9 +214,9 @@ async fn softdeletable_default_query_includes_deleted_pre_8gamma(mut ctx: djogi:
         rows.len(),
         2,
         "Only the manual `.not_deleted()` helper is shipped — \
-         automatic default-filter composition is deferred to T6 \
+         automatic default-filter composition is deferred to  \
          (spec line 971, RESOLVED 2026-05-03, lens, locked). \
-         When 8γ T6 lands, this assertion must flip to 1 row, and a \
+         When 8γ  lands, this assertion must flip to 1 row, and a \
          comment recording the change should be added below.",
     );
 }

@@ -21,8 +21,8 @@
 //
 // # Design notes
 //
-// - Models are declared inline in this file and scoped to `orders_p65` /
-//   `runs_p65` to avoid colliding with earlier table fixtures if
+// - Models are declared inline in this file and scoped to `orders_aggregate` /
+//   `runs_aggregate` to avoid colliding with earlier table fixtures if
 //   another test file is ever merged into the same binary.
 // - Each live test uses `#[djogi_test(sync_models = [...])]` so schema setup
 //   flows through Djogi's typed descriptor projection instead of handwritten
@@ -49,12 +49,12 @@ use djogi::prelude::*;
 
 /// Sales-order fixture: one row per transaction, with `org_id` + `status`
 /// suitable for multi-dimensional GROUP BY, `amount` for SUM / AVG, and
-/// `user_id` for COUNT(DISTINCT). The table name is suffixed `_p65` to avoid
+/// `user_id` for COUNT(DISTINCT). The table name is suffixed `_aggregate` to avoid
 /// colliding with the transactions `accounts` fixture if both files ever land in the
 /// same test binary.
-// T2 default flip — pin HeerId; grouped-aggregation tests
+// default flip — pin HeerId; grouped-aggregation tests
 // rely on HeerId construction via `Order { id: HeerId::..., .. }`.
-#[model(table = "orders_p65", pk = HeerId)]
+#[model(table = "orders_aggregate", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Order {
     pub org_id: i64,
@@ -67,7 +67,7 @@ pub struct Order {
 /// `partition_id` groups rows into partitions; `seq` is the in-partition
 /// ordering key (integer monotone — avoids the flakiness that would come
 /// from relying on `created_at` millisecond resolution).
-#[model(table = "runs_p65", pk = HeerId)]
+#[model(table = "runs_aggregate", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Run {
     pub partition_id: i64,

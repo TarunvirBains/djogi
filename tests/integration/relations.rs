@@ -29,7 +29,7 @@
 // (`seed_owner`, `seed_fuel_type`, `seed_vehicle_with_owner`) compose
 // into per-test fixtures.
 //
-// The `_p3` table-name suffix keeps these integration tests isolated
+// The table-name suffix keeps these integration tests isolated
 // from the core model/queryset fixtures that share the same database.
 
 use djogi::prelude::*;
@@ -45,7 +45,7 @@ use djogi::transaction::{AtomicFuture, atomic};
 // Default flip — pin ascending HeerId; the seed helpers
 // and FK targets below assume `Owner::Pk` / `FuelType::Pk` / `Vehicle::Pk`
 // are all ordinary `HeerId`.
-#[model(table = "owners_p3", pk = HeerId)]
+#[model(table = "owners", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Owner {
     pub name: String,
@@ -53,7 +53,7 @@ pub struct Owner {
 
 // `FuelType` is the FK target for the nullable relation on `Vehicle`.
 // Same Default-derived shape as `Owner` so the seed helpers stay parallel.
-#[model(table = "fuel_types_p3", pk = HeerId)]
+#[model(table = "fuel_types", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct FuelType {
     pub name: String,
@@ -65,7 +65,7 @@ pub struct FuelType {
 // compile-pass fixture in `djogi-macros/tests/compile_pass/relations.rs`
 // for the same rationale). Tests construct `Vehicle` with explicit
 // framework-field sentinels via `vehicle_for_insert` below.
-#[model(table = "vehicles_p3", pk = HeerId, no_default)]
+#[model(table = "vehicles", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
     pub make: String,
@@ -110,7 +110,7 @@ async fn seed_fuel_type(ctx: &mut djogi::DjogiContext, name: &str) -> FuelType {
 
 /// Build a `Vehicle` value suitable for `Vehicle::create`. Framework
 /// fields use the same sentinel pattern as
-/// `phase1_model::rich_field_types_roundtrip` — the DB defaults
+/// `model::rich_field_types_roundtrip` — the DB defaults
 /// overwrite them via `RETURNING *` on the insert. Extracted into a
 /// helper because `no_default` on `Vehicle` forbids
 /// `..Default::default()` and the sentinel construction would
@@ -281,7 +281,7 @@ async fn nullable_fk_fetch_loads_related_row(mut ctx: djogi::DjogiContext) {
 }
 
 /// Inserting a `Vehicle` with an `owner_id` that doesn't exist in
-/// `owners_p3` must surface the Postgres `foreign_key_violation` as a
+/// `owners` must surface the Postgres `foreign_key_violation` as a
 /// `DjogiError::Db` — not panic, not swallow, not mangle. This
 /// anchors the contract that the relation wrapper is transparent to
 /// the usual error flow: the FK column is just a BIGINT with a REFERENCES
@@ -289,7 +289,7 @@ async fn nullable_fk_fetch_loads_related_row(mut ctx: djogi::DjogiContext) {
 /// error plumbing continues to work.
 #[djogi::djogi_test(sync_models = [Owner, FuelType, Vehicle])]
 async fn fk_creation_db_error_on_unknown_owner(mut ctx: djogi::DjogiContext) {
-    // Craft a HeerId that can't exist in `owners_p3` — we never seed
+    // Craft a HeerId that can't exist in `owners` — we never seed
     // any owners in this test, and `generate_id()` produces
     // time-ordered IDs that dwarf this small sentinel value.
     let bogus_owner_id = ::heeranjid::HeerId::from_i64(42).expect("42 is a valid HeerId");
@@ -768,7 +768,7 @@ async fn select_related_and_prefetch_compose_disjoint(mut ctx: djogi::DjogiConte
 /// `.select_related(...)` composed with `.filter(|f| f.id.eq(x))` —
 /// the filter targets the framework `id` column, which also appears
 /// on the joined `Owner` table. The emitted SQL qualifies the
-/// reference as `WHERE vehicles_p3.id = $1`, so Postgres does not
+/// reference as `WHERE vehicles.id = $1`, so Postgres does not
 /// raise 42702 on the bare form.
 #[djogi::djogi_test(sync_models = [Owner, FuelType, Vehicle])]
 async fn select_related_compose_with_filter_on_id(mut ctx: djogi::DjogiContext) {
@@ -797,7 +797,7 @@ async fn select_related_compose_with_filter_on_id(mut ctx: djogi::DjogiContext) 
 /// `.select_related(...)` composed with `.order_by(|f| f.created_at.asc())` —
 /// the ordering targets the framework `created_at` column, which also
 /// appears on the joined `Owner` table. The emitter qualifies the
-/// reference as `ORDER BY vehicles_p3.created_at ASC`, sidestepping
+/// reference as `ORDER BY vehicles.created_at ASC`, sidestepping
 /// 42702.
 #[djogi::djogi_test(sync_models = [Owner, FuelType, Vehicle])]
 async fn select_related_compose_with_order_by_created_at(mut ctx: djogi::DjogiContext) {

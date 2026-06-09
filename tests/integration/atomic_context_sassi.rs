@@ -10,31 +10,31 @@ use djogi::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[model(table = "phase8_5_c2_123_rows", pk = HeerId)]
+#[model(table = "atomic_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
-pub struct Phase85C2123Row {
+pub struct AtomicRow {
     pub label: String,
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2123Row])]
+#[djogi::djogi_test(sync_models = [AtomicRow])]
 async fn pool_backed_context_atomic_reuses_parent_sassi(mut ctx: djogi::DjogiContext) {
     let parent_punnu = ctx
-        .punnu::<Phase85C2123Row>()
-        .expect("Phase85C2123Row must register a Punnu boot hook");
+        .punnu::<AtomicRow>()
+        .expect("AtomicRow must register a Punnu boot hook");
 
     let tx_used_parent_punnu = djogi::transaction::atomic(&mut ctx, |tx| {
         let parent_punnu = parent_punnu.clone();
         Box::pin(async move {
-            Phase85C2123Row::create(
+            AtomicRow::create(
                 tx,
-                Phase85C2123Row {
+                AtomicRow {
                     label: "committed".to_owned(),
                     ..Default::default()
                 },
             )
             .await?;
             let tx_punnu = tx
-                .punnu::<Phase85C2123Row>()
+                .punnu::<AtomicRow>()
                 .expect("transaction context must see the registered Punnu");
             Ok::<_, djogi::DjogiError>(std::sync::Arc::ptr_eq(&parent_punnu, &tx_punnu))
         })
@@ -48,18 +48,18 @@ async fn pool_backed_context_atomic_reuses_parent_sassi(mut ctx: djogi::DjogiCon
          a rebuilt Sassi would allocate a distinct Punnu"
     );
 
-    let count = Phase85C2123Row::objects()
+    let count = AtomicRow::objects()
         .count(&mut ctx)
         .await
         .expect("count committed rows");
     assert_eq!(count, 1, "pool-backed context atomic must commit on Ok");
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2123Row])]
+#[djogi::djogi_test(sync_models = [AtomicRow])]
 async fn compatibility_pool_atomic_keeps_fresh_context_boundary(mut ctx: djogi::DjogiContext) {
     let parent_punnu = ctx
-        .punnu::<Phase85C2123Row>()
-        .expect("Phase85C2123Row must register a Punnu boot hook");
+        .punnu::<AtomicRow>()
+        .expect("AtomicRow must register a Punnu boot hook");
     let pool = ctx
         .share_pool()
         .expect("djogi_test harness returns a pool-backed context");
@@ -68,7 +68,7 @@ async fn compatibility_pool_atomic_keeps_fresh_context_boundary(mut ctx: djogi::
         let parent_punnu = parent_punnu.clone();
         Box::pin(async move {
             let tx_punnu = tx
-                .punnu::<Phase85C2123Row>()
+                .punnu::<AtomicRow>()
                 .expect("transaction context must see the registered Punnu");
             Ok::<_, djogi::DjogiError>(std::sync::Arc::ptr_eq(&parent_punnu, &tx_punnu))
         })
@@ -83,7 +83,7 @@ async fn compatibility_pool_atomic_keeps_fresh_context_boundary(mut ctx: djogi::
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2123Row])]
+#[djogi::djogi_test(sync_models = [AtomicRow])]
 async fn pool_backed_context_atomic_rolls_back_on_err(mut ctx: djogi::DjogiContext) {
     ctx.set_tenant("stale-pool-flag")
         .await
@@ -95,9 +95,9 @@ async fn pool_backed_context_atomic_rolls_back_on_err(mut ctx: djogi::DjogiConte
 
     let result = djogi::transaction::atomic(&mut ctx, |tx| {
         Box::pin(async move {
-            Phase85C2123Row::create(
+            AtomicRow::create(
                 tx,
-                Phase85C2123Row {
+                AtomicRow {
                     label: "rolled-back".to_owned(),
                     ..Default::default()
                 },
@@ -114,14 +114,14 @@ async fn pool_backed_context_atomic_rolls_back_on_err(mut ctx: djogi::DjogiConte
         "rollback must clear stale pool-context tenant tracker state"
     );
 
-    let count = Phase85C2123Row::objects()
+    let count = AtomicRow::objects()
         .count(&mut ctx)
         .await
         .expect("count rows after rollback");
     assert_eq!(count, 0, "pool-backed context atomic must roll back on Err");
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2123Row])]
+#[djogi::djogi_test(sync_models = [AtomicRow])]
 async fn pool_backed_context_atomic_carries_auth_on_success(mut ctx: djogi::DjogiContext) {
     ctx.set_auth(
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("valid HeerId"))
@@ -162,7 +162,7 @@ async fn pool_backed_context_atomic_carries_auth_on_success(mut ctx: djogi::Djog
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2123Row])]
+#[djogi::djogi_test(sync_models = [AtomicRow])]
 async fn pool_backed_context_atomic_drains_on_commit(mut ctx: djogi::DjogiContext) {
     let fired = Arc::new(AtomicUsize::new(0));
 
@@ -186,14 +186,14 @@ async fn pool_backed_context_atomic_drains_on_commit(mut ctx: djogi::DjogiContex
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85C2123Row])]
+#[djogi::djogi_test(sync_models = [AtomicRow])]
 async fn pool_backed_context_atomic_rolls_back_on_panic(mut ctx: djogi::DjogiContext) {
     let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
         djogi::transaction::atomic::<_, _, ()>(&mut ctx, |tx| {
             Box::pin(async move {
-                Phase85C2123Row::create(
+                AtomicRow::create(
                     tx,
-                    Phase85C2123Row {
+                    AtomicRow {
                         label: "panic-rolled-back".to_owned(),
                         ..Default::default()
                     },
@@ -207,7 +207,7 @@ async fn pool_backed_context_atomic_rolls_back_on_panic(mut ctx: djogi::DjogiCon
 
     assert!(result.is_err(), "closure panic must resume after rollback");
 
-    let count = Phase85C2123Row::objects()
+    let count = AtomicRow::objects()
         .count(&mut ctx)
         .await
         .expect("count rows after panic rollback");

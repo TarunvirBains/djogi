@@ -1,4 +1,4 @@
-// T9 — live-PG integration tests for the PK-type-flip
+//  — live-PG integration tests for the PK-type-flip
 // migration engine.
 //
 // Each `#[djogi::djogi_test]` provisions a fresh `djogi_test_<uuid>`
@@ -63,7 +63,7 @@ fn temp_lock() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("djogi-t9-{stamp}.lock"))
+    std::env::temp_dir().join(format!("djogi-test-{stamp}.lock"))
 }
 
 fn acquire_test_workspace_guard() -> WorkspaceGuard {
@@ -81,7 +81,7 @@ fn make_runner_ctx(plan: &MigrationPlan, version: &str) -> RunnerCtx {
     RunnerCtx {
         bucket: plan.bucket.clone(),
         version: version.to_string(),
-        description: format!("T9 PK flip {version}"),
+        description: format!("PK flip {version}"),
         checksum_up,
         checksum_down: None,
         snapshot: None,
@@ -242,8 +242,8 @@ fn lowered_plan_from_bucket_schemas(before: AppliedSchema, after: AppliedSchema)
     // Use plan_delta so order_operations runs — without it, AddTable
     // operations emit in the differ's BTreeMap alphabetical order,
     // which breaks any test that introduces a child table whose name
-    // sorts before its parent (e.g. `phase7_t9_child` before
-    // `phase7_t9_parent`). Codex round-7 BLOCK 3 follow-up: the
+    // sorts before its parent (e.g. `child` before
+    // `parent`). The
     // helper now respects the planner's toposort just like production
     // code paths do.
     plan_delta(&delta).expect("plan delta")
@@ -343,9 +343,9 @@ async fn deferrable_fk_roundtrip_live(mut ctx: djogi::DjogiContext) {
     let mut after = empty_snapshot();
 
     after.models.insert(
-        "phase7_t9_parent".to_string(),
+        "parent".to_string(),
         basic_table(
-            "phase7_t9_parent",
+            "parent",
             vec![basic_column("id", "BIGINT", false)],
         ),
     );
@@ -356,16 +356,16 @@ async fn deferrable_fk_roundtrip_live(mut ctx: djogi::DjogiContext) {
             initially_deferred: true,
             on_delete: OnDeleteSchema::Restrict,
             ref_column: "id".to_string(),
-            ref_table: "phase7_t9_parent".to_string(),
+            ref_table: "parent".to_string(),
         }),
         on_delete: Some(OnDeleteSchema::Restrict),
         relation_kind: Some(RelationKindSchema::ForeignKey),
         ..basic_column("parent_id", "BIGINT", false)
     };
     after.models.insert(
-        "phase7_t9_child".to_string(),
+        "child".to_string(),
         basic_table(
-            "phase7_t9_child",
+            "child",
             vec![basic_column("id", "BIGINT", false), child_fk],
         ),
     );
@@ -381,7 +381,7 @@ async fn deferrable_fk_roundtrip_live(mut ctx: djogi::DjogiContext) {
         .raw_scalar(
             "SELECT condeferrable \
              FROM pg_constraint \
-             WHERE conname = 'phase7_t9_child_parent_id_fkey'",
+             WHERE conname = 'child_parent_id_fkey'",
             &[],
         )
         .await
@@ -392,7 +392,7 @@ async fn deferrable_fk_roundtrip_live(mut ctx: djogi::DjogiContext) {
         .raw_scalar(
             "SELECT condeferred \
              FROM pg_constraint \
-             WHERE conname = 'phase7_t9_child_parent_id_fkey'",
+             WHERE conname = 'child_parent_id_fkey'",
             &[],
         )
         .await
@@ -753,9 +753,9 @@ fn status_no_warning_for_additive_plan() {
     assert!(djogi::migrate::render_pending_plan_warnings(&plan).is_empty());
 }
 
-// ── B-1 round-2 additions: 8 missing live-PG integration tests ───────────
+// ── Additional live-PG integration tests ───────────────────────────────
 //
-// Per the v3 plan T9 testing-additions (lines 783–856) every test
+// Every test
 // below is a `#[djogi_test]` async fn that drives the multi-segment
 // plan against a fresh schema. Reduced row counts where possible to
 // keep wall-clock under 30s per test on commodity hardware; the
@@ -823,7 +823,7 @@ async fn flip_self_fk_multi_pair_trigger(mut ctx: djogi::DjogiContext) {
         .expect("orphans");
     assert_eq!(n_orphans, 0, "self-FK references must resolve post-cutover");
 
-    // ── B-1r: post-cutover the autofill trigger must be GONE.
+    // ── Post-cutover the autofill trigger must be GONE.
     // Cutover removes the trigger; assert ZERO triggers named
     // `zzz_nodes_autofill_desc` exist in pg_trigger after the
     // cutover lands.
@@ -928,7 +928,7 @@ async fn flip_join_table_option_a_single_mega_tx(mut ctx: djogi::DjogiContext) {
         .await
         .expect("apply option A");
 
-    // ── B-1r structural assertion: cutover landed as ONE
+    // ── Structural assertion: cutover landed as ONE
     // transaction. The migration ledger records exactly ONE
     // applied row for this version; the segment plan carries one
     // SegmentKind::Transactional entry containing the entire
@@ -981,7 +981,7 @@ async fn flip_join_table_option_b_sequential(mut ctx: djogi::DjogiContext) {
         .await
         .expect("seed bt");
 
-    // ── B-1r round-2 fix: exercise the SAME pk_flip code path ─────
+    // ── Exercise the SAME pk_flip code path ─────
     //
     // Option B: each parent flips in its own group with
     // `join_table_option = OptionB` set. Verify the planner emits
@@ -1099,7 +1099,7 @@ async fn flip_cycle_with_deferrable_fks(mut ctx: djogi::DjogiContext) {
     group.self_fk = Some(PkFlipSelfFk {
         fk_columns: vec!["manager_id".to_string()],
         fk_constraint_names: vec!["users_c_manager_id_fkey".to_string()],
-        // B-16: cycle path forces deferrable + initially_deferred so
+        // : cycle path forces deferrable + initially_deferred so
         // the recreated FK preserves the deferrable property post-
         // cutover. The synthetic group exercises the cutover-emitter
         // contract that lives in `emit_cutover` / phase helpers.
@@ -1213,7 +1213,7 @@ async fn flip_partitioned_parent_pg13(mut ctx: djogi::DjogiContext) {
         .expect("aggregate count");
     assert_eq!(n, 150);
 
-    // ── B-1r structural assertion: every leaf attached via
+    // ── Structural assertion: every leaf attached via
     // ATTACH PARTITION post-cutover. Query pg_inherits — every
     // leaf the test created should still be a partition of the
     // parent after the flip. (If `ATTACH` failed, `pg_inherits`
@@ -1234,7 +1234,7 @@ async fn flip_partitioned_parent_pg13(mut ctx: djogi::DjogiContext) {
 
 // ── Test 13b — partitioned verification halts on NULL shadow ─────────────
 
-/// B-7r: deliberately leave one leaf row's `id_desc` NULL after
+/// : deliberately leave one leaf row's `id_desc` NULL after
 /// backfill, then run the verification segment, and assert the
 /// runner halts with `RunnerError::PkFlipVerificationFailed`
 /// BEFORE the cutover segment runs.
@@ -1431,7 +1431,7 @@ async fn post_cutover_invalid_index_cleanup_surfaced_by_status(mut ctx: djogi::D
     let warnings = djogi::migrate::render_invalid_index_warnings(&mut ctx)
         .await
         .expect("status invalid-index render");
-    // ── B-10r: assert EXACT format prefix, not just substring.
+    // ── Assert EXACT format prefix, not just substring.
     // The warning format contract is:
     //   "⚠ INVALID index detected: <schema>.<index> on <table> — ..."
     // We verify the exact prefix bytes for the public-schema case.
@@ -1453,9 +1453,9 @@ async fn post_cutover_invalid_index_cleanup_surfaced_by_status(mut ctx: djogi::D
     );
 }
 
-// ── Test 15b — INVALID index live test through PK-flip path (B-10r) ─────
+// ── Test 15b — INVALID index live test through PK-flip path () ─────
 
-/// B-10r: drive a real PK-flip plan, interrupt the CONCURRENT
+/// : drive a real PK-flip plan, interrupt the CONCURRENT
 /// unique-index build during the non-tx phase, and verify status
 /// surfaces the INVALID-index warning in the contractual format.
 /// Then resume via repair.
@@ -1719,7 +1719,7 @@ async fn flip_complex_schema_authors_books_tags_book_tags_reviews(mut ctx: djogi
         .expect("orphan review check");
     assert_eq!(n_orphan_reviews, 0, "reviews FK preserved");
 
-    // ── B-1r structural assertion: post-flip the primary-key
+    // ── Structural assertion: post-flip the primary-key
     // index exists and is VALID on c_authors, and on c_books
     // there is an FK index (or the column itself has an index
     // entry). We verify via pg_index/pg_class catalog instead of
@@ -1774,7 +1774,7 @@ async fn flip_partial_apply_resume_via_repair(mut ctx: djogi::DjogiContext) {
     // Single-table flip; we deliberately fail mid-apply by
     // replacing the backfill segment with a no-op so verify halts.
     // After the failure the ledger row is in `failed` state — we
-    // then call `repair_resume_partial_apply` (per B-1r contract)
+    // then call `repair_resume_partial_apply` (per  contract)
     // to advance the migration to applied via the substrate's
     // resume path.
     ctx.raw_ddl("CREATE TABLE pa_authors (id BIGINT PRIMARY KEY DEFAULT generate_id())")
@@ -1813,7 +1813,7 @@ async fn flip_partial_apply_resume_via_repair(mut ctx: djogi::DjogiContext) {
         .expect("ledger");
     assert_eq!(status, "failed", "partial apply must mark row failed");
 
-    // ── B-1r: actually call repair_resume_partial_apply.
+    // ── Actually call repair_resume_partial_apply.
     //
     // The substrate API takes the *original* plan (the one whose
     // checksum is recorded in the ledger). Resume is forward-only:
@@ -1913,14 +1913,14 @@ async fn flip_partial_apply_resume_via_repair(mut ctx: djogi::DjogiContext) {
     assert_eq!(status2, "applied", "resume run must apply cleanly");
 }
 
-// ── Test 21 — B-13 (Codex round-3): real two-table A↔B cycle  ────────────
+// ── Test 21 —  (): real two-table A↔B cycle  ────────────
 //
 // This is the FIRST cycle live test that drives the planner via
 // `diff_bucket_maps` end-to-end against real per-bucket
 // `AppliedSchema`s. Every previous cycle test fabricated
 // `PkTypeFlipGroup` directly via `synth_single_group` and grafted
 // `PkFlipCycle` entries onto an otherwise child-less group — that
-// path missed the structural defect Codex round-3 found, which is
+// path missed the structural defect  found, which is
 // that cycle peers were recorded ONLY in `cycles` and never in
 // `children`, so the segment emitters (preparation / backfill /
 // concurrent index / NOT NULL proof / cutover) never created the
@@ -2053,7 +2053,7 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
 
     // 3. Two `PkTypeFlipGroup`s — one per parent. Both list the peer
     //    as a `PkFlipChild` with `cycle_flag = true` AND as a
-    //    `PkFlipCycle`. THIS is the structural fix B-13 closed.
+    //    `PkFlipCycle`. THIS is the structural fix  closed.
     let groups: Vec<&PkTypeFlipGroup> = delta
         .operations
         .iter()
@@ -2175,7 +2175,7 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
         "cyc_a.b_id linkage preserved (50 rows had NULL FK at seed time)",
     );
 
-    // ── B-16 (Codex round-4) — FK deferrability preservation ─────────
+    // ──  () — FK deferrability preservation ─────────
     //
     // The source FKs were created `DEFERRABLE INITIALLY DEFERRED`
     // (cycle requirement). Post-cutover the recreated FKs MUST
@@ -2184,7 +2184,7 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
     // mid-tx FK violation would trip immediately even though the
     // cycle was declared deferrable).
     //
-    // Pre-B-16 the cutover emitter rendered plain `ADD CONSTRAINT
+    // Pre- the cutover emitter rendered plain `ADD CONSTRAINT
     // ... FOREIGN KEY (...) REFERENCES ...(id);` and silently
     // downgraded both FKs to non-deferrable. The fix carries the
     // deferrability through `PkFlipChild::fk_deferrable` /
@@ -2203,7 +2203,7 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
             .expect("condeferrable lookup");
         assert!(
             condeferrable,
-            "B-16: post-cutover FK {fk_name} on {table} must remain DEFERRABLE",
+            ": post-cutover FK {fk_name} on {table} must remain DEFERRABLE",
         );
         let condeferred: bool = ctx
             .raw_scalar(
@@ -2216,14 +2216,14 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
             .expect("condeferred lookup");
         assert!(
             condeferred,
-            "B-16: post-cutover FK {fk_name} on {table} must remain INITIALLY DEFERRED",
+            ": post-cutover FK {fk_name} on {table} must remain INITIALLY DEFERRED",
         );
     }
 
-    // ── B-13 partial (Codex round-4) — full two-way FK integrity ─────
+    // ──  partial () — full two-way FK integrity ─────
     //
     // Round-3 only counted rows + checked one direction's linkage.
-    // The round-4 strengthening verifies BOTH directions: every
+    // The round strengthening verifies BOTH directions: every
     // cyc_a row with a non-null `b_id` has a matching cyc_b row,
     // and every cyc_b row with a non-null `a_id` has a matching
     // cyc_a row. A 3-way JOIN through both FK columns proves the
@@ -2268,7 +2268,7 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
     // 3-way JOIN through both FK columns. The seed deliberately
     // links the SAME 50 rows on both sides (rn-paired in the
     // seeding WITH clause), so all 50 paired rows must round-trip
-    // through `cyc_a → cyc_b → cyc_a`. Pre-fix the round-3 test
+    // through `cyc_a → cyc_b → cyc_a`. Pre-fix the round test
     // never asserted both directions; a half-broken cutover that
     // preserved one FK and silently dropped the other would have
     // slipped through.
@@ -2288,13 +2288,13 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
     );
 }
 
-// ── Test 22 — B-12 (Codex round-3): Option A vs B produce DIFFERENT SQL ──
+// ── Test 22 —  (): Option A vs B produce DIFFERENT SQL ──
 //
-// The round-2 fix landed `pk_flip_join_table_option` in config /
+// The round fix landed `pk_flip_join_table_option` in config /
 // compose / `apply_pk_flip_join_table_option` plumbing, but the
 // planner only read the field to print a comment marker. Same
 // `PkTypeFlipGroup` with different `join_table_option` produced
-// IDENTICAL SQL aside from one comment line. Codex round-3 found
+// IDENTICAL SQL aside from one comment line.  found
 // the gap; this fixup wires the planner to emit the playbook §7
 // shapes — Option A: single mega-tx covering BOTH FK columns of
 // a cross-flipping join table; Option B: sequential per-parent
@@ -2372,7 +2372,7 @@ fn cross_flipping_join_schema_with_pk_kind(pk_kind: PkKindSchema) -> AppliedSche
 
 #[test]
 fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
-    // Codex round-4 B-15: Option A now emits a SINGLE
+    //  : Option A now emits a SINGLE
     // `PkTypeFlipMultiGroup` per cluster (the merger interleaves
     // all parents at every stage so the cutover is one mega-tx).
     // Option B keeps the per-parent `PkTypeFlipGroup` shape so
@@ -2658,9 +2658,9 @@ fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
     );
 }
 
-// ── Test 23 — B-14: transitive FK closure end-to-end via diff_bucket_maps ─
+// ── Test 23 — : transitive FK closure end-to-end via diff_bucket_maps ─
 //
-// The transitive FK closure landed in the round-2 fix
+// The transitive FK closure landed in the round fix
 // (`promote_pk_flips_to_groups`'s BFS over the FK graph), but the
 // 21-test live suite never exercised it through `diff_bucket_maps`
 // — every prior cascade test fabricated `PkTypeFlipGroup` with
@@ -2859,7 +2859,7 @@ async fn flip_three_level_cascade_via_diff_bucket_maps(mut ctx: djogi::DjogiCont
         .expect("count chain");
     assert_eq!(n_chain, 20, "FK chain p_root → c_mid → gc_leaf intact");
 
-    // ── B-14 partial (Codex round-4) — gc_leaf untouched at the catalog level ─
+    // ──  partial () — gc_leaf untouched at the catalog level ─
     //
     // The asc↔desc invariant says only DIRECT children of the
     // migrating parent get shadow-column orchestration; transitive
@@ -2886,7 +2886,7 @@ async fn flip_three_level_cascade_via_diff_bucket_maps(mut ctx: djogi::DjogiCont
         .expect("gc_leaf columns");
     assert_eq!(
         gc_columns, "id,c_id",
-        "B-14: gc_leaf must have exactly its pre-flip columns post-cutover; \
+        ": gc_leaf must have exactly its pre-flip columns post-cutover; \
          the asc↔desc invariant forbids shadow-column orchestration on \
          transitive descendants. Got: {gc_columns}",
     );
@@ -2905,15 +2905,15 @@ async fn flip_three_level_cascade_via_diff_bucket_maps(mut ctx: djogi::DjogiCont
         // misclassified `gc_leaf` as a direct child.
         assert!(
             !col.as_bytes().ends_with(b"_desc"),
-            "B-14: gc_leaf column `{col}` carries the `_desc` suffix; the asc↔desc \
+            ": gc_leaf column `{col}` carries the `_desc` suffix; the asc↔desc \
              invariant forbids shadow-column orchestration on transitive descendants",
         );
     }
 }
 
-// ── Test 24 — Codex round-4 B-15: Option A multi-parent live apply ───────
+// ── Test 24 —  : Option A multi-parent live apply ───────
 //
-// The structurally-correct fix for the B-15 finding. Drives the
+// The structurally-correct fix for the  finding. Drives the
 // FULL pipeline:
 //
 //   1. Build before/after `AppliedSchema`s for two parents +
@@ -2931,7 +2931,7 @@ async fn flip_three_level_cascade_via_diff_bucket_maps(mut ctx: djogi::DjogiCont
 //      pointing at the post-flip parents, the data round-trips
 //      cleanly via a JOIN through both FK columns.
 //
-// **Why this test is necessary.** The previous round-3 test exercised
+// **Why this test is necessary.** The previous round test exercised
 // `winner_a` and `loser_a` independently via `lower_pk_flip_group`
 // — never running them as a combined plan and never applying the
 // combined output. The bug was in segment lowering (segment 3b
@@ -3027,7 +3027,7 @@ async fn flip_option_a_multi_parent_via_diff_bucket_maps_end_to_end(mut ctx: djo
     apply_pk_flip_join_table_option(&mut deltas, PkFlipJoinTableOption::OptionA);
 
     // 3. Confirm the merger produced a single MultiGroup (the
-    //    structural fix for B-15).
+    //    structural fix for ).
     let delta = deltas
         .iter()
         .find(|d| d.bucket == bucket_key)
@@ -3224,13 +3224,13 @@ async fn flip_option_a_multi_parent_via_diff_bucket_maps_end_to_end(mut ctx: djo
     );
 }
 
-// ── Test 25 — Codex round-4 B-14 PARTIAL: partitioned-parent real path ───
+// ── Test 25 —   PARTIAL: partitioned-parent real path ───
 //
 // Round-3 added a real-path test for the transitive FK closure
 // (`flip_three_level_cascade_via_diff_bucket_maps`) but the
 // partitioned-parent variant of `promote_pk_flips_to_groups` was
 // only exercised through `synth_single_group` — the synthetic
-// path bypasses the differ entirely. Codex round-4 PARTIAL
+// path bypasses the differ entirely.  PARTIAL
 // flagged the gap; this test fills it.
 //
 // **Shape.** Build a parent + 3 leaf-partition `AppliedSchema`
@@ -3607,7 +3607,7 @@ fn diff_bucket_maps_rejects_partitioned_cross_flipping_cluster() {
     }
 }
 
-// ── T3 / #317 — partitioned parent partial-apply resume uses expanded leaf steps
+// ──  / #317 — partitioned parent partial-apply resume uses expanded leaf steps
 
 #[djogi::djogi_test]
 async fn flip_partitioned_parent_partial_apply_resume_uses_expanded_leaf_steps(
@@ -3734,7 +3734,7 @@ async fn flip_partitioned_parent_partial_apply_resume_uses_expanded_leaf_steps(
     assert!(leaf_b_attached, "resume must run leaf B create + attach");
 }
 
-// ── T5 / #317 — partitioned parent rollback uses expanded leaf down SQL
+// ──  / #317 — partitioned parent rollback uses expanded leaf down SQL
 
 /// Check if an index with the given name exists in pg_class.
 async fn index_exists_by_name(ctx: &mut djogi::DjogiContext, index_name: &str) -> bool {

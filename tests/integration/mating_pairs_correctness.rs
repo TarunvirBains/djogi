@@ -24,7 +24,7 @@
 //    rather than under `examples/elephant-tracker/tests/` because the
 //    fixture's payload is the typed pair-tuple closure self-join — a
 //    framework substrate concern — and the same Postgres + djogi_test
-//    harness the other phase8_zero_* live tests use applies directly.
+//    harness the other zero_* live tests use applies directly.
 //    The demo's end-to-end JSON-output behavioural validation is a
 //    separate slice tracked in the same issue.
 //
@@ -44,10 +44,10 @@
 //            COALESCE(SUM(la.path_count * ra.path_count
 //                         * POWER(0.5, la.depth + ra.depth + 1)), 0)
 //            ::float8 AS __djogi_agg_0
-//     FROM phase8_5_c4a_mating_nodes AS l
-//     CROSS JOIN phase8_5_c4a_mating_nodes AS r
-//     LEFT JOIN phase8_5_c4a_mating_ancestries AS la ON la.node_id = l.id
-//     LEFT JOIN phase8_5_c4a_mating_ancestries AS ra ON ra.node_id = r.id
+//     FROM c4a_mating_nodes AS l
+//     CROSS JOIN c4a_mating_nodes AS r
+//     LEFT JOIN c4a_mating_ancestries AS la ON la.node_id = l.id
+//     LEFT JOIN c4a_mating_ancestries AS ra ON ra.node_id = r.id
 //                                                    AND ra.ancestor_id = la.ancestor_id
 //     WHERE l.id <> r.id
 //       AND l.id = ANY($n) AND r.id = ANY($m)
@@ -58,7 +58,7 @@ use djogi::query::PairClosureKinshipSum;
 
 // ── Pedigree model + closure model ──────────────────────────────────────────
 
-#[model(table = "phase8_5_c4a_mating_nodes", pk = HeerId)]
+#[model(table = "c4a_mating_nodes", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct MatingNode {
     pub label: String,
@@ -67,7 +67,7 @@ pub struct MatingNode {
 }
 
 #[model(
-    table = "phase8_5_c4a_mating_ancestries",
+    table = "c4a_mating_ancestries",
     pk = HeerId,
     no_default,
     indexes(unique(fields = [node_id, ancestor_id, depth]))

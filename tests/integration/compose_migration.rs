@@ -1,14 +1,13 @@
-//! T2.5 migration round-trip — composed columns lower to
+//! Migration round-trip — composed columns lower to
 //! the same `CREATE TABLE` SQL as hand-declared columns.
 //!
 //! What this file pins:
 //!
-//! Spec line 1101 — generate the `CREATE TABLE` for an
+//! Generate the `CREATE TABLE` for an
 //! `Auditable + SoftDeletable` model and assert the SQL contains both
-//! `created_by TEXT` (nullable) and `deleted_at TIMESTAMPTZ` (nullable),
-//! matching v3 §T2 line 231's acceptance criterion.
+//! `created_by TEXT` (nullable) and `deleted_at TIMESTAMPTZ` (nullable).
 //!
-//! Spec line 1124 says the migration differ does NOT key off
+//! The migration differ does NOT key off
 //! `composed_via`. This test proves it: the round-trip path runs from
 //! `Model::descriptor()` → `project_from_inventory` →
 //! `diff_bucket_maps` against an empty before-state →
@@ -29,12 +28,12 @@
 //!
 //! # Why `Auditable + SoftDeletable` together
 //!
-//! Spec line 1101 names the combination explicitly. Stacking both
+//! Stacking both
 //! composition derives on one model exercises:
 //!
 //! - The model macro's `auditable` flag flowing through to descriptor
 //!   emission (`#[model(auditable)]` path).
-//! - The `#[model(soft_deletable)]` opt-in (T2.6) emitting the trait
+//! - The `#[model(soft_deletable)]` opt-in emitting the trait
 //!   impl alongside the auditable surface.
 //! - The descriptor emitter tagging both `created_by` and `deleted_at`
 //!   independently with the right provenance string.
@@ -55,9 +54,9 @@ use djogi::prelude::*;
 // would adopt.
 // ---------------------------------------------------------------------------
 
-#[model(table = "phase8_compose_round_trip", auditable, soft_deletable)]
+#[model(table = "compose_round_trip", auditable, soft_deletable)]
 #[derive(Debug, Clone)]
-pub struct Phase8ComposeRoundTrip {
+pub struct ComposeRoundTrip {
     pub note: String,
     pub created_by: Option<String>,
     pub deleted_at: Option<djogi::DateTime>,
@@ -101,7 +100,7 @@ fn extract_add_table_delta(deltas: Vec<SchemaDelta>, target_table: &str) -> Sche
 }
 
 // ---------------------------------------------------------------------------
-// Test 1 — round-trip emission (the spec line 1101 anchor).
+// Test 1 — round-trip emission.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -110,7 +109,7 @@ fn migration_emits_composed_columns_identically() {
     let deltas = djogi::migrate::diff::diff_bucket_maps(&empty_before(), &projected)
         .expect("diff_bucket_maps against empty before-state");
 
-    let delta = extract_add_table_delta(deltas, "phase8_compose_round_trip");
+    let delta = extract_add_table_delta(deltas, "compose_round_trip");
     let ops = lower_delta(&delta).expect("lower the AddTable delta to SQL");
     assert_eq!(
         ops.len(),
@@ -119,9 +118,7 @@ fn migration_emits_composed_columns_identically() {
     );
     let sql = &ops[0].up;
 
-    // Spec line 1101 acceptance criterion (v3 §T2 line 231):
-    // `created_by TEXT NULL` and `deleted_at TIMESTAMPTZ NULL`. The
-    // current emitter renders nullability by absence of `NOT NULL`
+    // The current emitter renders nullability by absence of `NOT NULL`
     // rather than an explicit `NULL` keyword (Postgres-compatible
     // since `NULL` is the column default), so we assert the column
     // tokens directly without the trailing `NULL` — and assert the
@@ -173,8 +170,8 @@ fn migration_emits_composed_columns_identically() {
     // than a downstream column-presence check if the projection
     // mis-routes the model.
     assert!(
-        sql.starts_with("CREATE TABLE \"phase8_compose_round_trip\""),
-        "AddTable up SQL should begin with `CREATE TABLE \"phase8_compose_round_trip\"`;\nSQL was:\n{sql}",
+        sql.starts_with("CREATE TABLE \"compose_round_trip\""),
+        "AddTable up SQL should begin with `CREATE TABLE \"compose_round_trip\"`;\nSQL was:\n{sql}",
     );
 }
 
@@ -189,9 +186,9 @@ fn migration_emits_composed_columns_identically() {
 // `composed_via`, the two strings would diverge.
 // ---------------------------------------------------------------------------
 
-#[model(table = "phase8_compose_round_trip_baseline")]
+#[model(table = "compose_round_trip_baseline")]
 #[derive(Debug, Clone)]
-pub struct Phase8ComposeRoundTripBaseline {
+pub struct ComposeRoundTripBaseline {
     pub note: String,
     pub created_by: Option<String>,
     pub deleted_at: Option<djogi::DateTime>,
@@ -203,8 +200,8 @@ fn composed_columns_match_hand_declared_baseline() {
     let deltas = djogi::migrate::diff::diff_bucket_maps(&empty_before(), &projected)
         .expect("diff_bucket_maps against empty before-state");
 
-    let composed_delta = extract_add_table_delta(deltas.clone(), "phase8_compose_round_trip");
-    let baseline_delta = extract_add_table_delta(deltas, "phase8_compose_round_trip_baseline");
+    let composed_delta = extract_add_table_delta(deltas.clone(), "compose_round_trip");
+    let baseline_delta = extract_add_table_delta(deltas, "compose_round_trip_baseline");
 
     let composed_sql = lower_delta(&composed_delta)
         .expect("lower composed")
@@ -231,8 +228,8 @@ fn composed_columns_match_hand_declared_baseline() {
         sql[open + 1..close].replace(table_name, "$TABLE")
     }
     assert_eq!(
-        normalized_column_body(&composed_sql, "phase8_compose_round_trip"),
-        normalized_column_body(&baseline_sql, "phase8_compose_round_trip_baseline"),
+        normalized_column_body(&composed_sql, "compose_round_trip"),
+        normalized_column_body(&baseline_sql, "compose_round_trip_baseline"),
         "composed `Auditable + SoftDeletable` model must emit the same column body \
          as a hand-declared model with the same fields; emission must NOT depend \
          on `composed_via`. composed:\n{composed_sql}\n\nbaseline:\n{baseline_sql}",

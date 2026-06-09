@@ -1,6 +1,6 @@
 use djogi::prelude::*;
 
-#[model(table = "phase85_visage_derived_null_rows")]
+#[model(table = "visage_derived_null_rows")]
 #[derive(Model, Debug, Clone)]
 #[derived(
     name = computed_label,
@@ -14,7 +14,7 @@ pub struct DerivedNullRow {
     pub maybe_label: Option<String>,
 }
 
-#[model(table = "phase85_visage_derived_type_rows")]
+#[model(table = "visage_derived_type_rows")]
 #[derive(Model, Debug, Clone)]
 #[derived(
     name = computed_label,

@@ -1,6 +1,6 @@
 use djogi::prelude::*;
 
-#[model(table = "phase1_joined_debug_guard_posts", pk = HeerId)]
+#[model(table = "joined_debug_guard_posts", pk = HeerId)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DebugGuardPost {
     pub title: String,

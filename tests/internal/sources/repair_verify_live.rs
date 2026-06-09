@@ -1,4 +1,4 @@
-// T5 — live-PG integration tests for rollback, fake-apply,
+//  — live-PG integration tests for rollback, fake-apply,
 // baseline, verify, and repair.
 //
 // # What these tests prove
@@ -300,10 +300,10 @@ fn make_runner_ctx(
         snapshot,
         snapshot_path,
         config: MigrateConfig::default(),
-        // T5 tests pre-date T7's policy gate; pick the permissive
+        //  tests pre-date 's policy gate; pick the permissive
         // default so rollback / repair / baseline paths run as before.
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
-        // T9.4 audit-pool plumbing: not exercised in T5 paths.
+        // .4 audit-pool plumbing: not exercised in  paths.
         audit_pool: None,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     }
@@ -315,9 +315,9 @@ fn make_runner_ctx(
 async fn rollback_happy_path_drops_table_and_marks_row_rolled_back(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
-        "AddTable t5_users",
-        "CREATE TABLE \"t5_users\" (\"id\" BIGINT PRIMARY KEY)",
-        "DROP TABLE \"t5_users\"",
+        "AddTable users",
+        "CREATE TABLE \"users\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"users\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010001__rollback_happy", None, None);
 
@@ -327,7 +327,7 @@ async fn rollback_happy_path_drops_table_and_marks_row_rolled_back(mut ctx: djog
 
     let exists_before: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 't5_users' AND relkind = 'r')",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'users' AND relkind = 'r')",
             &[],
         )
         .await
@@ -349,7 +349,7 @@ async fn rollback_happy_path_drops_table_and_marks_row_rolled_back(mut ctx: djog
 
     let exists_after: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 't5_users' AND relkind = 'r')",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'users' AND relkind = 'r')",
             &[],
         )
         .await
@@ -382,15 +382,15 @@ async fn rollback_happy_path_drops_table_and_marks_row_rolled_back(mut ctx: djog
 async fn rollback_lossy_refuses_without_policy(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![lossy_op(
-        "DropColumn t5_lossy.legacy",
-        "ALTER TABLE \"t5_lossy\" DROP COLUMN \"legacy\"",
+        "DropColumn lossy.legacy",
+        "ALTER TABLE \"lossy\" DROP COLUMN \"legacy\"",
         "-- LOSSY: column data not recoverable",
         LossyRollbackKind::DropColumn,
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010002__rollback_lossy_refused", None, None);
 
     // Manually create the table so the apply path itself is happy.
-    ctx.raw_ddl("CREATE TABLE t5_lossy (id BIGINT, legacy TEXT)")
+    ctx.raw_ddl("CREATE TABLE lossy (id BIGINT, legacy TEXT)")
         .await
         .expect("create base table");
 
@@ -429,13 +429,13 @@ async fn rollback_lossy_allowed_records_reason(mut ctx: djogi::DjogiContext) {
     // surfaces the reason. We test the typical pattern where the lossy
     // operation's down side is harmless to execute.
     let plan = transactional_plan(vec![lossy_op(
-        "DropColumn t5_lossy_allow.legacy",
-        "ALTER TABLE \"t5_lossy_allow\" DROP COLUMN \"legacy\"",
+        "DropColumn lossy_allow.legacy",
+        "ALTER TABLE \"lossy_allow\" DROP COLUMN \"legacy\"",
         "-- LOSSY: column data not recoverable",
         LossyRollbackKind::DropColumn,
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010003__rollback_lossy_allow", None, None);
-    ctx.raw_ddl("CREATE TABLE t5_lossy_allow (id BIGINT, legacy TEXT)")
+    ctx.raw_ddl("CREATE TABLE lossy_allow (id BIGINT, legacy TEXT)")
         .await
         .expect("create base table");
 
@@ -477,9 +477,9 @@ async fn rollback_lossy_allowed_records_reason(mut ctx: djogi::DjogiContext) {
 async fn rollback_refuses_when_status_is_pending(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
-        "AddTable t5_pending",
-        "CREATE TABLE \"t5_pending\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_pending\"",
+        "AddTable pending",
+        "CREATE TABLE \"pending\" (\"id\" BIGINT)",
+        "DROP TABLE \"pending\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010004__rollback_pending", None, None);
 
@@ -509,9 +509,9 @@ async fn rollback_reverts_snapshot_when_prior_supplied(mut ctx: djogi::DjogiCont
     let snapshot_path = temp_path("rollback-snap");
     // Apply with one snapshot.
     let plan = transactional_plan(vec![op(
-        "AddTable t5_rb_snap",
-        "CREATE TABLE \"t5_rb_snap\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_rb_snap\"",
+        "AddTable rb_snap",
+        "CREATE TABLE \"rb_snap\" (\"id\" BIGINT)",
+        "DROP TABLE \"rb_snap\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -547,9 +547,9 @@ async fn rollback_reverts_snapshot_when_prior_supplied(mut ctx: djogi::DjogiCont
 async fn fake_apply_records_faked_row_without_running_sql(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
-        "AddTable t5_fake",
-        "CREATE TABLE \"t5_fake\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_fake\"",
+        "AddTable fake",
+        "CREATE TABLE \"fake\" (\"id\" BIGINT)",
+        "DROP TABLE \"fake\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010006__fake", None, None);
 
@@ -575,7 +575,7 @@ async fn fake_apply_records_faked_row_without_running_sql(mut ctx: djogi::DjogiC
     // Critical: the SQL must NOT have run.
     let exists: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 't5_fake' AND relkind = 'r')",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'fake' AND relkind = 'r')",
             &[],
         )
         .await
@@ -599,9 +599,9 @@ async fn fake_apply_persists_snapshot(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let snapshot_path = temp_path("fake-snap");
     let plan = transactional_plan(vec![op(
-        "AddTable t5_fake_snap",
-        "CREATE TABLE \"t5_fake_snap\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_fake_snap\"",
+        "AddTable fake_snap",
+        "CREATE TABLE \"fake_snap\" (\"id\" BIGINT)",
+        "DROP TABLE \"fake_snap\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -623,9 +623,9 @@ async fn fake_apply_duplicate_version_faked_row_surfaces_typed_error(
     let _guard = acquire_test_workspace_guard();
     bootstrap_ledger(&mut ctx).await.expect("bootstrap");
     let plan = transactional_plan(vec![op(
-        "AddTable t5_fake_dup_terminal",
-        "CREATE TABLE \"t5_fake_dup_terminal\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_fake_dup_terminal\"",
+        "AddTable fake_dup_terminal",
+        "CREATE TABLE \"fake_dup_terminal\" (\"id\" BIGINT)",
+        "DROP TABLE \"fake_dup_terminal\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010006__fake_dup_terminal", None, None);
     seed_duplicate_version_row(
@@ -667,9 +667,9 @@ async fn fake_apply_duplicate_version_failed_row_surfaces_non_terminal_collision
     let _guard = acquire_test_workspace_guard();
     bootstrap_ledger(&mut ctx).await.expect("bootstrap");
     let plan = transactional_plan(vec![op(
-        "AddTable t5_fake_dup_failed",
-        "CREATE TABLE \"t5_fake_dup_failed\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_fake_dup_failed\"",
+        "AddTable fake_dup_failed",
+        "CREATE TABLE \"fake_dup_failed\" (\"id\" BIGINT)",
+        "DROP TABLE \"fake_dup_failed\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010007__fake_dup_failed", None, None);
     seed_duplicate_version_row(
@@ -914,7 +914,7 @@ async fn verify_detects_missing_table_as_d601(mut ctx: djogi::DjogiContext) {
 #[djogi::djogi_test]
 async fn verify_detects_extra_live_table_as_d602(mut ctx: djogi::DjogiContext) {
     bootstrap_ledger(&mut ctx).await.expect("bootstrap");
-    ctx.raw_ddl("CREATE TABLE t5_unlisted (id BIGINT PRIMARY KEY)")
+    ctx.raw_ddl("CREATE TABLE unlisted (id BIGINT PRIMARY KEY)")
         .await
         .expect("create rogue table");
     let snap = empty_snapshot();
@@ -923,8 +923,8 @@ async fn verify_detects_extra_live_table_as_d602(mut ctx: djogi::DjogiContext) {
         report
             .diagnostics
             .iter()
-            .any(|d| d.code == "D602" && d.location.as_deref() == Some("t5_unlisted")),
-        "expected D602 t5_unlisted; got: {:?}",
+            .any(|d| d.code == "D602" && d.location.as_deref() == Some("unlisted")),
+        "expected D602 unlisted; got: {:?}",
         report.diagnostics
     );
 }
@@ -934,10 +934,10 @@ async fn verify_detects_extra_live_table_as_d602(mut ctx: djogi::DjogiContext) {
 #[djogi::djogi_test]
 async fn verify_diagnostic_ordering_is_stable(mut ctx: djogi::DjogiContext) {
     bootstrap_ledger(&mut ctx).await.expect("bootstrap");
-    ctx.raw_ddl("CREATE TABLE t5_alpha (id BIGINT PRIMARY KEY)")
+    ctx.raw_ddl("CREATE TABLE alpha (id BIGINT PRIMARY KEY)")
         .await
         .expect("alpha");
-    ctx.raw_ddl("CREATE TABLE t5_zebra (id BIGINT PRIMARY KEY)")
+    ctx.raw_ddl("CREATE TABLE zebra (id BIGINT PRIMARY KEY)")
         .await
         .expect("zebra");
     let snap = empty_snapshot();
@@ -955,7 +955,7 @@ async fn verify_diagnostic_ordering_is_stable(mut ctx: djogi::DjogiContext) {
         .filter(|d| d.code == "D602")
         .map(|d| d.location.as_deref().unwrap_or(""))
         .collect();
-    assert_eq!(d602, vec!["t5_alpha", "t5_zebra"]);
+    assert_eq!(d602, vec!["alpha", "zebra"]);
 }
 
 // ── Repair: checksum drift ────────────────────────────────────────────────
@@ -964,9 +964,9 @@ async fn verify_diagnostic_ordering_is_stable(mut ctx: djogi::DjogiContext) {
 async fn repair_checksum_drift_updates_row(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
-        "AddTable t5_drift",
-        "CREATE TABLE \"t5_drift\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_drift\"",
+        "AddTable drift",
+        "CREATE TABLE \"drift\" (\"id\" BIGINT)",
+        "DROP TABLE \"drift\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010009__drift", None, None);
     apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
@@ -1012,9 +1012,9 @@ async fn repair_checksum_drift_updates_row(mut ctx: djogi::DjogiContext) {
 async fn repair_checksum_drift_rejects_invalid_checksum(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
-        "AddTable t5_drift_bad",
-        "CREATE TABLE \"t5_drift_bad\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_drift_bad\"",
+        "AddTable drift_bad",
+        "CREATE TABLE \"drift_bad\" (\"id\" BIGINT)",
+        "DROP TABLE \"drift_bad\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010010__drift_bad", None, None);
     apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
@@ -1070,25 +1070,25 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
             Segment {
                 kind: SegmentKind::Transactional,
                 statements: vec![op(
-                    "AddTable t5_partial",
-                    "CREATE TABLE \"t5_partial\" (\"id\" BIGINT, \"e\" TEXT)",
-                    "DROP TABLE \"t5_partial\"",
+                    "AddTable partial",
+                    "CREATE TABLE \"partial\" (\"id\" BIGINT, \"e\" TEXT)",
+                    "DROP TABLE \"partial\"",
                 )],
             },
             Segment {
                 kind: SegmentKind::NonTransactional,
                 statements: vec![
                     op(
-                        "AddIndex t5_partial_e_idx",
-                        "CREATE INDEX CONCURRENTLY \"t5_partial_e_idx\" \
-                         ON \"t5_partial\" (\"e\")",
-                        "DROP INDEX CONCURRENTLY \"t5_partial_e_idx\"",
+                        "AddIndex partial_e_idx",
+                        "CREATE INDEX CONCURRENTLY \"partial_e_idx\" \
+                         ON \"partial\" (\"e\")",
+                        "DROP INDEX CONCURRENTLY \"partial_e_idx\"",
                     ),
                     op(
-                        "AddIndex t5_partial_missing_idx",
-                        "CREATE INDEX CONCURRENTLY \"t5_partial_missing_idx\" \
-                         ON \"t5_partial\" (\"missing\")",
-                        "DROP INDEX CONCURRENTLY \"t5_partial_missing_idx\"",
+                        "AddIndex partial_missing_idx",
+                        "CREATE INDEX CONCURRENTLY \"partial_missing_idx\" \
+                         ON \"partial\" (\"missing\")",
+                        "DROP INDEX CONCURRENTLY \"partial_missing_idx\"",
                     ),
                 ],
             },
@@ -1113,7 +1113,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
         } => {
             assert_eq!(segment_index, 1);
             assert_eq!(step_index, 1);
-            assert_eq!(statement_label, "AddIndex t5_partial_missing_idx");
+            assert_eq!(statement_label, "AddIndex partial_missing_idx");
             assert_eq!(applied_steps_count, 1);
         }
         other => panic!("expected NonTransactionalSegmentFailed, got {other:?}"),
@@ -1159,7 +1159,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
         "partial apply note should name the failing step"
     );
     assert!(
-        partial_apply_note.contains("AddIndex t5_partial_missing_idx"),
+        partial_apply_note.contains("AddIndex partial_missing_idx"),
         "partial apply note should name the failing statement"
     );
     assert!(
@@ -1232,9 +1232,9 @@ async fn repair_partial_apply_marks_faked(mut ctx: djogi::DjogiContext) {
         segments: vec![Segment {
             kind: SegmentKind::Transactional,
             statements: vec![op(
-                "AddTable t5_fake_repair",
-                "CREATE TABLE \"t5_fake_repair_invalid\" (\"id\" THIS_IS_NOT_A_TYPE)",
-                "DROP TABLE \"t5_fake_repair_invalid\"",
+                "AddTable fake_repair",
+                "CREATE TABLE \"fake_repair_invalid\" (\"id\" THIS_IS_NOT_A_TYPE)",
+                "DROP TABLE \"fake_repair_invalid\"",
             )],
         }],
     };
@@ -1273,9 +1273,9 @@ async fn repair_partial_apply_marks_applied(mut ctx: djogi::DjogiContext) {
         segments: vec![Segment {
             kind: SegmentKind::Transactional,
             statements: vec![op(
-                "AddTable t5_applied_repair",
-                "CREATE TABLE \"t5_applied_repair_invalid\" (\"id\" THIS_IS_NOT_A_TYPE)",
-                "DROP TABLE \"t5_applied_repair_invalid\"",
+                "AddTable applied_repair",
+                "CREATE TABLE \"applied_repair_invalid\" (\"id\" THIS_IS_NOT_A_TYPE)",
+                "DROP TABLE \"applied_repair_invalid\"",
             )],
         }],
     };
@@ -1306,9 +1306,9 @@ async fn repair_partial_apply_marks_applied(mut ctx: djogi::DjogiContext) {
 async fn repair_partial_apply_rejects_already_applied(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
-        "AddTable t5_partial_invalid",
-        "CREATE TABLE \"t5_partial_invalid\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_partial_invalid\"",
+        "AddTable partial_invalid",
+        "CREATE TABLE \"partial_invalid\" (\"id\" BIGINT)",
+        "DROP TABLE \"partial_invalid\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010014__partial_invalid", None, None);
     apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
@@ -1338,15 +1338,15 @@ async fn repair_partial_apply_rejects_already_applied(mut ctx: djogi::DjogiConte
 
 #[djogi::djogi_test]
 async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiContext) {
-    // B-12 (Codex round-3): the round-2 strengthening compared the
+    // B-12 (Codex round): the round strengthening compared the
     // rebuild output against a SECOND rebuild — that pinned
     // determinism but not correctness. A deterministic-but-wrong
-    // projection would still pass. This round-3 version pins the
+    // projection would still pass. This round version pins the
     // rebuild against expected per-column / per-index VALUES, so a
     // wrong projection (missing default, swapped type, wrong index
     // column list, wrong uniqueness) fails the test loudly.
     //
-    // The round-3 plan:
+    // The round plan:
     //
     //   1. Apply a multi-table plan with varied shape (3 tables,
     //      different column types, an index, different PK column
@@ -1357,25 +1357,25 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
     //   4. Re-read the rebuilt snapshot via `load_snapshot`.
     //   5. Run `repair_snapshot_rebuild` a SECOND time into a
     //      separate path (determinism cross-check — kept from
-    //      round-2 because it is cheap and catches a different
+    //      round because it is cheap and catches a different
     //      class of regression than the per-column assertions).
     //   6. Per-column / per-index VALUE assertions:
-    //      - `t5_b12_alpha.id` is `int8` (the canonical lower-cased
+    //      - `b12_alpha.id` is `int8` (the canonical lower-cased
     //        rendering of `BIGINT` returned by `format_type`) and
     //        NOT NULL.
-    //      - `t5_b12_beta.created_at` carries a NON-NONE
+    //      - `b12_beta.created_at` carries a NON-NONE
     //        `default_sql` whose normalized form mentions `now`
     //        (Postgres rewrites `DEFAULT now()` to `now()` in
     //        `pg_get_expr`; the projection passes it through).
-    //      - `t5_b12_gamma.alpha_id` is `int8` NOT NULL.
-    //      - `t5_b12_gamma_alpha_id_idx` lives on `t5_b12_gamma`,
+    //      - `b12_gamma.alpha_id` is `int8` NOT NULL.
+    //      - `b12_gamma_alpha_id_idx` lives on `b12_gamma`,
     //        is NON-unique (`CREATE INDEX`, no `UNIQUE`), uses
     //        `BTree`, and its column list is exactly `["alpha_id"]`.
     //
     // Per-column / per-index VALUE assertions provably fail on a
     // deterministic-but-wrong projection (e.g. swapping `int8` for
     // `text`, dropping the default, returning the wrong column
-    // list). Codex round-3 B-1 picked this option (b) over the
+    // list). Codex round B-1 picked this option (b) over the
     // export-`live_schema_for_repair` path (option a) because the
     // public-surface change is more invasive than is justified by
     // the marginal coverage gain — the per-value assertions exhaust
@@ -1397,33 +1397,33 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
             kind: SegmentKind::Transactional,
             statements: vec![
                 op(
-                    "AddTable t5_b12_alpha",
-                    "CREATE TABLE \"t5_b12_alpha\" (\
+                    "AddTable b12_alpha",
+                    "CREATE TABLE \"b12_alpha\" (\
                        \"id\" BIGINT PRIMARY KEY, \
                        \"label\" TEXT NOT NULL, \
                        \"qty\" INTEGER)",
-                    "DROP TABLE \"t5_b12_alpha\"",
+                    "DROP TABLE \"b12_alpha\"",
                 ),
                 op(
-                    "AddTable t5_b12_beta",
-                    "CREATE TABLE \"t5_b12_beta\" (\
+                    "AddTable b12_beta",
+                    "CREATE TABLE \"b12_beta\" (\
                        \"id\" BIGINT PRIMARY KEY, \
                        \"name\" VARCHAR(64) NOT NULL, \
                        \"created_at\" TIMESTAMPTZ NOT NULL DEFAULT now())",
-                    "DROP TABLE \"t5_b12_beta\"",
+                    "DROP TABLE \"b12_beta\"",
                 ),
                 op(
-                    "AddTable t5_b12_gamma",
-                    "CREATE TABLE \"t5_b12_gamma\" (\
+                    "AddTable b12_gamma",
+                    "CREATE TABLE \"b12_gamma\" (\
                        \"id\" BIGINT PRIMARY KEY, \
                        \"alpha_id\" BIGINT NOT NULL)",
-                    "DROP TABLE \"t5_b12_gamma\"",
+                    "DROP TABLE \"b12_gamma\"",
                 ),
                 op(
-                    "AddIndex t5_b12_gamma_alpha_id_idx",
-                    "CREATE INDEX \"t5_b12_gamma_alpha_id_idx\" \
-                     ON \"t5_b12_gamma\" (\"alpha_id\")",
-                    "DROP INDEX \"t5_b12_gamma_alpha_id_idx\"",
+                    "AddIndex b12_gamma_alpha_id_idx",
+                    "CREATE INDEX \"b12_gamma_alpha_id_idx\" \
+                     ON \"b12_gamma\" (\"alpha_id\")",
+                    "DROP INDEX \"b12_gamma_alpha_id_idx\"",
                 ),
             ],
         }],
@@ -1502,7 +1502,7 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
         "rebuild must produce the same index list across calls"
     );
     // All three migration tables must show up.
-    for t in ["t5_b12_alpha", "t5_b12_beta", "t5_b12_gamma"] {
+    for t in ["b12_alpha", "b12_beta", "b12_gamma"] {
         assert!(
             rebuilt.models.contains_key(t),
             "rebuild must project {t}; got models {:?}",
@@ -1515,7 +1515,7 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
         rebuilt
             .indexes
             .iter()
-            .any(|i| i.name == "t5_b12_gamma_alpha_id_idx"),
+            .any(|i| i.name == "b12_gamma_alpha_id_idx"),
         "rebuild must project the gamma_alpha_id index; got {:?}",
         rebuilt.indexes.iter().map(|i| &i.name).collect::<Vec<_>>()
     );
@@ -1526,10 +1526,10 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
     // but-wrong projection (swapped type, dropped default, wrong
     // index column list) fails these assertions.
 
-    // (1) `t5_b12_alpha.id` — BIGINT NOT NULL, PK column.
+    // (1) `b12_alpha.id` — BIGINT NOT NULL, PK column.
     let alpha = rebuilt
         .models
-        .get("t5_b12_alpha")
+        .get("b12_alpha")
         .expect("alpha in rebuild");
     let alpha_id = alpha
         .columns
@@ -1555,7 +1555,7 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
         alpha.primary_key.columns
     );
 
-    // (2) `t5_b12_beta.created_at` — TIMESTAMPTZ NOT NULL DEFAULT now().
+    // (2) `b12_beta.created_at` — TIMESTAMPTZ NOT NULL DEFAULT now().
     // The rebuild must round-trip the DEFAULT expression. Postgres
     // returns `DEFAULT now()` as the literal string `now()` from
     // `pg_get_expr`; the projection passes that through. We assert
@@ -1563,12 +1563,12 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
     // silently drop the default) AND that the captured expression
     // equals exactly `now()` (case-insensitive, whitespace-trimmed).
     //
-    // Codex round-4 B-13: a `.contains("now()")` check would admit
+    // Codex round B-13: a `.contains("now()")` check would admit
     // `nope_now()` or `timezone('utc', now())` — both are legitimate
     // Postgres defaults, but neither is what we declared. The exact
     // form is the safe assertion because `pg_get_expr` canonicalises
     // `DEFAULT now()` to the literal `now()`.
-    let beta = rebuilt.models.get("t5_b12_beta").expect("beta in rebuild");
+    let beta = rebuilt.models.get("b12_beta").expect("beta in rebuild");
     let beta_created_at = beta
         .columns
         .iter()
@@ -1601,10 +1601,10 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
         beta_default
     );
 
-    // (3) `t5_b12_gamma.alpha_id` — BIGINT NOT NULL with FK → t5_b12_alpha(id).
+    // (3) `b12_gamma.alpha_id` — BIGINT NOT NULL with FK → b12_alpha(id).
     let gamma = rebuilt
         .models
-        .get("t5_b12_gamma")
+        .get("b12_gamma")
         .expect("gamma in rebuild");
     let gamma_alpha_id = gamma
         .columns
@@ -1627,18 +1627,18 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
          because this plan does not create a live FK constraint"
     );
 
-    // (4) `t5_b12_gamma_alpha_id_idx` — NON-unique BTree on `["alpha_id"]`,
-    //     owned by `t5_b12_gamma`.
+    // (4) `b12_gamma_alpha_id_idx` — NON-unique BTree on `["alpha_id"]`,
+    //     owned by `b12_gamma`.
     use djogi::migrate::{IndexKindSchema, IndexTargetSchema, IndexTypeSchema};
     let idx = rebuilt
         .indexes
         .iter()
-        .find(|i| i.name == "t5_b12_gamma_alpha_id_idx")
+        .find(|i| i.name == "b12_gamma_alpha_id_idx")
         .expect("gamma index must be projected");
     assert_eq!(
         idx.table.as_str(),
-        "t5_b12_gamma",
-        "gamma index must claim `t5_b12_gamma` as its owning table; got {:?}",
+        "b12_gamma",
+        "gamma index must claim `b12_gamma` as its owning table; got {:?}",
         idx.table
     );
     assert!(
@@ -1710,17 +1710,17 @@ async fn rollback_compound_tx_aborts_when_any_segment_fails(mut ctx: djogi::Djog
             Segment {
                 kind: SegmentKind::Transactional,
                 statements: vec![op(
-                    "AddTable t5_b1_alpha",
-                    "CREATE TABLE \"t5_b1_alpha\" (\"id\" BIGINT PRIMARY KEY)",
-                    "DROP TABLE \"t5_b1_alpha\"",
+                    "AddTable b1_alpha",
+                    "CREATE TABLE \"b1_alpha\" (\"id\" BIGINT PRIMARY KEY)",
+                    "DROP TABLE \"b1_alpha\"",
                 )],
             },
             Segment {
                 kind: SegmentKind::Transactional,
                 statements: vec![op(
-                    "AddTable t5_b1_beta",
-                    "CREATE TABLE \"t5_b1_beta\" (\"id\" BIGINT PRIMARY KEY)",
-                    "DROP TABLE \"t5_b1_beta\"",
+                    "AddTable b1_beta",
+                    "CREATE TABLE \"b1_beta\" (\"id\" BIGINT PRIMARY KEY)",
+                    "DROP TABLE \"b1_beta\"",
                 )],
             },
         ],
@@ -1740,18 +1740,18 @@ async fn rollback_compound_tx_aborts_when_any_segment_fails(mut ctx: djogi::Djog
             Segment {
                 kind: SegmentKind::Transactional,
                 statements: vec![OperationSql {
-                    label: "AddTable t5_b1_alpha".to_string(),
-                    up: "CREATE TABLE \"t5_b1_alpha\" (\"id\" BIGINT PRIMARY KEY)".to_string(),
-                    down: "DROP TABLE \"t5_b1_alpha_does_not_exist_will_fail\"".to_string(),
+                    label: "AddTable b1_alpha".to_string(),
+                    up: "CREATE TABLE \"b1_alpha\" (\"id\" BIGINT PRIMARY KEY)".to_string(),
+                    down: "DROP TABLE \"b1_alpha_does_not_exist_will_fail\"".to_string(),
                     lossy: None,
                 }],
             },
             Segment {
                 kind: SegmentKind::Transactional,
                 statements: vec![op(
-                    "AddTable t5_b1_beta",
-                    "CREATE TABLE \"t5_b1_beta\" (\"id\" BIGINT PRIMARY KEY)",
-                    "DROP TABLE \"t5_b1_beta\"",
+                    "AddTable b1_beta",
+                    "CREATE TABLE \"b1_beta\" (\"id\" BIGINT PRIMARY KEY)",
+                    "DROP TABLE \"b1_beta\"",
                 )],
             },
         ],
@@ -1780,14 +1780,14 @@ async fn rollback_compound_tx_aborts_when_any_segment_fails(mut ctx: djogi::Djog
     // Both tables must still exist — the compound tx aborted.
     let alpha_exists: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 't5_b1_alpha' AND relkind = 'r')",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'b1_alpha' AND relkind = 'r')",
             &[],
         )
         .await
         .expect("alpha exists");
     let beta_exists: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 't5_b1_beta' AND relkind = 'r')",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'b1_beta' AND relkind = 'r')",
             &[],
         )
         .await
@@ -1802,8 +1802,8 @@ async fn rollback_compound_tx_aborts_when_any_segment_fails(mut ctx: djogi::Djog
     );
 
     // Cleanup so re-runs of the test are clean.
-    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_b1_alpha").await;
-    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_b1_beta").await;
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS b1_alpha").await;
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS b1_beta").await;
 }
 
 // ── B-2: rollback clears total_steps to NULL ─────────────────────────────
@@ -1816,9 +1816,9 @@ async fn rollback_clears_total_steps_to_null(mut ctx: djogi::DjogiContext) {
     // confirm the rollback clears it.
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
-        "AddTable t5_b2_total_steps",
-        "CREATE TABLE \"t5_b2_total_steps\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_b2_total_steps\"",
+        "AddTable b2_total_steps",
+        "CREATE TABLE \"b2_total_steps\" (\"id\" BIGINT)",
+        "DROP TABLE \"b2_total_steps\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010101__b2_total_steps", None, None);
     apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
@@ -1869,9 +1869,9 @@ async fn rollback_prior_snapshot_missing_does_not_mutate(mut ctx: djogi::DjogiCo
     let _guard = acquire_test_workspace_guard();
     let snapshot_path = temp_path("b3-snap");
     let plan = transactional_plan(vec![op(
-        "AddTable t5_b3_prior_missing",
-        "CREATE TABLE \"t5_b3_prior_missing\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_b3_prior_missing\"",
+        "AddTable b3_prior_missing",
+        "CREATE TABLE \"b3_prior_missing\" (\"id\" BIGINT)",
+        "DROP TABLE \"b3_prior_missing\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,
@@ -1901,7 +1901,7 @@ async fn rollback_prior_snapshot_missing_does_not_mutate(mut ctx: djogi::DjogiCo
     // Table must still exist — no down ran.
     let exists: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 't5_b3_prior_missing' AND relkind = 'r')",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'b3_prior_missing' AND relkind = 'r')",
             &[],
         )
         .await
@@ -1925,7 +1925,7 @@ async fn rollback_prior_snapshot_missing_does_not_mutate(mut ctx: djogi::DjogiCo
     );
 
     let _ = ctx
-        .raw_ddl("DROP TABLE IF EXISTS t5_b3_prior_missing")
+        .raw_ddl("DROP TABLE IF EXISTS b3_prior_missing")
         .await;
     let _ = std::fs::remove_file(&snapshot_path);
 }
@@ -2006,7 +2006,7 @@ async fn fake_apply_status_is_faked_not_pending(mut ctx: djogi::DjogiContext) {
     // insert_pending writes 'pending'. The previous arrangement left
     // the row at 'pending' forever.
     //
-    // Codex round-2 B-4 follow-up: the insert + UPDATE pair now sits
+    // Codex round B-4 follow-up: the insert + UPDATE pair now sits
     // inside a single Postgres tx (BEGIN / insert_pending / UPDATE /
     // COMMIT) so a crash between the two writes can no longer strand
     // the row at 'pending'. Either both writes commit (the row is
@@ -2015,9 +2015,9 @@ async fn fake_apply_status_is_faked_not_pending(mut ctx: djogi::DjogiContext) {
     // crash-injection harness can pin the rollback path explicitly.
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
-        "AddTable t5_b4_faked",
-        "CREATE TABLE \"t5_b4_faked\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_b4_faked\"",
+        "AddTable b4_faked",
+        "CREATE TABLE \"b4_faked\" (\"id\" BIGINT)",
+        "DROP TABLE \"b4_faked\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010103__b4_faked", None, None);
 
@@ -2063,7 +2063,7 @@ async fn verify_detects_default_drift_as_d607(mut ctx: djogi::DjogiContext) {
     // Live DB has a column with no default; snapshot expects DEFAULT
     // now(). D607 must fire.
     ctx.raw_ddl(
-        "CREATE TABLE t5_b5_default (id BIGINT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL)",
+        "CREATE TABLE b5_default (id BIGINT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL)",
     )
     .await
     .expect("create");
@@ -2097,7 +2097,7 @@ async fn verify_detects_default_drift_as_d607(mut ctx: djogi::DjogiContext) {
     created_col.sql_type = "TIMESTAMPTZ".to_string();
     created_col.default_sql = Some("now()".to_string()); // <-- snapshot expects default
     snap.models.insert(
-        "t5_b5_default".to_string(),
+        "b5_default".to_string(),
         djogi::migrate::TableSchema {
             app: None,
             columns: vec![id_col, created_col],
@@ -2113,7 +2113,7 @@ async fn verify_detects_default_drift_as_d607(mut ctx: djogi::DjogiContext) {
             rationale: None,
             renamed_from: None,
             rls_enabled: false,
-            table: "t5_b5_default".to_string(),
+            table: "b5_default".to_string(),
             table_comment: None,
             storage_params: None,
             tablespace: None,
@@ -2124,12 +2124,12 @@ async fn verify_detects_default_drift_as_d607(mut ctx: djogi::DjogiContext) {
     assert!(
         report.diagnostics.iter().any(|d| d.code == "D607"
             && d.severity == VerifySeverity::Error
-            && d.location.as_deref() == Some("t5_b5_default.created_at")),
-        "expected D607 t5_b5_default.created_at; got: {:?}",
+            && d.location.as_deref() == Some("b5_default.created_at")),
+        "expected D607 b5_default.created_at; got: {:?}",
         report.diagnostics,
     );
 
-    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_b5_default").await;
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS b5_default").await;
 }
 
 // ── B-6: verify detects PK mismatch (D608) ─────────────────────────────
@@ -2138,7 +2138,7 @@ async fn verify_detects_default_drift_as_d607(mut ctx: djogi::DjogiContext) {
 async fn verify_detects_pk_mismatch_as_d608(mut ctx: djogi::DjogiContext) {
     bootstrap_ledger(&mut ctx).await.expect("bootstrap");
     // Live DB has PK on `id`; snapshot declares PK on `email`.
-    ctx.raw_ddl("CREATE TABLE t5_b6_pk (id BIGINT PRIMARY KEY, email TEXT NOT NULL)")
+    ctx.raw_ddl("CREATE TABLE b6_pk (id BIGINT PRIMARY KEY, email TEXT NOT NULL)")
         .await
         .expect("create");
 
@@ -2169,7 +2169,7 @@ async fn verify_detects_pk_mismatch_as_d608(mut ctx: djogi::DjogiContext) {
     email_col.name = "email".to_string();
     email_col.sql_type = "TEXT".to_string();
     snap.models.insert(
-        "t5_b6_pk".to_string(),
+        "b6_pk".to_string(),
         djogi::migrate::TableSchema {
             app: None,
             columns: vec![id_col, email_col],
@@ -2185,7 +2185,7 @@ async fn verify_detects_pk_mismatch_as_d608(mut ctx: djogi::DjogiContext) {
             rationale: None,
             renamed_from: None,
             rls_enabled: false,
-            table: "t5_b6_pk".to_string(),
+            table: "b6_pk".to_string(),
             table_comment: None,
             storage_params: None,
             tablespace: None,
@@ -2196,12 +2196,12 @@ async fn verify_detects_pk_mismatch_as_d608(mut ctx: djogi::DjogiContext) {
     assert!(
         report.diagnostics.iter().any(|d| d.code == "D608"
             && d.severity == VerifySeverity::Error
-            && d.location.as_deref() == Some("t5_b6_pk.<pk>")),
-        "expected D608 t5_b6_pk.<pk>; got: {:?}",
+            && d.location.as_deref() == Some("b6_pk.<pk>")),
+        "expected D608 b6_pk.<pk>; got: {:?}",
         report.diagnostics,
     );
 
-    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_b6_pk").await;
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS b6_pk").await;
 }
 
 // ── B-9: verify detects FK deferrability drift (D609) ────────────────────
@@ -2210,12 +2210,12 @@ async fn verify_detects_pk_mismatch_as_d608(mut ctx: djogi::DjogiContext) {
 async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext) {
     bootstrap_ledger(&mut ctx).await.expect("bootstrap");
     ctx.raw_ddl(
-        "CREATE TABLE t5_fk_parent (id BIGINT PRIMARY KEY); \
-         CREATE TABLE t5_fk_child ( \
+        "CREATE TABLE fk_parent (id BIGINT PRIMARY KEY); \
+         CREATE TABLE fk_child ( \
              id BIGINT PRIMARY KEY, \
              parent_id BIGINT NOT NULL, \
-             CONSTRAINT t5_fk_child_parent_id_fkey \
-                 FOREIGN KEY (parent_id) REFERENCES t5_fk_parent(id) \
+             CONSTRAINT fk_child_parent_id_fkey \
+                 FOREIGN KEY (parent_id) REFERENCES fk_parent(id) \
                  ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED \
          )",
     )
@@ -2246,7 +2246,7 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
     };
     let mut snap = empty_snapshot();
     snap.models.insert(
-        "t5_fk_parent".to_string(),
+        "fk_parent".to_string(),
         djogi::migrate::TableSchema {
             app: None,
             columns: vec![id_col.clone()],
@@ -2262,7 +2262,7 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
             rationale: None,
             renamed_from: None,
             rls_enabled: false,
-            table: "t5_fk_parent".to_string(),
+            table: "fk_parent".to_string(),
             table_comment: None,
             storage_params: None,
             tablespace: None,
@@ -2270,7 +2270,7 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
         },
     );
     snap.models.insert(
-        "t5_fk_child".to_string(),
+        "fk_child".to_string(),
         djogi::migrate::TableSchema {
             app: None,
             columns: vec![
@@ -2284,7 +2284,7 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
                         initially_deferred: true,
                         on_delete: djogi::migrate::OnDeleteSchema::Restrict,
                         ref_column: "id".to_string(),
-                        ref_table: "t5_fk_parent".to_string(),
+                        ref_table: "fk_parent".to_string(),
                     }),
                     generated: None,
                     identity: None,
@@ -2316,7 +2316,7 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
             rationale: None,
             renamed_from: None,
             rls_enabled: false,
-            table: "t5_fk_child".to_string(),
+            table: "fk_child".to_string(),
             table_comment: None,
             storage_params: None,
             tablespace: None,
@@ -2332,9 +2332,9 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
     );
 
     ctx.raw_ddl(
-        "ALTER TABLE t5_fk_child DROP CONSTRAINT t5_fk_child_parent_id_fkey; \
-         ALTER TABLE t5_fk_child ADD CONSTRAINT t5_fk_child_parent_id_fkey \
-             FOREIGN KEY (parent_id) REFERENCES t5_fk_parent(id) \
+        "ALTER TABLE fk_child DROP CONSTRAINT fk_child_parent_id_fkey; \
+         ALTER TABLE fk_child ADD CONSTRAINT fk_child_parent_id_fkey \
+             FOREIGN KEY (parent_id) REFERENCES fk_parent(id) \
              ON DELETE RESTRICT",
     )
     .await
@@ -2345,15 +2345,15 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
         drifted
             .diagnostics
             .iter()
-            .any(|d| d.code == "D609" && d.location.as_deref() == Some("t5_fk_child.parent_id")),
+            .any(|d| d.code == "D609" && d.location.as_deref() == Some("fk_child.parent_id")),
         "expected D609 for FK deferrability drift; got {:?}",
         drifted.diagnostics,
     );
 
     let _ = ctx
         .raw_ddl(
-            "DROP TABLE IF EXISTS t5_fk_child; \
-             DROP TABLE IF EXISTS t5_fk_parent",
+            "DROP TABLE IF EXISTS fk_child; \
+             DROP TABLE IF EXISTS fk_parent",
         )
         .await;
 }
@@ -2364,8 +2364,8 @@ async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext
 async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext) {
     bootstrap_ledger(&mut ctx).await.expect("bootstrap");
     ctx.raw_ddl(
-        "CREATE TABLE t5_b7_idx_cols (id BIGINT PRIMARY KEY, a TEXT NOT NULL, b TEXT NOT NULL); \
-         CREATE INDEX t5_b7_idx ON t5_b7_idx_cols (a)",
+        "CREATE TABLE b7_idx_cols (id BIGINT PRIMARY KEY, a TEXT NOT NULL, b TEXT NOT NULL); \
+         CREATE INDEX b7_idx ON b7_idx_cols (a)",
     )
     .await
     .expect("create");
@@ -2376,11 +2376,11 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
         include: Vec::new(),
         index_type: djogi::migrate::IndexTypeSchema::BTree,
         kind: djogi::migrate::IndexKindSchema::NonUnique,
-        name: "t5_b7_idx".to_string(),
+        name: "b7_idx".to_string(),
         nulls_not_distinct: false,
         predicate: None,
         requires_out_of_transaction: false,
-        table: "t5_b7_idx_cols".to_string(),
+        table: "b7_idx_cols".to_string(),
         target: djogi::migrate::IndexTargetSchema::Columns(vec![
             djogi::migrate::IndexColumnSchema {
                 name: "b".to_string(), // <-- wrong column
@@ -2393,7 +2393,7 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
     // Also tell snapshot about the table so D602 doesn't drown the
     // diagnostic list.
     snap.models.insert(
-        "t5_b7_idx_cols".to_string(),
+        "b7_idx_cols".to_string(),
         djogi::migrate::TableSchema {
             app: None,
             columns: vec![
@@ -2476,7 +2476,7 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
             rationale: None,
             renamed_from: None,
             rls_enabled: false,
-            table: "t5_b7_idx_cols".to_string(),
+            table: "b7_idx_cols".to_string(),
             table_comment: None,
             storage_params: None,
             tablespace: None,
@@ -2487,12 +2487,12 @@ async fn verify_detects_index_wrong_columns_as_d612(mut ctx: djogi::DjogiContext
     assert!(
         report.diagnostics.iter().any(|d| d.code == "D612"
             && d.severity == VerifySeverity::Error
-            && d.location.as_deref() == Some("index:t5_b7_idx")),
-        "expected D612 index:t5_b7_idx; got: {:?}",
+            && d.location.as_deref() == Some("index:b7_idx")),
+        "expected D612 index:b7_idx; got: {:?}",
         report.diagnostics,
     );
 
-    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_b7_idx_cols").await;
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS b7_idx_cols").await;
 }
 
 // ── B-8: verify on missing ledger emits D621, doesn't bootstrap ─────────
@@ -2541,9 +2541,9 @@ async fn verify_missing_ledger_emits_d621_without_bootstrap(mut ctx: djogi::Djog
 async fn repair_checksum_drift_repairs_both_up_and_down(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
-        "AddTable t5_b9_drift_both",
-        "CREATE TABLE \"t5_b9_drift_both\" (\"id\" BIGINT)",
-        "DROP TABLE \"t5_b9_drift_both\"",
+        "AddTable b9_drift_both",
+        "CREATE TABLE \"b9_drift_both\" (\"id\" BIGINT)",
+        "DROP TABLE \"b9_drift_both\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010104__b9_drift_both", None, None);
     apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
@@ -2609,7 +2609,7 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
     // The plan: one transactional CREATE TABLE then two non-tx
     // CREATE INDEX statements; we fake a state where step 1 of 2
     // already applied so the resume runs only step 2.
-    ctx.raw_ddl("DROP TABLE IF EXISTS t5_b10_resume")
+    ctx.raw_ddl("DROP TABLE IF EXISTS b10_resume")
         .await
         .expect("clean");
     let plan = MigrationPlan {
@@ -2622,23 +2622,23 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
             Segment {
                 kind: SegmentKind::Transactional,
                 statements: vec![op(
-                    "AddTable t5_b10_resume",
-                    "CREATE TABLE \"t5_b10_resume\" (\"id\" BIGINT, \"a\" TEXT, \"b\" TEXT)",
-                    "DROP TABLE \"t5_b10_resume\"",
+                    "AddTable b10_resume",
+                    "CREATE TABLE \"b10_resume\" (\"id\" BIGINT, \"a\" TEXT, \"b\" TEXT)",
+                    "DROP TABLE \"b10_resume\"",
                 )],
             },
             Segment {
                 kind: SegmentKind::NonTransactional,
                 statements: vec![
                     op(
-                        "AddIndex t5_b10_resume_a_idx",
-                        "CREATE INDEX \"t5_b10_resume_a_idx\" ON \"t5_b10_resume\" (\"a\")",
-                        "DROP INDEX \"t5_b10_resume_a_idx\"",
+                        "AddIndex b10_resume_a_idx",
+                        "CREATE INDEX \"b10_resume_a_idx\" ON \"b10_resume\" (\"a\")",
+                        "DROP INDEX \"b10_resume_a_idx\"",
                     ),
                     op(
-                        "AddIndex t5_b10_resume_b_idx",
-                        "CREATE INDEX \"t5_b10_resume_b_idx\" ON \"t5_b10_resume\" (\"b\")",
-                        "DROP INDEX \"t5_b10_resume_b_idx\"",
+                        "AddIndex b10_resume_b_idx",
+                        "CREATE INDEX \"b10_resume_b_idx\" ON \"b10_resume\" (\"b\")",
+                        "DROP INDEX \"b10_resume_b_idx\"",
                     ),
                 ],
             },
@@ -2649,10 +2649,10 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
     // Apply the transactional segment + the FIRST non-tx step
     // manually so the ledger ends up in failed state with
     // applied_steps_count=1 / total_steps=2.
-    ctx.raw_ddl("CREATE TABLE \"t5_b10_resume\" (\"id\" BIGINT, \"a\" TEXT, \"b\" TEXT)")
+    ctx.raw_ddl("CREATE TABLE \"b10_resume\" (\"id\" BIGINT, \"a\" TEXT, \"b\" TEXT)")
         .await
         .expect("manual create");
-    ctx.raw_ddl("CREATE INDEX \"t5_b10_resume_a_idx\" ON \"t5_b10_resume\" (\"a\")")
+    ctx.raw_ddl("CREATE INDEX \"b10_resume_a_idx\" ON \"b10_resume\" (\"a\")")
         .await
         .expect("manual idx");
     bootstrap_ledger(&mut ctx).await.expect("bootstrap");
@@ -2691,7 +2691,7 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
         report
             .actions_taken
             .iter()
-            .any(|a| a.contains("AddIndex t5_b10_resume_b_idx")),
+            .any(|a| a.contains("AddIndex b10_resume_b_idx")),
         "actions: {:?}",
         report.actions_taken,
     );
@@ -2720,7 +2720,7 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
     // The second index must now exist.
     let b_idx_exists: bool = ctx
         .raw_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 't5_b10_resume_b_idx' AND relkind = 'i')",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'b10_resume_b_idx' AND relkind = 'i')",
             &[],
         )
         .await
@@ -2728,12 +2728,12 @@ async fn repair_resume_partial_apply_resumes_remaining_steps(mut ctx: djogi::Djo
     assert!(b_idx_exists, "B-10: resume must run step 2's CREATE INDEX");
 
     let _ = ctx
-        .raw_ddl("DROP INDEX IF EXISTS t5_b10_resume_a_idx")
+        .raw_ddl("DROP INDEX IF EXISTS b10_resume_a_idx")
         .await;
     let _ = ctx
-        .raw_ddl("DROP INDEX IF EXISTS t5_b10_resume_b_idx")
+        .raw_ddl("DROP INDEX IF EXISTS b10_resume_b_idx")
         .await;
-    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_b10_resume").await;
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS b10_resume").await;
 }
 
 #[djogi::djogi_test]
@@ -2994,25 +2994,25 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
             Segment {
                 kind: SegmentKind::Transactional,
                 statements: vec![op(
-                    "AddTable t5_resume_ack",
-                    "CREATE TABLE \"t5_resume_ack\" (\"id\" BIGINT, \"e\" TEXT)",
-                    "DROP TABLE \"t5_resume_ack\"",
+                    "AddTable resume_ack",
+                    "CREATE TABLE \"resume_ack\" (\"id\" BIGINT, \"e\" TEXT)",
+                    "DROP TABLE \"resume_ack\"",
                 )],
             },
             Segment {
                 kind: SegmentKind::NonTransactional,
                 statements: vec![
                     op(
-                        "AddIndex t5_resume_ack_e_idx",
-                        "CREATE INDEX CONCURRENTLY \"t5_resume_ack_e_idx\" \
-                         ON \"t5_resume_ack\" (\"e\")",
-                        "DROP INDEX CONCURRENTLY \"t5_resume_ack_e_idx\"",
+                        "AddIndex resume_ack_e_idx",
+                        "CREATE INDEX CONCURRENTLY \"resume_ack_e_idx\" \
+                         ON \"resume_ack\" (\"e\")",
+                        "DROP INDEX CONCURRENTLY \"resume_ack_e_idx\"",
                     ),
                     op(
-                        "AddIndex t5_resume_ack_missing_idx",
-                        "CREATE INDEX CONCURRENTLY \"t5_resume_ack_missing_idx\" \
-                         ON \"t5_resume_ack\" (\"missing\")",
-                        "DROP INDEX CONCURRENTLY \"t5_resume_ack_missing_idx\"",
+                        "AddIndex resume_ack_missing_idx",
+                        "CREATE INDEX CONCURRENTLY \"resume_ack_missing_idx\" \
+                         ON \"resume_ack\" (\"missing\")",
+                        "DROP INDEX CONCURRENTLY \"resume_ack_missing_idx\"",
                     ),
                 ],
             },
@@ -3033,7 +3033,7 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
         "got {err:?}"
     );
 
-    ctx.raw_ddl("ALTER TABLE \"t5_resume_ack\" ADD COLUMN \"missing\" TEXT")
+    ctx.raw_ddl("ALTER TABLE \"resume_ack\" ADD COLUMN \"missing\" TEXT")
         .await
         .expect("add missing column so resume step can succeed");
     bootstrap_ledger(&mut ctx).await.expect("bootstrap");
@@ -3089,7 +3089,7 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
     );
 
     assert!(
-        index_exists(&mut ctx, "t5_resume_ack_missing_idx").await,
+        index_exists(&mut ctx, "resume_ack_missing_idx").await,
         "the committed resumed step must still exist"
     );
 
@@ -3106,7 +3106,7 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
     .expect_err("ambiguous claim must block duplicate rerun");
 
     assert_eq!(
-        index_count(&mut ctx, "t5_resume_ack_missing_idx").await,
+        index_count(&mut ctx, "resume_ack_missing_idx").await,
         1,
         "resume must not silently rerun an already-committed step"
     );
@@ -3180,10 +3180,10 @@ async fn baseline_projects_live_database_into_snapshot(mut ctx: djogi::DjogiCont
     // schema directly, run baseline, assert the snapshot file
     // matches.
     let _guard = acquire_test_workspace_guard();
-    ctx.raw_ddl("DROP TABLE IF EXISTS t5_b11_legacy_users")
+    ctx.raw_ddl("DROP TABLE IF EXISTS b11_legacy_users")
         .await
         .expect("clean");
-    ctx.raw_ddl("CREATE TABLE t5_b11_legacy_users (id BIGINT PRIMARY KEY, email TEXT NOT NULL)")
+    ctx.raw_ddl("CREATE TABLE b11_legacy_users (id BIGINT PRIMARY KEY, email TEXT NOT NULL)")
         .await
         .expect("create legacy");
 
@@ -3223,13 +3223,13 @@ async fn baseline_projects_live_database_into_snapshot(mut ctx: djogi::DjogiCont
     assert!(snapshot_path.exists(), "snapshot must be persisted");
     let written = djogi::migrate::load_snapshot(&snapshot_path).expect("load");
     assert!(
-        written.models.contains_key("t5_b11_legacy_users"),
+        written.models.contains_key("b11_legacy_users"),
         "B-11: baseline must project the live legacy table; got {:?}",
         written.models.keys().collect::<Vec<_>>()
     );
 
     let _ = ctx
-        .raw_ddl("DROP TABLE IF EXISTS t5_b11_legacy_users")
+        .raw_ddl("DROP TABLE IF EXISTS b11_legacy_users")
         .await;
     let _ = std::fs::remove_file(&snapshot_path);
 }
@@ -3270,14 +3270,14 @@ async fn baseline_rejects_caller_supplied_snapshot(mut ctx: djogi::DjogiContext)
 
 // ── Round-3 A-1: two-bucket baseline scoping (named vs synthetic global) ──
 //
-// Codex round-3 A-1: the only B-11 live test (above) exercised a
+// Codex round A-1: the only B-11 live test (above) exercised a
 // SINGLE bucket. The B-11 contract is broader — each bucket's
 // baseline must project ONLY the tables that belong to that bucket,
 // so a named app does not pull in a peer app's tables and the
 // synthetic global bucket does not silently swallow a named app's
 // tables.
 //
-// We pick the round-3 Option B framing: without test-time
+// We pick the round Option B framing: without test-time
 // `inventory::submit!` to register synthetic descriptors, a named
 // bucket's projection is empty by construction (no descriptor
 // claims any of the freshly-created live tables for `phantom_bill`,
@@ -3294,16 +3294,16 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
     // Two adopter-owned tables created via raw DDL — no inventory
     // descriptors claim them, so they live in the synthetic global
     // bucket.
-    ctx.raw_ddl("DROP TABLE IF EXISTS t5_a1_alpha_table")
+    ctx.raw_ddl("DROP TABLE IF EXISTS a1_alpha_table")
         .await
         .expect("clean alpha");
-    ctx.raw_ddl("DROP TABLE IF EXISTS t5_a1_beta_table")
+    ctx.raw_ddl("DROP TABLE IF EXISTS a1_beta_table")
         .await
         .expect("clean beta");
-    ctx.raw_ddl("CREATE TABLE t5_a1_alpha_table (id BIGINT PRIMARY KEY, label TEXT NOT NULL)")
+    ctx.raw_ddl("CREATE TABLE a1_alpha_table (id BIGINT PRIMARY KEY, label TEXT NOT NULL)")
         .await
         .expect("create alpha");
-    ctx.raw_ddl("CREATE TABLE t5_a1_beta_table (id BIGINT PRIMARY KEY, payload TEXT)")
+    ctx.raw_ddl("CREATE TABLE a1_beta_table (id BIGINT PRIMARY KEY, payload TEXT)")
         .await
         .expect("create beta");
 
@@ -3342,7 +3342,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
     // descriptor in inventory declares this app label, so the named
     // bucket's projection MUST exclude every live table. The named
     // bucket's snapshot must therefore contain neither
-    // `t5_a1_alpha_table` nor `t5_a1_beta_table`.
+    // `a1_alpha_table` nor `a1_beta_table`.
     let named_bucket = BucketKey {
         database: "main".to_string(),
         app: "phantom_billing".to_string(),
@@ -3375,27 +3375,27 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
     // Assertion 1 — the global bucket's projection includes BOTH
     // adopter tables.
     assert!(
-        global_snap.models.contains_key("t5_a1_alpha_table"),
-        "global bucket must include t5_a1_alpha_table; got {:?}",
+        global_snap.models.contains_key("a1_alpha_table"),
+        "global bucket must include a1_alpha_table; got {:?}",
         global_snap.models.keys().collect::<Vec<_>>()
     );
     assert!(
-        global_snap.models.contains_key("t5_a1_beta_table"),
-        "global bucket must include t5_a1_beta_table; got {:?}",
+        global_snap.models.contains_key("a1_beta_table"),
+        "global bucket must include a1_beta_table; got {:?}",
         global_snap.models.keys().collect::<Vec<_>>()
     );
 
     // Assertion 2 — the named bucket's projection includes NEITHER
     // adopter table (no descriptor claims either for `phantom_billing`).
     assert!(
-        !named_snap.models.contains_key("t5_a1_alpha_table"),
-        "named bucket `phantom_billing` must NOT include t5_a1_alpha_table; \
+        !named_snap.models.contains_key("a1_alpha_table"),
+        "named bucket `phantom_billing` must NOT include a1_alpha_table; \
          got {:?}",
         named_snap.models.keys().collect::<Vec<_>>()
     );
     assert!(
-        !named_snap.models.contains_key("t5_a1_beta_table"),
-        "named bucket `phantom_billing` must NOT include t5_a1_beta_table; \
+        !named_snap.models.contains_key("a1_beta_table"),
+        "named bucket `phantom_billing` must NOT include a1_beta_table; \
          got {:?}",
         named_snap.models.keys().collect::<Vec<_>>()
     );
@@ -3412,20 +3412,20 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         named_snap.models.keys().map(String::as_str).collect();
     assert_ne!(
         global_set, named_set,
-        "round-3 A-1: global and named buckets must produce DIFFERENT \
+        "global and named buckets must produce DIFFERENT \
          projections; got identical model sets {global_set:?}"
     );
 
     // Cleanup.
-    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_a1_alpha_table").await;
-    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_a1_beta_table").await;
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS a1_alpha_table").await;
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS a1_beta_table").await;
     let _ = std::fs::remove_file(&global_path);
     let _ = std::fs::remove_file(&named_path);
 }
 
 // ── Round-3 A-2: verify does not exclude adopter `heer_orders` table ──
 //
-// Codex round-3 A-2: the round-2 A-1 fix landed in unit-test space
+// Codex round A-2: the round A-1 fix landed in unit-test space
 // (`is_heeranjid_artifact_table("heer_orders")` returns false at the
 // allowlist function level), but the live integration suite carried
 // no test that proved the policy end-to-end against a real Postgres
@@ -3461,7 +3461,7 @@ async fn verify_does_not_exclude_adopter_named_heer_orders_table(mut ctx: djogi:
 
     // Round-3 A-2: `heer_orders` must surface as a `D602` (live
     // table not in snapshot) diagnostic. If the projection silently
-    // excluded the table — the bug the round-2 A-1 fix targeted —
+    // excluded the table — the bug the round A-1 fix targeted —
     // verify would emit no diagnostic for `heer_orders` and the
     // operator would have no way to learn the framework was
     // ignoring their data.
@@ -3470,7 +3470,7 @@ async fn verify_does_not_exclude_adopter_named_heer_orders_table(mut ctx: djogi:
             .diagnostics
             .iter()
             .any(|d| d.code == "D602" && d.location.as_deref() == Some("heer_orders")),
-        "round-3 A-2: verify must surface adopter `heer_orders` as D602 \
+        "round A-2: verify must surface adopter `heer_orders` as D602 \
          (live table not in snapshot); got diagnostics: {:?}",
         report.diagnostics
     );
@@ -3488,7 +3488,7 @@ async fn verify_does_not_exclude_adopter_named_heer_orders_table(mut ctx: djogi:
 //    does not exist, the file will not compile, giving a deterministic RED.
 // 2. After the fix lands, a clean repair succeeds and does not produce
 //    AdvisoryLockFailed (lock acquired immediately — no concurrent holder).
-// 3. After repair completes, pg_locks (visible cluster-wide) shows the
+// 3. After repair completes, pg_locks (visible ) shows the
 //    advisory lock for the bucket is fully released.
 //
 // After the GH #274 fix, repair_checksum_drift takes an explicit BucketKey
@@ -3502,10 +3502,10 @@ async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djog
     let _guard = acquire_test_workspace_guard();
 
     // Apply a migration so we have a ledger row to repair.
-    let plan = transactional_plan_for_app("repair_274_lock_release", vec![op(
-        "AddTable t5_274_repair_lock",
-        "CREATE TABLE \"t5_274_repair_lock\" (\"id\" BIGINT PRIMARY KEY)",
-        "DROP TABLE \"t5_274_repair_lock\"",
+    let plan = transactional_plan(vec![op(
+        "AddTable repair_lock",
+        "CREATE TABLE \"repair_lock\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"repair_lock\"",
     )]);
     let runner_ctx = make_runner_ctx(&plan, "V20260425010101__274_repair_lock", None, None);
     apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
@@ -3581,15 +3581,15 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
 ) {
     let _guard = acquire_test_workspace_guard();
 
-    let same_app = "t5_274_same_bucket";
-    let other_app = "t5_274_other_bucket";
+    let same_app = "same_bucket";
+    let other_app = "other_bucket";
 
     let same_seed_plan = transactional_plan_for_app(
         same_app,
         vec![op(
-            "AddTable t5_274_same_seed",
-            "CREATE TABLE \"t5_274_same_seed\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t5_274_same_seed\"",
+            "AddTable same_seed",
+            "CREATE TABLE \"same_seed\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"same_seed\"",
         )],
     );
     let same_seed_ctx = make_runner_ctx(
@@ -3605,9 +3605,9 @@ async fn repair_checksum_drift_contends_with_apply_on_same_bucket_but_not_differ
     let other_seed_plan = transactional_plan_for_app(
         other_app,
         vec![op(
-            "AddTable t5_274_other_seed",
-            "CREATE TABLE \"t5_274_other_seed\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t5_274_other_seed\"",
+            "AddTable other_seed",
+            "CREATE TABLE \"other_seed\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"other_seed\"",
         )],
     );
     let other_seed_ctx = make_runner_ctx(
@@ -3729,11 +3729,11 @@ async fn repair_checksum_drift_reports_advisory_lock_budget_exhaustion(
     let _guard = acquire_test_workspace_guard();
 
     let plan = transactional_plan_for_app(
-        "t5_274_budget",
+        "budget",
         vec![op(
-            "AddTable t5_274_budget",
-            "CREATE TABLE \"t5_274_budget\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t5_274_budget\"",
+            "AddTable budget",
+            "CREATE TABLE \"budget\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"budget\"",
         )],
     );
     let runner_ctx = make_runner_ctx(&plan, "V20260425010105__274_budget", None, None);
@@ -3804,7 +3804,7 @@ async fn repair_checksum_drift_reports_advisory_lock_budget_exhaustion(
 #[djogi::djogi_test]
 async fn apply_waits_while_repair_resume_holds_same_bucket_lock(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
-    let app = "t5_274_reverse";
+    let app = "reverse";
 
     let resume_plan = MigrationPlan {
         bucket: BucketKey {
@@ -3850,9 +3850,9 @@ async fn apply_waits_while_repair_resume_holds_same_bucket_lock(mut ctx: djogi::
     let apply_plan_same_bucket = transactional_plan_for_app(
         app,
         vec![op(
-            "AddTable t5_274_reverse_apply",
-            "CREATE TABLE \"t5_274_reverse_apply\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t5_274_reverse_apply\"",
+            "AddTable reverse_apply",
+            "CREATE TABLE \"reverse_apply\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"reverse_apply\"",
         )],
     );
     let apply_ctx_same_bucket = make_runner_ctx(
@@ -3936,15 +3936,15 @@ async fn repair_checksum_drift_rejects_wrong_bucket_app_and_releases_lock(
     mut ctx: djogi::DjogiContext,
 ) {
     let _guard = acquire_test_workspace_guard();
-    let src_app = "t5_274_mismatch_ck_src";
+    let src_app = "mismatch_ck_src";
 
     // Apply a migration whose row will have app_label = src_app.
     let plan = transactional_plan_for_app(
         src_app,
         vec![op(
-            "AddTable t5_274_mismatch_ck",
-            "CREATE TABLE \"t5_274_mismatch_ck\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t5_274_mismatch_ck\"",
+            "AddTable mismatch_ck",
+            "CREATE TABLE \"mismatch_ck\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"mismatch_ck\"",
         )],
     );
     let runner_ctx = make_runner_ctx(&plan, "V20260425010110__274_mismatch_ck", None, None);
@@ -3956,7 +3956,7 @@ async fn repair_checksum_drift_rejects_wrong_bucket_app_and_releases_lock(
     // on this wrong bucket before the mismatch is detected.
     let wrong_bucket = BucketKey {
         database: "main".to_string(),
-        app: "t5_274_mismatch_ck_wrong".to_string(),
+        app: "mismatch_ck_wrong".to_string(),
     };
     let lock_key = advisory_lock_key(&wrong_bucket);
 
@@ -3982,7 +3982,7 @@ async fn repair_checksum_drift_rejects_wrong_bucket_app_and_releases_lock(
             assert_eq!(version, &runner_ctx.version, "version in BucketAppMismatch");
             assert_eq!(row_app_label, src_app, "row_app_label in BucketAppMismatch");
             assert_eq!(
-                supplied_app, "t5_274_mismatch_ck_wrong",
+                supplied_app, "mismatch_ck_wrong",
                 "supplied_app in BucketAppMismatch"
             );
         }
@@ -4004,7 +4004,7 @@ async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
     mut ctx: djogi::DjogiContext,
 ) {
     let _guard = acquire_test_workspace_guard();
-    let src_app = "t5_274_mismatch_pa_src";
+    let src_app = "mismatch_pa_src";
 
     // Apply a transactional migration so the row exists with app_label = src_app.
     // The BucketAppMismatch check runs before the status check in
@@ -4014,9 +4014,9 @@ async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
     let plan = transactional_plan_for_app(
         src_app,
         vec![op(
-            "AddTable t5_274_mismatch_pa",
-            "CREATE TABLE \"t5_274_mismatch_pa\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t5_274_mismatch_pa\"",
+            "AddTable mismatch_pa",
+            "CREATE TABLE \"mismatch_pa\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"mismatch_pa\"",
         )],
     );
     let runner_ctx = make_runner_ctx(&plan, "V20260425010111__274_mismatch_pa", None, None);
@@ -4026,7 +4026,7 @@ async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
 
     let wrong_bucket = BucketKey {
         database: "main".to_string(),
-        app: "t5_274_mismatch_pa_wrong".to_string(),
+        app: "mismatch_pa_wrong".to_string(),
     };
     let lock_key = advisory_lock_key(&wrong_bucket);
 
@@ -4052,7 +4052,7 @@ async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
             assert_eq!(version, &runner_ctx.version, "version in BucketAppMismatch");
             assert_eq!(row_app_label, src_app, "row_app_label in BucketAppMismatch");
             assert_eq!(
-                supplied_app, "t5_274_mismatch_pa_wrong",
+                supplied_app, "mismatch_pa_wrong",
                 "supplied_app in BucketAppMismatch"
             );
         }
@@ -4078,15 +4078,15 @@ async fn repair_partial_apply_rejects_wrong_bucket_app_and_releases_lock(
 #[djogi::djogi_test]
 async fn rollback_rejects_wrong_bucket_app_and_releases_lock(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
-    let src_app = "t5_274_mismatch_rb_src";
+    let src_app = "mismatch_rb_src";
 
     // Apply a migration so a ledger row exists with app_label = src_app.
     let plan = transactional_plan_for_app(
         src_app,
         vec![op(
-            "AddTable t5_274_mismatch_rb",
-            "CREATE TABLE \"t5_274_mismatch_rb\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t5_274_mismatch_rb\"",
+            "AddTable mismatch_rb",
+            "CREATE TABLE \"mismatch_rb\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"mismatch_rb\"",
         )],
     );
     let runner_ctx = make_runner_ctx(&plan, "V20260425010112__274_mismatch_rb", None, None);
@@ -4097,11 +4097,11 @@ async fn rollback_rejects_wrong_bucket_app_and_releases_lock(mut ctx: djogi::Djo
     // Build a rollback plan with a different bucket app — the advisory lock
     // will be acquired on this wrong bucket before the mismatch is detected.
     let wrong_plan = transactional_plan_for_app(
-        "t5_274_mismatch_rb_wrong",
+        "mismatch_rb_wrong",
         vec![op(
-            "AddTable t5_274_mismatch_rb",
-            "CREATE TABLE \"t5_274_mismatch_rb\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t5_274_mismatch_rb\"",
+            "AddTable mismatch_rb",
+            "CREATE TABLE \"mismatch_rb\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"mismatch_rb\"",
         )],
     );
     let lock_key = advisory_lock_key(&wrong_plan.bucket);
@@ -4129,7 +4129,7 @@ async fn rollback_rejects_wrong_bucket_app_and_releases_lock(mut ctx: djogi::Djo
             assert_eq!(version, &runner_ctx.version, "version in BucketAppMismatch");
             assert_eq!(row_app_label, src_app, "row_app_label in BucketAppMismatch");
             assert_eq!(
-                supplied_app, "t5_274_mismatch_rb_wrong",
+                supplied_app, "mismatch_rb_wrong",
                 "supplied_app in BucketAppMismatch",
             );
         }
@@ -4163,11 +4163,11 @@ async fn repair_checksum_drift_pool_backed_context_pins_session(
 
     // Set up a migration in Applied state with a known checksum.
     let plan = transactional_plan_for_app(
-        "t5_331_repair_pin",
+        "repair_pin",
         vec![op(
-            "AddTable t5_331_repair_pin",
-            "CREATE TABLE \"t5_331_repair_pin\" (\"id\" BIGINT PRIMARY KEY)",
-            "DROP TABLE \"t5_331_repair_pin\"",
+            "AddTable repair_pin",
+            "CREATE TABLE \"repair_pin\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"repair_pin\"",
         )],
     );
     let runner_ctx = make_runner_ctx(
@@ -4202,7 +4202,7 @@ async fn repair_checksum_drift_pool_backed_context_pins_session(
 
     // The fresh (correct) checksum is computed from the up SQL.
     let fresh_checksum =
-        compute_checksum(["CREATE TABLE \"t5_331_repair_pin\" (\"id\" BIGINT PRIMARY KEY)"]);
+        compute_checksum(["CREATE TABLE \"repair_pin\" (\"id\" BIGINT PRIMARY KEY)"]);
     let repair_result = repair_checksum_drift(
         &mut ctx,
         &_guard,
@@ -4236,7 +4236,7 @@ async fn repair_checksum_drift_pool_backed_context_pins_session(
     );
 }
 
-// ── T3 / #317 — repair refuses when replay stream is shorter than total_steps
+// ──  / #317 — repair refuses when replay stream is shorter than total_steps
 
 #[djogi::djogi_test]
 async fn repair_resume_partial_apply_refuses_when_replay_stream_is_shorter_than_total_steps(
@@ -4244,10 +4244,10 @@ async fn repair_resume_partial_apply_refuses_when_replay_stream_is_shorter_than_
 ) {
     let _guard = acquire_test_workspace_guard();
 
-    ctx.raw_ddl("DROP TABLE IF EXISTS t5_replay_short")
+    ctx.raw_ddl("DROP TABLE IF EXISTS replay_short")
         .await
         .expect("clean");
-    ctx.raw_ddl("CREATE TABLE \"t5_replay_short\" (\"id\" BIGINT, \"a\" TEXT)")
+    ctx.raw_ddl("CREATE TABLE \"replay_short\" (\"id\" BIGINT, \"a\" TEXT)")
         .await
         .expect("create table");
 
@@ -4260,9 +4260,9 @@ async fn repair_resume_partial_apply_refuses_when_replay_stream_is_shorter_than_
         segments: vec![Segment {
             kind: SegmentKind::NonTransactional,
             statements: vec![op(
-                "AddIndex t5_replay_short_a_idx",
-                "CREATE INDEX \"t5_replay_short_a_idx\" ON \"t5_replay_short\" (\"a\")",
-                "DROP INDEX \"t5_replay_short_a_idx\"",
+                "AddIndex replay_short_a_idx",
+                "CREATE INDEX \"replay_short_a_idx\" ON \"replay_short\" (\"a\")",
+                "DROP INDEX \"replay_short_a_idx\"",
             )],
         }],
     };
@@ -4326,7 +4326,7 @@ async fn repair_resume_partial_apply_refuses_when_replay_stream_is_shorter_than_
     assert_eq!(status, "failed");
 
     assert!(
-        !index_exists(&mut ctx, "t5_replay_short_a_idx").await,
+        !index_exists(&mut ctx, "replay_short_a_idx").await,
         "repair must refuse before running the shorter replay stream",
     );
 }

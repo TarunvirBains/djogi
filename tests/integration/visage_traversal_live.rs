@@ -3,15 +3,15 @@
 //
 // # What this test does
 //
-// 1. (T8) Creates two tables with an FK relationship (`emps → depts`).
-// 2. (T8) Inserts fixtures so one department has a known name and the
+// 1. Creates two tables with an FK relationship (`emps → depts`).
+// 2. Inserts fixtures so one department has a known name and the
 //    employees that point at it form a witness set.
-// 3. (T8) Runs a typed model queryset over the same fixtures to confirm the
+// 3. Runs a typed model queryset over the same fixtures to confirm the
 //    FK relationship returns the expected rows.
-// 4. (T9) Exercises the visage-scoped reverse-FK accessor — a
+// 4. Exercises the visage-scoped reverse-FK accessor — a
 //    `DeptPublic::employees(ctx)` call that returns `Vec<EmpPublic>`
 //    end-to-end against the live Postgres database.
-// 5. (T9) Exercises the visage-scoped M2M accessor — a
+// 5. Exercises the visage-scoped M2M accessor — a
 //    `PersonPublic::groups(ctx)` call that returns `Vec<GroupPublic>`
 //    walking through a junction table.
 //
@@ -21,9 +21,9 @@
 // `tests/internal/visage_traversal_shape.rs`. This ordinary live
 // target stays on public typed APIs.
 //
-// # Why the reverse/M2M live tests (T9)
+// # Why the reverse/M2M live tests.
 //
-// T9 is exactly the surface where `{Visage}::fetch` DOES work today
+//  is exactly the surface where `{Visage}::fetch` DOES work today
 // — the visage-scoped method goes model-scoped query → TryFrom
 // projection → `Vec<PeerVisage>`. Testing against a live DB pins
 // that the conversion cycle survives real row decoding, real PK
@@ -35,14 +35,14 @@ fn sentinel_id() -> djogi::types::HeerIdDesc {
     <djogi::types::HeerIdDesc as djogi::PrimaryKey>::sentinel()
 }
 
-#[model(table = "phase7_zero2_t8_live_depts")]
+#[model(table = "live_depts")]
 #[derive(Debug, Clone)]
 pub struct Dept {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "phase7_zero2_t8_live_emps", no_default)]
+#[model(table = "live_emps", no_default)]
 #[derive(Debug, Clone)]
 pub struct Emp {
     #[field(expose(public))]
@@ -103,16 +103,16 @@ async fn typed_fk_filter_returns_related_rows(mut ctx: DjogiContext) {
     assert_eq!(employees[1].display_name, "Grace");
 }
 
-// --- T9 — reverse-FK visage boundary live coverage ---
+// ---  — reverse-FK visage boundary live coverage ---
 
-#[model(table = "phase7_zero2_t9_live_depts")]
+#[model(table = "live_v9_depts")]
 #[derive(Debug, Clone)]
 pub struct RevDept {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "phase7_zero2_t9_live_emps", no_default)]
+#[model(table = "live_v9_emps", no_default)]
 #[derive(Debug, Clone)]
 pub struct RevEmp {
     #[field(expose(public))]
@@ -168,7 +168,7 @@ async fn reverse_fk_visage_accessor_projects_to_peer_visage(mut ctx: DjogiContex
     .expect("create Grace");
 
     // Drive the visage-scoped reverse accessor through the DeptPublic
-    // visage. T13a returns a SELECT-narrowed
+    // visage. a returns a SELECT-narrowed
     // `VisageQuerySet<RevEmpPublic>`; the caller chains `.fetch_all(ctx)`.
     let dept_public = RevDeptPublic::from(&dept);
     let employees_qs = dept_public.employees();
@@ -184,23 +184,23 @@ async fn reverse_fk_visage_accessor_projects_to_peer_visage(mut ctx: DjogiContex
     assert_eq!(names, vec!["Ada", "Grace"]);
 }
 
-// --- T9 — M2M visage boundary live coverage ---
+// ---  — M2M visage boundary live coverage ---
 
-#[model(table = "phase7_zero2_t9_live_m2m_persons")]
+#[model(table = "live_v9_m2m_persons")]
 #[derive(Debug, Clone)]
 pub struct M2mPerson {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "phase7_zero2_t9_live_m2m_groups")]
+#[model(table = "live_v9_m2m_groups")]
 #[derive(Debug, Clone)]
 pub struct M2mGroup {
     #[field(expose(public))]
     pub name: String,
 }
 
-#[model(table = "phase7_zero2_t9_live_m2m_person_groups", through, no_default)]
+#[model(table = "live_v9_m2m_person_groups", through, no_default)]
 #[derive(Debug, Clone)]
 pub struct M2mPersonGroup {
     pub person_id: ForeignKey<M2mPerson>,
@@ -280,7 +280,7 @@ async fn m2m_visage_accessor_returns_peer_visage(mut ctx: DjogiContext) {
     .await
     .expect("join Ada → Reviewers");
 
-    // Drive the visage-scoped M2M accessor. T13b returns
+    // Drive the visage-scoped M2M accessor. b returns
     // a SELECT-narrowed `VisageQuerySet<M2mGroupPublic>`.
     let ada_public = M2mPersonPublic::from(&ada);
     let groups_qs = ada_public.groups();

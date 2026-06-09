@@ -58,18 +58,18 @@ use time::{OffsetDateTime, PrimitiveDateTime};
 /// Discrete-integer range column. Postgres canonicalises every
 /// `int4range` write to lower-inclusive / upper-exclusive storage
 /// form; the Rust round-trip reflects the canonicalised shape.
-#[model(table = "phase8_5_g0_range_i32_rows", pk = HeerId, no_default)]
+#[model(table = "g0_range_i32_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85G0RangeI32Row {
+pub struct G0RangeI32Row {
     pub span: Range<i32>,
     pub label: String,
 }
 
 /// Discrete 64-bit integer range column. Postgres canonicalises
 /// `int8range` the same way it canonicalises `int4range`.
-#[model(table = "phase8_5_g0_range_i64_rows", pk = HeerId, no_default)]
+#[model(table = "g0_range_i64_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85G0RangeI64Row {
+pub struct G0RangeI64Row {
     pub span64: Range<i64>,
     pub label: String,
 }
@@ -77,9 +77,9 @@ pub struct Phase85G0RangeI64Row {
 /// Continuous timezone-aware temporal range column. Postgres does NOT
 /// canonicalise `tstzrange` storage; the bound shape round-trips as
 /// written.
-#[model(table = "phase8_5_g0_range_tstz_rows", pk = HeerId, no_default)]
+#[model(table = "g0_range_tstz_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85G0RangeTstzRow {
+pub struct G0RangeTstzRow {
     pub booking_window: Range<DateTime>,
     pub label: String,
 }
@@ -87,9 +87,9 @@ pub struct Phase85G0RangeTstzRow {
 /// Continuous timestamp-without-timezone range column. This is the #215
 /// `tsrange` surface and deliberately uses `time::PrimitiveDateTime`,
 /// separate from Djogi's timezone-aware `DateTime` alias.
-#[model(table = "phase8_5_215_range_ts_rows", pk = HeerId, no_default)]
+#[model(table = "range_ts_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85215RangeTsRow {
+pub struct RangeTsRow {
     pub local_window: Range<PrimitiveDateTime>,
     pub label: String,
 }
@@ -98,40 +98,40 @@ pub struct Phase85215RangeTsRow {
 /// `decode_bound` chain hands each finite endpoint to
 /// `rust_decimal::Decimal::from_sql`; the round-trip preserves the
 /// rust_decimal coefficient + scale verbatim.
-#[model(table = "phase8_5_g0_range_decimal_rows", pk = HeerId, no_default)]
+#[model(table = "g0_range_decimal_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85G0RangeDecimalRow {
+pub struct G0RangeDecimalRow {
     pub money: Range<Decimal>,
     pub label: String,
 }
 
 /// Discrete date range column. Postgres canonicalises `daterange` to
 /// lower-inclusive / upper-exclusive storage form.
-#[model(table = "phase8_5_g0_range_date_rows", pk = HeerId, no_default)]
+#[model(table = "g0_range_date_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85G0RangeDateRow {
+pub struct G0RangeDateRow {
     pub span_date: Range<time::Date>,
     pub label: String,
 }
 
 /// Nullable range column used to pin the present-only predicate surface.
-#[model(table = "phase8_5_g0_range_nullable_i64_rows", pk = HeerId, no_default)]
+#[model(table = "g0_range_nullable_i64_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Phase85G0NullableRangeI64Row {
+pub struct G0NullableRangeI64Row {
     pub maybe_span64: Option<Range<i64>>,
     pub label: String,
 }
 
 // ── (1) — Range<i32> canonicalisation + bound-shape coverage ─────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeI32Row])]
+#[djogi::djogi_test(sync_models = [G0RangeI32Row])]
 async fn range_i32_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext) {
     // Canonical discrete shape. Postgres stores it as written; the
     // round-trip preserves `Inclusive(1) / Exclusive(10)` byte for
     // byte.
-    let row = Phase85G0RangeI32Row::create(
+    let row = G0RangeI32Row::create(
         &mut ctx,
-        Phase85G0RangeI32Row {
+        G0RangeI32Row {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -145,23 +145,23 @@ async fn range_i32_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext) 
     assert_eq!(*row.span.lower(), RangeBound::Inclusive(1));
     assert_eq!(*row.span.upper(), RangeBound::Exclusive(10));
 
-    let fetched = Phase85G0RangeI32Row::get(&mut ctx, row.id)
+    let fetched = G0RangeI32Row::get(&mut ctx, row.id)
         .await
         .expect("get round-trip");
     assert_eq!(*fetched.span.lower(), RangeBound::Inclusive(1));
     assert_eq!(*fetched.span.upper(), RangeBound::Exclusive(10));
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeI32Row])]
+#[djogi::djogi_test(sync_models = [G0RangeI32Row])]
 async fn range_i32_inclusive_canonicalises_to_inclusive_exclusive(mut ctx: djogi::DjogiContext) {
     // Postgres canonicalises `int4range '[1,9]'` to the equivalent
     // canonical form `[1,10)` at storage time. The Rust round-trip
     // reflects what Postgres stored: the upper bound comes back as
     // `Exclusive(10)`, not `Inclusive(9)`. The lower bound stays
     // `Inclusive(1)` because that side is already in canonical form.
-    let row = Phase85G0RangeI32Row::create(
+    let row = G0RangeI32Row::create(
         &mut ctx,
-        Phase85G0RangeI32Row {
+        G0RangeI32Row {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -184,14 +184,14 @@ async fn range_i32_inclusive_canonicalises_to_inclusive_exclusive(mut ctx: djogi
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeI32Row])]
+#[djogi::djogi_test(sync_models = [G0RangeI32Row])]
 async fn range_i32_empty_round_trip(mut ctx: djogi::DjogiContext) {
     // The empty range encodes as a single `RANGE_EMPTY` flag byte and
     // carries no bound bytes; the decoder reconstructs
     // `Range::empty()` without consulting the element type.
-    let row = Phase85G0RangeI32Row::create(
+    let row = G0RangeI32Row::create(
         &mut ctx,
-        Phase85G0RangeI32Row {
+        G0RangeI32Row {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -203,20 +203,20 @@ async fn range_i32_empty_round_trip(mut ctx: djogi::DjogiContext) {
     .expect("empty Range<i32> must round-trip");
 
     assert!(row.span.is_empty());
-    let fetched = Phase85G0RangeI32Row::get(&mut ctx, row.id)
+    let fetched = G0RangeI32Row::get(&mut ctx, row.id)
         .await
         .expect("get round-trip");
     assert!(fetched.span.is_empty());
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeI32Row])]
+#[djogi::djogi_test(sync_models = [G0RangeI32Row])]
 async fn range_i32_unbounded_lower_round_trip(mut ctx: djogi::DjogiContext) {
     // `(-inf, 5)`: the wire format sets `RANGE_LB_INF` and writes only
     // the upper bound bytes. The decoder must skip the missing lower
     // bound and reconstruct `RangeBound::Unbounded`.
-    let row = Phase85G0RangeI32Row::create(
+    let row = G0RangeI32Row::create(
         &mut ctx,
-        Phase85G0RangeI32Row {
+        G0RangeI32Row {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -231,13 +231,13 @@ async fn range_i32_unbounded_lower_round_trip(mut ctx: djogi::DjogiContext) {
     assert_eq!(*row.span.upper(), RangeBound::Exclusive(5));
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeI32Row])]
+#[djogi::djogi_test(sync_models = [G0RangeI32Row])]
 async fn range_i32_unbounded_upper_round_trip(mut ctx: djogi::DjogiContext) {
     // `[5, +inf)`: sets `RANGE_UB_INF` and writes only the lower
     // bound bytes.
-    let row = Phase85G0RangeI32Row::create(
+    let row = G0RangeI32Row::create(
         &mut ctx,
-        Phase85G0RangeI32Row {
+        G0RangeI32Row {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -254,7 +254,7 @@ async fn range_i32_unbounded_upper_round_trip(mut ctx: djogi::DjogiContext) {
 
 // ── (2) — Range<DateTime> continuous TIMESTAMPTZ codec ───────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeTstzRow])]
+#[djogi::djogi_test(sync_models = [G0RangeTstzRow])]
 async fn range_tstz_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext) {
     // Booking-window shape: lower-inclusive / upper-exclusive. The
     // `tstzrange` codec is continuous; Postgres does NOT canonicalise
@@ -264,9 +264,9 @@ async fn range_tstz_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext)
     let upper = OffsetDateTime::from_unix_timestamp(1_700_086_400)
         .expect("valid UNIX timestamp must produce a valid OffsetDateTime");
 
-    let row = Phase85G0RangeTstzRow::create(
+    let row = G0RangeTstzRow::create(
         &mut ctx,
-        Phase85G0RangeTstzRow {
+        G0RangeTstzRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -280,7 +280,7 @@ async fn range_tstz_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext)
     assert_eq!(*row.booking_window.lower(), RangeBound::Inclusive(lower));
     assert_eq!(*row.booking_window.upper(), RangeBound::Exclusive(upper));
 
-    let fetched = Phase85G0RangeTstzRow::get(&mut ctx, row.id)
+    let fetched = G0RangeTstzRow::get(&mut ctx, row.id)
         .await
         .expect("get round-trip on Range<DateTime>");
     assert_eq!(
@@ -293,11 +293,11 @@ async fn range_tstz_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext)
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeTstzRow])]
+#[djogi::djogi_test(sync_models = [G0RangeTstzRow])]
 async fn range_tstz_empty_round_trip(mut ctx: djogi::DjogiContext) {
-    let row = Phase85G0RangeTstzRow::create(
+    let row = G0RangeTstzRow::create(
         &mut ctx,
-        Phase85G0RangeTstzRow {
+        G0RangeTstzRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -311,7 +311,7 @@ async fn range_tstz_empty_round_trip(mut ctx: djogi::DjogiContext) {
     assert!(row.booking_window.is_empty());
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeTstzRow])]
+#[djogi::djogi_test(sync_models = [G0RangeTstzRow])]
 async fn range_tstz_unbounded_lower_round_trip(mut ctx: djogi::DjogiContext) {
     // "Anything before <upper>" — the historical shape for "starts
     // at the dawn of time" booking windows. Lower side is
@@ -319,9 +319,9 @@ async fn range_tstz_unbounded_lower_round_trip(mut ctx: djogi::DjogiContext) {
     let upper = OffsetDateTime::from_unix_timestamp(1_700_000_000)
         .expect("valid UNIX timestamp must produce a valid OffsetDateTime");
 
-    let row = Phase85G0RangeTstzRow::create(
+    let row = G0RangeTstzRow::create(
         &mut ctx,
-        Phase85G0RangeTstzRow {
+        G0RangeTstzRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -338,7 +338,7 @@ async fn range_tstz_unbounded_lower_round_trip(mut ctx: djogi::DjogiContext) {
 
 // ── (2b) — Range<PrimitiveDateTime> continuous TSRANGE codec ────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85215RangeTsRow])]
+#[djogi::djogi_test(sync_models = [RangeTsRow])]
 async fn range_ts_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext) {
     let lower = PrimitiveDateTime::new(
         time::Date::from_calendar_date(2026, time::Month::January, 1).expect("valid lower date"),
@@ -349,9 +349,9 @@ async fn range_ts_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext) {
         time::Time::MIDNIGHT,
     );
 
-    let row = Phase85215RangeTsRow::create(
+    let row = RangeTsRow::create(
         &mut ctx,
-        Phase85215RangeTsRow {
+        RangeTsRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -365,7 +365,7 @@ async fn range_ts_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext) {
     assert_eq!(*row.local_window.lower(), RangeBound::Inclusive(lower));
     assert_eq!(*row.local_window.upper(), RangeBound::Exclusive(upper));
 
-    let fetched = Phase85215RangeTsRow::get(&mut ctx, row.id)
+    let fetched = RangeTsRow::get(&mut ctx, row.id)
         .await
         .expect("get round-trip on Range<PrimitiveDateTime>");
     assert_eq!(*fetched.local_window.lower(), RangeBound::Inclusive(lower));
@@ -374,15 +374,15 @@ async fn range_ts_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext) {
 
 // ── (3) — Range<Decimal> continuous NUMERIC codec ────────────────────────────
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeDecimalRow])]
+#[djogi::djogi_test(sync_models = [G0RangeDecimalRow])]
 async fn range_decimal_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiContext) {
     // The `numrange` codec hands each finite endpoint through the
     // `decode_bound` chain to `rust_decimal::Decimal::from_sql`; the
     // round-trip must preserve coefficient + scale verbatim for a
     // typical currency value with mid-scale precision.
-    let row = Phase85G0RangeDecimalRow::create(
+    let row = G0RangeDecimalRow::create(
         &mut ctx,
-        Phase85G0RangeDecimalRow {
+        G0RangeDecimalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -396,14 +396,14 @@ async fn range_decimal_inclusive_exclusive_round_trip(mut ctx: djogi::DjogiConte
     assert_eq!(*row.money.lower(), RangeBound::Inclusive(dec!(1.50)));
     assert_eq!(*row.money.upper(), RangeBound::Exclusive(dec!(99.99)));
 
-    let fetched = Phase85G0RangeDecimalRow::get(&mut ctx, row.id)
+    let fetched = G0RangeDecimalRow::get(&mut ctx, row.id)
         .await
         .expect("get round-trip on Range<Decimal>");
     assert_eq!(*fetched.money.lower(), RangeBound::Inclusive(dec!(1.50)));
     assert_eq!(*fetched.money.upper(), RangeBound::Exclusive(dec!(99.99)));
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeDecimalRow])]
+#[djogi::djogi_test(sync_models = [G0RangeDecimalRow])]
 async fn range_decimal_high_precision_round_trip(mut ctx: djogi::DjogiContext) {
     // Stretch the `decode_bound` Decimal path with values carrying
     // close to rust_decimal's maximum scale (28). A buggy NUMERIC
@@ -418,9 +418,9 @@ async fn range_decimal_high_precision_round_trip(mut ctx: djogi::DjogiContext) {
     // multiple coefficient widths.
     let lower = dec!(0.0000000000000000000000000001); // scale 28, coefficient 1
     let upper = dec!(123456789012345.6789012345678); // 15 integer + 13 fractional = 28 sig digits
-    let row = Phase85G0RangeDecimalRow::create(
+    let row = G0RangeDecimalRow::create(
         &mut ctx,
-        Phase85G0RangeDecimalRow {
+        G0RangeDecimalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -435,11 +435,11 @@ async fn range_decimal_high_precision_round_trip(mut ctx: djogi::DjogiContext) {
     assert_eq!(*row.money.upper(), RangeBound::Exclusive(upper));
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeDecimalRow])]
+#[djogi::djogi_test(sync_models = [G0RangeDecimalRow])]
 async fn range_decimal_empty_round_trip(mut ctx: djogi::DjogiContext) {
-    let row = Phase85G0RangeDecimalRow::create(
+    let row = G0RangeDecimalRow::create(
         &mut ctx,
-        Phase85G0RangeDecimalRow {
+        G0RangeDecimalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -453,14 +453,14 @@ async fn range_decimal_empty_round_trip(mut ctx: djogi::DjogiContext) {
     assert!(row.money.is_empty());
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeDecimalRow])]
+#[djogi::djogi_test(sync_models = [G0RangeDecimalRow])]
 async fn range_decimal_unbounded_upper_round_trip(mut ctx: djogi::DjogiContext) {
     // "Anything at or above <lower>" — typical "open-ended price floor"
     // shape. Lower side carries the bound bytes; upper side is
     // `RangeBound::Unbounded`.
-    let row = Phase85G0RangeDecimalRow::create(
+    let row = G0RangeDecimalRow::create(
         &mut ctx,
-        Phase85G0RangeDecimalRow {
+        G0RangeDecimalRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -481,11 +481,11 @@ async fn range_decimal_unbounded_upper_round_trip(mut ctx: djogi::DjogiContext) 
 // while projecting a `Range<T>` column exercises the live SELECT decode path
 // independently from the range predicate operators below.
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeI32Row])]
+#[djogi::djogi_test(sync_models = [G0RangeI32Row])]
 async fn range_i32_filter_returns_decoded_range_column(mut ctx: djogi::DjogiContext) {
-    Phase85G0RangeI32Row::create(
+    G0RangeI32Row::create(
         &mut ctx,
-        Phase85G0RangeI32Row {
+        G0RangeI32Row {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -496,9 +496,9 @@ async fn range_i32_filter_returns_decoded_range_column(mut ctx: djogi::DjogiCont
     .await
     .expect("create filter-target row");
 
-    Phase85G0RangeI32Row::create(
+    G0RangeI32Row::create(
         &mut ctx,
-        Phase85G0RangeI32Row {
+        G0RangeI32Row {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -509,7 +509,7 @@ async fn range_i32_filter_returns_decoded_range_column(mut ctx: djogi::DjogiCont
     .await
     .expect("create filter-other row");
 
-    let rows = Phase85G0RangeI32Row::objects()
+    let rows = G0RangeI32Row::objects()
         .filter(|f| f.label().eq("filter-target".to_string()))
         .fetch_all(&mut ctx)
         .await
@@ -527,7 +527,7 @@ async fn range_i32_filter_returns_decoded_range_column(mut ctx: djogi::DjogiCont
 
 // ── (5) — #215 SQL-only range predicate operators ───────────────────────────
 
-fn sorted_range_labels(rows: Vec<Phase85G0RangeI32Row>) -> Vec<String> {
+fn sorted_range_labels(rows: Vec<G0RangeI32Row>) -> Vec<String> {
     let mut labels = rows.into_iter().map(|row| row.label).collect::<Vec<_>>();
     labels.sort();
     labels
@@ -540,9 +540,9 @@ async fn seed_range_predicate_rows(ctx: &mut djogi::DjogiContext) {
         (Range::inclusive_exclusive(10_i32, 15_i32), "c"),
         (Range::inclusive_exclusive(20_i32, 30_i32), "d"),
     ] {
-        Phase85G0RangeI32Row::create(
+        G0RangeI32Row::create(
             ctx,
-            Phase85G0RangeI32Row {
+            G0RangeI32Row {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -555,18 +555,18 @@ async fn seed_range_predicate_rows(ctx: &mut djogi::DjogiContext) {
     }
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeI32Row])]
+#[djogi::djogi_test(sync_models = [G0RangeI32Row])]
 async fn range_i32_predicate_operators_filter_rows(mut ctx: djogi::DjogiContext) {
     seed_range_predicate_rows(&mut ctx).await;
 
-    let contains = Phase85G0RangeI32Row::objects()
+    let contains = G0RangeI32Row::objects()
         .filter(|f| f.span().explicit_pg_predicate().contains(3_i32))
         .fetch_all(&mut ctx)
         .await
         .expect("range contains element predicate");
     assert_eq!(sorted_range_labels(contains), ["a"]);
 
-    let contains_range = Phase85G0RangeI32Row::objects()
+    let contains_range = G0RangeI32Row::objects()
         .filter(|f| {
             f.span()
                 .explicit_pg_predicate()
@@ -577,7 +577,7 @@ async fn range_i32_predicate_operators_filter_rows(mut ctx: djogi::DjogiContext)
         .expect("range contains range predicate");
     assert_eq!(sorted_range_labels(contains_range), ["a"]);
 
-    let contained_by = Phase85G0RangeI32Row::objects()
+    let contained_by = G0RangeI32Row::objects()
         .filter(|f| {
             f.span()
                 .explicit_pg_predicate()
@@ -588,7 +588,7 @@ async fn range_i32_predicate_operators_filter_rows(mut ctx: djogi::DjogiContext)
         .expect("range contained-by predicate");
     assert_eq!(sorted_range_labels(contained_by), ["a", "b"]);
 
-    let overlaps = Phase85G0RangeI32Row::objects()
+    let overlaps = G0RangeI32Row::objects()
         .filter(|f| {
             f.span()
                 .explicit_pg_predicate()
@@ -599,7 +599,7 @@ async fn range_i32_predicate_operators_filter_rows(mut ctx: djogi::DjogiContext)
         .expect("range overlaps predicate");
     assert_eq!(sorted_range_labels(overlaps), ["a", "b"]);
 
-    let strictly_left = Phase85G0RangeI32Row::objects()
+    let strictly_left = G0RangeI32Row::objects()
         .filter(|f| {
             f.span()
                 .explicit_pg_predicate()
@@ -610,7 +610,7 @@ async fn range_i32_predicate_operators_filter_rows(mut ctx: djogi::DjogiContext)
         .expect("range strictly-left predicate");
     assert_eq!(sorted_range_labels(strictly_left), ["a"]);
 
-    let strictly_right = Phase85G0RangeI32Row::objects()
+    let strictly_right = G0RangeI32Row::objects()
         .filter(|f| {
             f.span()
                 .explicit_pg_predicate()
@@ -621,7 +621,7 @@ async fn range_i32_predicate_operators_filter_rows(mut ctx: djogi::DjogiContext)
         .expect("range strictly-right predicate");
     assert_eq!(sorted_range_labels(strictly_right), ["c", "d"]);
 
-    let not_extends_right = Phase85G0RangeI32Row::objects()
+    let not_extends_right = G0RangeI32Row::objects()
         .filter(|f| {
             f.span()
                 .explicit_pg_predicate()
@@ -632,7 +632,7 @@ async fn range_i32_predicate_operators_filter_rows(mut ctx: djogi::DjogiContext)
         .expect("range not-extends-right predicate");
     assert_eq!(sorted_range_labels(not_extends_right), ["a", "b"]);
 
-    let not_extends_left = Phase85G0RangeI32Row::objects()
+    let not_extends_left = G0RangeI32Row::objects()
         .filter(|f| {
             f.span()
                 .explicit_pg_predicate()
@@ -643,7 +643,7 @@ async fn range_i32_predicate_operators_filter_rows(mut ctx: djogi::DjogiContext)
         .expect("range not-extends-left predicate");
     assert_eq!(sorted_range_labels(not_extends_left), ["b", "c", "d"]);
 
-    let adjacent = Phase85G0RangeI32Row::objects()
+    let adjacent = G0RangeI32Row::objects()
         .filter(|f| {
             f.span()
                 .explicit_pg_predicate()
@@ -655,15 +655,15 @@ async fn range_i32_predicate_operators_filter_rows(mut ctx: djogi::DjogiContext)
     assert_eq!(sorted_range_labels(adjacent), ["a", "c"]);
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeI64Row])]
+#[djogi::djogi_test(sync_models = [G0RangeI64Row])]
 async fn range_i64_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     for (span64, label) in [
         (Range::inclusive_exclusive(1_i64, 5_i64), "a"),
         (Range::inclusive_exclusive(5_i64, 10_i64), "b"),
     ] {
-        Phase85G0RangeI64Row::create(
+        G0RangeI64Row::create(
             &mut ctx,
-            Phase85G0RangeI64Row {
+            G0RangeI64Row {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -675,7 +675,7 @@ async fn range_i64_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
         .expect("seed i64 range row");
     }
 
-    let rows = Phase85G0RangeI64Row::objects()
+    let rows = G0RangeI64Row::objects()
         .filter(|f| f.span64().explicit_pg_predicate().contains(3_i64))
         .fetch_all(&mut ctx)
         .await
@@ -686,15 +686,15 @@ async fn range_i64_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeDecimalRow])]
+#[djogi::djogi_test(sync_models = [G0RangeDecimalRow])]
 async fn range_decimal_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     for (money, label) in [
         (Range::inclusive_exclusive(dec!(1.50), dec!(9.50)), "a"),
         (Range::inclusive_exclusive(dec!(9.50), dec!(20.00)), "b"),
     ] {
-        Phase85G0RangeDecimalRow::create(
+        G0RangeDecimalRow::create(
             &mut ctx,
-            Phase85G0RangeDecimalRow {
+            G0RangeDecimalRow {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -706,7 +706,7 @@ async fn range_decimal_contains_element_filter_rows(mut ctx: djogi::DjogiContext
         .expect("seed decimal range row");
     }
 
-    let rows = Phase85G0RangeDecimalRow::objects()
+    let rows = G0RangeDecimalRow::objects()
         .filter(|f| f.money().explicit_pg_predicate().contains(dec!(2.25)))
         .fetch_all(&mut ctx)
         .await
@@ -717,7 +717,7 @@ async fn range_decimal_contains_element_filter_rows(mut ctx: djogi::DjogiContext
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeTstzRow])]
+#[djogi::djogi_test(sync_models = [G0RangeTstzRow])]
 async fn range_tstz_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     let lower_a = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid timestamp");
     let upper_a = OffsetDateTime::from_unix_timestamp(1_700_086_400).expect("valid timestamp");
@@ -727,9 +727,9 @@ async fn range_tstz_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
         (Range::inclusive_exclusive(lower_a, upper_a), "a"),
         (Range::inclusive_exclusive(lower_b, upper_b), "b"),
     ] {
-        Phase85G0RangeTstzRow::create(
+        G0RangeTstzRow::create(
             &mut ctx,
-            Phase85G0RangeTstzRow {
+            G0RangeTstzRow {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -742,7 +742,7 @@ async fn range_tstz_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     }
 
     let probe = OffsetDateTime::from_unix_timestamp(1_700_043_200).expect("valid timestamp");
-    let rows = Phase85G0RangeTstzRow::objects()
+    let rows = G0RangeTstzRow::objects()
         .filter(|f| f.booking_window().explicit_pg_predicate().contains(probe))
         .fetch_all(&mut ctx)
         .await
@@ -753,7 +753,7 @@ async fn range_tstz_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85215RangeTsRow])]
+#[djogi::djogi_test(sync_models = [RangeTsRow])]
 async fn range_ts_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     let lower_a = PrimitiveDateTime::new(
         time::Date::from_calendar_date(2026, time::Month::January, 1).expect("valid lower date"),
@@ -772,9 +772,9 @@ async fn range_ts_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
         (Range::inclusive_exclusive(lower_a, upper_a), "a"),
         (Range::inclusive_exclusive(lower_b, upper_b), "b"),
     ] {
-        Phase85215RangeTsRow::create(
+        RangeTsRow::create(
             &mut ctx,
-            Phase85215RangeTsRow {
+            RangeTsRow {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -790,7 +790,7 @@ async fn range_ts_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
         time::Date::from_calendar_date(2026, time::Month::January, 1).expect("valid probe date"),
         time::Time::from_hms(12, 0, 0).expect("valid probe time"),
     );
-    let rows = Phase85215RangeTsRow::objects()
+    let rows = RangeTsRow::objects()
         .filter(|f| f.local_window().explicit_pg_predicate().contains(probe))
         .fetch_all(&mut ctx)
         .await
@@ -801,7 +801,7 @@ async fn range_ts_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0RangeDateRow])]
+#[djogi::djogi_test(sync_models = [G0RangeDateRow])]
 async fn range_date_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     let jan_1 = time::Date::from_calendar_date(2026, time::Month::January, 1).expect("valid date");
     let jan_5 = time::Date::from_calendar_date(2026, time::Month::January, 5).expect("valid date");
@@ -813,9 +813,9 @@ async fn range_date_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
         (Range::inclusive_exclusive(jan_1, jan_5), "a"),
         (Range::inclusive_exclusive(jan_10, jan_15), "b"),
     ] {
-        Phase85G0RangeDateRow::create(
+        G0RangeDateRow::create(
             &mut ctx,
-            Phase85G0RangeDateRow {
+            G0RangeDateRow {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -828,7 +828,7 @@ async fn range_date_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     }
 
     let probe = time::Date::from_calendar_date(2026, time::Month::January, 3).expect("valid date");
-    let rows = Phase85G0RangeDateRow::objects()
+    let rows = G0RangeDateRow::objects()
         .filter(|f| f.span_date().explicit_pg_predicate().contains(probe))
         .fetch_all(&mut ctx)
         .await
@@ -839,7 +839,7 @@ async fn range_date_contains_element_filter_rows(mut ctx: djogi::DjogiContext) {
     );
 }
 
-#[djogi::djogi_test(sync_models = [Phase85G0NullableRangeI64Row])]
+#[djogi::djogi_test(sync_models = [G0NullableRangeI64Row])]
 async fn nullable_range_i64_present_only_contains_element_filter_rows(
     mut ctx: djogi::DjogiContext,
 ) {
@@ -848,9 +848,9 @@ async fn nullable_range_i64_present_only_contains_element_filter_rows(
         (Some(Range::inclusive_exclusive(5_i64, 10_i64)), "b"),
         (None, "nil"),
     ] {
-        Phase85G0NullableRangeI64Row::create(
+        G0NullableRangeI64Row::create(
             &mut ctx,
-            Phase85G0NullableRangeI64Row {
+            G0NullableRangeI64Row {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -862,7 +862,7 @@ async fn nullable_range_i64_present_only_contains_element_filter_rows(
         .expect("seed nullable i64 range row");
     }
 
-    let rows = Phase85G0NullableRangeI64Row::objects()
+    let rows = G0NullableRangeI64Row::objects()
         .filter(|f| f.maybe_span64().some().contains(3_i64))
         .fetch_all(&mut ctx)
         .await

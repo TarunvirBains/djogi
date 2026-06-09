@@ -25,7 +25,7 @@
 // # Schema
 //
 // `#[djogi_test(sync_models = [TrackedPoint])]` provisions a single
-// `tracked_points_p8c` table mirroring the elephant-tracker per-elephant
+// `tracked_points` table mirroring the elephant-tracker per-elephant
 // location model: `(id, herd_id, location)`.
 
 use djogi::geo::{GeoPoint, Polygon};
@@ -38,7 +38,7 @@ use djogi::prelude::*;
 /// Point with group id — mirrors the `(id, herd_id, location)` triple from the
 /// elephant-tracker mating-pairs demo, simplified to the shape these
 /// spatial-aggregate tests actually exercise.
-#[model(table = "tracked_points_p8c", pk = HeerId, no_default)]
+#[model(table = "tracked_points", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct TrackedPoint {
     pub herd_id: i64,

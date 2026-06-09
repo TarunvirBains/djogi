@@ -1,6 +1,6 @@
 // Live coverage for `bulk_create` pre-allocation.
 //
-// The post-T5 emission dispatches on `pk_kind`:
+// The emission dispatches on `pk_kind`:
 //
 // - `HeerId` / `HeerIdDesc` / `RanjId` / `RanjIdDesc` / custom DB-gen:
 //   pre-allocate `N` ids in one round-trip through
@@ -20,7 +20,7 @@ use djogi::types::{HeerId, HeerIdRecencyBiased, RanjId, RanjIdRecencyBiased};
 
 // ── HeerId — ascending, one round-trip ────────────────────────────────
 
-#[model(table = "phase7_zero2_t5_bulk_asc", pk = HeerId)]
+#[model(table = "bulk_asc", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct AscRow {
     pub name: String,
@@ -60,7 +60,7 @@ async fn heerid_bulk_create_pre_allocates_and_preserves_ascending_order(mut ctx:
 
 // ── HeerIdRecencyBiased — descending, one round-trip ──────────────────
 
-#[model(table = "phase7_zero2_t5_bulk_desc", pk = HeerIdRecencyBiased)]
+#[model(table = "bulk_desc", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct DescRow {
     pub name: String,
@@ -103,7 +103,7 @@ async fn heerid_desc_bulk_create_pre_allocates_and_preserves_descending_order(
 
 // ── RanjId — distinct ids, one round-trip ─────────────────────────────
 
-#[model(table = "phase7_zero2_t5_bulk_ranj", pk = RanjId)]
+#[model(table = "bulk_ranj", pk = RanjId)]
 #[derive(Debug, Clone)]
 pub struct RanjRow {
     pub name: String,
@@ -138,7 +138,7 @@ async fn ranjid_bulk_create_pre_allocates_distinct_non_sentinel_ids(mut ctx: Djo
 
 // ── RanjIdRecencyBiased — distinct ids, one round-trip ────────────────
 
-#[model(table = "phase7_zero2_t5_bulk_ranj_desc", pk = RanjIdRecencyBiased)]
+#[model(table = "bulk_ranj_desc", pk = RanjIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct RanjDescRow {
     pub name: String,
