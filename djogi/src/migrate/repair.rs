@@ -800,7 +800,7 @@ async fn repair_checksum_drift_pinned(
     // Load the row inside the lock window — the `before` values must
     // be captured atomically with the mutation so the audit trail is
     // consistent even if another agent races.
-    let row = match load_row(ctx, version).await {
+    let row = match load_row(ctx, version, &bucket.app).await {
         Ok(r) => r,
         Err(e) => {
             let _released = release_advisory_lock(ctx, lock_key).await;
@@ -820,8 +820,8 @@ async fn repair_checksum_drift_pinned(
         .execute(
             "UPDATE djogi_schema_migrations \
              SET checksum_up = $2, checksum_down = $3 \
-             WHERE version = $1",
-            &[&version, &new_checksum_up, &new_down_owned],
+             WHERE version = $1 AND app_label = $4",
+            &[&version, &new_checksum_up, &new_down_owned, &bucket.app],
         )
         .await
         .map_err(|e| RepairError::LedgerIo { source: e })
@@ -949,7 +949,7 @@ async fn repair_partial_apply_pinned(
     acquire_advisory_lock_repair(ctx, bucket, lock_key).await?;
 
     // Load row and check status inside the lock window.
-    let row = match load_row(ctx, version).await {
+    let row = match load_row(ctx, version, &bucket.app).await {
         Ok(r) => r,
         Err(e) => {
             let _released = release_advisory_lock(ctx, lock_key).await;
@@ -988,8 +988,8 @@ async fn repair_partial_apply_pinned(
         .execute(
             "UPDATE djogi_schema_migrations \
              SET status = $2, applied_steps_count = $3, partial_apply_note = $4 \
-             WHERE version = $1",
-            &[&version, &status_str, &target_steps, &note],
+             WHERE version = $1 AND app_label = $5",
+            &[&version, &status_str, &target_steps, &note, &bucket.app],
         )
         .await
         .map_err(|e| RepairError::LedgerIo { source: e })
@@ -1173,7 +1173,7 @@ async fn repair_resume_body(
 ) -> Result<RepairReport, RepairError> {
     // Load row and run all validation inside the lock window to prevent
     // TOCTOU races (GH #274).
-    let row = load_row(ctx, version).await?;
+    let row = load_row(ctx, version, &bucket.app).await?;
     ensure_row_matches_bucket_app(&row, bucket, version)?;
 
     let plan_checksum = compute_plan_checksum_up(plan);
@@ -1219,7 +1219,7 @@ async fn repair_resume_body(
 
     // The runner CRUD helpers (`update_progress` / `mark_partial`)
     // take the row's BIGINT id. Look it up once.
-    let ledger_id = lookup_ledger_id_by_version(ctx, &row.version).await?;
+    let ledger_id = lookup_ledger_id_by_version(ctx, &row.version, &bucket.app).await?;
 
     // #366: Pre-strict leaf-identity check with lenient lookup so a zero-leaf↔non-empty
     // topology drift surfaces as LeafIdentityMismatch rather than PartitionExpansionNoLeaves.
@@ -1384,8 +1384,8 @@ async fn repair_resume_body(
     ctx.execute(
         "UPDATE djogi_schema_migrations \
          SET status = 'applied', applied_steps_count = $2, partial_apply_note = NULL \
-         WHERE version = $1",
-        &[&row_version, &applied],
+         WHERE version = $1 AND app_label = $3",
+        &[&row_version, &applied, &bucket.app],
     )
     .await
     .map_err(|e| RepairError::LedgerIo { source: e })
@@ -1427,11 +1427,13 @@ fn compute_plan_checksum_up(plan: &MigrationPlan) -> String {
 async fn lookup_ledger_id_by_version(
     ctx: &mut DjogiContext,
     version: &str,
+    app_label: &str,
 ) -> Result<i64, RepairError> {
     let row = ctx
         .query_one(
-            "SELECT id FROM djogi_schema_migrations WHERE version = $1",
-            &[&version],
+            "SELECT id FROM djogi_schema_migrations \
+             WHERE version = $1 AND app_label = $2",
+            &[&version, &app_label],
         )
         .await
         .map_err(|e| RepairError::LedgerIo { source: e })?;
@@ -1583,8 +1585,12 @@ async fn repair_snapshot_rebuild_pinned(
 /// Delegates to [`ledger::load_full_row_by_version`] — the 14-column
 /// SELECT and try_get cascade live in ledger.rs to avoid triplication
 /// across runner / repair / verify (cluster-2 simplify Finding 3).
-async fn load_row(ctx: &mut DjogiContext, version: &str) -> Result<LedgerRow, RepairError> {
-    load_full_row_by_version(ctx, version)
+async fn load_row(
+    ctx: &mut DjogiContext,
+    version: &str,
+    app_label: &str,
+) -> Result<LedgerRow, RepairError> {
+    load_full_row_by_version(ctx, version, app_label)
         .await
         .map_err(|e| RepairError::LedgerIo { source: e })?
         .ok_or_else(|| RepairError::VersionNotFound {

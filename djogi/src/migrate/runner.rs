@@ -1350,7 +1350,12 @@ async fn apply_plan_inner(
         Ok(id) => id,
         Err(e) => {
             if is_unique_violation(&e) {
-                return Err(classify_duplicate_version_collision(ctx, &runner_ctx.version).await);
+                return Err(classify_duplicate_version_collision(
+                    ctx,
+                    &runner_ctx.version,
+                    &runner_ctx.bucket.app,
+                )
+                .await);
             }
             return Err(RunnerError::LedgerWriteFailed {
                 version: runner_ctx.version.clone(),
@@ -2122,7 +2127,7 @@ async fn rollback_handle_lock(
 ) -> Result<RollbackReport, RollbackError> {
     // 3. Confirm the row exists and is in a rollbackable status — inside
     // the lock so the status read is atomic with the subsequent write.
-    let row = load_ledger_row_for_version(ctx, &runner_ctx.version)
+    let row = load_ledger_row_for_version(ctx, &runner_ctx.version, &runner_ctx.bucket.app)
         .await
         .map_err(|e| {
             RollbackError::Runner(RunnerError::LedgerQueryFailed {
@@ -2351,8 +2356,8 @@ async fn rollback_inner(
              applied_steps_count = 0, \
              total_steps = NULL, \
              partial_apply_note = $2 \
-         WHERE version = $1",
-        &[&runner_ctx.version, &note],
+         WHERE version = $1 AND app_label = $3",
+        &[&runner_ctx.version, &note, &runner_ctx.bucket.app],
     )
     .await
     .map_err(|e| {
@@ -2615,7 +2620,12 @@ async fn fake_apply_inner(
         Ok(id) => id,
         Err(e) => {
             if is_unique_violation(&e) {
-                return Err(classify_duplicate_version_collision(ctx, &runner_ctx.version).await);
+                return Err(classify_duplicate_version_collision(
+                    ctx,
+                    &runner_ctx.version,
+                    &runner_ctx.bucket.app,
+                )
+                .await);
             }
             return Err(RunnerError::LedgerWriteFailed {
                 version: runner_ctx.version.clone(),
@@ -2815,7 +2825,12 @@ async fn baseline_inner(
         Ok(id) => id,
         Err(e) => {
             if is_unique_violation(&e) {
-                return Err(classify_duplicate_version_collision(ctx, &runner_ctx.version).await);
+                return Err(classify_duplicate_version_collision(
+                    ctx,
+                    &runner_ctx.version,
+                    &runner_ctx.bucket.app,
+                )
+                .await);
             }
             return Err(RunnerError::LedgerWriteFailed {
                 version: runner_ctx.version.clone(),
@@ -2863,14 +2878,15 @@ pub(crate) fn checksum_for_baseline_snapshot(schema: &super::schema::AppliedSche
 
 /// Read a ledger row for a given version. Used by the rollback path
 /// to confirm the row is in a state that admits rollback.
-/// Delegates to [`ledger::load_full_row_by_version`] — the 14-column
+/// Delegates to [`ledger::load_full_row_by_version`] — the 15-column
 /// SELECT and try_get cascade live in ledger.rs to avoid triplication
-/// across runner / repair / verify (cluster-2 simplify Finding 3).
+/// across runner / repair / verify.
 async fn load_ledger_row_for_version(
     ctx: &mut DjogiContext,
     version: &str,
+    app_label: &str,
 ) -> Result<Option<LedgerRow>, DjogiError> {
-    load_full_row_by_version(ctx, version).await
+    load_full_row_by_version(ctx, version, app_label).await
 }
 
 // ── Segment dispatch helpers ──────────────────────────────────────────────
@@ -4121,8 +4137,9 @@ fn db_code_matches(db: &DbError, target: &tokio_postgres::error::SqlState) -> bo
 async fn classify_duplicate_version_collision(
     ctx: &mut DjogiContext,
     version: &str,
+    app_label: &str,
 ) -> RunnerError {
-    let row = match load_ledger_row_for_version(ctx, version).await {
+    let row = match load_ledger_row_for_version(ctx, version, app_label).await {
         Ok(Some(row)) => row,
         Ok(None) => {
             return RunnerError::LedgerQueryFailed {
@@ -4143,7 +4160,7 @@ async fn classify_duplicate_version_collision(
 
     match row.status {
         LedgerStatus::Applied | LedgerStatus::Faked | LedgerStatus::Baseline => {
-            let applied_at = load_applied_at(ctx, version).await;
+            let applied_at = load_applied_at(ctx, version, app_label).await;
             RunnerError::VersionAlreadyApplied {
                 version: version.to_string(),
                 applied_at,
@@ -4211,11 +4228,16 @@ async fn find_higher_applied_version(
 /// `version` we just collided with. Returns `None` if the lookup
 /// fails — the operator-facing message degrades gracefully because
 /// the message is informational only.
-async fn load_applied_at(ctx: &mut DjogiContext, version: &str) -> Option<OffsetDateTime> {
+async fn load_applied_at(
+    ctx: &mut DjogiContext,
+    version: &str,
+    app_label: &str,
+) -> Option<OffsetDateTime> {
     let row = ctx
         .query_opt(
-            "SELECT applied_at FROM djogi_schema_migrations WHERE version = $1",
-            &[&version],
+            "SELECT applied_at FROM djogi_schema_migrations \
+             WHERE version = $1 AND app_label = $2",
+            &[&version, &app_label],
         )
         .await
         .ok()??;
@@ -5935,7 +5957,7 @@ mod tests {
         .expect("insert RolledBack row");
 
         // Attempt to classify via the runner's collision path
-        let result = classify_duplicate_version_collision(&mut ctx, version).await;
+        let result = classify_duplicate_version_collision(&mut ctx, version, "").await;
         match result {
             RunnerError::VersionCollisionNonTerminal { ref status, .. } => {
                 assert!(
@@ -5976,7 +5998,7 @@ mod tests {
         .await
         .expect("insert Pending row");
 
-        let result = classify_duplicate_version_collision(&mut ctx, version).await;
+        let result = classify_duplicate_version_collision(&mut ctx, version, "").await;
         match result {
             RunnerError::VersionCollisionNonTerminal { ref status, .. } => {
                 assert!(
@@ -7534,8 +7556,14 @@ mod tests {
         let guard = acquire_test_workspace_guard();
 
         let version = "V20260609000000__t397";
-        let bucket_a = BucketKey { database: "main".into(), app: "users".into() };
-        let bucket_b = BucketKey { database: "main".into(), app: "system".into() };
+        let bucket_a = BucketKey {
+            database: "main".into(),
+            app: "users".into(),
+        };
+        let bucket_b = BucketKey {
+            database: "main".into(),
+            app: "system".into(),
+        };
 
         // Clean up any leftover tables from prior runs.
         let _ = ctx.execute("DROP TABLE IF EXISTS t397_users", &[]).await;
@@ -7565,7 +7593,9 @@ mod tests {
             .await
             .expect("bucket B must apply on its own (version, app_label) stream");
 
-        let rows = super::ledger::select_all(&mut ctx).await.expect("ledger readable");
+        let rows = super::ledger::select_all(&mut ctx)
+            .await
+            .expect("ledger readable");
         let same_version: Vec<_> = rows.iter().filter(|r| r.version == version).collect();
         assert_eq!(same_version.len(), 2, "one ledger row per app stream");
         assert!(same_version.iter().any(|r| r.app_label == "users"));

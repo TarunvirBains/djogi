@@ -129,18 +129,19 @@ impl TryFrom<&tokio_postgres::Row> for LedgerRow {
     }
 }
 
-/// Load the full ledger row for a given `version`. Returns `None` when
-/// the row is absent (not a hard error — callers that distinguish
-/// "missing" from "DB error" handle both arms). Surfaced as a
+/// Load the full ledger row for a given `(version, app_label)` stream key.
+/// Returns `None` when the row is absent (not a hard error — callers that
+/// distinguish "missing" from "DB error" handle both arms). Surfaced as a
 /// `pub(crate)` helper so runner, repair, and verify can share the
 /// 15-column SELECT without duplicating the column list or the
 /// try_get cascade.
 pub(crate) async fn load_full_row_by_version(
     ctx: &mut DjogiContext,
     version: &str,
+    app_label: &str,
 ) -> Result<Option<LedgerRow>, DjogiError> {
-    let sql = format!("{LEDGER_SELECT_COLS} WHERE version = $1");
-    let row_opt = ctx.query_opt(&sql, &[&version]).await?;
+    let sql = format!("{LEDGER_SELECT_COLS} WHERE version = $1 AND app_label = $2");
+    let row_opt = ctx.query_opt(&sql, &[&version, &app_label]).await?;
     let Some(row) = row_opt else {
         return Ok(None);
     };
@@ -999,7 +1000,9 @@ mod tests {
         ctx.raw_ddl(old_ddl).await.expect("old DDL creates");
 
         // Run bootstrap — should upgrade the constraint.
-        bootstrap(&mut ctx).await.expect("bootstrap upgrades old constraint");
+        bootstrap(&mut ctx)
+            .await
+            .expect("bootstrap upgrades old constraint");
 
         // Insert two rows with the same version but different app labels.
         let version = "V20260609000000__upgrade_test";

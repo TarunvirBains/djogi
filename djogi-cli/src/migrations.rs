@@ -1437,7 +1437,9 @@ async fn apply_one_pending(
                 // Failed and RolledBack rows both block re-apply, but callers
                 // gate which statuses may be cleaned before reaching this
                 // status-agnostic DELETE helper.
-                if let Err(e) = delete_reapply_blocking_ledger_row(ctx, &pending.version).await {
+                if let Err(e) =
+                    delete_reapply_blocking_ledger_row(ctx, &pending.version, &bucket.app).await
+                {
                     return ApplyResult::Refused(format!(
                         "clean {} ledger row: {e}",
                         existing_status.as_db_str()
@@ -1548,10 +1550,12 @@ fn runner_error_exit_code(_error: &RunnerError) -> i32 {
 async fn delete_reapply_blocking_ledger_row(
     ctx: &mut djogi::context::DjogiContext,
     version: &str,
+    app_label: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ctx.raw_execute(
-        "DELETE FROM djogi_schema_migrations WHERE version = $1",
-        &[&version],
+        "DELETE FROM djogi_schema_migrations \
+         WHERE version = $1 AND app_label = $2",
+        &[&version, &app_label],
     )
     .await?;
     Ok(())
