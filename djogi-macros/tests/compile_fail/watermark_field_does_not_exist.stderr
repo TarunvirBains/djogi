@@ -44,7 +44,7 @@ error[E0599]: the method `invalidate` exists for struct `Arc<Punnu<WatermarkMiss
    = note: the following trait bounds were not satisfied:
            `WatermarkMissingRow: Cacheable`
 note: the trait `Cacheable` must be implemented
-  --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/sassi-0.1.0-beta.3/src/cacheable.rs:43:1
+  --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/sassi-0.1.0-beta.4/src/cacheable.rs:43:1
    |
 43 | pub trait Cacheable: Send + Sync + 'static {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
