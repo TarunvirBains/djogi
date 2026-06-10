@@ -3327,6 +3327,7 @@ fn baseline_error_exit_code(err: &RunnerError) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use djogi::__bypass::RawAccessExt as _;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -3789,6 +3790,356 @@ mod tests {
             "error should name both apps and mention cycle, got: {err}"
         );
         let _ = fs::remove_dir_all(&work);
+    }
+
+    /// End-to-end test: two buckets, same version, `system.event_log`
+    /// FK→`users.users`, composed and applied through real Postgres.
+    /// Asserts both tables exist, the FK constraint exists in pg_constraint,
+    /// and the ledger has exactly two rows for the composed version.
+    /// Requires DATABASE_URL to be set (CI env or local test harness).
+    #[test]
+    #[ignore] // requires live Postgres — run with --include-ignored in CI
+    fn cross_bucket_fk_applies_in_dependency_order() {
+        let database_url = std::env::var("DATABASE_URL").expect(
+            "DATABASE_URL must be set for E2E tests \
+             (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
+        );
+
+        // Unique suffix for table names — avoids collisions when tests run in parallel.
+        static E2E_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = E2E_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let users_table = format!("e2e_users_{n}");
+        let event_log_table = format!("e2e_event_log_{n}");
+
+        let work = temp_workspace("cross-bucket-fk-e2e");
+        let guard = djogi::migrate::acquire_workspace_lock(
+            &work.join(LOCK_FILE_NAME),
+            std::time::Duration::from_secs(5),
+        )
+        .expect("lock workspace");
+
+        // Construct models: users bucket (PK only) + system bucket (FK→users).
+        let mut models: std::collections::BTreeMap<
+            djogi::migrate::BucketKey,
+            djogi::migrate::AppliedSchema,
+        > = std::collections::BTreeMap::new();
+
+        let users_bucket = BucketKey {
+            database: "main".into(),
+            app: "users".into(),
+        };
+        let system_bucket = BucketKey {
+            database: "main".into(),
+            app: "system".into(),
+        };
+
+        {
+            let mut users_schema = djogi::migrate::AppliedSchema {
+                djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                enums: std::collections::BTreeMap::new(),
+                format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                generated_at: "2026-06-10T00:00:00Z".to_string(),
+                indexes: Vec::new(),
+                models: std::collections::BTreeMap::new(),
+                registered_apps: vec!["users".to_string()],
+            };
+            users_schema.models.insert(
+                users_table.clone(),
+                djogi::migrate::TableSchema {
+                    app: Some("users".to_string()),
+                    columns: vec![djogi::migrate::ColumnSchema {
+                        name: "id".to_string(),
+                        sql_type: "BIGINT".to_string(),
+                        nullable: false,
+                        default_sql: Some("heerid_next_desc()".to_string()),
+                        ..default_col()
+                    }],
+                    primary_key: djogi::migrate::PrimaryKeySchema {
+                        columns: vec!["id".to_string()],
+                        kind: djogi::migrate::PkKindSchema::HeerIdRecencyBiased,
+                    },
+                    table: users_table.clone(),
+                    ..default_table()
+                },
+            );
+            models.insert(users_bucket.clone(), users_schema);
+        }
+
+        {
+            let mut system_schema = djogi::migrate::AppliedSchema {
+                djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                enums: std::collections::BTreeMap::new(),
+                format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                generated_at: "2026-06-10T00:00:00Z".to_string(),
+                indexes: Vec::new(),
+                models: std::collections::BTreeMap::new(),
+                registered_apps: vec!["system".to_string()],
+            };
+            system_schema.models.insert(
+                event_log_table.clone(),
+                djogi::migrate::TableSchema {
+                    app: Some("system".to_string()),
+                    columns: vec![
+                        djogi::migrate::ColumnSchema {
+                            name: "id".to_string(),
+                            sql_type: "BIGINT".to_string(),
+                            nullable: false,
+                            default_sql: Some("heerid_next_desc()".to_string()),
+                            ..default_col()
+                        },
+                        djogi::migrate::ColumnSchema {
+                            name: "user_id".to_string(),
+                            sql_type: "BIGINT".to_string(),
+                            nullable: false,
+                            foreign_key: Some(djogi::migrate::ForeignKeySchema {
+                                deferrable: false,
+                                initially_deferred: false,
+                                on_delete: djogi::migrate::OnDeleteSchema::Restrict,
+                                ref_column: "id".to_string(),
+                                ref_table: users_table.clone(),
+                            }),
+                            ..default_col()
+                        },
+                    ],
+                    primary_key: djogi::migrate::PrimaryKeySchema {
+                        columns: vec!["id".to_string()],
+                        kind: djogi::migrate::PkKindSchema::HeerIdRecencyBiased,
+                    },
+                    table: event_log_table.clone(),
+                    ..default_table()
+                },
+            );
+            models.insert(system_bucket.clone(), system_schema);
+        }
+
+        // Empty snapshots — fresh compose so differ sees all tables as new.
+        let mut snapshots = std::collections::BTreeMap::new();
+        for bucket in [&users_bucket, &system_bucket] {
+            snapshots.insert(
+                bucket.clone(),
+                djogi::migrate::AppliedSchema {
+                    djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                    enums: std::collections::BTreeMap::new(),
+                    format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                    generated_at: "2026-06-10T00:00:00Z".to_string(),
+                    indexes: Vec::new(),
+                    models: std::collections::BTreeMap::new(),
+                    registered_apps: vec![bucket.app.clone()],
+                },
+            );
+        }
+
+        let apps = vec![
+            djogi::migrate::AppLifecycle {
+                label: "users".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            djogi::migrate::AppLifecycle {
+                label: "system".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        // Compose — generates pending files + migration SQL.
+        let compose_req = djogi::migrate::ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "cross-bucket-fk",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: time::OffsetDateTime::UNIX_EPOCH
+                + time::Duration::days(19726)
+                + time::Duration::seconds(0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let compose_report = djogi::migrate::compose(compose_req).expect("compose");
+        assert!(
+            !compose_report.composed_buckets.is_empty(),
+            "compose should produce delta buckets"
+        );
+
+        // Extract the composed version from the report.
+        let composed_version = &compose_report.composed_buckets[0].version;
+
+        // Write minimal workspace config for run_apply.
+        fs::write(
+            work.join("Djogi.toml"),
+            format!(
+                "[database]\nurl = \"{database_url}\"\n\
+                 max_connections = 1\ndev_mode = false\n\
+                 [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
+            ),
+        )
+        .unwrap();
+
+        // Drive the apply loop through run_apply (same path as `djogi migrations apply`).
+        let exit = {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(run_apply(
+                &work,
+                &FakeMode::Real,
+                None,
+                true, // single_node_dev: bypass node identity for E2E test
+            ))
+        };
+
+        assert_eq!(exit, 0, "apply should succeed (tables created in FK dependency order)");
+
+        // Connect to the database and verify results.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime for verification");
+        runtime.block_on(async {
+            let pool = djogi::pg::pool::DjogiPool::connect(&database_url)
+                .await
+                .expect("connect for verification");
+            let mut ctx = djogi::context::DjogiContext::from_pool(pool);
+
+            // Assert 1: FK constraint exists on event_log → users.
+            let fk_rows = ctx
+                .raw_rows(
+                    "SELECT conname FROM pg_constraint \
+                     WHERE conrelid = $1::regclass AND contype = 'f' AND confrelid = $2::regclass",
+                    &[&event_log_table.as_str(), &users_table.as_str()],
+                )
+                .await
+                .expect("query pg_constraint");
+            assert!(
+                !fk_rows.is_empty(),
+                "FK constraint should exist from {event_log_table} → {users_table}"
+            );
+
+            // Assert 2: Ledger has exactly TWO rows for the composed version
+            // (one per bucket: users and system). Do NOT assert total row count —
+            // phase-zero row also exists at PHASE_ZERO_VERSION.
+            let ledger_rows = ctx
+                .raw_rows(
+                    "SELECT app_label FROM djogi_schema_migrations \
+                     WHERE version = $1 AND status = 'applied'",
+                    &[&composed_version.as_str()],
+                )
+                .await
+                .expect("query ledger");
+            assert_eq!(
+                ledger_rows.len(),
+                2,
+                "ledger should have exactly 2 rows for composed version {composed_version} \
+                 (users + system), got {} rows",
+                ledger_rows.len()
+            );
+            let app_labels: Vec<String> = ledger_rows
+                .iter()
+                .map(|row| row.try_get(0).expect("decode app_label"))
+                .collect();
+            assert!(
+                app_labels.contains(&"users".to_string()),
+                "ledger should have 'users' bucket: {app_labels:?}"
+            );
+            assert!(
+                app_labels.contains(&"system".to_string()),
+                "ledger should have 'system' bucket: {app_labels:?}"
+            );
+
+            // Assert 3: Verify ordering — users applied before system.
+            let ordered_rows = ctx
+                .raw_rows(
+                    "SELECT app_label, id FROM djogi_schema_migrations \
+                     WHERE version = $1 AND status = 'applied' ORDER BY id",
+                    &[&composed_version.as_str()],
+                )
+                .await
+                .expect("query ledger ordered");
+            assert_eq!(ordered_rows[0].try_get::<_, String>(0).unwrap(), "users");
+            assert_eq!(ordered_rows[1].try_get::<_, String>(0).unwrap(), "system");
+
+            // Cleanup: drop the test tables and delete ledger rows for this version.
+            let _ = ctx
+                .raw_execute(
+                    &format!("DROP TABLE IF EXISTS {event_log_table}"),
+                    &[],
+                )
+                .await;
+            let _ = ctx
+                .raw_execute(&format!("DROP TABLE IF EXISTS {users_table}"), &[])
+                .await;
+            let _ = ctx
+                .raw_execute(
+                    "DELETE FROM djogi_schema_migrations WHERE version = $1",
+                    &[&composed_version.as_str()],
+                )
+                .await;
+        });
+
+        drop(guard);
+        let _ = fs::remove_dir_all(&work);
+
+        // Note: reverting the stage-2 topo sort in discover_pending_plans
+        // (removing the order_pending_groups_by_dependencies call) would cause
+        // this test to fail — `system` sorts before `users` alphabetically,
+        // so the FK constraint on event_log.user_id → users.id would fire
+        // before the users table exists (SQLSTATE 42P01 undefined_table).
+    }
+
+    fn default_col() -> djogi::migrate::ColumnSchema {
+        djogi::migrate::ColumnSchema {
+            check: None,
+            comment: None,
+            default_sql: None,
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "".to_string(),
+            unique: false,
+            type_change_using: None,
+        }
+    }
+
+    fn default_table() -> djogi::migrate::TableSchema {
+        djogi::migrate::TableSchema {
+            app: None,
+            columns: Vec::new(),
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: djogi::migrate::PrimaryKeySchema {
+                columns: Vec::new(),
+                kind: djogi::migrate::PkKindSchema::Composite,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
+            tenant_key: None,
+        }
     }
 
     #[test]
