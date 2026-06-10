@@ -1357,7 +1357,7 @@ fn order_pending_groups_by_dependencies(
         let version = &out[i].plan.version;
 
         // Build the dependency graph within this group.
-        let group_len = (j - i) as usize;
+        let group_len = j - i;
         let mut in_degree = vec![0usize; group_len];
         let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); group_len];
 
@@ -1366,9 +1366,9 @@ fn order_pending_groups_by_dependencies(
                 // Find the index of the dependency within this group.
                 // If not found, it's outside the group — ignore (REQ-398-6).
                 let mut found = None;
-                for m in i..j {
-                    if out[m].bucket.app.as_str() == dep_app.as_str() {
-                        found = Some(m - i);
+                for (m_offset, entry) in out[i..j].iter().enumerate() {
+                    if entry.bucket.app.as_str() == dep_app.as_str() {
+                        found = Some(m_offset);
                         break;
                     }
                 }
@@ -1383,23 +1383,18 @@ fn order_pending_groups_by_dependencies(
             }
         }
 
-        // Kahn's algorithm with BTreeSet for deterministic tiebreak.
-        // The stage-1 sort already ordered by path (alphabetical app),
-        // so iterating in index order gives the deterministic tiebreak.
-        let mut ready: Vec<usize> = (0..group_len)
-            .filter(|&idx| in_degree[idx] == 0)
-            .collect();
-        ready.sort(); // alphabetical tiebreak from stage-1 ordering
+        // Kahn's algorithm with BTreeSet for deterministic (min-first) tiebreak.
+        let mut ready: std::collections::BTreeSet<usize> =
+            (0..group_len).filter(|&idx| in_degree[idx] == 0).collect();
 
         let mut ordered = Vec::with_capacity(group_len);
-        while let Some(idx) = ready.pop() {
+        while let Some(idx) = ready.iter().next().cloned() {
+            ready.remove(&idx);
             ordered.push(idx);
             for &dependent in &reverse[idx] {
                 in_degree[dependent] -= 1;
                 if in_degree[dependent] == 0 {
-                    // Insert in sorted position to maintain tiebreak order.
-                    ready.push(dependent);
-                    ready.sort();
+                    ready.insert(dependent);
                 }
             }
         }
@@ -3698,6 +3693,34 @@ mod tests {
         let plans = discover_pending_plans(&work).expect("discovers");
         let apps: Vec<&str> = plans.iter().map(|p| p.bucket.app.as_str()).collect();
         assert_eq!(apps, ["users", "system"]);
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Buckets with no dependencies should be ordered alphabetically by app
+    /// name as a deterministic tiebreak in Kahn's topological sort.
+    #[test]
+    fn discover_orders_no_dependency_buckets_alphabetically() {
+        let work = temp_workspace("discover_pending_alpha_tiebreak");
+        // Three buckets, same version, no dependencies — should emit alpha, bravo, charlie
+        for app in &["charlie", "bravo", "alpha"] {
+            write_pending_json(
+                &djogi::migrate::pending_json_path(
+                    &work,
+                    &BucketKey {
+                        database: "main".to_string(),
+                        app: app.to_string(),
+                    },
+                ),
+                "main",
+                app,
+                "V20260609000000__initial",
+                &[],
+            );
+        }
+
+        let plans = discover_pending_plans(&work).expect("discovers");
+        let apps: Vec<&str> = plans.iter().map(|p| p.bucket.app.as_str()).collect();
+        assert_eq!(apps, ["alpha", "bravo", "charlie"]);
         let _ = fs::remove_dir_all(&work);
     }
 
