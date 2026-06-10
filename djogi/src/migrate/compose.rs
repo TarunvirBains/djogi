@@ -583,7 +583,7 @@ pub struct PendingPlan {
 /// Pending-JSON format version. Bumped when the [`PendingPlan`] shape
 /// changes incompatibly.
 ///
-/// Format `"2"`: added `depends_on` field (cross-bucket FK ordering, #398).
+/// Format `"2"`: added `depends_on` field (cross-bucket FK ordering).
 /// Stale format-`"1"` pending files are rejected with
 /// [`PendingLoadError::UnsupportedFormatVersion`]; the operator must
 /// recompose. Pending files use a stricter bump policy than snapshots
@@ -695,7 +695,7 @@ pub fn load_pending(path: &Path) -> Result<PendingPlan, PendingLoadError> {
     parse_pending_bytes(&bytes, Some(path.to_path_buf()))
 }
 
-// ── Cross-bucket FK dependency graph (#398) ────────────────────────────────
+// ── Cross-bucket FK dependency graph ─────────────────────────────────────
 
 /// Map every projected table name to its owning bucket, per database.
 /// Input is the same `models` map compose already diffs against.

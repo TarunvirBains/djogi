@@ -1308,7 +1308,7 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
             .then_with(|| a.path.cmp(&b.path))
     });
 
-    // Stage 2 — #398: within each (database, version, is_phase_zero) group,
+    // Stage 2: within each (database, version, is_phase_zero) group,
     // reorder by the recorded depends_on (Kahn; stage-1 alphabetical order
     // is the deterministic tiebreak). Dependencies naming buckets outside
     // the group are ignored — their migrations applied in an earlier run.
@@ -3796,15 +3796,10 @@ mod tests {
     /// FK→`users.users`, composed and applied through real Postgres.
     /// Asserts both tables exist, the FK constraint exists in pg_constraint,
     /// and the ledger has exactly two rows for the composed version.
-    /// Requires DATABASE_URL to be set (CI env or local test harness).
-    #[test]
-    #[ignore] // requires live Postgres — run with --include-ignored in CI
-    fn cross_bucket_fk_applies_in_dependency_order() {
-        let database_url = std::env::var("DATABASE_URL").expect(
-            "DATABASE_URL must be set for E2E tests \
-             (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
-        );
-
+    /// Uses `#[djogi_test]` for per-test database isolation (the macro drops
+    /// the test database on normal return or caught panic).
+    #[djogi::djogi_test]
+    async fn cross_bucket_fk_applies_in_dependency_order(mut ctx: djogi::context::DjogiContext) {
         // Unique suffix for table names — avoids collisions when tests run in parallel.
         static E2E_COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = E2E_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -3970,11 +3965,25 @@ mod tests {
         // Extract the composed version from the report.
         let composed_version = &compose_report.composed_buckets[0].version;
 
+        // `run_apply` reads config from a Djogi.toml file rather than accepting
+        // a DjogiContext, so we construct the per-test database URL by querying
+        // current_database() and replacing it in the admin DATABASE_URL.
+        let test_db = ctx
+            .raw_scalar::<String>("SELECT current_database()", &[])
+            .await
+            .expect("current_database");
+        let admin_url = std::env::var("DATABASE_URL").expect(
+            "DATABASE_URL must be set for djogi_test \
+             (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
+        );
+        let test_db_url = replace_db_in_url(&admin_url, &test_db)
+            .expect("construct per-test database URL from DATABASE_URL");
+
         // Write minimal workspace config for run_apply.
         fs::write(
             work.join("Djogi.toml"),
             format!(
-                "[database]\nurl = \"{database_url}\"\n\
+                "[database]\nurl = \"{test_db_url}\"\n\
                  max_connections = 1\ndev_mode = false\n\
                  [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
             ),
@@ -4000,88 +4009,62 @@ mod tests {
             "apply should succeed (tables created in FK dependency order)"
         );
 
-        // Connect to the database and verify results.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime for verification");
-        runtime.block_on(async {
-            let pool = djogi::pg::pool::DjogiPool::connect(&database_url)
-                .await
-                .expect("connect for verification");
-            let mut ctx = djogi::context::DjogiContext::from_pool(pool);
+        // Assert 1: FK constraint exists on event_log → users.
+        let fk_rows = ctx
+            .raw_rows(
+                "SELECT conname FROM pg_constraint \
+                 WHERE conrelid = $1::regclass AND contype = 'f' AND confrelid = $2::regclass",
+                &[&event_log_table.as_str(), &users_table.as_str()],
+            )
+            .await
+            .expect("query pg_constraint");
+        assert!(
+            !fk_rows.is_empty(),
+            "FK constraint should exist from {event_log_table} → {users_table}"
+        );
 
-            // Assert 1: FK constraint exists on event_log → users.
-            let fk_rows = ctx
-                .raw_rows(
-                    "SELECT conname FROM pg_constraint \
-                     WHERE conrelid = $1::regclass AND contype = 'f' AND confrelid = $2::regclass",
-                    &[&event_log_table.as_str(), &users_table.as_str()],
-                )
-                .await
-                .expect("query pg_constraint");
-            assert!(
-                !fk_rows.is_empty(),
-                "FK constraint should exist from {event_log_table} → {users_table}"
-            );
+        // Assert 2: Ledger has exactly TWO rows for the composed version
+        // (one per bucket: users and system). Do NOT assert total row count —
+        // phase-zero row also exists at PHASE_ZERO_VERSION.
+        let ledger_rows = ctx
+            .raw_rows(
+                "SELECT app_label FROM djogi_schema_migrations \
+                 WHERE version = $1 AND status = 'applied'",
+                &[&composed_version.as_str()],
+            )
+            .await
+            .expect("query ledger");
+        assert_eq!(
+            ledger_rows.len(),
+            2,
+            "ledger should have exactly 2 rows for composed version {composed_version} \
+             (users + system), got {} rows",
+            ledger_rows.len()
+        );
+        let app_labels: Vec<String> = ledger_rows
+            .iter()
+            .map(|row| row.try_get(0).expect("decode app_label"))
+            .collect();
+        assert!(
+            app_labels.contains(&"users".to_string()),
+            "ledger should have 'users' bucket: {app_labels:?}"
+        );
+        assert!(
+            app_labels.contains(&"system".to_string()),
+            "ledger should have 'system' bucket: {app_labels:?}"
+        );
 
-            // Assert 2: Ledger has exactly TWO rows for the composed version
-            // (one per bucket: users and system). Do NOT assert total row count —
-            // phase-zero row also exists at PHASE_ZERO_VERSION.
-            let ledger_rows = ctx
-                .raw_rows(
-                    "SELECT app_label FROM djogi_schema_migrations \
-                     WHERE version = $1 AND status = 'applied'",
-                    &[&composed_version.as_str()],
-                )
-                .await
-                .expect("query ledger");
-            assert_eq!(
-                ledger_rows.len(),
-                2,
-                "ledger should have exactly 2 rows for composed version {composed_version} \
-                 (users + system), got {} rows",
-                ledger_rows.len()
-            );
-            let app_labels: Vec<String> = ledger_rows
-                .iter()
-                .map(|row| row.try_get(0).expect("decode app_label"))
-                .collect();
-            assert!(
-                app_labels.contains(&"users".to_string()),
-                "ledger should have 'users' bucket: {app_labels:?}"
-            );
-            assert!(
-                app_labels.contains(&"system".to_string()),
-                "ledger should have 'system' bucket: {app_labels:?}"
-            );
-
-            // Assert 3: Verify ordering — users applied before system.
-            let ordered_rows = ctx
-                .raw_rows(
-                    "SELECT app_label, id FROM djogi_schema_migrations \
-                     WHERE version = $1 AND status = 'applied' ORDER BY id",
-                    &[&composed_version.as_str()],
-                )
-                .await
-                .expect("query ledger ordered");
-            assert_eq!(ordered_rows[0].try_get::<_, String>(0).unwrap(), "users");
-            assert_eq!(ordered_rows[1].try_get::<_, String>(0).unwrap(), "system");
-
-            // Cleanup: drop the test tables and delete ledger rows for this version.
-            let _ = ctx
-                .raw_execute(&format!("DROP TABLE IF EXISTS {event_log_table}"), &[])
-                .await;
-            let _ = ctx
-                .raw_execute(&format!("DROP TABLE IF EXISTS {users_table}"), &[])
-                .await;
-            let _ = ctx
-                .raw_execute(
-                    "DELETE FROM djogi_schema_migrations WHERE version = $1",
-                    &[&composed_version.as_str()],
-                )
-                .await;
-        });
+        // Assert 3: Verify ordering — users applied before system.
+        let ordered_rows = ctx
+            .raw_rows(
+                "SELECT app_label, id FROM djogi_schema_migrations \
+                 WHERE version = $1 AND status = 'applied' ORDER BY id",
+                &[&composed_version.as_str()],
+            )
+            .await
+            .expect("query ledger ordered");
+        assert_eq!(ordered_rows[0].try_get::<_, String>(0).unwrap(), "users");
+        assert_eq!(ordered_rows[1].try_get::<_, String>(0).unwrap(), "system");
 
         drop(guard);
         let _ = fs::remove_dir_all(&work);
@@ -4091,6 +4074,36 @@ mod tests {
         // this test to fail — `system` sorts before `users` alphabetically,
         // so the FK constraint on event_log.user_id → users.id would fire
         // before the users table exists (SQLSTATE 42P01 undefined_table).
+    }
+
+    /// Replace the database component of a Postgres URL with a new name.
+    /// Mirrors `djogi::migrate::reset::replace_db_in_url`; inlined here
+    /// so the test module does not depend on that internal path.
+    fn replace_db_in_url(url: &str, new_db: &str) -> Option<String> {
+        let body = url
+            .strip_prefix("postgres://")
+            .or_else(|| url.strip_prefix("postgresql://"))?;
+        let scheme = if url.starts_with("postgres://") {
+            "postgres://"
+        } else {
+            "postgresql://"
+        };
+        let mut idx = 0usize;
+        let body_bytes = body.as_bytes();
+        while idx < body_bytes.len() && body_bytes[idx] != b'/' {
+            idx += 1;
+        }
+        if idx >= body_bytes.len() {
+            return None;
+        }
+        let authority = &body[..idx];
+        let path_start = idx + 1;
+        let mut path_end = path_start;
+        while path_end < body_bytes.len() && body_bytes[path_end] != b'?' {
+            path_end += 1;
+        }
+        let trailing = &body[path_end..];
+        Some(format!("{scheme}{authority}/{new_db}{trailing}"))
     }
 
     fn default_col() -> djogi::migrate::ColumnSchema {
