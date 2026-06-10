@@ -273,6 +273,17 @@ impl<T: Model + 'static> crate::query::field::DjogiPortableEq for ForeignKey<T> 
 {
 }
 
+// A `ForeignKey<T>` column stores the target PK value, which compares
+// correctly on a JSONB path exactly when its underlying PK type does. Bound
+// on `T::Pk: JsonbPathComparable` so only FKs whose PK is itself comparable
+// participate — mirroring the `IntoFilterValue` delegation above. No
+// `PrimaryKey` blanket can cover this: `ForeignKey<T>` does not implement
+// `PrimaryKey`.
+impl<T: crate::model::Model> crate::jsonb::JsonbPathComparable for ForeignKey<T> where
+    T::Pk: crate::jsonb::JsonbPathComparable
+{
+}
+
 // ---------------------------------------------------------------------------
 // Expression-IR integration — `FieldRef<M, ForeignKey<T>>` ↔ `Expr<T::Pk>`.
 // ---------------------------------------------------------------------------

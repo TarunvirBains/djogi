@@ -183,6 +183,15 @@ impl<T: Model + 'static> crate::query::field::DjogiPortableEq for OneToOneField<
 {
 }
 
+// A `OneToOneField<T>` column stores the target PK value, which compares
+// correctly on a JSONB path exactly when its underlying PK type does. Same
+// rationale as the `ForeignKey<T>` impl; `OneToOneField<T>` does not
+// implement `PrimaryKey`, so an explicit impl is required.
+impl<T: crate::model::Model> crate::jsonb::JsonbPathComparable for OneToOneField<T> where
+    T::Pk: crate::jsonb::JsonbPathComparable
+{
+}
+
 // ---------------------------------------------------------------------------
 // serde integration — forward through the wrapped `ForeignKey<T>`. (#38)
 // ---------------------------------------------------------------------------

@@ -479,7 +479,95 @@ pub struct JsonbPathLeaf {
 
 use crate::query::field::IntoFilterValue;
 
-impl<M: Model, V: IntoFilterValue + 'static> JsonbPathRef<M, V> {
+/// Marker for value types that have a correct Postgres cast for a JSONB
+/// path LHS comparison. The comparison surface of
+/// [`JsonbPathRef<M, V>`](crate::jsonb::JsonbPathRef)
+/// (`eq`/`neq`/`gt`/`gte`/`lt`/`lte`/`in_list`) requires this bound so a
+/// type whose JSONB text extraction would compare incorrectly cannot
+/// reach the comparison API. The flat
+/// [`path::<V>()`](crate::query::field::FieldRef::path) constructor stays
+/// unbounded for dynamic paths; the bound applies only when a comparison
+/// is actually built.
+///
+/// # Intentionally NOT comparable
+/// - `Vec<u8>` (BYTEA): raw binary; `->>'k'` yields the JSON string form,
+///   not bytes — comparing it against a BYTEA bind is meaningless.
+/// - [`Range<T>`](crate::Range): a JSONB range is stored as an object, not
+///   a scalar the cast table can target.
+/// - array `Vec<V>`: a JSONB array, not a scalar.
+/// - `time::PrimitiveDateTime`: without `time/serde-human-readable`,
+///   `time` serializes it into JSONB as a numeric tuple
+///   (e.g. `[2021,2,3,4,5,0]`), not a timestamp string, so
+///   `(col->>'key')::timestamp` would fail at the database. (The same
+///   tuple-serialization caveat applies to `OffsetDateTime`/`Date` and is
+///   tracked separately in djogi#400; this release keeps them comparable to
+///   avoid scope creep.)
+/// - `crate::Interval`: `djogi::Interval` has no `Serialize` impl, so it
+///   cannot be stored in a `Jsonb<T>` field via the typed surface. A
+///   `JsonbPathRef<M, Interval>` comparison would be dead code — there is
+///   nothing to compare against. If `Interval` gains `Serialize` in the
+///   future, verify the on-disk encoding is ISO 8601 text before adding an
+///   impl here.
+///
+/// # Extending for adopter types
+/// This is an **open marker trait** — no private seal. Adopters who define
+/// a custom scalar newtype for a JSONB path and override
+/// [`IntoFilterValue::jsonb_sql_cast`](crate::query::field::IntoFilterValue::jsonb_sql_cast)
+/// MUST also add a one-line `impl djogi::jsonb::JsonbPathComparable for
+/// MyType {}` so the comparison surface accepts it. The
+/// [`primary_key!`](crate::primary_key!) macro emits this impl
+/// automatically for custom PK newtypes. The orphan rule prevents an
+/// adopter crate from implementing this marker for a foreign type such as
+/// `Vec<u8>`, so the open marker cannot be abused to restore a blocked
+/// built-in.
+pub trait JsonbPathComparable {}
+
+// Built-in scalars with a correct cast (mirror `jsonb_sql_cast_for_type`,
+// MINUS `time::PrimitiveDateTime` which serializes as a tuple in JSONB).
+// `String` (None cast — text extraction is already TEXT) is included so
+// string-typed JSONB-path comparisons keep compiling.
+macro_rules! impl_jsonb_path_comparable {
+    ($($t:ty),* $(,)?) => {$(
+        impl JsonbPathComparable for $t {}
+    )*};
+}
+impl_jsonb_path_comparable!(
+    i8,
+    i16,
+    i32,
+    i64,
+    u8,
+    u16,
+    u32,
+    u64,
+    f32,
+    f64,
+    bool,
+    String,
+    // NOTE: `time::PrimitiveDateTime` is intentionally absent (numeric tuple serialization).
+    time::OffsetDateTime,
+    time::Date,
+    uuid::Uuid,
+    rust_decimal::Decimal,
+    crate::HeerId,
+    crate::RanjId,
+    crate::HeerIdDesc,
+    crate::RanjIdDesc,
+    // NOTE: `crate::Interval` is intentionally absent — `djogi::Interval` has no
+    // `Serialize` impl, so it cannot appear in a `Jsonb<T>` field at all; adding
+    // it here would be dead code.
+);
+
+// The comparison surface requires `V: 'static`, so `&'static str` is the
+// only `&str` form that can reach the comparison impl — matches the
+// existing `IntoFilterValue for &str` impl (lifetime-elided) which already
+// had this constraint via the `'static` bound on the comparison block.
+impl JsonbPathComparable for &'static str {}
+
+#[cfg(feature = "network")]
+impl_jsonb_path_comparable!(std::net::IpAddr, crate::CidrAddr, crate::MacAddr);
+
+impl<M: Model, V: IntoFilterValue + JsonbPathComparable + 'static> JsonbPathRef<M, V> {
     /// Return the Postgres cast suffix for `V`.
     /// Routes through the typed [`IntoFilterValue::jsonb_sql_cast`]
     /// dispatch — wrapper types like `primary_key!`-emitted
@@ -1162,6 +1250,13 @@ mod tests {
             <i64 as IntoFilterValue>::jsonb_sql_cast()
         }
     }
+
+    // LocalI64Id mirrors the documented adopter pattern: a custom scalar
+    // newtype that overrides `jsonb_sql_cast` must also opt into the
+    // comparison surface via the open `JsonbPathComparable` marker. (The
+    // `primary_key!` macro emits this automatically; a hand-rolled newtype
+    // like this one adds the one line explicitly.)
+    impl JsonbPathComparable for LocalI64Id {}
 
     #[test]
     fn local_newtype_wrapper_delegates_jsonb_sql_cast_to_inner() {

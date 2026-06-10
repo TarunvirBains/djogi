@@ -4094,6 +4094,15 @@ impl<M: Model, T> FieldRef<M, Jsonb<T>> {
     /// # SQL emission
     /// `specs.path::<i32>("engine.cylinders")` emits
     /// `(specs->'engine'->>'cylinders')::int` on the LHS of the comparison.
+    /// # Comparison bound
+    /// The returned [`JsonbPathRef<M, V>`](crate::jsonb::JsonbPathRef)
+    /// constructor is unbounded so dynamic paths can be built for any `V`,
+    /// but the comparison surface (`eq`/`neq`/`gt`/…) requires
+    /// `V: `[`JsonbPathComparable`](crate::jsonb::JsonbPathComparable). Types
+    /// with no correct scalar JSONB cast — `Vec<u8>` (BYTEA),
+    /// [`Range<T>`](crate::Range), array `Vec<V>`, `time::PrimitiveDateTime`
+    /// — deliberately do not implement it, so `.path::<Vec<u8>>(…).eq(…)`
+    /// is a compile error rather than a silently-wrong text comparison.
     /// # Example
     /// ```ignore
     /// Post::objects()
