@@ -1365,4 +1365,33 @@ mod tests {
         let lhs = build_path_sql(leaf.column, leaf.path, leaf.cast);
         assert_eq!(lhs, "(meta->>'view_count')::numeric");
     }
+
+    /// SQL-shape pin — `JsonbPathRef<_, time::OffsetDateTime>` must carry
+    /// the `::timestamptz` cast end-to-end. This is the positive counterpart
+    /// to the blocked `PrimitiveDateTime` case: `OffsetDateTime` IS
+    /// `JsonbPathComparable` (it has a cast-table arm), so a comparison
+    /// resolves and emits `(meta->>'seen_at')::timestamptz`. Guards against a
+    /// future refactor silently dropping `OffsetDateTime` from the
+    /// `JsonbPathComparable` impl list.
+    #[test]
+    fn jsonb_path_ref_builds_timestamptz_cast_for_offset_date_time() {
+        use crate::query::condition::Condition;
+        let path: JsonbPathRef<StubModel, time::OffsetDateTime> =
+            JsonbPathRef::new("meta", "seen_at");
+        // `time::macros::datetime!` is NOT available — djogi does not enable
+        // the `time/macros` feature. Construct via the calendar constructors,
+        // matching `migrate/naming.rs` (`date.with_time(...).assume_utc()`).
+        let probe = time::Date::from_calendar_date(2021, time::Month::January, 2)
+            .unwrap()
+            .with_time(time::Time::from_hms(3, 4, 5).unwrap())
+            .assume_utc();
+        let cond = path.gt(probe);
+        let leaf = match cond {
+            Condition::JsonbPath(l) => l,
+            other => panic!("expected JsonbPath leaf, got {other:?}"),
+        };
+        assert_eq!(leaf.cast, Some("::timestamptz"));
+        let lhs = build_path_sql(leaf.column, leaf.path, leaf.cast);
+        assert_eq!(lhs, "(meta->>'seen_at')::timestamptz");
+    }
 }
