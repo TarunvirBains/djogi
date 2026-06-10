@@ -183,6 +183,23 @@ impl<T: Model + 'static> crate::query::field::DjogiPortableEq for OneToOneField<
 {
 }
 
+// A `OneToOneField<T>` column stores the target PK value, which compares
+// correctly on a JSONB path exactly when its underlying PK type does. Same
+// rationale as the `ForeignKey<T>` impl; `OneToOneField<T>` does not
+// implement `PrimaryKey`, so an explicit impl is required.
+impl<T: crate::model::Model> crate::jsonb::JsonbPathComparable for OneToOneField<T> where
+    T::Pk: crate::jsonb::JsonbPathComparable
+{
+}
+
+// A O2O column stores the target PK value, which is an integer or UUID and is
+// unambiguously orderable in Postgres. Same rationale as the `ForeignKey<T>`
+// impl; bound on `T::Pk: ExplicitPgOrderable`.
+impl<T: crate::model::Model> crate::query::field::ExplicitPgOrderable for OneToOneField<T> where
+    T::Pk: crate::query::field::ExplicitPgOrderable
+{
+}
+
 // ---------------------------------------------------------------------------
 // serde integration — forward through the wrapped `ForeignKey<T>`. (#38)
 // ---------------------------------------------------------------------------

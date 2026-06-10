@@ -360,8 +360,8 @@ pub use djogi_macros::{
 pub use geo::GeoPoint;
 pub use hooks::ModelHooks;
 pub use jsonb::{
-    Jsonb, JsonbPathRef, JsonbSchema, JsonbSqlCast, MirJzSON, MirJzSONError, UnknownField,
-    UnknownFieldExt,
+    Jsonb, JsonbPathComparable, JsonbPathRef, JsonbSchema, JsonbSqlCast, MirJzSON, MirJzSONError,
+    UnknownField, UnknownFieldExt,
 };
 // `FromPgRow` is the canonical row-decode trait — adopters write
 // `ctx.raw_query::<MyType>(...)` against it, so it stays in the public
@@ -438,8 +438,8 @@ pub use fts_query::FtsFieldRef;
 // never reaches for `Condition` directly.
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
-    ClosureModel, ConditionExt, DjogiPortableEq, FieldRef, FilterClause, InnerLateral,
-    InsertSelectColumn, InsertSelectSource, InsertSelectStmt, IntoAggregateTuple,
+    ClosureModel, ConditionExt, DjogiPortableEq, ExplicitPgOrderable, FieldRef, FilterClause,
+    InnerLateral, InsertSelectColumn, InsertSelectSource, InsertSelectStmt, IntoAggregateTuple,
     IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
     JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, LateralQuerySet, LeftLateral,
     Lookup, MaterializeClosureOptions, MaterializeClosureReport, MergeCounts, MergeStmt,
@@ -568,8 +568,8 @@ pub mod prelude {
     pub use crate::fts_query::FtsFieldRef;
     pub use crate::hooks::ModelHooks;
     pub use crate::jsonb::{
-        Jsonb, JsonbPathRef, JsonbSchema, JsonbSqlCast, MirJzSON, MirJzSONError, UnknownField,
-        UnknownFieldExt,
+        Jsonb, JsonbPathComparable, JsonbPathRef, JsonbSchema, JsonbSqlCast, MirJzSON,
+        MirJzSONError, UnknownField, UnknownFieldExt,
     };
     pub use crate::model::Model;
     // DjogiPool is the adopter-facing pool handle. It belongs in the prelude
@@ -593,6 +593,7 @@ pub mod prelude {
         // Djogi#103 + GH#299 — VALUES join (inner, left, cross).
         CrossValuesJoinedQuerySet,
         DjogiPortableEq,
+        ExplicitPgOrderable,
         FieldRef,
         FilterClause,
         InlineValues,

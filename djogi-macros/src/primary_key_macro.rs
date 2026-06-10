@@ -416,6 +416,14 @@ pub fn expand(input: TokenStream) -> TokenStream {
             }
         }
 
+        // Custom-PK newtypes participate in the JSONB-path comparison
+        // surface. `JsonbPathComparable` is an open marker; the orphan
+        // rule lets the macro emit it for the adopter's own PK type.
+        // Without this, `JsonbPathRef::<M, #name>::gt(...)` would fail
+        // the `V: JsonbPathComparable` bound even though the cast
+        // delegation (above) is correct.
+        impl ::djogi::jsonb::JsonbPathComparable for #name {}
+
         impl<'a> ::djogi::__private::postgres_types::FromSql<'a> for #name {
             fn from_sql(
                 ty: &::djogi::__private::postgres_types::Type,

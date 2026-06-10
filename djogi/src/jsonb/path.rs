@@ -479,7 +479,95 @@ pub struct JsonbPathLeaf {
 
 use crate::query::field::IntoFilterValue;
 
-impl<M: Model, V: IntoFilterValue + 'static> JsonbPathRef<M, V> {
+/// Marker for value types that have a correct Postgres cast for a JSONB
+/// path LHS comparison. The comparison surface of
+/// [`JsonbPathRef<M, V>`](crate::jsonb::JsonbPathRef)
+/// (`eq`/`neq`/`gt`/`gte`/`lt`/`lte`/`in_list`) requires this bound so a
+/// type whose JSONB text extraction would compare incorrectly cannot
+/// reach the comparison API. The flat
+/// [`path::<V>()`](crate::query::field::FieldRef::path) constructor stays
+/// unbounded for dynamic paths; the bound applies only when a comparison
+/// is actually built.
+///
+/// # Intentionally NOT comparable
+/// - `Vec<u8>` (BYTEA): raw binary; `->>'k'` yields the JSON string form,
+///   not bytes — comparing it against a BYTEA bind is meaningless.
+/// - [`Range<T>`](crate::Range): a JSONB range is stored as an object, not
+///   a scalar the cast table can target.
+/// - array `Vec<V>`: a JSONB array, not a scalar.
+/// - `time::PrimitiveDateTime`: without `time/serde-human-readable`,
+///   `time` serializes it into JSONB as a numeric tuple
+///   (e.g. `[2021,2,3,4,5,0]`), not a timestamp string, so
+///   `(col->>'key')::timestamp` would fail at the database. (The same
+///   tuple-serialization caveat applies to `OffsetDateTime`/`Date` and is
+///   tracked separately in djogi#400; this release keeps them comparable to
+///   avoid scope creep.)
+/// - `crate::Interval`: `djogi::Interval` has no `Serialize` impl, so it
+///   cannot be stored in a `Jsonb<T>` field via the typed surface. A
+///   `JsonbPathRef<M, Interval>` comparison would be dead code — there is
+///   nothing to compare against. If `Interval` gains `Serialize` in the
+///   future, verify the on-disk encoding is ISO 8601 text before adding an
+///   impl here.
+///
+/// # Extending for adopter types
+/// This is an **open marker trait** — no private seal. Adopters who define
+/// a custom scalar newtype for a JSONB path and override
+/// [`IntoFilterValue::jsonb_sql_cast`]
+/// MUST also add a one-line `impl djogi::jsonb::JsonbPathComparable for
+/// MyType {}` so the comparison surface accepts it. The
+/// [`primary_key!`](crate::primary_key!) macro emits this impl
+/// automatically for custom PK newtypes. The orphan rule prevents an
+/// adopter crate from implementing this marker for a foreign type such as
+/// `Vec<u8>`, so the open marker cannot be abused to restore a blocked
+/// built-in.
+pub trait JsonbPathComparable {}
+
+// Built-in scalars with a correct cast (mirror `jsonb_sql_cast_for_type`,
+// MINUS `time::PrimitiveDateTime` which serializes as a tuple in JSONB).
+// `String` (None cast — text extraction is already TEXT) is included so
+// string-typed JSONB-path comparisons keep compiling.
+macro_rules! impl_jsonb_path_comparable {
+    ($($t:ty),* $(,)?) => {$(
+        impl JsonbPathComparable for $t {}
+    )*};
+}
+impl_jsonb_path_comparable!(
+    i8,
+    i16,
+    i32,
+    i64,
+    u8,
+    u16,
+    u32,
+    u64,
+    f32,
+    f64,
+    bool,
+    String,
+    // NOTE: `time::PrimitiveDateTime` is intentionally absent (numeric tuple serialization).
+    time::OffsetDateTime,
+    time::Date,
+    uuid::Uuid,
+    rust_decimal::Decimal,
+    crate::HeerId,
+    crate::RanjId,
+    crate::HeerIdDesc,
+    crate::RanjIdDesc,
+    // NOTE: `crate::Interval` is intentionally absent — `djogi::Interval` has no
+    // `Serialize` impl, so it cannot appear in a `Jsonb<T>` field at all; adding
+    // it here would be dead code.
+);
+
+// The comparison surface requires `V: 'static`, so `&'static str` is the
+// only `&str` form that can reach the comparison impl — matches the
+// existing `IntoFilterValue for &str` impl (lifetime-elided) which already
+// had this constraint via the `'static` bound on the comparison block.
+impl JsonbPathComparable for &'static str {}
+
+#[cfg(feature = "network")]
+impl_jsonb_path_comparable!(std::net::IpAddr, crate::CidrAddr, crate::MacAddr);
+
+impl<M: Model, V: IntoFilterValue + JsonbPathComparable + 'static> JsonbPathRef<M, V> {
     /// Return the Postgres cast suffix for `V`.
     /// Routes through the typed [`IntoFilterValue::jsonb_sql_cast`]
     /// dispatch — wrapper types like `primary_key!`-emitted
@@ -734,6 +822,28 @@ mod tests {
     fn sql_cast_for_date() {
         assert_eq!(sql_cast_for_type("time::Date"), Some("::date"));
         assert_eq!(sql_cast_for_type("Date"), Some("::date"));
+    }
+
+    #[test]
+    fn sql_cast_for_primitive_date_time_is_none_intentionally() {
+        // PrimitiveDateTime is DELIBERATELY not castable on a JSONB path.
+        // The workspace does not enable `time/serde-human-readable`, so
+        // `time` serializes a PrimitiveDateTime into a JSONB column as a
+        // 6-element numeric array (e.g. [2021,2,3,4,5,0]), NOT a timestamp
+        // string. `(col->>'key')::timestamp` on that array text raises a
+        // Postgres cast error at runtime. The type is blocked from the
+        // JSONB-path comparison surface via `JsonbPathComparable` (it is
+        // simply never given an impl). This test pins the `None` cast so
+        // nobody re-adds a `::timestamp` arm that would compile but fail at
+        // the database. The broader temporal-in-JSONB question
+        // (OffsetDateTime / Date have the same tuple-serialization shape) is
+        // tracked in djogi#400.
+        assert_eq!(
+            sql_cast_for_type("time::primitive_date_time::PrimitiveDateTime"),
+            None
+        );
+        assert_eq!(sql_cast_for_type("time::PrimitiveDateTime"), None);
+        assert_eq!(sql_cast_for_type("PrimitiveDateTime"), None);
     }
 
     #[test]
@@ -1141,6 +1251,13 @@ mod tests {
         }
     }
 
+    // LocalI64Id mirrors the documented adopter pattern: a custom scalar
+    // newtype that overrides `jsonb_sql_cast` must also opt into the
+    // comparison surface via the open `JsonbPathComparable` marker. (The
+    // `primary_key!` macro emits this automatically; a hand-rolled newtype
+    // like this one adds the one line explicitly.)
+    impl JsonbPathComparable for LocalI64Id {}
+
     #[test]
     fn local_newtype_wrapper_delegates_jsonb_sql_cast_to_inner() {
         assert_eq!(
@@ -1247,5 +1364,34 @@ mod tests {
         );
         let lhs = build_path_sql(leaf.column, leaf.path, leaf.cast);
         assert_eq!(lhs, "(meta->>'view_count')::numeric");
+    }
+
+    /// SQL-shape pin — `JsonbPathRef<_, time::OffsetDateTime>` must carry
+    /// the `::timestamptz` cast end-to-end. This is the positive counterpart
+    /// to the blocked `PrimitiveDateTime` case: `OffsetDateTime` IS
+    /// `JsonbPathComparable` (it has a cast-table arm), so a comparison
+    /// resolves and emits `(meta->>'seen_at')::timestamptz`. Guards against a
+    /// future refactor silently dropping `OffsetDateTime` from the
+    /// `JsonbPathComparable` impl list.
+    #[test]
+    fn jsonb_path_ref_builds_timestamptz_cast_for_offset_date_time() {
+        use crate::query::condition::Condition;
+        let path: JsonbPathRef<StubModel, time::OffsetDateTime> =
+            JsonbPathRef::new("meta", "seen_at");
+        // `time::macros::datetime!` is NOT available — djogi does not enable
+        // the `time/macros` feature. Construct via the calendar constructors,
+        // matching `migrate/naming.rs` (`date.with_time(...).assume_utc()`).
+        let probe = time::Date::from_calendar_date(2021, time::Month::January, 2)
+            .unwrap()
+            .with_time(time::Time::from_hms(3, 4, 5).unwrap())
+            .assume_utc();
+        let cond = path.gt(probe);
+        let leaf = match cond {
+            Condition::JsonbPath(l) => l,
+            other => panic!("expected JsonbPath leaf, got {other:?}"),
+        };
+        assert_eq!(leaf.cast, Some("::timestamptz"));
+        let lhs = build_path_sql(leaf.column, leaf.path, leaf.cast);
+        assert_eq!(lhs, "(meta->>'seen_at')::timestamptz");
     }
 }

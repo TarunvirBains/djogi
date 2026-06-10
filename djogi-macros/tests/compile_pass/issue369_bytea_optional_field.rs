@@ -1,4 +1,4 @@
-// djogi#369 — `Option<Vec<u8>>` maps to a nullable Postgres `BYTEA` column.
+// djogi#369, djogi#372 — `Option<Vec<u8>>` maps to a nullable Postgres `BYTEA` column.
 //
 // Companion to `issue369_bytea_field.rs`. The non-optional fixture proves a
 // `Vec<u8>` field lowers to `BYTEA`; this one proves the `Option<Vec<u8>>`
@@ -11,11 +11,18 @@
 // over `Vec<u8>`), so the macro-generated bind/decode path round-trips a
 // nullable binary column with no widening shim.
 //
-// As with the non-optional form, `Option<Vec<u8>>` is classified
-// `Unsupported` by the portable-predicate emitter (the `Option` strip exposes
-// the `Unsupported` `Vec<u8>` inner, which the classifier preserves), so the
-// closure filter does not expose `.eq` / `.is_null` on a BYTEA field. The
-// model still compiles fully and the column is first-class.
+// SQL predicates: `eq`, `neq`, `in_`, `not_in` are available via explicit
+// `DjogiField<M, Option<Vec<u8>>>` impl (djogi#372). Additionally:
+// - `is_null()` / `is_not_null()` — generic on all `Option<U>` fields
+// - `.some().eq(...)` / `.some().neq(...)` / `.some().in_(...)` /
+//   `.some().not_in(...)` — present-only comparisons via
+//   `DjogiPresentField<M, Vec<u8>>`. The present-only `not_in([])` falls back
+//   to `IS NOT NULL` at emission (every present row is not-in the empty set);
+//   the behavioral assertion for that fallback lives in the `field.rs` unit
+//   tests, since lihaaf only verifies this fixture *compiles*.
+// Portable/closure equality remains unavailable. The field is classified
+// `Unsupported` by the portable-predicate emitter, so the closure filter does
+// not expose `.eq` through the generic path.
 use djogi::prelude::*;
 
 #[model(table = "optional_blobs")]
@@ -36,6 +43,21 @@ fn _check_field_types(blob: &OptionalBlob) {
 
 fn _check_model_surface() {
     let _qs = OptionalBlob::objects();
+}
+
+// djogi#372 — verify SQL filter predicates compile on the nullable BYTEA field.
+fn _check_optional_bytea_filter_surface() {
+    let _ = OptionalBlob::objects().filter(|f| f.payload().eq(vec![1, 2]));
+    // djogi#372 — nullable BYTEA neq.
+    let _ = OptionalBlob::objects().filter(|f| f.payload().neq(vec![5, 6]));
+    let _ = OptionalBlob::objects().filter(|f| f.payload().is_null());
+    let _ = OptionalBlob::objects().filter(|f| f.payload().is_not_null());
+    let _ = OptionalBlob::objects().filter(|f| f.payload().some().eq(vec![3, 4]));
+    // Present-only non-empty NOT IN.
+    let _ = OptionalBlob::objects().filter(|f| f.payload().some().not_in([vec![1u8], vec![2u8]]));
+    // Present-only empty NOT IN — compiles; falls back to IS NOT NULL at
+    // emission (behavioral assertion lives in the field.rs unit tests).
+    let _ = OptionalBlob::objects().filter(|f| f.payload().some().not_in(Vec::<Vec<u8>>::new()));
 }
 
 fn main() {}

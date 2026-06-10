@@ -591,6 +591,9 @@ pub enum FilterValue {
     Decimal(rust_decimal::Decimal),
     /// Postgres `INTERVAL` column values.
     Interval(crate::Interval),
+    /// Postgres `BYTEA` column values. Carries `Vec<u8>`; tokio-postgres
+    /// native `ToSql`/`FromSql` codec.
+    Bytea(Vec<u8>),
     /// Postgres `INET` column values (, `network` feature).
     /// Carries `std::net::IpAddr`; the wire codec is the always-on
     /// `postgres-types` native impl which writes /32 or /128 netmasks

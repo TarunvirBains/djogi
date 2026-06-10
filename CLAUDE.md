@@ -47,10 +47,10 @@ cargo test -p djogi-macros
 # Check proc macro expansion (requires cargo-expand)
 cargo expand -p djogi-macros
 
-# Macro fixture gate — lihaaf (currently 327 fixtures: 322 default + 4 spatial + 1 network)
+# Macro fixture gate — lihaaf (currently 345 fixtures: 340 default + 4 spatial + 1 network)
 cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 4
 
-# Raw-SQL bypass fixture gate — lihaaf (currently 42 fixtures: 39 default + 3 spatial)
+# Raw-SQL bypass fixture gate — lihaaf (currently 49 fixtures: 46 default + 3 spatial)
 cargo lihaaf --manifest-path djogi/Cargo.toml -j 4
 
 # Re-bless lihaaf compile_fail snapshots after diagnostic changes

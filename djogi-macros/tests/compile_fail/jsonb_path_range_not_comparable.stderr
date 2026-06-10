@@ -1,0 +1,29 @@
+error[E0599]: the method `eq` exists for struct `JsonbPathRef<Doc, djogi::Range<i32>>`, but its trait bounds were not satisfied
+   --> $DIR/jsonb_path_range_not_comparable.rs:31:14
+    |
+ 28 | /         f.meta()
+ 29 | |             .explicit_pg_predicate()
+ 30 | |             .path::<djogi::Range<i32>>("span")
+ 31 | |             .eq(djogi::Range::<i32>::default())
+    | |             -^^ method cannot be called on `JsonbPathRef<Doc, djogi::Range<i32>>` due to unsatisfied trait bounds
+    | |_____________|
+    |
+    |
+   ::: djogi/src/jsonb/path.rs:79:1
+    |
+ 79 |   pub struct JsonbPathRef<M, V> {
+    |   ----------------------------- doesn't satisfy `JsonbPathRef<Doc, djogi::Range<i32>>: Iterator`
+    |
+   ::: djogi/src/pg_types.rs:342:1
+    |
+342 |   pub struct Range<T> {
+    |   ------------------- doesn't satisfy `djogi::Range<i32>: JsonbPathComparable`
+    |
+    = note: the following trait bounds were not satisfied:
+            `djogi::Range<i32>: JsonbPathComparable`
+            `JsonbPathRef<Doc, djogi::Range<i32>>: Iterator`
+            which is required by `&mut JsonbPathRef<Doc, djogi::Range<i32>>: Iterator`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

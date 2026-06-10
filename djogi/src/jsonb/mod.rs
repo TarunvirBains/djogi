@@ -35,7 +35,7 @@ pub mod schema;
 pub mod unknown;
 
 pub use mirjzson::{MirJzSON, MirJzSONError};
-pub use path::{JsonbPathRef, JsonbSqlCast};
+pub use path::{JsonbPathComparable, JsonbPathRef, JsonbSqlCast};
 pub use schema::JsonbSchema;
 pub use unknown::{UnknownField, UnknownFieldError, UnknownFieldExt};
 

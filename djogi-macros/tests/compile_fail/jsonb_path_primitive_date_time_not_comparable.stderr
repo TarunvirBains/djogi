@@ -1,0 +1,29 @@
+error[E0599]: the method `eq` exists for struct `JsonbPathRef<Doc, PrimitiveDateTime>`, but its trait bounds were not satisfied
+  --> $DIR/jsonb_path_primitive_date_time_not_comparable.rs:42:14
+   |
+39 | /         f.meta()
+40 | |             .explicit_pg_predicate()
+41 | |             .path::<time::PrimitiveDateTime>("seen_at")
+42 | |             .eq(probe)
+   | |             -^^ method cannot be called on `JsonbPathRef<Doc, PrimitiveDateTime>` due to unsatisfied trait bounds
+   | |_____________|
+   |
+   |
+  ::: djogi/src/jsonb/path.rs:79:1
+   |
+79 |   pub struct JsonbPathRef<M, V> {
+   |   ----------------------------- doesn't satisfy `JsonbPathRef<Doc, PrimitiveDateTime>: Iterator`
+   |
+  ::: $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.47/src/primitive_date_time.rs:28:1
+   |
+28 |   pub struct PrimitiveDateTime {
+   |   ---------------------------- doesn't satisfy `PrimitiveDateTime: JsonbPathComparable`
+   |
+   = note: the following trait bounds were not satisfied:
+           `PrimitiveDateTime: JsonbPathComparable`
+           `JsonbPathRef<Doc, PrimitiveDateTime>: Iterator`
+           which is required by `&mut JsonbPathRef<Doc, PrimitiveDateTime>: Iterator`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.
