@@ -248,7 +248,7 @@ Phase 1 maps these Rust types to SQL column types:
 | `uuid::Uuid` | `UUID` | |
 | `serde_json::Value` | `JSONB` | untyped JSON — typed `Jsonb<T>` covers the schema-validated case |
 | `Jsonb<T>` | `JSONB` | typed JSONB with unknown-field preservation — see [JSONB guide](./jsonb.md) |
-| `Vec<u8>` | `BYTEA` | Raw binary blob, NOT a `SMALLINT[]` array. SQL query predicates: `eq`, `neq`, `in_`, `not_in` (via explicit `DjogiField` impl — ordering is non-goal for binary data). Closure-filter portable equality is not exposed (binary comparison is not portable to in-memory evaluation). `Option<Vec<u8>>` adds `is_null`/`is_not_null` (generic on all `Option<U>`) and `.some().eq(...)` for present-only comparisons. djogi#369, djogi#372 |
+| `Vec<u8>` | `BYTEA` | Raw binary blob, NOT a `SMALLINT[]` array. SQL query predicates: `eq`, `neq`, `in_`, `not_in` (via explicit `DjogiField` impl — ordering is non-goal for binary data). Closure-filter portable equality is not exposed (binary comparison is not portable to in-memory evaluation). `Option<Vec<u8>>` adds `is_null`/`is_not_null` (generic on all `Option<U>`) and `.some().eq(...)` for present-only comparisons. See [BYTEA query surface](#vecu8--bytea) below. djogi#369, djogi#372 |
 | `Vec<String>` | `TEXT[]` | |
 | `Vec<i32>` | `INTEGER[]` | |
 | `Vec<i64>` | `BIGINT[]` | |
@@ -346,6 +346,56 @@ exceeds Djogi's `time::Date` upper-bound CHECK. Prefer
 maximum on a discrete range column. The continuous subtypes
 (`numrange`, `tstzrange`) are NOT canonicalised by Postgres and accept
 `[..., MAX]` unchanged.
+
+#### `Vec<u8>` — `BYTEA`
+
+A `Vec<u8>` field lowers to a Postgres `BYTEA` column (raw binary, NOT a
+`SMALLINT[]` array — the array arms recognise `Vec<u8>` ahead of the generic
+`Vec<T>` lowering). `tokio-postgres` ships the native `ToSql`/`FromSql` codec
+for `Vec<u8>` ↔ `BYTEA`, so reads and writes round-trip with no widening shim.
+
+**Non-nullable `Vec<u8>`** exposes equality and membership predicates via the
+explicit `DjogiField<M, Vec<u8>>` impl: `eq`, `neq`, `in_`, `not_in`.
+
+**Nullable `Option<Vec<u8>>`** adds the generic `Option<U>` null checks
+`is_null()` / `is_not_null()`, and a present-field surface through `.some()`:
+`eq`, `neq`, `in_`, `not_in`. The present-field `not_in([])` deliberately
+falls back to `IS NOT NULL` — every present (non-NULL) row is trivially
+not-in the empty set, so the empty-list case degenerates to a presence check
+rather than `NOT IN ()` (which is invalid SQL).
+
+```rust,ignore
+// Exact-match a stored binary blob.
+let rows = Asset::objects()
+    .filter(|f| f.checksum().eq(expected_sha256.to_vec()))
+    .fetch_all(&mut ctx).await?;
+
+// Nullable BYTEA: membership + present-only NOT IN.
+let rows = Asset::objects()
+    .filter(|f| f.thumbnail().some().not_in([blob_a, blob_b]))
+    .fetch_all(&mut ctx).await?;
+
+// Empty NOT IN on a present nullable BYTEA -> IS NOT NULL.
+let present = Asset::objects()
+    .filter(|f| f.thumbnail().some().not_in(Vec::<Vec<u8>>::new()))
+    .fetch_all(&mut ctx).await?;
+```
+
+**Non-goals (deliberate).** BYTEA participates only in equality and
+membership predicates. The following are intentionally NOT exposed:
+
+- **Ordering** — `gt`/`gte`/`lt`/`lte`/`between` are not callable on a BYTEA
+  field, *not even via `explicit_pg_predicate()`*. Binary data has no portable
+  ordering story, so `f.payload().explicit_pg_predicate().gt(…)` is a compile
+  error (`Vec<u8>` does not implement `ExplicitPgOrderable`).
+- **Closure-filter portable equality** — raw-binary comparison is not portable
+  to in-memory Punnu evaluation, so the generic closure-filter equality path is
+  not exposed on BYTEA fields.
+- **JSONB-path comparison** — `Vec<u8>` cannot be compared on a JSONB path:
+  `.path::<Vec<u8>>(…)` may construct (dynamic-path escape hatch) but offers no
+  comparison surface, because `Vec<u8>` does not implement
+  `JsonbPathComparable`. JSONB text extraction yields the JSON string form of
+  the bytes, not the bytes, so a comparison would be meaningless.
 
 #### `std::net::IpAddr` — `INET` (feature `network`)
 
