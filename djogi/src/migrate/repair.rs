@@ -60,8 +60,8 @@ use crate::error::DjogiError;
 use super::bootstrap::PHASE_ZERO_VERSION;
 use super::guard::WorkspaceGuard;
 use super::ledger::{
-    self, ChecksumFormatErrorKind, LedgerRow, LedgerStatus, LEDGER_SELECT_COLS,
-    compute_checksum, validate_checksum_format,
+    self, ChecksumFormatErrorKind, LEDGER_SELECT_COLS, LedgerRow, LedgerStatus, compute_checksum,
+    validate_checksum_format,
 };
 use super::projection::BucketKey;
 use super::runner::{
