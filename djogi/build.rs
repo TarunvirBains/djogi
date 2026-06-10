@@ -394,7 +394,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
 /// Pending JSON format version this Djogi understands. Mirrors
 /// [`crate::migrate::compose::PENDING_FORMAT_VERSION`] — duplicated
 /// here because build.rs cannot import the crate it's compiling.
-const PENDING_FORMAT_VERSION: &str = "1";
+const PENDING_FORMAT_VERSION: &str = "2";
 
 /// Canonical hidden Phase 0 pending version label. Mirrored from
 /// `crate::migrate::bootstrap::PHASE_ZERO_VERSION` because build.rs

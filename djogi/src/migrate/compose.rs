@@ -552,11 +552,25 @@ pub struct PendingPlan {
     pub checksum_down: Option<String>,
     /// Compose timestamp (RFC 3339 UTC, second precision).
     pub composed_at: String,
+
+    /// App labels (same database) whose pending migrations must apply
+    /// BEFORE this bucket's. Compose derives the list from cross-bucket
+    /// foreign-key targets; apply orders same-version buckets with it.
+    /// Sorted and deduplicated. The empty string names the global
+    /// bucket. Introduced with pending format "2".
+    pub depends_on: Vec<String>,
 }
 
 /// Pending-JSON format version. Bumped when the [`PendingPlan`] shape
 /// changes incompatibly.
-pub const PENDING_FORMAT_VERSION: &str = "1";
+///
+/// Format `"2"`: added `depends_on` field (cross-bucket FK ordering, #398).
+/// Stale format-`"1"` pending files are rejected with
+/// [`PendingLoadError::UnsupportedFormatVersion`]; the operator must
+/// recompose. Pending files use a stricter bump policy than snapshots
+/// (`deny_unknown_fields` + version peek), so the snapshot additive-field
+/// exemption does not apply.
+pub const PENDING_FORMAT_VERSION: &str = "2";
 
 /// Errors surfaced by [`parse_pending_bytes`].
 /// A separate type from [`ComposeError`] because the pending-load
@@ -1016,6 +1030,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                 checksum_up: checksum_up.clone(),
                 checksum_down: checksum_down.clone(),
                 composed_at: composed_at.clone(),
+                depends_on: Vec::new(), // populated by Task 3 (cross-bucket FK graph)
             };
 
             let up_path = bucket_dir(req.workspace_root, &delta.bucket).join(up_filename(&version));
@@ -2747,6 +2762,7 @@ mod tests {
             checksum_up: "V1:".to_string() + &"a".repeat(64),
             checksum_down: None,
             composed_at: "2026-04-25T01:02:03Z".to_string(),
+            depends_on: Vec::new(),
         };
         let bytes = serde_json::to_vec(&plan).unwrap();
         let parsed: PendingPlan = serde_json::from_slice(&bytes).unwrap();
@@ -3040,7 +3056,7 @@ mod tests {
     #[test]
     fn b7_pending_format_version_peek_rejects_future_version() {
         let blob = r#"{
-            "format_version": "2",
+            "format_version": "3",
             "bucket_database": "main",
             "bucket_app": "billing",
             "version": "V20260425010203__add_invoices",
@@ -3057,15 +3073,15 @@ mod tests {
             "checksum_up": "V1:0000000000000000000000000000000000000000000000000000000000000000",
             "checksum_down": null,
             "composed_at": "2026-04-25T01:02:03Z",
-            "future_field_added_in_v2": "garbage"
+            "future_field_added_in_v3": "garbage"
         }"#;
         let err = parse_pending_bytes(blob.as_bytes(), None).expect_err("must fail");
         match err {
             PendingLoadError::UnsupportedFormatVersion {
                 found, expected, ..
             } => {
-                assert_eq!(found, "2");
-                assert_eq!(expected, "1");
+                assert_eq!(found, "3");
+                assert_eq!(expected, PENDING_FORMAT_VERSION);
             }
             other => panic!("expected UnsupportedFormatVersion, got {other:?}"),
         }
@@ -3086,10 +3102,43 @@ mod tests {
             checksum_up: "V1:".to_string() + &"a".repeat(64),
             checksum_down: None,
             composed_at: "2026-04-25T01:02:03Z".to_string(),
+            depends_on: Vec::new(),
         };
         let bytes = serde_json::to_vec(&plan).unwrap();
         let parsed = parse_pending_bytes(&bytes, None).expect("loader accepts canonical shape");
         assert_eq!(parsed, plan);
+    }
+
+    /// A pre-#398 format-"1" pending file must be rejected with the
+    /// actionable version-mismatch error (telling the operator to
+    /// recompose), NOT a generic serde unknown/missing-field error.
+    /// The blob below is the shape an older djogi binary produced:
+    /// `format_version = "1"` and no `depends_on` field.
+    #[test]
+    fn format_one_pending_rejected_with_version_mismatch() {
+        let blob = r#"{
+            "format_version": "1",
+            "bucket_database": "main",
+            "bucket_app": "billing",
+            "version": "V20260425010203__add_invoices",
+            "slug": "add_invoices",
+            "model_snapshot": {
+                "djogi_version": "0.2.0",
+                "enums": {},
+                "format_version": "1",
+                "generated_at": "2027-01-01T00:00:00Z",
+                "indexes": [],
+                "models": {},
+                "registered_apps": ["billing"]
+            },
+            "checksum_up": "V1:0000000000000000000000000000000000000000000000000000000000000000",
+            "checksum_down": null,
+            "composed_at": "2026-04-25T01:02:03Z"
+        }"#;
+        let err = parse_pending_bytes(blob.as_bytes(), None)
+            .expect_err("old format must be rejected");
+        assert!(matches!(err, PendingLoadError::UnsupportedFormatVersion { .. }),
+            "expected the actionable upgrade error, got {err:?}");
     }
 
     /// Rollback guard removes ALL staged tmp files when any rename in

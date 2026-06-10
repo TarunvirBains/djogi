@@ -747,6 +747,7 @@ pub fn ensure_phase_zero_emitted(
             checksum_up: compute_checksum([up_sql.as_str()]),
             checksum_down: None, // comment-only, no real rollback
             composed_at: format_rfc3339_seconds(now),
+            depends_on: Vec::new(),
         };
         let pending_bytes =
             serde_json::to_vec_pretty(&pending).map_err(AutoEmitError::PendingJson)?;
@@ -1641,6 +1642,7 @@ mod tests {
                 .to_string(),
             checksum_down: None,
             composed_at: format_rfc3339_seconds(fixed_now()),
+            depends_on: Vec::new(),
         };
         fs::write(
             pending_json_path(&work, &bucket),
@@ -1691,6 +1693,7 @@ mod tests {
                 .to_string(),
             checksum_down: None,
             composed_at: format_rfc3339_seconds(fixed_now()),
+            depends_on: Vec::new(),
         };
         let legacy_path = pending_json_path(&work, &bucket);
         ensure_parent(&legacy_path).unwrap();
