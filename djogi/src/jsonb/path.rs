@@ -737,6 +737,28 @@ mod tests {
     }
 
     #[test]
+    fn sql_cast_for_primitive_date_time_is_none_intentionally() {
+        // PrimitiveDateTime is DELIBERATELY not castable on a JSONB path.
+        // The workspace does not enable `time/serde-human-readable`, so
+        // `time` serializes a PrimitiveDateTime into a JSONB column as a
+        // 6-element numeric array (e.g. [2021,2,3,4,5,0]), NOT a timestamp
+        // string. `(col->>'key')::timestamp` on that array text raises a
+        // Postgres cast error at runtime. The type is blocked from the
+        // JSONB-path comparison surface via `JsonbPathComparable` (it is
+        // simply never given an impl). This test pins the `None` cast so
+        // nobody re-adds a `::timestamp` arm that would compile but fail at
+        // the database. The broader temporal-in-JSONB question
+        // (OffsetDateTime / Date have the same tuple-serialization shape) is
+        // tracked in djogi#400.
+        assert_eq!(
+            sql_cast_for_type("time::primitive_date_time::PrimitiveDateTime"),
+            None
+        );
+        assert_eq!(sql_cast_for_type("time::PrimitiveDateTime"), None);
+        assert_eq!(sql_cast_for_type("PrimitiveDateTime"), None);
+    }
+
+    #[test]
     fn sql_cast_for_uuid() {
         assert_eq!(sql_cast_for_type("uuid::Uuid"), Some("::uuid"));
         assert_eq!(sql_cast_for_type("Uuid"), Some("::uuid"));
