@@ -60,8 +60,8 @@ use crate::error::DjogiError;
 use super::bootstrap::PHASE_ZERO_VERSION;
 use super::guard::WorkspaceGuard;
 use super::ledger::{
-    self, ChecksumFormatErrorKind, LedgerRow, LedgerStatus, compute_checksum,
-    load_full_row_by_version, validate_checksum_format,
+    self, ChecksumFormatErrorKind, LedgerRow, LedgerStatus, LEDGER_SELECT_COLS,
+    compute_checksum, validate_checksum_format,
 };
 use super::projection::BucketKey;
 use super::runner::{
@@ -1582,20 +1582,29 @@ async fn repair_snapshot_rebuild_pinned(
 /// [`RepairError::VersionNotFound`] when the row is absent so the
 /// caller can distinguish "no such version" from a generic database
 /// error.
-/// Delegates to [`ledger::load_full_row_by_version`] — the 14-column
-/// SELECT and try_get cascade live in ledger.rs to avoid triplication
-/// across runner / repair / verify (cluster-2 simplify Finding 3).
+///
+/// Queries by version only (not app_label) so that a mismatched bucket
+/// returns the existing row — the caller's `ensure_row_matches_bucket_app`
+/// then produces [`RepairError::BucketAppMismatch`] instead of
+/// masking the real problem as "version not found".
 async fn load_row(
     ctx: &mut DjogiContext,
     version: &str,
-    app_label: &str,
+    _app_label: &str,
 ) -> Result<LedgerRow, RepairError> {
-    load_full_row_by_version(ctx, version, app_label)
+    let pg_row = ctx
+        .query_opt(
+            &format!("{LEDGER_SELECT_COLS} WHERE version = $1"),
+            &[&version],
+        )
         .await
-        .map_err(|e| RepairError::LedgerIo { source: e })?
-        .ok_or_else(|| RepairError::VersionNotFound {
+        .map_err(|e| RepairError::LedgerIo { source: e })?;
+    match pg_row {
+        Some(r) => LedgerRow::try_from(&r).map_err(io_err),
+        None => Err(RepairError::VersionNotFound {
             version: version.to_string(),
-        })
+        }),
+    }
 }
 
 // RepairError is intentionally rich and unboxed; size is accepted for typed caller matching.
