@@ -2448,6 +2448,9 @@ mod tests {
     /// 4. True absence: `load_row("MISSING", "app_a")` returns
     ///    `VersionNotFound`.
     #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (PIN): Seeds migration ledger rows directly to isolate
+    // load_row's two-phase lookup logic; no typed insert API exists for
+    // injecting raw ledger state.
     #[djogi_test]
     async fn load_row_two_phase_lookup(mut ctx: DjogiContext) {
         ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
@@ -2503,10 +2506,9 @@ mod tests {
         );
 
         // ── Phase 2 mismatch path ───────────────────────────────────
-        // With only (V1, "app_a") in a fresh context (use a version not yet
-        // seeded for "app_c" to get the single-row fallback scenario), query
-        // for a non-existent app. The fallback row returned must allow
-        // ensure_row_matches_bucket_app to emit BucketAppMismatch.
+        // V2 is owned by app_c only; querying for (V2, app_d) exercises the
+        // single-owner fallback path. Phase 2 must return app_c's row so the
+        // caller can classify it as BucketAppMismatch.
         //
         // Seed a distinct version owned by "app_c" only.
         ctx.raw_execute(
