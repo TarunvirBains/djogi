@@ -665,39 +665,22 @@ pub async fn bootstrap(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
     // with the composite per-app-stream constraint. Pre-existing alpha
     // ledgers have auto-named `djogi_schema_migrations_version_key`;
     // fresh tables already carry the named composite constraint from DDL.
-    let has_old: bool = ctx
-        .query_opt(
-            "SELECT 1 FROM pg_constraint \
-             WHERE conname = 'djogi_schema_migrations_version_key' \
-               AND conrelid = 'djogi_schema_migrations'::regclass",
-            &[],
-        )
-        .await?
-        .is_some();
-    if has_old {
-        ctx.raw_ddl(
-            "ALTER TABLE djogi_schema_migrations \
-             DROP CONSTRAINT djogi_schema_migrations_version_key",
-        )
-        .await?;
-    }
-    let has_new: bool = ctx
-        .query_opt(
-            "SELECT 1 FROM pg_constraint \
-             WHERE conname = 'djogi_schema_migrations_version_app_key' \
-               AND conrelid = 'djogi_schema_migrations'::regclass",
-            &[],
-        )
-        .await?
-        .is_some();
-    if !has_new {
-        ctx.raw_ddl(
-            "ALTER TABLE djogi_schema_migrations \
-             ADD CONSTRAINT djogi_schema_migrations_version_app_key \
-             UNIQUE (version, app_label)",
-        )
-        .await?;
-    }
+    // Use idempotent DDL to avoid TOCTOU between probe and mutation.
+    ctx.raw_ddl(
+        "ALTER TABLE djogi_schema_migrations \
+         DROP CONSTRAINT IF EXISTS djogi_schema_migrations_version_key",
+    )
+    .await?;
+    ctx.raw_ddl(
+        "DO $$ BEGIN
+            ALTER TABLE djogi_schema_migrations
+                ADD CONSTRAINT djogi_schema_migrations_version_app_key
+                UNIQUE (version, app_label);
+        EXCEPTION WHEN OTHERS THEN
+            IF SQLSTATE != '42P07' THEN RAISE; END IF;
+        END $$",
+    )
+    .await?;
 
     Ok(())
 }

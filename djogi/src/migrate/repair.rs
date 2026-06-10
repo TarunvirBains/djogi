@@ -1578,24 +1578,19 @@ async fn repair_snapshot_rebuild_pinned(
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
-/// Load the full ledger row for a `version`. Surfaces
-/// [`RepairError::VersionNotFound`] when the row is absent so the
-/// caller can distinguish "no such version" from a generic database
+/// Load the full ledger row for a `(version, app_label)` composite key.
+/// Surfaces [`RepairError::VersionNotFound`] when the row is absent so
+/// the caller can distinguish "no such version" from a generic database
 /// error.
-///
-/// Queries by version only (not app_label) so that a mismatched bucket
-/// returns the existing row — the caller's `ensure_row_matches_bucket_app`
-/// then produces [`RepairError::BucketAppMismatch`] instead of
-/// masking the real problem as "version not found".
 async fn load_row(
     ctx: &mut DjogiContext,
     version: &str,
-    _app_label: &str,
+    app_label: &str,
 ) -> Result<LedgerRow, RepairError> {
     let pg_row = ctx
         .query_opt(
-            &format!("{LEDGER_SELECT_COLS} WHERE version = $1"),
-            &[&version],
+            &format!("{LEDGER_SELECT_COLS} WHERE version = $1 AND app_label = $2"),
+            &[&version, &app_label],
         )
         .await
         .map_err(|e| RepairError::LedgerIo { source: e })?;
@@ -1648,6 +1643,7 @@ async fn count_applied_for_app(ctx: &mut DjogiContext, app_label: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use djogi_macros::djogi_test;
     use std::collections::BTreeSet;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2398,6 +2394,44 @@ mod tests {
         assert!(
             result.is_ok(),
             "Non-P0 resume with binding-capable identity should pass the gate"
+        );
+    }
+
+    // ── load_row app isolation ──────────────────────────────────────
+
+    /// Verify that `load_row` scopes by composite (version, app_label) key,
+    /// not version alone. When the ledger contains `(V1, "app_a")`,
+    /// querying for `"app_b"` must return VersionNotFound instead of
+    /// returning app_a's row and masking the mismatch downstream.
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    #[djogi_test]
+    async fn load_row_scopes_by_app_label(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+                     'applied', 1, '1', 'app_a')",
+            &[&"V1"],
+        )
+        .await
+        .expect("seed app_a row");
+
+        // Query for (V1, "app_b") — should NOT return app_a's row.
+        let result = load_row(&mut ctx, "V1", "app_b").await;
+
+        assert!(
+            matches!(result, Err(RepairError::VersionNotFound { .. })),
+            "load_row(V1, app_b) should return VersionNotFound when only app_a exists, got {result:?}",
+        );
+
+        // Sanity: querying for the actual row should succeed.
+        let result = load_row(&mut ctx, "V1", "app_a").await;
+        assert!(
+            result.is_ok(),
+            "load_row(V1, app_a) should find the seeded row, got {result:?}",
         );
     }
 }
