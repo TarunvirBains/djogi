@@ -14,7 +14,12 @@
 // SQL predicates: `eq`, `neq`, `in_`, `not_in` are available via explicit
 // `DjogiField<M, Option<Vec<u8>>>` impl (djogi#372). Additionally:
 // - `is_null()` / `is_not_null()` — generic on all `Option<U>` fields
-// - `.some().eq(...)` — present-only comparison via `DjogiPresentField<M, Vec<u8>>`
+// - `.some().eq(...)` / `.some().neq(...)` / `.some().in_(...)` /
+//   `.some().not_in(...)` — present-only comparisons via
+//   `DjogiPresentField<M, Vec<u8>>`. The present-only `not_in([])` falls back
+//   to `IS NOT NULL` at emission (every present row is not-in the empty set);
+//   the behavioral assertion for that fallback lives in the `field.rs` unit
+//   tests, since lihaaf only verifies this fixture *compiles*.
 // Portable/closure equality remains unavailable. The field is classified
 // `Unsupported` by the portable-predicate emitter, so the closure filter does
 // not expose `.eq` through the generic path.
@@ -42,14 +47,17 @@ fn _check_model_surface() {
 
 // djogi#372 — verify SQL filter predicates compile on the nullable BYTEA field.
 fn _check_optional_bytea_filter_surface() {
-    let _ = OptionalBlob::objects()
-        .filter(|f| f.payload().eq(vec![1, 2]));
-    let _ = OptionalBlob::objects()
-        .filter(|f| f.payload().is_null());
-    let _ = OptionalBlob::objects()
-        .filter(|f| f.payload().is_not_null());
-    let _ = OptionalBlob::objects()
-        .filter(|f| f.payload().some().eq(vec![3, 4]));
+    let _ = OptionalBlob::objects().filter(|f| f.payload().eq(vec![1, 2]));
+    // djogi#372 — nullable BYTEA neq.
+    let _ = OptionalBlob::objects().filter(|f| f.payload().neq(vec![5, 6]));
+    let _ = OptionalBlob::objects().filter(|f| f.payload().is_null());
+    let _ = OptionalBlob::objects().filter(|f| f.payload().is_not_null());
+    let _ = OptionalBlob::objects().filter(|f| f.payload().some().eq(vec![3, 4]));
+    // Present-only non-empty NOT IN.
+    let _ = OptionalBlob::objects().filter(|f| f.payload().some().not_in([vec![1u8], vec![2u8]]));
+    // Present-only empty NOT IN — compiles; falls back to IS NOT NULL at
+    // emission (behavioral assertion lives in the field.rs unit tests).
+    let _ = OptionalBlob::objects().filter(|f| f.payload().some().not_in(Vec::<Vec<u8>>::new()));
 }
 
 fn main() {}
