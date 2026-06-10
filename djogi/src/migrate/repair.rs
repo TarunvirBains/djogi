@@ -60,8 +60,8 @@ use crate::error::DjogiError;
 use super::bootstrap::PHASE_ZERO_VERSION;
 use super::guard::WorkspaceGuard;
 use super::ledger::{
-    self, ChecksumFormatErrorKind, LedgerRow, LedgerStatus, compute_checksum,
-    load_full_row_by_version, validate_checksum_format,
+    self, ChecksumFormatErrorKind, LEDGER_SELECT_COLS, LedgerRow, LedgerStatus, compute_checksum,
+    validate_checksum_format,
 };
 use super::projection::BucketKey;
 use super::runner::{
@@ -800,7 +800,7 @@ async fn repair_checksum_drift_pinned(
     // Load the row inside the lock window — the `before` values must
     // be captured atomically with the mutation so the audit trail is
     // consistent even if another agent races.
-    let row = match load_row(ctx, version).await {
+    let row = match load_row(ctx, version, &bucket.app).await {
         Ok(r) => r,
         Err(e) => {
             let _released = release_advisory_lock(ctx, lock_key).await;
@@ -820,8 +820,8 @@ async fn repair_checksum_drift_pinned(
         .execute(
             "UPDATE djogi_schema_migrations \
              SET checksum_up = $2, checksum_down = $3 \
-             WHERE version = $1",
-            &[&version, &new_checksum_up, &new_down_owned],
+             WHERE version = $1 AND app_label = $4",
+            &[&version, &new_checksum_up, &new_down_owned, &bucket.app],
         )
         .await
         .map_err(|e| RepairError::LedgerIo { source: e })
@@ -949,7 +949,7 @@ async fn repair_partial_apply_pinned(
     acquire_advisory_lock_repair(ctx, bucket, lock_key).await?;
 
     // Load row and check status inside the lock window.
-    let row = match load_row(ctx, version).await {
+    let row = match load_row(ctx, version, &bucket.app).await {
         Ok(r) => r,
         Err(e) => {
             let _released = release_advisory_lock(ctx, lock_key).await;
@@ -988,8 +988,8 @@ async fn repair_partial_apply_pinned(
         .execute(
             "UPDATE djogi_schema_migrations \
              SET status = $2, applied_steps_count = $3, partial_apply_note = $4 \
-             WHERE version = $1",
-            &[&version, &status_str, &target_steps, &note],
+             WHERE version = $1 AND app_label = $5",
+            &[&version, &status_str, &target_steps, &note, &bucket.app],
         )
         .await
         .map_err(|e| RepairError::LedgerIo { source: e })
@@ -1173,7 +1173,7 @@ async fn repair_resume_body(
 ) -> Result<RepairReport, RepairError> {
     // Load row and run all validation inside the lock window to prevent
     // TOCTOU races (GH #274).
-    let row = load_row(ctx, version).await?;
+    let row = load_row(ctx, version, &bucket.app).await?;
     ensure_row_matches_bucket_app(&row, bucket, version)?;
 
     let plan_checksum = compute_plan_checksum_up(plan);
@@ -1219,7 +1219,7 @@ async fn repair_resume_body(
 
     // The runner CRUD helpers (`update_progress` / `mark_partial`)
     // take the row's BIGINT id. Look it up once.
-    let ledger_id = lookup_ledger_id_by_version(ctx, &row.version).await?;
+    let ledger_id = lookup_ledger_id_by_version(ctx, &row.version, &bucket.app).await?;
 
     // #366: Pre-strict leaf-identity check with lenient lookup so a zero-leaf↔non-empty
     // topology drift surfaces as LeafIdentityMismatch rather than PartitionExpansionNoLeaves.
@@ -1384,8 +1384,8 @@ async fn repair_resume_body(
     ctx.execute(
         "UPDATE djogi_schema_migrations \
          SET status = 'applied', applied_steps_count = $2, partial_apply_note = NULL \
-         WHERE version = $1",
-        &[&row_version, &applied],
+         WHERE version = $1 AND app_label = $3",
+        &[&row_version, &applied, &bucket.app],
     )
     .await
     .map_err(|e| RepairError::LedgerIo { source: e })
@@ -1427,11 +1427,13 @@ fn compute_plan_checksum_up(plan: &MigrationPlan) -> String {
 async fn lookup_ledger_id_by_version(
     ctx: &mut DjogiContext,
     version: &str,
+    app_label: &str,
 ) -> Result<i64, RepairError> {
     let row = ctx
         .query_one(
-            "SELECT id FROM djogi_schema_migrations WHERE version = $1",
-            &[&version],
+            "SELECT id FROM djogi_schema_migrations \
+             WHERE version = $1 AND app_label = $2",
+            &[&version, &app_label],
         )
         .await
         .map_err(|e| RepairError::LedgerIo { source: e })?;
@@ -1576,20 +1578,63 @@ async fn repair_snapshot_rebuild_pinned(
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
-/// Load the full ledger row for a `version`. Surfaces
-/// [`RepairError::VersionNotFound`] when the row is absent so the
-/// caller can distinguish "no such version" from a generic database
-/// error.
-/// Delegates to [`ledger::load_full_row_by_version`] — the 14-column
-/// SELECT and try_get cascade live in ledger.rs to avoid triplication
-/// across runner / repair / verify (cluster-2 simplify Finding 3).
-async fn load_row(ctx: &mut DjogiContext, version: &str) -> Result<LedgerRow, RepairError> {
-    load_full_row_by_version(ctx, version)
+/// Load a ledger row for `version`, preserving the ability to classify
+/// a wrong-app call as [`RepairError::BucketAppMismatch`] (via the
+/// caller's [`ensure_row_matches_bucket_app`] check) rather than
+/// silently collapsing it to [`RepairError::VersionNotFound`].
+///
+/// Uses a two-phase strategy:
+///
+/// 1. **Exact composite lookup** — `(version, app_label)`. Returns the
+///    row directly when the caller's app owns this version; this is the
+///    common, correct-app path and requires only one query.
+///
+/// 2. **Version-only fallback** — when the exact composite key is
+///    absent, a second query (`WHERE version = $1 ORDER BY app_label
+///    LIMIT 1`) checks whether the version exists under a different app.
+///    If it does, that row is returned so the caller's
+///    `ensure_row_matches_bucket_app` can emit `BucketAppMismatch`.
+///    `ORDER BY app_label` makes the fallback row deterministic across
+///    multiple apps that share the same version.
+///
+/// Returns [`RepairError::VersionNotFound`] only when no row exists for
+/// this version in any app stream.
+async fn load_row(
+    ctx: &mut DjogiContext,
+    version: &str,
+    app_label: &str,
+) -> Result<LedgerRow, RepairError> {
+    // Phase 1: exact composite key — the fast, common-case path.
+    let pg_row = ctx
+        .query_opt(
+            &format!("{LEDGER_SELECT_COLS} WHERE version = $1 AND app_label = $2"),
+            &[&version, &app_label],
+        )
         .await
-        .map_err(|e| RepairError::LedgerIo { source: e })?
-        .ok_or_else(|| RepairError::VersionNotFound {
+        .map_err(|e| RepairError::LedgerIo { source: e })?;
+    if let Some(r) = pg_row {
+        return LedgerRow::try_from(&r).map_err(io_err);
+    }
+
+    // Phase 2: version exists under a different app — return that row so the
+    // caller's `ensure_row_matches_bucket_app` can emit `BucketAppMismatch`
+    // instead of the misleading `VersionNotFound`.
+    // `ORDER BY app_label LIMIT 1` is deterministic even when multiple apps
+    // share the same version (permitted by the `UNIQUE (version, app_label)`
+    // composite constraint).
+    let any_row = ctx
+        .query_opt(
+            &format!("{LEDGER_SELECT_COLS} WHERE version = $1 ORDER BY app_label LIMIT 1"),
+            &[&version],
+        )
+        .await
+        .map_err(|e| RepairError::LedgerIo { source: e })?;
+    match any_row {
+        Some(r) => LedgerRow::try_from(&r).map_err(io_err),
+        None => Err(RepairError::VersionNotFound {
             version: version.to_string(),
-        })
+        }),
+    }
 }
 
 // RepairError is intentionally rich and unboxed; size is accepted for typed caller matching.
@@ -1633,6 +1678,7 @@ async fn count_applied_for_app(ctx: &mut DjogiContext, app_label: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use djogi_macros::djogi_test;
     use std::collections::BTreeSet;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2383,6 +2429,128 @@ mod tests {
         assert!(
             result.is_ok(),
             "Non-P0 resume with binding-capable identity should pass the gate"
+        );
+    }
+
+    // ── load_row two-phase lookup ────────────────────────────────────
+
+    /// Verify the two-phase `load_row` semantics:
+    ///
+    /// 1. Exact composite key hit: `(version, app_label)` returns the
+    ///    matching row directly (Phase 1 fast path).
+    /// 2. Multi-row scenario: two apps sharing the same version — each
+    ///    composite key resolves to its own row, not the other app's.
+    /// 3. Fallback (mismatch) path: when only `(V1, "app_a")` exists,
+    ///    `load_row("V1", "app_b")` returns `Ok(row)` where `row.app_label
+    ///    == "app_a"`, enabling the caller's `ensure_row_matches_bucket_app`
+    ///    to emit `BucketAppMismatch` rather than the misleading
+    ///    `VersionNotFound`.
+    /// 4. True absence: `load_row("MISSING", "app_a")` returns
+    ///    `VersionNotFound`.
+    #[djogi::deliberately_bypass_convention_with_raw_sql]
+    // JUSTIFICATION (PIN): Seeds migration ledger rows directly to isolate
+    // load_row's two-phase lookup logic; no typed insert API exists for
+    // injecting raw ledger state.
+    #[djogi_test]
+    async fn load_row_two_phase_lookup(mut ctx: DjogiContext) {
+        ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
+
+        // ── Phase 1 exact-hit path ──────────────────────────────────
+        // Seed a single (V1, "app_a") row and verify direct hit.
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+                     'applied', 1, '1', 'app_a')",
+            &[&"V1"],
+        )
+        .await
+        .expect("seed (V1, app_a) row");
+
+        let result = load_row(&mut ctx, "V1", "app_a").await;
+        let row = result.expect("Phase 1: exact composite hit must return Ok");
+        assert_eq!(
+            row.app_label, "app_a",
+            "Phase 1: returned row must belong to app_a"
+        );
+
+        // ── Multi-row scenario ──────────────────────────────────────
+        // Add a second row for "app_b" at the same version. Both composite
+        // keys must resolve independently.
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+                     'applied', 2, '1', 'app_b')",
+            &[&"V1"],
+        )
+        .await
+        .expect("seed (V1, app_b) row");
+
+        let a_row = load_row(&mut ctx, "V1", "app_a")
+            .await
+            .expect("multi-row: (V1, app_a) must still resolve to app_a's row");
+        assert_eq!(
+            a_row.app_label, "app_a",
+            "multi-row: app_a key returns app_a row"
+        );
+
+        let b_row = load_row(&mut ctx, "V1", "app_b")
+            .await
+            .expect("multi-row: (V1, app_b) must resolve to app_b's row");
+        assert_eq!(
+            b_row.app_label, "app_b",
+            "multi-row: app_b key returns app_b row"
+        );
+
+        // ── Phase 2 mismatch path ───────────────────────────────────
+        // V2 is owned by app_c only; querying for (V2, app_d) exercises the
+        // single-owner fallback path. Phase 2 must return app_c's row so the
+        // caller can classify it as BucketAppMismatch.
+        //
+        // Seed a distinct version owned by "app_c" only.
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'test', 'V2:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+                     'applied', 3, '1', 'app_c')",
+            &[&"V2"],
+        )
+        .await
+        .expect("seed (V2, app_c) row for fallback test");
+
+        // Query for (V2, "app_d") — V2 exists under app_c only.
+        // Phase 2 must return app_c's row so the caller can classify as BucketAppMismatch.
+        let fallback_result = load_row(&mut ctx, "V2", "app_d").await;
+        let fallback_row = fallback_result.expect(
+            "Phase 2 fallback: version exists under a different app — must return Ok(row), not VersionNotFound",
+        );
+        assert_eq!(
+            fallback_row.app_label, "app_c",
+            "Phase 2 fallback: returned row must belong to app_c (the actual owner)",
+        );
+
+        // Verify the fallback row triggers BucketAppMismatch via ensure_row_matches_bucket_app.
+        let wrong_bucket = BucketKey {
+            database: "main".to_string(),
+            app: "app_d".to_string(),
+        };
+        let mismatch = ensure_row_matches_bucket_app(&fallback_row, &wrong_bucket, "V2")
+            .expect_err("wrong-app fallback row must produce BucketAppMismatch");
+        assert!(
+            matches!(mismatch, RepairError::BucketAppMismatch { .. }),
+            "expected BucketAppMismatch from ensure_row_matches_bucket_app, got {mismatch:?}",
+        );
+
+        // ── VersionNotFound path ────────────────────────────────────
+        // A version that does not exist in any app stream.
+        let missing_result = load_row(&mut ctx, "MISSING", "app_a").await;
+        assert!(
+            matches!(missing_result, Err(RepairError::VersionNotFound { .. })),
+            "absent version must return VersionNotFound, got {missing_result:?}",
         );
     }
 }

@@ -1377,9 +1377,9 @@ fn reconcile_pending_plans_after_lock(
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (PIN): apply_one_pending owns the shared cleanup path for
 // caller-gated Failed/RolledBack rows via
-// `DELETE FROM djogi_schema_migrations WHERE version = $1`. The public API has
-// no delete operation — `select_all_ledger_rows` is read-only and
-// `insert_pending` is write-only. This is the minimal raw SQL surface for
+// `DELETE FROM djogi_schema_migrations WHERE version = $1 AND app_label = $2`.
+// The public API has no delete operation — `select_all_ledger_rows` is read-only
+// and `insert_pending` is write-only. This is the minimal raw SQL surface for
 // reapply-blocking ledger-row cleanup.
 async fn apply_one_pending(
     ctx: &mut djogi::context::DjogiContext,
@@ -1399,8 +1399,8 @@ async fn apply_one_pending(
 
     let bucket = pending_file.bucket.clone();
 
-    // 2. Check ledger state machine for this version.
-    match check_ledger_state(ctx, &pending.version).await {
+    // 2. Check ledger state machine for this (version, app_label) stream.
+    match check_ledger_state(ctx, &pending.version, &bucket.app).await {
         LedgerState::NotPresent => {} /* normal path */
         LedgerState::AlreadyApplied => {
             return ApplyResult::Skipped("already applied".to_string());
@@ -1437,7 +1437,9 @@ async fn apply_one_pending(
                 // Failed and RolledBack rows both block re-apply, but callers
                 // gate which statuses may be cleaned before reaching this
                 // status-agnostic DELETE helper.
-                if let Err(e) = delete_reapply_blocking_ledger_row(ctx, &pending.version).await {
+                if let Err(e) =
+                    delete_reapply_blocking_ledger_row(ctx, &pending.version, &bucket.app).await
+                {
                     return ApplyResult::Refused(format!(
                         "clean {} ledger row: {e}",
                         existing_status.as_db_str()
@@ -1509,15 +1511,21 @@ enum LedgerState {
     PendingOrPartial(LedgerStatus),
 }
 
-/// Check the ledger for an existing row matching `version`.
-async fn check_ledger_state(ctx: &mut djogi::context::DjogiContext, version: &str) -> LedgerState {
+/// Check the ledger for an existing row matching `(version, app_label)`.
+async fn check_ledger_state(
+    ctx: &mut djogi::context::DjogiContext,
+    version: &str,
+    app_label: &str,
+) -> LedgerState {
     let Ok(rows) = djogi::migrate::select_all_ledger_rows(ctx).await else {
         // Ledger table might not exist yet — treat as NotPresent so
         // the runner can bootstrap it.
         return LedgerState::NotPresent;
     };
 
-    let existing = rows.iter().find(|r| r.version == version);
+    let existing = rows
+        .iter()
+        .find(|r| r.version == version && r.app_label == app_label);
     match existing {
         None => LedgerState::NotPresent,
         Some(row) => match row.status {
@@ -1548,10 +1556,12 @@ fn runner_error_exit_code(_error: &RunnerError) -> i32 {
 async fn delete_reapply_blocking_ledger_row(
     ctx: &mut djogi::context::DjogiContext,
     version: &str,
+    app_label: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ctx.raw_execute(
-        "DELETE FROM djogi_schema_migrations WHERE version = $1",
-        &[&version],
+        "DELETE FROM djogi_schema_migrations \
+         WHERE version = $1 AND app_label = $2",
+        &[&version, &app_label],
     )
     .await?;
     Ok(())
@@ -5023,5 +5033,58 @@ mod tests {
         assert!(msg.contains("seed-dml"), "refusal reason: {msg}");
 
         let _ = fs::remove_dir_all(&work);
+    }
+
+    // ── per-app version-stream test ─────────────────────────────────
+
+    #[djogi::djogi_test]
+    async fn check_ledger_state_is_app_scoped(mut ctx: djogi::context::DjogiContext) {
+        use djogi::migrate::{ExecutionMode, LedgerRow, LedgerStatus};
+
+        // Bootstrap the ledger table so insert_pending works.
+        djogi::migrate::bootstrap_ledger(&mut ctx)
+            .await
+            .expect("bootstrap");
+
+        // Seed one applied row for app "users" at version V.
+        let row = LedgerRow {
+            version: "V20260609000000__t397".into(),
+            description: "test migration".into(),
+            checksum_up: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            checksum_down: Some(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            ),
+            execution_mode: ExecutionMode::Transactional,
+            status: LedgerStatus::Pending,
+            execution_time_ms: 0,
+            out_of_order_flag: false,
+            applied_steps_count: 0,
+            total_steps: None,
+            partial_apply_note: None,
+            run_id: 1,
+            snapshot_version: "0".into(),
+            app_label: "users".into(),
+            leaf_identity: None,
+        };
+        let ledger_id = djogi::migrate::insert_pending_ledger_row(&mut ctx, &row)
+            .await
+            .expect("insert pending");
+        djogi::migrate::mark_ledger_applied(&mut ctx, ledger_id, 10, 1)
+            .await
+            .expect("mark applied");
+
+        // Different app stream must be NotPresent.
+        let state = check_ledger_state(&mut ctx, "V20260609000000__t397", "system").await;
+        assert!(
+            matches!(state, LedgerState::NotPresent),
+            "different app stream must be NotPresent, got {state:?}",
+        );
+
+        // Same app stream must be AlreadyApplied.
+        let state = check_ledger_state(&mut ctx, "V20260609000000__t397", "users").await;
+        assert!(
+            matches!(state, LedgerState::AlreadyApplied),
+            "same app stream must be AlreadyApplied, got {state:?}",
+        );
     }
 }

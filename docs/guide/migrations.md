@@ -84,6 +84,8 @@ Every applied migration writes a row to `djogi_schema_migrations` (one ledger pe
 
 The `V1:<sha256-hex>` checksum prefix is intentional: future hash algorithms can coexist (`V2:...`) without ambiguity. For Djogi-composed migrations, headers and label comments are outside the checksum domain; `checksum_down = NULL` means there is no real rollback SQL beyond comment placeholders. Operation SQL drift between disk and the ledger is detected at apply/reset time and refuses without `repair` or an explicit reset drift override.
 
+When a migration is applied, the "already applied" check is scoped per `(version, app_label)` — the same version string can exist in multiple buckets independently. A `compose` run stamps one version across all affected buckets, and each bucket's migration applies and is tracked in its own ledger stream.
+
 ## CLI commands
 
 ### `djogi migrations compose`
