@@ -512,7 +512,7 @@ use crate::query::field::IntoFilterValue;
 /// # Extending for adopter types
 /// This is an **open marker trait** — no private seal. Adopters who define
 /// a custom scalar newtype for a JSONB path and override
-/// [`IntoFilterValue::jsonb_sql_cast`](crate::query::field::IntoFilterValue::jsonb_sql_cast)
+/// [`IntoFilterValue::jsonb_sql_cast`]
 /// MUST also add a one-line `impl djogi::jsonb::JsonbPathComparable for
 /// MyType {}` so the comparison surface accepts it. The
 /// [`primary_key!`](crate::primary_key!) macro emits this impl
