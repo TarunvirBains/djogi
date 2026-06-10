@@ -1578,15 +1578,33 @@ async fn repair_snapshot_rebuild_pinned(
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
-/// Load the full ledger row for a `(version, app_label)` composite key.
-/// Surfaces [`RepairError::VersionNotFound`] when the row is absent so
-/// the caller can distinguish "no such version" from a generic database
-/// error.
+/// Load a ledger row for `version`, preserving the ability to classify
+/// a wrong-app call as [`RepairError::BucketAppMismatch`] (via the
+/// caller's [`ensure_row_matches_bucket_app`] check) rather than
+/// silently collapsing it to [`RepairError::VersionNotFound`].
+///
+/// Uses a two-phase strategy:
+///
+/// 1. **Exact composite lookup** — `(version, app_label)`. Returns the
+///    row directly when the caller's app owns this version; this is the
+///    common, correct-app path and requires only one query.
+///
+/// 2. **Version-only fallback** — when the exact composite key is
+///    absent, a second query (`WHERE version = $1 ORDER BY app_label
+///    LIMIT 1`) checks whether the version exists under a different app.
+///    If it does, that row is returned so the caller's
+///    `ensure_row_matches_bucket_app` can emit `BucketAppMismatch`.
+///    `ORDER BY app_label` makes the fallback row deterministic across
+///    multiple apps that share the same version.
+///
+/// Returns [`RepairError::VersionNotFound`] only when no row exists for
+/// this version in any app stream.
 async fn load_row(
     ctx: &mut DjogiContext,
     version: &str,
     app_label: &str,
 ) -> Result<LedgerRow, RepairError> {
+    // Phase 1: exact composite key — the fast, common-case path.
     let pg_row = ctx
         .query_opt(
             &format!("{LEDGER_SELECT_COLS} WHERE version = $1 AND app_label = $2"),
@@ -1594,7 +1612,24 @@ async fn load_row(
         )
         .await
         .map_err(|e| RepairError::LedgerIo { source: e })?;
-    match pg_row {
+    if let Some(r) = pg_row {
+        return LedgerRow::try_from(&r).map_err(io_err);
+    }
+
+    // Phase 2: version exists under a different app — return that row so the
+    // caller's `ensure_row_matches_bucket_app` can emit `BucketAppMismatch`
+    // instead of the misleading `VersionNotFound`.
+    // `ORDER BY app_label LIMIT 1` is deterministic even when multiple apps
+    // share the same version (permitted by the `UNIQUE (version, app_label)`
+    // composite constraint).
+    let any_row = ctx
+        .query_opt(
+            &format!("{LEDGER_SELECT_COLS} WHERE version = $1 ORDER BY app_label LIMIT 1"),
+            &[&version],
+        )
+        .await
+        .map_err(|e| RepairError::LedgerIo { source: e })?;
+    match any_row {
         Some(r) => LedgerRow::try_from(&r).map_err(io_err),
         None => Err(RepairError::VersionNotFound {
             version: version.to_string(),
@@ -2397,17 +2432,28 @@ mod tests {
         );
     }
 
-    // ── load_row app isolation ──────────────────────────────────────
+    // ── load_row two-phase lookup ────────────────────────────────────
 
-    /// Verify that `load_row` scopes by composite (version, app_label) key,
-    /// not version alone. When the ledger contains `(V1, "app_a")`,
-    /// querying for `"app_b"` must return VersionNotFound instead of
-    /// returning app_a's row and masking the mismatch downstream.
+    /// Verify the two-phase `load_row` semantics:
+    ///
+    /// 1. Exact composite key hit: `(version, app_label)` returns the
+    ///    matching row directly (Phase 1 fast path).
+    /// 2. Multi-row scenario: two apps sharing the same version — each
+    ///    composite key resolves to its own row, not the other app's.
+    /// 3. Fallback (mismatch) path: when only `(V1, "app_a")` exists,
+    ///    `load_row("V1", "app_b")` returns `Ok(row)` where `row.app_label
+    ///    == "app_a"`, enabling the caller's `ensure_row_matches_bucket_app`
+    ///    to emit `BucketAppMismatch` rather than the misleading
+    ///    `VersionNotFound`.
+    /// 4. True absence: `load_row("MISSING", "app_a")` returns
+    ///    `VersionNotFound`.
     #[djogi::deliberately_bypass_convention_with_raw_sql]
     #[djogi_test]
-    async fn load_row_scopes_by_app_label(mut ctx: DjogiContext) {
+    async fn load_row_two_phase_lookup(mut ctx: DjogiContext) {
         ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
 
+        // ── Phase 1 exact-hit path ──────────────────────────────────
+        // Seed a single (V1, "app_a") row and verify direct hit.
         ctx.raw_execute(
             "INSERT INTO djogi_schema_migrations \
              (version, description, checksum_up, status, run_id, \
@@ -2417,21 +2463,92 @@ mod tests {
             &[&"V1"],
         )
         .await
-        .expect("seed app_a row");
+        .expect("seed (V1, app_a) row");
 
-        // Query for (V1, "app_b") — should NOT return app_a's row.
-        let result = load_row(&mut ctx, "V1", "app_b").await;
-
-        assert!(
-            matches!(result, Err(RepairError::VersionNotFound { .. })),
-            "load_row(V1, app_b) should return VersionNotFound when only app_a exists, got {result:?}",
+        let result = load_row(&mut ctx, "V1", "app_a").await;
+        let row = result.expect("Phase 1: exact composite hit must return Ok");
+        assert_eq!(
+            row.app_label, "app_a",
+            "Phase 1: returned row must belong to app_a"
         );
 
-        // Sanity: querying for the actual row should succeed.
-        let result = load_row(&mut ctx, "V1", "app_a").await;
+        // ── Multi-row scenario ──────────────────────────────────────
+        // Add a second row for "app_b" at the same version. Both composite
+        // keys must resolve independently.
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+                     'applied', 2, '1', 'app_b')",
+            &[&"V1"],
+        )
+        .await
+        .expect("seed (V1, app_b) row");
+
+        let a_row = load_row(&mut ctx, "V1", "app_a")
+            .await
+            .expect("multi-row: (V1, app_a) must still resolve to app_a's row");
+        assert_eq!(
+            a_row.app_label, "app_a",
+            "multi-row: app_a key returns app_a row"
+        );
+
+        let b_row = load_row(&mut ctx, "V1", "app_b")
+            .await
+            .expect("multi-row: (V1, app_b) must resolve to app_b's row");
+        assert_eq!(
+            b_row.app_label, "app_b",
+            "multi-row: app_b key returns app_b row"
+        );
+
+        // ── Phase 2 mismatch path ───────────────────────────────────
+        // With only (V1, "app_a") in a fresh context (use a version not yet
+        // seeded for "app_c" to get the single-row fallback scenario), query
+        // for a non-existent app. The fallback row returned must allow
+        // ensure_row_matches_bucket_app to emit BucketAppMismatch.
+        //
+        // Seed a distinct version owned by "app_c" only.
+        ctx.raw_execute(
+            "INSERT INTO djogi_schema_migrations \
+             (version, description, checksum_up, status, run_id, \
+              snapshot_version, app_label) \
+             VALUES ($1, 'test', 'V2:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+                     'applied', 3, '1', 'app_c')",
+            &[&"V2"],
+        )
+        .await
+        .expect("seed (V2, app_c) row for fallback test");
+
+        // Query for (V2, "app_d") — V2 exists under app_c only.
+        // Phase 2 must return app_c's row so the caller can classify as BucketAppMismatch.
+        let fallback_result = load_row(&mut ctx, "V2", "app_d").await;
+        let fallback_row = fallback_result.expect(
+            "Phase 2 fallback: version exists under a different app — must return Ok(row), not VersionNotFound",
+        );
+        assert_eq!(
+            fallback_row.app_label, "app_c",
+            "Phase 2 fallback: returned row must belong to app_c (the actual owner)",
+        );
+
+        // Verify the fallback row triggers BucketAppMismatch via ensure_row_matches_bucket_app.
+        let wrong_bucket = BucketKey {
+            database: "main".to_string(),
+            app: "app_d".to_string(),
+        };
+        let mismatch = ensure_row_matches_bucket_app(&fallback_row, &wrong_bucket, "V2")
+            .expect_err("wrong-app fallback row must produce BucketAppMismatch");
         assert!(
-            result.is_ok(),
-            "load_row(V1, app_a) should find the seeded row, got {result:?}",
+            matches!(mismatch, RepairError::BucketAppMismatch { .. }),
+            "expected BucketAppMismatch from ensure_row_matches_bucket_app, got {mismatch:?}",
+        );
+
+        // ── VersionNotFound path ────────────────────────────────────
+        // A version that does not exist in any app stream.
+        let missing_result = load_row(&mut ctx, "MISSING", "app_a").await;
+        assert!(
+            matches!(missing_result, Err(RepairError::VersionNotFound { .. })),
+            "absent version must return VersionNotFound, got {missing_result:?}",
         );
     }
 }
