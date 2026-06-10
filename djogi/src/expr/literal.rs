@@ -34,6 +34,10 @@
 //!   (there is no `Expr<NULL>`), lists belong in `IN (...)` which is a
 //!   separate `FieldRef` lookup, and pairs are the `BETWEEN` payload
 //!   shape, not a standalone expression.
+//!   `FilterValue::Bytea` is also omitted: raw binary is not a meaningful
+//!   standalone expression literal — there is no `Expr<Vec<u8>>` promotion
+//!   because BYTEA participates only in equality/membership predicates, not
+//!   in arithmetic/comparison expression trees (GH #372).
 
 use crate::expr::Expr;
 use crate::query::condition::FilterValue;
