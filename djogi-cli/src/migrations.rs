@@ -3369,7 +3369,7 @@ mod tests {
 
     fn write_pending_json(path: &Path, database: &str, app: &str, version: &str) {
         let pending = PendingPlan {
-            format_version: "1".to_string(),
+            format_version: djogi::migrate::PENDING_FORMAT_VERSION.to_string(),
             bucket_database: database.to_string(),
             bucket_app: app.to_string(),
             version: version.to_string(),
@@ -3387,6 +3387,7 @@ mod tests {
                 .to_string(),
             checksum_down: None,
             composed_at: "2026-06-06T00:00:00Z".to_string(),
+            depends_on: Vec::new(),
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
