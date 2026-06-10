@@ -5409,6 +5409,8 @@ mod tests {
         duration: crate::Interval,
         maybe_duration: Option<crate::Interval>,
         span: crate::Range<i32>,
+        payload: Vec<u8>,
+        maybe_payload: Option<Vec<u8>>,
     }
 
     impl crate::model::__sealed::Sealed for FakeRow {}
@@ -5629,6 +5631,80 @@ mod tests {
             "maybe_duration IS NOT NULL",
             "present Interval not_in([]) must preserve the IS NOT NULL guard"
         );
+    }
+
+    #[test]
+    fn djogi_field_bytea_eq_neq_in_not_in_are_sql_only_conditions() {
+        let f =
+            djogi_field_macro_support::__make_djogi_field::<FakeRow, Vec<u8>>("payload", |row| {
+                &row.payload
+            });
+
+        // (1) eq -> Eq + FilterValue::Bytea
+        if let Condition::Leaf(leaf) = f.eq(vec![1, 2, 3]) {
+            assert_eq!(leaf.column, "payload");
+            assert_eq!(leaf.op, LookupOp::Eq);
+            assert!(matches!(leaf.value, FilterValue::Bytea(ref b) if b == &[1, 2, 3]));
+        } else {
+            panic!("expected BYTEA eq Leaf");
+        }
+
+        // (2) neq -> Neq + FilterValue::Bytea
+        if let Condition::Leaf(leaf) = f.neq(vec![9]) {
+            assert_eq!(leaf.op, LookupOp::Neq);
+            assert!(matches!(leaf.value, FilterValue::Bytea(ref b) if b == &[9]));
+        } else {
+            panic!("expected BYTEA neq Leaf");
+        }
+
+        // (3) in_ -> In + FilterValue::List
+        if let Condition::Leaf(leaf) = f.in_([vec![1u8], vec![2u8]]) {
+            assert_eq!(leaf.op, LookupOp::In);
+            assert!(matches!(leaf.value, FilterValue::List(ref v) if v.len() == 2));
+        } else {
+            panic!("expected BYTEA in_ Leaf");
+        }
+
+        // (4) not_in (non-empty) -> NotIn + FilterValue::List
+        if let Condition::Leaf(leaf) = f.not_in([vec![1u8], vec![2u8]]) {
+            assert_eq!(leaf.op, LookupOp::NotIn);
+            assert!(matches!(leaf.value, FilterValue::List(ref v) if v.len() == 2));
+        } else {
+            panic!("expected BYTEA not_in Leaf");
+        }
+    }
+
+    #[test]
+    fn djogi_present_field_bytea_empty_not_in_falls_back_to_is_not_null() {
+        // (5) DjogiPresentField<_, Vec<u8>>::not_in([]) -> IS NOT NULL
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<Vec<u8>>>(
+            "maybe_payload",
+            |row| &row.maybe_payload,
+        );
+        let empty: Condition = f.some().not_in(Vec::<Vec<u8>>::new());
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_condition(&mut acc, &empty, None).unwrap();
+        assert_eq!(
+            acc.sql(),
+            "maybe_payload IS NOT NULL",
+            "present BYTEA not_in([]) must preserve the IS NOT NULL guard"
+        );
+    }
+
+    #[test]
+    fn djogi_field_nullable_bytea_eq_is_sql_only_condition() {
+        // (6) DjogiField<_, Option<Vec<u8>>>::eq -> Eq + FilterValue::Bytea
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<Vec<u8>>>(
+            "maybe_payload",
+            |row| &row.maybe_payload,
+        );
+        if let Condition::Leaf(leaf) = f.eq(vec![7, 8]) {
+            assert_eq!(leaf.column, "maybe_payload");
+            assert_eq!(leaf.op, LookupOp::Eq);
+            assert!(matches!(leaf.value, FilterValue::Bytea(ref b) if b == &[7, 8]));
+        } else {
+            panic!("expected nullable BYTEA eq Leaf");
+        }
     }
 
     #[test]
