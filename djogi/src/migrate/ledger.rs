@@ -661,24 +661,41 @@ pub async fn bootstrap(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
     ctx.raw_ddl("ALTER TABLE djogi_schema_migrations ADD COLUMN IF NOT EXISTS leaf_identity TEXT")
         .await?;
 
-    // Upgrade: replace the column-level UNIQUE (version) constraint
-    // with the composite per-app-stream constraint. Pre-existing alpha
-    // ledgers have auto-named `djogi_schema_migrations_version_key`;
-    // fresh tables already carry the named composite constraint from DDL.
-    // Use idempotent DDL to avoid TOCTOU between probe and mutation.
+    // Upgrade: replace any single-column UNIQUE(version) constraint with
+    // the composite UNIQUE(version, app_label) needed for per-app version
+    // streams. The DO block probes pg_constraint by column membership so
+    // it finds the constraint regardless of its auto-generated name.
+    // EXECUTE format(...%I...) provides server-side identifier quoting;
+    // IF EXISTS guards the TOCTOU window between probe and drop.
     ctx.raw_ddl(
-        "ALTER TABLE djogi_schema_migrations \
-         DROP CONSTRAINT IF EXISTS djogi_schema_migrations_version_key",
-    )
-    .await?;
-    ctx.raw_ddl(
-        "DO $$ BEGIN
-            ALTER TABLE djogi_schema_migrations
-                ADD CONSTRAINT djogi_schema_migrations_version_app_key
-                UNIQUE (version, app_label);
-        EXCEPTION WHEN OTHERS THEN
-            IF SQLSTATE != '42P07' THEN RAISE; END IF;
-        END $$",
+        "DO $$
+         DECLARE
+             con_name text;
+         BEGIN
+             SELECT con.conname
+               INTO con_name
+               FROM pg_constraint con
+               JOIN pg_class     c  ON c.oid        = con.conrelid
+               JOIN pg_attribute a  ON a.attrelid   = c.oid
+                                   AND a.attnum     = con.conkey[1]
+              WHERE c.relname              = 'djogi_schema_migrations'
+                AND con.contype            = 'u'
+                AND array_length(con.conkey, 1) = 1
+                AND a.attname              = 'version';
+
+             IF con_name IS NOT NULL THEN
+                 EXECUTE format(
+                     'ALTER TABLE djogi_schema_migrations DROP CONSTRAINT IF EXISTS %I',
+                     con_name
+                 );
+             END IF;
+
+             ALTER TABLE djogi_schema_migrations
+                 ADD CONSTRAINT djogi_schema_migrations_version_app_key
+                 UNIQUE (version, app_label);
+         EXCEPTION WHEN OTHERS THEN
+             IF SQLSTATE != '42P07' THEN RAISE; END IF;
+         END $$",
     )
     .await?;
 
@@ -1042,6 +1059,34 @@ mod tests {
         assert_eq!(same_version.len(), 2, "both app streams should have a row");
         assert!(same_version.iter().any(|r| r.app_label == "users"));
         assert!(same_version.iter().any(|r| r.app_label == "system"));
+
+        // Second bootstrap — exercises the 42P07-swallow path: the
+        // composite constraint already exists, the probe finds no
+        // single-column UNIQUE(version) constraint, and the DO block
+        // catches the duplicate-object error and is a no-op.
+        bootstrap(&mut ctx)
+            .await
+            .expect("second bootstrap is a no-op");
+
+        // Third bootstrap — confirms no partial state from the second
+        // left the constraint in an inconsistent shape.
+        bootstrap(&mut ctx)
+            .await
+            .expect("third bootstrap is a no-op");
+
+        // Re-assert: both rows still readable after repeated bootstrap.
+        let rows_after = select_all(&mut ctx)
+            .await
+            .expect("read ledger after repeat bootstrap");
+        let same_version_after: Vec<_> =
+            rows_after.iter().filter(|r| r.version == version).collect();
+        assert_eq!(
+            same_version_after.len(),
+            2,
+            "repeated bootstrap must not disturb existing rows",
+        );
+        assert!(same_version_after.iter().any(|r| r.app_label == "users"));
+        assert!(same_version_after.iter().any(|r| r.app_label == "system"));
     }
 
     #[test]
