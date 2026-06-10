@@ -62,6 +62,7 @@ fn write_pending_with_format_version(
             .to_string(),
         checksum_down: None,
         composed_at: "2026-06-06T00:00:00Z".to_string(),
+        depends_on: Vec::new(),
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap();

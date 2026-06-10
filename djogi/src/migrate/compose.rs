@@ -338,6 +338,12 @@ pub enum ComposeError {
     /// the failing step (composition vs. filesystem write vs.
     /// pending-JSON serialize).
     PhaseZeroAutoEmit(super::bootstrap::AutoEmitError),
+    /// Foreign keys between app buckets form a cycle — no bucket apply
+    /// order can satisfy them. Automatic cycle-breaking is out of scope;
+    /// the operator moves the mutually-referencing models into one app,
+    /// or removes one direction of the reference (future: declared
+    /// hierarchy via #399).
+    CrossBucketForeignKeyCycle { database: String, chain: Vec<String> },
 }
 
 impl std::fmt::Display for ComposeError {
@@ -382,6 +388,16 @@ impl std::fmt::Display for ComposeError {
             ),
             Self::Diff(e) => write!(f, "differ refused: {e}"),
             Self::PhaseZeroAutoEmit(e) => write!(f, "{e}"),
+            Self::CrossBucketForeignKeyCycle { database, chain } => {
+                write!(
+                    f,
+                    "cross-app foreign keys in database `{database}` form a dependency cycle \
+                     between apps: {chain}. No slice apply order can satisfy the cycle. Move \
+                     the mutually-referencing models into one app, or remove one direction of \
+                     the reference",
+                    chain = chain.join(", ")
+                )
+            }
         }
     }
 }
@@ -676,6 +692,199 @@ pub fn load_pending(path: &Path) -> Result<PendingPlan, PendingLoadError> {
     parse_pending_bytes(&bytes, Some(path.to_path_buf()))
 }
 
+// ── Cross-bucket FK dependency graph (#398) ────────────────────────────────
+
+/// Map every projected table name to its owning bucket, per database.
+/// Input is the same `models` map compose already diffs against.
+fn table_to_bucket_index(
+    models: &std::collections::BTreeMap<BucketKey, AppliedSchema>,
+) -> std::collections::BTreeMap<(String, String), BucketKey> {
+    let mut idx = std::collections::BTreeMap::new();
+    for (bucket, schema) in models {
+        for table_name in schema.models.keys() {
+            idx.insert(
+                (bucket.database.clone(), table_name.clone()),
+                bucket.clone(),
+            );
+        }
+    }
+    idx
+}
+
+/// Collect the FK target-table names an operation introduces.
+/// Family-complete over every op variant in the shipped IR that
+/// carries an FK reference: AddTable (inline column FKs), AddForeignKey,
+/// AddColumn with an FK-bearing column.
+///
+/// Enumeration justification (REQ-398-2): every SchemaOperation variant
+/// is accounted for below. The variants that introduce FK targets are
+/// AddTable, AddColumn, and AddForeignKey. All others either remove
+/// references, rename without adding new ones, or operate on non-FK
+/// schema elements (indexes, enums, comments, PK flips, metadata).
+fn fk_target_tables(op: &SchemaOperation) -> Vec<String> {
+    let mut out = Vec::new();
+    match op {
+        // Included: inline column FKs in the new table definition
+        SchemaOperation::AddTable(t) => {
+            for col in &t.columns {
+                if let Some(fk) = &col.foreign_key {
+                    out.push(fk.ref_table.clone());
+                }
+            }
+            // Period FK constraints are NOT part of TableSchema or the
+            // diff IR today (schema-level struct + test-only emitters
+            // only). If they ever join the pipeline, their ref_table
+            // joins this extraction.
+        }
+        // Included: column-level foreign_key may reference another table
+        SchemaOperation::AddColumn { column, .. } => {
+            if let Some(fk) = &column.foreign_key {
+                out.push(fk.ref_table.clone());
+            }
+        }
+        // Included: explicit FK addition on an existing column
+        SchemaOperation::AddForeignKey { fk, .. } => {
+            out.push(fk.ref_table.clone());
+        }
+        // Excluded — no new FK reference introduced:
+        // DropTable — removes a table, not a reference target
+        // RenameTable — renames without adding references
+        // DropColumn — removes a column
+        // RenameColumn — renames without adding references
+        // AlterColumn { .. } — changes type/nullability/default; does not add FK
+        //   (FK changes go through AddForeignKey / DropForeignKey)
+        // DropForeignKey { .. } — removes a reference, doesn't create one
+        // AddIndex / DropIndex — index metadata only
+        // AddExclusionConstraint / DropExclusionConstraint — constraint metadata
+        // AddEnum / DropEnum / AddEnumVariant — enum type operations
+        // PkTypeFlip / PkTypeFlipGroup / PkTypeFlipMultiGroup — PK migration
+        // RenameApp — metadata-only rename
+        // MoveModelBetweenApps — moves model ownership, no FK change
+        // SetTableComment / SetStorageParams / SetTablespace — table metadata
+        // Unsupported — differ refusal, not an operation
+        SchemaOperation::DropTable { .. } => {}
+        SchemaOperation::RenameTable { .. } => {}
+        SchemaOperation::DropColumn { .. } => {}
+        SchemaOperation::RenameColumn { .. } => {}
+        SchemaOperation::AlterColumn { .. } => {}
+        SchemaOperation::DropForeignKey { .. } => {}
+        SchemaOperation::AddIndex(_) => {}
+        SchemaOperation::DropIndex(_) => {}
+        SchemaOperation::AddExclusionConstraint { .. } => {}
+        SchemaOperation::DropExclusionConstraint { .. } => {}
+        SchemaOperation::AddEnum(_) => {}
+        SchemaOperation::DropEnum(_) => {}
+        SchemaOperation::AddEnumVariant { .. } => {}
+        SchemaOperation::PkTypeFlip { .. } => {}
+        SchemaOperation::PkTypeFlipGroup(_) => {}
+        SchemaOperation::PkTypeFlipMultiGroup(_) => {}
+        SchemaOperation::RenameApp { .. } => {}
+        SchemaOperation::MoveModelBetweenApps { .. } => {}
+        SchemaOperation::SetTableComment { .. } => {}
+        SchemaOperation::SetStorageParams { .. } => {}
+        SchemaOperation::SetTablespace { .. } => {}
+        SchemaOperation::Unsupported { .. } => {}
+    }
+    out
+}
+
+/// Cross-bucket dependency map: for each delta bucket, the set of
+/// SAME-DATABASE buckets owning tables its new FKs reference.
+/// Within-bucket refs are segment.rs's job; targets absent from the
+/// index were already validated by projection (or pre-exist on disk)
+/// and need no compose-run ordering edge.
+fn cross_bucket_dependencies(
+    deltas: &[SchemaDelta],
+    index: &std::collections::BTreeMap<(String, String), BucketKey>,
+) -> std::collections::BTreeMap<BucketKey, std::collections::BTreeSet<String>> {
+    let mut deps: std::collections::BTreeMap<BucketKey, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for delta in deltas {
+        let entry = deps.entry(delta.bucket.clone()).or_default();
+        for op in &delta.operations {
+            for target in fk_target_tables(op) {
+                let key = (delta.bucket.database.clone(), target);
+                if let Some(owner) = index.get(&key) {
+                    // Within-bucket refs are handled by segment.rs
+                    if *owner != delta.bucket {
+                        entry.insert(owner.app.clone());
+                    }
+                }
+            }
+        }
+    }
+    deps
+}
+
+/// Topologically order the composed buckets of one database by their
+/// cross-bucket dependencies. Alphabetical tiebreak (precedent:
+/// segment.rs toposort). Returns Err on a dependency cycle.
+fn order_buckets(
+    database: &str,
+    buckets: &std::collections::BTreeSet<String>,
+    deps: &std::collections::BTreeMap<BucketKey, std::collections::BTreeSet<String>>,
+) -> Result<Vec<String>, ComposeError> {
+    let mut in_degree: std::collections::BTreeMap<&str, usize> = buckets
+        .iter()
+        .map(|b| (b.as_str(), 0))
+        .collect();
+    // rev[dep] = list of buckets that depend on `dep`
+    let mut rev: std::collections::BTreeMap<&str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+
+    for app in buckets {
+        let key = BucketKey {
+            database: database.to_string(),
+            app: app.clone(),
+        };
+        if let Some(targets) = deps.get(&key) {
+            for dep in targets {
+                // Edges to buckets without a delta this run are ignored:
+                // their tables already exist (REQ-398-6 compose-side twin).
+                if buckets.contains(dep) {
+                    *in_degree.get_mut(app.as_str()).expect("seeded") += 1;
+                    rev.entry(dep.as_str())
+                        .or_default()
+                        .push(app.as_str());
+                }
+            }
+        }
+    }
+
+    let mut ready: std::collections::BTreeSet<&str> = in_degree
+        .iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(b, _)| *b)
+        .collect();
+    let mut out = Vec::with_capacity(buckets.len());
+
+    while let Some(&next) = ready.iter().next() {
+        ready.remove(next);
+        out.push(next.to_string());
+        for &dependent in rev.get(next).map(Vec::as_slice).unwrap_or(&[]) {
+            let d = in_degree.get_mut(dependent).expect("seeded");
+            *d -= 1;
+            if *d == 0 {
+                ready.insert(dependent);
+            }
+        }
+    }
+
+    if out.len() != buckets.len() {
+        let chain: Vec<String> = in_degree
+            .iter()
+            .filter(|(_, d)| **d > 0)
+            .map(|(b, _)| (*b).to_string())
+            .collect();
+        return Err(ComposeError::CrossBucketForeignKeyCycle {
+            database: database.to_string(),
+            chain,
+        });
+    }
+
+    Ok(out)
+}
+
 // ── Public entry point ─────────────────────────────────────────────────────
 
 /// Run compose against the supplied request.
@@ -948,6 +1157,42 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         }
     }
 
+    // 6b. Cross-bucket FK dependency graph — cycle detection + ordering.
+    let bucket_index = table_to_bucket_index(req.models);
+    let cross_deps = cross_bucket_dependencies(&effective, &bucket_index);
+
+    // Group buckets by database for per-database topological sort.
+    let mut db_buckets: std::collections::BTreeMap<&str, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for delta in &effective {
+        db_buckets
+            .entry(delta.bucket.database.as_str())
+            .or_default()
+            .insert(delta.bucket.app.clone());
+    }
+
+    // Fail before writing any artifact if a cycle is detected.
+    for (database, buckets) in &db_buckets {
+        order_buckets(database, buckets, &cross_deps)?;
+    }
+
+    // Build depends_on map: bucket_key -> list of dependency app names
+    // filtered to only buckets that have deltas THIS compose run.
+    let depends_on_map: std::collections::BTreeMap<
+        BucketKey,
+        Vec<String>,
+    > = cross_deps
+        .iter()
+        .map(|(key, targets)| {
+            let effective_apps: std::collections::BTreeSet<String> = effective
+                .iter()
+                .filter(|d| d.bucket.database == key.database)
+                .map(|d| d.bucket.app.clone())
+                .collect();
+            (key.clone(), targets.intersection(&effective_apps).cloned().collect())
+        })
+        .collect();
+
     // 7. Lower each delta to SQL pairs + plan, write all artifacts.
     // The write dance per bucket:
     // - Compute the lowered SQL pair + checksums.
@@ -1030,7 +1275,10 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                 checksum_up: checksum_up.clone(),
                 checksum_down: checksum_down.clone(),
                 composed_at: composed_at.clone(),
-                depends_on: Vec::new(), // populated by Task 3 (cross-bucket FK graph)
+                depends_on: depends_on_map
+                    .get(&delta.bucket)
+                    .cloned()
+                    .unwrap_or_default(),
             };
 
             let up_path = bucket_dir(req.workspace_root, &delta.bucket).join(up_filename(&version));
@@ -5027,6 +5275,451 @@ mod tests {
             matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label == "orphan"),
             "expected LinkageDropWithoutModels for orphan, got: {err}"
         );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    // ── Cross-bucket FK ordering tests (#398) ──────────────────────
+
+    /// Build a `ForeignKeySchema` for a column referencing the
+    /// `users` table. Used by the two-bucket FK fixture.
+    fn fk_to_users() -> crate::migrate::schema::ForeignKeySchema {
+        use crate::migrate::schema::{ForeignKeySchema, OnDeleteSchema};
+        ForeignKeySchema {
+            deferrable: false,
+            initially_deferred: false,
+            on_delete: OnDeleteSchema::Restrict,
+            ref_column: "id".to_string(),
+            ref_table: "users".to_string(),
+        }
+    }
+
+    /// Build a column that carries an FK to the `users` table.
+    fn col_with_fk_to_users() -> ColumnSchema {
+        ColumnSchema {
+            name: "user_id".to_string(),
+            sql_type: "BIGINT".to_string(),
+            nullable: false,
+            foreign_key: Some(fk_to_users()),
+            ..col("user_id", "BIGINT", false)
+        }
+    }
+
+    /// Build a table `event_log` with an FK column to `users`.
+    fn table_event_log_with_fk(bucket: &BucketKey) -> TableSchema {
+        TableSchema {
+            app: if bucket.app.is_empty() {
+                None
+            } else {
+                Some(bucket.app.clone())
+            },
+            columns: vec![id_column_heerid_desc(), col_with_fk_to_users()],
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerIdRecencyBiased,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "event_log".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
+            tenant_key: None,
+        }
+    }
+
+    /// Build a simple `users` table (PK only).
+    fn table_users(bucket: &BucketKey) -> TableSchema {
+        TableSchema {
+            app: if bucket.app.is_empty() {
+                None
+            } else {
+                Some(bucket.app.clone())
+            },
+            columns: vec![id_column_heerid_desc()],
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerIdRecencyBiased,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "users".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
+            tenant_key: None,
+        }
+    }
+
+    /// Read a PendingPlan from the composed report for a given bucket.
+    fn read_written_pending(
+        report: &ComposeReport,
+        database: &str,
+        app: &str,
+    ) -> PendingPlan {
+        let bucket = BucketKey {
+            database: database.to_string(),
+            app: app.to_string(),
+        };
+        let cb = report
+            .composed_buckets
+            .iter()
+            .find(|c| c.bucket == bucket)
+            .expect(&format!("composed bucket for {database}/{app}"));
+        let bytes =
+            fs::read(&cb.pending_json_path).expect(&format!("read pending for {database}/{app}"));
+        parse_pending_bytes(&bytes, Some(cb.pending_json_path.clone()))
+            .expect(&format!("parse pending for {database}/{app}"))
+    }
+
+    /// system.event_log carries an FK to users.users (different bucket,
+    /// same database) — compose must record system -> depends_on ["users"]
+    /// and leave users' depends_on empty.
+    #[test]
+    fn cross_bucket_fk_records_depends_on() {
+        let work = temp_workspace("two-bucket-fk");
+        let guard = lock_for(&work);
+
+        let users_bucket = BucketKey {
+            database: "main".into(),
+            app: "users".into(),
+        };
+        let system_bucket = BucketKey {
+            database: "main".into(),
+            app: "system".into(),
+        };
+
+        // Models: both buckets have tables
+        let mut models = BTreeMap::new();
+        {
+            let mut users_schema = empty_snapshot(&users_bucket);
+            users_schema.models.insert("users".to_string(), table_users(&users_bucket));
+            models.insert(users_bucket.clone(), users_schema);
+        }
+        {
+            let mut system_schema = empty_snapshot(&system_bucket);
+            system_schema
+                .models
+                .insert("event_log".to_string(), table_event_log_with_fk(&system_bucket));
+            models.insert(system_bucket.clone(), system_schema);
+        }
+
+        // Snapshots: empty (fresh compose) — clear models so differ sees new tables
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(users_bucket.clone(), empty_snapshot(&users_bucket));
+        snapshots.insert(system_bucket.clone(), empty_snapshot(&system_bucket));
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "users".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "system".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "cross-bucket-fk",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("composes");
+        let system = read_written_pending(&report, "main", "system");
+        let users = read_written_pending(&report, "main", "users");
+        assert_eq!(
+            system.depends_on,
+            vec!["users".to_string()],
+            "system should depend on users (cross-bucket FK)"
+        );
+        assert!(
+            users.depends_on.is_empty(),
+            "users should have no dependencies"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    // ── Unit tests for helper functions ────────────────────────────
+
+    #[test]
+    fn fk_target_tables_add_table_with_inline_fk() {
+        use crate::migrate::diff::SchemaOperation;
+        let bucket = BucketKey {
+            database: "main".into(),
+            app: "system".into(),
+        };
+        let op = SchemaOperation::AddTable(table_event_log_with_fk(&bucket));
+        let targets = fk_target_tables(&op);
+        assert_eq!(targets, vec!["users".to_string()]);
+    }
+
+    #[test]
+    fn fk_target_tables_add_foreign_key() {
+        use crate::migrate::diff::SchemaOperation;
+        let op = SchemaOperation::AddForeignKey {
+            table: "orders".to_string(),
+            column: "user_id".to_string(),
+            fk: fk_to_users(),
+        };
+        let targets = fk_target_tables(&op);
+        assert_eq!(targets, vec!["users".to_string()]);
+    }
+
+    #[test]
+    fn fk_target_tables_add_column_with_fk() {
+        use crate::migrate::diff::SchemaOperation;
+        let col = col_with_fk_to_users();
+        let op = SchemaOperation::AddColumn {
+            table: "orders".to_string(),
+            column: col,
+        };
+        let targets = fk_target_tables(&op);
+        assert_eq!(targets, vec!["users".to_string()]);
+    }
+
+    #[test]
+    fn fk_target_tables_drop_table_returns_empty() {
+        use crate::migrate::diff::SchemaOperation;
+        let op = SchemaOperation::DropTable("widgets".to_string());
+        assert!(fk_target_tables(&op).is_empty());
+    }
+
+    #[test]
+    fn order_buckets_acyclic_two_bucket_order() {
+        use std::collections::{BTreeSet, BTreeMap};
+
+        let _users_bucket = BucketKey {
+            database: "main".into(),
+            app: "users".into(),
+        };
+        let system_bucket = BucketKey {
+            database: "main".into(),
+            app: "system".into(),
+        };
+
+        // system depends on users
+        let mut deps = BTreeMap::new();
+        let mut system_deps = BTreeSet::new();
+        system_deps.insert("users".to_string());
+        deps.insert(system_bucket, system_deps);
+
+        let buckets: BTreeSet<String> =
+            BTreeSet::from_iter(vec!["users".into(), "system".into()]);
+        let order = order_buckets("main", &buckets, &deps).expect("no cycle");
+        assert_eq!(order, vec!["users", "system"]);
+    }
+
+    #[test]
+    fn order_buckets_dependency_on_missing_bucket_is_ignored() {
+        use std::collections::{BTreeSet, BTreeMap};
+
+        let system_bucket = BucketKey {
+            database: "main".into(),
+            app: "system".into(),
+        };
+
+        // system depends on "billing", but billing is not in the buckets set
+        let mut deps = BTreeMap::new();
+        let mut system_deps = BTreeSet::new();
+        system_deps.insert("billing".to_string());
+        deps.insert(system_bucket, system_deps);
+
+        let buckets: BTreeSet<String> = BTreeSet::from_iter(vec!["system".into()]);
+        let order = order_buckets("main", &buckets, &deps).expect("no cycle");
+        assert_eq!(order, vec!["system"]);
+    }
+
+    #[test]
+    fn order_buckets_cycle_returns_error() {
+        use std::collections::{BTreeSet, BTreeMap};
+
+        let a_bucket = BucketKey {
+            database: "main".into(),
+            app: "a".into(),
+        };
+        let b_bucket = BucketKey {
+            database: "main".into(),
+            app: "b".into(),
+        };
+
+        // a -> b and b -> a (cycle)
+        let mut deps = BTreeMap::new();
+        let mut a_deps = BTreeSet::new();
+        a_deps.insert("b".to_string());
+        deps.insert(a_bucket, a_deps);
+
+        let mut b_deps = BTreeSet::new();
+        b_deps.insert("a".to_string());
+        deps.insert(b_bucket, b_deps);
+
+        let buckets: BTreeSet<String> = BTreeSet::from_iter(vec!["a".into(), "b".into()]);
+        let err = order_buckets("main", &buckets, &deps).expect_err("cycle detected");
+        match err {
+            ComposeError::CrossBucketForeignKeyCycle { database, chain } => {
+                assert_eq!(database, "main");
+                assert!(chain.contains(&"a".to_string()));
+                assert!(chain.contains(&"b".to_string()));
+            }
+            _ => panic!("expected CrossBucketForeignKeyCycle, got: {err:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_bucket_cycle_compose_refuses() {
+        let work = temp_workspace("cross-bucket-cycle");
+        let guard = lock_for(&work);
+
+        let a_bucket = BucketKey {
+            database: "main".into(),
+            app: "a".into(),
+        };
+        let b_bucket = BucketKey {
+            database: "main".into(),
+            app: "b".into(),
+        };
+
+        // Build FK from a's table to b's table and vice versa
+        fn fk_to_table(table_name: &str) -> crate::migrate::schema::ForeignKeySchema {
+            use crate::migrate::schema::{ForeignKeySchema, OnDeleteSchema};
+            ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: table_name.to_string(),
+            }
+        }
+
+        fn col_fk(name: &str, target: &str) -> ColumnSchema {
+            ColumnSchema {
+                name: format!("{name}_id"),
+                sql_type: "BIGINT".to_string(),
+                nullable: false,
+                foreign_key: Some(fk_to_table(target)),
+                ..col(&format!("{name}_id"), "BIGINT", false)
+            }
+        }
+
+        fn simple_table(
+            name: &str,
+            fk_col_name: &str,
+            fk_target: &str,
+            bucket: &BucketKey,
+        ) -> TableSchema {
+            TableSchema {
+                app: if bucket.app.is_empty() {
+                    None
+                } else {
+                    Some(bucket.app.clone())
+                },
+                columns: vec![id_column_heerid_desc(), col_fk(fk_col_name, fk_target)],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: name.to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            }
+        }
+
+        // a has table_a with FK to b's table_b
+        let mut models = BTreeMap::new();
+        {
+            let mut a_schema = empty_snapshot(&a_bucket);
+            a_schema.models.insert(
+                "table_a".to_string(),
+                simple_table("table_a", "b", "table_b", &a_bucket),
+            );
+            models.insert(a_bucket.clone(), a_schema);
+        }
+        {
+            let mut b_schema = empty_snapshot(&b_bucket);
+            b_schema.models.insert(
+                "table_b".to_string(),
+                simple_table("table_b", "a", "table_a", &b_bucket),
+            );
+            models.insert(b_bucket.clone(), b_schema);
+        }
+
+        // Empty snapshots so differ sees new tables
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(a_bucket.clone(), empty_snapshot(&a_bucket));
+        snapshots.insert(b_bucket.clone(), empty_snapshot(&b_bucket));
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "a".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "b".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "cycle-test",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let err = compose(req).expect_err("cycle must be refused");
+        match err {
+            ComposeError::CrossBucketForeignKeyCycle { database, chain } => {
+                assert_eq!(database, "main");
+                assert!(chain.contains(&"a".to_string()));
+                assert!(chain.contains(&"b".to_string()));
+            }
+            _ => panic!("expected CrossBucketForeignKeyCycle, got: {err:?}"),
+        }
         let _ = fs::remove_dir_all(&work);
     }
 }
