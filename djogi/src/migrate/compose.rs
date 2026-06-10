@@ -343,7 +343,10 @@ pub enum ComposeError {
     /// the operator moves the mutually-referencing models into one app,
     /// or removes one direction of the reference (future: declared
     /// hierarchy via #399).
-    CrossBucketForeignKeyCycle { database: String, chain: Vec<String> },
+    CrossBucketForeignKeyCycle {
+        database: String,
+        chain: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for ComposeError {
@@ -824,13 +827,10 @@ fn order_buckets(
     buckets: &std::collections::BTreeSet<String>,
     deps: &std::collections::BTreeMap<BucketKey, std::collections::BTreeSet<String>>,
 ) -> Result<Vec<String>, ComposeError> {
-    let mut in_degree: std::collections::BTreeMap<&str, usize> = buckets
-        .iter()
-        .map(|b| (b.as_str(), 0))
-        .collect();
+    let mut in_degree: std::collections::BTreeMap<&str, usize> =
+        buckets.iter().map(|b| (b.as_str(), 0)).collect();
     // rev[dep] = list of buckets that depend on `dep`
-    let mut rev: std::collections::BTreeMap<&str, Vec<&str>> =
-        std::collections::BTreeMap::new();
+    let mut rev: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
 
     for app in buckets {
         let key = BucketKey {
@@ -843,9 +843,7 @@ fn order_buckets(
                 // their tables already exist (REQ-398-6 compose-side twin).
                 if buckets.contains(dep) {
                     *in_degree.get_mut(app.as_str()).expect("seeded") += 1;
-                    rev.entry(dep.as_str())
-                        .or_default()
-                        .push(app.as_str());
+                    rev.entry(dep.as_str()).or_default().push(app.as_str());
                 }
             }
         }
@@ -1178,10 +1176,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
 
     // Build depends_on map: bucket_key -> list of dependency app names
     // filtered to only buckets that have deltas THIS compose run.
-    let depends_on_map: std::collections::BTreeMap<
-        BucketKey,
-        Vec<String>,
-    > = cross_deps
+    let depends_on_map: std::collections::BTreeMap<BucketKey, Vec<String>> = cross_deps
         .iter()
         .map(|(key, targets)| {
             let effective_apps: std::collections::BTreeSet<String> = effective
@@ -1189,7 +1184,10 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                 .filter(|d| d.bucket.database == key.database)
                 .map(|d| d.bucket.app.clone())
                 .collect();
-            (key.clone(), targets.intersection(&effective_apps).cloned().collect())
+            (
+                key.clone(),
+                targets.intersection(&effective_apps).cloned().collect(),
+            )
         })
         .collect();
 
@@ -3383,10 +3381,12 @@ mod tests {
             "checksum_down": null,
             "composed_at": "2026-04-25T01:02:03Z"
         }"#;
-        let err = parse_pending_bytes(blob.as_bytes(), None)
-            .expect_err("old format must be rejected");
-        assert!(matches!(err, PendingLoadError::UnsupportedFormatVersion { .. }),
-            "expected the actionable upgrade error, got {err:?}");
+        let err =
+            parse_pending_bytes(blob.as_bytes(), None).expect_err("old format must be rejected");
+        assert!(
+            matches!(err, PendingLoadError::UnsupportedFormatVersion { .. }),
+            "expected the actionable upgrade error, got {err:?}"
+        );
     }
 
     /// Rollback guard removes ALL staged tmp files when any rename in
@@ -5363,11 +5363,7 @@ mod tests {
     }
 
     /// Read a PendingPlan from the composed report for a given bucket.
-    fn read_written_pending(
-        report: &ComposeReport,
-        database: &str,
-        app: &str,
-    ) -> PendingPlan {
+    fn read_written_pending(report: &ComposeReport, database: &str, app: &str) -> PendingPlan {
         let bucket = BucketKey {
             database: database.to_string(),
             app: app.to_string(),
@@ -5376,11 +5372,11 @@ mod tests {
             .composed_buckets
             .iter()
             .find(|c| c.bucket == bucket)
-            .expect(&format!("composed bucket for {database}/{app}"));
-        let bytes =
-            fs::read(&cb.pending_json_path).expect(&format!("read pending for {database}/{app}"));
+            .unwrap_or_else(|| panic!("composed bucket for {database}/{app}"));
+        let bytes = fs::read(&cb.pending_json_path)
+            .unwrap_or_else(|_| panic!("read pending for {database}/{app}"));
         parse_pending_bytes(&bytes, Some(cb.pending_json_path.clone()))
-            .expect(&format!("parse pending for {database}/{app}"))
+            .unwrap_or_else(|e| panic!("parse pending for {database}/{app}: {e}"))
     }
 
     /// system.event_log carries an FK to users.users (different bucket,
@@ -5404,14 +5400,17 @@ mod tests {
         let mut models = BTreeMap::new();
         {
             let mut users_schema = empty_snapshot(&users_bucket);
-            users_schema.models.insert("users".to_string(), table_users(&users_bucket));
+            users_schema
+                .models
+                .insert("users".to_string(), table_users(&users_bucket));
             models.insert(users_bucket.clone(), users_schema);
         }
         {
             let mut system_schema = empty_snapshot(&system_bucket);
-            system_schema
-                .models
-                .insert("event_log".to_string(), table_event_log_with_fk(&system_bucket));
+            system_schema.models.insert(
+                "event_log".to_string(),
+                table_event_log_with_fk(&system_bucket),
+            );
             models.insert(system_bucket.clone(), system_schema);
         }
 
@@ -5511,7 +5510,7 @@ mod tests {
 
     #[test]
     fn order_buckets_acyclic_two_bucket_order() {
-        use std::collections::{BTreeSet, BTreeMap};
+        use std::collections::{BTreeMap, BTreeSet};
 
         let _users_bucket = BucketKey {
             database: "main".into(),
@@ -5528,15 +5527,14 @@ mod tests {
         system_deps.insert("users".to_string());
         deps.insert(system_bucket, system_deps);
 
-        let buckets: BTreeSet<String> =
-            BTreeSet::from_iter(vec!["users".into(), "system".into()]);
+        let buckets: BTreeSet<String> = BTreeSet::from_iter(vec!["users".into(), "system".into()]);
         let order = order_buckets("main", &buckets, &deps).expect("no cycle");
         assert_eq!(order, vec!["users", "system"]);
     }
 
     #[test]
     fn order_buckets_dependency_on_missing_bucket_is_ignored() {
-        use std::collections::{BTreeSet, BTreeMap};
+        use std::collections::{BTreeMap, BTreeSet};
 
         let system_bucket = BucketKey {
             database: "main".into(),
@@ -5556,7 +5554,7 @@ mod tests {
 
     #[test]
     fn order_buckets_cycle_returns_error() {
-        use std::collections::{BTreeSet, BTreeMap};
+        use std::collections::{BTreeMap, BTreeSet};
 
         let a_bucket = BucketKey {
             database: "main".into(),

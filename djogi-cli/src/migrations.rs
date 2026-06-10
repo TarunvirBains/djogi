@@ -3995,7 +3995,10 @@ mod tests {
             ))
         };
 
-        assert_eq!(exit, 0, "apply should succeed (tables created in FK dependency order)");
+        assert_eq!(
+            exit, 0,
+            "apply should succeed (tables created in FK dependency order)"
+        );
 
         // Connect to the database and verify results.
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -4067,10 +4070,7 @@ mod tests {
 
             // Cleanup: drop the test tables and delete ledger rows for this version.
             let _ = ctx
-                .raw_execute(
-                    &format!("DROP TABLE IF EXISTS {event_log_table}"),
-                    &[],
-                )
+                .raw_execute(&format!("DROP TABLE IF EXISTS {event_log_table}"), &[])
                 .await;
             let _ = ctx
                 .raw_execute(&format!("DROP TABLE IF EXISTS {users_table}"), &[])
