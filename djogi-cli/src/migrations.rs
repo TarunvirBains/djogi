@@ -1298,6 +1298,8 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
         }
     }
 
+    // Stage 1 — global stable order: version, then phase-zero precedence,
+    // then path (also the within-group tiebreak seed).
     out.sort_by(|a, b| {
         a.plan
             .version
@@ -1305,7 +1307,122 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
             .then_with(|| b.is_phase_zero.cmp(&a.is_phase_zero))
             .then_with(|| a.path.cmp(&b.path))
     });
+
+    // Stage 2 — #398: within each (database, version, is_phase_zero) group,
+    // reorder by the recorded depends_on (Kahn; stage-1 alphabetical order
+    // is the deterministic tiebreak). Dependencies naming buckets outside
+    // the group are ignored — their migrations applied in an earlier run.
+    // A cycle is a compose bug or a hand-edited pending file; refuse loudly.
+    let out = order_pending_groups_by_dependencies(out)?;
+
     Ok(out)
+}
+
+/// Within each same-(database, version, is_phase_zero) group, reorder by
+/// the recorded depends_on list using Kahn's algorithm. The stage-1 sort
+/// provides a deterministic alphabetical tiebreak for nodes with equal
+/// in-degree. Dependencies on buckets not present in the current group
+/// are ignored (their migrations already applied). Returns an error on
+/// cycle — the compose side should have caught this, but apply guards
+/// against hand-edited or corrupted pending files.
+///
+/// Algorithmic twin of `order_buckets` in compose.rs; kept local because
+/// the CLI cannot call private compose helpers across crates.
+fn order_pending_groups_by_dependencies(
+    out: Vec<DiscoveredPendingPlan>,
+) -> Result<Vec<DiscoveredPendingPlan>, String> {
+    // Group by (database, version, is_phase_zero). Since stage 1 already
+    // sorted by these keys, consecutive entries share the same group.
+    let mut result = Vec::with_capacity(out.len());
+    let mut i = 0;
+    while i < out.len() {
+        let mut j = i + 1;
+        while j < out.len()
+            && out[j].bucket.database == out[i].bucket.database
+            && out[j].plan.version == out[i].plan.version
+            && out[j].is_phase_zero == out[i].is_phase_zero
+        {
+            j += 1;
+        }
+
+        // Process the group [i..j)
+        if j - i <= 1 {
+            // Single-element or empty group: no reordering needed.
+            result.append(&mut out[i..j].to_vec());
+            i = j;
+            continue;
+        }
+
+        let database = &out[i].bucket.database;
+        let version = &out[i].plan.version;
+
+        // Build the dependency graph within this group.
+        let group_len = (j - i) as usize;
+        let mut in_degree = vec![0usize; group_len];
+        let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); group_len];
+
+        for k in i..j {
+            for dep_app in &out[k].plan.depends_on {
+                // Find the index of the dependency within this group.
+                // If not found, it's outside the group — ignore (REQ-398-6).
+                let mut found = None;
+                for m in i..j {
+                    if out[m].bucket.app.as_str() == dep_app.as_str() {
+                        found = Some(m - i);
+                        break;
+                    }
+                }
+                let Some(dep_idx) = found else {
+                    continue;
+                };
+                let k_idx = k - i;
+                if dep_idx != k_idx {
+                    in_degree[k_idx] += 1;
+                    reverse[dep_idx].push(k_idx);
+                }
+            }
+        }
+
+        // Kahn's algorithm with BTreeSet for deterministic tiebreak.
+        // The stage-1 sort already ordered by path (alphabetical app),
+        // so iterating in index order gives the deterministic tiebreak.
+        let mut ready: Vec<usize> = (0..group_len)
+            .filter(|&idx| in_degree[idx] == 0)
+            .collect();
+        ready.sort(); // alphabetical tiebreak from stage-1 ordering
+
+        let mut ordered = Vec::with_capacity(group_len);
+        while let Some(idx) = ready.pop() {
+            ordered.push(idx);
+            for &dependent in &reverse[idx] {
+                in_degree[dependent] -= 1;
+                if in_degree[dependent] == 0 {
+                    // Insert in sorted position to maintain tiebreak order.
+                    ready.push(dependent);
+                    ready.sort();
+                }
+            }
+        }
+
+        if ordered.len() != group_len {
+            let chain: Vec<String> = (0..group_len)
+                .filter(|&idx| in_degree[idx] > 0)
+                .map(|idx| out[i + idx].bucket.app.clone())
+                .collect();
+            return Err(format!(
+                "pending migrations for database `{database}` version `{version}` \
+                 declare a dependency cycle between apps: {chain:?}; \
+                 recompose or inspect hand-edited pending files"
+            ));
+        }
+
+        for idx in ordered {
+            result.push(out[i + idx].clone());
+        }
+        i = j;
+    }
+
+    Ok(result)
 }
 
 fn load_verified_pending_for_apply(
@@ -3367,7 +3484,13 @@ mod tests {
             .expect("compose seed-capable Phase 0")
     }
 
-    fn write_pending_json(path: &Path, database: &str, app: &str, version: &str) {
+    fn write_pending_json(
+        path: &Path,
+        database: &str,
+        app: &str,
+        version: &str,
+        depends_on: &[&str],
+    ) {
         let pending = PendingPlan {
             format_version: djogi::migrate::PENDING_FORMAT_VERSION.to_string(),
             bucket_database: database.to_string(),
@@ -3387,7 +3510,7 @@ mod tests {
                 .to_string(),
             checksum_down: None,
             composed_at: "2026-06-06T00:00:00Z".to_string(),
-            depends_on: Vec::new(),
+            depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
@@ -3514,6 +3637,7 @@ mod tests {
             "main",
             "",
             "V20260606010101__later_global",
+            &[],
         );
         write_pending_json(
             &djogi::migrate::phase_zero_pending_json_path(
@@ -3524,6 +3648,7 @@ mod tests {
             "main",
             "",
             djogi::migrate::PHASE_ZERO_VERSION,
+            &[],
         );
 
         let discovered = discover_pending_plans(&work).expect("discover");
@@ -3534,6 +3659,112 @@ mod tests {
         );
         assert!(discovered[0].is_phase_zero);
         assert_eq!(discovered[1].plan.version, "V20260606010101__later_global");
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Same-version buckets order by recorded depends_on, not path order.
+    /// `system` depends on `users`, so `users` must come first even though
+    /// `system` sorts earlier alphabetically.
+    #[test]
+    fn discover_orders_same_version_buckets_by_depends_on() {
+        let work = temp_workspace("discover_pending_depends_on");
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: "system".to_string(),
+                },
+            ),
+            "main",
+            "system",
+            "V20260609000000__initial",
+            &["users"],
+        );
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: "users".to_string(),
+                },
+            ),
+            "main",
+            "users",
+            "V20260609000000__initial",
+            &[],
+        );
+
+        let plans = discover_pending_plans(&work).expect("discovers");
+        let apps: Vec<&str> = plans.iter().map(|p| p.bucket.app.as_str()).collect();
+        assert_eq!(apps, ["users", "system"]);
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// depends_on referencing a bucket NOT in the current pending set is
+    /// silently ignored (REQ-398-6: already applied earlier / no delta this run).
+    #[test]
+    fn discover_depends_on_missing_bucket_is_ignored() {
+        let work = temp_workspace("discover_pending_deps_missing");
+        // system depends on billing, but billing has no pending file
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: "system".to_string(),
+                },
+            ),
+            "main",
+            "system",
+            "V20260609000000__initial",
+            &["billing"],
+        );
+
+        let plans = discover_pending_plans(&work).expect("discovers");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].bucket.app, "system");
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Same-version buckets with a dependency cycle are refused at apply time
+    /// (REQ-398-7 defensive half — compose should have caught this, but apply
+    /// guards against hand-edited or corrupted pending files).
+    #[test]
+    fn discover_depends_on_cycle_is_refused() {
+        let work = temp_workspace("discover_pending_deps_cycle");
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: "alpha".to_string(),
+                },
+            ),
+            "main",
+            "alpha",
+            "V20260609000000__initial",
+            &["beta"],
+        );
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: "beta".to_string(),
+                },
+            ),
+            "main",
+            "beta",
+            "V20260609000000__initial",
+            &["alpha"],
+        );
+
+        let err = discover_pending_plans(&work).expect_err("cycle must be refused");
+        assert!(
+            err.contains("alpha") && err.contains("beta") && err.contains("cycle"),
+            "error should name both apps and mention cycle, got: {err}"
+        );
         let _ = fs::remove_dir_all(&work);
     }
 
@@ -3567,6 +3798,7 @@ mod tests {
             "other_db",
             "",
             djogi::migrate::PHASE_ZERO_VERSION,
+            &[],
         );
 
         let err = discover_pending_plans(&work).expect_err("hidden Phase 0 mismatch must refuse");
@@ -3587,7 +3819,7 @@ mod tests {
                 app: String::new(),
             },
         );
-        write_pending_json(&path, "main", "", djogi::migrate::PHASE_ZERO_VERSION);
+        write_pending_json(&path, "main", "", djogi::migrate::PHASE_ZERO_VERSION, &[]);
 
         let err = discover_pending_plans(&work).expect_err("normal-global Phase 0 must refuse");
         assert!(
@@ -3607,7 +3839,7 @@ mod tests {
                 app: "billing".to_string(),
             },
         );
-        write_pending_json(&path, "main", "audit", "V20260606010101__mismatch");
+        write_pending_json(&path, "main", "audit", "V20260606010101__mismatch", &[]);
 
         let err = discover_pending_plans(&work).expect_err("normal app mismatch must refuse");
         assert!(
@@ -3621,7 +3853,7 @@ mod tests {
     fn discover_pending_plans_refuses_noncanonical_normal_pending_filename() {
         let work = temp_workspace("discover_pending_noncanonical_filename");
         let path = work.join("target/djogi_pending/main/bad-name.json");
-        write_pending_json(&path, "main", "bad-name", "V20260606010101__bad_name");
+        write_pending_json(&path, "main", "bad-name", "V20260606010101__bad_name", &[]);
 
         let err = discover_pending_plans(&work).expect_err("non-canonical filename must refuse");
         assert!(
@@ -3641,7 +3873,7 @@ mod tests {
                 app: String::new(),
             },
         );
-        write_pending_json(&path, "main", "", "V20260606010101__stable");
+        write_pending_json(&path, "main", "", "V20260606010101__stable", &[]);
         let discovered = discover_pending_plans(&work).expect("discover");
         fs::write(
             &path,
@@ -3672,7 +3904,7 @@ mod tests {
                 app: String::new(),
             },
         );
-        write_pending_json(&path, "main", "", "V20260606010101__stable");
+        write_pending_json(&path, "main", "", "V20260606010101__stable", &[]);
         let discovered = discover_pending_plans(&work).expect("discover");
         write_pending_json(
             &djogi::migrate::phase_zero_pending_json_path(
@@ -3683,6 +3915,7 @@ mod tests {
             "main",
             "",
             djogi::migrate::PHASE_ZERO_VERSION,
+            &[],
         );
 
         let err = reconcile_pending_plans_after_lock(&work, &discovered)
@@ -3704,7 +3937,7 @@ mod tests {
                 app: String::new(),
             },
         );
-        write_pending_json(&path, "main", "", "V20260606010101__stable");
+        write_pending_json(&path, "main", "", "V20260606010101__stable", &[]);
         let discovered = discover_pending_plans(&work).expect("discover");
 
         let locked = reconcile_pending_plans_after_lock(&work, &discovered)
@@ -4562,6 +4795,7 @@ mod tests {
             "main",
             "",
             "V20260607010101__main_global",
+            &[],
         );
         write_pending_json(
             &djogi::migrate::pending_json_path(
@@ -4574,6 +4808,7 @@ mod tests {
             "crud_log",
             "audit",
             "V20260607010102__crud_log_audit",
+            &[],
         );
 
         let discovered = discover_pending_plans(&work).expect("discover");
@@ -4616,6 +4851,7 @@ mod tests {
             "analytics",
             "",
             "V20260607010103__analytics_global",
+            &[],
         );
 
         let discovered = discover_pending_plans(&work).expect("discover");
