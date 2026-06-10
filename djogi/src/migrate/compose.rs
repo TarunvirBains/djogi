@@ -546,7 +546,7 @@ pub struct AppLifecycle {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PendingPlan {
-    /// Pending JSON format version. Currently always `"1"`.
+    /// Pending JSON format version. Currently `"2"`; see [`PENDING_FORMAT_VERSION`].
     pub format_version: String,
     /// Bucket the pending plan applies to. Owned strings so the file
     /// round-trips through serde without lifetime gymnastics.
