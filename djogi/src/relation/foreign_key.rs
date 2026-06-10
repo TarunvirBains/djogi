@@ -284,6 +284,15 @@ impl<T: crate::model::Model> crate::jsonb::JsonbPathComparable for ForeignKey<T>
 {
 }
 
+// An FK column stores the target PK value, which is an integer or UUID and is
+// unambiguously orderable in Postgres. Bound on `T::Pk: ExplicitPgOrderable`
+// so only FKs whose PK is itself explicit-PG-orderable participate, mirroring
+// the `JsonbPathComparable` wrapper impl above.
+impl<T: crate::model::Model> crate::query::field::ExplicitPgOrderable for ForeignKey<T> where
+    T::Pk: crate::query::field::ExplicitPgOrderable
+{
+}
+
 // ---------------------------------------------------------------------------
 // Expression-IR integration — `FieldRef<M, ForeignKey<T>>` ↔ `Expr<T::Pk>`.
 // ---------------------------------------------------------------------------

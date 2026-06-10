@@ -127,9 +127,9 @@ pub use closure::{ClosureModel, MaterializeClosureOptions, MaterializeClosureRep
 // return `FieldRef` until PR3 flips the macro emission.
 pub use condition::ConditionExt;
 pub use field::{
-    DjogiField, DjogiPortableEq, DjogiPortableOrd, DjogiPresentField, ExplicitPgPredicateField,
-    FieldRef, IntoFieldFilterValue, IntoFilterValue, IntoPortableFieldValue, IntoSqlField,
-    OptionalRelationRef,
+    DjogiField, DjogiPortableEq, DjogiPortableOrd, DjogiPresentField, ExplicitPgOrderable,
+    ExplicitPgPredicateField, FieldRef, IntoFieldFilterValue, IntoFilterValue,
+    IntoPortableFieldValue, IntoSqlField, OptionalRelationRef,
 };
 // Djogi#195 — MirJzSON JSON predicate builder re-exports.
 pub use filter::{FilterClause, Lookup, ModelFilter};

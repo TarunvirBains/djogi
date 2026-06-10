@@ -192,6 +192,14 @@ impl<T: crate::model::Model> crate::jsonb::JsonbPathComparable for OneToOneField
 {
 }
 
+// A O2O column stores the target PK value, which is an integer or UUID and is
+// unambiguously orderable in Postgres. Same rationale as the `ForeignKey<T>`
+// impl; bound on `T::Pk: ExplicitPgOrderable`.
+impl<T: crate::model::Model> crate::query::field::ExplicitPgOrderable for OneToOneField<T> where
+    T::Pk: crate::query::field::ExplicitPgOrderable
+{
+}
+
 // ---------------------------------------------------------------------------
 // serde integration — forward through the wrapped `ForeignKey<T>`. (#38)
 // ---------------------------------------------------------------------------

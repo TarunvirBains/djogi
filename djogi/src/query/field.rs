@@ -542,6 +542,65 @@ where
 }
 impl<V> DjogiPortableEq for Tracked<V> where V: DjogiPortableEq {}
 
+/// Marker for value types that support database-locale
+/// (`explicit_pg_predicate()`) ordering: `gt`/`gte`/`lt`/`lte`/`between`.
+/// BROADER than [`DjogiPortableOrd`] — it intentionally INCLUDES `String`,
+/// `f32`, `f64` (whose ordering is correct under Postgres collation/numeric
+/// rules but is NOT portable to Punnu's byte-lexicographic / IEEE comparison,
+/// so they are deliberately omitted from `DjogiPortableOrd`). It deliberately
+/// EXCLUDES `Vec<u8>` (BYTEA), [`Range<T>`](crate::Range), and array `Vec<V>`,
+/// for which ordering is a non-goal (GH #372).
+///
+/// Open marker: the orphan rule prevents adopters from implementing it for a
+/// foreign blocked type such as `Vec<u8>`.
+///
+/// # Adopter extension
+/// Adopters who want `explicit_pg_predicate()` ordering on a custom PK newtype
+/// used as a `ForeignKey<T>` target must manually add
+/// `impl djogi::ExplicitPgOrderable for MyCustomPk {}`. Unlike
+/// [`JsonbPathComparable`](crate::jsonb::JsonbPathComparable), the
+/// `primary_key!` macro does NOT currently emit this impl automatically.
+pub trait ExplicitPgOrderable {}
+
+impl ExplicitPgOrderable for String {}
+impl ExplicitPgOrderable for &'static str {}
+// `bool` is included even though it is not `DjogiPortableOrd` — Postgres
+// allows `>`, `<`, `BETWEEN` on boolean columns (`false < true`). The portable
+// marker deliberately excluded it because Punnu's in-memory evaluation does
+// not have a meaningful total order for booleans, but explicit Postgres
+// ordering is well-defined. Omitting it here would silently break any caller
+// that reaches `.explicit_pg_predicate().gt(false)` on a boolean field after
+// this bound lands.
+impl ExplicitPgOrderable for bool {}
+impl ExplicitPgOrderable for i8 {}
+impl ExplicitPgOrderable for i16 {}
+impl ExplicitPgOrderable for i32 {}
+impl ExplicitPgOrderable for i64 {}
+impl ExplicitPgOrderable for u8 {}
+impl ExplicitPgOrderable for u16 {}
+impl ExplicitPgOrderable for u32 {}
+impl ExplicitPgOrderable for u64 {}
+impl ExplicitPgOrderable for f32 {}
+impl ExplicitPgOrderable for f64 {}
+impl ExplicitPgOrderable for time::PrimitiveDateTime {}
+impl ExplicitPgOrderable for time::OffsetDateTime {}
+impl ExplicitPgOrderable for time::Date {}
+impl ExplicitPgOrderable for uuid::Uuid {}
+impl ExplicitPgOrderable for rust_decimal::Decimal {}
+impl ExplicitPgOrderable for crate::HeerId {}
+impl ExplicitPgOrderable for crate::RanjId {}
+impl ExplicitPgOrderable for crate::HeerIdDesc {}
+impl ExplicitPgOrderable for crate::RanjIdDesc {}
+impl ExplicitPgOrderable for crate::Interval {}
+impl<V> ExplicitPgOrderable for Tracked<V> where V: ExplicitPgOrderable {}
+
+#[cfg(feature = "network")]
+impl ExplicitPgOrderable for std::net::IpAddr {}
+#[cfg(feature = "network")]
+impl ExplicitPgOrderable for crate::CidrAddr {}
+#[cfg(feature = "network")]
+impl ExplicitPgOrderable for crate::MacAddr {}
+
 /// Marker for array element types whose `Vec<T>` equality has been
 /// parity-checked between Rust/Punnu and PostgreSQL.
 /// `IntoArrayFilterValue` is intentionally wider: it also contains
@@ -2326,6 +2385,27 @@ impl<M: Model, V> ExplicitPgPredicateField<M, V> {
         self.sql.neq(value)
     }
 
+    /// Case-insensitive equality through database-locale `LOWER(...)`.
+    /// Forwarded from [`FieldRef::iexact`]. Distinct from the portable
+    /// ASCII-stable `DjogiField::iexact`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn iexact<P>(self, value: P) -> Condition
+    where
+        P: IntoFieldFilterValue<V>,
+    {
+        self.sql.iexact(value)
+    }
+}
+
+// Ordering predicates on the explicit-PG surface are gated by
+// `ExplicitPgOrderable`. The marker includes every scalar that orders
+// correctly under Postgres rules — `String`/`f32`/`f64` (locale/numeric
+// ordering that is correct on the server even though it is not portable to
+// Punnu's in-memory comparison), plus the temporal/uuid/decimal/id/Interval
+// /network families. It deliberately EXCLUDES `Vec<u8>` (BYTEA), `Range<T>`,
+// and array `Vec<V>` so `f.bytea_col().explicit_pg_predicate().gt(...)` is a
+// compile error — ordering is a non-goal for binary data (GH #372).
+impl<M: Model, V: ExplicitPgOrderable> ExplicitPgPredicateField<M, V> {
     /// `column > value` — forwarded from [`FieldRef::gt`]. Database-locale
     /// ordering.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -2371,17 +2451,6 @@ impl<M: Model, V> ExplicitPgPredicateField<M, V> {
         P: IntoFieldFilterValue<V>,
     {
         self.sql.between(low, high)
-    }
-
-    /// Case-insensitive equality through database-locale `LOWER(...)`.
-    /// Forwarded from [`FieldRef::iexact`]. Distinct from the portable
-    /// ASCII-stable `DjogiField::iexact`.
-    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
-    pub fn iexact<P>(self, value: P) -> Condition
-    where
-        P: IntoFieldFilterValue<V>,
-    {
-        self.sql.iexact(value)
     }
 }
 
