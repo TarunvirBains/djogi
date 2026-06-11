@@ -5142,12 +5142,10 @@ mod tests {
     fn u4_compose_runtime_variants_map_to_exit_code_one() {
         use djogi::migrate::ComposeError;
 
-        let cases = [
-            ComposeError::Io {
-                path: std::path::PathBuf::from("/tmp/io-failure"),
-                source: std::io::Error::other("io failure"),
-            },
-        ];
+        let cases = [ComposeError::Io {
+            path: std::path::PathBuf::from("/tmp/io-failure"),
+            source: std::io::Error::other("io failure"),
+        }];
 
         for case in &cases {
             assert_eq!(
