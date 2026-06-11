@@ -2967,6 +2967,7 @@ mod tests {
     fn id_col() -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: Some("heerid_next()".to_string()),
             foreign_key: None,
@@ -2999,6 +3000,7 @@ mod tests {
     fn fk_col(name: &str, target: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: Some(ForeignKeySchema {

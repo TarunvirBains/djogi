@@ -414,6 +414,21 @@ fn try_expand(
                 // `migrate::projection` overwrites it with the actual
                 // target PK type when it has access to all descriptors.
                 sql_str_to_tokens("TEXT")
+            } else if fa
+                .protected
+                .as_ref()
+                .and_then(|p| p.codec.as_deref())
+                .is_some()
+            {
+                // A field with an at-rest codec stores its ciphertext as
+                // BYTEA — the codec's Encoded type is `Vec<u8>` regardless of
+                // the decoded Rust type (e.g. an encrypted `String` column is
+                // BYTEA, not VARCHAR/TEXT). The codec ID is validated against
+                // KNOWN_CODEC_IDS at parse time; every shipped codec uses
+                // BYTEA storage. Ordered AFTER the FK arm so a codec on an FK
+                // field cannot override the FK's target-PK type — FK + codec
+                // is not a supported combination and the FK arm wins safely.
+                sql_str_to_tokens("BYTEA")
             } else if let Some(domain_name) = &fa.domain {
                 let domain_name = domain_name.as_str();
                 let base = field_sql_type_tokens(&inner_ty);
@@ -786,6 +801,37 @@ fn try_expand(
                     })
                 }
                 None => None,
+            }
+        })
+        .collect();
+
+    // Codec startup submissions — one per unique codec used by protected
+    // fields. Each submission registers a FieldCodecStartupRequirement so
+    // pool startup validation will call the codec's validate function
+    // before any CRUD operations. This replaces the unconditional
+    // inventory::submit! in aes.rs so binaries with no encrypted fields
+    // start without DJOGI_FIELD_CODEC_KEY. Deduplicated per codec_id
+    // so multiple encrypted fields on the same model emit only one
+    // registration per codec type.
+    let mut seen_codecs: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let codec_startup_submits: Vec<TokenStream> = user_fields
+        .iter()
+        .filter_map(|(_, fa)| {
+            let codec_id = fa.protected.as_ref().and_then(|p| p.codec.as_deref())?;
+            if !seen_codecs.insert(codec_id) {
+                return None; // Already emitted for this codec.
+            }
+            match codec_id {
+                "aes256_gcm_v1" => Some(quote! {
+                    ::djogi::__private::inventory::submit! {
+                        ::djogi::field_codec::FieldCodecStartupRequirement::const_new(
+                            "aes256_gcm_v1",
+                            ::djogi::__private::field_codec_aes::ENV_VAR,
+                            ::djogi::__private::field_codec_aes::load_ring,
+                        )
+                    }
+                }),
+                _ => None, // Unknown codec — already rejected by rule (c) at parse time.
             }
         })
         .collect();
@@ -1164,6 +1210,7 @@ fn try_expand(
             }
         }
         #(#deferrability_submits)*
+        #(#codec_startup_submits)*
     })
 }
 

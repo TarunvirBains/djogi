@@ -229,6 +229,7 @@ fn write_billing_snapshot_with_table(work: &Path) {
 
     let id_column = ColumnSchema {
         check: None,
+        codec: None,
         comment: None,
         default_sql: Some("heerid_next_desc()".to_string()),
         foreign_key: None,

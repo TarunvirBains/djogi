@@ -505,13 +505,18 @@ pub fn expand(
             let col_eq = format!("{col_str} = ");
             let kind = bind_kind(ty);
             let nullable = is_nullable(ty);
+            let codec = fa
+                .protected
+                .as_ref()
+                .and_then(|p| p.codec.clone())
+                .map(|codec_id| (codec_id, name.to_string(), col_str.clone()));
             if is_tracked(ty) {
                 // Tracked<T>: emit only when dirty.
                 // `(*self.<f>).clone()` gives the inner `T` via Deref.
                 // Pass tracked=false because we've already extracted T;
                 // `push_bind_tokens` sees T, not Tracked<T>.
                 let inner_expr = quote! { (*self.#f).clone() };
-                let push_stmt = push_bind_tokens(&kind, nullable, false, inner_expr);
+                let push_stmt = push_bind_tokens(&kind, nullable, false, inner_expr, codec);
                 Some(quote! {
                     if self.#f.is_dirty() {
                         if __first { __first = false; } else { __acc.push_sql(", "); }
@@ -543,7 +548,7 @@ pub fn expand(
                 // `push_bind_tokens` receives `Option<T>` (nullable=true,
                 // tracked=false), correctly applying widening (if any).
                 let inner_expr = quote! { self.#f.as_ref().map(|__t| (**__t).clone()) };
-                let push_stmt = push_bind_tokens(&kind, nullable, false, inner_expr);
+                let push_stmt = push_bind_tokens(&kind, nullable, false, inner_expr, codec);
                 Some(quote! {
                     {
                         if __first { __first = false; } else { __acc.push_sql(", "); }
@@ -556,7 +561,7 @@ pub fn expand(
                 // models that do not opt into dirty tracking.
                 // `self.#f.clone()` may be T or Option<T>; tracked=false.
                 let field_expr = quote! { self.#f.clone() };
-                let push_stmt = push_bind_tokens(&kind, nullable, false, field_expr);
+                let push_stmt = push_bind_tokens(&kind, nullable, false, field_expr, codec);
                 Some(quote! {
                     {
                         if __first { __first = false; } else { __acc.push_sql(", "); }
@@ -2058,13 +2063,20 @@ pub fn expand(
         let field_bind_stmts: Vec<TokenStream> = user_fields
             .iter()
             .zip(user_field_types.iter())
+            .zip(field_attrs.iter())
             .enumerate()
-            .map(|(i, (f, ty))| {
+            .map(|(i, ((f, ty), fa))| {
                 let kind = bind_kind(ty);
                 let nullable = is_nullable(ty);
                 let tracked = is_tracked_inner(ty);
                 let field_expr = quote! { row.#f };
-                let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr);
+                let col_str = crate::syn_util::column_name_from_ident(f);
+                let codec = fa
+                    .protected
+                    .as_ref()
+                    .and_then(|p| p.codec.clone())
+                    .map(|codec_id| (codec_id, name.to_string(), col_str));
+                let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
                 if i == 0 {
                     quote! {
                         __acc.push_sql("(");
@@ -2219,12 +2231,19 @@ pub fn expand(
         let user_field_bind_stmts: Vec<TokenStream> = user_fields
             .iter()
             .zip(user_field_types.iter())
-            .map(|(f, ty)| {
+            .zip(field_attrs.iter())
+            .map(|((f, ty), fa)| {
                 let kind = bind_kind(ty);
                 let nullable = is_nullable(ty);
                 let tracked = is_tracked_inner(ty);
                 let field_expr = quote! { row.#f };
-                let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr);
+                let col_str = crate::syn_util::column_name_from_ident(f);
+                let codec = fa
+                    .protected
+                    .as_ref()
+                    .and_then(|p| p.codec.clone())
+                    .map(|codec_id| (codec_id, name.to_string(), col_str));
+                let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
                 quote! {
                     __acc.push_sql(", ");
                     #push_stmt;
@@ -2970,12 +2989,20 @@ pub fn expand(
                 let uf_bind_stmts: Vec<TokenStream> = user_fields
                     .iter()
                     .zip(user_field_types.iter())
-                    .map(|(f, ty)| {
+                    .zip(field_attrs.iter())
+                    .map(|((f, ty), fa)| {
                         let kind = bind_kind(ty);
                         let nullable = is_nullable(ty);
                         let tracked = is_tracked_inner(ty);
                         let field_expr = quote! { row.#f };
-                        let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr);
+                        let col_str = crate::syn_util::column_name_from_ident(f);
+                        let codec = fa
+                            .protected
+                            .as_ref()
+                            .and_then(|p| p.codec.clone())
+                            .map(|codec_id| (codec_id, name.to_string(), col_str));
+                        let push_stmt =
+                            push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
                         quote! {
                             __acc.push_sql(", ");
                             #push_stmt;

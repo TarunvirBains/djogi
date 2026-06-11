@@ -223,15 +223,28 @@ pub fn dispatch_pattern(
                          (see `live_migrate::classify` OfflineOnly verdict)"
                     .to_string(),
             }),
-            // Per the codec_transition module docstring, codec rotations
-            // currently surface as `ChangeType { from, to }` whose
-            // `from`/`to` are codec IDs rather than SQL types. The
-            // distinction is not yet expressed on the SchemaOperation
-            // enum; this dispatch routes every (non-`using`) `ChangeType`
-            // to the [`replacement_column`] pattern. When a dedicated
-            // `CodecChange` variant lands on `ColumnChange` (tracked
-            // for a later phase), this arm grows the codec route.
+            // A genuine column type change (NOT codec-driven — codec
+            // transitions now ride the dedicated `ColumnChange::CodecChange`
+            // op below) routes to the shadow-column [`replacement_column`]
+            // pattern. The `using: Some(_)` non-default-cast case is refused
+            // above.
             ColumnChange::ChangeType { .. } => replacement_column::ReplacementColumn::emit(op, ctx),
+            // A codec add / swap / drop is never an online SQL-cast backfill —
+            // every row must be re-encoded. The classifier routes this
+            // OfflineOnly (add / drop) or ExpandContract (codec → codec); this
+            // explicit refusal is the belt-and-braces guard against a future
+            // callsite composing a live plan without consulting the
+            // classifier. Online codec rotation is deferred (issue #371).
+            ColumnChange::CodecChange { .. } => Err(PatternError::CannotEmit {
+                pattern: "dispatch_pattern",
+                reason: "an at-rest codec change (a column gained, swapped, or dropped a \
+                         `#[field(protected(codec = ...))]` codec) requires re-encoding every \
+                         row and is never an online SQL-cast backfill. The classifier routes \
+                         this OfflineOnly (add / drop) or ExpandContract (codec → codec); apply \
+                         via the offline compose path. Online codec rotation is deferred to a \
+                         post-v1 SchemaOperation (issue #371)."
+                    .to_string(),
+            }),
             ColumnChange::SetNullable(false) => nullable_not_null::NullableNotNull::emit(op, ctx),
             _ => Err(PatternError::CannotEmit {
                 pattern: "dispatch_pattern",

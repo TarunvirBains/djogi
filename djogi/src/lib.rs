@@ -324,6 +324,20 @@ pub mod __private {
         // `feedback_macro_path_routing.md`.
         pub use crate::query::portable::emit as portable_emit;
     }
+
+    /// AES-256-GCM codec re-exports for macro-generated code.
+    /// When the `aes-codec` feature is enabled, protected-field macros
+    /// emit code that references `Aes256GcmV1`, `ENV_VAR`, and
+    /// `load_ring` through this path instead of reaching into the
+    /// crate-private `aes` submodule. Adopter code accesses the codec
+    /// only via the `#[field(protected(codec = "aes256_gcm_v1"))]`
+    /// attribute; the macro handles resolution.
+    #[cfg(feature = "aes-codec")]
+    pub mod field_codec_aes {
+        pub use crate::field_codec::aes::Aes256GcmV1;
+        pub use crate::field_codec::aes::ENV_VAR;
+        pub use crate::field_codec::aes::load_ring;
+    }
 }
 
 pub use apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};

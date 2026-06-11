@@ -109,6 +109,7 @@ fn diff_single_bucket(before: &AppliedSchema, after: &AppliedSchema) -> SchemaDe
 fn col(name: &str, sql_type: &str) -> ColumnSchema {
     ColumnSchema {
         check: None,
+        codec: None,
         comment: None,
         default_sql: None,
         foreign_key: None,

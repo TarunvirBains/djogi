@@ -222,6 +222,21 @@ pub struct ColumnSchema {
     /// `None` for the common case.
     pub check: Option<String>,
 
+    /// At-rest codec ID for an encrypted/transformed column
+    /// (`#[field(protected(codec = "<id>"))]`). `None` for plaintext
+    /// columns. Drives migration classification: a transition that ADDS
+    /// or CHANGES a codec on a column is never a plain SQL-cast type
+    /// change — the bytes must be re-encoded, which the framework refuses
+    /// to auto-online (`OfflineOnly` / `ExpandContract`, see
+    /// [`crate::live_migrate::classify`]). Participates fully in
+    /// [`PartialEq`] (unlike the transient `type_change_using` slot) so a
+    /// codec-only change — even one that leaves `sql_type` unchanged,
+    /// e.g. a future `aes256_gcm_v1` → `aes256_gcm_v2` both rendering
+    /// `BYTEA` — registers as a column difference. `#[serde(default)]` so
+    /// snapshots predating this field round-trip cleanly.
+    #[serde(default)]
+    pub codec: Option<String>,
+
     /// `#[field(comment = "<text>")]` value when set
     /// . Lowered to `COMMENT ON COLUMN <t>.<c> IS
     /// '<text>'` by the migration composer immediately after the
@@ -414,6 +429,7 @@ impl PartialEq for ColumnSchema {
         // slot design).
         let ColumnSchema {
             check: self_check,
+            codec: self_codec,
             comment: self_comment,
             default_sql: self_default_sql,
             foreign_key: self_foreign_key,
@@ -437,6 +453,7 @@ impl PartialEq for ColumnSchema {
         } = self;
         let ColumnSchema {
             check: other_check,
+            codec: other_codec,
             comment: other_comment,
             default_sql: other_default_sql,
             foreign_key: other_foreign_key,
@@ -459,6 +476,7 @@ impl PartialEq for ColumnSchema {
             type_change_using: _,
         } = other;
         self_check == other_check
+            && self_codec == other_codec
             && self_comment == other_comment
             && self_default_sql == other_default_sql
             && self_foreign_key == other_foreign_key
@@ -1069,6 +1087,7 @@ mod column_schema_type_change_using_tests {
     fn base_column(name: &str) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: None,
@@ -1164,6 +1183,52 @@ mod column_schema_type_change_using_tests {
         let json = serde_json::to_string(&base_column("kind")).expect("serialize");
         let loaded: ColumnSchema = serde_json::from_str(&json).expect("deserialize");
         assert!(loaded.type_change_using.is_none());
+    }
+
+    // ── Codec snapshot field (issue #371) ───────────────────────────────────
+
+    #[test]
+    fn column_schema_codec_participates_in_equality() {
+        // Unlike `type_change_using`, the `codec` slot DOES participate in
+        // equality: a codec-only change (even one leaving `sql_type`
+        // unchanged) must register as a column difference so the differ does
+        // not short-circuit it as a no-op.
+        let a = base_column("token");
+        let b = ColumnSchema {
+            codec: Some("aes256_gcm_v1".to_string()),
+            ..base_column("token")
+        };
+        assert_ne!(a, b, "codec change must register as a column difference");
+    }
+
+    #[test]
+    fn codec_deserialize_defaults_when_absent() {
+        // Snapshots predating the codec field never carry the key. Loading
+        // them must yield `None` structurally — `#[serde(default)]` covers
+        // the absence under `deny_unknown_fields`. We craft JSON without the
+        // `codec` key explicitly (serialize emits it, so strip it) to mimic
+        // an older snapshot, then confirm it loads with `codec: None`.
+        let with_codec = ColumnSchema {
+            codec: Some("aes256_gcm_v1".to_string()),
+            ..base_column("token")
+        };
+        let json = serde_json::to_string(&with_codec).expect("serialize");
+        assert!(
+            json.contains("\"codec\""),
+            "serialize must emit the codec key"
+        );
+        // Older snapshot shape: the same JSON with the codec key removed.
+        let older: serde_json::Value = {
+            let mut v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+            v.as_object_mut().unwrap().remove("codec");
+            v
+        };
+        let loaded: ColumnSchema =
+            serde_json::from_value(older).expect("older snapshot without codec must load");
+        assert!(
+            loaded.codec.is_none(),
+            "absent codec key must default to None: {loaded:?}"
+        );
     }
 }
 

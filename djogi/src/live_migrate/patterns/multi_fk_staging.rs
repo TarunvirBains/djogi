@@ -159,6 +159,7 @@ mod tests {
     fn fk_column(name: &str, ref_table: &str) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: Some(ForeignKeySchema {
@@ -190,6 +191,7 @@ mod tests {
     fn scalar_column(name: &str) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: None,

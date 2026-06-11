@@ -851,6 +851,7 @@ async fn read_all_columns(
 
         out.entry(table_name).or_default().push(ColumnSchema {
             check: None,
+            codec: None,
             // Verify does not yet read `col_description(c.oid, attnum)`
             // to round-trip the column comment from `pg_description`.
             // Advisory mode reports the live catalog as carrying no
@@ -2026,6 +2027,7 @@ mod tests {
     fn col(name: &str, sql_type: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             // Column comments default off in test fixtures; tests
             // asserting comment behaviour set the slot explicitly.
             comment: None,

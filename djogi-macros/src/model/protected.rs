@@ -23,11 +23,6 @@
 //! lookup — no regex, no runtime FFI, span-precise diagnostics. The
 //! synchronization contract (update both lists when adding a codec)
 //! is documented on the runtime `REGISTRY` static.
-//! V1 ships an empty registry, so any `codec = "..."` literal triggers
-//! the unknown-codec error. The error message lists the empty set
-//! verbatim ("(none)") so adopters reading the diagnostic understand
-//! that codec support has not yet shipped, rather than thinking they
-//! mistyped a real codec name.
 
 use proc_macro2::Span;
 use quote::quote;
@@ -38,11 +33,10 @@ use syn::{
 /// Sorted const slice of every codec ID that the macro recognises at
 /// expansion time.
 /// Kept in sync with `djogi::field_codec::REGISTRY` per the contract
-/// documented on that static. V1 ships empty — every real codec lands
-/// in later tasks. Sorted so [`is_known_codec`] resolves via
+/// documented on that static. Sorted so [`is_known_codec`] resolves via
 /// `slice::binary_search`; matches the project's no-regex,
 /// sorted-const-slice convention.
-pub const KNOWN_CODEC_IDS: &[&str] = &[];
+pub const KNOWN_CODEC_IDS: &[&str] = &["aes256_gcm_v1"];
 
 /// `true` when `id` appears in [`KNOWN_CODEC_IDS`]. Resolved by
 /// `binary_search` on the sorted slice — O(log n) with zero allocation.
@@ -811,9 +805,7 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
         }
     }
 
-    // Rule (c): codec ID must be in the compile-time registry. The
-    // registry is currently empty; the diagnostic states "(none)" so
-    // adopters know codec support has not yet shipped.
+    // Rule (c): codec ID must be in the compile-time registry.
     if let Some(id) = spec.codec.as_deref()
         && !is_known_codec(id)
     {
@@ -954,7 +946,8 @@ mod tests {
 
     #[test]
     fn empty_registry_rejects_every_codec_id() {
-        assert!(!is_known_codec("aes256_gcm_v1"));
+        // `aes256_gcm_v1` is in KNOWN_CODEC_IDS, so it should be recognized.
+        assert!(is_known_codec("aes256_gcm_v1"));
         assert!(!is_known_codec(""));
     }
 
@@ -1106,15 +1099,16 @@ mod tests {
             #[field(protected(
                 sensitivity = "pii",
                 rationale = "GDPR",
-                codec = "aes256_gcm_v1"
+                codec = "unknown_codec_v1"
             ))]
             pub email: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         let err = validate(&spec, &f).expect_err("rule (c)");
         let msg = err.to_string();
+        assert!(msg.contains("unknown_codec_v1"), "got: {msg}");
+        // Error message lists the valid codec IDs available in this build.
         assert!(msg.contains("aes256_gcm_v1"), "got: {msg}");
-        assert!(msg.contains("(none)"), "got: {msg}");
     }
 
     #[test]

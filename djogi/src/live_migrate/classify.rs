@@ -562,6 +562,50 @@ fn classify_column_change(
         // Postgres docs: §"COMMENT" (no lock-window guidance because
         // `pg_description` updates are catalog-only).
         ColumnChange::SetComment { .. } => OnlineSafetyClassification::OnlineSafe,
+
+        // A codec add / swap / drop is never a plain SQL cast — every row
+        // must be re-encoded under the new codec, which an in-place
+        // `<col>::BYTEA` backfill cannot do (it would write plaintext /
+        // old-format bytes into a column whose schema claims the new codec).
+        // The framework refuses to auto-generate an online migration; the
+        // operator re-encrypts manually. Classification mirrors the codec-
+        // transition table (issue #371) via `classify_codec_transition`.
+        ColumnChange::CodecChange {
+            from_codec,
+            to_codec,
+        } => classify_codec_transition(from_codec.as_deref(), to_codec.as_deref()),
+    }
+}
+
+/// Classify an at-rest codec transition for online-safety (issue #371).
+/// Every codec-involving transition is a full row re-encode, so none is a
+/// catalog-only `OnlineSafe` change except the degenerate same-codec no-op
+/// (which the differ filters upstream — it only emits `CodecChange` when
+/// `before.codec != after.codec`).
+///
+/// - plaintext → codec (`None → Some`): full offline re-encode → `OfflineOnly`.
+/// - codec → plaintext (`Some → None`): full decode-in-place rewrite →
+///   `OfflineOnly`.
+/// - codec → different codec (`Some(a) → Some(b)`, `a != b`): dual-write /
+///   backfill (`ExpandContract`), though v1's online emitter is fenced (the
+///   offline compose path is the v1 story).
+/// - same codec (`Some(a) → Some(a)`): degenerate no-op (`OnlineSafe`,
+///   defensive — the differ never emits this in practice).
+fn classify_codec_transition(from: Option<&str>, to: Option<&str>) -> OnlineSafetyClassification {
+    match (from, to) {
+        // No-op (identical codec) — defensive; differ filters identical pairs.
+        (Some(a), Some(b)) if a == b => OnlineSafetyClassification::OnlineSafe,
+        // codec → different codec: dual-write / backfill (expand-contract),
+        // but the online emitter is fenced (issue #371); the offline compose
+        // path is the v1 story.
+        (Some(_), Some(_)) => OnlineSafetyClassification::ExpandContract,
+        // plaintext → codec, or codec → plaintext: full offline re-encode.
+        (None, Some(_)) | (Some(_), None) => OnlineSafetyClassification::OfflineOnly,
+        // No codec on either side — `emit_alter_column` never pushes
+        // `CodecChange` for this case (it only pushes when
+        // `before.codec != after.codec`), so this arm is unreachable; keep it
+        // total and route to the safe default.
+        (None, None) => OnlineSafetyClassification::OnlineSafe,
     }
 }
 
@@ -949,6 +993,7 @@ mod tests {
     fn nullable_column(name: &str) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: None,
@@ -2432,6 +2477,47 @@ mod tests {
         };
         assert_eq!(
             classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    // ── Codec-transition classification (issue #371) ────────────────────────
+
+    #[test]
+    fn classify_codec_transition_routes_per_table() {
+        use OnlineSafetyClassification::*;
+        // plaintext -> codec: full offline re-encode.
+        assert_eq!(
+            classify_codec_transition(None, Some("aes256_gcm_v1")),
+            OfflineOnly
+        );
+        // codec -> plaintext: also a full re-encode.
+        assert_eq!(
+            classify_codec_transition(Some("aes256_gcm_v1"), None),
+            OfflineOnly
+        );
+        // codec -> different codec: expand-contract (online emitter fenced).
+        assert_eq!(
+            classify_codec_transition(Some("aes256_gcm_v1"), Some("aes256_gcm_v2")),
+            ExpandContract
+        );
+        // identical codec: degenerate no-op (defensive).
+        assert_eq!(
+            classify_codec_transition(Some("aes256_gcm_v1"), Some("aes256_gcm_v1")),
+            OnlineSafe
+        );
+    }
+
+    #[test]
+    fn classify_column_change_routes_codec_change_offline() {
+        let (_unused, ctx) = ctx_app(Some(1_000));
+        let change = ColumnChange::CodecChange {
+            from_codec: None,
+            to_codec: Some("aes256_gcm_v1".to_string()),
+        };
+        // plaintext -> codec is OfflineOnly regardless of estimated rows.
+        assert_eq!(
+            classify_column_change(&change, &ctx),
             OnlineSafetyClassification::OfflineOnly,
         );
     }

@@ -650,6 +650,10 @@ impl DjogiPoolBuilder {
         crate::presentation::validate_startup_inventory()
             .map_err(DjogiError::PresentationStartup)?;
 
+        #[cfg(feature = "aes-codec")]
+        crate::field_codec::validate_codec_startup_inventory()
+            .map_err(DjogiError::field_codec_startup)?;
+
         if self.max_size == 0 {
             return Err(DjogiError::Validation(
                 "DjogiPoolBuilder::max_size must be >= 1; \

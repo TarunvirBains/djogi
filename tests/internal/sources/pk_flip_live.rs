@@ -152,6 +152,7 @@ fn synth_single_group(parent: &str, from: PkKindSchema, to: PkKindSchema) -> PkT
 fn basic_column(name: &str, sql_type: &str, nullable: bool) -> ColumnSchema {
     ColumnSchema {
         check: None,
+        codec: None,
         comment: None,
         default_sql: None,
         foreign_key: None,

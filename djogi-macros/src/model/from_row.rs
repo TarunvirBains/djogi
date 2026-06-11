@@ -41,18 +41,18 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ItemStruct;
 
-use super::attrs::{FieldAttrs, ModelAttrs};
+use super::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
 use super::sql_bind::{bind_kind, decode_field_tokens, is_nullable, is_tracked_inner};
 
 /// Emit `impl FromPgRow for <Struct>` — the canonical row-decode
 /// contract used by every CRUD terminal and QuerySet terminal.
-/// `model_attrs` and `field_attrs` are accepted for API consistency
-/// with other `expand` functions and for future use (e.g.
-/// `#[field(column = "…")]` column-name overrides).
+/// `model_attrs` provides pk strategy info so we can determine how many
+/// framework fields precede user fields. `field_attrs` carries per-field
+/// metadata including codec information for protected fields with encryption.
 pub fn expand(
     struct_item: &ItemStruct,
-    _model_attrs: &ModelAttrs,
-    _field_attrs: &[FieldAttrs],
+    model_attrs: &ModelAttrs,
+    field_attrs: &[FieldAttrs],
 ) -> TokenStream {
     let name = &struct_item.ident;
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
@@ -78,6 +78,34 @@ pub fn expand(
     // u64 → Decimal). The `sql_bind` module determines the bind kind from
     // the field's Rust type; the debug-build column-name guard runs on the
     // wide read inside each helper.
+    //
+    // Build a codec vector aligned with ALL struct fields (None for framework,
+    // Some/None for users). `field_attrs` is user-only but `struct_item.fields`
+    // includes framework fields at the front, so we can't zip them directly.
+    let n_framework = match model_attrs.pk {
+        PkStrategy::None => 2, // created_at, updated_at only
+        _ => 3,                // id, created_at, updated_at
+    };
+    let codec_vec: Vec<Option<(String, String, String)>> = struct_item
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(idx, field)| {
+            if idx < n_framework {
+                None // Framework fields have no codec.
+            } else {
+                let fa_idx = idx - n_framework;
+                field_attrs
+                    .get(fa_idx)
+                    .and_then(|fa| fa.protected.as_ref().and_then(|p| p.codec.clone()))
+                    .map(|codec_id| {
+                        let col_name = crate::syn_util::column_name_from_field(field);
+                        (codec_id, name.to_string(), col_name)
+                    })
+            }
+        })
+        .collect();
+
     let field_assignments: Vec<TokenStream> = struct_item
         .fields
         .iter()
@@ -88,7 +116,8 @@ pub fn expand(
             let kind = bind_kind(&field.ty);
             let nullable = is_nullable(&field.ty);
             let tracked = is_tracked_inner(&field.ty);
-            let decode_expr = decode_field_tokens(&kind, nullable, tracked, i, col_name);
+            let codec = codec_vec[i].clone();
+            let decode_expr = decode_field_tokens(&kind, nullable, tracked, i, col_name, codec);
             quote! {
                 #fname: #decode_expr
             }

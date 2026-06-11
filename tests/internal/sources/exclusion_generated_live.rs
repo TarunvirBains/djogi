@@ -70,6 +70,7 @@ fn pk_id() -> PrimaryKeySchema {
 fn id_column() -> ColumnSchema {
     ColumnSchema {
         check: None,
+        codec: None,
         comment: None,
         default_sql: Some("generate_id()".to_string()),
         foreign_key: None,
