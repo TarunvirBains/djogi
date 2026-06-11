@@ -4039,6 +4039,13 @@ mod tests {
             "compose should produce delta buckets"
         );
 
+        // Release the workspace lock before driving run_apply: run_apply acquires the
+        // same lock internally (step 5). The lock was only needed for the compose
+        // phase; holding it through the spawn_blocking call causes flock(LOCK_EX|LOCK_NB)
+        // to return EWOULDBLOCK on the second open-file-description, blocking run_apply
+        // for the full GUARD_DEFAULT_TIMEOUT (30 s) and returning exit code 1.
+        drop(guard);
+
         // Extract the composed version from the report.
         let composed_version = &compose_report.composed_buckets[0].version;
 
