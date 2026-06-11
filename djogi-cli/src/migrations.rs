@@ -4068,17 +4068,25 @@ mod tests {
         .unwrap();
 
         // Drive the apply loop through run_apply (same path as `djogi migrations apply`).
+        // spawn_blocking avoids a nested-runtime panic: djogi_test already owns a
+        // tokio runtime; creating another with block_on from inside async context
+        // panics. A blocking thread has no runtime, so the new runtime is safe there.
         let exit = {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime");
-            runtime.block_on(run_apply(
-                &work,
-                &FakeMode::Real,
-                None,
-                true, // single_node_dev: bypass node identity for E2E test
-            ))
+            let work = work.clone();
+            tokio::task::spawn_blocking(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(run_apply(
+                        &work,
+                        &FakeMode::Real,
+                        None,
+                        true, // single_node_dev: bypass node identity for E2E test
+                    ))
+            })
+            .await
+            .expect("spawn_blocking join")
         };
 
         assert_eq!(
