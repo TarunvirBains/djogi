@@ -540,7 +540,7 @@ Project created. Next steps:
   docker compose up -d
   export DATABASE_URL="postgres://djogi:djogi@localhost/my_project"
   djogi db reset --single-node-dev --yes
-  djogi db seed
+  djogi db seed --database my_project
 ```
 
 ### `djogi init`
