@@ -158,7 +158,9 @@ fn build_elephant_tracker_binary(
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(&cargo)
         .arg("build")
-        .arg("--locked")
+        // No `--locked`: this builds from a copied fixture whose Cargo.lock
+        // may diverge from the workspace resolution (patched paths → different
+        // dependency graph). The build is still isolated via `--target-dir`.
         .arg("--package")
         .arg(package)
         .arg("--bin")
