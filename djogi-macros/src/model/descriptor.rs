@@ -414,6 +414,21 @@ fn try_expand(
                 // `migrate::projection` overwrites it with the actual
                 // target PK type when it has access to all descriptors.
                 sql_str_to_tokens("TEXT")
+            } else if fa
+                .protected
+                .as_ref()
+                .and_then(|p| p.codec.as_deref())
+                .is_some()
+            {
+                // A field with an at-rest codec stores its ciphertext as
+                // BYTEA — the codec's Encoded type is `Vec<u8>` regardless of
+                // the decoded Rust type (e.g. an encrypted `String` column is
+                // BYTEA, not VARCHAR/TEXT). The codec ID is validated against
+                // KNOWN_CODEC_IDS at parse time; every shipped codec uses
+                // BYTEA storage. Ordered AFTER the FK arm so a codec on an FK
+                // field cannot override the FK's target-PK type — FK + codec
+                // is not a supported combination and the FK arm wins safely.
+                sql_str_to_tokens("BYTEA")
             } else if let Some(domain_name) = &fa.domain {
                 let domain_name = domain_name.as_str();
                 let base = field_sql_type_tokens(&inner_ty);

@@ -144,24 +144,30 @@ pub fn push_bind_tokens(
         let field_lit = syn::LitStr::new(&field_name, proc_macro2::Span::call_site());
 
         if nullable {
-            // Option<T> with codec: map through the Option, encode each Some.
+            // Option<T> with codec: map each Some through encode, producing an
+            // `Option<Result<Vec<u8>, DjogiError>>`, then `.transpose()?` to
+            // hoist the error out (mirroring the decode path). A bare `?` inside
+            // the `.map` closure cannot work — the closure returns the success
+            // type, not a `Result`; transpose is the correct combinator.
             return quote! {
                 __acc.push_bind(
-                    #field_expr.map(|__v| {
-                        <#codec_ty as ::djogi::field_codec::FieldCodec>::encode(
-                            #model_lit,
-                            #field_lit,
-                            &__v,
-                        )
-                        .map_err(|__e| {
-                            ::djogi::DjogiError::field_codec_encode(
+                    #field_expr
+                        .map(|__v| {
+                            <#codec_ty as ::djogi::field_codec::FieldCodec>::encode(
                                 #model_lit,
                                 #field_lit,
-                                <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
-                                __e,
+                                &__v,
                             )
-                        })?
-                    })
+                            .map_err(|__e| {
+                                ::djogi::DjogiError::field_codec_encode(
+                                    #model_lit,
+                                    #field_lit,
+                                    <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+                                    __e.to_string(),
+                                )
+                            })
+                        })
+                        .transpose()?
                 )
             };
         } else {
@@ -178,7 +184,7 @@ pub fn push_bind_tokens(
                             #model_lit,
                             #field_lit,
                             <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
-                            __e,
+                            __e.to_string(),
                         )
                     })?
                 })
