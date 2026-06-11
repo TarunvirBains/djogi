@@ -4030,7 +4030,11 @@ mod tests {
                 + time::Duration::seconds(0),
             _guard: &guard,
             pk_flip_join_table_option: None,
-            skip_phase_zero_auto_emit: true,
+            // Emit Phase 0 so the runner's SingleNodeDev provisioning sets the
+            // heer.node_id GUC on the migration session before binding node 1.
+            // Phase 0 lands at PHASE_ZERO_VERSION (different from composed_version)
+            // so the version-scoped ledger assertions below are unaffected.
+            skip_phase_zero_auto_emit: false,
         };
 
         let compose_report = djogi::migrate::compose(compose_req).expect("compose");
@@ -4089,7 +4093,7 @@ mod tests {
                         &work,
                         &FakeMode::Real,
                         None,
-                        true, // single_node_dev: bypass node identity for E2E test
+                        true, // single_node_dev: select SingleNodeDev identity so Phase 0 seeds + binds node 1
                     ))
             })
             .await
