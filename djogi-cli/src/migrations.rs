@@ -4108,8 +4108,11 @@ mod tests {
         // Assert 1: FK constraint exists on event_log → users.
         let fk_rows = ctx
             .raw_rows(
-                "SELECT conname FROM pg_constraint \
-                 WHERE conrelid = to_regclass($1) AND contype = 'f' AND confrelid = to_regclass($2)",
+                "SELECT c.conname \
+                 FROM pg_constraint c \
+                 JOIN pg_class r ON r.oid = c.conrelid \
+                 JOIN pg_class f ON f.oid = c.confrelid \
+                 WHERE r.relname = $1 AND c.contype = 'f' AND f.relname = $2",
                 &[&event_log_table.as_str(), &users_table.as_str()],
             )
             .await
