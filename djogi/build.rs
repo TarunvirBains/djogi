@@ -394,7 +394,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
 /// Pending JSON format version this Djogi understands. Mirrors
 /// [`crate::migrate::compose::PENDING_FORMAT_VERSION`] — duplicated
 /// here because build.rs cannot import the crate it's compiling.
-const PENDING_FORMAT_VERSION: &str = "1";
+const PENDING_FORMAT_VERSION: &str = "2";
 
 /// Canonical hidden Phase 0 pending version label. Mirrored from
 /// `crate::migrate::bootstrap::PHASE_ZERO_VERSION` because build.rs
@@ -517,10 +517,35 @@ fn format_hidden_phase_zero_format_version_mismatch(database: &str, found: &str)
     format_pending_format_version_mismatch_at(&hidden_phase_zero_location(database), found)
 }
 
+/// Direction-aware recovery hint for an unsupported-format-version
+/// diagnostic. Mirrors `format_version_recovery_hint` in
+/// `crate::migrate::compose` — duplicated here because build.rs cannot
+/// import the crate it is compiling. The recovery-clause wording must
+/// stay byte-identical between the two helpers; the build-warning
+/// agreement integration tests pin the exact phrases. Compares against
+/// the local [`PENDING_FORMAT_VERSION`] const so the operator is told to
+/// recompose (stale) vs. upgrade djogi (future); non-numeric versions
+/// fall back to the generic upgrade hint without panicking.
+fn format_version_recovery_hint(found: &str) -> &'static str {
+    match (
+        found.parse::<u64>().ok(),
+        PENDING_FORMAT_VERSION.parse::<u64>().ok(),
+    ) {
+        (Some(f), Some(e)) if f < e => {
+            "re-run 'djogi migrations compose' to regenerate this pending file"
+        }
+        (Some(f), Some(e)) if f > e => {
+            "upgrade to a newer version of djogi (or check out a newer revision)"
+        }
+        _ => "upgrade or check out a newer djogi",
+    }
+}
+
 fn format_pending_format_version_mismatch_at(location: &str, found: &str) -> String {
     format!(
-        "djogi: pending JSON format version '{found}' at {location} is not supported by this Djogi (expected '{expected}'); upgrade or check out a newer djogi",
+        "djogi: pending JSON format version '{found}' at {location} is not supported by this Djogi (expected '{expected}'); {hint}",
         expected = PENDING_FORMAT_VERSION,
+        hint = format_version_recovery_hint(found),
     )
 }
 

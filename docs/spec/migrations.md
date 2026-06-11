@@ -197,6 +197,29 @@ Djogi does **not** promise distributed atomic migration across multiple database
 
 If the apps/database-domains subsystem is enabled, migrations may be grouped by `(database_target, app_label)` rather than only by a global flat scope. See [Apps & Database Domains](./apps-and-database-domains.md).
 
+### 10.5a Cross-App Dependency Ordering (same database)
+
+Although cross-**database** foreign keys are rejected, cross-**app** foreign keys within the **same** database target are fully supported. When a `compose` produces multiple buckets at the same version and one bucket's tables reference another bucket's tables via foreign keys, Djogi automatically derives the dependency graph from the foreign-key targets and emits it into each pending plan.
+
+**Pending format "2".** The pending JSON format was bumped from `"1"` to `"2"` with the addition of a `depends_on` field on [`PendingPlan`](https://docs.rs/djogi/latest/djogi/migrate/struct.PendingPlan.html). Each bucket's pending plan lists the app labels (within the same database) whose migrations must apply before this bucket. The list is sorted, deduplicated, and the empty string (`""`) names the global bucket. Example:
+
+```json
+{
+  "format_version": "2",
+  "bucket_database": "main",
+  "bucket_app": "system",
+  "version": "V20260610000000__cross_bucket_fk",
+  "depends_on": ["users"],
+  ...
+}
+```
+
+The `users` bucket's pending plan carries `"depends_on": []` (no dependency), while the `system` bucket declares its dependency on `users`. During apply, Djogi performs a topological sort (Kahn's algorithm) over same-version buckets and applies them in dependency order — so `users` creates its tables before `system` attempts to reference them via foreign keys.
+
+**Cyclic dependencies are rejected at compose time.** If the cross-bucket FK graph forms a cycle (e.g., app A references app B which references app A), compose aborts with a cycle error rather than emitting an unapplyable plan.
+
+**Bump policy.** Pending files use a stricter bump policy than snapshots: they carry `#[serde(deny_unknown_fields)]` and go through a two-stage version peek before structural deserialize. This means additive fields do not get the snapshot exemption — every field addition requires a format version bump, so stale pending files from older Djogi versions are explicitly rejected rather than silently dropping unknown keys. The operator must recompose to proceed.
+
 ### 10.6 Differ Surface
 
 The migration differ works from descriptors and snapshots, not by replaying the live database catalog on every build.

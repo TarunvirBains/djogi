@@ -600,6 +600,14 @@ fn compose_with_inputs(
             // Exit 2 — refusal: models must be compiled in before dropping app linkage.
             ExitCode::from(2)
         }
+        Err(e @ ComposeError::CrossBucketForeignKeyCycle { .. }) => {
+            eprintln!("djogi migrations compose: {e}");
+            // Exit 2 — operator-actionable refusal: the operator resolves the
+            // cycle (merge the apps or drop one FK direction). A blind retry
+            // would refuse identically, so this is exit 2, not the exit-1
+            // unexpected-error catch-all below.
+            ExitCode::from(2)
+        }
         Err(e) => {
             eprintln!("djogi migrations compose: {e}");
             ExitCode::from(1)
@@ -1298,6 +1306,8 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
         }
     }
 
+    // Stage 1 — global stable order: version, then phase-zero precedence,
+    // then path (also the within-group tiebreak seed).
     out.sort_by(|a, b| {
         a.plan
             .version
@@ -1305,7 +1315,132 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
             .then_with(|| b.is_phase_zero.cmp(&a.is_phase_zero))
             .then_with(|| a.path.cmp(&b.path))
     });
+
+    // Stage 2: within each (database, version, is_phase_zero) group,
+    // reorder by the recorded depends_on (Kahn; stage-1 alphabetical order
+    // is the deterministic tiebreak). Dependencies naming buckets outside
+    // the group are ignored — their migrations applied in an earlier run.
+    // A cycle is a compose bug or a hand-edited pending file; refuse loudly.
+    let out = order_pending_groups_by_dependencies(out)?;
+
     Ok(out)
+}
+
+/// Within each same-(database, version, is_phase_zero) group, reorder by
+/// the recorded depends_on list using Kahn's algorithm. The stage-1 sort
+/// provides a deterministic alphabetical tiebreak for nodes with equal
+/// in-degree. Dependencies on buckets not present in the current group
+/// are ignored (their migrations already applied). Returns an error on
+/// cycle — the compose side should have caught this, but apply guards
+/// against hand-edited or corrupted pending files.
+///
+/// Algorithmic twin of `order_buckets` in compose.rs; kept local because
+/// the CLI cannot call private compose helpers across crates.
+fn order_pending_groups_by_dependencies(
+    out: Vec<DiscoveredPendingPlan>,
+) -> Result<Vec<DiscoveredPendingPlan>, String> {
+    // Group by (database, version, is_phase_zero). Since stage 1 already
+    // sorted by these keys, consecutive entries share the same group.
+    let mut result = Vec::with_capacity(out.len());
+    let mut i = 0;
+    while i < out.len() {
+        let mut j = i + 1;
+        while j < out.len()
+            && out[j].bucket.database == out[i].bucket.database
+            && out[j].plan.version == out[i].plan.version
+            && out[j].is_phase_zero == out[i].is_phase_zero
+        {
+            j += 1;
+        }
+
+        // Validate depends_on labels for all entries in this group before
+        // any topo-sort (including the singleton fast-path that bypasses it).
+        // Discovery validates pending *filenames*, but depends_on labels live
+        // inside the pending JSON and are otherwise unchecked — a hand-edited
+        // or corrupted label (path traversal, whitespace) would slip through
+        // the singleton fast-path silently.
+        for entry in &out[i..j] {
+            for dep_app in &entry.plan.depends_on {
+                if !is_acceptable_pending_path_component(dep_app.as_bytes()) {
+                    return Err(format!(
+                        "pending plan for {}/{} has invalid depends_on label {:?}",
+                        entry.bucket.database, entry.bucket.app, dep_app,
+                    ));
+                }
+            }
+        }
+
+        // Process the group [i..j)
+        if j - i <= 1 {
+            // Single-element or empty group: no reordering needed.
+            result.append(&mut out[i..j].to_vec());
+            i = j;
+            continue;
+        }
+
+        let database = &out[i].bucket.database;
+        let version = &out[i].plan.version;
+
+        // Build the dependency graph within this group.
+        let group_len = j - i;
+        let mut in_degree = vec![0usize; group_len];
+        let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); group_len];
+
+        // Build app→index lookup for this group (O(n)).
+        let app_to_idx: std::collections::HashMap<&str, usize> = out[i..j]
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| (entry.bucket.app.as_str(), idx))
+            .collect();
+
+        for (k_idx, entry) in out[i..j].iter().enumerate() {
+            for dep_app in &entry.plan.depends_on {
+                let Some(&dep_idx) = app_to_idx.get(dep_app.as_str()) else {
+                    continue; // outside group — ignore (REQ-398-6)
+                };
+                if dep_idx != k_idx {
+                    in_degree[k_idx] += 1;
+                    reverse[dep_idx].push(k_idx);
+                }
+            }
+        }
+
+        // Kahn's algorithm with BTreeSet for deterministic (min-first) tiebreak.
+        let mut ready: std::collections::BTreeSet<usize> =
+            (0..group_len).filter(|&idx| in_degree[idx] == 0).collect();
+
+        let mut ordered = Vec::with_capacity(group_len);
+        while let Some(idx) = ready.iter().next().cloned() {
+            ready.remove(&idx);
+            ordered.push(idx);
+            for &dependent in &reverse[idx] {
+                in_degree[dependent] -= 1;
+                if in_degree[dependent] == 0 {
+                    ready.insert(dependent);
+                }
+            }
+        }
+
+        if ordered.len() != group_len {
+            let mut chain: Vec<String> = (0..group_len)
+                .filter(|&idx| in_degree[idx] > 0)
+                .map(|idx| out[i + idx].bucket.app.clone())
+                .collect();
+            chain.sort();
+            return Err(format!(
+                "pending migrations for database `{database}` version `{version}` \
+                 declare a dependency cycle between apps: {chain:?}; \
+                 recompose or inspect hand-edited pending files"
+            ));
+        }
+
+        for idx in ordered {
+            result.push(out[i + idx].clone());
+        }
+        i = j;
+    }
+
+    Ok(result)
 }
 
 fn load_verified_pending_for_apply(
@@ -3215,6 +3350,7 @@ fn baseline_error_exit_code(err: &RunnerError) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use djogi::__bypass::RawAccessExt as _;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -3367,9 +3503,15 @@ mod tests {
             .expect("compose seed-capable Phase 0")
     }
 
-    fn write_pending_json(path: &Path, database: &str, app: &str, version: &str) {
+    fn write_pending_json(
+        path: &Path,
+        database: &str,
+        app: &str,
+        version: &str,
+        depends_on: &[&str],
+    ) {
         let pending = PendingPlan {
-            format_version: "1".to_string(),
+            format_version: djogi::migrate::PENDING_FORMAT_VERSION.to_string(),
             bucket_database: database.to_string(),
             bucket_app: app.to_string(),
             version: version.to_string(),
@@ -3387,6 +3529,7 @@ mod tests {
                 .to_string(),
             checksum_down: None,
             composed_at: "2026-06-06T00:00:00Z".to_string(),
+            depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
@@ -3513,6 +3656,7 @@ mod tests {
             "main",
             "",
             "V20260606010101__later_global",
+            &[],
         );
         write_pending_json(
             &djogi::migrate::phase_zero_pending_json_path(
@@ -3523,6 +3667,7 @@ mod tests {
             "main",
             "",
             djogi::migrate::PHASE_ZERO_VERSION,
+            &[],
         );
 
         let discovered = discover_pending_plans(&work).expect("discover");
@@ -3534,6 +3679,593 @@ mod tests {
         assert!(discovered[0].is_phase_zero);
         assert_eq!(discovered[1].plan.version, "V20260606010101__later_global");
         let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Same-version buckets order by recorded depends_on, not path order.
+    /// `system` depends on `users`, so `users` must come first even though
+    /// `system` sorts earlier alphabetically.
+    #[test]
+    fn discover_orders_same_version_buckets_by_depends_on() {
+        let work = temp_workspace("discover_pending_depends_on");
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: "system".to_string(),
+                },
+            ),
+            "main",
+            "system",
+            "V20260609000000__initial",
+            &["users"],
+        );
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: "users".to_string(),
+                },
+            ),
+            "main",
+            "users",
+            "V20260609000000__initial",
+            &[],
+        );
+
+        let plans = discover_pending_plans(&work).expect("discovers");
+        let apps: Vec<&str> = plans.iter().map(|p| p.bucket.app.as_str()).collect();
+        assert_eq!(apps, ["users", "system"]);
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Buckets with no dependencies should be ordered alphabetically by app
+    /// name as a deterministic tiebreak in Kahn's topological sort.
+    #[test]
+    fn discover_orders_no_dependency_buckets_alphabetically() {
+        let work = temp_workspace("discover_pending_alpha_tiebreak");
+        // Three buckets, same version, no dependencies — should emit alpha, bravo, charlie
+        for app in &["charlie", "bravo", "alpha"] {
+            write_pending_json(
+                &djogi::migrate::pending_json_path(
+                    &work,
+                    &BucketKey {
+                        database: "main".to_string(),
+                        app: app.to_string(),
+                    },
+                ),
+                "main",
+                app,
+                "V20260609000000__initial",
+                &[],
+            );
+        }
+
+        let plans = discover_pending_plans(&work).expect("discovers");
+        let apps: Vec<&str> = plans.iter().map(|p| p.bucket.app.as_str()).collect();
+        assert_eq!(apps, ["alpha", "bravo", "charlie"]);
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// depends_on referencing a bucket NOT in the current pending set is
+    /// silently ignored (REQ-398-6: already applied earlier / no delta this run).
+    #[test]
+    fn discover_depends_on_missing_bucket_is_ignored() {
+        let work = temp_workspace("discover_pending_deps_missing");
+        // system depends on billing, but billing has no pending file
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: "system".to_string(),
+                },
+            ),
+            "main",
+            "system",
+            "V20260609000000__initial",
+            &["billing"],
+        );
+
+        let plans = discover_pending_plans(&work).expect("discovers");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].bucket.app, "system");
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Same-version buckets with a dependency cycle are refused at apply time
+    /// (REQ-398-7 defensive half — compose should have caught this, but apply
+    /// guards against hand-edited or corrupted pending files).
+    #[test]
+    fn discover_depends_on_cycle_is_refused() {
+        let work = temp_workspace("discover_pending_deps_cycle");
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: "alpha".to_string(),
+                },
+            ),
+            "main",
+            "alpha",
+            "V20260609000000__initial",
+            &["beta"],
+        );
+        write_pending_json(
+            &djogi::migrate::pending_json_path(
+                &work,
+                &BucketKey {
+                    database: "main".to_string(),
+                    app: "beta".to_string(),
+                },
+            ),
+            "main",
+            "beta",
+            "V20260609000000__initial",
+            &["alpha"],
+        );
+
+        let err = discover_pending_plans(&work).expect_err("cycle must be refused");
+        assert!(
+            err.contains("alpha") && err.contains("beta") && err.contains("cycle"),
+            "error should name both apps and mention cycle, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// A singleton pending group whose `depends_on` carries a label that
+    /// fails `is_acceptable_pending_path_component` must be refused. The
+    /// singleton fast-path bypasses the topo-sort, so without the
+    /// pre-fast-path validation loop a hand-edited or corrupted label
+    /// (path traversal, embedded whitespace) would slip through silently.
+    /// Drives `order_pending_groups_by_dependencies` directly because the
+    /// invalid label lives inside the pending JSON, not in the filename
+    /// that discovery already validates.
+    #[test]
+    fn single_bucket_with_invalid_depends_on_is_refused() {
+        let make_singleton = |dep: &str| -> Vec<DiscoveredPendingPlan> {
+            let plan = PendingPlan {
+                format_version: djogi::migrate::PENDING_FORMAT_VERSION.to_string(),
+                bucket_database: "main".to_string(),
+                bucket_app: "system".to_string(),
+                version: "V20260609000000__initial".to_string(),
+                slug: "test".to_string(),
+                model_snapshot: djogi::migrate::AppliedSchema {
+                    djogi_version: "0.1.0".to_string(),
+                    enums: std::collections::BTreeMap::new(),
+                    format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                    generated_at: "2026-06-09T00:00:00Z".to_string(),
+                    indexes: Vec::new(),
+                    models: std::collections::BTreeMap::new(),
+                    registered_apps: vec!["system".to_string()],
+                },
+                checksum_up: "V1:".to_string() + &"a".repeat(64),
+                checksum_down: None,
+                composed_at: "2026-06-09T00:00:00Z".to_string(),
+                depends_on: vec![dep.to_string()],
+            };
+            vec![DiscoveredPendingPlan {
+                path: PathBuf::from("target/djogi_pending/main/system.json"),
+                bucket: BucketKey {
+                    database: "main".to_string(),
+                    app: "system".to_string(),
+                },
+                plan,
+                is_phase_zero: false,
+            }]
+        };
+
+        for bad_label in ["../traversal", "has space"] {
+            let err = order_pending_groups_by_dependencies(make_singleton(bad_label))
+                .expect_err("invalid singleton depends_on label must be refused");
+            assert!(
+                err.contains("invalid depends_on label")
+                    && err.contains("main")
+                    && err.contains("system"),
+                "[{bad_label}] error must name database, app, and the invalid label: {err}"
+            );
+        }
+    }
+
+    /// End-to-end test: two buckets, same version, `system.event_log`
+    /// FK→`users.users`, composed and applied through real Postgres.
+    /// Asserts both tables exist, the FK constraint exists in pg_constraint,
+    /// and the ledger has exactly two rows for the composed version.
+    /// Uses `#[djogi_test]` for per-test database isolation (the macro drops
+    /// the test database on normal return or caught panic).
+    #[djogi::djogi_test]
+    async fn cross_bucket_fk_applies_in_dependency_order(mut ctx: djogi::context::DjogiContext) {
+        // Unique suffix for table names — avoids collisions when tests run in parallel.
+        static E2E_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = E2E_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let users_table = format!("e2e_users_{n}");
+        let event_log_table = format!("e2e_event_log_{n}");
+
+        let work = temp_workspace("cross-bucket-fk-e2e");
+        let guard = djogi::migrate::acquire_workspace_lock(
+            &work.join(LOCK_FILE_NAME),
+            std::time::Duration::from_secs(5),
+        )
+        .expect("lock workspace");
+
+        // Construct models: users bucket (PK only) + system bucket (FK→users).
+        let mut models: std::collections::BTreeMap<
+            djogi::migrate::BucketKey,
+            djogi::migrate::AppliedSchema,
+        > = std::collections::BTreeMap::new();
+
+        let users_bucket = BucketKey {
+            database: "main".into(),
+            app: "users".into(),
+        };
+        let system_bucket = BucketKey {
+            database: "main".into(),
+            app: "system".into(),
+        };
+
+        {
+            let mut users_schema = djogi::migrate::AppliedSchema {
+                djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                enums: std::collections::BTreeMap::new(),
+                format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                generated_at: "2026-06-10T00:00:00Z".to_string(),
+                indexes: Vec::new(),
+                models: std::collections::BTreeMap::new(),
+                registered_apps: vec!["users".to_string()],
+            };
+            users_schema.models.insert(
+                users_table.clone(),
+                djogi::migrate::TableSchema {
+                    app: Some("users".to_string()),
+                    columns: vec![djogi::migrate::ColumnSchema {
+                        name: "id".to_string(),
+                        sql_type: "BIGINT".to_string(),
+                        nullable: false,
+                        default_sql: Some("heerid_next_desc()".to_string()),
+                        ..default_col()
+                    }],
+                    primary_key: djogi::migrate::PrimaryKeySchema {
+                        columns: vec!["id".to_string()],
+                        kind: djogi::migrate::PkKindSchema::HeerIdRecencyBiased,
+                    },
+                    table: users_table.clone(),
+                    ..default_table()
+                },
+            );
+            models.insert(users_bucket.clone(), users_schema);
+        }
+
+        {
+            let mut system_schema = djogi::migrate::AppliedSchema {
+                djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                enums: std::collections::BTreeMap::new(),
+                format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                generated_at: "2026-06-10T00:00:00Z".to_string(),
+                indexes: Vec::new(),
+                models: std::collections::BTreeMap::new(),
+                registered_apps: vec!["system".to_string()],
+            };
+            system_schema.models.insert(
+                event_log_table.clone(),
+                djogi::migrate::TableSchema {
+                    app: Some("system".to_string()),
+                    columns: vec![
+                        djogi::migrate::ColumnSchema {
+                            name: "id".to_string(),
+                            sql_type: "BIGINT".to_string(),
+                            nullable: false,
+                            default_sql: Some("heerid_next_desc()".to_string()),
+                            ..default_col()
+                        },
+                        djogi::migrate::ColumnSchema {
+                            name: "user_id".to_string(),
+                            sql_type: "BIGINT".to_string(),
+                            nullable: false,
+                            foreign_key: Some(djogi::migrate::ForeignKeySchema {
+                                deferrable: false,
+                                initially_deferred: false,
+                                on_delete: djogi::migrate::OnDeleteSchema::Restrict,
+                                ref_column: "id".to_string(),
+                                ref_table: users_table.clone(),
+                            }),
+                            ..default_col()
+                        },
+                    ],
+                    primary_key: djogi::migrate::PrimaryKeySchema {
+                        columns: vec!["id".to_string()],
+                        kind: djogi::migrate::PkKindSchema::HeerIdRecencyBiased,
+                    },
+                    table: event_log_table.clone(),
+                    ..default_table()
+                },
+            );
+            models.insert(system_bucket.clone(), system_schema);
+        }
+
+        // Empty snapshots — fresh compose so differ sees all tables as new.
+        let mut snapshots = std::collections::BTreeMap::new();
+        for bucket in [&users_bucket, &system_bucket] {
+            snapshots.insert(
+                bucket.clone(),
+                djogi::migrate::AppliedSchema {
+                    djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                    enums: std::collections::BTreeMap::new(),
+                    format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                    generated_at: "2026-06-10T00:00:00Z".to_string(),
+                    indexes: Vec::new(),
+                    models: std::collections::BTreeMap::new(),
+                    registered_apps: vec![bucket.app.clone()],
+                },
+            );
+        }
+
+        let apps = vec![
+            djogi::migrate::AppLifecycle {
+                label: "users".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            djogi::migrate::AppLifecycle {
+                label: "system".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        // Compose — generates pending files + migration SQL.
+        let compose_req = djogi::migrate::ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "cross-bucket-fk",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: time::OffsetDateTime::UNIX_EPOCH
+                + time::Duration::days(19726)
+                + time::Duration::seconds(0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            // Emit Phase 0 so the runner's SingleNodeDev provisioning sets the
+            // heer.node_id GUC on the migration session before binding node 1.
+            // Phase 0 lands at PHASE_ZERO_VERSION (different from composed_version)
+            // so the version-scoped ledger assertions below are unaffected.
+            skip_phase_zero_auto_emit: false,
+        };
+
+        let compose_report = djogi::migrate::compose(compose_req).expect("compose");
+        assert!(
+            !compose_report.composed_buckets.is_empty(),
+            "compose should produce delta buckets"
+        );
+
+        // Release the workspace lock before driving run_apply: run_apply acquires the
+        // same lock internally (step 5). The lock was only needed for the compose
+        // phase; holding it through the spawn_blocking call causes flock(LOCK_EX|LOCK_NB)
+        // to return EWOULDBLOCK on the second open-file-description, blocking run_apply
+        // for the full GUARD_DEFAULT_TIMEOUT (30 s) and returning exit code 1.
+        drop(guard);
+
+        // Extract the composed version from the report.
+        let composed_version = &compose_report.composed_buckets[0].version;
+
+        // `run_apply` reads config from a Djogi.toml file rather than accepting
+        // a DjogiContext, so we construct the per-test database URL by querying
+        // current_database() and replacing it in the admin DATABASE_URL.
+        let test_db = ctx
+            .raw_scalar::<String>("SELECT current_database()", &[])
+            .await
+            .expect("current_database");
+        let admin_url = std::env::var("DATABASE_URL").expect(
+            "DATABASE_URL must be set for djogi_test \
+             (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
+        );
+        let test_db_url = replace_db_in_url(&admin_url, &test_db)
+            .expect("construct per-test database URL from DATABASE_URL");
+
+        // Write minimal workspace config for run_apply.
+        fs::write(
+            work.join("Djogi.toml"),
+            format!(
+                "[database]\nurl = \"{test_db_url}\"\n\
+                 max_connections = 1\ndev_mode = false\n\
+                 [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
+            ),
+        )
+        .unwrap();
+
+        // Override DATABASE_URL to the per-test database for the duration of
+        // run_apply. load_from_workspace unconditionally replaces config.database.url
+        // with DATABASE_URL when the env var is present, so without this the
+        // migrations land in the admin database rather than the per-test one.
+        // DatabaseUrlEnvGuard holds the process-wide env mutex and restores the
+        // prior value on Drop. #[djogi_test] does not acquire this mutex, so
+        // there is no deadlock risk.
+        let db_url_guard = DatabaseUrlEnvGuard::new();
+        db_url_guard.set(&test_db_url);
+
+        // Drive the apply loop through run_apply (same path as `djogi migrations apply`).
+        // spawn_blocking avoids a nested-runtime panic: djogi_test already owns a
+        // tokio runtime; creating another with block_on from inside async context
+        // panics. A blocking thread has no runtime, so the new runtime is safe there.
+        let exit = {
+            let work = work.clone();
+            tokio::task::spawn_blocking(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(run_apply(
+                        &work,
+                        &FakeMode::Real,
+                        None,
+                        true, // single_node_dev: select SingleNodeDev identity so Phase 0 seeds + binds node 1
+                    ))
+            })
+            .await
+            .expect("spawn_blocking join")
+        };
+
+        // Restore DATABASE_URL before the assertions; the per-test ctx already
+        // points at the correct database and does not use DATABASE_URL.
+        drop(db_url_guard);
+
+        assert_eq!(
+            exit, 0,
+            "apply should succeed (tables created in FK dependency order)"
+        );
+
+        // Assert 1: FK constraint exists on event_log → users.
+        let fk_rows = ctx
+            .raw_rows(
+                "SELECT c.conname \
+                 FROM pg_constraint c \
+                 JOIN pg_class r ON r.oid = c.conrelid \
+                 JOIN pg_class f ON f.oid = c.confrelid \
+                 WHERE r.relname = $1 AND c.contype = 'f' AND f.relname = $2",
+                &[&event_log_table.as_str(), &users_table.as_str()],
+            )
+            .await
+            .expect("query pg_constraint");
+        assert!(
+            !fk_rows.is_empty(),
+            "FK constraint should exist from {event_log_table} → {users_table}"
+        );
+
+        // Assert 2: Ledger has exactly TWO rows for the composed version
+        // (one per bucket: users and system). Do NOT assert total row count —
+        // phase-zero row also exists at PHASE_ZERO_VERSION.
+        let ledger_rows = ctx
+            .raw_rows(
+                "SELECT app_label FROM djogi_schema_migrations \
+                 WHERE version = $1 AND status = 'applied'",
+                &[&composed_version.as_str()],
+            )
+            .await
+            .expect("query ledger");
+        assert_eq!(
+            ledger_rows.len(),
+            2,
+            "ledger should have exactly 2 rows for composed version {composed_version} \
+             (users + system), got {} rows",
+            ledger_rows.len()
+        );
+        let app_labels: Vec<String> = ledger_rows
+            .iter()
+            .map(|row| row.try_get(0).expect("decode app_label"))
+            .collect();
+        assert!(
+            app_labels.contains(&"users".to_string()),
+            "ledger should have 'users' bucket: {app_labels:?}"
+        );
+        assert!(
+            app_labels.contains(&"system".to_string()),
+            "ledger should have 'system' bucket: {app_labels:?}"
+        );
+
+        // Assert 3: Verify ordering — users applied before system.
+        let ordered_rows = ctx
+            .raw_rows(
+                "SELECT app_label, id FROM djogi_schema_migrations \
+                 WHERE version = $1 AND status = 'applied' ORDER BY id",
+                &[&composed_version.as_str()],
+            )
+            .await
+            .expect("query ledger ordered");
+        assert_eq!(ordered_rows[0].try_get::<_, String>(0).unwrap(), "users");
+        assert_eq!(ordered_rows[1].try_get::<_, String>(0).unwrap(), "system");
+
+        let _ = fs::remove_dir_all(&work);
+
+        // Note: reverting the stage-2 topo sort in discover_pending_plans
+        // (removing the order_pending_groups_by_dependencies call) would cause
+        // this test to fail — `system` sorts before `users` alphabetically,
+        // so the FK constraint on event_log.user_id → users.id would fire
+        // before the users table exists (SQLSTATE 42P01 undefined_table).
+    }
+
+    /// Replace the database component of a Postgres URL with a new name.
+    /// Mirrors `djogi::migrate::reset::replace_db_in_url`; inlined here
+    /// so the test module does not depend on that internal path.
+    fn replace_db_in_url(url: &str, new_db: &str) -> Option<String> {
+        let body = url
+            .strip_prefix("postgres://")
+            .or_else(|| url.strip_prefix("postgresql://"))?;
+        let scheme = if url.starts_with("postgres://") {
+            "postgres://"
+        } else {
+            "postgresql://"
+        };
+        let mut idx = 0usize;
+        let body_bytes = body.as_bytes();
+        while idx < body_bytes.len() && body_bytes[idx] != b'/' {
+            idx += 1;
+        }
+        if idx >= body_bytes.len() {
+            return None;
+        }
+        let authority = &body[..idx];
+        let path_start = idx + 1;
+        let mut path_end = path_start;
+        while path_end < body_bytes.len() && body_bytes[path_end] != b'?' {
+            path_end += 1;
+        }
+        let trailing = &body[path_end..];
+        Some(format!("{scheme}{authority}/{new_db}{trailing}"))
+    }
+
+    fn default_col() -> djogi::migrate::ColumnSchema {
+        djogi::migrate::ColumnSchema {
+            check: None,
+            codec: None,
+            comment: None,
+            default_sql: None,
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "".to_string(),
+            unique: false,
+            type_change_using: None,
+        }
+    }
+
+    fn default_table() -> djogi::migrate::TableSchema {
+        djogi::migrate::TableSchema {
+            app: None,
+            columns: Vec::new(),
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: djogi::migrate::PrimaryKeySchema {
+                columns: Vec::new(),
+                kind: djogi::migrate::PkKindSchema::Composite,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "".to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
+            tenant_key: None,
+        }
     }
 
     #[test]
@@ -3566,6 +4298,7 @@ mod tests {
             "other_db",
             "",
             djogi::migrate::PHASE_ZERO_VERSION,
+            &[],
         );
 
         let err = discover_pending_plans(&work).expect_err("hidden Phase 0 mismatch must refuse");
@@ -3586,7 +4319,7 @@ mod tests {
                 app: String::new(),
             },
         );
-        write_pending_json(&path, "main", "", djogi::migrate::PHASE_ZERO_VERSION);
+        write_pending_json(&path, "main", "", djogi::migrate::PHASE_ZERO_VERSION, &[]);
 
         let err = discover_pending_plans(&work).expect_err("normal-global Phase 0 must refuse");
         assert!(
@@ -3606,7 +4339,7 @@ mod tests {
                 app: "billing".to_string(),
             },
         );
-        write_pending_json(&path, "main", "audit", "V20260606010101__mismatch");
+        write_pending_json(&path, "main", "audit", "V20260606010101__mismatch", &[]);
 
         let err = discover_pending_plans(&work).expect_err("normal app mismatch must refuse");
         assert!(
@@ -3620,7 +4353,7 @@ mod tests {
     fn discover_pending_plans_refuses_noncanonical_normal_pending_filename() {
         let work = temp_workspace("discover_pending_noncanonical_filename");
         let path = work.join("target/djogi_pending/main/bad-name.json");
-        write_pending_json(&path, "main", "bad-name", "V20260606010101__bad_name");
+        write_pending_json(&path, "main", "bad-name", "V20260606010101__bad_name", &[]);
 
         let err = discover_pending_plans(&work).expect_err("non-canonical filename must refuse");
         assert!(
@@ -3640,7 +4373,7 @@ mod tests {
                 app: String::new(),
             },
         );
-        write_pending_json(&path, "main", "", "V20260606010101__stable");
+        write_pending_json(&path, "main", "", "V20260606010101__stable", &[]);
         let discovered = discover_pending_plans(&work).expect("discover");
         fs::write(
             &path,
@@ -3671,7 +4404,7 @@ mod tests {
                 app: String::new(),
             },
         );
-        write_pending_json(&path, "main", "", "V20260606010101__stable");
+        write_pending_json(&path, "main", "", "V20260606010101__stable", &[]);
         let discovered = discover_pending_plans(&work).expect("discover");
         write_pending_json(
             &djogi::migrate::phase_zero_pending_json_path(
@@ -3682,6 +4415,7 @@ mod tests {
             "main",
             "",
             djogi::migrate::PHASE_ZERO_VERSION,
+            &[],
         );
 
         let err = reconcile_pending_plans_after_lock(&work, &discovered)
@@ -3703,7 +4437,7 @@ mod tests {
                 app: String::new(),
             },
         );
-        write_pending_json(&path, "main", "", "V20260606010101__stable");
+        write_pending_json(&path, "main", "", "V20260606010101__stable", &[]);
         let discovered = discover_pending_plans(&work).expect("discover");
 
         let locked = reconcile_pending_plans_after_lock(&work, &discovered)
@@ -3906,6 +4640,127 @@ mod tests {
             "compose must have seen the disk snapshot and emitted DROP TABLE — \
              this proves discover_snapshot_buckets_on_disk reached the differ. \
              SQL: {up_sql}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// A cross-bucket foreign-key cycle surfaced by `compose` must map to
+    /// exit code 2 through `compose_with_inputs` — an operator-actionable
+    /// refusal, not the exit-1 unexpected-error catch-all. The cycle is
+    /// injected at the model level: app `a`'s table references app `b`'s
+    /// table and vice versa, so no slice apply order satisfies both FKs
+    /// and `compose` returns
+    /// [`ComposeError::CrossBucketForeignKeyCycle`]. Before the dedicated
+    /// arm was added this fell through to the catch-all and exited 1.
+    #[test]
+    fn compose_cycle_exits_with_code_two() {
+        use djogi::migrate::projection::BucketKey;
+        use djogi::migrate::schema::{
+            AppliedSchema, ColumnSchema, ForeignKeySchema, OnDeleteSchema, PkKindSchema,
+            PrimaryKeySchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
+        };
+        use std::collections::BTreeMap;
+
+        let work = temp_workspace("compose_cycle_exit_two");
+
+        // A column that foreign-keys to `target_table.id`.
+        let fk_col = |name: &str, target_table: &str| -> ColumnSchema {
+            ColumnSchema {
+                name: name.to_string(),
+                sql_type: "BIGINT".to_string(),
+                foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
+                    on_delete: OnDeleteSchema::Restrict,
+                    ref_column: "id".to_string(),
+                    ref_table: target_table.to_string(),
+                }),
+                ..default_col()
+            }
+        };
+
+        // A table with a HeerId PK `id` column and one FK column.
+        let table_with_fk =
+            |app: &str, table: &str, fk_name: &str, fk_target: &str| -> TableSchema {
+                let id_col = ColumnSchema {
+                    name: "id".to_string(),
+                    sql_type: "BIGINT".to_string(),
+                    default_sql: Some("heerid_next_desc()".to_string()),
+                    ..default_col()
+                };
+                TableSchema {
+                    app: Some(app.to_string()),
+                    columns: vec![id_col, fk_col(fk_name, fk_target)],
+                    primary_key: PrimaryKeySchema {
+                        columns: vec!["id".to_string()],
+                        kind: PkKindSchema::HeerIdRecencyBiased,
+                    },
+                    table: table.to_string(),
+                    ..default_table()
+                }
+            };
+
+        let schema_for =
+            |app: &str, table: &str, fk_name: &str, fk_target: &str| -> AppliedSchema {
+                let mut models = BTreeMap::new();
+                models.insert(
+                    table.to_string(),
+                    table_with_fk(app, table, fk_name, fk_target),
+                );
+                AppliedSchema {
+                    djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                    enums: BTreeMap::new(),
+                    format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+                    generated_at: "2026-06-10T00:00:00Z".to_string(),
+                    indexes: Vec::new(),
+                    models,
+                    registered_apps: vec![app.to_string()],
+                }
+            };
+
+        let a_bucket = BucketKey {
+            database: "main".into(),
+            app: "a".into(),
+        };
+        let b_bucket = BucketKey {
+            database: "main".into(),
+            app: "b".into(),
+        };
+
+        // a.table_a.b_id → b.table_b ; b.table_b.a_id → a.table_a (cycle).
+        let mut models: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
+        models.insert(a_bucket, schema_for("a", "table_a", "b_id", "table_b"));
+        models.insert(b_bucket, schema_for("b", "table_b", "a_id", "table_a"));
+
+        let now = time::OffsetDateTime::from_unix_timestamp(1_749_513_600).unwrap();
+        let exit = compose_with_inputs(
+            &work,
+            "cross-bucket cycle",
+            false, // allow_destructive — irrelevant; the cycle refuses first
+            false, // force_overwrite
+            &models,
+            &[
+                AppLifecycle {
+                    label: "a".to_string(),
+                    database: "main".to_string(),
+                    renamed_from: None,
+                    tombstone: false,
+                },
+                AppLifecycle {
+                    label: "b".to_string(),
+                    database: "main".to_string(),
+                    renamed_from: None,
+                    tombstone: false,
+                },
+            ],
+            now,
+            None, // pk_flip_join_table_option — no flip in this test
+        );
+
+        assert_eq!(
+            exit,
+            ExitCode::from(2),
+            "a cross-bucket FK cycle must exit 2 (operator-actionable refusal), not 1"
         );
         let _ = fs::remove_dir_all(&work);
     }
@@ -4561,6 +5416,7 @@ mod tests {
             "main",
             "",
             "V20260607010101__main_global",
+            &[],
         );
         write_pending_json(
             &djogi::migrate::pending_json_path(
@@ -4573,6 +5429,7 @@ mod tests {
             "crud_log",
             "audit",
             "V20260607010102__crud_log_audit",
+            &[],
         );
 
         let discovered = discover_pending_plans(&work).expect("discover");
@@ -4615,6 +5472,7 @@ mod tests {
             "analytics",
             "",
             "V20260607010103__analytics_global",
+            &[],
         );
 
         let discovered = discover_pending_plans(&work).expect("discover");

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.11] - 2026-06-10
+
+### Added
+
+- migration: cross-app FK ordering within one database — same-version pending
+  slices (one compose run) now apply in the dependency order recorded in each
+  pending plan's `depends_on` list, derived at compose time from cross-app
+  foreign-key targets. Ties break alphabetically by app label for determinism.
+- migration: cross-app FK cycles are rejected at compose time with an error
+  naming the participating apps; `djogi migrations compose` exits with code 2
+  for this operator-actionable refusal.
+- migration: `PendingLoadError::UnsupportedFormatVersion` now gives direction-
+  aware recovery hints — stale pending files (found version lower than expected)
+  prompt recompose; future files (found version higher than expected) prompt a
+  djogi upgrade.
+
+### Changed
+
+- migration: pending JSON format version bumped from `"1"` to `"2"` — the new
+  `depends_on` field is required; stale format-`"1"` files after upgrade are
+  rejected with the version-mismatch error and must be recomposed.
+- `ComposeError` is now `#[non_exhaustive]` — downstream exhaustive matches
+  must add a `_` catch-all arm.
+
 ## [0.1.0-alpha.10] - 2026-06-08
 
 ### Changed

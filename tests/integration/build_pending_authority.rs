@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use djogi::migrate::{AppliedSchema, PendingPlan, SNAPSHOT_FORMAT_VERSION};
+use djogi::migrate::{AppliedSchema, PENDING_FORMAT_VERSION, PendingPlan, SNAPSHOT_FORMAT_VERSION};
 
 #[allow(dead_code)]
 #[path = "../../djogi/build.rs"]
@@ -40,7 +40,14 @@ fn write_pending(
     version: &str,
     snapshot: &AppliedSchema,
 ) {
-    write_pending_with_format_version(path, database, app, version, snapshot, "1");
+    write_pending_with_format_version(
+        path,
+        database,
+        app,
+        version,
+        snapshot,
+        PENDING_FORMAT_VERSION,
+    );
 }
 
 fn write_pending_with_format_version(
@@ -62,6 +69,7 @@ fn write_pending_with_format_version(
             .to_string(),
         checksum_down: None,
         composed_at: "2026-06-06T00:00:00Z".to_string(),
+        depends_on: Vec::new(),
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap();
@@ -494,6 +502,66 @@ fn build_collect_diagnostics_reports_normal_global_format_version_identity() {
         "normal global format mismatch must keep the normal _global_ identity: {texts:?}"
     );
 
+    let _ = fs::remove_dir_all(&work);
+}
+
+/// A stale (`found < expected`) pending file must make the build
+/// diagnostic tell the operator to recompose, matching the recompose
+/// phrase the library's `PendingLoadError` Display produces.
+/// `PENDING_FORMAT_VERSION` is `"2"`; `found = "1"` is the stale case.
+#[test]
+fn build_collect_diagnostics_stale_format_version_says_recompose() {
+    let work = temp_workspace("stale_format_version_recompose");
+    let pending_path = work.join("target/djogi_pending/main/_global_.json");
+    write_pending_with_format_version(
+        &pending_path,
+        "main",
+        "",
+        "V20260606010101__normal_global",
+        &schema("pending"),
+        "1",
+    );
+    let diagnostics = build_script::collect_diagnostics(&work);
+    let texts = diagnostic_texts(&diagnostics);
+    assert!(
+        texts.iter().any(|text| {
+            text.contains("pending JSON format version '1'")
+                && text.ends_with(
+                    "; re-run 'djogi migrations compose' to regenerate this pending file",
+                )
+        }),
+        "stale build diagnostic must end with '; <recompose phrase>': {texts:?}"
+    );
+    let _ = fs::remove_dir_all(&work);
+}
+
+/// A future (`found > expected`) pending file must make the build
+/// diagnostic tell the operator to upgrade djogi, matching the upgrade
+/// phrase the library's `PendingLoadError` Display produces.
+/// `PENDING_FORMAT_VERSION` is `"2"`; `found = "3"` is the future case.
+#[test]
+fn build_collect_diagnostics_future_format_version_says_upgrade() {
+    let work = temp_workspace("future_format_version_upgrade");
+    let pending_path = work.join("target/djogi_pending/main/_global_.json");
+    write_pending_with_format_version(
+        &pending_path,
+        "main",
+        "",
+        "V20260606010101__normal_global",
+        &schema("pending"),
+        "3",
+    );
+    let diagnostics = build_script::collect_diagnostics(&work);
+    let texts = diagnostic_texts(&diagnostics);
+    assert!(
+        texts.iter().any(|text| {
+            text.contains("pending JSON format version '3'")
+                && text.ends_with(
+                    "; upgrade to a newer version of djogi (or check out a newer revision)",
+                )
+        }),
+        "future build diagnostic must end with '; <upgrade phrase>': {texts:?}"
+    );
     let _ = fs::remove_dir_all(&work);
 }
 
