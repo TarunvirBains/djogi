@@ -4109,7 +4109,7 @@ mod tests {
         let fk_rows = ctx
             .raw_rows(
                 "SELECT conname FROM pg_constraint \
-                 WHERE conrelid = $1::regclass AND contype = 'f' AND confrelid = $2::regclass",
+                 WHERE conrelid = to_regclass($1) AND contype = 'f' AND confrelid = to_regclass($2)",
                 &[&event_log_table.as_str(), &users_table.as_str()],
             )
             .await
