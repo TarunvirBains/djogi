@@ -1361,21 +1361,18 @@ fn order_pending_groups_by_dependencies(
         let mut in_degree = vec![0usize; group_len];
         let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); group_len];
 
-        for k in i..j {
-            for dep_app in &out[k].plan.depends_on {
-                // Find the index of the dependency within this group.
-                // If not found, it's outside the group — ignore (REQ-398-6).
-                let mut found = None;
-                for (m_offset, entry) in out[i..j].iter().enumerate() {
-                    if entry.bucket.app.as_str() == dep_app.as_str() {
-                        found = Some(m_offset);
-                        break;
-                    }
-                }
-                let Some(dep_idx) = found else {
-                    continue;
+        // Build app→index lookup for this group (O(n)).
+        let app_to_idx: std::collections::HashMap<&str, usize> = out[i..j]
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| (entry.bucket.app.as_str(), idx))
+            .collect();
+
+        for (k_idx, entry) in out[i..j].iter().enumerate() {
+            for dep_app in &entry.plan.depends_on {
+                let Some(&dep_idx) = app_to_idx.get(dep_app.as_str()) else {
+                    continue; // outside group — ignore (REQ-398-6)
                 };
-                let k_idx = k - i;
                 if dep_idx != k_idx {
                     in_degree[k_idx] += 1;
                     reverse[dep_idx].push(k_idx);
@@ -1400,10 +1397,11 @@ fn order_pending_groups_by_dependencies(
         }
 
         if ordered.len() != group_len {
-            let chain: Vec<String> = (0..group_len)
+            let mut chain: Vec<String> = (0..group_len)
                 .filter(|&idx| in_degree[idx] > 0)
                 .map(|idx| out[i + idx].bucket.app.clone())
                 .collect();
+            chain.sort();
             return Err(format!(
                 "pending migrations for database `{database}` version `{version}` \
                  declare a dependency cycle between apps: {chain:?}; \

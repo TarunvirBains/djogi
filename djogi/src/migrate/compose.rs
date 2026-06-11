@@ -1170,6 +1170,9 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     }
 
     // Fail before writing any artifact if a cycle is detected.
+    // The returned order is intentionally discarded — compose writes per-bucket
+    // artifacts without ordering; the apply phase re-derives execution order
+    // from depends_on fields in the written pending plans.
     for (database, buckets) in &db_buckets {
         order_buckets(database, buckets, &cross_deps)?;
     }
@@ -5718,6 +5721,363 @@ mod tests {
             }
             _ => panic!("expected CrossBucketForeignKeyCycle, got: {err:?}"),
         }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    // ── Cross-database FK filtering ────────────────────────────────
+
+    /// Two buckets in different databases: analytics/events has an FK to
+    /// a table in the main database. The depends_on list must be empty
+    /// because cross-database references are not ordering edges.
+    #[test]
+    fn cross_bucket_fk_different_databases_is_filtered() {
+        let work = temp_workspace("cross-db-fk-filter");
+        let guard = lock_for(&work);
+
+        let users_bucket = BucketKey {
+            database: "main".into(),
+            app: "users".into(),
+        };
+        let events_bucket = BucketKey {
+            database: "analytics".into(),
+            app: "events".into(),
+        };
+
+        // Build an FK that references the "users" table (which lives in main)
+        fn fk_to_users_table() -> crate::migrate::schema::ForeignKeySchema {
+            use crate::migrate::schema::{ForeignKeySchema, OnDeleteSchema};
+            ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: "users".to_string(),
+            }
+        }
+
+        fn col_fk_user(_bucket: &BucketKey) -> ColumnSchema {
+            ColumnSchema {
+                name: "user_id".to_string(),
+                sql_type: "BIGINT".to_string(),
+                nullable: false,
+                foreign_key: Some(fk_to_users_table()),
+                ..col("user_id", "BIGINT", false)
+            }
+        }
+
+        fn table_events(bucket: &BucketKey) -> TableSchema {
+            TableSchema {
+                app: if bucket.app.is_empty() {
+                    None
+                } else {
+                    Some(bucket.app.clone())
+                },
+                columns: vec![id_column_heerid_desc(), col_fk_user(bucket)],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "page_views".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            }
+        }
+
+        // Models: both buckets exist in their respective databases
+        let mut models = BTreeMap::new();
+        {
+            let mut users_schema = empty_snapshot(&users_bucket);
+            users_schema
+                .models
+                .insert("users".to_string(), table_users(&users_bucket));
+            models.insert(users_bucket.clone(), users_schema);
+        }
+        {
+            let mut events_schema = empty_snapshot(&events_bucket);
+            events_schema
+                .models
+                .insert("page_views".to_string(), table_events(&events_bucket));
+            models.insert(events_bucket.clone(), events_schema);
+        }
+
+        // Empty snapshots so differ sees new tables
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(users_bucket.clone(), empty_snapshot(&users_bucket));
+        snapshots.insert(events_bucket.clone(), empty_snapshot(&events_bucket));
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "users".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "events".into(),
+                database: "analytics".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "cross-db-fk",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("composes");
+        let events = read_written_pending(&report, "analytics", "events");
+        assert!(
+            events.depends_on.is_empty(),
+            "events should have no depends_on (cross-database FK to main/users is filtered out)"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    // ── Pre-existing target exclusion ──────────────────────────────
+
+    /// Single bucket with a table carrying an FK to "users", but "users"
+    /// table is NOT in the models map (pre-existing on disk). The
+    /// depends_on list must be empty because the target is not tracked
+    /// in this compose run.
+    #[test]
+    fn cross_bucket_fk_target_not_in_projection_is_ignored() {
+        let work = temp_workspace("fk-preexisting-target");
+        let guard = lock_for(&work);
+
+        let system_bucket = BucketKey {
+            database: "main".into(),
+            app: "system".into(),
+        };
+
+        // Build a table with FK to "users" (which does NOT exist in models)
+        fn table_orders(bucket: &BucketKey) -> TableSchema {
+            TableSchema {
+                app: if bucket.app.is_empty() {
+                    None
+                } else {
+                    Some(bucket.app.clone())
+                },
+                columns: vec![id_column_heerid_desc(), col_with_fk_to_users()],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "orders".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            }
+        }
+
+        let mut models = BTreeMap::new();
+        {
+            let mut system_schema = empty_snapshot(&system_bucket);
+            system_schema
+                .models
+                .insert("orders".to_string(), table_orders(&system_bucket));
+            models.insert(system_bucket.clone(), system_schema);
+        }
+
+        // Empty snapshot so differ sees new table
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(system_bucket.clone(), empty_snapshot(&system_bucket));
+
+        let apps: Vec<AppLifecycle> = vec![AppLifecycle {
+            label: "system".into(),
+            database: "main".into(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "fk-preexisting",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("composes");
+        let system = read_written_pending(&report, "main", "system");
+        assert!(
+            system.depends_on.is_empty(),
+            "system should have no depends_on (FK target 'users' not in projection)"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    // ── Within-bucket FK exclusion ─────────────────────────────────
+
+    /// Single bucket with two tables, one carrying an FK to the other.
+    /// The depends_on list must be empty because within-bucket FKs are
+    /// handled by segment.rs, not cross-bucket ordering.
+    #[test]
+    fn cross_bucket_fk_within_same_bucket_is_excluded() {
+        let work = temp_workspace("within-bucket-fk");
+        let guard = lock_for(&work);
+
+        let orders_bucket = BucketKey {
+            database: "main".into(),
+            app: "orders".into(),
+        };
+
+        // FK referencing the "items" table (same bucket)
+        fn fk_to_items() -> crate::migrate::schema::ForeignKeySchema {
+            use crate::migrate::schema::{ForeignKeySchema, OnDeleteSchema};
+            ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: "items".to_string(),
+            }
+        }
+
+        fn col_item_id() -> ColumnSchema {
+            ColumnSchema {
+                name: "item_id".to_string(),
+                sql_type: "BIGINT".to_string(),
+                nullable: false,
+                foreign_key: Some(fk_to_items()),
+                ..col("item_id", "BIGINT", false)
+            }
+        }
+
+        fn table_line_items(bucket: &BucketKey) -> TableSchema {
+            TableSchema {
+                app: if bucket.app.is_empty() {
+                    None
+                } else {
+                    Some(bucket.app.clone())
+                },
+                columns: vec![id_column_heerid_desc(), col_item_id()],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "line_items".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            }
+        }
+
+        fn table_items(bucket: &BucketKey) -> TableSchema {
+            TableSchema {
+                app: if bucket.app.is_empty() {
+                    None
+                } else {
+                    Some(bucket.app.clone())
+                },
+                columns: vec![id_column_heerid_desc()],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "items".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            }
+        }
+
+        // Both tables in the same bucket
+        let mut models = BTreeMap::new();
+        {
+            let mut orders_schema = empty_snapshot(&orders_bucket);
+            orders_schema
+                .models
+                .insert("line_items".to_string(), table_line_items(&orders_bucket));
+            orders_schema
+                .models
+                .insert("items".to_string(), table_items(&orders_bucket));
+            models.insert(orders_bucket.clone(), orders_schema);
+        }
+
+        // Empty snapshot so differ sees both new tables
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(orders_bucket.clone(), empty_snapshot(&orders_bucket));
+
+        let apps: Vec<AppLifecycle> = vec![AppLifecycle {
+            label: "orders".into(),
+            database: "main".into(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "within-bucket-fk",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("composes");
+        let orders = read_written_pending(&report, "main", "orders");
+        assert!(
+            orders.depends_on.is_empty(),
+            "orders should have no depends_on (within-bucket FK is excluded)"
+        );
         let _ = fs::remove_dir_all(&work);
     }
 }
