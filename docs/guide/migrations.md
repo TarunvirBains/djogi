@@ -61,6 +61,7 @@ migrations/                        ← git submodule
 ```
 
 - One directory per `(database, app)` bucket. Cross-database FKs are rejected at projection time. Cross-app FKs **within the same database** are fully supported — when a compose produces multiple buckets at the same version and one references another via foreign key, Djogi automatically derives the dependency graph and orders the apply so referenced tables are created first.
+- Sharing a `DjogiEnum` across apps works without special configuration: compose deduplicates shared enum types automatically, emitting exactly one `CREATE TYPE` in the first bucket (by alphabetical order when no FK edges exist). The other buckets that reference the same enum get a dependency edge pointing to the owning bucket, so they apply after the type exists. You just derive `DjogiEnum` once and use it from models in any app — compose and apply handle the rest.
 - Filename grammar: `V<14-digit timestamp>__<slug>.sdjql` (up) plus `.down.sdjql` (reverse).
 - `_global_` is the synthetic bucket for models without an explicit `#[model(app = ...)]`.
 - `schema_snapshot.json` is the per-bucket applied-state side-car. The runner persists it atomically after every transactional segment commits and the ledger row reaches `applied`.

@@ -4188,6 +4188,304 @@ mod tests {
         // before the users table exists (SQLSTATE 42P01 undefined_table).
     }
 
+    /// End-to-end test: two buckets sharing an enum type (`mood`) plus
+    /// a cross-bucket FK. Compose + apply, then assert exactly one `CREATE TYPE`
+    /// in Postgres, both tables exist, and no error during apply.
+    #[djogi::djogi_test]
+    async fn shared_enum_multi_slice_applies(mut ctx: djogi::context::DjogiContext) {
+        // Unique suffix for table names — avoids collisions when tests run in parallel.
+        static E2E_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = E2E_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let posts_table = format!("e2e_posts_{n}");
+        let comments_table = format!("e2e_comments_{n}");
+
+        let work = temp_workspace("shared-enum-e2e");
+        let guard = djogi::migrate::acquire_workspace_lock(
+            &work.join(LOCK_FILE_NAME),
+            std::time::Duration::from_secs(5),
+        )
+        .expect("lock workspace");
+
+        // Construct models: alpha bucket (owns enum + posts table) +
+        // beta bucket (references same enum + FK → alpha.posts).
+        let mut models: std::collections::BTreeMap<
+            djogi::migrate::BucketKey,
+            djogi::migrate::AppliedSchema,
+        > = std::collections::BTreeMap::new();
+
+        let alpha_bucket = BucketKey {
+            database: "main".into(),
+            app: "alpha".into(),
+        };
+        let beta_bucket = BucketKey {
+            database: "main".into(),
+            app: "beta".into(),
+        };
+
+        // Shared enum schema.
+        let mood_enum = djogi::migrate::schema::EnumSchema {
+            name: "mood".to_string(),
+            variants: vec!["happy".to_string(), "sad".to_string()],
+        };
+
+        // Alpha: posts table with mood column (enum owner by alphabetical order).
+        {
+            let mut alpha_schema = djogi::migrate::AppliedSchema {
+                djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                enums: std::collections::BTreeMap::new(),
+                format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                generated_at: "2026-06-10T00:00:00Z".to_string(),
+                indexes: Vec::new(),
+                models: std::collections::BTreeMap::new(),
+                registered_apps: vec!["alpha".to_string()],
+            };
+            alpha_schema
+                .enums
+                .insert("mood".to_string(), mood_enum.clone());
+            alpha_schema.models.insert(
+                posts_table.clone(),
+                djogi::migrate::TableSchema {
+                    app: Some("alpha".to_string()),
+                    columns: vec![
+                        djogi::migrate::ColumnSchema {
+                            name: "id".to_string(),
+                            sql_type: "BIGINT".to_string(),
+                            nullable: false,
+                            default_sql: Some("heerid_next_desc()".to_string()),
+                            ..default_col()
+                        },
+                        djogi::migrate::ColumnSchema {
+                            name: "mood".to_string(),
+                            sql_type: "mood".to_string(),
+                            nullable: true,
+                            ..default_col()
+                        },
+                    ],
+                    primary_key: djogi::migrate::PrimaryKeySchema {
+                        columns: vec!["id".to_string()],
+                        kind: djogi::migrate::PkKindSchema::HeerIdRecencyBiased,
+                    },
+                    table: posts_table.clone(),
+                    ..default_table()
+                },
+            );
+            models.insert(alpha_bucket.clone(), alpha_schema);
+        }
+
+        // Beta: comments table with mood column + FK → alpha.posts.
+        {
+            let mut beta_schema = djogi::migrate::AppliedSchema {
+                djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                enums: std::collections::BTreeMap::new(),
+                format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                generated_at: "2026-06-10T00:00:00Z".to_string(),
+                indexes: Vec::new(),
+                models: std::collections::BTreeMap::new(),
+                registered_apps: vec!["beta".to_string()],
+            };
+            beta_schema.enums.insert("mood".to_string(), mood_enum);
+            beta_schema.models.insert(
+                comments_table.clone(),
+                djogi::migrate::TableSchema {
+                    app: Some("beta".to_string()),
+                    columns: vec![
+                        djogi::migrate::ColumnSchema {
+                            name: "id".to_string(),
+                            sql_type: "BIGINT".to_string(),
+                            nullable: false,
+                            default_sql: Some("heerid_next_desc()".to_string()),
+                            ..default_col()
+                        },
+                        djogi::migrate::ColumnSchema {
+                            name: "post_id".to_string(),
+                            sql_type: "BIGINT".to_string(),
+                            nullable: false,
+                            foreign_key: Some(djogi::migrate::ForeignKeySchema {
+                                deferrable: false,
+                                initially_deferred: false,
+                                on_delete: djogi::migrate::OnDeleteSchema::Restrict,
+                                ref_column: "id".to_string(),
+                                ref_table: posts_table.clone(),
+                            }),
+                            ..default_col()
+                        },
+                        djogi::migrate::ColumnSchema {
+                            name: "author_mood".to_string(),
+                            sql_type: "mood".to_string(),
+                            nullable: true,
+                            ..default_col()
+                        },
+                    ],
+                    primary_key: djogi::migrate::PrimaryKeySchema {
+                        columns: vec!["id".to_string()],
+                        kind: djogi::migrate::PkKindSchema::HeerIdRecencyBiased,
+                    },
+                    table: comments_table.clone(),
+                    ..default_table()
+                },
+            );
+            models.insert(beta_bucket.clone(), beta_schema);
+        }
+
+        // Empty snapshots — fresh compose so differ sees all tables + enum as new.
+        let mut snapshots = std::collections::BTreeMap::new();
+        for bucket in [&alpha_bucket, &beta_bucket] {
+            snapshots.insert(
+                bucket.clone(),
+                djogi::migrate::AppliedSchema {
+                    djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                    enums: std::collections::BTreeMap::new(),
+                    format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                    generated_at: "2026-06-10T00:00:00Z".to_string(),
+                    indexes: Vec::new(),
+                    models: std::collections::BTreeMap::new(),
+                    registered_apps: vec![bucket.app.clone()],
+                },
+            );
+        }
+
+        let apps = vec![
+            djogi::migrate::AppLifecycle {
+                label: "alpha".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            djogi::migrate::AppLifecycle {
+                label: "beta".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        // Compose — generates pending files + migration SQL.
+        let compose_req = djogi::migrate::ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "shared-enum-multi-slice",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: time::OffsetDateTime::UNIX_EPOCH
+                + time::Duration::days(19726)
+                + time::Duration::seconds(0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: false,
+        };
+
+        let compose_report = djogi::migrate::compose(compose_req).expect("compose");
+        assert!(
+            !compose_report.composed_buckets.is_empty(),
+            "compose should produce delta buckets"
+        );
+
+        // Release the workspace lock before driving run_apply.
+        drop(guard);
+
+        // Extract the composed version from the report.
+        let composed_version = &compose_report.composed_buckets[0].version;
+
+        // Construct per-test database URL from DATABASE_URL.
+        let test_db = ctx
+            .raw_scalar::<String>("SELECT current_database()", &[])
+            .await
+            .expect("current_database");
+        let admin_url = std::env::var("DATABASE_URL").expect(
+            "DATABASE_URL must be set for djogi_test \
+             (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
+        );
+        let test_db_url = replace_db_in_url(&admin_url, &test_db)
+            .expect("construct per-test database URL from DATABASE_URL");
+
+        // Write minimal workspace config for run_apply.
+        fs::write(
+            work.join("Djogi.toml"),
+            format!(
+                "[database]\nurl = \"{test_db_url}\"\n\
+                 max_connections = 1\ndev_mode = false\n\
+                 [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
+            ),
+        )
+        .unwrap();
+
+        let db_url_guard = DatabaseUrlEnvGuard::new();
+        db_url_guard.set(&test_db_url);
+
+        // Drive the apply loop through run_apply.
+        let exit = {
+            let work = work.clone();
+            tokio::task::spawn_blocking(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(run_apply(
+                        &work,
+                        &FakeMode::Real,
+                        None,
+                        true, // single_node_dev
+                    ))
+            })
+            .await
+            .expect("spawn_blocking join")
+        };
+
+        drop(db_url_guard);
+
+        assert_eq!(
+            exit, 0,
+            "apply should succeed (enum created once, tables in FK order)"
+        );
+
+        // Assert 1: Exactly one `mood` enum type in pg_type.
+        let mood_count = ctx
+            .raw_scalar::<i64>(
+                "SELECT count(*) FROM pg_type WHERE typname = $1",
+                &[&"mood"],
+            )
+            .await
+            .expect("query pg_type for mood");
+        assert_eq!(
+            mood_count, 1,
+            "exactly one mood enum type should exist in pg_type, got {mood_count}"
+        );
+
+        // Assert 2: Both tables exist.
+        let table_count = ctx
+            .raw_scalar::<i64>(
+                "SELECT count(*) FROM pg_class WHERE relname = $1 OR relname = $2",
+                &[&posts_table.as_str(), &comments_table.as_str()],
+            )
+            .await
+            .expect("query pg_class for tables");
+        assert_eq!(
+            table_count, 2,
+            "both tables should exist ({posts_table}, {comments_table}), got {table_count}"
+        );
+
+        // Assert 3: Ledger has exactly two rows for the composed version.
+        let ledger_rows = ctx
+            .raw_rows(
+                "SELECT app_label FROM djogi_schema_migrations \
+                 WHERE version = $1 AND status = 'applied'",
+                &[&composed_version.as_str()],
+            )
+            .await
+            .expect("query ledger");
+        assert_eq!(
+            ledger_rows.len(),
+            2,
+            "ledger should have exactly 2 rows for composed version {composed_version} \
+             (alpha + beta), got {} rows",
+            ledger_rows.len()
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
     /// Replace the database component of a Postgres URL with a new name.
     /// Mirrors `djogi::migrate::reset::replace_db_in_url`; inlined here
     /// so the test module does not depend on that internal path.
