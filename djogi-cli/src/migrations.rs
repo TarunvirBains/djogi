@@ -4078,6 +4078,16 @@ mod tests {
         )
         .unwrap();
 
+        // Override DATABASE_URL to the per-test database for the duration of
+        // run_apply. load_from_workspace unconditionally replaces config.database.url
+        // with DATABASE_URL when the env var is present, so without this the
+        // migrations land in the admin database rather than the per-test one.
+        // DatabaseUrlEnvGuard holds the process-wide env mutex and restores the
+        // prior value on Drop. #[djogi_test] does not acquire this mutex, so
+        // there is no deadlock risk.
+        let db_url_guard = DatabaseUrlEnvGuard::new();
+        db_url_guard.set(&test_db_url);
+
         // Drive the apply loop through run_apply (same path as `djogi migrations apply`).
         // spawn_blocking avoids a nested-runtime panic: djogi_test already owns a
         // tokio runtime; creating another with block_on from inside async context
@@ -4099,6 +4109,10 @@ mod tests {
             .await
             .expect("spawn_blocking join")
         };
+
+        // Restore DATABASE_URL before the assertions; the per-test ctx already
+        // points at the correct database and does not use DATABASE_URL.
+        drop(db_url_guard);
 
         assert_eq!(
             exit, 0,
