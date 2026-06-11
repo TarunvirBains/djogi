@@ -693,8 +693,8 @@ pub async fn bootstrap(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
              ALTER TABLE djogi_schema_migrations
                  ADD CONSTRAINT djogi_schema_migrations_version_app_key
                  UNIQUE (version, app_label);
-         EXCEPTION WHEN OTHERS THEN
-             IF SQLSTATE != '42P07' THEN RAISE; END IF;
+         EXCEPTION WHEN duplicate_table THEN
+             NULL;
          END $$",
     )
     .await?;
