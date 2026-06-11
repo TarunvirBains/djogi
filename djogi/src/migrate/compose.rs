@@ -7340,4 +7340,205 @@ mod tests {
 
         let _ = fs::remove_dir_all(&work);
     }
+
+    /// Regression test: enum owner selection must follow FK-based topological
+    /// order, not alphabetical. When alpha has an FK to beta, the topo order
+    /// is [beta, alpha] (beta first), but alphabetical would be [alpha, beta].
+    /// Beta should own the enum; alpha's AddEnum should be deduplicated away.
+    #[test]
+    fn enum_owner_follows_fk_order_not_alphabetical() {
+        let work = temp_workspace("enum-owner-fk-order");
+        let guard = lock_for(&work);
+
+        let alpha_bucket = BucketKey {
+            database: "main".into(),
+            app: "alpha".into(),
+        };
+        let beta_bucket = BucketKey {
+            database: "main".into(),
+            app: "beta".into(),
+        };
+
+        // Build a column with both an enum type and an FK to beta's table.
+        fn fk_to_beta_items() -> crate::migrate::schema::ForeignKeySchema {
+            use crate::migrate::schema::{ForeignKeySchema, OnDeleteSchema};
+            ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: "items".to_string(),
+            }
+        }
+
+        fn col_item_id_with_fk() -> ColumnSchema {
+            ColumnSchema {
+                name: "item_id".to_string(),
+                sql_type: "BIGINT".to_string(),
+                nullable: false,
+                foreign_key: Some(fk_to_beta_items()),
+                ..col("item_id", "BIGINT", false)
+            }
+        }
+
+        fn col_mood() -> ColumnSchema {
+            ColumnSchema {
+                name: "mood".to_string(),
+                sql_type: "mood".to_string(),
+                nullable: true,
+                foreign_key: None,
+                ..col("mood", "mood", true)
+            }
+        }
+
+        // Alpha's table: has enum col + FK to beta's items table.
+        fn alpha_posts(bucket: &BucketKey) -> TableSchema {
+            TableSchema {
+                app: Some(bucket.app.clone()),
+                columns: vec![id_column_heerid_desc(), col_item_id_with_fk(), col_mood()],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "posts".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            }
+        }
+
+        // Beta's table: has enum col only, no FK.
+        fn beta_items(bucket: &BucketKey) -> TableSchema {
+            TableSchema {
+                app: Some(bucket.app.clone()),
+                columns: vec![id_column_heerid_desc(), col_mood()],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "items".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            }
+        }
+
+        let mood = EnumSchema {
+            name: "mood".to_string(),
+            variants: vec!["happy".to_string(), "sad".to_string()],
+        };
+
+        // Models: both buckets project the same enum + their own table.
+        let mut models = BTreeMap::new();
+        {
+            let mut alpha_schema = empty_snapshot(&alpha_bucket);
+            alpha_schema.enums.insert("mood".to_string(), mood.clone());
+            alpha_schema
+                .models
+                .insert("posts".to_string(), alpha_posts(&alpha_bucket));
+            models.insert(alpha_bucket.clone(), alpha_schema);
+        }
+        {
+            let mut beta_schema = empty_snapshot(&beta_bucket);
+            beta_schema.enums.insert("mood".to_string(), mood.clone());
+            beta_schema
+                .models
+                .insert("items".to_string(), beta_items(&beta_bucket));
+            models.insert(beta_bucket.clone(), beta_schema);
+        }
+
+        // Snapshots: empty for both (fresh compose, no prior state).
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(alpha_bucket.clone(), empty_snapshot(&alpha_bucket));
+        snapshots.insert(beta_bucket.clone(), empty_snapshot(&beta_bucket));
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "alpha".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "beta".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "enum-fk-order",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        // 1. Compose must succeed (no CrossBucketForeignKeyCycle).
+        let report = compose(req).expect("compose should succeed without cycle error");
+
+        // 2. Beta's SQL contains CREATE TYPE (beta is the enum owner — first in topo order).
+        let beta_up = fs::read_to_string(
+            &report
+                .composed_buckets
+                .iter()
+                .find(|c| c.bucket == beta_bucket)
+                .expect("beta should be in composed_buckets")
+                .up_sql_path,
+        )
+        .unwrap();
+        assert!(
+            beta_up.contains("CREATE TYPE"),
+            "beta should emit CREATE TYPE (enum owner). beta_up:\n{}",
+            beta_up
+        );
+
+        // 3. Alpha's SQL does NOT contain CREATE TYPE (AddEnum deduplicated away).
+        let alpha_cb = report
+            .composed_buckets
+            .iter()
+            .find(|c| c.bucket == alpha_bucket)
+            .expect("alpha should be in composed_buckets");
+        let alpha_up = fs::read_to_string(&alpha_cb.up_sql_path).unwrap();
+        assert!(
+            !alpha_up.contains("CREATE TYPE"),
+            "alpha should NOT emit CREATE TYPE (deduplicated). alpha_up:\n{}",
+            alpha_up
+        );
+
+        // 4. Alpha depends on beta (from both FK edge and enum ownership edge).
+        let alpha_pending = read_written_pending(&report, "main", "alpha");
+        assert!(
+            alpha_pending.depends_on.contains(&"beta".to_string()),
+            "alpha should depend on beta (FK + enum ownership). depends_on: {:?}",
+            alpha_pending.depends_on
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
 }
