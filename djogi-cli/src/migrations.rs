@@ -4158,7 +4158,6 @@ mod tests {
         assert_eq!(ordered_rows[0].try_get::<_, String>(0).unwrap(), "users");
         assert_eq!(ordered_rows[1].try_get::<_, String>(0).unwrap(), "system");
 
-        drop(guard);
         let _ = fs::remove_dir_all(&work);
 
         // Note: reverting the stage-2 topo sort in discover_pending_plans
