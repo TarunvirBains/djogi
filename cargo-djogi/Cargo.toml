@@ -14,3 +14,6 @@ documentation = "https://docs.rs/djogi-cli"
 # Use the shared config loader and section from djogi to keep wrapper behavior
 # consistent with the normal CLI entry points.
 djogi.workspace = true
+# Parse Cargo --message-format=json to discover the actual binary artifact path
+# at runtime, instead of hardcoding target/debug/<bin> layout.
+serde_json.workspace = true

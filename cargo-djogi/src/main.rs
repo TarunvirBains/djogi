@@ -6,7 +6,7 @@
 
 use djogi::config::DjogiConfig;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, ExitStatus};
+use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
     match run() {
@@ -39,14 +39,7 @@ fn run() -> Result<i32, String> {
     };
 
     let target_dir = workspace_target_dir(&workspace);
-    build_adopter_binary(&workspace, &target_dir, &package, &bin)?;
-    let binary = binary_path(&target_dir, &bin);
-    if !binary.exists() {
-        return Err(format!(
-            "built {bin} binary missing at {}",
-            binary.display()
-        ));
-    }
+    let binary = discover_binary_path(&workspace, &target_dir, &package, &bin)?;
 
     run_adopter_binary(&binary)
 }
@@ -71,14 +64,18 @@ fn workspace_target_dir(workspace: &Path) -> PathBuf {
     workspace.join("target")
 }
 
-fn build_adopter_binary(
+/// Build the adopter binary and discover its actual path from Cargo's
+/// `--message-format=json` output, instead of assuming a hardcoded
+/// `target/debug/<bin>` layout. This handles cross-compilation targets,
+/// custom target dirs, and any future Cargo layout changes.
+fn discover_binary_path(
     workspace: &Path,
     target_dir: &Path,
     package: &str,
     bin: &str,
-) -> Result<(), String> {
+) -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(&cargo)
+    let output = Command::new(&cargo)
         .arg("build")
         .arg("--locked")
         .arg("--package")
@@ -89,27 +86,62 @@ fn build_adopter_binary(
         .arg(workspace.join("Cargo.toml"))
         .arg("--target-dir")
         .arg(target_dir)
-        .status()
+        .arg("--message-format")
+        .arg("json")
+        .output()
         .map_err(|err| format!("failed to run cargo build: {err}"))?;
 
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
-            "cargo build failed for package '{package}', bin '{bin}' with status {status}"
+            "cargo build failed for package '{package}', bin '{bin}': {stderr}"
         ));
     }
-    Ok(())
-}
 
-fn binary_path(target_dir: &Path, bin: &str) -> PathBuf {
-    if cfg!(windows) {
-        target_dir.join("debug").join(format!("{bin}.exe"))
-    } else {
-        target_dir.join("debug").join(bin)
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let msg: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if msg.get("reason").and_then(|r| r.as_str()) != Some("compiler-artifact") {
+            continue;
+        }
+        let target_kind: Vec<&str> = msg
+            .get("target")
+            .and_then(|t| t.get("kind"))
+            .and_then(|k| k.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        if !target_kind.contains(&"bin") {
+            continue;
+        }
+        let bin_name = match msg
+            .get("target")
+            .and_then(|t| t.get("name"))
+            .and_then(|n| n.as_str())
+        {
+            Some(name) => name,
+            None => continue,
+        };
+        if bin_name != bin {
+            continue;
+        }
+        if let Some(filenames) = msg.get("filenames").and_then(|f| f.as_array()) {
+            for file in filenames.iter().filter_map(|f| f.as_str()) {
+                if !file.ends_with(".d") && !file.ends_with(".pdb") {
+                    return Ok(PathBuf::from(file));
+                }
+            }
+        }
     }
+
+    Err(format!(
+        "cargo build succeeded but no binary artifact found for '{bin}'"
+    ))
 }
 
 fn run_adopter_binary(binary: &Path) -> Result<i32, String> {
-    let status: ExitStatus = Command::new(binary)
+    let status: std::process::ExitStatus = Command::new(binary)
         .args(std::env::args_os().skip(1))
         .current_dir(std::env::current_dir().map_err(|err| err.to_string())?)
         .status()

@@ -27,6 +27,53 @@ use djogi::testing::cli::{
     current_database, djogi_binary_path, temp_workspace, write_minimal_djogi_toml,
 };
 
+/// Parse Cargo `--message-format=json` stdout to extract the artifact path
+/// for the requested binary. Profile-agnostic: reads actual paths from Cargo
+/// output rather than assuming `target/debug/<bin>` or `target/release/<bin>`
+/// layout, so cross-compilation targets are handled correctly.
+fn discover_binary_path_str(
+    cargo_stdout: &str,
+    bin_name: &str,
+) -> Result<String, String> {
+    for line in cargo_stdout.lines() {
+        let msg: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if msg.get("reason").and_then(|r| r.as_str()) != Some("compiler-artifact") {
+            continue;
+        }
+        let target_kind: Vec<&str> = msg
+            .get("target")
+            .and_then(|t| t.get("kind"))
+            .and_then(|k| k.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        if !target_kind.contains(&"bin") {
+            continue;
+        }
+        let bin = match msg
+            .get("target")
+            .and_then(|t| t.get("name"))
+            .and_then(|n| n.as_str())
+        {
+            Some(n) => n,
+            None => continue,
+        };
+        if bin != bin_name {
+            continue;
+        }
+        if let Some(filenames) = msg.get("filenames").and_then(|f| f.as_array()) {
+            for file in filenames.iter().filter_map(|f| f.as_str()) {
+                if !file.ends_with(".d") && !file.ends_with(".pdb") {
+                    return Ok(file.to_string());
+                }
+            }
+        }
+    }
+    Err(format!("no binary artifact found for '{bin_name}'"))
+}
+
 // ── Path resolution ─────────────────────────────────────────────────────────
 
 /// The `djogi-cli` crate root. `CARGO_MANIFEST_DIR` resolves to the
@@ -109,8 +156,9 @@ fn build_elephant_tracker_binary(
 ) -> PathBuf {
     let target_dir = temp_workspace(target_subdir);
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(&cargo)
+    let output = Command::new(&cargo)
         .arg("build")
+        .arg("--locked")
         .arg("--package")
         .arg(package)
         .arg("--bin")
@@ -119,18 +167,21 @@ fn build_elephant_tracker_binary(
         .arg(manifest)
         .arg("--target-dir")
         .arg(&target_dir)
-        .status()
+        .arg("--message-format")
+        .arg("json")
+        .output()
         .expect("spawn cargo build");
     assert!(
-        status.success(),
-        "build failed for package '{package}', bin '{bin}' with status {status}"
+        output.status.success(),
+        "build failed for package '{package}', bin '{bin}': {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 
-    if cfg!(windows) {
-        target_dir.join("debug").join(format!("{bin}.exe"))
-    } else {
-        target_dir.join("debug").join(bin)
-    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    PathBuf::from(
+        discover_binary_path_str(&stdout, bin)
+            .unwrap_or_else(|_| panic!("no binary artifact for '{bin}' in cargo output")),
+    )
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) {
@@ -199,7 +250,7 @@ fn copy_fixture_to_temp(fixture: &str) -> PathBuf {
 fn build_djogi_in_workspace(manifest: &Path, target_subdir: &str, package: &str, bin: &str) -> PathBuf {
     let target_dir = workspace_root().join("target").join(target_subdir);
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(&cargo)
+    let output = Command::new(&cargo)
         .arg("build")
         .arg("--locked")
         .arg("--bin")
@@ -210,37 +261,48 @@ fn build_djogi_in_workspace(manifest: &Path, target_subdir: &str, package: &str,
         .arg(manifest)
         .arg("--target-dir")
         .arg(&target_dir)
-        .status()
+        .arg("--message-format")
+        .arg("json")
+        .output()
         .expect("spawn cargo build");
-    assert!(status.success(), "build for manifest {} failed", manifest.display());
-    let exe = if cfg!(windows) {
-        format!("{bin}.exe")
-    } else {
-        bin.to_string()
-    };
-    target_dir.join("debug").join(exe)
+    assert!(
+        output.status.success(),
+        "build for manifest {} failed: {}",
+        manifest.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    PathBuf::from(
+        discover_binary_path_str(&stdout, bin)
+            .unwrap_or_else(|_| panic!("no binary artifact for '{bin}' in cargo output")),
+    )
 }
 
 fn build_cargo_djogi_binary() -> PathBuf {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let root = workspace_root();
     let target_dir = root.join("target").join("cargo-djogi-tests");
-    let status = Command::new(&cargo)
+    let output = Command::new(&cargo)
         .arg("build")
         .arg("-p")
         .arg("cargo-djogi")
         .arg("--locked")
         .arg("--target-dir")
         .arg(&target_dir)
-        .status()
+        .arg("--message-format")
+        .arg("json")
+        .output()
         .expect("spawn cargo build -p cargo-djogi");
-    assert!(status.success(), "build cargo-djogi test binary must succeed");
-    let exe = if cfg!(windows) {
-        "cargo-djogi.exe"
-    } else {
-        "cargo-djogi"
-    };
-    target_dir.join("debug").join(exe)
+    assert!(
+        output.status.success(),
+        "build cargo-djogi test binary failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    PathBuf::from(
+        discover_binary_path_str(&stdout, "cargo-djogi")
+            .unwrap_or_else(|_| panic!("no binary artifact for 'cargo-djogi' in cargo output")),
+    )
 }
 
 // ── Fixture / binary builders ────────────────────────────────────────────────
@@ -266,7 +328,7 @@ fn build_fixture_djogi(fixture: &str, target_subdir: &str) -> PathBuf {
     );
     let target_dir = workspace_root().join("target").join(target_subdir);
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(&cargo)
+    let output = Command::new(&cargo)
         .arg("build")
         // Match the CI release link profile the linkage spike used.
         .arg("--release")
@@ -278,10 +340,20 @@ fn build_fixture_djogi(fixture: &str, target_subdir: &str) -> PathBuf {
         .arg("--target-dir")
         .arg(&target_dir)
         .env_remove("CARGO_TARGET_DIR")
-        .status()
+        .arg("--message-format")
+        .arg("json")
+        .output()
         .expect("spawn cargo build for fixture");
-    assert!(status.success(), "fixture {fixture} failed to build");
-    target_dir.join("release").join("djogi")
+    assert!(
+        output.status.success(),
+        "fixture {fixture} failed to build: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    PathBuf::from(
+        discover_binary_path_str(&stdout, "djogi")
+            .unwrap_or_else(|_| panic!("no binary artifact for 'djogi' in cargo output")),
+    )
 }
 
 // ── Workspace / output helpers ───────────────────────────────────────────────
@@ -1309,4 +1381,36 @@ fn t_forbid_unsafe_build_succeeds() {
         bin.exists(),
         "forbid_unsafe binary should exist after a successful build"
     );
+}
+
+// ── Unit tests for discover_binary_path_str ──────────────────────────────────
+
+#[test]
+fn discover_binary_path_native_json() {
+    let stdout = r#"{"reason":"compiler-artifact","target":{"name":"djogi","kind":["bin"]},"profile":"release","filenames":["/some/path/target/release/djogi"]}"#;
+    let path = discover_binary_path_str(stdout, "djogi").unwrap();
+    assert_eq!(path, "/some/path/target/release/djogi");
+}
+
+#[test]
+fn discover_binary_path_cross_compiled_json() {
+    let stdout = r#"{"reason":"compiler-artifact","target":{"name":"my_app","kind":["bin"]},"target_triple":"aarch64-unknown-linux-gnu","profile":"debug","filenames":["/some/path/target/aarch64-unknown-linux-gnu/debug/my_app"]}"#;
+    let path = discover_binary_path_str(stdout, "my_app").unwrap();
+    assert_eq!(path, "/some/path/target/aarch64-unknown-linux-gnu/debug/my_app");
+}
+
+#[test]
+fn discover_binary_path_no_match() {
+    let stdout = r#"{"reason":"compiler-artifact","target":{"name":"other_lib","kind":["rlib"]},"filenames":["/some/path/target/debug/libother.rlib"]}"#;
+    let result = discover_binary_path_str(stdout, "djogi");
+    assert!(result.is_err());
+}
+
+#[test]
+fn discover_binary_path_multiline() {
+    let stdout = r#"{"reason":"status","message":"compiling"}
+{"reason":"compiler-artifact","target":{"name":"djogi","kind":["bin"]},"filenames":["/path/target/x86_64-unknown-linux-gnu/release/djogi"]}
+{"reason":"build-finished","success":true}"#;
+    let path = discover_binary_path_str(stdout, "djogi").unwrap();
+    assert_eq!(path, "/path/target/x86_64-unknown-linux-gnu/release/djogi");
 }
