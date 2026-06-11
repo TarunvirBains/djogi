@@ -905,6 +905,7 @@ fn project_model(
 fn project_fts_column(fts: &FtsDescriptor) -> ColumnSchema {
     ColumnSchema {
         check: None,
+        codec: None,
         // Djogi#217) — FTS tsvector columns are
         // framework-synthesised; no adopter `#[field(comment)]` flows.
         comment: None,
@@ -1058,6 +1059,7 @@ fn outbox_pending_index_name(table: &str) -> String {
 fn outbox_column(name: &str, sql_type: &str, default_sql: Option<&str>) -> ColumnSchema {
     ColumnSchema {
         check: None,
+        codec: None,
         // Djogi#217) — framework-synthesised
         // outbox columns carry no adopter `#[field(comment)]`; the
         // attribute applies to user-declared fields only.
@@ -2045,6 +2047,14 @@ fn project_column(
 
     ColumnSchema {
         check,
+        // At-rest codec id (`#[field(protected(codec = "<id>"))]`) recorded so
+        // the differ can detect and classify codec transitions independent of
+        // the rendered SQL type (issue #371). `None` for plaintext columns.
+        codec: f
+            .protected
+            .as_ref()
+            .and_then(|p| p.codec)
+            .map(|s| s.to_string()),
         // Djogi#217) — copy adopter
         // `#[field(comment = "…")]` from descriptor verbatim. The
         // composer owns single-quote escaping at SQL-emission time.

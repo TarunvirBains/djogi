@@ -1174,6 +1174,34 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             let down = render_comment_on_column(table, column, from.as_deref());
             (up, down, "set COMMENT", None)
         }
+        // At-rest codec change (issue #371). A codec add / swap / drop is a
+        // full row re-encode, not DDL — v1 emits an operator-actionable comment
+        // on the offline compose path rather than a runnable statement (there
+        // is no server-side `djogi_codec_recode`). The schema's BYTEA column
+        // already exists (or is created by the accompanying AddColumn for a
+        // fresh column); this op documents that the *bytes* must be re-encrypted
+        // out of band. The same-codec no-op never reaches here (the differ only
+        // emits `CodecChange` when `before.codec != after.codec`).
+        ColumnChange::CodecChange {
+            from_codec,
+            to_codec,
+        } => {
+            let from_desc = from_codec.as_deref().unwrap_or("plaintext");
+            let to_desc = to_codec.as_deref().unwrap_or("plaintext");
+            let up = format!(
+                "-- MANUAL STEP: column `{table}.{column}` codec changed \
+                 `{from_desc}` -> `{to_desc}`. Re-encode every row out of band \
+                 (read, re-encrypt under the new codec, write back). The framework \
+                 emits no automatic backfill — online codec rotation is not yet \
+                 supported (issue #371). Apply via an operator-run offline migration."
+            );
+            let down = format!(
+                "-- MANUAL STEP: reverting column `{table}.{column}` codec \
+                 `{to_desc}` -> `{from_desc}` requires the same out-of-band re-encode \
+                 in reverse. No automatic rollback is emitted."
+            );
+            (up, down, "codec change (manual re-encode)", None)
+        }
     };
     OperationSql {
         label: format!("AlterColumn {table}.{column} ({label_suffix})"),
@@ -2575,6 +2603,7 @@ mod tests {
     fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: None,
@@ -2642,6 +2671,7 @@ mod tests {
             id_column_heerid(),
             ColumnSchema {
                 check: check.map(|s| s.to_string()),
+                codec: None,
                 comment: None,
                 default_sql: None,
                 foreign_key: None,

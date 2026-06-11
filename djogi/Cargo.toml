@@ -1204,3 +1204,14 @@ harness = true
 name = "preflight_version_gate"
 path = "../tests/integration/preflight_version_gate.rs"
 harness = true
+
+# Issue #371 — AES-256-GCM encrypted-at-rest field codec acceptance.
+# Pins the BYTEA column-type override (Class A) via project_from_inventory()
+# and the CRUD round-trip (Class E): an encrypted String field encrypts on
+# write, decrypts on read, and a nullable encrypted field round-trips None as
+# SQL NULL. Requires the `aes-codec` feature; runs against the live dev DB.
+[[test]]
+name = "field_codec_aes_roundtrip"
+path = "../tests/integration/field_codec_aes_roundtrip.rs"
+harness = true
+required-features = ["aes-codec"]

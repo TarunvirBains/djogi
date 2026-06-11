@@ -405,6 +405,28 @@ pub enum ColumnChange {
         using: Option<String>,
     },
 
+    /// A column's at-rest codec changed (added / swapped / removed) —
+    /// `#[field(protected(codec = "<id>"))]` drift. Carries both sides so
+    /// the classifier and offline emitter can name the transition.
+    /// Emitted whenever `before.codec != after.codec`, **independent of
+    /// whether `sql_type` also changed** — a codec→codec swap between two
+    /// codecs with the same storage type (e.g. `aes256_gcm_v1` →
+    /// `aes256_gcm_v2`, both BYTEA) leaves `sql_type` unchanged and would
+    /// otherwise be invisible to the differ. Re-encoding every row under
+    /// the new codec is never a plain SQL cast, so the classifier routes
+    /// this `OfflineOnly` (add / drop codec) or `ExpandContract`
+    /// (codec → codec) and never to an online in-place backfill. Online
+    /// codec rotation is deferred (issue #371); v1 emits this op only on
+    /// the offline compose path.
+    CodecChange {
+        /// Codec on the BEFORE (loaded-from-disk) side. `None` = the
+        /// column was plaintext.
+        from_codec: Option<String>,
+        /// Codec on the AFTER (freshly-projected) side. `None` = the
+        /// codec was dropped (codec → plaintext).
+        to_codec: Option<String>,
+    },
+
     /// `SET / DROP CHECK` constraint at the column level.
     /// Carries **both** the prior CHECK expression (`from`) and the new
     /// CHECK expression (`to`) so the SQL emitter can render a fully
@@ -2187,7 +2209,15 @@ fn emit_alter_column(
             });
         };
         let type_changed = before.sql_type != after.sql_type;
-        if type_changed && before.check.is_some() {
+        // A codec add / swap / drop is owned by a dedicated `CodecChange` op
+        // (below), NOT by `ChangeType`: a codec transition is a full row
+        // re-encode, never a plain SQL cast, and a plaintext→codec transition
+        // also flips VARCHAR→BYTEA (so `type_changed` would otherwise fire a
+        // corrupting `<col>::BYTEA` cast). When the codec changed, the
+        // `ChangeType` and the type-change CHECK-drop/re-add are suppressed so
+        // `CodecChange` is the single owner of the transition (issue #371).
+        let codec_changed = before.codec != after.codec;
+        if type_changed && !codec_changed && before.check.is_some() {
             // If the old CHECK still references the pre-conversion type,
             // drop it before the type migration to avoid Postgres re-validating
             // it against the new type shape. The `from` carries the prior
@@ -2195,12 +2225,16 @@ fn emit_alter_column(
             // type change back — without this, the down-side rollback
             // would leave the column un-checked (the bug
             // flagged: lossy CHECK rollback on type-changed columns).
+            // Excluded when `codec_changed`: a codec transition emits no
+            // `ChangeType`, so a lone CHECK-drop would have no paired
+            // type-change rollback — the operator's offline re-encode owns
+            // CHECK handling.
             push(ColumnChange::SetCheck {
                 from: before.check.clone(),
                 to: None,
             });
         }
-        if type_changed {
+        if type_changed && !codec_changed {
             // pull the adopter-supplied USING expression
             // from the AFTER column. The `type_change_using` slot is
             // `#[serde(skip)]` on `ColumnSchema`, so the BEFORE
@@ -2208,10 +2242,26 @@ fn emit_alter_column(
             // freshly-projected AFTER side ever carries `Some(...)`.
             // The expression is emitted verbatim into the migration's
             // `USING (<expr>)` clause; adopters own correctness.
+            // Suppressed when `codec_changed`: a plaintext→codec transition
+            // flips VARCHAR→BYTEA, and a plain `::BYTEA` cast would write
+            // plaintext UTF-8 bytes into the "encrypted" column. The
+            // `CodecChange` op below is the sole owner of that transition.
             push(ColumnChange::ChangeType {
                 from: before.sql_type.clone(),
                 to: after.sql_type.clone(),
                 using: after.type_change_using.clone(),
+            });
+        }
+        if codec_changed {
+            // Codec add / swap / drop. Owns the transition regardless of
+            // whether `sql_type` also flipped (plaintext→codec flips
+            // VARCHAR→BYTEA; codec→codec between same-storage codecs does
+            // not). Emitted unconditionally on `before.codec != after.codec`
+            // so a same-`sql_type` codec swap is detectable at all — without
+            // this op it would be a silent no-op (issue #371, Pre-flight §8).
+            push(ColumnChange::CodecChange {
+                from_codec: before.codec.clone(),
+                to_codec: after.codec.clone(),
             });
         }
         if before.nullable != after.nullable {
@@ -2238,7 +2288,13 @@ fn emit_alter_column(
         // moment this entry runs. The composed down file rolls back
         // in reverse: drop the post-type CHECK, alter the type back,
         // re-add the original CHECK. Non-lossy.
-        if type_changed && before.check.is_some() {
+        // Gated `&& !codec_changed` to match the type-change CHECK-drop above:
+        // a codec transition emits no `ChangeType`, so there is no paired
+        // type change for this CHECK re-add to accompany. When the codec
+        // changed, CHECK handling falls through to the standard
+        // `(before.check, after.check)` transition arm in the `else` branch
+        // (a CHECK change orthogonal to the codec still emits normally).
+        if type_changed && !codec_changed && before.check.is_some() {
             if let Some(check) = &after.check {
                 push(ColumnChange::SetCheck {
                     from: None,
@@ -3453,6 +3509,7 @@ mod tests {
 
         let id_col = ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: Some("heerid_next()".to_string()),
             foreign_key: None,
@@ -3475,6 +3532,7 @@ mod tests {
         };
         let amount_col = ColumnSchema {
             check: check.map(|s| s.to_string()),
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: None,
@@ -3802,6 +3860,7 @@ mod tests {
         fn build_schema(identity: Option<IdentityKindSchema>) -> AppliedSchema {
             let id_col = ColumnSchema {
                 check: None,
+                codec: None,
                 comment: None,
                 default_sql: None,
                 foreign_key: None,
@@ -4143,6 +4202,7 @@ mod tests {
                 app: None,
                 columns: vec![ColumnSchema {
                     check: None,
+                    codec: None,
                     comment: None,
                     default_sql: None,
                     foreign_key: None,
@@ -4412,6 +4472,7 @@ mod tests {
         // PK column
         columns.push(ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: None,
@@ -4435,6 +4496,7 @@ mod tests {
         for (col, ref_table) in fks {
             columns.push(ColumnSchema {
                 check: None,
+                codec: None,
                 comment: None,
                 default_sql: None,
                 foreign_key: Some(ForeignKeySchema {
@@ -4517,6 +4579,7 @@ mod tests {
             columns: vec![
                 ColumnSchema {
                     check: None,
+                    codec: None,
                     comment: None,
                     default_sql: None,
                     foreign_key: None,
@@ -4539,6 +4602,7 @@ mod tests {
                 },
                 ColumnSchema {
                     check: None,
+                    codec: None,
                     comment: None,
                     default_sql: None,
                     foreign_key: None,
@@ -4586,6 +4650,7 @@ mod tests {
             columns: vec![
                 ColumnSchema {
                     check: None,
+                    codec: None,
                     comment: None,
                     default_sql: Some("heerid_next()".to_string()),
                     foreign_key: None,
@@ -4608,6 +4673,7 @@ mod tests {
                 },
                 ColumnSchema {
                     check: None,
+                    codec: None,
                     comment: None,
                     default_sql: None,
                     foreign_key: Some(ForeignKeySchema {
@@ -4636,6 +4702,7 @@ mod tests {
                 },
                 ColumnSchema {
                     check: None,
+                    codec: None,
                     comment: None,
                     default_sql: None,
                     foreign_key: Some(ForeignKeySchema {
@@ -5008,6 +5075,229 @@ mod tests {
                     if from == "VARCHAR(100)" && to == "VARCHAR(200)"
             )),
             "VARCHAR(100) → VARCHAR(200) must emit ColumnChange::ChangeType; got: {changes:?}"
+        );
+    }
+
+    // ── Codec transition detection (issue #371, Class C) ────────────────────
+
+    /// Build an `AppliedSchema` with a single user column `token` carrying the
+    /// given `sql_type` and optional `codec`, plus the framework `id` column.
+    fn build_codec_table(
+        sql_type: &str,
+        codec: Option<&str>,
+    ) -> crate::migrate::schema::AppliedSchema {
+        use crate::migrate::schema::{
+            AppliedSchema, ColumnSchema, PkKindSchema, PrimaryKeySchema, TableSchema,
+        };
+        use std::collections::BTreeMap;
+
+        let id_col = ColumnSchema {
+            check: None,
+            codec: None,
+            comment: None,
+            default_sql: Some("heerid_next()".to_string()),
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "id".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "BIGINT".to_string(),
+            unique: false,
+            type_change_using: None,
+        };
+        let token_col = ColumnSchema {
+            check: None,
+            codec: codec.map(|s| s.to_string()),
+            comment: None,
+            default_sql: None,
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "token".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: sql_type.to_string(),
+            unique: false,
+            type_change_using: None,
+        };
+        let mut models = BTreeMap::new();
+        models.insert(
+            "vault".to_string(),
+            TableSchema {
+                app: None,
+                columns: vec![id_col, token_col],
+                exclusion_constraints: vec![],
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerId,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "vault".to_string(),
+                table_comment: None,
+                storage_params: None,
+                tablespace: None,
+                tenant_key: None,
+            },
+        );
+        AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: BTreeMap::new(),
+            format_version: "1".to_string(),
+            generated_at: "2026-06-10T00:00:00Z".to_string(),
+            indexes: vec![],
+            models,
+            registered_apps: vec!["".to_string()],
+        }
+    }
+
+    #[test]
+    fn same_sql_type_codec_swap_emits_codec_change_not_nothing() {
+        // Both codecs render BYTEA — sql_type is identical on both sides. The
+        // differ must still emit exactly one CodecChange op (NOT zero ops —
+        // the silent-no-op bug — and NOT a ChangeType, since sql_type is
+        // unchanged). This is the load-bearing Pre-flight §8 regression guard.
+        let before = build_codec_table("BYTEA", Some("aes256_gcm_v1"));
+        let after = build_codec_table("BYTEA", Some("aes256_gcm_v2"));
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "token");
+        assert_eq!(
+            changes.len(),
+            1,
+            "a same-sql_type codec swap must emit exactly one op; got: {changes:?}"
+        );
+        assert!(
+            matches!(
+                &changes[0],
+                ColumnChange::CodecChange { from_codec: Some(f), to_codec: Some(t) }
+                    if f == "aes256_gcm_v1" && t == "aes256_gcm_v2"
+            ),
+            "expected a CodecChange(v1 -> v2); got: {:?}",
+            changes[0]
+        );
+        assert!(
+            !changes
+                .iter()
+                .any(|c| matches!(c, ColumnChange::ChangeType { .. })),
+            "no ChangeType op for an unchanged sql_type; got: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn plaintext_to_codec_emits_codec_change_and_suppresses_change_type() {
+        // plaintext -> codec flips VARCHAR/TEXT -> BYTEA, so type_changed is
+        // true. The transition must be owned by CodecChange and the ChangeType
+        // suppressed — otherwise the differ would emit a `::BYTEA` cast that
+        // writes plaintext UTF-8 bytes into the "encrypted" column.
+        let before = build_codec_table("TEXT", None);
+        let after = build_codec_table("BYTEA", Some("aes256_gcm_v1"));
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "token");
+        assert!(
+            changes.iter().any(|c| matches!(
+                c,
+                ColumnChange::CodecChange { from_codec: None, to_codec: Some(t) }
+                    if t == "aes256_gcm_v1"
+            )),
+            "plaintext->codec must emit CodecChange(None -> v1); got: {changes:?}"
+        );
+        assert!(
+            !changes
+                .iter()
+                .any(|c| matches!(c, ColumnChange::ChangeType { .. })),
+            "ChangeType must be suppressed when the type change is codec-driven \
+             (no ::BYTEA cast); got: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn codec_drop_emits_codec_change() {
+        // codec -> plaintext (BYTEA -> TEXT) is also owned by CodecChange.
+        let before = build_codec_table("BYTEA", Some("aes256_gcm_v1"));
+        let after = build_codec_table("TEXT", None);
+        let delta = diff_schemas(&before, &after, empty_global());
+        let changes = alter_column_changes_for(&delta, "token");
+        assert!(
+            changes.iter().any(|c| matches!(
+                c,
+                ColumnChange::CodecChange { from_codec: Some(f), to_codec: None }
+                    if f == "aes256_gcm_v1"
+            )),
+            "codec->plaintext must emit CodecChange(v1 -> None); got: {changes:?}"
+        );
+        assert!(
+            !changes
+                .iter()
+                .any(|c| matches!(c, ColumnChange::ChangeType { .. })),
+            "ChangeType must be suppressed for a codec drop; got: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn plaintext_to_codec_classifies_offline_only() {
+        // End-to-end Class C acceptance (issue #371): a field gaining a codec
+        // against a prior plaintext snapshot produces a CodecChange op that the
+        // classifier rates OfflineOnly.
+        use crate::live_migrate::classify::{ClassifyContext, classify_operation};
+        use crate::live_migrate::{LoggingProfile, TargetDatabase};
+        use crate::migrate::schema::OnlineSafetyClassification;
+        use std::collections::BTreeMap;
+
+        let before = build_codec_table("TEXT", None);
+        let after = build_codec_table("BYTEA", Some("aes256_gcm_v1"));
+        let delta = diff_schemas(&before, &after, empty_global());
+        let codec_op = delta
+            .operations
+            .iter()
+            .find(|op| {
+                matches!(
+                    op,
+                    SchemaOperation::AlterColumn {
+                        change: ColumnChange::CodecChange { .. },
+                        ..
+                    }
+                )
+            })
+            .expect("a CodecChange op must be present for plaintext->codec");
+
+        let inbound: BTreeMap<String, u32> = BTreeMap::new();
+        let overrides: BTreeMap<(String, String), crate::descriptor::DefaultVolatility> =
+            BTreeMap::new();
+        let ctx = ClassifyContext {
+            estimated_rows: Some(1_000),
+            validation_threshold_rows: 100_000,
+            multi_fk_threshold: 4,
+            logging_profile: LoggingProfile::Balanced,
+            target_database: TargetDatabase::Application,
+            inbound_fk_counts: &inbound,
+            default_volatility_overrides: &overrides,
+        };
+        assert_eq!(
+            classify_operation(codec_op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+            "plaintext->codec must classify OfflineOnly"
         );
     }
 }

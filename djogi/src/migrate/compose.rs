@@ -1938,6 +1938,7 @@ mod tests {
                 },
                 columns: vec![ColumnSchema {
                     check: None,
+                    codec: None,
                     comment: None,
                     default_sql: Some("heerid_next_desc()".to_string()),
                     foreign_key: None,
@@ -1990,6 +1991,7 @@ mod tests {
     fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: None,
@@ -2015,6 +2017,7 @@ mod tests {
     fn col_numeric_array_metric_check() -> ColumnSchema {
         ColumnSchema {
             check: Some("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"amounts\")".to_string()),
+            codec: None,
             ..col("amounts", "NUMERIC[]", true)
         }
     }
@@ -2022,6 +2025,7 @@ mod tests {
     fn col_date_array_with_finite_check() -> ColumnSchema {
         ColumnSchema {
             check: Some("djogi.__djogi_date_array_is_finite_v1(\"blackout_dates\")".to_string()),
+            codec: None,
             ..col("blackout_dates", "DATE[]", true)
         }
     }
@@ -2029,6 +2033,7 @@ mod tests {
     fn col_tstz_array_with_finite_check() -> ColumnSchema {
         ColumnSchema {
             check: Some("djogi.__djogi_tstz_array_is_finite_v1(\"scheduled_slots\")".to_string()),
+            codec: None,
             ..col("scheduled_slots", "TIMESTAMPTZ[]", true)
         }
     }
@@ -2607,6 +2612,7 @@ mod tests {
         let new_table = new_schema.models.get_mut("widgets").unwrap();
         new_table.columns.push(ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: None,
@@ -3624,6 +3630,7 @@ mod tests {
                         },
                         columns: vec![ColumnSchema {
                             check: None,
+                            codec: None,
                             comment: None,
                             default_sql: Some("heerid_next_desc()".to_string()),
                             foreign_key: None,

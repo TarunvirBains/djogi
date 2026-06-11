@@ -616,6 +616,7 @@ mod tests {
     fn col(name: &str, ty: &str, nullable: bool) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: None,
@@ -648,6 +649,7 @@ mod tests {
     fn numeric_array_column(name: &str) -> ColumnSchema {
         ColumnSchema {
             check: Some("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"amounts\")".to_string()),
+            codec: None,
             ..col(name, "NUMERIC[]", true)
         }
     }
@@ -655,6 +657,7 @@ mod tests {
     fn date_array_column(name: &str) -> ColumnSchema {
         ColumnSchema {
             check: Some(format!("djogi.__djogi_date_array_is_finite_v1(\"{name}\")")),
+            codec: None,
             ..col(name, "DATE[]", true)
         }
     }
@@ -662,6 +665,7 @@ mod tests {
     fn tstz_array_column(name: &str) -> ColumnSchema {
         ColumnSchema {
             check: Some(format!("djogi.__djogi_tstz_array_is_finite_v1(\"{name}\")")),
+            codec: None,
             ..col(name, "TIMESTAMPTZ[]", true)
         }
     }
@@ -1264,6 +1268,7 @@ mod tests {
     fn fk_col(name: &str, target: &str) -> ColumnSchema {
         ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: Some(ForeignKeySchema {

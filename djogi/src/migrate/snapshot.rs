@@ -461,6 +461,7 @@ mod tests {
         let columns = vec![
             ColumnSchema {
                 check: None,
+                codec: None,
                 comment: None,
                 default_sql: Some("heerid_next_desc()".to_string()),
                 foreign_key: None,
@@ -483,6 +484,7 @@ mod tests {
             },
             ColumnSchema {
                 check: None,
+                codec: None,
                 comment: None,
                 default_sql: None,
                 foreign_key: Some(ForeignKeySchema {
@@ -580,6 +582,7 @@ mod tests {
         let columns = vec![
             ColumnSchema {
                 check: None,
+                codec: None,
                 comment: None,
                 default_sql: Some("heerid_next()".to_string()),
                 foreign_key: None,
@@ -602,6 +605,7 @@ mod tests {
             },
             ColumnSchema {
                 check: None,
+                codec: None,
                 comment: None,
                 default_sql: None,
                 foreign_key: None,
