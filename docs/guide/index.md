@@ -31,6 +31,7 @@ For design history and items still on the horizon, see
 | [Apps](./apps.md) | `djogi::apps!` subsystem, `#[model(app = ...)]`, retirement flow with tombstones, migration grouping |
 | [Migrations](./migrations.md) | Compose / status / attune / db reset / db seed / docs commands; ledger; library APIs; classifications; out-of-order policy; PK-type flips |
 | [Authentication](./auth.md) | `DjogiAuth` trait, `AuthContext`, `PasswordHash`, auto-`set_tenant`, `with_no_tenant_scope` |
+| [Encrypted at Rest](./encrypted-at-rest.md) | `#[field(protected(codec = "aes256_gcm_v1"))]`, AES-256-GCM field encryption, `DJOGI_FIELD_CODEC_KEY_*` ring, rotation, threat model (requires `aes-codec` feature) |
 | [Proxy Models](./proxy.md) | `#[model(proxy_for)]`, `default_filter`, `default_order`, schema-passthrough, bulk-op scoping |
 | [Computed Properties](./computed.md) | `#[computed(sql = "...")]`, `{Model}Computed` ZST, `filter_expr`, Rust-trait registration |
 | [Hooks and Composition](./hooks.md) | `#[model(hooks)]`, `ModelHooks`, before/after lifecycle, `#[model(auditable)]`, `#[model(soft_deletable)]`, `.not_deleted()` |

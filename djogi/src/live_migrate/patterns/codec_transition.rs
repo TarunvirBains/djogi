@@ -1,49 +1,52 @@
 //! Protected-field codec transition pattern.
-//! Covers the "Codec transition (same decoded type)" row of the v3
-//! plan §7 classification table. Triggered when a protected field's
-//! `FieldCodec` rotates (e.g. AES-256-GCM key rotation, encoding
-//! change) and `FieldCodec::classify_transition::<Other>()` reports
-//! the transition rewrites ciphertext.
+//! The staged implementation of ONLINE codec rotation — re-encrypting an
+//! encrypted column's ciphertext under a new codec without downtime. Triggered
+//! conceptually when a protected field's `FieldCodec` rotates (e.g. AES-256-GCM
+//! key rotation, encoding change) and the transition rewrites ciphertext.
 //! # Operation shape
-//! Until a dedicated `CodecChange` variant lands on
-//! [`SchemaOperation`], this pattern accepts an
-//! [`AlterColumn`](SchemaOperation::AlterColumn) carrying
-//! [`ColumnChange::ChangeType`] whose `from`/`to` are interpreted by
-//! the dispatcher as the old / new codec identifiers. The step
-//! graph is a structural mirror of
+//! This staged step-graph accepts an
+//! [`AlterColumn`](SchemaOperation::AlterColumn) carrying a
+//! [`ColumnChange::ChangeType`](crate::migrate::diff::ColumnChange::ChangeType)
+//! whose `from`/`to` are interpreted by the dispatcher as the old / new codec
+//! identifiers. The step graph is a structural mirror of
 //! [`replacement_column`](super::replacement_column) — the
 //! semantically-meaningful difference is the per-row conversion the
 //! dual-write hook performs (`encode_new(decode_old(value))` rather
 //! than a SQL cast). The runner consumes the same plan-file shape
-//! either way.
+//! either way. (Codec drift detection in this release rides the dedicated
+//! [`ColumnChange::CodecChange`](crate::migrate::diff::ColumnChange::CodecChange)
+//! op on the *offline* path — see the status note below.)
 //! # Step graph
-//! 1. [`StepKind::ExpandSchema`] — `ALTER TABLE <t> ADD COLUMN
-//! <c>_new BYTEA NULL`. The shadow column lands as `BYTEA` so
-//!    the codec can swap encoding shapes (the `to` codec ID lives in
-//!    the descriptor, not in the column type). The `_new` suffix
+//! (`StepKind` paths are fully qualified in these links because the
+//! `StepKind` import is `#[cfg(test)]`-gated — the staged step-graph code is
+//! test-only; see the status note below.)
+//! 1. [`StepKind::ExpandSchema`](crate::live_migrate::plan::StepKind::ExpandSchema)
+//!    — `ALTER TABLE <t> ADD COLUMN <c>_new BYTEA NULL`. The shadow column
+//!    lands as `BYTEA` so the codec can swap encoding shapes (the `to` codec ID
+//!    lives in the descriptor, not in the column type). The `_new` suffix
 //!    matches the convention pinned by
 //!    [`replacement_column`](super::replacement_column) and the
 //!    runtime hook parser at
 //!    [`crate::live_migrate::hooks`] — every shadow-column-style
 //!    pattern uses the same suffix so the parser can derive
 //!    `shadow_column` from a hook ID alone.
-//! 2. [`StepKind::BeginCompatibilityWindow`] — register the dual-
-//!    read / dual-write hooks. The hook IDs include the old + new
-//!    codec identifiers so the runtime layer can route encode /
+//! 2. [`StepKind::BeginCompatibilityWindow`](crate::live_migrate::plan::StepKind::BeginCompatibilityWindow)
+//!    — register the dual-read / dual-write hooks. The hook IDs include the
+//!    old + new codec identifiers so the runtime layer can route encode /
 //!    decode calls to the right codec implementation per row.
-//! 3. [`StepKind::BackfillChunked`] — copy `<c>` into `<c>_new`
-//!    re-encoded under the new codec. The predicate `WHERE
-//! <c>_new IS NULL` is structurally idempotent — once a row
+//! 3. [`StepKind::BackfillChunked`](crate::live_migrate::plan::StepKind::BackfillChunked)
+//!    — copy `<c>` into `<c>_new` re-encoded under the new codec. The predicate
+//!    `WHERE <c>_new IS NULL` is structurally idempotent — once a row
 //!    is re-encoded the chunk skips it on subsequent passes.
-//! 4. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//!    until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL`
-//!    returns zero.
-//! 5. [`StepKind::CutoverReads`] — visage projection switches reads
-//!    onto the new codec.
-//! 6. [`StepKind::CutoverWrites`] — writes target the new codec
-//!    only.
-//! 7. [`StepKind::CleanupLegacyState`] — `DROP COLUMN <c>` then
-//!    `RENAME COLUMN <c>_new TO <c>`.
+//! 4. [`StepKind::ValidateBackfill`](crate::live_migrate::plan::StepKind::ValidateBackfill)
+//!    — operator gate; runner pauses until
+//!    `SELECT count(*) FROM <t> WHERE <c>_new IS NULL` returns zero.
+//! 5. [`StepKind::CutoverReads`](crate::live_migrate::plan::StepKind::CutoverReads)
+//!    — visage projection switches reads onto the new codec.
+//! 6. [`StepKind::CutoverWrites`](crate::live_migrate::plan::StepKind::CutoverWrites)
+//!    — writes target the new codec only.
+//! 7. [`StepKind::CleanupLegacyState`](crate::live_migrate::plan::StepKind::CleanupLegacyState)
+//!    — `DROP COLUMN <c>` then `RENAME COLUMN <c>_new TO <c>`.
 //!
 //! # Status (issue #371): staged, not wired
 //! This pattern and its `djogi_codec_recode(<col>, '<from>', '<to>')` backfill
