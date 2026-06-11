@@ -12,7 +12,7 @@ This guide walks through setting up that binary, the three invocation models (de
 
 Djogi discovers models via Rust's `inventory` registry, which is a **link-time** mechanism: a binary only sees descriptors from crates linked into it. The standalone published binary links `djogi` + `djogi-cli` and **no adopter model crates**, so it sees zero models.
 
-The solution is minimal: add one dependency line and a tiny binary file to your workspace, then invoke `cargo run --bin djogi` instead of the published binary for descriptor-dependent commands.
+The solution is minimal: add one dependency line and a tiny binary file to your workspace, then invoke `cargo djogi` instead of the published binary for descriptor-dependent commands.
 
 ---
 
@@ -125,22 +125,28 @@ myapp/
 
 ## 3. Invocation Models
 
-### Development: `cargo run --bin djogi`
+### Development: `cargo djogi`
 
 Run descriptor-dependent commands from your workspace root:
 
+```toml
+[cli]
+package = "my-adopter-app-bin"   # package name that defines your `src/bin/djogi.rs`
+bin = "djogi"                    # executable built by that package
+```
+
 ```bash
 # Compose migrations from model drift
-cargo run --bin djogi -- migrations compose
+cargo djogi migrations compose
 
 # Verify live schema against snapshot
-cargo run --bin djogi -- migrations verify
+cargo djogi migrations verify
 
 # Render schema documentation
-cargo run --bin djogi -- schema
+cargo djogi schema
 
 # Generate model documentation
-cargo run --bin djogi -- docs
+cargo djogi docs
 ```
 
 This works identically to the published `djogi` binary, but your binary links your model crates so descriptor discovery succeeds.
@@ -182,7 +188,7 @@ The **published standalone** `djogi` binary can still run `migrations apply` aga
 
 ```bash
 # In CI — compose with adopter-linked binary
-cargo run --bin djogi -- migrations compose
+cargo djogi migrations compose
 
 # On a fresh local/ephemeral database — apply with standalone binary
 djogi migrations apply --single-node-dev

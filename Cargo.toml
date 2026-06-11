@@ -1,5 +1,5 @@
 [workspace]
-members = ["djogi", "djogi-macros", "djogi-cli", "djogi-shell", "examples/elephant-tracker", "xtask"]
+members = ["djogi", "djogi-macros", "djogi-cli", "djogi-shell", "cargo-djogi", "examples/elephant-tracker", "xtask"]
 # Local sibling-repo symlinks (per `reference_sibling_repos.md`) can live
 # alongside this workspace as `*-reference` directories. They are gitignored
 # and excluded so Cargo never treats an incidental sibling checkout as a djogi

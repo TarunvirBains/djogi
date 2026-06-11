@@ -1,28 +1,19 @@
 //! elephant-tracker — runnable Djogi example.
 //!
-//! See `README.md` for an overview. This binary exposes three
-//! subcommand groups:
-//!
-//! - `migrate` — drop all tables then recreate the example schema through
-//!   the framework's descriptor-driven pipeline: `project_from_inventory()`
-//!   → `diff_bucket_maps()` → `plan_delta()` → `apply_plan()`. Destructive:
-//!   the prior schema and all row data are lost on every run.
-//! - `seed` — load `seeds/countries.sql`, then insert herds,
-//!   herd ranges, elephants, and sightings programmatically.
-//! - `demo <which>` — run one of five feature walkthroughs:
-//!   `cluster-sightings`, `cross-border-herds`, `lineage`,
-//!   `herd-summaries`, or `mating-pairs`. Most demos accept
-//!   `--format json|mermaid|markdown` plus `--out <path>` (default stdout).
+//! See `README.md` for an overview. This binary exposes a `demo` command
+//! group with six feature walkthroughs:
+//! `cluster-sightings`, `cross-border-herds`, `lineage`,
+//! `herd-summaries`, `mating-pairs`, and `values-scores`.
+//! Most demos accept `--format json|mermaid|markdown` plus
+//! `--out <path>` (default stdout).
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod demos;
-mod migrate;
 mod models;
 mod output;
-mod seed;
 mod visages;
 
 use output::Format;
@@ -40,13 +31,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Drop all tables and recreate the example schema from descriptor inventory.
-    /// Destructive — the existing schema and all row data are lost on every run.
-    Migrate,
-
-    /// Load `seeds/countries.sql` then seed herds + sightings programmatically.
-    Seed,
-
     /// Run a feature walkthrough.
     Demo {
         #[command(subcommand)]
@@ -191,8 +175,6 @@ async fn main() -> Result<()> {
     let mut ctx = djogi::DjogiContext::from_pool(pool);
 
     match cli.cmd {
-        Cmd::Migrate => migrate::run(&mut ctx).await?,
-        Cmd::Seed => seed::run(&mut ctx).await?,
         Cmd::Demo { which } => match which {
             DemoCmd::ClusterSightings { out, format } => {
                 demos::cluster_sightings::run(&mut ctx, format, out.as_deref()).await?

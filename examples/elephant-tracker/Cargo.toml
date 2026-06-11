@@ -18,6 +18,7 @@ description = "Runnable Djogi example: tracking African elephant herds across bo
 # `spatial` is required because `Sighting.location` is a `GeoPoint`
 # field and the GiST index is feature-gated.
 djogi = { path = "../../djogi", features = ["spatial", "outbox"] }
+djogi-cli = { path = "../../djogi-cli" }
 heeranjid = "0.4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # `migrate.rs` reaches the underlying client through the

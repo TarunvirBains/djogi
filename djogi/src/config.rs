@@ -15,6 +15,11 @@ pub struct DjogiConfig {
     /// Migration-engine settings. See [`MigrateConfig`].
     #[serde(default)]
     pub migrate: MigrateConfig,
+    /// Developer wrapper settings for `cargo djogi`.
+    /// `cargo djogi` reads this section to resolve and run the adopter-linked
+    /// binary that includes your model descriptors.
+    #[serde(default)]
+    pub cli: CliConfig,
     /// Deployment profile. Drives the migration engine's
     /// out-of-order policy default (production/CI rejects out-of-order
     /// applies; development warns and proceeds) and gates destructive
@@ -66,6 +71,20 @@ pub struct DatabaseConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CliConfig {
+    /// Workspace package name that owns the adopter-linked CLI binary.
+    #[serde(default)]
+    pub package: String,
+    /// Binary name inside that package. Defaults to `"djogi"`.
+    #[serde(default = "default_cli_bin")]
+    pub bin: String,
+}
+
+fn default_cli_bin() -> String {
+    "djogi".to_string()
 }
 
 /// Migration-engine settings. Controls the runner's relpages-probe
@@ -125,6 +144,15 @@ fn default_pk_flip_join_table_option() -> char {
     'A'
 }
 
+impl Default for CliConfig {
+    fn default() -> Self {
+        Self {
+            package: String::new(),
+            bin: default_cli_bin(),
+        }
+    }
+}
+
 impl Default for MigrateConfig {
     fn default() -> Self {
         Self {
@@ -176,6 +204,10 @@ impl Default for DjogiConfig {
                 port: 8000,
             },
             migrate: MigrateConfig::default(),
+            cli: CliConfig {
+                package: String::new(),
+                bin: default_cli_bin(),
+            },
             profile: default_profile(),
             policy: PolicyConfig::default(),
         }
@@ -274,6 +306,40 @@ mod tests {
         let cfg = DjogiConfig::default();
         assert_eq!(cfg.profile, "development");
         assert!(!cfg.is_production());
+    }
+
+    #[test]
+    fn default_cli_config_is_non_empty_bin_and_empty_package() {
+        let cfg = DjogiConfig::default();
+        assert_eq!(cfg.cli.bin, "djogi");
+        assert_eq!(cfg.cli.package, "");
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)] // figment::Jail returns this error type.
+    fn loaded_cli_config_reads_package_and_bin_values() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "Djogi.toml",
+                r#"
+                [database]
+                url = "postgres://localhost/test"
+                dev_mode = false
+
+                [server]
+                host = "0.0.0.0"
+                port = 8000
+
+                [cli]
+                package = "my-workspace-bin"
+                bin = "my-djogi"
+                "#,
+            )?;
+            let cfg = DjogiConfig::load().expect("load");
+            assert_eq!(cfg.cli.package, "my-workspace-bin");
+            assert_eq!(cfg.cli.bin, "my-djogi");
+            Ok(())
+        });
     }
 
     #[test]

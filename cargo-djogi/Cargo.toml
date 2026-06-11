@@ -1,0 +1,16 @@
+[package]
+name = "cargo-djogi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Developer cargo-subcommand wrapper for Djogi adopter-linked CLI"
+documentation = "https://docs.rs/djogi-cli"
+
+[dependencies]
+# Use the shared config loader and section from djogi to keep wrapper behavior
+# consistent with the normal CLI entry points.
+djogi.workspace = true

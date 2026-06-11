@@ -50,6 +50,13 @@ event_delivery = "derive" # derive | off | best_effort | durable
 host = "0.0.0.0"
 port = 8000
 
+[cli]
+# Optional in production binaries; required for `cargo djogi` in adopters.
+# `package` is the workspace package name that contains your adopter-linked `djogi` binary.
+# `bin` is that binary's executable name.
+package = "my-app-bin"
+bin = "djogi"
+
 [migrations]
 submodule = "migrations"
 allow_destructive = false
@@ -77,6 +84,12 @@ The explicit `crud_delivery` and `event_delivery` keys are escape hatches, not t
 ---
 
 ## 14. CLI — `djogi`
+
+### CLI Wrapper Discovery (`cargo djogi`)
+
+- `[cli].package` must be set in `Djogi.toml` for `cargo djogi` to locate and build the adopter-linked binary.
+- `[cli].bin` defaults to `djogi` when omitted.
+- `cargo djogi` loads this file from the workspace root, builds the configured package/bin with Cargo, then executes the resulting binary with your CLI args.
 
 Installed once, used everywhere:
 ```bash

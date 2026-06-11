@@ -143,10 +143,11 @@ docker run --rm -d --name elephant-pg \
 #    run — prior row data is lost). Creates .djogi-migrations-lock in cwd
 #    while running; the file is gitignored.
 export DATABASE_URL=postgres://djogi:djogi@localhost:5432/djogi_test
-cargo run -p elephant-tracker -- migrate
+cargo djogi migrations compose --name init
+cargo djogi migrations apply
 
 # 3. Seed countries + 4 herds + 120 elephants + 200 sightings.
-cargo run -p elephant-tracker -- seed
+cargo djogi db seed
 
 # 4. Try the demos — each accepts `--format` and `--out`.
 cargo run -p elephant-tracker -- demo herd-summaries
@@ -185,13 +186,15 @@ Available format matrix:
 | `lineage`           |  ✓  |   ✓     |    ✓     |
 | `cluster-sightings` |  ✓  |   —     |    ✓     |
 | `mating-pairs`      |  ✓  |   ✓     |    ✓     |
+| `values-scores`     |  ✓  |   —     |    ✓     |
 
 ## Status
 
 This example is part of pre-v0.1.0 publish prep. The model definitions
-target Djogi `0.1.0`. The `migrate` subcommand applies the example's
-schema through the same descriptor-driven pipeline that `djogi
-migrations compose` + `djogi migrations apply` with node identity
+target Djogi `0.1.0`. Use `cargo djogi migrations compose` +
+`cargo djogi migrations apply` to apply the example's schema through the
+same descriptor-driven pipeline that production uses:
+`djogi migrations compose` + `djogi migrations apply` with node identity
 (`--node-id`, `HEER_NODE_ID`, or `--single-node-dev`) uses in production:
 `project_from_inventory()` → `diff_bucket_maps()` → `plan_delta()` →
 `apply_plan()`. No `CREATE TABLE`, `CREATE INDEX`, or `ALTER TABLE ADD
@@ -249,7 +252,9 @@ elephant-tracker/
 ├── seeds/
 │   └── countries.sql           # five countries, hand-written
 └── src/
-    ├── main.rs                 # CLI dispatch — migrate / seed / demo
+    ├── main.rs                 # CLI dispatch — demo-only app commands
+    ├── bin/
+    │   └── elephant-tracker-djogi.rs # adopter-linked `djogi` CLI
     ├── migrate.rs              # descriptor-driven schema apply + Phase 0 bootstrap; drop_all is raw DDL
     ├── seed.rs                 # countries.sql raw-DDL load + programmatic batch wrapped in atomic()
     ├── output.rs               # Format enum + JSON / Mermaid / Markdown writers
