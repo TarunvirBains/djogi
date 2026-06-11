@@ -488,6 +488,10 @@ mod tests {
                 pk_flip_long_tx_threshold_secs: 60,
                 pk_flip_join_table_option: 'A',
             },
+            cli: crate::config::CliConfig {
+                package: String::new(),
+                bin: "djogi".to_string(),
+            },
             profile: "development".to_string(),
             policy: crate::config::PolicyConfig::default(),
         }

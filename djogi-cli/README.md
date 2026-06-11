@@ -20,6 +20,20 @@ CLI for the Djogi Model-first Postgres framework — schema migrations, database
 
 The published `djogi` binary on crates.io runs **descriptor-free commands** — those that work on pre-composed migration artifacts. Commands like `apply`, `status`, and `seed` run this way.
 
+You can also invoke an adopter-linked binary through:
+
+```bash
+cargo djogi <command...>
+```
+
+with these `Djogi.toml` keys configured:
+
+```toml
+[cli]
+package = "my-adopter-app-bin"
+bin = "djogi"
+```
+
 Descriptor-dependent commands (`compose`, `verify`, `schema`, `docs`) require an **adopter-linked CLI** built in your own workspace. Wire it with one dependency line:
 
 ```toml
