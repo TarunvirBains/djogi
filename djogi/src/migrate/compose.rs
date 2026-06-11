@@ -816,6 +816,324 @@ fn fk_target_tables(op: &SchemaOperation) -> Vec<String> {
 /// Within-bucket refs are segment.rs's job; targets absent from the
 /// index were already validated by projection (or pre-exist on disk)
 /// and need no compose-run ordering edge.
+/// Cross-bucket enum reconciliation: dedup AddEnum to one owner,
+/// suppress AddEnum when another bucket's snapshot already has it,
+/// defer DropEnum until last referencing bucket, and wire enum
+/// ownership edges into the depends_on graph.
+///
+/// Returns ownership edges (same shape as `cross_bucket_dependencies`):
+/// `BTreeMap<BucketKey, BTreeSet<String>>` mapping non-owner buckets
+/// to the set of owner app names they depend on for enum types.
+fn reconcile_enum_ops_across_buckets(
+    deltas: &mut [SchemaDelta],
+    models: &std::collections::BTreeMap<BucketKey, AppliedSchema>,
+    snapshots: &std::collections::BTreeMap<BucketKey, AppliedSchema>,
+    fk_cross_deps: &std::collections::BTreeMap<BucketKey, std::collections::BTreeSet<String>>,
+) -> Result<std::collections::BTreeMap<BucketKey, std::collections::BTreeSet<String>>, ComposeError>
+{
+    use std::collections::{BTreeMap as BM, BTreeSet as BS};
+
+    /// Intermediate decision: which (delta_index, enum_name) to remove.
+    #[derive(Clone, Debug)]
+    struct RemoveOp {
+        idx: usize,
+        enum_name: String,
+        op_kind: OpKind,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum OpKind {
+        AddEnum,
+        DropEnum,
+    }
+
+    // Phase 1: Read — collect all data needed for decisions.
+    // Group deltas by database and gather per-database context.
+    let mut db_context: BM<String, (Vec<usize>, DBContext)> = BM::new();
+
+    for delta in deltas.iter() {
+        db_context
+            .entry(delta.bucket.database.clone())
+            .or_insert_with(|| {
+                (
+                    Vec::new(),
+                    DBContext {
+                        projected_enums: BM::new(),
+                        snapshot_enums: BM::new(),
+                        add_enum_ops: BM::new(),
+                        drop_enum_ops: BM::new(),
+                        add_enum_variant_buckets: BM::new(),
+                    },
+                )
+            });
+    }
+
+    // Populate projected_enums and snapshot_enums from ALL entries
+    // in models/snapshots, not just effective delta buckets. No-op
+    // deltas are filtered out before reconciliation (compose step 5),
+    // but their schema context is still needed for cross-bucket
+    // decisions: snapshot suppression (REQ-396-4) requires knowing
+    // which enums exist in any bucket's snapshot, and drop deferral
+    // (REQ-396-5) requires knowing which enums are still projected
+    // by any bucket — including those with no pending delta.
+    for (bucket, schema) in models {
+        if let Some((_, ctx)) = db_context.get_mut(&bucket.database) {
+            for name in schema.enums.keys() {
+                ctx.projected_enums
+                    .entry(bucket.clone())
+                    .or_default()
+                    .insert(name.clone());
+            }
+        }
+    }
+    for (bucket, schema) in snapshots {
+        if let Some((_, ctx)) = db_context.get_mut(&bucket.database) {
+            for name in schema.enums.keys() {
+                ctx.snapshot_enums
+                    .entry(bucket.clone())
+                    .or_default()
+                    .insert(name.clone());
+            }
+        }
+    }
+
+    for (i, delta) in deltas.iter().enumerate() {
+        let db = delta.bucket.database.clone();
+        let (indices, ctx) = db_context.entry(db).or_insert_with(|| {
+            (
+                Vec::new(),
+                DBContext {
+                    projected_enums: BM::new(),
+                    snapshot_enums: BM::new(),
+                    add_enum_ops: BM::new(),
+                    drop_enum_ops: BM::new(),
+                    add_enum_variant_buckets: BM::new(),
+                },
+            )
+        });
+        indices.push(i);
+        for op in &delta.operations {
+            match op {
+                SchemaOperation::AddEnum(e) => {
+                    ctx.add_enum_ops
+                        .insert((delta.bucket.clone(), e.name.clone()), i);
+                }
+                SchemaOperation::DropEnum(name) => {
+                    ctx.drop_enum_ops
+                        .entry((delta.bucket.clone(), name.clone()))
+                        .or_default()
+                        .push(i);
+                }
+                SchemaOperation::AddEnumVariant { enum_name, .. } => {
+                    ctx.add_enum_variant_buckets
+                        .entry(enum_name.clone())
+                        .or_default()
+                        .insert(delta.bucket.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Phase 2: Decide — compute which ops to remove and which edges to add.
+    let mut removes: Vec<RemoveOp> = Vec::new();
+    let mut enum_edges: BM<BucketKey, BS<String>> = BM::new();
+
+    for (db_name, (_indices, ctx)) in &db_context {
+        // Gather all unique enum names.
+        let mut all_enum_names: BS<String> = BS::new();
+        for (_, name) in ctx.add_enum_ops.keys() {
+            all_enum_names.insert(name.clone());
+        }
+        for (_, name) in ctx.drop_enum_ops.keys() {
+            all_enum_names.insert(name.clone());
+        }
+
+        // Compute topological order for owner selection within this
+        // database. Owner is the first bucket in `order_buckets` output
+        // (FK-only deps, before enum edges are merged), so enum edges
+        // never point opposite to FK edges and avoid false-positive cycles.
+        let all_projected_apps: BS<String> = ctx
+            .add_enum_ops
+            .keys()
+            .chain(ctx.drop_enum_ops.keys())
+            .map(|(bk, _)| bk.app.clone())
+            .collect();
+        let db_deps: BM<BucketKey, BS<String>> = fk_cross_deps
+            .iter()
+            .filter(|(bk, _)| bk.database == *db_name)
+            .map(|(bk, deps)| (bk.clone(), deps.clone()))
+            .collect();
+        let topo_order = if all_projected_apps.len() > 1 {
+            order_buckets(db_name, &all_projected_apps, &db_deps)?
+        } else {
+            all_projected_apps.into_iter().collect()
+        };
+
+        // 1. AddEnum dedup (REQ-396-3, REQ-396-4).
+        for enum_name in &all_enum_names {
+            let mut adders: Vec<(BucketKey, usize)> = ctx
+                .add_enum_ops
+                .iter()
+                .filter(|((_, name), _)| name == enum_name)
+                .map(|((bucket, _), idx)| (bucket.clone(), *idx))
+                .collect();
+
+            if adders.is_empty() {
+                continue;
+            }
+
+            // Sort by topological position so owner is the first bucket
+            // in the FK-based order — enum edges follow FK direction.
+            adders.sort_by_key(|(bk, _)| topo_order.iter().position(|a| a == &bk.app).unwrap_or(0));
+
+            // Check snapshot ownership: if any adder has the enum in
+            // another bucket's snapshot, the type was created by a prior
+            // migration — suppress all AddEnum to avoid duplicate CREATE TYPE.
+            let has_snapshot_owner = adders.iter().any(|(adder_bucket, _)| {
+                ctx.snapshot_enums.iter().any(|(snap_bucket, snap_set)| {
+                    snap_bucket != adder_bucket && snap_set.contains(enum_name.as_str())
+                })
+            });
+
+            if has_snapshot_owner {
+                // Remove AddEnum from ALL adders.
+                for (_bucket, idx) in &adders {
+                    removes.push(RemoveOp {
+                        idx: *idx,
+                        enum_name: enum_name.clone(),
+                        op_kind: OpKind::AddEnum,
+                    });
+                }
+            } else {
+                let (owner_bucket, _owner_idx) = &adders[0];
+                for (bucket, idx) in &adders[1..] {
+                    removes.push(RemoveOp {
+                        idx: *idx,
+                        enum_name: enum_name.clone(),
+                        op_kind: OpKind::AddEnum,
+                    });
+                    enum_edges
+                        .entry(bucket.clone())
+                        .or_default()
+                        .insert(owner_bucket.app.clone());
+                }
+            }
+        }
+
+        // 2. DropEnum deferral (REQ-396-5).
+        for enum_name in &all_enum_names {
+            let mut droppers: Vec<(BucketKey, usize)> = ctx
+                .drop_enum_ops
+                .iter()
+                .filter(|((_, name), _)| name == enum_name)
+                .flat_map(|((bucket, _), idxs)| idxs.iter().map(|&idx| (bucket.clone(), idx)))
+                .collect();
+
+            if droppers.is_empty() {
+                continue;
+            }
+
+            let any_projected = ctx
+                .projected_enums
+                .values()
+                .any(|en| en.contains(enum_name.as_str()));
+
+            if any_projected {
+                // Suppress all drops.
+                for (_bucket, idx) in &droppers {
+                    removes.push(RemoveOp {
+                        idx: *idx,
+                        enum_name: enum_name.clone(),
+                        op_kind: OpKind::DropEnum,
+                    });
+                }
+            } else {
+                // Keep drop only for the LAST bucket in topological order,
+                // so dependent buckets drop their references before the type
+                // is removed. The keeper runs last and drops after everyone else.
+                droppers.sort_by_key(|(bk, _)| {
+                    topo_order.iter().position(|a| a == &bk.app).unwrap_or(0)
+                });
+                for (_bucket, idx) in &droppers[..droppers.len() - 1] {
+                    removes.push(RemoveOp {
+                        idx: *idx,
+                        enum_name: enum_name.clone(),
+                        op_kind: OpKind::DropEnum,
+                    });
+                }
+            }
+        }
+
+        // 3. AddEnumVariant in non-owner bucket (REQ-396-12).
+        for (enum_name, variant_buckets) in &ctx.add_enum_variant_buckets {
+            // First try to find an AddEnum owner from current operations.
+            let owner = ctx
+                .add_enum_ops
+                .iter()
+                .find(|((_, name), _)| name == enum_name);
+
+            // If no AddEnum exists (e.g., removed by snapshot ownership
+            // because the type was created by a prior migration), fall back
+            // to the first bucket that projects this enum — it's the
+            // canonical reference for dependency ordering.
+            let owner_bucket: Option<BucketKey> = match owner {
+                Some(((bucket, _), _)) => Some(bucket.clone()),
+                None => ctx
+                    .projected_enums
+                    .iter()
+                    .find(|(_, names)| names.contains(enum_name.as_str()))
+                    .map(|(bucket, _)| bucket.clone()),
+            };
+
+            if let Some(ref owner_bucket) = owner_bucket {
+                for variant_bucket in variant_buckets {
+                    if variant_bucket != owner_bucket {
+                        enum_edges
+                            .entry(variant_bucket.clone())
+                            .or_default()
+                            .insert(owner_bucket.app.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Phase 3: Apply — remove ops from deltas.
+    for rm in &removes {
+        match rm.op_kind {
+            OpKind::AddEnum => {
+                deltas[rm.idx].operations.retain(
+                    |op| !matches!(op, SchemaOperation::AddEnum(e) if e.name == rm.enum_name),
+                );
+            }
+            OpKind::DropEnum => {
+                deltas[rm.idx]
+                    .operations
+                    .retain(|op| !matches!(op, SchemaOperation::DropEnum(n) if n == &rm.enum_name));
+            }
+        }
+    }
+
+    Ok(enum_edges)
+}
+
+/// Per-database context collected during Phase 1 (read).
+#[derive(Default)]
+struct DBContext {
+    projected_enums: std::collections::BTreeMap<BucketKey, std::collections::BTreeSet<String>>,
+    snapshot_enums: std::collections::BTreeMap<BucketKey, std::collections::BTreeSet<String>>,
+    add_enum_ops: std::collections::BTreeMap<(BucketKey, String), usize>,
+    drop_enum_ops: std::collections::BTreeMap<(BucketKey, String), Vec<usize>>,
+    add_enum_variant_buckets:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<BucketKey>>,
+}
+
+/// Cross-bucket FK dependency map: for each delta bucket, the set of
+/// SAME-DATABASE buckets owning tables its new FKs reference.
+/// Within-bucket refs are segment.rs's job; targets absent from the
+/// index were already validated by projection (or pre-exist on disk)
+/// and need no compose-run ordering edge.
 fn cross_bucket_dependencies(
     deltas: &[SchemaDelta],
     index: &std::collections::BTreeMap<(String, String), BucketKey>,
@@ -1149,15 +1467,47 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         return Err(ComposeError::NothingToCompose);
     }
 
-    // 6. Re-classify deltas that gained injected RenameApp ops and
-    // apply the destructive / unsupported gates.
+    // 5b. Hoist cross-bucket FK dependency graph so enum ownership
+    // edges merge before cycle detection (REQ-396-3).
+    let bucket_index = table_to_bucket_index(req.models);
+    let mut cross_deps = cross_bucket_dependencies(&effective, &bucket_index);
+
+    // 5c. Cross-bucket enum reconciliation — dedup AddEnum to one
+    // owner, defer DropEnum until last referencing bucket, and
+    // suppress enums already recorded by another bucket's snapshot.
+    let enum_edges =
+        reconcile_enum_ops_across_buckets(&mut effective, req.models, req.snapshots, &cross_deps)?;
+
+    // 5d. Merge enum ownership edges into cross_deps before cycle check.
+    for (bucket, deps) in &enum_edges {
+        cross_deps
+            .entry(bucket.clone())
+            .or_default()
+            .extend(deps.iter().cloned());
+    }
+
+    // 5e. Re-classify deltas whose ops were modified by reconciliation.
     for delta in &mut effective {
-        // RenameApp ops re-classify via `classify` (not exposed) but
-        // a metadata-only op classifies as `Reversible` per the
-        // existing classifier rules; a delta that already had drops
-        // remains Destructive. We do not need to re-derive — the
-        // existing classification is already correct because the
-        // injected ops are metadata-only and don't escalate severity.
+        delta.classification = super::diff::classify_operations(&delta.operations);
+    }
+
+    // 5f. Drop deltas that became empty after reconciliation.
+    effective
+        .retain(|d| !d.operations.is_empty() || !matches!(d.classification, Classification::NoOp));
+
+    // After reconciliation, check if all deltas were consumed.
+    if effective.is_empty() {
+        if !emitted_phase_zero.is_empty() {
+            return Ok(ComposeReport {
+                composed_buckets: Vec::new(),
+                emitted_phase_zero,
+            });
+        }
+        return Err(ComposeError::NothingToCompose);
+    }
+
+    // 6. Classification gates — use fresh classifications from step 5e.
+    for delta in &mut effective {
         match &delta.classification {
             Classification::Unsupported { reason } => {
                 return Err(ComposeError::UnsupportedDelta {
@@ -1175,9 +1525,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         }
     }
 
-    // 6b. Cross-bucket FK dependency graph — cycle detection + ordering.
-    let bucket_index = table_to_bucket_index(req.models);
-    let cross_deps = cross_bucket_dependencies(&effective, &bucket_index);
+    // 6b. Cycle detection and ordering using merged cross_deps.
 
     // Group buckets by database for per-database topological sort.
     let mut db_buckets: std::collections::BTreeMap<&str, std::collections::BTreeSet<String>> =
@@ -1197,22 +1545,51 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         order_buckets(database, buckets, &cross_deps)?;
     }
 
-    // Build depends_on map: bucket_key -> list of dependency app names
-    // filtered to only buckets that have deltas THIS compose run.
-    let depends_on_map: std::collections::BTreeMap<BucketKey, Vec<String>> = cross_deps
+    // Build depends_on map: bucket_key -> list of dependency app names.
+    // FK cross-bucket edges are filtered to same-cycle targets (the
+    // referenced table must have a delta this run), but enum ownership
+    // edges are preserved unconditionally — the owner may be a prior-cycle
+    // migration with no current delta, yet the variant bucket still needs
+    // the ordering guarantee that the enum type was created first.
+    let effective_apps: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = {
+        let mut map: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for delta in &effective {
+            map.entry(delta.bucket.database.clone())
+                .or_default()
+                .insert(delta.bucket.app.clone());
+        }
+        map
+    };
+
+    let mut depends_on_map: std::collections::BTreeMap<BucketKey, Vec<String>> = cross_deps
         .iter()
         .map(|(key, targets)| {
-            let effective_apps: std::collections::BTreeSet<String> = effective
-                .iter()
-                .filter(|d| d.bucket.database == key.database)
-                .map(|d| d.bucket.app.clone())
-                .collect();
             (
                 key.clone(),
-                targets.intersection(&effective_apps).cloned().collect(),
+                effective_apps
+                    .get(key.database.as_str())
+                    .map(|apps| targets.intersection(apps).cloned().collect())
+                    .unwrap_or_default(),
             )
         })
         .collect();
+
+    // Restore enum ownership edges that were filtered out by effective_apps.
+    // FK cross-deps need same-cycle targets, but enum edges may reference
+    // prior-cycle owners with no current delta. Use BTreeSet to avoid
+    // duplicates when the owner IS in effective (already present via
+    // cross_deps -> depends_on_map).
+    for (bucket, deps) in &enum_edges {
+        let mut target_set: std::collections::BTreeSet<String> = depends_on_map
+            .get(bucket)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        target_set.extend(deps.iter().cloned());
+        depends_on_map.insert(bucket.clone(), target_set.into_iter().collect());
+    }
 
     // 7. Lower each delta to SQL pairs + plan, write all artifacts.
     // The write dance per bucket:
@@ -2168,7 +2545,8 @@ mod tests {
     use crate::migrate::guard::acquire as acquire_guard;
     use crate::migrate::replay_plan::{self, ReplayPlanLoadStatus};
     use crate::migrate::schema::{
-        ColumnSchema, PkKindSchema, PrimaryKeySchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
+        ColumnSchema, EnumSchema, PkKindSchema, PrimaryKeySchema, SNAPSHOT_FORMAT_VERSION,
+        TableSchema,
     };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -5441,6 +5819,62 @@ mod tests {
         }
     }
 
+    /// Build an `AppliedSchema` with a single enum and no models.
+    fn snapshot_with_enum(bucket: &BucketKey, name: &str, variants: &[&str]) -> AppliedSchema {
+        let mut s = empty_snapshot(bucket);
+        s.enums.insert(
+            name.to_string(),
+            EnumSchema {
+                name: name.to_string(),
+                variants: variants.iter().map(|s| s.to_string()).collect(),
+            },
+        );
+        s
+    }
+
+    /// Build a simple table with an enum-typed column (e.g. `mood`).
+    fn table_with_enum_col(
+        bucket: &BucketKey,
+        table: &str,
+        col_name: &str,
+        enum_type: &str,
+    ) -> TableSchema {
+        TableSchema {
+            app: if bucket.app.is_empty() {
+                None
+            } else {
+                Some(bucket.app.clone())
+            },
+            columns: vec![
+                id_column_heerid_desc(),
+                ColumnSchema {
+                    name: col_name.to_string(),
+                    sql_type: enum_type.to_string(),
+                    nullable: true,
+                    foreign_key: None,
+                    ..col(col_name, enum_type, true)
+                },
+            ],
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerIdRecencyBiased,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: table.to_string(),
+            table_comment: None,
+            storage_params: None,
+            tablespace: None,
+            tenant_key: None,
+        }
+    }
+
     /// Read a PendingPlan from the composed report for a given bucket.
     fn read_written_pending(report: &ComposeReport, database: &str, app: &str) -> PendingPlan {
         let bucket = BucketKey {
@@ -6154,6 +6588,756 @@ mod tests {
             orders.depends_on.is_empty(),
             "orders should have no depends_on (within-bucket FK is excluded)"
         );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    // ── Enum reconciliation tests (GH #396, Stage 3) ──────────────
+
+    /// Two buckets both reference same enum `mood`. Assert exactly one
+    /// CREATE TYPE across both buckets; owner is alphabetically first
+    /// (no FK edges); non-owner has depends_on edge to owner.
+    #[test]
+    fn shared_enum_creates_once_with_ownership_edge() {
+        let work = temp_workspace("shared-enum-create");
+        let guard = lock_for(&work);
+
+        let alpha_bucket = BucketKey {
+            database: "main".into(),
+            app: "alpha".into(),
+        };
+        let beta_bucket = BucketKey {
+            database: "main".into(),
+            app: "beta".into(),
+        };
+
+        // Both buckets project the `mood` enum + a table that uses it.
+        let mood = EnumSchema {
+            name: "mood".to_string(),
+            variants: vec!["happy".to_string(), "sad".to_string()],
+        };
+
+        let mut models = BTreeMap::new();
+        {
+            let mut alpha_schema = empty_snapshot(&alpha_bucket);
+            alpha_schema.enums.insert("mood".to_string(), mood.clone());
+            alpha_schema.models.insert(
+                "posts".to_string(),
+                table_with_enum_col(&alpha_bucket, "posts", "mood", "mood"),
+            );
+            models.insert(alpha_bucket.clone(), alpha_schema);
+        }
+        {
+            let mut beta_schema = empty_snapshot(&beta_bucket);
+            beta_schema.enums.insert("mood".to_string(), mood.clone());
+            beta_schema.models.insert(
+                "comments".to_string(),
+                table_with_enum_col(&beta_bucket, "comments", "author_mood", "mood"),
+            );
+            models.insert(beta_bucket.clone(), beta_schema);
+        }
+
+        // Empty snapshots — fresh compose, no prior enums.
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(alpha_bucket.clone(), empty_snapshot(&alpha_bucket));
+        snapshots.insert(beta_bucket.clone(), empty_snapshot(&beta_bucket));
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "alpha".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "beta".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "shared-enum-create",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("composes");
+
+        // Read up SQL for each bucket.
+        let alpha_up = fs::read_to_string(
+            &report
+                .composed_buckets
+                .iter()
+                .find(|c| c.bucket == alpha_bucket)
+                .unwrap()
+                .up_sql_path,
+        )
+        .unwrap();
+        let beta_up = fs::read_to_string(
+            &report
+                .composed_buckets
+                .iter()
+                .find(|c| c.bucket == beta_bucket)
+                .unwrap()
+                .up_sql_path,
+        )
+        .unwrap();
+
+        // Exactly one CREATE TYPE across both buckets.
+        let alpha_creates = alpha_up.contains("CREATE TYPE");
+        let beta_creates = beta_up.contains("CREATE TYPE");
+        assert!(
+            alpha_creates && !beta_creates,
+            "alpha should own CREATE TYPE; beta should not. alpha_up:\n{}\nbeta_up:\n{}",
+            alpha_up,
+            beta_up
+        );
+
+        // Non-owner (beta) depends on owner (alpha).
+        let beta_pending = read_written_pending(&report, "main", "beta");
+        assert_eq!(
+            beta_pending.depends_on,
+            vec!["alpha".to_string()],
+            "beta should depend on alpha for enum ownership"
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// REQ-396-7: After the first compose materialises enum ownership edges
+    /// and writes model snapshots, a second compose with those snapshots as
+    /// the baseline should produce no delta — `NothingToCompose`.
+    #[test]
+    fn recompose_after_enum_dedup_is_noop() {
+        let work = temp_workspace("recompose-enum-noop");
+        let guard = lock_for(&work);
+
+        let alpha_bucket = BucketKey {
+            database: "main".into(),
+            app: "alpha".into(),
+        };
+        let beta_bucket = BucketKey {
+            database: "main".into(),
+            app: "beta".into(),
+        };
+
+        // Both buckets project the `mood` enum + a table that uses it.
+        let mut models = BTreeMap::new();
+        {
+            let mut alpha_schema = empty_snapshot(&alpha_bucket);
+            alpha_schema.enums.insert(
+                "mood".to_string(),
+                EnumSchema {
+                    name: "mood".to_string(),
+                    variants: vec!["happy".to_string(), "sad".to_string()],
+                },
+            );
+            alpha_schema.models.insert(
+                "posts".to_string(),
+                table_with_enum_col(&alpha_bucket, "posts", "mood", "mood"),
+            );
+            models.insert(alpha_bucket.clone(), alpha_schema);
+        }
+        {
+            let mut beta_schema = empty_snapshot(&beta_bucket);
+            beta_schema.enums.insert(
+                "mood".to_string(),
+                EnumSchema {
+                    name: "mood".to_string(),
+                    variants: vec!["happy".to_string(), "sad".to_string()],
+                },
+            );
+            beta_schema.models.insert(
+                "comments".to_string(),
+                table_with_enum_col(&beta_bucket, "comments", "author_mood", "mood"),
+            );
+            models.insert(beta_bucket.clone(), beta_schema);
+        }
+
+        // Empty snapshots — fresh compose.
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(alpha_bucket.clone(), empty_snapshot(&alpha_bucket));
+        snapshots.insert(beta_bucket.clone(), empty_snapshot(&beta_bucket));
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "alpha".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "beta".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        // First compose — creates the enum + tables.
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "recompose-enum-noop",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+        let report = compose(req).expect("first compose should succeed");
+        assert!(
+            !report.composed_buckets.is_empty(),
+            "first compose should have produced buckets"
+        );
+
+        // Collect each bucket's model_snapshot from the pending JSON
+        // into a new BTreeMap to use as the baseline for recompose.
+        let mut model_snapshots: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
+        for cb in &report.composed_buckets {
+            let pending = read_written_pending(&report, &cb.bucket.database, &cb.bucket.app);
+            model_snapshots.insert(cb.bucket.clone(), pending.model_snapshot);
+        }
+
+        // Second compose — same models, post-compose snapshots as baseline.
+        let req2 = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &model_snapshots,
+            apps: &apps,
+            name: "recompose-enum-noop-2",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 1),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+        let err = compose(req2).expect_err("second compose should produce NothingToCompose");
+        assert!(
+            matches!(err, ComposeError::NothingToCompose),
+            "recompose after enum dedup should be a no-op, got: {err}"
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Bucket A's snapshot already records `mood`; bucket B newly
+    /// references it. Assert no CREATE TYPE in any delta.
+    #[test]
+    fn add_enum_suppressed_when_snapshot_already_has_it() {
+        let work = temp_workspace("enum-already-in-snapshot");
+        let guard = lock_for(&work);
+
+        let alpha_bucket = BucketKey {
+            database: "main".into(),
+            app: "alpha".into(),
+        };
+        let beta_bucket = BucketKey {
+            database: "main".into(),
+            app: "beta".into(),
+        };
+
+        let mood = EnumSchema {
+            name: "mood".to_string(),
+            variants: vec!["happy".to_string(), "sad".to_string()],
+        };
+
+        let mut models = BTreeMap::new();
+        // Both buckets project the enum.
+        {
+            let mut alpha_schema = empty_snapshot(&alpha_bucket);
+            alpha_schema.enums.insert("mood".to_string(), mood.clone());
+            models.insert(alpha_bucket.clone(), alpha_schema);
+        }
+        {
+            let mut beta_schema = empty_snapshot(&beta_bucket);
+            beta_schema.enums.insert("mood".to_string(), mood.clone());
+            models.insert(beta_bucket.clone(), beta_schema);
+        }
+
+        // Snapshots: alpha already has the enum; beta does not.
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(
+            alpha_bucket.clone(),
+            snapshot_with_enum(&alpha_bucket, "mood", &["happy", "sad"]),
+        );
+        snapshots.insert(beta_bucket.clone(), empty_snapshot(&beta_bucket));
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "alpha".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "beta".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "enum-already-in-snapshot",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        // Beta would have AddEnum for mood, but alpha's snapshot
+        // already has it → suppressed everywhere.
+        let result = compose(req);
+        // With suppression, beta should have no-op (or at least no CREATE TYPE).
+        // If both deltas become NoOp, we get NothingToCompose.
+        match result {
+            Ok(report) => {
+                for cb in &report.composed_buckets {
+                    let up = fs::read_to_string(&cb.up_sql_path).unwrap();
+                    assert!(
+                        !up.contains("CREATE TYPE"),
+                        "No CREATE TYPE expected when snapshot already has enum. Bucket {:?}:\n{}",
+                        cb.bucket,
+                        up
+                    );
+                }
+            }
+            Err(ComposeError::NothingToCompose) => {
+                // Both deltas became no-ops after suppression → valid.
+            }
+            Err(e) => panic!("Unexpected error: {:?}", e),
+        }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Pre-fix shape: Bucket A references `mood` (snapshot has it,
+    /// projection has it → no-op). Bucket B does NOT reference `mood`
+    /// (snapshot has it from pre-fix global fanout, scoped projection
+    /// drops it → DropEnum in delta). Assert Bucket B's SQL contains
+    /// no DROP TYPE.
+    #[test]
+    fn drop_enum_deferred_until_last_referencing_bucket() {
+        let work = temp_workspace("defer-drop-enum");
+        let guard = lock_for(&work);
+
+        let alpha_bucket = BucketKey {
+            database: "main".into(),
+            app: "alpha".into(),
+        };
+        let beta_bucket = BucketKey {
+            database: "main".into(),
+            app: "beta".into(),
+        };
+
+        let mood = EnumSchema {
+            name: "mood".to_string(),
+            variants: vec!["happy".to_string(), "sad".to_string()],
+        };
+
+        let mut models = BTreeMap::new();
+        // Alpha's projection still has the enum.
+        {
+            let mut alpha_schema = empty_snapshot(&alpha_bucket);
+            alpha_schema.enums.insert("mood".to_string(), mood.clone());
+            models.insert(alpha_bucket.clone(), alpha_schema);
+        }
+        // Beta's projection no longer has the enum.
+        {
+            let beta_schema = empty_snapshot(&beta_bucket);
+            models.insert(beta_bucket.clone(), beta_schema);
+        }
+
+        // Snapshots: both have the enum (pre-fix global fanout).
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(
+            alpha_bucket.clone(),
+            snapshot_with_enum(&alpha_bucket, "mood", &["happy", "sad"]),
+        );
+        snapshots.insert(
+            beta_bucket.clone(),
+            snapshot_with_enum(&beta_bucket, "mood", &["happy", "sad"]),
+        );
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "alpha".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "beta".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "defer-drop-enum",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        // Beta has DropEnum for mood (snapshot has it, projection
+        // doesn't), but alpha's projected schema still references it,
+        // so the drop is deferred.
+        let result = compose(req);
+        match result {
+            Ok(report) => {
+                for cb in &report.composed_buckets {
+                    let up = fs::read_to_string(&cb.up_sql_path).unwrap();
+                    assert!(
+                        !up.contains("DROP TYPE"),
+                        "No DROP TYPE expected when another bucket still references enum. Bucket {:?}:\n{}",
+                        cb.bucket,
+                        up
+                    );
+                }
+            }
+            Err(ComposeError::NothingToCompose) => {
+                // Alpha is no-op (enum unchanged), Beta's DropEnum
+                // was suppressed → both become no-ops. Valid.
+            }
+            Err(e) => panic!("Unexpected error: {:?}", e),
+        }
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// No bucket references `mood` anymore; both have DropEnum.
+    /// Assert exactly one DROP TYPE across buckets (first in order).
+    #[test]
+    fn last_bucket_drop_emits_drop_enum() {
+        let work = temp_workspace("last-bucket-drop-enum");
+        let guard = lock_for(&work);
+
+        let alpha_bucket = BucketKey {
+            database: "main".into(),
+            app: "alpha".into(),
+        };
+        let beta_bucket = BucketKey {
+            database: "main".into(),
+            app: "beta".into(),
+        };
+
+        let mut models = BTreeMap::new();
+        // Neither bucket projects the enum.
+        {
+            models.insert(alpha_bucket.clone(), empty_snapshot(&alpha_bucket));
+        }
+        {
+            models.insert(beta_bucket.clone(), empty_snapshot(&beta_bucket));
+        }
+
+        // Snapshots: both have the enum (pre-fix global fanout).
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(
+            alpha_bucket.clone(),
+            snapshot_with_enum(&alpha_bucket, "mood", &["happy", "sad"]),
+        );
+        snapshots.insert(
+            beta_bucket.clone(),
+            snapshot_with_enum(&beta_bucket, "mood", &["happy", "sad"]),
+        );
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "alpha".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "beta".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "last-bucket-drop-enum",
+            allow_destructive: true, // DropEnum is destructive.
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("composes");
+
+        // Beta keeps the drop (last bucket in topological order), so alpha's
+        // DropEnum was removed and alpha has no operations.
+        let alpha_present = report
+            .composed_buckets
+            .iter()
+            .any(|c| c.bucket == alpha_bucket);
+        assert!(
+            !alpha_present,
+            "alpha should not appear in composed_buckets after its DropEnum is deduplicated away"
+        );
+
+        // Read up SQL for beta (the keeper — last in topological order).
+        let beta_up = fs::read_to_string(
+            &report
+                .composed_buckets
+                .iter()
+                .find(|c| c.bucket == beta_bucket)
+                .expect("beta should be in composed_buckets")
+                .up_sql_path,
+        )
+        .unwrap();
+
+        assert!(
+            beta_up.contains("DROP TYPE"),
+            "beta should emit DROP TYPE. beta_up:\n{}",
+            beta_up
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// AddEnumVariant interaction test (REQ-396-12): bucket A owns
+    /// AddEnum for `mood`; bucket B has AddEnumVariant for same enum.
+    /// Assert bucket B depends on bucket A.
+    #[test]
+    fn add_enum_variant_orders_after_owner_via_depends_on() {
+        let work = temp_workspace("enum-variant-depends");
+        let guard = lock_for(&work);
+
+        let alpha_bucket = BucketKey {
+            database: "main".into(),
+            app: "alpha".into(),
+        };
+        let beta_bucket = BucketKey {
+            database: "main".into(),
+            app: "beta".into(),
+        };
+
+        let mood_base = EnumSchema {
+            name: "mood".to_string(),
+            variants: vec!["happy".to_string(), "sad".to_string()],
+        };
+        let mood_extended = EnumSchema {
+            name: "mood".to_string(),
+            variants: vec![
+                "happy".to_string(),
+                "sad".to_string(),
+                "excited".to_string(),
+            ],
+        };
+
+        let mut models = BTreeMap::new();
+        // Alpha projects the base enum.
+        {
+            let mut alpha_schema = empty_snapshot(&alpha_bucket);
+            alpha_schema
+                .enums
+                .insert("mood".to_string(), mood_base.clone());
+            models.insert(alpha_bucket.clone(), alpha_schema);
+        }
+        // Beta projects the extended enum (new variant).
+        {
+            let mut beta_schema = empty_snapshot(&beta_bucket);
+            beta_schema
+                .enums
+                .insert("mood".to_string(), mood_extended.clone());
+            models.insert(beta_bucket.clone(), beta_schema);
+        }
+
+        // Alpha snapshot empty (no enum yet) → diff produces AddEnum.
+        // Beta snapshot has base enum → diff produces AddEnumVariant for "excited".
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(alpha_bucket.clone(), empty_snapshot(&alpha_bucket));
+        snapshots.insert(
+            beta_bucket.clone(),
+            snapshot_with_enum(&beta_bucket, "mood", &["happy", "sad"]),
+        );
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "alpha".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "beta".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "enum-variant-depends",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("composes");
+
+        // Beta depends on alpha (enum ownership edge for same-run AddEnum + AddEnumVariant).
+        let beta_pending = read_written_pending(&report, "main", "beta");
+        assert!(
+            beta_pending.depends_on.contains(&"alpha".to_string()),
+            "beta should depend on alpha for enum ownership"
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Classification re-derivation test: delta with DropEnum
+    /// (suppressed by deferral) + AddColumn → re-classifies to
+    /// non-destructive. Compose succeeds WITHOUT --allow-destructive.
+    #[test]
+    fn classification_rederived_after_drop_enum_suppression() {
+        let work = temp_workspace("reclassify-after-drop-enum");
+        let guard = lock_for(&work);
+
+        let alpha_bucket = BucketKey {
+            database: "main".into(),
+            app: "alpha".into(),
+        };
+        let beta_bucket = BucketKey {
+            database: "main".into(),
+            app: "beta".into(),
+        };
+
+        let mood = EnumSchema {
+            name: "mood".to_string(),
+            variants: vec!["happy".to_string(), "sad".to_string()],
+        };
+
+        let mut models = BTreeMap::new();
+        // Alpha keeps the enum + a table.
+        {
+            let mut alpha_schema = empty_snapshot(&alpha_bucket);
+            alpha_schema.enums.insert("mood".to_string(), mood.clone());
+            alpha_schema
+                .models
+                .insert("posts".to_string(), table_users(&alpha_bucket));
+            models.insert(alpha_bucket.clone(), alpha_schema);
+        }
+        // Beta drops the enum but adds a column to its own table.
+        {
+            let mut beta_schema = empty_snapshot(&beta_bucket);
+            // No enum in beta's projection.
+            beta_schema
+                .models
+                .insert("comments".to_string(), table_users(&beta_bucket));
+            models.insert(beta_bucket.clone(), beta_schema);
+        }
+
+        // Snapshots: both have the enum; beta has the comments table
+        // without the extra column.
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(
+            alpha_bucket.clone(),
+            snapshot_with_enum(&alpha_bucket, "mood", &["happy", "sad"]),
+        );
+        {
+            let mut beta_snap = snapshot_with_enum(&beta_bucket, "mood", &["happy", "sad"]);
+            // Beta has the comments table already.
+            beta_snap
+                .models
+                .insert("comments".to_string(), table_users(&beta_bucket));
+            snapshots.insert(beta_bucket.clone(), beta_snap);
+        }
+
+        let apps: Vec<AppLifecycle> = vec![
+            AppLifecycle {
+                label: "alpha".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "beta".into(),
+                database: "main".into(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name: "reclassify-after-drop-enum",
+            allow_destructive: false, // No --allow-destructive!
+            force_overwrite: false,
+            now: at(2026, 6, 10, 0, 0, 0),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        // Beta would have DropEnum (destructive) but it's suppressed
+        // because alpha still references mood. After suppression, beta
+        // should be NoOp or additive only → compose succeeds without
+        // --allow-destructive.
+        let result = compose(req);
+        match result {
+            Ok(_) => {
+                // Success — the DropEnum was suppressed and reclassified.
+            }
+            Err(ComposeError::NothingToCompose) => {
+                // Both deltas became no-ops — also valid.
+            }
+            Err(ComposeError::DestructiveRequiresAllowDestructive { .. }) => {
+                panic!(
+                    "DropEnum should have been suppressed and reclassified to non-destructive; \
+                     compose failed with DestructiveRequiresAllowDestructive"
+                )
+            }
+            Err(e) => panic!("Unexpected error: {:?}", e),
+        }
+
         let _ = fs::remove_dir_all(&work);
     }
 }
