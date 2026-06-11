@@ -50,7 +50,9 @@ cargo expand -p djogi-macros
 # Macro fixture gate — lihaaf (currently 345 fixtures: 340 default + 4 spatial + 1 network)
 cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 4
 
-# Raw-SQL bypass fixture gate — lihaaf (currently 49 fixtures: 46 default + 3 spatial)
+# djogi-runtime fixture gate — raw-SQL bypass + typed-query misuse
+# - Runtime enforcement fixtures and typed-query API misuse checks live here
+# - Macro emission fixtures still live in djogi-macros/Cargo.toml
 cargo lihaaf --manifest-path djogi/Cargo.toml -j 4
 
 # Re-bless lihaaf compile_fail snapshots after diagnostic changes

@@ -288,9 +288,9 @@ error[E0599]: the method `eq` exists for struct `DjogiField<ActiveVehicle, std::
             `DjogiField<ActiveVehicle, std::string::String>: Iterator`
             which is required by `&mut DjogiField<ActiveVehicle, std::string::String>: Iterator`
 note: the trait `djogi::model::Model` must be implemented
-   --> djogi/src/model.rs:121:1
+   --> djogi/src/model.rs:126:1
     |
-121 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -311,9 +311,9 @@ error[E0599]: the method `neq` exists for struct `DjogiField<ActiveVehicle, std:
     = note: the following trait bounds were not satisfied:
             `ActiveVehicle: djogi::model::Model`
 note: the trait `djogi::model::Model` must be implemented
-   --> djogi/src/model.rs:121:1
+   --> djogi/src/model.rs:126:1
     |
-121 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -334,9 +334,9 @@ error[E0599]: the method `in_` exists for struct `DjogiField<ActiveVehicle, std:
     = note: the following trait bounds were not satisfied:
             `ActiveVehicle: djogi::model::Model`
 note: the trait `djogi::model::Model` must be implemented
-   --> djogi/src/model.rs:121:1
+   --> djogi/src/model.rs:126:1
     |
-121 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -357,9 +357,9 @@ error[E0599]: the method `not_in` exists for struct `DjogiField<ActiveVehicle, s
     = note: the following trait bounds were not satisfied:
             `ActiveVehicle: djogi::model::Model`
 note: the trait `djogi::model::Model` must be implemented
-   --> djogi/src/model.rs:121:1
+   --> djogi/src/model.rs:126:1
     |
-121 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -387,9 +387,9 @@ error[E0599]: the method `eq` exists for struct `DjogiField<ActiveVehicle, bool>
             `DjogiField<ActiveVehicle, bool>: Iterator`
             which is required by `&mut DjogiField<ActiveVehicle, bool>: Iterator`
 note: the trait `djogi::model::Model` must be implemented
-   --> djogi/src/model.rs:121:1
+   --> djogi/src/model.rs:126:1
     |
-121 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -410,9 +410,9 @@ error[E0599]: the method `neq` exists for struct `DjogiField<ActiveVehicle, bool
     = note: the following trait bounds were not satisfied:
             `ActiveVehicle: djogi::model::Model`
 note: the trait `djogi::model::Model` must be implemented
-   --> djogi/src/model.rs:121:1
+   --> djogi/src/model.rs:126:1
     |
-121 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -433,9 +433,9 @@ error[E0599]: the method `in_` exists for struct `DjogiField<ActiveVehicle, bool
     = note: the following trait bounds were not satisfied:
             `ActiveVehicle: djogi::model::Model`
 note: the trait `djogi::model::Model` must be implemented
-   --> djogi/src/model.rs:121:1
+   --> djogi/src/model.rs:126:1
     |
-121 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -456,9 +456,9 @@ error[E0599]: the method `not_in` exists for struct `DjogiField<ActiveVehicle, b
     = note: the following trait bounds were not satisfied:
             `ActiveVehicle: djogi::model::Model`
 note: the trait `djogi::model::Model` must be implemented
-   --> djogi/src/model.rs:121:1
+   --> djogi/src/model.rs:126:1
     |
-121 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 

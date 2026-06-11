@@ -238,7 +238,7 @@ Phase 1 maps these Rust types to SQL column types:
 
 | Rust type | SQL type | Notes |
 |---|---|---|
-| `String` | `TEXT` | |
+| `String` | `TEXT` | Use this for dynamic text fields. For app-owned finite sets, prefer `DjogiEnum` instead (see [Enums](./enums.md)). |
 | `i16`, `i32`, `i64` | `SMALLINT`, `INTEGER`, `BIGINT` | |
 | `f32`, `f64` | `REAL`, `DOUBLE PRECISION` | |
 | `bool` | `BOOLEAN` | |
@@ -263,6 +263,15 @@ Phase 1 maps these Rust types to SQL column types:
 | `Option<T>` | nullable | wraps any of the above |
 
 For relation field types like `ForeignKey<T>` and `OneToOneField<T>`, see the [relations guide](./relations.md).
+
+### Closed-set enums in models
+
+For app-owned finite sets like status, category, or type fields, choose
+`DjogiEnum` over `String` by default. `DjogiEnum` keeps variant coverage
+in migration descriptors and rejects unknown values at decode boundaries.
+
+`String` remains the escape hatch when the value set is external or truly
+unbounded.
 
 ### Postgres typed surface
 

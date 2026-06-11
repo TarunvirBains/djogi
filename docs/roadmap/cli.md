@@ -319,18 +319,18 @@ Database reset complete. Schema at version 0003.
 
 | Flag | Description |
 |---|---|
-| `--seed` | Run `seeds.rhai` after migrations complete |
 | `--wipe-crud-logs` | Also drop and recreate the CRUD log database |
 | `--wipe-all-logs` | Also drop and recreate both log databases |
 
 ```bash
-djogi db reset --seed
+djogi db reset --single-node-dev --yes
+djogi db seed
 # planned: djogi db reset --wipe-crud-logs
 ```
 
 ### `djogi db seed`
 
-Runs `seeds.rhai` against the existing database without dropping or migrating. The seed script runs inside a transaction — if any step fails, the entire seed is rolled back.
+Runs operator-authored SQL seed files in `seeds/<database>/*.sql` alphabetically against the existing database without dropping or migrating. The runner takes a per-database advisory lock, records each seed run in the `djogi_seed_runs` ledger, and skips files whose `V1:<sha256>` checksum already matches an `applied` row.
 
 ```bash
 djogi db seed
@@ -531,7 +531,7 @@ Creating my-project/
   my-project/docker-compose.yml
   my-project/src/main.rs
   my-project/src/apps/mod.rs
-  my-project/seeds.rhai
+  my-project/seeds/my_project/
   my-project/.gitignore
   my-project/migrations/  (git submodule initialized)
 
@@ -539,7 +539,8 @@ Project created. Next steps:
   cd my-project
   docker compose up -d
   export DATABASE_URL="postgres://djogi:djogi@localhost/my_project"
-  djogi db reset --single-node-dev --seed
+  djogi db reset --single-node-dev --yes
+  djogi db seed --database my_project
 ```
 
 ### `djogi init`

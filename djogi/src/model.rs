@@ -50,9 +50,11 @@ use std::future::Future;
 /// `Model` impl. The module is `#[doc(hidden)] pub` because `djogi-macros`
 /// emits a cross-crate path through it; the `__` prefix plus the
 /// seal-marker doc comment are the social signal that downstream code
-/// must never reach into it directly. The threat model defends against
-/// accidental hand-impls, not deliberate framework subversion (which
-/// has simpler routes via `unsafe`).
+/// must never reach into it directly. This is social sealing, not a hard
+/// visibility boundary: a determined downstream crate can still create
+/// equivalent types to bypass convention.
+/// The threat model defends against accidental hand-impls, not deliberate
+/// framework subversion (which has simpler routes via `unsafe`).
 #[doc(hidden)]
 pub mod __sealed {
     pub trait Sealed {}
@@ -115,9 +117,12 @@ pub mod __sealed {
 /// Every `Model` method composes through emitter sites that trust
 /// `Self::table_name()` and `Self::descriptor().fields[].name` to be
 /// well-formed identifiers. A hand-rolled `impl Model` could smuggle hostile
-/// strings into those positions; the seal removes that route entirely.
+/// strings into those positions; the seal removes that route.
 /// Threat model: defends against accidental hand-impls, not deliberate
-/// framework subversion (which has simpler routes via `unsafe`).
+/// framework subversion (which has simpler routes via `unsafe`). These
+/// `__djogi_` hooks are socially sealed: overriding them through
+/// unsupported channels is an explicit tradeoff and may violate cache
+/// invalidation guarantees.
 pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// Primary key Rust type.
     /// - `pk = HeerIdRecencyBiased` (default) → `HeerIdDesc`
