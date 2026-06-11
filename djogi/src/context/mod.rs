@@ -371,10 +371,8 @@ impl DjogiContext {
     }
 
     /// Return true when this context owns an active transaction connection.
-    /// Currently unused by the bypass harness (which uses `conn().is_some()`),
-    /// but available for future integration layers that need a cheap check
-    /// without taking a mutable reference.
-    #[allow(dead_code)] // Available for future use; bypass harness uses conn().is_some()
+    /// Used internally and by macro-generated helpers to avoid repeating
+    /// transaction variant matching logic.
     pub(crate) fn is_transaction_backed(&self) -> bool {
         matches!(&self.inner, ContextInner::Transaction(_))
     }
@@ -405,7 +403,7 @@ impl DjogiContext {
     /// whether to collect affected primary keys for deferred invalidation.
     #[doc(hidden)]
     pub fn __djogi_is_transaction_backed_for_macros(&self) -> bool {
-        matches!(&self.inner, ContextInner::Transaction(_))
+        self.is_transaction_backed()
     }
 
     // -------------------------------------------------------------------------
