@@ -606,23 +606,25 @@ fn compose_with_inputs(
             // signals out-of-sync state via exit code.
             ExitCode::from(0)
         }
-        Err(ComposeError::LinkageDropWithoutModels { ref text, .. }) => {
-            eprintln!("djogi migrations compose: {text}");
-            // Exit 2 — refusal: models must be compiled in before dropping app linkage.
-            ExitCode::from(2)
-        }
-        Err(e @ ComposeError::CrossBucketForeignKeyCycle { .. }) => {
-            eprintln!("djogi migrations compose: {e}");
-            // Exit 2 — operator-actionable refusal: the operator resolves the
-            // cycle (merge the apps or drop one FK direction). A blind retry
-            // would refuse identically, so this is exit 2, not the exit-1
-            // unexpected-error catch-all below.
-            ExitCode::from(2)
-        }
         Err(e) => {
             eprintln!("djogi migrations compose: {e}");
-            ExitCode::from(1)
+            ExitCode::from(compose_error_exit_code(&e) as u8)
         }
+    }
+}
+
+/// Map a [`ComposeError`] to an exit code for compose command handling.
+fn compose_error_exit_code(error: &ComposeError) -> i32 {
+    match error {
+        ComposeError::DestructiveRequiresAllowDestructive { .. }
+        | ComposeError::TombstonedAppRequiresAllowDestructive { .. }
+        | ComposeError::UnsupportedDelta { .. }
+        | ComposeError::HandEditedMigrationWouldBeOverwritten { .. }
+        | ComposeError::PendingJsonWouldBeOverwritten { .. }
+        | ComposeError::FolderRenameTargetCollision { .. }
+        | ComposeError::LinkageDropWithoutModels { .. }
+        | ComposeError::CrossBucketForeignKeyCycle { .. } => 2,
+        _ => 1,
     }
 }
 
@@ -5073,6 +5075,87 @@ mod tests {
             "a cross-bucket FK cycle must exit 2 (operator-actionable refusal), not 1"
         );
         let _ = fs::remove_dir_all(&work);
+    }
+
+    /// All operator-actionable compose refusals should map to exit code
+    /// `2`; these are conditions the operator must fix and rerun.
+    #[test]
+    fn u4_compose_refusal_variants_map_to_exit_code_two() {
+        use djogi::migrate::{BucketKey, Classification, ComposeError};
+
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: "billing".to_string(),
+        };
+
+        let cases = [
+            ComposeError::TombstonedAppRequiresAllowDestructive {
+                app_label: "billing".to_string(),
+                database: "main".to_string(),
+                text: "D011: tombstoned app".to_string(),
+            },
+            ComposeError::DestructiveRequiresAllowDestructive {
+                bucket: bucket.clone(),
+                classification: Classification::Lossy,
+            },
+            ComposeError::UnsupportedDelta {
+                bucket: bucket.clone(),
+                reason: "unsupported transition".to_string(),
+            },
+            ComposeError::HandEditedMigrationWouldBeOverwritten {
+                bucket: bucket.clone(),
+                path: std::path::PathBuf::from("/tmp/example.sdjql"),
+                text: "D013: hand-edited migration would be overwritten".to_string(),
+            },
+            ComposeError::PendingJsonWouldBeOverwritten {
+                path: std::path::PathBuf::from("/tmp/example.pending"),
+                text: "pending json mismatch".to_string(),
+            },
+            ComposeError::FolderRenameTargetCollision {
+                from: std::path::PathBuf::from("/tmp/old"),
+                to: std::path::PathBuf::from("/tmp/new"),
+                offending_entry: "users.sdjql".to_string(),
+            },
+            ComposeError::LinkageDropWithoutModels {
+                app_label: "billing".to_string(),
+                database: "main".to_string(),
+                text: "D010: linkage drop without models".to_string(),
+            },
+            ComposeError::CrossBucketForeignKeyCycle {
+                database: "main".to_string(),
+                chain: vec!["a".to_string(), "b".to_string()],
+            },
+        ];
+
+        for case in &cases {
+            assert_eq!(
+                compose_error_exit_code(case),
+                2,
+                "compose refusal variant must map to exit 2: {case}"
+            );
+        }
+    }
+
+    /// Non-refusal `ComposeError` variants remain exit code `1`
+    /// so CI can treat them as retryable infra/runtime issues.
+    #[test]
+    fn u4_compose_runtime_variants_map_to_exit_code_one() {
+        use djogi::migrate::ComposeError;
+
+        let cases = [
+            ComposeError::Io {
+                path: std::path::PathBuf::from("/tmp/io-failure"),
+                source: std::io::Error::other("io failure"),
+            },
+        ];
+
+        for case in &cases {
+            assert_eq!(
+                compose_error_exit_code(case),
+                1,
+                "compose runtime variant must map to exit 1: {case}"
+            );
+        }
     }
 
     /// `status_cmd` invokes its tokio runtime and

@@ -68,6 +68,22 @@ Three-way match logic, run per `(target, app)` pair. Pending ingestion is kind-a
 4. if `target/djogi_models.json` is missing, skip the model-vs-* legs silently but still classify pending-vs-snapshot so composed-not-applied surfaces truthfully
 5. if `target/djogi_models.json` is present but malformed, emit one loud warning naming the file/cause, then degrade to the same reduced pending-vs-snapshot path
 
+Compose exit-code contract:
+
+- `0` — success or `NothingToCompose` (no delta found for any bucket).
+- `1` — runtime failure (snapshot load failure after guard passes, emit failure, I/O failure, differential failure, checksum serialization failure, phase-zero auto-emit failure, etc.).
+- `2` — operator-actionable refusal requiring manual follow-up before re-run.
+
+`2` currently applies to:
+
+- `ComposeError::LinkageDropWithoutModels`
+- `ComposeError::TombstonedAppRequiresAllowDestructive`
+- `ComposeError::DestructiveRequiresAllowDestructive`
+- `ComposeError::UnsupportedDelta`
+- `ComposeError::HandEditedMigrationWouldBeOverwritten`
+- `ComposeError::PendingJsonWouldBeOverwritten`
+- `ComposeError::FolderRenameTargetCollision`
+
 Example build warning:
 
 ```text
