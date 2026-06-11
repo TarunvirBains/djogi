@@ -4107,6 +4107,7 @@ mod tests {
     fn default_col() -> djogi::migrate::ColumnSchema {
         djogi::migrate::ColumnSchema {
             check: None,
+            codec: None,
             comment: None,
             default_sql: None,
             foreign_key: None,
