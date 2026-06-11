@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use djogi::migrate::{AppliedSchema, PendingPlan, SNAPSHOT_FORMAT_VERSION};
+use djogi::migrate::{AppliedSchema, PENDING_FORMAT_VERSION, PendingPlan, SNAPSHOT_FORMAT_VERSION};
 
 #[allow(dead_code)]
 #[path = "../../djogi/build.rs"]
@@ -40,7 +40,14 @@ fn write_pending(
     version: &str,
     snapshot: &AppliedSchema,
 ) {
-    write_pending_with_format_version(path, database, app, version, snapshot, "1");
+    write_pending_with_format_version(
+        path,
+        database,
+        app,
+        version,
+        snapshot,
+        PENDING_FORMAT_VERSION,
+    );
 }
 
 fn write_pending_with_format_version(
