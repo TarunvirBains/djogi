@@ -223,6 +223,7 @@ impl Drop for WriteRollback {
 
 /// Errors surfaced by [`compose`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ComposeError {
     /// The differ produced an empty operation list for every bucket
     /// nothing to compose. Distinct from a successful no-op so the
@@ -341,8 +342,8 @@ pub enum ComposeError {
     /// Foreign keys between app buckets form a cycle — no bucket apply
     /// order can satisfy them. Automatic cycle-breaking is out of scope;
     /// the operator moves the mutually-referencing models into one app,
-    /// or removes one direction of the reference (future: declared
-    /// hierarchy via #399).
+    /// or removes one direction of the reference. See #399 for
+    /// operator-declared resolution design.
     CrossBucketForeignKeyCycle {
         database: String,
         chain: Vec<String>,
@@ -606,12 +607,28 @@ pub enum PendingLoadError {
     /// `format_version` mismatch — declared version doesn't match
     /// [`PENDING_FORMAT_VERSION`]. Caught by the peek BEFORE
     /// structural deserialize so the operator gets an actionable
-    /// upgrade message instead of a `deny_unknown_fields` shower.
+    /// recovery message instead of a `deny_unknown_fields` shower.
     UnsupportedFormatVersion {
         found: String,
         expected: &'static str,
         path: Option<PathBuf>,
     },
+}
+
+/// Direction-aware recovery hint for an UnsupportedFormatVersion message.
+/// Numeric comparison so the operator is told to recompose (stale) vs.
+/// upgrade djogi (future); non-numeric versions fall back to the generic
+/// upgrade hint without panicking.
+fn format_version_recovery_hint(found: &str, expected: &str) -> &'static str {
+    match (found.parse::<u64>().ok(), expected.parse::<u64>().ok()) {
+        (Some(f), Some(e)) if f < e => {
+            "re-run 'djogi migrations compose' to regenerate this pending file"
+        }
+        (Some(f), Some(e)) if f > e => {
+            "upgrade to a newer version of djogi (or check out a newer revision)"
+        }
+        _ => "upgrade or check out a newer djogi",
+    }
 }
 
 impl std::fmt::Display for PendingLoadError {
@@ -625,17 +642,20 @@ impl std::fmt::Display for PendingLoadError {
                 found,
                 expected,
                 path,
-            } => match path {
-                Some(p) => write!(
-                    f,
-                    "pending JSON format version '{found}' at {} is not supported by this Djogi (expected '{expected}'); upgrade or check out a newer djogi",
-                    p.display()
-                ),
-                None => write!(
-                    f,
-                    "pending JSON format version '{found}' is not supported by this Djogi (expected '{expected}'); upgrade or check out a newer djogi"
-                ),
-            },
+            } => {
+                let hint = format_version_recovery_hint(found, expected);
+                match path {
+                    Some(p) => write!(
+                        f,
+                        "pending JSON format version '{found}' at {} is not supported by this Djogi (expected '{expected}'); {hint}",
+                        p.display()
+                    ),
+                    None => write!(
+                        f,
+                        "pending JSON format version '{found}' is not supported by this Djogi (expected '{expected}'); {hint}"
+                    ),
+                }
+            }
         }
     }
 }
@@ -3389,6 +3409,62 @@ mod tests {
         assert!(
             matches!(err, PendingLoadError::UnsupportedFormatVersion { .. }),
             "expected the actionable upgrade error, got {err:?}"
+        );
+    }
+
+    /// A stale pending file (numeric `found` below the expected version)
+    /// must tell the operator to recompose — the file was produced by an
+    /// older djogi and the current binary can regenerate it.
+    #[test]
+    fn unsupported_format_version_display_stale_says_recompose() {
+        let err = PendingLoadError::UnsupportedFormatVersion {
+            found: "1".to_string(),
+            expected: PENDING_FORMAT_VERSION,
+            path: None,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.ends_with("; re-run 'djogi migrations compose' to regenerate this pending file"),
+            "stale must end with '; <recompose phrase>': {msg}"
+        );
+    }
+
+    /// A future pending file (numeric `found` above the expected version)
+    /// must tell the operator to upgrade djogi — recomposing with the
+    /// current binary would only downgrade the file. The path-bearing arm
+    /// must still name the offending file.
+    #[test]
+    fn unsupported_format_version_display_future_says_upgrade() {
+        let err = PendingLoadError::UnsupportedFormatVersion {
+            found: "3".to_string(),
+            expected: PENDING_FORMAT_VERSION,
+            path: Some(std::path::PathBuf::from("migrations/main/_global_/V.json")),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.ends_with("; upgrade to a newer version of djogi (or check out a newer revision)"),
+            "future must end with '; <upgrade phrase>': {msg}"
+        );
+        assert!(
+            msg.contains("migrations/main/_global_/V.json"),
+            "path arm must still name the file: {msg}"
+        );
+    }
+
+    /// A non-numeric `found` (e.g. a hand-edited `v2-beta`) cannot be
+    /// ordered against the expected version, so the message falls back to
+    /// the generic upgrade hint rather than panicking on the parse.
+    #[test]
+    fn unsupported_format_version_display_non_numeric_fallback() {
+        let err = PendingLoadError::UnsupportedFormatVersion {
+            found: "v2-beta".to_string(),
+            expected: PENDING_FORMAT_VERSION,
+            path: None,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.ends_with("; upgrade or check out a newer djogi"),
+            "non-numeric must end with '; <fallback phrase>': {msg}"
         );
     }
 

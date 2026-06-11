@@ -600,6 +600,14 @@ fn compose_with_inputs(
             // Exit 2 — refusal: models must be compiled in before dropping app linkage.
             ExitCode::from(2)
         }
+        Err(e @ ComposeError::CrossBucketForeignKeyCycle { .. }) => {
+            eprintln!("djogi migrations compose: {e}");
+            // Exit 2 — operator-actionable refusal: the operator resolves the
+            // cycle (merge the apps or drop one FK direction). A blind retry
+            // would refuse identically, so this is exit 2, not the exit-1
+            // unexpected-error catch-all below.
+            ExitCode::from(2)
+        }
         Err(e) => {
             eprintln!("djogi migrations compose: {e}");
             ExitCode::from(1)
@@ -1343,6 +1351,23 @@ fn order_pending_groups_by_dependencies(
             && out[j].is_phase_zero == out[i].is_phase_zero
         {
             j += 1;
+        }
+
+        // Validate depends_on labels for all entries in this group before
+        // any topo-sort (including the singleton fast-path that bypasses it).
+        // Discovery validates pending *filenames*, but depends_on labels live
+        // inside the pending JSON and are otherwise unchecked — a hand-edited
+        // or corrupted label (path traversal, whitespace) would slip through
+        // the singleton fast-path silently.
+        for entry in &out[i..j] {
+            for dep_app in &entry.plan.depends_on {
+                if !is_acceptable_pending_path_component(dep_app.as_bytes()) {
+                    return Err(format!(
+                        "pending plan for {}/{} has invalid depends_on label {:?}",
+                        entry.bucket.database, entry.bucket.app, dep_app,
+                    ));
+                }
+            }
         }
 
         // Process the group [i..j)
@@ -3790,6 +3815,60 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
+    /// A singleton pending group whose `depends_on` carries a label that
+    /// fails `is_acceptable_pending_path_component` must be refused. The
+    /// singleton fast-path bypasses the topo-sort, so without the
+    /// pre-fast-path validation loop a hand-edited or corrupted label
+    /// (path traversal, embedded whitespace) would slip through silently.
+    /// Drives `order_pending_groups_by_dependencies` directly because the
+    /// invalid label lives inside the pending JSON, not in the filename
+    /// that discovery already validates.
+    #[test]
+    fn single_bucket_with_invalid_depends_on_is_refused() {
+        let make_singleton = |dep: &str| -> Vec<DiscoveredPendingPlan> {
+            let plan = PendingPlan {
+                format_version: djogi::migrate::PENDING_FORMAT_VERSION.to_string(),
+                bucket_database: "main".to_string(),
+                bucket_app: "system".to_string(),
+                version: "V20260609000000__initial".to_string(),
+                slug: "test".to_string(),
+                model_snapshot: djogi::migrate::AppliedSchema {
+                    djogi_version: "0.1.0".to_string(),
+                    enums: std::collections::BTreeMap::new(),
+                    format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+                    generated_at: "2026-06-09T00:00:00Z".to_string(),
+                    indexes: Vec::new(),
+                    models: std::collections::BTreeMap::new(),
+                    registered_apps: vec!["system".to_string()],
+                },
+                checksum_up: "V1:".to_string() + &"a".repeat(64),
+                checksum_down: None,
+                composed_at: "2026-06-09T00:00:00Z".to_string(),
+                depends_on: vec![dep.to_string()],
+            };
+            vec![DiscoveredPendingPlan {
+                path: PathBuf::from("target/djogi_pending/main/system.json"),
+                bucket: BucketKey {
+                    database: "main".to_string(),
+                    app: "system".to_string(),
+                },
+                plan,
+                is_phase_zero: false,
+            }]
+        };
+
+        for bad_label in ["../traversal", "has space"] {
+            let err = order_pending_groups_by_dependencies(make_singleton(bad_label))
+                .expect_err("invalid singleton depends_on label must be refused");
+            assert!(
+                err.contains("invalid depends_on label")
+                    && err.contains("main")
+                    && err.contains("system"),
+                "[{bad_label}] error must name database, app, and the invalid label: {err}"
+            );
+        }
+    }
+
     /// End-to-end test: two buckets, same version, `system.event_log`
     /// FK→`users.users`, composed and applied through real Postgres.
     /// Asserts both tables exist, the FK constraint exists in pg_constraint,
@@ -4526,6 +4605,127 @@ mod tests {
             "compose must have seen the disk snapshot and emitted DROP TABLE — \
              this proves discover_snapshot_buckets_on_disk reached the differ. \
              SQL: {up_sql}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// A cross-bucket foreign-key cycle surfaced by `compose` must map to
+    /// exit code 2 through `compose_with_inputs` — an operator-actionable
+    /// refusal, not the exit-1 unexpected-error catch-all. The cycle is
+    /// injected at the model level: app `a`'s table references app `b`'s
+    /// table and vice versa, so no slice apply order satisfies both FKs
+    /// and `compose` returns
+    /// [`ComposeError::CrossBucketForeignKeyCycle`]. Before the dedicated
+    /// arm was added this fell through to the catch-all and exited 1.
+    #[test]
+    fn compose_cycle_exits_with_code_two() {
+        use djogi::migrate::projection::BucketKey;
+        use djogi::migrate::schema::{
+            AppliedSchema, ColumnSchema, ForeignKeySchema, OnDeleteSchema, PkKindSchema,
+            PrimaryKeySchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
+        };
+        use std::collections::BTreeMap;
+
+        let work = temp_workspace("compose_cycle_exit_two");
+
+        // A column that foreign-keys to `target_table.id`.
+        let fk_col = |name: &str, target_table: &str| -> ColumnSchema {
+            ColumnSchema {
+                name: name.to_string(),
+                sql_type: "BIGINT".to_string(),
+                foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
+                    on_delete: OnDeleteSchema::Restrict,
+                    ref_column: "id".to_string(),
+                    ref_table: target_table.to_string(),
+                }),
+                ..default_col()
+            }
+        };
+
+        // A table with a HeerId PK `id` column and one FK column.
+        let table_with_fk =
+            |app: &str, table: &str, fk_name: &str, fk_target: &str| -> TableSchema {
+                let id_col = ColumnSchema {
+                    name: "id".to_string(),
+                    sql_type: "BIGINT".to_string(),
+                    default_sql: Some("heerid_next_desc()".to_string()),
+                    ..default_col()
+                };
+                TableSchema {
+                    app: Some(app.to_string()),
+                    columns: vec![id_col, fk_col(fk_name, fk_target)],
+                    primary_key: PrimaryKeySchema {
+                        columns: vec!["id".to_string()],
+                        kind: PkKindSchema::HeerIdRecencyBiased,
+                    },
+                    table: table.to_string(),
+                    ..default_table()
+                }
+            };
+
+        let schema_for =
+            |app: &str, table: &str, fk_name: &str, fk_target: &str| -> AppliedSchema {
+                let mut models = BTreeMap::new();
+                models.insert(
+                    table.to_string(),
+                    table_with_fk(app, table, fk_name, fk_target),
+                );
+                AppliedSchema {
+                    djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                    enums: BTreeMap::new(),
+                    format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+                    generated_at: "2026-06-10T00:00:00Z".to_string(),
+                    indexes: Vec::new(),
+                    models,
+                    registered_apps: vec![app.to_string()],
+                }
+            };
+
+        let a_bucket = BucketKey {
+            database: "main".into(),
+            app: "a".into(),
+        };
+        let b_bucket = BucketKey {
+            database: "main".into(),
+            app: "b".into(),
+        };
+
+        // a.table_a.b_id → b.table_b ; b.table_b.a_id → a.table_a (cycle).
+        let mut models: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
+        models.insert(a_bucket, schema_for("a", "table_a", "b_id", "table_b"));
+        models.insert(b_bucket, schema_for("b", "table_b", "a_id", "table_a"));
+
+        let now = time::OffsetDateTime::from_unix_timestamp(1_749_513_600).unwrap();
+        let exit = compose_with_inputs(
+            &work,
+            "cross-bucket cycle",
+            false, // allow_destructive — irrelevant; the cycle refuses first
+            false, // force_overwrite
+            &models,
+            &[
+                AppLifecycle {
+                    label: "a".to_string(),
+                    database: "main".to_string(),
+                    renamed_from: None,
+                    tombstone: false,
+                },
+                AppLifecycle {
+                    label: "b".to_string(),
+                    database: "main".to_string(),
+                    renamed_from: None,
+                    tombstone: false,
+                },
+            ],
+            now,
+            None, // pk_flip_join_table_option — no flip in this test
+        );
+
+        assert_eq!(
+            exit,
+            ExitCode::from(2),
+            "a cross-bucket FK cycle must exit 2 (operator-actionable refusal), not 1"
         );
         let _ = fs::remove_dir_all(&work);
     }

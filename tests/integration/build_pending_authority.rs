@@ -505,6 +505,66 @@ fn build_collect_diagnostics_reports_normal_global_format_version_identity() {
     let _ = fs::remove_dir_all(&work);
 }
 
+/// A stale (`found < expected`) pending file must make the build
+/// diagnostic tell the operator to recompose, matching the recompose
+/// phrase the library's `PendingLoadError` Display produces.
+/// `PENDING_FORMAT_VERSION` is `"2"`; `found = "1"` is the stale case.
+#[test]
+fn build_collect_diagnostics_stale_format_version_says_recompose() {
+    let work = temp_workspace("stale_format_version_recompose");
+    let pending_path = work.join("target/djogi_pending/main/_global_.json");
+    write_pending_with_format_version(
+        &pending_path,
+        "main",
+        "",
+        "V20260606010101__normal_global",
+        &schema("pending"),
+        "1",
+    );
+    let diagnostics = build_script::collect_diagnostics(&work);
+    let texts = diagnostic_texts(&diagnostics);
+    assert!(
+        texts.iter().any(|text| {
+            text.contains("pending JSON format version '1'")
+                && text.ends_with(
+                    "; re-run 'djogi migrations compose' to regenerate this pending file",
+                )
+        }),
+        "stale build diagnostic must end with '; <recompose phrase>': {texts:?}"
+    );
+    let _ = fs::remove_dir_all(&work);
+}
+
+/// A future (`found > expected`) pending file must make the build
+/// diagnostic tell the operator to upgrade djogi, matching the upgrade
+/// phrase the library's `PendingLoadError` Display produces.
+/// `PENDING_FORMAT_VERSION` is `"2"`; `found = "3"` is the future case.
+#[test]
+fn build_collect_diagnostics_future_format_version_says_upgrade() {
+    let work = temp_workspace("future_format_version_upgrade");
+    let pending_path = work.join("target/djogi_pending/main/_global_.json");
+    write_pending_with_format_version(
+        &pending_path,
+        "main",
+        "",
+        "V20260606010101__normal_global",
+        &schema("pending"),
+        "3",
+    );
+    let diagnostics = build_script::collect_diagnostics(&work);
+    let texts = diagnostic_texts(&diagnostics);
+    assert!(
+        texts.iter().any(|text| {
+            text.contains("pending JSON format version '3'")
+                && text.ends_with(
+                    "; upgrade to a newer version of djogi (or check out a newer revision)",
+                )
+        }),
+        "future build diagnostic must end with '; <upgrade phrase>': {texts:?}"
+    );
+    let _ = fs::remove_dir_all(&work);
+}
+
 #[test]
 fn build_collect_diagnostics_rejects_normal_global_phase_zero_pending() {
     let work = temp_workspace("normal_global_phase_zero");
