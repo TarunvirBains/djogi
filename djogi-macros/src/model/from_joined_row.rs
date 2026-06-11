@@ -61,7 +61,8 @@ pub fn expand(
                 None // Framework fields have no codec.
             } else {
                 let fa_idx = idx - n_framework;
-                field_attrs.get(fa_idx)
+                field_attrs
+                    .get(fa_idx)
                     .and_then(|fa| fa.protected.as_ref().and_then(|p| p.codec.clone()))
                     .map(|codec_id| {
                         let col_name = crate::syn_util::column_name_from_field(field);
@@ -97,7 +98,8 @@ pub fn expand(
                     #col_name,
                 ) as &str
             };
-            let decode_expr = decode_joined_field_tokens(&kind, nullable, tracked, col_name_expr, codec);
+            let decode_expr =
+                decode_joined_field_tokens(&kind, nullable, tracked, col_name_expr, codec);
             quote! {
                 #fname: #decode_expr
             }

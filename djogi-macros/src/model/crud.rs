@@ -505,7 +505,9 @@ pub fn expand(
             let col_eq = format!("{col_str} = ");
             let kind = bind_kind(ty);
             let nullable = is_nullable(ty);
-            let codec = fa.protected.as_ref()
+            let codec = fa
+                .protected
+                .as_ref()
                 .and_then(|p| p.codec.clone())
                 .map(|codec_id| (codec_id, name.to_string(), col_str.clone()));
             if is_tracked(ty) {
@@ -2069,7 +2071,9 @@ pub fn expand(
                 let tracked = is_tracked_inner(ty);
                 let field_expr = quote! { row.#f };
                 let col_str = crate::syn_util::column_name_from_ident(f);
-                let codec = fa.protected.as_ref()
+                let codec = fa
+                    .protected
+                    .as_ref()
                     .and_then(|p| p.codec.clone())
                     .map(|codec_id| (codec_id, name.to_string(), col_str));
                 let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
@@ -2234,7 +2238,9 @@ pub fn expand(
                 let tracked = is_tracked_inner(ty);
                 let field_expr = quote! { row.#f };
                 let col_str = crate::syn_util::column_name_from_ident(f);
-                let codec = fa.protected.as_ref()
+                let codec = fa
+                    .protected
+                    .as_ref()
                     .and_then(|p| p.codec.clone())
                     .map(|codec_id| (codec_id, name.to_string(), col_str));
                 let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
@@ -2990,10 +2996,13 @@ pub fn expand(
                         let tracked = is_tracked_inner(ty);
                         let field_expr = quote! { row.#f };
                         let col_str = crate::syn_util::column_name_from_ident(f);
-                        let codec = fa.protected.as_ref()
+                        let codec = fa
+                            .protected
+                            .as_ref()
                             .and_then(|p| p.codec.clone())
                             .map(|codec_id| (codec_id, name.to_string(), col_str));
-                        let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
+                        let push_stmt =
+                            push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
                         quote! {
                             __acc.push_sql(", ");
                             #push_stmt;

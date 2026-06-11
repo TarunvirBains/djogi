@@ -131,8 +131,21 @@ djogi-macros = { path = "djogi-macros", version = "0.1.0-alpha.9" }
 # cryptographically secure nonce generation; `hex` is the wire-format encoder
 # for stored ciphertext payloads.
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
-getrandom = "0.3"
+# `std` is enabled so `getrandom::Error` implements `std::error::Error` — the
+# impl lives behind getrandom 0.3's `std` feature (off by default). The codec's
+# `CodecError::RngFailure` chains it as an error source, matching how the other
+# wrapped errors chain, so the feature is required (not merely nice-to-have).
+getrandom = { version = "0.3", features = ["std"] }
 hex = "0.4"
+
+# HKDF-SHA256 per-(model, field) subkey derivation for the AES-256-GCM
+# field codec. Pinned to the `digest 0.11` trait generation so
+# `Hkdf::<sha2::Sha256>` resolves against the workspace `sha2 = "0.11"`
+# baseline — hkdf 0.12 targets `digest 0.10` and will not compile here,
+# exactly as `hmac = "0.13"` is pinned for the same reason. `sha2` itself
+# is already always-on (snapshot HMAC signing uses it), so the codec's
+# `sha2::Sha256` use needs no second optional declaration.
+hkdf = "0.13"
 
 # Testing — serial test execution for integration tests that share mutable state
 # (e.g., a single Postgres database). Prevents flaky race conditions when

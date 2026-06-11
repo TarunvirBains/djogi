@@ -125,10 +125,13 @@ testing = []
 hmac-codec = []
 
 # aes-codec — gates the AES-256-GCM field-level AEAD codec for encrypted-at-rest
-# protected fields. Pulls in `aes-gcm`, `getrandom`, and `hex` as optional
-# dependencies; the codec implementation lives behind this feature so builds
-# without at-rest encryption skip the crypto dependency tree entirely.
-aes-codec = ["dep:aes-gcm", "dep:getrandom", "dep:hex"]
+# protected fields. Pulls in `aes-gcm`, `getrandom`, `hex`, and `hkdf` as
+# optional dependencies; the codec implementation lives behind this feature so
+# builds without at-rest encryption skip the crypto dependency tree entirely.
+# `sha2` is NOT listed here — it is already an unconditional dependency
+# (snapshot HMAC signing), so the codec's HKDF-SHA256 use is satisfied by the
+# existing always-on `sha2`.
+aes-codec = ["dep:aes-gcm", "dep:getrandom", "dep:hex", "dep:hkdf"]
 
 [dependencies]
 argon2 = { version = "0.5", optional = true, features = ["std"] }
@@ -180,6 +183,7 @@ trait-variant.workspace = true
 aes-gcm = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+hkdf = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

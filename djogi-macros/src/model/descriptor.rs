@@ -802,8 +802,7 @@ fn try_expand(
     let codec_startup_submits: Vec<TokenStream> = user_fields
         .iter()
         .filter_map(|(_, fa)| {
-            let codec_id = fa.protected.as_ref()
-                .and_then(|p| p.codec.as_deref())?;
+            let codec_id = fa.protected.as_ref().and_then(|p| p.codec.as_deref())?;
             if !seen_codecs.insert(codec_id) {
                 return None; // Already emitted for this codec.
             }
@@ -813,7 +812,7 @@ fn try_expand(
                         ::djogi::field_codec::FieldCodecStartupRequirement::const_new(
                             "aes256_gcm_v1",
                             ::djogi::__private::field_codec_aes::ENV_VAR,
-                            ::djogi::__private::field_codec_aes::load_key,
+                            ::djogi::__private::field_codec_aes::load_ring,
                         )
                     }
                 }),

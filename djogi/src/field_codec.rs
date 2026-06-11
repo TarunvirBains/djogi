@@ -45,29 +45,86 @@ use crate::migrate::OnlineSafetyClassification;
 mod error_types {
     /// Errors produced by field codec operations.
     /// Error messages are hygiene-safe: they carry structural information
-    /// (lengths, codec IDs) but never plaintext, key material, nonce values,
-    /// or ciphertext bytes.
+    /// (lengths, ring indices, codec IDs) but never plaintext, key material,
+    /// nonce values, or ciphertext bytes.
     #[derive(Debug)]
     pub enum CodecError {
-        /// The codec key was not configured or could not be parsed.
-        MissingKey,
-        /// Stored ciphertext is too short to contain a valid nonce + tag.
-        CiphertextTooShort { got: usize },
-        /// AES-GCM authentication or decryption failure.
+        /// Missing or malformed key material at startup for a specific ring
+        /// index. Carries the offending index so the message — and the
+        /// [`CodecStartupError`] it is rendered into — names the exact
+        /// `DJOGI_FIELD_CODEC_KEY_{index}` variable the operator must fix.
+        /// `kind` distinguishes a ring gap (a lower index is absent while a
+        /// higher one is present) from a malformed entry (non-hex / wrong
+        /// length).
+        MissingKey { index: u8, kind: MissingKeyKind },
+        /// No `DJOGI_FIELD_CODEC_KEY_*` variable is set at all, so the ring
+        /// has zero entries. (If `_0` is absent but a higher index *is* set,
+        /// that surfaces as `MissingKey { index: 0, kind: Gap }` instead,
+        /// naming `_0` explicitly.) Display names `DJOGI_FIELD_CODEC_KEY_0`
+        /// as the always-required base entry.
+        RingEmpty,
+        /// Stored blob is shorter than the 30-byte minimum
+        /// (1 version + 1 key_index + 12 nonce + 16 tag).
+        CiphertextTooShort,
+        /// Ciphertext version byte is not recognized by this codec version.
+        UnknownVersion(u8),
+        /// Key index recorded in a ciphertext is out of range for the current
+        /// ring. Carries both the offending `index` byte and the `ring_len`
+        /// captured at decode time so the message distinguishes a key that was
+        /// never present from one that has been retired.
+        UnknownKeyIndex { index: u8, ring_len: u8 },
+        /// AES-GCM authentication or decryption failure (tag mismatch, wrong
+        /// key, tampered data).
         AeadError(aes_gcm::Error),
+        /// OS CSPRNG failed while generating the per-encryption nonce.
+        /// Effectively unreachable in practice (a failing `getrandom` means the
+        /// host entropy source is unavailable), but surfaced as a typed error
+        /// rather than a panic. Holds [`getrandom::Error`] so the bare `?`
+        /// operator works in `generate_nonce` via the `From` impl below.
+        RngFailure(getrandom::Error),
         /// Decrypted bytes are not valid UTF-8.
         Utf8Error(std::string::FromUtf8Error),
+    }
+
+    /// Why a specific ring index failed to load. Carried by
+    /// [`CodecError::MissingKey`] so startup errors name the exact variable
+    /// and failure reason.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MissingKeyKind {
+        /// A lower index is absent while a higher index is present (ring gap).
+        Gap,
+        /// The variable is set but is not 64 lowercase hex characters, or does
+        /// not decode to exactly 32 bytes.
+        Malformed,
     }
 
     impl std::fmt::Display for CodecError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                CodecError::MissingKey => write!(f, "field codec key not configured"),
-                CodecError::CiphertextTooShort { got } => write!(
-                    f,
-                    "ciphertext too short: expected at least 28 bytes, got {got}"
+                CodecError::MissingKey { index, kind } => match kind {
+                    MissingKeyKind::Gap => write!(
+                        f,
+                        "ring gap: DJOGI_FIELD_CODEC_KEY_{index} is not set but a higher index is present"
+                    ),
+                    MissingKeyKind::Malformed => write!(
+                        f,
+                        "malformed key: DJOGI_FIELD_CODEC_KEY_{index} must be 64 lowercase hex characters"
+                    ),
+                },
+                CodecError::RingEmpty => f.write_str(
+                    "no field codec key configured: set DJOGI_FIELD_CODEC_KEY_0 (64 lowercase hex characters)",
                 ),
+                CodecError::CiphertextTooShort => {
+                    f.write_str("ciphertext too short: minimum valid ciphertext is 30 bytes")
+                }
+                CodecError::UnknownVersion(v) => write!(f, "unknown ciphertext version byte: {v}"),
+                CodecError::UnknownKeyIndex { index, ring_len } => {
+                    write!(f, "key index {index} not in ring of length {ring_len}")
+                }
                 CodecError::AeadError(_) => f.write_str("generic AEAD error"),
+                CodecError::RngFailure(_) => {
+                    f.write_str("OS CSPRNG failed while generating nonce")
+                }
                 CodecError::Utf8Error(e) => write!(f, "decoded bytes are not valid UTF-8: {e}"),
             }
         }
@@ -76,12 +133,39 @@ mod error_types {
     impl std::error::Error for CodecError {
         fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
             match self {
-                // aes_gcm::aead::Error is an opaque single-byte type that does not
-                // implement std::error::Error, so we cannot chain it as a source.
+                // aes_gcm::aead::Error is an opaque single-byte type that does
+                // not implement std::error::Error, so we cannot chain it as a
+                // source.
                 CodecError::AeadError(_) => None,
+                // getrandom::Error implements std::error::Error, so chain it.
+                CodecError::RngFailure(e) => Some(e),
                 CodecError::Utf8Error(e) => Some(e),
-                _ => None,
+                CodecError::MissingKey { .. }
+                | CodecError::RingEmpty
+                | CodecError::CiphertextTooShort
+                | CodecError::UnknownVersion(_)
+                | CodecError::UnknownKeyIndex { .. } => None,
             }
+        }
+    }
+
+    // `From` impls so the bare `?` operator threads the source error through
+    // `encode` / `decode` / `generate_nonce` without a manual `.map_err`.
+    // `MissingKey` deliberately gets no `From` impl — it is always constructed
+    // explicitly inside `load_ring` so the offending index is captured.
+    impl From<aes_gcm::Error> for CodecError {
+        fn from(e: aes_gcm::Error) -> Self {
+            CodecError::AeadError(e)
+        }
+    }
+    impl From<getrandom::Error> for CodecError {
+        fn from(e: getrandom::Error) -> Self {
+            CodecError::RngFailure(e)
+        }
+    }
+    impl From<std::string::FromUtf8Error> for CodecError {
+        fn from(e: std::string::FromUtf8Error) -> Self {
+            CodecError::Utf8Error(e)
         }
     }
 
@@ -112,7 +196,7 @@ mod error_types {
 }
 
 #[cfg(feature = "aes-codec")]
-pub use error_types::{CodecError, CodecStartupError};
+pub use error_types::{CodecError, CodecStartupError, MissingKeyKind};
 
 // ── AES-256-GCM submodule (feature-gated) ──────────────────────────────────
 
@@ -206,11 +290,15 @@ pub trait FieldCodec: Send + Sync + 'static {
 pub struct FieldCodecStartupRequirement {
     /// The codec ID (e.g., `"aes256_gcm_v1"`).
     pub codec_id: &'static str,
-    /// The environment variable name required for this codec.
+    /// The environment variable name required for this codec (the always-
+    /// required base entry; the validator scans the full indexed family).
     pub env_var: &'static str,
-    /// Validation function that populates the OnceLock cache on success.
-    /// MUST be `load_key` (or equivalent codec init), not a separate validate function.
-    pub validate: fn() -> Result<[u8; 32], CodecError>,
+    /// Validation function that populates the `OnceLock<Vec<[u8; 32]>>` key-ring
+    /// cache on success and returns `Ok(())`. MUST be `load_ring` (or
+    /// equivalent codec init), not a separate validate function — startup
+    /// success then implies the ring is validated AND cached, which closes the
+    /// decode-time side-channel.
+    pub validate: fn() -> Result<(), CodecError>,
 }
 
 #[cfg(feature = "aes-codec")]
@@ -223,7 +311,7 @@ impl FieldCodecStartupRequirement {
     pub const fn const_new(
         codec_id: &'static str,
         env_var: &'static str,
-        validate: fn() -> Result<[u8; 32], CodecError>,
+        validate: fn() -> Result<(), CodecError>,
     ) -> Self {
         Self {
             codec_id,
@@ -242,11 +330,12 @@ inventory::collect!(FieldCodecStartupRequirement);
 /// codec in one pass — matching the presentation startup pattern from
 /// [`crate::presentation::validate_startup_inventory`].
 ///
-/// The `validate` pointer IS the codec's `load_key` function (not a separate
-/// validator), so startup success implies the OnceLock cache is populated.
-/// After successful validation, every subsequent `load_key()` returns `Ok`,
-/// making decode-time `MissingKey` impossible — the side-channel prevention
-/// property holds when startup validation runs before CRUD calls.
+/// The `validate` pointer IS the codec's `load_ring` function (not a separate
+/// validator), so startup success implies the `OnceLock<Vec<[u8; 32]>>` cache
+/// is populated. After successful validation, every subsequent `load_ring()`
+/// returns `Ok`, making decode-time `RingEmpty` / `MissingKey` impossible — the
+/// side-channel prevention property holds when startup validation runs before
+/// CRUD calls.
 #[cfg(feature = "aes-codec")]
 pub fn validate_codec_startup_inventory() -> Result<(), Vec<CodecStartupError>> {
     let mut errors: Vec<CodecStartupError> = Vec::new();
