@@ -251,9 +251,14 @@ for the full contract.
 
 Use the type that maps to the correct Postgres column type:
 
+For app-owned closed vocabularies (status/type/category), prefer `DjogiEnum`
+instead of `String` so invalid values fail at migration/typed-surface boundaries.
+Use `String` only for genuinely external or dynamic value sets.
+
 | Rust type | Postgres column |
 |---|---|
 | `String` | `TEXT NOT NULL` |
+| `DjogiEnum` | `ENUM`/migration descriptor-backed enum type |
 | `Option<String>` | `TEXT` (nullable) |
 | `bool` | `BOOLEAN NOT NULL` |
 | `i32` | `INTEGER NOT NULL` |

@@ -192,14 +192,27 @@ rust_decimal_macros.workspace = true
 tracing-test = "0.2"
 serial_test = { workspace = true }
 
-# Lihaaf v0.1 — the raw SQL bypass compile-fail fixtures
-# (`djogi/tests/compile_fail/*.rs`) prove that the `pool()`, `conn()`,
-# `with_client`, and `raw_*` methods are unreachable from
-# `DjogiContext` / `DjogiPool` without the `RawAccessExt` /
-# `RawPoolAccessExt` traits in scope. Each fixture is a standalone
-# rustc invocation against the djogi dylib; the blessed `.stderr`
-# snapshots live alongside the `.rs` files and are committed so CI
-# passes without `--bless`.
+# Lihaaf v0.1 — djogi-runtime fixture gate
+#
+# This gate covers two djogi-runtime fixture categories:
+#
+# 1) raw-SQL bypass enforcement
+#   - prove `pool()`, `conn()`, `with_client`, and `raw_*` methods are
+#     unreachable from `DjogiContext` / `DjogiPool` without
+#     `RawAccessExt` / `RawPoolAccessExt`.
+#
+# 2) typed-query API misuse failures
+#   - prove typed-query misuse at use sites fails cleanly at compile-time
+#     (e.g. wrong builder chaining at projection/mode/aggregate boundaries).
+#
+# Every fixture is a standalone rustc invocation against the djogi dylib.
+# Inputs are compile-fail `.rs` files with blessed `.stderr` snapshots
+# committed under each fixture directory.
+#
+# If a fixture exercises macro emission surfaces (`#[derive(Model)]`,
+# parse/validation/emission failures), it belongs in
+# `djogi-macros/Cargo.toml` with sibling fixture directories (currently
+# `tests/compile_fail*`) because those belong to the macro emission crate.
 #
 # CI invokes `cargo lihaaf --manifest-path djogi/Cargo.toml -j 2`
 # alongside the djogi-macros lihaaf step (see

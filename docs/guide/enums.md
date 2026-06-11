@@ -78,6 +78,15 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
 
 ## Common Patterns
 
+### Use typed enums by default for closed sets
+
+For app-owned finite status/type/category fields, use `DjogiEnum` as the default
+modeling choice. `DjogiEnum` keeps the allowed values canonical at the codec and
+migration layer instead of deferring validation to later application logic.
+
+Use `String` for escape-hatch cases where valid values are external,
+dynamic, or intentionally unbounded.
+
 ### Renaming all variants at once
 
 The `rename_all` attribute accepts `"snake_case"` (the default), `"SCREAMING_SNAKE_CASE"`,

@@ -319,12 +319,12 @@ Database reset complete. Schema at version 0003.
 
 | Flag | Description |
 |---|---|
-| `--seed` | Run `seeds.rhai` after migrations complete |
 | `--wipe-crud-logs` | Also drop and recreate the CRUD log database |
 | `--wipe-all-logs` | Also drop and recreate both log databases |
 
 ```bash
-djogi db reset --seed
+djogi db reset --single-node-dev --yes
+djogi db seed
 # planned: djogi db reset --wipe-crud-logs
 ```
 
@@ -539,7 +539,8 @@ Project created. Next steps:
   cd my-project
   docker compose up -d
   export DATABASE_URL="postgres://djogi:djogi@localhost/my_project"
-  djogi db reset --single-node-dev --seed
+  djogi db reset --single-node-dev --yes
+  djogi db seed
 ```
 
 ### `djogi init`
