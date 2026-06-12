@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.12] - 2026-06-11
+
+### Added
+
+- migration: `RepairError::Runner` wraps runner-level failures surfaced
+  during repair — node-identity binding on the pinned resume session, the
+  leaf-identity pre-check, and strict-replay plan materialization —
+  preserving the full `Error::source()` chain (the underlying Postgres
+  error is no longer flattened into a `LedgerIo` string). Downstream
+  exhaustive matches on `RepairError` must add an arm; the CLI classifies
+  it as exit 1 (retryable), unchanged from the previous behavior of every
+  affected path.
+
+### Fixed
+
+- docs: `materialize_execution_plan` doc comment now correctly describes the
+  helper as crate-internal.
+
 ## [0.1.0-alpha.11] - 2026-06-10
 
 ### Added
