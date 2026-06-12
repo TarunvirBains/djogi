@@ -1,6 +1,6 @@
 # Djogi
 
-*An opinionated Postgres-native data layer for Rust. Define your schema as structs and derive the ORM, migrations, audit trail, and more from one model declaration.*
+*A Postgres-native distributed data engine for Rust. Define your schema as structs; Djogi derives the ORM, migrations, audit trail, and more from one model declaration.*
 
 ---
 
