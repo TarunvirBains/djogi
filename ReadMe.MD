@@ -1,10 +1,10 @@
 # Djogi
 
-*A Postgres-native distributed data engine for Rust. Define your schema as structs; Djogi derives the ORM, migrations, audit trail, and more from one model declaration.*
+*A Postgres-native distributed data engine for Rust, driven by model declarations. Define your models as structs; Djogi derives the ORM, migrations, audit trail, and more from a single model definition.*
 
 ---
 
-Most Rust data libraries solve one slice — a query builder, migrations, or an audit log. Djogi treats the data tier as a single surface: typed queries, schema evolution, relations, change tracking, row-level security, transport projections, and spatial predicates all derive from one model definition. You bring your own HTTP/application stack; Djogi owns the data layer end-to-end. Raw SQL is a deliberate escape hatch when you need edge-case control.
+Most Rust data libraries solve one slice — a query builder, migrations, or an audit log. Djogi treats the data tier as a single, model-first surface: typed queries, schema evolution, relations, change tracking, row-level security, transport projections, and spatial predicates all derive from your model declarations. You bring your own HTTP/application stack; Djogi owns the data layer end-to-end. Raw SQL is a deliberate escape hatch when you need edge-case control.
 
 ## Why Postgres Only
 
