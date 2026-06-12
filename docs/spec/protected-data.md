@@ -34,6 +34,8 @@ Field protection is declared via a single grouped attribute. Five named keys liv
 pub email: String,
 ```
 
+**Warning on Syntax:** All governance metadata must be declared inside the nested `protected(...)` list. Top-level attributes like `#[field(sensitive = "pii")]` or `#[field(redact_in = "...")]` are **not supported** and will be silently ignored or rejected. The parser only recognizes the keys when they are within the `protected(...)` attribute.
+
 `rationale`, `redaction`, `codec`, and `retention` are optional keys
 within `protected(...)`. The grammar is order-insensitive and rejects
 duplicate keys with a span-precise error.

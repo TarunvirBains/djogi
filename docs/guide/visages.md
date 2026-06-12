@@ -341,6 +341,15 @@ See [Derived Projections](./derived-projections.md) for the adopter
 surface, parity rule, nullable-value handling, fallibility detection,
 and current Tier 1 limits.
 
+## Protected fields and redaction
+
+Visages are the primary enforcement point for data governance. When a field is projected into a visage, Djogi applies the `redaction` policy or the `per_scope` codec declared in `#[field(protected(...))]`.
+
+- **Automatic Redaction:** If a field has `redaction = "mask"`, it will appear masked in any visage that exposes it, unless a specific `per_scope` codec overrides this behavior.
+- **Presentation Codecs:** Use `per_scope` within `protected(...)` to apply different transforms (e.g., hash in `Public`, plaintext in `Admin`).
+
+See the [Protected Fields Guide](./protected-fields.md) for the full grammar of redaction and presentation codecs.
+
 ## Common compile errors
 
 These compile-fail cases are pinned by djogi-macros's compile-fail

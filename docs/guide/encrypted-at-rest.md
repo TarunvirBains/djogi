@@ -35,7 +35,10 @@ deterministic encryption, `Vec<u8>` → `Vec<u8>` encryption, and KMS integratio
 ## Declaring an encrypted field
 
 Annotate any `String` (or `Option<String>`) field with
-`#[field(protected(codec = "aes256_gcm_v1"))]`:
+`#[field(protected(codec = "aes256_gcm_v1"))]`. Note that `codec` is always
+declared inside the `protected(...)` list alongside other governance metadata
+like `sensitivity` and `rationale` (see the
+[Protected Fields Guide](./protected-fields.md)).
 
 ```rust
 use djogi::prelude::*;

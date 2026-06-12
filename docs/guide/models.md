@@ -948,6 +948,10 @@ for desc in inventory::iter::<djogi::ModelDescriptor> {
 
 Field values can be transformed when projecting to different visage scopes. Use `#[field(protected(...))]` with `per_scope` to declare which codecs apply per scope; the generated visage struct's conversion method (`From<&Model>` or `TryFrom<&Model>`) transparently applies the codec.
 
+**Data Governance:** Beyond presentation codecs, `protected(...)` is the central home for all data governance metadata (sensitivity, rationale, redaction, and retention). See the [Protected Fields Guide](./protected-fields.md) for the complete grammar and validation rules.
+
+**Note on syntax:** All governance metadata must be nested inside `protected(...)`. Top-level attributes like `#[field(sensitive = "pii")]` are **not supported** and will be ignored; use `#[field(protected(sensitivity = "pii", ...))]` instead.
+
 **Purpose:** Emit masked, hashed, or otherwise redacted field values in public-facing visages while keeping unmodified values in internal or admin visages — all enforced by the type system at compile time.
 
 ### Macro grammar
