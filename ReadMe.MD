@@ -35,7 +35,7 @@ Djogi targets PostgreSQL exclusively — permanently, not as a temporary limitat
 
 ## Status
 
-**Current release:** `v0.1.0-alpha.9` (public alpha — API may change before v0.1.0 stable)
+**Current release:** `v0.1.0-alpha.11` (public alpha — API may change before v0.1.0 stable)
 
 ## Project Layout
 
