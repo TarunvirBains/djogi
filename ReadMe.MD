@@ -4,7 +4,7 @@
 
 ---
 
-Most Rust data libraries solve one slice — a query builder, migrations, or an audit log. Djogi treats the data tier as a single, model-first surface: typed queries, schema evolution, relations, change tracking, row-level security, transport projections, and spatial predicates all derive from your model declarations. You bring your own HTTP/application stack; Djogi owns the data layer end-to-end. Raw SQL is a deliberate escape hatch when you need edge-case control.
+Most Rust data libraries solve one slice — a query builder, migrations, or an audit log. Djogi treats the data tier as a single, model-first surface: typed queries, schema evolution, relations, change tracking, row-level security, transport projections via visages, in-memory cache, cross-runtime predicate algebra, and spatial predicates all derive from your model declarations. You bring your own HTTP/application stack; Djogi owns the data layer end-to-end. Raw SQL is a deliberate escape hatch when you need edge-case control.
 
 ## Why Postgres Only
 
@@ -28,7 +28,7 @@ Djogi targets PostgreSQL exclusively — permanently, not as a temporary limitat
 | Typed JSONB columns preserving unknown fields | [JSONB guide](docs/guide/jsonb.md) |
 | Spatial types and geographic predicates | [Spatial guide](docs/guide/spatial.md) |
 | Auth context, password hashing, multi-tenancy & RLS | [Auth guide](docs/guide/auth.md), [Tenancy guide](docs/guide/tenancy.md) |
-| Audience-specific transport projections (visages) | [Visages guide](docs/guide/visages.md) |
+| Audience-specific transport projections via visages, in-memory cache, and cross-runtime predicate algebra | [Visages guide](docs/guide/visages.md) |
 | Transactions, outbox pattern, expressions & aggregates | [Transactions](docs/guide/transactions.md), [Outbox](docs/guide/outbox.md), [Expressions](docs/guide/expressions.md) guides |
 
 **Planned (not yet shipped):** Rhai interactive shell for model inspection and query building; Maahi admin console — a Dioxus operations UI derived from your model descriptors.
