@@ -4,7 +4,7 @@
 
 ---
 
-Most Rust data libraries solve one slice — a query builder, migrations, or an audit log. Djogi treats the data tier as a single, model-first surface: typed queries, schema evolution, relations, change tracking, row-level security, transport projections via visages, in-memory cache, cross-runtime predicate algebra, and spatial predicates all derive from your model declarations. You bring your own HTTP/application stack; Djogi owns the data layer end-to-end. Raw SQL is a deliberate escape hatch when you need edge-case control.
+Most Rust data libraries solve one slice — a query builder, migrations, or an audit log. Djogi treats the data tier as a single, model-first surface: typed queries, schema evolution, relations, change tracking, row-level security, transport projections via visages, in-memory cache, cross-runtime predicate algebra, and spatial predicates all derive from your model declarations. You bring your own HTTP/application stack; Djogi owns the data layer end-to-end.
 
 ## Why Postgres Only
 
@@ -16,7 +16,7 @@ Djogi targets PostgreSQL exclusively — permanently, not as a temporary limitat
 - **Explicit over implicit** — No hidden middleware chains or convention-as-code. Behavior is visible in typed APIs and generated descriptors.
 - **Postgres-first, not portable abstraction** — Djogi maps core features directly to native Postgres capabilities instead of lowest-common-denominator SQL.
 - **Your app stack, your handlers** — Djogi integrates with Axum, Warp, Actix, Rocket, and others. Routing, middleware, and rendering remain yours.
-- **Performance and safety defaults** — Type-first APIs cover common production workloads; raw SQL remains an explicit escape hatch for rare edge cases.
+- **Performance and safety defaults** — Type-first APIs cover common production workloads, with explicit escape hatches available for exceptional requirements.
 
 ## What You Get
 
@@ -88,4 +88,5 @@ The full specification lives in [`docs/spec/`](docs/spec/index.md). Key docs:
 | [Logging](docs/spec/logging.md) | CRUD audit trail, event tracing |
 | [Configuration & CLI](docs/spec/configuration.md) | `Djogi.toml`, CLI commands, app registration |
 | [Architecture Principles](docs/spec/architecture-principles.md) | Framework boundaries and design decisions |
+| [Raw SQL Escape Hatches](docs/spec/raw-sql-escape-hatches.md) | Bypass points for hand-rolled SQL and direct driver access |
 | [Scope & Boundaries](docs/spec/scope.md) | What belongs in Djogi vs an app crate |
