@@ -1231,10 +1231,9 @@ async fn repair_resume_body(
     // #366: Pre-strict leaf-identity check with lenient lookup so a zero-leaf↔non-empty
     // topology drift surfaces as LeafIdentityMismatch rather than PartitionExpansionNoLeaves.
     if let Some(ref stored_identity) = row.leaf_identity {
-        let pre_cache =
-            compute_leaf_identity_cache(ctx, plan)
-                .await
-                .map_err(RepairError::Runner)?;
+        let pre_cache = compute_leaf_identity_cache(ctx, plan)
+            .await
+            .map_err(RepairError::Runner)?;
         let pre_identity = serialize_leaf_identity(&pre_cache).unwrap_or_default();
         if pre_identity != *stored_identity {
             return Err(RepairError::LeafIdentityMismatch {
