@@ -1,21 +1,22 @@
 # Djogi
 
-*A Postgres-native data layer for Rust. Define your schema as structs; Djogi derives the ORM, migrations, audit trail, and more.*
+*An opinionated Postgres-native data layer for Rust. Define your schema as structs and derive the ORM, migrations, audit trail, and more from one model declaration.*
 
 ---
 
-Most Rust data libraries solve one slice — a query builder, or migrations, or an audit log. Djogi treats the data tier as a single surface: typed queries, schema evolution, relations, change tracking, row-level security, transport projections, and spatial predicates all integrate from one model definition. You bring your own web framework; Djogi owns the data tier end-to-end.
+Most Rust data libraries solve one slice — a query builder, migrations, or an audit log. Djogi treats the data tier as a single surface: typed queries, schema evolution, relations, change tracking, row-level security, transport projections, and spatial predicates all derive from one model definition. You bring your own HTTP/application stack; Djogi owns the data layer end-to-end. Raw SQL is a deliberate escape hatch when you need edge-case control.
 
 ## Why Postgres Only
 
-Djogi targets PostgreSQL exclusively — permanently, not as a temporary limitation. The framework depends on JSONB with path operators for typed schema fields, advisory locks for migration safety, RETURNING clauses for atomic round-trips, row-level locking, rich indexing, and transactional DDL. Abstracting over multiple databases would mean abandoning these capabilities or reimplementing them poorly. Every query Djogi generates targets Postgres directly; there is no lowest-common-denominator SQL layer.
+Djogi targets PostgreSQL exclusively — permanently, not as a temporary limitation. Djogi depends on JSONB path operators for typed schema fields, advisory locks for migration safety, `RETURNING` for atomic round-trips, row-level locking, rich indexing, and transactional DDL. Abstracting over multiple databases would mean abandoning these capabilities or reimplementing them poorly. Every query Djogi generates targets Postgres directly; there is no lowest-common-denominator SQL layer.
 
 ## Design Principles
 
 - **Define once, derive everything** — `#[derive(Model)]` produces typed CRUD, migration diffs, audit hooks, and transport projections from a single struct declaration.
-- **Explicit over implicit** — No hidden middleware chains or convention-as-code. What the framework does is visible in your types and callable APIs.
-- **Postgres-first, not Postgres-compatible** — The framework surfaces Postgres capabilities directly rather than hiding them behind a portable abstraction.
-- **Your web framework, your view layer** — Djogi integrates with Axum, Warp, Actix, Rocket, or any Rust web framework. Routing, middleware, and rendering are your responsibility.
+- **Explicit over implicit** — No hidden middleware chains or convention-as-code. Behavior is visible in typed APIs and generated descriptors.
+- **Postgres-first, not portable abstraction** — Djogi maps core features directly to native Postgres capabilities instead of lowest-common-denominator SQL.
+- **Your app stack, your handlers** — Djogi integrates with Axum, Warp, Actix, Rocket, and others. Routing, middleware, and rendering remain yours.
+- **Performance and safety defaults** — Type-first APIs cover common production workloads; raw SQL remains an explicit escape hatch for rare edge cases.
 
 ## What You Get
 
@@ -46,12 +47,12 @@ my-app/
       vehicles/
         mod.rs              # djogi::apps! { ... }
         models.rs           # #[derive(Model)] structs + relations
-        routes.rs           # web-framework handlers (any Rust web framework)
+        routes.rs           # handlers for your application stack
   build.rs                  # drift detection + migration generation
   Djogi.toml                # configuration
   migrations/               # managed by pipeline (git submodule)
 
-djogi/                      # framework library crate
+djogi/                      # core data library crate
 djogi-macros/               # proc macro crate
 djogi-cli/                  # standalone `djogi` binary
 ```
@@ -74,7 +75,7 @@ Reproduce CI locally:
 
 ## Specification & Guides
 
-The full framework specification lives in [`docs/spec/`](docs/spec/index.md). Key docs:
+The full specification lives in [`docs/spec/`](docs/spec/index.md). Key docs:
 
 | Doc | Covers |
 |---|---|
