@@ -20,12 +20,41 @@
 // and pending JSON under `target/djogi_pending/` — never a workspace-root
 // `schema_snapshot.json` (compose writes no such file).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use djogi::testing::cli::{
     current_database, djogi_binary_path, temp_workspace, write_minimal_djogi_toml,
 };
+
+static CACHED_CARGO_DJOGI_BINARY: OnceLock<PathBuf> = OnceLock::new();
+static CACHED_DJOGI_IN_WORKSPACE_BINARIES: OnceLock<Mutex<HashMap<String, PathBuf>>> =
+    OnceLock::new();
+static CACHED_ELEPHANT_TRACKER_BINARIES: OnceLock<Mutex<HashMap<String, PathBuf>>> =
+    OnceLock::new();
+static CACHED_FIXTURE_BINARIES: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+
+fn cached_path(
+    cache: &'static OnceLock<Mutex<HashMap<String, PathBuf>>>,
+    key: String,
+    build: impl FnOnce() -> PathBuf,
+) -> PathBuf {
+    let lock = cache.get_or_init(|| Mutex::new(HashMap::new()));
+
+    {
+        let guard = lock.lock().expect("acquire cached binary lock");
+        if let Some(path) = guard.get(&key) {
+            return path.clone();
+        }
+    }
+
+    let built = build();
+
+    let mut guard = lock.lock().expect("acquire cached binary lock");
+    guard.entry(key).or_insert(built.clone()).clone()
+}
 
 /// Parse Cargo `--message-format=json` stdout to extract the artifact path
 /// for the requested binary. Profile-agnostic: reads actual paths from Cargo
@@ -154,36 +183,40 @@ fn build_elephant_tracker_binary(
     package: &str,
     bin: &str,
 ) -> PathBuf {
-    let target_dir = temp_workspace(target_subdir);
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(&cargo)
-        .arg("build")
-        // No `--locked`: this builds from a copied fixture whose Cargo.lock
-        // may diverge from the workspace resolution (patched paths → different
-        // dependency graph). The build is still isolated via `--target-dir`.
-        .arg("--package")
-        .arg(package)
-        .arg("--bin")
-        .arg(bin)
-        .arg("--manifest-path")
-        .arg(manifest)
-        .arg("--target-dir")
-        .arg(&target_dir)
-        .arg("--message-format")
-        .arg("json")
-        .output()
-        .expect("spawn cargo build");
-    assert!(
-        output.status.success(),
-        "build failed for package '{package}', bin '{bin}': {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let _ = target_subdir;
+    let key = format!("elephant-tracker|{package}|{bin}");
+    cached_path(&CACHED_ELEPHANT_TRACKER_BINARIES, key, || {
+        let target_dir = workspace_root().join("target").join(format!("elephant-tracker-{package}-{bin}"));
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let output = Command::new(&cargo)
+            .arg("build")
+            // No `--locked`: this builds from a copied fixture whose Cargo.lock
+            // may diverge from the workspace resolution (patched paths → different
+            // dependency graph). The build is still isolated via `--target-dir`.
+            .arg("--package")
+            .arg(package)
+            .arg("--bin")
+            .arg(bin)
+            .arg("--manifest-path")
+            .arg(manifest)
+            .arg("--target-dir")
+            .arg(&target_dir)
+            .arg("--message-format")
+            .arg("json")
+            .output()
+            .expect("spawn cargo build");
+        assert!(
+            output.status.success(),
+            "build failed for package '{package}', bin '{bin}': {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    PathBuf::from(
-        discover_binary_path_str(&stdout, bin)
-            .unwrap_or_else(|_| panic!("no binary artifact for '{bin}' in cargo output")),
-    )
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        PathBuf::from(
+            discover_binary_path_str(&stdout, bin)
+                .unwrap_or_else(|_| panic!("no binary artifact for '{bin}' in cargo output")),
+        )
+    })
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) {
@@ -250,37 +283,45 @@ fn copy_fixture_to_temp(fixture: &str) -> PathBuf {
 }
 
 fn build_djogi_in_workspace(manifest: &Path, target_subdir: &str, package: &str, bin: &str) -> PathBuf {
-    let target_dir = workspace_root().join("target").join(target_subdir);
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(&cargo)
-        .arg("build")
-        .arg("--locked")
-        .arg("--bin")
-        .arg(bin)
-        .arg("--package")
-        .arg(package)
-        .arg("--manifest-path")
-        .arg(manifest)
-        .arg("--target-dir")
-        .arg(&target_dir)
-        .arg("--message-format")
-        .arg("json")
-        .output()
-        .expect("spawn cargo build");
-    assert!(
-        output.status.success(),
-        "build for manifest {} failed: {}",
-        manifest.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    PathBuf::from(
-        discover_binary_path_str(&stdout, bin)
-            .unwrap_or_else(|_| panic!("no binary artifact for '{bin}' in cargo output")),
-    )
+    let _ = target_subdir;
+    let key = format!("workspace:{manifest:?}|{package}|{bin}");
+    cached_path(&CACHED_DJOGI_IN_WORKSPACE_BINARIES, key, || {
+        let target_dir = workspace_root().join("target").join(format!("workspace-{package}-{bin}"));
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let output = Command::new(&cargo)
+            .arg("build")
+            .arg("--locked")
+            .arg("--bin")
+            .arg(bin)
+            .arg("--package")
+            .arg(package)
+            .arg("--manifest-path")
+            .arg(manifest)
+            .arg("--target-dir")
+            .arg(&target_dir)
+            .arg("--message-format")
+            .arg("json")
+            .output()
+            .expect("spawn cargo build");
+        assert!(
+            output.status.success(),
+            "build for manifest {} failed: {}",
+            manifest.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        PathBuf::from(
+            discover_binary_path_str(&stdout, bin)
+                .unwrap_or_else(|_| panic!("no binary artifact for '{bin}' in cargo output")),
+        )
+    })
 }
 
 fn build_cargo_djogi_binary() -> PathBuf {
+    if let Some(path) = CACHED_CARGO_DJOGI_BINARY.get() {
+        return path.clone();
+    }
+
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let root = workspace_root();
     let target_dir = root.join("target").join("cargo-djogi-tests");
@@ -301,10 +342,12 @@ fn build_cargo_djogi_binary() -> PathBuf {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    PathBuf::from(
+    let path = PathBuf::from(
         discover_binary_path_str(&stdout, "cargo-djogi")
             .unwrap_or_else(|_| panic!("no binary artifact for 'cargo-djogi' in cargo output")),
-    )
+    );
+    let _ = CACHED_CARGO_DJOGI_BINARY.set(path.clone());
+    path
 }
 
 // ── Fixture / binary builders ────────────────────────────────────────────────
@@ -319,6 +362,9 @@ fn build_cargo_djogi_binary() -> PathBuf {
 /// the parent invocation's env does not leak in. `--locked` keeps the
 /// fixture build deterministic against the committed `Cargo.lock`.
 fn build_fixture_djogi(fixture: &str, target_subdir: &str) -> PathBuf {
+    let _ = target_subdir;
+    let key = fixture.to_string();
+    cached_path(&CACHED_FIXTURE_BINARIES, key, || {
     let manifest = cli_crate_dir()
         .join("tests/fixtures")
         .join(fixture)
@@ -328,7 +374,9 @@ fn build_fixture_djogi(fixture: &str, target_subdir: &str) -> PathBuf {
         "fixture manifest not found: {}",
         manifest.display()
     );
-    let target_dir = workspace_root().join("target").join(target_subdir);
+        let target_dir = workspace_root()
+            .join("target")
+            .join(format!("fixture-{fixture}"));
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(&cargo)
         .arg("build")
@@ -352,10 +400,11 @@ fn build_fixture_djogi(fixture: &str, target_subdir: &str) -> PathBuf {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    PathBuf::from(
+        PathBuf::from(
         discover_binary_path_str(&stdout, "djogi")
             .unwrap_or_else(|_| panic!("no binary artifact for 'djogi' in cargo output")),
-    )
+        )
+    })
 }
 
 // ── Workspace / output helpers ───────────────────────────────────────────────
