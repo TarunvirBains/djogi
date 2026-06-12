@@ -613,15 +613,11 @@ async fn acquire_advisory_lock_repair(
                 RepairError::AdvisoryLockQueryFailed { app_label, source }
             }
             other => {
-                // Unreachable: acquire_advisory_lock only returns the two variants above.
-                // Wrap defensively rather than panic so future runner changes do not
-                // silently produce a misclassified error.
-                RepairError::AdvisoryLockQueryFailed {
-                    app_label: bucket.app.clone(),
-                    source: DjogiError::Db(crate::error::DbError::other(format!(
-                        "unexpected acquire error: {other}"
-                    ))),
-                }
+                // Unreachable today: acquire_advisory_lock only returns the two
+                // variants above. Pass through structurally rather than panic or
+                // stringify, so a future runner change surfaces with its full
+                // source chain instead of a flattened misclassified error.
+                RepairError::Runner(other)
             }
         })
 }
@@ -1138,11 +1134,7 @@ pub async fn repair_resume_partial_apply(
             ),
         )
         .await
-        .map_err(|e| RepairError::LedgerIo {
-            source: crate::DjogiError::Db(crate::DbError::other(format!(
-                "bind runner node identity: {e}"
-            ))),
-        })?;
+        .map_err(RepairError::Runner)?;
     }
 
     repair_resume_pinned(&mut pinned, version, plan, &plan.bucket, lock_key).await
@@ -1242,11 +1234,7 @@ async fn repair_resume_body(
         let pre_cache =
             compute_leaf_identity_cache(ctx, plan)
                 .await
-                .map_err(|e| RepairError::LedgerIo {
-                    source: DjogiError::Db(crate::error::DbError::other(format!(
-                        "leaf-identity pre-check failed: {e}"
-                    ))),
-                })?;
+                .map_err(RepairError::Runner)?;
         let pre_identity = serialize_leaf_identity(&pre_cache).unwrap_or_default();
         if pre_identity != *stored_identity {
             return Err(RepairError::LeafIdentityMismatch {
@@ -1277,11 +1265,7 @@ async fn repair_resume_body(
                         replay_total_steps: 0,
                     }
                 }
-                other => RepairError::LedgerIo {
-                    source: DjogiError::Db(crate::error::DbError::other(format!(
-                        "materialize_execution_plan failed: {other}"
-                    ))),
-                },
+                other => RepairError::Runner(other),
             })?;
 
     check_phase_zero_materialized_resume_stream(version, &materialized_plan)?;
