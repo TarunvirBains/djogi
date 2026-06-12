@@ -2308,6 +2308,21 @@ mod tests {
         assert!(level2.downcast_ref::<DjogiError>().is_some());
     }
 
+    // ── ReplayPlanShapeMismatch display ─────────────────────
+
+    #[test]
+    fn repair_error_replay_plan_shape_mismatch_display_names_counts() {
+        let e = RepairError::ReplayPlanShapeMismatch {
+            version: "V20260526031700__shape".to_string(),
+            expected_step_count: 5,
+            actual_step_count: 1,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("V20260526031700__shape"));
+        assert!(msg.contains("completed 1 step(s)"));
+        assert!(msg.contains("expected 5"));
+    }
+
     #[test]
     fn repair_leaf_identity_mismatch_display() {
         let err = RepairError::LeafIdentityMismatch {
