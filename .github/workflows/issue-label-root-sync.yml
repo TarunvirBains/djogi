@@ -69,8 +69,6 @@ jobs:
                   "concurrent",
                   "race",
                   "racy",
-                  "lock",
-                  "locking",
                   "deadlock",
                   "advisory lock",
                   "advisory-lock",
@@ -85,10 +83,10 @@ jobs:
                   "cancel"
                 ],
                 rules: [
-                  { label: "bug/concurrency/lock", terms: ["advisory lock", "advisory-lock", "advisory_lock", "deadlock", "lock", "locking", "mutex"] },
+                  { label: "bug/concurrency/lock", terms: ["advisory lock", "advisory-lock", "advisory_lock", "deadlock", "mutex"] },
                   { label: "bug/concurrency/race", terms: ["race condition", "data race", "racy", "parallel"] },
                   { label: "bug/concurrency/lifecycle", terms: ["panic", "cancel", "drop", "tenant", "pool", "context", "lifecycle", "shutdown"] },
-                  { label: "bug/concurrency/idempotence", terms: ["idempotent", "idempotence", "duplicate", "resume", "replay", "checkpoint", "retry", "non-transactional"] },
+                  { label: "bug/concurrency/idempotence", terms: ["idempotent", "idempotence", "at-most-once", "exactly-once", "exactly once", "duplicate execution", "resume", "non-transactional"] },
                 ],
               },
               {
