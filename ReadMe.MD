@@ -90,3 +90,16 @@ The full specification lives in [`docs/spec/`](docs/spec/index.md). Key docs:
 | [Architecture Principles](docs/spec/architecture-principles.md) | Framework boundaries and design decisions |
 | [Raw SQL Escape Hatches](docs/spec/raw-sql-escape-hatches.md) | Bypass points for hand-rolled SQL and direct driver access |
 | [Scope & Boundaries](docs/spec/scope.md) | What belongs in Djogi vs an app crate |
+
+## Deep Links
+
+- [Query aggregation](docs/guide/query-aggregation.md) — `rollup`, `cube`, `group_by_sets`, and typed aggregate forms.
+- [Enums](docs/guide/enums.md) — Postgres enum modeling via `DjogiEnum`.
+- [Arrays](docs/guide/arrays.md) — Array field operators and semantics.
+- [Tracked fields](docs/guide/tracked-fields.md) — Dirty tracking and selective write behavior.
+- [Optimistic locking](docs/guide/optimistic-locking.md) — Version-based conflict control.
+- [Apps](docs/guide/apps.md) — Multi-app registration and shared-cluster workflows.
+- [Shell](docs/spec/shell.md) — Rhai shell trajectory and operational scripting context.
+- [Maahi](docs/spec/maahi/index.md) — Admin console and RBAC direction.
+- [Design decisions](docs/spec/decisions.md) — Long-form architecture rationale.
+- [The hypothesis](docs/hypothesis.md) — Why model-first data tooling.
