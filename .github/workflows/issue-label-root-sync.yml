@@ -1,0 +1,52 @@
+name: Sync bug label parents
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    name: Add missing bug parent labels
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ensure parent category labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            if (!issue) {
+              return;
+            }
+
+            const labels = issue.labels?.map((l) => l.name) ?? [];
+            const categoryRoots = [
+              "bug/concurrency",
+              "bug/db-control-plane",
+              "bug/query-schema",
+            ];
+
+            const requiredParents = new Set();
+            for (const label of labels) {
+              for (const root of categoryRoots) {
+                if (label.startsWith(`${root}/`) && !requiredParents.has(root)) {
+                  requiredParents.add(root);
+                }
+              }
+            }
+
+            const toAdd = [...requiredParents].filter((root) => !labels.includes(root));
+            if (toAdd.length === 0) {
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              labels: toAdd,
+            });
