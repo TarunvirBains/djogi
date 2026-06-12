@@ -2436,6 +2436,7 @@ fn repair_error_exit_code(err: &RepairError) -> i32 {
         | RepairError::PinnedSessionCheckoutFailed { .. } // could not check out a pinned session from the pool
         | RepairError::ResumeStepFailed { .. }        // a replayed statement failed; partial state recorded, retryable
         | RepairError::ResumeProgressAckFailed { .. } // step committed but the progress ack write failed; retryable
+        | RepairError::Runner(..)                     // runner-level failure during repair (identity binding, leaf-identity probe, plan materialization); wraps a transient SQL/connection/catalog source
         => 1,
 
         // ── Exit 2: refusals and structural / ledger-logic guards.
