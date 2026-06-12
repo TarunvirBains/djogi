@@ -28,6 +28,19 @@ jobs:
             const text = `${issue.title ?? ""} ${issue.body ?? ""}`.toLowerCase();
 
             const has = (term) => text.includes(term);
+            const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const hasWord = (term) => {
+              if (term.includes(" ") || /[^\w]/.test(term)) {
+                return has(term);
+              }
+              return new RegExp(`(?:^|[^a-z0-9_])${escapeRegex(term)}(?:[^a-z0-9_]|$)`, "i").test(text);
+            };
+            const hasTerm = (term) => {
+              if (term.endsWith("*")) {
+                return has(term.slice(0, -1));
+              }
+              return hasWord(term);
+            };
             const hasRegex = (pattern) => new RegExp(pattern, "i").test(text);
 
             const isBug = hasLabel.has("bug") ||
@@ -75,7 +88,7 @@ jobs:
                   { label: "bug/concurrency/lock", terms: ["advisory lock", "advisory-lock", "advisory_lock", "deadlock", "lock", "locking", "mutex"] },
                   { label: "bug/concurrency/race", terms: ["race", "racy", "parallel", "concurrent", "concurrency"] },
                   { label: "bug/concurrency/lifecycle", terms: ["panic", "cancel", "drop", "tenant", "pool", "context", "lifecycle", "shutdown"] },
-                  { label: "bug/concurrency/idempotence", terms: ["idempot", "resume", "duplicate", "replay", "checkpoint", "retry", "non-transactional"] },
+                  { label: "bug/concurrency/idempotence", terms: ["idempotent", "idempotence", "duplicate", "resume", "replay", "checkpoint", "retry", "non-transactional"] },
                 ],
               },
               {
@@ -138,11 +151,11 @@ jobs:
             const addForDomain = new Set();
             for (const domain of domains) {
               let matchedSpecific = false;
-              const domainSignals = domain.signals.some((term) => has(term));
-              const anyRuleMatched = domain.rules.some((rule) => rule.terms.some((term) => has(term)));
+              const domainSignals = domain.signals.some((term) => hasTerm(term));
+              const anyRuleMatched = domain.rules.some((rule) => rule.terms.some((term) => hasTerm(term)));
 
               for (const rule of domain.rules) {
-                const matched = rule.terms.some((term) => has(term));
+                const matched = rule.terms.some((term) => hasTerm(term));
                 if (matched) {
                   addLabels.add(rule.label);
                   matchedSpecific = true;
@@ -167,7 +180,7 @@ jobs:
             ];
 
             for (const rule of classification) {
-              const matched = rule.terms.some((term) => has(term));
+              const matched = rule.terms.some((term) => hasTerm(term));
               if (matched) {
                 addLabels.add(rule.label);
               }
