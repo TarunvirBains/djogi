@@ -641,11 +641,12 @@ where
         bucket_models.entry(bucket).or_default();
     }
 
-    // Enums — global namespace, but emitted into every bucket whose
-    // models reference them. For now, emit each enum into every
-    // bucket that holds at least one model (simple and correct for
-    // 0.1.0; the differ can refine if needed). Enforce duplicate
-    // postgres_type detection.
+    // Enums — global namespace, scoped per-bucket to only those enums
+    // actually referenced by that bucket's tables (via exact sql_type
+    // equality). Creation ownership across buckets is reconciled at
+    // compose time; the projection layer answers "which enums does this
+    // bucket's schema depend on". Enforce duplicate postgres_type
+    // detection.
     let mut enum_map: BTreeMap<&str, EnumSchema> = BTreeMap::new();
     let mut enum_rust_type_for_pg: BTreeMap<&str, &str> = BTreeMap::new();
     for e in enums {
@@ -807,10 +808,20 @@ where
             (a.table.as_str(), a.name.as_str()).cmp(&(b.table.as_str(), b.name.as_str()))
         });
 
-        // Per-bucket enum projection — for now, every bucket sees the
-        // global enum set. may scope enums per app.
+        // Per-bucket enum projection — scoped to the enums this
+        // bucket's tables actually reference (directly or as arrays).
+        // Creation ownership across buckets is reconciled at compose
+        // time; the projection layer only answers "which enums does
+        // this bucket's schema depend on".
         let bucket_enums: BTreeMap<String, EnumSchema> = enum_map
             .iter()
+            .filter(|(name, _)| {
+                tables.values().any(|t| {
+                    t.columns
+                        .iter()
+                        .any(|c| sql_type_references_enum(&c.sql_type, name))
+                })
+            })
             .map(|(k, v)| ((*k).to_string(), v.clone()))
             .collect();
 
@@ -827,6 +838,19 @@ where
     }
 
     Ok(out)
+}
+
+/// Whether `sql_type` references the enum named `enum_name`.
+/// Shape evidence (#396, recorded from djogi-macros/src/djogi_enum.rs:363):
+/// enum columns carry `<postgres_type>` verbatim as a
+/// `FieldSqlType::Custom(postgres_type)`. The Display impl renders the
+/// bare name (descriptor.rs line 447), so `ColumnSchema.sql_type` is an
+/// exact match — no substring matching, so `mood_archive` never matches
+/// `mood`. Enum-array columns have no macro lowering today; if that
+/// changes, extend this matcher with the observed array spelling and
+/// a test in the same change.
+fn sql_type_references_enum(sql_type: &str, enum_name: &str) -> bool {
+    sql_type == enum_name
 }
 
 /// Returns the current UTC time as RFC 3339, second precision
@@ -6315,5 +6339,99 @@ mod tests {
             app: String::new(),
         };
         assert!(out.contains_key(&global), "global bucket always present");
+    }
+
+    /// REQ-396-1 / REQ-396-2: bucket enums scoped to referencing tables.
+    /// Two buckets, two enums: `mood` referenced by users-bucket column,
+    /// `level` referenced by system-bucket column. Each bucket's projected
+    /// schema must contain exactly its own referenced enum — not the
+    /// global set.
+    #[test]
+    fn bucket_enums_scoped_to_referencing_tables() {
+        static USERS_FIELDS: &[FieldDescriptor] = &[
+            // Enum column — sql_type carries the postgres_type verbatim
+            // (exact equality, no quoting, no schema qualification).
+            // Evidence: djogi-macros/src/djogi_enum.rs line ~280 emits
+            // DjogiSqlType::SQL_TYPE = postgres_type_str; descriptor.rs
+            // FieldSqlType::Custom(s) Display renders as {s}; projection.rs
+            // project_column uses f.sql_type.to_string().
+            FieldDescriptor {
+                ..field_descriptor("status", FieldSqlType::Custom("mood"), true)
+            },
+        ];
+        static SYSTEM_FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("priority", FieldSqlType::Custom("level"), true)
+        }];
+
+        let users_app = synth_app("users", "main");
+        let system_app = synth_app("system", "main");
+
+        let user_model = ModelDescriptor {
+            app: Some("users"),
+            fields: USERS_FIELDS,
+            ..synth_model("users", "User")
+        };
+        let system_model = ModelDescriptor {
+            app: Some("system"),
+            fields: SYSTEM_FIELDS,
+            ..synth_model("system_config", "SystemConfig")
+        };
+
+        let mood_enum = EnumDescriptor {
+            type_name: "Mood",
+            postgres_type: "mood",
+            variants: &["happy", "sad", "neutral"],
+        };
+        let level_enum = EnumDescriptor {
+            type_name: "Level",
+            postgres_type: "level",
+            variants: &["low", "medium", "high"],
+        };
+
+        let buckets = project_from_iters(
+            [&user_model, &system_model],
+            [&mood_enum, &level_enum],
+            [&users_app, &system_app],
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+
+        let users_bucket = BucketKey {
+            database: "main".to_string(),
+            app: "users".to_string(),
+        };
+        let system_bucket = BucketKey {
+            database: "main".to_string(),
+            app: "system".to_string(),
+        };
+
+        // Users bucket should contain only `mood`, not `level`.
+        let users_schema = buckets.get(&users_bucket).expect("users bucket present");
+        assert!(
+            users_schema.enums.contains_key("mood"),
+            "users bucket must contain mood enum (referenced by users.status)"
+        );
+        assert!(
+            !users_schema.enums.contains_key("level"),
+            "users bucket must NOT contain level enum (not referenced by any users table)"
+        );
+
+        // System bucket should contain only `level`, not `mood`.
+        let system_schema = buckets.get(&system_bucket).expect("system bucket present");
+        assert!(
+            system_schema.enums.contains_key("level"),
+            "system bucket must contain level enum (referenced by system_config.priority)"
+        );
+        assert!(
+            !system_schema.enums.contains_key("mood"),
+            "system bucket must NOT contain mood enum (not referenced by any system table)"
+        );
+
+        // Global bucket has no models referencing enums, so it should have none.
+        let global = buckets.get(&empty_global()).expect("global bucket present");
+        assert!(
+            global.enums.is_empty(),
+            "global bucket must have no enums (no models reference any enum)"
+        );
     }
 }

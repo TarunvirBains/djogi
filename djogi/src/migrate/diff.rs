@@ -2809,6 +2809,13 @@ fn severity_of(op: &SchemaOperation) -> Severity {
     }
 }
 
+/// Re-derive the aggregate classification from a list of operations.
+/// Used by the compose pipeline after enum reconciliation modifies
+/// delta operations (REQ-396-3).
+pub(crate) fn classify_operations(ops: &[SchemaOperation]) -> Classification {
+    classify(ops)
+}
+
 fn classify(ops: &[SchemaOperation]) -> Classification {
     if ops.is_empty() {
         return Classification::NoOp;
@@ -3310,7 +3317,11 @@ mod tests {
 
     #[test]
     fn add_enum_is_additive() {
-        let m = synth_model("widgets", "Widget");
+        // Model must reference the enum via <postgres_type> so it projects
+        // into the bucket under per-bucket enum scoping (REQ-396-1).
+        let status_field = field_descriptor("status", FieldSqlType::Custom("status"), true);
+        let fields: &'static [FieldDescriptor] = Box::leak(Box::new([status_field]));
+        let m = model_descriptor("Widget", "widgets", PkType::HeerIdDesc, fields);
         let e = EnumDescriptor {
             type_name: "Status",
             postgres_type: "status",
@@ -3344,7 +3355,11 @@ mod tests {
 
     #[test]
     fn variant_removal_classifies_as_unsupported() {
-        let m = synth_model("widgets", "Widget");
+        // Model must reference the enum via <postgres_type> so it projects
+        // into the bucket under per-bucket enum scoping (REQ-396-1).
+        let status_field = field_descriptor("status", FieldSqlType::Custom("status"), true);
+        let fields: &'static [FieldDescriptor] = Box::leak(Box::new([status_field]));
+        let m = model_descriptor("Widget", "widgets", PkType::HeerIdDesc, fields);
         let two = EnumDescriptor {
             type_name: "Status",
             postgres_type: "status",

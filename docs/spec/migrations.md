@@ -220,6 +220,12 @@ The `users` bucket's pending plan carries `"depends_on": []` (no dependency), wh
 
 **Bump policy.** Pending files use a stricter bump policy than snapshots: they carry `#[serde(deny_unknown_fields)]` and go through a two-stage version peek before structural deserialize. This means additive fields do not get the snapshot exemption — every field addition requires a format version bump, so stale pending files from older Djogi versions are explicitly rejected rather than silently dropping unknown keys. The operator must recompose to proceed.
 
+**Slice apply order.** When a compose stamps multiple buckets at the same version, the runner performs a topological sort over the pending plans' `depends_on` edges before applying. Buckets with no dependencies apply first; buckets that reference them (via FK or shared enum ownership) apply after. This guarantees that referenced tables and shared types exist before any dependent bucket attempts to use them.
+
+**Enum types across slices.** Postgres enum types share one namespace per database. Compose materializes each newly-required enum exactly once, in the first slice (by dependency order) whose models reference it; other referencing slices order after the creating slice via their recorded dependencies. An enum already recorded by any slice's applied snapshot is never re-created. A slice stops referencing an enum without dropping it while other slices still depend on it; the type is dropped by the last referencing slice. `CREATE TYPE` carries no `IF NOT EXISTS` in PostgreSQL — Djogi guarantees uniqueness by construction instead of masking duplicates at runtime.
+
+**Snapshot convergence on upgrade.** When a bucket's only pending delta is a `DropEnum` that compose suppresses (because another bucket still references the type), the bucket's net delta is empty. Rather than returning `NothingToCompose`, compose writes the current scoped snapshot for that bucket and records it in `ComposeReport::converged_snapshot_buckets`. No migration SQL is emitted. This arises when upgrading from a Djogi version that stored enum entries globally across all buckets to one that scopes them per bucket: the first `compose` run advances the stale snapshots and reports each converged bucket; subsequent builds see no drift and no further convergence is needed.
+
 ### 10.6 Differ Surface
 
 The migration differ works from descriptors and snapshots, not by replaying the live database catalog on every build.
