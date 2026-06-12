@@ -586,6 +586,17 @@ fn compose_with_inputs(
                     classification = cb.classification,
                 );
             }
+            for bucket in &report.converged_snapshot_buckets {
+                println!(
+                    "snapshot converged: {database}/{app} — snapshot updated to scoped enum set, no migration needed",
+                    database = bucket.database,
+                    app = if bucket.app.is_empty() {
+                        "_global_"
+                    } else {
+                        bucket.app.as_str()
+                    },
+                );
+            }
             ExitCode::from(0)
         }
         Err(ComposeError::NothingToCompose) => {
