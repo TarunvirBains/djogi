@@ -1702,10 +1702,7 @@ async fn apply_one_pending(
     };
 
     let snap_path = reconstruct_snapshot_path(workspace, &bucket);
-    let drift_baseline = match load_drift_baseline(mode, &snap_path) {
-        Ok(baseline) => baseline,
-        Err(reason) => return ApplyResult::Refused(reason),
-    };
+    let drift_baseline = load_drift_baseline(mode, &snap_path);
 
     // 4. Construct RunnerCtx.
     let runner_ctx = RunnerCtx {
@@ -1821,19 +1818,28 @@ fn reconstruct_snapshot_path(workspace: &Path, bucket: &djogi::migrate::BucketKe
         .join("schema_snapshot.json")
 }
 
-fn load_drift_baseline(mode: &FakeMode, snap_path: &Path) -> Result<DriftBaseline, String> {
+/// Resolve the apply-time drift baseline from the recorded snapshot.
+/// Every on-disk state maps to a typed [`DriftBaseline`] — never an error:
+/// - `--fake` apply disables the gate ([`DriftBaseline::Disabled`]).
+/// - A readable snapshot becomes [`DriftBaseline::Snapshot`].
+/// - A missing file becomes [`DriftBaseline::Missing`].
+/// - A present-but-unreadable file becomes [`DriftBaseline::Corrupted`],
+///   carrying the parse/IO error text.
+///
+/// The runner decides whether each non-`Disabled` state refuses (the bucket
+/// has applied history) or self-skips (the bucket was never applied), so this
+/// loader must not collapse a corrupt snapshot into a hard error — doing so
+/// would refuse even a never-applied bucket, where drift is undefined.
+fn load_drift_baseline(mode: &FakeMode, snap_path: &Path) -> DriftBaseline {
     if let FakeMode::Fake { .. } = mode {
-        return Ok(DriftBaseline::Disabled);
+        return DriftBaseline::Disabled;
     }
     match load_snapshot(snap_path) {
-        Ok(snapshot) => Ok(DriftBaseline::Snapshot(snapshot)),
+        Ok(snapshot) => DriftBaseline::Snapshot(snapshot),
         Err(SnapshotError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
-            Ok(DriftBaseline::Missing)
+            DriftBaseline::Missing
         }
-        Err(e) => Err(format!(
-            "load drift baseline snapshot {}: {e}",
-            snap_path.display()
-        )),
+        Err(e) => DriftBaseline::Corrupted(e.to_string()),
     }
 }
 
@@ -6263,6 +6269,13 @@ mod tests {
                 2,
             ),
             (
+                RunnerError::DriftBaselineCorrupted {
+                    bucket: bucket.clone(),
+                    reason: "unexpected end of input".to_string(),
+                },
+                2,
+            ),
+            (
                 RunnerError::DriftPreflightFailed {
                     source: Box::new(djogi::migrate::verify::VerifyRunError::CatalogQueryFailed {
                         query_label: "columns",
@@ -6408,30 +6421,28 @@ mod tests {
                     },
                     &missing,
                 ),
-                Ok(DriftBaseline::Disabled)
+                DriftBaseline::Disabled
             ),
             "fake apply must not touch the snapshot path"
         );
         assert!(
             matches!(
                 load_drift_baseline(&FakeMode::Real, &missing),
-                Ok(DriftBaseline::Missing)
+                DriftBaseline::Missing
             ),
             "real apply must surface missing snapshot as a typed baseline state"
         );
     }
 
     #[test]
-    fn load_drift_baseline_real_corrupt_snapshot_refuses() {
+    fn load_drift_baseline_real_corrupt_snapshot_maps_to_corrupted() {
         let work = temp_workspace("load-drift-baseline-corrupt");
         let path = work.join("schema_snapshot.json");
         fs::write(&path, b"{ not json").unwrap();
-
-        let err = load_drift_baseline(&FakeMode::Real, &path)
-            .expect_err("corrupt snapshot must not disable drift detection");
+        let baseline = load_drift_baseline(&FakeMode::Real, &path);
         assert!(
-            err.contains("load drift baseline snapshot"),
-            "expected named helper context in error: {err}"
+            matches!(baseline, DriftBaseline::Corrupted(_)),
+            "corrupt snapshot must map to DriftBaseline::Corrupted, got: {baseline:?}"
         );
     }
 
