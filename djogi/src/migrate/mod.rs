@@ -142,7 +142,8 @@ pub use repair::{
     repair_snapshot_rebuild,
 };
 pub use reset::{
-    ReplayedMigration, ResetError, ResetRefusal, ResetReport, ResetRequest, ResetSqlSide,
+    FallbackReplayPlan, FallbackReplayPlanError, ReplayedMigration, ResetError, ResetRefusal,
+    ResetReport, ResetRequest, ResetSqlSide, canonical_fallback_replay_plan,
     compute_committed_down_sql_checksum, compute_committed_sql_checksum, replace_db_in_url,
     reset_app_database,
 };

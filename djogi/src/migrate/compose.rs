@@ -3035,6 +3035,90 @@ mod tests {
     }
 
     #[test]
+    fn fallback_plan_round_trips_rendered_helper_prelude_files() {
+        let work = temp_workspace("numeric-array-helper-fallback");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+
+        let mut models = BTreeMap::new();
+        let mut model_snapshot = snapshot_with_widgets(&bucket);
+        model_snapshot.models.insert(
+            "metrics_events".to_string(),
+            table_with_numeric_array_metric_check(&bucket),
+        );
+        models.insert(bucket.clone(), model_snapshot);
+
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "numeric-array-fallback-round-trip",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: true,
+        };
+
+        let report = compose(req).expect("compose should succeed");
+        assert_eq!(report.composed_buckets.len(), 1);
+        let composed = &report.composed_buckets[0];
+
+        let pending: PendingPlan =
+            serde_json::from_slice(&fs::read(&composed.pending_json_path).unwrap())
+                .expect("parse pending");
+
+        // Read the RENDERED files back from disk — the builder input is
+        // the committed SQL text, never the sidecar (this is the no-sidecar
+        // path; the sidecar compose wrote is deliberately ignored here).
+        let up_sql = fs::read_to_string(&composed.up_sql_path).unwrap();
+        let down_sql = fs::read_to_string(&composed.down_sql_path).unwrap();
+        assert!(
+            up_sql.contains(NUMERIC_ARRAY_HELPER_PRELUDE),
+            "fixture must carry the injected helper prelude: {up_sql}"
+        );
+
+        let built = crate::migrate::canonical_fallback_replay_plan(
+            &bucket,
+            &pending.version,
+            &up_sql,
+            &down_sql,
+        )
+        .expect("rendered helper-prelude files must build a fallback plan");
+
+        // Builder values == the pending/sidecar values, byte for byte.
+        assert_eq!(built.checksum_up, pending.checksum_up);
+        assert_eq!(built.checksum_down, pending.checksum_down);
+        assert!(built.checksum_down.is_some());
+
+        // Runner-verification invariant: the recovered plan rehashes to
+        // the pending checksum, helper prelude included (mirrors
+        // compute_checksum_for_plan_up).
+        let rehash = compute_checksum(
+            built
+                .plan
+                .segments
+                .iter()
+                .flat_map(|segment| segment.statements.iter())
+                .map(|statement| statement.up.as_str()),
+        );
+        assert_eq!(rehash, pending.checksum_up);
+
+        // The prelude is recovered as the leading executable statement.
+        assert_eq!(
+            built.plan.segments[0].statements[0].up,
+            NUMERIC_ARRAY_HELPER_PRELUDE
+        );
+
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
     fn empty_models_and_snapshots_returns_nothing_to_compose() {
         let work = temp_workspace("empty");
         let guard = lock_for(&work);

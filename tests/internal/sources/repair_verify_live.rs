@@ -27,11 +27,13 @@ use djogi::migrate::{
     LossyRollbackPolicy, LossyRollbackWarning, MigrationPlan, OperationSql,
     PHASE_ZERO_VERSION, PartialApplyResolution, RepairConfirmation, RepairError, RollbackError,
     RunnerCtx, RunnerError, RunnerIdentity, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind,
-    VerifySeverity,
+    ResetSqlSide, VerifySeverity,
     WorkspaceGuard, acquire_workspace_lock, advisory_lock_key, apply_plan, baseline_plan,
-    bootstrap_ledger, compute_checksum, fake_apply_plan, repair_checksum_drift,
+    bootstrap_ledger, canonical_fallback_replay_plan, compute_checksum,
+    compute_committed_down_sql_checksum, compute_committed_sql_checksum,
+    fake_apply_plan, repair_checksum_drift,
     repair_partial_apply, repair_resume_partial_apply, repair_snapshot_rebuild, rollback_plan,
-    up_filename, verify, bucket_dir,
+    bucket_dir, down_filename, up_filename, verify,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -2544,6 +2546,339 @@ async fn verify_missing_ledger_emits_d621_without_bootstrap(mut ctx: djogi::Djog
 }
 
 // ── B-9: repair_checksum_drift updates both up and down checksums ───────
+
+const TASK_6_COMPOSED_UP_FIXTURE: &str = "-- Djogi composed migration — up\n\
+                                             -- Version: V20260612000000__add_widgets\n\
+                                             -- Bucket:  main/_global_\n\
+                                             -- Classification: Additive\n\
+                                             --\n\
+                                             -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
+                                             \n\
+                                             -- CreateModel widgets\n\
+                                             CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);\n\
+                                             \n\
+                                             -- AddIndex widgets_id_idx\n\
+                                             CREATE INDEX widgets_id_idx ON \"widgets\" (\"id\");\n\
+                                             \n";
+
+const TASK_6_COMPOSED_DOWN_FIXTURE: &str = "-- Djogi composed migration — down\n\
+                                              -- Version: V20260612000000__add_widgets\n\
+                                              -- Bucket:  main/_global_\n\
+                                              --\n\
+                                              -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
+                                              \n\
+                                              -- AddIndex widgets_id_idx\n\
+                                              DROP INDEX widgets_id_idx;\n\
+                                              \n\
+                                              -- CreateModel widgets\n\
+                                              DROP TABLE \"widgets\";\n\
+                                              \n";
+
+#[djogi::djogi_test]
+async fn fallback_applied_row_passes_canonical_parity_recompute(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    let workspace = temp_workspace_root("fallback-parity-canonical-live");
+    let bucket = BucketKey {
+        database: "main".to_string(),
+        app: "".to_string(),
+    };
+    let bucket_directory = bucket_dir(&workspace, &bucket);
+    std::fs::create_dir_all(&bucket_directory).expect("create bucket dir");
+    let version = "V20260612000000__add_widgets";
+
+    std::fs::write(bucket_directory.join(up_filename(version)), TASK_6_COMPOSED_UP_FIXTURE)
+        .expect("write canonical up fixture");
+    std::fs::write(bucket_directory.join(down_filename(version)), TASK_6_COMPOSED_DOWN_FIXTURE)
+        .expect("write canonical down fixture");
+
+    let built = canonical_fallback_replay_plan(
+        &bucket,
+        version,
+        TASK_6_COMPOSED_UP_FIXTURE,
+        TASK_6_COMPOSED_DOWN_FIXTURE,
+    )
+    .expect("build fallback plan from canonical fragments");
+
+    let mut runner_ctx = make_runner_ctx(&built.plan, version, None, None);
+    runner_ctx.checksum_up = built.checksum_up.clone();
+    runner_ctx.checksum_down = built.checksum_down.clone();
+
+    apply_plan(&mut ctx, &built.plan, &runner_ctx, &_guard)
+        .await
+        .expect("fallback replay should apply");
+
+    let stored_up: String = ctx
+        .raw_scalar(
+            "SELECT checksum_up FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read up checksum");
+    let stored_down: Option<String> = ctx
+        .raw_scalar(
+            "SELECT checksum_down FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read down checksum");
+
+    let expected_up =
+        compute_committed_sql_checksum(TASK_6_COMPOSED_UP_FIXTURE, ResetSqlSide::Up);
+    let expected_down = compute_committed_down_sql_checksum(TASK_6_COMPOSED_DOWN_FIXTURE);
+    assert_eq!(stored_up, expected_up);
+    assert_eq!(stored_down, expected_down);
+
+    let report = repair_checksum_drift(
+        &mut ctx,
+        &_guard,
+        &bucket,
+        version,
+        &workspace,
+        &expected_up,
+        expected_down.as_deref(),
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect("repair canonical no-op");
+
+    let up_change = report
+        .ledger_changes
+        .iter()
+        .find(|change| change.column == "checksum_up")
+        .expect("checksum_up repair change");
+    let down_change = report
+        .ledger_changes
+        .iter()
+        .find(|change| change.column == "checksum_down")
+        .expect("checksum_down repair change");
+    assert_eq!(up_change.before, expected_up);
+    assert_eq!(up_change.after, expected_up);
+    assert_eq!(down_change.before, expected_down.clone().unwrap_or_else(|| "<none>".to_string()));
+    assert_eq!(down_change.after, expected_down.unwrap_or_else(|| "<none>".to_string()));
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[djogi::djogi_test]
+async fn repair_checksum_drift_reconciles_legacy_fallback_row(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    let workspace = temp_workspace_root("legacy-fallback-reconcile-live");
+    let bucket = BucketKey {
+        database: "main".to_string(),
+        app: "".to_string(),
+    };
+    let bucket_directory = bucket_dir(&workspace, &bucket);
+    std::fs::create_dir_all(&bucket_directory).expect("create bucket dir");
+    let version = "V20260612000001__legacy_fallback";
+
+    let up_sql = TASK_6_COMPOSED_UP_FIXTURE;
+    let down_sql = TASK_6_COMPOSED_DOWN_FIXTURE;
+    std::fs::write(bucket_directory.join(up_filename(version)), up_sql)
+        .expect("write legacy up fixture");
+    std::fs::write(bucket_directory.join(down_filename(version)), down_sql)
+        .expect("write legacy down fixture");
+
+    let plan = transactional_plan(vec![op("Legacy fallback path", up_sql, down_sql)]);
+    let mut runner_ctx = make_runner_ctx(&plan, version, None, None);
+    runner_ctx.checksum_up = compute_checksum([up_sql]);
+    runner_ctx.checksum_down = None;
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("legacy fallback write should apply");
+
+    let stored_up: String = ctx
+        .raw_scalar(
+            "SELECT checksum_up FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read legacy up checksum");
+    let stored_down: Option<String> = ctx
+        .raw_scalar(
+            "SELECT checksum_down FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read legacy down checksum");
+
+    assert_eq!(stored_up, compute_checksum([up_sql]));
+    assert!(stored_down.is_none());
+
+    let canonical_up = compute_committed_sql_checksum(up_sql, ResetSqlSide::Up);
+    let canonical_down = compute_committed_down_sql_checksum(down_sql);
+    assert_ne!(stored_up, canonical_up);
+    assert_ne!(stored_down, canonical_down);
+
+    repair_checksum_drift(
+        &mut ctx,
+        &_guard,
+        &bucket,
+        version,
+        &workspace,
+        &canonical_up,
+        canonical_down.as_deref(),
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect("repair legacy fallback row");
+
+    let repaired_up: String = ctx
+        .raw_scalar(
+            "SELECT checksum_up FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read repaired up checksum");
+    let repaired_down: Option<String> = ctx
+        .raw_scalar(
+            "SELECT checksum_down FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read repaired down checksum");
+    assert_eq!(repaired_up, canonical_up);
+    assert_eq!(repaired_down, canonical_down);
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[djogi::djogi_test]
+async fn repair_checksum_drift_reconciles_non_composed_legacy_down_only_row(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let workspace = temp_workspace_root("noncomposed-legacy-fallback-reconcile-live");
+    let bucket = BucketKey {
+        database: "main".to_string(),
+        app: "".to_string(),
+    };
+    let bucket_directory = bucket_dir(&workspace, &bucket);
+    std::fs::create_dir_all(&bucket_directory).expect("create bucket dir");
+    let version = "V20260612000002__non_composed_legacy";
+    let up_sql = "CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);\n";
+    let down_sql = "DROP TABLE \"widgets\";\n";
+    std::fs::write(bucket_directory.join(up_filename(version)), up_sql)
+        .expect("write legacy noncomposed up");
+    std::fs::write(bucket_directory.join(down_filename(version)), down_sql)
+        .expect("write legacy noncomposed down");
+
+    let plan = transactional_plan(vec![op("Legacy non-composed fallback path", up_sql, down_sql)]);
+    let mut runner_ctx = make_runner_ctx(&plan, version, None, None);
+    runner_ctx.checksum_up = compute_checksum([up_sql]);
+    runner_ctx.checksum_down = None;
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("legacy non-composed fallback should apply");
+
+    let stored_up: String = ctx
+        .raw_scalar(
+            "SELECT checksum_up FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read legacy up checksum");
+    let stored_down: Option<String> = ctx
+        .raw_scalar(
+            "SELECT checksum_down FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read legacy down checksum");
+
+    let canonical_up = compute_committed_sql_checksum(up_sql, ResetSqlSide::Up);
+    let canonical_down = compute_committed_down_sql_checksum(down_sql);
+    assert_eq!(stored_up, canonical_up);
+    assert!(stored_down.is_none());
+
+    repair_checksum_drift(
+        &mut ctx,
+        &_guard,
+        &bucket,
+        version,
+        &workspace,
+        &canonical_up,
+        canonical_down.as_deref(),
+        RepairConfirmation::OperatorAcknowledged,
+    )
+    .await
+    .expect("repair legacy non-composed down-only row");
+
+    let repaired_up: String = ctx
+        .raw_scalar(
+            "SELECT checksum_up FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read repaired up checksum");
+    let repaired_down: Option<String> = ctx
+        .raw_scalar(
+            "SELECT checksum_down FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("read repaired down checksum");
+
+    assert_eq!(repaired_up, canonical_up);
+    assert_eq!(repaired_down, canonical_down);
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[djogi::djogi_test]
+async fn fallback_plan_with_comment_only_fragment_applies_cleanly(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    let bucket = BucketKey {
+        database: "main".to_string(),
+        app: "".to_string(),
+    };
+    let version = "V20260612000003__comment_only_fragment";
+    let up_sql = "-- Djogi composed migration — up\n\
+                 -- Version: V20260612000003__comment_only_fragment\n\
+                 -- Bucket:  main/_global_\n\
+                 -- Classification: Additive\n\
+                 --\n\
+                 -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
+                 \n\
+                 -- CreateTable widgets\n\
+                 CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);\n\
+                 \n\
+                 -- RenameApp bookkeeping\n\
+                 -- handled at the ledger layer\n\
+                 \n";
+    let down_sql = "-- Djogi composed migration — down\n\
+                  -- Version: V20260612000003__comment_only_fragment\n\
+                  -- Bucket:  main/_global_\n\
+                  --\n\
+                  -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
+                  \n\
+                  -- DropTable widgets\n\
+                  DROP TABLE \"widgets\";\n\
+                  \n\
+                  -- RenameApp bookkeeping\n\
+                  -- nothing to undo\n\
+                  \n";
+
+    let built = canonical_fallback_replay_plan(&bucket, version, up_sql, down_sql)
+        .expect("build fallback plan for comment-only fragment");
+    let mut runner_ctx = make_runner_ctx(&built.plan, version, None, None);
+    runner_ctx.checksum_up = built.checksum_up;
+    runner_ctx.checksum_down = built.checksum_down;
+
+    apply_plan(&mut ctx, &built.plan, &runner_ctx, &_guard)
+        .await
+        .expect("comment-only fragments should apply cleanly");
+
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'widgets' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("read table existence");
+    assert!(exists, "created table must still be present");
+}
 
 #[djogi::djogi_test]
 async fn repair_checksum_drift_repairs_both_up_and_down(mut ctx: djogi::DjogiContext) {
