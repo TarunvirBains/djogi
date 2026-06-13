@@ -358,6 +358,12 @@ pub enum RunnerError {
     /// reported it missing on disk.
     DriftBaselineMissing { bucket: BucketKey },
 
+    /// The drift pre-flight baseline file exists but could not be read or
+    /// deserialized. Same refusal contract as
+    /// [`RunnerError::DriftBaselineMissing`]: no pending ledger row, no
+    /// user-schema mutation, no migration SQL.
+    DriftBaselineCorrupted { bucket: BucketKey, reason: String },
+
     /// Apply-time drift pre-flight could not complete its read-only
     /// verify projection before any migration SQL ran.
     DriftPreflightFailed {
@@ -538,6 +544,7 @@ impl RunnerError {
             | Self::StalePhaseZeroArtifact { .. }
             | Self::DriftDetected { .. }
             | Self::DriftBaselineMissing { .. }
+            | Self::DriftBaselineCorrupted { .. }
             | Self::OutOfOrderRejected { .. }
             | Self::PkFlipHazardReplicaSessions { .. }
             | Self::PkFlipHazardPreexistingZzzTrigger { .. }
@@ -819,6 +826,17 @@ impl std::fmt::Display for RunnerError {
                 db = bucket.database,
                 app = bucket.app,
             ),
+            RunnerError::DriftBaselineCorrupted { bucket, reason } => write!(
+                f,
+                "drift pre-flight refused apply for database={db} app={app}: \
+                 the recorded snapshot baseline (`schema_snapshot.json`) exists \
+                 but could not be read: {reason}. No migration SQL was executed \
+                 and no pending ledger row was written. Restore the snapshot \
+                 from version control or rebuild it with \
+                 `djogi migrations repair snapshot-rebuild`.",
+                db = bucket.database,
+                app = bucket.app,
+            ),
             RunnerError::DriftPreflightFailed { source } => {
                 write!(f, "drift pre-flight could not run: {source}")
             }
@@ -949,6 +967,7 @@ impl std::error::Error for RunnerError {
             RunnerError::BaselineProjectionFailed { source } => Some(source.as_ref()),
             RunnerError::DriftDetected { .. } => None,
             RunnerError::DriftBaselineMissing { .. } => None,
+            RunnerError::DriftBaselineCorrupted { .. } => None,
             RunnerError::DriftPreflightFailed { source } => Some(source.as_ref()),
             RunnerError::CatalogQueryFailed { source, .. } => Some(source),
             RunnerError::LedgerQueryFailed { source, .. } => Some(source),
@@ -1037,6 +1056,12 @@ pub enum DriftBaseline {
     Missing,
     /// The recorded snapshot baseline to verify against before apply.
     Snapshot(super::schema::AppliedSchema),
+    /// The snapshot file exists but could not be deserialized (corrupt or
+    /// wrong format). The runner skips the gate when the bucket has never
+    /// been applied (drift is undefined without a prior applied state) and
+    /// refuses with [`RunnerError::DriftBaselineCorrupted`] when the bucket
+    /// has applied history.
+    Corrupted(String),
 }
 
 /// Caller-supplied context for one runner invocation. Decouples the
@@ -1402,7 +1427,7 @@ async fn apply_plan_inner(
     }
     match &runner_ctx.drift_baseline {
         DriftBaseline::Disabled => {}
-        DriftBaseline::Missing | DriftBaseline::Snapshot(_) => {
+        DriftBaseline::Missing | DriftBaseline::Corrupted(_) | DriftBaseline::Snapshot(_) => {
             let has_applied_history = bucket_has_applied_history(ctx, &plan.bucket)
                 .await
                 .map_err(|e| RunnerError::LedgerQueryFailed {
@@ -1415,6 +1440,12 @@ async fn apply_plan_inner(
                     DriftBaseline::Missing => {
                         return Err(RunnerError::DriftBaselineMissing {
                             bucket: plan.bucket.clone(),
+                        });
+                    }
+                    DriftBaseline::Corrupted(reason) => {
+                        return Err(RunnerError::DriftBaselineCorrupted {
+                            bucket: plan.bucket.clone(),
+                            reason: reason.clone(),
                         });
                     }
                     DriftBaseline::Snapshot(snapshot) => {
@@ -5604,6 +5635,13 @@ mod tests {
                 true,
             ),
             (
+                RunnerError::DriftBaselineCorrupted {
+                    bucket: bucket("main", "billing"),
+                    reason: String::new(),
+                },
+                true,
+            ),
+            (
                 RunnerError::OutOfOrderRejected {
                     version: "V20260101000000__add_users".to_string(),
                     conflicting_version: "V20260102000000__add_orders".to_string(),
@@ -5874,6 +5912,20 @@ mod tests {
             msg.contains("djogi migrations repair snapshot-rebuild"),
             "got: {msg}"
         );
+        assert!(std::error::Error::source(&e).is_none());
+    }
+
+    #[test]
+    fn drift_baseline_corrupted_display_names_bucket_and_recovery_commands() {
+        let e = RunnerError::DriftBaselineCorrupted {
+            bucket: bucket("main", "billing"),
+            reason: "unexpected end of input".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("database=main"), "got: {msg}");
+        assert!(msg.contains("app=billing"), "got: {msg}");
+        assert!(msg.contains("schema_snapshot.json"), "got: {msg}");
+        assert!(msg.contains("repair snapshot-rebuild"), "got: {msg}");
         assert!(std::error::Error::source(&e).is_none());
     }
 
@@ -8445,6 +8497,29 @@ mod tests {
         apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
             .await
             .expect("never-applied bucket must skip the gate for a Missing baseline");
+    }
+
+    /// A never-applied bucket skips the gate when the baseline is reported
+    /// `Corrupted`: drift is undefined without a prior applied state, so a
+    /// first apply proceeds rather than refusing on an unreadable snapshot.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_skips_drift_gate_on_never_applied_bucket_with_corrupted_baseline(
+        mut ctx: DjogiContext,
+    ) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_corrupted_skip_{n}");
+        let plan = single_table_plan(&table);
+        let guard = acquire_test_workspace_guard();
+        let runner_ctx = runner_ctx_with_drift_baseline(
+            &plan,
+            "V20260613000070__drift_corrupted_skip",
+            DriftBaseline::Corrupted("fake corruption error".to_string()),
+        );
+        apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
+            .await
+            .expect("first apply with Corrupted baseline must succeed on never-applied bucket");
     }
 
     /// A brand-new bucket in an established database skips the gate: the
