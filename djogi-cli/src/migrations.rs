@@ -85,9 +85,8 @@ const CLI_REPLAY_PLAN_FORMAT_VERSION: &str = "1";
 
 /// Load the committed replay plan from disk and convert to a
 /// [`djogi::migrate::MigrationPlan`]. Returns `(plan, checksum_up, checksum_down)`.
-/// Falls back to reading the up/down SQL files and constructing a
-/// single-segment transactional plan when the replay plan JSON is
-/// absent or invalid. This mirrors the reset.rs fallback path.
+/// Falls back to reading up/down SQL files and reconstructing the
+/// canonical fallback plan when the replay plan JSON is absent.
 fn load_replay_plan_from_disk(
     workspace: &Path,
     bucket: &djogi::migrate::BucketKey,
@@ -99,7 +98,18 @@ fn load_replay_plan_from_disk(
     let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
     let replay_plan_path = bucket_dir.join(format!("{version}.plan.json"));
 
-    if let Ok(bytes) = std::fs::read(&replay_plan_path) {
+    let sidecar_bytes = match std::fs::read(&replay_plan_path) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(ApplyReplayPlanError::PlanRead {
+                path: replay_plan_path.clone(),
+                source: e.to_string(),
+            });
+        }
+    };
+
+    if let Some(bytes) = sidecar_bytes {
         let stored: CliReplayPlan = match serde_json::from_slice(&bytes) {
             Ok(s) => s,
             Err(e) => {
@@ -149,7 +159,8 @@ fn load_replay_plan_from_disk(
         return Ok((plan, stored.checksum_up, stored.checksum_down));
     }
 
-    // Fallback: read SQL files and construct single-segment plan.
+    // Fallback: read SQL files and reconstruct the canonical
+    // operation-fragment plan shape from committed migration SQL.
     let up_filename = djogi::migrate::up_filename(version);
     let down_filename = djogi::migrate::down_filename(version);
     let up_path = bucket_dir.join(&up_filename);
@@ -171,43 +182,49 @@ fn load_replay_plan_from_disk(
         }
     };
 
-    // Compute checksum for the single-segment fallback. The runner
-    // recomputes from the plan's SQL fragments and verifies against
-    // what we provide in RunnerCtx, so they must match.
-    let computed_checksum_up = djogi::migrate::compute_checksum([&up_sql]);
+    // Reconstruct canonical fragments from committed SQL so replay
+    // checksums and runner checks align for composed migrations.
+    let fallback =
+        djogi::migrate::canonical_fallback_replay_plan(bucket, version, &up_sql, &down_sql)
+            .map_err(|e| match e {
+                djogi::migrate::FallbackReplayPlanError::NonTransactionalStatement { shape } => {
+                    ApplyReplayPlanError::NonTransactionalWithoutReplayPlan {
+                        shape,
+                        path: replay_plan_path.clone(),
+                    }
+                }
+            })?;
 
-    // Build a single-transactional-segment plan. This is correct for
-    // most migrations — only CONCURRENTLY indexes require non-tx
-    // segments, and those always have a replay plan JSON.
-    let plan = djogi::migrate::MigrationPlan {
-        bucket: bucket.clone(),
-        classification: djogi::migrate::Classification::Additive,
-        segments: vec![djogi::migrate::Segment {
-            kind: djogi::migrate::SegmentKind::Transactional,
-            statements: vec![djogi::migrate::OperationSql {
-                label: format!("replay {version}"),
-                up: up_sql,
-                down: down_sql,
-                lossy: None,
-            }],
-        }],
-    };
+    // Up checksum mismatch means the file changed after compose and the
+    // pending row was generated from different up SQL.
+    if fallback.checksum_up != pending_checksum_up {
+        return Err(ApplyReplayPlanError::FallbackChecksumMismatch {
+            computed: fallback.checksum_up,
+            pending: pending_checksum_up.to_string(),
+        });
+    }
 
-    Ok((plan, computed_checksum_up, None))
+    Ok((fallback.plan, fallback.checksum_up, fallback.checksum_down))
 }
 
 /// Errors from [`load_replay_plan_from_disk`].
 #[derive(Debug)]
 enum ApplyReplayPlanError {
+    PlanRead { path: PathBuf, source: String },
     Parse { path: PathBuf, source: String },
     FormatVersion { found: String, path: PathBuf },
     ChecksumMismatch,
+    NonTransactionalWithoutReplayPlan { shape: &'static str, path: PathBuf },
     SqlRead { path: PathBuf, source: String },
+    FallbackChecksumMismatch { computed: String, pending: String },
 }
 
 impl std::fmt::Display for ApplyReplayPlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PlanRead { path, source } => {
+                write!(f, "read replay plan {}: {source}", path.display())
+            }
             Self::Parse { path, source } => {
                 write!(f, "parse replay plan {}: {source}", path.display())
             }
@@ -221,9 +238,22 @@ impl std::fmt::Display for ApplyReplayPlanError {
             Self::ChecksumMismatch => {
                 write!(f, "checksum mismatch between pending JSON and replay plan")
             }
+            Self::NonTransactionalWithoutReplayPlan { shape, path } => write!(
+                f,
+                "migration contains `{shape}`, which cannot replay as a single \
+                 transaction and requires its committed replay plan; restore {} \
+                 (or re-run `djogi migrations compose`) and retry",
+                path.display()
+            ),
             Self::SqlRead { path, source } => {
                 write!(f, "read SQL file {}: {source}", path.display())
             }
+            Self::FallbackChecksumMismatch { computed, pending } => write!(
+                f,
+                "committed up SQL checksum {computed} does not match the pending \
+                 plan's {pending}; the file changed after compose — re-run \
+                 `djogi migrations compose` (or restore the committed file)"
+            ),
         }
     }
 }
@@ -3580,6 +3610,160 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, serde_json::to_vec_pretty(&pending).unwrap()).unwrap();
+    }
+
+    fn write_fallback_migration_files(
+        work: &std::path::Path,
+        version: &str,
+        up: &str,
+        down: Option<&str>,
+    ) -> djogi::migrate::BucketKey {
+        let bucket = djogi::migrate::BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let dir = djogi::migrate::bucket_dir(work, &bucket);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(djogi::migrate::up_filename(version)), up).unwrap();
+        if let Some(down) = down {
+            fs::write(dir.join(djogi::migrate::down_filename(version)), down).unwrap();
+        }
+        bucket
+    }
+
+    const COMPOSED_UP_FIXTURE: &str = "-- Djogi composed migration — up\n\
+                                              -- Version: V20260612000000__add_widgets\n\
+                                              -- Bucket:  main/_global_\n\
+                                              -- Classification: Additive\n\
+                                              --\n\
+                                              -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
+                                              \n\
+                                              -- CreateModel widgets\n\
+                                              CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);\n\
+                                              \n\
+                                              -- AddIndex widgets_id_idx\n\
+                                              CREATE INDEX \"widgets_id_idx\" ON \"widgets\" (\"id\");\n\
+                                              \n";
+
+    const COMPOSED_DOWN_FIXTURE: &str = "-- Djogi composed migration — down\n\
+                                                -- Version: V20260612000000__add_widgets\n\
+                                                -- Bucket:  main/_global_\n\
+                                                --\n\
+                                                -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
+                                                \n\
+                                                -- AddIndex widgets_id_idx\n\
+                                                DROP INDEX \"widgets_id_idx\";\n\
+                                                \n\
+                                                -- CreateModel widgets\n\
+                                                DROP TABLE \"widgets\";\n\
+                                                \n";
+
+    #[test]
+    fn fallback_checksums_match_canonical_domain_for_composed_file() {
+        let work = temp_workspace("fallback-canonical");
+        let version = "V20260612000000__add_widgets";
+        let bucket = write_fallback_migration_files(
+            &work,
+            version,
+            COMPOSED_UP_FIXTURE,
+            Some(COMPOSED_DOWN_FIXTURE),
+        );
+        let canonical_up = djogi::migrate::compute_committed_sql_checksum(
+            COMPOSED_UP_FIXTURE,
+            djogi::migrate::ResetSqlSide::Up,
+        );
+        let canonical_down =
+            djogi::migrate::compute_committed_down_sql_checksum(COMPOSED_DOWN_FIXTURE);
+
+        let (plan, checksum_up, checksum_down) = load_replay_plan_from_disk(
+            &work,
+            &bucket,
+            version,
+            &canonical_up,
+            canonical_down.as_deref(),
+        )
+        .expect("fallback must load");
+
+        assert_eq!(checksum_up, canonical_up);
+        assert_eq!(checksum_down, canonical_down);
+        assert!(checksum_down.is_some());
+
+        let rehash = djogi::migrate::compute_checksum(
+            plan.segments
+                .iter()
+                .flat_map(|segment| segment.statements.iter())
+                .map(|stmt| stmt.up.as_str()),
+        );
+        assert_eq!(rehash, checksum_up);
+    }
+
+    #[test]
+    fn fallback_down_checksum_none_for_comment_only_down() {
+        let work = temp_workspace("fallback-comment-down");
+        let version = "V20260612000001__no_rollback";
+        let up = "CREATE TABLE plain (id BIGINT);\n";
+        let bucket = write_fallback_migration_files(&work, version, up, Some("-- no rollback\n"));
+        let pending_up = djogi::migrate::compute_checksum([up]);
+        let (_, _, checksum_down) =
+            load_replay_plan_from_disk(&work, &bucket, version, &pending_up, None).expect("load");
+        assert_eq!(checksum_down, None);
+    }
+
+    #[test]
+    fn fallback_down_checksum_some_for_executable_hand_authored_down() {
+        let work = temp_workspace("fallback-plain-down");
+        let version = "V20260612000002__plain";
+        let up = "CREATE TABLE plain (id BIGINT);\n";
+        let down = "DROP TABLE plain;\n";
+        let bucket = write_fallback_migration_files(&work, version, up, Some(down));
+        let pending_up = djogi::migrate::compute_checksum([up]);
+        let pending_down = djogi::migrate::compute_checksum([down]);
+        let (_, checksum_up, checksum_down) =
+            load_replay_plan_from_disk(&work, &bucket, version, &pending_up, Some(&pending_down))
+                .expect("load");
+        assert_eq!(checksum_up, pending_up);
+        assert_eq!(checksum_down, Some(pending_down));
+    }
+
+    #[test]
+    fn fallback_refuses_non_transactional_shape_without_replay_plan() {
+        let work = temp_workspace("fallback-nontx");
+        let version = "V20260612000003__conc_idx";
+        let up = "CREATE INDEX CONCURRENTLY widgets_idx ON widgets (id);";
+        let bucket = write_fallback_migration_files(&work, version, up, None);
+        let pending_up = djogi::migrate::compute_checksum([up]);
+        let err = load_replay_plan_from_disk(&work, &bucket, version, &pending_up, None)
+            .expect_err("non-transactional migrations should refuse fallback");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("CREATE INDEX CONCURRENTLY"),
+            "actionable shape in: {rendered}"
+        );
+    }
+
+    #[test]
+    fn fallback_refuses_when_up_file_diverges_from_pending_checksum() {
+        let work = temp_workspace("fallback-tamper");
+        let version = "V20260612000004__tampered";
+        let bucket = write_fallback_migration_files(&work, version, COMPOSED_UP_FIXTURE, None);
+        let stale_pending = djogi::migrate::compute_checksum(["something else entirely"]);
+        let err = load_replay_plan_from_disk(&work, &bucket, version, &stale_pending, None)
+            .expect_err("up-domain mismatch must not be silently ignored");
+        assert!(err.to_string().contains("checksum"), "actionable: {err}");
+    }
+
+    #[test]
+    fn fallback_unreadable_replay_plan_sidecar_is_an_error_not_a_silent_fallback() {
+        let work = temp_workspace("fallback-badplan");
+        let version = "V20260612000005__badplan";
+        let bucket =
+            write_fallback_migration_files(&work, version, "CREATE TABLE t (id BIGINT);\n", None);
+        let plan_path =
+            djogi::migrate::bucket_dir(&work, &bucket).join(format!("{version}.plan.json"));
+        fs::create_dir_all(&plan_path).unwrap();
+        let pending_up = djogi::migrate::compute_checksum(["CREATE TABLE t (id BIGINT);\n"]);
+        load_replay_plan_from_disk(&work, &bucket, version, &pending_up, None)
+            .expect_err("non-NotFound sidecar read errors must surface");
     }
 
     /// The CLI's bucket-discovery walk must include directories that exist
