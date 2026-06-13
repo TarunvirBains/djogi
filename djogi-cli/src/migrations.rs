@@ -4576,6 +4576,588 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
+    fn bucket_snapshot(
+        app: &str,
+        models: std::collections::BTreeMap<String, djogi::migrate::TableSchema>,
+        indexes: Vec<djogi::migrate::IndexSchema>,
+    ) -> djogi::migrate::AppliedSchema {
+        djogi::migrate::AppliedSchema {
+            djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+            enums: std::collections::BTreeMap::new(),
+            format_version: djogi::migrate::SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-06-13T00:00:00Z".to_string(),
+            indexes,
+            models,
+            registered_apps: vec![app.to_string()],
+        }
+    }
+
+    fn simple_table(
+        app: &str,
+        table: &str,
+        mut columns: Vec<djogi::migrate::ColumnSchema>,
+    ) -> djogi::migrate::TableSchema {
+        for column in &mut columns {
+            if column.name == "id" && column.default_sql.is_none() {
+                column.default_sql = Some("heerid_next_desc()".to_string());
+            }
+        }
+        djogi::migrate::TableSchema {
+            app: Some(app.to_string()),
+            columns,
+            primary_key: djogi::migrate::PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: djogi::migrate::PkKindSchema::HeerIdRecencyBiased,
+            },
+            table: table.to_string(),
+            ..default_table()
+        }
+    }
+
+    fn id_col() -> djogi::migrate::ColumnSchema {
+        djogi::migrate::ColumnSchema {
+            name: "id".to_string(),
+            sql_type: "BIGINT".to_string(),
+            nullable: false,
+            default_sql: Some("heerid_next_desc()".to_string()),
+            ..default_col()
+        }
+    }
+
+    fn text_col(name: &str, nullable: bool) -> djogi::migrate::ColumnSchema {
+        djogi::migrate::ColumnSchema {
+            name: name.to_string(),
+            sql_type: "TEXT".to_string(),
+            nullable,
+            ..default_col()
+        }
+    }
+
+    fn bigint_fk_col(
+        name: &str,
+        ref_table: &str,
+        on_delete: djogi::migrate::OnDeleteSchema,
+    ) -> djogi::migrate::ColumnSchema {
+        djogi::migrate::ColumnSchema {
+            name: name.to_string(),
+            sql_type: "BIGINT".to_string(),
+            nullable: false,
+            foreign_key: Some(djogi::migrate::ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
+                on_delete,
+                ref_column: "id".to_string(),
+                ref_table: ref_table.to_string(),
+            }),
+            ..default_col()
+        }
+    }
+
+    fn btree_index(table: &str, name: &str, column: &str) -> djogi::migrate::IndexSchema {
+        djogi::migrate::IndexSchema {
+            extension_dependency: None,
+            include: vec![],
+            index_type: djogi::migrate::IndexTypeSchema::BTree,
+            kind: djogi::migrate::IndexKindSchema::NonUnique,
+            name: name.to_string(),
+            nulls_not_distinct: false,
+            predicate: None,
+            requires_out_of_transaction: false,
+            table: table.to_string(),
+            target: djogi::migrate::IndexTargetSchema::Columns(vec![
+                djogi::migrate::IndexColumnSchema {
+                    name: column.to_string(),
+                    nulls: djogi::migrate::IndexNullsOrderSchema::Default,
+                    opclass: None,
+                    order: djogi::migrate::IndexOrderSchema::Asc,
+                },
+            ]),
+        }
+    }
+
+    async fn run_apply_in_test_db(
+        ctx: &mut djogi::context::DjogiContext,
+        work: &std::path::Path,
+        mode: FakeMode,
+    ) -> i32 {
+        let test_db = ctx
+            .raw_scalar::<String>("SELECT current_database()", &[])
+            .await
+            .expect("current_database");
+        let admin_url = std::env::var("DATABASE_URL").expect(
+            "DATABASE_URL must be set for djogi_test \
+             (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
+        );
+        let test_db_url = replace_db_in_url(&admin_url, &test_db)
+            .expect("construct per-test database URL from DATABASE_URL");
+
+        fs::write(
+            work.join("Djogi.toml"),
+            format!(
+                "[database]\nurl = \"{test_db_url}\"\n\
+                 max_connections = 1\ndev_mode = false\n\
+                 [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
+            ),
+        )
+        .unwrap();
+
+        let db_url_guard = DatabaseUrlEnvGuard::new();
+        db_url_guard.set(&test_db_url);
+
+        let exit = {
+            let work = work.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(run_apply(&work, &mode, None, true))
+            })
+            .await
+            .expect("spawn_blocking join")
+        };
+
+        drop(db_url_guard);
+        exit
+    }
+
+    fn compose_bucket_migration(
+        work: &std::path::Path,
+        bucket: &BucketKey,
+        current: djogi::migrate::AppliedSchema,
+        previous: djogi::migrate::AppliedSchema,
+        name: &str,
+        now: time::OffsetDateTime,
+    ) -> djogi::migrate::ComposeReport {
+        let guard = djogi::migrate::acquire_workspace_lock(
+            &work.join(LOCK_FILE_NAME),
+            std::time::Duration::from_secs(5),
+        )
+        .expect("lock workspace");
+
+        let mut models = std::collections::BTreeMap::new();
+        models.insert(bucket.clone(), current);
+
+        let mut snapshots = std::collections::BTreeMap::new();
+        snapshots.insert(bucket.clone(), previous);
+
+        let apps = vec![djogi::migrate::AppLifecycle {
+            label: bucket.app.clone(),
+            database: bucket.database.clone(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+
+        let report = djogi::migrate::compose(djogi::migrate::ComposeRequest {
+            workspace_root: work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &apps,
+            name,
+            allow_destructive: false,
+            force_overwrite: false,
+            now,
+            _guard: &guard,
+            pk_flip_join_table_option: None,
+            skip_phase_zero_auto_emit: false,
+        })
+        .expect("compose");
+        drop(guard);
+        report
+    }
+
+    #[djogi::djogi_test]
+    async fn apply_refuses_on_column_drift_before_second_migration(
+        mut ctx: djogi::context::DjogiContext,
+    ) {
+        static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = DRIFT_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_users_{n}");
+        let bucket = BucketKey {
+            database: "main".into(),
+            app: "billing".into(),
+        };
+        let work = temp_workspace("drift-column-refusal");
+
+        let v1_models = std::collections::BTreeMap::from([(
+            table.clone(),
+            simple_table(&bucket.app, &table, vec![id_col(), text_col("name", false)]),
+        )]);
+        let v1_snapshot = bucket_snapshot(&bucket.app, v1_models.clone(), vec![]);
+        let empty_snapshot =
+            bucket_snapshot(&bucket.app, std::collections::BTreeMap::new(), vec![]);
+        let first_report = compose_bucket_migration(
+            &work,
+            &bucket,
+            v1_snapshot.clone(),
+            empty_snapshot,
+            "drift-column-v1",
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19729),
+        );
+        assert!(
+            !first_report.composed_buckets.is_empty(),
+            "first compose must emit"
+        );
+        let first_version = first_report.composed_buckets[0].version.clone();
+
+        let first_exit = run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await;
+        assert_eq!(first_exit, 0, "initial apply must succeed");
+
+        ctx.raw_execute(
+            &format!("ALTER TABLE {table} RENAME COLUMN name TO full_name"),
+            &[],
+        )
+        .await
+        .expect("rename live column out of band");
+
+        let v2_models = std::collections::BTreeMap::from([(
+            table.clone(),
+            simple_table(
+                &bucket.app,
+                &table,
+                vec![id_col(), text_col("name", false), text_col("email", true)],
+            ),
+        )]);
+        let v2_snapshot = bucket_snapshot(&bucket.app, v2_models, vec![]);
+        let second_report = compose_bucket_migration(
+            &work,
+            &bucket,
+            v2_snapshot,
+            v1_snapshot,
+            "drift-column-v2",
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19730),
+        );
+        let second_version = second_report.composed_buckets[0].version.clone();
+
+        let second_exit = run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await;
+        assert_eq!(second_exit, 2, "drifted apply must refuse");
+
+        let applied_count = ctx
+            .raw_scalar::<i64>(
+                "SELECT count(*) FROM djogi_schema_migrations \
+                 WHERE version = $1 AND app_label = $2",
+                &[&second_version, &bucket.app],
+            )
+            .await
+            .expect("count second-version rows");
+        assert_eq!(
+            applied_count, 0,
+            "refusal must not insert second ledger row"
+        );
+
+        let email_exists = ctx
+            .raw_scalar::<bool>(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = $1 AND column_name = 'email'
+                 )",
+                &[&table],
+            )
+            .await
+            .expect("check email column");
+        assert!(!email_exists, "refusal must precede second migration SQL");
+
+        let first_rows = ctx
+            .raw_scalar::<i64>(
+                "SELECT count(*) FROM djogi_schema_migrations \
+                 WHERE version = $1 AND app_label = $2 AND status = 'applied'",
+                &[&first_version, &bucket.app],
+            )
+            .await
+            .expect("count first-version rows");
+        assert_eq!(first_rows, 1, "baseline apply should remain intact");
+    }
+
+    #[djogi::djogi_test]
+    async fn apply_refuses_on_missing_snapshot_for_applied_bucket(
+        mut ctx: djogi::context::DjogiContext,
+    ) {
+        static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = DRIFT_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_missing_snapshot_{n}");
+        let bucket = BucketKey {
+            database: "main".into(),
+            app: "billing".into(),
+        };
+        let work = temp_workspace("drift-missing-snapshot");
+
+        let v1_models = std::collections::BTreeMap::from([(
+            table.clone(),
+            simple_table(&bucket.app, &table, vec![id_col(), text_col("name", false)]),
+        )]);
+        let v1_snapshot = bucket_snapshot(&bucket.app, v1_models.clone(), vec![]);
+        let empty_snapshot =
+            bucket_snapshot(&bucket.app, std::collections::BTreeMap::new(), vec![]);
+        compose_bucket_migration(
+            &work,
+            &bucket,
+            v1_snapshot.clone(),
+            empty_snapshot,
+            "drift-missing-v1",
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19731),
+        );
+        assert_eq!(
+            run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await,
+            0
+        );
+
+        let v2_models = std::collections::BTreeMap::from([(
+            table.clone(),
+            simple_table(
+                &bucket.app,
+                &table,
+                vec![id_col(), text_col("name", false), text_col("email", true)],
+            ),
+        )]);
+        compose_bucket_migration(
+            &work,
+            &bucket,
+            bucket_snapshot(&bucket.app, v2_models, vec![]),
+            v1_snapshot,
+            "drift-missing-v2",
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19732),
+        );
+
+        let snap_path = reconstruct_snapshot_path(&work, &bucket);
+        fs::remove_file(&snap_path).expect("delete recorded snapshot");
+
+        let exit = run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await;
+        assert_eq!(exit, 2, "missing baseline must refuse on applied bucket");
+    }
+
+    #[djogi::djogi_test]
+    async fn apply_refuses_on_dropped_index_drift(mut ctx: djogi::context::DjogiContext) {
+        static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = DRIFT_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_index_{n}");
+        let index_name = format!("{table}_name_idx");
+        let bucket = BucketKey {
+            database: "main".into(),
+            app: "billing".into(),
+        };
+        let work = temp_workspace("drift-index-refusal");
+
+        let base_table = simple_table(&bucket.app, &table, vec![id_col(), text_col("name", false)]);
+        let v1_snapshot = bucket_snapshot(
+            &bucket.app,
+            std::collections::BTreeMap::from([(table.clone(), base_table.clone())]),
+            vec![btree_index(&table, &index_name, "name")],
+        );
+        let empty_snapshot =
+            bucket_snapshot(&bucket.app, std::collections::BTreeMap::new(), vec![]);
+        compose_bucket_migration(
+            &work,
+            &bucket,
+            v1_snapshot.clone(),
+            empty_snapshot,
+            "drift-index-v1",
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19733),
+        );
+        assert_eq!(
+            run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await,
+            0
+        );
+
+        ctx.raw_execute(&format!("DROP INDEX {index_name}"), &[])
+            .await
+            .expect("drop index out of band");
+
+        let v2_snapshot = bucket_snapshot(
+            &bucket.app,
+            std::collections::BTreeMap::from([(
+                table.clone(),
+                simple_table(
+                    &bucket.app,
+                    &table,
+                    vec![id_col(), text_col("name", false), text_col("email", true)],
+                ),
+            )]),
+            vec![btree_index(&table, &index_name, "name")],
+        );
+        compose_bucket_migration(
+            &work,
+            &bucket,
+            v2_snapshot,
+            v1_snapshot,
+            "drift-index-v2",
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19734),
+        );
+
+        let exit = run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await;
+        assert_eq!(exit, 2, "dropped index drift must refuse");
+    }
+
+    #[djogi::djogi_test]
+    async fn apply_refuses_on_foreign_key_shape_drift(mut ctx: djogi::context::DjogiContext) {
+        static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = DRIFT_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let users = format!("drift_fk_users_{n}");
+        let posts = format!("drift_fk_posts_{n}");
+        let bucket = BucketKey {
+            database: "main".into(),
+            app: "billing".into(),
+        };
+        let work = temp_workspace("drift-fk-refusal");
+
+        let v1_models = std::collections::BTreeMap::from([
+            (
+                users.clone(),
+                simple_table(&bucket.app, &users, vec![id_col(), text_col("name", false)]),
+            ),
+            (
+                posts.clone(),
+                simple_table(
+                    &bucket.app,
+                    &posts,
+                    vec![
+                        id_col(),
+                        bigint_fk_col("user_id", &users, djogi::migrate::OnDeleteSchema::Restrict),
+                    ],
+                ),
+            ),
+        ]);
+        let v1_snapshot = bucket_snapshot(&bucket.app, v1_models.clone(), vec![]);
+        let empty_snapshot =
+            bucket_snapshot(&bucket.app, std::collections::BTreeMap::new(), vec![]);
+        compose_bucket_migration(
+            &work,
+            &bucket,
+            v1_snapshot.clone(),
+            empty_snapshot,
+            "drift-fk-v1",
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19735),
+        );
+        assert_eq!(
+            run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await,
+            0
+        );
+
+        ctx.raw_execute(
+            &format!(
+                "ALTER TABLE {posts} DROP CONSTRAINT {posts}_user_id_fkey; \
+                 ALTER TABLE {posts} ADD CONSTRAINT {posts}_user_id_fkey \
+                 FOREIGN KEY (user_id) REFERENCES {users}(id) ON DELETE CASCADE"
+            ),
+            &[],
+        )
+        .await
+        .expect("rewrite FK out of band");
+
+        let v2_models = std::collections::BTreeMap::from([
+            (
+                users.clone(),
+                simple_table(&bucket.app, &users, vec![id_col(), text_col("name", false)]),
+            ),
+            (
+                posts.clone(),
+                simple_table(
+                    &bucket.app,
+                    &posts,
+                    vec![
+                        id_col(),
+                        bigint_fk_col("user_id", &users, djogi::migrate::OnDeleteSchema::Restrict),
+                        text_col("note", true),
+                    ],
+                ),
+            ),
+        ]);
+        compose_bucket_migration(
+            &work,
+            &bucket,
+            bucket_snapshot(&bucket.app, v2_models, vec![]),
+            v1_snapshot,
+            "drift-fk-v2",
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19736),
+        );
+
+        let exit = run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await;
+        assert_eq!(exit, 2, "FK shape drift must refuse");
+    }
+
+    #[djogi::djogi_test]
+    async fn fake_apply_succeeds_with_corrupt_snapshot_on_disk(
+        mut ctx: djogi::context::DjogiContext,
+    ) {
+        static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = DRIFT_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("fake_corrupt_snapshot_{n}");
+        let bucket = BucketKey {
+            database: "main".into(),
+            app: "billing".into(),
+        };
+        let work = temp_workspace("fake-corrupt-snapshot");
+
+        let v1_models = std::collections::BTreeMap::from([(
+            table.clone(),
+            simple_table(&bucket.app, &table, vec![id_col(), text_col("name", false)]),
+        )]);
+        let v1_snapshot = bucket_snapshot(&bucket.app, v1_models.clone(), vec![]);
+        let empty_snapshot =
+            bucket_snapshot(&bucket.app, std::collections::BTreeMap::new(), vec![]);
+        compose_bucket_migration(
+            &work,
+            &bucket,
+            v1_snapshot.clone(),
+            empty_snapshot,
+            "fake-corrupt-v1",
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19737),
+        );
+        assert_eq!(
+            run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await,
+            0
+        );
+
+        let v2_models = std::collections::BTreeMap::from([(
+            table.clone(),
+            simple_table(
+                &bucket.app,
+                &table,
+                vec![id_col(), text_col("name", false), text_col("email", true)],
+            ),
+        )]);
+        let v2_snapshot = bucket_snapshot(&bucket.app, v2_models, vec![]);
+        let report = compose_bucket_migration(
+            &work,
+            &bucket,
+            v2_snapshot.clone(),
+            v1_snapshot,
+            "fake-corrupt-v2",
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19738),
+        );
+        let second_version = report.composed_buckets[0].version.clone();
+
+        let snap_path = reconstruct_snapshot_path(&work, &bucket);
+        fs::write(&snap_path, b"not json").expect("corrupt snapshot");
+
+        let exit = run_apply_in_test_db(
+            &mut ctx,
+            &work,
+            FakeMode::Fake {
+                reason: "schema pre-exists (corrupt-snapshot guard)".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(exit, 0, "fake apply must ignore corrupt snapshot");
+
+        let status = ctx
+            .raw_scalar::<String>(
+                "SELECT status FROM djogi_schema_migrations \
+                 WHERE version = $1 AND app_label = $2",
+                &[&second_version, &bucket.app],
+            )
+            .await
+            .expect("query fake row status");
+        assert_eq!(status, "faked");
+
+        let repaired_snapshot = djogi::migrate::load_snapshot(&snap_path)
+            .expect("fake apply should rewrite a valid snapshot");
+        assert!(
+            repaired_snapshot.models.contains_key(&table),
+            "fake apply should persist the caller-supplied snapshot forward"
+        );
+    }
+
     /// Replace the database component of a Postgres URL with a new name.
     /// Mirrors `djogi::migrate::reset::replace_db_in_url`; inlined here
     /// so the test module does not depend on that internal path.
