@@ -497,12 +497,13 @@ impl RunnerError {
     /// });
     /// assert!(refusal.is_operator_actionable());
     ///
-    /// let retryable = RunnerError::LedgerWriteFailed {
-    ///     version: "V20260101000000__add_users".to_string(),
-    ///     source: djogi::error::DjogiError::Db(std::io::Error::other("disk full").into()),
+    /// let transient = RunnerError::LockTimeout {
+    ///     path: std::path::PathBuf::from("/tmp/.djogi-migrations-lock"),
+    ///     holder_pid: None,
     /// };
-    /// assert!(!retryable.is_operator_actionable());
+    /// assert!(!transient.is_operator_actionable());
     /// ```
+    #[must_use]
     #[allow(clippy::match_like_matches_macro)]
     pub fn is_operator_actionable(&self) -> bool {
         match self {

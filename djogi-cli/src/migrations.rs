@@ -5223,9 +5223,9 @@ mod tests {
     }
 
     /// Transient `RunnerError` variants reachable from the baseline path
-    /// must map to exit `1` (retryable). The `#[non_exhaustive]`
-    /// wildcard arm guarantees any unnamed variant also lands on `1`;
-    /// these representative cases pin the projection / ledger / snapshot
+    /// must map to exit `1` (retryable). Classification is exhaustive in
+    /// the library (`RunnerError::is_operator_actionable`) — these
+    /// representative cases pin the projection / ledger / snapshot
     /// failure shapes the baseline runner can actually emit.
     #[test]
     fn baseline_transient_variants_map_to_exit_code_one() {
