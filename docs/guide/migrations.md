@@ -104,6 +104,24 @@ Composes a new migration from descriptor diff against the last committed snapsho
 
 Output: `V<timestamp>__<slug>.sdjql` + `.down.sdjql` per affected bucket, plus per-bucket pending staging under `target/djogi_pending/<database>/<app>.json`. Auto-emitted Phase 0 uses the hidden namespace `target/djogi_pending/<database>/.phase_zero/<version>.json` so it can coexist with normal global pending and diagnostics can name the hidden artifact distinctly from `_global_.json`. New compose output never writes Phase 0 to `_global_.json`; legacy normal-global Phase 0 pending is read only by the bootstrap emitter as a compatibility fallback when the hidden file is absent.
 
+### `djogi migrations apply`
+
+```
+djogi migrations apply [--fake --reason "<text>"]
+```
+
+Applies pending migrations discovered from `target/djogi_pending/`.
+
+- `djogi migrations apply` applies SQL and snapshots exactly as composed.
+- `djogi migrations apply --fake --reason "<text>"` records the migration as
+  `faked` in the ledger without executing SQL; `--reason` is required and
+  must be non-empty.
+- When there are no pending migrations, the command is a no-op and exits `0`
+  (no identity or pool validation).
+- Exit codes: `0` success, `1` runtime/refusal-free execution failure, `2` refusal
+  (policy gate, argument validation, identity, or out-of-order conflict under
+  `Reject` policy).
+
 ### `djogi migrations status`
 
 ```

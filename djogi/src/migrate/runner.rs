@@ -477,6 +477,76 @@ pub enum RunnerError {
     },
 }
 
+impl RunnerError {
+    /// Classify a runner error for the CLI exit-code matrix.
+    ///
+    /// `true` means the error is an operator-actionable refusal (exit code `2`):
+    /// a deterministic rejection with no meaningful retry path before intervention.
+    /// `false` means the operation was attempted, failed, and can be retried by CI
+    /// after a normal backoff / transient recovery (`1`).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use djogi::migrate::{RunnerError, ledger::ChecksumMismatch};
+    ///
+    /// let refusal = RunnerError::ChecksumMismatch(ChecksumMismatch {
+    ///     version: "V20260101000000__add_users".to_string(),
+    ///     expected: "V1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+    ///     actual: "V1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+    /// });
+    /// assert!(refusal.is_operator_actionable());
+    ///
+    /// let retryable = RunnerError::LedgerWriteFailed {
+    ///     version: "V20260101000000__add_users".to_string(),
+    ///     source: djogi::error::DjogiError::Db(std::io::Error::other("disk full").into()),
+    /// };
+    /// assert!(!retryable.is_operator_actionable());
+    /// ```
+    #[allow(clippy::match_like_matches_macro)]
+    pub fn is_operator_actionable(&self) -> bool {
+        match self {
+            Self::ChecksumMismatch(_)
+            | Self::ChecksumFormat(_)
+            | Self::VersionAlreadyApplied { .. }
+            | Self::VersionCollisionNonTerminal { .. }
+            | Self::TargetTableNotFound { .. }
+            | Self::RelpagesThresholdExceeded { .. }
+            | Self::SegmentSqlExecutionModeConflict { .. }
+            | Self::SnapshotPersistFailed { .. }
+            | Self::BaselineSnapshotShouldNotBeProvided
+            | Self::StalePhaseZeroArtifact { .. }
+            | Self::OutOfOrderRejected { .. }
+            | Self::PkFlipHazardReplicaSessions { .. }
+            | Self::PkFlipHazardPreexistingZzzTrigger { .. }
+            | Self::PkFlipHazardDisabledTriggers { .. }
+            | Self::PkFlipHazardLongRunningTx { .. }
+            | Self::PkFlipVerificationFailed { .. }
+            | Self::AdvisoryUnlockReturnedFalse { .. }
+            | Self::PartitionExpansionNoLeaves { .. }
+            | Self::MissingApplyIdentity { .. } => true,
+
+            Self::LockTimeout { .. }
+            | Self::GuardError(_)
+            | Self::AdvisoryLockFailed { .. }
+            | Self::AdvisoryLockQueryFailed { .. }
+            | Self::LedgerWriteFailed { .. }
+            | Self::LedgerQueryFailed { .. }
+            | Self::RunIdGenerationFailed { .. }
+            | Self::NodeIdentityBindingFailed { .. }
+            | Self::SingleNodeDevProvisioningFailed { .. }
+            | Self::LedgerBootstrapFailed { .. }
+            | Self::TransactionalSegmentFailed { .. }
+            | Self::NonTransactionalSegmentFailed { .. }
+            | Self::NonTransactionalProgressAckFailed { .. }
+            | Self::ConfigLoadFailed { .. }
+            | Self::BaselineProjectionFailed { .. }
+            | Self::CatalogQueryFailed { .. }
+            | Self::PinnedSessionCheckoutFailed { .. } => false,
+        }
+    }
+}
+
 impl std::fmt::Display for RunnerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -5173,6 +5243,305 @@ mod tests {
                     std::env::remove_var("DJOGI_SNAPSHOT_SIGNING_KEY");
                 }
             }
+        }
+    }
+
+    fn db_err(message: &'static str) -> DjogiError {
+        DjogiError::Db(DbError::other(message))
+    }
+
+    /// `RunnerError::is_operator_actionable()` must classify every current
+    /// variant consistently: checksum/domain/PK-flip/preflight refusals are
+    /// operator-actionable (`true`), while transient I/O / backend failures
+    /// remain retryable (`false`).
+    #[test]
+    fn runner_error_operator_actionable_variants() {
+        let cases = [
+            (
+                RunnerError::ChecksumMismatch(djogi::migrate::ledger::ChecksumMismatch {
+                    version: "V20260101000000__add_users".to_string(),
+                    expected:
+                        "V1:11111111111111111111111111111111111111111111111111111111111111111111"
+                            .to_string(),
+                    actual:
+                        "V1:22222222222222222222222222222222222222222222222222222222222222222222"
+                            .to_string(),
+                }),
+                true,
+            ),
+            (
+                RunnerError::ChecksumFormat(djogi::migrate::ledger::ChecksumFormatError {
+                    side: djogi::migrate::ledger::ChecksumSide::Expected,
+                    value: "V2:deadbeef".to_string(),
+                    kind: djogi::migrate::ledger::ChecksumFormatErrorKind::WrongPrefix,
+                }),
+                true,
+            ),
+            (
+                RunnerError::VersionAlreadyApplied {
+                    version: "V20260101000000__add_users".to_string(),
+                    applied_at: None,
+                },
+                true,
+            ),
+            (
+                RunnerError::VersionCollisionNonTerminal {
+                    version: "V20260101000000__add_users".to_string(),
+                    status: LedgerStatus::Pending,
+                    run_id: 1,
+                },
+                true,
+            ),
+            (
+                RunnerError::TargetTableNotFound {
+                    bucket: bucket("main", ""),
+                    index_name: "users_email_idx".to_string(),
+                    target_table: "users".to_string(),
+                },
+                true,
+            ),
+            (
+                RunnerError::RelpagesThresholdExceeded {
+                    bucket: bucket("main", ""),
+                    index_name: "users_email_idx".to_string(),
+                    target_table: "users".to_string(),
+                    relpages: 4096,
+                    threshold: 128,
+                },
+                true,
+            ),
+            (
+                RunnerError::SegmentSqlExecutionModeConflict {
+                    segment_index: 0,
+                    segment_kind: SegmentKind::Transactional,
+                    statement_label: "CREATE TRIGGER users_idx".to_string(),
+                    problem: SegmentSqlExecutionModeProblem::RequiresNonTransactional {
+                        statement_shape: "requires non-transactional execution",
+                    },
+                },
+                true,
+            ),
+            (
+                RunnerError::SnapshotPersistFailed {
+                    path: "schema_snapshot.json".into(),
+                    source: SnapshotError::Io {
+                        path: None,
+                        source: std::io::Error::other("disk full"),
+                    },
+                },
+                true,
+            ),
+            (RunnerError::BaselineSnapshotShouldNotBeProvided, true),
+            (
+                RunnerError::StalePhaseZeroArtifact {
+                    version: "V00000000000000__phase_zero".to_string(),
+                    refusal_reason: "generated-stale",
+                },
+                true,
+            ),
+            (
+                RunnerError::OutOfOrderRejected {
+                    version: "V20260101000000__add_users".to_string(),
+                    conflicting_version: "V20260102000000__add_orders".to_string(),
+                    conflicting_applied_at: None,
+                },
+                true,
+            ),
+            (
+                RunnerError::PkFlipHazardReplicaSessions {
+                    walsenders: vec![("wal_sender".to_string(), "127.0.0.1:5432".to_string())],
+                    subscriptions: vec!["replication_slot".to_string()],
+                },
+                true,
+            ),
+            (
+                RunnerError::PkFlipHazardPreexistingZzzTrigger {
+                    table: "public.events".to_string(),
+                    trigger_names: vec!["zzz_rv_users_id".to_string()],
+                },
+                true,
+            ),
+            (
+                RunnerError::PkFlipHazardDisabledTriggers {
+                    table: "public.events".to_string(),
+                    triggers: vec![("zzz_rv_events_id".to_string(), 'D')],
+                },
+                true,
+            ),
+            (
+                RunnerError::PkFlipHazardLongRunningTx {
+                    offenders: vec![(1234, 120)],
+                    threshold_secs: 60,
+                },
+                true,
+            ),
+            (
+                RunnerError::PkFlipVerificationFailed {
+                    table: "public.events".to_string(),
+                    count_violating: 2,
+                },
+                true,
+            ),
+            (
+                RunnerError::AdvisoryUnlockReturnedFalse {
+                    key: 0x0102_0304_0506_0708,
+                    bucket: bucket("main", ""),
+                },
+                true,
+            ),
+            (
+                RunnerError::PartitionExpansionNoLeaves {
+                    parent: "events".to_string(),
+                    statement_label: "migrate_partitions".to_string(),
+                },
+                true,
+            ),
+            (
+                RunnerError::MissingApplyIdentity {
+                    version: "V20260101000000__add_users".to_string(),
+                },
+                true,
+            ),
+        ];
+
+        for (err, expected) in cases {
+            assert_eq!(err.is_operator_actionable(), expected, "{err}");
+        }
+    }
+
+    #[test]
+    fn runner_error_non_operator_actionable_variants() {
+        let cases = [
+            (
+                RunnerError::LockTimeout {
+                    path: PathBuf::from("/tmp/.djogi-migrations-lock"),
+                    holder_pid: Some(99),
+                },
+                false,
+            ),
+            (
+                RunnerError::GuardError(crate::migrate::guard::GuardError::Io {
+                    path: PathBuf::from("/tmp/.djogi-migrations-lock"),
+                    source: std::io::Error::other("permission denied"),
+                }),
+                false,
+            ),
+            (
+                RunnerError::AdvisoryLockFailed {
+                    bucket: bucket("main", ""),
+                    key: 0x0000_0001_0000_0001,
+                    attempts: 3,
+                },
+                false,
+            ),
+            (
+                RunnerError::AdvisoryLockQueryFailed {
+                    app_label: "main".to_string(),
+                    source: db_err("advisory lock query failed"),
+                },
+                false,
+            ),
+            (
+                RunnerError::LedgerWriteFailed {
+                    version: "V20260101000000__add_users".to_string(),
+                    source: db_err("insert failed"),
+                },
+                false,
+            ),
+            (
+                RunnerError::LedgerQueryFailed {
+                    query_label: "load_row_for_version",
+                    source: db_err("query failed"),
+                },
+                false,
+            ),
+            (
+                RunnerError::RunIdGenerationFailed {
+                    source: db_err("sequence exhausted"),
+                },
+                false,
+            ),
+            (
+                RunnerError::NodeIdentityBindingFailed {
+                    node_id: 1,
+                    source: db_err("identity bind failed"),
+                },
+                false,
+            ),
+            (
+                RunnerError::SingleNodeDevProvisioningFailed {
+                    node_id: 1,
+                    step: "register node",
+                    source: db_err("provisioning failed"),
+                },
+                false,
+            ),
+            (
+                RunnerError::LedgerBootstrapFailed {
+                    source: db_err("create table failed"),
+                },
+                false,
+            ),
+            (
+                RunnerError::TransactionalSegmentFailed {
+                    segment_index: 0,
+                    statement_label: "AddTable users".to_string(),
+                    source: db_err("transaction failed"),
+                },
+                false,
+            ),
+            (
+                RunnerError::NonTransactionalSegmentFailed {
+                    segment_index: 0,
+                    step_index: 0,
+                    statement_label: "INSERT user".to_string(),
+                    applied_steps_count: 0,
+                    source: db_err("statement failed"),
+                },
+                false,
+            ),
+            (
+                RunnerError::NonTransactionalProgressAckFailed {
+                    segment_index: 0,
+                    step_index: 0,
+                    statement_label: "INSERT user".to_string(),
+                    applied_steps_count: 0,
+                    source: db_err("ack failed"),
+                },
+                false,
+            ),
+            (
+                RunnerError::ConfigLoadFailed {
+                    source: figment::Error::from("invalid config"),
+                },
+                false,
+            ),
+            (
+                RunnerError::BaselineProjectionFailed {
+                    source: Box::new(djogi::migrate::verify::VerifyRunError::CatalogQueryFailed {
+                        query_label: "pg_namespace",
+                        source: db_err("verify catalog query failed"),
+                    }),
+                },
+                false,
+            ),
+            (
+                RunnerError::CatalogQueryFailed {
+                    query_label: "pg_class",
+                    source: db_err("catalog query failed"),
+                },
+                false,
+            ),
+            (
+                RunnerError::PinnedSessionCheckoutFailed {
+                    source: db_err("pool checkout failed"),
+                },
+                false,
+            ),
+        ];
+
+        for (err, expected) in cases {
+            assert_eq!(err.is_operator_actionable(), expected, "{err}");
         }
     }
 

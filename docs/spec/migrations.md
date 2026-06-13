@@ -913,7 +913,7 @@ Adoption flows:
 Fake-apply out-of-order policy:
 
 - `--fake` enforces the same out-of-order policy gate as real apply (Decision 2)
-- If CI/prod policy is `Reject`, fake-apply on an out-of-order version is rejected with exit code 1
+- If CI/prod policy is `Reject`, fake-apply on an out-of-order version is rejected with exit code 2
 - The ledger row records `out_of_order_flag = true` when the policy allows it, and the `partial_apply_note` includes the out-of-order peer information
 
 ### 10.9 Verification and Out-of-Order Policy

@@ -1052,7 +1052,8 @@ enum ApplyResult {
     Skipped(String),
     /// User-facing refusal — exit code 2.
     Refused(String),
-    /// Runner error — exit code 1.
+    /// Runner error — exit code 2 for operator-actionable refusals,
+    /// 1 for retryable/internal failures (see [`runner_error_exit_code`]).
     RunnerError(RunnerError),
 }
 
@@ -1685,12 +1686,17 @@ async fn check_ledger_state(
     }
 }
 
-/// Map a [`RunnerError`] to an exit code.
-/// All runner errors map to exit code 1 (apply failure). Exit code 2
-/// is reserved for user-facing refusals that happen before the runner
-/// is invoked.
-fn runner_error_exit_code(_error: &RunnerError) -> i32 {
-    1
+/// Map a [`RunnerError`] onto the CLI exit-code contract
+/// (`docs/spec/configuration.md` §CLI Exit-Code Matrix): exit `2` for
+/// operator-actionable refusals (deterministic — a blind retry hits the
+/// same condition), exit `1` for transient / internal failures (CI may
+/// retry). The per-variant classification lives on the enum itself
+/// ([`RunnerError::is_operator_actionable`]) as a same-crate exhaustive
+/// match, so every future variant is classified at compile time — this
+/// mapper cannot silently bucket a new refusal as exit `1`, and the apply
+/// and baseline paths cannot diverge (both delegate here).
+fn runner_error_exit_code(error: &RunnerError) -> i32 {
+    if error.is_operator_actionable() { 2 } else { 1 }
 }
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
@@ -3302,60 +3308,8 @@ async fn run_baseline(
         }
         Err(e) => {
             eprintln!("djogi migrations baseline: {e}");
-            baseline_error_exit_code(&e)
+            runner_error_exit_code(&e)
         }
-    }
-}
-
-/// Map a [`RunnerError`] produced by [`baseline_plan`] onto the CLI
-/// exit-code contract.
-/// The flat [`runner_error_exit_code`] (always `1`) is wrong for
-/// baseline: a duplicate-version collision is a refusal the operator
-/// must resolve by choosing a new version, and a blind retry hits the
-/// same collision — that must surface as exit `2`, matching the
-/// `migrations apply` doc-contract ("re-running reports
-/// `VersionAlreadyApplied` (exit 2)") and the `repair` family's
-/// [`repair_error_exit_code`] convention.
-/// `RunnerError` is `#[non_exhaustive]`, so the wildcard arm is
-/// load-bearing: any variant NOT named below defaults to exit `1`
-/// (transient — a retry may succeed). That is the safe default for the
-/// I/O- and connection-shaped variants the baseline path can hit
-/// (projection failure, ledger bootstrap / write / query failure,
-/// snapshot persist failure, pinned-session checkout failure,
-/// advisory-lock contention). Only the genuine refusals are pulled out
-/// into the exit-`2` arm.
-fn baseline_error_exit_code(err: &RunnerError) -> i32 {
-    match err {
-        // ── Exit 2: refusals — the operator must intervene; a blind
-        // retry hits the same condition.
-        // - A duplicate version (terminal or non-terminal) means the
-        // chosen baseline version is already taken; pick another.
-        // - A caller-supplied snapshot is a programming error in the
-        // wiring (the CLI always passes `snapshot: None`), surfaced
-        // as a structural refusal rather than a retryable fault.
-        // - An out-of-order rejection is a policy refusal identical to
-        // the apply path's.
-        // - AdvisoryUnlockReturnedFalse is a session-pinning correctness
-        // failure (PG returned false for pg_advisory_unlock); it is not
-        // transient — matches the repair family's exit-2 treatment.
-        // - SnapshotPersistFailed in the baseline path is a post-ledger
-        // failure: baseline_inner inserts the terminal ledger row BEFORE
-        // writing the snapshot. A retry with the same version therefore
-        // hits VersionAlreadyApplied (exit 2) before it can write the
-        // snapshot. Exit 1 (retryable) would give false hope; exit 2
-        // signals that operator intervention is needed (run
-        // `repair snapshot-rebuild` or choose a new version).
-        RunnerError::VersionAlreadyApplied { .. }
-        | RunnerError::VersionCollisionNonTerminal { .. }
-        | RunnerError::BaselineSnapshotShouldNotBeProvided
-        | RunnerError::AdvisoryUnlockReturnedFalse { .. }
-        | RunnerError::SnapshotPersistFailed { .. }
-        | RunnerError::OutOfOrderRejected { .. } => 2,
-        // ── Exit 1: everything else (transient I/O / connection / SQL /
-        // projection failures). `#[non_exhaustive]` makes this wildcard
-        // mandatory; new transient-shaped variants inherit the retryable
-        // default.
-        _ => 1,
     }
 }
 
@@ -5223,7 +5177,8 @@ mod tests {
     /// surface must map to exit `2` — a blind retry would hit the same
     /// condition, so CI must treat them as "operator must intervene"
     /// rather than retryable. A duplicate baseline version (terminal or
-    /// non-terminal), a wiring bug that supplies a snapshot, and an
+    /// non-terminal), a wiring bug that supplies a snapshot, a
+    /// post-applied-version snapshot persistence failure, and an
     /// out-of-order rejection are all refusals.
     #[test]
     fn baseline_refusal_variants_map_to_exit_code_two() {
@@ -5238,6 +5193,13 @@ mod tests {
                 run_id: 1,
             },
             RunnerError::BaselineSnapshotShouldNotBeProvided,
+            RunnerError::SnapshotPersistFailed {
+                path: std::path::PathBuf::from("/tmp/schema_snapshot.json"),
+                source: djogi::migrate::snapshot::SnapshotError::Io {
+                    path: None,
+                    source: std::io::Error::other("disk full"),
+                },
+            },
             RunnerError::AdvisoryUnlockReturnedFalse {
                 bucket: BucketKey {
                     database: "main".to_string(),
@@ -5253,7 +5215,7 @@ mod tests {
         ];
         for err in &cases {
             assert_eq!(
-                baseline_error_exit_code(err),
+                runner_error_exit_code(err),
                 2,
                 "baseline refusal variant must map to exit 2: {err}"
             );
@@ -5290,9 +5252,98 @@ mod tests {
         ];
         for err in &cases {
             assert_eq!(
-                baseline_error_exit_code(err),
+                runner_error_exit_code(err),
                 1,
                 "baseline transient variant must map to exit 1: {err}"
+            );
+        }
+    }
+
+    /// Runner errors mapped through `migrations apply` retain the
+    /// library's operator-actionability semantics: refusals are exit `2`
+    /// and retryable transient failures stay at exit `1`.
+    #[test]
+    fn apply_runner_refusal_variants_map_to_exit_code_two() {
+        let cases = [
+            RunnerError::VersionAlreadyApplied {
+                version: "V20260101000000__add_users".to_string(),
+                applied_at: None,
+            },
+            RunnerError::VersionCollisionNonTerminal {
+                version: "V20260101000000__add_users".to_string(),
+                status: LedgerStatus::Pending,
+                run_id: 1,
+            },
+            RunnerError::StalePhaseZeroArtifact {
+                version: "V00000000000000__phase_zero".to_string(),
+                refusal_reason: "generated-stale",
+            },
+            RunnerError::OutOfOrderRejected {
+                version: "V20260101000000__add_users".to_string(),
+                conflicting_version: "V20260201000000__add_more".to_string(),
+                conflicting_applied_at: Some("2026-01-01T00:00:00Z".to_string()),
+            },
+            RunnerError::SnapshotPersistFailed {
+                path: std::path::PathBuf::from("/tmp/schema_snapshot.json"),
+                source: djogi::migrate::snapshot::SnapshotError::Io {
+                    path: None,
+                    source: std::io::Error::other("disk full"),
+                },
+            },
+            RunnerError::PkFlipHazardDisabledTriggers {
+                table: "public.events".to_string(),
+                triggers: vec![("zzz_rv_events_id".to_string(), 'D')],
+            },
+            RunnerError::PartitionExpansionNoLeaves {
+                parent: "public.events".to_string(),
+                statement_label: "expand_partitions".to_string(),
+            },
+        ];
+        for err in &cases {
+            assert_eq!(
+                runner_error_exit_code(err),
+                2,
+                "runner refusal variant must map to exit 2: {err}"
+            );
+        }
+    }
+
+    /// Runner errors surfaced through `migrations apply` remain retryable
+    /// where a blind retry can still make progress after transient
+    /// recovery.
+    #[test]
+    fn apply_runner_transient_variants_map_to_exit_code_one() {
+        use djogi::error::{DbError, DjogiError};
+        let cases = [
+            RunnerError::LockTimeout {
+                path: std::path::PathBuf::from("/tmp/.djogi-migrations-lock"),
+                holder_pid: None,
+            },
+            RunnerError::LedgerWriteFailed {
+                version: "V20260101000000__add_users".to_string(),
+                source: DjogiError::Db(DbError::other("insert failed")),
+            },
+            RunnerError::CatalogQueryFailed {
+                query_label: "pg_class relpages",
+                source: DjogiError::Db(DbError::other("query failed")),
+            },
+            RunnerError::PinnedSessionCheckoutFailed {
+                source: DjogiError::Db(DbError::other("pool unavailable")),
+            },
+            RunnerError::AdvisoryLockFailed {
+                bucket: BucketKey {
+                    database: "main".to_string(),
+                    app: String::new(),
+                },
+                key: 0x0102_0304_0506_0708,
+                attempts: 3,
+            },
+        ];
+        for err in &cases {
+            assert_eq!(
+                runner_error_exit_code(err),
+                1,
+                "runner transient variant must map to exit 1: {err}"
             );
         }
     }

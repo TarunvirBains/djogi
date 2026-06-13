@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- migration: classify `RunnerError` outcomes for `djogi migrations apply` so
+  operator-actionable refusals exit with code `2` (including out-of-order
+  rejects under `Reject` policy), while retryable runtime failures remain at
+  code `1`; `djogi migrations baseline` shares the same mapper.
+- docs: update migration apply and fake-apply exit-code documentation in
+  spec/guide guidance to match the unified mapping.
+
 ## [0.1.0-alpha.12] - 2026-06-11
 
 ### Added
