@@ -11,11 +11,12 @@ use std::process::ExitCode;
 
 use djogi::apps::AppRegistry;
 use djogi::migrate::{
-    AppLifecycle, AttuneError, AttuneMode, AttuneRequest, BucketKey, ComposeError, ComposeRequest,
-    DescriptorProvider, GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PartialApplyResolution, PendingPlan,
-    RepairConfirmation, RepairError, RepairReport, RunnerCtx, RunnerError, SnapshotError,
-    VerifyReport, VerifySeverity, acquire_workspace_lock, apply_plan, attune, baseline_plan,
-    compose, fake_apply_plan, load_snapshot, project_from_provider, repair_checksum_drift,
+    AppLifecycle, AttuneError, AttuneMode, AttuneRequest, AutoEmitError, BootstrapError, BucketKey,
+    ComposeError, ComposeRequest, DescriptorProvider, DiffError, GUARD_DEFAULT_TIMEOUT,
+    LOCK_FILE_NAME, PartialApplyResolution, PendingPlan, RepairConfirmation, RepairError,
+    RepairReport, RunnerCtx, RunnerError, SnapshotError, SqlEmitError, VerifyReport,
+    VerifySeverity, acquire_workspace_lock, apply_plan, attune, baseline_plan, compose,
+    fake_apply_plan, load_snapshot, project_from_provider, repair_checksum_drift,
     repair_partial_apply, repair_resume_partial_apply, repair_snapshot_rebuild, snapshot_path,
 };
 
@@ -606,23 +607,101 @@ fn compose_with_inputs(
             // signals out-of-sync state via exit code.
             ExitCode::from(0)
         }
-        Err(ComposeError::LinkageDropWithoutModels { ref text, .. }) => {
-            eprintln!("djogi migrations compose: {text}");
-            // Exit 2 — refusal: models must be compiled in before dropping app linkage.
-            ExitCode::from(2)
-        }
-        Err(e @ ComposeError::CrossBucketForeignKeyCycle { .. }) => {
-            eprintln!("djogi migrations compose: {e}");
-            // Exit 2 — operator-actionable refusal: the operator resolves the
-            // cycle (merge the apps or drop one FK direction). A blind retry
-            // would refuse identically, so this is exit 2, not the exit-1
-            // unexpected-error catch-all below.
-            ExitCode::from(2)
-        }
         Err(e) => {
             eprintln!("djogi migrations compose: {e}");
-            ExitCode::from(1)
+            ExitCode::from(compose_error_exit_code(&e) as u8)
         }
+    }
+}
+
+/// Map a [`ComposeError`] to an exit code for compose command handling.
+///
+/// Exit-code contract (mirrors `docs/spec/migrations.md` §10.2):
+/// - `0` — `NothingToCompose`: no delta for any bucket; not an error.
+/// - `2` — operator-actionable refusal: the operator must fix a model
+///   descriptor, resolve a conflict, or hand-write a migration, then
+///   re-run. Covers both the flat top-level refusals AND the
+///   operator-actionable sub-variants nested inside the `SqlEmit`,
+///   `Diff`, and `PhaseZeroAutoEmit` wrappers — those wrappers do not
+///   map to a single exit code, so each is destructured.
+/// - `1` — runtime / framework-internal failure that is not the
+///   operator's to fix by editing schema (transient I/O, serialization,
+///   DB errors, framework routing-invariant violations). Retryable in CI.
+///
+/// `NothingToCompose` is mapped explicitly even though the compose
+/// command intercepts it upstream and returns exit 0 before reaching
+/// this helper — so the helper's contract is total and self-consistent
+/// rather than relying on the call-site short-circuit.
+fn compose_error_exit_code(error: &ComposeError) -> i32 {
+    match error {
+        ComposeError::NothingToCompose => 0,
+
+        // Flat operator-actionable refusals.
+        ComposeError::DestructiveRequiresAllowDestructive { .. }
+        | ComposeError::TombstonedAppRequiresAllowDestructive { .. }
+        | ComposeError::UnsupportedDelta { .. }
+        | ComposeError::HandEditedMigrationWouldBeOverwritten { .. }
+        | ComposeError::PendingJsonWouldBeOverwritten { .. }
+        | ComposeError::FolderRenameTargetCollision { .. }
+        | ComposeError::LinkageDropWithoutModels { .. }
+        | ComposeError::CrossBucketForeignKeyCycle { .. } => 2,
+
+        // The SQL emitter's failures split: some are operator-actionable
+        // (schema transition cannot be auto-lowered, partition shape
+        // change, malformed storage params), one is a framework routing
+        // invariant, and one forwards a `DiffError` to be classified by
+        // the shared `diff_exit_code` mapping.
+        ComposeError::SqlEmit(e) => match e {
+            SqlEmitError::Unsupported { .. }
+            | SqlEmitError::UnsupportedPartitionChange { .. }
+            | SqlEmitError::InvalidStorageParams { .. } => 2,
+            SqlEmitError::Diff(diff_err) => diff_exit_code(diff_err),
+            // PK-type flip reached the standard emitter — a framework
+            // routing-invariant violation, not an operator-caused refusal.
+            SqlEmitError::PkTypeFlipMustRouteToT9 { .. } => 1,
+        },
+
+        // Differential failures classified by the shared mapping.
+        ComposeError::Diff(e) => diff_exit_code(e),
+
+        // Phase-zero bootstrap auto-emit splits: invalid / unknown
+        // extension names are operator-actionable; DB, I/O, and
+        // serialization failures are transient runtime failures.
+        ComposeError::PhaseZeroAutoEmit(e) => match e {
+            AutoEmitError::Compose(BootstrapError::InvalidExtensionName { .. })
+            | AutoEmitError::Compose(BootstrapError::UnknownExtension { .. }) => 2,
+            AutoEmitError::Compose(BootstrapError::Db { .. })
+            | AutoEmitError::Io { .. }
+            | AutoEmitError::PendingJson(_) => 1,
+        },
+
+        // Runtime failures — transient or serialization, not the
+        // operator's to fix by editing schema.
+        ComposeError::Io { .. } | ComposeError::SerializeFailed(_) => 1,
+
+        // Future operator-actionable variants MUST be added to the exit-2
+        // arm above; this wildcard covers only the `#[non_exhaustive]`
+        // safety requirement.
+        _ => 1,
+    }
+}
+
+/// Map a [`DiffError`] to a compose exit code.
+///
+/// Shared by [`compose_error_exit_code`] for both the top-level
+/// `ComposeError::Diff` wrapper and the `SqlEmit(SqlEmitError::Diff(..))`
+/// path, which forwards the same `DiffError` through the emitter layer.
+/// `DiffError` is not `#[non_exhaustive]`, so this match is total — a new
+/// variant becomes a compile error here, forcing a deliberate classification.
+fn diff_exit_code(error: &DiffError) -> i32 {
+    match error {
+        // Operator must restructure the FK graph / resolve the
+        // partitioned-parent combination before re-running.
+        DiffError::PkFlipCascadeDepthExceeded { .. }
+        | DiffError::PartitionedMultiParentClusterUnsupported { .. } => 2,
+        // Framework-internal invariant violation (sidecar metadata out
+        // of sync) — not an operator-fixable schema condition.
+        DiffError::PkFlipMalformedSelfFkMetadata(_) => 1,
     }
 }
 
@@ -5073,6 +5152,211 @@ mod tests {
             "a cross-bucket FK cycle must exit 2 (operator-actionable refusal), not 1"
         );
         let _ = fs::remove_dir_all(&work);
+    }
+
+    /// All operator-actionable compose refusals should map to exit code
+    /// `2`; these are conditions the operator must fix and rerun.
+    #[test]
+    fn u4_compose_refusal_variants_map_to_exit_code_two() {
+        use djogi::migrate::{BucketKey, Classification, ComposeError};
+
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: "billing".to_string(),
+        };
+
+        let cases = [
+            ComposeError::TombstonedAppRequiresAllowDestructive {
+                app_label: "billing".to_string(),
+                database: "main".to_string(),
+                text: "D011: tombstoned app".to_string(),
+            },
+            ComposeError::DestructiveRequiresAllowDestructive {
+                bucket: bucket.clone(),
+                classification: Classification::Lossy,
+            },
+            ComposeError::UnsupportedDelta {
+                bucket: bucket.clone(),
+                reason: "unsupported transition".to_string(),
+            },
+            ComposeError::HandEditedMigrationWouldBeOverwritten {
+                bucket: bucket.clone(),
+                path: std::path::PathBuf::from("/tmp/example.sdjql"),
+                text: "D013: hand-edited migration would be overwritten".to_string(),
+            },
+            ComposeError::PendingJsonWouldBeOverwritten {
+                path: std::path::PathBuf::from("/tmp/example.pending"),
+                text: "pending json mismatch".to_string(),
+            },
+            ComposeError::FolderRenameTargetCollision {
+                from: std::path::PathBuf::from("/tmp/old"),
+                to: std::path::PathBuf::from("/tmp/new"),
+                offending_entry: "users.sdjql".to_string(),
+            },
+            ComposeError::LinkageDropWithoutModels {
+                app_label: "billing".to_string(),
+                database: "main".to_string(),
+                text: "D010: linkage drop without models".to_string(),
+            },
+            ComposeError::CrossBucketForeignKeyCycle {
+                database: "main".to_string(),
+                chain: vec!["a".to_string(), "b".to_string()],
+            },
+        ];
+
+        for case in &cases {
+            assert_eq!(
+                compose_error_exit_code(case),
+                2,
+                "compose refusal variant must map to exit 2: {case}"
+            );
+        }
+    }
+
+    /// `NothingToCompose` maps to exit `0` directly through the helper.
+    /// The compose command intercepts it upstream and returns `0` before
+    /// reaching the helper, but the helper's contract must still be total
+    /// and self-consistent — returning `0`, not falling through to the
+    /// `#[non_exhaustive]` wildcard's `1`.
+    #[test]
+    fn u4_compose_nothing_to_compose_maps_to_exit_code_zero() {
+        use djogi::migrate::ComposeError;
+
+        assert_eq!(
+            compose_error_exit_code(&ComposeError::NothingToCompose),
+            0,
+            "NothingToCompose must map to exit 0 in the helper, not the wildcard's 1"
+        );
+    }
+
+    /// Runtime, serialization, and framework-internal `ComposeError`
+    /// variants remain exit code `1` so CI can treat them as retryable
+    /// infra issues rather than operator-actionable refusals. Covers the
+    /// constructible exit-1 shapes across every wrapper: top-level I/O and
+    /// serialization, the `SqlEmit` routing-invariant violation, the
+    /// `Diff` framework-internal invariant, and the `PhaseZeroAutoEmit`
+    /// transient/serialization variants.
+    #[test]
+    fn u4_compose_runtime_variants_map_to_exit_code_one() {
+        use djogi::migrate::schema::PkKindSchema;
+        use djogi::migrate::{
+            AutoEmitError, ComposeError, DiffError, PkFlipError, SnapshotError, SqlEmitError,
+        };
+
+        let cases = [
+            // Top-level transient I/O.
+            ComposeError::Io {
+                path: std::path::PathBuf::from("/tmp/io-failure"),
+                source: std::io::Error::other("io failure"),
+            },
+            // SQL emit reached by a framework-routing invariant violation
+            // (a PK-type flip must route through the PK-flip playbook, not
+            // the standard emitter) — not operator-caused.
+            ComposeError::SqlEmit(SqlEmitError::PkTypeFlipMustRouteToT9 {
+                table: "orders".to_string(),
+                from: PkKindSchema::HeerIdRecencyBiased,
+                to: PkKindSchema::HeerId,
+            }),
+            // Differential failure rooted in a framework-internal invariant
+            // (self-FK sidecar metadata lengths out of sync). `PkFlipError`
+            // is re-exported from `djogi::migrate` and its sole variant has
+            // all-public fields, so this exit-1 `DiffError` sub-variant is
+            // constructible directly here.
+            ComposeError::Diff(DiffError::PkFlipMalformedSelfFkMetadata(
+                PkFlipError::MalformedSelfFkMetadata {
+                    parent_table: "nodes".to_string(),
+                    fk_columns: 2,
+                    fk_constraint_names: 1,
+                    fk_deferrable: 2,
+                    fk_initially_deferred: 2,
+                },
+            )),
+            // Phase-zero bootstrap with transient I/O.
+            ComposeError::PhaseZeroAutoEmit(AutoEmitError::Io {
+                path: std::path::PathBuf::from("/tmp/bootstrap.sdjql"),
+                source: std::io::Error::other("disk full"),
+            }),
+            // Phase-zero bootstrap with a serialization failure.
+            ComposeError::PhaseZeroAutoEmit(AutoEmitError::PendingJson(
+                serde_json::from_str::<serde_json::Value>("not-json-at-all").unwrap_err(),
+            )),
+            // Checksum / snapshot serialization failure.
+            ComposeError::SerializeFailed(SnapshotError::Parse {
+                path: None,
+                source: serde_json::from_str::<serde_json::Value>("not-json").unwrap_err(),
+            }),
+        ];
+
+        for case in &cases {
+            assert_eq!(
+                compose_error_exit_code(case),
+                1,
+                "compose runtime variant must map to exit 1: {case}"
+            );
+        }
+    }
+
+    /// Operator-actionable sub-variants nested inside the `SqlEmit`,
+    /// `Diff`, and `PhaseZeroAutoEmit` wrappers must map to exit code `2`
+    /// just like the flat refusals — the wrapper alone does not decide the
+    /// code. The companion `u4_compose_refusal_variants_map_to_exit_code_two`
+    /// covers the eight flat top-level refusals; this covers the nested set.
+    #[test]
+    fn u4_compose_nested_refusal_variants_map_to_exit_code_two() {
+        use djogi::migrate::{
+            AutoEmitError, BootstrapError, ComposeError, DiffError, SqlEmitError,
+        };
+
+        let cases = [
+            // SQL emit operator-actionable sub-variants.
+            ComposeError::SqlEmit(SqlEmitError::Unsupported {
+                reason: "enum-variant removal requires hand-written migration".to_string(),
+            }),
+            ComposeError::SqlEmit(SqlEmitError::UnsupportedPartitionChange {
+                table: "events".to_string(),
+                detail: "changing partition method requires full table rebuild".to_string(),
+            }),
+            ComposeError::SqlEmit(SqlEmitError::InvalidStorageParams {
+                params: "fillfactor=invalid".to_string(),
+                reason: "fillfactor must be an integer 10..100".to_string(),
+            }),
+            // Differential operator-actionable sub-variants.
+            ComposeError::Diff(DiffError::PkFlipCascadeDepthExceeded {
+                parent_table: "vehicles".to_string(),
+                chain: vec!["vehicles".to_string(), "parts".to_string()],
+                max_depth: 65,
+            }),
+            ComposeError::Diff(DiffError::PartitionedMultiParentClusterUnsupported {
+                partitioned_parents: vec!["invoices".to_string()],
+                cross_flipping_partners: vec!["invoices".to_string(), "line_items".to_string()],
+            }),
+            // Phase-zero bootstrap extension refusals.
+            ComposeError::PhaseZeroAutoEmit(AutoEmitError::Compose(
+                BootstrapError::InvalidExtensionName {
+                    name: "bad-name!".to_string(),
+                },
+            )),
+            ComposeError::PhaseZeroAutoEmit(AutoEmitError::Compose(
+                BootstrapError::UnknownExtension {
+                    name: "not_in_allowlist".to_string(),
+                },
+            )),
+            // A `DiffError` forwarded through the SQL emitter layer is
+            // classified identically to a top-level `Diff`.
+            ComposeError::SqlEmit(SqlEmitError::Diff(DiffError::PkFlipCascadeDepthExceeded {
+                parent_table: "widgets".to_string(),
+                chain: vec!["widgets".to_string()],
+                max_depth: 65,
+            })),
+        ];
+
+        for case in &cases {
+            assert_eq!(
+                compose_error_exit_code(case),
+                2,
+                "nested operator-actionable compose refusal must map to exit 2: {case}"
+            );
+        }
     }
 
     /// `status_cmd` invokes its tokio runtime and
