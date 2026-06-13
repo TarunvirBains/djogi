@@ -789,24 +789,39 @@ impl std::fmt::Display for RunnerError {
                 f,
                 "baseline live-DB projection failed before ledger insert: {source}",
             ),
-            RunnerError::DriftDetected { bucket, .. } => write!(
-                f,
-                "apply-time drift pre-flight refused bucket database={} app={}: \
-                 live schema differs from the recorded snapshot baseline",
-                bucket.database, bucket.app,
-            ),
+            RunnerError::DriftDetected { bucket, report } => {
+                let errors = report
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.severity == super::verify::VerifySeverity::Error)
+                    .count();
+                write!(
+                    f,
+                    "drift pre-flight refused apply for database={db} app={app}: \
+                     {errors} error-severity drift diagnostic(s) between the \
+                     recorded snapshot and the live database; no migration SQL \
+                     was executed and no pending ledger row was written. Inspect \
+                     with `djogi migrations verify`; reconcile intentional drift \
+                     with `djogi migrations attune`.",
+                    db = bucket.database,
+                    app = bucket.app,
+                )
+            }
             RunnerError::DriftBaselineMissing { bucket } => write!(
                 f,
-                "apply-time drift pre-flight refused bucket database={} app={}: \
-                 schema_snapshot.json is missing for a previously-applied bucket; \
-                 restore it from version control or rebuild it with \
-                 `djogi migrations repair snapshot-rebuild`",
-                bucket.database, bucket.app,
+                "drift pre-flight refused apply for database={db} app={app}: \
+                 the bucket has applied migration history but no recorded \
+                 snapshot baseline (`schema_snapshot.json`) was found; no \
+                 migration SQL was executed and no pending ledger row was \
+                 written. Restore the snapshot from version control, or \
+                 rebuild it from the live database with `djogi migrations \
+                 repair snapshot-rebuild`.",
+                db = bucket.database,
+                app = bucket.app,
             ),
-            RunnerError::DriftPreflightFailed { source } => write!(
-                f,
-                "apply-time drift pre-flight failed before any migration SQL ran: {source}",
-            ),
+            RunnerError::DriftPreflightFailed { source } => {
+                write!(f, "drift pre-flight could not run: {source}")
+            }
             RunnerError::PkFlipHazardReplicaSessions {
                 walsenders,
                 subscriptions,
@@ -5699,6 +5714,65 @@ mod tests {
         for (err, expected) in cases {
             assert_eq!(err.is_operator_actionable(), expected, "{err}");
         }
+    }
+
+    // ── drift RunnerError Display / source ───────────────────────────────
+    // These pin the operator-facing text and `source()` chaining for the
+    // three apply-time drift refusals so a future Display edit cannot
+    // silently drop the bucket identity, the error-severity count, or the
+    // next-step commands operators rely on.
+
+    #[test]
+    fn drift_detected_display_names_bucket_and_error_count_and_next_step() {
+        let e = RunnerError::DriftDetected {
+            bucket: bucket("main", "billing"),
+            report: crate::migrate::verify::VerifyReport {
+                diagnostics: vec![crate::migrate::verify::VerifyDiagnostic {
+                    code: "D601".to_string(),
+                    severity: crate::migrate::verify::VerifySeverity::Error,
+                    message: "snapshot table `users` missing in live".to_string(),
+                    location: Some("users".to_string()),
+                }],
+                latest_applied_version: Some("V20260101000000__x".to_string()),
+                applied_count: 3,
+                unfinished_count: 0,
+            },
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("database=main"), "got: {msg}");
+        assert!(msg.contains("app=billing"), "got: {msg}");
+        assert!(msg.contains("1 error-severity"), "got: {msg}");
+        assert!(msg.contains("djogi migrations verify"), "got: {msg}");
+        assert!(msg.contains("djogi migrations attune"), "got: {msg}");
+        assert!(std::error::Error::source(&e).is_none());
+    }
+
+    #[test]
+    fn drift_preflight_failed_exposes_verify_error_as_source() {
+        let e = RunnerError::DriftPreflightFailed {
+            source: Box::new(crate::migrate::verify::VerifyRunError::LedgerQueryFailed {
+                source: db_err("ledger read failed in test"),
+            }),
+        };
+        assert!(e.to_string().contains("drift pre-flight could not run"));
+        assert!(std::error::Error::source(&e).is_some());
+    }
+
+    #[test]
+    fn drift_baseline_missing_display_names_bucket_and_recovery_commands() {
+        let e = RunnerError::DriftBaselineMissing {
+            bucket: bucket("main", "billing"),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("database=main"), "got: {msg}");
+        assert!(msg.contains("app=billing"), "got: {msg}");
+        assert!(msg.contains("applied migration history"), "got: {msg}");
+        assert!(msg.contains("schema_snapshot.json"), "got: {msg}");
+        assert!(
+            msg.contains("djogi migrations repair snapshot-rebuild"),
+            "got: {msg}"
+        );
+        assert!(std::error::Error::source(&e).is_none());
     }
 
     // ── advisory_lock_key determinism ────────────────────────────────────
