@@ -168,7 +168,7 @@ Exit codes: `0` on success, `1` on runtime error (config / network / SQL / git),
 
 ## Library APIs
 
-The `apply` command ships as `djogi migrations apply` (with `--fake` / `--reason` flags for existing-database adoption). The `verify` command ships as `djogi migrations verify`. The `repair` family ships as `djogi migrations repair <checksum-drift|partial-apply|resume-partial|snapshot-rebuild>` (see **Repair Commands** below). The `baseline` command ships as `djogi migrations baseline` (see **Baseline Command** below). The `rollback` CLI dispatcher is deferred; library callers use the public entry point directly:
+The `apply` command ships as `djogi migrations apply` (with `--fake` / `--reason` flags for existing-database adoption). The `verify` command ships as `djogi migrations verify`. The `repair` family ships as `djogi migrations repair <checksum-drift|partial-apply|resume-partial|snapshot-rebuild>` (see **Repair Commands** below). The `baseline` command ships as `djogi migrations baseline` (see **Baseline Command** below). The `rollback` command ships as `djogi migrations rollback` (see **Rollback Command** below). The library entry points remain available for programmatic callers:
 
 ```rust
 use djogi::migrate::{
@@ -201,7 +201,7 @@ All apply paths require a `WorkspaceGuard` — a typed witness that the caller h
 Djogi migration commands that execute user SQL or generate run IDs require an explicit node identity. There are four separate identity boundaries:
 
 1. **Runtime application pools** — caller-owned via `post_connect`. The Djogi runtime library and pool constructors (`DjogiPool::connect`, `from_database_config`) do NOT read `HEER_NODE_ID` automatically. Wire node GUCs explicitly in your `post_connect` hook.
-2. **Migration CLI resolver** — identity-bearing CLI commands (`migrations apply`, `migrations baseline`, `db reset`, `repair resume-partial`) support `--node-id <id>` and `--single-node-dev` flags. The resolver selects explicit `--node-id` over `HEER_NODE_ID` env var. Values outside `0..=511` refuse with exit code 2 before database work.
+2. **Migration CLI resolver** — identity-bearing CLI commands (`migrations apply`, `migrations rollback`, `migrations baseline`, `db reset`, `repair resume-partial`) support `--node-id <id>` and `--single-node-dev` flags. The resolver selects explicit `--node-id` over `HEER_NODE_ID` env var. Values outside `0..=511` refuse with exit code 2 before database work.
 3. **Migration runner library** — the runner binds the selected node on the pinned migration session before non-Phase-0 `generate_run_id` / `HeeRanjID` calls and before user SQL execution. Missing identity is refused before session pinning or ledger mutation.
 4. **Phase 0 bootstrap** — production/cluster Phase 0 installs HeeRanjID schema/functions without node seed or database-level defaults. The canonical Phase 0 SQL remains identity-free; explicit `--single-node-dev` provisions node 1 after Phase 0 SQL succeeds and before the ledger row is marked applied.
 
@@ -229,7 +229,7 @@ DJOGI_ENV=production djogi migrations apply --single-node-dev  # error
 
 ### Identity-Free Paths
 
-These paths do NOT require node identity because they neither execute user migration SQL nor call non-Phase-0 run ID generation: `migrations status`, `migrations verify`, all `migrations attune` modes, `repair checksum-drift`, `repair partial-apply` status updates, and `repair snapshot-rebuild`. When no pending migrations exist, `migrations apply` prints a no-op message without identity resolution.
+These paths do NOT require node identity because they neither execute user migration SQL nor call non-Phase-0 run ID generation: `migrations status`, `migrations verify`, all `migrations attune` modes, `migrations rollback --dry-run`, `repair checksum-drift`, `repair partial-apply` status updates, and `repair snapshot-rebuild`. When no pending migrations exist, `migrations apply` prints a no-op message without identity resolution.
 
 ### Phase 0 Bootstrap Modes
 
@@ -242,6 +242,44 @@ Explicit `--single-node-dev` keeps the on-disk Phase 0 SQL identity-free, then t
 Phase 0 artifact preflight is scoped to paths that would replay or record Phase 0 SQL. `apply`, `fake apply`, `repair resume`, reset replay, and CLI reapply cleanup allow only identity-free replay-current Phase 0 artifacts before mutation; seed-capable runtime helper SQL and seed-DML non-runtime artifacts are refused for replay. `rollback` preflights the authoritative materialized down SQL before changing ledger status or running down-side SQL, so seed-capable, seed-DML non-runtime, ambiguous/comment-only, and generated-stale Phase 0 down payloads refuse early. `migrations attune` remains identity-free; only Record/Squash with `--apply` refuse seed-capable, seed-DML non-runtime, ambiguous, or generated-stale Phase 0 files before ledger/file mutation. `baseline` does not broaden into Phase 0 artifact preflight; it keeps its snapshot refusal and identity checks.
 
 The Phase 0 classifier recognizes only exact banner lines for the current and legacy production/seeded banners. Identity-free production artifacts are the only replay-current shape; seeded current artifacts are runtime-only. Banner text embedded in SQL literals, suffixed banner strings, mixed literal/dynamic database defaults, seed-free incomplete generation, generated-stale literal database defaults, and non-runtime top-level seed-table mutation against HeeRanjID seed tables all fail closed on replay paths. The seed mutation scanner covers direct `INSERT`/`UPDATE`/`DELETE`, CTE-led data mutations, `MERGE INTO`, and `COPY ... FROM`, while skipping comments, strings, quoted identifiers, and dollar-quoted bodies. Rollback is stricter still: Phase 0 rollback requires a non-empty down payload that classifies as identity-free replay-current before any transactional or non-transactional down SQL or ledger mutation begins.
+
+## Rollback Command
+
+`djogi migrations rollback` executes committed down SQL for the selected
+bucket in reverse ledger insertion order. Without `--to`, it rolls back the
+single newest rollbackable row. With `--to <version>`, it keeps `<version>`
+applied and rolls back every newer applied row above it.
+
+```bash
+djogi migrations rollback --single-node-dev
+djogi migrations rollback --to V20260101000000__init --node-id 7
+djogi migrations rollback --dry-run
+```
+
+- The command reads the committed `migrations/<database>/<app>/<version>.down.sdjql`
+  file under the workspace lock, checks it against the ledger row's recorded
+  checksums, and refuses before execution if the files drifted.
+- Missing down files, comment-only down files, and down files containing
+  non-transactional statement shapes refuse with exit code `2`. If the rollback
+  already happened out of band, use
+  `djogi migrations repair partial-apply <version> rolled-back` to rewrite the
+  ledger state explicitly instead of pretending an empty down file did work.
+- `--dry-run` is read-only: it prints the committed down SQL for the current
+  target set and then exits. The real run re-reads the ledger after acquiring
+  the workspace lock and refuses with "rerun the command" if the target set
+  changed while it was waiting.
+- Lossy down files refuse unless you pass `--allow-data-loss --reason "<why>"`.
+  The reason is recorded in the rolled-back ledger row's note.
+- After any run in which at least one rollback committed, Djogi re-projects the
+  bucket snapshot from the live database so `schema_snapshot.json` reflects the
+  actual post-rollback catalog even if a later rollback target fails.
+
+Exit codes: `0` success, `1` runtime error, `2` refusal (unsupported shape,
+missing identity, checksum drift, lossy without opt-in, or lock/ledger drift).
+
+> **Warning:** Rollback executes committed down SQL and may permanently remove
+> data or schema state. Review the down file before using
+> `--allow-data-loss`.
 
 ## Repair Commands
 

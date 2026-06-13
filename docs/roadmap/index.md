@@ -16,7 +16,7 @@
 | [Models](./models.md) | Shipped (Phases 3–7.5) | [Models](../guide/models.md), [Relations](../guide/relations.md), [Spatial](../guide/spatial.md), [JSONB](../guide/jsonb.md) |
 | [Querying](./querying.md) | Shipped (Phase 2 + 4 + 6.5) | [Queries](../guide/queries.md), [Expressions](../guide/expressions.md), [Aggregation](../guide/query-aggregation.md) |
 | [Security](./security.md) | Shipped (Phases 5 + 5.5) | [Auth](../guide/auth.md), [Tenancy](../guide/tenancy.md) |
-| [CLI](./cli.md) | Shipped (Phase 7) — except the `rollback` CLI dispatcher is deferred; `apply --fake` ships as a flag on the apply command and `baseline` ships as `djogi migrations baseline` | [Migrations](../guide/migrations.md) |
+| [CLI](./cli.md) | Shipped — `apply --fake` ships as a flag on the apply command; `baseline` and `rollback` ship as `djogi migrations baseline` / `djogi migrations rollback` | [Migrations](../guide/migrations.md) |
 | [Future work](./future-work.md) | Mixed — some items shipped, some still future | Cross-reference per item; this doc still useful for not-yet-shipped scope expansions |
 
 ## Why the roadmap docs are kept

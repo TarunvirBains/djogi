@@ -26,8 +26,8 @@ use djogi::migrate::{
     AppliedSchema, BucketKey, Classification, LedgerStatus, LossyRollbackKind,
     LossyRollbackPolicy, LossyRollbackWarning, MigrationPlan, OperationSql,
     PHASE_ZERO_VERSION, PartialApplyResolution, RepairConfirmation, RepairError, RollbackError,
-    RunnerCtx, RunnerError, RunnerIdentity, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind,
-    ResetSqlSide, VerifySeverity,
+    RollbackChecksumSide, RunnerCtx, RunnerError, RunnerIdentity, SNAPSHOT_FORMAT_VERSION, Segment,
+    SegmentKind, ResetSqlSide, VerifySeverity,
     WorkspaceGuard, acquire_workspace_lock, advisory_lock_key, apply_plan, baseline_plan,
     bootstrap_ledger, canonical_fallback_replay_plan, compute_checksum,
     compute_committed_down_sql_checksum, compute_committed_sql_checksum,
@@ -314,6 +314,21 @@ fn make_runner_ctx(
     }
 }
 
+fn checksum_for_down_fragments(plan: &MigrationPlan) -> Option<String> {
+    let frags: Vec<&str> = plan
+        .segments
+        .iter()
+        .flat_map(|s| s.statements.iter())
+        .map(|s| s.down.as_str())
+        .filter(|sql| !sql.trim().is_empty() && !sql.trim_start().starts_with("--"))
+        .collect();
+    if frags.is_empty() {
+        None
+    } else {
+        Some(compute_checksum(frags))
+    }
+}
+
 // ── Rollback: happy path ──────────────────────────────────────────────────
 
 #[djogi::djogi_test]
@@ -474,6 +489,333 @@ async fn rollback_lossy_allowed_records_reason(mut ctx: djogi::DjogiContext) {
         .expect("note");
     let note = note.expect("note");
     assert!(note.contains("operator validated backups"), "note: {note}");
+}
+
+#[djogi::djogi_test]
+async fn rollback_allow_policy_records_reason_without_lossy_markers(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let plan = transactional_plan(vec![op(
+        "AddTable markerless_reason",
+        "CREATE TABLE \"markerless_reason\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"markerless_reason\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260613000001__rollback_markerless_reason",
+        None,
+        None,
+    );
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    let report = rollback_plan(
+        &mut ctx,
+        &plan,
+        &runner_ctx,
+        &_guard,
+        LossyRollbackPolicy::Allow {
+            reason: "CLI supplied rollback reason".to_string(),
+        },
+        None,
+    )
+    .await
+    .expect("rollback ok");
+
+    assert_eq!(
+        report.lossy_reason.as_deref(),
+        Some("CLI supplied rollback reason"),
+        "Allow {{ reason }} must survive even when the materialized plan has no lossy markers"
+    );
+
+    let note: Option<String> = ctx
+        .raw_scalar(
+            "SELECT partial_apply_note FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("note");
+    let note = note.expect("note");
+    assert!(note.contains("CLI supplied rollback reason"), "note: {note}");
+}
+
+#[djogi::djogi_test]
+async fn rollback_refuses_when_runner_checksum_up_differs_from_ledger(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let plan = transactional_plan(vec![op(
+        "AddTable rollback_checksum_up",
+        "CREATE TABLE \"rollback_checksum_up\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"rollback_checksum_up\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260613000002__rollback_checksum_up",
+        None,
+        None,
+    );
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    let mut drifted_ctx = make_runner_ctx(&plan, &runner_ctx.version, None, None);
+    drifted_ctx.checksum_up =
+        "V1:0000000000000000000000000000000000000000000000000000000000000000".to_string();
+
+    let err = rollback_plan(
+        &mut ctx,
+        &plan,
+        &drifted_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await
+    .expect_err("rollback must refuse checksum drift before down SQL");
+
+    match &err {
+        RollbackError::ChecksumDrift {
+            side,
+            ledger,
+            on_disk,
+            ..
+        } => {
+            assert_eq!(*side, RollbackChecksumSide::Up);
+            assert_eq!(ledger.as_deref(), Some(runner_ctx.checksum_up.as_str()));
+            assert_eq!(on_disk.as_deref(), Some(drifted_ctx.checksum_up.as_str()));
+        }
+        other => panic!("expected ChecksumDrift, got {other:?}"),
+    }
+    assert!(
+        !err.live_db_committed(),
+        "checksum refusal must be non-committed"
+    );
+
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class \
+             WHERE relname = 'rollback_checksum_up' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("exists after refused rollback");
+    assert!(exists, "down SQL must not run after checksum refusal");
+}
+
+#[djogi::djogi_test]
+async fn rollback_refuses_checksum_down_none_some_asymmetry_before_down_sql(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let plan = transactional_plan(vec![op(
+        "AddTable rollback_checksum_down",
+        "CREATE TABLE \"rollback_checksum_down\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"rollback_checksum_down\"",
+    )]);
+    let mut runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260613000003__rollback_checksum_down",
+        None,
+        None,
+    );
+    runner_ctx.checksum_down = checksum_for_down_fragments(&plan);
+    let stored_down = runner_ctx
+        .checksum_down
+        .clone()
+        .expect("test plan has executable down SQL");
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    let mut missing_down_ctx = make_runner_ctx(&plan, &runner_ctx.version, None, None);
+    missing_down_ctx.checksum_up = runner_ctx.checksum_up.clone();
+    missing_down_ctx.checksum_down = None;
+
+    let err = rollback_plan(
+        &mut ctx,
+        &plan,
+        &missing_down_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await
+    .expect_err("rollback must refuse checksum_down Some/None drift before down SQL");
+
+    match &err {
+        RollbackError::ChecksumDrift {
+            side,
+            ledger,
+            on_disk,
+            ..
+        } => {
+            assert_eq!(*side, RollbackChecksumSide::Down);
+            assert_eq!(ledger.as_deref(), Some(stored_down.as_str()));
+            assert!(on_disk.is_none(), "expected None on-disk checksum, got {on_disk:?}");
+        }
+        other => panic!("expected ChecksumDrift, got {other:?}"),
+    }
+    assert!(
+        !err.live_db_committed(),
+        "checksum_down asymmetry refusal must be non-committed"
+    );
+
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class \
+             WHERE relname = 'rollback_checksum_down' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("exists after refused rollback");
+    assert!(exists, "down SQL must not run after checksum refusal");
+}
+
+#[djogi::djogi_test]
+async fn rollback_non_transactional_down_failure_reports_committed(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let plan = MigrationPlan {
+        bucket: BucketKey {
+            database: "main".to_string(),
+            app: "".to_string(),
+        },
+        classification: Classification::Additive,
+        segments: vec![
+            Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![op(
+                    "AddTable rollback_non_tx_commit_state",
+                    "CREATE TABLE \"rollback_non_tx_commit_state\" \
+                     (\"id\" BIGINT, \"email\" TEXT)",
+                    "DROP TABLE \"rollback_non_tx_commit_state\"",
+                )],
+            },
+            Segment {
+                kind: SegmentKind::NonTransactional,
+                statements: vec![op(
+                    "AddIndex rollback_non_tx_commit_state_email_idx",
+                    "CREATE INDEX CONCURRENTLY \"rollback_non_tx_commit_state_email_idx\" \
+                     ON \"rollback_non_tx_commit_state\" (\"email\")",
+                    "DROP INDEX CONCURRENTLY \"rollback_non_tx_missing_idx\"",
+                )],
+            },
+        ],
+    };
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260613000004__rollback_non_tx_commit_state",
+        None,
+        None,
+    );
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    let err = rollback_plan(
+        &mut ctx,
+        &plan,
+        &runner_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await
+    .expect_err("non-transactional down statement should fail");
+
+    assert!(
+        matches!(err, RollbackError::DownStatementFailed { .. }),
+        "expected DownStatementFailed, got {err:?}"
+    );
+    assert!(
+        err.live_db_committed(),
+        "non-transactional down failure must be conservative-committed once execution was attempted"
+    );
+    assert!(
+        index_exists(&mut ctx, "rollback_non_tx_commit_state_email_idx").await,
+        "rollback failed before dropping the originally applied index"
+    );
+}
+
+#[djogi::djogi_test]
+async fn rollback_snapshot_persist_failure_reports_committed(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    let plan = transactional_plan(vec![op(
+        "AddTable rollback_snapshot_commit_state",
+        "CREATE TABLE \"rollback_snapshot_commit_state\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"rollback_snapshot_commit_state\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260613000005__rollback_snapshot_commit_state",
+        None,
+        None,
+    );
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+
+    let bad_snapshot_path = temp_workspace_root("rollback-snapshot-commit-state-dir");
+    let mut rollback_ctx = make_runner_ctx(
+        &plan,
+        &runner_ctx.version,
+        None,
+        Some(bad_snapshot_path.clone()),
+    );
+    rollback_ctx.checksum_up = runner_ctx.checksum_up.clone();
+    rollback_ctx.checksum_down = runner_ctx.checksum_down.clone();
+
+    let err = rollback_plan(
+        &mut ctx,
+        &plan,
+        &rollback_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        Some(&empty_snapshot()),
+    )
+    .await
+    .expect_err("snapshot persist should fail after rollback commits");
+
+    assert!(
+        matches!(err, RollbackError::SnapshotPersistFailed { .. }),
+        "expected SnapshotPersistFailed, got {err:?}"
+    );
+    assert!(
+        err.live_db_committed(),
+        "snapshot persist failure occurs after rollback down SQL and ledger mutation"
+    );
+
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class \
+             WHERE relname = 'rollback_snapshot_commit_state' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("exists after snapshot failure");
+    assert!(
+        !exists,
+        "table should already be dropped before snapshot persistence fails"
+    );
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("status");
+    assert_eq!(status, "rolled_back");
+    let _ = std::fs::remove_dir_all(&bad_snapshot_path);
 }
 
 // ── Rollback: not-applied state refuses ───────────────────────────────────

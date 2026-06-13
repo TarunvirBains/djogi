@@ -96,12 +96,12 @@ Installed once, used everywhere:
 cargo install djogi-cli
 ```
 ```bash
-# Migrations — registered in djogi-cli today (Phase 7 T6 / T7 / T8)
+# Migrations — drift composition and state
 djogi migrations compose               # generate migration files from current drift
 djogi migrations compose --allow-destructive
 djogi migrations status                # show file/ledger/snapshot state
 
-# Migration-history state management — registered today (T7)
+# Migration-history state management
 djogi migrations attune                                    # diff-only ledger / disk reconciliation (read-only)
 djogi migrations attune <target>                           # resolve target (Git commit / tag / branch); diff-only without --apply
 djogi migrations attune <target> --apply                   # diff + commit ledger / disk mutations
@@ -110,12 +110,10 @@ djogi migrations attune --record-ledger --apply            # insert ledger rows 
 djogi migrations attune --squash --from V<ts> --apply      # dev-only local squash of migration history
 djogi migrations attune --squash --from V<ts> --apply --publish   # squash and push the rewritten submodule
 
-# Migrations — shipped CLI + one deferred verb (library APIs available for all)
+# Migrations — shipped CLI (library APIs available for all)
 # The library entry points (`apply_plan`, `rollback_plan`, `repair_*`,
 # `baseline_plan`) are public and exercised by the integration test suite.
-# `apply`, `verify`, `repair`, and `baseline` ship as CLI commands;
-# the `rollback` CLI dispatcher is deferred;
-# library callers reach that runner via the public `djogi::migrate` entry point.
+# `apply`, `verify`, `repair`, `baseline`, and `rollback` ship as CLI commands.
 djogi migrations apply                 # apply pending migrations, update snapshot
 djogi migrations apply --fake --reason "existing schema"  # mark applied without running SQL
 djogi migrations verify                # compare snapshot expectations to the live DB
@@ -125,9 +123,9 @@ djogi migrations repair partial-apply V<ts>__<slug> rolled-back  # resolve a par
 djogi migrations repair resume-partial V<ts>__<slug>  # resume an interrupted non-transactional apply
 djogi migrations repair snapshot-rebuild --app <label>  # rebuild a bucket snapshot from ledger + live DB
 djogi migrations baseline V<ts>__baseline --reason "existing schema"  # adopt an existing DB without replaying SQL
-# djogi migrations rollback              # roll back last migration, rewind snapshot
+djogi migrations rollback --single-node-dev  # roll back newest migration, re-project snapshot
 
-# Database (dev only — triple-gated) — registered today (T8)
+# Database (dev only — triple-gated)
 djogi db reset                         # drop → recreate → replay; refuses without --yes / interactive y
 djogi db reset --yes                   # non-interactive — typical for CI
 djogi db reset --yes --allow-checksum-drift-reset # explicit override when ledger/file parity drift is known and accepted
@@ -135,7 +133,7 @@ djogi db seed                          # run seeds/<database>/*.sql files; idemp
 djogi db seed --database crud_log      # operator-supplied database — splices into URL path for routing
 djogi db seed --allow-non-localhost    # opt in to remote DBs (CI integration suites)
 
-# Documentation — registered today (T8)
+# Documentation
 djogi docs                             # render Markdown reference pages from descriptor inventory
 
 # Shell — Phase 9 (deferred)

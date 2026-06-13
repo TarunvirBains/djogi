@@ -144,13 +144,13 @@ pub use repair::{
 pub use reset::{
     FallbackReplayPlan, FallbackReplayPlanError, ReplayedMigration, ResetError, ResetRefusal,
     ResetReport, ResetRequest, ResetSqlSide, canonical_fallback_replay_plan,
-    compute_committed_down_sql_checksum, compute_committed_sql_checksum, replace_db_in_url,
-    reset_app_database,
+    compute_committed_down_sql_checksum, compute_committed_sql_checksum,
+    find_non_transactional_statement_shape, replace_db_in_url, reset_app_database,
 };
 pub use runner::{
-    DriftBaseline, LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx,
-    RunnerError, RunnerIdentity, advisory_lock_key, apply_plan, baseline_plan, fake_apply_plan,
-    rollback_plan,
+    DriftBaseline, LossyRollbackPolicy, RollbackChecksumSide, RollbackError, RollbackReport,
+    RunReport, RunnerCtx, RunnerError, RunnerIdentity, advisory_lock_key, apply_plan,
+    baseline_plan, fake_apply_plan, rollback_plan,
 };
 pub use schema::{
     AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,

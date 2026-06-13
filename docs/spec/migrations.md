@@ -852,7 +852,7 @@ Advisory lock contract:
 Canonical CLI surface:
 
 ```bash
-# Registered in djogi-cli today (Phase 7 T6 / T7 / T8)
+# Shipped djogi-cli surface
 djogi migrations compose
 djogi migrations status
 djogi migrations attune
@@ -870,18 +870,14 @@ djogi migrations repair partial-apply V<ts>__<slug> rolled-back  # resolve a par
 djogi migrations repair resume-partial V<ts>__<slug>  # resume an interrupted non-transactional apply
 djogi migrations repair snapshot-rebuild --app <label>  # rebuild a bucket snapshot from ledger + live DB
 djogi migrations baseline V<ts>__baseline --reason "existing schema"  # adopt an existing DB — project live schema into a baseline row + snapshot
+djogi migrations rollback --single-node-dev
+djogi migrations rollback --to V<ts>__<slug> --node-id 7
+djogi migrations rollback --dry-run
 djogi db reset --yes
 djogi db reset --yes --allow-checksum-drift-reset
 djogi db seed
 djogi db seed --database crud_log
 djogi docs
-
-# Phase-7-deferred — library API ships today; CLI dispatch lands in a follow-up
-# task. The runtime entry point (`rollback_plan`) is public and exercised by
-# the integration test suite; the gap is the config / snapshot / plan / ledger
-# plumbing the CLI dispatch needs around it. Adopters who need this flow ahead
-# of the CLI registration can wire the library API directly today.
-# deferred CLI sketch: djogi migrations rollback
 ```
 
 `migrations attune` is the migration-history state-management command.

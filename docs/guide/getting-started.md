@@ -203,10 +203,9 @@ djogi migrations status           # show ledger / snapshot / live-DB state
 djogi migrations attune           # reconcile disk / ledger / live DB
 ```
 
-Apply the composed plan through the library API
-(`djogi::migrate::apply_plan` / `rollback_plan` / `fake_apply_plan` /
-`baseline_plan`) — the operator-facing `djogi migrations apply` CLI
-dispatcher is deferred to a Phase 7 follow-up. See the
+Apply the composed plan with `djogi migrations apply` (or through the
+library API: `djogi::migrate::apply_plan` / `rollback_plan` /
+`fake_apply_plan` / `baseline_plan`). See the
 [Migrations guide](./migrations.md) for the full pipeline (compose /
 apply / attune), library entry points, online-safety classification,
 and the ledger.

@@ -221,7 +221,7 @@ This proposal replaces them with noun-grouped verbs throughout. The shipped CLI 
 | `djogi migrations status` | Show pending and applied migration state |
 | `djogi migrations attune` | Reconcile migration history state through the shipped attune workflow |
 | Shipped target verb | `apply` ships as `djogi migrations apply` |
-| Deferred target verbs | `rollback` remains a deferred CLI surface; `verify` ships as `djogi migrations verify`, `repair` ships as `djogi migrations repair`, and `baseline` ships as `djogi migrations baseline` |
+| Target verbs | `apply` ships as `djogi migrations apply`; `verify` as `djogi migrations verify`; `repair` as `djogi migrations repair`; `baseline` as `djogi migrations baseline`; and `rollback` as `djogi migrations rollback` |
 | `djogi migrations help [<subcommand>]` | Print help for the group or a specific subcommand |
 | `djogi migrations` (no subcommand) | Equivalent to `help` — prints subcommand list + common workflows |
 

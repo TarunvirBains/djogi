@@ -14,9 +14,9 @@ use djogi::migrate::{
     AppLifecycle, AttuneError, AttuneMode, AttuneRequest, AutoEmitError, BootstrapError, BucketKey,
     ComposeError, ComposeRequest, DescriptorProvider, DiffError, DriftBaseline,
     GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PartialApplyResolution, PendingPlan, RepairConfirmation,
-    RepairError, RepairReport, RunnerCtx, RunnerError, SnapshotError, SqlEmitError, VerifyReport,
-    VerifySeverity, acquire_workspace_lock, apply_plan, attune, baseline_plan, compose,
-    fake_apply_plan, load_snapshot, project_from_provider, repair_checksum_drift,
+    RepairError, RepairReport, RollbackError, RunnerCtx, RunnerError, SnapshotError, SqlEmitError,
+    VerifyReport, VerifySeverity, acquire_workspace_lock, apply_plan, attune, baseline_plan,
+    compose, fake_apply_plan, load_snapshot, project_from_provider, repair_checksum_drift,
     repair_partial_apply, repair_resume_partial_apply, repair_snapshot_rebuild, snapshot_path,
 };
 
@@ -2665,6 +2665,633 @@ fn repair_error_exit_code(err: &RepairError) -> i32 {
     }
 }
 
+/// Map a [`RollbackError`] onto the CLI exit-code contract: exit `2` for
+/// deterministic operator-actionable refusals, exit `1` for transient or
+/// runtime failures.
+fn rollback_error_exit_code(error: &RollbackError) -> i32 {
+    match error {
+        RollbackError::Runner { source, .. } => runner_error_exit_code(source),
+        RollbackError::LossyRollbackRefused { .. }
+        | RollbackError::VersionNotRollbackable { .. }
+        | RollbackError::VersionNotFound { .. }
+        | RollbackError::BucketAppMismatch { .. }
+        | RollbackError::ChecksumDrift { .. }
+        | RollbackError::PriorSnapshotMissing
+        | RollbackError::LeafIdentityMismatch { .. }
+        | RollbackError::StalePhaseZeroDown { .. }
+        | RollbackError::MissingRollbackIdentity { .. } => 2,
+        RollbackError::DownStatementFailed { .. } | RollbackError::SnapshotPersistFailed { .. } => {
+            1
+        }
+    }
+}
+
+/// `djogi migrations rollback` entry point.
+#[allow(clippy::too_many_arguments)]
+pub fn rollback_cmd(
+    to: Option<String>,
+    dry_run: bool,
+    allow_data_loss: bool,
+    reason: Option<String>,
+    app: Option<&str>,
+    database: Option<&str>,
+    workspace: Option<PathBuf>,
+    node_id: Option<u32>,
+    single_node_dev: bool,
+) -> ExitCode {
+    if allow_data_loss {
+        match reason.as_deref() {
+            Some(reason) if !reason.trim().is_empty() => {}
+            Some(_) => {
+                eprintln!(
+                    "djogi migrations rollback --allow-data-loss: --reason must not be empty; \
+                     supply a non-empty reason why lossy rollback is acceptable"
+                );
+                return ExitCode::from(2);
+            }
+            None => {
+                eprintln!(
+                    "djogi migrations rollback --allow-data-loss: --reason is required; \
+                     supply a reason why lossy rollback is acceptable. \
+                     This is recorded in the ledger audit trail."
+                );
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let workspace = resolve_workspace(workspace);
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("djogi migrations rollback: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let exit = runtime.block_on(async {
+        run_rollback(
+            &workspace,
+            to.as_deref(),
+            dry_run,
+            allow_data_loss,
+            reason.as_deref(),
+            app,
+            database,
+            node_id,
+            single_node_dev,
+        )
+        .await
+    });
+    ExitCode::from(exit as u8)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_rollback(
+    workspace: &Path,
+    to: Option<&str>,
+    dry_run: bool,
+    allow_data_loss: bool,
+    reason: Option<&str>,
+    app: Option<&str>,
+    database: Option<&str>,
+    node_id: Option<u32>,
+    single_node_dev: bool,
+) -> i32 {
+    use djogi::config::DjogiConfig;
+
+    let config = match DjogiConfig::load_from_workspace(workspace) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("djogi migrations rollback: config load: {e}");
+            return 1;
+        }
+    };
+
+    let runner_identity: Option<djogi::migrate::RunnerIdentity> = if dry_run {
+        None
+    } else {
+        match crate::identity::resolve_identity(
+            node_id,
+            single_node_dev,
+            &config.profile,
+            "rollback",
+        ) {
+            Ok(resolved) => Some(resolved.into_runner_identity()),
+            Err(e) => {
+                let _ = crate::identity::print_identity_error("rollback", &e);
+                return 2;
+            }
+        }
+    };
+
+    let db_name = resolve_database(database, &config);
+    let url = match resolve_bucket_url(&config.database, &db_name) {
+        Some(url) => url,
+        None => {
+            eprintln!("djogi migrations rollback: cannot derive a database URL for `{db_name}`");
+            return 2;
+        }
+    };
+
+    let mut ctx = match connect_and_check(&url).await {
+        ContextOutcome::Ready(ctx) => ctx,
+        ContextOutcome::UnsupportedVersion(e) => {
+            crate::print_support_boundary_error("migrations rollback", &e);
+            return 2;
+        }
+        ContextOutcome::RuntimeError(msg) => {
+            eprintln!("djogi migrations rollback: pool: {msg}");
+            return 1;
+        }
+    };
+
+    let app_label = app.unwrap_or("");
+    let bucket = BucketKey {
+        database: db_name,
+        app: app_label.to_string(),
+    };
+
+    let pre_lock_rows = match read_ledger_rows_or_empty(&mut ctx).await {
+        Ok(rows) => rows,
+        Err(msg) => {
+            eprintln!("djogi migrations rollback: ledger read: {msg}");
+            return 1;
+        }
+    };
+    let pre_lock_targets = match select_rollback_targets(&pre_lock_rows, app_label, to) {
+        Ok(targets) => targets,
+        Err(msg) => {
+            eprintln!("djogi migrations rollback: {msg}");
+            return 2;
+        }
+    };
+    if pre_lock_targets.is_empty() {
+        println!("Nothing to roll back.");
+        return 0;
+    }
+
+    if dry_run {
+        let gated_targets = match gate_rollback_targets(workspace, &bucket, &pre_lock_targets) {
+            Ok(targets) => targets,
+            Err(RollbackCliGateError::Refusal(msg)) => {
+                eprintln!("djogi migrations rollback: {msg}");
+                return 2;
+            }
+            Err(RollbackCliGateError::Io(msg)) => {
+                eprintln!("djogi migrations rollback: {msg}");
+                return 1;
+            }
+        };
+        if !allow_data_loss && let Some((version, markers)) = first_lossy_target(&gated_targets) {
+            eprintln!("djogi migrations rollback: rollback refused for `{version}`:");
+            for marker in markers {
+                eprintln!("  {marker}");
+            }
+            eprintln!("pass --allow-data-loss with --reason to proceed");
+            return 2;
+        }
+        print_rollback_data_loss_warning();
+        for target in &gated_targets {
+            println!(
+                "-- rollback {} ({}/{})",
+                target.row.version,
+                bucket.database,
+                display_bucket_app(&bucket.app)
+            );
+            print!("{}", target.down_sql);
+            if !target.down_sql.ends_with('\n') {
+                println!();
+            }
+        }
+        println!(
+            "preview of the current ledger state; the real run re-reads the ledger under the workspace lock"
+        );
+        println!("dry run — nothing executed.");
+        return 0;
+    }
+
+    let lock_path = workspace.join(LOCK_FILE_NAME);
+    let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("djogi migrations rollback: workspace lock: {e}");
+            return 1;
+        }
+    };
+
+    let locked_rows = match read_ledger_rows_or_empty(&mut ctx).await {
+        Ok(rows) => rows,
+        Err(msg) => {
+            eprintln!("djogi migrations rollback: ledger read: {msg}");
+            return 1;
+        }
+    };
+    let locked_targets = match select_rollback_targets(&locked_rows, app_label, to) {
+        Ok(targets) => targets,
+        Err(msg) => {
+            eprintln!("djogi migrations rollback: {msg}");
+            return 2;
+        }
+    };
+    if let Err(msg) = ensure_no_target_drift(&pre_lock_targets, &locked_targets) {
+        eprintln!("djogi migrations rollback: {msg}");
+        return 2;
+    }
+
+    let gated_targets = match gate_rollback_targets(workspace, &bucket, &locked_targets) {
+        Ok(targets) => targets,
+        Err(RollbackCliGateError::Refusal(msg)) => {
+            eprintln!("djogi migrations rollback: {msg}");
+            return 2;
+        }
+        Err(RollbackCliGateError::Io(msg)) => {
+            eprintln!("djogi migrations rollback: {msg}");
+            return 1;
+        }
+    };
+
+    if !allow_data_loss && let Some((version, markers)) = first_lossy_target(&gated_targets) {
+        eprintln!("djogi migrations rollback: rollback refused for `{version}`:");
+        for marker in markers {
+            eprintln!("  {marker}");
+        }
+        eprintln!("pass --allow-data-loss with --reason to proceed");
+        return 2;
+    }
+
+    print_rollback_data_loss_warning();
+
+    let audit_pool = match djogi::migrate::resolve_audit_url(&config) {
+        Ok(url) => djogi::migrate::build_audit_pool(&url).await.ok(),
+        Err(_) => None,
+    };
+    let mut rolled_back_count = 0usize;
+    let mut loop_failure: Option<djogi::migrate::RollbackError> = None;
+    let lossy_reason = reason.map(str::to_string);
+
+    for target in gated_targets {
+        let plan = djogi::migrate::MigrationPlan {
+            bucket: bucket.clone(),
+            classification: djogi::migrate::Classification::Additive,
+            segments: vec![djogi::migrate::Segment {
+                kind: djogi::migrate::SegmentKind::Transactional,
+                statements: vec![djogi::migrate::OperationSql {
+                    label: format!("rollback {}", target.row.version),
+                    up: target.up_sql.clone(),
+                    down: target.down_sql.clone(),
+                    lossy: None,
+                }],
+            }],
+        };
+        let runner_ctx = RunnerCtx {
+            bucket: bucket.clone(),
+            version: target.row.version.clone(),
+            description: target.row.description.clone(),
+            checksum_up: target.checksum_up.clone(),
+            checksum_down: target.checksum_down.clone(),
+            snapshot: None,
+            snapshot_path: None,
+            config: djogi::config::MigrateConfig {
+                concurrent_warn_relpages: config.migrate.concurrent_warn_relpages,
+                strict_concurrent_warnings: config.migrate.strict_concurrent_warnings,
+                pk_flip_long_tx_threshold_secs: config.migrate.pk_flip_long_tx_threshold_secs,
+                pk_flip_join_table_option: config.migrate.pk_flip_join_table_option,
+            },
+            out_of_order_policy: djogi::migrate::OutOfOrderPolicy::default_for_config(&config),
+            audit_pool: audit_pool.clone(),
+            runner_identity,
+            // Apply-time drift verification is an apply-path gate;
+            // rollback_plan never reads this field. Rollback's own
+            // pre-execution guard is the ledger-vs-file checksum-parity
+            // gate inside rollback_handle_lock.
+            drift_baseline: DriftBaseline::Disabled,
+        };
+        let policy = match lossy_reason.as_deref() {
+            Some(reason) => djogi::migrate::LossyRollbackPolicy::Allow {
+                reason: reason.to_string(),
+            },
+            None => djogi::migrate::LossyRollbackPolicy::Refuse,
+        };
+
+        println!("  rolling back {}...", target.row.version);
+        match djogi::migrate::rollback_plan(&mut ctx, &plan, &runner_ctx, &guard, policy, None)
+            .await
+        {
+            Ok(report) => {
+                if let Some(lossy_reason) = report.lossy_reason.as_deref() {
+                    println!(
+                        "  rolled back {} (lossy reason: {lossy_reason})",
+                        target.row.version
+                    );
+                } else {
+                    println!("  rolled back {}", target.row.version);
+                }
+                rolled_back_count += 1;
+            }
+            Err(e) => {
+                eprintln!("djogi migrations rollback: {e}");
+                loop_failure = Some(e);
+                break;
+            }
+        }
+    }
+
+    let snapshot_path = reconstruct_snapshot_path(workspace, &bucket);
+    let live_db_mutated = rolled_back_count > 0
+        || loop_failure
+            .as_ref()
+            .is_some_and(djogi::migrate::RollbackError::live_db_committed);
+
+    match loop_failure {
+        None => {
+            match repair_snapshot_rebuild(
+                &mut ctx,
+                &guard,
+                &bucket,
+                &snapshot_path,
+                RepairConfirmation::OperatorAcknowledged,
+            )
+            .await
+            {
+                Ok(_) => {
+                    println!(
+                        "rolled back {rolled_back_count} migration(s); snapshot re-projected."
+                    );
+                    0
+                }
+                Err(e) => {
+                    eprintln!(
+                        "djogi migrations rollback: rollback recorded; snapshot rebuild failed: {e} — run `djogi migrations repair snapshot-rebuild --app {} --database {}` to restore the snapshot",
+                        bucket.app, bucket.database,
+                    );
+                    2
+                }
+            }
+        }
+        Some(e) if live_db_mutated => {
+            match repair_snapshot_rebuild(
+                &mut ctx,
+                &guard,
+                &bucket,
+                &snapshot_path,
+                RepairConfirmation::OperatorAcknowledged,
+            )
+            .await
+            {
+                Ok(_) => {
+                    println!("snapshot re-projected to match committed rollback work.");
+                }
+                Err(rebuild_error) => {
+                    eprintln!(
+                        "djogi migrations rollback: snapshot may be stale: {rebuild_error} — run `djogi migrations repair snapshot-rebuild --app {} --database {}` to restore the snapshot",
+                        bucket.app, bucket.database,
+                    );
+                }
+            }
+            rollback_error_exit_code(&e)
+        }
+        Some(e) => rollback_error_exit_code(&e),
+    }
+}
+
+/// Compute the ordered rollback set for one bucket from the full ledger
+/// listing. Pure — no I/O — so the walk rules are unit-testable.
+fn select_rollback_targets<'a>(
+    rows: &'a [djogi::migrate::LedgerSummaryRow],
+    app_label: &str,
+    to: Option<&str>,
+) -> Result<Vec<&'a djogi::migrate::LedgerSummaryRow>, String> {
+    use djogi::migrate::LedgerStatus;
+
+    let mut bucket_rows: Vec<&djogi::migrate::LedgerSummaryRow> = rows
+        .iter()
+        .filter(|row| row.app_label == app_label)
+        .collect();
+    bucket_rows.sort_by_key(|row| std::cmp::Reverse(row.id));
+
+    let floor_id = match to {
+        None => None,
+        Some(version) => {
+            let target = bucket_rows
+                .iter()
+                .find(|row| row.version == version)
+                .ok_or_else(|| {
+                    format!("--to version `{version}` is not present in this bucket's ledger")
+                })?;
+            if !matches!(
+                target.status,
+                LedgerStatus::Applied | LedgerStatus::Faked | LedgerStatus::Baseline
+            ) {
+                return Err(format!(
+                    "--to version `{version}` has status `{status}`; the rollback \
+                     target must remain applied (applied / faked / baseline)",
+                    status = target.status.as_db_str(),
+                ));
+            }
+            Some(target.id)
+        }
+    };
+
+    let mut targets = Vec::new();
+    for row in &bucket_rows {
+        if let Some(floor) = floor_id
+            && row.id <= floor
+        {
+            break;
+        }
+        match row.status {
+            LedgerStatus::RolledBack => continue,
+            LedgerStatus::Applied | LedgerStatus::Faked => {
+                targets.push(*row);
+                if floor_id.is_none() {
+                    break;
+                }
+            }
+            LedgerStatus::Pending | LedgerStatus::Failed => {
+                return Err(format!(
+                    "ledger row `{version}` has status `{status}`; resolve it with \
+                     `djogi migrations repair` before rolling back past it",
+                    version = row.version,
+                    status = row.status.as_db_str(),
+                ));
+            }
+            LedgerStatus::Baseline => {
+                if floor_id.is_none() {
+                    break;
+                }
+                return Err(format!(
+                    "cannot roll back past baseline row `{version}`",
+                    version = row.version,
+                ));
+            }
+        }
+    }
+
+    Ok(targets)
+}
+
+/// Refuse when the rollback target set computed under the workspace lock
+/// differs from the pre-lock baseline the operator may have just observed.
+fn ensure_no_target_drift(
+    pre_lock: &[&djogi::migrate::LedgerSummaryRow],
+    locked: &[&djogi::migrate::LedgerSummaryRow],
+) -> Result<(), String> {
+    let key = |set: &[&djogi::migrate::LedgerSummaryRow]| -> Vec<(i64, String, String)> {
+        set.iter()
+            .map(|row| {
+                (
+                    row.id,
+                    row.version.clone(),
+                    row.status.as_db_str().to_string(),
+                )
+            })
+            .collect()
+    };
+    if key(pre_lock) != key(locked) {
+        return Err(
+            "ledger changed while waiting for the workspace lock; rerun the command".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Collect the lossy-marker comment lines from a committed down SQL file.
+fn scan_lossy_down_markers(down_sql: &str) -> Vec<String> {
+    down_sql
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("-- LOSSY"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[derive(Debug)]
+enum RollbackCliGateError {
+    Refusal(String),
+    Io(String),
+}
+
+#[derive(Debug)]
+struct GatedRollbackTarget<'a> {
+    row: &'a djogi::migrate::LedgerSummaryRow,
+    up_sql: String,
+    down_sql: String,
+    checksum_up: String,
+    checksum_down: Option<String>,
+    lossy_markers: Vec<String>,
+}
+
+async fn read_ledger_rows_or_empty(
+    ctx: &mut djogi::context::DjogiContext,
+) -> Result<Vec<djogi::migrate::LedgerSummaryRow>, String> {
+    match djogi::migrate::select_all_ledger_rows(ctx).await {
+        Ok(rows) => Ok(rows),
+        Err(e) => {
+            if e.to_string().contains("djogi_schema_migrations") {
+                Ok(Vec::new())
+            } else {
+                Err(e.to_string())
+            }
+        }
+    }
+}
+
+fn gate_rollback_targets<'a>(
+    workspace: &Path,
+    bucket: &BucketKey,
+    rows: &[&'a djogi::migrate::LedgerSummaryRow],
+) -> Result<Vec<GatedRollbackTarget<'a>>, RollbackCliGateError> {
+    let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
+    let mut gated = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let down_path = bucket_dir.join(djogi::migrate::down_filename(&row.version));
+        let down_sql = match std::fs::read_to_string(&down_path) {
+            Ok(sql) => sql,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(RollbackCliGateError::Refusal(format!(
+                    "version `{}` has no committed down file; use `djogi migrations repair partial-apply {} rolled-back` if the rollback already happened out of band",
+                    row.version, row.version
+                )));
+            }
+            Err(e) => {
+                return Err(RollbackCliGateError::Io(format!(
+                    "read down SQL {}: {e}",
+                    down_path.display()
+                )));
+            }
+        };
+        let checksum_down = djogi::migrate::compute_committed_down_sql_checksum(&down_sql);
+        if checksum_down.is_none() {
+            return Err(RollbackCliGateError::Refusal(format!(
+                "version `{}` has no executable down SQL; use `djogi migrations repair partial-apply {} rolled-back` if the rollback already happened out of band",
+                row.version, row.version
+            )));
+        }
+        if let Some(shape) = djogi::migrate::find_non_transactional_statement_shape(&down_sql) {
+            return Err(RollbackCliGateError::Refusal(format!(
+                "version `{}` contains non-transactional down SQL (`{shape}`); use the library rollback entry point for this migration",
+                row.version
+            )));
+        }
+
+        let up_path = bucket_dir.join(djogi::migrate::up_filename(&row.version));
+        let up_sql = std::fs::read_to_string(&up_path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                RollbackCliGateError::Refusal(format!(
+                    "version `{}` is missing its committed up file",
+                    row.version
+                ))
+            } else {
+                RollbackCliGateError::Io(format!("read up SQL {}: {e}", up_path.display()))
+            }
+        })?;
+        let checksum_up = djogi::migrate::compute_committed_sql_checksum(
+            &up_sql,
+            djogi::migrate::ResetSqlSide::Up,
+        );
+        let lossy_markers = scan_lossy_down_markers(&down_sql);
+
+        gated.push(GatedRollbackTarget {
+            row,
+            up_sql,
+            down_sql,
+            checksum_up,
+            checksum_down,
+            lossy_markers,
+        });
+    }
+
+    Ok(gated)
+}
+
+fn first_lossy_target<'a>(
+    targets: &'a [GatedRollbackTarget<'a>],
+) -> Option<(&'a str, &'a [String])> {
+    targets
+        .iter()
+        .find(|target| !target.lossy_markers.is_empty())
+        .map(|target| (target.row.version.as_str(), target.lossy_markers.as_slice()))
+}
+
+fn display_bucket_app(app_label: &str) -> &str {
+    if app_label.is_empty() {
+        "_global_"
+    } else {
+        app_label
+    }
+}
+
+fn print_rollback_data_loss_warning() {
+    eprintln!(
+        "WARNING: rollback executes committed down SQL and may permanently remove data or schema state."
+    );
+}
+
 /// Resolve the database name for bucket construction. Uses the explicit
 /// `--database` flag if provided, otherwise defaults to `"main"` (the
 /// global database name — see [`djogi::apps::AppDescriptor::GLOBAL_DATABASE`]).
@@ -3559,6 +4186,27 @@ mod tests {
         let p = std::env::temp_dir().join(format!("djogi-cli-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    fn ledger_row(
+        id: i64,
+        version: &str,
+        status: LedgerStatus,
+        app_label: &str,
+    ) -> djogi::migrate::LedgerSummaryRow {
+        djogi::migrate::LedgerSummaryRow {
+            id,
+            version: version.to_string(),
+            description: format!("desc {version}"),
+            status,
+            execution_time_ms: 0,
+            applied_at_rfc3339: "2026-01-01T00:00:00Z".to_string(),
+            applied_by: "test".to_string(),
+            run_id: id,
+            partial_apply_note: None,
+            app_label: app_label.to_string(),
+            out_of_order_flag: false,
+        }
     }
 
     fn write_unreachable_config(work: &std::path::Path) {
@@ -6311,6 +6959,302 @@ mod tests {
                 "runtime variant must map to exit 1: {err}"
             );
         }
+    }
+
+    // ── issue #355: rollback CLI exit / guard mapping ───────────────────
+
+    #[test]
+    fn rollback_lossy_opt_in_requires_non_empty_reason() {
+        let workspace = Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws"));
+
+        let missing = rollback_cmd(
+            None,
+            false,
+            true,
+            None,
+            None,
+            None,
+            workspace.clone(),
+            None,
+            false,
+        );
+        assert_eq!(
+            missing,
+            ExitCode::from(2),
+            "--allow-data-loss without --reason must exit 2 before any DB work"
+        );
+
+        let blank = rollback_cmd(
+            None,
+            false,
+            true,
+            Some("   ".to_string()),
+            None,
+            None,
+            workspace,
+            None,
+            false,
+        );
+        assert_eq!(
+            blank,
+            ExitCode::from(2),
+            "blank --reason with --allow-data-loss must exit 2 before any DB work"
+        );
+    }
+
+    #[test]
+    fn rollback_allow_data_loss_with_whitespace_reason_exits_code_2() {
+        let work = temp_workspace("rollback-empty-reason");
+        write_unreachable_config(&work);
+        let exit = without_database_url(|| {
+            rollback_cmd(
+                None,
+                false,
+                true,
+                Some("   ".to_string()),
+                None,
+                None,
+                Some(work.clone()),
+                None,
+                true,
+            )
+        });
+        assert_eq!(exit, ExitCode::from(2));
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn rollback_missing_identity_exits_code_2_before_db_work() {
+        let work = temp_workspace("rollback-no-identity");
+        write_unreachable_config(&work);
+        let exit = without_database_url(|| {
+            rollback_cmd(
+                None,
+                false,
+                false,
+                None,
+                None,
+                None,
+                Some(work.clone()),
+                None,
+                false,
+            )
+        });
+        assert_eq!(exit, ExitCode::from(2));
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn rollback_unreachable_database_exits_code_1() {
+        let work = temp_workspace("rollback-unreachable");
+        write_unreachable_config(&work);
+        let exit = without_database_url(|| {
+            rollback_cmd(
+                None,
+                false,
+                false,
+                None,
+                None,
+                None,
+                Some(work.clone()),
+                None,
+                true,
+            )
+        });
+        assert_eq!(exit, ExitCode::from(1));
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn rollback_refusal_variants_map_to_exit_code_two() {
+        use djogi::migrate::LossyRollbackKind;
+
+        let cases = [
+            RollbackError::LossyRollbackRefused {
+                offending_labels: vec!["DropTable widgets".to_string()],
+                kinds: vec![LossyRollbackKind::DropTable],
+            },
+            RollbackError::VersionNotRollbackable {
+                version: "V20260101000000__widgets".to_string(),
+                current_status: LedgerStatus::Pending,
+            },
+            RollbackError::VersionNotFound {
+                version: "V20260101000000__widgets".to_string(),
+            },
+            RollbackError::MissingRollbackIdentity {
+                version: "V20260101000000__widgets".to_string(),
+            },
+        ];
+
+        for err in &cases {
+            assert_eq!(
+                rollback_error_exit_code(err),
+                2,
+                "rollback refusal variant must map to exit 2: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_runner_refusal_variants_map_to_exit_code_two() {
+        let err = RollbackError::Runner {
+            source: RunnerError::PartitionExpansionNoLeaves {
+                parent: "public.events".to_string(),
+                statement_label: "expand_partitions".to_string(),
+            },
+            live_db_committed: false,
+        };
+        assert_eq!(
+            rollback_error_exit_code(&err),
+            2,
+            "rollback should classify replay-strict refusal variants as exit 2"
+        );
+    }
+
+    #[test]
+    fn rollback_transient_variants_map_to_exit_code_one() {
+        use djogi::error::{DbError, DjogiError};
+
+        let cases = [
+            RollbackError::Runner {
+                source: RunnerError::PinnedSessionCheckoutFailed {
+                    source: DjogiError::Db(DbError::other("pool exhausted")),
+                },
+                live_db_committed: false,
+            },
+            RollbackError::DownStatementFailed {
+                segment_index: 0,
+                statement_label: "DROP TABLE widgets".to_string(),
+                live_db_committed: false,
+                source: DjogiError::Db(DbError::other("syntax error")),
+            },
+        ];
+
+        for err in &cases {
+            assert_eq!(
+                rollback_error_exit_code(err),
+                1,
+                "rollback transient variant must map to exit 1: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_targets_without_to_selects_newest_applied_row_only() {
+        let rows = vec![
+            ledger_row(10, "V20260101000001__old", LedgerStatus::Applied, ""),
+            ledger_row(11, "V20260101000002__new", LedgerStatus::Applied, ""),
+            ledger_row(
+                12,
+                "V20260101000003__other_app",
+                LedgerStatus::Applied,
+                "billing",
+            ),
+        ];
+
+        let selected = select_rollback_targets(&rows, "", None).expect("selection ok");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].version, "V20260101000002__new");
+    }
+
+    #[test]
+    fn rollback_targets_with_to_selects_every_newer_non_rolled_back_row() {
+        let rows = vec![
+            ledger_row(10, "V20260101000001__base", LedgerStatus::Applied, ""),
+            ledger_row(11, "V20260101000002__middle", LedgerStatus::Faked, ""),
+            ledger_row(12, "V20260101000003__newest", LedgerStatus::Applied, ""),
+        ];
+
+        let selected = select_rollback_targets(&rows, "", Some("V20260101000001__base"))
+            .expect("selection ok");
+        assert_eq!(
+            selected
+                .iter()
+                .map(|row| row.version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["V20260101000003__newest", "V20260101000002__middle"]
+        );
+    }
+
+    #[test]
+    fn rollback_targets_refuse_pending_row_inside_to_range() {
+        let rows = vec![
+            ledger_row(10, "V20260101000001__base", LedgerStatus::Applied, ""),
+            ledger_row(11, "V20260101000002__pending", LedgerStatus::Pending, ""),
+            ledger_row(12, "V20260101000003__newest", LedgerStatus::Applied, ""),
+        ];
+
+        let err = select_rollback_targets(&rows, "", Some("V20260101000001__base"))
+            .expect_err("pending row must refuse");
+        assert!(err.contains("resolve it with `djogi migrations repair`"));
+        assert!(err.contains("V20260101000002__pending"));
+    }
+
+    #[test]
+    fn rollback_targets_refuse_missing_to_version() {
+        let rows = vec![ledger_row(
+            10,
+            "V20260101000001__base",
+            LedgerStatus::Applied,
+            "",
+        )];
+
+        let err = select_rollback_targets(&rows, "", Some("V20260101000099__missing"))
+            .expect_err("missing --to must refuse");
+        assert!(err.contains("is not present in this bucket's ledger"));
+    }
+
+    #[test]
+    fn rollback_drift_identical_sets_pass() {
+        let rows = [ledger_row(1, "V1__a", LedgerStatus::Applied, "")];
+        let pre: Vec<_> = rows.iter().collect();
+        let locked: Vec<_> = rows.iter().collect();
+        assert!(ensure_no_target_drift(&pre, &locked).is_ok());
+    }
+
+    #[test]
+    fn rollback_drift_between_reads_refuses_with_rerun() {
+        let pre_rows = [ledger_row(1, "V1__a", LedgerStatus::Applied, "")];
+        let locked_rows = [
+            ledger_row(1, "V1__a", LedgerStatus::Applied, ""),
+            ledger_row(2, "V2__b", LedgerStatus::Applied, ""),
+        ];
+        let pre: Vec<_> = pre_rows.iter().collect();
+        let locked: Vec<_> = locked_rows.iter().collect();
+        let err = ensure_no_target_drift(&pre, &locked).expect_err("drift must refuse");
+        assert!(err.contains("rerun"));
+    }
+
+    #[test]
+    fn lossy_scan_detects_both_marker_spellings() {
+        let down = "-- Djogi composed migration — down\n\
+                    -- LOSSY: DroppedColumn — data in `horsepower` is lost\n\
+                    ALTER TABLE vehicles DROP COLUMN horsepower;\n\
+                    -- LOSSY ROLLBACK: cannot recreate table `probe` from the diff.\n";
+        let hits = scan_lossy_down_markers(down);
+        assert_eq!(hits.len(), 2);
+        assert!(hits[0].starts_with("-- LOSSY:"));
+        assert!(hits[1].starts_with("-- LOSSY ROLLBACK:"));
+    }
+
+    #[test]
+    fn lossy_scan_ignores_plain_comments_and_sql() {
+        let down = "-- ordinary comment\nDROP TABLE probe;\n";
+        assert!(scan_lossy_down_markers(down).is_empty());
+    }
+
+    #[test]
+    fn non_transactional_down_shape_is_detectable_via_public_api() {
+        assert_eq!(
+            djogi::migrate::find_non_transactional_statement_shape(
+                "CREATE INDEX CONCURRENTLY idx_probe ON widgets (id);"
+            ),
+            Some("CREATE INDEX CONCURRENTLY"),
+        );
+        assert_eq!(
+            djogi::migrate::find_non_transactional_statement_shape("DROP TABLE widgets;"),
+            None,
+        );
     }
 
     // ── issue #354: baseline exit-code mapping ──────────────────────────

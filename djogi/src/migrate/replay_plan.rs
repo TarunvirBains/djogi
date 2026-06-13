@@ -161,7 +161,17 @@ pub(crate) fn load_committed_replay_plan(
     ReplayPlanLoadStatus::Loaded(plan)
 }
 
-pub(crate) fn find_non_transactional_statement_shape(sql: &str) -> Option<&'static str> {
+/// Return the first non-transactional statement shape found in a SQL stream.
+///
+/// This scans statement-by-statement, skipping SQL comments, quoted strings,
+/// quoted identifiers, and dollar-quoted bodies, and returns the classified
+/// shape label for the first statement that cannot safely run inside a single
+/// transaction.
+///
+/// This is used by rollback/reset callers that reconstruct execution from
+/// committed SQL files and must fail closed before opening a transaction when
+/// they encounter shapes such as `CREATE INDEX CONCURRENTLY`.
+pub fn find_non_transactional_statement_shape(sql: &str) -> Option<&'static str> {
     find_non_transactional_statement_shape_in_sql(sql)
         .or_else(|| find_non_transactional_placeholder_shape(sql))
 }

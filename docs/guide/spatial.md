@@ -972,11 +972,11 @@ the reviewable migration pair under
 `migrations/<database>/<app>/`. The composer emits the geography column
 plus the GiST index in the correct transactional / non-transactional
 segments — you do not hand-write `ALTER TABLE ... ADD COLUMN GEOGRAPHY` or
-`CREATE INDEX CONCURRENTLY`. Library callers apply via
-`djogi::migrate::apply_plan`; the
-`apply` / `rollback` / `fake` / `baseline` / `verify` / `repair` CLI
-dispatchers are deferred to a Phase 7 follow-up, so reach for the public
-`djogi::migrate` entry points directly in the interim. See
+`CREATE INDEX CONCURRENTLY`. Operators apply through the shipped CLI —
+`djogi migrations apply` (with `--fake` / `--reason` for existing-database
+adoption), `rollback`, `baseline`, `verify`, and `repair` — and library
+callers reach the same flows through the public `djogi::migrate` entry points
+(`apply_plan`, `rollback_plan`, `fake_apply_plan`, `baseline_plan`). See
 [the migrations guide](./migrations.md) for the full contract.
 
 The composer emits an index name following the `{table}_{column}_gix`
@@ -1033,14 +1033,12 @@ The following are candidates for a future spatial phase — not committed:
   operator for index-accelerated nearest-neighbor queries.
 - **Raster and topology types** — `RASTER`, PostGIS topology, `pgRouting`
   integration. Out of scope for the typed surface.
-- **`apply` CLI dispatcher for spatial migrations** — the descriptor-driven
+- **Migration execution for spatial changes** — the descriptor-driven
   composer already emits the geography column and the
   `CREATE INDEX CONCURRENTLY` segment from `IndexSpec` metadata
-  (`requires_out_of_transaction`, `extension_dependency`); applying that
-  migration today goes through `djogi::migrate::apply_plan` directly. The
-  `apply` / `rollback` / `fake` / `baseline` / `verify` / `repair` CLI
-  dispatchers are deferred to a Phase 7 follow-up and will wrap the same
-  library entry points without changing the emitted DDL.
+  (`requires_out_of_transaction`, `extension_dependency`); apply, rollback,
+  baseline, verify, and repair all ship on the CLI and drive the same library
+  entry points without changing the emitted DDL.
 
 Shipped in Phase 6.5 (previously deferred):
 
