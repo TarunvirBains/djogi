@@ -5044,14 +5044,11 @@ mod tests {
             )
             .await
             .expect("lookup live FK name");
-        ctx.raw_execute(
-            &format!(
-                "ALTER TABLE {posts} DROP CONSTRAINT {fk_name}; \
-                 ALTER TABLE {posts} ADD CONSTRAINT {fk_name} \
-                 FOREIGN KEY (user_id) REFERENCES {users}(id) ON DELETE CASCADE"
-            ),
-            &[],
-        )
+        ctx.raw_ddl(&format!(
+            "ALTER TABLE {posts} DROP CONSTRAINT {fk_name}; \
+             ALTER TABLE {posts} ADD CONSTRAINT {fk_name} \
+             FOREIGN KEY (user_id) REFERENCES {users}(id) ON DELETE CASCADE"
+        ))
         .await
         .expect("rewrite FK out of band");
 
