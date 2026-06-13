@@ -104,6 +104,30 @@ Composes a new migration from descriptor diff against the last committed snapsho
 
 Output: `V<timestamp>__<slug>.sdjql` + `.down.sdjql` per affected bucket, plus per-bucket pending staging under `target/djogi_pending/<database>/<app>.json`. Auto-emitted Phase 0 uses the hidden namespace `target/djogi_pending/<database>/.phase_zero/<version>.json` so it can coexist with normal global pending and diagnostics can name the hidden artifact distinctly from `_global_.json`. New compose output never writes Phase 0 to `_global_.json`; legacy normal-global Phase 0 pending is read only by the bootstrap emitter as a compatibility fallback when the hidden file is absent.
 
+### `djogi migrations apply`
+
+```
+djogi migrations apply [--fake --reason "<text>"]
+```
+
+Applies pending migrations discovered from `target/djogi_pending/`.
+
+- `djogi migrations apply` applies SQL and snapshots exactly as composed.
+- `djogi migrations apply --fake --reason "<text>"` records the migration as
+  `faked` in the ledger without executing SQL; `--reason` is required and
+  must be non-empty.
+- When there are no pending migrations, the command is a no-op and exits `0`
+  (no identity or pool validation).
+- Exit codes: `0` success, `1` transient runtime error (connection, pool,
+  SQL execution failure — CI may retry), `2` refusal — the condition is
+  deterministic and requires operator action: a missing or invalid node
+  identity, a checksum mismatch or format error on a committed migration,
+  a version collision, a stale Phase 0 artifact, a segment execution-mode
+  conflict, a relpages threshold refusal, a target-table-not-found, an
+  out-of-order rejection under `Reject` policy, a PK-flip pre-flight
+  hazard, a snapshot persist failure after the ledger row was applied, or
+  an advisory-unlock correctness failure.
+
 ### `djogi migrations status`
 
 ```
@@ -289,10 +313,11 @@ acknowledgment.
 | `--database NAME` | Database name. Defaults to `main`. `crud_log` / `event_log` route to their configured per-database URLs. |
 | `--workspace PATH` | Workspace-root override. Defaults to the current working directory. |
 
-Exit codes: `0` success, `1` runtime error (config / pool / snapshot I/O), `2`
+Exit codes: `0` success, `1` runtime error (config / pool / SQL failure), `2`
 refusal — empty `--reason`, an unresolvable database URL, a duplicate version
-that already carries a ledger row, a session-pinning correctness failure
-(`pg_advisory_unlock` returned false), or a Postgres server below version 18.
+that already carries a ledger row, a snapshot persist failure after the ledger
+row was applied, a session-pinning correctness failure (`pg_advisory_unlock`
+returned false), or a Postgres server below version 18.
 
 > **One baseline per bucket.** A bucket should carry at most one `baseline` row.
 > Re-running `baseline` with a version that already exists in the ledger refuses
