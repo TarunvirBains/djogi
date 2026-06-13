@@ -53,8 +53,9 @@ migration SQL executes.
 
 The gate is default-on for real apply:
 
-- if the bucket has never been applied, the gate self-skips
+- if the bucket has never been applied, the gate self-skips (drift is undefined without a prior applied state)
 - if the bucket has applied history and the snapshot is missing, apply refuses
+- if the bucket has applied history and the snapshot is corrupt (present but unreadable), apply refuses
 - if the bucket has applied history and verify finds error-severity drift, apply refuses
 - if verify itself cannot complete, apply fails before user-schema mutation
 
@@ -146,16 +147,44 @@ Common operator stance:
 - `WARN`: investigate, but the runner does not block on warnings alone
 - `INFO`: visibility only
 
-The current registry lives in the verify implementation. Examples include:
+The current registry lives in the verify implementation. The full set of
+diagnostics and their severities:
 
-- missing live tables recorded in the snapshot
-- live indexes absent from the snapshot
-- foreign key mismatches
-- ledger lifecycle diagnostics when explicitly requested by verify
+| Code | Diagnostic | Severity |
+|------|-----------|----------|
+| D601 | Snapshot table missing in live catalog | Error |
+| D602 | Live table not in snapshot | Error |
+| D603 | Snapshot column missing in live | Error |
+| D604 | Live column not in snapshot | Error |
+| D605 | Column nullability drift | Error |
+| D606 | Column type-string drift | Warning |
+| D607 | Column default drift | Error |
+| D608 | Primary-key column list drift | Error |
+| D609 | Foreign-key shape drift | Error |
+| D610 | Snapshot index missing in live | Error |
+| D611 | Extra live index not in snapshot | Warning |
+| D612 | Index column list drift | Error |
+| D613 | Index uniqueness drift | Error |
+| D614 | Index access method drift | Warning |
+| D615 | Index attached to wrong table | Error |
+| D621 | Ledger table not found *(suppressed at apply-time)* | Error |
+| D622 | Out-of-order migration detected *(suppressed at apply-time)* | Warning/Error |
+| D623 | Repair refused: leaf identity mismatch | Error |
+| D624 | Rollback refused: leaf identity mismatch | Error |
+| D690–D693 | Feature not yet verified (FTS, partition, enums, partial indexes) | Info |
+| D699 | Ledger reports applied but DB has no tables *(suppressed at apply-time)* | Error |
 
-The apply-time gate suppresses ledger-lifecycle diagnostics because the runner
-already owns its own ledger preflights and only needs the bucket-scoped catalog
-comparison.
+D606, D611, and D614 are advisory (Warning) because the divergence may be a
+legitimate operator choice — a manually-tuned index method, an extra
+covering index, or a type rendering that differs only cosmetically. D622 is a
+Warning by default and upgrades to Error under strict out-of-order policy.
+Everything else is an Error: the apply-time gate refuses only when at least
+one Error-severity diagnostic is present, so a Warning- or Info-only report
+still allows apply.
+
+The apply-time gate suppresses D621, D622, and D699 (ledger-lifecycle
+diagnostics); the runner bootstraps the ledger before the gate and owns its
+own out-of-order preflight.
 
 ## Known boundaries and non-goals
 
