@@ -2433,7 +2433,9 @@ fn render_drift_refusal(report_bucket: &BucketKey, report: &VerifyReport) -> Vec
             .to_string(),
     );
     lines.push(
-        "Next steps: reconcile intentional drift with `djogi migrations attune`, or rebuild the recorded snapshot with `djogi migrations repair snapshot-rebuild`."
+        "Next steps: inspect with `djogi migrations verify`, reconcile intentional drift \
+         with `djogi migrations attune`, or if drift is from partial non-transactional \
+         progress, resume with `djogi migrations repair resume-partial`."
             .to_string(),
     );
     lines
@@ -6688,10 +6690,20 @@ mod tests {
             "missing refusal trailer: {lines:?}"
         );
         assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("djogi migrations repair snapshot-rebuild")),
-            "missing recovery guidance: {lines:?}"
+            lines.iter().any(|l| l.contains("djogi migrations verify")),
+            "missing verify guidance: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("djogi migrations attune")),
+            "missing attune guidance: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("repair resume-partial")),
+            "missing resume-partial guidance: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("repair snapshot-rebuild")),
+            "DriftDetected trailer must not mention snapshot-rebuild (that is for DriftBaselineMissing): {lines:?}"
         );
     }
 
