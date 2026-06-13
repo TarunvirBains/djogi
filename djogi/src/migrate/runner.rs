@@ -8559,4 +8559,111 @@ mod tests {
             "second migration table must exist after an advisory-only proceed"
         );
     }
+
+    /// Re-applying over committed partial non-transactional progress refuses
+    /// as drift. A non-transactional segment autocommits each statement, so a
+    /// later step's failure leaves the earlier step's table in the live
+    /// catalog. On the next apply that committed-but-unrecorded table is drift
+    /// the baseline does not describe (D602), and the gate refuses before any
+    /// further SQL runs.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_over_partial_non_tx_progress_refuses_as_drift(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let setup_table = format!("drift_partial_setup_{n}");
+        let committed_table = format!("drift_partial_committed_{n}");
+        let broken_table = format!("drift_partial_broken_{n}");
+        let guard = acquire_test_workspace_guard();
+
+        // Establish the bucket so it has applied history.
+        let setup_plan = single_table_plan(&setup_table);
+        let setup_ctx = runner_ctx_with_drift_baseline(
+            &setup_plan,
+            "V20260613000060__drift_partial_setup",
+            DriftBaseline::Disabled,
+        );
+        apply_plan(&mut ctx, &setup_plan, &setup_ctx, &guard)
+            .await
+            .expect("setup apply establishes the bucket");
+
+        // Baseline projected now, before the partial progress lands. It does
+        // not describe `committed_table`.
+        let baseline =
+            crate::migrate::verify::live_schema_for_repair(&mut ctx, &setup_plan.bucket, None)
+                .await
+                .expect("project baseline from live schema");
+
+        // Two non-transactional segments: the first commits a table (autocommit),
+        // the second is invalid SQL and fails — leaving the first table live.
+        let partial_version = "V20260613000061__drift_partial_progress";
+        let partial_plan = MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![
+                Segment {
+                    kind: SegmentKind::NonTransactional,
+                    statements: vec![op(
+                        &format!("AddTable {committed_table}"),
+                        &format!("CREATE TABLE {committed_table} (id bigint)"),
+                    )],
+                },
+                Segment {
+                    kind: SegmentKind::NonTransactional,
+                    statements: vec![op(
+                        &format!("AddTable {broken_table}"),
+                        &format!("CREATE TABLE {broken_table} (id THIS_IS_NOT_A_TYPE)"),
+                    )],
+                },
+            ],
+        };
+        let partial_ctx =
+            runner_ctx_with_drift_baseline(&partial_plan, partial_version, DriftBaseline::Disabled);
+        let partial_result = apply_plan(&mut ctx, &partial_plan, &partial_ctx, &guard).await;
+        assert!(
+            matches!(
+                partial_result,
+                Err(RunnerError::NonTransactionalSegmentFailed { .. })
+            ),
+            "second non-tx segment must fail, leaving partial progress, got: {partial_result:?}"
+        );
+
+        // The first non-tx statement committed its table out-of-band of the
+        // baseline.
+        let committed: Option<String> = ctx
+            .query_one(
+                &format!("SELECT to_regclass('public.{committed_table}')::text"),
+                &[],
+            )
+            .await
+            .expect("regclass lookup")
+            .try_get(0)
+            .expect("regclass column");
+        assert!(
+            committed.is_some(),
+            "the first non-tx statement must have committed its table"
+        );
+
+        // Remove the failed ledger row so the same version can re-apply. The
+        // bucket keeps its applied-history row from the setup migration.
+        ctx.batch_execute(&format!(
+            "DELETE FROM djogi_schema_migrations \
+             WHERE version = '{partial_version}' AND app_label = ''"
+        ))
+        .await
+        .expect("clear failed partial ledger row");
+
+        // Re-applying with the pre-partial baseline must refuse: the committed
+        // table is in the live catalog but not in the baseline (D602).
+        let reapply_ctx = runner_ctx_with_drift_baseline(
+            &partial_plan,
+            partial_version,
+            DriftBaseline::Snapshot(baseline),
+        );
+        let reapply_result = apply_plan(&mut ctx, &partial_plan, &reapply_ctx, &guard).await;
+        assert!(
+            matches!(reapply_result, Err(RunnerError::DriftDetected { .. })),
+            "re-apply over committed partial non-tx progress must refuse as drift, got: {reapply_result:?}"
+        );
+    }
 }
