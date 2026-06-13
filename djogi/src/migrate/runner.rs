@@ -5114,6 +5114,7 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use crate::config::MigrateConfig;
@@ -5224,6 +5225,107 @@ mod tests {
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
             drift_baseline: DriftBaseline::Disabled,
         }
+    }
+
+    /// Build a `RunnerCtx` for a drift-gate test: no snapshot persist
+    /// (`snapshot: None`, `snapshot_path: None` — these tests assert gate
+    /// behaviour, not snapshot writes), `SingleNodeDev` identity so the
+    /// non-Phase-0 identity gate is satisfied, and the caller-chosen
+    /// [`DriftBaseline`].
+    fn runner_ctx_with_drift_baseline(
+        plan: &MigrationPlan,
+        version: &str,
+        drift_baseline: DriftBaseline,
+    ) -> RunnerCtx {
+        RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: version.to_string(),
+            description: "drift gate test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: Some(RunnerIdentity::SingleNodeDev),
+            drift_baseline,
+        }
+    }
+
+    /// A `single_table_plan` with an explicitly-labelled bucket. The drift
+    /// gate's history check keys on `app_label`, so a distinct app gives a
+    /// distinct history bucket even on the shared test database.
+    fn named_bucket_single_table_plan(db: &str, app: &str, table: &str) -> MigrationPlan {
+        MigrationPlan {
+            bucket: bucket(db, app),
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![op(
+                    &format!("AddTable {table}"),
+                    &format!("CREATE TABLE {table} (id bigint)"),
+                )],
+            }],
+        }
+    }
+
+    /// Build a one-table [`AppliedSchema`] baseline. The table is declared
+    /// with a single `id BIGINT` PK column and nothing else. When the named
+    /// table is absent from the live catalog, verifying this baseline yields a
+    /// D601 (snapshot table missing in live, error-severity) diagnostic — so
+    /// passing it to a never-applied bucket proves the gate self-skips rather
+    /// than passing because the baseline happened to match.
+    fn drift_baseline_with_table(table: &str) -> AppliedSchema {
+        use crate::migrate::schema::{ColumnSchema, PkKindSchema, PrimaryKeySchema, TableSchema};
+
+        let id_col = ColumnSchema {
+            check: None,
+            codec: None,
+            comment: None,
+            default_sql: None,
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "id".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "BIGINT".to_string(),
+            unique: false,
+            type_change_using: None,
+        };
+        let table_schema = TableSchema {
+            app: None,
+            columns: vec![id_col],
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerId,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            storage_params: None,
+            table: table.to_string(),
+            table_comment: None,
+            tablespace: None,
+            tenant_key: None,
+        };
+        let mut snapshot = empty_snapshot();
+        snapshot.models.insert(table.to_string(), table_schema);
+        snapshot
     }
 
     fn unique_temp_path(tag: &str, ext: &str) -> PathBuf {
@@ -8226,5 +8328,235 @@ mod tests {
         assert_eq!(same_version.len(), 2, "one ledger row per app stream");
         assert!(same_version.iter().any(|r| r.app_label == "users"));
         assert!(same_version.iter().any(|r| r.app_label == "system"));
+    }
+
+    // ── apply-time drift gate: skip and proceed paths ──────────────────
+    // These pin the gate's negative space — every input shape under which
+    // the gate must NOT refuse. `DriftDetected` refusals are exercised at
+    // the CLI layer; here we lock in: gate disabled, never-applied bucket
+    // (Snapshot / Missing baselines), a fresh bucket in an otherwise
+    // established database, and advisory-only (warning-severity) divergence.
+    // Live tests (`#[djogi_test]`): a Postgres connection is required; they
+    // compile here and run under the project's integration CI.
+
+    /// A drifted live DB plus `DriftBaseline::Disabled` proceeds: the gate's
+    /// outer arm short-circuits, so neither the history probe nor verify runs.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_proceeds_with_gate_disabled(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let first_table = format!("drift_disabled_a_{n}");
+        let drift_table = format!("drift_disabled_extra_{n}");
+        let second_table = format!("drift_disabled_b_{n}");
+        let guard = acquire_test_workspace_guard();
+
+        // First apply establishes applied history for the bucket.
+        let first_plan = single_table_plan(&first_table);
+        let first_ctx = runner_ctx_with_drift_baseline(
+            &first_plan,
+            "V20260613000010__drift_disabled_a",
+            DriftBaseline::Disabled,
+        );
+        apply_plan(&mut ctx, &first_plan, &first_ctx, &guard)
+            .await
+            .expect("first apply establishes history");
+
+        // Introduce out-of-band drift: an extra table the baseline would not
+        // know about (a D602 error if the gate verified).
+        ctx.batch_execute(&format!("CREATE TABLE {drift_table} (id bigint)"))
+            .await
+            .expect("create out-of-band drift table");
+
+        // Second apply with the gate disabled must proceed despite the drift.
+        let second_plan = single_table_plan(&second_table);
+        let second_ctx = runner_ctx_with_drift_baseline(
+            &second_plan,
+            "V20260613000011__drift_disabled_b",
+            DriftBaseline::Disabled,
+        );
+        apply_plan(&mut ctx, &second_plan, &second_ctx, &guard)
+            .await
+            .expect("apply with DriftBaseline::Disabled must proceed despite live drift");
+
+        let created: Option<String> = ctx
+            .query_one(
+                &format!("SELECT to_regclass('public.{second_table}')::text"),
+                &[],
+            )
+            .await
+            .expect("regclass lookup")
+            .try_get(0)
+            .expect("regclass column");
+        assert!(
+            created.is_some(),
+            "second migration table must exist after a gate-disabled apply"
+        );
+    }
+
+    /// A never-applied bucket skips the gate even when a `Snapshot` baseline
+    /// is supplied that would otherwise drift (the baseline names a table that
+    /// does not exist in the fresh database → D601 if verified).
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_skips_drift_gate_on_never_applied_bucket(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_skip_snapshot_{n}");
+        let plan = single_table_plan(&table);
+        let guard = acquire_test_workspace_guard();
+        let runner_ctx = runner_ctx_with_drift_baseline(
+            &plan,
+            "V20260613000020__drift_skip_snapshot",
+            DriftBaseline::Snapshot(drift_baseline_with_table("never_existed_table")),
+        );
+
+        apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
+            .await
+            .expect(
+                "never-applied bucket must skip the gate even with a drifting Snapshot baseline",
+            );
+
+        let created: Option<String> = ctx
+            .query_one(&format!("SELECT to_regclass('public.{table}')::text"), &[])
+            .await
+            .expect("regclass lookup")
+            .try_get(0)
+            .expect("regclass column");
+        assert!(created.is_some(), "first migration table must be created");
+    }
+
+    /// A never-applied bucket skips the gate when the baseline is reported
+    /// `Missing`: drift is undefined without a prior applied state.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_skips_gate_for_missing_baseline_on_never_applied_bucket(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_skip_missing_{n}");
+        let plan = single_table_plan(&table);
+        let guard = acquire_test_workspace_guard();
+        let runner_ctx = runner_ctx_with_drift_baseline(
+            &plan,
+            "V20260613000030__drift_skip_missing",
+            DriftBaseline::Missing,
+        );
+
+        apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
+            .await
+            .expect("never-applied bucket must skip the gate for a Missing baseline");
+    }
+
+    /// A brand-new bucket in an established database skips the gate: the
+    /// history probe keys on the bucket's own app label, so applied history in
+    /// a sibling bucket does not force the new bucket through verify. Covers
+    /// both the `Snapshot` and `Missing` baselines for the new bucket.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_skips_gate_for_new_bucket_in_established_database(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let alpha_table = format!("drift_new_bucket_alpha_{n}");
+        let beta_table = format!("drift_new_bucket_beta_{n}");
+        let beta_table_missing = format!("drift_new_bucket_beta_missing_{n}");
+        let guard = acquire_test_workspace_guard();
+
+        // Establish applied history for bucket `alpha`.
+        let alpha_plan = named_bucket_single_table_plan("djogi_test", "alpha", &alpha_table);
+        let alpha_ctx = runner_ctx_with_drift_baseline(
+            &alpha_plan,
+            "V20260613000040__drift_new_bucket_alpha",
+            DriftBaseline::Disabled,
+        );
+        apply_plan(&mut ctx, &alpha_plan, &alpha_ctx, &guard)
+            .await
+            .expect("alpha apply establishes history in the database");
+
+        // First apply for the unrelated bucket `beta` with a drifting Snapshot
+        // baseline must skip the gate — beta has no applied history of its own.
+        let beta_plan = named_bucket_single_table_plan("djogi_test", "beta", &beta_table);
+        let beta_ctx = runner_ctx_with_drift_baseline(
+            &beta_plan,
+            "V20260613000041__drift_new_bucket_beta",
+            DriftBaseline::Snapshot(drift_baseline_with_table("never_existed_table")),
+        );
+        apply_plan(&mut ctx, &beta_plan, &beta_ctx, &guard)
+            .await
+            .expect("new bucket beta must skip the gate despite alpha's applied history");
+
+        // The same fresh-bucket skip holds for a Missing baseline. Use a
+        // distinct app so the bucket is again never-applied.
+        let gamma_plan = named_bucket_single_table_plan("djogi_test", "gamma", &beta_table_missing);
+        let gamma_ctx = runner_ctx_with_drift_baseline(
+            &gamma_plan,
+            "V20260613000042__drift_new_bucket_gamma",
+            DriftBaseline::Missing,
+        );
+        apply_plan(&mut ctx, &gamma_plan, &gamma_ctx, &guard)
+            .await
+            .expect("new bucket gamma must skip the gate for a Missing baseline");
+    }
+
+    /// Advisory-only (warning-severity) divergence proceeds: an extra live
+    /// index produces D611 (Warning), and the gate refuses only on
+    /// error-severity drift (`report.has_errors()`).
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_proceeds_on_advisory_only_divergence(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_advisory_{n}");
+        let extra_index = format!("{table}_extra_idx");
+        let second_table = format!("drift_advisory_b_{n}");
+        let guard = acquire_test_workspace_guard();
+
+        // Setup apply establishes the table and applied history.
+        let setup_plan = single_table_plan(&table);
+        let setup_ctx = runner_ctx_with_drift_baseline(
+            &setup_plan,
+            "V20260613000050__drift_advisory_setup",
+            DriftBaseline::Disabled,
+        );
+        apply_plan(&mut ctx, &setup_plan, &setup_ctx, &guard)
+            .await
+            .expect("setup apply establishes the table");
+
+        // Project the baseline from the live DB so it matches exactly; the
+        // only divergence will be the extra index added next.
+        let baseline =
+            crate::migrate::verify::live_schema_for_repair(&mut ctx, &setup_plan.bucket, None)
+                .await
+                .expect("project baseline from live schema");
+
+        // Add an out-of-band index not present in the baseline → D611 Warning.
+        ctx.batch_execute(&format!("CREATE INDEX {extra_index} ON {table} (id)"))
+            .await
+            .expect("create out-of-band advisory index");
+
+        // A new migration with the projected baseline must proceed: the only
+        // diagnostic is a warning, so `has_errors()` is false.
+        let next_plan = single_table_plan(&second_table);
+        let next_ctx = runner_ctx_with_drift_baseline(
+            &next_plan,
+            "V20260613000051__drift_advisory_next",
+            DriftBaseline::Snapshot(baseline),
+        );
+        apply_plan(&mut ctx, &next_plan, &next_ctx, &guard)
+            .await
+            .expect("advisory-only (warning) divergence must not refuse apply");
+
+        let created: Option<String> = ctx
+            .query_one(
+                &format!("SELECT to_regclass('public.{second_table}')::text"),
+                &[],
+            )
+            .await
+            .expect("regclass lookup")
+            .try_get(0)
+            .expect("regclass column");
+        assert!(
+            created.is_some(),
+            "second migration table must exist after an advisory-only proceed"
+        );
     }
 }
