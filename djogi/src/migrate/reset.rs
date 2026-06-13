@@ -91,7 +91,7 @@ use super::projection::BucketKey;
 use super::replay_plan::{
     ReplayPlanLoadStatus, find_non_transactional_statement_shape, load_committed_replay_plan,
 };
-use super::runner::{RunnerCtx, RunnerIdentity, apply_plan};
+use super::runner::{DriftBaseline, RunnerCtx, RunnerIdentity, apply_plan};
 use super::segment::{MigrationPlan, Segment, SegmentKind};
 use super::sql::OperationSql;
 use super::target::{app_dirname, bucket_dir, migrations_root};
@@ -1502,6 +1502,7 @@ async fn replay_one_migration(
         // marking the bootstrap row applied; later replayed migrations
         // bind the provisioned node normally.
         runner_identity,
+        drift_baseline: DriftBaseline::Disabled,
     };
 
     apply_plan(ctx, &plan, &runner_ctx, guard)

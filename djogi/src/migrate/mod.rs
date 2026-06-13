@@ -147,8 +147,9 @@ pub use reset::{
     reset_app_database,
 };
 pub use runner::{
-    LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx, RunnerError,
-    RunnerIdentity, advisory_lock_key, apply_plan, baseline_plan, fake_apply_plan, rollback_plan,
+    DriftBaseline, LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx,
+    RunnerError, RunnerIdentity, advisory_lock_key, apply_plan, baseline_plan, fake_apply_plan,
+    rollback_plan,
 };
 pub use schema::{
     AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,

@@ -12,9 +12,9 @@ use std::process::ExitCode;
 use djogi::apps::AppRegistry;
 use djogi::migrate::{
     AppLifecycle, AttuneError, AttuneMode, AttuneRequest, AutoEmitError, BootstrapError, BucketKey,
-    ComposeError, ComposeRequest, DescriptorProvider, DiffError, GUARD_DEFAULT_TIMEOUT,
-    LOCK_FILE_NAME, PartialApplyResolution, PendingPlan, RepairConfirmation, RepairError,
-    RepairReport, RunnerCtx, RunnerError, SnapshotError, SqlEmitError, VerifyReport,
+    ComposeError, ComposeRequest, DescriptorProvider, DiffError, DriftBaseline,
+    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, PartialApplyResolution, PendingPlan, RepairConfirmation,
+    RepairError, RepairReport, RunnerCtx, RunnerError, SnapshotError, SqlEmitError, VerifyReport,
     VerifySeverity, acquire_workspace_lock, apply_plan, attune, baseline_plan, compose,
     fake_apply_plan, load_snapshot, project_from_provider, repair_checksum_drift,
     repair_partial_apply, repair_resume_partial_apply, repair_snapshot_rebuild, snapshot_path,
@@ -1106,9 +1106,16 @@ async fn run_apply(
                 return 2;
             }
             ApplyResult::RunnerError(e) => {
-                eprintln!(
-                    "djogi migrations apply: runner error on {bucket_database}/{app_label}: {e}"
-                );
+                match &e {
+                    RunnerError::DriftDetected { bucket, report } => {
+                        for line in render_drift_refusal(bucket, report) {
+                            eprintln!("{line}");
+                        }
+                    }
+                    _ => eprintln!(
+                        "djogi migrations apply: runner error on {bucket_database}/{app_label}: {e}"
+                    ),
+                }
                 return runner_error_exit_code(&e);
             }
         }
@@ -1694,6 +1701,12 @@ async fn apply_one_pending(
         }
     };
 
+    let snap_path = reconstruct_snapshot_path(workspace, &bucket);
+    let drift_baseline = match load_drift_baseline(mode, &snap_path) {
+        Ok(baseline) => baseline,
+        Err(reason) => return ApplyResult::Refused(reason),
+    };
+
     // 4. Construct RunnerCtx.
     let runner_ctx = RunnerCtx {
         bucket: bucket.clone(),
@@ -1702,7 +1715,7 @@ async fn apply_one_pending(
         checksum_up,
         checksum_down,
         snapshot: Some(pending.model_snapshot.clone()),
-        snapshot_path: Some(reconstruct_snapshot_path(workspace, &bucket)),
+        snapshot_path: Some(snap_path),
         // MigrateConfig does not derive Clone; construct from fields.
         config: djogi::config::MigrateConfig {
             concurrent_warn_relpages: config.migrate.concurrent_warn_relpages,
@@ -1713,6 +1726,7 @@ async fn apply_one_pending(
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::default_for_config(config),
         audit_pool: audit_pool.cloned(),
         runner_identity,
+        drift_baseline,
     };
 
     // 5. Apply (or fake-apply) the plan through the library runner.
@@ -1805,6 +1819,22 @@ fn reconstruct_snapshot_path(workspace: &Path, bucket: &djogi::migrate::BucketKe
         .join(&bucket.database)
         .join(djogi::migrate::app_dirname(&bucket.app))
         .join("schema_snapshot.json")
+}
+
+fn load_drift_baseline(mode: &FakeMode, snap_path: &Path) -> Result<DriftBaseline, String> {
+    if let FakeMode::Fake { .. } = mode {
+        return Ok(DriftBaseline::Disabled);
+    }
+    match load_snapshot(snap_path) {
+        Ok(snapshot) => Ok(DriftBaseline::Snapshot(snapshot)),
+        Err(SnapshotError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            Ok(DriftBaseline::Missing)
+        }
+        Err(e) => Err(format!(
+            "load drift baseline snapshot {}: {e}",
+            snap_path.display()
+        )),
+    }
 }
 
 /// `djogi migrations attune` entry point.
@@ -2392,6 +2422,20 @@ fn render_verify_report(report: &VerifyReport, bucket: &BucketKey) -> Vec<String
         lines.push(format!("Result: PASSED ({infos} info(s))"));
     }
 
+    lines
+}
+
+fn render_drift_refusal(report_bucket: &BucketKey, report: &VerifyReport) -> Vec<String> {
+    let mut lines = render_verify_report(report, report_bucket);
+    lines.push(String::new());
+    lines.push(
+        "Apply refused before any migration SQL ran because error-severity drift was detected."
+            .to_string(),
+    );
+    lines.push(
+        "Next steps: reconcile intentional drift with `djogi migrations attune`, or rebuild the recorded snapshot with `djogi migrations repair snapshot-rebuild`."
+            .to_string(),
+    );
     lines
 }
 
@@ -3372,6 +3416,7 @@ async fn run_baseline(
             Err(_) => None,
         },
         runner_identity,
+        drift_baseline: DriftBaseline::Disabled,
     };
 
     match baseline_plan(&mut ctx, &bucket, &runner_ctx, &guard, reason).await {
@@ -5592,6 +5637,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn apply_runner_drift_variants_map_to_expected_exit_codes() {
+        use djogi::error::{DbError, DjogiError};
+
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: "billing".to_string(),
+        };
+        let report = VerifyReport {
+            diagnostics: vec![djogi::migrate::VerifyDiagnostic {
+                code: "D601".to_string(),
+                severity: VerifySeverity::Error,
+                message: "Snapshot table missing from live DB".to_string(),
+                location: Some("billing.invoices".to_string()),
+            }],
+            latest_applied_version: Some("V20260601000000__billing".to_string()),
+            applied_count: 2,
+            unfinished_count: 0,
+        };
+        let cases = [
+            (
+                RunnerError::DriftDetected {
+                    bucket: bucket.clone(),
+                    report,
+                },
+                2,
+            ),
+            (
+                RunnerError::DriftBaselineMissing {
+                    bucket: bucket.clone(),
+                },
+                2,
+            ),
+            (
+                RunnerError::DriftPreflightFailed {
+                    source: Box::new(djogi::migrate::verify::VerifyRunError::CatalogQueryFailed {
+                        query_label: "columns",
+                        source: DjogiError::Db(DbError::other("catalog read failed")),
+                    }),
+                },
+                1,
+            ),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(
+                runner_error_exit_code(&err),
+                expected,
+                "drift variant must map to exit code {expected}: {err}"
+            );
+        }
+    }
+
     /// Runner errors surfaced through `migrations apply` remain retryable
     /// where a blind retry can still make progress after transient
     /// recovery.
@@ -5703,6 +5800,46 @@ mod tests {
             result,
             ExitCode::from(2),
             "--reason without --fake should not refuse"
+        );
+    }
+
+    #[test]
+    fn load_drift_baseline_fake_skips_filesystem_and_real_missing_maps_missing() {
+        let work = temp_workspace("load-drift-baseline");
+        let missing = work.join("schema_snapshot.json");
+
+        assert!(
+            matches!(
+                load_drift_baseline(
+                    &FakeMode::Fake {
+                        reason: "adopt existing schema".to_string(),
+                    },
+                    &missing,
+                ),
+                Ok(DriftBaseline::Disabled)
+            ),
+            "fake apply must not touch the snapshot path"
+        );
+        assert!(
+            matches!(
+                load_drift_baseline(&FakeMode::Real, &missing),
+                Ok(DriftBaseline::Missing)
+            ),
+            "real apply must surface missing snapshot as a typed baseline state"
+        );
+    }
+
+    #[test]
+    fn load_drift_baseline_real_corrupt_snapshot_refuses() {
+        let work = temp_workspace("load-drift-baseline-corrupt");
+        let path = work.join("schema_snapshot.json");
+        fs::write(&path, b"{ not json").unwrap();
+
+        let err = load_drift_baseline(&FakeMode::Real, &path)
+            .expect_err("corrupt snapshot must not disable drift detection");
+        assert!(
+            err.contains("load drift baseline snapshot"),
+            "expected named helper context in error: {err}"
         );
     }
 
@@ -5934,6 +6071,37 @@ mod tests {
         assert!(
             lines.contains(&"Result: PASSED (1 info(s))".to_string()),
             "all-info summary; got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn render_drift_refusal_appends_next_steps_trailer() {
+        use djogi::migrate::{VerifyReport, VerifySeverity};
+
+        let report = VerifyReport {
+            diagnostics: vec![diag(
+                "D601",
+                VerifySeverity::Error,
+                "Snapshot table missing from live DB",
+                Some("billing.invoices"),
+            )],
+            latest_applied_version: Some("V20260601000000__billing".to_string()),
+            applied_count: 2,
+            unfinished_count: 0,
+        };
+        let lines = render_drift_refusal(&render_bucket("main", "billing"), &report);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Apply refused before any migration SQL ran")),
+            "missing refusal trailer: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("djogi migrations repair snapshot-rebuild")),
+            "missing recovery guidance: {lines:?}"
         );
     }
 

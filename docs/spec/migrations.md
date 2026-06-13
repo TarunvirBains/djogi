@@ -963,6 +963,25 @@ the live database catalog and is used for:
 - snapshot rebuild workflows
 - post-failure recovery validation
 
+#### Apply-time drift gate
+
+`djogi migrations apply` also runs a bucket-scoped verification pre-flight
+before any migration SQL executes. The gate uses the recorded
+`schema_snapshot.json` as the expected baseline for the bucket that is about to
+apply.
+
+Behavior:
+
+- a never-applied bucket self-skips the gate
+- an already-applied bucket with a missing snapshot refuses before mutation
+- an already-applied bucket with error-level drift refuses before mutation
+- `--fake` is exempt; it neither runs the gate nor reads the snapshot file
+
+This keeps adoption and fake-apply workflows working on existing databases
+while still making real apply default-safe. See the dedicated
+[Drift Detection](./drift-detection.md) guide for adopter integration patterns
+and operational guidance.
+
 Out-of-order policy:
 
 - local/dev: allowed by default, but always recorded and warned

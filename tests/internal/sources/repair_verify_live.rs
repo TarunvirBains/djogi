@@ -304,6 +304,7 @@ fn make_runner_ctx(
         // default so rollback / repair / baseline paths run as before.
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         // .4 audit-pool plumbing: not exercised in  paths.
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         audit_pool: None,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     }
@@ -3214,6 +3215,7 @@ async fn baseline_projects_live_database_into_snapshot(mut ctx: djogi::DjogiCont
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     let _plan = plan; // unused — baseline does not consume the plan SQL
@@ -3263,6 +3265,7 @@ async fn baseline_rejects_caller_supplied_snapshot(mut ctx: djogi::DjogiContext)
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     let _plan = plan;
@@ -3333,6 +3336,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     baseline_plan(
@@ -3367,6 +3371,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
     baseline_plan(

@@ -248,6 +248,7 @@ fn make_runner_ctx(
         // audit DB. .7 owns the integration coverage that flips
         // this to `Some`.
         audit_pool: None,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     }
 }

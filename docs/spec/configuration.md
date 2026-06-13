@@ -168,6 +168,12 @@ happened" without distinguishing the two cases. `1` is reserved for
 "we tried; something broke" so CI can retry. Subcommands document
 the matrix in their `--help` output.
 
+For `djogi migrations apply`, drift refusals follow the same matrix:
+
+- detected error-level drift before SQL runs: exit `2`
+- missing snapshot for a previously-applied bucket: exit `2`
+- drift pre-flight infrastructure failure: exit `1`
+
 `db reset` hard-errors unless all three guards pass: `DATABASE_URL` resolves to localhost (per the byte-level libpq + URL parser shared with `attune --squash`), `Djogi.toml::profile != "production"`, and the operator supplies explicit confirmation (either `--yes` on the command line or types `yes` at the interactive prompt). After those guards, reset still runs a non-destructive checksum-parity preflight against the live ledger before `DROP DATABASE`: edited migration files, missing historical files, or baseline rows whose checksums cannot be compared to file bytes refuse with exit code `2` unless `--allow-checksum-drift-reset` is passed. Logging databases (`crud_log`, `event_log`) are NEVER touched by `db reset`.
 
 `db seed` uses `--database <name>` to select BOTH the seed directory (`seeds/<name>/`) and the connection target. The CLI splices `<name>` into `database.url`'s path component (via `djogi::migrate::derive_per_database_url`) so seeds always run against the matching DB; a malformed application URL refuses with exit code 1 rather than falling back to the application database. Per-database routing is the linchpin of the three-database architecture (`url` / `crud_log_url` / `event_log_url`) — until config exposes per-DB URL fields directly, the splice gives operators a deterministic route to every cluster database from a single application URL.

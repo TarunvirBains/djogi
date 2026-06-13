@@ -141,6 +141,7 @@ fn make_runner_ctx(plan: &MigrationPlan, version: &str, policy: OutOfOrderPolicy
         config: MigrateConfig::default(),
         out_of_order_policy: policy,
         audit_pool: None,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     }
 }

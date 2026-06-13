@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.14] - 2026-06-13
+
+### Added
+
+- migrations: add default-on apply-time drift verification for real
+  `djogi migrations apply`. Previously-applied buckets now refuse before any
+  migration SQL runs when the recorded snapshot is missing or when
+  error-severity drift is detected against the live catalog. `--fake` remains
+  exempt and does not read the snapshot file.
+- docs: add the drift-detection integration guide and wire the apply-time gate
+  into the migration and configuration specs.
+
+### Changed
+
+- migrate API: re-export the new `DriftBaseline` enum and add
+  `RunnerError::DriftDetected`, `RunnerError::DriftBaselineMissing`, and
+  `RunnerError::DriftPreflightFailed` for the apply-time gate.
+
+### Breaking
+
+- `RunnerCtx` now requires `drift_baseline: DriftBaseline`. Real apply should
+  pass the recorded snapshot state; callers that deliberately manage or skip
+  verification must now say so explicitly with `DriftBaseline::Disabled`.
+
 ## [0.1.0-alpha.13] - 2026-06-13
 
 ### Fixed

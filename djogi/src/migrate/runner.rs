@@ -51,7 +51,7 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::__bypass::guarded_batch_execute;
-use crate::config::MigrateConfig;
+use crate::config::{MigrateConfig, PolicyConfig};
 use crate::context::{DjogiContext, PinnedCtx};
 use crate::error::{DbError, DjogiError};
 use crate::types::HeerId;
@@ -345,6 +345,25 @@ pub enum RunnerError {
         source: Box<super::verify::VerifyRunError>,
     },
 
+    /// Apply-time drift pre-flight found error-severity schema drift
+    /// against the recorded snapshot baseline for a previously-applied
+    /// bucket.
+    DriftDetected {
+        bucket: BucketKey,
+        report: super::verify::VerifyReport,
+    },
+
+    /// Apply-time drift pre-flight required the recorded snapshot
+    /// baseline for a previously-applied bucket, but the caller
+    /// reported it missing on disk.
+    DriftBaselineMissing { bucket: BucketKey },
+
+    /// Apply-time drift pre-flight could not complete its read-only
+    /// verify projection before any migration SQL ran.
+    DriftPreflightFailed {
+        source: Box<super::verify::VerifyRunError>,
+    },
+
     /// **D060** — PK-flip pre-flight: logical-replication apply
     /// machinery is active in this database. Walsenders surfaced via
     /// `pg_stat_replication` and/or local subscriptions surfaced via
@@ -517,6 +536,8 @@ impl RunnerError {
             | Self::SnapshotPersistFailed { .. }
             | Self::BaselineSnapshotShouldNotBeProvided
             | Self::StalePhaseZeroArtifact { .. }
+            | Self::DriftDetected { .. }
+            | Self::DriftBaselineMissing { .. }
             | Self::OutOfOrderRejected { .. }
             | Self::PkFlipHazardReplicaSessions { .. }
             | Self::PkFlipHazardPreexistingZzzTrigger { .. }
@@ -542,6 +563,7 @@ impl RunnerError {
             | Self::NonTransactionalProgressAckFailed { .. }
             | Self::ConfigLoadFailed { .. }
             | Self::BaselineProjectionFailed { .. }
+            | Self::DriftPreflightFailed { .. }
             | Self::CatalogQueryFailed { .. }
             | Self::PinnedSessionCheckoutFailed { .. } => false,
         }
@@ -767,6 +789,24 @@ impl std::fmt::Display for RunnerError {
                 f,
                 "baseline live-DB projection failed before ledger insert: {source}",
             ),
+            RunnerError::DriftDetected { bucket, .. } => write!(
+                f,
+                "apply-time drift pre-flight refused bucket database={} app={}: \
+                 live schema differs from the recorded snapshot baseline",
+                bucket.database, bucket.app,
+            ),
+            RunnerError::DriftBaselineMissing { bucket } => write!(
+                f,
+                "apply-time drift pre-flight refused bucket database={} app={}: \
+                 schema_snapshot.json is missing for a previously-applied bucket; \
+                 restore it from version control or rebuild it with \
+                 `djogi migrations repair snapshot-rebuild`",
+                bucket.database, bucket.app,
+            ),
+            RunnerError::DriftPreflightFailed { source } => write!(
+                f,
+                "apply-time drift pre-flight failed before any migration SQL ran: {source}",
+            ),
             RunnerError::PkFlipHazardReplicaSessions {
                 walsenders,
                 subscriptions,
@@ -892,6 +932,9 @@ impl std::error::Error for RunnerError {
             RunnerError::SnapshotPersistFailed { source, .. } => Some(source),
             RunnerError::StalePhaseZeroArtifact { .. } => None,
             RunnerError::BaselineProjectionFailed { source } => Some(source.as_ref()),
+            RunnerError::DriftDetected { .. } => None,
+            RunnerError::DriftBaselineMissing { .. } => None,
+            RunnerError::DriftPreflightFailed { source } => Some(source.as_ref()),
             RunnerError::CatalogQueryFailed { source, .. } => Some(source),
             RunnerError::LedgerQueryFailed { source, .. } => Some(source),
             RunnerError::RunIdGenerationFailed { source } => Some(source),
@@ -967,6 +1010,18 @@ impl RunnerIdentity {
     pub(crate) fn provisions_phase_zero_single_node_dev(self) -> bool {
         matches!(self, Self::SingleNodeDev)
     }
+}
+
+/// How the apply-time drift pre-flight obtains its baseline.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum DriftBaseline {
+    /// Drift pre-flight is deliberately disabled by the caller.
+    Disabled,
+    /// The caller looked for the recorded snapshot and did not find it.
+    Missing,
+    /// The recorded snapshot baseline to verify against before apply.
+    Snapshot(super::schema::AppliedSchema),
 }
 
 /// Caller-supplied context for one runner invocation. Decouples the
@@ -1056,6 +1111,10 @@ pub struct RunnerCtx {
     /// value; the runner will validate identity-bearing operations
     /// refuse when no binding-capable mode is present.
     pub runner_identity: Option<RunnerIdentity>,
+    /// Baseline for the apply-time drift pre-flight. Real CLI applies
+    /// load this from the current on-disk snapshot; fake apply, reset
+    /// replay, and baseline establishment deliberately disable it.
+    pub drift_baseline: DriftBaseline,
 }
 
 /// Successful-apply report. The runner returns this on a clean
@@ -1188,6 +1247,10 @@ fn validate_rollback_identity(runner_ctx: &RunnerCtx) -> Result<(), RollbackErro
 /// **Per-bucket advisory lock.** The runner DOES acquire and
 /// release the per-bucket Postgres advisory lock around every
 /// segment dispatch.
+/// **Drift pre-flight.** Before inserting the pending ledger row or
+/// running any migration SQL, apply verifies the live catalog against
+/// the recorded snapshot baseline when the bucket already has applied
+/// history.
 /// **Snapshot persistence.** Writes the snapshot file ONLY after
 /// the ledger row reaches `applied` and every segment succeeded.
 /// Any failure leaves the snapshot at its prior value.
@@ -1321,6 +1384,49 @@ async fn apply_plan_inner(
             policy = ?runner_ctx.out_of_order_policy,
             "out-of-order migration apply allowed by policy",
         );
+    }
+    match &runner_ctx.drift_baseline {
+        DriftBaseline::Disabled => {}
+        DriftBaseline::Missing | DriftBaseline::Snapshot(_) => {
+            let has_applied_history = bucket_has_applied_history(ctx, &plan.bucket)
+                .await
+                .map_err(|e| RunnerError::LedgerQueryFailed {
+                    query_label: "drift_bucket_history",
+                    source: e,
+                })?;
+            if has_applied_history {
+                match &runner_ctx.drift_baseline {
+                    DriftBaseline::Disabled => unreachable!("matched above"),
+                    DriftBaseline::Missing => {
+                        return Err(RunnerError::DriftBaselineMissing {
+                            bucket: plan.bucket.clone(),
+                        });
+                    }
+                    DriftBaseline::Snapshot(snapshot) => {
+                        let report = super::verify::verify_bucket(
+                            ctx,
+                            &plan.bucket,
+                            snapshot,
+                            &PolicyConfig::default(),
+                            false,
+                            false,
+                        )
+                        .await
+                        .map_err(|source| {
+                            RunnerError::DriftPreflightFailed {
+                                source: Box::new(source),
+                            }
+                        })?;
+                        if report.has_errors() {
+                            return Err(RunnerError::DriftDetected {
+                                bucket: plan.bucket.clone(),
+                                report,
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
     // Compose a partial_apply_note when the policy is AllowExplicit so
     // the operator-supplied override reason lands on the row alongside
@@ -4295,6 +4401,22 @@ async fn find_higher_applied_version(
     Ok(Some((conflicting_version, applied_at_rfc3339)))
 }
 
+async fn bucket_has_applied_history(
+    ctx: &mut DjogiContext,
+    bucket: &BucketKey,
+) -> Result<bool, DjogiError> {
+    let row = ctx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 \
+             FROM djogi_schema_migrations \
+             WHERE app_label = $1 \
+               AND status IN ('applied', 'faked', 'baseline'))",
+            &[&bucket.app],
+        )
+        .await?;
+    row.try_get(0).map_err(Into::into)
+}
+
 /// Read the `applied_at` timestamp of an existing row whose
 /// `version` we just collided with. Returns `None` if the lookup
 /// fails — the operator-facing message degrades gracefully because
@@ -5085,6 +5207,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool,
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
+            drift_baseline: DriftBaseline::Disabled,
         }
     }
 
@@ -5341,6 +5464,29 @@ mod tests {
                 true,
             ),
             (
+                RunnerError::DriftDetected {
+                    bucket: bucket("main", "billing"),
+                    report: crate::migrate::VerifyReport {
+                        diagnostics: vec![crate::migrate::VerifyDiagnostic {
+                            code: "D601".to_string(),
+                            severity: crate::migrate::VerifySeverity::Error,
+                            message: "Snapshot table missing from live DB".to_string(),
+                            location: Some("billing.invoices".to_string()),
+                        }],
+                        latest_applied_version: Some("V20260601000000__billing".to_string()),
+                        applied_count: 2,
+                        unfinished_count: 0,
+                    },
+                },
+                true,
+            ),
+            (
+                RunnerError::DriftBaselineMissing {
+                    bucket: bucket("main", "billing"),
+                },
+                true,
+            ),
+            (
                 RunnerError::OutOfOrderRejected {
                     version: "V20260101000000__add_users".to_string(),
                     conflicting_version: "V20260102000000__add_orders".to_string(),
@@ -5522,6 +5668,15 @@ mod tests {
                     source: Box::new(djogi::migrate::verify::VerifyRunError::CatalogQueryFailed {
                         query_label: "pg_namespace",
                         source: db_err("verify catalog query failed"),
+                    }),
+                },
+                false,
+            ),
+            (
+                RunnerError::DriftPreflightFailed {
+                    source: Box::new(djogi::migrate::verify::VerifyRunError::CatalogQueryFailed {
+                        query_label: "columns",
+                        source: db_err("drift preflight failed"),
                     }),
                 },
                 false,
@@ -6214,6 +6369,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: Some(audit_pool),
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -6433,6 +6589,7 @@ mod tests {
             out_of_order_policy: crate::migrate::OutOfOrderPolicy::Reject,
             audit_pool: None,
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -6489,6 +6646,7 @@ mod tests {
             out_of_order_policy: crate::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -6564,6 +6722,7 @@ mod tests {
             },
             audit_pool: None,
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -6938,6 +7097,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         }
     }
 
@@ -7094,6 +7254,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7121,6 +7282,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7148,6 +7310,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7175,6 +7338,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7210,6 +7374,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7237,6 +7402,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7264,6 +7430,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7294,6 +7461,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7329,6 +7497,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7362,6 +7531,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7395,6 +7565,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7429,6 +7600,7 @@ mod tests {
                 out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
                 audit_pool: None,
                 runner_identity: None,
+                drift_baseline: DriftBaseline::Disabled,
             };
             let guard = acquire_test_workspace_guard();
 
@@ -7463,6 +7635,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7496,6 +7669,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7529,6 +7703,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7564,6 +7739,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7613,6 +7789,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None, // intentionally missing — should be refused for non-P0
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -7658,6 +7835,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None, // intentionally missing — should be refused for non-P0
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -7714,6 +7892,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None, // intentionally missing — should be refused for non-P0
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -7759,6 +7938,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: Some(RunnerIdentity::IdentityFree), // IdentityFree — should be refused for non-P0
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -7804,6 +7984,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None, // Phase 0 — should NOT be refused
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -7914,6 +8095,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: Some(RunnerIdentity::SingleNodeDev),
+            drift_baseline: DriftBaseline::Disabled,
         };
         (plan, runner_ctx)
     }
