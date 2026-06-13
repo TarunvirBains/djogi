@@ -4278,7 +4278,7 @@ pub(crate) enum PartitionExpansionMode {
     ReplayStrict,
 }
 
-/// Public-facing helper wrapping [`expand_partition_leaf_placeholders`].
+/// Crate-internal helper wrapping [`expand_partition_leaf_placeholders`].
 /// Materializes partition leaf placeholders according to the given mode.
 pub(crate) async fn materialize_execution_plan(
     ctx: &mut DjogiContext,

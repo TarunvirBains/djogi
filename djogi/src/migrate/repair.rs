@@ -375,6 +375,19 @@ pub enum RepairError {
         /// The migration version that was refused.
         version: String,
     },
+
+    /// A runner-level operation invoked during repair failed.
+    /// Producers: node-identity binding on the pinned resume session,
+    /// the leaf-identity pre-check, strict-replay plan
+    /// materialization (for any failure other than the zero-leaf
+    /// refusal, which maps to [`RepairError::ResumePlanShapeMismatch`]),
+    /// and a defensive advisory-lock acquire fallback that is not
+    /// reachable under current control flow.
+    /// Wraps [`RunnerError`] so the underlying failure (e.g. a Postgres
+    /// catalog probe or binding-statement error) stays structured and
+    /// reachable through `Error::source()` instead of being flattened
+    /// into a string.
+    Runner(RunnerError),
 }
 
 impl std::fmt::Display for RepairError {
@@ -553,6 +566,7 @@ impl std::fmt::Display for RepairError {
                 "repair resume-partial refused: version '{version}' requires a binding-capable \
                  runner identity for SQL replay",
             ),
+            RepairError::Runner(e) => write!(f, "repair failed at runner level: {e}"),
         }
     }
 }
@@ -566,6 +580,7 @@ impl std::error::Error for RepairError {
             RepairError::ResumeProgressAckFailed { source, .. } => Some(source),
             RepairError::AdvisoryLockQueryFailed { source, .. } => Some(source),
             RepairError::PinnedSessionCheckoutFailed { source } => Some(source),
+            RepairError::Runner(e) => Some(e),
             _ => None,
         }
     }
@@ -598,15 +613,11 @@ async fn acquire_advisory_lock_repair(
                 RepairError::AdvisoryLockQueryFailed { app_label, source }
             }
             other => {
-                // Unreachable: acquire_advisory_lock only returns the two variants above.
-                // Wrap defensively rather than panic so future runner changes do not
-                // silently produce a misclassified error.
-                RepairError::AdvisoryLockQueryFailed {
-                    app_label: bucket.app.clone(),
-                    source: DjogiError::Db(crate::error::DbError::other(format!(
-                        "unexpected acquire error: {other}"
-                    ))),
-                }
+                // Unreachable today: acquire_advisory_lock only returns the two
+                // variants above. Pass through structurally rather than panic or
+                // stringify, so a future runner change surfaces with its full
+                // source chain instead of a flattened misclassified error.
+                RepairError::Runner(other)
             }
         })
 }
@@ -1123,11 +1134,7 @@ pub async fn repair_resume_partial_apply(
             ),
         )
         .await
-        .map_err(|e| RepairError::LedgerIo {
-            source: crate::DjogiError::Db(crate::DbError::other(format!(
-                "bind runner node identity: {e}"
-            ))),
-        })?;
+        .map_err(RepairError::Runner)?;
     }
 
     repair_resume_pinned(&mut pinned, version, plan, &plan.bucket, lock_key).await
@@ -1224,14 +1231,9 @@ async fn repair_resume_body(
     // #366: Pre-strict leaf-identity check with lenient lookup so a zero-leaf↔non-empty
     // topology drift surfaces as LeafIdentityMismatch rather than PartitionExpansionNoLeaves.
     if let Some(ref stored_identity) = row.leaf_identity {
-        let pre_cache =
-            compute_leaf_identity_cache(ctx, plan)
-                .await
-                .map_err(|e| RepairError::LedgerIo {
-                    source: DjogiError::Db(crate::error::DbError::other(format!(
-                        "leaf-identity pre-check failed: {e}"
-                    ))),
-                })?;
+        let pre_cache = compute_leaf_identity_cache(ctx, plan)
+            .await
+            .map_err(RepairError::Runner)?;
         let pre_identity = serialize_leaf_identity(&pre_cache).unwrap_or_default();
         if pre_identity != *stored_identity {
             return Err(RepairError::LeafIdentityMismatch {
@@ -1262,11 +1264,7 @@ async fn repair_resume_body(
                         replay_total_steps: 0,
                     }
                 }
-                other => RepairError::LedgerIo {
-                    source: DjogiError::Db(crate::error::DbError::other(format!(
-                        "materialize_execution_plan failed: {other}"
-                    ))),
-                },
+                other => RepairError::Runner(other),
             })?;
 
     check_phase_zero_materialized_resume_stream(version, &materialized_plan)?;
@@ -2257,6 +2255,71 @@ mod tests {
         assert!(msg.contains("V20260526031700__shape"));
         assert!(msg.contains("ledger total_steps=5"));
         assert!(msg.contains("expanded replay non-transactional statements=1"));
+    }
+
+    // ── Runner-source preservation through the repair error chain ──
+
+    #[test]
+    fn repair_error_runner_preserves_node_identity_binding_source_chain() {
+        let err = RepairError::Runner(RunnerError::NodeIdentityBindingFailed {
+            node_id: 7,
+            source: DjogiError::Db(crate::error::DbError::other("bind statement failed")),
+        });
+
+        let level1 = std::error::Error::source(&err)
+            .expect("RepairError::Runner must expose its RunnerError source");
+        let runner = level1
+            .downcast_ref::<RunnerError>()
+            .expect("source must downcast to RunnerError");
+        match runner {
+            RunnerError::NodeIdentityBindingFailed { node_id, .. } => {
+                assert_eq!(*node_id, 7);
+            }
+            other => panic!("expected NodeIdentityBindingFailed, got {other:?}"),
+        }
+
+        let level2 = std::error::Error::source(runner)
+            .expect("NodeIdentityBindingFailed must expose its DjogiError source");
+        assert!(level2.downcast_ref::<DjogiError>().is_some());
+    }
+
+    #[test]
+    fn repair_error_runner_preserves_catalog_query_source_chain() {
+        let err = RepairError::Runner(RunnerError::CatalogQueryFailed {
+            query_label: "pg_class relpages",
+            source: DjogiError::Db(crate::error::DbError::other("connection reset by peer")),
+        });
+
+        let level1 = std::error::Error::source(&err)
+            .expect("RepairError::Runner must expose its RunnerError source");
+        let runner = level1
+            .downcast_ref::<RunnerError>()
+            .expect("source must downcast to RunnerError");
+        match runner {
+            RunnerError::CatalogQueryFailed { query_label, .. } => {
+                assert_eq!(*query_label, "pg_class relpages");
+            }
+            other => panic!("expected CatalogQueryFailed, got {other:?}"),
+        }
+
+        let level2 = std::error::Error::source(runner)
+            .expect("CatalogQueryFailed must expose its DjogiError source");
+        assert!(level2.downcast_ref::<DjogiError>().is_some());
+    }
+
+    // ── ReplayPlanShapeMismatch display ─────────────────────
+
+    #[test]
+    fn repair_error_replay_plan_shape_mismatch_display_names_counts() {
+        let e = RepairError::ReplayPlanShapeMismatch {
+            version: "V20260526031700__shape".to_string(),
+            expected_step_count: 5,
+            actual_step_count: 1,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("V20260526031700__shape"));
+        assert!(msg.contains("completed 1 step(s)"));
+        assert!(msg.contains("expected 5"));
     }
 
     #[test]
