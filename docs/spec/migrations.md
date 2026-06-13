@@ -71,10 +71,12 @@ Three-way match logic, run per `(target, app)` pair. Pending ingestion is kind-a
 Compose exit-code contract:
 
 - `0` — success or `NothingToCompose` (no delta found for any bucket).
-- `1` — runtime failure (snapshot load failure after guard passes, emit failure, I/O failure, differential failure, checksum serialization failure, phase-zero auto-emit failure, etc.).
+- `1` — runtime or framework-internal failure (snapshot load failure after guard passes, transient I/O failure, checksum serialization failure, a phase-zero auto-emit DB / I/O / serialization failure, or a framework routing-invariant violation such as a PK-type flip reaching the standard SQL emitter). These are not the operator's to fix by editing the schema and are retryable in CI. Note that the `SqlEmit`, `Diff`, and `PhaseZeroAutoEmit` wrappers do **not** map uniformly to `1` — their operator-actionable sub-variants map to `2` (see the exit-2 list below).
 - `2` — operator-actionable refusal requiring manual follow-up before re-run.
 
-`2` currently applies to:
+`2` applies to the following flat refusals and nested operator-actionable sub-variants.
+
+Flat operator-actionable refusals (top-level `ComposeError`):
 
 - `ComposeError::LinkageDropWithoutModels`
 - `ComposeError::TombstonedAppRequiresAllowDestructive`
@@ -83,6 +85,19 @@ Compose exit-code contract:
 - `ComposeError::HandEditedMigrationWouldBeOverwritten`
 - `ComposeError::PendingJsonWouldBeOverwritten`
 - `ComposeError::FolderRenameTargetCollision`
+- `ComposeError::CrossBucketForeignKeyCycle`
+
+Nested operator-actionable sub-variants (the wrapping variant maps to `2` only for these inner shapes):
+
+- `ComposeError::SqlEmit(SqlEmitError::Unsupported)` — schema transition can't be auto-lowered; operator hand-writes the migration
+- `ComposeError::SqlEmit(SqlEmitError::UnsupportedPartitionChange)` — partition shape change requires a manual rebuild
+- `ComposeError::SqlEmit(SqlEmitError::InvalidStorageParams)` — malformed `storage_params` in a model descriptor
+- `ComposeError::Diff(DiffError::PkFlipCascadeDepthExceeded)` — transitive FK closure exceeded the depth limit; operator must restructure the FK graph
+- `ComposeError::Diff(DiffError::PartitionedMultiParentClusterUnsupported)` — partitioned parent in a cross-flipping cluster; operator must resolve the combination
+- `ComposeError::PhaseZeroAutoEmit(AutoEmitError::Compose(BootstrapError::InvalidExtensionName))` — extension name fails the Postgres identifier grammar
+- `ComposeError::PhaseZeroAutoEmit(AutoEmitError::Compose(BootstrapError::UnknownExtension))` — extension is not in Djogi's allowed-extension list
+
+`ComposeError::SqlEmit(SqlEmitError::Diff(..))` forwards a `DiffError` through the emitter layer; it is classified identically to `ComposeError::Diff` (so `PkFlipCascadeDepthExceeded` / `PartitionedMultiParentClusterUnsupported` map to `2` there too).
 
 Example build warning:
 
