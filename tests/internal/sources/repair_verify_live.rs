@@ -2915,7 +2915,7 @@ const COMPOSED_WIDGETS_DOWN_FIXTURE: &str = "-- Djogi composed migration — dow
                                               -- AddIndex widgets_id_idx\n\
                                               DROP INDEX widgets_id_idx;\n\
                                               \n\
-                                              -- DropTable widgets\n\
+                                              -- AddTable widgets\n\
                                               DROP TABLE \"widgets\";\n\
                                               \n";
 
@@ -4192,13 +4192,17 @@ async fn verify_does_not_exclude_adopter_named_heer_orders_table(mut ctx: djogi:
 #[djogi::djogi_test]
 async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djogi::DjogiContext) {
     let _guard = acquire_test_workspace_guard();
+    let app = "repair_lock_bucket";
 
     // Apply a migration so we have a ledger row to repair.
-    let plan = transactional_plan(vec![op(
-        "AddTable repair_lock",
-        "CREATE TABLE \"repair_lock\" (\"id\" BIGINT PRIMARY KEY)",
-        "DROP TABLE \"repair_lock\"",
-    )]);
+    let plan = transactional_plan_for_app(
+        app,
+        vec![op(
+            "AddTable repair_lock",
+            "CREATE TABLE \"repair_lock\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"repair_lock\"",
+        )],
+    );
     let runner_ctx = make_runner_ctx(&plan, "V20260425010101__274_repair_lock", None, None);
     apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
         .await
@@ -4240,9 +4244,11 @@ async fn repair_checksum_drift_acquires_and_releases_advisory_lock(mut ctx: djog
     assert!(result.is_ok(), "repair_checksum_drift must succeed");
 
     // After repair completes, the advisory lock for the repair bucket must be
-    // released cluster-wide. The repair uses the same explicit plan.bucket
-    // the runner used, so the runner-side and repair-side advisory-lock keys
-    // are identical — both call advisory_lock_key(&plan.bucket).
+    // released cluster-wide. Use a test-local app bucket so this assertion
+    // cannot collide with unrelated parallel tests on the same Postgres
+    // cluster. The repair uses the same explicit plan.bucket the runner used,
+    // so the runner-side and repair-side advisory-lock keys are identical —
+    // both call advisory_lock_key(&plan.bucket).
     //
     // This is the critical correctness check: before the GH #274 fix,
     // derive_bucket() used current_database() which returned the per-test
