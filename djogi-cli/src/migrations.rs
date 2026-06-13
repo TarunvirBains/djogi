@@ -5033,10 +5033,21 @@ mod tests {
             0
         );
 
+        let fk_name = ctx
+            .raw_scalar::<String>(
+                "SELECT c.conname
+                 FROM pg_constraint c
+                 JOIN pg_class t ON t.oid = c.conrelid
+                 WHERE t.relname = $1 AND c.contype = 'f'
+                 LIMIT 1",
+                &[&posts.as_str()],
+            )
+            .await
+            .expect("lookup live FK name");
         ctx.raw_execute(
             &format!(
-                "ALTER TABLE {posts} DROP CONSTRAINT {posts}_user_id_fkey; \
-                 ALTER TABLE {posts} ADD CONSTRAINT {posts}_user_id_fkey \
+                "ALTER TABLE {posts} DROP CONSTRAINT {fk_name}; \
+                 ALTER TABLE {posts} ADD CONSTRAINT {fk_name} \
                  FOREIGN KEY (user_id) REFERENCES {users}(id) ON DELETE CASCADE"
             ),
             &[],
