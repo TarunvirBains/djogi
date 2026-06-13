@@ -4483,16 +4483,26 @@ async fn load_applied_at(
     row.try_get::<_, OffsetDateTime>("applied_at").ok()
 }
 
-/// Walk the plan and collect the set of table names that an
-/// `AddTable` statement creates. The relpages probe uses this to
-/// disambiguate "table being created in this very plan" (legit
-/// `relpages = None`) from "typo / mis-quoted identifier"
-/// (`TargetTableNotFound`).
+/// Walk the plan and collect the set of table names that a table-creation
+/// statement creates. The relpages probe uses this to disambiguate "table
+/// being created in this very plan" (legit `relpages = None`) from "typo /
+/// mis-quoted identifier" (`TargetTableNotFound`).
+///
+/// Two label prefixes are recognised:
+/// - `"AddTable "` — the djogi-native label convention.
+/// - `"CreateModel "` — the composed-migration convention (Django-style
+///   operation names). Composed migrations that create a table and then add
+///   an index on it in the same plan would otherwise trigger a spurious
+///   `TargetTableNotFound` panic from the relpages probe.
 fn collect_add_table_targets(plan: &MigrationPlan) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for seg in &plan.segments {
         for stmt in &seg.statements {
-            if let Some(table) = stmt.label.strip_prefix("AddTable ") {
+            if let Some(table) = stmt
+                .label
+                .strip_prefix("AddTable ")
+                .or_else(|| stmt.label.strip_prefix("CreateModel "))
+            {
                 out.insert(table.to_string());
             }
         }
@@ -6169,6 +6179,56 @@ mod tests {
         };
         let set = collect_add_table_targets(&plan);
         assert!(set.is_empty());
+    }
+
+    /// Composed migrations use `"CreateModel "` as the label prefix instead
+    /// of `"AddTable "`. Both must be recognised so the relpages probe does
+    /// not panic with `TargetTableNotFound` when a composed plan creates a
+    /// table and immediately adds an index on it.
+    #[test]
+    fn collect_add_table_targets_recognises_create_model_prefix() {
+        let plan = MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![
+                    OperationSql {
+                        label: "CreateModel products".to_string(),
+                        up: "CREATE TABLE products ()".to_string(),
+                        down: "DROP TABLE products".to_string(),
+                        lossy: None,
+                    },
+                    OperationSql {
+                        label: "AddIndex products_sku_idx".to_string(),
+                        up: "CREATE INDEX products_sku_idx ON products (sku)".to_string(),
+                        down: String::new(),
+                        lossy: None,
+                    },
+                    // Mix: an AddTable in the same plan must also be collected.
+                    OperationSql {
+                        label: "AddTable orders".to_string(),
+                        up: "CREATE TABLE orders ()".to_string(),
+                        down: "DROP TABLE orders".to_string(),
+                        lossy: None,
+                    },
+                ],
+            }],
+        };
+        let set = collect_add_table_targets(&plan);
+        assert!(
+            set.contains("products"),
+            "CreateModel prefix must be recognised"
+        );
+        assert!(
+            set.contains("orders"),
+            "AddTable prefix must still be recognised"
+        );
+        assert!(
+            !set.contains("products_sku_idx"),
+            "AddIndex must not be collected"
+        );
+        assert_eq!(set.len(), 2);
     }
 
     // ── segment SQL execution-mode preflight (#286) ─────────────────────
