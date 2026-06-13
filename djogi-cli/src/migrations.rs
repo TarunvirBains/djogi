@@ -199,8 +199,21 @@ fn load_replay_plan_from_disk(
     // pending row was generated from different up SQL.
     if fallback.checksum_up != pending_checksum_up {
         return Err(ApplyReplayPlanError::FallbackChecksumMismatch {
+            side: "up",
             computed: fallback.checksum_up,
             pending: pending_checksum_up.to_string(),
+        });
+    }
+
+    // Down checksum mismatch means the .down.sql file changed after compose.
+    // The sidecar path (lines 131-134) already checks both sides; the fallback
+    // path must apply the same guard so a post-compose edit to the down file
+    // is caught consistently.
+    if fallback.checksum_down.as_deref() != pending_checksum_down {
+        return Err(ApplyReplayPlanError::FallbackChecksumMismatch {
+            side: "down",
+            computed: fallback.checksum_down.unwrap_or_default(),
+            pending: pending_checksum_down.unwrap_or_default().to_string(),
         });
     }
 
@@ -210,13 +223,32 @@ fn load_replay_plan_from_disk(
 /// Errors from [`load_replay_plan_from_disk`].
 #[derive(Debug)]
 enum ApplyReplayPlanError {
-    PlanRead { path: PathBuf, source: String },
-    Parse { path: PathBuf, source: String },
-    FormatVersion { found: String, path: PathBuf },
+    PlanRead {
+        path: PathBuf,
+        source: String,
+    },
+    Parse {
+        path: PathBuf,
+        source: String,
+    },
+    FormatVersion {
+        found: String,
+        path: PathBuf,
+    },
     ChecksumMismatch,
-    NonTransactionalWithoutReplayPlan { shape: &'static str, path: PathBuf },
-    SqlRead { path: PathBuf, source: String },
-    FallbackChecksumMismatch { computed: String, pending: String },
+    NonTransactionalWithoutReplayPlan {
+        shape: &'static str,
+        path: PathBuf,
+    },
+    SqlRead {
+        path: PathBuf,
+        source: String,
+    },
+    FallbackChecksumMismatch {
+        side: &'static str,
+        computed: String,
+        pending: String,
+    },
 }
 
 impl std::fmt::Display for ApplyReplayPlanError {
@@ -248,9 +280,13 @@ impl std::fmt::Display for ApplyReplayPlanError {
             Self::SqlRead { path, source } => {
                 write!(f, "read SQL file {}: {source}", path.display())
             }
-            Self::FallbackChecksumMismatch { computed, pending } => write!(
+            Self::FallbackChecksumMismatch {
+                side,
+                computed,
+                pending,
+            } => write!(
                 f,
-                "committed up SQL checksum {computed} does not match the pending \
+                "committed {side} SQL checksum {computed} does not match the pending \
                  plan's {pending}; the file changed after compose — re-run \
                  `djogi migrations compose` (or restore the committed file)"
             ),
@@ -3750,6 +3786,43 @@ mod tests {
         let err = load_replay_plan_from_disk(&work, &bucket, version, &stale_pending, None)
             .expect_err("up-domain mismatch must not be silently ignored");
         assert!(err.to_string().contains("checksum"), "actionable: {err}");
+    }
+
+    /// When the on-disk `.down.sql` file has changed since compose but the up
+    /// checksum still matches, the fallback path must detect the drift and
+    /// return an error — not silently record the new down checksum.  This is
+    /// the parallel of `fallback_refuses_when_up_file_diverges_from_pending_checksum`
+    /// for the down side.
+    #[test]
+    fn fallback_refuses_when_down_file_diverges_from_pending_checksum() {
+        let work = temp_workspace("fallback-tamper-down");
+        let version = "V20260612000004__tampered_down";
+        let up = "CREATE TABLE downcheck (id BIGINT);\n";
+        let original_down = "DROP TABLE downcheck;\n";
+        let tampered_down = "DROP TABLE downcheck; -- tampered\n";
+
+        // Write files with the tampered down content.
+        let bucket = write_fallback_migration_files(&work, version, up, Some(tampered_down));
+
+        // pending_checksum_down reflects the original down file (before tamper).
+        let pending_up = djogi::migrate::compute_checksum([up]);
+        let pending_down = djogi::migrate::compute_checksum([original_down]);
+
+        // The function must not succeed: the on-disk down SQL no longer matches
+        // the pending plan's checksum_down.
+        let err =
+            load_replay_plan_from_disk(&work, &bucket, version, &pending_up, Some(&pending_down))
+                .expect_err("down-domain mismatch must not be silently ignored");
+
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("checksum"),
+            "error message must mention checksum: {rendered}"
+        );
+        assert!(
+            rendered.contains("down"),
+            "error message must identify the down side: {rendered}"
+        );
     }
 
     #[test]
