@@ -243,6 +243,64 @@ example above) never appear in the emitted SQL. This is the headline
 performance win — visages stop being only an output shape and start
 paying off at the query side.
 
+### Embedding a visage queryset as a subquery
+
+`VisageQuerySet` can also be lowered into `IN` / `NOT IN` / `EXISTS`
+predicates without widening back to the source model's full column set.
+The key constraint is explicit single-column projection: `IN` and the
+quantified `ANY` / `ALL` forms must name one exposed physical column.
+
+```rust
+use djogi::prelude::*;
+
+let gold_authors = AuthorPublic::filter(|a| a.tier().eq("gold".to_string()))
+    .selecting(AuthorPublic::id())?;
+
+let posts: Vec<Post> = Post::objects()
+    .filter(|f| f.author_id().in_visage(gold_authors))
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+`selecting(...)` is fallible on purpose. If the visage queryset carries
+`.order_by(...)`, `.limit(...)`, or `.offset(...)`, Djogi rejects the
+conversion with `DjogiError::InvalidSubqueryModifier` instead of silently
+dropping those clauses.
+
+`EXISTS` does not need a projected column:
+
+```rust
+use djogi::prelude::*;
+
+let has_published = VisageExists::new(PostPublic::filter(|p| {
+    Q::Expression(p.published().as_expr().eq(Expr::literal(true)))
+        & Q::Expression(
+            p.author_id()
+                .as_expr()
+                .eq(AuthorOuterRef::id().as_qualified_expr()),
+        )
+}))?;
+
+let authors: Vec<Author> = Author::objects()
+    .filter(|_| has_published)
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+The subquery still preserves the visage boundary:
+
+- Only columns with generated `VisageColumn` accessors can be projected.
+- Non-exposed columns have no accessor at all.
+- Derived fields, presentation-codec fields, and at-rest codec fields are
+  intentionally excluded from the accessor surface.
+- The lowered subquery keeps the visage's own `WHERE` predicate and narrows
+  the SELECT list to exactly the chosen column.
+
+Current scope: only single-column subqueries are supported. Multi-column
+row-value `IN` (`(a, b) IN (SELECT x, y ...)`) is intentionally deferred to a
+follow-up because it needs a tuple-typed selector surface rather than the
+single-column `selecting(...)` API.
+
 **Compile-time field-boundary enforcement.** The closure receiver
 is a `{Visage}Fields` type that surfaces only the visage's exposed
 fields. Referencing a non-exposed field is a compile error, not a

@@ -1,0 +1,14 @@
+error[E0624]: associated function `__new` is private
+   --> $DIR/visage_column_unforgeable_constructor.rs:11:73
+    |
+ 11 |     let _t = ::djogi::__private::visage_column_seal::VisageColumnToken::__new();
+    |                                                                         ^^^^^ private associated function
+    |
+   ::: djogi/src/visage.rs:367:5
+    |
+367 |     pub(crate) const fn __new() -> Self {
+    |     ----------------------------------- private associated function defined here
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0624`.

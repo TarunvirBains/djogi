@@ -113,6 +113,113 @@ pub struct VisageQuerySet<V: DjogiVisage> {
     _visage: PhantomData<fn() -> V>,
 }
 
+/// Single exposed visage column selector for subquery projection.
+#[must_use = "visage columns are inert until projected through selecting()"]
+pub struct VisageColumn<V: DjogiVisage, U> {
+    pub(crate) column: &'static str,
+    __sealed: crate::visage::VisageColumnToken,
+    _v: PhantomData<fn() -> V>,
+    _u: PhantomData<fn() -> U>,
+}
+
+impl<V: DjogiVisage, U> Clone for VisageColumn<V, U> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<V: DjogiVisage, U> Copy for VisageColumn<V, U> {}
+
+impl<V: DjogiVisage, U> std::fmt::Debug for VisageColumn<V, U> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VisageColumn")
+            .field("column", &self.column)
+            .finish()
+    }
+}
+
+impl<V: DjogiVisage, U> VisageColumn<V, U> {
+    #[doc(hidden)]
+    pub fn __new_for_visage_column(
+        column: &'static str,
+        token: crate::visage::VisageColumnToken,
+    ) -> Self {
+        crate::ident::assert_plain_ident(column, "visage_column");
+        assert!(
+            <V as crate::visage::DjogiVisage>::COLUMNS.contains(&column),
+            "djogi::query::VisageColumn: column {column:?} is not a member of visage `{}`'s exposed COLUMNS",
+            std::any::type_name::<V>(),
+        );
+        Self {
+            column,
+            __sealed: token,
+            _v: PhantomData,
+            _u: PhantomData,
+        }
+    }
+}
+
+/// Single-column visage subquery ready for `IN` / quantified embedding.
+#[must_use = "a VisageSubquery is lazy — embed it in a field predicate or it has no effect"]
+pub struct VisageSubquery<V: DjogiVisage, U> {
+    table: &'static str,
+    select_column: &'static str,
+    condition: Q<V::Model>,
+    _u: PhantomData<fn() -> U>,
+}
+
+impl<V: DjogiVisage, U> std::fmt::Debug for VisageSubquery<V, U> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VisageSubquery")
+            .field("table", &self.table)
+            .field("select_column", &self.select_column)
+            .field("condition", &self.condition)
+            .finish()
+    }
+}
+
+/// Typed `EXISTS (...)` predicate built from a visage queryset.
+#[must_use = "EXISTS predicates are lazy — drop one and the filter is silently omitted"]
+#[derive(Debug, Clone)]
+pub struct VisageExists {
+    node: crate::expr::node::SubqueryNode,
+}
+
+impl VisageExists {
+    pub fn new<V: DjogiVisage>(qs: VisageQuerySet<V>) -> Result<Self, DjogiError> {
+        reject_subquery_modifiers("VisageExists::new", &qs.ordering, qs.limit, qs.offset)?;
+        Ok(Self {
+            node: crate::expr::node::SubqueryNode {
+                table: qs.table,
+                select_column: None,
+                where_clause: crate::expr::subquery::__q_to_subquery_opt::<V::Model>(qs.condition),
+            },
+        })
+    }
+
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn as_expr(self) -> crate::expr::Expr<bool> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::Exists(Box::new(self.node)))
+    }
+
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn not_exists(self) -> crate::expr::Expr<bool> {
+        let expr = self.as_expr();
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::Not(Box::new(expr.node)))
+    }
+}
+
+impl<V: DjogiVisage, U> VisageSubquery<V, U> {
+    #[doc(hidden)]
+    pub(crate) fn __into_subquery_node(self) -> crate::expr::node::SubqueryNode {
+        crate::expr::node::SubqueryNode {
+            table: self.table,
+            select_column: Some(self.select_column),
+            where_clause: crate::expr::subquery::__q_to_subquery_opt::<V::Model>(self.condition),
+        }
+    }
+}
+
 impl<V: DjogiVisage> Clone for VisageQuerySet<V> {
     fn clone(&self) -> Self {
         VisageQuerySet {
@@ -213,6 +320,18 @@ impl<V: DjogiVisage> VisageQuerySet<V> {
             .unwrap_or_else(|_| panic!("VisageQuerySet::offset(n = {n}) overflows i64"));
         self.offset = Some(n);
         self
+    }
+
+    /// Project this visage queryset to a single exposed column for subquery
+    /// embedding.
+    pub fn selecting<U>(self, col: VisageColumn<V, U>) -> Result<VisageSubquery<V, U>, DjogiError> {
+        reject_subquery_modifiers("selecting", &self.ordering, self.limit, self.offset)?;
+        Ok(VisageSubquery {
+            table: self.table,
+            select_column: col.column,
+            condition: self.condition,
+            _u: PhantomData,
+        })
     }
 
     /// Render the SQL string this queryset would send to Postgres.
@@ -472,5 +591,261 @@ fn and_q_into_q<T: crate::model::Model, A: IntoQ<T>>(current: Q<T>, addition: A)
         current
     } else {
         current & addition
+    }
+}
+
+fn reject_subquery_modifiers(
+    entry_point: &'static str,
+    ordering: &[OrderExpr],
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<(), DjogiError> {
+    let offending = if !ordering.is_empty() {
+        Some("order_by")
+    } else if limit.is_some() {
+        Some("limit")
+    } else if offset.is_some() {
+        Some("offset")
+    } else {
+        None
+    };
+    if let Some(modifier) = offending {
+        return Err(DjogiError::invalid_subquery_modifier(
+            entry_point,
+            match modifier {
+                "order_by" => {
+                    "order_by is not meaningful in a subquery; remove it before embedding"
+                }
+                "limit" => "limit is not meaningful in a subquery; remove it before embedding",
+                "offset" => "offset is not meaningful in a subquery; remove it before embedding",
+                other => unreachable!(
+                    "reject_subquery_modifiers: unhandled modifier {other:?} — offending selector out of sync"
+                ),
+            },
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VisageColumn, VisageExists, VisageQuerySet};
+    use crate::model::Model;
+    use crate::pg::accumulator::SqlAccumulator;
+    use crate::query::SqlEmitContext;
+    use crate::query::field::djogi_field_macro_support::__make_djogi_field;
+
+    #[allow(dead_code)]
+    struct Src {
+        id: i64,
+        name: String,
+    }
+
+    impl crate::model::__sealed::Sealed for Src {}
+    #[allow(clippy::manual_async_fn)]
+    impl Model for Src {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "srcs"
+        }
+        fn pk_value(&self) -> &i64 {
+            &self.id
+        }
+        fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
+            unimplemented!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unimplemented!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unimplemented!() }
+        }
+    }
+
+    struct SrcView;
+    impl crate::visage_boundary::private::Sealed<Src> for SrcView {}
+    impl crate::visage_boundary::DjogiVisageOf<Src> for SrcView {}
+    impl crate::visage::private::Sealed for SrcView {}
+    impl crate::visage::DjogiVisage for SrcView {
+        type Model = Src;
+        const SCOPE: &'static str = "public";
+        const COLUMNS: &'static [&'static str] = &["id", "name"];
+        const PROJECTIONS: &'static [crate::__private::ProjectionEntry] = &[];
+        const PROJECTION_LIST: &'static str = "id, name";
+    }
+
+    fn test_col<U>(name: &'static str) -> VisageColumn<SrcView, U> {
+        VisageColumn::__new_for_visage_column(name, crate::__private::visage_column_seal::TOKEN)
+    }
+
+    fn emit_expr_sql(expr: crate::expr::Expr<bool>) -> String {
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &expr.node, SqlEmitContext::root()).expect("emit");
+        acc.sql().trim().to_string()
+    }
+
+    #[test]
+    fn selecting_builds_visage_subquery_emitting_select_col() {
+        let sub = VisageQuerySet::<SrcView>::new_for_visage("srcs", "id, name")
+            .selecting(test_col::<i64>("id"))
+            .expect("clean queryset");
+        let node = sub.__into_subquery_node();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::__emit_subquery_for_test(&mut acc, &node, SqlEmitContext::root())
+            .expect("emit");
+        assert_eq!(acc.sql().trim(), "SELECT id FROM srcs");
+    }
+
+    #[test]
+    fn selecting_rejects_order_by() {
+        let name_field =
+            __make_djogi_field::<Src, String>("name", |_r: &Src| -> &String { unreachable!() });
+        let err = VisageQuerySet::<SrcView>::new_for_visage("srcs", "id, name")
+            .order_by(vec![name_field.asc()])
+            .selecting(test_col::<i64>("id"))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::InvalidSubqueryModifier { .. }
+        ));
+        assert!(err.to_string().contains("order_by"), "got: {err}");
+    }
+
+    #[test]
+    fn selecting_rejects_limit() {
+        let err = VisageQuerySet::<SrcView>::new_for_visage("srcs", "id, name")
+            .limit(10)
+            .selecting(test_col::<i64>("id"))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::InvalidSubqueryModifier { .. }
+        ));
+        assert!(err.to_string().contains("limit"), "got: {err}");
+    }
+
+    #[test]
+    fn selecting_rejects_offset() {
+        let err = VisageQuerySet::<SrcView>::new_for_visage("srcs", "id, name")
+            .offset(5)
+            .selecting(test_col::<i64>("id"))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::InvalidSubqueryModifier { .. }
+        ));
+        assert!(err.to_string().contains("offset"), "got: {err}");
+    }
+
+    #[test]
+    fn selecting_subquery_narrows_to_one_column_and_keeps_where() {
+        let predicate = crate::query::field::FieldRef::<Src, String>::new("name")
+            .as_expr()
+            .eq(crate::expr::Expr::literal("x".to_string()));
+        let sub = VisageQuerySet::<SrcView>::new_for_visage("srcs", "id, name")
+            .filter(predicate)
+            .selecting(test_col::<i64>("id"))
+            .expect("clean queryset");
+        let node = sub.__into_subquery_node();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::__emit_subquery_for_test(&mut acc, &node, SqlEmitContext::root())
+            .expect("emit");
+        let sql = acc.sql();
+        assert!(sql.contains("SELECT id FROM srcs WHERE"), "got: {sql}");
+        assert!(!sql.contains("id, name"), "got: {sql}");
+        assert!(sql.contains("name = $1"), "got: {sql}");
+    }
+
+    #[test]
+    fn visage_exists_emits_exists_subquery() {
+        let exists = VisageExists::new(VisageQuerySet::<SrcView>::new_for_visage(
+            "srcs", "id, name",
+        ))
+        .expect("clean queryset");
+        assert_eq!(
+            emit_expr_sql(exists.as_expr()),
+            "EXISTS (SELECT 1 FROM srcs)"
+        );
+    }
+
+    #[test]
+    fn visage_exists_not_exists_wraps_in_not() {
+        let exists = VisageExists::new(VisageQuerySet::<SrcView>::new_for_visage(
+            "srcs", "id, name",
+        ))
+        .expect("clean queryset");
+        assert_eq!(
+            emit_expr_sql(exists.not_exists()),
+            "NOT (EXISTS (SELECT 1 FROM srcs))"
+        );
+    }
+
+    #[test]
+    fn visage_exists_rejects_order_by() {
+        let name_field =
+            __make_djogi_field::<Src, String>("name", |_r: &Src| -> &String { unreachable!() });
+        let err = VisageExists::new(
+            VisageQuerySet::<SrcView>::new_for_visage("srcs", "id, name")
+                .order_by(vec![name_field.asc()]),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::InvalidSubqueryModifier { .. }
+        ));
+        assert!(err.to_string().contains("order_by"), "got: {err}");
+    }
+
+    #[test]
+    fn visage_exists_rejects_limit() {
+        let err = VisageExists::new(
+            VisageQuerySet::<SrcView>::new_for_visage("srcs", "id, name").limit(10),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::InvalidSubqueryModifier { .. }
+        ));
+        assert!(err.to_string().contains("limit"), "got: {err}");
+    }
+
+    #[test]
+    fn visage_exists_rejects_offset() {
+        let err = VisageExists::new(
+            VisageQuerySet::<SrcView>::new_for_visage("srcs", "id, name").offset(5),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::InvalidSubqueryModifier { .. }
+        ));
+        assert!(err.to_string().contains("offset"), "got: {err}");
     }
 }

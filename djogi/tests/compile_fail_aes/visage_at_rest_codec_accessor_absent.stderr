@@ -1,0 +1,12 @@
+error[E0599]: no associated function or constant named `secret_token` found for struct `SecretBoxPublic` in the current scope
+  --> $DIR/visage_at_rest_codec_accessor_absent.rs:18:30
+   |
+ 3 | #[model(table = "vsq_at_rest_codec_absent")]
+   | -------------------------------------------- associated function or constant `secret_token` not found for this struct
+...
+18 |     let _ = SecretBoxPublic::secret_token();
+   |                              ^^^^^^^^^^^^ associated function or constant not found in `SecretBoxPublic`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

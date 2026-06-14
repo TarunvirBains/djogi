@@ -1,0 +1,12 @@
+error[E0599]: no associated function or constant named `email` found for struct `UserPublic` in the current scope
+  --> $DIR/visage_presentation_codec_accessor_absent.rs:23:25
+   |
+ 4 | #[model(table = "vsq_presentation_codec_absent")]
+   | ------------------------------------------------- associated function or constant `email` not found for this struct
+...
+23 |     let _ = UserPublic::email();
+   |                         ^^^^^ associated function or constant not found in `UserPublic`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

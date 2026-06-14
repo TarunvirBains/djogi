@@ -256,6 +256,13 @@ pub mod __private {
         /// via `::djogi::__private::apps_seal::TOKEN`.
         pub const TOKEN: SealToken = SealToken::__new();
     }
+    pub mod visage_column_seal {
+        pub use crate::visage::VisageColumnToken;
+
+        /// Sole [`VisageColumnToken`] value — reached from macro-emitted code
+        /// via `::djogi::__private::visage_column_seal::TOKEN`.
+        pub const TOKEN: VisageColumnToken = VisageColumnToken::__new();
+    }
 
     /// Hook-dispatch re-exports for the `#[model(hooks)]` macro.
     /// The macro-emitted code routes through `::djogi::__private::hooks::*`
@@ -459,7 +466,8 @@ pub use query::{
     Lookup, MaterializeClosureOptions, MaterializeClosureReport, MergeCounts, MergeStmt,
     ModelCursorStream, ModelFilter, OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide,
     PairWindowExt, PortableQuerySet, Q, QuerySet, RawCursorStream, RecursiveDirection,
-    RecursiveQuerySet, SetOpKind, SetOpQuerySet, UpdateAssignment, UpdateStmt, VisageQuerySet,
+    RecursiveQuerySet, SetOpKind, SetOpQuerySet, UpdateAssignment, UpdateStmt, VisageExists,
+    VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -654,6 +662,7 @@ pub mod prelude {
         ValuesOn,
         ValuesRow,
         ValuesScalar,
+        VisageExists,
         VisageQuerySet,
     };
     // `atomic` / `atomic_with` / `retry_on_conflict` /

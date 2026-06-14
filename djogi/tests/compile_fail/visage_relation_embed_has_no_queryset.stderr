@@ -1,0 +1,26 @@
+error[E0599]: `EmployeePublic` is not an iterator
+  --> $DIR/visage_relation_embed_has_no_queryset.rs:18:29
+   |
+10 | #[model(table = "vsq_rel_embed_employees", no_default)]
+   | ------------------------------------------------------- associated function or constant `filter` not found for this struct because it doesn't satisfy `EmployeePublic: Iterator`
+...
+18 |     let _ = EmployeePublic::filter(|_| true);
+   |                             ^^^^^^ `EmployeePublic` is not an iterator
+   |
+   = note: the following trait bounds were not satisfied:
+           `EmployeePublic: Iterator`
+           which is required by `&mut EmployeePublic: Iterator`
+note: the trait `Iterator` must be implemented
+  --> $RUST/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:42:1
+   |
+42 | pub const trait Iterator {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following traits define an item `filter`, perhaps you need to implement one of them:
+           candidate $TYPEID: `Iterator`
+           candidate $TYPEID: `fallible_iterator::FallibleIterator`
+           candidate $TYPEID: `futures_util::stream::stream::StreamExt`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

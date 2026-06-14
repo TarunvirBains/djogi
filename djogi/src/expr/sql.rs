@@ -38,7 +38,9 @@
 //! [`SqlEmitContext::root()`] which qualifies nothing, preserving
 //! the bare-column emission shipped.
 
-use crate::expr::node::{AggOp, CmpOp, ExprNode, SubqueryNode};
+use crate::expr::node::{
+    AggOp, CmpOp, ExprNode, QuantifiedCmpOp, SubqueryNode, SubqueryQuantifier,
+};
 use crate::pg::accumulator::SqlAccumulator;
 use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 
@@ -964,6 +966,45 @@ pub(crate) fn emit_expr(
             emit_subquery(acc, sub, ctx)?;
             acc.push_sql(")");
         }
+        ExprNode::InSubquery {
+            lhs,
+            negated,
+            subquery,
+        } => {
+            emit_expr(acc, lhs, ctx)?;
+            if *negated {
+                acc.push_sql(" NOT IN (");
+            } else {
+                acc.push_sql(" IN (");
+            }
+            emit_subquery(acc, subquery, ctx)?;
+            acc.push_sql(")");
+        }
+        ExprNode::QuantifiedSubquery {
+            lhs,
+            op,
+            quantifier,
+            subquery,
+        } => {
+            emit_expr(acc, lhs, ctx)?;
+            acc.push_sql(" ");
+            acc.push_sql(match op {
+                QuantifiedCmpOp::Eq => "=",
+                QuantifiedCmpOp::Neq => "<>",
+                QuantifiedCmpOp::Gt => ">",
+                QuantifiedCmpOp::Gte => ">=",
+                QuantifiedCmpOp::Lt => "<",
+                QuantifiedCmpOp::Lte => "<=",
+            });
+            acc.push_sql(" ");
+            acc.push_sql(match quantifier {
+                SubqueryQuantifier::Any => "ANY",
+                SubqueryQuantifier::All => "ALL",
+            });
+            acc.push_sql(" (");
+            emit_subquery(acc, subquery, ctx)?;
+            acc.push_sql(")");
+        }
         ExprNode::ArrayLength { column } => {
             // array_length(column, 1) — dimension is always 1 (Djogi arrays
             // are 1-dimensional; multi-dimensional arrays are not supported).
@@ -1565,6 +1606,15 @@ fn emit_subquery(
         predicate.emit(acc, ctx.subquery_body())?;
     }
     Ok(())
+}
+
+#[doc(hidden)]
+pub(crate) fn __emit_subquery_for_test(
+    acc: &mut SqlAccumulator,
+    node: &SubqueryNode,
+    ctx: SqlEmitContext,
+) -> Result<(), PortablePredicateError> {
+    emit_subquery(acc, node, ctx)
 }
 
 /// Emit a binary node with parens around nested arithmetic or boolean

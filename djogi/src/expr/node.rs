@@ -327,6 +327,33 @@ pub(crate) enum ExprNode {
     /// (already validated at `FieldRef::new` construction time).
     Subquery(Box<SubqueryNode>),
 
+    /// `lhs [NOT] IN (SELECT col FROM ... [WHERE ...])` — boolean-valued
+    /// subquery membership predicate.
+    /// The left-hand side is any scalar expression; the inner
+    /// [`SubqueryNode`] always carries `select_column = Some(_)` because the
+    /// membership set must project exactly one column.
+    InSubquery {
+        /// Left-hand expression being checked for membership.
+        lhs: Box<ExprNode>,
+        /// `true` renders `NOT IN`, `false` renders `IN`.
+        negated: bool,
+        /// Single-column subquery supplying the membership set.
+        subquery: Box<SubqueryNode>,
+    },
+
+    /// `lhs <op> ANY/ALL (SELECT col FROM ... [WHERE ...])` — quantified
+    /// comparison against a single-column subquery result set.
+    QuantifiedSubquery {
+        /// Left-hand expression being compared against the quantified set.
+        lhs: Box<ExprNode>,
+        /// Comparison operator allowed in a quantified position.
+        op: QuantifiedCmpOp,
+        /// Row quantifier keyword (`ANY` / `ALL`).
+        quantifier: SubqueryQuantifier,
+        /// Single-column subquery supplying the quantified set.
+        subquery: Box<SubqueryNode>,
+    },
+
     /// `array_length(column, 1)` — number of elements in a 1-dimensional
     /// Postgres array column.
     /// The dimension argument is hardcoded to `1`; Djogi arrays are always
@@ -1193,4 +1220,125 @@ pub(crate) enum CmpOp {
     IsDistinctFrom,
     /// `lhs IS NOT DISTINCT FROM rhs`
     IsNotDistinctFrom,
+}
+
+/// Subquery row quantifier — the `ANY` / `ALL` keyword in a quantified
+/// comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubqueryQuantifier {
+    /// `<op> ANY (subquery)`
+    Any,
+    /// `<op> ALL (subquery)`
+    All,
+}
+
+/// Comparison operator valid in a quantified subquery position.
+/// Deliberately narrower than [`CmpOp`]: `IS [NOT] DISTINCT FROM` has no
+/// valid Postgres `ANY` / `ALL` form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuantifiedCmpOp {
+    Eq,
+    Neq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+}
+
+impl TryFrom<CmpOp> for QuantifiedCmpOp {
+    type Error = crate::DjogiError;
+
+    fn try_from(op: CmpOp) -> Result<Self, Self::Error> {
+        match op {
+            CmpOp::Eq => Ok(Self::Eq),
+            CmpOp::Neq => Ok(Self::Neq),
+            CmpOp::Gt => Ok(Self::Gt),
+            CmpOp::Gte => Ok(Self::Gte),
+            CmpOp::Lt => Ok(Self::Lt),
+            CmpOp::Lte => Ok(Self::Lte),
+            CmpOp::IsDistinctFrom => Err(crate::DjogiError::invalid_subquery_modifier(
+                "ANY/ALL quantifier",
+                "IS DISTINCT FROM has no quantified subquery form",
+            )),
+            CmpOp::IsNotDistinctFrom => Err(crate::DjogiError::invalid_subquery_modifier(
+                "ANY/ALL quantifier",
+                "IS NOT DISTINCT FROM has no quantified subquery form",
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CmpOp, ExprNode, QuantifiedCmpOp, SubqueryNode, SubqueryQuantifier};
+
+    #[test]
+    fn in_subquery_node_round_trips_through_clone_and_debug() {
+        let inner = SubqueryNode {
+            table: "authors",
+            select_column: Some("id"),
+            where_clause: None,
+        };
+        let node = ExprNode::InSubquery {
+            lhs: Box::new(ExprNode::Field {
+                column: "author_id",
+            }),
+            negated: false,
+            subquery: Box::new(inner),
+        };
+        let cloned = node.clone();
+        let dbg = format!("{cloned:?}");
+        assert!(dbg.contains("InSubquery"), "got: {dbg}");
+    }
+
+    #[test]
+    fn quantified_subquery_node_round_trips() {
+        let inner = SubqueryNode {
+            table: "authors",
+            select_column: Some("follower_count"),
+            where_clause: None,
+        };
+        let node = ExprNode::QuantifiedSubquery {
+            lhs: Box::new(ExprNode::Field { column: "score" }),
+            op: QuantifiedCmpOp::Gt,
+            quantifier: SubqueryQuantifier::Any,
+            subquery: Box::new(inner),
+        };
+        let dbg = format!("{node:?}");
+        assert!(dbg.contains("QuantifiedSubquery"), "got: {dbg}");
+    }
+
+    #[test]
+    fn quantified_cmp_op_try_from_maps_six_and_rejects_distinctness() {
+        assert_eq!(
+            QuantifiedCmpOp::try_from(CmpOp::Eq).unwrap(),
+            QuantifiedCmpOp::Eq
+        );
+        assert_eq!(
+            QuantifiedCmpOp::try_from(CmpOp::Neq).unwrap(),
+            QuantifiedCmpOp::Neq
+        );
+        assert_eq!(
+            QuantifiedCmpOp::try_from(CmpOp::Lt).unwrap(),
+            QuantifiedCmpOp::Lt
+        );
+        assert_eq!(
+            QuantifiedCmpOp::try_from(CmpOp::Lte).unwrap(),
+            QuantifiedCmpOp::Lte
+        );
+        assert_eq!(
+            QuantifiedCmpOp::try_from(CmpOp::Gt).unwrap(),
+            QuantifiedCmpOp::Gt
+        );
+        assert_eq!(
+            QuantifiedCmpOp::try_from(CmpOp::Gte).unwrap(),
+            QuantifiedCmpOp::Gte
+        );
+        assert!(QuantifiedCmpOp::try_from(CmpOp::IsDistinctFrom).is_err());
+        assert!(QuantifiedCmpOp::try_from(CmpOp::IsNotDistinctFrom).is_err());
+        let msg = QuantifiedCmpOp::try_from(CmpOp::IsDistinctFrom)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("DISTINCT FROM"), "got: {msg}");
+    }
 }

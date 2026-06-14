@@ -82,20 +82,63 @@ through 4.
 subquery.
 
 ```rust
-// Posts whose author has ≥ 10 followers
+// Posts whose author has ≥ 10 followers.
 let subquery = Author::objects()
-    .filter(|f| f.id().eq_outer(OuterRef::<Post, _>::author_id()))
+    .filter_expr(|f| {
+        f.id()
+            .as_expr()
+            .eq(PostOuterRef::author_id().as_qualified_expr())
+    })
     .filter(|f| f.follower_count().gte(10i64));
 
 Post::objects()
-    .filter(|_| Exists::new(subquery))
+    .filter_expr(|_| Exists::new(subquery).as_expr())
     .fetch_all(ctx).await?;
 ```
 
-`OuterRef<Post, HeerId>::author_id()` is a macro-emitted associated
-function returning a typed reference to `Post.author_id` bound for
-use inside a subquery's `filter`. Mismatched value types fail at
-compile time.
+`PostOuterRef::author_id()` is the macro-emitted helper. It returns a
+typed outer reference bound to the enclosing `Post` query; the explicit
+`.as_qualified_expr()` form avoids ambiguity when both scopes expose an
+`id` column.
+
+Visage querysets reuse the same substrate. `IN` and `NOT IN` project one
+explicit exposed column:
+
+```rust
+use djogi::prelude::*;
+
+let gold_authors = AuthorPublic::filter(|a| a.tier().eq("gold".to_string()))
+    .selecting(AuthorPublic::id())?;
+
+Post::objects()
+    .filter(|f| f.author_id().in_visage(gold_authors))
+    .fetch_all(&mut ctx).await?;
+```
+
+`EXISTS` over a visage queryset uses `VisageExists` and keeps the same
+outer-ref pattern:
+
+```rust
+use djogi::prelude::*;
+
+let has_published = VisageExists::new(PostPublic::filter(|p| {
+    Q::Expression(p.published().as_expr().eq(Expr::literal(true)))
+        & Q::Expression(
+            p.author_id()
+                .as_expr()
+                .eq(AuthorOuterRef::id().as_qualified_expr()),
+        )
+}))?;
+
+Author::objects()
+    .filter(|_| has_published)
+    .fetch_all(&mut ctx).await?;
+```
+
+`selecting(...)` and `VisageExists::new(...)` are both fallible: they reject
+`order_by` / `limit` / `offset` carried on a `VisageQuerySet`, because those
+modifiers do not survive subquery lowering and Djogi refuses to drop them
+silently.
 
 ## CASE / WHEN
 
