@@ -883,6 +883,19 @@ path = "../tests/internal/set_op_sql_shape.rs"
 harness = true
 required-features = ["testing"]
 
+# Issue #442 — public CTE surface: DB-free SQL-shape pins.
+# Verifies the hidden `render_cte_sql_for_testing` hook on the
+# adopter-facing `QuerySet::with(...)` / `with_recursive(...)` surface:
+# - non-recursive `WITH ... AS (...) SELECT ... FROM <cte>` emission
+# - `SetOpQuerySet` bodies accepted through the sealed `IntoCteBody` trait
+# - recursive `UNION ALL` body emission from `RecursiveArm::join_on(...)`
+# - `CYCLE ... SET ... USING ...` plus consumer-side `exclude_cycle_rows()`
+# - bind renumbering across body clauses and the outer consumer tail
+[[test]]
+name = "cte_sql_shape"
+path = "../tests/internal/cte_sql_shape.rs"
+harness = true
+
 [[test]]
 name = "lateral_sql_shape"
 path = "../tests/internal/lateral_sql_shape.rs"
@@ -921,6 +934,15 @@ harness = true
 [[test]]
 name = "set_op_live"
 path = "../tests/integration/set_op_live.rs"
+harness = true
+
+# Issue #442 — public CTE surface: live Postgres acceptance.
+# Covers non-recursive `WITH` bodies, recursive `WITH RECURSIVE` walks,
+# cycle detection/filtering through `CYCLE ... SET ... USING ...`, and the
+# live `fetch_all` / `count` / `exists` / `first` terminals.
+[[test]]
+name = "cte_live"
+path = "../tests/integration/cte_live.rs"
 harness = true
 
 [[test]]

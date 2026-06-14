@@ -460,16 +460,17 @@ pub use fts_query::FtsFieldRef;
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
     ClosureModel, ConditionExt, ConflictAction, ConflictColumns, ConflictCondition, ConflictExpr,
-    ConflictTarget, ConflictUpdate, DjogiPortableEq, ExcludedRef, ExplicitPgOrderable, FieldRef,
-    FilterClause, InnerLateral, InsertSelectColumn, InsertSelectSource, InsertSelectStmt,
-    IntoAggregateTuple, IntoConflictColumn, IntoConflictCondition, IntoConflictExpr,
-    IntoConflictUpdates, IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns,
-    IntoPortableFieldValue, IntoSetOpArm, JoinedAnnotatedQuerySet, JoinedAnnotatedRow,
-    JoinedQuerySet, LateralQuerySet, LeftLateral, Lookup, MaterializeClosureOptions,
-    MaterializeClosureReport, MergeCounts, MergeStmt, ModelCursorStream, ModelFilter,
-    OnConflictClause, OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt,
-    PortableQuerySet, Q, QuerySet, RawCursorStream, RecursiveDirection, RecursiveQuerySet,
-    SetOpKind, SetOpQuerySet, UpdateAssignment, UpdateStmt, VisageExists, VisageQuerySet,
+    ConflictTarget, ConflictUpdate, CteQuerySet, DjogiPortableEq, ExcludedRef,
+    ExplicitPgOrderable, FieldRef, FilterClause, InnerLateral, InsertSelectColumn,
+    InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoConflictColumn,
+    IntoConflictCondition, IntoConflictExpr, IntoConflictUpdates, IntoCteBody,
+    IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue,
+    IntoSetOpArm, JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, LateralQuerySet,
+    LeftLateral, Lookup, MaterializeClosureOptions, MaterializeClosureReport, MergeCounts,
+    MergeStmt, ModelCursorStream, ModelFilter, OnConflictClause, OrderExpr,
+    PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q, QuerySet,
+    RawCursorStream, RecursiveArm, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet,
+    UpdateAssignment, UpdateStmt, VisageExists, VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -622,6 +623,7 @@ pub mod prelude {
         ConflictUpdate,
         // Djogi#103 + GH#299 — VALUES join (inner, left, cross).
         CrossValuesJoinedQuerySet,
+        CteQuerySet,
         DjogiPortableEq,
         ExcludedRef,
         ExplicitPgOrderable,
@@ -661,6 +663,7 @@ pub mod prelude {
         PortableQuerySet,
         Q,
         QuerySet,
+        RecursiveArm,
         RecursiveDirection,
         RecursiveQuerySet,
         // Djogi#180 — PG18 OLD/NEW RETURNING result type.

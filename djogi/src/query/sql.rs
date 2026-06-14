@@ -1228,25 +1228,17 @@ fn push_tail<T: Model>(
     push_tail_qualified(acc, qs, None)
 }
 
-/// Lowest-level tail helper — caller supplies the full SQL emission
-/// context, including joined-table qualification and any optional
-/// lateral scope metadata.
-pub(crate) fn push_tail_with_ctx<T: Model>(
+fn push_order_limit_offset<T: Model>(
     acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
     ctx: SqlEmitContext,
-) -> Result<(), PortablePredicateError> {
-    push_where_with_ctx(acc, qs, ctx)?;
-
+) {
     if !qs.ordering.is_empty() {
         acc.push_sql(" ORDER BY ");
         for (i, o) in qs.ordering.iter().enumerate() {
             if i > 0 {
                 acc.push_sql(", ");
             }
-            // Delegate to OrderExpr::emit — it handles both Column and
-            // (when the spatial feature is on) SpatialDistance variants.
-            // The table_qualifier threads through for select_related joins.
             o.emit(acc, ctx.parent_table());
         }
     }
@@ -1259,6 +1251,41 @@ pub(crate) fn push_tail_with_ctx<T: Model>(
         acc.push_sql(" OFFSET ");
         acc.push_bind(n);
     }
+}
+
+pub(crate) fn has_consumer_where<T: Model>(qs: &QuerySet<T>) -> bool {
+    !q_is_vacuously_true(&qs.condition)
+}
+
+pub(crate) fn push_consumer_predicate_only<T: Model>(
+    acc: &mut SqlAccumulator,
+    qs: &QuerySet<T>,
+) -> Result<(), PortablePredicateError> {
+    if q_is_vacuously_true(&qs.condition) {
+        return Ok(());
+    }
+    emit_q::<T>(acc, &qs.condition, SqlEmitContext::root())
+}
+
+pub(crate) fn push_consumer_order_limit_offset<T: Model>(
+    acc: &mut SqlAccumulator,
+    qs: &QuerySet<T>,
+) {
+    push_order_limit_offset(acc, qs, SqlEmitContext::root());
+}
+
+/// Emit the consumer-side tail for a CTE query's outer SELECT.
+/// Row locks are intentionally excluded from the CTE consumer surface.
+/// Lowest-level tail helper — caller supplies the full SQL emission
+/// context, including joined-table qualification and any optional
+/// lateral scope metadata.
+pub(crate) fn push_tail_with_ctx<T: Model>(
+    acc: &mut SqlAccumulator,
+    qs: &QuerySet<T>,
+    ctx: SqlEmitContext,
+) -> Result<(), PortablePredicateError> {
+    push_where_with_ctx(acc, qs, ctx)?;
+    push_order_limit_offset(acc, qs, ctx);
     // Row-lock tail — `FOR UPDATE [NOWAIT|SKIP LOCKED]` — is the last
     // thing Postgres accepts on a SELECT, after `LIMIT`/`OFFSET`.
     // `LockMode::None` is a no-op so the pre-Task-7 SELECT shape is
