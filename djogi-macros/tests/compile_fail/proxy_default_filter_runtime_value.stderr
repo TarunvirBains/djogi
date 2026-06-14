@@ -206,12 +206,12 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
   18 | #[model(table = "phase8_proxy_runtime_vehicles")]
      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `djogi::query::field::djogi_field_macro_support::__make_djogi_field`
-    --> djogi/src/query/field.rs:3066:12
+    --> djogi/src/query/field.rs:3264:12
      |
-3064 |     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
+3262 |     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
      |            ------------------ required by a bound in this function
-3065 |     where
-3066 |         M: Model,
+3263 |     where
+3264 |         M: Model,
      |            ^^^^^ required by this bound in `__make_djogi_field`
      = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -479,9 +479,9 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `djogi::expr::subquery::__macro_support::__make_outer_ref`
-   --> djogi/src/expr/subquery.rs:485:32
+   --> djogi/src/expr/subquery.rs:488:32
     |
-485 |     pub fn __make_outer_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
+488 |     pub fn __make_outer_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
     |                                ^^^^^ required by this bound in `__make_outer_ref`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
