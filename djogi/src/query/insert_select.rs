@@ -938,7 +938,10 @@ pub enum ConflictTarget<T: Model> {
         inference_predicate: Option<Box<ConflictCondition<T>>>,
     },
     #[non_exhaustive]
-    Constraint { name: &'static str },
+    Constraint {
+        name: &'static str,
+        inference_predicate: Option<Box<ConflictCondition<T>>>,
+    },
 }
 
 impl<T: Model> Clone for ConflictTarget<T> {
@@ -951,7 +954,13 @@ impl<T: Model> Clone for ConflictTarget<T> {
                 columns: columns.clone(),
                 inference_predicate: inference_predicate.clone(),
             },
-            Self::Constraint { name } => Self::Constraint { name },
+            Self::Constraint {
+                name,
+                inference_predicate,
+            } => Self::Constraint {
+                name,
+                inference_predicate: inference_predicate.clone(),
+            },
         }
     }
 }
@@ -967,7 +976,14 @@ impl<T: Model> std::fmt::Debug for ConflictTarget<T> {
                 .field("columns", columns)
                 .field("inference_predicate", inference_predicate)
                 .finish(),
-            Self::Constraint { name } => f.debug_struct("Constraint").field("name", name).finish(),
+            Self::Constraint {
+                name,
+                inference_predicate,
+            } => f
+                .debug_struct("Constraint")
+                .field("name", name)
+                .field("inference_predicate", inference_predicate)
+                .finish(),
         }
     }
 }
@@ -1282,7 +1298,10 @@ impl<T: Model> ConflictTarget<T> {
     #[must_use]
     pub fn constraint(name: &'static str) -> Self {
         crate::ident::assert_plain_ident(name, "conflict constraint name");
-        Self::Constraint { name }
+        Self::Constraint {
+            name,
+            inference_predicate: None,
+        }
     }
 
     #[must_use]
@@ -1304,9 +1323,12 @@ impl<T: Model> ConflictTarget<T> {
                     f(T::Fields::default()).into_conflict_condition(),
                 )),
             },
-            Self::Constraint { .. } => {
-                panic!("ConflictTarget::where_predicate is invalid on constraint targets")
-            }
+            Self::Constraint { name, .. } => Self::Constraint {
+                name,
+                inference_predicate: Some(Box::new(
+                    f(T::Fields::default()).into_conflict_condition(),
+                )),
+            },
         }
     }
 }
@@ -1335,6 +1357,23 @@ impl<T: Model> std::ops::Not for ConflictCondition<T> {
             node: ExprNode::Not(Box::new(self.node)),
             _marker: PhantomData,
         }
+    }
+}
+
+fn expr_node_contains_excluded(node: &ExprNode) -> bool {
+    match node {
+        ExprNode::Excluded { .. } => true,
+        ExprNode::Cmp { lhs, rhs, .. }
+        | ExprNode::Add(lhs, rhs)
+        | ExprNode::Sub(lhs, rhs)
+        | ExprNode::Mul(lhs, rhs)
+        | ExprNode::Div(lhs, rhs)
+        | ExprNode::And(lhs, rhs)
+        | ExprNode::Or(lhs, rhs) => {
+            expr_node_contains_excluded(lhs) || expr_node_contains_excluded(rhs)
+        }
+        ExprNode::Not(inner) => expr_node_contains_excluded(inner),
+        _ => false,
     }
 }
 
@@ -1566,32 +1605,59 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
         }
 
         if let Some(clause) = &self.on_conflict {
-            if let Some(ConflictTarget::Columns { columns, .. }) = &clause.target {
-                if columns.is_empty() {
-                    return Err(DjogiError::Validation(format!(
-                        "insert_into::<{}>: ON CONFLICT conflict target column list is empty",
-                        T::table_name(),
-                    )));
-                }
-                let mut seen: HashSet<&'static str> = HashSet::with_capacity(columns.len());
-                for col in columns {
-                    if !seen.insert(col) {
-                        return Err(DjogiError::Validation(format!(
-                            "insert_into::<{}>: ON CONFLICT conflict target column '{}' appears more than once",
-                            T::table_name(),
-                            col,
-                        )));
+            if let Some(target) = &clause.target {
+                match target {
+                    ConflictTarget::Columns {
+                        columns,
+                        inference_predicate,
+                    } => {
+                        if columns.is_empty() {
+                            return Err(DjogiError::Validation(format!(
+                                "insert_into::<{}>: ON CONFLICT conflict target column list is empty",
+                                T::table_name(),
+                            )));
+                        }
+                        let mut seen: HashSet<&'static str> = HashSet::with_capacity(columns.len());
+                        for col in columns {
+                            if !seen.insert(col) {
+                                return Err(DjogiError::Validation(format!(
+                                    "insert_into::<{}>: ON CONFLICT conflict target column '{}' appears more than once",
+                                    T::table_name(),
+                                    col,
+                                )));
+                            }
+                        }
+                        let known: HashSet<&'static str> =
+                            T::descriptor().fields.iter().map(|f| f.name).collect();
+                        for col in columns {
+                            if !known.contains(col) {
+                                return Err(DjogiError::Validation(format!(
+                                    "insert_into::<{}>: ON CONFLICT conflict target column '{}' is not a column of the model",
+                                    T::table_name(),
+                                    col,
+                                )));
+                            }
+                        }
+                        if inference_predicate
+                            .as_deref()
+                            .is_some_and(|pred| expr_node_contains_excluded(&pred.node))
+                        {
+                            return Err(DjogiError::Validation(format!(
+                                "insert_into::<{}>: ON CONFLICT conflict target WHERE predicate cannot reference EXCLUDED; arbiter inference predicates may only reference target-table columns",
+                                T::table_name(),
+                            )));
+                        }
                     }
-                }
-                let known: HashSet<&'static str> =
-                    T::descriptor().fields.iter().map(|f| f.name).collect();
-                for col in columns {
-                    if !known.contains(col) {
-                        return Err(DjogiError::Validation(format!(
-                            "insert_into::<{}>: ON CONFLICT conflict target column '{}' is not a column of the model",
-                            T::table_name(),
-                            col,
-                        )));
+                    ConflictTarget::Constraint {
+                        inference_predicate,
+                        ..
+                    } => {
+                        if inference_predicate.is_some() {
+                            return Err(DjogiError::Validation(format!(
+                                "insert_into::<{}>: ON CONFLICT ON CONSTRAINT does not accept a WHERE inference predicate; use ConflictTarget::columns(...).where_predicate(...) instead",
+                                T::table_name(),
+                            )));
+                        }
                     }
                 }
             }
@@ -2409,9 +2475,43 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn where_predicate_on_constraint_target_panics() {
-        let _ = ConflictTarget::<Target>::constraint("oc_targets_slug_key")
-            .where_predicate(|t| t.published().conflict_is_true());
+    fn validate_rejects_where_predicate_on_constraint_target() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(
+                ConflictTarget::<Target>::constraint("oc_targets_slug_key")
+                    .where_predicate(|t| t.published().conflict_is_true()),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(matches!(
+            err,
+            DjogiError::Validation(ref m)
+                if m.contains("ON CONSTRAINT") && m.contains("WHERE inference predicate")
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_excluded_in_conflict_target_where_predicate() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(
+                ConflictTarget::columns([FieldRef::<Target, i32>::new("view_count")])
+                    .where_predicate(|t| t.view_count().excluded().conflict_gt_value(0)),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(matches!(
+            err,
+            DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")
+        ));
     }
 }

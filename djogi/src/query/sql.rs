@@ -2809,7 +2809,7 @@ fn push_on_conflict<S: Model, T: Model>(
                     crate::expr::sql::emit_expr(acc, &pred.node, SqlEmitContext::root())?;
                 }
             }
-            ConflictTarget::Constraint { name } => {
+            ConflictTarget::Constraint { name, .. } => {
                 acc.push_sql(" ON CONSTRAINT ");
                 acc.push_sql(name);
             }
@@ -3685,6 +3685,7 @@ mod tests {
         let clause = OnConflictClause {
             target: Some(ConflictTarget::Constraint {
                 name: "fakes_payload_key",
+                inference_predicate: None,
             }),
             action: ConflictAction::DoNothing,
         };
