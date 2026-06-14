@@ -196,10 +196,11 @@ in source, snapshot already reflects the change) and emits a hard error requirin
 
 ### Pillar 10: First-class repair, baseline, verify, and status commands
 
-the repair, baseline, verify, and status migration flows are Phase 7 engine
-deliverables, not appendix material. `status` is registered in the CLI today;
-repair, baseline, and verify are public library flows with CLI dispatch
-deferred.
+the repair, baseline, verify, and status migration flows are core engine
+deliverables, not appendix material. All four are registered in the CLI today
+as `djogi migrations status`, `djogi migrations repair`,
+`djogi migrations baseline`, and `djogi migrations verify`, each backed by a
+public library entry point.
 The research finding that motivated this: every system that has been run at production scale
 either built first-class repair/adoption tooling or accumulated painful war stories about
 operators hand-editing the ledger table (T03, C-08 in doc 15).
@@ -221,7 +222,7 @@ This proposal replaces them with noun-grouped verbs throughout. The shipped CLI 
 | `djogi migrations status` | Show pending and applied migration state |
 | `djogi migrations attune` | Reconcile migration history state through the shipped attune workflow |
 | Shipped target verb | `apply` ships as `djogi migrations apply` |
-| Deferred target verbs | `rollback` remains a deferred CLI surface; `verify` ships as `djogi migrations verify`, `repair` ships as `djogi migrations repair`, and `baseline` ships as `djogi migrations baseline` |
+| Target verbs | `apply` ships as `djogi migrations apply`; `verify` as `djogi migrations verify`; `repair` as `djogi migrations repair`; `baseline` as `djogi migrations baseline`; and `rollback` as `djogi migrations rollback` |
 | `djogi migrations help [<subcommand>]` | Print help for the group or a specific subcommand |
 | `djogi migrations` (no subcommand) | Equivalent to `help` — prints subcommand list + common workflows |
 
@@ -396,8 +397,8 @@ Three files, three roles:
 
 **Lifecycle:** `migrations compose` writes `target/djogi_pending/<app>.json` and generates the
 SQL pair. The library apply path consumes the pending file (atomic `tmp → fsync → rename` into the
-submodule snapshot, then deletes the pending file) on successful completion; the matching CLI
-dispatcher is deferred. (OI-04)
+submodule snapshot, then deletes the pending file) on successful completion; this ships as
+`djogi migrations apply`. (OI-04)
 
 **Crash recovery:** If the process is killed between ledger COMMIT and snapshot rename, the DB
 is fully applied but the snapshot is stale. `djogi migrations verify` (or
@@ -498,7 +499,7 @@ per R-20).
 
 The drift detection system uses structured diagnostic codes. Codes are emitted from two surfaces:
 `build.rs` (every build, must be terse) and the library `djogi::migrate::verify`
-entry point (explicit invocation, can be rich; CLI dispatcher deferred).
+entry point (explicit invocation, can be rich; also available as `djogi migrations verify`).
 
 | Code | Meaning | Fires at |
 |---|---|---|
@@ -780,6 +781,11 @@ Snapshot updated.
 The ledger row for this migration has `execution_mode = 'non_transactional'`, `total_steps = 1`,
 `applied_steps_count = 1`.
 
+Because the down file is non-transactional, `djogi migrations rollback` refuses this migration with
+exit code `2`; undo it through the `djogi::migrate::rollback_plan` library entry point or by running
+`DROP INDEX CONCURRENTLY` by hand. See [the migrations guide](../guide/migrations.md) for the
+rollback-refusal contract.
+
 ### 3.5 Partial failure and repair
 
 Scenario: a non-transactional migration with two steps; step 2 fails.
@@ -925,7 +931,7 @@ Scenario: an operator ran `ALTER TABLE vehicles ADD COLUMN legacy_id TEXT` direc
 production DB. No migration was generated or applied.
 
 ```
-$ # deferred CLI sketch: djogi migrations verify
+$ djogi migrations verify
 Comparing snapshot against live DB...
   WARN: live DB has column vehicles.legacy_id — not in snapshot
   OK: all other 11 columns match snapshot

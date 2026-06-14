@@ -89,7 +89,9 @@ use super::naming::{down_filename, up_filename};
 use super::policy::{OutOfOrderPolicy, is_localhost_connection};
 use super::projection::BucketKey;
 use super::replay_plan::{
-    ReplayPlanLoadStatus, find_non_transactional_statement_shape, load_committed_replay_plan,
+    ReplayPlanLoadStatus,
+    find_non_transactional_statement_shape as replay_find_non_transactional_statement_shape,
+    load_committed_replay_plan,
 };
 use super::runner::{DriftBaseline, RunnerCtx, RunnerIdentity, apply_plan};
 use super::segment::{MigrationPlan, Segment, SegmentKind};
@@ -1072,7 +1074,7 @@ fn replay_semantics_issue_for_plan_status(
     replay_sql: &ReplaySqlFiles,
     plan_status: &ReplayPlanLoadStatus,
 ) -> Option<ResetReplaySemanticsIssue> {
-    let statement_shape = find_non_transactional_statement_shape(&replay_sql.up_sql)?;
+    let statement_shape = replay_find_non_transactional_statement_shape(&replay_sql.up_sql)?;
     let problem = match plan_status {
         ReplayPlanLoadStatus::Loaded(_) => return None,
         ReplayPlanLoadStatus::Missing => ResetReplaySemanticsProblem::MissingReplayPlan,
@@ -1228,6 +1230,15 @@ struct ReplaySqlFiles {
     down_sql: String,
     checksum_up: String,
     checksum_down: Option<String>,
+}
+
+/// Classify SQL that must run outside a Postgres transaction, such
+/// as `CREATE INDEX CONCURRENTLY` and `DROP INDEX CONCURRENTLY`.
+///
+/// This is the library surface for callers that need to preflight a
+/// committed SQL file without duplicating the runner/reset parser.
+pub fn find_non_transactional_statement_shape(sql: &str) -> Option<&'static str> {
+    replay_find_non_transactional_statement_shape(sql)
 }
 
 /// Compute the canonical checksum of a committed migration SQL file's
@@ -1486,7 +1497,7 @@ pub fn canonical_fallback_replay_plan(
     up_sql: &str,
     down_sql: &str,
 ) -> Result<FallbackReplayPlan, FallbackReplayPlanError> {
-    if let Some(shape) = find_non_transactional_statement_shape(up_sql) {
+    if let Some(shape) = replay_find_non_transactional_statement_shape(up_sql) {
         return Err(FallbackReplayPlanError::NonTransactionalStatement { shape });
     }
 

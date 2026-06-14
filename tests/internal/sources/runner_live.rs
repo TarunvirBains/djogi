@@ -1680,10 +1680,13 @@ async fn rollback_bind_failure_releases_advisory_lock(mut ctx: djogi::DjogiConte
     assert!(
         matches!(
             &result,
-            Err(RollbackError::Runner(RunnerError::NodeIdentityBindingFailed {
+            Err(RollbackError::Runner {
+                source: RunnerError::NodeIdentityBindingFailed {
                 node_id: 7,
                 ..
-            }))
+            },
+                ..
+            })
         ),
         "rollback must fail at selected-node binding for unregistered node 7: {result:?}",
     );

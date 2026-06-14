@@ -96,6 +96,11 @@ path = "tests/internal/djogi_verify_cli.rs"
 harness = true
 
 [[test]]
+name = "djogi_migrations_rollback_cli"
+path = "tests/internal/djogi_migrations_rollback_cli.rs"
+harness = true
+
+[[test]]
 name = "djogi_analyze_recommendations"
 path = "tests/internal/djogi_analyze_recommendations.rs"
 harness = true

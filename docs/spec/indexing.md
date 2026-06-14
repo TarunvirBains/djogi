@@ -165,6 +165,8 @@ WHERE i.indisvalid = false;
 DROP INDEX <schema>.<index_name>;
 ```
 
+A `concurrently = true` index's generated down file is non-transactional, so `djogi migrations rollback` refuses it with exit code `2` — undo it through the `djogi::migrate::rollback_plan` library entry point or by running `DROP INDEX CONCURRENTLY` by hand.
+
 #### 6. Determinism promise
 
 The same DDL runs in CI and in production. A migration containing any `concurrently = true` index is marked non-transactional in every profile — CI migrations do not quietly become transactional to simplify rollback. Tests see the same failure modes production sees. This is Phase 7-Zero v3 Q1 ruling A; the alternative (downgrade in CI to `CREATE INDEX` wrapped in a transaction) was rejected because it hides production-only failure modes until they happen in production.

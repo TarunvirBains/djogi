@@ -2,11 +2,10 @@
 
 # CLI Roadmap — current binary is `djogi`
 
-> **Status: MOSTLY SHIPPED.** Phase 7 ships
+> **Status: MOSTLY SHIPPED.** The shipped CLI provides
 > `djogi migrations apply` (with `--fake` / `--reason`), `compose`, `status`,
-> `attune`, `verify`, `repair`, and `baseline`, plus `djogi db reset / seed` and
-> `djogi docs`. The `rollback` CLI dispatcher is deferred; adopters
-> needing it today call the public library entry point directly. The
+> `attune`, `verify`, `repair`, `baseline`, and `rollback`, plus
+> `djogi db reset / seed` and `djogi docs`. The
 > authoritative current CLI surface lives in
 > [`docs/guide/migrations.md`](../guide/migrations.md). This roadmap
 > document is preserved as design history.
@@ -19,7 +18,7 @@ cargo install djogi-cli
 
 All subcommands run from the project root (the directory containing `Djogi.toml`). The CLI reads `Djogi.toml` and the `DATABASE_URL`, `DJOGI_ENV` environment variables.
 
-**Migration-runner identity.** Identity-bearing commands (`migrations apply`, `migrations baseline`, `db reset`, `repair resume-partial`) support `--node-id <id>` and `--single-node-dev` flags. The CLI resolver selects explicit `--node-id` over `HEER_NODE_ID`; values outside `0..=511` refuse with exit code 2. `--single-node-dev` is refused under production profile (`DJOGI_ENV=production`). Runtime application pools remain caller-owned via `post_connect` and do NOT read `HEER_NODE_ID`.
+**Migration-runner identity.** Identity-bearing commands (`migrations apply`, `migrations rollback`, `migrations baseline`, `db reset`, `repair resume-partial`) support `--node-id <id>` and `--single-node-dev` flags. The CLI resolver selects explicit `--node-id` over `HEER_NODE_ID`; values outside `0..=511` refuse with exit code 2. `--single-node-dev` is refused under production profile (`DJOGI_ENV=production`). Runtime application pools remain caller-owned via `post_connect` and do NOT read `HEER_NODE_ID`.
 
 ---
 
@@ -47,32 +46,42 @@ djogi migrations apply --fake --reason "schema pre-exists from prior tooling"
 
 ---
 
-### Deferred: `djogi migrations rollback` (historical `djogi migrations rollback` design)
+### `djogi migrations rollback`
 
-Rolls back the last applied migration by running its `_down.sql` pair, then rewinds `schema_snapshot.json` to the previous version.
+Rolls back the newest applied migration in the selected bucket, or every
+applied migration newer than `--to <version>`, in reverse ledger insertion
+order. The command executes the committed `<version>.down.sdjql` file, flips
+the matching ledger row to `rolled_back`, then re-projects
+`schema_snapshot.json` from the live database whenever at least one rollback
+committed.
 
 ```bash
-djogi migrations rollback
-```
-
-**Example output:**
-
-```
-Rolling back 0003_create_comments... done
-Schema rewound to version 0002.
+djogi migrations rollback --single-node-dev
+djogi migrations rollback --to V20260101000000__init --node-id 7
+djogi migrations rollback --dry-run
 ```
 
 **Flags:**
 
 | Flag | Description |
 |---|---|
-| `--to N` | Roll back to a specific version (applies multiple down migrations in reverse order) |
-| `--dry-run` | Show the SQL that would run without executing |
+| `--to <version>` | Keep `<version>` applied and roll back every newer applied row in reverse ledger insertion order |
+| `--dry-run` | Print the committed down SQL that would run without executing it |
+| `--allow-data-loss` | Opt in to lossy down SQL flagged by committed `-- LOSSY` markers; requires `--reason` |
+| `--reason TEXT` | Required with `--allow-data-loss`; persisted into the ledger note for audit |
+| `--app <label>` | Select a non-global app bucket |
+| `--database <name>` | Select the bucket database (defaults to `main`) |
+| `--workspace <path>` | Override the workspace root |
+| `--node-id <id>` / `--single-node-dev` | Bind runner identity for non-dry-run rollback execution |
 
-```bash
-# deferred: djogi migrations rollback --to 0001
-# deferred: djogi migrations rollback --dry-run
-```
+The `--dry-run` preview reflects the current ledger state; the real command
+re-reads the ledger after acquiring the workspace lock and refuses with exit
+code `2` if the target set changed while it was waiting for the lock.
+
+Exit codes: `0` success, `1` runtime error (config / network / SQL /
+down-statement failure), `2` refusal (lossy without opt-in, missing or
+non-rollbackable version, checksum drift, non-transactional down SQL, below
+Postgres 18, or ledger drift while waiting for the lock).
 
 > **Warning:** Down migrations for column drops and table drops are destructive — data is not recoverable after rollback. Each down migration file includes a comment warning about data loss. Review the down file before executing `rollback`.
 

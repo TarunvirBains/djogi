@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.15] - 2026-06-13
+
+### Added
+
+- feat(#355): wire `djogi migrations rollback` CLI dispatcher with
+  `--to`, `--dry-run`, and `--allow-data-loss --reason`; the command
+  executes committed down SQL, maps refusal/runtime exits to the shared
+  migration CLI contract, and re-projects the bucket snapshot from the
+  live database after committed rollback work.
+
+### Changed
+
+- migration: `rollback_plan` now refuses before execution when the
+  applied ledger row and the current committed migration files drift on
+  either checksum side.
+
+### Fixed
+
+- migration: `LossyRollbackPolicy::Allow { reason }` now preserves the
+  operator-supplied reason even for file-derived rollback plans with no
+  in-memory lossy markers, so the rolled-back ledger note keeps the
+  audit trail promised by the public API.
+- docs: remove stale deferral claims for the shipped migration CLI
+  surface (`apply`, `verify`, `repair`, `baseline`, `rollback`, and
+  `db reset`) across roadmap/spec/guide pages.
+- breaking: `RollbackError::DownStatementFailed` now carries
+  `live_db_committed`, and `RollbackError` exposes
+  `live_db_committed()` so callers can rebuild derived state after
+  post-commit rollback failures or attempted non-transactional down
+  statements.
+- breaking: `RollbackError` gains `ChecksumDrift { side, ledger,
+  on_disk, .. }` plus the exported `RollbackChecksumSide` tag; callers
+  with exhaustive matches must add the new arm. This guard assumes the
+  harmonized committed-SQL checksum domain shipped in the #421 line.
+- breaking: `RollbackError::Runner` changed from the tuple variant
+  `Runner(RunnerError)` to the struct variant `Runner { source,
+  live_db_committed }`; callers that constructed or matched it
+  positionally must switch to the named-field form.
+
 ## [0.1.0-alpha.14] - 2026-06-13
 
 ### Added
@@ -526,7 +565,8 @@ framework fits their app.
   `phf`-backed `field_codec` registry — wire sensitive columns into the
   live-migration substrate's protected-data audit path.
 
-[Unreleased]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.13...HEAD
+[Unreleased]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.14...HEAD
+[0.1.0-alpha.14]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.13...v0.1.0-alpha.14
 [0.1.0-alpha.13]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.12...v0.1.0-alpha.13
 [0.1.0-alpha.2]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.0...v0.1.0-alpha.1

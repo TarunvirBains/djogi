@@ -585,6 +585,49 @@ pub enum MigrationsCommand {
         #[arg(long, default_value_t = false)]
         single_node_dev: bool,
     },
+    /// Roll back applied migrations in reverse ledger insertion order.
+    /// Use `--to <version>` to stop once `<version>` remains applied, and
+    /// `--dry-run` to preview the selected target set without executing SQL.
+    /// Lossy rollback stays fail-closed unless `--allow-data-loss` and
+    /// `--reason` are both supplied.
+    Rollback {
+        /// Stop once this version remains applied. Versions newer than
+        /// `--to` are selected for rollback; `--to` itself is kept.
+        #[arg(long)]
+        to: Option<String>,
+        /// Preview the selected rollback set without executing SQL or
+        /// mutating the ledger/snapshot.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Permit lossy rollback when the committed down SQL is marked
+        /// as data-losing. Requires `--reason`.
+        #[arg(long, default_value_t = false, requires = "reason")]
+        allow_data_loss: bool,
+        /// Audit-trail reason recorded when `--allow-data-loss` is used.
+        /// Only meaningful alongside `--allow-data-loss`; supplying it
+        /// alone is a parse error.
+        #[arg(long, requires = "allow_data_loss")]
+        reason: Option<String>,
+        /// App label for the migration bucket. Defaults to the global
+        /// bucket when not specified.
+        #[arg(long)]
+        app: Option<String>,
+        /// Database name. Defaults to `main` if not specified.
+        #[arg(long)]
+        database: Option<String>,
+        /// Workspace root override. Defaults to the current working
+        /// directory.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Explicit cluster node identity (0..=511). Required for
+        /// SQL-executing rollback unless `--single-node-dev` is supplied.
+        #[arg(long, conflicts_with = "single_node_dev")]
+        node_id: Option<u32>,
+        /// Single-node development mode — binds node 1 for rollback.
+        /// Refused in production profile or `DJOGI_ENV=production`.
+        #[arg(long, default_value_t = false)]
+        single_node_dev: bool,
+    },
     /// Operator-confirmed repair flows for ledger drift, partial
     /// applies, and missing snapshots. Every subcommand requires
     /// explicit confirmation — invoking the CLI subcommand IS the
@@ -1005,6 +1048,27 @@ fn dispatch_command(
                 workspace.clone(),
                 *fake,
                 reason.clone(),
+                *node_id,
+                *single_node_dev,
+            ),
+            MigrationsCommand::Rollback {
+                to,
+                dry_run,
+                allow_data_loss,
+                reason,
+                app,
+                database,
+                workspace,
+                node_id,
+                single_node_dev,
+            } => migrations::rollback_cmd(
+                to.clone(),
+                *dry_run,
+                *allow_data_loss,
+                reason.clone(),
+                app.as_deref(),
+                database.as_deref(),
+                workspace.clone(),
                 *node_id,
                 *single_node_dev,
             ),
@@ -1543,5 +1607,135 @@ mod tests {
         assert_eq!(description, "custom description");
         assert_eq!(app.as_deref(), Some("billing"));
         assert_eq!(database.as_deref(), Some("crud_log"));
+    }
+
+    // ── rollback subcommand argument parsing ───────────────────────────────
+
+    /// Extract the `MigrationsCommand::Rollback` variant from a parsed
+    /// `Cli`, panicking on any other shape.
+    fn rollback_command(cli: Cli) -> MigrationsCommand {
+        match cli.command {
+            TopCommand::Migrations {
+                command: command @ MigrationsCommand::Rollback { .. },
+            } => command,
+            _ => panic!("expected migrations rollback command"),
+        }
+    }
+
+    #[test]
+    fn parse_rollback_accepts_required_reason_for_lossy_opt_in() {
+        let cli = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "rollback",
+            "--allow-data-loss",
+            "--reason",
+            "operator confirmed rollback",
+        ])
+        .unwrap();
+        let MigrationsCommand::Rollback {
+            to,
+            dry_run,
+            allow_data_loss,
+            reason,
+            app,
+            database,
+            node_id,
+            single_node_dev,
+            ..
+        } = rollback_command(cli)
+        else {
+            panic!("expected Rollback");
+        };
+        assert!(to.is_none());
+        assert!(!dry_run);
+        assert!(allow_data_loss);
+        assert_eq!(reason.as_deref(), Some("operator confirmed rollback"));
+        assert!(app.is_none());
+        assert!(database.is_none());
+        assert!(node_id.is_none());
+        assert!(!single_node_dev);
+    }
+
+    #[test]
+    fn parse_rollback_accepts_to_dry_run_and_bucket_flags() {
+        let cli = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "rollback",
+            "--to",
+            "V20260101000000__baseline",
+            "--dry-run",
+            "--app",
+            "billing",
+            "--database",
+            "analytics",
+        ])
+        .unwrap();
+        let MigrationsCommand::Rollback {
+            to,
+            dry_run,
+            allow_data_loss,
+            reason,
+            app,
+            database,
+            node_id,
+            single_node_dev,
+            ..
+        } = rollback_command(cli)
+        else {
+            panic!("expected Rollback");
+        };
+        assert_eq!(to.as_deref(), Some("V20260101000000__baseline"));
+        assert!(dry_run);
+        assert!(!allow_data_loss);
+        assert!(reason.is_none());
+        assert_eq!(app.as_deref(), Some("billing"));
+        assert_eq!(database.as_deref(), Some("analytics"));
+        assert!(node_id.is_none());
+        assert!(!single_node_dev);
+    }
+
+    #[test]
+    fn parse_rollback_rejects_lossy_opt_in_without_reason() {
+        let result = Cli::try_parse_from(["djogi", "migrations", "rollback", "--allow-data-loss"]);
+        assert!(
+            result.is_err(),
+            "rollback --allow-data-loss without --reason should fail"
+        );
+    }
+
+    #[test]
+    fn parse_rollback_rejects_reason_without_allow_data_loss() {
+        // `--reason` is only meaningful with `--allow-data-loss`; clap should
+        // reject it on its own so an operator cannot silently supply a lossy
+        // audit reason that has no effect.
+        let result = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "rollback",
+            "--reason",
+            "operator confirmed rollback",
+        ]);
+        assert!(
+            result.is_err(),
+            "rollback --reason without --allow-data-loss should fail"
+        );
+    }
+
+    #[test]
+    fn parse_rollback_accepts_allow_data_loss_and_reason_together() {
+        let result = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "rollback",
+            "--allow-data-loss",
+            "--reason",
+            "operator confirmed rollback",
+        ]);
+        assert!(
+            result.is_ok(),
+            "rollback --allow-data-loss with --reason should parse"
+        );
     }
 }

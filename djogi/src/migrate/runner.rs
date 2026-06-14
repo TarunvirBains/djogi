@@ -1991,6 +1991,22 @@ pub enum LossyRollbackPolicy {
     },
 }
 
+/// SQL file side involved in rollback checksum parity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RollbackChecksumSide {
+    Up,
+    Down,
+}
+
+impl RollbackChecksumSide {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+        }
+    }
+}
+
 /// Errors specific to [`rollback_plan`]. Distinct from [`RunnerError`]
 /// because rollback shares many shapes with apply but adds the
 /// lossy-policy refusal path.
@@ -1999,7 +2015,12 @@ pub enum RollbackError {
     /// Workspace lock / Postgres error from the apply substrate.
     /// Wraps [`RunnerError`] so the caller can match the specific
     /// underlying failure.
-    Runner(RunnerError),
+    Runner {
+        source: RunnerError,
+        /// `true` when the rollback may already have mutated the
+        /// live database before this runner-level error surfaced.
+        live_db_committed: bool,
+    },
     /// At least one operation's `down` SQL is flagged lossy and the
     /// operator did not opt in. The rollback was rejected before any
     /// SQL ran.
@@ -2037,7 +2058,20 @@ pub enum RollbackError {
     DownStatementFailed {
         segment_index: usize,
         statement_label: String,
+        /// `true` when the failed statement may already have
+        /// committed or left residue in the live database.
+        live_db_committed: bool,
         source: DjogiError,
+    },
+    /// The applied ledger row's checksums do not match the current
+    /// file-derived rollback context. Refused before any down SQL
+    /// runs; operators should restore the exact migration files or
+    /// explicitly repair checksum drift before rollback.
+    ChecksumDrift {
+        version: String,
+        side: RollbackChecksumSide,
+        ledger: Option<String>,
+        on_disk: Option<String>,
     },
     /// The runner was asked to revert the snapshot to a prior version
     /// but no `prior_snapshot` was supplied.
@@ -2084,10 +2118,60 @@ pub enum RollbackError {
     },
 }
 
+impl RollbackError {
+    fn runner(source: RunnerError) -> Self {
+        Self::Runner {
+            source,
+            live_db_committed: false,
+        }
+    }
+
+    fn runner_committed(source: RunnerError) -> Self {
+        Self::Runner {
+            source,
+            live_db_committed: true,
+        }
+    }
+
+    /// Return `true` when this rollback error occurred after the
+    /// live database may already have been mutated.
+    ///
+    /// A successful rollback result means the live DB is committed by
+    /// definition. This method exists for `Err` paths, where callers
+    /// need to decide whether automatic retry is safe.
+    #[must_use]
+    pub fn live_db_committed(&self) -> bool {
+        match self {
+            Self::Runner {
+                live_db_committed, ..
+            }
+            | Self::DownStatementFailed {
+                live_db_committed, ..
+            } => *live_db_committed,
+            Self::SnapshotPersistFailed { .. } => true,
+            Self::LossyRollbackRefused { .. }
+            | Self::VersionNotRollbackable { .. }
+            | Self::VersionNotFound { .. }
+            | Self::BucketAppMismatch { .. }
+            | Self::ChecksumDrift { .. }
+            | Self::PriorSnapshotMissing
+            | Self::LeafIdentityMismatch { .. }
+            | Self::StalePhaseZeroDown { .. }
+            | Self::MissingRollbackIdentity { .. } => false,
+        }
+    }
+}
+
+fn render_rollback_checksum_value(value: Option<&str>) -> &str {
+    value.unwrap_or("<none>")
+}
+
 impl std::fmt::Display for RollbackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RollbackError::Runner(e) => write!(f, "rollback failed at runner level: {e}"),
+            RollbackError::Runner { source, .. } => {
+                write!(f, "rollback failed at runner level: {source}")
+            }
             RollbackError::LossyRollbackRefused {
                 offending_labels, ..
             } => write!(
@@ -2123,10 +2207,27 @@ impl std::fmt::Display for RollbackError {
                 segment_index,
                 statement_label,
                 source,
+                ..
             } => write!(
                 f,
                 "rollback `down` segment {segment_index} `{statement_label}` failed: {source}",
             ),
+            RollbackError::ChecksumDrift {
+                version,
+                side,
+                ledger,
+                on_disk,
+            } => {
+                write!(
+                    f,
+                    "rollback refused: {side} checksum drift for `{version}` \
+                     (ledger={} on_disk={}); restore the exact committed migration \
+                     files or run `djogi migrations repair checksum-drift` before rollback",
+                    render_rollback_checksum_value(ledger.as_deref()),
+                    render_rollback_checksum_value(on_disk.as_deref()),
+                    side = side.as_str(),
+                )
+            }
             RollbackError::PriorSnapshotMissing => f.write_str(
                 "rollback requires a prior_snapshot to revert to but the caller passed None",
             ),
@@ -2166,7 +2267,7 @@ impl std::fmt::Display for RollbackError {
 impl std::error::Error for RollbackError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            RollbackError::Runner(e) => Some(e),
+            RollbackError::Runner { source, .. } => Some(source),
             RollbackError::DownStatementFailed { source, .. } => Some(source),
             RollbackError::SnapshotPersistFailed { source, .. } => Some(source),
             _ => None,
@@ -2206,6 +2307,19 @@ impl std::error::Error for RollbackError {
 ///    [`LedgerStatus::RolledBack`], `applied_steps_count` resets to 0,
 ///    and `partial_apply_note` is filled with a record of the rollback
 ///    (timestamp + lossy reason if any).
+///
+/// **Recovering from a failed rollback.** An `Ok(`[`RollbackReport`]`)`
+/// means every segment committed and any caller-supplied snapshot was
+/// persisted — no recovery is needed. On the `Err` arm, call
+/// [`RollbackError::live_db_committed`] before retrying: when it returns
+/// `true` the live database was already mutated (for example, a
+/// non-transactional segment auto-committed before a later transactional
+/// segment failed), so the caller must rebuild any derived state — the
+/// schema snapshot in particular — to match the partially-applied reality
+/// before issuing another `rollback_plan`. Retrying blindly after a
+/// post-commit failure will surface
+/// [`RollbackError::VersionNotRollbackable`], because the ledger row has
+/// already advanced past a rollbackable status.
 pub async fn rollback_plan(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
@@ -2225,7 +2339,7 @@ pub async fn rollback_plan(
     // GH #274 / #331 — pin one physical Postgres session for the
     // entire rollback window (same contract as apply_plan).
     let mut pinned = ctx.pin_for_migration().await.map_err(|e| {
-        RollbackError::Runner(RunnerError::PinnedSessionCheckoutFailed { source: e })
+        RollbackError::runner(RunnerError::PinnedSessionCheckoutFailed { source: e })
     })?;
     rollback_plan_pinned(&mut pinned, plan, runner_ctx, lossy_policy, prior_snapshot).await
 }
@@ -2254,12 +2368,12 @@ fn rollback_lossy_allow_reason(
         .collect();
 
     match (lossy_policy, lossy_ops.is_empty()) {
-        (_, true) => Ok(None),
+        (LossyRollbackPolicy::Refuse, true) => Ok(None),
         (LossyRollbackPolicy::Refuse, false) => Err(RollbackError::LossyRollbackRefused {
             offending_labels: lossy_ops.iter().map(|(label, _)| label.clone()).collect(),
             kinds: lossy_ops.iter().map(|(_, kind)| *kind).collect(),
         }),
-        (LossyRollbackPolicy::Allow { reason }, false) => Ok(Some(reason.clone())),
+        (LossyRollbackPolicy::Allow { reason }, _) => Ok(Some(reason.clone())),
     }
 }
 
@@ -2292,6 +2406,33 @@ fn preflight_phase_zero_down_payload(
     Ok(())
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "rollback guard helpers return the public RollbackError enum unchanged"
+)]
+fn validate_rollback_checksum_parity(
+    row: &LedgerRow,
+    runner_ctx: &RunnerCtx,
+) -> Result<(), RollbackError> {
+    if row.checksum_up != runner_ctx.checksum_up {
+        return Err(RollbackError::ChecksumDrift {
+            version: runner_ctx.version.clone(),
+            side: RollbackChecksumSide::Up,
+            ledger: Some(row.checksum_up.clone()),
+            on_disk: Some(runner_ctx.checksum_up.clone()),
+        });
+    }
+    if row.checksum_down != runner_ctx.checksum_down {
+        return Err(RollbackError::ChecksumDrift {
+            version: runner_ctx.version.clone(),
+            side: RollbackChecksumSide::Down,
+            ledger: row.checksum_down.clone(),
+            on_disk: runner_ctx.checksum_down.clone(),
+        });
+    }
+    Ok(())
+}
+
 /// Internal rollback path that runs on an already-pinned context.
 /// Materializes the strict replay plan inside the advisory lock before
 /// scanning lossy markers or executing down SQL. Partition-expanded
@@ -2310,7 +2451,7 @@ async fn rollback_plan_pinned(
     // relation-not-found.
     ledger::bootstrap(ctx)
         .await
-        .map_err(|e| RollbackError::Runner(RunnerError::LedgerBootstrapFailed { source: e }))?;
+        .map_err(|e| RollbackError::runner(RunnerError::LedgerBootstrapFailed { source: e }))?;
 
     // 2. Acquire the per-bucket advisory lock BEFORE loading the ledger
     // row. Moving the row read inside the lock eliminates the TOCTOU
@@ -2319,7 +2460,7 @@ async fn rollback_plan_pinned(
     let lock_key = advisory_lock_key(&plan.bucket);
     acquire_advisory_lock(ctx, &plan.bucket, lock_key)
         .await
-        .map_err(RollbackError::Runner)?;
+        .map_err(RollbackError::runner)?;
 
     let result = rollback_handle_lock(ctx, plan, runner_ctx, lossy_policy, prior_snapshot).await;
 
@@ -2331,7 +2472,7 @@ async fn rollback_plan_pinned(
             ctx.mark_clean();
             Ok(r)
         }
-        (Ok(_), false) => Err(RollbackError::Runner(
+        (Ok(_), false) => Err(RollbackError::runner_committed(
             RunnerError::AdvisoryUnlockReturnedFalse {
                 key: lock_key,
                 bucket: plan.bucket.clone(),
@@ -2353,7 +2494,7 @@ async fn rollback_handle_lock(
     let row = load_ledger_row_for_version(ctx, &runner_ctx.version, &runner_ctx.bucket.app)
         .await
         .map_err(|e| {
-            RollbackError::Runner(RunnerError::LedgerQueryFailed {
+            RollbackError::runner(RunnerError::LedgerQueryFailed {
                 query_label: "load_row_for_version",
                 source: e,
             })
@@ -2382,11 +2523,18 @@ async fn rollback_handle_lock(
         });
     }
 
+    // #355: The destructive rollback path must prove that the
+    // current file-derived checksums match the applied ledger row
+    // before any down SQL runs. This lives inside the advisory-lock
+    // window so the status/checksum decision is atomic with the
+    // later rollback mutation.
+    validate_rollback_checksum_parity(&row, runner_ctx)?;
+
     // #366: Pre-strict leaf-identity check — zero-leaf↔non-empty drift.
     if let Some(ref stored_identity) = row.leaf_identity {
         let pre_cache = compute_leaf_identity_cache(ctx, plan)
             .await
-            .map_err(RollbackError::Runner)?;
+            .map_err(RollbackError::runner)?;
         let pre_identity = serialize_leaf_identity(&pre_cache).unwrap_or_default();
         if pre_identity != *stored_identity {
             return Err(RollbackError::LeafIdentityMismatch {
@@ -2405,7 +2553,7 @@ async fn rollback_handle_lock(
     let (replay_plan, leaves_cache_rollback) =
         materialize_execution_plan(ctx, plan, PartitionExpansionMode::ReplayStrict)
             .await
-            .map_err(RollbackError::Runner)?;
+            .map_err(RollbackError::runner)?;
 
     // #356: Compare stored leaf identity against freshly materialized leaves.
     let current_rollback_identity =
@@ -2467,7 +2615,7 @@ async fn rollback_handle_lock(
             ),
         )
         .await
-        .map_err(RollbackError::Runner)?;
+        .map_err(RollbackError::runner)?;
     }
 
     rollback_inner(ctx, &replay_plan, runner_ctx, prior_snapshot, allow_reason).await
@@ -2524,6 +2672,11 @@ async fn rollback_inner(
             .map_err(|e| RollbackError::DownStatementFailed {
                 segment_index: usize::MAX,
                 statement_label: "<BEGIN compound rollback tx>".to_string(),
+                // Phase-a non-tx segments auto-commit per statement. If any
+                // ran, the live DB is already mutated even though the
+                // compound-tx BEGIN never succeeded — report committed so the
+                // caller rebuilds derived state instead of leaving it stale.
+                live_db_committed: non_transactional_undone > 0,
                 source: e,
             })?;
 
@@ -2542,6 +2695,11 @@ async fn rollback_inner(
                     return Err(RollbackError::DownStatementFailed {
                         segment_index: rev_idx,
                         statement_label: stmt.label.clone(),
+                        // The compound tx is rolled back, so the transactional
+                        // segments left no residue. But Phase-a non-tx segments
+                        // already auto-committed; if any ran, the live DB is
+                        // mutated and the caller must rebuild derived state.
+                        live_db_committed: non_transactional_undone > 0,
                         source: e,
                     });
                 }
@@ -2554,6 +2712,7 @@ async fn rollback_inner(
             .map_err(|e| RollbackError::DownStatementFailed {
                 segment_index: usize::MAX,
                 statement_label: "<COMMIT compound rollback tx>".to_string(),
+                live_db_committed: true,
                 source: e,
             })?;
     }
@@ -2584,7 +2743,7 @@ async fn rollback_inner(
     )
     .await
     .map_err(|e| {
-        RollbackError::Runner(RunnerError::LedgerWriteFailed {
+        RollbackError::runner_committed(RunnerError::LedgerWriteFailed {
             version: runner_ctx.version.clone(),
             source: e,
         })
@@ -2629,6 +2788,7 @@ async fn rollback_non_transactional_segment(
             return Err(RollbackError::DownStatementFailed {
                 segment_index,
                 statement_label: stmt.label.clone(),
+                live_db_committed: true,
                 source: e,
             });
         }
@@ -7225,6 +7385,112 @@ mod tests {
         assert!(msg.contains("non-Phase-0 rollback"));
         assert!(msg.contains("V20260101000000__add_users"));
         assert!(msg.contains("binding-capable runner identity"));
+    }
+
+    #[test]
+    fn rollback_lossy_allow_reason_preserves_reason_without_lossy_markers() {
+        let plan = single_table_plan("lossy_reason_markerless");
+        let reason = "operator supplied a file-derived rollback reason".to_string();
+
+        let allow_reason = rollback_lossy_allow_reason(
+            &plan,
+            &LossyRollbackPolicy::Allow {
+                reason: reason.clone(),
+            },
+        )
+        .expect("allow policy should not refuse markerless rollback");
+
+        assert_eq!(
+            allow_reason.as_deref(),
+            Some(reason.as_str()),
+            "Allow {{ reason }} must survive even when the replay plan has no lossy markers"
+        );
+    }
+
+    #[test]
+    fn rollback_error_live_db_committed_signal_is_conservative() {
+        let pre_execution_runner = RollbackError::Runner {
+            source: RunnerError::LockTimeout {
+                path: PathBuf::from("/tmp/djogi-lock"),
+                holder_pid: None,
+            },
+            live_db_committed: false,
+        };
+        assert!(
+            !pre_execution_runner.live_db_committed(),
+            "pre-execution runner refusals must report non-committed"
+        );
+
+        let post_commit_runner = RollbackError::Runner {
+            source: RunnerError::LockTimeout {
+                path: PathBuf::from("/tmp/djogi-lock"),
+                holder_pid: None,
+            },
+            live_db_committed: true,
+        };
+        assert!(
+            post_commit_runner.live_db_committed(),
+            "post-commit runner errors must report committed"
+        );
+
+        let transactional_statement_failed = RollbackError::DownStatementFailed {
+            segment_index: 0,
+            statement_label: "DropTable tx".to_string(),
+            live_db_committed: false,
+            source: DjogiError::Db(DbError::other("transactional rollback failure")),
+        };
+        assert!(
+            !transactional_statement_failed.live_db_committed(),
+            "transactional statement failures before COMMIT should remain non-committed"
+        );
+
+        let non_transactional_statement_failed = RollbackError::DownStatementFailed {
+            segment_index: 1,
+            statement_label: "DropIndex concurrently".to_string(),
+            live_db_committed: true,
+            source: DjogiError::Db(DbError::other("non-transactional rollback failure")),
+        };
+        assert!(
+            non_transactional_statement_failed.live_db_committed(),
+            "non-transactional down failures must report committed once execution was attempted"
+        );
+
+        let snapshot_failed = RollbackError::SnapshotPersistFailed {
+            path: PathBuf::from("/tmp/djogi-snapshot"),
+            source: SnapshotError::Io {
+                path: None,
+                source: std::io::Error::other("snapshot write failed"),
+            },
+        };
+        assert!(
+            snapshot_failed.live_db_committed(),
+            "snapshot persistence happens after down SQL and ledger mutation"
+        );
+
+        let checksum_refusal = RollbackError::ChecksumDrift {
+            version: "V20260613000000__checksum_refusal".to_string(),
+            side: RollbackChecksumSide::Up,
+            ledger: Some(
+                "V1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            ),
+            on_disk: Some(
+                "V1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            ),
+        };
+        assert!(
+            !checksum_refusal.live_db_committed(),
+            "checksum parity refusal must happen before destructive down SQL"
+        );
+    }
+
+    #[test]
+    fn migrate_surface_reexports_non_transactional_shape_helper() {
+        assert_eq!(
+            crate::migrate::find_non_transactional_statement_shape(
+                "CREATE INDEX CONCURRENTLY idx ON table_name (id)"
+            ),
+            Some("CREATE INDEX CONCURRENTLY")
+        );
     }
 
     #[test]

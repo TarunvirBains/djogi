@@ -26,7 +26,10 @@ adds them.
   the model. Use `djogi migrations compose` for generated migration
   plans and `djogi migrations apply` with node identity (`--node-id`,
   `HEER_NODE_ID`, or `--single-node-dev`) to run pending plans (or the public
-  `djogi::migrate` library APIs when applying from code). The `rollback` CLI dispatcher is deferred; `apply --fake` ships as a flag on the apply command and `baseline` ships as `djogi migrations baseline`. Hand-written RLS
+  `djogi::migrate` library APIs when applying from code). `apply --fake`
+  ships as a flag on the apply command, `baseline` ships as
+  `djogi migrations baseline`, and `rollback` ships as
+  `djogi migrations rollback`. Hand-written RLS
   SQL is an escape hatch, not the default path. The emitted policy is equivalent
   to:
   ```sql

@@ -316,8 +316,10 @@ write `CREATE TABLE` by hand.
 - In **production code**, change the struct, rebuild (`cargo build` emits a
   drift warning), then run `djogi migrations compose --name
   add_subscriptions` to generate a reviewable `V<ts>__add_subscriptions.sdjql`
-  pair under `migrations/<database>/<app>/`. Library callers apply via
-  `djogi::migrate::apply_plan`; see [the migrations guide](./migrations.md).
+  pair under `migrations/<database>/<app>/`. Apply it with
+  `djogi migrations apply`; library callers can use
+  `djogi::migrate::apply_plan`. See
+  [the migrations guide](./migrations.md).
 - In **tests**, list the model in `sync_models = [...]` on the
   `#[djogi::djogi_test]` attribute (Step 5 below) and the harness
   materialises it into the per-test database through the same projection
@@ -370,13 +372,14 @@ and `build.rs` emits a `cargo:warning=` drift line. Run
 `djogi migrations compose --name add_subscription_notes` to write
 `V<ts>__add_subscription_notes.sdjql` + `.down.sdjql` into the appropriate
 `migrations/<database>/<app>/` bucket — review the SQL in your PR, then
-apply via the library API (`djogi::migrate::apply_plan`). Use
-`djogi migrations attune` only for migration-history ledger/disk
-reconciliation; it does not execute migration SQL. See
-[the migrations guide](./migrations.md) for the full compose/status/attune
-contract; the CLI dispatchers for `apply` / `rollback` / `fake` /
-`baseline` / `verify` / `repair` are not available; library
-callers use the public `djogi::migrate` entry points directly.
+apply it with `djogi migrations apply` (`djogi::migrate::apply_plan` for
+library callers). Use `djogi migrations attune` only for
+migration-history ledger/disk reconciliation; it does not execute
+migration SQL. See [the migrations guide](./migrations.md) for the full
+command surface — `apply` (with `--fake` / `--reason` for
+existing-database adoption), `rollback`, `baseline`, `verify`, and
+`repair` are all reachable as `djogi migrations <verb>`, and the public
+`djogi::migrate` entry points remain the programmatic alternative.
 
 In tests, just add the field to the struct — the next `#[djogi::djogi_test(
 sync_models = [Subscription])]` run projects the updated descriptor into

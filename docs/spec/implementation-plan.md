@@ -520,14 +520,14 @@ Filenames are `V<YYYYMMDDHHMMSS>__<slug>.sdjql` plus `.down.sdjql`. Every Phase 
 
 - [x] `djogi migrations compose` — compose pending up/down SQL pairs from descriptor drift
 - [x] `djogi migrations apply` — apply pending migrations (also available via `djogi::migrate::apply_plan` library entry point)
-- [ ] `djogi migrations rollback` — deferred CLI dispatcher for rolling back the last applied migration for one target
+- [x] `djogi migrations rollback` — shipped CLI dispatcher (issue #355) for rolling back applied migrations for one target in reverse ledger insertion order; supports `--to <version>`, `--dry-run`, and explicit `--allow-data-loss --reason`; library callers use `djogi::migrate::rollback_plan`
 - [x] `djogi migrations status` — show file / snapshot / ledger / live-DB state for one target
 - [x] `djogi migrations verify` — shipped CLI dispatcher (issue #352)
 - [x] `djogi migrations repair` — shipped CLI dispatcher (issue #353) for repairing failed or partially applied target-local migration state; subcommands `checksum-drift` / `partial-apply` / `resume-partial` / `snapshot-rebuild`
 - [x] `djogi migrations baseline` — shipped CLI dispatcher (issue #354) for adopting an existing database: projects the live schema into a single `baseline` ledger row + snapshot without replay; library callers use `djogi::migrate::baseline_plan`
 - [x] `djogi migrations attune` — `--record` / `--squash --from <ver>` with `--publish`; localhost + dev-profile gates on squash
 - [x] `djogi migrations apply --fake` — shipped as boolean flag on `apply` command, requires `--reason` argument; library callers use `djogi::migrate::fake_apply_plan`
-- [ ] `djogi db reset` — deferred convenience wrapper around drop + recreate + migration apply (triple-gated: localhost + non-production profile + explicit `--yes`)
+- [x] `djogi db reset` — shipped convenience wrapper around drop + recreate + migration apply (triple-gated: localhost + non-production profile + explicit `--yes`)
 - [x] `djogi db seed` — run `seeds/<database>/*.sql` files; `djogi_seed_runs` ledger; checksum-drift refusal; `--allow-non-localhost` opt-in
 - [x] `djogi docs` — render Markdown reference pages from `inventory::iter::<ModelDescriptor>()` to `target/djogi-docs/<app>/<Model>.md`
 
