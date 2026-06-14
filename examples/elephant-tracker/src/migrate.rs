@@ -258,6 +258,7 @@ async fn apply_descriptor_schema(
             config: MigrateConfig::default(),
             out_of_order_policy: OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
+            drift_baseline: djogi::migrate::DriftBaseline::Disabled,
             runner_identity: Some(RunnerIdentity::SingleNodeDev),
         };
 

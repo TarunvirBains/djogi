@@ -527,6 +527,15 @@ pub enum MigrationsCommand {
     /// before faking. The `--fake` flag respects the same out-of-order
     /// policy as real apply; if CI/prod policy is `Reject`, fake-apply
     /// on an out-of-order version is also rejected.
+    /// **Drift pre-flight:** real apply verifies the live catalog
+    /// against the recorded `schema_snapshot.json` before executing
+    /// SQL and refuses with exit `2` when error-severity drift is
+    /// found. The check self-skips only when the bucket has never
+    /// been applied; a missing snapshot on a previously-applied
+    /// bucket is itself a refusal (exit `2`) and should be repaired
+    /// with `djogi migrations repair snapshot-rebuild` or restored
+    /// from version control. `--fake` neither runs the pre-flight nor
+    /// reads the snapshot file.
     /// **Node identity:** for operations that execute SQL, supply
     /// `--node-id <id>` (explicit cluster node) or
     /// `--single-node-dev` (dev mode, binds node 1). Mutually exclusive.

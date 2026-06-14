@@ -298,6 +298,7 @@ async fn sync_models_and_apply_plan_produce_identical_pg_class() {
                 &djogi::config::DjogiConfig::default(),
             ),
             audit_pool: None,
+            drift_baseline: djogi::migrate::DriftBaseline::Disabled,
             runner_identity: Some(RunnerIdentity::SingleNodeDev),
         };
         apply_plan(&mut ctx_b, plan, &runner_ctx, &guard)

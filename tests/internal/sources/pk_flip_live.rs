@@ -89,6 +89,7 @@ fn make_runner_ctx(plan: &MigrationPlan, version: &str) -> RunnerCtx {
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
         audit_pool: None,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     }
 }

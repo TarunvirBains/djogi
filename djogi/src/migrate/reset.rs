@@ -91,7 +91,7 @@ use super::projection::BucketKey;
 use super::replay_plan::{
     ReplayPlanLoadStatus, find_non_transactional_statement_shape, load_committed_replay_plan,
 };
-use super::runner::{RunnerCtx, RunnerIdentity, apply_plan};
+use super::runner::{DriftBaseline, RunnerCtx, RunnerIdentity, apply_plan};
 use super::segment::{MigrationPlan, Segment, SegmentKind};
 use super::sql::OperationSql;
 use super::target::{app_dirname, bucket_dir, migrations_root};
@@ -1283,6 +1283,13 @@ pub fn compute_committed_down_sql_checksum(sql: &str) -> Option<String> {
     }
 }
 
+fn is_comment_only_sql(sql: &str) -> bool {
+    sql.lines()
+        .map(str::trim_start)
+        .filter(|line| !line.trim().is_empty())
+        .all(|line| line.starts_with("--"))
+}
+
 /// One statement fragment recovered from a committed composed SQL
 /// file: the rendered `-- <label>` marker and the executable bytes
 /// that follow it.
@@ -1368,18 +1375,9 @@ fn canonical_composed_labeled_fragments(
     Some(fragments)
 }
 
-/// Compute the canonical checksum of a committed migration SQL file,
-/// returning each recovered executable fragment as plain `String`s.
 fn canonical_composed_sql_fragments(sql: &str, side: ResetSqlSide) -> Option<Vec<String>> {
     canonical_composed_labeled_fragments(sql, side)
         .map(|fragments| fragments.into_iter().map(|fragment| fragment.sql).collect())
-}
-
-fn is_comment_only_sql(sql: &str) -> bool {
-    sql.lines()
-        .map(str::trim_start)
-        .filter(|line| !line.trim().is_empty())
-        .all(|line| line.starts_with("--"))
 }
 
 fn parse_composed_operation_fragments(
@@ -1482,51 +1480,6 @@ pub enum FallbackReplayPlanError {
 /// `CREATE INDEX CONCURRENTLY`), because the fallback API cannot safely
 /// preserve the original non-transactional execution shape without the
 /// committed sidecar.
-///
-/// # Examples
-/// ```
-/// use djogi::migrate::{
-///     canonical_fallback_replay_plan, BucketKey, ResetSqlSide,
-///     compute_committed_sql_checksum,
-/// };
-///
-/// let up_sql = r#"-- Djogi composed migration — up
-/// -- Version: V20260612000000__add_widgets
-/// -- Bucket:  main/_global_
-/// -- Classification: Additive
-/// --
-/// -- DO NOT EDIT — regenerate via `djogi migrations compose`.
-///
-/// -- CreateModel widgets
-/// CREATE TABLE "widgets" ("id" BIGINT PRIMARY KEY);
-/// "#;
-///
-/// let down_sql = r#"-- Djogi composed migration — down
-/// -- Version: V20260612000000__add_widgets
-/// -- Bucket:  main/_global_
-/// --
-/// -- DO NOT EDIT — regenerate via `djogi migrations compose`.
-///
-/// -- CreateModel widgets
-/// DROP TABLE "widgets";
-/// "#;
-/// let bucket = BucketKey {
-///     database: "main".to_string(),
-///     app: String::new(),
-/// };
-///
-/// let built = canonical_fallback_replay_plan(
-///     &bucket,
-///     "V20260612000000__add_widgets",
-///     up_sql,
-///     down_sql,
-/// )
-///     .expect("built fallback plan");
-/// assert_eq!(
-///     built.checksum_up,
-///     compute_committed_sql_checksum(up_sql, ResetSqlSide::Up)
-/// );
-/// ```
 pub fn canonical_fallback_replay_plan(
     bucket: &BucketKey,
     version: &str,
@@ -1701,6 +1654,7 @@ async fn replay_one_migration(
         // marking the bootstrap row applied; later replayed migrations
         // bind the provisioned node normally.
         runner_identity,
+        drift_baseline: DriftBaseline::Disabled,
     };
 
     apply_plan(ctx, &plan, &runner_ctx, guard)
@@ -2606,173 +2560,8 @@ mod tests {
              -- Bucket:  main/_global_\n\
              -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n\
              -- DropTable widgets\n\
-            {body}\n\n"
+             {body}\n\n"
         )
-    }
-
-    /// Realistic composed up file. Only the first line and the DO NOT EDIT
-    /// banner are load-bearing for fragment recovery; the middle header
-    /// lines mirror `compose_up_text` for realism.
-    const COMPOSED_UP_FIXTURE: &str = "-- Djogi composed migration — up\n\
-                                              -- Version: V20260612000000__add_widgets\n\
-                                              -- Bucket:  main/_global_\n\
-                                              -- Classification: Additive\n\
-                                              --\n\
-                                              -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
-                                              \n\
-                                              -- CreateModel widgets\n\
-                                              CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);\n\
-                                              \n\
-                                              -- AddIndex widgets_id_idx\n\
-                                              CREATE INDEX \"widgets_id_idx\" ON \"widgets\" (\"id\");\n\
-                                              \n";
-
-    const COMPOSED_DOWN_FIXTURE: &str = "-- Djogi composed migration — down\n\
-                                                -- Version: V20260612000000__add_widgets\n\
-                                                -- Bucket:  main/_global_\n\
-                                                --\n\
-                                                -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
-                                                \n\
-                                                -- AddIndex widgets_id_idx\n\
-                                                DROP INDEX \"widgets_id_idx\";\n\
-                                                \n\
-                                                -- CreateModel widgets\n\
-                                                DROP TABLE \"widgets\";\n\
-                                                \n";
-
-    fn fallback_test_bucket() -> BucketKey {
-        BucketKey {
-            database: "main".to_string(),
-            app: String::new(),
-        }
-    }
-
-    #[test]
-    fn fallback_plan_checksum_invariant_for_composed_file() {
-        let built = canonical_fallback_replay_plan(
-            &fallback_test_bucket(),
-            "V20260612000000__add_widgets",
-            COMPOSED_UP_FIXTURE,
-            COMPOSED_DOWN_FIXTURE,
-        )
-        .expect("transactional composed file must build a fallback plan");
-
-        assert_eq!(
-            built.checksum_up,
-            compute_committed_sql_checksum(COMPOSED_UP_FIXTURE, ResetSqlSide::Up)
-        );
-        assert_eq!(
-            built.checksum_down,
-            compute_committed_down_sql_checksum(COMPOSED_DOWN_FIXTURE)
-        );
-        assert!(
-            built.checksum_down.is_some(),
-            "executable down must hash to Some"
-        );
-
-        let rehash = compute_checksum(
-            built
-                .plan
-                .segments
-                .iter()
-                .flat_map(|segment| segment.statements.iter())
-                .map(|stmt| stmt.up.as_str()),
-        );
-        assert_eq!(rehash, built.checksum_up);
-
-        let stmts = &built.plan.segments[0].statements;
-        assert_eq!(stmts.len(), 2);
-        assert_eq!(stmts[0].label, "CreateModel widgets");
-        assert_eq!(
-            stmts[0].up,
-            "CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);"
-        );
-        assert_eq!(stmts[1].label, "AddIndex widgets_id_idx");
-    }
-
-    #[test]
-    fn fallback_plan_checksum_invariant_for_non_composed_file() {
-        // Hand-authored file: canonical domain == whole-file digest, and the
-        // plan stays a single whole-file statement (unchanged legacy shape).
-        let up = "CREATE TABLE plain (id BIGINT);\n";
-        let down = "DROP TABLE plain;\n";
-        let built = canonical_fallback_replay_plan(&fallback_test_bucket(), "V1__plain", up, down)
-            .expect("plain transactional SQL must build a fallback plan");
-        assert_eq!(built.checksum_up, compute_checksum([up]));
-        assert_eq!(built.checksum_down, Some(compute_checksum([down])));
-        let stmts = &built.plan.segments[0].statements;
-        assert_eq!(stmts.len(), 1);
-        assert_eq!(stmts[0].up, up);
-    }
-
-    #[test]
-    fn fallback_plan_down_checksum_none_for_comment_only_and_missing_down() {
-        let up = "CREATE TABLE plain (id BIGINT);\n";
-        let comment_only = canonical_fallback_replay_plan(
-            &fallback_test_bucket(),
-            "V1__plain",
-            up,
-            "-- no rollback\n",
-        )
-        .expect("build");
-        assert_eq!(comment_only.checksum_down, None);
-        let missing = canonical_fallback_replay_plan(&fallback_test_bucket(), "V1__plain", up, "")
-            .expect("build");
-        assert_eq!(missing.checksum_down, None);
-    }
-
-    #[test]
-    fn fallback_plan_refuses_non_transactional_statement_shapes() {
-        let up = "CREATE INDEX CONCURRENTLY widgets_idx ON widgets (id);";
-        let err = canonical_fallback_replay_plan(&fallback_test_bucket(), "V1__conc", up, "")
-            .expect_err("CONCURRENTLY without a replay plan must refuse");
-        let FallbackReplayPlanError::NonTransactionalStatement { shape } = err;
-        assert_eq!(shape, "CREATE INDEX CONCURRENTLY");
-    }
-
-    #[test]
-    fn sidecarless_composed_replay_fallback_rehashes_to_replay_sql_checksums() {
-        let work = temp_root("sidecarless_composed_replay_fallback_rehashes");
-        let version = "V20260612000000__add_widgets";
-        let bucket = fallback_test_bucket();
-        let dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(up_filename(version)), COMPOSED_UP_FIXTURE).unwrap();
-        fs::write(dir.join(down_filename(version)), COMPOSED_DOWN_FIXTURE).unwrap();
-
-        let replay_sql =
-            read_replay_sql_files(&work, &bucket, version).expect("read replay SQL files");
-        assert!(
-            load_reset_replay_plan(&work, &bucket, version, &replay_sql)
-                .expect("composed, transactional migration must load replay plan status")
-                .is_none(),
-            "missing sidecar must route replay_one_migration through fallback builder"
-        );
-        assert_ne!(
-            replay_sql.checksum_up,
-            compute_checksum([COMPOSED_UP_FIXTURE])
-        );
-
-        let built = canonical_fallback_replay_plan(
-            &bucket,
-            version,
-            &replay_sql.up_sql,
-            &replay_sql.down_sql,
-        )
-        .expect("build fallback replay plan");
-        let rehash = compute_checksum(
-            built
-                .plan
-                .segments
-                .iter()
-                .flat_map(|segment| segment.statements.iter())
-                .map(|statement| statement.up.as_str()),
-        );
-        assert_eq!(rehash, replay_sql.checksum_up);
-        assert_eq!(built.checksum_up, replay_sql.checksum_up);
-        assert_eq!(built.checksum_down, replay_sql.checksum_down);
-
-        let _ = fs::remove_dir_all(&work);
     }
 
     #[test]

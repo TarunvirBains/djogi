@@ -305,6 +305,9 @@ fn make_runner_ctx(
         //  tests pre-date 's policy gate; pick the permissive
         // default so rollback / repair / baseline paths run as before.
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
+        // Drift gate is disabled in rollback/repair/baseline test
+        // paths — these tests pre-date the apply-time drift pre-flight.
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         // .4 audit-pool plumbing: not exercised in  paths.
         audit_pool: None,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
@@ -2547,21 +2550,21 @@ async fn verify_missing_ledger_emits_d621_without_bootstrap(mut ctx: djogi::Djog
 
 // ── B-9: repair_checksum_drift updates both up and down checksums ───────
 
-const TASK_6_COMPOSED_UP_FIXTURE: &str = "-- Djogi composed migration — up\n\
+const COMPOSED_WIDGETS_UP_FIXTURE: &str = "-- Djogi composed migration — up\n\
                                              -- Version: V20260612000000__add_widgets\n\
                                              -- Bucket:  main/_global_\n\
                                              -- Classification: Additive\n\
                                              --\n\
                                              -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
                                              \n\
-                                             -- CreateModel widgets\n\
+                                             -- AddTable widgets\n\
                                              CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);\n\
                                              \n\
                                              -- AddIndex widgets_id_idx\n\
                                              CREATE INDEX widgets_id_idx ON \"widgets\" (\"id\");\n\
                                              \n";
 
-const TASK_6_COMPOSED_DOWN_FIXTURE: &str = "-- Djogi composed migration — down\n\
+const COMPOSED_WIDGETS_DOWN_FIXTURE: &str = "-- Djogi composed migration — down\n\
                                               -- Version: V20260612000000__add_widgets\n\
                                               -- Bucket:  main/_global_\n\
                                               --\n\
@@ -2570,7 +2573,7 @@ const TASK_6_COMPOSED_DOWN_FIXTURE: &str = "-- Djogi composed migration — down
                                               -- AddIndex widgets_id_idx\n\
                                               DROP INDEX widgets_id_idx;\n\
                                               \n\
-                                              -- CreateModel widgets\n\
+                                              -- DropTable widgets\n\
                                               DROP TABLE \"widgets\";\n\
                                               \n";
 
@@ -2586,16 +2589,16 @@ async fn fallback_applied_row_passes_canonical_parity_recompute(mut ctx: djogi::
     std::fs::create_dir_all(&bucket_directory).expect("create bucket dir");
     let version = "V20260612000000__add_widgets";
 
-    std::fs::write(bucket_directory.join(up_filename(version)), TASK_6_COMPOSED_UP_FIXTURE)
+    std::fs::write(bucket_directory.join(up_filename(version)), COMPOSED_WIDGETS_UP_FIXTURE)
         .expect("write canonical up fixture");
-    std::fs::write(bucket_directory.join(down_filename(version)), TASK_6_COMPOSED_DOWN_FIXTURE)
+    std::fs::write(bucket_directory.join(down_filename(version)), COMPOSED_WIDGETS_DOWN_FIXTURE)
         .expect("write canonical down fixture");
 
     let built = canonical_fallback_replay_plan(
         &bucket,
         version,
-        TASK_6_COMPOSED_UP_FIXTURE,
-        TASK_6_COMPOSED_DOWN_FIXTURE,
+        COMPOSED_WIDGETS_UP_FIXTURE,
+        COMPOSED_WIDGETS_DOWN_FIXTURE,
     )
     .expect("build fallback plan from canonical fragments");
 
@@ -2623,8 +2626,8 @@ async fn fallback_applied_row_passes_canonical_parity_recompute(mut ctx: djogi::
         .expect("read down checksum");
 
     let expected_up =
-        compute_committed_sql_checksum(TASK_6_COMPOSED_UP_FIXTURE, ResetSqlSide::Up);
-    let expected_down = compute_committed_down_sql_checksum(TASK_6_COMPOSED_DOWN_FIXTURE);
+        compute_committed_sql_checksum(COMPOSED_WIDGETS_UP_FIXTURE, ResetSqlSide::Up);
+    let expected_down = compute_committed_down_sql_checksum(COMPOSED_WIDGETS_DOWN_FIXTURE);
     assert_eq!(stored_up, expected_up);
     assert_eq!(stored_down, expected_down);
 
@@ -2671,8 +2674,8 @@ async fn repair_checksum_drift_reconciles_legacy_fallback_row(mut ctx: djogi::Dj
     std::fs::create_dir_all(&bucket_directory).expect("create bucket dir");
     let version = "V20260612000001__legacy_fallback";
 
-    let up_sql = TASK_6_COMPOSED_UP_FIXTURE;
-    let down_sql = TASK_6_COMPOSED_DOWN_FIXTURE;
+    let up_sql = COMPOSED_WIDGETS_UP_FIXTURE;
+    let down_sql = COMPOSED_WIDGETS_DOWN_FIXTURE;
     std::fs::write(bucket_directory.join(up_filename(version)), up_sql)
         .expect("write legacy up fixture");
     std::fs::write(bucket_directory.join(down_filename(version)), down_sql)
@@ -3548,6 +3551,7 @@ async fn baseline_projects_live_database_into_snapshot(mut ctx: djogi::DjogiCont
         snapshot_path: Some(snapshot_path.clone()),
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         audit_pool: None,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
@@ -3597,6 +3601,7 @@ async fn baseline_rejects_caller_supplied_snapshot(mut ctx: djogi::DjogiContext)
         snapshot_path: None,
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         audit_pool: None,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
@@ -3667,6 +3672,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         snapshot_path: Some(global_path.clone()),
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         audit_pool: None,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };
@@ -3701,6 +3707,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         snapshot_path: Some(named_path.clone()),
         config: MigrateConfig::default(),
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
+        drift_baseline: djogi::migrate::DriftBaseline::Disabled,
         audit_pool: None,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };

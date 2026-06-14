@@ -51,7 +51,7 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::__bypass::guarded_batch_execute;
-use crate::config::MigrateConfig;
+use crate::config::{MigrateConfig, PolicyConfig};
 use crate::context::{DjogiContext, PinnedCtx};
 use crate::error::{DbError, DjogiError};
 use crate::types::HeerId;
@@ -345,6 +345,31 @@ pub enum RunnerError {
         source: Box<super::verify::VerifyRunError>,
     },
 
+    /// Apply-time drift pre-flight found error-severity schema drift
+    /// against the recorded snapshot baseline for a previously-applied
+    /// bucket.
+    DriftDetected {
+        bucket: BucketKey,
+        report: super::verify::VerifyReport,
+    },
+
+    /// Apply-time drift pre-flight required the recorded snapshot
+    /// baseline for a previously-applied bucket, but the caller
+    /// reported it missing on disk.
+    DriftBaselineMissing { bucket: BucketKey },
+
+    /// The drift pre-flight baseline file exists but could not be read or
+    /// deserialized. Same refusal contract as
+    /// [`RunnerError::DriftBaselineMissing`]: no pending ledger row, no
+    /// user-schema mutation, no migration SQL.
+    DriftBaselineCorrupted { bucket: BucketKey, reason: String },
+
+    /// Apply-time drift pre-flight could not complete its read-only
+    /// verify projection before any migration SQL ran.
+    DriftPreflightFailed {
+        source: Box<super::verify::VerifyRunError>,
+    },
+
     /// **D060** — PK-flip pre-flight: logical-replication apply
     /// machinery is active in this database. Walsenders surfaced via
     /// `pg_stat_replication` and/or local subscriptions surfaced via
@@ -517,6 +542,9 @@ impl RunnerError {
             | Self::SnapshotPersistFailed { .. }
             | Self::BaselineSnapshotShouldNotBeProvided
             | Self::StalePhaseZeroArtifact { .. }
+            | Self::DriftDetected { .. }
+            | Self::DriftBaselineMissing { .. }
+            | Self::DriftBaselineCorrupted { .. }
             | Self::OutOfOrderRejected { .. }
             | Self::PkFlipHazardReplicaSessions { .. }
             | Self::PkFlipHazardPreexistingZzzTrigger { .. }
@@ -542,6 +570,7 @@ impl RunnerError {
             | Self::NonTransactionalProgressAckFailed { .. }
             | Self::ConfigLoadFailed { .. }
             | Self::BaselineProjectionFailed { .. }
+            | Self::DriftPreflightFailed { .. }
             | Self::CatalogQueryFailed { .. }
             | Self::PinnedSessionCheckoutFailed { .. } => false,
         }
@@ -767,6 +796,50 @@ impl std::fmt::Display for RunnerError {
                 f,
                 "baseline live-DB projection failed before ledger insert: {source}",
             ),
+            RunnerError::DriftDetected { bucket, report } => {
+                let errors = report
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.severity == super::verify::VerifySeverity::Error)
+                    .count();
+                write!(
+                    f,
+                    "drift pre-flight refused apply for database={db} app={app}: \
+                     {errors} error-severity drift diagnostic(s) between the \
+                     recorded snapshot and the live database; no migration SQL \
+                     was executed and no pending ledger row was written. Inspect \
+                     with `djogi migrations verify`; reconcile intentional drift \
+                     with `djogi migrations attune`.",
+                    db = bucket.database,
+                    app = bucket.app,
+                )
+            }
+            RunnerError::DriftBaselineMissing { bucket } => write!(
+                f,
+                "drift pre-flight refused apply for database={db} app={app}: \
+                 the bucket has applied migration history but no recorded \
+                 snapshot baseline (`schema_snapshot.json`) was found; no \
+                 migration SQL was executed and no pending ledger row was \
+                 written. Restore the snapshot from version control, or \
+                 rebuild it from the live database with `djogi migrations \
+                 repair snapshot-rebuild`.",
+                db = bucket.database,
+                app = bucket.app,
+            ),
+            RunnerError::DriftBaselineCorrupted { bucket, reason } => write!(
+                f,
+                "drift pre-flight refused apply for database={db} app={app}: \
+                 the recorded snapshot baseline (`schema_snapshot.json`) exists \
+                 but could not be read: {reason}. No migration SQL was executed \
+                 and no pending ledger row was written. Restore the snapshot \
+                 from version control or rebuild it with \
+                 `djogi migrations repair snapshot-rebuild`.",
+                db = bucket.database,
+                app = bucket.app,
+            ),
+            RunnerError::DriftPreflightFailed { source } => {
+                write!(f, "drift pre-flight could not run: {source}")
+            }
             RunnerError::PkFlipHazardReplicaSessions {
                 walsenders,
                 subscriptions,
@@ -892,6 +965,10 @@ impl std::error::Error for RunnerError {
             RunnerError::SnapshotPersistFailed { source, .. } => Some(source),
             RunnerError::StalePhaseZeroArtifact { .. } => None,
             RunnerError::BaselineProjectionFailed { source } => Some(source.as_ref()),
+            RunnerError::DriftDetected { .. } => None,
+            RunnerError::DriftBaselineMissing { .. } => None,
+            RunnerError::DriftBaselineCorrupted { .. } => None,
+            RunnerError::DriftPreflightFailed { source } => Some(source.as_ref()),
             RunnerError::CatalogQueryFailed { source, .. } => Some(source),
             RunnerError::LedgerQueryFailed { source, .. } => Some(source),
             RunnerError::RunIdGenerationFailed { source } => Some(source),
@@ -967,6 +1044,24 @@ impl RunnerIdentity {
     pub(crate) fn provisions_phase_zero_single_node_dev(self) -> bool {
         matches!(self, Self::SingleNodeDev)
     }
+}
+
+/// How the apply-time drift pre-flight obtains its baseline.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum DriftBaseline {
+    /// Drift pre-flight is deliberately disabled by the caller.
+    Disabled,
+    /// The caller looked for the recorded snapshot and did not find it.
+    Missing,
+    /// The recorded snapshot baseline to verify against before apply.
+    Snapshot(super::schema::AppliedSchema),
+    /// The snapshot file exists but could not be deserialized (corrupt or
+    /// wrong format). The runner skips the gate when the bucket has never
+    /// been applied (drift is undefined without a prior applied state) and
+    /// refuses with [`RunnerError::DriftBaselineCorrupted`] when the bucket
+    /// has applied history.
+    Corrupted(String),
 }
 
 /// Caller-supplied context for one runner invocation. Decouples the
@@ -1056,6 +1151,10 @@ pub struct RunnerCtx {
     /// value; the runner will validate identity-bearing operations
     /// refuse when no binding-capable mode is present.
     pub runner_identity: Option<RunnerIdentity>,
+    /// Baseline for the apply-time drift pre-flight. Real CLI applies
+    /// load this from the current on-disk snapshot; fake apply, reset
+    /// replay, and baseline establishment deliberately disable it.
+    pub drift_baseline: DriftBaseline,
 }
 
 /// Successful-apply report. The runner returns this on a clean
@@ -1188,6 +1287,10 @@ fn validate_rollback_identity(runner_ctx: &RunnerCtx) -> Result<(), RollbackErro
 /// **Per-bucket advisory lock.** The runner DOES acquire and
 /// release the per-bucket Postgres advisory lock around every
 /// segment dispatch.
+/// **Drift pre-flight.** Before inserting the pending ledger row or
+/// running any migration SQL, apply verifies the live catalog against
+/// the recorded snapshot baseline when the bucket already has applied
+/// history.
 /// **Snapshot persistence.** Writes the snapshot file ONLY after
 /// the ledger row reaches `applied` and every segment succeeded.
 /// Any failure leaves the snapshot at its prior value.
@@ -1321,6 +1424,55 @@ async fn apply_plan_inner(
             policy = ?runner_ctx.out_of_order_policy,
             "out-of-order migration apply allowed by policy",
         );
+    }
+    match &runner_ctx.drift_baseline {
+        DriftBaseline::Disabled => {}
+        DriftBaseline::Missing | DriftBaseline::Corrupted(_) | DriftBaseline::Snapshot(_) => {
+            let has_applied_history = bucket_has_applied_history(ctx, &plan.bucket)
+                .await
+                .map_err(|e| RunnerError::LedgerQueryFailed {
+                    query_label: "drift_bucket_history",
+                    source: e,
+                })?;
+            if has_applied_history {
+                match &runner_ctx.drift_baseline {
+                    DriftBaseline::Disabled => unreachable!("matched above"),
+                    DriftBaseline::Missing => {
+                        return Err(RunnerError::DriftBaselineMissing {
+                            bucket: plan.bucket.clone(),
+                        });
+                    }
+                    DriftBaseline::Corrupted(reason) => {
+                        return Err(RunnerError::DriftBaselineCorrupted {
+                            bucket: plan.bucket.clone(),
+                            reason: reason.clone(),
+                        });
+                    }
+                    DriftBaseline::Snapshot(snapshot) => {
+                        let report = super::verify::verify_bucket(
+                            ctx,
+                            &plan.bucket,
+                            snapshot,
+                            &PolicyConfig::default(),
+                            false,
+                            false,
+                        )
+                        .await
+                        .map_err(|source| {
+                            RunnerError::DriftPreflightFailed {
+                                source: Box::new(source),
+                            }
+                        })?;
+                        if report.has_errors() {
+                            return Err(RunnerError::DriftDetected {
+                                bucket: plan.bucket.clone(),
+                                report,
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
     // Compose a partial_apply_note when the policy is AllowExplicit so
     // the operator-supplied override reason lands on the row alongside
@@ -4295,6 +4447,22 @@ async fn find_higher_applied_version(
     Ok(Some((conflicting_version, applied_at_rfc3339)))
 }
 
+async fn bucket_has_applied_history(
+    ctx: &mut DjogiContext,
+    bucket: &BucketKey,
+) -> Result<bool, DjogiError> {
+    let row = ctx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 \
+             FROM djogi_schema_migrations \
+             WHERE app_label = $1 \
+               AND status IN ('applied', 'faked', 'baseline'))",
+            &[&bucket.app],
+        )
+        .await?;
+    row.try_get(0).map_err(Into::into)
+}
+
 /// Read the `applied_at` timestamp of an existing row whose
 /// `version` we just collided with. Returns `None` if the lookup
 /// fails — the operator-facing message degrades gracefully because
@@ -4977,6 +5145,7 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use crate::config::MigrateConfig;
@@ -5085,7 +5254,109 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool,
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
+            drift_baseline: DriftBaseline::Disabled,
         }
+    }
+
+    /// Build a `RunnerCtx` for a drift-gate test: no snapshot persist
+    /// (`snapshot: None`, `snapshot_path: None` — these tests assert gate
+    /// behaviour, not snapshot writes), `SingleNodeDev` identity so the
+    /// non-Phase-0 identity gate is satisfied, and the caller-chosen
+    /// [`DriftBaseline`].
+    fn runner_ctx_with_drift_baseline(
+        plan: &MigrationPlan,
+        version: &str,
+        drift_baseline: DriftBaseline,
+    ) -> RunnerCtx {
+        RunnerCtx {
+            bucket: plan.bucket.clone(),
+            version: version.to_string(),
+            description: "drift gate test".to_string(),
+            checksum_up: compute_checksum_for_plan_up(plan),
+            checksum_down: None,
+            snapshot: None,
+            snapshot_path: None,
+            config: MigrateConfig::default(),
+            out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
+            audit_pool: None,
+            runner_identity: Some(RunnerIdentity::SingleNodeDev),
+            drift_baseline,
+        }
+    }
+
+    /// A `single_table_plan` with an explicitly-labelled bucket. The drift
+    /// gate's history check keys on `app_label`, so a distinct app gives a
+    /// distinct history bucket even on the shared test database.
+    fn named_bucket_single_table_plan(db: &str, app: &str, table: &str) -> MigrationPlan {
+        MigrationPlan {
+            bucket: bucket(db, app),
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![op(
+                    &format!("AddTable {table}"),
+                    &format!("CREATE TABLE {table} (id bigint)"),
+                )],
+            }],
+        }
+    }
+
+    /// Build a one-table [`AppliedSchema`] baseline. The table is declared
+    /// with a single `id BIGINT` PK column and nothing else. When the named
+    /// table is absent from the live catalog, verifying this baseline yields a
+    /// D601 (snapshot table missing in live, error-severity) diagnostic — so
+    /// passing it to a never-applied bucket proves the gate self-skips rather
+    /// than passing because the baseline happened to match.
+    fn drift_baseline_with_table(table: &str) -> AppliedSchema {
+        use crate::migrate::schema::{ColumnSchema, PkKindSchema, PrimaryKeySchema, TableSchema};
+
+        let id_col = ColumnSchema {
+            check: None,
+            codec: None,
+            comment: None,
+            default_sql: None,
+            foreign_key: None,
+            generated: None,
+            identity: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "id".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "BIGINT".to_string(),
+            unique: false,
+            type_change_using: None,
+        };
+        let table_schema = TableSchema {
+            app: None,
+            columns: vec![id_col],
+            exclusion_constraints: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerId,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            storage_params: None,
+            table: table.to_string(),
+            table_comment: None,
+            tablespace: None,
+            tenant_key: None,
+        };
+        let mut snapshot = empty_snapshot();
+        snapshot.models.insert(table.to_string(), table_schema);
+        snapshot
     }
 
     fn unique_temp_path(tag: &str, ext: &str) -> PathBuf {
@@ -5341,6 +5612,36 @@ mod tests {
                 true,
             ),
             (
+                RunnerError::DriftDetected {
+                    bucket: bucket("main", "billing"),
+                    report: crate::migrate::VerifyReport {
+                        diagnostics: vec![crate::migrate::VerifyDiagnostic {
+                            code: "D601".to_string(),
+                            severity: crate::migrate::VerifySeverity::Error,
+                            message: "Snapshot table missing from live DB".to_string(),
+                            location: Some("billing.invoices".to_string()),
+                        }],
+                        latest_applied_version: Some("V20260601000000__billing".to_string()),
+                        applied_count: 2,
+                        unfinished_count: 0,
+                    },
+                },
+                true,
+            ),
+            (
+                RunnerError::DriftBaselineMissing {
+                    bucket: bucket("main", "billing"),
+                },
+                true,
+            ),
+            (
+                RunnerError::DriftBaselineCorrupted {
+                    bucket: bucket("main", "billing"),
+                    reason: String::new(),
+                },
+                true,
+            ),
+            (
                 RunnerError::OutOfOrderRejected {
                     version: "V20260101000000__add_users".to_string(),
                     conflicting_version: "V20260102000000__add_orders".to_string(),
@@ -5527,6 +5828,15 @@ mod tests {
                 false,
             ),
             (
+                RunnerError::DriftPreflightFailed {
+                    source: Box::new(djogi::migrate::verify::VerifyRunError::CatalogQueryFailed {
+                        query_label: "columns",
+                        source: db_err("drift preflight failed"),
+                    }),
+                },
+                false,
+            ),
+            (
                 RunnerError::CatalogQueryFailed {
                     query_label: "pg_class",
                     source: db_err("catalog query failed"),
@@ -5544,6 +5854,79 @@ mod tests {
         for (err, expected) in cases {
             assert_eq!(err.is_operator_actionable(), expected, "{err}");
         }
+    }
+
+    // ── drift RunnerError Display / source ───────────────────────────────
+    // These pin the operator-facing text and `source()` chaining for the
+    // three apply-time drift refusals so a future Display edit cannot
+    // silently drop the bucket identity, the error-severity count, or the
+    // next-step commands operators rely on.
+
+    #[test]
+    fn drift_detected_display_names_bucket_and_error_count_and_next_step() {
+        let e = RunnerError::DriftDetected {
+            bucket: bucket("main", "billing"),
+            report: crate::migrate::verify::VerifyReport {
+                diagnostics: vec![crate::migrate::verify::VerifyDiagnostic {
+                    code: "D601".to_string(),
+                    severity: crate::migrate::verify::VerifySeverity::Error,
+                    message: "snapshot table `users` missing in live".to_string(),
+                    location: Some("users".to_string()),
+                }],
+                latest_applied_version: Some("V20260101000000__x".to_string()),
+                applied_count: 3,
+                unfinished_count: 0,
+            },
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("database=main"), "got: {msg}");
+        assert!(msg.contains("app=billing"), "got: {msg}");
+        assert!(msg.contains("1 error-severity"), "got: {msg}");
+        assert!(msg.contains("djogi migrations verify"), "got: {msg}");
+        assert!(msg.contains("djogi migrations attune"), "got: {msg}");
+        assert!(std::error::Error::source(&e).is_none());
+    }
+
+    #[test]
+    fn drift_preflight_failed_exposes_verify_error_as_source() {
+        let e = RunnerError::DriftPreflightFailed {
+            source: Box::new(crate::migrate::verify::VerifyRunError::LedgerQueryFailed {
+                source: db_err("ledger read failed in test"),
+            }),
+        };
+        assert!(e.to_string().contains("drift pre-flight could not run"));
+        assert!(std::error::Error::source(&e).is_some());
+    }
+
+    #[test]
+    fn drift_baseline_missing_display_names_bucket_and_recovery_commands() {
+        let e = RunnerError::DriftBaselineMissing {
+            bucket: bucket("main", "billing"),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("database=main"), "got: {msg}");
+        assert!(msg.contains("app=billing"), "got: {msg}");
+        assert!(msg.contains("applied migration history"), "got: {msg}");
+        assert!(msg.contains("schema_snapshot.json"), "got: {msg}");
+        assert!(
+            msg.contains("djogi migrations repair snapshot-rebuild"),
+            "got: {msg}"
+        );
+        assert!(std::error::Error::source(&e).is_none());
+    }
+
+    #[test]
+    fn drift_baseline_corrupted_display_names_bucket_and_recovery_commands() {
+        let e = RunnerError::DriftBaselineCorrupted {
+            bucket: bucket("main", "billing"),
+            reason: "unexpected end of input".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("database=main"), "got: {msg}");
+        assert!(msg.contains("app=billing"), "got: {msg}");
+        assert!(msg.contains("schema_snapshot.json"), "got: {msg}");
+        assert!(msg.contains("repair snapshot-rebuild"), "got: {msg}");
+        assert!(std::error::Error::source(&e).is_none());
     }
 
     // ── advisory_lock_key determinism ────────────────────────────────────
@@ -6214,6 +6597,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: Some(audit_pool),
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -6433,6 +6817,7 @@ mod tests {
             out_of_order_policy: crate::migrate::OutOfOrderPolicy::Reject,
             audit_pool: None,
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -6489,6 +6874,7 @@ mod tests {
             out_of_order_policy: crate::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -6564,6 +6950,7 @@ mod tests {
             },
             audit_pool: None,
             runner_identity: Some(RunnerIdentity::SingleNodeDev), // test fixture — SingleNodeDev for non-P0 runner identity binding (G-gate requires it)
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -6938,6 +7325,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         }
     }
 
@@ -7094,6 +7482,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7121,6 +7510,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7148,6 +7538,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7175,6 +7566,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7210,6 +7602,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7237,6 +7630,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7264,6 +7658,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7294,6 +7689,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7329,6 +7725,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7362,6 +7759,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7395,6 +7793,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7429,6 +7828,7 @@ mod tests {
                 out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
                 audit_pool: None,
                 runner_identity: None,
+                drift_baseline: DriftBaseline::Disabled,
             };
             let guard = acquire_test_workspace_guard();
 
@@ -7463,6 +7863,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7496,6 +7897,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7529,6 +7931,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7564,6 +7967,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None,
+            drift_baseline: DriftBaseline::Disabled,
         };
         let guard = acquire_test_workspace_guard();
 
@@ -7613,6 +8017,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None, // intentionally missing — should be refused for non-P0
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -7658,6 +8063,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None, // intentionally missing — should be refused for non-P0
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -7714,6 +8120,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None, // intentionally missing — should be refused for non-P0
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -7759,6 +8166,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: Some(RunnerIdentity::IdentityFree), // IdentityFree — should be refused for non-P0
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -7804,6 +8212,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: None, // Phase 0 — should NOT be refused
+            drift_baseline: DriftBaseline::Disabled,
         };
 
         let guard = acquire_test_workspace_guard();
@@ -7914,6 +8323,7 @@ mod tests {
             out_of_order_policy: crate::migrate::policy::OutOfOrderPolicy::AllowWithDiagnostic,
             audit_pool: None,
             runner_identity: Some(RunnerIdentity::SingleNodeDev),
+            drift_baseline: DriftBaseline::Disabled,
         };
         (plan, runner_ctx)
     }
@@ -7970,5 +8380,365 @@ mod tests {
         assert_eq!(same_version.len(), 2, "one ledger row per app stream");
         assert!(same_version.iter().any(|r| r.app_label == "users"));
         assert!(same_version.iter().any(|r| r.app_label == "system"));
+    }
+
+    // ── apply-time drift gate: skip and proceed paths ──────────────────
+    // These pin the gate's negative space — every input shape under which
+    // the gate must NOT refuse. `DriftDetected` refusals are exercised at
+    // the CLI layer; here we lock in: gate disabled, never-applied bucket
+    // (Snapshot / Missing baselines), a fresh bucket in an otherwise
+    // established database, and advisory-only (warning-severity) divergence.
+    // Live tests (`#[djogi_test]`): a Postgres connection is required; they
+    // compile here and run under the project's integration CI.
+
+    /// A drifted live DB plus `DriftBaseline::Disabled` proceeds: the gate's
+    /// outer arm short-circuits, so neither the history probe nor verify runs.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_proceeds_with_gate_disabled(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let first_table = format!("drift_disabled_a_{n}");
+        let drift_table = format!("drift_disabled_extra_{n}");
+        let second_table = format!("drift_disabled_b_{n}");
+        let guard = acquire_test_workspace_guard();
+
+        // First apply establishes applied history for the bucket.
+        let first_plan = single_table_plan(&first_table);
+        let first_ctx = runner_ctx_with_drift_baseline(
+            &first_plan,
+            "V20260613000010__drift_disabled_a",
+            DriftBaseline::Disabled,
+        );
+        apply_plan(&mut ctx, &first_plan, &first_ctx, &guard)
+            .await
+            .expect("first apply establishes history");
+
+        // Introduce out-of-band drift: an extra table the baseline would not
+        // know about (a D602 error if the gate verified).
+        ctx.batch_execute(&format!("CREATE TABLE {drift_table} (id bigint)"))
+            .await
+            .expect("create out-of-band drift table");
+
+        // Second apply with the gate disabled must proceed despite the drift.
+        let second_plan = single_table_plan(&second_table);
+        let second_ctx = runner_ctx_with_drift_baseline(
+            &second_plan,
+            "V20260613000011__drift_disabled_b",
+            DriftBaseline::Disabled,
+        );
+        apply_plan(&mut ctx, &second_plan, &second_ctx, &guard)
+            .await
+            .expect("apply with DriftBaseline::Disabled must proceed despite live drift");
+
+        let created: Option<String> = ctx
+            .query_one(
+                &format!("SELECT to_regclass('public.{second_table}')::text"),
+                &[],
+            )
+            .await
+            .expect("regclass lookup")
+            .try_get(0)
+            .expect("regclass column");
+        assert!(
+            created.is_some(),
+            "second migration table must exist after a gate-disabled apply"
+        );
+    }
+
+    /// A never-applied bucket skips the gate even when a `Snapshot` baseline
+    /// is supplied that would otherwise drift (the baseline names a table that
+    /// does not exist in the fresh database → D601 if verified).
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_skips_drift_gate_on_never_applied_bucket(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_skip_snapshot_{n}");
+        let plan = single_table_plan(&table);
+        let guard = acquire_test_workspace_guard();
+        let runner_ctx = runner_ctx_with_drift_baseline(
+            &plan,
+            "V20260613000020__drift_skip_snapshot",
+            DriftBaseline::Snapshot(drift_baseline_with_table("never_existed_table")),
+        );
+
+        apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
+            .await
+            .expect(
+                "never-applied bucket must skip the gate even with a drifting Snapshot baseline",
+            );
+
+        let created: Option<String> = ctx
+            .query_one(&format!("SELECT to_regclass('public.{table}')::text"), &[])
+            .await
+            .expect("regclass lookup")
+            .try_get(0)
+            .expect("regclass column");
+        assert!(created.is_some(), "first migration table must be created");
+    }
+
+    /// A never-applied bucket skips the gate when the baseline is reported
+    /// `Missing`: drift is undefined without a prior applied state.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_skips_gate_for_missing_baseline_on_never_applied_bucket(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_skip_missing_{n}");
+        let plan = single_table_plan(&table);
+        let guard = acquire_test_workspace_guard();
+        let runner_ctx = runner_ctx_with_drift_baseline(
+            &plan,
+            "V20260613000030__drift_skip_missing",
+            DriftBaseline::Missing,
+        );
+
+        apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
+            .await
+            .expect("never-applied bucket must skip the gate for a Missing baseline");
+    }
+
+    /// A never-applied bucket skips the gate when the baseline is reported
+    /// `Corrupted`: drift is undefined without a prior applied state, so a
+    /// first apply proceeds rather than refusing on an unreadable snapshot.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_skips_drift_gate_on_never_applied_bucket_with_corrupted_baseline(
+        mut ctx: DjogiContext,
+    ) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_corrupted_skip_{n}");
+        let plan = single_table_plan(&table);
+        let guard = acquire_test_workspace_guard();
+        let runner_ctx = runner_ctx_with_drift_baseline(
+            &plan,
+            "V20260613000070__drift_corrupted_skip",
+            DriftBaseline::Corrupted("fake corruption error".to_string()),
+        );
+        apply_plan(&mut ctx, &plan, &runner_ctx, &guard)
+            .await
+            .expect("first apply with Corrupted baseline must succeed on never-applied bucket");
+    }
+
+    /// A brand-new bucket in an established database skips the gate: the
+    /// history probe keys on the bucket's own app label, so applied history in
+    /// a sibling bucket does not force the new bucket through verify. Covers
+    /// both the `Snapshot` and `Missing` baselines for the new bucket.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_skips_gate_for_new_bucket_in_established_database(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let alpha_table = format!("drift_new_bucket_alpha_{n}");
+        let beta_table = format!("drift_new_bucket_beta_{n}");
+        let beta_table_missing = format!("drift_new_bucket_beta_missing_{n}");
+        let guard = acquire_test_workspace_guard();
+
+        // Establish applied history for bucket `alpha`.
+        let alpha_plan = named_bucket_single_table_plan("djogi_test", "alpha", &alpha_table);
+        let alpha_ctx = runner_ctx_with_drift_baseline(
+            &alpha_plan,
+            "V20260613000040__drift_new_bucket_alpha",
+            DriftBaseline::Disabled,
+        );
+        apply_plan(&mut ctx, &alpha_plan, &alpha_ctx, &guard)
+            .await
+            .expect("alpha apply establishes history in the database");
+
+        // First apply for the unrelated bucket `beta` with a drifting Snapshot
+        // baseline must skip the gate — beta has no applied history of its own.
+        let beta_plan = named_bucket_single_table_plan("djogi_test", "beta", &beta_table);
+        let beta_ctx = runner_ctx_with_drift_baseline(
+            &beta_plan,
+            "V20260613000041__drift_new_bucket_beta",
+            DriftBaseline::Snapshot(drift_baseline_with_table("never_existed_table")),
+        );
+        apply_plan(&mut ctx, &beta_plan, &beta_ctx, &guard)
+            .await
+            .expect("new bucket beta must skip the gate despite alpha's applied history");
+
+        // The same fresh-bucket skip holds for a Missing baseline. Use a
+        // distinct app so the bucket is again never-applied.
+        let gamma_plan = named_bucket_single_table_plan("djogi_test", "gamma", &beta_table_missing);
+        let gamma_ctx = runner_ctx_with_drift_baseline(
+            &gamma_plan,
+            "V20260613000042__drift_new_bucket_gamma",
+            DriftBaseline::Missing,
+        );
+        apply_plan(&mut ctx, &gamma_plan, &gamma_ctx, &guard)
+            .await
+            .expect("new bucket gamma must skip the gate for a Missing baseline");
+    }
+
+    /// Advisory-only (warning-severity) divergence proceeds: an extra live
+    /// index produces D611 (Warning), and the gate refuses only on
+    /// error-severity drift (`report.has_errors()`).
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_proceeds_on_advisory_only_divergence(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let table = format!("drift_advisory_{n}");
+        let extra_index = format!("{table}_extra_idx");
+        let second_table = format!("drift_advisory_b_{n}");
+        let guard = acquire_test_workspace_guard();
+
+        // Setup apply establishes the table and applied history.
+        let setup_plan = single_table_plan(&table);
+        let setup_ctx = runner_ctx_with_drift_baseline(
+            &setup_plan,
+            "V20260613000050__drift_advisory_setup",
+            DriftBaseline::Disabled,
+        );
+        apply_plan(&mut ctx, &setup_plan, &setup_ctx, &guard)
+            .await
+            .expect("setup apply establishes the table");
+
+        // Project the baseline from the live DB so it matches exactly; the
+        // only divergence will be the extra index added next.
+        let baseline =
+            crate::migrate::verify::live_schema_for_repair(&mut ctx, &setup_plan.bucket, None)
+                .await
+                .expect("project baseline from live schema");
+
+        // Add an out-of-band index not present in the baseline → D611 Warning.
+        ctx.batch_execute(&format!("CREATE INDEX {extra_index} ON {table} (id)"))
+            .await
+            .expect("create out-of-band advisory index");
+
+        // A new migration with the projected baseline must proceed: the only
+        // diagnostic is a warning, so `has_errors()` is false.
+        let next_plan = single_table_plan(&second_table);
+        let next_ctx = runner_ctx_with_drift_baseline(
+            &next_plan,
+            "V20260613000051__drift_advisory_next",
+            DriftBaseline::Snapshot(baseline),
+        );
+        apply_plan(&mut ctx, &next_plan, &next_ctx, &guard)
+            .await
+            .expect("advisory-only (warning) divergence must not refuse apply");
+
+        let created: Option<String> = ctx
+            .query_one(
+                &format!("SELECT to_regclass('public.{second_table}')::text"),
+                &[],
+            )
+            .await
+            .expect("regclass lookup")
+            .try_get(0)
+            .expect("regclass column");
+        assert!(
+            created.is_some(),
+            "second migration table must exist after an advisory-only proceed"
+        );
+    }
+
+    /// Re-applying over committed partial non-transactional progress refuses
+    /// as drift. A non-transactional segment autocommits each statement, so a
+    /// later step's failure leaves the earlier step's table in the live
+    /// catalog. On the next apply that committed-but-unrecorded table is drift
+    /// the baseline does not describe (D602), and the gate refuses before any
+    /// further SQL runs.
+    #[allow(clippy::await_holding_lock)]
+    #[djogi_test]
+    async fn apply_over_partial_non_tx_progress_refuses_as_drift(mut ctx: DjogiContext) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let setup_table = format!("drift_partial_setup_{n}");
+        let committed_table = format!("drift_partial_committed_{n}");
+        let broken_table = format!("drift_partial_broken_{n}");
+        let guard = acquire_test_workspace_guard();
+
+        // Establish the bucket so it has applied history.
+        let setup_plan = single_table_plan(&setup_table);
+        let setup_ctx = runner_ctx_with_drift_baseline(
+            &setup_plan,
+            "V20260613000060__drift_partial_setup",
+            DriftBaseline::Disabled,
+        );
+        apply_plan(&mut ctx, &setup_plan, &setup_ctx, &guard)
+            .await
+            .expect("setup apply establishes the bucket");
+
+        // Baseline projected now, before the partial progress lands. It does
+        // not describe `committed_table`.
+        let baseline =
+            crate::migrate::verify::live_schema_for_repair(&mut ctx, &setup_plan.bucket, None)
+                .await
+                .expect("project baseline from live schema");
+
+        // Two non-transactional segments: the first commits a table (autocommit),
+        // the second is invalid SQL and fails — leaving the first table live.
+        let partial_version = "V20260613000061__drift_partial_progress";
+        let partial_plan = MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![
+                Segment {
+                    kind: SegmentKind::NonTransactional,
+                    statements: vec![op(
+                        &format!("AddTable {committed_table}"),
+                        &format!("CREATE TABLE {committed_table} (id bigint)"),
+                    )],
+                },
+                Segment {
+                    kind: SegmentKind::NonTransactional,
+                    statements: vec![op(
+                        &format!("AddTable {broken_table}"),
+                        &format!("CREATE TABLE {broken_table} (id THIS_IS_NOT_A_TYPE)"),
+                    )],
+                },
+            ],
+        };
+        let partial_ctx =
+            runner_ctx_with_drift_baseline(&partial_plan, partial_version, DriftBaseline::Disabled);
+        let partial_result = apply_plan(&mut ctx, &partial_plan, &partial_ctx, &guard).await;
+        assert!(
+            matches!(
+                partial_result,
+                Err(RunnerError::NonTransactionalSegmentFailed { .. })
+            ),
+            "second non-tx segment must fail, leaving partial progress, got: {partial_result:?}"
+        );
+
+        // The first non-tx statement committed its table out-of-band of the
+        // baseline.
+        let committed: Option<String> = ctx
+            .query_one(
+                &format!("SELECT to_regclass('public.{committed_table}')::text"),
+                &[],
+            )
+            .await
+            .expect("regclass lookup")
+            .try_get(0)
+            .expect("regclass column");
+        assert!(
+            committed.is_some(),
+            "the first non-tx statement must have committed its table"
+        );
+
+        // Remove the failed ledger row so the same version can re-apply. The
+        // bucket keeps its applied-history row from the setup migration.
+        ctx.batch_execute(&format!(
+            "DELETE FROM djogi_schema_migrations \
+             WHERE version = '{partial_version}' AND app_label = ''"
+        ))
+        .await
+        .expect("clear failed partial ledger row");
+
+        // Re-applying with the pre-partial baseline must refuse: the committed
+        // table is in the live catalog but not in the baseline (D602).
+        let reapply_ctx = runner_ctx_with_drift_baseline(
+            &partial_plan,
+            partial_version,
+            DriftBaseline::Snapshot(baseline),
+        );
+        let reapply_result = apply_plan(&mut ctx, &partial_plan, &reapply_ctx, &guard).await;
+        assert!(
+            matches!(reapply_result, Err(RunnerError::DriftDetected { .. })),
+            "re-apply over committed partial non-tx progress must refuse as drift, got: {reapply_result:?}"
+        );
     }
 }
