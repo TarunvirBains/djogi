@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-alpha.13] - 2026-06-13
 
+### Added
+
+- migration: add `canonical_fallback_replay_plan` for fallback replay plans.
+- migration: no-sidecar replay fallback now uses canonical reconstruction of composed fragments so fallback-side checksums are computed from executable statements before runner verification.
+
+### Changed
+
+- migration: fallback replay and repair now compare against committed canonical checksum domains (`checksum_up` and `checksum_down`) derived from composed fragment SQL.
+
 ### Fixed
 
 - migration: classify `RunnerError` outcomes for `djogi migrations apply` so
@@ -41,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code `1`; `djogi migrations baseline` shares the same mapper.
 - docs: update migration apply and fake-apply exit-code documentation in
   spec/guide guidance to match the unified mapping.
+- operators: clarify the parity/reconciliation transition for fallback rows: composed legacy rows now normalize both checksum sides when repaired, and legacy hand-authored (`non-composed`) rows may stay parity-clean on `checksum_up` while exposing `checksum_down` reconciliation through `repair checksum-drift` before rollback gate #355 consumes it.
 
 ## [0.1.0-alpha.12] - 2026-06-11
 
@@ -516,7 +526,8 @@ framework fits their app.
   `phf`-backed `field_codec` registry — wire sensitive columns into the
   live-migration substrate's protected-data audit path.
 
-[Unreleased]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.2...HEAD
+[Unreleased]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.13...HEAD
+[0.1.0-alpha.13]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.12...v0.1.0-alpha.13
 [0.1.0-alpha.2]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/TarunvirBains/djogi/compare/v0.1.0-alpha.0...v0.1.0-alpha.1
 [0.1.0-alpha.0]: https://github.com/TarunvirBains/djogi/releases/tag/v0.1.0-alpha.0
