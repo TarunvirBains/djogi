@@ -979,6 +979,13 @@ callers reach the same flows through the public `djogi::migrate` entry points
 (`apply_plan`, `rollback_plan`, `fake_apply_plan`, `baseline_plan`). See
 [the migrations guide](./migrations.md) for the full contract.
 
+Because the GiST index lands in a non-transactional segment, the generated
+down file is also non-transactional and `djogi migrations rollback` refuses it
+with exit code `2`. To undo the index, call the `djogi::migrate::rollback_plan`
+library entry point or drop it by hand with
+`DROP INDEX CONCURRENTLY places_location_gix`. See
+[the migrations guide](./migrations.md) for the rollback-refusal contract.
+
 The composer emits an index name following the `{table}_{column}_gix`
 convention that the macro records in `IndexSpec.name` —
 e.g. `places_location_gix`.

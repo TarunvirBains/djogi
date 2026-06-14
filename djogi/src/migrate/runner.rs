@@ -2307,6 +2307,19 @@ impl std::error::Error for RollbackError {
 ///    [`LedgerStatus::RolledBack`], `applied_steps_count` resets to 0,
 ///    and `partial_apply_note` is filled with a record of the rollback
 ///    (timestamp + lossy reason if any).
+///
+/// **Recovering from a failed rollback.** An `Ok(`[`RollbackReport`]`)`
+/// means every segment committed and any caller-supplied snapshot was
+/// persisted — no recovery is needed. On the `Err` arm, call
+/// [`RollbackError::live_db_committed`] before retrying: when it returns
+/// `true` the live database was already mutated (for example, a
+/// non-transactional segment auto-committed before a later transactional
+/// segment failed), so the caller must rebuild any derived state — the
+/// schema snapshot in particular — to match the partially-applied reality
+/// before issuing another `rollback_plan`. Retrying blindly after a
+/// post-commit failure will surface
+/// [`RollbackError::VersionNotRollbackable`], because the ledger row has
+/// already advanced past a rollbackable status.
 pub async fn rollback_plan(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
@@ -2659,7 +2672,11 @@ async fn rollback_inner(
             .map_err(|e| RollbackError::DownStatementFailed {
                 segment_index: usize::MAX,
                 statement_label: "<BEGIN compound rollback tx>".to_string(),
-                live_db_committed: false,
+                // Phase-a non-tx segments auto-commit per statement. If any
+                // ran, the live DB is already mutated even though the
+                // compound-tx BEGIN never succeeded — report committed so the
+                // caller rebuilds derived state instead of leaving it stale.
+                live_db_committed: non_transactional_undone > 0,
                 source: e,
             })?;
 
@@ -2678,7 +2695,11 @@ async fn rollback_inner(
                     return Err(RollbackError::DownStatementFailed {
                         segment_index: rev_idx,
                         statement_label: stmt.label.clone(),
-                        live_db_committed: false,
+                        // The compound tx is rolled back, so the transactional
+                        // segments left no residue. But Phase-a non-tx segments
+                        // already auto-committed; if any ran, the live DB is
+                        // mutated and the caller must rebuild derived state.
+                        live_db_committed: non_transactional_undone > 0,
                         source: e,
                     });
                 }

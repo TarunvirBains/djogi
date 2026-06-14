@@ -604,7 +604,9 @@ pub enum MigrationsCommand {
         #[arg(long, default_value_t = false, requires = "reason")]
         allow_data_loss: bool,
         /// Audit-trail reason recorded when `--allow-data-loss` is used.
-        #[arg(long)]
+        /// Only meaningful alongside `--allow-data-loss`; supplying it
+        /// alone is a parse error.
+        #[arg(long, requires = "allow_data_loss")]
         reason: Option<String>,
         /// App label for the migration bucket. Defaults to the global
         /// bucket when not specified.
@@ -1700,6 +1702,40 @@ mod tests {
         assert!(
             result.is_err(),
             "rollback --allow-data-loss without --reason should fail"
+        );
+    }
+
+    #[test]
+    fn parse_rollback_rejects_reason_without_allow_data_loss() {
+        // `--reason` is only meaningful with `--allow-data-loss`; clap should
+        // reject it on its own so an operator cannot silently supply a lossy
+        // audit reason that has no effect.
+        let result = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "rollback",
+            "--reason",
+            "operator confirmed rollback",
+        ]);
+        assert!(
+            result.is_err(),
+            "rollback --reason without --allow-data-loss should fail"
+        );
+    }
+
+    #[test]
+    fn parse_rollback_accepts_allow_data_loss_and_reason_together() {
+        let result = Cli::try_parse_from([
+            "djogi",
+            "migrations",
+            "rollback",
+            "--allow-data-loss",
+            "--reason",
+            "operator confirmed rollback",
+        ]);
+        assert!(
+            result.is_ok(),
+            "rollback --allow-data-loss with --reason should parse"
         );
     }
 }

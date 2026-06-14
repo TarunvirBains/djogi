@@ -2679,10 +2679,14 @@ fn rollback_error_exit_code(error: &RollbackError) -> i32 {
         | RollbackError::PriorSnapshotMissing
         | RollbackError::LeafIdentityMismatch { .. }
         | RollbackError::StalePhaseZeroDown { .. }
+        // If SnapshotPersistFailed ever fires the rollback's SQL already
+        // committed; the live DB advanced but the snapshot is stale. A blind
+        // retry would refuse (the ledger row is no longer rollbackable), so
+        // this is an operator-actionable repair signal, not a transient
+        // failure — exit 2, pointing at snapshot-rebuild.
+        | RollbackError::SnapshotPersistFailed { .. }
         | RollbackError::MissingRollbackIdentity { .. } => 2,
-        RollbackError::DownStatementFailed { .. } | RollbackError::SnapshotPersistFailed { .. } => {
-            1
-        }
+        RollbackError::DownStatementFailed { .. } => 1,
     }
 }
 
@@ -3140,6 +3144,12 @@ fn ensure_no_target_drift(
     pre_lock: &[&djogi::migrate::LedgerSummaryRow],
     locked: &[&djogi::migrate::LedgerSummaryRow],
 ) -> Result<(), String> {
+    // Drift detection compares (id, version, status) triples only —
+    // LedgerSummaryRow carries no checksums, so committed-SQL checksum parity
+    // is not (and need not be) checked here. That parity is enforced
+    // downstream by rollback_plan's ChecksumDrift refusal before any down SQL
+    // runs; this guard only catches the ledger SET changing between the
+    // pre-lock read and the locked read.
     let key = |set: &[&djogi::migrate::LedgerSummaryRow]| -> Vec<(i64, String, String)> {
         set.iter()
             .map(|row| {
@@ -7140,6 +7150,28 @@ mod tests {
     }
 
     #[test]
+    fn rollback_snapshot_persist_failed_maps_to_exit_two() {
+        use djogi::migrate::SnapshotError;
+
+        // SnapshotPersistFailed only fires after the rollback SQL committed,
+        // so it is an operator-actionable repair signal (rebuild the snapshot),
+        // not a transient failure a blind retry could clear. It must map to
+        // exit 2 like the other refusals, not exit 1.
+        let err = RollbackError::SnapshotPersistFailed {
+            path: PathBuf::from("/tmp/schema_snapshot.json"),
+            source: SnapshotError::Io {
+                path: Some(PathBuf::from("/tmp/schema_snapshot.json")),
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+            },
+        };
+        assert_eq!(
+            rollback_error_exit_code(&err),
+            2,
+            "SnapshotPersistFailed must map to exit 2 (post-commit repair signal)"
+        );
+    }
+
+    #[test]
     fn rollback_targets_without_to_selects_newest_applied_row_only() {
         let rows = vec![
             ledger_row(10, "V20260101000001__old", LedgerStatus::Applied, ""),
@@ -7202,6 +7234,77 @@ mod tests {
         let err = select_rollback_targets(&rows, "", Some("V20260101000099__missing"))
             .expect_err("missing --to must refuse");
         assert!(err.contains("is not present in this bucket's ledger"));
+    }
+
+    #[test]
+    fn rollback_targets_skip_rolled_back_rows_inside_to_range() {
+        // A previously rolled-back row interleaved with applied rows must be
+        // skipped (continue), not break the walk or be re-selected.
+        let rows = vec![
+            ledger_row(10, "V20260101000001__base", LedgerStatus::Applied, ""),
+            ledger_row(11, "V20260101000002__undone", LedgerStatus::RolledBack, ""),
+            ledger_row(12, "V20260101000003__newest", LedgerStatus::Applied, ""),
+        ];
+
+        let selected = select_rollback_targets(&rows, "", Some("V20260101000001__base"))
+            .expect("selection ok");
+        assert_eq!(
+            selected
+                .iter()
+                .map(|row| row.version.as_str())
+                .collect::<Vec<_>>(),
+            // The rolled-back middle row is absent; only the still-applied
+            // newest row above the floor is selected.
+            vec!["V20260101000003__newest"]
+        );
+    }
+
+    #[test]
+    fn rollback_targets_without_to_stop_at_newest_baseline_row() {
+        // With no `--to`, encountering a baseline row as the newest entry
+        // breaks the walk and returns an empty set — nothing newer to undo.
+        let rows = vec![
+            ledger_row(10, "V20260101000001__older", LedgerStatus::Applied, ""),
+            ledger_row(11, "V20260101000002__baseline", LedgerStatus::Baseline, ""),
+        ];
+
+        let selected = select_rollback_targets(&rows, "", None).expect("selection ok");
+        assert!(
+            selected.is_empty(),
+            "baseline as newest row must yield no rollback targets, got {selected:?}"
+        );
+    }
+
+    #[test]
+    fn rollback_targets_refuse_baseline_above_floor() {
+        // With `--to` pointing at an older applied row, a baseline row sitting
+        // ABOVE the floor cannot be rolled back past — refuse explicitly.
+        let rows = vec![
+            ledger_row(10, "V20260101000001__base", LedgerStatus::Applied, ""),
+            ledger_row(11, "V20260101000002__baseline", LedgerStatus::Baseline, ""),
+            ledger_row(12, "V20260101000003__newest", LedgerStatus::Applied, ""),
+        ];
+
+        let err = select_rollback_targets(&rows, "", Some("V20260101000001__base"))
+            .expect_err("baseline above floor must refuse");
+        assert!(err.contains("cannot roll back past baseline"));
+        assert!(err.contains("V20260101000002__baseline"));
+    }
+
+    #[test]
+    fn rollback_targets_refuse_failed_row_inside_to_range() {
+        // A `failed` row in the rollback range must refuse with the same
+        // repair pointer as a pending row.
+        let rows = vec![
+            ledger_row(10, "V20260101000001__base", LedgerStatus::Applied, ""),
+            ledger_row(11, "V20260101000002__failed", LedgerStatus::Failed, ""),
+            ledger_row(12, "V20260101000003__newest", LedgerStatus::Applied, ""),
+        ];
+
+        let err = select_rollback_targets(&rows, "", Some("V20260101000001__base"))
+            .expect_err("failed row must refuse");
+        assert!(err.contains("resolve it with `djogi migrations repair`"));
+        assert!(err.contains("V20260101000002__failed"));
     }
 
     #[test]

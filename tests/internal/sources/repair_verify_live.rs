@@ -818,6 +818,101 @@ async fn rollback_snapshot_persist_failure_reports_committed(mut ctx: djogi::Djo
     let _ = std::fs::remove_dir_all(&bad_snapshot_path);
 }
 
+// Rollback walks Phase-a (non-transactional segments, auto-committed) before
+// Phase-b (transactional segments inside one compound tx). When a Phase-a
+// segment commits its down SQL and a later Phase-b statement then fails, the
+// live database is already mutated even though the compound tx rolled back.
+// The mid-tx failure constructor must report `live_db_committed == true` so
+// the caller rebuilds the snapshot instead of trusting a stale one. This is
+// distinct from `rollback_non_transactional_down_failure_reports_committed`,
+// where the non-transactional down itself fails (Phase-a path).
+#[djogi::djogi_test]
+async fn rollback_phase_b_failure_after_nontx_commit_reports_committed(
+    mut ctx: djogi::DjogiContext,
+) {
+    let _guard = acquire_test_workspace_guard();
+    let plan = MigrationPlan {
+        bucket: BucketKey {
+            database: "main".to_string(),
+            app: "".to_string(),
+        },
+        classification: Classification::Additive,
+        segments: vec![
+            // Phase-b on rollback: the transactional segment's down SQL drops
+            // a table that never existed, so it fails inside the compound tx.
+            Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![op(
+                    "AddTable rollback_phase_b_after_nontx",
+                    "CREATE TABLE \"rollback_phase_b_after_nontx\" \
+                     (\"id\" BIGINT, \"email\" TEXT)",
+                    "DROP TABLE \"rollback_phase_b_after_nontx_never_existed\"",
+                )],
+            },
+            // Phase-a on rollback: the non-transactional segment's down SQL
+            // drops the real index and auto-commits before Phase-b runs.
+            Segment {
+                kind: SegmentKind::NonTransactional,
+                statements: vec![op(
+                    "AddIndex rollback_phase_b_after_nontx_email_idx",
+                    "CREATE INDEX CONCURRENTLY \"rollback_phase_b_after_nontx_email_idx\" \
+                     ON \"rollback_phase_b_after_nontx\" (\"email\")",
+                    "DROP INDEX CONCURRENTLY \"rollback_phase_b_after_nontx_email_idx\"",
+                )],
+            },
+        ],
+    };
+    // One runner_ctx (checksum_down: None) for both apply and rollback, so the
+    // ledger row's recorded checksum and the rollback ctx's checksum agree and
+    // the committed-SQL parity gate passes.
+    let runner_ctx = make_runner_ctx(&plan, "V20260613000006__rollback_phase_b_after_nontx", None, None);
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply ok");
+    assert!(
+        index_exists(&mut ctx, "rollback_phase_b_after_nontx_email_idx").await,
+        "apply should have created the concurrent index"
+    );
+
+    let err = rollback_plan(
+        &mut ctx,
+        &plan,
+        &runner_ctx,
+        &_guard,
+        LossyRollbackPolicy::Refuse,
+        None,
+    )
+    .await
+    .expect_err("transactional down statement should fail after non-tx segment commits");
+
+    // The Phase-a DROP INDEX CONCURRENTLY committed, so the live DB is mutated
+    // even though the compound tx rolled back. RED before the runner fix
+    // (mid-tx constructor hardcoded `false`); GREEN once it threads the
+    // non-transactional-undone count.
+    assert!(
+        err.live_db_committed(),
+        "Phase-a non-tx segment committed before the Phase-b failure; the live \
+         DB is mutated and must report committed, got {err:?}"
+    );
+    // segment_index must be the real (non-sentinel) transactional segment
+    // index — proving the mid-tx statement-failure constructor was hit, not
+    // the BEGIN or COMMIT constructors (both usize::MAX) or the Phase-a path.
+    assert!(
+        matches!(
+            err,
+            RollbackError::DownStatementFailed { segment_index, .. }
+                if segment_index != usize::MAX
+        ),
+        "expected a mid-transaction DownStatementFailed, got {err:?}"
+    );
+    // Confirm the Phase-a DROP INDEX CONCURRENTLY actually committed.
+    assert!(
+        !index_exists(&mut ctx, "rollback_phase_b_after_nontx_email_idx").await,
+        "Phase-a DROP INDEX CONCURRENTLY should have committed before Phase-b failed"
+    );
+}
+
 // ── Rollback: not-applied state refuses ───────────────────────────────────
 
 #[djogi::djogi_test]

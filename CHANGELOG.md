@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on_disk, .. }` plus the exported `RollbackChecksumSide` tag; callers
   with exhaustive matches must add the new arm. This guard assumes the
   harmonized committed-SQL checksum domain shipped in the #421 line.
+- breaking: `RollbackError::Runner` changed from the tuple variant
+  `Runner(RunnerError)` to the struct variant `Runner { source,
+  live_db_committed }`; callers that constructed or matched it
+  positionally must switch to the named-field form.
 
 ## [0.1.0-alpha.14] - 2026-06-13
 
