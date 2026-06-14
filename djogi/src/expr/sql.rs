@@ -1055,6 +1055,10 @@ pub(crate) fn emit_expr(
             acc.push_sql(".");
             acc.push_sql(column);
         }
+        ExprNode::Excluded { column } => {
+            acc.push_sql("EXCLUDED.");
+            acc.push_sql(column);
+        }
         ExprNode::OuterRefAlias {
             alias,
             column,
@@ -1733,6 +1737,15 @@ mod tests {
         {
             async { unreachable!() }
         }
+    }
+
+    #[test]
+    fn emit_excluded_renders_qualified_pseudo_table_reference() {
+        let mut acc = SqlAccumulator::new("");
+        let node = ExprNode::Excluded { column: "payload" };
+        emit_expr(&mut acc, &node, SqlEmitContext::root()).unwrap();
+        assert_eq!(acc.sql(), "EXCLUDED.payload");
+        assert_eq!(acc.bind_count(), 0);
     }
 
     #[test]

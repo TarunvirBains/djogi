@@ -949,6 +949,197 @@ impl<M: Model, V> DjogiField<M, V> {
     pub fn as_insert_source(self) -> crate::query::insert_select::InsertSelectSource<M, V> {
         self.sql.as_insert_source()
     }
+
+    #[must_use = "an ExcludedRef is lazy — use it in a DO UPDATE SET assignment or a condition"]
+    pub fn excluded(self) -> crate::query::insert_select::ExcludedRef<M, V> {
+        self.sql.excluded()
+    }
+
+    #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
+    pub fn as_conflict_expr(self) -> crate::query::insert_select::ConflictExpr<M, V> {
+        self.sql.as_conflict_expr()
+    }
+
+    #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
+    pub fn into_conflict_expr(self) -> crate::query::insert_select::ConflictExpr<M, V> {
+        use crate::query::insert_select::IntoConflictExpr;
+        self.sql.into_conflict_expr()
+    }
+
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_set<S: Model>(
+        self,
+        value: crate::query::insert_select::ExcludedRef<M, V>,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M> {
+        self.sql.conflict_set(value)
+    }
+
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_set_expr<S: Model, E>(
+        self,
+        value: E,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_set_expr(value)
+    }
+
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_set_value<S: Model>(
+        self,
+        value: V,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_set_value(value)
+    }
+
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_excluded<S: Model>(self) -> crate::query::insert_select::ConflictUpdate<S, M> {
+        self.sql.conflict_excluded()
+    }
+
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_add<S: Model>(
+        self,
+        value: V,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_add(value)
+    }
+
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_sub<S: Model>(
+        self,
+        value: V,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_sub(value)
+    }
+
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_mul<S: Model>(
+        self,
+        value: V,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_mul(value)
+    }
+
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_div<S: Model>(
+        self,
+        value: V,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_div(value)
+    }
+
+    pub fn conflict_eq<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_eq(rhs)
+    }
+
+    pub fn conflict_eq_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_eq_value(value)
+    }
+
+    pub fn conflict_neq<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_neq(rhs)
+    }
+
+    pub fn conflict_neq_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_neq_value(value)
+    }
+
+    pub fn conflict_gt<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_gt(rhs)
+    }
+
+    pub fn conflict_gt_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_gt_value(value)
+    }
+
+    pub fn conflict_gte<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_gte(rhs)
+    }
+
+    pub fn conflict_gte_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_gte_value(value)
+    }
+
+    pub fn conflict_lt<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_lt(rhs)
+    }
+
+    pub fn conflict_lt_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_lt_value(value)
+    }
+
+    pub fn conflict_lte<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_lte(rhs)
+    }
+
+    pub fn conflict_lte_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_lte_value(value)
+    }
+}
+
+impl<M: Model> DjogiField<M, bool> {
+    #[must_use = "a ConflictCondition is inert until placed in an OnConflictClause"]
+    pub fn conflict_is_true(self) -> crate::query::insert_select::ConflictCondition<M> {
+        self.sql.conflict_is_true()
+    }
+
+    #[must_use = "a ConflictCondition is inert until placed in an OnConflictClause"]
+    pub fn conflict_is_false(self) -> crate::query::insert_select::ConflictCondition<M> {
+        self.sql.conflict_is_false()
+    }
 }
 
 impl<M: Model, V> DjogiField<M, V> {

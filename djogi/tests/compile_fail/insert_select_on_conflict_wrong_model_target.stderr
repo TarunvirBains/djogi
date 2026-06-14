@@ -1,0 +1,28 @@
+error[E0277]: the trait bound `Option<djogi::ConflictTarget<WrongTgtTarget>>: From<djogi::ConflictTarget<WrongTgtSource>>` is not satisfied
+    --> $DIR/insert_select_on_conflict_wrong_model_target.rs:21:33
+     |
+  21 |         .on_conflict_do_nothing(ConflictTarget::columns([WrongTgtSource::fields().label()]));
+     |          ---------------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `From<djogi::ConflictTarget<WrongTgtSource>>` is not implemented for `Option<djogi::ConflictTarget<WrongTgtTarget>>`
+     |          |
+     |          required by a bound introduced by this call
+     |
+     = help: the following other types implement trait `From<T>`:
+               `Option<&T>` implements `From<&Option<T>>`
+               `Option<&mut T>` implements `From<&mut Option<T>>`
+               `Option<&tracing_core::metadata::Metadata<'_>>` implements `From<&tracing_core::span::Current>`
+               `Option<&tracing_core::span::Id>` implements `From<&djogi::__private::tracing::span::EnteredSpan>`
+               `Option<&tracing_core::span::Id>` implements `From<&djogi::__private::tracing::span::Span>`
+               `Option<&tracing_core::span::Id>` implements `From<&tracing_core::span::Current>`
+               `Option<PlanClassification>` implements `From<OnlineSafetyClassification>`
+               `Option<T>` implements `From<T>`
+             and 22 others
+     = note: required for `djogi::ConflictTarget<WrongTgtSource>` to implement `Into<Option<djogi::ConflictTarget<WrongTgtTarget>>>`
+note: required by a bound in `InsertSelectStmt::<S, T>::on_conflict_do_nothing`
+    --> djogi/src/query/insert_select.rs:1612:58
+     |
+1612 |     pub fn on_conflict_do_nothing(mut self, target: impl Into<Option<ConflictTarget<T>>>) -> Self {
+     |                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `InsertSelectStmt::<S, T>::on_conflict_do_nothing`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0277`.

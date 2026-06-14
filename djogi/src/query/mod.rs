@@ -146,7 +146,10 @@ pub use mirjzson::{
 // mapping OR `Vec` of mappings); and `InsertSelectStmt<S, T>` is the
 // inert terminal-pending statement returned by `QuerySet::insert_into`.
 pub use insert_select::{
-    InsertSelectColumn, InsertSelectSource, InsertSelectStmt, IntoInsertColumns,
+    ConflictAction, ConflictColumns, ConflictCondition, ConflictExpr, ConflictTarget,
+    ConflictUpdate, ExcludedRef, InsertSelectColumn, InsertSelectSource, InsertSelectStmt,
+    IntoConflictColumn, IntoConflictCondition, IntoConflictExpr, IntoConflictUpdates,
+    IntoInsertColumns, OnConflictClause,
 };
 // Typed pair-tuple query surface re-exports.
 pub use joined::{
