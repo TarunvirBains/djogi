@@ -284,10 +284,20 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             // text-rendering happens once at macro time.
             #[inline]
             fn __new() -> ::djogi::query::VisageQuerySet<#visage_ident> {
+                // Seed the source model's default filter so proxy visage querysets
+                // respect the proxy's default_filter_condition, exactly as QuerySet::new()
+                // does on the model side. Non-proxy models return None → always_true.
+                let __djogi_default_condition =
+                    <#source as ::djogi::prelude::Model>::default_filter_condition()
+                        .map_or_else(
+                            ::djogi::query::Q::<#source>::always_true,
+                            ::djogi::query::Q::<#source>::Condition,
+                        );
                 ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
                     <#source as ::djogi::prelude::Model>::table_name(),
                     #projection_list_lit,
                 )
+                .filter(__djogi_default_condition)
             }
 
             /// Build a [`VisageQuerySet`] over the source model's table

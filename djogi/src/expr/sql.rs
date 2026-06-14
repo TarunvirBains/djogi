@@ -949,9 +949,10 @@ pub(crate) fn emit_expr(
             // EXISTS (<subquery>) — subquery renders SELECT 1 because
             // EXISTS only cares about row presence. `emit_subquery`
             // special-cases the `None` select_column arm for exactly
-            // this reason; the [`super::subquery::Exists`] typed
-            // constructor is the sole producer of this shape and always
-            // sets `select_column = None`.
+            // this reason. Both typed constructors that produce this
+            // shape — the model-side [`super::subquery::Exists`] and the
+            // visage-side [`crate::query::VisageExists`] — always set
+            // `select_column = None`.
             acc.push_sql("EXISTS (");
             emit_subquery(acc, sub, ctx)?;
             acc.push_sql(")");

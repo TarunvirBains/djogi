@@ -482,6 +482,11 @@ path = "../tests/integration/visage_subquery_correlated.rs"
 harness = true
 
 [[test]]
+name = "proxy_visage_default_filter"
+path = "../tests/internal/proxy_visage_default_filter.rs"
+harness = true
+
+[[test]]
 name = "ensure_enum_type_live"
 path = "../tests/integration/ensure_enum_type_live.rs"
 harness = true

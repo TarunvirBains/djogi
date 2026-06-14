@@ -503,7 +503,30 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: aborting due to 21 previous errors
+error[E0599]: the variant, associated function, or constant `always_true` exists for enum `Q<ActiveVehicle>`, but its trait bounds were not satisfied
+   --> $DIR/proxy_default_filter_runtime_value.rs:25:1
+    |
+ 25 |   #[model(
+    |  _^
+ 26 | |     table = "phase8_proxy_runtime_vehicles",
+ 27 | |     proxy_for = Vehicle,
+ 28 | |     default_filter = |f| f.active.eq(RUNTIME_VAR),
+ 29 | | )]
+    | |__^ variant, associated function, or constant cannot be called on `Q<ActiveVehicle>` due to unsatisfied trait bounds
+ 30 |   #[derive(Debug, Clone)]
+ 31 |   pub struct ActiveVehicle {
+    |   ------------------------ doesn't satisfy `ActiveVehicle: djogi::model::Model`
+    |
+    = note: the following trait bounds were not satisfied:
+            `ActiveVehicle: djogi::model::Model`
+note: the trait `djogi::model::Model` must be implemented
+   --> djogi/src/model.rs:126:1
+    |
+126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: aborting due to 22 previous errors
 
 Some errors have detailed explanations: E0277, E0599.
 For more information about an error, try `rustc --explain E0277`.

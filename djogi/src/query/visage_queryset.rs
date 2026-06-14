@@ -250,9 +250,19 @@ impl<V: DjogiVisage> std::fmt::Debug for VisageQuerySet<V> {
 impl<V: DjogiVisage> VisageQuerySet<V> {
     /// Construct a `VisageQuerySet` with the given table and narrowed
     /// projection list.
-    /// Called by the `#[model]`-emitted `V::filter(...)` / `V::order_by(...)`
-    /// / `V::limit(...)` entry points; not part of the user-visible API.
-    /// The queryset starts with a vacuous root predicate (`Q::always_true()`).
+    /// Internal constructor — called by the `#[model]`-emitted
+    /// `V::filter(...)` / `V::order_by(...)` / `V::limit(...)` entry points;
+    /// not part of the user-visible API.
+    /// The queryset starts with a vacuous root predicate (`Q::always_true()`)
+    /// and does **not** seed any proxy `default_filter_condition`. Seeding the
+    /// proxy default is the caller's responsibility: the macro-emitted
+    /// `V::__new()` wrapper threads the source model's
+    /// [`Model::default_filter_condition`](crate::model::Model::default_filter_condition)
+    /// in via [`filter`](Self::filter) immediately after this call, matching
+    /// what [`QuerySet::new`](crate::query::QuerySet::new) does on the model
+    /// side. Any direct caller that bypasses `V::__new()` must apply that
+    /// `.filter(...)` itself, or proxy-scoped visages will silently return
+    /// rows the proxy filter is meant to exclude.
     /// The `projection_list` is the visage's pre-rendered SELECT
     /// projection — column entries pass through verbatim; derived
     /// entries render as `(<sql>) AS <alias>` and the list is joined
