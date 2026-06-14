@@ -1,0 +1,12 @@
+error[E0599]: no associated function or constant named `display_label` found for struct `ItemPublic` in the current scope
+  --> $DIR/visage_derived_accessor_absent.rs:19:25
+   |
+ 3 | #[model(table = "vsq_derived_accessor_absent")]
+   | ----------------------------------------------- associated function or constant `display_label` not found for this struct
+...
+19 |     let _ = ItemPublic::display_label();
+   |                         ^^^^^^^^^^^^^ associated function or constant not found in `ItemPublic`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

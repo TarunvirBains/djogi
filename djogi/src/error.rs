@@ -572,6 +572,24 @@ pub enum DjogiError {
         reason: &'static str,
     },
 
+    /// A subquery conversion rejected a modifier or quantified operator
+    /// that does not have valid SQL meaning in that subquery position.
+    /// # When this surfaces
+    /// - `VisageQuerySet::selecting` and `VisageExists::new` reject
+    ///   `order_by` / `limit` / `offset` carried on a visage queryset:
+    ///   silently dropping those clauses would change semantics.
+    /// - Quantified subquery comparisons reject
+    ///   `IS [NOT] DISTINCT FROM`, which has no Postgres `ANY` / `ALL`
+    ///   form.
+    #[error("invalid subquery modifier: {op} — {reason}")]
+    #[non_exhaustive]
+    InvalidSubqueryModifier {
+        /// The rejecting entry point or operator family.
+        op: &'static str,
+        /// Human-readable explanation of the rejected modifier.
+        reason: &'static str,
+    },
+
     /// The emitted SELECT list contains two columns with the same alias;
     /// the decoder would read the wrong value for one of the columns.
     /// This is a Djogi internal bug — a future API extension likely introduced
@@ -1271,6 +1289,14 @@ impl DjogiError {
         }
     }
 
+    /// Construct an [`InvalidSubqueryModifier`](Self::InvalidSubqueryModifier)
+    /// error. The call sites for this variant all use literal strings, so the
+    /// constructor keeps the shape `&'static str` rather than widening to an
+    /// owned `String`.
+    pub fn invalid_subquery_modifier(op: &'static str, reason: &'static str) -> Self {
+        Self::InvalidSubqueryModifier { op, reason }
+    }
+
     /// Construct a `FieldCodecStartup` error. Called by startup validation when
     /// codec key is missing or malformed. Accepts a Vec of errors (collected
     /// from all validators), matching the [`PresentationStartup`](Self::PresentationStartup) pattern.
@@ -1438,6 +1464,17 @@ mod tests {
     }
 
     #[test]
+    fn invalid_subquery_modifier_constructs_and_displays() {
+        let err = DjogiError::invalid_subquery_modifier(
+            "selecting",
+            "ordering is not meaningful in subquery context",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("selecting"), "got: {msg}");
+        assert!(msg.contains("ordering is not meaningful"), "got: {msg}");
+    }
+
+    #[test]
     fn relation_unloaded_displays_model_and_field() {
         let err = DjogiError::relation_unloaded("Vehicle", "owner_id");
         let msg = format!("{err}");
@@ -1535,6 +1572,11 @@ mod tests {
             })
             .is_terminal(),
             "Visage conversion failures must be terminal unless explicitly reclassified"
+        );
+        assert!(
+            DjogiError::invalid_subquery_modifier("selecting", "limit is not meaningful")
+                .is_terminal(),
+            "InvalidSubqueryModifier must be terminal — retrying will not make the subquery shape valid"
         );
         assert!(
             DjogiError::PresentationStartup(vec![]).is_terminal(),

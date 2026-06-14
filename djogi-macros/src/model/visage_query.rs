@@ -131,13 +131,67 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let projection_list_lit = &projection_list;
     let n_cols = columns.len();
     let fields_ident = format_ident!("{visage_ident}Fields");
+    let scoped_derived: Vec<&crate::model::derived::DerivedAttr> = ctx.scope_derived().collect();
+    let mut column_accessors: Vec<TokenStream> = Vec::new();
+
+    for field in struct_item.fields.iter().take(n_framework) {
+        let Some(fname) = field.ident.as_ref() else {
+            continue;
+        };
+        let column = crate::syn_util::column_name_from_ident(fname);
+        let ty = &field.ty;
+        column_accessors.push(quote! {
+            #[must_use]
+            pub fn #fname() -> ::djogi::query::VisageColumn<#visage_ident, #ty> {
+                ::djogi::query::VisageColumn::<#visage_ident, #ty>::__new_for_visage_column(
+                    #column,
+                    ::djogi::__private::visage_column_seal::TOKEN,
+                )
+            }
+        });
+    }
+
+    for (field, attrs) in &user_field_pairs {
+        let Some(fname) = field.ident.as_ref() else {
+            continue;
+        };
+        if !matches!(
+            classify_field_for_scope(field, attrs, scope),
+            ScopeMembership::Scalar
+        ) {
+            continue;
+        }
+        if scoped_derived.iter().any(|d| d.name == *fname) {
+            continue;
+        }
+        if lookup_per_scope_codec(attrs, scope).is_some() {
+            continue;
+        }
+        if attrs
+            .protected
+            .as_ref()
+            .is_some_and(|spec| spec.codec.is_some())
+        {
+            continue;
+        }
+        let column = crate::syn_util::column_name_from_ident(fname);
+        let ty = &field.ty;
+        column_accessors.push(quote! {
+            #[must_use]
+            pub fn #fname() -> ::djogi::query::VisageColumn<#visage_ident, #ty> {
+                ::djogi::query::VisageColumn::<#visage_ident, #ty>::__new_for_visage_column(
+                    #column,
+                    ::djogi::__private::visage_column_seal::TOKEN,
+                )
+            }
+        });
+    }
 
     // #231 — derived entries decode via the same `decode_at`
     // helper as columns. The position carries the alias name on the
     // wire; the decoder's debug-build name guard compares
     // `COLUMNS[i]` against the wire column name, both of which equal
     // the alias. The Rust type comes from the derived entry's `ty`.
-    let scoped_derived: Vec<&crate::model::derived::DerivedAttr> = ctx.scope_derived().collect();
 
     // Per-column decode token: positional `try_get(i)`, with the same
     // debug-build name guard the model-side `FromPgRow` emitter uses.
@@ -217,6 +271,8 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
 
     quote! {
         impl #visage_ident {
+            #(#column_accessors)*
+
             // Internal ctor — builds a fresh `VisageQuerySet` with the
             // visage's baked projection list and a vacuous root condition.
             // All public entry methods delegate here so the construction
@@ -228,10 +284,20 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             // text-rendering happens once at macro time.
             #[inline]
             fn __new() -> ::djogi::query::VisageQuerySet<#visage_ident> {
+                // Seed the source model's default filter so proxy visage querysets
+                // respect the proxy's default_filter_condition, exactly as QuerySet::new()
+                // does on the model side. Non-proxy models return None → always_true.
+                let __djogi_default_condition =
+                    <#source as ::djogi::prelude::Model>::default_filter_condition()
+                        .map_or_else(
+                            ::djogi::query::Q::<#source>::always_true,
+                            ::djogi::query::Q::<#source>::Condition,
+                        );
                 ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
                     <#source as ::djogi::prelude::Model>::table_name(),
                     #projection_list_lit,
                 )
+                .filter(__djogi_default_condition)
             }
 
             /// Build a [`VisageQuerySet`] over the source model's table

@@ -1,0 +1,12 @@
+error[E0599]: no associated function or constant named `password_hash` found for struct `AuthorPublic` in the current scope
+  --> $DIR/visage_non_exposed_column_accessor_absent.rs:12:27
+   |
+ 3 | #[model(table = "vsq_non_exposed_authors")]
+   | ------------------------------------------- associated function or constant `password_hash` not found for this struct
+...
+12 |     let _ = AuthorPublic::password_hash();
+   |                           ^^^^^^^^^^^^^ associated function or constant not found in `AuthorPublic`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.

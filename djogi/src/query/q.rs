@@ -540,6 +540,14 @@ impl<T: Model> IntoQ<T> for crate::expr::Expr<bool> {
     }
 }
 
+impl sealed_into_q::Sealed for crate::query::visage_queryset::VisageExists {}
+impl<T: Model> IntoQ<T> for crate::query::visage_queryset::VisageExists {
+    #[inline]
+    fn into_q(self) -> Q<T> {
+        Q::Expression(self.as_expr())
+    }
+}
+
 // ── Macro-emitted `IntoQ<T>` for `{Model}Filter` ────────────────────────────
 // The `#[derive(Model)]` macro emits an `IntoQ<#model_ty>` impl for
 // each `{Model}Filter` it generates. The impl keeps the filter's

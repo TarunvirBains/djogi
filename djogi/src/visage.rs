@@ -349,6 +349,26 @@ pub(crate) mod private {
     pub trait Sealed {}
 }
 
+/// Hidden construction seal for `VisageColumn`.
+/// Macro-emitted accessors route through the pre-minted
+/// `crate::__private::visage_column_seal::TOKEN` value rather than calling
+/// the constructor directly, matching the existing PK/apps seal-token
+/// pattern.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisageColumnToken {
+    _private: (),
+}
+
+impl VisageColumnToken {
+    /// `pub(crate)` so only djogi can mint fresh seal values; downstream code
+    /// may only reach the pre-minted `__private` constant by deliberately
+    /// crossing the convention boundary.
+    pub(crate) const fn __new() -> Self {
+        Self { _private: () }
+    }
+}
+
 /// Sealed projection metadata enum.
 /// `ProjectionEntry` is `pub` (the [`DjogiVisage::PROJECTIONS`]
 /// trait constant requires the enum to be nameable through
@@ -576,5 +596,12 @@ mod tests {
         assert!(msg.contains("facility_site"));
         assert!(msg.contains("Site"));
         assert!(msg.contains("INTEGER"));
+    }
+
+    #[test]
+    fn visage_column_token_is_zero_sized() {
+        assert_eq!(std::mem::size_of::<crate::visage::VisageColumnToken>(), 0);
+        let _t = crate::__private::visage_column_seal::TOKEN;
+        let _t2 = crate::visage::VisageColumnToken::__new();
     }
 }

@@ -163,7 +163,7 @@ impl<T: Model, V> Subquery<T, V> {
                 // filters chained) collapse to `None` so the emitter
                 // skips the `WHERE` clause entirely — same logical
                 // shape Subquery emission produced before the rewrite.
-                where_clause: q_to_subquery_opt::<T>(qs.condition),
+                where_clause: __q_to_subquery_opt::<T>(qs.condition),
             },
             _phantom: PhantomData,
         }
@@ -242,7 +242,7 @@ impl Exists {
                 // 1` from the inner subquery; only the WHERE body
                 // changes shape vs the pre-flip `Option<Condition>`
                 // storage.
-                where_clause: q_to_subquery_opt::<T>(qs.condition),
+                where_clause: __q_to_subquery_opt::<T>(qs.condition),
             },
         }
     }
@@ -411,7 +411,10 @@ impl<M: Model, V> OuterRef<M, V> {
 /// in an `ErasedSubqueryPredicate` handle. Used by both [`Subquery::new`]
 /// and [`Exists::new`] so subquery and EXISTS emission share one
 /// identity-folding path.
-fn q_to_subquery_opt<T: Model>(q: crate::query::q::Q<T>) -> Option<ErasedSubqueryPredicate> {
+#[doc(hidden)]
+pub(crate) fn __q_to_subquery_opt<T: Model>(
+    q: crate::query::q::Q<T>,
+) -> Option<ErasedSubqueryPredicate> {
     if is_vacuously_true(&q) {
         None
     } else {

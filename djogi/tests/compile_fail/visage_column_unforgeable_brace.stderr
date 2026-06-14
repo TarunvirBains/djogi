@@ -1,0 +1,18 @@
+error: cannot construct `VisageColumn<_, _>` with struct literal syntax due to private fields
+  --> $DIR/visage_column_unforgeable_brace.rs:13:52
+   |
+13 |     let _bad: VisageColumn<AuthorPublic, String> = VisageColumn {
+   |                                                    ^^^^^^^^^^^^
+14 |         column: "password_hash",
+   |         ----------------------- private field
+   |
+   = note: ...and other private fields `__sealed`, `_v` and `_u` that were not provided
+help: you might have meant to use the `__new_for_visage_column` associated function
+   |
+13 -     let _bad: VisageColumn<AuthorPublic, String> = VisageColumn {
+14 -         column: "password_hash",
+15 -     };
+13 +     let _bad: VisageColumn<AuthorPublic, String> = VisageColumn::__new_for_visage_column(_, _);
+   |
+
+error: aborting due to 1 previous error

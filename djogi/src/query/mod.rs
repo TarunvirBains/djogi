@@ -216,6 +216,7 @@ pub use stream::{ModelCursorStream, RawCursorStream};
 // Djogi#180 — PG18 OLD/NEW RETURNING result type.
 pub use returning::ReturningPair;
 pub use update::{IntoAssignments, UpdateAssignment, UpdateStmt};
+pub use visage_queryset::{VisageColumn, VisageExists, VisageQuerySet, VisageSubquery};
 // Djogi#103 — typed VALUES join surface.
 // `InlineValues`, the three queryset types, and the supporting traits are the
 // user-facing names. `ValuesScalar` / `ValuesRow` / `IntoValuesColumns` are
@@ -228,8 +229,6 @@ pub use values::{
     CrossValuesJoinedQuerySet, InlineValues, IntoValuesColumns, LeftValuesJoinedQuerySet,
     ValuesFieldRef, ValuesFields, ValuesJoinedQuerySet, ValuesOn, ValuesRow, ValuesScalar,
 };
-pub use visage_queryset::VisageQuerySet;
-
 /// Raw Condition-AST surface — not peer public API with `Condition`.
 /// Holds `Leaf`, `FilterValue`, and `LookupOp` for framework-internal
 /// consumers (SQL emitter, differ, shell). User code that finds itself

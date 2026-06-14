@@ -237,6 +237,11 @@ name = "spatial"
 features = ["testing", "spatial"]
 fixture_dirs = ["tests/compile_fail_spatial"]
 
+[[package.metadata.lihaaf.suite]]
+name = "aes"
+features = ["testing", "aes-codec"]
+fixture_dirs = ["tests/compile_fail_aes"]
+
 [[bin]]
 name = "djogi-outbox-relay"
 path = "src/bin/djogi-outbox-relay.rs"
@@ -459,6 +464,26 @@ harness = true
 [[test]]
 name = "select_narrowing_live"
 path = "../tests/integration/select_narrowing_live.rs"
+harness = true
+
+[[test]]
+name = "visage_subquery_in"
+path = "../tests/integration/visage_subquery_in.rs"
+harness = true
+
+[[test]]
+name = "visage_subquery_exists"
+path = "../tests/integration/visage_subquery_exists.rs"
+harness = true
+
+[[test]]
+name = "visage_subquery_correlated"
+path = "../tests/integration/visage_subquery_correlated.rs"
+harness = true
+
+[[test]]
+name = "proxy_visage_default_filter"
+path = "../tests/internal/proxy_visage_default_filter.rs"
 harness = true
 
 [[test]]
