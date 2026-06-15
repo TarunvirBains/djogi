@@ -2446,6 +2446,40 @@ impl<M: Model, V> DjogiField<M, V> {
             subquery,
         )
     }
+
+    /// `column = ALL (SELECT <visage-column> FROM ...)` — true when *every*
+    /// row the subquery returns equals this column.
+    ///
+    /// **Why:** filter to rows whose value matches every row of a projected
+    /// visage subquery — e.g. "orders whose price equals every price in the
+    /// reference set" (typically meaningful when the subquery yields a single
+    /// value or a constant set).
+    ///
+    /// **Vacuous truth:** `= ALL` over an *empty* subquery is **true** for
+    /// every row (standard Postgres `ALL` semantics — there is no counter-row
+    /// to falsify the predicate). If you need "matches at least one row",
+    /// use [`Self::in_visage`] (`= ANY`) instead.
+    ///
+    /// **NULL semantics:** a NULL row in the subquery makes the comparison
+    /// UNKNOWN for that row, which suppresses the overall `ALL` (it cannot be
+    /// definitively true) — prefer a non-null projected column. Same three-
+    /// valued behavior as [`Self::gt_any`].
+    ///
+    /// `<> ALL` is spelled [`Self::not_in_visage`]; `= ANY` is [`Self::in_visage`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn eq_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, V>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage(
+            crate::expr::node::QuantifiedCmpOp::Eq,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
 }
 
 // ── DjogiField — Option<U> predicates ──────────────────────────────────────
@@ -4326,6 +4360,40 @@ impl<M: Model, V> FieldRef<M, V> {
     {
         self.quantified_visage(
             crate::expr::node::QuantifiedCmpOp::Lte,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
+
+    /// `column = ALL (SELECT <visage-column> FROM ...)` — true when *every*
+    /// row the subquery returns equals this column.
+    ///
+    /// **Why:** filter to rows whose value matches every row of a projected
+    /// visage subquery — e.g. "orders whose price equals every price in the
+    /// reference set" (typically meaningful when the subquery yields a single
+    /// value or a constant set).
+    ///
+    /// **Vacuous truth:** `= ALL` over an *empty* subquery is **true** for
+    /// every row (standard Postgres `ALL` semantics — there is no counter-row
+    /// to falsify the predicate). If you need "matches at least one row",
+    /// use [`Self::in_visage`] (`= ANY`) instead.
+    ///
+    /// **NULL semantics:** a NULL row in the subquery makes the comparison
+    /// UNKNOWN for that row, which suppresses the overall `ALL` (it cannot be
+    /// definitively true) — prefer a non-null projected column. Same three-
+    /// valued behavior as [`Self::gt_any`].
+    ///
+    /// `<> ALL` is spelled [`Self::not_in_visage`]; `= ANY` is [`Self::in_visage`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn eq_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, V>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage(
+            crate::expr::node::QuantifiedCmpOp::Eq,
             crate::expr::node::SubqueryQuantifier::All,
             subquery,
         )
@@ -6584,6 +6652,56 @@ mod tests {
                 .expect("clean queryset");
         let expr = FieldRef::<FakeRow, i64>::new("age").gt_any(subquery);
         assert_eq!(emit_expr_sql(expr), "age > ANY (SELECT id FROM fake_rows)");
+    }
+
+    #[test]
+    fn field_ref_eq_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, i64>::new("age").eq_all(subquery);
+        assert_eq!(emit_expr_sql(expr), "age = ALL (SELECT id FROM fake_rows)");
+    }
+
+    #[test]
+    fn field_ref_gt_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, i64>::new("age").gt_all(subquery);
+        assert_eq!(emit_expr_sql(expr), "age > ALL (SELECT id FROM fake_rows)");
+    }
+
+    #[test]
+    fn field_ref_gte_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, i64>::new("age").gte_all(subquery);
+        assert_eq!(emit_expr_sql(expr), "age >= ALL (SELECT id FROM fake_rows)");
+    }
+
+    #[test]
+    fn field_ref_lt_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, i64>::new("age").lt_all(subquery);
+        assert_eq!(emit_expr_sql(expr), "age < ALL (SELECT id FROM fake_rows)");
+    }
+
+    #[test]
+    fn field_ref_lte_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, i64>::new("age").lte_all(subquery);
+        assert_eq!(emit_expr_sql(expr), "age <= ALL (SELECT id FROM fake_rows)");
     }
 
     /// FIX_BEFORE_BETA-4: the new

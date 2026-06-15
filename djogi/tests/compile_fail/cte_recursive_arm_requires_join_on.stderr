@@ -1,10 +1,10 @@
 error[E0308]: mismatched types
     --> $DIR/cte_recursive_arm_requires_join_on.rs:15:60
      |
-  15 |     let _ = Node::objects().with_recursive("walk", anchor, Node::objects());
-     |                             --------------                 ^^^^^^^^^^^^^^^ expected `RecursiveArm<Node>`, found `QuerySet<Node>`
-     |                             |
-     |                             arguments to this method are incorrect
+  15 | ...bjects().with_recursive("walk", anchor, Node::objects());
+     |             --------------                 ^^^^^^^^^^^^^^^ expected `RecursiveArm<Node>`, found `QuerySet<Node>`
+     |             |
+     |             arguments to this method are incorrect
      |
      = note: expected struct `RecursiveArm<Node>`
                 found struct `QuerySet<Node>`

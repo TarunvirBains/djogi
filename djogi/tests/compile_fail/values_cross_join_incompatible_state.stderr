@@ -1,8 +1,8 @@
 error[E0061]: this method takes 1 argument but 2 arguments were supplied
     --> $DIR/values_cross_join_incompatible_state.rs:27:34
      |
-  27 |     let _bad = Animal::objects().cross_join_values(labels, |_a: AnimalFields, _v: ValuesFields<(String,)>| ());
-     |                                  ^^^^^^^^^^^^^^^^^         -------------------------------------------------- unexpected argument $TYPEID of type `{closure@$DIR/values_cross_join_incompatible_state.rs:27:60: 27:107}`
+  27 | ...().cross_join_values(labels, |_a: AnimalFields, _v: ValuesFields<(String,)>| ());
+     |       ^^^^^^^^^^^^^^^^^         -------------------------------------------------- unexpected argument $TYPEID of type `{closure@$DIR/values_cross_join_incompatible_state.rs:27:60: 27:107}`
      |
 note: method defined here
     --> djogi/src/query/values.rs:1011:12

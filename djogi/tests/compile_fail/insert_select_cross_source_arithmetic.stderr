@@ -1,8 +1,8 @@
 error[E0308]: mismatched types
   --> $DIR/insert_select_cross_source_arithmetic.rs:40:54
    |
-40 |     let _bad = a_fields.score().as_insert_source() + b_fields.score().as_insert_source();
-   |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `InsertSelectSource<CrossSourceA, i32>`, found `InsertSelectSource<CrossSourceB, i32>`
+40 | ...t_source() + b_fields.score().as_insert_source();
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `InsertSelectSource<CrossSourceA, i32>`, found `InsertSelectSource<CrossSourceB, i32>`
    |
    = note: expected struct `InsertSelectSource<CrossSourceA, _>`
               found struct `InsertSelectSource<CrossSourceB, _>`

@@ -18,8 +18,8 @@ help: there is a method `conflict_mul` with a similar name, but with different a
 error[E0599]: no method named `conflict_coalesce_excluded` found for struct `DjogiField<ConflictNullNonOptionTarget, i32>` in the current scope
   --> $DIR/insert_select_conflict_null_on_non_option.rs:30:58
    |
-30 |                 vec![t.hits().conflict_set_expr(t.hits().conflict_coalesce_excluded())]
-   |                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+30 | ...ct_set_expr(t.hits().conflict_coalesce_excluded())]
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
 help: there is a method `conflict_excluded` with a similar name
    |

@@ -1,8 +1,8 @@
 error[E0624]: associated function `__new` is private
    --> $DIR/visage_column_unforgeable_constructor.rs:11:73
     |
- 11 |     let _t = ::djogi::__private::visage_column_seal::VisageColumnToken::__new();
-    |                                                                         ^^^^^ private associated function
+ 11 | ...sageColumnToken::__new();
+    |                     ^^^^^ private associated function
     |
    ::: djogi/src/visage.rs:367:5
     |

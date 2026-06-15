@@ -6,11 +6,14 @@ error[E0599]: no method named `distinct` found for struct `AsMvtTerminal<T, A>` 
    |               |
    |  _____________method `distinct` is available on `QuerySet<TileFeature>`
    | |
-15 | |         .as_mvt_with_options(MvtOptions::new("tiles").with_geom_name("location"))
+15 | |         .as_mvt_with_options(MvtOptions::new("tiles").with_geom_name("...
 16 | |         .distinct();
-   | |         -^^^^^^^^ method not found in `AsMvtTerminal<TileFeature, djogi::query::EmptyAnnotation>`
+   | |         -^^^^^^^^ method not found in `AsMvtTerminal<TileFeature, ...>`
    | |_________|
    |
+   |
+   = note: the full name for the type has been written to '$LONGTYPE_FILE'
+   = note: consider using `--verbose` to print the full type name to the console
 
 error: aborting due to 1 previous error
 
