@@ -129,6 +129,33 @@ logic: only `TRUE` performs the update; both `FALSE` and `NULL` skip it.
 The null-test helpers let you make that behavior explicit instead of
 depending on a nullable comparison result.
 
+### Arbiter position restriction
+
+`conflict_is_null()`, `conflict_is_not_null()`, and
+`conflict_coalesce_excluded()` are valid in `DO UPDATE SET` assignments and
+`DO UPDATE ... WHERE` action guards against the existing target column.
+
+They must not be used in the arbiter `where_predicate` of
+`ConflictTarget::columns([...]).where_predicate(...)`. The arbiter predicate
+narrows which rows trigger conflict resolution. PostgreSQL only allows
+target-table column references there, not `EXCLUDED.*`. Djogi enforces this at
+`validate_execute` time with a validation error.
+
+Use `EXCLUDED`-referencing helpers only in the `DO UPDATE` action path:
+
+```rust,ignore
+// OK: target null-test in the arbiter predicate.
+ConflictTarget::columns([Profile::fields().slug()])
+    .where_predicate(|t| t.avatar_url().conflict_is_null())
+
+// OK: EXCLUDED reference in the DO UPDATE WHERE guard.
+.on_conflict_do_update_where(
+    ConflictTarget::columns([Profile::fields().slug()]),
+    |t| vec![t.avatar_url().conflict_set(t.avatar_url().excluded())],
+    |t| t.avatar_url().excluded().conflict_is_null(),
+)
+```
+
 ## RETURNING
 
 `execute_returning(...)` composes with `ON CONFLICT`. `DO NOTHING` omits

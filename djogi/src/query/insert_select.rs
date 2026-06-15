@@ -1704,9 +1704,33 @@ impl<T: Model> std::ops::Not for ConflictCondition<T> {
     }
 }
 
+// SAFETY-CRITICAL: This walker enforces that arbiter inference predicates
+// never reference EXCLUDED. The match must remain exhaustive; do not add a
+// wildcard arm. Every structural ExprNode variant that can transitively carry
+// an Excluded child must have an explicit recursive arm here. When a new
+// ExprNode variant is added that has inner ExprNode children, add a
+// corresponding arm that recurses into those children. Variants with no inner
+// ExprNode children should return false.
 fn expr_node_contains_excluded(node: &ExprNode) -> bool {
     match node {
+        // Leaf variants contain no inner ExprNode, so they can never carry Excluded.
+        ExprNode::Field { .. }
+        | ExprNode::RawSql(_)
+        | ExprNode::Literal(_)
+        | ExprNode::ArrayLength { .. }
+        | ExprNode::CurrentYear
+        | ExprNode::OuterRef { .. }
+        | ExprNode::OuterRefColumn { .. }
+        | ExprNode::OuterRefAlias { .. }
+        | ExprNode::TsMatch { .. }
+        | ExprNode::TsRank { .. }
+        | ExprNode::TsRankCd { .. }
+        | ExprNode::IntervalLiteral { .. } => false,
+
+        // The only true leaf that signals EXCLUDED.
         ExprNode::Excluded { .. } => true,
+
+        // Binary arithmetic and logical expressions recurse into both sides.
         ExprNode::Cmp { lhs, rhs, .. }
         | ExprNode::Add(lhs, rhs)
         | ExprNode::Sub(lhs, rhs)
@@ -1716,8 +1740,45 @@ fn expr_node_contains_excluded(node: &ExprNode) -> bool {
         | ExprNode::Or(lhs, rhs) => {
             expr_node_contains_excluded(lhs) || expr_node_contains_excluded(rhs)
         }
-        ExprNode::Not(inner) => expr_node_contains_excluded(inner),
-        _ => false,
+
+        // Unary wrappers recurse into the single inner node.
+        ExprNode::Not(inner) | ExprNode::IsNull(inner) | ExprNode::IsNotNull(inner) => {
+            expr_node_contains_excluded(inner)
+        }
+
+        // Variadic expressions recurse into every operand.
+        ExprNode::Coalesce(operands) => operands.iter().any(expr_node_contains_excluded),
+        ExprNode::GroupingVariadic { args } => args.iter().any(expr_node_contains_excluded),
+
+        // CASE recurses into each arm's condition and value, plus the default.
+        ExprNode::Case { arms, otherwise } => {
+            arms.iter().any(|(cond, val)| {
+                expr_node_contains_excluded(cond) || expr_node_contains_excluded(val)
+            }) || expr_node_contains_excluded(otherwise)
+        }
+
+        // Aggregate recurses into the argument and optional expression fields.
+        ExprNode::Aggregate {
+            arg, arg2, filter, ..
+        } => {
+            expr_node_contains_excluded(arg)
+                || arg2.as_deref().is_some_and(expr_node_contains_excluded)
+                || filter.as_deref().is_some_and(expr_node_contains_excluded)
+        }
+
+        // Subquery bodies are separate scopes; only lhs expressions belong to this scope.
+        ExprNode::Exists(_) | ExprNode::Subquery(_) => false,
+        ExprNode::InSubquery { lhs, .. } | ExprNode::QuantifiedSubquery { lhs, .. } => {
+            expr_node_contains_excluded(lhs)
+        }
+
+        // Spatial variants have no inner ExprNode children reachable via this path.
+        #[cfg(feature = "spatial")]
+        ExprNode::Spatial(_) | ExprNode::RowAggregate { .. } => false,
+
+        // Trigram variants are leaf-shaped and have no inner ExprNode.
+        #[cfg(feature = "trgm")]
+        ExprNode::TrgmSimilarTo { .. } | ExprNode::TrgmSimilarityScore { .. } => false,
     }
 }
 
@@ -3021,6 +3082,79 @@ mod tests {
             err,
             DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")
         ));
+    }
+
+    #[test]
+    fn validate_rejects_excluded_is_null_in_conflict_target_where_predicate() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(
+                ConflictTarget::columns([FieldRef::<Target, Option<i32>>::new("maybe_view_count")])
+                    .where_predicate(|_t| {
+                        FieldRef::<Target, Option<i32>>::new("maybe_view_count")
+                            .excluded()
+                            .conflict_is_null()
+                    }),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(
+            matches!(err, DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")),
+            "expected EXCLUDED rejection, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_excluded_is_not_null_in_conflict_target_where_predicate() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(
+                ConflictTarget::columns([FieldRef::<Target, Option<i32>>::new("maybe_view_count")])
+                    .where_predicate(|_t| {
+                        FieldRef::<Target, Option<i32>>::new("maybe_view_count")
+                            .excluded()
+                            .conflict_is_not_null()
+                    }),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(
+            matches!(err, DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")),
+            "expected EXCLUDED rejection, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_coalesce_excluded_in_conflict_target_where_predicate() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(
+                ConflictTarget::columns([FieldRef::<Target, Option<i32>>::new("maybe_view_count")])
+                    .where_predicate(|_t| {
+                        FieldRef::<Target, Option<i32>>::new("maybe_view_count").conflict_eq(
+                            FieldRef::<Target, Option<i32>>::new("maybe_view_count")
+                                .conflict_coalesce_excluded(),
+                        )
+                    }),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(
+            matches!(err, DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")),
+            "expected EXCLUDED rejection, got: {err:?}"
+        );
     }
 
     #[test]
