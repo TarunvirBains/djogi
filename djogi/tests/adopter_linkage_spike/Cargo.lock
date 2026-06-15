@@ -398,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "djogi"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.17"
 dependencies = [
  "async-trait",
  "bytes",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "djogi-macros"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.17"
 dependencies = [
  "darling",
  "proc-macro2",
