@@ -2,46 +2,46 @@
 //! # Scope (— amendment)
 //! `attune` operates on local migration history. Three modes:
 //! 1. **Default (`AttuneMode::DiffOnly`)**: read-only diff between
-//!    on-disk SQL files and the ledger. Reports SQL files present on
-//!    disk but absent from the ledger ("unrecorded"), and ledger rows
-//!    whose corresponding SQL file is missing on disk ("orphaned").
-//!    Acquires the workspace file lock to take a consistent snapshot
-//!    but never writes.
+//! on-disk SQL files and the ledger. Reports SQL files present on
+//! disk but absent from the ledger ("unrecorded"), and ledger rows
+//! whose corresponding SQL file is missing on disk ("orphaned").
+//! Acquires the workspace file lock to take a consistent snapshot
+//! but never writes.
 //! 2. **`AttuneMode::Record`**: walks the same drift report and
-//!    INSERTs ledger rows for every unrecorded SQL file, with
-//!    `status = 'applied'` and a `partial_apply_note` recording the
-//!    operator-supplied reason. **Does NOT execute the SQL** — `Record`
-//!    is the operator asserting "these migrations were already applied
-//!    out-of-band". Distinct from `fake_apply_plan` because `Record`
-//!    walks every unrecorded SQL file in the bucket in one go.
+//! INSERTs ledger rows for every unrecorded SQL file, with
+//! `status = 'applied'` and a `partial_apply_note` recording the
+//! operator-supplied reason. **Does NOT execute the SQL** — `Record`
+//! is the operator asserting "these migrations were already applied
+//! out-of-band". Distinct from `fake_apply_plan` because `Record`
+//! walks every unrecorded SQL file in the bucket in one go.
 //! 3. **`AttuneMode::Squash { from, publish, app }`**: HISTORY REWRITE.
-//!    Coalesces every committed SQL file from `from` to HEAD into one
-//!    squashed file, deletes the originals, and removes the deleted
-//!    versions from the ledger. Per plus the fixup for (single-bucket scope):
+//! Coalesces every committed SQL file from `from` to HEAD into one
+//! squashed file, deletes the originals, and removes the deleted
+//! versions from the ledger. Per plus the fixup for (single-bucket scope):
 //! - **Localhost-only.** Refuses to run when `DATABASE_URL` does
-//!   not resolve to the local machine — see
-//!   [`crate::migrate::policy::is_localhost_connection`]. A typo in
-//!   the URL pointing at staging cannot rewrite history that other
-//!   developers also pull from.
+//! not resolve to the local machine — see
+//! [`crate::migrate::policy::is_localhost_connection`]. A typo in
+//! the URL pointing at staging cannot rewrite history that other
+//! developers also pull from.
 //! - **Dev-profile-only.** Refuses to run when
-//!   `Djogi.toml::profile = "production"`. Production environments
-//!   have a hard line against destructive history rewrites.
+//! `Djogi.toml::profile = "production"`. Production environments
+//! have a hard line against destructive history rewrites.
 //! - **Local-only by default.** The `--publish` flag must be
-//!   explicitly passed for the squashed history to be pushed to
-//!   the remote `migrations` submodule. Without it, the rewrite
-//!   stays local — the operator can inspect the result, run the
-//!   test suite, and only then publish.
+//! explicitly passed for the squashed history to be pushed to
+//! the remote `migrations` submodule. Without it, the rewrite
+//! stays local — the operator can inspect the result, run the
+//! test suite, and only then publish.
 //! - **`--publish` is atomic: commit-then-push.**
-//!   When `--publish` is set, attune treats the squash mutation as
-//!   one atomic step: it stages every change in the migrations
-//!   working tree (`git add -A`), creates a commit
-//!   (`djogi attune --squash from <from>`), then pushes the current
-//!   branch to `origin`. The operator does NOT need to commit the
-//!   mutation themselves — the publisher's contract is "commit the
-//!   squash mutation, then push to origin". This matches 's
-//!   "destructive history rewrite" framing: the squash mutation +
-//!   the publish are one indivisible operation. Without `--publish`
-//!   the operator owns the commit cycle as before.
+//! When `--publish` is set, attune treats the squash mutation as
+//! one atomic step: it stages every change in the migrations
+//! working tree (`git add -A`), creates a commit
+//! (`djogi attune --squash from <from>`), then pushes the current
+//! branch to `origin`. The operator does NOT need to commit the
+//! mutation themselves — the publisher's contract is "commit the
+//! squash mutation, then push to origin". This matches 's
+//! "destructive history rewrite" framing: the squash mutation +
+//! the publish are one indivisible operation. Without `--publish`
+//! the operator owns the commit cycle as before.
 //! # File-lock contract
 //! Every mode acquires the workspace [`super::guard::WorkspaceGuard`]
 //! before touching any path. Concurrent compose / apply / repair
@@ -59,18 +59,18 @@
 //! Three paths are read-only and MUST NOT bootstrap
 //! `djogi_schema_migrations`:
 //! - `AttuneMode::DiffOnly` (any value of `apply`)
-//! - `AttuneMode::Record { .. }` with `apply == false`
-//! - `AttuneMode::Squash { .. }` with `apply == false`
-//!   On a fresh database where the ledger does not exist yet, every
-//!   read-only path probes `pg_class` instead of calling
-//!   [`super::ledger::bootstrap`]; the returned report carries an
-//!   [`AttuneDiagnostic::LedgerTableMissing`] entry and the ledger
-//!   stays absent. The operator must run `apply` or `attune --record
+//! - `AttuneMode::Record {.. }` with `apply == false`
+//! - `AttuneMode::Squash {.. }` with `apply == false`
+//! On a fresh database where the ledger does not exist yet, every
+//! read-only path probes `pg_class` instead of calling
+//! [`super::ledger::bootstrap`]; the returned report carries an
+//! [`AttuneDiagnostic::LedgerTableMissing`] entry and the ledger
+//! stays absent. The operator must run `apply` or `attune --record
 //! --apply` (or `baseline`) to bootstrap. Only Record / Squash with
-//!   `--apply` call `ledger::bootstrap`.
-//!   , Record / Squash bootstrapped the ledger up-front
-//!   regardless of `--apply`, which silently created the table during
-//!   a dry-run — an out-of-contract mutation. The fix gates the bootstrap behind `req.apply`.
+//! `--apply` call `ledger::bootstrap`.
+//!, Record / Squash bootstrapped the ledger up-front
+//! regardless of `--apply`, which silently created the table during
+//! a dry-run — an out-of-contract mutation. The fix gates the bootstrap behind `req.apply`.
 //! # No regex
 //! Per the Djogi-wide no-regex rule, the SQL filename detection uses
 //! byte-level prefix / suffix checks against the [`super::naming`]
@@ -283,30 +283,30 @@ impl std::fmt::Display for AttuneDiagnostic {
             AttuneDiagnostic::LedgerTableMissing { database } => write!(
                 f,
                 "[{}] ledger table `djogi_schema_migrations` does not exist in database \
-                 `{database}`; ledger not bootstrapped — run `migrations apply` or \
-                 `attune --record --apply` first; plain `attune --record` without `--apply` \
-                 is dry-run after U-5 and will not bootstrap; the apply flag is load-bearing",
+     `{database}`; ledger not bootstrapped — run `migrations apply` or \
+     `attune --record --apply` first; plain `attune --record` without `--apply` \
+     is dry-run after and will not bootstrap; the apply flag is load-bearing",
                 self.code(),
             ),
             AttuneDiagnostic::DryRunMutationsSkipped { mode } => write!(
                 f,
                 "[{}] {mode} mode requested without `--apply`; diff reported, \
-                 no database or disk mutation happened — re-run with `--apply` to commit",
+     no database or disk mutation happened — re-run with `--apply` to commit",
                 self.code(),
             ),
             AttuneDiagnostic::DryRunRecordSkipped { resolved_target } => match resolved_target {
                 Some(sha) => write!(
                     f,
                     "[{}] `--record` was requested without `--apply`; parent submodule \
-                     pointer would be updated to `{sha}` but no parent index mutation \
-                     happened — re-run with `--apply` to commit",
+      pointer would be updated to `{sha}` but no parent index mutation \
+      happened — re-run with `--apply` to commit",
                     self.code(),
                 ),
                 None => write!(
                     f,
                     "[{}] `--record` was requested without `--apply`; no parent submodule \
-                     pointer would be updated because no target was resolved — pass \
-                     `--target <ref>` to populate, then re-run with `--apply` to commit",
+      pointer would be updated because no target was resolved — pass \
+      `--target <ref>` to populate, then re-run with `--apply` to commit",
                     self.code(),
                 ),
             },
@@ -315,15 +315,15 @@ impl std::fmt::Display for AttuneDiagnostic {
                     Some(sha) => write!(
                         f,
                         "[{}] would update parent submodule pointer to `{sha}` but `--apply` \
-                     was not provided; no parent index mutation happened — re-run with \
-                     `--apply` to commit",
+      was not provided; no parent index mutation happened — re-run with \
+      `--apply` to commit",
                         self.code(),
                     ),
                     None => write!(
                         f,
                         "[{}] no parent submodule pointer would be updated because no target \
-                     was resolved; pass `--target <ref>` to populate, then re-run with \
-                     `--apply` to commit",
+      was resolved; pass `--target <ref>` to populate, then re-run with \
+      `--apply` to commit",
                         self.code(),
                     ),
                 }
@@ -493,9 +493,9 @@ impl std::fmt::Display for AttuneError {
                 Some(c) => write!(
                     f,
                     "attune target `{target}`: git rev-parse failed locally and after \
-                     a remote fetch retry (status {c}): {stderr}; either the target \
-                     does not exist on any configured remote, or `migrations/` has no \
-                     remote at all"
+      a remote fetch retry (status {c}): {stderr}; either the target \
+      does not exist on any configured remote, or `migrations/` has no \
+      remote at all"
                 ),
                 None => write!(
                     f,
@@ -523,12 +523,12 @@ impl std::fmt::Display for AttuneError {
                 Some(c) => write!(
                     f,
                     "attune --record: failed to update parent repo's submodule \
-                     pointer to `{new_sha}` (status {c}): {stderr}"
+      pointer to `{new_sha}` (status {c}): {stderr}"
                 ),
                 None => write!(
                     f,
                     "attune --record: parent submodule pointer update terminated \
-                     by signal: {stderr}"
+      by signal: {stderr}"
                 ),
             },
         }
@@ -541,47 +541,47 @@ impl std::fmt::Display for AttuneRefusal {
             AttuneRefusal::SquashNotLocalhost { database_url } => write!(
                 f,
                 "attune --squash refuses to run when DATABASE_URL is not localhost \
-                 (got `{database_url}`); squash is a destructive history rewrite and \
-                 must not be invoked against shared / production databases"
+     (got `{database_url}`); squash is a destructive history rewrite and \
+     must not be invoked against shared / production databases"
             ),
             AttuneRefusal::SquashNotDevProfile { profile } => write!(
                 f,
                 "attune --squash refuses to run with profile=`{profile}`; squash \
-                 is dev-only — set `profile = \"development\"` (or remove the \
-                 production override) before retrying"
+     is dev-only — set `profile = \"development\"` (or remove the \
+     production override) before retrying"
             ),
             AttuneRefusal::SquashDevModeOff => f.write_str(
                 "attune --squash refuses to run when `[database].dev_mode = false` \
-                 in Djogi.toml; squash is a destructive history rewrite and the \
-                 `dev_mode` flag is the explicit opt-in. Set `dev_mode = true` in \
-                 the `[database]` block before retrying",
+     in Djogi.toml; squash is a destructive history rewrite and the \
+     `dev_mode` flag is the explicit opt-in. Set `dev_mode = true` in \
+     the `[database]` block before retrying",
             ),
             AttuneRefusal::SquashEnvIsProduction { env_value } => write!(
                 f,
                 "attune --squash refuses to run when DJOGI_ENV=`{env_value}` \
-                 (case-insensitive `production`); the deployment-environment \
-                 signal overrides any local Djogi.toml profile override. Unset \
-                 DJOGI_ENV (or set it to a non-production value) before retrying"
+     (case-insensitive `production`); the deployment-environment \
+     signal overrides any local Djogi.toml profile override. Unset \
+     DJOGI_ENV (or set it to a non-production value) before retrying"
             ),
             AttuneRefusal::SquashFromVersionNotFound { version } => write!(
                 f,
                 "attune --squash --from `{version}` did not match any version on disk \
-                 in the connected database; list `migrations/<database>/<app>/` to find \
-                 a valid starting version"
+     in the connected database; list `migrations/<database>/<app>/` to find \
+     a valid starting version"
             ),
             AttuneRefusal::SquashFromVersionAmbiguous { version, buckets } => write!(
                 f,
                 "attune --squash --from `{version}` exists in multiple buckets ({}); \
-                 squash refuses to silently pick one — each bucket's history is \
-                 independent. Disambiguate by passing `--app <app_label>` to scope the \
-                 squash to a single bucket",
+     squash refuses to silently pick one — each bucket's history is \
+     independent. Disambiguate by passing `--app <app_label>` to scope the \
+     squash to a single bucket",
                 buckets.join(", ")
             ),
             AttuneRefusal::StalePhaseZero { version } => write!(
                 f,
                 "attune refused — Phase 0 artifact `{version}` is seed-capable, \
-                 seed-DML non-runtime, generated-stale, or ambiguous; \
-                 regenerate the Phase 0 file from the canonical composer before retrying"
+     seed-DML non-runtime, generated-stale, or ambiguous; \
+     regenerate the Phase 0 file from the canonical composer before retrying"
             ),
         }
     }
@@ -659,7 +659,7 @@ pub struct AttuneRequest<'a> {
     /// `docs/spec/configuration.md` §15 and `docs/spec/migrations.md`
     /// §"migrations attune". The runtime computes an
     /// `effective_record` boolean as `req.record ||
-    /// matches!(req.mode, AttuneMode::Squash { .. })`, so an operator
+    /// matches!(req.mode, AttuneMode::Squash {.. })`, so an operator
     /// running `attune --squash --apply --target <ref>` gets the
     /// parent pointer write WITHOUT also typing `--record`. The
     /// explicit `req.record` flag is still honoured (and required)
@@ -700,9 +700,9 @@ fn djogi_env_is_production() -> Option<String> {
 /// Centralises the routing rule the three dry-run paths (DiffOnly,
 /// Record, Squash) all need:
 /// - explicit `--record` → `DryRunRecordSkipped` (causal prose names
-///   the flag);
+/// the flag);
 /// - `--squash`-implied recording → `DryRunSquashRecordSkipped`
-///   (neutral prose);
+/// (neutral prose);
 /// - any other mode without a resolved target → no-op.
 fn push_record_skipped(
     diagnostics: &mut Vec<AttuneDiagnostic>,
@@ -1108,8 +1108,8 @@ async fn scan_ledger(
     let rows = ctx
         .query_all(
             "SELECT version, app_label, status \
-             FROM djogi_schema_migrations \
-             ORDER BY app_label, version",
+    FROM djogi_schema_migrations \
+    ORDER BY app_label, version",
             &[],
         )
         .await
@@ -1178,7 +1178,7 @@ async fn ledger_table_exists(ctx: &mut DjogiContext) -> Result<bool, AttuneError
     let row = ctx
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM pg_class \
-             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+    WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
             &[],
         )
         .await
@@ -1297,22 +1297,22 @@ async fn insert_recorded_row(
 /// applied to EXACTLY ONE bucket — the bucket where `from` actually
 /// exists. The squash contract:
 /// - If `app_filter` is `Some(label)`, the squash is scoped to
-///   `(active_db, label)`; if `from` is absent there it errors with
-///   [`AttuneRefusal::SquashFromVersionNotFound`].
+/// `(active_db, label)`; if `from` is absent there it errors with
+/// [`AttuneRefusal::SquashFromVersionNotFound`].
 /// - If `app_filter` is `None` and `from` exists in exactly one bucket,
-///   that bucket is the target.
+/// that bucket is the target.
 /// - If `app_filter` is `None` and `from` exists in multiple buckets,
-///   we refuse with [`AttuneRefusal::SquashFromVersionAmbiguous`] and
-///   require the operator to disambiguate.
+/// we refuse with [`AttuneRefusal::SquashFromVersionAmbiguous`] and
+/// require the operator to disambiguate.
 /// - If `from` exists in zero buckets, we refuse with
-///   [`AttuneRefusal::SquashFromVersionNotFound`].
-///   **Retained-row checksum refresh.** After writing the squashed
-///   SQL file, we recompute its `up` (and best-effort `down`) checksum
-///   and `UPDATE` the retained `from` ledger row's `checksum_up`,
-///   `checksum_down`, and `description` to match. The pre-
-///   implementation left the retained row's checksum describing the
-///   PRE-squash file content — every subsequent verify or apply path
-///   would surface drift authored by squash itself.
+/// [`AttuneRefusal::SquashFromVersionNotFound`].
+/// **Retained-row checksum refresh.** After writing the squashed
+/// SQL file, we recompute its `up` (and best-effort `down`) checksum
+/// and `UPDATE` the retained `from` ledger row's `checksum_up`,
+/// `checksum_down`, and `description` to match. The pre-
+/// implementation left the retained row's checksum describing the
+/// PRE-squash file content — every subsequent verify or apply path
+/// would surface drift authored by squash itself.
 #[allow(clippy::too_many_arguments)]
 async fn run_squash(
     ctx: &mut DjogiContext,
@@ -1556,7 +1556,7 @@ async fn refresh_retained_row(
     let prior_description: Option<String> = ctx
         .query_one(
             "SELECT description FROM djogi_schema_migrations \
-             WHERE version = $1 AND app_label = $2",
+    WHERE version = $1 AND app_label = $2",
             &[&from.to_string(), &bucket.app],
         )
         .await
@@ -1572,8 +1572,8 @@ async fn refresh_retained_row(
     };
     ctx.execute(
         "UPDATE djogi_schema_migrations \
-         SET checksum_up = $1, checksum_down = $2, description = $3 \
-         WHERE version = $4 AND app_label = $5",
+   SET checksum_up = $1, checksum_down = $2, description = $3 \
+   WHERE version = $4 AND app_label = $5",
         &[
             &new_checksum_up,
             &new_checksum_down,
@@ -1688,8 +1688,8 @@ fn run_git_commit_and_publish(workspace_root: &Path, from: &str) -> Result<(), A
     if !remote_check.status.success() {
         return Err(AttuneError::GitPublishFailed {
             stderr: "remote `origin` is not configured on the migrations submodule; \
-                     set a remote with `git -C migrations remote add origin <url>` \
-                     before retrying `--publish`"
+      set a remote with `git -C migrations remote add origin <url>` \
+      before retrying `--publish`"
                 .to_string(),
             status_code: remote_check.status.code(),
         });
@@ -1718,9 +1718,9 @@ fn run_git_commit_and_publish(workspace_root: &Path, from: &str) -> Result<(), A
         return Err(AttuneError::GitPublishFailed {
             stderr: format!(
                 "`git push origin HEAD` failed: {stderr}\n\
-                 Hint: the squash commit IS on the local migrations branch; \
-                 retry with `attune --squash --publish` once the push issue \
-                 is resolved (auth, network, etc.)."
+     Hint: the squash commit IS on the local migrations branch; \
+     retry with `attune --squash --publish` once the push issue \
+     is resolved (auth, network, etc.)."
             ),
             status_code: push_out.status.code(),
         });
@@ -1965,7 +1965,7 @@ mod tests {
         sql.replace_range(
             start..end,
             "ALTER DATABASE \"main\" SET heer.node_id = '1';\n\
-             ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
+    ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
         );
         sql
     }
@@ -2235,14 +2235,14 @@ mod tests {
         assert!(
             explicit.contains(
                 "`--record` was requested without `--apply`; parent submodule pointer \
-                 would be updated to `abcd`"
+     would be updated to `abcd`"
             ),
             "direct --record wording must name the explicit flag: {explicit}"
         );
         assert!(
             squash.contains(
                 "would update parent submodule pointer to `abcd` but `--apply` was not \
-                 provided; no parent index mutation happened"
+     provided; no parent index mutation happened"
             ),
             "squash-implied wording must match neutral prose: {squash}"
         );
@@ -2273,8 +2273,8 @@ mod tests {
         assert_eq!(
             diagnostic.to_string(),
             "[ATTUNE-003] `--record` was requested without `--apply`; parent submodule \
-             pointer would be updated to `abc123` but no parent index mutation happened \
-             — re-run with `--apply` to commit"
+    pointer would be updated to `abc123` but no parent index mutation happened \
+    — re-run with `--apply` to commit"
         );
     }
 

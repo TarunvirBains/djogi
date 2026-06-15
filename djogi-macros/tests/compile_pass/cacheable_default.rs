@@ -22,7 +22,7 @@ use djogi::prelude::*;
 #[model(table = "phase8_t7_cacheable_default_rows")]
 #[derive(Debug, Clone)]
 pub struct DefaultRow {
-    pub label: String,
+ pub label: String,
 }
 
 // The load-bearing surface check: a function generic over
@@ -35,10 +35,10 @@ fn _accept_cacheable<T: ::djogi::types::Cacheable>() {}
 // Concrete usability through the `Punnu<T>` surface — the auto-
 // emitted impl must satisfy every bound `Punnu` requires of `T`.
 fn _build_punnu() -> ::djogi::cache::Punnu<DefaultRow> {
-    ::djogi::cache::Punnu::<DefaultRow>::builder().build()
+ ::djogi::cache::Punnu::<DefaultRow>::builder().build()
 }
 
 fn main() {
-    _accept_cacheable::<DefaultRow>();
-    let _punnu = _build_punnu();
+ _accept_cacheable::<DefaultRow>();
+ let _punnu = _build_punnu();
 }

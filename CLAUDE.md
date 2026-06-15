@@ -6,25 +6,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Djogi** is a Model-first web framework for Rust. Define your data schema as Rust structs, and the framework derives everything else — ORM, migrations, admin UI, audit trail, shell bindings, JSONB schema handling. One definition, full derivation chain. Djogi's core is **web-framework-agnostic**; per-framework integrations (Axum extractors, etc.) ship behind sub-feature flags so adopters pick their HTTP layer.
 
-The `ReadMe.MD` is the project overview. The full specification lives in `docs/spec/` — read the relevant spec doc before implementing any feature. The [implementation plan](docs/spec/implementation-plan.md) sequences the build.
+The `README.md` is the project overview. The full specification lives in `docs/spec/` — read the relevant spec doc before implementing any feature. The [implementation plan](docs/spec/implementation-plan.md) sequences the build.
 
 **Current status:** Implementation in progress. The README is the authoritative specification. When there is a conflict between the README and the code, treat the README as the design target unless otherwise instructed.
 
 ## Workspace Layout
 
 ```
-djogi/                  ← this repo — the framework implementation
-  djogi/                ← framework library crate
-  djogi-macros/         ← proc macro crate (separate crate — required by Rust)
-  djogi-cli/            ← djogi binary
-  djogi-shell/          ← Rhai engine + model bindings (Phase 9 target)
-  djogi-maahi/          ← planned admin console crate (Dioxus full-stack); not present as shipped component in this worktree
+djogi/   ← this repo — the framework implementation
+ djogi/  ← framework library crate
+ djogi-macros/  ← proc macro crate (separate crate — required by Rust)
+ djogi-cli/  ← djogi binary
+ djogi-shell/  ← Rhai engine + model bindings (REPL and scripting target)
+ djogi-maahi/  ← planned admin console crate (Dioxus full-stack); not present as shipped component in this worktree
 
-../HeeRanjID/           ← sibling workspace — the HeeRanjId ID system
-  heeranjid/            ← core Rust types and conversions
-  heeranjid-sqlx/       ← PostgreSQL + SQLx integration
-  heeranjid-ffi/        ← C FFI shared library
-  bindings/             ← Python, TypeScript, .NET
+../HeeRanjID/  ← sibling workspace — the HeeRanjId ID system
+ heeranjid/  ← core Rust types and conversions
+ heeranjid-sqlx/ ← PostgreSQL + SQLx integration
+ heeranjid-ffi/ ← C FFI shared library
+ bindings/  ← Python, TypeScript,.NET
 ```
 
 Djogi calls into HeeRanjId for ID generation (`heerid_next()` / `heerid_next_desc()` / `ranjid_next()` / `ranjid_next_desc()`, plus `generate_ids(...)` / `generate_ranjids(...)` batch helpers) but does not own it. HeeRanjId is a standalone crate that Djogi depends on.
@@ -72,18 +72,18 @@ cargo xtask check-secrets
 cargo xtask check-secrets --staged
 cargo xtask check-secrets --stdin < draft.md
 
-# CLI (Phase 7 + later phases)
-djogi migrations apply               # apply pending migrations (canonical spelling)
-djogi migrations apply --fake \      # fake-apply for existing-DB adoption
-  --reason "schema pre-exists"
-djogi migrate apply                  # alias for djogi migrations apply
-djogi migrations compose             # generate up/down SQL pair from descriptor drift
-djogi migrations status              # show ledger / snapshot / live-DB state
-djogi migrations attune              # reconcile disk / ledger / live DB
-djogi db reset --yes                 # drop, recreate, replay (triple-gated)
-djogi db seed                        # run seeds/<database>/*.sql via djogi_seed_runs ledger
-djogi docs                           # render Markdown reference pages from descriptor inventory
-# djogi shell                          # Rhai shell (Phase 9 target; deferred in v0.1.0)
+# CLI
+djogi migrations apply  # apply pending migrations (canonical spelling)
+djogi migrations apply --fake \ # fake-apply for existing-DB adoption
+ --reason "schema pre-exists"
+djogi migrate apply   # alias for djogi migrations apply
+djogi migrations compose  # generate up/down SQL pair from descriptor drift
+djogi migrations status  # show ledger / snapshot / live-DB state
+djogi migrations attune  # reconcile disk / ledger / live DB
+djogi db reset --yes   # drop, recreate, replay (triple-gated)
+djogi db seed   # run seeds/<database>/*.sql via djogi_seed_runs ledger
+djogi docs    # render Markdown reference pages from descriptor inventory
+# djogi shell    # Rhai shell (deferred in v0.1.0)
 ```
 
 After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets --all-features` before handoff when feasible, not just targeted tests.
@@ -115,12 +115,12 @@ Two ways to enable per-worktree isolation:
 
 ```bash
 # direnv (recommended): per-worktree opt-in, no shell-init pollution
-cp .envrc.example .envrc && direnv allow
+cp.envrc.example.envrc && direnv allow
 
 # manual (no direnv): source the example, or inline the same SHA-256 id
 # (using basename "$PWD" would collide between sibling worktrees and
 # orphan caches when `cargo xtask gc-target-cache` runs).
-source .envrc.example
+source.envrc.example
 # — or, self-contained one-shot —
 export CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(printf '%s' "$(pwd -P)" | sha256sum | cut -c1-12)"
 ```
@@ -168,7 +168,7 @@ The macro is the heart of the framework. It:
 Proc macro testing: use `lihaaf` for compile-fail/compile-pass cases (the
 sole compile-fixture gate, fast parallel dylib path); `macrotest` for
 expansion snapshots. Djogi no longer uses `trybuild` — the historical
-trybuild corpus was migrated to lihaaf in Phase 8.5, with the `.stderr`
+trybuild corpus was migrated to lihaaf in, with the `.stderr`
 snapshots committed under `djogi-macros/tests/compile_fail/` and
 `djogi/tests/compile_fail/`.
 
@@ -195,10 +195,10 @@ workspace `clippy::disallowed_methods` lint.
 dedicated pin test under `tests/pin/`, or in a deliberately
 unidiomatic helper - decorate the enclosing item:
 
-    #[djogi::deliberately_bypass_convention_with_raw_sql]
-    // JUSTIFICATION (djogi#234): citext column needs case-insensitive
-    // equality; QuerySet doesn't expose LOWER(col) equality yet.
-    async fn my_test(mut ctx: DjogiContext) { ... }
+ #[djogi::deliberately_bypass_convention_with_raw_sql]
+ // JUSTIFICATION (djogi#234): citext column needs case-insensitive
+ // equality; QuerySet doesn't expose LOWER(col) equality yet.
+ async fn my_test(mut ctx: DjogiContext) {... }
 
 **The `// JUSTIFICATION (djogi#<n>):` convention.** Every use of the
 attribute under `tests/` MUST be paired with a `JUSTIFICATION` comment
@@ -265,8 +265,8 @@ ID generation patterns:
 `Jsonb<T>` wraps a `JSONB` column with a typed schema. Internal layout:
 ```rust
 pub struct Jsonb<T> {
-    pub data: T,                           // typed, validated on save
-    extra: IndexMap<String, UnknownField>, // unknown fields — never dropped
+ pub data: T,    // typed, validated on save
+ extra: IndexMap<String, UnknownField>, // unknown fields — never dropped
 }
 ```
 Unknown fields (present in DB, absent from schema) are preserved across every `save()`. All `UnknownField` conversions return `Result` — no implicit coercion. Validation runs the full `validator` tree before any DB write.
@@ -284,7 +284,7 @@ The shell holds a dedicated single-threaded Tokio runtime. Every terminal method
 - FK cascade default is `RESTRICT` — must opt in to `cascade` per field
 - Field renames: annotate with `#[field(renamed_from = "old_name")]` or the differ treats it as drop+add
 - Admin panel is opt-in via `djogi = { features = ["admin"] }` — not bundled by default
-- **Specialized features (spatial, outbox publisher backends, vector, etc.) ship as feature flags within `djogi`, never as separate `djogi-*` crates.** The workspace includes crates for hard Rust boundaries (library, macros, CLI, shell runtime) and keeps admin as a planned carve-out: **djogi-maahi** is not in shipped components in this branch and remains a Phase 10 dependency target. The "one `cargo add djogi`" experience is preserved conceptually, but `features = ["admin"]` is not yet available until Maahi ships. The phrase "companion crate" in `docs/spec/` refers to user-side / app-side crates, not Djogi-maintained ones.
+- **Specialized features (spatial, outbox publisher backends, vector, etc.) ship as feature flags within `djogi`, never as separate `djogi-*` crates.** The workspace includes crates for hard Rust boundaries (library, macros, CLI, shell runtime) and keeps admin as a planned carve-out: **djogi-maahi** is not in shipped components in this branch and remains a dependency target. The "one `cargo add djogi`" experience is preserved conceptually, but `features = ["admin"]` is not yet available until Maahi ships. The phrase "companion crate" in `docs/spec/` refers to user-side / app-side crates, not Djogi-maintained ones.
 - `Djogi.toml` holds app config; secrets (DATABASE_URL, HEER_NODE_ID) live in env vars only
 
 ## Tests must use djogi structs, not raw escape hatches
@@ -293,7 +293,7 @@ The shell holds a dedicated single-threaded Tokio runtime. Every terminal method
 
 Every fixture constructs database state through djogi's typed surface:
 
-- `#[djogi::djogi_test(sync_models = [Model, ...])]` for table creation (the macro calls `djogi::testing::sync_models` for you, which projects the descriptor through `pk_default_sql` and dispatches DDL — the projection layer stays in the call chain)
+- `#[djogi::djogi_test(sync_models = [Model,...])]` for table creation (the macro calls `djogi::testing::sync_models` for you, which projects the descriptor through `pk_default_sql` and dispatches DDL — the projection layer stays in the call chain)
 - `Model::create` / `Model::save` / `Model::delete` for row writes
 - `Model::objects()` and the queryset for reads
 

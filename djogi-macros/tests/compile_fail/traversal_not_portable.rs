@@ -26,23 +26,23 @@ use djogi::prelude::*;
 #[model(table = "phase8eta_traversal_dept")]
 #[derive(Debug, Clone)]
 pub struct Department {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "phase8eta_traversal_emp", no_default)]
 #[derive(Debug, Clone)]
 pub struct Employee {
-    pub display_name: String,
-    pub department: ForeignKey<Department>,
+ pub display_name: String,
+ pub department: ForeignKey<Department>,
 }
 
 fn main() {
-    let punnu = Punnu::<Employee>::builder().build();
-    let _scope = punnu
-        .scope(Vec::<MemQ<Employee>>::new())
-        // Traversal `f.department().name()` is SQL-only after PR3. The
-        // root FK column accessor returns `DjogiField<_, ForeignKey<_>>`,
-        // so the compile error must surface when trying to continue into
-        // `.name()` as though it were a path-aware traversal handle.
-        .filter_basic(|f| f.department().name().eq("Sales"));
+ let punnu = Punnu::<Employee>::builder().build();
+ let _scope = punnu
+ .scope(Vec::<MemQ<Employee>>::new())
+  // Traversal `f.department().name()` is SQL-only after PR3. The
+  // root FK column accessor returns `DjogiField<_, ForeignKey<_>>`,
+  // so the compile error must surface when trying to continue into
+  // `.name()` as though it were a path-aware traversal handle.
+ .filter_basic(|f| f.department().name().eq("Sales"));
 }

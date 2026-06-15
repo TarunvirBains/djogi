@@ -11,7 +11,7 @@ Ten of the eleven surveyed systems default to running each migration inside its 
 | System | Default tx boundary | Opt-out mechanism | Auto-detect non-tx stmts? | Ledger INSERT placement | CREATE INDEX CONCURRENTLY support |
 |---|---|---|---|---|---|
 | **Django** | Per-migration `BEGIN`/`COMMIT` (Postgres only; conditional on `can_rollback_ddl`) | `atomic = False` on `Migration` class | No — `NotInTransactionMixin` raises error if called inside tx; user must manually set `atomic = False` | Inside migration transaction (same `BEGIN`/`COMMIT`) | Yes — `AddIndexConcurrently` in `django.contrib.postgres.operations`; requires `atomic = False` |
-| **Alembic** | Global transaction across all migrations when `transaction_per_migration=False` (default); per-migration when `True` — on Postgres only (`PostgresqlImpl.transactional_ddl = True`) | `transaction_per_migration=True` in `configure()` + `autocommit_block()` per statement | No — `autocommit_block()` is a user-placed escape hatch, not auto-detected | Inside transaction (version update after `migration_fn()` succeeds) | Yes — via `op.get_context().autocommit_block()` wrapping `op.execute("CREATE INDEX CONCURRENTLY ...")` |
+| **Alembic** | Global transaction across all migrations when `transaction_per_migration=False` (default); per-migration when `True` — on Postgres only (`PostgresqlImpl.transactional_ddl = True`) | `transaction_per_migration=True` in `configure()` + `autocommit_block()` per statement | No — `autocommit_block()` is a user-placed escape hatch, not auto-detected | Inside transaction (version update after `migration_fn()` succeeds) | Yes — via `op.get_context().autocommit_block()` wrapping `op.execute("CREATE INDEX CONCURRENTLY...")` |
 | **Flyway** | Per-migration transaction | `-- @executeInTransaction` directive in SQL file (or `executeInTransaction=false` in Java migration); auto-detected if regex matches | **Yes** — `PostgreSQLParser.detectCanExecuteInTransaction` scans every statement | Inside migration transaction for transactional migrations; SEPARATE `success=false` row written on failure for non-transactional | Yes — auto-detected, script flagged non-transactional, runs outside tx |
 | **Liquibase** | Per-changeset transaction (when `runInTransaction=true`, the default) | `runInTransaction="false"` attribute on `<changeSet>` | No — no detection; user must set attribute manually | **Separate transaction** — DDL commits, then ledger INSERT in its own commit | No auto-detect; user sets `runInTransaction="false"` manually |
 | **Prisma** | Per-migration (inferred from `applyMigrations` RPC semantics and `applied_steps_count` field) | Not surfaced at the TS level; engine handles internally. No user-facing opt-out directive found in the TypeScript clone | Unknown — Rust engine not fully visible; no evidence of auto-detection | Inside migration transaction (row written before DDL, `applied_steps_count` incremented per successful step) | Not documented; no evidence of support in this clone (medium confidence) |
@@ -32,7 +32,7 @@ Postgres supports DDL inside a transaction — `CREATE TABLE`, `ALTER TABLE`, `D
 - **`DROP INDEX CONCURRENTLY`** — same constraint. (SQLAlchemy: `lib/sqlalchemy/dialects/postgresql/base.py:2783-2786`; sea-query: `src/backend/postgres/index.rs:91-93`.)
 - **`REINDEX CONCURRENTLY` and `REINDEX DATABASE/SCHEMA/SYSTEM`** — Flyway detects these explicitly (`PostgreSQLParser.java:143-144`).
 - **`VACUUM`** and **`DISCARD ALL`** — Flyway regex at `PostgreSQLParser.java:145-146`.
-- **`ALTER TYPE ... ADD VALUE`** (pre-Postgres 12) — adding a value to an enum type cannot be seen within the same transaction. In Postgres 12+, the restriction is lifted for most cases but the behavior is subtler. Flyway dynamically queries server version to decide (`PostgreSQLParser.java:125-134`). SQLAlchemy's documentation notes this: `lib/sqlalchemy/dialects/postgresql/named_types.py` and the sqlalchemy.md synthesis note.
+- **`ALTER TYPE... ADD VALUE`** (pre-Postgres 12) — adding a value to an enum type cannot be seen within the same transaction. In Postgres 12+, the restriction is lifted for most cases but the behavior is subtler. Flyway dynamically queries server version to decide (`PostgreSQLParser.java:125-134`). SQLAlchemy's documentation notes this: `lib/sqlalchemy/dialects/postgresql/named_types.py` and the sqlalchemy.md synthesis note.
 - **`CREATE DATABASE`**, **`DROP DATABASE`**, **`CREATE TABLESPACE`**, **`CREATE SUBSCRIPTION`** — Flyway's regex catches all of these (`PostgreSQLParser.java:114-137`).
 - **`ALTER SYSTEM`** — Flyway also catches this.
 
@@ -58,16 +58,16 @@ The overwhelming majority position. Each migration gets its own `BEGIN`/`COMMIT`
 ```python
 # executor.py:254-257
 with self.connection.schema_editor(
-    atomic=migration.atomic
+  atomic=migration.atomic
 ) as schema_editor:
-    state = migration.apply(state, schema_editor)
+  state = migration.apply(state, schema_editor)
 ```
 
 The `atomic` attribute on the `Migration` class controls this:
 
 ```python
 class Migration:
-    atomic = True  # default
+  atomic = True # default
 ```
 
 Setting `atomic = False` bypasses the `SchemaEditor.__enter__` wrapping entirely. Django checks `connection.features.can_rollback_ddl` before opening the transaction — on Postgres this is `True`, so migrations are transactional by default.
@@ -76,9 +76,9 @@ Setting `atomic = False` bypasses the `SchemaEditor.__enter__` wrapping entirely
 
 ```rust
 if migration.metadata().run_in_transaction() {
-    self.transaction(apply_migration)?;
+  self.transaction(apply_migration)?;
 } else {
-    apply_migration(self)?;
+  apply_migration(self)?;
 }
 ```
 
@@ -92,10 +92,10 @@ run_in_transaction = false
 
 ```rust
 fn should_use_transaction(migration: &dyn crate::MigrationTrait, backend: DbBackend) -> bool {
-    match migration.use_transaction() {
-        Some(v) => v,
-        None => backend == DbBackend::Postgres,
-    }
+  match migration.use_transaction() {
+    Some(v) => v,
+    None => backend == DbBackend::Postgres,
+  }
 }
 ```
 
@@ -112,7 +112,7 @@ Opt-out: implement `use_transaction()` on the migration struct returning `Some(f
 ```python
 # ddl/postgresql.py:84
 class PostgresqlImpl(DefaultImpl):
-    transactional_ddl = True
+  transactional_ddl = True
 
 # runtime/environment.py:580-582 (configure() option)
 # transaction_per_migration defaults to False
@@ -125,8 +125,8 @@ This is maximally safe for all-or-nothing deploys but means `CREATE INDEX CONCUR
 ```python
 # runtime/migration.py:279-370
 def upgrade():
-    with op.get_context().autocommit_block():
-        op.execute("ALTER TYPE mood ADD VALUE 'soso'")
+  with op.get_context().autocommit_block():
+    op.execute("ALTER TYPE mood ADD VALUE 'soso'")
 ```
 
 The docstring warns that the migration preceding the block is committed before the operation completes; using `transaction_per_migration=True` is strongly recommended when using `autocommit_block()`.
@@ -153,13 +153,13 @@ Only **Flyway** does this, via `PostgreSQLParser.detectCanExecuteInTransaction` 
 
 ```java
 private static final Pattern CREATE_INDEX_CONCURRENTLY_REGEX =
-    Pattern.compile("^(CREATE|DROP)( UNIQUE)? INDEX CONCURRENTLY");
+  Pattern.compile("^(CREATE|DROP)( UNIQUE)? INDEX CONCURRENTLY");
 private static final Pattern REINDEX_REGEX =
-    Pattern.compile("^REINDEX( VERBOSE)? (SCHEMA|DATABASE|SYSTEM)");
+  Pattern.compile("^REINDEX( VERBOSE)? (SCHEMA|DATABASE|SYSTEM)");
 private static final Pattern VACUUM_REGEX = Pattern.compile("^VACUUM");
 private static final Pattern DISCARD_ALL_REGEX = Pattern.compile("^DISCARD ALL");
 private static final Pattern ALTER_TYPE_ADD_VALUE_REGEX =
-    Pattern.compile("^ALTER TYPE( .*)? ADD VALUE");
+  Pattern.compile("^ALTER TYPE(.*)? ADD VALUE");
 ```
 
 If **any** statement in the file matches, the entire migration is flagged `canExecuteInTransaction=false`. Flyway also queries the server version to conditionally apply the `ALTER TYPE ADD VALUE` rule (only non-transactional on Postgres < 12).
@@ -169,9 +169,9 @@ When mixing transactional and non-transactional migrations in one deployment bat
 ```java
 // DbMigrate.java:323-332
 if (!configuration.isMixed() && executeGroupInTransaction != inTransaction) {
-    throw new FlywayMigrateException(entry.getKey(),
-        "Detected both transactional and non-transactional migrations within the same migration group"
-        + " (even though mixed is false)...");
+  throw new FlywayMigrateException(entry.getKey(),
+    "Detected both transactional and non-transactional migrations within the same migration group"
+    + " (even though mixed is false)...");
 }
 ```
 
@@ -188,26 +188,26 @@ if (!configuration.isMixed() && executeGroupInTransaction != inTransaction) {
 ```python
 # django/db/migrations/migration.py (class attribute)
 class Migration(migrations.Migration):
-    atomic = False
+  atomic = False
 
-    operations = [
-        migrations.AddIndexConcurrently(
-            model_name='mymodel',
-            index=models.Index(fields=['status'], name='mymodel_status_idx'),
-        ),
-    ]
+  operations = [
+    migrations.AddIndexConcurrently(
+      model_name='mymodel',
+      index=models.Index(fields=['status'], name='mymodel_status_idx'),
+    ),
+  ]
 ```
 
 The `atomic = False` attribute is checked in `executor.py:254-257` and passed to `SchemaEditor`. The `AddIndexConcurrently` operation also carries `atomic = False` at the operation level and will raise `NotSupportedError` if called inside a transaction block (`django/contrib/postgres/operations.py:114-120`):
 
 ```python
 class NotInTransactionMixin:
-    def _ensure_not_in_transaction(self, schema_editor):
-        if schema_editor.connection.in_atomic_block:
-            raise NotSupportedError(
-                "The %s operation cannot be executed inside a transaction "
-                "(set atomic = False on the migration)." % self.__class__.__name__
-            )
+  def _ensure_not_in_transaction(self, schema_editor):
+    if schema_editor.connection.in_atomic_block:
+      raise NotSupportedError(
+        "The %s operation cannot be executed inside a transaction "
+        "(set atomic = False on the migration)." % self.__class__.__name__
+      )
 ```
 
 ### Alembic: `transaction_per_migration` + `autocommit_block()`
@@ -215,15 +215,15 @@ class NotInTransactionMixin:
 ```python
 # env.py — configure() call
 context.configure(
-    connection=connection,
-    target_metadata=target_metadata,
-    transaction_per_migration=True,   # isolate each migration
+  connection=connection,
+  target_metadata=target_metadata,
+  transaction_per_migration=True,  # isolate each migration
 )
 
 # Inside a migration script
 def upgrade():
-    with op.get_context().autocommit_block():
-        op.execute("CREATE INDEX CONCURRENTLY ...")
+  with op.get_context().autocommit_block():
+    op.execute("CREATE INDEX CONCURRENTLY...")
 ```
 
 The `autocommit_block()` context manager sets `isolation_level="AUTOCOMMIT"` on the connection (`runtime/migration.py:344-346`). The docstring warns: "The migration preceding the block is committed before the operation completes."
@@ -248,7 +248,7 @@ The `--create-only` flag allows generating the migration SQL without applying it
 
 ```xml
 <changeSet id="1" author="alice" runInTransaction="false">
-    <sql>CREATE INDEX CONCURRENTLY idx_foo ON bar (col)</sql>
+  <sql>CREATE INDEX CONCURRENTLY idx_foo ON bar (col)</sql>
 </changeSet>
 ```
 
@@ -257,10 +257,10 @@ Source: `ChangeSet.java:438`, `ChangeSet.java:752, 868-870`.
 ```java
 // ChangeSet.java:752
 database.setAutoCommit(!runInTransaction);
-// ...
+//...
 // ChangeSet.java:868-870
 if (runInTransaction) {
-    database.commit();
+  database.commit();
 }
 ```
 
@@ -282,18 +282,18 @@ For Rust migrations (not SQL files): `RustMigration::without_transaction()` at `
 ```rust
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
-    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager.execute(
-            Statement::from_string(
-                DbBackend::Postgres,
-                "CREATE INDEX CONCURRENTLY ...".to_string(),
-            )
-        ).await
-    }
+  async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+    manager.execute(
+      Statement::from_string(
+        DbBackend::Postgres,
+        "CREATE INDEX CONCURRENTLY...".to_string(),
+      )
+    ).await
+  }
 
-    fn use_transaction(&self) -> Option<bool> {
-        Some(false)   // opt out of automatic transaction
-    }
+  fn use_transaction(&self) -> Option<bool> {
+    Some(false)  // opt out of automatic transaction
+  }
 }
 ```
 
@@ -313,31 +313,31 @@ This is the clear majority pattern:
 
 - **Django**: `executor.py:258-262` — the `record_migration()` call runs after `migration.apply()` returns, inside the same `SchemaEditor` context manager that holds the `BEGIN`/`COMMIT`. The timestamp in the ledger reflects completion after `deferred_sql` drains (SURPRISE 2 in the Django project note).
 - **Diesel**: `migration_harness.rs:176-183` — both the migration SQL and the `INSERT INTO __diesel_schema_migrations` are inside the `self.transaction(apply_migration)` closure. Atomically committed or rolled back together.
-- **SeaORM**: `exec.rs:254-266` — `migration.up(&txn_manager).await?` then `insert_migration_record(&transaction, ...).await?` then `transaction.commit().await?`. All three steps in one transaction.
+- **SeaORM**: `exec.rs:254-266` — `migration.up(&txn_manager).await?` then `insert_migration_record(&transaction,...).await?` then `transaction.commit().await?`. All three steps in one transaction.
 - **Flyway** (transactional path): `DbMigrate.java:282` — the `ExecutionTemplate.execute()` call wraps `doMigrateGroup()`, which includes the ledger write inside the same transactional group. The ledger row is written via `schemaHistory.addAppliedMigration(...)` at `DbMigrate.java:419-420` — technically after the migration body but inside the same `ExecutionTemplate` wrapper (one transaction).
 
-  Important nuance from the Flyway note: there is a small window where on a crash between the DDL commit and the `addAppliedMigration` call (the `finally`-adjacent code path), the DDL could be applied without a ledger row. For transactional migrations this is not an issue because the history write is inside the same transaction.
+ Important nuance from the Flyway note: there is a small window where on a crash between the DDL commit and the `addAppliedMigration` call (the `finally`-adjacent code path), the DDL could be applied without a ledger row. For transactional migrations this is not an issue because the history write is inside the same transaction.
 
 ### Separate transaction (two-commit pattern)
 
 - **refinery** (always): `traits/sync.rs:85-99` — migration SQL and ledger INSERT are two separate `execute` calls, each wrapped by the driver in its own transaction. A crash between them orphans the migration.
-- **Liquibase** (always): `StandardChangeLogHistoryService.java:399-401` — the ledger INSERT is committed in its own transaction after the DDL transaction commits. Explicit two-transaction topology: `BEGIN; ...DDL...; COMMIT; BEGIN; INSERT INTO databasechangelog; COMMIT;`. The Liquibase project note confirms: "There is a window between the DDL commit and the ledger insert where a crash leaves the DDL applied but the ledger missing the row."
+- **Liquibase** (always): `StandardChangeLogHistoryService.java:399-401` — the ledger INSERT is committed in its own transaction after the DDL transaction commits. Explicit two-transaction topology: `BEGIN;...DDL...; COMMIT; BEGIN; INSERT INTO databasechangelog; COMMIT;`. The Liquibase project note confirms: "There is a window between the DDL commit and the ledger insert where a crash leaves the DDL applied but the ledger missing the row."
 - **cot** (no transaction at all): DDL operations and the ledger INSERT are independent `execute_schema()` calls. No transaction wraps either.
 
 ### Conditional — inside if transactional, outside if not
 
 - **Flyway** (non-transactional path): When the migration is non-transactional (either auto-detected or specified), a failure during execution causes Flyway to explicitly write a `success=false` row to the ledger (`DbMigrate.java:258-261`). The ledger write is a separate operation outside any transaction because there is no wrapping transaction. This is the cleanest handling of failure in a non-transactional context among all surveyed tools.
 
-  ```java
-  // DbMigrate.java:254-261 — non-transactional failure path
-  } else {
-      LOG.error(failedMsg + " Please restore backups and roll back database and code!");
-      schemaHistory.addAppliedMigration(
-          migration.getVersion(), migration.getDescription(),
-          migration.getType(), migration.getScript(),
-          migration.getChecksum(), executionTime, false /* success=false */);
-  }
-  ```
+ ```java
+ // DbMigrate.java:254-261 — non-transactional failure path
+ } else {
+   LOG.error(failedMsg + " Please restore backups and roll back database and code!");
+   schemaHistory.addAppliedMigration(
+     migration.getVersion(), migration.getDescription(),
+     migration.getType(), migration.getScript(),
+     migration.getChecksum(), executionTime, false /* success=false */);
+ }
+ ```
 
 - **Prisma** (inferred): `record_migration_started` writes the row before DDL executes; `applied_steps_count` is incremented per successful step; `finished_at` is written on completion. Failed rows have `finished_at IS NULL AND rolled_back_at IS NULL`; after `markMigrationRolledBack`, `rolled_back_at` is set. The row is never deleted. This is the richest post-failure state among all surveyed systems.
 
@@ -438,7 +438,7 @@ When a migration SQL file contains multiple statements, the question is whether 
 
 ### Default: per-migration transaction
 
-Each migration pair (`NNNN_name_up.sql`) runs inside a single `BEGIN ... COMMIT`. This matches Django, Diesel, SeaORM, Flyway, and the opt-in Alembic mode. The ledger INSERT is inside the same transaction.
+Each migration pair (`NNNN_name_up.sql`) runs inside a single `BEGIN... COMMIT`. This matches Django, Diesel, SeaORM, Flyway, and the opt-in Alembic mode. The ledger INSERT is inside the same transaction.
 
 Rationale: on failure, the DB returns to the pre-migration state and the ledger is clean. No repair step needed. Safe to retry immediately.
 
@@ -470,7 +470,7 @@ The closest analogue is Flyway's `-- @executeInTransaction false` (Teams edition
 | Transactional (default) | Inside migration transaction | Roll back together on failure; clean ledger on retry |
 | Non-transactional (opt-out) | Separate write after DDL succeeds | DDL cannot be in a transaction; ledger INSERT must be a separate commit |
 
-For non-transactional migrations, use `INSERT ... ON CONFLICT (version) DO UPDATE SET applied_at = EXCLUDED.applied_at` to make the ledger write idempotent — in case the DDL succeeded and the ledger INSERT fails on first attempt (network drop, etc.).
+For non-transactional migrations, use `INSERT... ON CONFLICT (version) DO UPDATE SET applied_at = EXCLUDED.applied_at` to make the ledger write idempotent — in case the DDL succeeded and the ledger INSERT fails on first attempt (network drop, etc.).
 
 For non-transactional failure, write a `failed_at` marker to the ledger immediately upon catching the error, before propagating. This enables:
 - Operators to see the failure without querying DB catalog.
@@ -490,11 +490,11 @@ Since Djogi does not plan to auto-detect these statements (v0.1.0), document the
 | `REINDEX CONCURRENTLY` | Yes | Postgres 12+ |
 | `REINDEX DATABASE` / `REINDEX SCHEMA` | Yes | Cannot run inside a transaction |
 | `VACUUM` | Yes | Never runs inside a transaction |
-| `ALTER TYPE ... ADD VALUE` | Yes (Postgres < 12) / conditional (Postgres ≥ 12) | Value not visible within same TX in PG < 12 |
+| `ALTER TYPE... ADD VALUE` | Yes (Postgres < 12) / conditional (Postgres ≥ 12) | Value not visible within same TX in PG < 12 |
 | `CREATE DATABASE` / `DROP DATABASE` | Yes | Rarely needed in migrations |
 | `ALTER SYSTEM` | Yes | System-level, not schema migration |
 
-For `ALTER TYPE ... ADD VALUE` on Postgres 18 (Djogi's minimum), the restriction is effectively lifted within a transaction block for most cases, but the migration should still be marked non-transactional if the new value needs to be visible in subsequent statements within the same script. Emit a doc comment in generated migrations containing enum additions.
+For `ALTER TYPE... ADD VALUE` on Postgres 18 (Djogi's minimum), the restriction is effectively lifted within a transaction block for most cases, but the migration should still be marked non-transactional if the new value needs to be visible in subsequent statements within the same script. Emit a doc comment in generated migrations containing enum additions.
 
 ### Auto-detect: defer to v0.2
 
@@ -509,7 +509,7 @@ Flyway's regex-based detection is the only implementation in the field. It is va
 
 1. **`CREATE INDEX CONCURRENTLY` inside a `-- djogi:no-transaction` migration with multiple statements**: if the file contains both `CREATE INDEX CONCURRENTLY` and a regular DML statement (e.g., `INSERT INTO`), the latter commits immediately. Define clearly: non-transactional files should contain only one DDL statement. Enforce this as a lint warning (`W: non-transactional migration contains multiple statements`).
 
-2. **`ALTER TYPE ... ADD VALUE` on Postgres 18**: Postgres 12 relaxed most restrictions on `ALTER TYPE ... ADD VALUE` inside transactions. Postgres 18 (Djogi's minimum) may further relax this. Document the current Postgres 18 behavior explicitly before v0.1.0 ships. Specifically: is the new enum value visible within the same transaction that added it? If yes, `ALTER TYPE ... ADD VALUE` no longer requires `-- djogi:no-transaction` on Postgres 18. This should be tested.
+2. **`ALTER TYPE... ADD VALUE` on Postgres 18**: Postgres 12 relaxed most restrictions on `ALTER TYPE... ADD VALUE` inside transactions. Postgres 18 (Djogi's minimum) may further relax this. Document the current Postgres 18 behavior explicitly before v0.1.0 ships. Specifically: is the new enum value visible within the same transaction that added it? If yes, `ALTER TYPE... ADD VALUE` no longer requires `-- djogi:no-transaction` on Postgres 18. This should be tested.
 
 3. **Advisory lock and non-transactional migrations**: Djogi's advisory lock (`pg_advisory_lock`) is session-scoped, not transaction-scoped. This means the lock persists across the gap between the non-transactional DDL commit and the subsequent ledger INSERT. This is the correct behavior — the lock should not release between the two commits. Verify the lock acquisition point is before the first DDL statement and release is after the ledger INSERT.
 

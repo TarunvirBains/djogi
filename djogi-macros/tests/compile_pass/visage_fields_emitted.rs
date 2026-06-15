@@ -28,33 +28,33 @@ use djogi::prelude::*;
 #[model(table = "users_t7_visage_fields")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(expose(public, self_view, admin, export))]
-    pub display_name: String,
-    #[field(expose(self_view, admin, export))]
-    pub email: String,
-    #[field(expose(none))]
-    pub password_hash: String,
+ #[field(expose(public, self_view, admin, export))]
+ pub display_name: String,
+ #[field(expose(self_view, admin, export))]
+ pub email: String,
+ #[field(expose(none))]
+ pub password_hash: String,
 }
 
 fn main() {
-    // UserPublicFields exists — emitted alongside UserPublic. Default
-    // construction gives the root handle (no SQL-alias path).
-    let public: UserPublicFields = UserPublicFields::default();
+ // UserPublicFields exists — emitted alongside UserPublic. Default
+ // construction gives the root handle (no SQL-alias path).
+ let public: UserPublicFields = UserPublicFields::default();
 
-    // `display_name` IS in public scope → accessor is emitted.
-    let _dn: FieldRef<User, String> = public.display_name();
+ // `display_name` IS in public scope → accessor is emitted.
+ let _dn: FieldRef<User, String> = public.display_name();
 
-    // `email` IS in self_view / admin / export scopes → accessors emitted
-    // on those Fields types. Same method-on-handle shape.
-    let _em_sv: FieldRef<User, String> = UserSelfViewFields::default().email();
-    let _em_ad: FieldRef<User, String> = UserAdminFields::default().email();
-    let _em_ex: FieldRef<User, String> = UserExportFields::default().email();
+ // `email` IS in self_view / admin / export scopes → accessors emitted
+ // on those Fields types. Same method-on-handle shape.
+ let _em_sv: FieldRef<User, String> = UserSelfViewFields::default().email();
+ let _em_ad: FieldRef<User, String> = UserAdminFields::default().email();
+ let _em_ex: FieldRef<User, String> = UserExportFields::default().email();
 
-    // Framework columns (id / created_at / updated_at) are always exposed.
-    let _id: FieldRef<User, HeerIdDesc> = public.id();
-    let _ca: FieldRef<User, DateTime> = public.created_at();
+ // Framework columns (id / created_at / updated_at) are always exposed.
+ let _id: FieldRef<User, HeerIdDesc> = public.id();
+ let _ca: FieldRef<User, DateTime> = public.created_at();
 
-    // Placeholder {Visage}Filter types also exist.
-    let _filter: UserPublicFilter = UserPublicFilter;
-    let _filter_sv: UserSelfViewFilter = UserSelfViewFilter;
+ // Placeholder {Visage}Filter types also exist.
+ let _filter: UserPublicFilter = UserPublicFilter;
+ let _filter_sv: UserSelfViewFilter = UserSelfViewFilter;
 }

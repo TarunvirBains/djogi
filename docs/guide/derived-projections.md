@@ -18,25 +18,25 @@ use djogi::prelude::*;
 #[derive(Model, Debug, Clone)]
 #[model(table = "consignments")]
 #[derived(
-    name = facility_site,
-    ty = Site,
-    scopes = [public, admin, export],
-    sql = "CASE WHEN direction = 'inbound' THEN inbound_site ELSE outbound_site END",
-    rust = "match model.direction {
-        Direction::Inbound => model.inbound_site.clone(),
-        _ => model.outbound_site.clone(),
-    }",
-    doc = "Facility-side site for this consignment.",
+ name = facility_site,
+ ty = Site,
+ scopes = [public, admin, export],
+ sql = "CASE WHEN direction = 'inbound' THEN inbound_site ELSE outbound_site END",
+ rust = "match model.direction {
+ Direction::Inbound => model.inbound_site.clone(),
+ _ => model.outbound_site.clone(),
+ }",
+ doc = "Facility-side site for this consignment.",
 )]
 pub struct Consignment {
-    #[field(expose(public, admin, export))]
-    pub inbound_site: Site,
+ #[field(expose(public, admin, export))]
+ pub inbound_site: Site,
 
-    #[field(expose(public, admin, export))]
-    pub outbound_site: Site,
+ #[field(expose(public, admin, export))]
+ pub outbound_site: Site,
 
-    #[field(expose(public, admin, export))]
-    pub direction: Direction,
+ #[field(expose(public, admin, export))]
+ pub direction: Direction,
 }
 ```
 
@@ -66,7 +66,7 @@ Every derived field has two implementations:
 
 - `sql` runs in Postgres when fetching through a visage queryset.
 - `rust` runs in memory when converting from a `&Model` with
-  `From` or `TryFrom`.
+ `From` or `TryFrom`.
 
 Djogi does not translate between the two. The adopter is responsible
 for keeping them equivalent. Put the generated parity helper in tests
@@ -75,9 +75,9 @@ for models where both paths matter:
 ```rust
 let in_memory: ConsignmentPublic = (&consignment).into();
 let from_db: ConsignmentPublic =
-    ConsignmentPublic::filter(|f| f.id().eq(consignment.id))
-        .fetch_one(&mut ctx)
-        .await?;
+ ConsignmentPublic::filter(|f| f.id().eq(consignment.id))
+.fetch_one(&mut ctx)
+.await?;
 
 in_memory.assert_derived_parity(&from_db)?;
 ```
@@ -102,9 +102,9 @@ let in_memory: ConsignmentPublic = (&consignment).into();
 let target_id = consignment.id;
 
 assert_derived_parity_fetched(&in_memory, || async {
-    ConsignmentPublic::filter(|f| f.id().eq(target_id))
-        .fetch_one(&mut ctx)
-        .await
+ ConsignmentPublic::filter(|f| f.id().eq(target_id))
+.fetch_one(&mut ctx)
+.await
 })
 .await?;
 ```
@@ -125,9 +125,9 @@ an unknown visage type bound on `djogi::testing::DerivedParity`:
 use djogi::testing::DerivedParity;
 
 fn compare_pair<V: DerivedParity>(a: &V, b: &V)
-    -> Result<(), djogi::testing::DerivedParityError>
+ -> Result<(), djogi::testing::DerivedParityError>
 {
-    a.assert_derived_parity(b)
+ a.assert_derived_parity(b)
 }
 ```
 
@@ -159,11 +159,11 @@ Use `Option<T>` in `ty` when the SQL expression may return `NULL`:
 
 ```rust
 #[derived(
-    name = nickname_or_label,
-    ty = Option<String>,
-    scopes = [public],
-    sql = "NULLIF(nickname, '')",
-    rust = "model.nickname.clone().filter(|s| !s.is_empty())",
+ name = nickname_or_label,
+ ty = Option<String>,
+ scopes = [public],
+ sql = "NULLIF(nickname, '')",
+ rust = "model.nickname.clone().filter(|s| !s.is_empty())",
 )]
 ```
 
@@ -201,7 +201,7 @@ Two rejected forms that adopters from the early Path A draft may
 encounter:
 
 ```rust
-// REJECTED — `expose = ...` inside `#[computed(...)]`
+// REJECTED — `expose =...` inside `#[computed(...)]`
 #[computed(sql = "base_price * 2", expose = "public")]
 pub double_price: f64,
 
@@ -242,7 +242,7 @@ inventory collection from `ModelDescriptor`. Documentation
 generators and framework-side lints walk that collection via
 `inventory::iter::<VisageDescriptor>()`. Each `VisageDescriptor`
 carries the `&'static [DerivedProjection]` slice with per-entry
-`ty_path` (token-string form of the `ty = ...` source spelling),
+`ty_path` (token-string form of the `ty =...` source spelling),
 `sql`, `rust`, optional `doc`, and the originating `scopes` list.
 The collection is structurally separate from `ModelDescriptor` and
 `EnumDescriptor`, so migration / snapshot / `build.rs` paths never

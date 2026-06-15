@@ -17,7 +17,7 @@
 //!
 //! Visage approach: the projection lists only the cheap columns
 //! (`id`, `name`, `estimated_population`). For the expensive aggregate
-//! (`herd_size` —  `COUNT(*) FROM elephants WHERE herd_id = $1`), the
+//! (`herd_size` — `COUNT(*) FROM elephants WHERE herd_id = $1`), the
 //! visage implements a trait that runs the side query when the caller
 //! actually asks for it.
 //!
@@ -64,7 +64,7 @@ pub trait HerdSizeQuery {
 }
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION: temporary Phase 8.5 debt; this count should move to the typed aggregate/query surface rather than remain a raw-SQL example.
+// JUSTIFICATION: temporary debt; this count should move to the typed aggregate/query surface rather than remain a raw-SQL example.
 impl HerdSizeQuery for HerdSummary {
     async fn herd_size(&self, ctx: &mut DjogiContext) -> Result<i64, DjogiError> {
         // Current-state raw-SQL debt. The typed replacement is

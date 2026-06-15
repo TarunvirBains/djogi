@@ -1,4 +1,4 @@
-//! Reference outbox relay binary — .
+//! Reference outbox relay binary —.
 //! Polls one or more outbox tables, claims pending rows, publishes them via a
 //! configured [`Publisher`], and marks them published or failed. Stale
 //! `processing` rows (abandoned by crashed workers) are recovered back to
@@ -20,11 +20,11 @@
 //! # Runtime behaviour
 //! Each iteration:
 //! 1. For every configured outbox table, opens an atomic scope and claims a
-//!    batch of pending rows.
+//! batch of pending rows.
 //! 2. Publishes each row via the configured publisher.
 //! 3. Marks each row published (success) or failed (error).
 //! 4. After the atomic scope, calls `recover_stale` outside any transaction
-//!    to reset rows whose leases have expired.
+//! to reset rows whose leases have expired.
 //! 5. Sleeps for `OUTBOX_POLL_MS` before the next iteration.
 //! # Note on long-running loop
 //! This binary is intentionally a reference implementation. Production

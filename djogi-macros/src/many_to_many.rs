@@ -4,27 +4,27 @@
 //! A function-like macro that emits, for a single direction of a
 //! many-to-many relationship:
 //! 1. `impl ::djogi::relation::ManyToMany<Target> for Source` with the
-//!    associated `Through` type, the `RELATION` const, the `this_fk` /
-//!    `that_fk` accessors, and the three async method bodies
-//!    (`related` / `add_related` / `remove_related`) matching the
-//!    trait contract (see [`djogi::relation::many_to_many`]).
+//! associated `Through` type, the `RELATION` const, the `this_fk` /
+//! `that_fk` accessors, and the three async method bodies
+//! (`related` / `add_related` / `remove_related`) matching the
+//! trait contract (see [`djogi::relation::many_to_many`]).
 //! 2. A per-relation trait `pub trait {Source}{Method-pascal}ManyToManyRelation`
-//!    plus `impl {Trait} for {Source}` carrying
-//!    `pub async fn <relation>(&self, ctx) -> Vec<Target>`, so users write
-//!    the ergonomic `person.groups(&mut ctx).await` instead of the fully-
-//!    qualified trait call. The accessor delegates straight to
-//!    `<Self as ManyToMany<Target>>::related` — no independent query logic
-//!    keeping the trait body the single source of truth.
-//!    Trait-based emission (vs an inherent `impl Source { ... }` block)
-//!    is what allows the macro to be invoked in a downstream crate when
-//!    the source model lives upstream — see GH issue #39 for the
-//!    coherence-rule (E0116) rationale, also documented in
-//!    `reverse_relation.rs`.
+//! plus `impl {Trait} for {Source}` carrying
+//! `pub async fn <relation>(&self, ctx) -> Vec<Target>`, so users write
+//! the ergonomic `person.groups(&mut ctx).await` instead of the fully-
+//! qualified trait call. The accessor delegates straight to
+//! `<Self as ManyToMany<Target>>::related` — no independent query logic
+//! keeping the trait body the single source of truth.
+//! Trait-based emission (vs an inherent `impl Source {... }` block)
+//! is what allows the macro to be invoked in a downstream crate when
+//! the source model lives upstream — see GH issue #39 for the
+//! coherence-rule (E0116) rationale, also documented in
+//! `reverse_relation.rs`.
 //! 3. An `inventory::submit!` block registering a
-//!    [`djogi::relation::registry::ReverseRelationMarker`] with
-//!    `RelationKind::M2M` so 's projection generator can walk
-//!    every declared M2M direction in the same pass it walks
-//!    reverse-FK / reverse-O2O accessors.
+//! [`djogi::relation::registry::ReverseRelationMarker`] with
+//! `RelationKind::M2M` so 's projection generator can walk
+//! every declared M2M direction in the same pass it walks
+//! reverse-FK / reverse-O2O accessors.
 //! # Why one direction per invocation
 //! M2M relationships are symmetric at the data layer (the junction row
 //! carries both FK columns) but asymmetric at the type layer: each
@@ -37,84 +37,84 @@
 //! independently — symmetric invocations read as symmetric prose:
 //! ```ignore
 //! many_to_many!(Person, Group, through = PersonGroup,
-//!               this_fk = person_id, that_fk = group_id,
-//!               relation = "groups");
+//!    this_fk = person_id, that_fk = group_id,
+//!    relation = "groups");
 //! many_to_many!(Group, Person, through = PersonGroup,
-//!               this_fk = group_id,  that_fk = person_id,
-//!               relation = "members");
+//!    this_fk = group_id, that_fk = person_id,
+//!    relation = "members");
 //! ```
 //! # How (emitted shape)
 //! For `many_to_many!(Source, Target, through = Through, this_fk = a_id, that_fk = b_id, relation = "name");`:
 //! ```ignore
 //! impl ::djogi::relation::ManyToMany<Target> for Source {
-//!     type Through = Through;
-//!     const RELATION: &'static str = "name";
-//!     fn this_fk() -> &'static str { "a_id" }
-//!     fn that_fk() -> &'static str { "b_id" }
+//!  type Through = Through;
+//!  const RELATION: &'static str = "name";
+//!  fn this_fk() -> &'static str { "a_id" }
+//!  fn that_fk() -> &'static str { "b_id" }
 //!
-//!     async fn related<'ctx>(
-//!         &'ctx self,
-//!         ctx: &'ctx mut DjogiContext,
-//!     ) -> Result<Vec<Target>, ::djogi::DjogiError>
-//!     {
-//!         let through_rows: Vec<Through> = Through::objects()
-//!             .filter(move |f| f.a_id().eq(ForeignKey::new(self.pk_value().clone())))
-//!             .fetch_all(ctx).await?;
-//!         let mut out = Vec::with_capacity(through_rows.len());
-//!         for row in &through_rows {
-//!             out.push(Target::get(ctx, row.b_id.key()).await?);
-//!         }
-//!         Ok(out)
-//!     }
+//!  async fn related<'ctx>(
+//!   &'ctx self,
+//!   ctx: &'ctx mut DjogiContext,
+//!  ) -> Result<Vec<Target>, ::djogi::DjogiError>
+//!  {
+//!   let through_rows: Vec<Through> = Through::objects()
+//!   .filter(move |f| f.a_id().eq(ForeignKey::new(self.pk_value().clone())))
+//!   .fetch_all(ctx).await?;
+//!   let mut out = Vec::with_capacity(through_rows.len());
+//!   for row in &through_rows {
+//!    out.push(Target::get(ctx, row.b_id.key()).await?);
+//!   }
+//!   Ok(out)
+//!  }
 //!
-//!     async fn add_related<'ctx>(
-//!         &'ctx self,
-//!         ctx: &'ctx mut DjogiContext,
-//!         target: &'ctx Target,
-//!         extras: Through,
-//!     ) -> Result<Through, ::djogi::DjogiError>
-//!     {
-//!         let junction = Through {
-//!             a_id: ForeignKey::new(self.pk_value().clone()),
-//!             b_id: ForeignKey::new(target.pk_value().clone()),
-//!             ..extras
-//!         };
-//!         Through::create(ctx, junction).await
-//!     }
+//!  async fn add_related<'ctx>(
+//!   &'ctx self,
+//!   ctx: &'ctx mut DjogiContext,
+//!   target: &'ctx Target,
+//!   extras: Through,
+//!  ) -> Result<Through, ::djogi::DjogiError>
+//!  {
+//!   let junction = Through {
+//!    a_id: ForeignKey::new(self.pk_value().clone()),
+//!    b_id: ForeignKey::new(target.pk_value().clone()),
+//!   ..extras
+//!   };
+//!   Through::create(ctx, junction).await
+//!  }
 //!
-//!     async fn remove_related<'ctx>(
-//!         &'ctx self,
-//!         ctx: &'ctx mut DjogiContext,
-//!         target: &'ctx Target,
-//!     ) -> Result<u64, ::djogi::DjogiError>
-//!     {
-//!         Through::objects()
-//!             .filter(move |f| f.a_id().eq(ForeignKey::new(self.pk_value().clone())))
-//!             .filter(move |f| f.b_id().eq(ForeignKey::new(target.pk_value().clone())))
-//!             .delete(ctx).await
-//!     }
+//!  async fn remove_related<'ctx>(
+//!   &'ctx self,
+//!   ctx: &'ctx mut DjogiContext,
+//!   target: &'ctx Target,
+//!  ) -> Result<u64, ::djogi::DjogiError>
+//!  {
+//!   Through::objects()
+//!   .filter(move |f| f.a_id().eq(ForeignKey::new(self.pk_value().clone())))
+//!   .filter(move |f| f.b_id().eq(ForeignKey::new(target.pk_value().clone())))
+//!   .delete(ctx).await
+//!  }
 //! }
 //!
 //! pub trait SourceNameManyToManyRelation {
-//!     fn name<'ctx>(
-//!         &'ctx self,
-//!         ctx: &'ctx mut DjogiContext,
-//!     ) -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'ctx;
+//!  fn name<'ctx>(
+//!   &'ctx self,
+//!   ctx: &'ctx mut DjogiContext,
+//!  ) -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'ctx;
 //! }
 //!
 //! impl SourceNameManyToManyRelation for Source {
-//!     fn name<'ctx>(
-//!         &'ctx self,
-//!         ctx: &'ctx mut DjogiContext,
-//!     ) -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'ctx
-//!     {
-//!         <Self as ManyToMany<Target>>::related(self, ctx)
-//!     }
+//!  fn name<'ctx>(
+//!   &'ctx self,
+//!   ctx: &'ctx mut DjogiContext,
+//!  ) -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'ctx
+//!  {
+//!   <Self as ManyToMany<Target>>::related(self, ctx)
+//!  }
 //! }
 //!
 //! inventory::submit! {
-//!     ReverseRelationMarker { kind: M2M, source: "Source", name: "name",
-//!                             target: "Target", via: "a_id" }
+//!  ReverseRelationMarker { kind: M2M, source: "Source", name: "name",
+//!        target: "Target", via: "a_id" }
 //! }
 //! ```
 //! The body shape mirrors `many_to_many_hand_impl.rs` exactly — that
@@ -127,39 +127,39 @@
 //! them to valid ident shapes at parse time. They flow into emitted
 //! code in three positions:
 //! - As Rust identifiers on the `{Through}Fields` handle
-//!   (e.g. `f.a_id()` / `f.b_id()`) — validated by rustc at macro
-//!   expansion time; a typo produces `no method named ... found`.
+//! (e.g. `f.a_id()` / `f.b_id()`) — validated by rustc at macro
+//! expansion time; a typo produces `no method named... found`.
 //! - As Rust struct-literal field names inside `add_related`'s
-//!   junction construction — same rustc validation.
+//! junction construction — same rustc validation.
 //! - As `&'static str` values returned by `RELATION` / `this_fk()` /
-//!   `that_fk()`. All three are routed through
-//!   [`djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident`]
-//!   at const-eval time; `relation` and `this_fk` additionally flow
-//!   through the inventory marker constructor. That panic fires before
-//!   the marker reaches the inventory slice, so any hostile or
-//!   `__djogi_*`-reserved string turns into a compile error pointing at
-//!   the macro invocation.
-//!   The `relation` string is also validated through the same const
-//!   path — it names both a Rust method on `Source` and a registry
-//!   `name` field, so the unquoted-identifier rule (letter / underscore
-//!   start, alphanumeric-or-underscore continuation, ≤ 63 bytes, not a
-//!   reserved Postgres keyword) is required for both positions.
+//! `that_fk()`. All three are routed through
+//! [`djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident`]
+//! at const-eval time; `relation` and `this_fk` additionally flow
+//! through the inventory marker constructor. That panic fires before
+//! the marker reaches the inventory slice, so any hostile or
+//! `__djogi_*`-reserved string turns into a compile error pointing at
+//! the macro invocation.
+//! The `relation` string is also validated through the same const
+//! path — it names both a Rust method on `Source` and a registry
+//! `name` field, so the unquoted-identifier rule (letter / underscore
+//! start, alphanumeric-or-underscore continuation, ≤ 63 bytes, not a
+//! reserved Postgres keyword) is required for both positions.
 //! # Where
 //! - [`djogi::relation::many_to_many::ManyToMany`] — the trait this
-//!   macro impls.
+//! macro impls.
 //! - [`djogi::relation::registry::ReverseRelationMarker`] — the
-//!   inventory record submitted.
+//! inventory record submitted.
 //! - `djogi-macros/tests/compile_pass/many_to_many_macro.rs` — the
-//!   end-to-end macro fixture that pins the emission shape.
+//! end-to-end macro fixture that pins the emission shape.
 //! - `djogi-macros/tests/compile_fail/many_to_many_collision.rs`
-//!   same-suffix collision fixture; two `many_to_many!` invocations
-//!   producing the same `(Source, relation)` pair emit the same
-//!   `…ManyToManyRelation` trait twice and trip rustc's E0428 / E0119
-//!   duplicate-definition errors. Cross-suffix collisions (M2M vs
-//!   reverse-FK / reverse-O2O on the same accessor name) emit
-//!   different trait names and slip past rustc; the
-//!   [`djogi::relation::registry::validate_relation_accessor_collisions`]
-//!   gate covers that case (GH issue #158).
+//! same-suffix collision fixture; two `many_to_many!` invocations
+//! producing the same `(Source, relation)` pair emit the same
+//! `…ManyToManyRelation` trait twice and trip rustc's E0428 / E0119
+//! duplicate-definition errors. Cross-suffix collisions (M2M vs
+//! reverse-FK / reverse-O2O on the same accessor name) emit
+//! different trait names and slip past rustc; the
+//! [`djogi::relation::registry::validate_relation_accessor_collisions`]
+//! gate covers that case (GH issue #158).
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -171,11 +171,11 @@ use syn::{Ident, LitStr, Path, Result, Token};
 /// argument, mirroring the trait's associated items:
 /// ```ignore
 /// many_to_many!(
-///     Source, Target,
-///     through  = Through,
-///     this_fk  = col_on_through,
-///     that_fk  = col_on_through,
-///     relation = "accessor_name"
+///  Source, Target,
+///  through = Through,
+///  this_fk = col_on_through,
+///  that_fk = col_on_through,
+///  relation = "accessor_name"
 /// );
 /// ```
 /// Both positional types are required first; the four keyword
@@ -279,7 +279,7 @@ impl Parse for ManyToManyInput {
                         if through_type.is_some() {
                             return Err(syn::Error::new(
                                 key.span(),
-                                "duplicate `through = ...` argument in many_to_many!",
+                                "duplicate `through =...` argument in many_to_many!",
                             ));
                         }
                         through_type = Some(input.parse()?);
@@ -288,7 +288,7 @@ impl Parse for ManyToManyInput {
                         if this_fk.is_some() {
                             return Err(syn::Error::new(
                                 key.span(),
-                                "duplicate `this_fk = ...` argument in many_to_many!",
+                                "duplicate `this_fk =...` argument in many_to_many!",
                             ));
                         }
                         this_fk = Some(input.parse()?);
@@ -297,7 +297,7 @@ impl Parse for ManyToManyInput {
                         if that_fk.is_some() {
                             return Err(syn::Error::new(
                                 key.span(),
-                                "duplicate `that_fk = ...` argument in many_to_many!",
+                                "duplicate `that_fk =...` argument in many_to_many!",
                             ));
                         }
                         that_fk = Some(input.parse()?);
@@ -306,7 +306,7 @@ impl Parse for ManyToManyInput {
                         if relation.is_some() {
                             return Err(syn::Error::new(
                                 key.span(),
-                                "duplicate `relation = ...` argument in many_to_many!",
+                                "duplicate `relation =...` argument in many_to_many!",
                             ));
                         }
                         relation = Some(input.parse()?);
@@ -316,7 +316,7 @@ impl Parse for ManyToManyInput {
                             key.span(),
                             format!(
                                 "unknown `many_to_many!` argument `{other}` — \
-                                 expected one of `through`, `this_fk`, `that_fk`, `relation`, `expose`"
+         expected one of `through`, `this_fk`, `that_fk`, `relation`, `expose`"
                             ),
                         ));
                     }
@@ -412,8 +412,8 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 relation.span(),
                 format!(
                     "many_to_many! `relation = {relation_lit:?}` must be a valid \
-                     Rust identifier (it becomes both a method name on `{source_type}` \
-                     and an entry in the relation registry)"
+      Rust identifier (it becomes both a method name on `{source_type}` \
+      and an entry in the relation registry)"
                 ),
             )
             .to_compile_error();
@@ -437,20 +437,20 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // one explicit const guard here keeps the three inputs under the
     // same stricter Postgres-identifier seal.
     let identifier_guard = quote! {
-        const _: () = {
-            ::djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident(
-                #relation_lit,
-                "many_to_many_relation",
-            );
-            ::djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident(
-                #this_fk_str,
-                "many_to_many_this_fk",
-            );
-            ::djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident(
-                #that_fk_str,
-                "many_to_many_that_fk",
-            );
-        };
+     const _: () = {
+      ::djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident(
+       #relation_lit,
+       "many_to_many_relation",
+      );
+      ::djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident(
+       #this_fk_str,
+       "many_to_many_this_fk",
+      );
+      ::djogi::relation::registry::__macro_support::__const_assert_user_supplied_ident(
+       #that_fk_str,
+       "many_to_many_that_fk",
+      );
+     };
     };
 
     // Named accessor documentation — read at the method call site in
@@ -459,12 +459,12 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // accessor came from without having to grep for the macro.
     let accessor_doc = format!(
         "Many-to-many accessor — returns every `{target}` row associated with \
-         this `{source}` via the `{through}` junction model. Declared with \
-         `djogi::many_to_many!({source}, {target}, through = {through}, \
-         this_fk = {this_fk}, that_fk = {that_fk}, relation = {relation:?});`. \
-         Delegates to \
-         `<Self as ::djogi::relation::ManyToMany<{target}>>::related(self, executor)` — \
-         the trait body is the single source of truth for the query shape.",
+   this `{source}` via the `{through}` junction model. Declared with \
+   `djogi::many_to_many!({source}, {target}, through = {through}, \
+   this_fk = {this_fk}, that_fk = {that_fk}, relation = {relation:?});`. \
+   Delegates to \
+   `<Self as ::djogi::relation::ManyToMany<{target}>>::related(self, executor)` — \
+   the trait body is the single source of truth for the query shape.",
         source = source_str,
         target = target_str,
         through = through_type,
@@ -481,115 +481,115 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // Each method takes `&'ctx mut DjogiContext`. The `related` body threads
     // the same `&mut ctx` through two sequential calls (one to
     // `Through::objects().fetch_all(ctx)`, then a loop of `Target::get(ctx,
-    // ...)`); `ctx` re-borrow is automatic because each inner call takes
+    //...)`); `ctx` re-borrow is automatic because each inner call takes
     // `&mut DjogiContext`. Under the hood every call pattern-matches on the
     // context's inner variant at the query dispatch boundary (see `djogi::context`).
     let trait_impl = quote! {
-        #[automatically_derived]
-        impl ::djogi::relation::ManyToMany<#target_type> for #source_type {
-            type Through = #through_type;
-            const RELATION: &'static str = #relation_lit;
+     #[automatically_derived]
+     impl ::djogi::relation::ManyToMany<#target_type> for #source_type {
+      type Through = #through_type;
+      const RELATION: &'static str = #relation_lit;
 
-            #[inline]
-            fn this_fk() -> &'static str { #this_fk_str }
+      #[inline]
+      fn this_fk() -> &'static str { #this_fk_str }
 
-            #[inline]
-            fn that_fk() -> &'static str { #that_fk_str }
+      #[inline]
+      fn that_fk() -> &'static str { #that_fk_str }
 
-            async fn related<'ctx>(
-                &'ctx self,
-                ctx: &'ctx mut ::djogi::context::DjogiContext,
-            ) -> ::std::result::Result<
-                ::std::vec::Vec<#target_type>,
-                ::djogi::DjogiError,
-            > {
-                // Capture the PK by value so the closure passed to
-                // `.filter(...)` owns the FK it compares against — the
-                // same pattern as `reverse_one_to_many!`'s expansion,
-                // and symmetric with the hand-impl fixture.
-                let this_pk = <Self as ::djogi::model::Model>::pk_value(self).clone();
-                let through_rows: ::std::vec::Vec<#through_type> =
-                    <#through_type as ::djogi::model::Model>::objects()
-                        .filter(move |f| {
-                            f.#this_fk().eq(
-                                ::djogi::relation::ForeignKey::<#source_type>::new(
-                                    this_pk.clone(),
-                                ),
-                            )
-                        })
-                        .fetch_all(&mut *ctx)
-                        .await?;
+      async fn related<'ctx>(
+       &'ctx self,
+       ctx: &'ctx mut ::djogi::context::DjogiContext,
+      ) -> ::std::result::Result<
+       ::std::vec::Vec<#target_type>,
+       ::djogi::DjogiError,
+      > {
+       // Capture the PK by value so the closure passed to
+       // `.filter(...)` owns the FK it compares against — the
+       // same pattern as `reverse_one_to_many!`'s expansion,
+       // and symmetric with the hand-impl fixture.
+       let this_pk = <Self as ::djogi::model::Model>::pk_value(self).clone();
+       let through_rows: ::std::vec::Vec<#through_type> =
+        <#through_type as ::djogi::model::Model>::objects()
+        .filter(move |f| {
+          f.#this_fk().eq(
+           ::djogi::relation::ForeignKey::<#source_type>::new(
+            this_pk.clone(),
+           ),
+          )
+         })
+        .fetch_all(&mut *ctx)
+        .await?;
 
-                // Project through-rows down to `Target` rows via PK
-                // lookup. The hand-impl fixture does the same: N+1
-                // queries are acceptable in the reference shape; a
-                // future optimisation can fold this into a single
-                // `WHERE id IN (...)` select once `QuerySet` grows an
-                // `.r#in(...)` lookup.
-                let mut out: ::std::vec::Vec<#target_type> =
-                    ::std::vec::Vec::with_capacity(through_rows.len());
-                for row in &through_rows {
-                    out.push(
-                        <#target_type as ::djogi::model::Model>::get(
-                            &mut *ctx,
-                            row.#that_fk.key().clone(),
-                        )
-                        .await?,
-                    );
-                }
-                ::std::result::Result::Ok(out)
-            }
+       // Project through-rows down to `Target` rows via PK
+       // lookup. The hand-impl fixture does the same: N+1
+       // queries are acceptable in the reference shape; a
+       // future optimisation can fold this into a single
+       // `WHERE id IN (...)` select once `QuerySet` grows an
+       // `.r#in(...)` lookup.
+       let mut out: ::std::vec::Vec<#target_type> =
+        ::std::vec::Vec::with_capacity(through_rows.len());
+       for row in &through_rows {
+        out.push(
+         <#target_type as ::djogi::model::Model>::get(
+          &mut *ctx,
+          row.#that_fk.key().clone(),
+         )
+        .await?,
+        );
+       }
+       ::std::result::Result::Ok(out)
+      }
 
-            async fn add_related<'ctx>(
-                &'ctx self,
-                ctx: &'ctx mut ::djogi::context::DjogiContext,
-                target: &'ctx #target_type,
-                extras: Self::Through,
-            ) -> ::std::result::Result<Self::Through, ::djogi::DjogiError> {
-                // Overwrite the two FK columns on `extras` so the
-                // junction row definitely points at this `self`/`target`
-                // pair; the rest of `extras` (role, joined_at, price,
-                // whatever relation-specific columns the junction
-                // carries) is preserved via `..extras`. Symmetric with
-                // the hand-impl fixture.
-                let junction = #through_type {
-                    #this_fk: ::djogi::relation::ForeignKey::<#source_type>::new(
-                        <Self as ::djogi::model::Model>::pk_value(self).clone(),
-                    ),
-                    #that_fk: ::djogi::relation::ForeignKey::<#target_type>::new(
-                        <#target_type as ::djogi::model::Model>::pk_value(target).clone(),
-                    ),
-                    ..extras
-                };
-                <#through_type as ::djogi::model::Model>::create(ctx, junction).await
-            }
+      async fn add_related<'ctx>(
+       &'ctx self,
+       ctx: &'ctx mut ::djogi::context::DjogiContext,
+       target: &'ctx #target_type,
+       extras: Self::Through,
+      ) -> ::std::result::Result<Self::Through, ::djogi::DjogiError> {
+       // Overwrite the two FK columns on `extras` so the
+       // junction row definitely points at this `self`/`target`
+       // pair; the rest of `extras` (role, joined_at, price,
+       // whatever relation-specific columns the junction
+       // carries) is preserved via `..extras`. Symmetric with
+       // the hand-impl fixture.
+       let junction = #through_type {
+        #this_fk: ::djogi::relation::ForeignKey::<#source_type>::new(
+         <Self as ::djogi::model::Model>::pk_value(self).clone(),
+        ),
+        #that_fk: ::djogi::relation::ForeignKey::<#target_type>::new(
+         <#target_type as ::djogi::model::Model>::pk_value(target).clone(),
+        ),
+       ..extras
+       };
+       <#through_type as ::djogi::model::Model>::create(ctx, junction).await
+      }
 
-            async fn remove_related<'ctx>(
-                &'ctx self,
-                ctx: &'ctx mut ::djogi::context::DjogiContext,
-                target: &'ctx #target_type,
-            ) -> ::std::result::Result<u64, ::djogi::DjogiError> {
-                let this_pk = <Self as ::djogi::model::Model>::pk_value(self).clone();
-                let that_pk = <#target_type as ::djogi::model::Model>::pk_value(target).clone();
-                <#through_type as ::djogi::model::Model>::objects()
-                    .filter(move |f| {
-                        f.#this_fk().eq(
-                            ::djogi::relation::ForeignKey::<#source_type>::new(
-                                this_pk.clone(),
-                            ),
-                        )
-                    })
-                    .filter(move |f| {
-                        f.#that_fk().eq(
-                            ::djogi::relation::ForeignKey::<#target_type>::new(
-                                that_pk.clone(),
-                            ),
-                        )
-                    })
-                    .delete(ctx)
-                    .await
-            }
-        }
+      async fn remove_related<'ctx>(
+       &'ctx self,
+       ctx: &'ctx mut ::djogi::context::DjogiContext,
+       target: &'ctx #target_type,
+      ) -> ::std::result::Result<u64, ::djogi::DjogiError> {
+       let this_pk = <Self as ::djogi::model::Model>::pk_value(self).clone();
+       let that_pk = <#target_type as ::djogi::model::Model>::pk_value(target).clone();
+       <#through_type as ::djogi::model::Model>::objects()
+       .filter(move |f| {
+         f.#this_fk().eq(
+          ::djogi::relation::ForeignKey::<#source_type>::new(
+           this_pk.clone(),
+          ),
+         )
+        })
+       .filter(move |f| {
+         f.#that_fk().eq(
+          ::djogi::relation::ForeignKey::<#target_type>::new(
+           that_pk.clone(),
+          ),
+         )
+        })
+       .delete(ctx)
+       .await
+      }
+     }
     };
 
     // Named-accessor — delegates to the `ManyToMany::related` trait
@@ -620,44 +620,44 @@ pub fn expand(input: TokenStream) -> TokenStream {
     );
     let m2m_trait_doc = format!(
         "Per-relation trait emitted by `djogi::many_to_many!` for the \
-         `{}::{}` accessor. Trait-based emission (vs an inherent impl on \
-         `{}`) lifts Rust's E0116 coherence-rule constraint so downstream \
-         crates can declare the accessor against an upstream source type. \
-         Adopters bring the method into scope with `use ...::{}`.",
+   `{}::{}` accessor. Trait-based emission (vs an inherent impl on \
+   `{}`) lifts Rust's E0116 coherence-rule constraint so downstream \
+   crates can declare the accessor against an upstream source type. \
+   Adopters bring the method into scope with `use...::{}`.",
         source_type, relation_lit, source_type, m2m_trait_ident,
     );
     let accessor_impl = quote! {
-        #[doc = #m2m_trait_doc]
-        #[automatically_derived]
-        pub trait #m2m_trait_ident {
-            #[doc = #accessor_doc]
-            fn #relation_ident<'ctx>(
-                &'ctx self,
-                ctx: &'ctx mut ::djogi::context::DjogiContext,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<
-                    ::std::vec::Vec<#target_type>,
-                    ::djogi::DjogiError,
-                >,
-            > + ::std::marker::Send + 'ctx;
-        }
+     #[doc = #m2m_trait_doc]
+     #[automatically_derived]
+     pub trait #m2m_trait_ident {
+      #[doc = #accessor_doc]
+      fn #relation_ident<'ctx>(
+       &'ctx self,
+       ctx: &'ctx mut ::djogi::context::DjogiContext,
+      ) -> impl ::std::future::Future<
+       Output = ::std::result::Result<
+        ::std::vec::Vec<#target_type>,
+        ::djogi::DjogiError,
+       >,
+      > + ::std::marker::Send + 'ctx;
+     }
 
-        #[automatically_derived]
-        impl #m2m_trait_ident for #source_type {
-            #[inline]
-            fn #relation_ident<'ctx>(
-                &'ctx self,
-                ctx: &'ctx mut ::djogi::context::DjogiContext,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<
-                    ::std::vec::Vec<#target_type>,
-                    ::djogi::DjogiError,
-                >,
-            > + ::std::marker::Send + 'ctx
-            {
-                <Self as ::djogi::relation::ManyToMany<#target_type>>::related(self, ctx)
-            }
-        }
+     #[automatically_derived]
+     impl #m2m_trait_ident for #source_type {
+      #[inline]
+      fn #relation_ident<'ctx>(
+       &'ctx self,
+       ctx: &'ctx mut ::djogi::context::DjogiContext,
+      ) -> impl ::std::future::Future<
+       Output = ::std::result::Result<
+        ::std::vec::Vec<#target_type>,
+        ::djogi::DjogiError,
+       >,
+      > + ::std::marker::Send + 'ctx
+      {
+       <Self as ::djogi::relation::ManyToMany<#target_type>>::related(self, ctx)
+      }
+     }
     };
 
     // Inventory marker. Routed through the existing sealed
@@ -685,15 +685,15 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // a CI gate so the diagnostic names the conflicting relation
     // metadata rather than an arbitrary downstream call site.
     let inventory_submit = quote! {
-        ::djogi::__private::inventory::submit! {
-            ::djogi::relation::registry::__macro_support::__make_reverse_relation_marker(
-                ::djogi::relation::registry::RelationKind::M2M,
-                #source_str,
-                #relation_lit,
-                #target_str,
-                #this_fk_str,
-            )
-        }
+     ::djogi::__private::inventory::submit! {
+      ::djogi::relation::registry::__macro_support::__make_reverse_relation_marker(
+       ::djogi::relation::registry::RelationKind::M2M,
+       #source_str,
+       #relation_lit,
+       #target_str,
+       #this_fk_str,
+      )
+     }
     };
 
     // Visage-scoped M2M accessors.
@@ -737,8 +737,8 @@ pub fn expand(input: TokenStream) -> TokenStream {
                     return syn::Error::new(
                         scope_ident.span(),
                         format!(
-                            "unknown visage scope `{other}` in `expose({other} -> ...)`; \
-                             valid scopes are `public`, `self_view`, `admin`, `export`"
+                            "unknown visage scope `{other}` in `expose({other} ->...)`; \
+        valid scopes are `public`, `self_view`, `admin`, `export`"
                         ),
                     )
                     .to_compile_error();
@@ -757,18 +757,18 @@ pub fn expand(input: TokenStream) -> TokenStream {
 
             let visage_doc = format!(
                 "Visage-scoped many-to-many accessor — returns a SELECT-narrowed \
-                 `VisageQuerySet<{peer_name}>` containing every `{peer_name}` associated \
-                 with this `{source_visage}` via the `{through_type}` junction. The \
-                 accessor emits an EXISTS-correlated subquery against the \
-                 `{through_type}` table: the outer query SELECTs only `{peer_name}`'s \
-                 exposed columns from `{target_type}` and the EXISTS predicate ties \
-                 each peer row to a junction row whose `{this_fk}` matches this \
-                 `{source_visage}`. Chain `.filter(...)`, `.order_by(...)`, \
-                 `.limit(n)`, `.count(ctx)`, `.exists(ctx)`, etc. before \
-                 `.fetch_all(ctx)`. The through-row visage (`{through_visage}`) \
-                 must exist at the `{scope_lit}` scope — the macro-emitted \
-                 zero-runtime existence probe forces a compile error if it \
-                 doesn't.",
+     `VisageQuerySet<{peer_name}>` containing every `{peer_name}` associated \
+     with this `{source_visage}` via the `{through_type}` junction. The \
+     accessor emits an EXISTS-correlated subquery against the \
+     `{through_type}` table: the outer query SELECTs only `{peer_name}`'s \
+     exposed columns from `{target_type}` and the EXISTS predicate ties \
+     each peer row to a junction row whose `{this_fk}` matches this \
+     `{source_visage}`. Chain `.filter(...)`, `.order_by(...)`, \
+     `.limit(n)`, `.count(ctx)`, `.exists(ctx)`, etc. before \
+     `.fetch_all(ctx)`. The through-row visage (`{through_visage}`) \
+     must exist at the `{scope_lit}` scope — the macro-emitted \
+     zero-runtime existence probe forces a compile error if it \
+     doesn't.",
                 peer_name = peer_name,
                 source_visage = source_visage,
                 through_type = through_type,
@@ -792,77 +792,77 @@ pub fn expand(input: TokenStream) -> TokenStream {
             );
             let m2m_visage_trait_doc = format!(
                 "Per-relation visage trait emitted by `djogi::many_to_many!` \
-                 for the `{}::{}` accessor at the `{}` visage scope. \
-                 Adopters bring the method into scope with `use ...::{}`.",
+     for the `{}::{}` accessor at the `{}` visage scope. \
+     Adopters bring the method into scope with `use...::{}`.",
                 source_type, relation_lit, scope_lit, m2m_visage_trait_ident,
             );
             quote! {
-                #[doc = #m2m_visage_trait_doc]
-                #[automatically_derived]
-                pub trait #m2m_visage_trait_ident {
-                    #[doc = #visage_doc]
-                    #[must_use = "querysets are lazy — dropping one silently omits the query"]
-                    fn #relation_ident(&self) -> ::djogi::query::VisageQuerySet<#peer>;
-                }
+             #[doc = #m2m_visage_trait_doc]
+             #[automatically_derived]
+             pub trait #m2m_visage_trait_ident {
+              #[doc = #visage_doc]
+              #[must_use = "querysets are lazy — dropping one silently omits the query"]
+              fn #relation_ident(&self) -> ::djogi::query::VisageQuerySet<#peer>;
+             }
 
-                #[automatically_derived]
-                impl #m2m_visage_trait_ident for #source_visage {
-                    #[inline]
-                    fn #relation_ident(&self) -> ::djogi::query::VisageQuerySet<#peer> {
-                        // Through-row exposure gate — the plan's
-                        // "both endpoints + through-row" rule enforces
-                        // itself through this zero-runtime probe: if
-                        // `{Through}{Suffix}` does not exist, the
-                        // `TryFrom<&Through>` bound fails to resolve and
-                        // the macro call site sees a clean diagnostic.
-                        // The `as T: TryFrom<...>` bound never executes
-                        // only the type-existence check matters.
-                        fn __djogi_through_visage_exists<T>() where
-                            T: for<'__a> ::std::convert::TryFrom<&'__a #through_type>
-                        {}
-                        __djogi_through_visage_exists::<#through_visage>();
+             #[automatically_derived]
+             impl #m2m_visage_trait_ident for #source_visage {
+              #[inline]
+              fn #relation_ident(&self) -> ::djogi::query::VisageQuerySet<#peer> {
+               // Through-row exposure gate — the plan's
+               // "both endpoints + through-row" rule enforces
+               // itself through this zero-runtime probe: if
+               // `{Through}{Suffix}` does not exist, the
+               // `TryFrom<&Through>` bound fails to resolve and
+               // the macro call site sees a clean diagnostic.
+               // The `as T: TryFrom<...>` bound never executes
+               // only the type-existence check matters.
+               fn __djogi_through_visage_exists<T>() where
+                T: for<'__a> ::std::convert::TryFrom<&'__a #through_type>
+               {}
+               __djogi_through_visage_exists::<#through_visage>();
 
-                        // Visages carry a framework `id` column typed as
-                        // the source model's PK. Cloning it once is
-                        // cheap (every PK type bounds `Clone`); the
-                        // owned value flows into the inner queryset's
-                        // FK predicate as a bind parameter.
-                        let pk = ::std::clone::Clone::clone(&self.id);
+               // Visages carry a framework `id` column typed as
+               // the source model's PK. Cloning it once is
+               // cheap (every PK type bounds `Clone`); the
+               // owned value flows into the inner queryset's
+               // FK predicate as a bind parameter.
+               let pk = ::std::clone::Clone::clone(&self.id);
 
-                        // Build the EXISTS
-                        // correlated subquery via the typed
-                        // surface so the predicate stays type-checked
-                        // end-to-end:
-                        // EXISTS (
-                        // SELECT 1 FROM <through_table>
-                        // WHERE <this_fk> = $source_pk
-                        // AND <that_fk> = <target_table>.id
-                        // )
-                        // The correlated `<target_table>.id` reference
-                        // uses `OuterRef::as_qualified_expr` (rather
-                        // than `as_expr`) because the inner through
-                        // table also has an `id` column — bare `id`
-                        // would raise `42702 column reference is
-                        // ambiguous`. The qualifier is `M::table_name()`,
-                        // which Djogi validates at `#[model]` expansion.
-                        let __djogi_inner = <#through_type as ::djogi::model::Model>::objects()
-                            .filter(move |f| {
-                                f.#this_fk().eq(
-                                    ::djogi::relation::ForeignKey::<#source_type>::new(pk),
-                                )
-                            })
-                            .filter_expr(|f| {
-                                ::djogi::expr::Expr::eq(
-                                    f.#that_fk().as_pk_expr(),
-                                    #target_outer_ref_ident::id().as_qualified_expr(),
-                                )
-                            });
-                        let __djogi_exists =
-                            ::djogi::expr::Exists::new(__djogi_inner).as_expr();
-                        let __djogi_cond = ::djogi::query::internal::Condition::Expr(__djogi_exists);
-                        <#peer>::__filter_with_initial_condition(__djogi_cond)
-                    }
-                }
+               // Build the EXISTS
+               // correlated subquery via the typed
+               // surface so the predicate stays type-checked
+               // end-to-end:
+               // EXISTS (
+               // SELECT 1 FROM <through_table>
+               // WHERE <this_fk> = $source_pk
+               // AND <that_fk> = <target_table>.id
+               // )
+               // The correlated `<target_table>.id` reference
+               // uses `OuterRef::as_qualified_expr` (rather
+               // than `as_expr`) because the inner through
+               // table also has an `id` column — bare `id`
+               // would raise `42702 column reference is
+               // ambiguous`. The qualifier is `M::table_name()`,
+               // which Djogi validates at `#[model]` expansion.
+               let __djogi_inner = <#through_type as ::djogi::model::Model>::objects()
+               .filter(move |f| {
+                 f.#this_fk().eq(
+                  ::djogi::relation::ForeignKey::<#source_type>::new(pk),
+                 )
+                })
+               .filter_expr(|f| {
+                 ::djogi::expr::Expr::eq(
+                  f.#that_fk().as_pk_expr(),
+                  #target_outer_ref_ident::id().as_qualified_expr(),
+                 )
+                });
+               let __djogi_exists =
+                ::djogi::expr::Exists::new(__djogi_inner).as_expr();
+               let __djogi_cond = ::djogi::query::internal::Condition::Expr(__djogi_exists);
+               <#peer>::__filter_with_initial_condition(__djogi_cond)
+              }
+             }
             }
         })
         .collect();
@@ -873,10 +873,10 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // parsing one giant TokenStream — and matches the reverse-relation
     // macro's internal structure.
     quote! {
-        #identifier_guard
-        #trait_impl
-        #accessor_impl
-        #inventory_submit
-        #(#visage_impls)*
+     #identifier_guard
+     #trait_impl
+     #accessor_impl
+     #inventory_submit
+     #(#visage_impls)*
     }
 }

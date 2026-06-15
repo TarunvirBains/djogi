@@ -21,8 +21,8 @@
 //! stdlib primitives (`u8::is_ascii_lowercase`, sorted-const-slice
 //! `binary_search`). No `regex` / `regex-lite` / `fancy-regex` /
 //! `regex-automata` dependency is added.
-//! [§Declaration]: ../docs/spec/visage-derived-fields.md#derived-is-a-helper-attribute-not-an-attribute-macro
-//! [error taxonomy]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+//! [§Declaration]:../docs/spec/visage-derived-fields.md#derived-is-a-helper-attribute-not-an-attribute-macro
+//! [error taxonomy]:../docs/spec/visage-derived-fields.md#error-taxonomy
 
 use proc_macro2::Span;
 use syn::spanned::Spanned;
@@ -39,7 +39,7 @@ pub struct DerivedAttr {
     /// Validated against the identifier-shape rules at parse time
     /// (E_DJG_VDF_004 / _005 / _012 / _014).
     pub name: syn::Ident,
-    /// Rust type of the output field (the entry's `ty = ...`).
+    /// Rust type of the output field (the entry's `ty =...`).
     /// Captured as a `syn::Type` so codegen can splice it into struct
     /// fields, accessor types, and the `where Ty: PartialEq` bound
     /// the parity helper emits.
@@ -155,25 +155,25 @@ const AGGREGATE_KEYWORDS: &[&str] = &[
 /// or other derived attributes — namely:
 /// - Required-key presence ([E_DJG_VDF_001]).
 /// - `name` identifier shape ([E_DJG_VDF_004], [E_DJG_VDF_005],
-///   [E_DJG_VDF_012], [E_DJG_VDF_014]).
+/// [E_DJG_VDF_012], [E_DJG_VDF_014]).
 /// - `scopes` membership + per-list duplicate detection
-///   ([E_DJG_VDF_006], [E_DJG_VDF_013]).
+/// ([E_DJG_VDF_006], [E_DJG_VDF_013]).
 /// - SQL surface: statement separator, leading DDL/DML, `$N`
-///   reservation, aggregate guard ([E_DJG_VDF_007]–[E_DJG_VDF_009]).
-///   Cross-attribute checks (column collisions per scope, derived ↔
-///   derived collisions, model-level structural rules like `pk = None`
-///   incompatibility) run later in `cross_check` once the call site has
-///   the model's full attribute set in scope.
-///   [E_DJG_VDF_001]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-///   [E_DJG_VDF_004]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-///   [E_DJG_VDF_005]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-///   [E_DJG_VDF_006]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-///   [E_DJG_VDF_007]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-///   [E_DJG_VDF_008]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-///   [E_DJG_VDF_009]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-///   [E_DJG_VDF_012]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-///   [E_DJG_VDF_013]: ../docs/spec/visage-derived-fields.md#error-taxonomy
-///   [E_DJG_VDF_014]: ../docs/spec/visage-derived-fields.md#error-taxonomy
+/// reservation, aggregate guard ([E_DJG_VDF_007]–[E_DJG_VDF_009]).
+/// Cross-attribute checks (column collisions per scope, derived ↔
+/// derived collisions, model-level structural rules like `pk = None`
+/// incompatibility) run later in `cross_check` once the call site has
+/// the model's full attribute set in scope.
+/// [E_DJG_VDF_001]:../docs/spec/visage-derived-fields.md#error-taxonomy
+/// [E_DJG_VDF_004]:../docs/spec/visage-derived-fields.md#error-taxonomy
+/// [E_DJG_VDF_005]:../docs/spec/visage-derived-fields.md#error-taxonomy
+/// [E_DJG_VDF_006]:../docs/spec/visage-derived-fields.md#error-taxonomy
+/// [E_DJG_VDF_007]:../docs/spec/visage-derived-fields.md#error-taxonomy
+/// [E_DJG_VDF_008]:../docs/spec/visage-derived-fields.md#error-taxonomy
+/// [E_DJG_VDF_009]:../docs/spec/visage-derived-fields.md#error-taxonomy
+/// [E_DJG_VDF_012]:../docs/spec/visage-derived-fields.md#error-taxonomy
+/// [E_DJG_VDF_013]:../docs/spec/visage-derived-fields.md#error-taxonomy
+/// [E_DJG_VDF_014]:../docs/spec/visage-derived-fields.md#error-taxonomy
 pub fn parse_derived_attrs(struct_item: &syn::ItemStruct) -> syn::Result<Vec<DerivedAttr>> {
     let mut out = Vec::new();
     for attr in &struct_item.attrs {
@@ -191,8 +191,8 @@ fn parse_one(attr: &syn::Attribute) -> syn::Result<DerivedAttr> {
         return Err(syn::Error::new_spanned(
             attr,
             "`#[derived]` requires `name`, `ty`, `scopes`, `sql`, and `rust` \
-             keys; see docs/spec/visage-derived-fields.md \
-             (E_DJG_VDF_001)",
+    keys; see docs/spec/visage-derived-fields.md \
+    (E_DJG_VDF_001)",
         ));
     }
 
@@ -212,7 +212,7 @@ fn parse_one(attr: &syn::Attribute) -> syn::Result<DerivedAttr> {
                 if name.is_some() {
                     return Err(syn::Error::new_spanned(
                         path,
-                        "duplicate `name = ...` key in `#[derived(...)]`",
+                        "duplicate `name =...` key in `#[derived(...)]`",
                     ));
                 }
                 name = Some(parse_name_value(value)?);
@@ -224,7 +224,7 @@ fn parse_one(attr: &syn::Attribute) -> syn::Result<DerivedAttr> {
                 if ty.is_some() {
                     return Err(syn::Error::new_spanned(
                         path,
-                        "duplicate `ty = ...` key in `#[derived(...)]`",
+                        "duplicate `ty =...` key in `#[derived(...)]`",
                     ));
                 }
                 ty = Some(parse_ty_value(value)?);
@@ -286,7 +286,7 @@ fn parse_one(attr: &syn::Attribute) -> syn::Result<DerivedAttr> {
                 return Err(syn::Error::new_spanned(
                     other,
                     "unknown key in `#[derived(...)]`; supported keys: \
-                     `name`, `ty`, `scopes`, `sql`, `rust`, `doc`",
+      `name`, `ty`, `scopes`, `sql`, `rust`, `doc`",
                 ));
             }
         }
@@ -362,14 +362,14 @@ fn parse_name_value(value: &Expr) -> syn::Result<syn::Ident> {
                 syn::Error::new_spanned(
                     s,
                     "`name = \"...\"` value is not a valid Rust identifier \
-                     (E_DJG_VDF_004)",
+      (E_DJG_VDF_004)",
                 )
             })?;
             Ok(ident)
         }
         _ => Err(syn::Error::new_spanned(
             value,
-            "`name = ...` expects a bare identifier (e.g. `name = facility_site`)",
+            "`name =...` expects a bare identifier (e.g. `name = facility_site`)",
         )),
     }
 }
@@ -386,8 +386,8 @@ fn parse_ty_value(value: &Expr) -> syn::Result<syn::Type> {
         syn::Error::new_spanned(
             value,
             format!(
-                "`ty = ...` could not be parsed as a Rust type: {e}. \
-                 Use a bare type (e.g. `ty = Site` / `ty = Option<Site>`)."
+                "`ty =...` could not be parsed as a Rust type: {e}. \
+     Use a bare type (e.g. `ty = Site` / `ty = Option<Site>`)."
             ),
         )
     })?;
@@ -403,7 +403,7 @@ fn parse_scopes_value(value: &Expr) -> syn::Result<Vec<DerivedScope>> {
             return Err(syn::Error::new_spanned(
                 value,
                 "`scopes = [...]` value must be a bracketed list of \
-                 identifiers (e.g. `scopes = [public, admin]`)",
+     identifiers (e.g. `scopes = [public, admin]`)",
             ));
         }
     };
@@ -412,7 +412,7 @@ fn parse_scopes_value(value: &Expr) -> syn::Result<Vec<DerivedScope>> {
         return Err(syn::Error::new_spanned(
             array,
             "`scopes = []` is empty — at least one of `public`, `self_view`, \
-             `admin`, `export` is required",
+    `admin`, `export` is required",
         ));
     }
 
@@ -441,8 +441,8 @@ fn parse_scopes_value(value: &Expr) -> syn::Result<Vec<DerivedScope>> {
                     ident,
                     format!(
                         "unknown scope `{key_str}` in `scopes = [...]` — \
-                         expected one of `public`, `self_view`, `admin`, `export` \
-                         (E_DJG_VDF_006)"
+       expected one of `public`, `self_view`, `admin`, `export` \
+       (E_DJG_VDF_006)"
                     ),
                 ));
             }
@@ -455,7 +455,7 @@ fn parse_scopes_value(value: &Expr) -> syn::Result<Vec<DerivedScope>> {
                 ident,
                 format!(
                     "duplicate scope `{key}` in `scopes = [...]` \
-                     (E_DJG_VDF_013)"
+      (E_DJG_VDF_013)"
                 ),
             ));
         }
@@ -475,7 +475,7 @@ fn parse_string_value(value: &Expr, key_name: &str) -> syn::Result<(String, Span
         _ => {
             return Err(syn::Error::new_spanned(
                 value,
-                format!("`{key_name} = ...` value must be a string literal"),
+                format!("`{key_name} =...` value must be a string literal"),
             ));
         }
     };
@@ -485,7 +485,7 @@ fn parse_string_value(value: &Expr, key_name: &str) -> syn::Result<(String, Span
             lit_str,
             format!(
                 "`{key_name} = \"\"` is empty — either provide a non-empty \
-                 expression or remove the `#[derived(...)]` attribute"
+     expression or remove the `#[derived(...)]` attribute"
             ),
         ));
     }
@@ -509,11 +509,11 @@ fn canonical_scope_key(raw: &str) -> Option<&'static str> {
 /// 3. Every remaining byte is ASCII lowercase letter, digit, or `_`.
 /// 4. Not prefixed by `__djogi_` (ASCII case-insensitive).
 /// 5. Not a Postgres fully-reserved keyword (reuses the sorted const
-///    slice in `crate::ident::RESERVED_KEYWORDS` via the existing
-///    `crate::ident::check_one` helper for the keyword-only check).
-///    Uppercase bytes have their own diagnostic (E_DJG_VDF_012) so an
-///    adopter who reaches for `camelCase` sees the precise rule and not
-///    the generic shape rule.
+/// slice in `crate::ident::RESERVED_KEYWORDS` via the existing
+/// `crate::ident::check_one` helper for the keyword-only check).
+/// Uppercase bytes have their own diagnostic (E_DJG_VDF_012) so an
+/// adopter who reaches for `camelCase` sees the precise rule and not
+/// the generic shape rule.
 fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
     let raw = name.to_string();
     // Strip the `r#` raw-identifier prefix when present (syn renders
@@ -535,7 +535,7 @@ fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
             span,
             format!(
                 "`#[derived]` `name` `{stripped}` is {len} bytes, exceeding the \
-                 {max}-byte Postgres unquoted-identifier cap (E_DJG_VDF_004)",
+     {max}-byte Postgres unquoted-identifier cap (E_DJG_VDF_004)",
                 len = bytes.len(),
                 max = MAX_DERIVED_NAME_LEN,
             ),
@@ -550,9 +550,9 @@ fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
                 span,
                 format!(
                     "`#[derived]` `name` `{stripped}` contains an uppercase byte; \
-                     derived aliases must be ASCII lowercase so Postgres's \
-                     unquoted-identifier case folding does not silently rename \
-                     them (E_DJG_VDF_012). Use snake_case (e.g. `facility_site`)."
+      derived aliases must be ASCII lowercase so Postgres's \
+      unquoted-identifier case folding does not silently rename \
+      them (E_DJG_VDF_012). Use snake_case (e.g. `facility_site`)."
                 ),
             ));
         }
@@ -566,7 +566,7 @@ fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
             span,
             format!(
                 "`#[derived]` `name` `{stripped}` starts with `{first_ch}` — first \
-                 byte must be `_` or an ASCII lowercase letter (E_DJG_VDF_004)",
+     byte must be `_` or an ASCII lowercase letter (E_DJG_VDF_004)",
                 first_ch = first as char,
             ),
         ));
@@ -579,8 +579,8 @@ fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
                 span,
                 format!(
                     "`#[derived]` `name` `{stripped}` contains byte `{ch}` — only \
-                     `_`, ASCII lowercase letters, and ASCII digits are permitted \
-                     after the first character (E_DJG_VDF_004)",
+      `_`, ASCII lowercase letters, and ASCII digits are permitted \
+      after the first character (E_DJG_VDF_004)",
                     ch = b as char,
                 ),
             ));
@@ -601,7 +601,7 @@ fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
             span,
             format!(
                 "`#[derived]` `name` `{stripped}` begins with the framework-reserved \
-                 `__djogi_` prefix — pick another name (E_DJG_VDF_005)"
+     `__djogi_` prefix — pick another name (E_DJG_VDF_005)"
             ),
         ));
     }
@@ -616,7 +616,7 @@ fn validate_name_shape(name: &syn::Ident) -> syn::Result<()> {
             span,
             format!(
                 "`#[derived]` `name` `{stripped}` is a Postgres reserved keyword; \
-                 it cannot appear unquoted in generated SQL (E_DJG_VDF_014)"
+     it cannot appear unquoted in generated SQL (E_DJG_VDF_014)"
             ),
         ));
     }
@@ -656,8 +656,8 @@ fn validate_sql_surface(sql: &str, span: Span) -> syn::Result<()> {
         return Err(syn::Error::new(
             span,
             "derived `sql` contains a `;` statement separator outside string-literal \
-             context — derived expressions must be a single per-row scalar \
-             (E_DJG_VDF_007)",
+    context — derived expressions must be a single per-row scalar \
+    (E_DJG_VDF_007)",
         ));
     }
 
@@ -672,7 +672,7 @@ fn validate_sql_surface(sql: &str, span: Span) -> syn::Result<()> {
             span,
             format!(
                 "derived `sql` begins with the DDL/DML keyword `{}` — derived \
-                 expressions must be a single per-row scalar (E_DJG_VDF_007)",
+     expressions must be a single per-row scalar (E_DJG_VDF_007)",
                 leading.to_ascii_uppercase()
             ),
         ));
@@ -682,11 +682,11 @@ fn validate_sql_surface(sql: &str, span: Span) -> syn::Result<()> {
     if contains_unquoted_dollar_digit(sql) {
         return Err(syn::Error::new(
             span,
-            "derived `sql` contains a `$N` placeholder token — `$1`, `$2`, ... \
-             tokens are reserved for future cross-model references and \
-             cannot appear in derived expressions in v0.1.0 (E_DJG_VDF_008). \
-             If a literal `$N` must appear in the output, route it through \
-             `chr(36) || '<digit>'` until proper escaping lands.",
+            "derived `sql` contains a `$N` placeholder token — `$1`, `$2`,... \
+    tokens are reserved for future cross-model references and \
+    cannot appear in derived expressions in v0.1.0 (E_DJG_VDF_008). \
+    If a literal `$N` must appear in the output, route it through \
+    `chr(36) || '<digit>'` until proper escaping lands.",
         ));
     }
 
@@ -698,13 +698,13 @@ fn validate_sql_surface(sql: &str, span: Span) -> syn::Result<()> {
             span,
             format!(
                 "derived `sql` references the aggregate or window construct \
-                 `{hit}` — Tier 1 rejects aggregates and window functions in \
-                 `#[derived]` `sql` today (derived expressions are per-row \
-                 scalars). The future aggregate / window surface is locked but \
-                 not yet implemented: Shape Q (QuerySet `.annotate(...)`) and \
-                 Shape V (`#[derived(..., aggregate = true)]`); the `aggregate \
-                 = true` marker is not accepted by the parser yet \
-                 (E_DJG_VDF_009)"
+     `{hit}` — Tier 1 rejects aggregates and window functions in \
+     `#[derived]` `sql` today (derived expressions are per-row \
+     scalars). The future aggregate / window surface is locked but \
+     not yet implemented: Shape Q (QuerySet `.annotate(...)`) and \
+     Shape V (`#[derived(..., aggregate = true)]`); the `aggregate \
+     = true` marker is not accepted by the parser yet \
+     (E_DJG_VDF_009)"
             ),
         ));
     }
@@ -753,7 +753,7 @@ fn contains_unquoted_dollar_digit(sql: &str) -> bool {
             }
             continue;
         }
-        // Skip `/* ... */`-style block comment.
+        // Skip `/*... */`-style block comment.
         if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
             i += 2;
             while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
@@ -782,7 +782,7 @@ fn leading_keyword(sql: &str) -> Option<String> {
             }
             continue;
         }
-        // Skip `/* ... */`-style block comment.
+        // Skip `/*... */`-style block comment.
         if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
             i += 2;
             while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
@@ -984,21 +984,21 @@ fn skip_dollar_body(bytes: &[u8], body_start: usize, tag_bytes: &[u8]) -> usize 
 /// set is known to the caller.
 /// Checks performed:
 /// - **Per-scope column collision (E_DJG_VDF_002)** — for each derived
-///   entry, every scope in `scopes = [...]` must not contain a model
-///   column with the same name. The column set is supplied as a
-///   `(column_name, exposed_scopes)` list since the call site
-///   already has the parsed `FieldAttrs::expose` shape.
+/// entry, every scope in `scopes = [...]` must not contain a model
+/// column with the same name. The column set is supplied as a
+/// `(column_name, exposed_scopes)` list since the call site
+/// already has the parsed `FieldAttrs::expose` shape.
 /// - **Per-scope derived collision (E_DJG_VDF_003)** — two derived
-///   entries with overlapping `scopes` cannot share a `name`.
+/// entries with overlapping `scopes` cannot share a `name`.
 /// - **Relation-form overlap (E_DJG_VDF_010)** — a derived entry
-///   cannot target a scope that also embeds a peer visage via
-///   `expose(scope -> Peer)`.
+/// cannot target a scope that also embeds a peer visage via
+/// `expose(scope -> Peer)`.
 /// - **Model-level pk = None incompatibility (E_DJG_VDF_015)**
-///   the caller supplies the model's PK strategy; `pk = None` rejects
-///   the entire attribute.
-///   Returns `Ok(())` when every check passes; any failure returns a
-///   span-precise `syn::Error` pointing at the offending derived
-///   attribute.
+/// the caller supplies the model's PK strategy; `pk = None` rejects
+/// the entire attribute.
+/// Returns `Ok(())` when every check passes; any failure returns a
+/// span-precise `syn::Error` pointing at the offending derived
+/// attribute.
 pub fn cross_check(
     derived: &[DerivedAttr],
     column_exposures: &[(String, Vec<&'static str>)],
@@ -1010,10 +1010,10 @@ pub fn cross_check(
         return Err(syn::Error::new(
             derived[0].attr_span,
             "`#[derived(...)]` is incompatible with `#[model(pk = None)]` — \
-             derived visages hydrate per-row identified by primary key, and \
-             a `pk = None` model has no `id` column, no `Model::Pk` \
-             associated type, and no visage queryset to filter against \
-             (E_DJG_VDF_015)",
+    derived visages hydrate per-row identified by primary key, and \
+    a `pk = None` model has no `id` column, no `Model::Pk` \
+    associated type, and no visage queryset to filter against \
+    (E_DJG_VDF_015)",
         ));
     }
 
@@ -1029,9 +1029,9 @@ pub fn cross_check(
                     scope.span,
                     format!(
                         "derived visage scope `{}` overlaps relation-form exposure `{field_name}` \
-                         in the same scope; derived fields and relation-form embedding are not \
-                         combinable until the relation projector emits derived expressions \
-                         (E_DJG_VDF_010)",
+       in the same scope; derived fields and relation-form embedding are not \
+       combinable until the relation projector emits derived expressions \
+       (E_DJG_VDF_010)",
                         scope.key
                     ),
                 ));
@@ -1056,7 +1056,7 @@ pub fn cross_check(
                     d.name.span(),
                     format!(
                         "derived `name = {d_name_str}` collides with the exposed \
-                         model column `{col}` in scope `{}` (E_DJG_VDF_002)",
+       model column `{col}` in scope `{}` (E_DJG_VDF_002)",
                         scope.key
                     ),
                 ));
@@ -1084,8 +1084,8 @@ pub fn cross_check(
                     b.name.span(),
                     format!(
                         "derived `name = {a_name_str}` declared twice in scope `{}` — \
-                         each derived entry's name must be unique within every scope \
-                         it targets (E_DJG_VDF_003)",
+       each derived entry's name must be unique within every scope \
+       it targets (E_DJG_VDF_003)",
                         scope.key
                     ),
                 ));
@@ -1107,7 +1107,7 @@ pub fn cross_check(
 /// so the outer block is emitted without an additional `?`; the other
 /// fallible shapes evaluate to `Result<T, E>` and need the outer `?`
 /// to unwrap.
-/// [§Fallibility detection]: ../docs/spec/visage-derived-fields.md#fallibility-detection-syntactic-tail-not-type
+/// [§Fallibility detection]:../docs/spec/visage-derived-fields.md#fallibility-detection-syntactic-tail-not-type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FallibilityShape {
     /// Infallible — block evaluates to `T`.
@@ -1140,8 +1140,8 @@ pub fn detect_fallibility_shape(rust_source: &str, span: Span) -> syn::Result<Fa
             span,
             format!(
                 "`#[derived]` `rust` expression failed to parse: {e}. \
-                 The string must be a valid Rust expression — e.g. \
-                 `rust = \"model.field.clone()\"`"
+     The string must be a valid Rust expression — e.g. \
+     `rust = \"model.field.clone()\"`"
             ),
         )
     })?;
@@ -1249,18 +1249,18 @@ mod tests {
     #[test]
     fn parses_minimal_derived_attribute() {
         let s = parse_struct(quote! {
-            #[derived(
-                name   = facility_site,
-                ty     = Site,
-                scopes = [public, admin],
-                sql    = "CASE WHEN direction = 'inbound' THEN inbound_site ELSE outbound_site END",
-                rust   = "model.inbound_site.clone()",
-            )]
-            struct Consignment {
-                pub direction: String,
-                pub inbound_site: String,
-                pub outbound_site: String,
-            }
+         #[derived(
+          name = facility_site,
+          ty  = Site,
+          scopes = [public, admin],
+          sql = "CASE WHEN direction = 'inbound' THEN inbound_site ELSE outbound_site END",
+          rust = "model.inbound_site.clone()",
+         )]
+         struct Consignment {
+          pub direction: String,
+          pub inbound_site: String,
+          pub outbound_site: String,
+         }
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         assert_eq!(parsed.len(), 1);
@@ -1277,13 +1277,13 @@ mod tests {
     fn rejects_missing_required_keys() {
         // Missing `rust`.
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public],
-                sql = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public],
+          sql = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("E_DJG_VDF_001"), "got: {msg}");
         assert!(msg.contains("rust"), "got: {msg}");
@@ -1292,14 +1292,14 @@ mod tests {
     #[test]
     fn rejects_uppercase_name_byte() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = facilitySite,
-                ty = i32,
-                scopes = [public],
-                sql = "1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = facilitySite,
+          ty = i32,
+          scopes = [public],
+          sql = "1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("E_DJG_VDF_012"), "got: {msg}");
     }
@@ -1307,14 +1307,14 @@ mod tests {
     #[test]
     fn rejects_reserved_djogi_prefix() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = __djogi_secret,
-                ty = i32,
-                scopes = [public],
-                sql = "1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = __djogi_secret,
+          ty = i32,
+          scopes = [public],
+          sql = "1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("E_DJG_VDF_005"), "got: {msg}");
     }
@@ -1322,14 +1322,14 @@ mod tests {
     #[test]
     fn rejects_reserved_pg_keyword() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = order,
-                ty = i32,
-                scopes = [public],
-                sql = "1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = order,
+          ty = i32,
+          scopes = [public],
+          sql = "1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("E_DJG_VDF_014"), "got: {msg}");
     }
@@ -1337,14 +1337,14 @@ mod tests {
     #[test]
     fn rejects_unknown_scope() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [unicorn],
-                sql = "1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [unicorn],
+          sql = "1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("E_DJG_VDF_006"), "got: {msg}");
     }
@@ -1352,14 +1352,14 @@ mod tests {
     #[test]
     fn rejects_duplicate_scope_within_list() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public, public],
-                sql = "1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public, public],
+          sql = "1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("E_DJG_VDF_013"), "got: {msg}");
     }
@@ -1367,14 +1367,14 @@ mod tests {
     #[test]
     fn rejects_empty_scopes_list() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [],
-                sql = "1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [],
+          sql = "1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("empty"), "got: {msg}");
     }
@@ -1382,14 +1382,14 @@ mod tests {
     #[test]
     fn rejects_statement_separator_in_sql() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public],
-                sql = "1; DROP TABLE x",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public],
+          sql = "1; DROP TABLE x",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("E_DJG_VDF_007"), "got: {msg}");
     }
@@ -1398,14 +1398,14 @@ mod tests {
     fn allows_semicolon_inside_string_literal() {
         // `';'` inside a quoted SQL string is not a statement separator.
         let s = parse_struct(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public],
-                sql = "CASE WHEN c = ';' THEN 1 ELSE 0 END",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public],
+          sql = "CASE WHEN c = ';' THEN 1 ELSE 0 END",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         parse_derived_attrs(&s).expect("ok");
     }
@@ -1413,14 +1413,14 @@ mod tests {
     #[test]
     fn rejects_leading_ddl_keyword() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public],
-                sql = "DELETE FROM x",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public],
+          sql = "DELETE FROM x",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("E_DJG_VDF_007"), "got: {msg}");
     }
@@ -1428,31 +1428,31 @@ mod tests {
     #[test]
     fn rejects_dollar_placeholder_token() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public],
-                sql = "$1 + 1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public],
+          sql = "$1 + 1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("E_DJG_VDF_008"), "got: {msg}");
     }
 
     #[test]
     fn allows_dollar_quoted_body() {
-        // `$tag$ ... $tag$` is a Postgres dollar-quoted string literal,
+        // `$tag$... $tag$` is a Postgres dollar-quoted string literal,
         // not a `$N` placeholder.
         let s = parse_struct(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public],
-                sql = "$tag$ inner; text $tag$",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public],
+          sql = "$tag$ inner; text $tag$",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         parse_derived_attrs(&s).expect("ok");
     }
@@ -1460,14 +1460,14 @@ mod tests {
     #[test]
     fn rejects_aggregate_call() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public],
-                sql = "COUNT(*) + 1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public],
+          sql = "COUNT(*) + 1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         assert!(msg.contains("E_DJG_VDF_009"), "got: {msg}");
     }
@@ -1475,14 +1475,14 @@ mod tests {
     #[test]
     fn rejects_over_keyword() {
         let msg = first_attr_err(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public],
-                sql = "rank() OVER (ORDER BY id)",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public],
+          sql = "rank() OVER (ORDER BY id)",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         // `rank` itself is not in our aggregate list; the OVER keyword
         // is what trips the detector.
@@ -1492,14 +1492,14 @@ mod tests {
     #[test]
     fn aggregate_inside_quotes_does_not_trip() {
         let s = parse_struct(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public],
-                sql = "'COUNT(*)'",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public],
+          sql = "'COUNT(*)'",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         parse_derived_attrs(&s).expect("ok");
     }
@@ -1507,14 +1507,14 @@ mod tests {
     #[test]
     fn cross_check_rejects_pk_none() {
         let s = parse_struct(quote! {
-            #[derived(
-                name = x,
-                ty = i32,
-                scopes = [public],
-                sql = "1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = x,
+          ty = i32,
+          scopes = [public],
+          sql = "1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         let err = cross_check(&parsed, &[], &[], true).expect_err("pk = None must reject");
@@ -1524,14 +1524,14 @@ mod tests {
     #[test]
     fn cross_check_rejects_collision_with_exposed_column() {
         let s = parse_struct(quote! {
-            #[derived(
-                name = display_name,
-                ty = i32,
-                scopes = [public],
-                sql = "1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = display_name,
+          ty = i32,
+          scopes = [public],
+          sql = "1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         let columns = vec![("display_name".to_string(), vec!["public"])];
@@ -1542,14 +1542,14 @@ mod tests {
     #[test]
     fn cross_check_rejects_relation_form_scope_overlap() {
         let s = parse_struct(quote! {
-            #[derived(
-                name = department,
-                ty = i32,
-                scopes = [public],
-                sql = "1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = department,
+          ty = i32,
+          scopes = [public],
+          sql = "1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         let columns = vec![("department".to_string(), vec!["public"])];
@@ -1564,14 +1564,14 @@ mod tests {
         // Column exposed only to `admin`; derived only in `public`
         // no overlap, no collision.
         let s = parse_struct(quote! {
-            #[derived(
-                name = display_name,
-                ty = i32,
-                scopes = [public],
-                sql = "1",
-                rust = "1",
-            )]
-            struct M { f: i32 }
+         #[derived(
+          name = display_name,
+          ty = i32,
+          scopes = [public],
+          sql = "1",
+          rust = "1",
+         )]
+         struct M { f: i32 }
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         let columns = vec![("display_name".to_string(), vec!["admin"])];
@@ -1581,9 +1581,9 @@ mod tests {
     #[test]
     fn cross_check_rejects_derived_collision_in_overlapping_scope() {
         let s = parse_struct(quote! {
-            #[derived(name = x, ty = i32, scopes = [public, admin], sql = "1", rust = "1")]
-            #[derived(name = x, ty = i32, scopes = [admin], sql = "2", rust = "2")]
-            struct M { f: i32 }
+         #[derived(name = x, ty = i32, scopes = [public, admin], sql = "1", rust = "1")]
+         #[derived(name = x, ty = i32, scopes = [admin], sql = "2", rust = "2")]
+         struct M { f: i32 }
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         let err = cross_check(&parsed, &[], &[], false).expect_err("collision must reject");
@@ -1641,7 +1641,7 @@ mod tests {
     // and similar tests cover the parser end-to-end via
     // `parse_derived_attrs`; the byte-level rules below are split
     // out here because the >63-byte path is awkward to write inline
-    // in a `quote! { ... }` block (and would also force the test
+    // in a `quote! {... }` block (and would also force the test
     // file itself to carry a 64-char ident, which clippy-style
     // tooling tends to dislike).
     // ──────────────────────────────────────────────────────────────

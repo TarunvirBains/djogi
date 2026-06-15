@@ -2,11 +2,11 @@
 use djogi::prelude::*;
 
 #[model(table = "users", indexes(
-    index(fields = [email], nulls_not_distinct = true),
+ index(fields = [email], nulls_not_distinct = true),
 ))]
 #[derive(Debug, Clone)]
 pub struct User {
-    pub email: String,
+ pub email: String,
 }
 
 fn main() {}

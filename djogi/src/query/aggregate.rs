@@ -5,7 +5,7 @@
 //! [`AggregateQuery<T, Out, K>`] whose terminal
 //! [`AggregateQuery::fetch_one`] issues
 //! ```sql
-//! SELECT <agg_expr> FROM <table> [WHERE ...]
+//! SELECT <agg_expr> FROM <table> [WHERE...]
 //! ```
 //! and decodes the single scalar result into `Out`. `Out` is the Rust
 //! return type carried by [`crate::expr::AggregateExpr<Out, K>`] — `i64`
@@ -23,19 +23,19 @@
 //! reaches `.fetch_all(ctx)` is forced to learn a new return type. The
 //! cost is one tiny wrapper struct; the benefit is clean additivity.
 //! # Clause set
-//! `SELECT <agg>, FROM <table> [WHERE ...]` — no `ORDER BY`, no
+//! `SELECT <agg>, FROM <table> [WHERE...]` — no `ORDER BY`, no
 //! `LIMIT`, no `OFFSET`, no `GROUP BY`. Ungrouped aggregates always
 //! collapse to exactly one result row regardless of cardinality, so
 //! those clauses would be meaningless / syntax errors. Grouped
 //! aggregates (`annotate(|f| f.col.count()).group_by(...)`) ship in a
-//! later phase; Task 4's scalar path stays single-row by design.
+//! later phase; 's scalar path stays single-row by design.
 //! # Empty short-circuit
 //! `QuerySet::none()` on the upstream queryset is honoured — the
 //! terminal short-circuits to a sentinel value without issuing any
 //! SQL. For `COUNT`-shaped aggregates the sentinel is `0`; for
 //! `MIN`/`MAX` it would be `NULL` in SQL (the queryset matched no
 //! rows), but we cannot conjure a `V` at the Rust level without a
-//! trait bound. Task 4 ships the straightforward version: structural-
+//! trait bound. ships the straightforward version: structural-
 //! empty querysets still run the SQL and Postgres returns `NULL` /
 //! `0` / `0.0` per the per-aggregate rules. If a later task adds
 //! zero-value defaults per `Out`, it will close this gap additively.
@@ -138,25 +138,25 @@ impl<T: Model> QuerySet<T> {
     /// `CUME_DIST_OF`, returning `AggregateExpr<Out, HypotheticalSetAgg>`).
     /// `K` is inferred from the aggregate the closure returns. Chain
     /// `.filter(Expr<bool>)` on value aggregates for
-    /// `FILTER (WHERE ...)` post-filtering; the per-kind impl blocks
+    /// `FILTER (WHERE...)` post-filtering; the per-kind impl blocks
     /// on `AggregateExpr` enforce which modifiers are legal per family.
     /// The pending [`AggregateQuery<T, Out, K>`] is terminated with
     /// [`AggregateQuery::fetch_one`], which issues
-    /// `SELECT <agg> FROM <table> [WHERE ...]` and decodes the single
+    /// `SELECT <agg> FROM <table> [WHERE...]` and decodes the single
     /// scalar result.
     /// ```ignore
     /// use djogi::prelude::*;
     ///
     /// // Value aggregate — `K = ValueAgg` (default).
     /// let total: i64 = Account::objects()
-    ///     .filter(|f| f.published().eq(true))
-    ///     .aggregate(|f| f.balance().sum())
-    ///     .fetch_one(&mut ctx).await?;
+    /// .filter(|f| f.published().eq(true))
+    /// .aggregate(|f| f.balance().sum())
+    /// .fetch_one(&mut ctx).await?;
     ///
     /// // Ordered-set aggregate — `K = OrderedSetAgg` inferred.
     /// let p95: f64 = Request::objects()
-    ///     .aggregate(|r| r.latency_ms().percentile_cont(0.95))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|r| r.latency_ms().percentile_cont(0.95))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregate queries are lazy — dropping one silently omits the query"]
     pub fn aggregate<F, Out, K>(self, f: F) -> AggregateQuery<T, Out, K>

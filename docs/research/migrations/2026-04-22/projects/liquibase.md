@@ -37,45 +37,45 @@ DDL is assembled programmatically in `liquibase-standard/src/main/java/liquibase
 
 ```java
 return new CreateTableStatement(database.getLiquibaseCatalogName(), database.getLiquibaseSchemaName(), database.getDatabaseChangeLogTableName())
-        .setTablespace(database.getLiquibaseTablespaceName())
-        .addColumn("ID", ..., charTypeName + "(255)", ..., new NotNullConstraint())
-        .addColumn("AUTHOR", ..., charTypeName + "(255)", ..., new NotNullConstraint())
-        .addColumn("FILENAME", ..., charTypeName + "(255)", ..., new NotNullConstraint())
-        .addColumn("DATEEXECUTED", ..., dateTimeTypeString, ..., new NotNullConstraint())
-        .addColumn("ORDEREXECUTED", ..., "int", ..., new NotNullConstraint())
-        .addColumn("EXECTYPE", ..., charTypeName + "(10)", ..., new NotNullConstraint())
-        .addColumn("MD5SUM", ..., charTypeName + "(35)", ...)
-        .addColumn("DESCRIPTION", ..., charTypeName + "(255)", ...)
-        .addColumn("COMMENTS", ..., charTypeName + "(255)", ...)
-        .addColumn("TAG", ..., charTypeName + "(255)", ...)
-        .addColumn("LIQUIBASE", ..., charTypeName + "(20)", ...)
-        .addColumn("CONTEXTS", ..., charTypeName + "(" + getContextsSize() + ")", ...)
-        .addColumn("LABELS", ..., charTypeName + "(" + getLabelsSize() + ")", ...)
-        .addColumn("DEPLOYMENT_ID", ..., charTypeName + "(10)", ...);
+   .setTablespace(database.getLiquibaseTablespaceName())
+   .addColumn("ID",..., charTypeName + "(255)",..., new NotNullConstraint())
+   .addColumn("AUTHOR",..., charTypeName + "(255)",..., new NotNullConstraint())
+   .addColumn("FILENAME",..., charTypeName + "(255)",..., new NotNullConstraint())
+   .addColumn("DATEEXECUTED",..., dateTimeTypeString,..., new NotNullConstraint())
+   .addColumn("ORDEREXECUTED",..., "int",..., new NotNullConstraint())
+   .addColumn("EXECTYPE",..., charTypeName + "(10)",..., new NotNullConstraint())
+   .addColumn("MD5SUM",..., charTypeName + "(35)",...)
+   .addColumn("DESCRIPTION",..., charTypeName + "(255)",...)
+   .addColumn("COMMENTS",..., charTypeName + "(255)",...)
+   .addColumn("TAG",..., charTypeName + "(255)",...)
+   .addColumn("LIQUIBASE",..., charTypeName + "(20)",...)
+   .addColumn("CONTEXTS",..., charTypeName + "(" + getContextsSize() + ")",...)
+   .addColumn("LABELS",..., charTypeName + "(" + getLabelsSize() + ")",...)
+   .addColumn("DEPLOYMENT_ID",..., charTypeName + "(10)",...);
 ```
 
 For Postgres this resolves to (reconstructed from the generator — the literal DDL is what `SqlGeneratorFactory` emits at runtime):
 
 ```sql
 CREATE TABLE public.databasechangelog (
-    ID            VARCHAR(255) NOT NULL,
-    AUTHOR        VARCHAR(255) NOT NULL,
-    FILENAME      VARCHAR(255) NOT NULL,
-    DATEEXECUTED  TIMESTAMP    NOT NULL,   -- "datetime" in generator; Postgres mapping
-    ORDEREXECUTED INT          NOT NULL,
-    EXECTYPE      VARCHAR(10)  NOT NULL,
-    MD5SUM        VARCHAR(35),
-    DESCRIPTION   VARCHAR(255),
-    COMMENTS      VARCHAR(255),
-    TAG           VARCHAR(255),
-    LIQUIBASE     VARCHAR(20),
-    CONTEXTS      VARCHAR(255),
-    LABELS        VARCHAR(255),
-    DEPLOYMENT_ID VARCHAR(10)
+  ID      VARCHAR(255) NOT NULL,
+  AUTHOR    VARCHAR(255) NOT NULL,
+  FILENAME   VARCHAR(255) NOT NULL,
+  DATEEXECUTED TIMESTAMP  NOT NULL,  -- "datetime" in generator; Postgres mapping
+  ORDEREXECUTED INT     NOT NULL,
+  EXECTYPE   VARCHAR(10) NOT NULL,
+  MD5SUM    VARCHAR(35),
+  DESCRIPTION  VARCHAR(255),
+  COMMENTS   VARCHAR(255),
+  TAG      VARCHAR(255),
+  LIQUIBASE   VARCHAR(20),
+  CONTEXTS   VARCHAR(255),
+  LABELS    VARCHAR(255),
+  DEPLOYMENT_ID VARCHAR(10)
 );
 ```
 
-**Primary key**: There is none. No column in the `addColumn(...)` chain uses `addPrimaryKeyColumn`, and there is no `ALTER TABLE ... ADD PRIMARY KEY` in the generator. Uniqueness of `(ID, AUTHOR, FILENAME)` is enforced by `StandardChangeLogHistoryService` in application code — `RanChangeSet.isSameAs` compares exactly those three fields, and `MarkChangeSetRanGenerator` uses them for its `WHERE` clause (`MarkChangeSetRanGenerator.java:77-80`). The stated `MD5SUM VARCHAR(35)` width enforces the checksum format `V:hex` (see "Recovery" section below).
+**Primary key**: There is none. No column in the `addColumn(...)` chain uses `addPrimaryKeyColumn`, and there is no `ALTER TABLE... ADD PRIMARY KEY` in the generator. Uniqueness of `(ID, AUTHOR, FILENAME)` is enforced by `StandardChangeLogHistoryService` in application code — `RanChangeSet.isSameAs` compares exactly those three fields, and `MarkChangeSetRanGenerator` uses them for its `WHERE` clause (`MarkChangeSetRanGenerator.java:77-80`). The stated `MD5SUM VARCHAR(35)` width enforces the checksum format `V:hex` (see "Recovery" section below).
 
 **Schema migration for existing tables**: `StandardChangeLogHistoryService.init` (`.../StandardChangeLogHistoryService.java:106-297`) detects missing/undersized columns and emits `AddColumnStatement` / `ModifyDataTypeStatement` for each. This is how Liquibase upgrades user databases when a new version adds a column (e.g. `DEPLOYMENT_ID` was introduced this way — see the explicit block at `:242-250`).
 
@@ -86,21 +86,21 @@ DDL assembled in `liquibase-standard/src/main/java/liquibase/sqlgenerator/core/C
 
 ```java
 CreateTableStatement createTableStatement = new CreateTableStatement(database.getLiquibaseCatalogName(), database.getLiquibaseSchemaName(), database.getDatabaseChangeLogLockTableName())
-        .setTablespace(database.getLiquibaseTablespaceName())
-        .addPrimaryKeyColumn("ID", DataTypeFactory.getInstance().fromDescription("int", database), null, null, null, new NotNullConstraint())
-        .addColumn("LOCKED", DataTypeFactory.getInstance().fromDescription("boolean", database), null, null, new NotNullConstraint())
-        .addColumn("LOCKGRANTED", DataTypeFactory.getInstance().fromDescription(dateTimeTypeString, database))
-        .addColumn("LOCKEDBY", DataTypeFactory.getInstance().fromDescription(charTypeName + "(255)", database));
+   .setTablespace(database.getLiquibaseTablespaceName())
+   .addPrimaryKeyColumn("ID", DataTypeFactory.getInstance().fromDescription("int", database), null, null, null, new NotNullConstraint())
+   .addColumn("LOCKED", DataTypeFactory.getInstance().fromDescription("boolean", database), null, null, new NotNullConstraint())
+   .addColumn("LOCKGRANTED", DataTypeFactory.getInstance().fromDescription(dateTimeTypeString, database))
+   .addColumn("LOCKEDBY", DataTypeFactory.getInstance().fromDescription(charTypeName + "(255)", database));
 ```
 
 Resolved for Postgres:
 
 ```sql
 CREATE TABLE public.databasechangeloglock (
-    ID          INT          NOT NULL PRIMARY KEY,
-    LOCKED      BOOLEAN      NOT NULL,
-    LOCKGRANTED TIMESTAMP,
-    LOCKEDBY    VARCHAR(255)
+  ID     INT     NOT NULL PRIMARY KEY,
+  LOCKED   BOOLEAN   NOT NULL,
+  LOCKGRANTED TIMESTAMP,
+  LOCKEDBY  VARCHAR(255)
 );
 ```
 
@@ -109,8 +109,8 @@ Primary key is `ID` (`addPrimaryKeyColumn` call). Initialisation inserts a **sin
 ```java
 DeleteStatement deleteStatement = new DeleteStatement(..., database.getDatabaseChangeLogLockTableName());
 InsertStatement insertStatement = new InsertStatement(..., database.getDatabaseChangeLogLockTableName())
-        .addColumnValue("ID", 1)
-        .addColumnValue("LOCKED", Boolean.FALSE);
+   .addColumnValue("ID", 1)
+   .addColumnValue("LOCKED", Boolean.FALSE);
 ```
 
 The whole locking scheme is "one row, mutate `LOCKED` via `UPDATE`". Confidence: **high**.
@@ -124,14 +124,14 @@ The whole locking scheme is "one row, mutate `LOCKED` via `UPDATE`". Confidence:
 2. If `LOCKED=true`, return `false` (caller waits).
 3. Otherwise `UPDATE DATABASECHANGELOGLOCK SET LOCKED=true, LOCKGRANTED=now(), LOCKEDBY='host#desc (ip)' WHERE ID=1 AND LOCKED=false` — the actual statement is produced by `LockDatabaseChangeLogGenerator.generateSql` at `liquibase-standard/src/main/java/liquibase/sqlgenerator/core/LockDatabaseChangeLogGenerator.java:46-51`:
 
-   ```java
-   updateStatement.addNewColumnValue("LOCKED", true);
-   updateStatement.addNewColumnValue("LOCKGRANTED", new DatabaseFunction(dateValue));
-   updateStatement.addNewColumnValue("LOCKEDBY", hostname + hostDescription + " (" + hostaddress + ")");
-   updateStatement.setWhereClause(... + " = 1 AND " + ... + " = " + ...objectToSql(false, database));
-   ```
+  ```java
+  updateStatement.addNewColumnValue("LOCKED", true);
+  updateStatement.addNewColumnValue("LOCKGRANTED", new DatabaseFunction(dateValue));
+  updateStatement.addNewColumnValue("LOCKEDBY", hostname + hostDescription + " (" + hostaddress + ")");
+  updateStatement.setWhereClause(... + " = 1 AND " +... + " = " +...objectToSql(false, database));
+  ```
 
-   The `AND LOCKED=false` clause is the entire concurrency-safety story: if two processes race, only one `UPDATE` reports `rowsUpdated == 1`. The loser sees `rowsUpdated == 0` and `acquireLock` returns `false` (`StandardLockService.java:342-346`).
+  The `AND LOCKED=false` clause is the entire concurrency-safety story: if two processes race, only one `UPDATE` reports `rowsUpdated == 1`. The loser sees `rowsUpdated == 0` and `acquireLock` returns `false` (`StandardLockService.java:342-346`).
 4. `database.commit()` — so the lock ack is visible to other sessions (`StandardLockService.java:347`).
 
 **Wait loop** (`StandardLockService.waitForLock`, `:257-299`): compute a deadline `now + CHANGELOGLOCK_WAIT_TIME*60000` ms (default wait 5 minutes — `GlobalConfiguration.java:83`); call `acquireLock` in a loop, sleeping `CHANGELOGLOCK_POLL_RATE` seconds between attempts (default 10s — `GlobalConfiguration.java:89`). If the deadline passes, throw `LockException("Could not acquire change log lock. Currently locked by " + lockedBy)` with the `LOCKEDBY` string and the `LOCKGRANTED` timestamp.
@@ -157,7 +157,7 @@ Per-changeset, not per-changelog. `ChangeSet.execute` (`liquibase-standard/src/m
 `runInTransaction` defaults to `true` (`ChangeSet.java:438`: `this.runInTransaction = node.getChildValue(null, "runInTransaction", true);`).
 
 ### Non-transactional DDL (Postgres-specific)
-Postgres *does* support DDL inside a transaction, and `PostgresDatabase` does **not** override `supportsDDLInTransaction()` — so it inherits `return true` from `AbstractJdbcDatabase.java:195`. This means by default every changeset runs inside a transaction on Postgres, which is correct for most DDL but breaks for `CREATE INDEX CONCURRENTLY`, `ALTER TYPE ... ADD VALUE`, `REINDEX CONCURRENTLY`, etc. The only escape hatch is to set `runInTransaction="false"` on the changeset manually. No built-in warning, no detection of concurrent-mode statements.
+Postgres *does* support DDL inside a transaction, and `PostgresDatabase` does **not** override `supportsDDLInTransaction()` — so it inherits `return true` from `AbstractJdbcDatabase.java:195`. This means by default every changeset runs inside a transaction on Postgres, which is correct for most DDL but breaks for `CREATE INDEX CONCURRENTLY`, `ALTER TYPE... ADD VALUE`, `REINDEX CONCURRENTLY`, etc. The only escape hatch is to set `runInTransaction="false"` on the changeset manually. No built-in warning, no detection of concurrent-mode statements.
 
 ### Ledger write
 After a changeset succeeds, `setExecType` is called (`AbstractUpdateCommandStep` path via `UpdateVisitor`). `StandardChangeLogHistoryService.setExecType` (`.../StandardChangeLogHistoryService.java:395-409`) executes `MarkChangeSetRanStatement` and commits. The generator (`MarkChangeSetRanGenerator.java:41-113`):
@@ -166,7 +166,7 @@ After a changeset succeeds, `setExecType` is called (`AbstractUpdateCommandStep`
 - For `ranBefore` exec types (`RERAN`): `UPDATE` the existing row matched by `(ID, AUTHOR, FILENAME)`, overwriting `DATEEXECUTED`, `ORDEREXECUTED`, `MD5SUM`, `EXECTYPE='RERAN'`, `DEPLOYMENT_ID`, `COMMENTS`, `CONTEXTS`, `LABELS`, `LIQUIBASE`, `DESCRIPTION`.
 - For `FAILED` / `SKIPPED`: `return EMPTY_SQL` (`:52-54`) — **failed and skipped changesets are NOT recorded in the ledger**. This is a significant property: if a changeset fails in the middle of a deployment, the ledger simply has no row for it.
 
-The ledger insert is committed in its own transaction (`StandardChangeLogHistoryService.java:399-401`). So the actual transaction topology per changeset is: `BEGIN; ...DDL...; COMMIT; BEGIN; INSERT INTO databasechangelog; COMMIT;` — two transactions if `runInTransaction=true`. There is a window between the DDL commit and the ledger insert where a crash leaves the DDL applied but the ledger missing the row. Confidence: **high** (read straight from source).
+The ledger insert is committed in its own transaction (`StandardChangeLogHistoryService.java:399-401`). So the actual transaction topology per changeset is: `BEGIN;...DDL...; COMMIT; BEGIN; INSERT INTO databasechangelog; COMMIT;` — two transactions if `runInTransaction=true`. There is a window between the DDL commit and the ledger insert where a crash leaves the DDL applied but the ledger missing the row. Confidence: **high** (read straight from source).
 
 ## Recovery
 
@@ -200,10 +200,10 @@ Confidence: **high**.
 Source: `liquibase-standard/src/main/java/liquibase/precondition/`, `liquibase-standard/src/main/java/liquibase/precondition/core/`.
 
 - Preconditions attach at the changelog level OR the changeset level. In `ChangeSet.execute` (`ChangeSet.java:770-834`) the container's `onFail` / `onError` drives behaviour:
-  - `HALT`: throw `MigrationFailedException`.
-  - `CONTINUE`: skip the changeset (`execType = SKIPPED`), which (critically) means **no ledger row is written**.
-  - `MARK_RAN`: skip but write a ledger row with `EXECTYPE='MARK_RAN'` — used to mask no-op cases without re-checking.
-  - `WARN`: just log.
+ - `HALT`: throw `MigrationFailedException`.
+ - `CONTINUE`: skip the changeset (`execType = SKIPPED`), which (critically) means **no ledger row is written**.
+ - `MARK_RAN`: skip but write a ledger row with `EXECTYPE='MARK_RAN'` — used to mask no-op cases without re-checking.
+ - `WARN`: just log.
 - Concrete preconditions: `TableExistsPrecondition`, `ColumnExistsPrecondition`, `IndexExistsPrecondition`, `ForeignKeyExistsPrecondition`, `PrimaryKeyExistsPrecondition`, `SequenceExistsPrecondition`, `ViewExistsPrecondition`, `RowCountPrecondition`, `TableIsEmptyPrecondition`, `ChangeSetExecutedPrecondition`, `ChangeLogPropertyDefinedPrecondition`, `DBMSPrecondition`, `RunningAsPrecondition`, `SqlPrecondition` (custom SQL returning an expected value), plus the logical combinators `And`/`Or`/`Not` extending `PreconditionLogic`.
 - The container itself extends `AndPrecondition` (`PreconditionContainer.java:25`) — so children are AND'ed by default.
 
@@ -237,7 +237,7 @@ The CLI has an `--ignoreOutdatedChangesets` / validator warning path (searched: 
 
 - `diffChangeLog` / `generateChangeLog` commands (`DiffChangelogCommandStep.java`, `GenerateChangelogCommandStep.java`) produce real changelog XML/YAML/JSON (or SQL if the output is `.sql`), not just diagnostic reports. `GenerateChangelogCommandStep.run` (`:120-177`) writes the output via `DiffToChangeLog.print(...)`.
 - Emitted Change types include `createTable`, `createIndex`, `addColumn`, `dropColumn`, `addForeignKeyConstraint`, `createSequence`, etc. `DiffToChangeLog` does not emit `RenameColumnChange` for renames between snapshots: there is no identity-mapping step that could detect a rename (all diffs are by name). The only place `RenameColumnChange` appears in the diff output path is in `ChangedColumnChangeGenerator.java:195-201` — and it's used as part of a workaround for type conversions that can't be expressed directly (add temp column, copy data, drop original, rename temp to original). **Rename as a semantic rename is not detected by diff**; users must write the `<renameColumn>` / `<renameTable>` changeset by hand.
-- The runtime changes `renameColumn` and `renameTable` exist as first-class Change types (`liquibase-standard/src/main/java/liquibase/change/core/RenameColumnChange.java:15-22`, and the analogous `RenameTableChange.java`). They emit `ALTER TABLE ... RENAME COLUMN ...` via `RenameColumnGenerator` / `RenameTableGenerator`.
+- The runtime changes `renameColumn` and `renameTable` exist as first-class Change types (`liquibase-standard/src/main/java/liquibase/change/core/RenameColumnChange.java:15-22`, and the analogous `RenameTableChange.java`). They emit `ALTER TABLE... RENAME COLUMN...` via `RenameColumnGenerator` / `RenameTableGenerator`.
 - **Destructive-operation gating**: Not found in source. `DropTableChange`, `DropColumnChange`, `DropAllCommandStep` run without confirmation flags in the OSS source. `DropAllCommandStep.java` exists and is destructive by design. No "this changeset is destructive, require --force" detection in the OSS source tree.
 
 Confidence: **high** for the diff/generate mechanics; **medium** for the rename-detection claim (I verified the one place rename appears in diff output and it's a type-conversion workaround, not a semantic-rename detector — but I did not exhaustively scan every snapshot/diff comparator).
@@ -273,10 +273,10 @@ Confidence: **high** (for absence — I searched for concurrency / online-safe /
 6. **`runOnChange` for view/function-body migrations.** `ShouldRunChangeSetFilter.java:66-68`. Redefinable objects (views, functions, triggers) benefit from "re-apply when source changes" without needing a new migration every time. Adopt but clearly mark as non-additive.
 
 ### Reject
-1. **Lock table with row update as the concurrency primitive.** `StandardLockService.acquireLock` — depends on `UPDATE ... WHERE LOCKED=false` returning `rowCount==1`. This works but has no auto-recovery from crashes; a killed process leaves `LOCKED=true` indefinitely. Djogi's Postgres 18 advisory locks (`pg_try_advisory_lock` / `pg_advisory_unlock`) are strictly better: session-scoped, auto-released on disconnect, no stale-lock problem. **Explicitly do not copy Liquibase's design here.**
+1. **Lock table with row update as the concurrency primitive.** `StandardLockService.acquireLock` — depends on `UPDATE... WHERE LOCKED=false` returning `rowCount==1`. This works but has no auto-recovery from crashes; a killed process leaves `LOCKED=true` indefinitely. Djogi's Postgres 18 advisory locks (`pg_try_advisory_lock` / `pg_advisory_unlock`) are strictly better: session-scoped, auto-released on disconnect, no stale-lock problem. **Explicitly do not copy Liquibase's design here.**
 2. **Conflating ledger and execution history in one table.** An `UPDATE` on re-run overwrites `DATEEXECUTED`, `ORDEREXECUTED`, `MD5SUM`, `EXECTYPE`, `DEPLOYMENT_ID` (`MarkChangeSetRanGenerator.java:65-84`). You cannot audit "how often did this changeset run, and when?". Djogi should split: a stable `migrations` (applied-state) table plus an append-only `migration_runs` (history) table.
 3. **Dropping failed/skipped changesets from the ledger.** `MarkChangeSetRanGenerator.java:52-54` explicitly returns `EMPTY_SQL` for `FAILED` and `SKIPPED`. This is why Liquibase has no partial-apply story: failures leave no trace in the ledger. Djogi MUST record attempts — success or failure — so the crash-between-DDL-commit-and-ledger-commit window becomes recoverable by examining the last attempt.
-4. **`clearChecksums` as a single blind `UPDATE ... SET MD5SUM=NULL`.** `StandardChangeLogHistoryService.clearAllCheckSums` (`:465-476`). No filtering, no confirmation, no audit trail of what was cleared. Djogi's `repair` command should at minimum log every checksum change and support dry-run and single-migration targeting.
+4. **`clearChecksums` as a single blind `UPDATE... SET MD5SUM=NULL`.** `StandardChangeLogHistoryService.clearAllCheckSums` (`:465-476`). No filtering, no confirmation, no audit trail of what was cleared. Djogi's `repair` command should at minimum log every checksum change and support dry-run and single-migration targeting.
 5. **No primary key on `DATABASECHANGELOG`.** Uniqueness of `(ID, AUTHOR, FILENAME)` is enforced purely in application code (`RanChangeSet.isSameAs`, `MarkChangeSetRanGenerator.java:77-80`). Djogi should declare the PK in DDL. Cheap safety.
 6. **Liquibase's diff-doesn't-detect-renames.** `DiffToChangeLog` emits add+drop for renames (no identity mapping). Djogi can defer rename detection, but should not claim to detect renames from diffs — that road leads to data loss when the heuristic guesses wrong.
 

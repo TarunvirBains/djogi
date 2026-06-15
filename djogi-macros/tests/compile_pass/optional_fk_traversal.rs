@@ -9,11 +9,11 @@
 //! This fixture pins:
 //!
 //! 1. The accessor's return type is `OptionalRelationRef<V>` where `V` is the
-//!    peer's `Fields` struct (not the peer's visage directly).
+//! peer's `Fields` struct (not the peer's visage directly).
 //! 2. `.map_filter(|a| a.display_name().eq(…))` preserves the legacy
-//!    `Condition` return shape for ordinary `FieldRef` traversal.
+//! `Condition` return shape for ordinary `FieldRef` traversal.
 //! 3. `.map_predicate(|a| a.display_name().eq(…))` lifts the same closure
-//!    into a root-typed `Q<Post>` when the caller needs an `IntoQ` result.
+//! into a root-typed `Q<Post>` when the caller needs an `IntoQ` result.
 //! 4. `.is_none()` / `.is_some()` standalone predicates compose.
 //!
 //! ## Deferred: `PostPublic::filter(|p| …)` entry point
@@ -29,18 +29,18 @@ use djogi::query::internal::Condition;
 #[model(table = "phase7_zero2_t8_opt_users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(expose(public))]
-    pub display_name: String,
+ #[field(expose(public))]
+ pub display_name: String,
 }
 
 #[model(table = "phase7_zero2_t8_opt_posts", no_default)]
 #[derive(Debug, Clone)]
 pub struct Post {
-    #[field(expose(public))]
-    pub title: String,
-    // Nullable FK — exposure-relation form is lifted post-T6.
-    #[field(expose(public -> UserPublic))]
-    pub author: Option<ForeignKey<User>>,
+ #[field(expose(public))]
+ pub title: String,
+ // Nullable FK — exposure-relation form is lifted post-T6.
+ #[field(expose(public -> UserPublic))]
+ pub author: Option<ForeignKey<User>>,
 }
 
 /// Optional-FK traversal under the wrapper's `map_filter` combinator.
@@ -48,16 +48,16 @@ pub struct Post {
 /// inner closure's condition — that is the T8 acceptance shape.
 #[allow(dead_code)]
 fn optional_traversal_composes(p: &PostPublicFields) -> Condition {
-    p.author()
-        .map_filter(|a| a.display_name().eq("Ada".to_string()))
+ p.author()
+ .map_filter(|a| a.display_name().eq("Ada".to_string()))
 }
 
 /// Broader predicate lane for callers that need a root-typed `Q<Post>`
 /// (for example codec-gated presentation predicates).
 #[allow(dead_code)]
 fn optional_traversal_predicate_composes(p: &PostPublicFields) -> Q<Post> {
-    p.author()
-        .map_predicate(|a| a.display_name().eq("Ada".to_string()))
+ p.author()
+ .map_predicate(|a| a.display_name().eq("Ada".to_string()))
 }
 
 /// Standalone `IS NULL` / `IS NOT NULL` predicates over the wrapper.
@@ -65,24 +65,24 @@ fn optional_traversal_predicate_composes(p: &PostPublicFields) -> Q<Post> {
 /// "rows with any author" without composing an inner closure.
 #[allow(dead_code)]
 fn optional_presence_composes(p: &PostPublicFields) -> (Condition, Condition) {
-    let author = p.author();
-    let author_again = p.author();
-    (author.is_some(), author_again.is_none())
+ let author = p.author();
+ let author_again = p.author();
+ (author.is_some(), author_again.is_none())
 }
 
 fn main() {
-    let fields = PostPublicFields::default();
+ let fields = PostPublicFields::default();
 
-    // The accessor's static return type is `OptionalRelationRef<UserPublicFields<Post>>`.
-    // Name the type to pin the contract — if the emitter ever regresses to
-    // returning the bare peer `Fields`, this binding fails.
-    let _opt: OptionalRelationRef<UserPublicFields<Post>> = fields.author();
+ // The accessor's static return type is `OptionalRelationRef<UserPublicFields<Post>>`.
+ // Name the type to pin the contract — if the emitter ever regresses to
+ // returning the bare peer `Fields`, this binding fails.
+ let _opt: OptionalRelationRef<UserPublicFields<Post>> = fields.author();
 
-    // Scalar on the owning visage still composes alongside.
-    let _own: Condition = fields.title().eq("Hello".to_string());
+ // Scalar on the owning visage still composes alongside.
+ let _own: Condition = fields.title().eq("Hello".to_string());
 
-    // The legacy and broader predicate helpers both type-check.
-    let _mapped: Condition = optional_traversal_composes(&fields);
-    let _mapped_q: Q<Post> = optional_traversal_predicate_composes(&fields);
-    let (_some, _none) = optional_presence_composes(&fields);
+ // The legacy and broader predicate helpers both type-check.
+ let _mapped: Condition = optional_traversal_composes(&fields);
+ let _mapped_q: Q<Post> = optional_traversal_predicate_composes(&fields);
+ let (_some, _none) = optional_presence_composes(&fields);
 }

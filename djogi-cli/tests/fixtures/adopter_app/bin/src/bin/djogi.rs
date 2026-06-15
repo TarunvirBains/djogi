@@ -3,7 +3,7 @@
 //! model CRATE — tracker AND billing — so both crates' inventory statics
 //! are retained.
 djogi_cli::djogi_main!(
-    tracker::Elephant,
-    tracker::Herd,
-    billing::Invoice
+ tracker::Elephant,
+ tracker::Herd,
+ billing::Invoice
 );

@@ -3,119 +3,119 @@
 //!
 //! ## What this demonstrates
 //!
-//! - **Typed pair-tuple closure self-join** (Cluster 4A, GH #99). The
-//!   ranking previously emitted by a hand-written `WITH RECURSIVE`-flavoured
-//!   raw SQL block is now expressed through
-//!   `Elephant::objects().self_pairs().left_join_closure_pair::<ElephantAncestry>().annotate(...)`.
-//!   No raw SQL is involved in the kinship pass — the
-//!   `JoinedQuerySet<L, L>` substrate emits the `CROSS JOIN ... LEFT JOIN
-//!   <closure> AS la / ra ...` plus the per-pair `GROUP BY l.id, r.id`
-//!   directly. The Wright kinship sum is a typed annotation slot
-//!   (`PairClosureKinshipSum<ElephantAncestry>`) that emits
-//!   `COALESCE(SUM(la.path_count * ra.path_count * 0.5^(la.depth + ra.depth + 1)), 0)::float8`
-//!   under the framework-reserved `__djogi_agg_0` alias.
+//! - **Typed pair-tuple closure self-join** (, GH #99). The
+//! ranking previously emitted by a hand-written `WITH RECURSIVE`-flavoured
+//! raw SQL block is now expressed through
+//! `Elephant::objects().self_pairs().left_join_closure_pair::<ElephantAncestry>().annotate(...)`.
+//! No raw SQL is involved in the kinship pass — the
+//! `JoinedQuerySet<L, L>` substrate emits the `CROSS JOIN... LEFT JOIN
+//! <closure> AS la / ra...` plus the per-pair `GROUP BY l.id, r.id`
+//! directly. The Wright kinship sum is a typed annotation slot
+//! (`PairClosureKinshipSum<ElephantAncestry>`) that emits
+//! `COALESCE(SUM(la.path_count * ra.path_count * 0.5^(la.depth + ra.depth + 1)), 0)::float8`
+//! under the framework-reserved `__djogi_agg_0` alias.
 //!
 //! - **Materialized closure as production-shape kinship lookup.**
-//!   The `ElephantAncestry` table (populated at seed time by
-//!   `Model::materialize_closure`) is joined to itself on
-//!   `ancestor_id` to find every shared ancestor between a female's
-//!   line and a male's line. One closure read per query rather than
-//!   re-walking the recursive CTE per pair — this is the framework's
-//!   answer for adopters at scale.
+//! The `ElephantAncestry` table (populated at seed time by
+//! `Model::materialize_closure`) is joined to itself on
+//! `ancestor_id` to find every shared ancestor between a female's
+//! line and a male's line. One closure read per query rather than
+//! re-walking the recursive CTE per pair — this is the framework's
+//! answer for adopters at scale.
 //!
 //! - **Wright 1922 inbreeding coefficient.** For each candidate pair
-//!   `(female, male)`, the offspring's expected inbreeding
-//!   coefficient `F` is:
+//! `(female, male)`, the offspring's expected inbreeding
+//! coefficient `F` is:
 //!
-//!   ```text
-//!   F = SUM over common ancestors A of:
-//!       (left.path_count × right.path_count) × 0.5^(d_left + d_right + 1)
-//!   ```
+//! ```text
+//! F = SUM over common ancestors A of:
+//!  (left.path_count × right.path_count) × 0.5^(d_left + d_right + 1)
+//! ```
 //!
-//!   where `left` is `(elephant_id = female_id, ancestor_id = A)` and
-//!   `right` is `(elephant_id = male_id, ancestor_id = A)` from the
-//!   closure. `path_count` preserves multi-path multiplicity per
-//!   Wright kinship; the framework's `materialize_closure` is correct
-//!   on this point because the underlying recursive CTE uses
-//!   `UNION ALL` (not `UNION`) so paths through different edges to
-//!   the same ancestor are summed, not deduped.
+//! where `left` is `(elephant_id = female_id, ancestor_id = A)` and
+//! `right` is `(elephant_id = male_id, ancestor_id = A)` from the
+//! closure. `path_count` preserves multi-path multiplicity per
+//! Wright kinship; the framework's `materialize_closure` is correct
+//! on this point because the underlying recursive CTE uses
+//! `UNION ALL` (not `UNION`) so paths through different edges to
+//! the same ancestor are summed, not deduped.
 //!
-//!   This implementation uses the simplified Wright form with
-//!   `(1 + F_A) ≈ 1` — i.e., the ancestor's own inbreeding
-//!   coefficient is treated as zero. The full recursive Wright
-//!   form would require a self-referential `WITH RECURSIVE` over
-//!   `F` itself, which is beyond the demo's pedagogical scope.
+//! This implementation uses the simplified Wright form with
+//! `(1 + F_A) ≈ 1` — i.e., the ancestor's own inbreeding
+//! coefficient is treated as zero. The full recursive Wright
+//! form would require a self-referential `WITH RECURSIVE` over
+//! `F` itself, which is beyond the demo's pedagogical scope.
 //!
-//!   **Caution for adopter use:** for our deterministic 120-elephant
-//!   seed (matriarchs and bulls are unrelated by construction so
-//!   ancestors carry no inbreeding) `F_A = 0` is exact. For real-
-//!   world adopter datasets with inherited inbreeding, each affected
-//!   term is under-counted by `(1 + F_A)`, and `(1 + F_A)` is not
-//!   necessarily small — populations with deep linebreeding can
-//!   carry F_A values that shift the top-N ranking. Any production
-//!   adopter computing kinship in earnest should extend this query
-//!   to the full Wright recurrence, or substitute a heavier-weight
-//!   library such as a published Wright/Malécot implementation.
-//!   The demo's value here is showing the framework substrate (one
-//!   `materialize_closure` call + indexed self-join), not shipping
-//!   a kinship library.
+//! **Caution for adopter use:** for our deterministic 120-elephant
+//! seed (matriarchs and bulls are unrelated by construction so
+//! ancestors carry no inbreeding) `F_A = 0` is exact. For real-
+//! world adopter datasets with inherited inbreeding, each affected
+//! term is under-counted by `(1 + F_A)`, and `(1 + F_A)` is not
+//! necessarily small — populations with deep linebreeding can
+//! carry F_A values that shift the top-N ranking. Any production
+//! adopter computing kinship in earnest should extend this query
+//! to the full Wright recurrence, or substitute a heavier-weight
+//! library such as a published Wright/Malécot implementation.
+//! The demo's value here is showing the framework substrate (one
+//! `materialize_closure` call + indexed self-join), not shipping
+//! a kinship library.
 //!
 //! - **Top-N per partition.** The Wright F values come back as
-//!   `Vec<((Elephant, Elephant), f64)>` from the typed pair-tuple
-//!   terminal. The composite-score multiplication, top-3 ranking, and
-//!   `(female_name, rank)` sort all run in Rust because the typed
-//!   pair-tuple `qualify(...)` surface in the Cluster 4A substrate
-//!   accepts only column references on its `partition_by_pair` /
-//!   `order_by_pair_desc` window-fn methods — not an arbitrary
-//!   `Expr<f64>` derived from `(1 - F) × overlap × age_compat`. The
-//!   demo's score is composed from three different sources (typed
-//!   aggregate output for `F` on `(Elephant, Elephant)` pairs, typed
-//!   aggregate output for `overlap` on the separate
-//!   `(Herd, Herd)` pair tuple from `Herd::objects().self_pairs()`
-//!   with `PairAreaOverlapRatio`, and Rust-side bell-curve for
-//!   `age_compat`), so the natural place to combine them is Rust. A
-//!   future slice that adds a pair-side `Expr`-based
-//!   `order_by_pair_desc` surface would let the entire ranking pass
-//!   land in SQL; see #99 and #65's "What changes when this ships"
-//!   note. (The pair-tuple `Expr::area_of_intersection` shape is now
-//!   shipped as `PairAreaOverlapRatio<L, R>` — see Step 2.5 below.)
+//! `Vec<((Elephant, Elephant), f64)>` from the typed pair-tuple
+//! terminal. The composite-score multiplication, top-3 ranking, and
+//! `(female_name, rank)` sort all run in Rust because the typed
+//! pair-tuple `qualify(...)` surface in the substrate
+//! accepts only column references on its `partition_by_pair` /
+//! `order_by_pair_desc` window-fn methods — not an arbitrary
+//! `Expr<f64>` derived from `(1 - F) × overlap × age_compat`. The
+//! demo's score is composed from three different sources (typed
+//! aggregate output for `F` on `(Elephant, Elephant)` pairs, typed
+//! aggregate output for `overlap` on the separate
+//! `(Herd, Herd)` pair tuple from `Herd::objects().self_pairs()`
+//! with `PairAreaOverlapRatio`, and Rust-side bell-curve for
+//! `age_compat`), so the natural place to combine them is Rust. A
+//! future slice that adds a pair-side `Expr`-based
+//! `order_by_pair_desc` surface would let the entire ranking pass
+//! land in SQL; see #99 and #65's "What changes when this ships"
+//! note. (The pair-tuple `Expr::area_of_intersection` shape is now
+//! shipped as `PairAreaOverlapRatio<L, R>` — see Step 2.5 below.)
 //!
 //! - **Punnu cache showcase.** Step 2 binds the mature-elephant typed
-//!   fetch to a `Punnu<Elephant>` L1 pool via the canonical
-//!   `QuerySet::cache(&pool)?.fetch_all(ctx)` modifier — the typed
-//!   surface mirrors rows into the identity map at the row-decode
-//!   boundary, no manual `pool.insert` loop. The demo then performs
-//!   one observable `pool.get(id)` lookup against the warmed pool so
-//!   the showcase reads as well as writes: the returned
-//!   `Arc<Elephant>` is asserted to match the original row and the
-//!   pool size is surfaced via `tracing::info!` for adopters wiring
-//!   `tracing-subscriber`. The CLI exits at end-of-process so the
-//!   pool drops with it; in a long-lived adopter process (request
-//!   handler, periodic scoring job) the same `pool.get(id)` pattern
-//!   serves every subsequent lookup without a DB round-trip.
+//! fetch to a `Punnu<Elephant>` L1 pool via the canonical
+//! `QuerySet::cache(&pool)?.fetch_all(ctx)` modifier — the typed
+//! surface mirrors rows into the identity map at the row-decode
+//! boundary, no manual `pool.insert` loop. The demo then performs
+//! one observable `pool.get(id)` lookup against the warmed pool so
+//! the showcase reads as well as writes: the returned
+//! `Arc<Elephant>` is asserted to match the original row and the
+//! pool size is surfaced via `tracing::info!` for adopters wiring
+//! `tracing-subscriber`. The CLI exits at end-of-process so the
+//! pool drops with it; in a long-lived adopter process (request
+//! handler, periodic scoring job) the same `pool.get(id)` pattern
+//! serves every subsequent lookup without a DB round-trip.
 //!
-//! - **Pair-tuple spatial overlap retrofit (Phase 8.5 #99 closure).**
-//!   The territory-overlap factor is the typed pair-tuple
-//!   `PairAreaOverlapRatio<Herd, Herd>` annotation on a
-//!   `Herd::objects().self_pairs()` join, reading the materialised
-//!   `Herd.territory` convex-hull polygon (populated at seed time from
-//!   sighting clusters) on both sides of the pair. The annotation
-//!   emits
+//! - **Pair-tuple spatial overlap retrofit ( #99 closure).**
+//! The territory-overlap factor is the typed pair-tuple
+//! `PairAreaOverlapRatio<Herd, Herd>` annotation on a
+//! `Herd::objects().self_pairs()` join, reading the materialised
+//! `Herd.territory` convex-hull polygon (populated at seed time from
+//! sighting clusters) on both sides of the pair. The annotation
+//! emits
 //!
-//!   ```sql
-//!   COALESCE(ST_Area(ST_Intersection(l.territory::geometry, r.territory::geometry)::geography), 0)::float8
-//!     / NULLIF(ST_Area(l.territory::geography), 0)::float8
-//!   ```
+//! ```sql
+//! COALESCE(ST_Area(ST_Intersection(l.territory::geometry, r.territory::geometry)::geography), 0)::float8
+//!  / NULLIF(ST_Area(l.territory::geography), 0)::float8
+//! ```
 //!
-//!   in one SQL pass over every herd-pair, returning
-//!   `Vec<((Herd, Herd), f64)>`. The pre-retrofit binary
-//!   same-herd=1.0 / cross-herd=0.0 fallback is gone: same-herd pairs
-//!   now report `1.0` because both sides reference the same hull
-//!   (intersection = the hull itself = denominator). Cross-herd pairs
-//!   report whatever fraction of the female-herd hull spatially
-//!   overlaps the male-herd hull — non-binary `(0, 1)` values surface
-//!   when adopter herds have wandering elephants whose sightings
-//!   straddle two herd ranges.
+//! in one SQL pass over every herd-pair, returning
+//! `Vec<((Herd, Herd), f64)>`. The pre-retrofit binary
+//! same-herd=1.0 / cross-herd=0.0 fallback is gone: same-herd pairs
+//! now report `1.0` because both sides reference the same hull
+//! (intersection = the hull itself = denominator). Cross-herd pairs
+//! report whatever fraction of the female-herd hull spatially
+//! overlaps the male-herd hull — non-binary `(0, 1)` values surface
+//! when adopter herds have wandering elephants whose sightings
+//! straddle two herd ranges.
 //!
 //! ## Composite score
 //!
@@ -128,36 +128,36 @@
 //! All three factors ship here.
 //!
 //! - **Kinship `(1 - F)`** comes from the typed pair-tuple
-//!   closure self-join above (Step 3).
+//! closure self-join above (Step 3).
 //! - **`territory_overlap_pct`** comes from the typed
-//!   `PairAreaOverlapRatio<Herd, Herd>` annotation on a
-//!   `Herd::objects().self_pairs()` join (Step 2.5). The
-//!   pre-retrofit binary same-herd / cross-herd identity is replaced
-//!   by a real `ST_Area(ST_Intersection(...)) / ST_Area(left)` ratio
-//!   computed in one SQL pass. The decoded value is in `[0, 1]`:
-//!   `1.0` for same-herd or fully-coincident territories, `0.0` for
-//!   fully-disjoint, and any fraction in between for partial
-//!   overlap. The composite-score arithmetic gates kinship × age on
-//!   this ratio so a perfectly-compatible cross-herd pair with no
-//!   territorial overlap still scores zero (they cannot physically
-//!   meet).
+//! `PairAreaOverlapRatio<Herd, Herd>` annotation on a
+//! `Herd::objects().self_pairs()` join (Step 2.5). The
+//! pre-retrofit binary same-herd / cross-herd identity is replaced
+//! by a real `ST_Area(ST_Intersection(...)) / ST_Area(left)` ratio
+//! computed in one SQL pass. The decoded value is in `[0, 1]`:
+//! `1.0` for same-herd or fully-coincident territories, `0.0` for
+//! fully-disjoint, and any fraction in between for partial
+//! overlap. The composite-score arithmetic gates kinship × age on
+//! this ratio so a perfectly-compatible cross-herd pair with no
+//! territorial overlap still scores zero (they cannot physically
+//! meet).
 //! - **`age_compatibility`** is a smooth fertility-window product
-//!   over female age peaked at 20 (sigma 10) and male age peaked at
-//!   32 (sigma 15); we report the geometric mean of the two bells so
-//!   a one-sided unsuitability is penalised more than a single-
-//!   factor average would be.
+//! over female age peaked at 20 (sigma 10) and male age peaked at
+//! 32 (sigma 15); we report the geometric mean of the two bells so
+//! a one-sided unsuitability is penalised more than a single-
+//! factor average would be.
 //!
 //! ## Output formats
 //!
 //! - `json` — flat list of `{rank, female_id, female_name,
-//!   female_herd, male_id, male_name, male_herd, f_offspring,
-//!   territory_overlap_pct, age_compatibility, score}` records,
-//!   top-3 per female, sorted by `(female_name, rank)`.
+//! female_herd, male_id, male_name, male_herd, f_offspring,
+//! territory_overlap_pct, age_compatibility, score}` records,
+//! top-3 per female, sorted by `(female_name, rank)`.
 //! - `markdown` — sorted table with one row per pair plus a
-//!   summary header.
+//! summary header.
 //! - `mermaid` — `graph LR` with one node per participating elephant
-//!   (label includes herd) and one directed `female --> male` edge
-//!   per pair (label `#rank score=N.NNN`).
+//! (label includes herd) and one directed `female --> male` edge
+//! per pair (label `#rank score=N.NNN`).
 //!
 //! Filter: only mature elephants (estimated_birth_year ≤
 //! `now - MATURITY_YEARS years`, see the constant for rationale on
@@ -256,16 +256,16 @@ struct MatingPair {
 ///
 /// 1. Fetch the per-herd label lookup (one typed `Herd::objects()`).
 /// 2. Fetch mature elephants via the typed
-///    `Elephant::objects().filter(...).cache(&pool)?.fetch_all(ctx)`
-///    cache-bound terminal — rows land in the `Punnu<Elephant>` L1
-///    pool at row-decode time. Demonstrate an observable
-///    `pool.get(id)` hit immediately after.
+/// `Elephant::objects().filter(...).cache(&pool)?.fetch_all(ctx)`
+/// cache-bound terminal — rows land in the `Punnu<Elephant>` L1
+/// pool at row-decode time. Demonstrate an observable
+/// `pool.get(id)` hit immediately after.
 /// 3. Fetch every `(female, male)` mature pair with its Wright F
-///    coefficient via the typed
-///    `Elephant::objects().self_pairs().left_join_closure_pair::<ElephantAncestry>().annotate(PairClosureKinshipSum)`
-///    chain. No raw SQL.
+/// coefficient via the typed
+/// `Elephant::objects().self_pairs().left_join_closure_pair::<ElephantAncestry>().annotate(PairClosureKinshipSum)`
+/// chain. No raw SQL.
 /// 4. Compute composite score in Rust (overlap × kinship × age
-///    compatibility), rank top-N per female, render.
+/// compatibility), rank top-N per female, render.
 pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> Result<()> {
     // ── Step 1 (typed Djogi) — per-herd label lookup ──────────────
     //
@@ -314,7 +314,7 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
                 .map_err(|(_qs, err)| {
                     anyhow::anyhow!(
                         "QuerySet::cache(&punnu) rejected the mature-elephant filter \
-                         as non-portable: {err:?}",
+       as non-portable: {err:?}",
                     )
                 })?
                 .fetch_all(ctx)
@@ -332,29 +332,29 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
             if let Some(sample) = rows.first() {
                 let cached: std::sync::Arc<Elephant> = pool.get(&sample.id).expect(
                     "Punnu<Elephant> cache miss for an id we just \
-                         cache-bound through .cache(&pool)?.fetch_all — \
-                         either the cache-binding pipeline did not \
-                         mirror rows or the pool was invalidated \
-                         between fetch_all and the get(...) call",
+       cache-bound through.cache(&pool)?.fetch_all — \
+       either the cache-binding pipeline did not \
+       mirror rows or the pool was invalidated \
+       between fetch_all and the get(...) call",
                 );
                 debug_assert_eq!(
                     cached.id, sample.id,
                     "Punnu<Elephant> returned a different row id than \
-                     the sample we keyed on — cache identity violation",
+      the sample we keyed on — cache identity violation",
                 );
                 tracing::info!(
-                    cache_size = pool.len(),
-                    sample_id = ?sample.id,
-                    sample_name = %cached.name.clone().into_inner(),
-                    "Punnu<Elephant> warm — `.cache(&pool)?` mirrored the \
-                     mature-elephant fetch, observable `pool.get(id)` \
-                     returned Arc<Elephant>"
+                 cache_size = pool.len(),
+                 sample_id = ?sample.id,
+                 sample_name = %cached.name.clone().into_inner(),
+                 "Punnu<Elephant> warm — `.cache(&pool)?` mirrored the \
+                  mature-elephant fetch, observable `pool.get(id)` \
+                  returned Arc<Elephant>"
                 );
             } else {
                 tracing::info!(
                     cache_size = pool.len(),
                     "Punnu<Elephant> warm — no mature elephants matched \
-                     the filter; cache stays empty"
+      the filter; cache stays empty"
                 );
             }
 
@@ -368,8 +368,8 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
             // module docstring as the value-add path.
             tracing::info!(
                 "Punnu<Elephant> not registered on this DjogiContext; \
-                 skipping cache showcase and falling back to the bare \
-                 typed fetch"
+     skipping cache showcase and falling back to the bare \
+     typed fetch"
             );
             Elephant::objects()
                 .filter(|e| e.estimated_birth_year().lte(mature_cutoff))
@@ -396,20 +396,20 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
     // herd's territory polygon. Emits one SQL pass via the
     // `PairAreaOverlapRatio<Herd, Herd>` typed annotation:
     //
-    //   Herd::objects()
-    //       .self_pairs()
-    //       .include_equal_pk()  // same-herd pairs report 1.0 here
-    //       .annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
-    //       .fetch_all(ctx)
+    // Herd::objects()
+    // .self_pairs()
+    // .include_equal_pk() // same-herd pairs report 1.0 here
+    // .annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
+    // .fetch_all(ctx)
     //
     // The substrate emits:
     //
-    //   SELECT l.*, r.*,
-    //          COALESCE(ST_Area(ST_Intersection(l.territory::geometry,
-    //                                           r.territory::geometry)::geography), 0)::float8
-    //          / NULLIF(ST_Area(l.territory::geography), 0)::float8
-    //          AS __djogi_agg_0
-    //   FROM herds AS l CROSS JOIN herds AS r;
+    // SELECT l.*, r.*,
+    //   COALESCE(ST_Area(ST_Intersection(l.territory::geometry,
+    //           r.territory::geometry)::geography), 0)::float8
+    //   / NULLIF(ST_Area(l.territory::geography), 0)::float8
+    //   AS __djogi_agg_0
+    // FROM herds AS l CROSS JOIN herds AS r;
     //
     // and decodes the result back into `Vec<((Herd, Herd), f64)>` —
     // one row per herd-pair with the territory-overlap ratio. The
@@ -440,28 +440,28 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
     // `(female, male)` pair is the output of the typed
     // `JoinedQuerySet<Elephant, Elephant>` substrate:
     //
-    //   Elephant::objects()
-    //       .self_pairs()                                 // (L, R = L)
-    //       .filter_left(|f| f.id().in_(female_ids))      // female pool
-    //       .filter_right(|m| m.id().in_(male_ids))       // male pool
-    //       .left_join_closure_pair::<ElephantAncestry>() // la / ra aliases
-    //       .annotate(|_l, _r| PairClosureKinshipSum::<ElephantAncestry>::new())
-    //       .fetch_all(ctx)
+    // Elephant::objects()
+    // .self_pairs()         // (L, R = L)
+    // .filter_left(|f| f.id().in_(female_ids))  // female pool
+    // .filter_right(|m| m.id().in_(male_ids))  // male pool
+    // .left_join_closure_pair::<ElephantAncestry>() // la / ra aliases
+    // .annotate(|_l, _r| PairClosureKinshipSum::<ElephantAncestry>::new())
+    // .fetch_all(ctx)
     //
     // The substrate emits:
     //
-    //   SELECT l.<cols> AS l_<cols>, r.<cols> AS r_<cols>,
-    //          COALESCE(SUM(la.path_count * ra.path_count
-    //                       * POWER(0.5, la.depth + ra.depth + 1)), 0)
-    //          ::float8 AS __djogi_agg_0
-    //   FROM elephants AS l
-    //   CROSS JOIN elephants AS r
-    //   LEFT JOIN elephant_ancestries AS la ON la.elephant_id = l.id
-    //   LEFT JOIN elephant_ancestries AS ra ON ra.elephant_id = r.id
-    //                                      AND ra.ancestor_id = la.ancestor_id
-    //   WHERE l.id <> r.id
-    //     AND l.id = ANY($1) AND r.id = ANY($2)
-    //   GROUP BY l.id, r.id;
+    // SELECT l.<cols> AS l_<cols>, r.<cols> AS r_<cols>,
+    //   COALESCE(SUM(la.path_count * ra.path_count
+    //      * POWER(0.5, la.depth + ra.depth + 1)), 0)
+    //   ::float8 AS __djogi_agg_0
+    // FROM elephants AS l
+    // CROSS JOIN elephants AS r
+    // LEFT JOIN elephant_ancestries AS la ON la.elephant_id = l.id
+    // LEFT JOIN elephant_ancestries AS ra ON ra.elephant_id = r.id
+    //          AND ra.ancestor_id = la.ancestor_id
+    // WHERE l.id <> r.id
+    //  AND l.id = ANY($1) AND r.id = ANY($2)
+    // GROUP BY l.id, r.id;
     //
     // and decodes the result back into `Vec<((Elephant, Elephant),
     // f64)>` — one row per pair, with the Wright F kinship in the
@@ -597,10 +597,10 @@ fn age_for(birth_year: Option<i16>) -> i16 {
 /// two Gaussian bells:
 ///
 /// - Female bell: peak `FEMALE_FERTILITY_PEAK` (20), σ
-///   `FEMALE_FERTILITY_SIGMA` (10). Centred on early adulthood.
+/// `FEMALE_FERTILITY_SIGMA` (10). Centred on early adulthood.
 /// - Male bell: peak `MALE_FERTILITY_PEAK` (32), σ
-///   `MALE_FERTILITY_SIGMA` (15). Centred on the musth-bull mean with
-///   a wider tail.
+/// `MALE_FERTILITY_SIGMA` (15). Centred on the musth-bull mean with
+/// a wider tail.
 ///
 /// The geometric mean (`sqrt(f_score × m_score)`) penalises one-sided
 /// unsuitability more than an arithmetic average would: a pair with
@@ -633,8 +633,8 @@ fn render_mermaid(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> Re
     if pairs.is_empty() {
         output::write_line(
             target,
-            "    n0[\"No candidate pairs — verify seed has mature \
-             elephants of both sexes with sex tags populated\"]",
+            " n0[\"No candidate pairs — verify seed has mature \
+    elephants of both sexes with sex tags populated\"]",
         )?;
         return Ok(());
     }
@@ -654,7 +654,7 @@ fn render_mermaid(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> Re
             .or_insert_with(|| output::escape_label(&format!("{} ({})", p.male_name, p.male_herd)));
     }
     for (id, label) in &nodes {
-        output::write_line(target, &format!("    {id}[\"{label}\"]"))?;
+        output::write_line(target, &format!(" {id}[\"{label}\"]"))?;
     }
     for p in pairs {
         let f_node = output::mermaid_node_id_from_str(&p.female_id);
@@ -662,7 +662,7 @@ fn render_mermaid(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> Re
         output::write_line(
             target,
             &format!(
-                "    {f_node} -->|\"#{} score={:.3}\"| {m_node}",
+                " {f_node} -->|\"#{} score={:.3}\"| {m_node}",
                 p.rank, p.score
             ),
         )?;
@@ -679,34 +679,34 @@ fn render_markdown(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> R
         output::write_line(
             target,
             "_No candidate pairs — verify the seed has mature \
-             elephants of both sexes (`tags->>'sex' = 'f'` / `'m'` \
-             populated, `estimated_birth_year` set) and at least two \
-             such elephants share a herd. The most common cause is \
-             running `migrate` from a pre-T22 snapshot whose \
-             elephants don't have sex tags._",
+    elephants of both sexes (`tags->>'sex' = 'f'` / `'m'` \
+    populated, `estimated_birth_year` set) and at least two \
+    such elephants share a herd. The most common cause is \
+    running `migrate` from a pre-T22 snapshot whose \
+    elephants don't have sex tags._",
         )?;
         return Ok(());
     }
     output::write_line(
         target,
         "Score = `(1 - F_offspring) × territory_overlap_pct × \
-         age_compatibility`. Higher is better. `F_offspring` uses the \
-         simplified Wright form with `F_A = 0` for ancestors — \
-         **exact** for non-inbred ancestors, but **production adopters \
-         with linebreeding should use the full Wright recurrence**: \
-         each affected term is under-counted by `(1 + F_A)` and that \
-         factor can be substantial enough to shift the top-N ranking. \
-         The demo's role is showcasing the framework substrate \
-         (`materialize_closure` + typed pair-tuple closure self-join \
-         + `PairClosureKinshipSum` aggregate), not shipping a kinship \
-         library. `territory_overlap_pct` is the typed pair-tuple \
-         `PairAreaOverlapRatio<Herd, Herd>` annotation on a \
-         `Herd::objects().self_pairs()` join — emits \
-         `ST_Area(ST_Intersection(l.territory, r.territory))/ST_Area(l.territory)` \
-         in one SQL pass, with `Herd.territory` populated at seed \
-         time as the convex hull of each herd's sightings. \
-         `age_compatibility` is the geometric mean of two Gaussian \
-         fertility bells (female peaked at 20, male peaked at 32).\n",
+   age_compatibility`. Higher is better. `F_offspring` uses the \
+   simplified Wright form with `F_A = 0` for ancestors — \
+   **exact** for non-inbred ancestors, but **production adopters \
+   with linebreeding should use the full Wright recurrence**: \
+   each affected term is under-counted by `(1 + F_A)` and that \
+   factor can be substantial enough to shift the top-N ranking. \
+   The demo's role is showcasing the framework substrate \
+   (`materialize_closure` + typed pair-tuple closure self-join \
+   + `PairClosureKinshipSum` aggregate), not shipping a kinship \
+   library. `territory_overlap_pct` is the typed pair-tuple \
+   `PairAreaOverlapRatio<Herd, Herd>` annotation on a \
+   `Herd::objects().self_pairs()` join — emits \
+   `ST_Area(ST_Intersection(l.territory, r.territory))/ST_Area(l.territory)` \
+   in one SQL pass, with `Herd.territory` populated at seed \
+   time as the convex hull of each herd's sightings. \
+   `age_compatibility` is the geometric mean of two Gaussian \
+   fertility bells (female peaked at 20, male peaked at 32).\n",
     )?;
     output::write_line(
         target,

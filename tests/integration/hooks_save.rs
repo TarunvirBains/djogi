@@ -4,18 +4,18 @@
 // What this file pins:
 //
 // 1. `before_save(self, ctx)` fires before the UPDATE composes and may
-//    mutate the in-memory `*self` — the mutation round-trips through the
-//    `RETURNING` clause back into the post-save state of `self`.
+//  mutate the in-memory `*self` — the mutation round-trips through the
+//  `RETURNING` clause back into the post-save state of `self`.
 // 2. `after_save(&*self, ctx)` fires after the outbox emission AND after
-//    `*self = row` rehydration. The hook therefore sees server-side
-//    defaults / triggers / sequence-bumped values, not the pre-call
-//    in-memory state.
+//  `*self = row` rehydration. The hook therefore sees server-side
+//  defaults / triggers / sequence-bumped values, not the pre-call
+//  in-memory state.
 // 3. Returning `Err` from `before_save` short-circuits the entire
-//    sequence: no UPDATE composes, no outbox row is written; a follow-up
-//    typed re-fetch confirms the row is unchanged.
+//  sequence: no UPDATE composes, no outbox row is written; a follow-up
+//  typed re-fetch confirms the row is unchanged.
 // 4. Shape B (version-aware) `LockConflict` early-return path skips
-//    `after_save` — the UPDATE didn't actually mutate the row, so
-//    `after_save` would observe stale state.
+//  `after_save` — the UPDATE didn't actually mutate the row, so
+//  `after_save` would observe stale state.
 //
 // §D3 lines 118-129 fix the canonical sequence as
 // `before_save -> UPDATE -> outbox -> after_save -> on_commit drain`.
@@ -55,9 +55,9 @@ pub struct SaveRecorder {
 // shared Vec<&'static str> to avoid `RefCell` ergonomics — each tag has
 // a recorded ordinal that captures the relative call order.
 tokio::task_local! {
-    static SR_NEXT_ORDINAL: Cell<u8>;
-    static SR_BEFORE_AT: Cell<u8>;
-    static SR_AFTER_AT: Cell<u8>;
+  static SR_NEXT_ORDINAL: Cell<u8>;
+  static SR_BEFORE_AT: Cell<u8>;
+  static SR_AFTER_AT: Cell<u8>;
 }
 
 fn sr_record_before() {
@@ -125,7 +125,7 @@ async fn before_save_fires_pre_update(mut ctx: djogi::DjogiContext) {
                             assert_eq!(
                                 after_at, 2,
                                 "after_save must fire after before_save (ordinal 2); \
-                                 recorded {after_at}",
+                 recorded {after_at}",
                             );
                         })
                         .await
@@ -212,8 +212,8 @@ pub struct SaveRehydrate {
 }
 
 tokio::task_local! {
-    static SH_PRE_SAVE_UPDATED_AT_NS: Cell<i128>;
-    static SH_AFTER_OBSERVED_NS: Cell<i128>;
+  static SH_PRE_SAVE_UPDATED_AT_NS: Cell<i128>;
+  static SH_AFTER_OBSERVED_NS: Cell<i128>;
 }
 
 impl djogi::hooks::ModelHooks for SaveRehydrate {
@@ -264,9 +264,9 @@ async fn after_save_sees_rehydrated_row(mut ctx: djogi::DjogiContext) {
                     assert!(
                         after_observed_ns > pre_save_ns,
                         "after_save must observe the rehydrated updated_at \
-                         (pre={pre_save_ns}, observed={after_observed_ns}) — \
-                         if observed == pre, after_save fired before \
-                         `*self = row` rehydration",
+             (pre={pre_save_ns}, observed={after_observed_ns}) — \
+             if observed == pre, after_save fired before \
+             `*self = row` rehydration",
                     );
                     // And the in-memory `*self` must match what after_save
                     // observed (proves the &*self pointer through the
@@ -276,7 +276,7 @@ async fn after_save_sees_rehydrated_row(mut ctx: djogi::DjogiContext) {
                         row.updated_at.unix_timestamp_nanos(),
                         after_observed_ns,
                         "after_save must observe the same rehydrated row \
-                         the caller sees in *self after save() returns",
+             the caller sees in *self after save() returns",
                     );
                 })
                 .await
@@ -305,8 +305,8 @@ pub struct SaveLock {
 }
 
 tokio::task_local! {
-    static SL_BEFORE_COUNT: Cell<u32>;
-    static SL_AFTER_COUNT: Cell<u32>;
+  static SL_BEFORE_COUNT: Cell<u32>;
+  static SL_AFTER_COUNT: Cell<u32>;
 }
 
 impl djogi::hooks::ModelHooks for SaveLock {
@@ -379,14 +379,14 @@ async fn before_save_lockconflict_branch_propagates(mut ctx: djogi::DjogiContext
                         SL_BEFORE_COUNT.with(Cell::get),
                         2,
                         "before_save must have fired AGAIN for clone_b's save \
-                         (precedes the UPDATE composition)",
+             (precedes the UPDATE composition)",
                     );
                     assert_eq!(
                         SL_AFTER_COUNT.with(Cell::get),
                         1,
                         "after_save must NOT have fired for the LockConflict path \
-                         — the UPDATE didn't mutate the row, after_save would \
-                         observe stale state",
+             — the UPDATE didn't mutate the row, after_save would \
+             observe stale state",
                     );
 
                     // Sanity check: the DB row's revision is still 1

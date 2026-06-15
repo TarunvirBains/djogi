@@ -1,7 +1,7 @@
 error: `#[mirjzson(justification = "schema?")]` is too short — give a specific reason `MirJzSON` is preferable to `Jsonb<T>` for this field (minimum 12 characters after trim; the spec example is "payload is externally owned by partner API")
-  --> $DIR/195_mirjzson_too_short_justification.rs:13:32
-   |
-13 |     #[mirjzson(justification = "schema?")]
-   |                                ^^^^^^^^^
+ --> $DIR/195_mirjzson_too_short_justification.rs:13:32
+ |
+13 |  #[mirjzson(justification = "schema?")]
+ |        ^^^^^^^^^
 
 error: aborting due to 1 previous error

@@ -4,8 +4,8 @@ use djogi::JsonbSchema;
 
 #[derive(JsonbSchema, serde::Serialize, serde::Deserialize)]
 pub struct Bad {
-    #[serde(flatten)]
-    pub extras: std::collections::HashMap<String, serde_json::Value>,
+ #[serde(flatten)]
+ pub extras: std::collections::HashMap<String, serde_json::Value>,
 }
 
 fn main() {}

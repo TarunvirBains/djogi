@@ -4,8 +4,8 @@
 // pointing at the offending literal.
 
 djogi::apps! {
-    #[app(label = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", database = "main")]
-    pub struct Vehicles;
+ #[app(label = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", database = "main")]
+ pub struct Vehicles;
 }
 
 fn main() {}

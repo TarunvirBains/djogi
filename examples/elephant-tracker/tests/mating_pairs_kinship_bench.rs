@@ -26,13 +26,13 @@
 //! Two reasons:
 //!
 //! 1. **Per-test database**: the fixture needs a fresh database for
-//!    deterministic timing baselines; Criterion has no built-in
-//!    machinery for that. `#[djogi_test]` gives a fresh DB per test
-//!    and tears it down after, isolating the bench's setup cost.
+//! deterministic timing baselines; Criterion has no built-in
+//! machinery for that. `#[djogi_test]` gives a fresh DB per test
+//! and tears it down after, isolating the bench's setup cost.
 //! 2. **Correctness gate**: the bench is most useful as a regression
-//!    pin — "the closure path produces the same Wright F as the
-//!    recursive CTE". An integration test asserts that; a Criterion
-//!    bench records timing only.
+//! pin — "the closure path produces the same Wright F as the
+//! recursive CTE". An integration test asserts that; a Criterion
+//! bench records timing only.
 //!
 //! Adopters who want a production-scale `cargo bench` shape can copy
 //! this fixture's setup into a `benches/` Criterion module; the
@@ -249,37 +249,37 @@ async fn recursive_cte_path_scores(
     // of an off-by-0.25 disagreement on ancestor-descendant pairs the
     // 200-elephant pedigree surfaces by chance.
     const SQL: &str = "
-        WITH RECURSIVE
-        left_anc(elephant_id, ancestor_id, depth, path_count) AS (
-            SELECT id, id, 0, 1
-              FROM elephants
-             WHERE id = $1
-            UNION ALL
-            SELECT la.elephant_id, parent.parent_id, la.depth + 1, la.path_count
-              FROM left_anc la
-              JOIN elephants e ON e.id = la.ancestor_id
-              CROSS JOIN LATERAL (VALUES (e.mother_id), (e.father_id))
-                                AS parent(parent_id)
-             WHERE parent.parent_id IS NOT NULL AND la.depth < 5
-        ),
-        right_anc(elephant_id, ancestor_id, depth, path_count) AS (
-            SELECT id, id, 0, 1
-              FROM elephants
-             WHERE id = $2
-            UNION ALL
-            SELECT ra.elephant_id, parent.parent_id, ra.depth + 1, ra.path_count
-              FROM right_anc ra
-              JOIN elephants e ON e.id = ra.ancestor_id
-              CROSS JOIN LATERAL (VALUES (e.mother_id), (e.father_id))
-                                AS parent(parent_id)
-             WHERE parent.parent_id IS NOT NULL AND ra.depth < 5
-        )
-        SELECT COALESCE(SUM(
-            la.path_count::numeric * ra.path_count::numeric
-            * POWER(0.5::numeric, (la.depth + ra.depth + 1)::numeric)
-        ), 0)::float8
-          FROM left_anc la
-          JOIN right_anc ra ON ra.ancestor_id = la.ancestor_id";
+  WITH RECURSIVE
+  left_anc(elephant_id, ancestor_id, depth, path_count) AS (
+   SELECT id, id, 0, 1
+    FROM elephants
+    WHERE id = $1
+   UNION ALL
+   SELECT la.elephant_id, parent.parent_id, la.depth + 1, la.path_count
+    FROM left_anc la
+    JOIN elephants e ON e.id = la.ancestor_id
+    CROSS JOIN LATERAL (VALUES (e.mother_id), (e.father_id))
+        AS parent(parent_id)
+    WHERE parent.parent_id IS NOT NULL AND la.depth < 5
+  ),
+  right_anc(elephant_id, ancestor_id, depth, path_count) AS (
+   SELECT id, id, 0, 1
+    FROM elephants
+    WHERE id = $2
+   UNION ALL
+   SELECT ra.elephant_id, parent.parent_id, ra.depth + 1, ra.path_count
+    FROM right_anc ra
+    JOIN elephants e ON e.id = ra.ancestor_id
+    CROSS JOIN LATERAL (VALUES (e.mother_id), (e.father_id))
+        AS parent(parent_id)
+    WHERE parent.parent_id IS NOT NULL AND ra.depth < 5
+  )
+  SELECT COALESCE(SUM(
+   la.path_count::numeric * ra.path_count::numeric
+   * POWER(0.5::numeric, (la.depth + ra.depth + 1)::numeric)
+  ), 0)::float8
+   FROM left_anc la
+   JOIN right_anc ra ON ra.ancestor_id = la.ancestor_id";
 
     let start = Instant::now();
     let mut scores = Vec::with_capacity(candidate_pairs.len());
@@ -297,8 +297,8 @@ async fn recursive_cte_path_scores(
 }
 
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Herd, Elephant, ElephantAncestry],
+ extensions = ["postgis"],
+ sync_models = [Herd, Elephant, ElephantAncestry],
 )]
 async fn closure_and_recursive_cte_agree_on_kinship_at_production_scale(
     mut ctx: djogi::DjogiContext,
@@ -402,7 +402,7 @@ async fn closure_and_recursive_cte_agree_on_kinship_at_production_scale(
         assert!(
             diff < 1e-9,
             "closure vs recursive-CTE disagreement on pair {i}: \
-             closure={cf}, recursive_cte={rf}, diff={diff}"
+    closure={cf}, recursive_cte={rf}, diff={diff}"
         );
     }
     tracing::info!(

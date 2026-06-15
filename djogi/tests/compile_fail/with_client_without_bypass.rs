@@ -1,8 +1,8 @@
 fn main() {
-    let pool = unreachable_djogi_pool();
-    let _ = pool.with_client(|_client| Box::pin(async { Ok(()) }));
+ let pool = unreachable_djogi_pool();
+ let _ = pool.with_client(|_client| Box::pin(async { Ok(()) }));
 }
 
 fn unreachable_djogi_pool() -> djogi::pg::pool::DjogiPool {
-    unreachable!()
+ unreachable!()
 }

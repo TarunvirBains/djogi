@@ -42,7 +42,7 @@ use djogi::prelude::*;
 #[model(table = "phase8_t7_4_boot_hook_rows")]
 #[derive(Debug, Clone)]
 pub struct BootHookRow {
-    pub name: String,
+ pub name: String,
 }
 
 // Verify the type is Cacheable (boot hook registration requires this).
@@ -50,10 +50,10 @@ fn _accept_cacheable<T: ::djogi::types::Cacheable + 'static>() {}
 
 // Verify SassiBootHook is reachable from the crate root.
 fn _use_boot_hook_type() -> Option<::djogi::SassiBootHook> {
-    None
+ None
 }
 
 fn main() {
-    _accept_cacheable::<BootHookRow>();
-    let _ = _use_boot_hook_type();
+ _accept_cacheable::<BootHookRow>();
+ let _ = _use_boot_hook_type();
 }

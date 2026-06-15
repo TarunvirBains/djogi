@@ -10,7 +10,7 @@ Djogi targets **Postgres 18 and later, exclusively** (see
 
 - Rust 1.85 or later (edition 2024)
 - A local Postgres 18+ instance, with the `postgis` extension
-  installed if you intend to run spatial tests
+ installed if you intend to run spatial tests
 - `cargo` and the standard toolchain
 
 Clone the repo, run the setup, run the tests:
@@ -20,7 +20,7 @@ git clone https://github.com/TarunvirBains/djogi
 cd djogi
 cargo build
 DATABASE_URL=postgres://djogi:djogi@localhost:5432/djogi_test \
-  cargo test --workspace -- --test-threads=1
+ cargo test --workspace -- --test-threads=1
 ```
 
 Integration tests assume a running Postgres at `DATABASE_URL` with
@@ -62,12 +62,12 @@ yet been exercised — please file an issue if you hit lane interference.
 - Follow stdlib conventions; idiomatic Rust over clever
 - `cargo fmt --all` before commit
 - `cargo clippy --all-targets --all-features -- -D warnings` must
-  pass
+ pass
 - No `regex` engine, no regex notation in comments or messages —
-  the project uses byte-level checks and explicit rules instead
-  (see `docs/spec/decisions.md`)
+ the project uses byte-level checks and explicit rules instead
+ (see `docs/spec/decisions.md`)
 - Atomic commits: each commit one logical unit, passes tests in
-  isolation
+ isolation
 
 ## Secrets hygiene
 
@@ -75,9 +75,9 @@ Before every commit, and before pasting issue / PR text into public
 GitHub, run the secret-pattern scanner:
 
 ```bash
-cargo xtask check-secrets --staged          # pre-commit
+cargo xtask check-secrets --staged   # pre-commit
 cargo xtask check-secrets --stdin < draft.md # pre-issue / pre-PR-body
-cargo xtask check-secrets                    # full repo sweep
+cargo xtask check-secrets     # full repo sweep
 ```
 
 Do not post real local credentials or raw connection URLs in public text.
@@ -104,20 +104,20 @@ forms.
 ## Proposing changes
 
 1. **Open an issue first** for non-trivial changes. The
-   [implementation plan](docs/spec/implementation-plan.md)
-   sequences the framework's build; please align with it where
-   relevant.
+ [implementation plan](docs/spec/implementation-plan.md)
+ sequences the framework's build; please align with it where
+ relevant.
 2. **Fork and branch.** Branch off `main`, name it descriptively
-   (`feature/foo`, `fix/bar`).
+ (`feature/foo`, `fix/bar`).
 3. **Tests are required** for new behavior. Add at least one
-   integration test that hits a live Postgres if the change
-   touches the data layer.
+ integration test that hits a live Postgres if the change
+ touches the data layer.
 4. **Document public surface.** Public functions, types, and
-   traits get rustdoc with what / why / how / where, in line
-   with the existing style. Adopters read these via docs.rs.
+ traits get rustdoc with what / why / how / where, in line
+ with the existing style. Adopters read these via docs.rs.
 5. **Open the PR.** Reference the issue, describe the change in
-   2–4 bullets, list a test plan. The PR template prompts for
-   these.
+ 2–4 bullets, list a test plan. The PR template prompts for
+ these.
 
 ## What's in scope
 
@@ -125,7 +125,7 @@ Djogi is a **Model-first framework** — it owns the data layer
 derivation chain (ORM, migrations, descriptors, audit trail,
 shell bindings). It explicitly does not wrap or compete with
 HTTP frameworks; integrations with Axum / Warp / Actix / etc.
-ship behind opt-in feature flags. See `ReadMe.MD` and
+ship behind opt-in feature flags. See `README.md` and
 `docs/spec/scope.md` for the boundaries.
 
 ## Pre-publish framing

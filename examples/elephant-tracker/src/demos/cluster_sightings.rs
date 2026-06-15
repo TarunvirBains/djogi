@@ -16,13 +16,13 @@
 //! 6.5), which produces a `GroupedQuerySet<Sighting, ClusterId>`
 //! keyed by DBSCAN's cluster id (`ClusterId(None)` is the noise
 //! bucket). Per-cluster reductions chain through `.annotate(...)`
-//! using three typed aggregates from Cluster E:
+//! using three typed aggregates from :
 //!
 //! - `f.id().count_star()` → per-cluster sighting count.
 //! - `f.location().centroid()` → per-cluster `GeoPoint` centroid,
-//!   emitted as `ST_Centroid(ST_Collect(<col>::geometry))::geography`.
+//! emitted as `ST_Centroid(ST_Collect(<col>::geometry))::geography`.
 //! - `f.id().array_agg().order_by(f.id().asc())` → deterministic
-//!   list of contributing sighting ids.
+//! list of contributing sighting ids.
 //!
 //! Aggregation runs server-side in a single round trip; the Rust
 //! side only decomposes the typed tuple `(ClusterId, i64, GeoPoint,
@@ -31,8 +31,8 @@
 //! ## Output formats
 //!
 //! - `json` (default): a list of clusters, each with cluster id,
-//!   sighting count, centroid latitude and longitude, and the list of
-//!   contributing sighting ids.
+//! sighting count, centroid latitude and longitude, and the list of
+//! contributing sighting ids.
 //! - `markdown`: a sorted table over the same data.
 
 use anyhow::Result;

@@ -1,8 +1,8 @@
 <!-- djogi-allow-secret-file: this guide names the very patterns the scanner
-     detects; every URL, password, and env-assignment in the prose below is an
-     obvious pedagogical example, not a real credential. -->
+ detects; every URL, password, and env-assignment in the prose below is an
+ obvious pedagogical example, not a real credential. -->
 
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Secrets Hygiene
 
@@ -32,13 +32,13 @@ triage.
 ## What the scanner does *not* detect
 
 - Generic high-entropy strings without a credential-shaped context.
-  Add the entropy heuristic only with a curated allowlist of
-  intentional base64 / hex fixture sites — out of scope for now.
+ Add the entropy heuristic only with a curated allowlist of
+ intentional base64 / hex fixture sites — out of scope for now.
 - Historical commits, remote branches, or live GitHub issue bodies.
-  Those require a separate sweep with appropriately scoped tooling.
+ Those require a separate sweep with appropriately scoped tooling.
 - The `.pgpass` `host:port:db:user:password` shape. The recommendation
-  is to keep `.pgpass` out of the repository entirely; the file pattern
-  is too easy to confuse with unrelated colon-separated text.
+ is to keep `.pgpass` out of the repository entirely; the file pattern
+ is too easy to confuse with unrelated colon-separated text.
 
 ## Modes
 
@@ -62,7 +62,7 @@ will *add*. Use this as a manual preflight, or wire it into a git
 pre-commit hook:
 
 ```bash
-# .git/hooks/pre-commit  (chmod +x)
+#.git/hooks/pre-commit (chmod +x)
 #!/usr/bin/env bash
 exec cargo xtask check-secrets --staged
 ```
@@ -74,7 +74,7 @@ to the staged blob).
 ### Stdin (pre-issue)
 
 ```bash
-gh issue create --body "$(cat draft.md)"   # only AFTER:
+gh issue create --body "$(cat draft.md)" # only AFTER:
 cargo xtask check-secrets --stdin < draft.md
 ```
 
@@ -121,20 +121,20 @@ Recognised comment prefixes (after `trim_start`): `//`, `/*`, `*`,
 Ruby, Markdown HTML comments, and Lisp/INI.
 
 ```yaml
-# .github/workflows/ci.yml
-        env:
-          POSTGRES_USER: djogi
-          # djogi-allow-secret: GHA service-container fixture; this Postgres
-          # binds only to the runner-local network and is destroyed at job end.
-          POSTGRES_PASSWORD: djogi
+#.github/workflows/ci.yml
+ env:
+  POSTGRES_USER: djogi
+  # djogi-allow-secret: GHA service-container fixture; this Postgres
+  # binds only to the runner-local network and is destroyed at job end.
+  POSTGRES_PASSWORD: djogi
 ```
 
 ```rust
 // djogi-allow-secret: synthetic admin URL used to exercise userinfo
 // stripping; `secret` is a placeholder password.
 let url = build_non_superuser_url(
-    "postgres://admin:secret@db.local:5432/main",
-    "djogi_test_001",
+ "postgres://admin:secret@db.local:5432/main",
+ "djogi_test_001",
 )?;
 ```
 
@@ -148,11 +148,11 @@ docker-compose, example seed files, scanner self-tests.
 # djogi-allow-secret-file: local dev cluster fixture; the `djogi:djogi`
 # credentials are intentionally weak and never accept remote connections.
 services:
-  postgres:
-    image: postgis/postgis:18-3.6
-    environment:
-      POSTGRES_USER: djogi
-      POSTGRES_PASSWORD: djogi
+ postgres:
+ image: postgis/postgis:18-3.6
+ environment:
+ POSTGRES_USER: djogi
+ POSTGRES_PASSWORD: djogi
 ```
 
 ## Built-in placeholder forms
@@ -191,19 +191,19 @@ configuration without a port-mapped local host nearby.
 ## What to do when the scanner fires
 
 1. **First — do not echo the value in chat, PR comments, or issue bodies.**
-   The scanner output is already redacted; do not re-paste the original
-   raw line.
+ The scanner output is already redacted; do not re-paste the original
+ raw line.
 2. Identify the file and line from the scanner output.
 3. If the value is a real secret:
-   - Remove it from the working tree.
-   - Rotate the credential (treat it as compromised — it lived in your
-     local checkout, your editor history, and your shell scrollback).
-   - File a security advisory if it landed on a public branch. See
-     [SECURITY.md](../../SECURITY.md).
+ - Remove it from the working tree.
+ - Rotate the credential (treat it as compromised — it lived in your
+ local checkout, your editor history, and your shell scrollback).
+ - File a security advisory if it landed on a public branch. See
+ [SECURITY.md](../../SECURITY.md).
 4. If the value is an intentional fixture or anti-pattern example:
-   - Add a `djogi-allow-secret:` marker on the line above, with a
-     one-line rationale.
-   - Re-run `cargo xtask check-secrets` to confirm the finding clears.
+ - Add a `djogi-allow-secret:` marker on the line above, with a
+ one-line rationale.
+ - Re-run `cargo xtask check-secrets` to confirm the finding clears.
 
 ## Extending the scanner
 

@@ -82,9 +82,9 @@ Pure spec cleanup. No design judgment required — the older `docs/spec/migratio
 | `migrations/<app>/schema_snapshot.json` | submodule | what is currently applied in the DB | yes |
 
 - **`build.rs` 3-way match logic:**
-    - `djogi_models.json == schema_snapshot.json` → silent.
-    - Mismatch AND `djogi_pending/<app>.json` matches `djogi_models.json` for that app → `note: migration pending — run 'djogi migrate' to apply`.
-    - Mismatch AND no matching pending file → `warning: schema drift detected — run 'djogi makemigrations'`.
+  - `djogi_models.json == schema_snapshot.json` → silent.
+  - Mismatch AND `djogi_pending/<app>.json` matches `djogi_models.json` for that app → `note: migration pending — run 'djogi migrate' to apply`.
+  - Mismatch AND no matching pending file → `warning: schema drift detected — run 'djogi makemigrations'`.
 - **Lifecycle:** `makemigrations` writes the pending file; `migrate` consumes it (atomic rename into the submodule snapshot, then delete the pending file) on successful completion.
 - **Source:** `14-locked-recommendations.md §OI-04` (variant B — separate folder in `target/`).
 
@@ -92,9 +92,9 @@ Pure spec cleanup. No design judgment required — the older `docs/spec/migratio
 
 - **Status:** LOCKED
 - **New ledger columns:**
-    - `applied_steps_count INTEGER NOT NULL DEFAULT 0` — incremented after each successful auto-commit.
-    - `total_steps INTEGER` — NULL for transactional migrations (single atomic step), set to statement count for non-transactional.
-    - `partial_apply_note TEXT` — optional human note, written during repair.
+  - `applied_steps_count INTEGER NOT NULL DEFAULT 0` — incremented after each successful auto-commit.
+  - `total_steps INTEGER` — NULL for transactional migrations (single atomic step), set to statement count for non-transactional.
+  - `partial_apply_note TEXT` — optional human note, written during repair.
 - **Rationale:** Prisma's proven pattern (`projects/prisma.md` / `topics/02-ledger-schema.md`). Queryable, repair-command-integrable, enables `WHERE applied_steps_count >= N` selectors.
 - **Rejected:** Free-text `partial_apply_detail TEXT` as the primary signal — retained only as the optional operator-note column.
 - **Source:** `14-locked-recommendations.md §OI-05`.
@@ -126,9 +126,9 @@ Defined once per crate, typically in `src/apps/mod.rs`:
 
 ```rust
 djogi::apps! {
-    Vehicles,
-    Users,
-    Orders,
+  Vehicles,
+  Users,
+  Orders,
 }
 ```
 
@@ -144,24 +144,24 @@ The `djogi::App` trait is sealed (serde/tokio-style `__private::Sealed` bound). 
 
 ```rust
 #[derive(Model)]
-#[model(app = Vehicles)]  // type reference, not string
-pub struct Vehicle { ... }
+#[model(app = Vehicles)] // type reference, not string
+pub struct Vehicle {... }
 ```
 
-Models without `#[model(app = ...)]` default to the global bucket (`app_label = ''`).
+Models without `#[model(app =...)]` default to the global bucket (`app_label = ''`).
 
 ### On-disk layout
 
 ```
 migrations/
-├── 0001_initial.sql              ← global (flat, unchanged from spec default)
+├── 0001_initial.sql       ← global (flat, unchanged from spec default)
 ├── 0002_add_system_cfg.sql
 ├── vehicles/
-│   ├── 0001_initial.sql
-│   └── schema_snapshot.json
+│  ├── 0001_initial.sql
+│  └── schema_snapshot.json
 └── users/
-    ├── 0001_initial.sql
-    └── schema_snapshot.json
+  ├── 0001_initial.sql
+  └── schema_snapshot.json
 ```
 
 ### Ledger
@@ -206,9 +206,9 @@ Override path at migrate time: `--force-apply` (discouraged; writes an `orphan_h
 
 ```json
 {
-  "format_version": 1,
-  "registered_apps": ["vehicles", "users", "orders"],
-  "models": { ... }
+ "format_version": 1,
+ "registered_apps": ["vehicles", "users", "orders"],
+ "models": {... }
 }
 ```
 
@@ -266,9 +266,9 @@ All three contradictions in `13-gap-analysis-vs-current-spec.md §Part IV` (C-01
 2. **Next artifact: `docs/spec/migration-proposal.md`.** A team-review document that positions this locked design as a proposal to compare against the existing `docs/spec/migrations.md` / `docs/spec/decisions.md` / Phase 7 plan. Non-destructive — the existing docs stay untouched until team review concludes.
 
 3. **After team review:** the proposal gets merged into the canonical spec docs, which means:
-   - `docs/spec/migrations.md` §10 rewrite
-   - New rows in `docs/spec/decisions.md`
-   - Phase 7 plan (the local Phase 7 migration-system v2 implementation plan) amendments
+  - `docs/spec/migrations.md` §10 rewrite
+  - New rows in `docs/spec/decisions.md`
+  - Phase 7 plan (the local Phase 7 migration-system v2 implementation plan) amendments
 
 4. **Phase 7 implementation (T1–T8 per the v2 plan)** proceeds against the finalized spec.
 

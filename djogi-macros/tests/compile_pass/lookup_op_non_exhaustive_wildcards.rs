@@ -28,23 +28,23 @@ use djogi::prelude::*;
 #[model(table = "phase8eta_lookup_op_widgets")]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    // Scalar — exercises Eq/Neq/Gt/Gte/Lt/Lte/Between/In/NotIn arms.
-    pub price: i64,
-    // String — adds the LIKE/ILIKE pattern family.
-    pub name: String,
-    // Bool — equality / list arms only.
-    pub active: bool,
-    // OptionScalar — adds null-test arms and option-aware
-    // eq/neq/in/not_in dispatch.
-    pub estimated_year: Option<i32>,
-    // OptionString — same surface as OptionScalar minus pattern
-    // arms.
-    pub maybe_label: Option<String>,
-    // OptionBool — null tests + scalar list/eq arms.
-    pub maybe_flag: Option<bool>,
-    // Array with safe portable element equality. Emits Eq/Neq/In/NotIn
-    // arms plus a catch-all unsupported-lookup wildcard.
-    pub tags: Vec<i32>,
+ // Scalar — exercises Eq/Neq/Gt/Gte/Lt/Lte/Between/In/NotIn arms.
+ pub price: i64,
+ // String — adds the LIKE/ILIKE pattern family.
+ pub name: String,
+ // Bool — equality / list arms only.
+ pub active: bool,
+ // OptionScalar — adds null-test arms and option-aware
+ // eq/neq/in/not_in dispatch.
+ pub estimated_year: Option<i32>,
+ // OptionString — same surface as OptionScalar minus pattern
+ // arms.
+ pub maybe_label: Option<String>,
+ // OptionBool — null tests + scalar list/eq arms.
+ pub maybe_flag: Option<bool>,
+ // Array with safe portable element equality. Emits Eq/Neq/In/NotIn
+ // arms plus a catch-all unsupported-lookup wildcard.
+ pub tags: Vec<i32>,
 }
 
 fn main() {}

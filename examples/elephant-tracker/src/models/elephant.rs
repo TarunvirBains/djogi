@@ -3,34 +3,34 @@
 //! ## What this demonstrates
 //!
 //! - **Multi-edge self-FKs** — `mother_id` + `father_id` both point at
-//!   `Elephant`, mirroring biological pedigree where every individual
-//!   has at most one mother and one father (each potentially unknown).
-//!   `Model::full_ancestors(id)` walks both edges in a single recursive
-//!   CTE preserving path multiplicity (Wright kinship requires summing
-//!   independent connecting paths). The single-edge `tree_ancestors`
-//!   /`tree_descendants` builders walk one named edge — typically the
-//!   matrilineal `mother_id` for herd-society semantics; the `lineage`
-//!   demo's raw recursive CTE uses the same matrilineal edge.
+//! `Elephant`, mirroring biological pedigree where every individual
+//! has at most one mother and one father (each potentially unknown).
+//! `Model::full_ancestors(id)` walks both edges in a single recursive
+//! CTE preserving path multiplicity (Wright kinship requires summing
+//! independent connecting paths). The single-edge `tree_ancestors`
+//! /`tree_descendants` builders walk one named edge — typically the
+//! matrilineal `mother_id` for herd-society semantics; the `lineage`
+//! demo's raw recursive CTE uses the same matrilineal edge.
 //! - **Macro-generated relation accessors**: `mother_id` → `ElephantRelated::mother()`,
-//!   `father_id` → `ElephantRelated::father()` (the `_id` suffix is
-//!   stripped by the framework's relation-name convention).
+//! `father_id` → `ElephantRelated::father()` (the `_id` suffix is
+//! stripped by the framework's relation-name convention).
 //! - `Jsonb<ElephantTags>` — typed JSONB with unknown-field preservation.
-//!   A row whose JSON contains keys not present on `ElephantTags` (added
-//!   by an older or newer version of the schema, hand-edited in psql,
-//!   etc.) round-trips those keys through every `save()` instead of
-//!   silently dropping them.
+//! A row whose JSON contains keys not present on `ElephantTags` (added
+//! by an older or newer version of the schema, hand-edited in psql,
+//! etc.) round-trips those keys through every `save()` instead of
+//! silently dropping them.
 //! - `#[field(version)]` — optimistic locking. Every `save()` bumps the
-//!   `version` column inside the same UPDATE that touches user fields.
-//!   A `save()` whose pre-image version no longer matches the row's
-//!   current version returns [`DjogiError::GoneAggregate`] rather than
-//!   silently overwriting a concurrent edit.
+//! `version` column inside the same UPDATE that touches user fields.
+//! A `save()` whose pre-image version no longer matches the row's
+//! current version returns [`DjogiError::GoneAggregate`] rather than
+//! silently overwriting a concurrent edit.
 //! - `Tracked<String>` on `name` — declares field-change tracking. Audit
-//!   `_logs` mirror-table wiring and `audit_pool` configuration are out of
-//!   scope for this example; the `Tracked` annotation is present to show
-//!   the macro surface.
+//! `_logs` mirror-table wiring and `audit_pool` configuration are out of
+//! scope for this example; the `Tracked` annotation is present to show
+//! the macro surface.
 //! - `no_default` — `ForeignKey<Herd>` does not implement `Default`, so
-//!   the macro's `Default` impl is suppressed; callers populate every
-//!   field explicitly.
+//! the macro's `Default` impl is suppressed; callers populate every
+//! field explicitly.
 
 use crate::models::Herd;
 use djogi::prelude::*;

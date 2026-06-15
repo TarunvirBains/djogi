@@ -18,9 +18,9 @@ use thiserror::Error;
 /// a wildcard:
 /// ```ignore
 /// match err {
-///     AuthError::InvalidToken => { /* ... */ }
-///     AuthError::ExpiredSession => { /* ... */ }
-///     _ => { /* forward-compatible catch-all */ }
+///  AuthError::InvalidToken => { /*... */ }
+///  AuthError::ExpiredSession => { /*... */ }
+///  _ => { /* forward-compatible catch-all */ }
 /// }
 /// ```
 /// # Error hierarchy

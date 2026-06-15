@@ -25,58 +25,58 @@ use djogi::prelude::*;
 
 /// Top-level `opclass = "text_pattern_ops"` on `unique(...)`.
 #[model(table = "uc_top_opclass", indexes(
-    unique(fields = [email], opclass = "text_pattern_ops"),
+ unique(fields = [email], opclass = "text_pattern_ops"),
 ))]
 #[derive(Debug, Clone)]
 pub struct TopOpclass {
-    pub email: String,
+ pub email: String,
 }
 
 /// Per-column `opclass` via the record form.
 #[model(table = "uc_col_opclass", indexes(
-    unique(fields = [(col = email, opclass = "text_pattern_ops")]),
+ unique(fields = [(col = email, opclass = "text_pattern_ops")]),
 ))]
 #[derive(Debug, Clone)]
 pub struct ColOpclass {
-    pub email: String,
+ pub email: String,
 }
 
 /// Per-column `order = desc`.
 #[model(table = "uc_col_desc", no_default, indexes(
-    unique(fields = [(col = happened_at, order = desc)]),
+ unique(fields = [(col = happened_at, order = desc)]),
 ))]
 #[derive(Debug, Clone)]
 pub struct ColDesc {
-    pub happened_at: DateTime,
+ pub happened_at: DateTime,
 }
 
 /// Per-column `nulls = first`.
 #[model(table = "uc_col_nulls_first", indexes(
-    unique(fields = [(col = slug, nulls = first)]),
+ unique(fields = [(col = slug, nulls = first)]),
 ))]
 #[derive(Debug, Clone)]
 pub struct ColNullsFirst {
-    pub slug: Option<String>,
+ pub slug: Option<String>,
 }
 
 /// Per-column `nulls = last`.
 #[model(table = "uc_col_nulls_last", indexes(
-    unique(fields = [(col = slug, nulls = last)]),
+ unique(fields = [(col = slug, nulls = last)]),
 ))]
 #[derive(Debug, Clone)]
 pub struct ColNullsLast {
-    pub slug: Option<String>,
+ pub slug: Option<String>,
 }
 
 /// Composite: opclass on one column and plain on another — escalates because
 /// the first column has an index-only modifier.
 #[model(table = "uc_composite_opclass", no_default, indexes(
-    unique(fields = [(col = tenant_id, opclass = "int8_ops"), external_id]),
+ unique(fields = [(col = tenant_id, opclass = "int8_ops"), external_id]),
 ))]
 #[derive(Debug, Clone)]
 pub struct CompositeOpclass {
-    pub tenant_id: HeerId,
-    pub external_id: String,
+ pub tenant_id: HeerId,
+ pub external_id: String,
 }
 
 fn main() {}

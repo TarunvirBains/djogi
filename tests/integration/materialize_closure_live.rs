@@ -4,11 +4,11 @@
 // Drives the full closure-helper surface end-to-end:
 //
 // - Self-pair triples at depth 0 (every source row appears as its
-//   own ancestor).
+//  own ancestor).
 // - Multi-edge multiplicity counting (`UNION ALL` inside the
-//   recursive term + `GROUP BY` in the outer SELECT).
+//  recursive term + `GROUP BY` in the outer SELECT).
 // - Idempotency on rerun (`ON CONFLICT … DO UPDATE SET path_count =
-//   EXCLUDED.path_count` REPLACES, never adds).
+//  EXCLUDED.path_count` REPLACES, never adds).
 // - `with_max_depth` truncation.
 // - `with_roots(...)` subset walk.
 // - Zero-self-FK descriptive error.
@@ -40,10 +40,10 @@ pub struct ClosureTreeNode {
 }
 
 #[model(
-    table = "closure_tree_node_closure",
-    pk = HeerId,
-    no_default,
-    indexes(unique(fields = [tree_node_id, ancestor_id, depth]))
+  table = "closure_tree_node_closure",
+  pk = HeerId,
+  no_default,
+  indexes(unique(fields = [tree_node_id, ancestor_id, depth]))
 )]
 #[derive(Debug, Clone)]
 pub struct ClosureTreeNodeAncestry {
@@ -80,10 +80,10 @@ pub struct ClosurePedigree {
 }
 
 #[model(
-    table = "closure_pedigree_ancestry",
-    pk = HeerId,
-    no_default,
-    indexes(unique(fields = [pedigree_id, ancestor_id, depth]))
+  table = "closure_pedigree_ancestry",
+  pk = HeerId,
+  no_default,
+  indexes(unique(fields = [pedigree_id, ancestor_id, depth]))
 )]
 #[derive(Debug, Clone)]
 pub struct ClosurePedigreeAncestry {
@@ -118,10 +118,10 @@ pub struct ClosureOrphan {
 }
 
 #[model(
-    table = "closure_orphan_ancestry",
-    pk = HeerId,
-    no_default,
-    indexes(unique(fields = [orphan_id, ancestor_id, depth]))
+  table = "closure_orphan_ancestry",
+  pk = HeerId,
+  no_default,
+  indexes(unique(fields = [orphan_id, ancestor_id, depth]))
 )]
 #[derive(Debug, Clone)]
 pub struct ClosureOrphanAncestry {
@@ -269,8 +269,8 @@ async fn closure_populates_self_pairs_at_depth_zero(mut ctx: DjogiContext) {
 #[djogi::djogi_test(sync_models = [ClosurePedigree, ClosurePedigreeAncestry])]
 async fn closure_two_edges_records_distinct_paths(mut ctx: DjogiContext) {
     // Linebreeding pedigree where `common` is reachable via TWO paths:
-    //   common → mom (mother) → child (mother)
-    //   common → dad (father) → child (father)
+    //  common → mom (mother) → child (mother)
+    //  common → dad (father) → child (father)
     let common = seed_pedigree_node(&mut ctx, "common", None, None).await;
     let mom = seed_pedigree_node(&mut ctx, "mom", Some(&common), None).await;
     let dad = seed_pedigree_node(&mut ctx, "dad", None, Some(&common)).await;
@@ -328,8 +328,8 @@ async fn closure_idempotent_on_rerun(mut ctx: DjogiContext) {
     assert_eq!(
         after_first, after_second,
         "closure must be exactly idempotent on rerun:\n\
-         first  = {after_first:?}\n\
-         second = {after_second:?}",
+     first = {after_first:?}\n\
+     second = {after_second:?}",
     );
 }
 

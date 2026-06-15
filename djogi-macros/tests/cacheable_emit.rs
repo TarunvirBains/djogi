@@ -1,4 +1,4 @@
-//! Cluster 8δ T7.2 — runtime checks for the auto-emitted
+//! δ T7.2 — runtime checks for the auto-emitted
 //! `impl Cacheable for {Model}` and `impl DeltaSyncCacheable for {Model}`.
 //!
 //! Ships in `djogi-macros/tests/` rather than `djogi/tests/` because
@@ -19,9 +19,9 @@
 //! `assert_id_type::<Model, ExpectedId>()` call at monomorphisation.
 //!
 //! Spec anchor:
-//!   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//!   §3 commit T7.2 — "Test names + assertions" bullet, plus the
-//!   T7.2 phase amendment block (Codex Finding 6 PK-variant fan-out).
+//! docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
+//! §3 commit T7.2 — "Test names + assertions" bullet, plus the
+//! T7.2 phase amendment block (a past finding PK-variant fan-out).
 
 use djogi::prelude::*;
 
@@ -43,7 +43,7 @@ use djogi::types::{BasicPredicate, Cacheable, DeltaSyncCacheable, IntoBasicPredi
 // concrete type.
 // ---------------------------------------------------------------------------
 
-/// Default `#[model]` declaration. Per Phase 7-Zero-2 T2 the implicit
+/// Default `#[model]` declaration. Per T2 the implicit
 /// PK strategy is `HeerIdDesc` (recency-biased), so the auto-emitted
 /// `Cacheable::Id` resolves to `HeerIdDesc`.
 #[model(table = "phase8_t7_cacheable_emit_default")]
@@ -52,7 +52,7 @@ pub struct DefaultModel {
     pub label: String,
 }
 
-/// Explicit `pk = HeerId` (ascending HeerId — the pre-Phase-7-Zero-2
+/// Explicit `pk = HeerId` (ascending HeerId — the pre-Phase-7
 /// historical default).
 #[model(table = "phase8_t7_cacheable_emit_heerid", pk = HeerId)]
 #[derive(Debug, Clone)]
@@ -92,17 +92,17 @@ pub struct SerialModel {
 }
 
 // `primary_key!`-declared custom PK type. The newtype wraps `i64` and
-// the auto-derive set added in Cluster 8δ T7.2 (Ord / PartialOrd /
+// the auto-derive set added in δ T7.2 (Ord / PartialOrd /
 // serde::Serialize / Deserialize on top of the previous Debug / Clone /
 // Copy / PartialEq / Eq / Hash) ensures the inner value passes the
 // `Cacheable::Id: Hash + Eq + Clone + Ord + Send + Sync + 'static`
 // bound when the auto-emitted `impl Cacheable for CustomPkModel`
 // binds `type Id = MyAppId`.
 djogi::primary_key! {
-    pub struct MyAppId(i64);
-    sql_type = "BIGINT";
-    default_sql = "0";
-    bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
+ pub struct MyAppId(i64);
+ sql_type = "BIGINT";
+ default_sql = "0";
+ bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
 }
 
 /// Adopter-declared custom PK. `Cacheable::Id` resolves to `MyAppId`.
@@ -327,7 +327,7 @@ fn jsonb_sql_cast_delegates_through_custom_pk_newtype() {
 fn jsonb_sql_cast_delegates_through_foreign_key() {
     // `ForeignKey<CustomPkModel>` wraps `CustomPkModel::Pk = MyAppId`,
     // which itself delegates to `i64`. The full delegation chain is:
-    //   ForeignKey<CustomPkModel> → MyAppId → i64 → JsonbSqlCast::Int8.
+    // ForeignKey<CustomPkModel> → MyAppId → i64 → JsonbSqlCast::Int8.
     assert_eq!(
         <djogi::ForeignKey<CustomPkModel> as djogi::IntoFilterValue>::jsonb_sql_cast(),
         Some(djogi::JsonbSqlCast::Int8),
@@ -542,15 +542,15 @@ fn cacheable_skipped_for_pk_none() {
 // `Cacheable::Fields` associated-type pin (issue #121). The auto-emitted
 // `impl Cacheable` MUST set `type Fields = {Model}Fields`, where
 // `{Model}Fields` is the ZST companion emitted by `model::stubs::expand`
-// (and re-used by every `QuerySet::filter(|f| ...)` closure call site).
+// (and re-used by every `QuerySet::filter(|f|...)` closure call site).
 //
 // Without this pin a regression that:
-//   * accidentally let sassi-codegen run `generate_fields_struct` would
-//     surface an E0428 (`{Model}Fields defined twice`) at expand time —
-//     caught upstream of this assertion;
-//   * silently wired `type Fields = ()` (or any other unintended type)
-//     through some future plumbing change would otherwise compile cleanly
-//     — only this assertion catches that scenario.
+// * accidentally let sassi-codegen run `generate_fields_struct` would
+// surface an E0428 (`{Model}Fields defined twice`) at expand time —
+// caught upstream of this assertion;
+// * silently wired `type Fields = ()` (or any other unintended type)
+// through some future plumbing change would otherwise compile cleanly
+// — only this assertion catches that scenario.
 // ---------------------------------------------------------------------------
 
 fn assert_fields_type<T, Expected>()
@@ -563,7 +563,7 @@ where
 /// `Cacheable::Fields` for every PK strategy resolves to the djogi-emitted
 /// `{Model}Fields` companion — never `()`, never a sassi-codegen-emitted
 /// collision struct. This is the load-bearing surface check for the
-/// Cluster 2 issue #121 cutover (route Cacheable emit through
+/// issue #121 cutover (route Cacheable emit through
 /// `sassi_codegen::generate_cacheable_impl` with
 /// `CacheableFieldsMode::external(...)`).
 #[test]
@@ -617,7 +617,7 @@ fn cacheable_id_returns_self_id_field() {
 /// `DeltaSyncCacheable::Watermark` resolves to the type of the field
 /// named by `#[model(watermark_field = "expires_at")]` — `DateTime`
 /// in this fixture. Without the override, the watermark defaults to
-/// `updated_at: DateTime` (always present per Phase 7 framework-field
+/// `updated_at: DateTime` (always present per framework-field
 /// injection).
 #[test]
 fn delta_sync_cacheable_watermark_uses_named_field() {

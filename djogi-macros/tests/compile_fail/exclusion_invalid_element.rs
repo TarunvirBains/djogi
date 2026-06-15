@@ -8,17 +8,17 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "bookings",
-    no_default,
-    exclusion(
-        name = "no_overlap",
-        using = "gist",
-        elements = ["room_id"],
-    ),
+ table = "bookings",
+ no_default,
+ exclusion(
+  name = "no_overlap",
+  using = "gist",
+  elements = ["room_id"],
+ ),
 )]
 #[derive(Debug, Clone)]
 pub struct Booking {
-    pub room_id: i64,
+ pub room_id: i64,
 }
 
 fn main() {}

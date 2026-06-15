@@ -28,20 +28,20 @@ fn vehicle_schema_const_renders_expected_shape() {
 
     // Framework fields, in fixed order.
     assert!(s.contains("\nfields:\n"));
-    assert!(s.contains("  id: HeerId (PK)\n"));
-    assert!(s.contains("  created_at: DateTime\n"));
-    assert!(s.contains("  updated_at: DateTime\n"));
+    assert!(s.contains(" id: HeerId (PK)\n"));
+    assert!(s.contains(" created_at: DateTime\n"));
+    assert!(s.contains(" updated_at: DateTime\n"));
 
     // User fields with modifiers.
-    assert!(s.contains("  vin: String NOT NULL UNIQUE\n"));
-    assert!(s.contains("  maker: String NOT NULL\n"));
-    assert!(s.contains("  colour: Option<String>\n"));
-    assert!(s.contains("  plate: String NOT NULL\n"));
+    assert!(s.contains(" vin: String NOT NULL UNIQUE\n"));
+    assert!(s.contains(" maker: String NOT NULL\n"));
+    assert!(s.contains(" colour: Option<String>\n"));
+    assert!(s.contains(" plate: String NOT NULL\n"));
 
     // Indexes section.
     assert!(s.contains("\nindexes:\n"));
-    assert!(s.contains("  - vin (UNIQUE)\n"));
-    assert!(s.contains("  - plate (BTREE)\n"));
+    assert!(s.contains(" - vin (UNIQUE)\n"));
+    assert!(s.contains(" - plate (BTREE)\n"));
 }
 
 #[test]
@@ -71,7 +71,7 @@ pub struct Minimal {
 fn minimal_schema_const_omits_empty_sections() {
     let s = MINIMAL_SCHEMA;
     assert!(s.starts_with("table: schema_const_minimal\n"));
-    assert!(s.contains("  note: String NOT NULL\n"));
+    assert!(s.contains(" note: String NOT NULL\n"));
 
     // No indexes / relations on this model — those sections must be
     // absent entirely (empty `indexes:\n` blocks would be noise).
@@ -100,7 +100,7 @@ fn multi_word_model_name_uppersnakes_const() {
     assert!(s.starts_with("table: schema_const_org_users\n"));
 }
 
-// Fixture 4 — default PK (no `pk = ...` attr) resolves to `HeerIdDesc`.
+// Fixture 4 — default PK (no `pk =...` attr) resolves to `HeerIdDesc`.
 // Pinned because an earlier renderer flattened ascending and descending
 // HeerId variants into the same `HeerId` label, hiding the recency-
 // biased ordering from adopters reading the const.
@@ -114,11 +114,11 @@ pub struct DefaultPk {
 fn default_pk_renders_as_heerid_desc() {
     let s = DEFAULT_PK_SCHEMA;
     assert!(
-        s.contains("  id: HeerIdDesc (PK)\n"),
+        s.contains(" id: HeerIdDesc (PK)\n"),
         "default PK must surface as HeerIdDesc (recency-biased), not HeerId; got: {s}"
     );
     assert!(
-        !s.contains("  id: HeerId (PK)\n"),
+        !s.contains(" id: HeerId (PK)\n"),
         "default PK must not be mislabelled as ascending HeerId; got: {s}"
     );
 }
@@ -134,7 +134,7 @@ pub struct AscendingPk {
 fn ascending_pk_renders_as_heerid() {
     let s = ASCENDING_PK_SCHEMA;
     assert!(
-        s.contains("  id: HeerId (PK)\n"),
+        s.contains(" id: HeerId (PK)\n"),
         "explicit `pk = HeerId` must surface as ascending HeerId; got: {s}"
     );
 }

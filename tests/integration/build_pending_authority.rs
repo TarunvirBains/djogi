@@ -133,15 +133,15 @@ fn library_phase_zero_outcome2() -> String {
 // distinguish (see `djogi/build.rs` header + `docs/spec/migrations.md`
 // §10.2):
 //
-//  - **Present** — file exists and parses to an object keyed by
-//    `<database>/<app>`. The model-vs-* legs of the four-way match run.
-//  - **Absent** — file legitimately missing (`NotFound`); the typical
-//    state today. Model legs are skipped *silently*; pending↔snapshot
-//    still classifies so a fresh hidden Phase 0 pending reports
-//    Outcome 2 (composed, not yet applied) instead of Outcome 4.
-//  - **Malformed** — file exists but is unreadable, not valid JSON, not
-//    a top-level object, or carries a non-`<database>/<app>` key. A loud
-//    warning fires, then the same reduced classification as Absent runs.
+// - **Present** — file exists and parses to an object keyed by
+//  `<database>/<app>`. The model-vs-* legs of the four-way match run.
+// - **Absent** — file legitimately missing (`NotFound`); the typical
+//  state today. Model legs are skipped *silently*; pending↔snapshot
+//  still classifies so a fresh hidden Phase 0 pending reports
+//  Outcome 2 (composed, not yet applied) instead of Outcome 4.
+// - **Malformed** — file exists but is unreadable, not valid JSON, not
+//  a top-level object, or carries a non-`<database>/<app>` key. A loud
+//  warning fires, then the same reduced classification as Absent runs.
 
 /// RED-A1 — absent inventory with a hidden Phase 0 pending must surface
 /// the truthful Outcome 2 (composed not yet applied), byte-for-byte
@@ -164,7 +164,7 @@ fn build_collect_diagnostics_hidden_phase_zero_without_model_inventory() {
     assert!(
         texts.iter().any(|t| *t == expected),
         "absent inventory + hidden Phase 0 pending must surface Outcome 2 \
-         byte-for-byte ({expected:?}); got: {texts:?}"
+     byte-for-byte ({expected:?}); got: {texts:?}"
     );
     assert!(
         !texts

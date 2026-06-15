@@ -1,6 +1,6 @@
-> [Back to Guides](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to Guides](./index.md) · [Back to README](../../README.md)
 
-Spec: [`docs/spec/models.md`](../spec/models.md) — Phase 5 version-field contract.
+Spec: [`docs/spec/models.md`](../spec/models.md) — version-field contract.
 
 # Optimistic Locking
 
@@ -16,22 +16,22 @@ rows and Djogi surfaces `DjogiError::LockConflict`.
 ## Contract
 
 - You annotate one field `#[field(version)] pub <name>: i32` (or `i64`).
-  No other type is allowed — `Option<i32>`, `String`, and any other type
-  produce a span-precise compile error at the annotated field.
+ No other type is allowed — `Option<i32>`, `String`, and any other type
+ produce a span-precise compile error at the annotated field.
 - Two or more `#[field(version)]` annotations on the same model produce a
-  compile error on the second occurrence.
+ compile error on the second occurrence.
 - `save()` emits:
-  ```sql
-  UPDATE <table>
-  SET <other_fields>, <version_col> = <version_col> + 1, updated_at = now()
-  WHERE id = $n AND <version_col> = $m
-  RETURNING *;
-  ```
+ ```sql
+ UPDATE <table>
+ SET <other_fields>, <version_col> = <version_col> + 1, updated_at = now()
+ WHERE id = $n AND <version_col> = $m
+ RETURNING *;
+ ```
 - Zero rows in RETURNING → `Err(DjogiError::LockConflict)`.
 - The version field's default value is `0`. The first successful `save()` sets
-  it to `1` in the database; the rehydrated row reflects that new value.
-- Models without `#[field(version)]` use the Phase 4 baseline UPDATE (no
-  version predicate).
+ it to `1` in the database; the rehydrated row reflects that new value.
+- Models without `#[field(version)]` use the baseline UPDATE (no
+ version predicate).
 
 ---
 
@@ -44,42 +44,42 @@ use djogi::error::DjogiError;
 #[model(table = "accounts")]
 #[derive(Debug, Clone)]
 pub struct Account {
-    pub owner: String,
-    pub balance: i64,
-    #[field(version)]
-    pub revision: i32,
+ pub owner: String,
+ pub balance: i64,
+ #[field(version)]
+ pub revision: i32,
 }
 
 async fn transfer(pool: &DjogiPool, account_id: HeerIdRecencyBiased, amount: i64) -> Result<(), DjogiError> {
-    // Writer A loads the account at revision = 3.
-    let mut ctx_a = DjogiContext::from_pool(pool.clone());
-    let mut account_a = Account::get(&mut ctx_a, account_id).await?;
+ // Writer A loads the account at revision = 3.
+ let mut ctx_a = DjogiContext::from_pool(pool.clone());
+ let mut account_a = Account::get(&mut ctx_a, account_id).await?;
 
-    // Simulate Writer B concurrently loading and saving the same row first.
-    let mut ctx_b = DjogiContext::from_pool(pool.clone());
-    let mut account_b = Account::get(&mut ctx_b, account_id).await?;
-    account_b.balance -= 50;
-    account_b.save(&mut ctx_b).await?;  // succeeds; revision becomes 4 in the DB
+ // Simulate Writer B concurrently loading and saving the same row first.
+ let mut ctx_b = DjogiContext::from_pool(pool.clone());
+ let mut account_b = Account::get(&mut ctx_b, account_id).await?;
+ account_b.balance -= 50;
+ account_b.save(&mut ctx_b).await?; // succeeds; revision becomes 4 in the DB
 
-    // Writer A now tries to save. The DB row is at revision 4 but account_a
-    // still holds revision 3. The WHERE clause finds no match.
-    account_a.balance += amount;
-    match account_a.save(&mut ctx_a).await {
-        Ok(()) => {
-            // Won the race — revision is now 5 in the DB.
-        }
-        Err(DjogiError::LockConflict(_)) => {
-            // Lost the race — re-read the latest state and retry.
-            let fresh = Account::get(&mut ctx_a, account_id).await?;
-            // Re-apply the mutation and save again.
-            let mut fresh = fresh;
-            fresh.balance += amount;
-            fresh.save(&mut ctx_a).await?;
-        }
-        Err(other) => return Err(other),
-    }
+ // Writer A now tries to save. The DB row is at revision 4 but account_a
+ // still holds revision 3. The WHERE clause finds no match.
+ account_a.balance += amount;
+ match account_a.save(&mut ctx_a).await {
+ Ok(()) => {
+  // Won the race — revision is now 5 in the DB.
+ }
+ Err(DjogiError::LockConflict(_)) => {
+  // Lost the race — re-read the latest state and retry.
+  let fresh = Account::get(&mut ctx_a, account_id).await?;
+  // Re-apply the mutation and save again.
+  let mut fresh = fresh;
+  fresh.balance += amount;
+  fresh.save(&mut ctx_a).await?;
+ }
+ Err(other) => return Err(other),
+ }
 
-    Ok(())
+ Ok(())
 }
 ```
 
@@ -98,10 +98,10 @@ use djogi::transaction::retry_on_conflict;
 
 // ctx is a DjogiContext — obtained from DjogiContext::from_pool or inside atomic().
 retry_on_conflict(&mut ctx, 3, async |ctx| {
-    let mut account = Account::get(ctx, account_id).await?;
-    account.balance += amount;
-    account.save(ctx).await?;
-    Ok::<_, DjogiError>(())
+ let mut account = Account::get(ctx, account_id).await?;
+ account.balance += amount;
+ account.save(ctx).await?;
+ Ok::<_, DjogiError>(())
 }).await?;
 ```
 
@@ -126,10 +126,10 @@ changes are selective (dirty tracking):
 ```rust
 #[model(table = "profiles")]
 pub struct Profile {
-    pub display_name: Tracked<String>,
-    pub bio: Tracked<String>,
-    #[field(version)]
-    pub revision: i32,
+ pub display_name: Tracked<String>,
+ pub bio: Tracked<String>,
+ #[field(version)]
+ pub revision: i32,
 }
 ```
 
@@ -140,9 +140,9 @@ often better to surface the conflict and ask the user to reconcile:
 
 ```rust
 match profile.save(&mut ctx).await {
-    Ok(()) => redirect_to_profile(),
-    Err(DjogiError::LockConflict(_)) => show_conflict_error("Someone else edited this profile — please review and resubmit."),
-    Err(e) => return Err(e),
+ Ok(()) => redirect_to_profile(),
+ Err(DjogiError::LockConflict(_)) => show_conflict_error("Someone else edited this profile — please review and resubmit."),
+ Err(e) => return Err(e),
 }
 ```
 
@@ -157,15 +157,15 @@ read; no version field is needed:
 
 ```rust
 djogi::transaction::atomic(&pool, |ctx| Box::pin(async move {
-    let mut account = Account::objects()
-        .filter(|f| f.id().eq(account_id))
-        .select_for_update()
-        .fetch_one(ctx).await?;
+ let mut account = Account::objects()
+.filter(|f| f.id().eq(account_id))
+.select_for_update()
+.fetch_one(ctx).await?;
 
-    account.balance += amount;
-    // save() here does not need a version field; the row lock prevents concurrent writes.
-    account.save(ctx).await?;
-    Ok::<_, DjogiError>(())
+ account.balance += amount;
+ // save() here does not need a version field; the row lock prevents concurrent writes.
+ account.save(ctx).await?;
+ Ok::<_, DjogiError>(())
 })).await?;
 ```
 

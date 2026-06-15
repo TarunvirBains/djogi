@@ -1,23 +1,23 @@
 error[E0624]: associated function `new` is private
-   --> $DIR/sealed_relation_path_new.rs:41:57
-    |
- 41 |       let _: RelationPath<Vehicle, Owner> = RelationPath::new(
-    |                                                           ^^^ private associated function
-    |
-   ::: djogi/src/relation/path.rs:108:5
-    |
-108 | /     pub(crate) const fn new(
-109 | |         source_column: &'static str,
-110 | |         target_table: &'static str,
-111 | |         kind: RelationKind,
-112 | |     ) -> Self {
-    | |_____________- private associated function defined here
-    |
-    = help: items from traits can only be used if the trait is in scope
+ --> $DIR/sealed_relation_path_new.rs:41:57
+ |
+ 41 |  let _: RelationPath<Vehicle, Owner> = RelationPath::new(
+ |               ^^^ private associated function
+ |
+ ::: djogi/src/relation/path.rs:108:5
+ |
+108 | /  pub(crate) const fn new(
+109 | |   source_column: &'static str,
+110 | |   target_table: &'static str,
+111 | |   kind: RelationKind,
+112 | |  ) -> Self {
+ | |_____________- private associated function defined here
+ |
+ = help: items from traits can only be used if the trait is in scope
 help: trait `Paint` which provides `new` is implemented but not in scope; perhaps you want to import it
-    |
+ |
  16 + use yansi::paint::Paint;
-    |
+ |
 
 error: aborting due to 1 previous error
 

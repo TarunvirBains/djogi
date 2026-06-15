@@ -27,7 +27,7 @@ In this repository's tests, do not import `djogi::__bypass` directly. Use:
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): explain the typed-surface gap.
 async fn test(mut ctx: DjogiContext) {
-    // raw calls are available here
+ // raw calls are available here
 }
 ```
 

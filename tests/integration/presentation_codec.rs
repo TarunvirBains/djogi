@@ -7,10 +7,10 @@
 //! This file is the acceptance criterion for the full feature:
 //!
 //! - Stage 2 defines `DjogiError::PresentationStartup` and the `djogi::presentation`
-//!   module with its full trait surface, built-in codecs, and startup validation.
+//!  module with its full trait surface, built-in codecs, and startup validation.
 //! - Stage 3 wires `validate_startup_inventory()` into `DjogiPool::connect`.
 //! - Stage 4 extends `#[derive(Model)]` with the `visage_scopes(name = Suffix)`
-//!   syntax and the `per_scope` codec grammar inside `protected(...)`.
+//!  syntax and the `per_scope` codec grammar inside `protected(...)`.
 //! - Stage 5 implements `MaskString` and other built-in codecs.
 //! - Stage 6 wires `validate_startup_inventory()` into `DjogiPool::connect`.
 //! - Stage 7 adds `djogi::testing::install_presentation_hmac_key_for_testing`.
@@ -37,26 +37,26 @@
 //! # What is asserted
 //!
 //! 1. **Pool startup validation** *(feature `hmac-codec` only)* — `DjogiPool::connect` with
-//!    `DJOGI_PRESENTATION_HMAC_KEY` unset returns
-//!    `Err(DjogiError::PresentationStartup(..))`, not a panic.
+//!  `DJOGI_PRESENTATION_HMAC_KEY` unset returns
+//!  `Err(DjogiError::PresentationStartup(..))`, not a panic.
 //! 2. **Custom scope generates visage struct** — `visage_scopes(support =
-//!    Support)` on `#[model(...)]` causes the macro to emit a `UserSupport`
-//!    struct; `UserSupport::from(&user)` is infallible and preserves `id`,
-//!    `created_at`, `updated_at`.
+//!  Support)` on `#[model(...)]` causes the macro to emit a `UserSupport`
+//!  struct; `UserSupport::from(&user)` is infallible and preserves `id`,
+//!  `created_at`, `updated_at`.
 //! 3. **PresentationCodec changes Output type** — a field annotated with
-//!    `per_scope = { public = { presentation_codec = MaskString } }` carries
-//!    `<MaskString as PresentationCodecInfo<String>>::Output` as its type in
-//!    `UserPublic`, not `String`.
+//!  `per_scope = { public = { presentation_codec = MaskString } }` carries
+//!  `<MaskString as PresentationCodecInfo<String>>::Output` as its type in
+//!  `UserPublic`, not `String`.
 //! 4. **TryPresentationCodec makes the scope visage use `TryFrom`** — a field
-//!    with `try_presentation_codec = C` on the `public` scope makes `UserWithTry`
-//!    implement `TryFrom<&User>`, not `From<&User>`.
+//!  with `try_presentation_codec = C` on the `public` scope makes `UserWithTry`
+//!  implement `TryFrom<&User>`, not `From<&User>`.
 //! 5. **`validate_startup_inventory()` returns `Err` when the HMAC key is
-//!    missing** — the freestanding validator surfaces the same error as the pool
-//!    connection path. *(feature `hmac-codec` only)*
+//!  missing** — the freestanding validator surfaces the same error as the pool
+//!  connection path. *(feature `hmac-codec` only)*
 //! 6. **Test-key install before pool connect** *(feature `hmac-codec` only)* — the doc-hidden,
-//!    unsafe testing helper `djogi::testing::install_presentation_hmac_key_for_testing`
-//!    installs a 64-hex-char key and allows `DjogiPool::connect` to succeed; a
-//!    `UserWithCodec::create` / fetch round-trip then works end-to-end.
+//!  unsafe testing helper `djogi::testing::install_presentation_hmac_key_for_testing`
+//!  installs a 64-hex-char key and allows `DjogiPool::connect` to succeed; a
+//!  `UserWithCodec::create` / fetch round-trip then works end-to-end.
 
 use djogi::prelude::*;
 use djogi::presentation::{
@@ -97,25 +97,25 @@ static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 // TODO Stage 4: confirm exact `visage_scopes(...)` argument syntax once the
 // macro grammar is pinned.
 #[model(
-    table = "gh227_codec_users",
-    visage_scopes(support = Support)
+  table = "gh227_codec_users",
+  visage_scopes(support = Support)
 )]
 #[derive(Debug, Clone)]
 pub struct User {
     /// Exposed on `public` with a presentation codec that masks the raw value.
     /// Exposed on `support` without a codec so support staff see the plaintext.
     #[field(
-        expose(public, support),
-        protected(
-            sensitivity = "pii",
-            rationale = "GH #227: email is PII per GDPR Art. 6(1)(b)",
-            per_scope = {
-                public = {
-                    presentation_codec = djogi::presentation::builtins::MaskString
-                }
-            }
-        )
-    )]
+    expose(public, support),
+    protected(
+      sensitivity = "pii",
+      rationale = "GH #227: email is PII per GDPR Art. 6(1)(b)",
+      per_scope = {
+        public = {
+          presentation_codec = djogi::presentation::builtins::MaskString
+        }
+      }
+    )
+  )]
     pub email: String,
 }
 
@@ -132,17 +132,17 @@ pub struct User {
 #[derive(Debug, Clone)]
 pub struct UserWithTry {
     #[field(
-        expose(public),
-        protected(
-            sensitivity = "pii",
-            rationale = "GH #227: phone is PII; codec is fallible (encrypt path)",
-            per_scope = {
-                public = {
-                    try_presentation_codec = djogi::presentation::builtins::MaskString
-                }
-            }
-        )
-    )]
+    expose(public),
+    protected(
+      sensitivity = "pii",
+      rationale = "GH #227: phone is PII; codec is fallible (encrypt path)",
+      per_scope = {
+        public = {
+          try_presentation_codec = djogi::presentation::builtins::MaskString
+        }
+      }
+    )
+  )]
     pub phone: String,
 }
 
@@ -152,17 +152,17 @@ pub struct UserWithTry {
 #[derive(Debug, Clone)]
 pub struct UserWithCodec {
     #[field(
-        expose(public),
-        protected(
-            sensitivity = "pii",
-            rationale = "GH #227: round-trip acceptance test for full create/fetch cycle",
-            per_scope = {
-                public = {
-                    presentation_codec = djogi::presentation::builtins::MaskString
-                }
-            }
-        )
-    )]
+    expose(public),
+    protected(
+      sensitivity = "pii",
+      rationale = "GH #227: round-trip acceptance test for full create/fetch cycle",
+      per_scope = {
+        public = {
+          presentation_codec = djogi::presentation::builtins::MaskString
+        }
+      }
+    )
+  )]
     pub display_name: String,
 }
 
@@ -177,17 +177,17 @@ pub struct UserWithCodec {
 #[derive(Debug, Clone)]
 pub struct UserWithQueryableIdentityCodec {
     #[field(
-        expose(public),
-        protected(
-            sensitivity = "pii",
-            rationale = "GH #227 P1 coverage: queryable presentation predicate entry",
-            per_scope = {
-                public = {
-                    presentation_codec = djogi::presentation::builtins::Identity
-                }
-            }
-        )
-    )]
+    expose(public),
+    protected(
+      sensitivity = "pii",
+      rationale = "GH #227 P1 coverage: queryable presentation predicate entry",
+      per_scope = {
+        public = {
+          presentation_codec = djogi::presentation::builtins::Identity
+        }
+      }
+    )
+  )]
     pub email: String,
 }
 
@@ -221,17 +221,17 @@ pub struct UserWithHmac {
     /// Field protected with an HMAC codec. Used only to register a startup-
     /// validation inventory entry — no `#[djogi_test]` body exercises this model.
     #[field(
-        expose(public),
-        protected(
-            sensitivity = "pii",
-            rationale = "GH #227: HMAC codec registers startup-validation inventory entry",
-            per_scope = {
-                public = {
-                    try_presentation_codec = djogi::presentation::builtins::HmacSha256HexString
-                }
-            }
-        )
-    )]
+    expose(public),
+    protected(
+      sensitivity = "pii",
+      rationale = "GH #227: HMAC codec registers startup-validation inventory entry",
+      per_scope = {
+        public = {
+          try_presentation_codec = djogi::presentation::builtins::HmacSha256HexString
+        }
+      }
+    )
+  )]
     pub email: String,
 }
 
@@ -239,17 +239,17 @@ pub struct UserWithHmac {
 #[derive(Debug, Clone)]
 pub struct UserWithFailingFetchCodec {
     #[field(
-        expose(public),
-        protected(
-            sensitivity = "pii",
-            rationale = "GH #227 F5: fetch-time presentation codec error mapping",
-            per_scope = {
-                public = {
-                    try_presentation_codec = FailingFetchCodec
-                }
-            }
-        )
-    )]
+    expose(public),
+    protected(
+      sensitivity = "pii",
+      rationale = "GH #227 F5: fetch-time presentation codec error mapping",
+      per_scope = {
+        public = {
+          try_presentation_codec = FailingFetchCodec
+        }
+      }
+    )
+  )]
     pub secret: String,
 }
 
@@ -344,7 +344,7 @@ async fn pool_connect_fails_without_hmac_key() {
 
 /// Compile-level assertion: the `email` field in `UserPublic` carries
 /// `<djogi::presentation::builtins::MaskString as
-///  djogi::presentation::PresentationCodecInfo<String>>::Output`
+/// djogi::presentation::PresentationCodecInfo<String>>::Output`
 /// as its type, not `String`.
 ///
 /// The `const _` block runs at compile time only. A runtime value is never
@@ -362,7 +362,7 @@ const _: () = {
     fn _assert_public_email_output_type(v: &User) {
         // Stage 4 / 5: `UserPublic::from(v).email` must be of type
         // `<djogi::presentation::builtins::MaskString
-        //      as djogi::presentation::PresentationCodecInfo<String>>::Output`.
+        //   as djogi::presentation::PresentationCodecInfo<String>>::Output`.
         //
         // The explicit type annotation on `_email` is the assertion. If the
         // field type were still `String` but `Output` is not `String`, the
@@ -370,7 +370,7 @@ const _: () = {
         // still proves the plumbing compiled correctly.
         let public = UserPublic::from(v);
         let _email: <djogi::presentation::builtins::MaskString
-            as djogi::presentation::PresentationCodecInfo<String>>::Output = public.email;
+      as djogi::presentation::PresentationCodecInfo<String>>::Output = public.email;
         let _ = _email;
     }
 };
@@ -469,7 +469,7 @@ async fn validate_startup_inventory_allows_missing_hmac_key_when_hmac_codec_disa
     assert!(
         result.is_ok(),
         "with feature `hmac-codec` disabled, startup validation must not require \
-         DJOGI_PRESENTATION_HMAC_KEY"
+     DJOGI_PRESENTATION_HMAC_KEY"
     );
 }
 
@@ -659,9 +659,9 @@ async fn visage_queryset_fetch_maps_try_codec_errors(mut ctx: DjogiContext) {
 ///
 /// 1. `DjogiPool::connect` fails while `DJOGI_PRESENTATION_HMAC_KEY` is absent.
 /// 2. `install_presentation_hmac_key_for_testing(...)` runs before any later
-///    pool creation.
+///  pool creation.
 /// 3. The manual test harness (`setup_test_db`) then succeeds, after which the
-///    normal create/fetch round-trip still works.
+///  normal create/fetch round-trip still works.
 #[tokio::test]
 #[cfg(feature = "hmac-codec")]
 async fn test_key_installed_before_pool_connect() {

@@ -33,18 +33,18 @@ version ranges will be documented per release.
 In scope:
 
 - The djogi framework crates (`djogi`, `djogi-macros`,
-  `djogi-cli`, `djogi-shell`)
+ `djogi-cli`, `djogi-shell`)
 - The planned `djogi-maahi` admin console once its crate and feature
-  flag ship; it is not a v0.1.0-alpha shipped surface
+ flag ship; it is not a v0.1.0-alpha shipped surface
 - Generated migration SQL — escape, injection, and
-  least-privilege concerns
+ least-privilege concerns
 - Auth substrate (`PasswordHash`, `AuthContext`, RLS policy
-  generation)
+ generation)
 
 Out of scope:
 
 - Vulnerabilities in transitive dependencies — please report to
-  the upstream project; we'll bump the dep version once a fix
-  ships
+ the upstream project; we'll bump the dep version once a fix
+ ships
 - Issues in adopter applications built with djogi — those are
-  the application's responsibility, not the framework's
+ the application's responsibility, not the framework's

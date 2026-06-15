@@ -17,15 +17,15 @@
 use djogi::prelude::*;
 
 fn main() {
-    let _zero_heerid: HeerId = <HeerId as PrimaryKey>::sentinel();
-    let _zero_heerid_desc: djogi::types::HeerIdDesc =
-        <djogi::types::HeerIdDesc as PrimaryKey>::sentinel();
-    let _zero_heerid_recency_biased: HeerIdRecencyBiased =
-        <HeerIdRecencyBiased as PrimaryKey>::sentinel();
-    let _zero_ranjid: RanjId = <RanjId as PrimaryKey>::sentinel();
-    let _zero_ranjid_desc: djogi::types::RanjIdDesc =
-        <djogi::types::RanjIdDesc as PrimaryKey>::sentinel();
-    let _zero_ranjid_recency_biased: RanjIdRecencyBiased =
-        <RanjIdRecencyBiased as PrimaryKey>::sentinel();
-    let _zero_serial: i32 = <i32 as PrimaryKey>::sentinel();
+ let _zero_heerid: HeerId = <HeerId as PrimaryKey>::sentinel();
+ let _zero_heerid_desc: djogi::types::HeerIdDesc =
+  <djogi::types::HeerIdDesc as PrimaryKey>::sentinel();
+ let _zero_heerid_recency_biased: HeerIdRecencyBiased =
+  <HeerIdRecencyBiased as PrimaryKey>::sentinel();
+ let _zero_ranjid: RanjId = <RanjId as PrimaryKey>::sentinel();
+ let _zero_ranjid_desc: djogi::types::RanjIdDesc =
+  <djogi::types::RanjIdDesc as PrimaryKey>::sentinel();
+ let _zero_ranjid_recency_biased: RanjIdRecencyBiased =
+  <RanjIdRecencyBiased as PrimaryKey>::sentinel();
+ let _zero_serial: i32 = <i32 as PrimaryKey>::sentinel();
 }

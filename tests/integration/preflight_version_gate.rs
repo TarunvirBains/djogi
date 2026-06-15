@@ -64,7 +64,7 @@ async fn preflight_report_fields_are_consistent() {
         report.server_version_num >= reconstructed
             && report.server_version_num < reconstructed + 100,
         "version_num {} should reconstruct to major={} minor={} \
-         (expected range [{}, {})), got reconstructed={}",
+     (expected range [{}, {})), got reconstructed={}",
         report.server_version_num,
         report.major,
         report.minor,

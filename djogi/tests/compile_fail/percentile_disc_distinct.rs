@@ -6,11 +6,11 @@ use djogi::prelude::*;
 #[model(table = "phase85_aggregate89_percentile_disc_distinct", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct PercentileDiscDistinctModel {
-    pub score: f64,
+ pub score: f64,
 }
 
 fn main() {
-    let _ = PercentileDiscDistinctModel::objects().annotate(|f| {
-        f.score().percentile_disc(0.5).distinct()
-    });
+ let _ = PercentileDiscDistinctModel::objects().annotate(|f| {
+  f.score().percentile_disc(0.5).distinct()
+ });
 }

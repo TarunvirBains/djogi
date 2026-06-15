@@ -1,18 +1,18 @@
 //! `djogi::apps! { … }` function-like proc macro.
 //! Lowers a block of `#[app(...)] pub struct Foo;` declarations into:
 //! 1. The unit structs themselves, with every `#[app(...)]` attribute
-//!    stripped (the emitted struct is plain Rust; all app metadata is
-//!    captured in the [`App`] impl).
+//! stripped (the emitted struct is plain Rust; all app metadata is
+//! captured in the [`App`] impl).
 //! 2. One `impl ::djogi::apps::App for <Struct>` per entry, carrying
-//!    the hidden seal witness required by `App`, with
-//!    `LABEL` / `DATABASE` / `DESCRIPTOR` associated constants fully
-//!    resolvable at const-eval time.
+//! the hidden seal witness required by `App`, with
+//! `LABEL` / `DATABASE` / `DESCRIPTOR` associated constants fully
+//! resolvable at const-eval time.
 //! 3. One `inventory::submit!` of the struct's
-//!    `::djogi::apps::AppDescriptor` per entry for migration and
-//!    ledger consumers to discover.
+//! `::djogi::apps::AppDescriptor` per entry for migration and
+//! ledger consumers to discover.
 //! 4. A single zero-sized invocation sentinel emitted exactly once
-//!    per `djogi::apps!` call. Two invocations in the same crate
-//!    collide on the sentinel's name and rustc raises `duplicate
+//! per `djogi::apps!` call. Two invocations in the same crate
+//! collide on the sentinel's name and rustc raises `duplicate
 //! definition`.
 //! # Parser
 //! Hand-rolled, matching the model-index parser shape. Darling's
@@ -105,7 +105,7 @@ fn parse_app_decl(input: ParseStream<'_>) -> syn::Result<AppDecl> {
     input.parse::<Token![struct]>()?;
     let ident: Ident = input.parse()?;
     let ident_span = ident.span();
-    // Reject `struct Foo(...)` and `struct Foo { ... }` — apps are
+    // Reject `struct Foo(...)` and `struct Foo {... }` — apps are
     // zero-sized unit structs only.
     let lookahead = input.lookahead1();
     if lookahead.peek(Token![;]) {
@@ -115,8 +115,8 @@ fn parse_app_decl(input: ParseStream<'_>) -> syn::Result<AppDecl> {
             ident_span,
             format!(
                 "`djogi::apps!` declarations must be unit structs — \
-                 `pub struct {ident};` with no fields. Tuple and named \
-                 structs are not allowed."
+     `pub struct {ident};` with no fields. Tuple and named \
+     structs are not allowed."
             ),
         ));
     } else {
@@ -146,9 +146,9 @@ fn parse_app_decl(input: ParseStream<'_>) -> syn::Result<AppDecl> {
 /// - `database = "…"` (required),
 /// - `renamed_from = "old_label"` (optional lifecycle marker),
 /// - `tombstone` (optional lifecycle flag).
-///   Errors on duplicates, unknown keys, non-string values, or when
-///   `renamed_from` and `tombstone` both appear (mutually exclusive
-///   a tombstoned app is being retired, not renamed).
+/// Errors on duplicates, unknown keys, non-string values, or when
+/// `renamed_from` and `tombstone` both appear (mutually exclusive
+/// a tombstoned app is being retired, not renamed).
 struct ParsedAppAttr {
     label_override: Option<LitStr>,
     database: String,
@@ -182,7 +182,7 @@ fn parse_app_attribute(attrs: &[Attribute], ident: &Ident) -> syn::Result<Parsed
             ident,
             format!(
                 "`pub struct {ident};` inside `djogi::apps!` needs an \
-                 `#[app(database = \"…\")]` attribute declaring its database target"
+     `#[app(database = \"…\")]` attribute declaring its database target"
             ),
         ));
     };
@@ -252,7 +252,7 @@ fn parse_app_attribute(attrs: &[Attribute], ident: &Ident) -> syn::Result<Parsed
                         key,
                         format!(
                             "unknown key `{key}` inside `#[app(...)]`; \
-                                 expected one of: label, database, renamed_from, tombstone"
+         expected one of: label, database, renamed_from, tombstone"
                         ),
                     ));
                 }
@@ -261,7 +261,7 @@ fn parse_app_attribute(attrs: &[Attribute], ident: &Ident) -> syn::Result<Parsed
                 return Err(syn::Error::new_spanned(
                     meta,
                     "entries inside `#[app(...)]` must be `key = \"value\"` pairs \
-                     or the `tombstone` flag",
+      or the `tombstone` flag",
                 ));
             }
         }
@@ -272,7 +272,7 @@ fn parse_app_attribute(attrs: &[Attribute], ident: &Ident) -> syn::Result<Parsed
             app_attr,
             format!(
                 "`#[app(...)]` on `{ident}` is missing the required \
-                 `database = \"…\"` key (e.g. `database = \"main\"`)"
+     `database = \"…\"` key (e.g. `database = \"main\"`)"
             ),
         )
     })?;
@@ -281,7 +281,7 @@ fn parse_app_attribute(attrs: &[Attribute], ident: &Ident) -> syn::Result<Parsed
         return Err(syn::Error::new(
             tombstone_span,
             "`tombstone` and `renamed_from` are mutually exclusive — a \
-             tombstoned app is being retired, not renamed",
+    tombstoned app is being retired, not renamed",
         ));
     }
 
@@ -328,9 +328,9 @@ fn derive_label(decl: &AppDecl) -> syn::Result<String> {
 /// 2. First byte is `b'_'` or `u8::is_ascii_alphabetic`.
 /// 3. Remaining bytes are `b'_'` or `u8::is_ascii_alphanumeric`.
 /// 4. Total length ≤ 63 bytes (Postgres `NAMEDATALEN - 1`).
-///    `via_override` only changes the error message's advice — "add an
-///    explicit `#[app(label = \"…\")]`" is only useful when the current
-///    failure came from the default-derivation path.
+/// `via_override` only changes the error message's advice — "add an
+/// explicit `#[app(label = \"…\")]`" is only useful when the current
+/// failure came from the default-derivation path.
 fn validate_label_shape(label: &str, span: Span, via_override: bool) -> syn::Result<()> {
     let bytes = label.as_bytes();
     if bytes.is_empty() {
@@ -365,11 +365,11 @@ fn validate_label_shape(label: &str, span: Span, via_override: bool) -> syn::Res
 fn label_shape_error(label: &str, span: Span, via_override: bool, which: &str) -> syn::Error {
     let advice = if via_override {
         "explicit labels must be ASCII — first byte a letter or underscore, \
-         remaining bytes ASCII alphanumerics or underscores"
+   remaining bytes ASCII alphanumerics or underscores"
     } else {
         "the default label is the struct identifier lowercased; \
-         if the identifier is non-ASCII, add an explicit \
-         `#[app(label = \"…\")]` with an ASCII-only override"
+   if the identifier is non-ASCII, add an explicit \
+   `#[app(label = \"…\")]` with an ASCII-only override"
     };
     syn::Error::new(
         span,
@@ -407,7 +407,7 @@ fn expand_inner(input: TokenStream) -> syn::Result<TokenStream> {
                 decl.ident_span,
                 format!(
                     "duplicate app identity (database = {database:?}, label = {label:?}) \
-                     — also declared by `{prior_ident}` in the same `djogi::apps!` block",
+      — also declared by `{prior_ident}` in the same `djogi::apps!` block",
                     database = decl.database,
                     prior_ident = prior.ident,
                 ),
@@ -435,10 +435,10 @@ fn expand_inner(input: TokenStream) -> syn::Result<TokenStream> {
                     rf.span(),
                     format!(
                         "`renamed_from = {rf_value:?}` targets a label still \
-                         declared live in the same database in this \
-                         `djogi::apps!` block. A rename retires the old label; \
-                         remove the prior app (or its explicit \
-                         `label = \"{rf_value}\"`) before renaming onto it.",
+       declared live in the same database in this \
+       `djogi::apps!` block. A rename retires the old label; \
+       remove the prior app (or its explicit \
+       `label = \"{rf_value}\"`) before renaming onto it.",
                     ),
                 ));
             }
@@ -477,30 +477,30 @@ fn emit_one(decl: &AppDecl, label: &str) -> TokenStream {
     };
 
     quote! {
-        #vis struct #ident_hidden;
+     #vis struct #ident_hidden;
 
-        impl ::djogi::apps::App for #ident_hidden {
-            const __DJOGI_APP_SEAL: ::djogi::apps::SealToken =
-                ::djogi::__private::apps_seal::TOKEN;
-            const LABEL: &'static str = #label_lit;
-            const DATABASE: &'static str = #database_lit;
-            const TOMBSTONE: bool = #tombstone_lit;
-            const DESCRIPTOR: ::djogi::apps::AppDescriptor = ::djogi::apps::AppDescriptor {
-                label: #label_lit,
-                database: #database_lit,
-                renamed_from: #renamed_from_tokens,
-                tombstone: #tombstone_lit,
-            };
-        }
+     impl ::djogi::apps::App for #ident_hidden {
+      const __DJOGI_APP_SEAL: ::djogi::apps::SealToken =
+       ::djogi::__private::apps_seal::TOKEN;
+      const LABEL: &'static str = #label_lit;
+      const DATABASE: &'static str = #database_lit;
+      const TOMBSTONE: bool = #tombstone_lit;
+      const DESCRIPTOR: ::djogi::apps::AppDescriptor = ::djogi::apps::AppDescriptor {
+       label: #label_lit,
+       database: #database_lit,
+       renamed_from: #renamed_from_tokens,
+       tombstone: #tombstone_lit,
+      };
+     }
 
-        ::djogi::__private::inventory::submit! {
-            ::djogi::apps::AppDescriptor {
-                label: #label_lit,
-                database: #database_lit,
-                renamed_from: #renamed_from_tokens,
-                tombstone: #tombstone_lit,
-            }
-        }
+     ::djogi::__private::inventory::submit! {
+      ::djogi::apps::AppDescriptor {
+       label: #label_lit,
+       database: #database_lit,
+       renamed_from: #renamed_from_tokens,
+       tombstone: #tombstone_lit,
+      }
+     }
     }
 }
 
@@ -509,9 +509,9 @@ fn emit_one(decl: &AppDecl, label: &str) -> TokenStream {
 /// [`crate::apps::AppRegistry::all`].
 fn emit_invocation_sentinel() -> TokenStream {
     quote! {
-        #[doc(hidden)]
-        #[allow(non_camel_case_types)]
-        mod __djogi_apps_invocation_sentinel {}
+     #[doc(hidden)]
+     #[allow(non_camel_case_types)]
+     mod __djogi_apps_invocation_sentinel {}
     }
 }
 

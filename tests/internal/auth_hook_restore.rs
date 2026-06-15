@@ -2,10 +2,10 @@ use djogi::auth::AuthContext;
 use djogi::prelude::*;
 
 #[model(
-    table = "tenant_hook_posts",
-    pk = HeerId,
-    tenant_key = "org_id",
-    hooks
+  table = "tenant_hook_posts",
+  pk = HeerId,
+  tenant_key = "org_id",
+  hooks
 )]
 #[derive(Debug, Clone)]
 pub struct TenantHookPost {

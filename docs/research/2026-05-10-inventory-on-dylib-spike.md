@@ -24,28 +24,28 @@ receive the rlib at zero extra build cost.
 Two operational notes:
 
 1. **`prefer-dynamic` is required when the fixture is linked at compile
-   time.** Without it, the dylib statically embeds stdlib and the
-   fixture's own stdlib rlibs collide with rustc's "cannot satisfy
-   dependencies so `std` only shows up once" error. Both djogi and the
-   fixture must be built with `-C prefer-dynamic`. With the flag, both
-   share the rust toolchain's `libstd-<hash>.so` from
-   `<sysroot>/lib/rustlib/<target>/lib/`.
+  time.** Without it, the dylib statically embeds stdlib and the
+  fixture's own stdlib rlibs collide with rustc's "cannot satisfy
+  dependencies so `std` only shows up once" error. Both djogi and the
+  fixture must be built with `-C prefer-dynamic`. With the flag, both
+  share the rust toolchain's `libstd-<hash>.so` from
+  `<sysroot>/lib/rustlib/<target>/lib/`.
 2. **For `dlopen`-based plugin loading (Phase 9 / `rhai-dylib`), the
-   no-`prefer-dynamic` dylib is more deployment-friendly** because it
-   bakes stdlib in (single self-contained `.so`, no `LD_LIBRARY_PATH`
-   gymnastics). If the runtime executable is also Rust and built with
-   the matching toolchain, prefer-dynamic remains a fine choice and
-   saves disk.
+  no-`prefer-dynamic` dylib is more deployment-friendly** because it
+  bakes stdlib in (single self-contained `.so`, no `LD_LIBRARY_PATH`
+  gymnastics). If the runtime executable is also Rust and built with
+  the matching toolchain, prefer-dynamic remains a fine choice and
+  saves disk.
 
 ## Q1 results — building djogi as a dylib
 
-| # | Invocation                                                    | Manifest change | Profile | Worked | Build wall (clean) | Output path                                      | Output size |
+| # | Invocation                          | Manifest change | Profile | Worked | Build wall (clean) | Output path                   | Output size |
 |---|---------------------------------------------------------------|-----------------|---------|--------|--------------------|--------------------------------------------------|-------------|
-| 1a | `cargo rustc -p djogi --lib --release --crate-type=dylib`     | none            | release | yes    | 20.80 s            | `<target>/release/libdjogi.so`                   | 22 760 544 B (~21.7 MiB) |
-| 1b | `cargo rustc -p djogi --lib --release --crate-type=dylib` with `RUSTFLAGS="-C prefer-dynamic"` | none | release | yes    | 21.06 s (after RUSTFLAGS-triggered full rebuild) | `<target>/release/libdjogi.so`                   | 21 329 800 B (~20.3 MiB) |
-| 1c | `cargo rustc -p djogi --lib --crate-type=dylib` with `RUSTFLAGS="-C prefer-dynamic"` (debug) | none | debug   | yes    | 16.90 s            | `<target>/debug/libdjogi.so`                     | 118 090 136 B (~112.6 MiB) |
-| 2  | `cargo build -p djogi --release --lib` with `RUSTFLAGS="-C prefer-dynamic --crate-type=dylib"` | none            | release | **no** | n/a (failed in <1 s) | n/a                                              | n/a |
-| 3  | `cargo build -p djogi --release --lib` after adding `[lib] crate-type = ["lib", "dylib"]` to `djogi/Cargo.toml`, with `RUSTFLAGS="-C prefer-dynamic"` | yes             | release | yes    | 22.15 s (full build of fixture crate too)        | `<fixture-target>/release/deps/libdjogi.so` and `libdjogi.rlib` (both produced) | dylib 21 329 800 B; rlib 19 322 456 B |
+| 1a | `cargo rustc -p djogi --lib --release --crate-type=dylib`   | none      | release | yes  | 20.80 s      | `<target>/release/libdjogi.so`          | 22 760 544 B (~21.7 MiB) |
+| 1b | `cargo rustc -p djogi --lib --release --crate-type=dylib` with `RUSTFLAGS="-C prefer-dynamic"` | none | release | yes  | 21.06 s (after RUSTFLAGS-triggered full rebuild) | `<target>/release/libdjogi.so`          | 21 329 800 B (~20.3 MiB) |
+| 1c | `cargo rustc -p djogi --lib --crate-type=dylib` with `RUSTFLAGS="-C prefer-dynamic"` (debug) | none | debug  | yes  | 16.90 s      | `<target>/debug/libdjogi.so`           | 118 090 136 B (~112.6 MiB) |
+| 2 | `cargo build -p djogi --release --lib` with `RUSTFLAGS="-C prefer-dynamic --crate-type=dylib"` | none      | release | **no** | n/a (failed in <1 s) | n/a                       | n/a |
+| 3 | `cargo build -p djogi --release --lib` after adding `[lib] crate-type = ["lib", "dylib"]` to `djogi/Cargo.toml`, with `RUSTFLAGS="-C prefer-dynamic"` | yes       | release | yes  | 22.15 s (full build of fixture crate too)    | `<fixture-target>/release/deps/libdjogi.so` and `libdjogi.rlib` (both produced) | dylib 21 329 800 B; rlib 19 322 456 B |
 
 Path 2 fails because `RUSTFLAGS` applies to *every* crate in the build
 graph, including build scripts (`bin` crates) and proc-macro crates
@@ -102,20 +102,20 @@ with `rustc -C prefer-dynamic --extern djogi=<libdjogi.so> -L <deps>`.
 Two fixture variants:
 
 - `fixture-manual.rs` — only iterates, no fixture-side submission.
-  Expected count ≥ 1.
+ Expected count ≥ 1.
 - `fixture-manual-bidir.rs` — submits `_fixture_register` and iterates.
-  Expected count ≥ 2.
+ Expected count ≥ 2.
 
 Run with
 `LD_LIBRARY_PATH=<target>/release:<target>/release/deps:<sysroot>/lib/rustlib/<target>/lib`:
 
 ```
-$ ./fixture-manual
+$./fixture-manual
 LIHAAF_SPIKE_TOTAL=1
 LIHAAF_SPIKE_VERDICT=DJOGI_SUBMISSION_VISIBLE
 EXIT=0
 
-$ ./fixture-manual-bidir
+$./fixture-manual-bidir
 LIHAAF_SPIKE_TOTAL=2
 LIHAAF_SPIKE_EXPECTED=2
 LIHAAF_SPIKE_VERDICT=BOTH_SUBMISSIONS_VISIBLE
@@ -127,7 +127,7 @@ EXIT=0
 Same fixture rebuilt against the debug dylib via the debug deps dir:
 
 ```
-$ ./fixture-manual-bidir-debug
+$./fixture-manual-bidir-debug
 LIHAAF_SPIKE_TOTAL=2
 LIHAAF_SPIKE_EXPECTED=2
 LIHAAF_SPIKE_VERDICT=BOTH_SUBMISSIONS_VISIBLE
@@ -143,7 +143,7 @@ on djogi and sassi by path) with djogi modified to declare
 `[lib] crate-type = ["lib", "dylib"]` and `RUSTFLAGS="-C prefer-dynamic"`:
 
 ```
-$ ./fixture
+$./fixture
 LIHAAF_SPIKE_TOTAL=2
 LIHAAF_SPIKE_EXPECTED_AT_LEAST=2
 LIHAAF_SPIKE_VERDICT=GO
@@ -159,7 +159,7 @@ constructor:
 
 ```
 $ objdump -h /home/tarunvir/lihaaf-spike-target/release/libdjogi.so | grep init_array
- 19 .init_array   00000010  0000000000643c58  0000000000643c58  00641c58  2**3
+ 19.init_array  00000010 0000000000643c58 0000000000643c58 00641c58 2**3
 ```
 
 `0x10 = 16 bytes` = two function pointers (rust runtime init + the
@@ -176,12 +176,12 @@ The `dlopen-test` Cargo crate calls `libloading::Library::new(...)` on
 `libdjogi.so`:
 
 ```
-$ ./dlopen-test /home/tarunvir/lihaaf-spike-target/release/libdjogi.so
+$./dlopen-test /home/tarunvir/lihaaf-spike-target/release/libdjogi.so
 DLOPEN_PATH=/home/tarunvir/lihaaf-spike-target/release/libdjogi.so
 DLOPEN_VERDICT=OK
 EXIT=0
 
-$ ./dlopen-test /home/tarunvir/lihaaf-spike-target-noprefer/release/libdjogi.so
+$./dlopen-test /home/tarunvir/lihaaf-spike-target-noprefer/release/libdjogi.so
 DLOPEN_PATH=/home/tarunvir/lihaaf-spike-target-noprefer/release/libdjogi.so
 DLOPEN_VERDICT=OK
 EXIT=0
@@ -228,43 +228,43 @@ a per-platform smoke test if any of them target macOS or Windows.
 ## Recommendations
 
 - **Recommended dylib build invocation for lihaaf** (compile-time link):
-  `RUSTFLAGS="-C prefer-dynamic" cargo rustc -p djogi --lib --release --crate-type=dylib`
-  in a dedicated CARGO_TARGET_DIR (do NOT share with the project's
-  normal `target/`, since RUSTFLAGS toggling triggers full rebuilds of
-  every crate in the graph). Lihaaf's per-fixture rustc invocation
-  must also pass `-C prefer-dynamic` and `--extern djogi=<libdjogi.so>`
-  with `-L <deps-dir>` so transitive crates resolve.
+ `RUSTFLAGS="-C prefer-dynamic" cargo rustc -p djogi --lib --release --crate-type=dylib`
+ in a dedicated CARGO_TARGET_DIR (do NOT share with the project's
+ normal `target/`, since RUSTFLAGS toggling triggers full rebuilds of
+ every crate in the graph). Lihaaf's per-fixture rustc invocation
+ must also pass `-C prefer-dynamic` and `--extern djogi=<libdjogi.so>`
+ with `-L <deps-dir>` so transitive crates resolve.
 - **Recommended dylib build invocation for Phase 9 shell**
-  (`dlopen` of djogi for `rhai-dylib`):
-  `cargo rustc -p djogi --lib --release --crate-type=dylib` (NO
-  `-C prefer-dynamic`) so the dylib is self-contained and dlopen-able
-  without sysroot library-path setup. The shell binary itself can be
-  built normally (linking djogi as rlib at compile time); plugin
-  crates that `dlopen` into the same shell must be built as dylibs
-  and reference the exact same djogi dylib (not a re-link).
+ (`dlopen` of djogi for `rhai-dylib`):
+ `cargo rustc -p djogi --lib --release --crate-type=dylib` (NO
+ `-C prefer-dynamic`) so the dylib is self-contained and dlopen-able
+ without sysroot library-path setup. The shell binary itself can be
+ built normally (linking djogi as rlib at compile time); plugin
+ crates that `dlopen` into the same shell must be built as dylibs
+ and reference the exact same djogi dylib (not a re-link).
 - **Whether the djogi `[lib]` PR is needed: NO** for the lihaaf use
-  case and Phase 9 link-time consumers. The override path keeps
-  zero-impact on application consumers. The
-  manifest-change path remains a viable fallback if a future use case
-  needs cargo-driven dylib resolution (e.g., if lihaaf grows a Cargo
-  metadata phase that needs djogi to advertise dylib in its manifest)
-  — but this spike has no such use case in scope.
+ case and Phase 9 link-time consumers. The override path keeps
+ zero-impact on application consumers. The
+ manifest-change path remains a viable fallback if a future use case
+ needs cargo-driven dylib resolution (e.g., if lihaaf grows a Cargo
+ metadata phase that needs djogi to advertise dylib in its manifest)
+ — but this spike has no such use case in scope.
 - **Platform caveats observed:**
-  - Linux x86_64 only verified. macOS / Windows / iOS / Android
-    expected to work per the inventory crate's platform support
-    matrix, but lihaaf and Phase 9 should ship per-platform smoke
-    tests if those targets are in their support set.
-  - `LD_LIBRARY_PATH` plumbing is required for the prefer-dynamic
-    dylib at run time (must include both the deps dir holding
-    `libdjogi.so` and the rust toolchain's
-    `<sysroot>/lib/rustlib/<target>/lib/` for `libstd-<hash>.so`).
-    Lihaaf's harness should set this automatically.
-  - In a shared CARGO_TARGET_DIR, alternating between
-    `cargo rustc --crate-type=dylib` (with `RUSTFLAGS="-C prefer-dynamic"`)
-    and a normal `cargo build` will trigger a full rebuild of every
-    crate in the graph because `RUSTFLAGS` is part of the cargo
-    fingerprint. Use a dedicated lihaaf target dir to avoid thrashing
-    the developer's normal `cargo test` loop.
+ - Linux x86_64 only verified. macOS / Windows / iOS / Android
+  expected to work per the inventory crate's platform support
+  matrix, but lihaaf and Phase 9 should ship per-platform smoke
+  tests if those targets are in their support set.
+ - `LD_LIBRARY_PATH` plumbing is required for the prefer-dynamic
+  dylib at run time (must include both the deps dir holding
+  `libdjogi.so` and the rust toolchain's
+  `<sysroot>/lib/rustlib/<target>/lib/` for `libstd-<hash>.so`).
+  Lihaaf's harness should set this automatically.
+ - In a shared CARGO_TARGET_DIR, alternating between
+  `cargo rustc --crate-type=dylib` (with `RUSTFLAGS="-C prefer-dynamic"`)
+  and a normal `cargo build` will trigger a full rebuild of every
+  crate in the graph because `RUSTFLAGS` is part of the cargo
+  fingerprint. Use a dedicated lihaaf target dir to avoid thrashing
+  the developer's normal `cargo test` loop.
 
 ## Reproduction
 
@@ -275,18 +275,18 @@ no special toolchain features required.
 
 ```bash
 # 0. Ensure sassi-reference symlink exists in the worktree
-ln -s ../../../../sassi <worktree>/sassi-reference
+ln -s../../../../sassi <worktree>/sassi-reference
 
 # 1. Add a one-line non-test inventory::submit! inside djogi/src/cache/boot.rs
-#    right after `inventory::collect!(SassiBootHook);` (the spike's marker).
-#    Without this, the release dylib has zero pre-registered SassiBootHook
-#    items and Q2 cannot demonstrate cross-boundary propagation.
-#    See djogi/src/cache/boot.rs in this worktree for the exact 5-line block.
+#  right after `inventory::collect!(SassiBootHook);` (the spike's marker).
+#  Without this, the release dylib has zero pre-registered SassiBootHook
+#  items and Q2 cannot demonstrate cross-boundary propagation.
+#  See djogi/src/cache/boot.rs in this worktree for the exact 5-line block.
 
 # 2. Build djogi as a dylib (Path 1, prefer-dynamic, release)
 RUSTFLAGS="-C prefer-dynamic" \
 CARGO_TARGET_DIR=/home/tarunvir/lihaaf-spike-target \
-  cargo rustc -p djogi --lib --release --crate-type=dylib
+ cargo rustc -p djogi --lib --release --crate-type=dylib
 
 # 3. Locate the sassi rlib hash (varies per build)
 SASSI_RLIB=$(ls /home/tarunvir/lihaaf-spike-target/release/deps/libsassi-*.rlib | head -1)
@@ -294,44 +294,44 @@ SASSI_RLIB=$(ls /home/tarunvir/lihaaf-spike-target/release/deps/libsassi-*.rlib 
 # 4. Build the spike fixture (manual rustc, bi-directional)
 cd /tmp/lihaaf-spike
 rustc --edition 2024 \
-  -C prefer-dynamic \
-  -L /home/tarunvir/lihaaf-spike-target/release/deps \
-  --extern djogi=/home/tarunvir/lihaaf-spike-target/release/libdjogi.so \
-  --extern sassi="$SASSI_RLIB" \
-  fixture-manual-bidir.rs -o fixture-manual-bidir
+ -C prefer-dynamic \
+ -L /home/tarunvir/lihaaf-spike-target/release/deps \
+ --extern djogi=/home/tarunvir/lihaaf-spike-target/release/libdjogi.so \
+ --extern sassi="$SASSI_RLIB" \
+ fixture-manual-bidir.rs -o fixture-manual-bidir
 
 # 5. Run with library paths set
 LD_LIBRARY_PATH=/home/tarunvir/lihaaf-spike-target/release:/home/tarunvir/lihaaf-spike-target/release/deps:/home/tarunvir/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib \
-  ./fixture-manual-bidir
+./fixture-manual-bidir
 
 # Expected:
-#   LIHAAF_SPIKE_TOTAL=2
-#   LIHAAF_SPIKE_EXPECTED=2
-#   LIHAAF_SPIKE_VERDICT=BOTH_SUBMISSIONS_VISIBLE
-#   exit code 0
+#  LIHAAF_SPIKE_TOTAL=2
+#  LIHAAF_SPIKE_EXPECTED=2
+#  LIHAAF_SPIKE_VERDICT=BOTH_SUBMISSIONS_VISIBLE
+#  exit code 0
 
 # 6. (optional) dlopen check — build a no-prefer-dynamic dylib and dlopen it
 CARGO_TARGET_DIR=/home/tarunvir/lihaaf-spike-target-noprefer \
-  cargo rustc -p djogi --lib --release --crate-type=dylib
+ cargo rustc -p djogi --lib --release --crate-type=dylib
 cd /tmp/lihaaf-spike/dlopen-test
 CARGO_TARGET_DIR=/home/tarunvir/lihaaf-spike-dlopen-target \
-  cargo build --release
+ cargo build --release
 ./target/release/dlopen-test /home/tarunvir/lihaaf-spike-target-noprefer/release/libdjogi.so
 # Expected: DLOPEN_VERDICT=OK, exit 0
 
 # 7. Cleanup (the spike target dirs and /tmp/lihaaf-spike are throwaway)
 rm -rf /home/tarunvir/lihaaf-spike-target \
-       /home/tarunvir/lihaaf-spike-target-noprefer \
-       /home/tarunvir/lihaaf-spike-fixture-target \
-       /home/tarunvir/lihaaf-spike-dlopen-target \
-       /tmp/lihaaf-spike
+    /home/tarunvir/lihaaf-spike-target-noprefer \
+    /home/tarunvir/lihaaf-spike-fixture-target \
+    /home/tarunvir/lihaaf-spike-dlopen-target \
+    /tmp/lihaaf-spike
 ```
 
 ## Spike artifacts (in this worktree)
 
 - `djogi/src/cache/boot.rs` — augmented with a 5-line `inventory::submit!`
-  marker block. **Throwaway. Revert before merging anything from this
-  worktree.** Search for `LIHAAF SPIKE` to find the marker.
+ marker block. **Throwaway. Revert before merging anything from this
+ worktree.** Search for `LIHAAF SPIKE` to find the marker.
 - This research note (`docs/research/2026-05-10-inventory-on-dylib-spike.md`).
 
 The Cargo.toml-modification for Path 3 was applied during the run and
@@ -341,22 +341,22 @@ boot.rs change and the new research note.
 ## Open questions / what was NOT tested
 
 - **macOS, Windows, musl, iOS, Android targets.** Inventory's README
-  claims support; this spike did not exercise it.
+ claims support; this spike did not exercise it.
 - **Symbol-table behavior under LTO.** This spike used the workspace's
-  default profile.release settings (no extra LTO flags). Phase 9 might
-  want to verify that thin/fat LTO does not strip the `.init_array`
-  constructor or merge it across crates in a way that breaks
-  propagation.
+ default profile.release settings (no extra LTO flags). Phase 9 might
+ want to verify that thin/fat LTO does not strip the `.init_array`
+ constructor or merge it across crates in a way that breaks
+ propagation.
 - **`#[derive(Model)]`-generated submissions through the macro
-  expansion path** (vs. the hand-written submission in this spike).
-  The expansion path uses `::djogi::__private::inventory::submit!`,
-  not `inventory::submit!` directly; it routes through the same
-  macro and should behave identically, but lihaaf's first real
-  fixture (an actual `#[model]` struct compiled into a separate crate
-  that the fixture links) is the conclusive end-to-end test.
+ expansion path** (vs. the hand-written submission in this spike).
+ The expansion path uses `::djogi::__private::inventory::submit!`,
+ not `inventory::submit!` directly; it routes through the same
+ macro and should behave identically, but lihaaf's first real
+ fixture (an actual `#[model]` struct compiled into a separate crate
+ that the fixture links) is the conclusive end-to-end test.
 - **Multiple dylibs depending on djogi.** If two plugin crates both
-  call `inventory::submit!` and both are built as dylibs and both are
-  linked into the same fixture, do their submissions all reach
-  djogi's single static registry? This is the standard inventory
-  guarantee and we have no reason to doubt it, but lihaaf's spec
-  may want to lock it down with a fixture before users discover it.
+ call `inventory::submit!` and both are built as dylibs and both are
+ linked into the same fixture, do their submissions all reach
+ djogi's single static registry? This is the standard inventory
+ guarantee and we have no reason to doubt it, but lihaaf's spec
+ may want to lock it down with a fixture before users discover it.

@@ -10,60 +10,60 @@ macro justification gate landing 2026-05-15
 ## Shipped in this slice
 
 - `MirJzSON` and `MirJzSONError` (`djogi::jsonb::mirjzson`) — wrapper type
-  over `sassi::JSahibON` with `#[repr(transparent)]` layout, no `Default`,
-  no `PartialEq` / `Eq` / `Hash` / `PartialOrd`.
+ over `sassi::JSahibON` with `#[repr(transparent)]` layout, no `Default`,
+ no `PartialEq` / `Eq` / `Hash` / `PartialOrd`.
 - Construction: `From<sassi::JSahibON>`, `TryFrom<serde_json::Value>` (typed
-  `MirJzSONError`), the Postgres `FromSql` / `ToSql` codec routing through
-  Sassi's `serde-json-bridge` (no JSahibON-equality reimplementation in
-  Djogi).
+ `MirJzSONError`), the Postgres `FromSql` / `ToSql` codec routing through
+ Sassi's `serde-json-bridge` (no JSahibON-equality reimplementation in
+ Djogi).
 - Projection: `as_jsahibon` / `into_jsahibon` (named cache-boundary helpers),
-  `From<MirJzSON>` for `serde_json::Value`, `Jsonb<T>::to_jsahibon` for the
-  full-document cache projection.
+ `From<MirJzSON>` for `serde_json::Value`, `Jsonb<T>::to_jsahibon` for the
+ full-document cache projection.
 - Query builder: `DjogiField<M, MirJzSON>::jsahibon()` and
-  `DjogiField<M, Option<MirJzSON>>::jsahibon()` returning Djogi-trusted
-  `PortablePredicate<M>` values for every Sassi `JSahibONPredicateBody`
-  variant (exists / missing / type / is-json-null / has-key family /
-  scalar comparison + IN + BETWEEN / json equality / array contains /
-  array length).
+ `DjogiField<M, Option<MirJzSON>>::jsahibon()` returning Djogi-trusted
+ `PortablePredicate<M>` values for every Sassi `JSahibONPredicateBody`
+ variant (exists / missing / type / is-json-null / has-key family /
+ scalar comparison + IN + BETWEEN / json equality / array contains /
+ array length).
 - SQL lowering for `LookupOp::Json` (`query::portable::emit_jsahibon_body`)
-  — two-valued guarded shapes per the table in §SQL Mapping. Numeric
-  operands bind through `rust_decimal::Decimal` (full `u64` range, never
-  `as i64`). Path segments and keys are bound parameters; nothing is
-  interpolated.
+ — two-valued guarded shapes per the table in §SQL Mapping. Numeric
+ operands bind through `rust_decimal::Decimal` (full `u64` range, never
+ `as i64`). Path segments and keys are bound parameters; nothing is
+ interpolated.
 - Trusted-provenance posture: `IntoQ<T>` is sealed; raw Sassi
-  `BasicPredicate<T>` cannot reach `Q::Portable(_)` from adopter code.
-  `PortablePredicateError::UntrustedJsonPredicate` is the defense-in-depth
-  rejection for the (currently unreachable) case where a `LookupOp::Json`
-  payload fails the `JSahibONPredicateBody` downcast.
+ `BasicPredicate<T>` cannot reach `Q::Portable(_)` from adopter code.
+ `PortablePredicateError::UntrustedJsonPredicate` is the defense-in-depth
+ rejection for the (currently unreachable) case where a `LookupOp::Json`
+ payload fails the `JSahibONPredicateBody` downcast.
 - `ExplicitPgPredicateField::mirjzson()` entry points exist with **no v1
-  predicate methods** — the API shape is committed but reserved for future
-  PostgreSQL-only operators.
+ predicate methods** — the API shape is committed but reserved for future
+ PostgreSQL-only operators.
 - Tests: 30 SQL-shape + value-projection pins (`djogi::jsonb::mirjzson::*`
-  + `djogi::query::mirjzson::*`).
+ + `djogi::query::mirjzson::*`).
 - Adopter guide: `docs/guide/jsonb.md` §MirJzSON section.
 
-## Implemented (Phase 8.5 issue #195) — macro gate
+## Implemented ( issue #195) — macro gate
 
 The `#[mirjzson(justification = "...")]` attribute described under
 §Model Gating below is now emitted and enforced by `#[model]`. The macro:
 
 - Detects every `MirJzSON` / `Option<MirJzSON>` field (last-segment
-  ident match — covers bare, `djogi::`, `djogi::jsonb::`, `crate::`,
-  `super::`, and `::djogi::*` path forms uniformly).
+ ident match — covers bare, `djogi::`, `djogi::jsonb::`, `crate::`,
+ `super::`, and `::djogi::*` path forms uniformly).
 - Requires `#[mirjzson(justification = "...")]` on every such field
-  and rejects missing annotations at expand time with a span-precise
-  field-level diagnostic.
+ and rejects missing annotations at expand time with a span-precise
+ field-level diagnostic.
 - Validates the justification literal: present, non-empty after trim,
-  not in an ASCII case-insensitive placeholder denylist (`TODO`,
-  `TBD`, `FIXME`, `?`, `none`, `external`, `see comment`, and
-  similar), and at least 12 trimmed bytes.
+ not in an ASCII case-insensitive placeholder denylist (`TODO`,
+ `TBD`, `FIXME`, `?`, `none`, `external`, `see comment`, and
+ similar), and at least 12 trimmed bytes.
 - Rejects `#[mirjzson(...)]` on any field whose type is not
-  `MirJzSON` / `Option<MirJzSON>` (including `Jsonb<T>` — the typed
-  schema IS the justification).
+ `MirJzSON` / `Option<MirJzSON>` (including `Jsonb<T>` — the typed
+ schema IS the justification).
 - Consumes the attribute from the rewritten struct so rustc never
-  emits `unknown attribute mirjzson`.
+ emits `unknown attribute mirjzson`.
 - Maps `MirJzSON` to `JSONB` in the descriptor pipeline through
-  `rust_type_to_sql` and accepts it for `#[field(index = "gin")]`.
+ `rust_type_to_sql` and accepts it for `#[field(index = "gin")]`.
 
 Lihaaf compile fixtures pin the gate: `phase85_195_mirjzson_basic`,
 `phase85_195_mirjzson_optional`, and `phase85_195_mirjzson_mixed_with_jsonb`
@@ -75,17 +75,17 @@ unknown key, non-string value, and duplicate attributes.
 ## Pending follow-up (still tracked under #195)
 
 - **Cluster portability gate explicit rejection.** Adding
-  `PortablePredicateError::UntrustedJsonPredicate` rejection at the
-  `try_portable` / cache-refresh boundary is wired through the existing
-  `Q::Condition(_)` / `Q::Expression(_)` rejection paths — future
-  SQL-only `.explicit_pg_predicate().mirjzson()` predicates will surface
-  through `Condition::MirJzSON(_)` (or a successor variant) and ride
-  the same cache-invalid path.
+ `PortablePredicateError::UntrustedJsonPredicate` rejection at the
+ `try_portable` / cache-refresh boundary is wired through the existing
+ `Q::Condition(_)` / `Q::Expression(_)` rejection paths — future
+ SQL-only `.explicit_pg_predicate().mirjzson()` predicates will surface
+ through `Condition::MirJzSON(_)` (or a successor variant) and ride
+ the same cache-invalid path.
 - **Live-DB SQL parity integration tests.** Unit tests pin SQL shape;
-  live PostgreSQL fixture coverage of the truth tables (SQL NULL vs JSON
-  null on a real `jsonb` column, `?` vs `?|` semantics on objects vs
-  arrays, `jsonb_array_length` non-array safety, etc.) is a separate
-  fixture file under `tests/integration/`.
+ live PostgreSQL fixture coverage of the truth tables (SQL NULL vs JSON
+ null on a real `jsonb` column, `?` vs `?|` semantics on objects vs
+ arrays, `jsonb_array_length` non-array safety, etc.) is a separate
+ fixture file under `tests/integration/`.
 
 This file is the Djogi-owned half of the JSON query design. Sassi owns
 `JSahibON` value semantics and portable predicate truth rules. Djogi imports
@@ -109,9 +109,9 @@ Djogi v1 includes:
 - Conversion back to `serde_json::Value`.
 - Explicit projection to `sassi::JSahibON`.
 - Trusted portable JSON predicate construction through
-  `DjogiField<M, MirJzSON>::jsahibon()`.
+ `DjogiField<M, MirJzSON>::jsahibon()`.
 - SQL lowering for Sassi `JSahibONPredicateBody` leaves with two-valued boolean
-  semantics.
+ semantics.
 
 Djogi v1 does not add schema-derived typed JSON path trees for `MirJzSON`.
 Typed schema JSON querying remains the job of existing `Jsonb<T>` /
@@ -131,9 +131,9 @@ choose an explicit cache projection:
 
 - Project to `T` when the cache/frontend needs only the typed schema content.
 - Project to `sassi::JSahibON` when the cache/frontend needs the full merged
-  JSON document, unknown fields, or Sassi-local JSON predicates.
+ JSON document, unknown fields, or Sassi-local JSON predicates.
 - Project to a future Sassi-owned typed JSON wrapper only if Sassi later
-  defines one.
+ defines one.
 
 Djogi should provide an explicit helper such as `Jsonb<T>::to_jsahibon()` or a
 fallible conversion from `Jsonb<T>` into `sassi::JSahibON` for the full-document
@@ -150,8 +150,8 @@ Expected dependency shape in `djogi/Cargo.toml`:
 
 ```toml
 sassi = {
-    version = "0.1.0-beta.3",
-    features = ["watermark-time", "serde-json-bridge"],
+ version = "0.1.0-beta.3",
+ features = ["watermark-time", "serde-json-bridge"],
 }
 ```
 
@@ -169,7 +169,7 @@ V1 is portable-only:
 
 ```rust
 pub struct MirJzSON {
-    portable: sassi::JSahibON,
+ portable: sassi::JSahibON,
 }
 ```
 
@@ -179,14 +179,14 @@ Required APIs:
 impl From<sassi::JSahibON> for MirJzSON;
 
 impl TryFrom<serde_json::Value> for MirJzSON {
-    type Error = MirJzSONError;
+ type Error = MirJzSONError;
 }
 
 impl From<MirJzSON> for serde_json::Value;
 
 impl MirJzSON {
-    pub fn into_jsahibon(self) -> sassi::JSahibON;
-    pub fn as_jsahibon(&self) -> &sassi::JSahibON;
+ pub fn into_jsahibon(self) -> sassi::JSahibON;
+ pub fn as_jsahibon(&self) -> &sassi::JSahibON;
 }
 ```
 
@@ -204,7 +204,7 @@ Trait posture:
 - `MirJzSON: Clone + Debug + Send + Sync + 'static`.
 - `MirJzSON` must not implement `PartialEq`, `Eq`, `Hash`, or `PartialOrd`.
 - Whole-value JSON predicates go through explicit JSON predicate methods, not
-  root `DjogiField::eq`.
+ root `DjogiField::eq`.
 
 ## Model Gating
 
@@ -219,11 +219,11 @@ payload: MirJzSON,
 Required macro behavior:
 
 - `MirJzSON` and `Option<MirJzSON>` fields without a justification fail at
-  expand time.
+ expand time.
 - Empty or vague justifications fail at expand time.
 - The attribute is stripped from the rewritten struct.
 - `Jsonb<T>` remains the typed-schema JSONB path. `MirJzSON` is for genuinely
-  unschemed JSON.
+ unschemed JSON.
 
 ## Trusted Portable Construction
 
@@ -235,11 +235,11 @@ Djogi owns the trusted portable accessor:
 
 ```rust
 impl<M: Model> DjogiField<M, MirJzSON> {
-    pub fn jsahibon(self) -> DjogiJSahibONFieldRef<M>;
+ pub fn jsahibon(self) -> DjogiJSahibONFieldRef<M>;
 }
 
 impl<M: Model> DjogiField<M, Option<MirJzSON>> {
-    pub fn jsahibon(self) -> DjogiJSahibONOptionFieldRef<M>;
+ pub fn jsahibon(self) -> DjogiJSahibONOptionFieldRef<M>;
 }
 ```
 
@@ -254,7 +254,7 @@ The accessor:
 
 - Is generated from Djogi model field metadata.
 - Captures the physical column through a Djogi-private trusted field token, not
-  through a caller-supplied string.
+ through a caller-supplied string.
 - Builds Sassi `JSahibONPredicateBody` payloads for semantics.
 - Uses Sassi's `evaluate_jsahibon_predicate` for local/Punnu evaluation.
 
@@ -265,30 +265,30 @@ while importing Sassi semantics:
 
 ```rust
 Post::objects()
-    .filter(|f| {
-        f.payload()
-            .jsahibon()
-            .path("engine.cylinders")
-            .value::<i64>()
-            .gte(4)
-    });
+.filter(|f| {
+ f.payload()
+ .jsahibon()
+ .path("engine.cylinders")
+ .value::<i64>()
+ .gte(4)
+ });
 
 Post::objects()
-    .filter(|f| {
-        f.payload()
-            .jsahibon()
-            .key("content-type")
-            .value::<String>()
-            .eq("application/json".to_string())
-    });
+.filter(|f| {
+ f.payload()
+ .jsahibon()
+ .key("content-type")
+ .value::<String>()
+ .eq("application/json".to_string())
+ });
 
 Post::objects()
-    .filter(|f| {
-        f.payload()
-            .jsahibon()
-            .path_segments(["a.b", "0", "cafe"])
-            .exists()
-    });
+.filter(|f| {
+ f.payload()
+ .jsahibon()
+ .path_segments(["a.b", "0", "cafe"])
+ .exists()
+ });
 ```
 
 The `.path("a.b")` convenience keeps sibling resemblance with Djogi's existing
@@ -301,11 +301,11 @@ Djogi reserves the PostgreSQL-specific route for future JSONB-only behavior:
 
 ```rust
 impl<M: Model> ExplicitPgPredicateField<M, MirJzSON> {
-    pub fn mirjzson(self) -> MirJzSONFieldRef<M>;
+ pub fn mirjzson(self) -> MirJzSONFieldRef<M>;
 }
 
 impl<M: Model> ExplicitPgPredicateField<M, Option<MirJzSON>> {
-    pub fn mirjzson(self) -> MirJzSONOptionFieldRef<M>;
+ pub fn mirjzson(self) -> MirJzSONOptionFieldRef<M>;
 }
 ```
 
@@ -329,26 +329,26 @@ leaf except as an internal value that is converted to `FALSE` or handled by
 For every JSON expression `j` (root column or `column #> $path_text_array`):
 
 - Missing path or SQL NULL yields SQL NULL for `j`; value predicates return
-  `FALSE` unless the predicate is `missing()`.
+ `FALSE` unless the predicate is `missing()`.
 - Key predicates guard `jsonb_typeof(j) = 'object'`; PostgreSQL `?`, `?|`, and
-  `?&` must not match arrays for the portable Sassi key contract.
+ `?&` must not match arrays for the portable Sassi key contract.
 - Array length predicates guard `jsonb_typeof(j) = 'array'` before calling
-  `jsonb_array_length`; non-arrays return `FALSE`.
+ `jsonb_array_length`; non-arrays return `FALSE`.
 - Array containment guards `jsonb_typeof(j) = 'array'`.
 - Scalar string predicates guard `jsonb_typeof(j) = 'string'`.
 - Scalar boolean predicates guard `jsonb_typeof(j) = 'boolean'`.
 - Scalar numeric predicates guard `jsonb_typeof(j) = 'number'`.
 - Numeric casts occur only inside a `CASE` expression or equivalent safe
-  preflight shape.
+ preflight shape.
 - JSON null predicates compare against JSONB `null`, not SQL `NULL`.
 
 Required safe numeric shape:
 
 ```sql
 CASE
-  WHEN jsonb_typeof(j) = 'number'
-  THEN (j #>> '{}'::text[])::numeric <op> $operand_numeric
-  ELSE FALSE
+ WHEN jsonb_typeof(j) = 'number'
+ THEN (j #>> '{}'::text[])::numeric <op> $operand_numeric
+ ELSE FALSE
 END
 ```
 
@@ -405,10 +405,10 @@ elements, and lengths are bound parameters.
 Djogi has two JSON predicate routes:
 
 - `f.payload().jsahibon()...`: portable Sassi semantics, trusted Djogi
-  provenance, lowerable to SQL and evaluable in Punnu.
+ provenance, lowerable to SQL and evaluable in Punnu.
 - `f.payload().explicit_pg_predicate().mirjzson()...`: reserved for future
-  SQL-only methods; those methods emit Djogi conditions and are rejected by
-  cache/refresh portability gates.
+ SQL-only methods; those methods emit Djogi conditions and are rejected by
+ cache/refresh portability gates.
 
 If/when `Condition::MirJzSON(_)` exists, `try_portable`, cache refresh, and
 Punnu-boundary checks reject it with a typed cache-invalid error.
@@ -418,36 +418,36 @@ Punnu-boundary checks reject it with a typed cache-invalid error.
 Compile-pass/fail:
 
 - `MirJzSON` and `Option<MirJzSON>` require non-empty, non-vague
-  `#[mirjzson(justification = "...")]`.
+ `#[mirjzson(justification = "...")]`.
 - `f.payload().eq(...)` does not compile for `MirJzSON`.
 - `f.payload().jsahibon().path("a").value::<u64>().gte(...)` compiles.
 - `f.payload().jsahibon().key("content-type").exists()` compiles.
 - `value::<String>().lt(...)` does not compile.
 - `.explicit_pg_predicate().mirjzson()` exposes no v1 portable-shaped duplicate
-  predicate methods.
+ predicate methods.
 - Existing `Jsonb<T>` typed path APIs remain unchanged.
 
 SQL/unit/integration:
 
 - Every Sassi body variant lowers to SQL with bound path/key/value parameters.
 - Every JSON leaf emits a two-valued boolean under `NOT`, `XOR`, `AND`, and
-  `OR`.
+ `OR`.
 - Arbitrary keys `content-type`, `a.b`, `0`, empty string, and non-ASCII keys
-  bind as data and match exact JSON keys.
+ bind as data and match exact JSON keys.
 - Non-object key tests return false on arrays, strings, numbers, booleans, JSON
-  null, SQL NULL, and missing paths.
+ null, SQL NULL, and missing paths.
 - Non-array length tests return false and never call `jsonb_array_length` on
-  non-arrays.
+ non-arrays.
 - Numeric comparisons never error on strings, booleans, objects, arrays, JSON
-  null, SQL NULL, or missing paths.
+ null, SQL NULL, or missing paths.
 - Full-range `u64` values, including `u64::MAX`, compare correctly.
 - JSON null and SQL NULL are distinct.
 - `JsonEq` object equality is order-insensitive and matches Sassi.
 - `array_contains` uses Sassi value equality, including numeric softening.
 - Portable `jsahibon()` predicates and local Sassi evaluation return identical
-  id sets over a mixed fixture dataset.
+ id sets over a mixed fixture dataset.
 - Forged standalone Sassi `LookupOp::Json` predicates without Djogi provenance
-  are rejected by Djogi lowering.
+ are rejected by Djogi lowering.
 - Future SQL-only `Condition::MirJzSON` predicates are cache-rejected.
 
 Parity drift between Sassi and Djogi for portable `JSahibON` predicates is a
@@ -464,13 +464,13 @@ Djogi issue #195 should summarize only the Djogi-owned half:
 - Keep the justification requirement.
 - Keep the no-root-`PartialEq` rule.
 - Describe the v1 query route:
-  `f.payload().jsahibon()` for trusted portable predicates.
+ `f.payload().jsahibon()` for trusted portable predicates.
 - State that `.explicit_pg_predicate().mirjzson()` is reserved in v1 for future
-  PostgreSQL-only JSONB operators.
+ PostgreSQL-only JSONB operators.
 - Include the provenance boundary: Djogi extends `PortablePredicate<T>` /
-  `DjogiFieldProvenance` and must not lower forged raw Sassi field names.
+ `DjogiFieldProvenance` and must not lower forged raw Sassi field names.
 - Include the SQL parity rule: every portable JSON leaf is two-valued and
-  guarded so mismatches return `FALSE`, not SQL errors.
+ guarded so mismatches return `FALSE`, not SQL errors.
 - Include cache rejection for future SQL-only `Condition::MirJzSON`.
 
 Do not paste the full Sassi value model into Djogi #195. Link the Sassi issue or

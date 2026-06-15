@@ -5,8 +5,8 @@ use djogi::prelude::*;
 #[model(table = "users_expose_unknown")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(expose(notascope))]
-    pub name: String,
+ #[field(expose(notascope))]
+ pub name: String,
 }
 
 fn main() {}

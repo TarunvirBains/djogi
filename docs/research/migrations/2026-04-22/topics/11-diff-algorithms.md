@@ -223,28 +223,28 @@ Djogi's `#[derive(Model)]` proc macro emits a `Model::descriptor()` call via `in
 **`_detect_changes()` runs in a fixed method sequence** (`autodetector.py:182-231`):
 
 ```
-generate_renamed_models()       # must run first — sets self.renamed_models
+generate_renamed_models()    # must run first — sets self.renamed_models
 _prepare_field_lists()
 generate_deleted_models()
-generate_created_models()       # emits FK fields as separate AddField with _auto_deps
+generate_created_models()    # emits FK fields as separate AddField with _auto_deps
 generate_deleted_proxies()
 generate_created_proxies()
 generate_altered_options()
-create_renamed_fields()         # computes self.renamed_fields dict
+create_renamed_fields()     # computes self.renamed_fields dict
 create_altered_indexes()
 create_altered_constraints()
 generate_removed_constraints()
 generate_removed_indexes()
-generate_renamed_fields()       # emits RenameField ops if rename confirmed
+generate_renamed_fields()    # emits RenameField ops if rename confirmed
 generate_renamed_indexes()
 generate_removed_fields()
 generate_added_fields()
 generate_altered_fields()
 generate_added_indexes()
 generate_added_constraints()
-_sort_migrations()              # topological sort within each app via graphlib
-_build_migration_list(graph)    # cross-app dependency resolution (chopping algorithm)
-_optimize_migrations()          # MigrationOptimizer collapses CreateModel+AddField etc.
+_sort_migrations()       # topological sort within each app via graphlib
+_build_migration_list(graph)  # cross-app dependency resolution (chopping algorithm)
+_optimize_migrations()     # MigrationOptimizer collapses CreateModel+AddField etc.
 ```
 
 **FK dependency tracking:** `generate_created_models()` separates FK and M2M fields from the `CreateModel` body and emits them as `AddField` operations with `_auto_deps` pointing to the target model's create dependency. This guarantees the target table exists before the FK is added. (`autodetector.py:649-786`)
@@ -269,8 +269,8 @@ _optimize_migrations()          # MigrationOptimizer collapses CreateModel+AddFi
 
 ```rust
 // Confirmed variants — no RenameColumn
-AlterTable(AlterTable)          // AddColumn, DropColumn, AlterColumn
-RedefineTables(Vec<RedefineTable>)  // drop-and-recreate with INSERT...SELECT
+AlterTable(AlterTable)     // AddColumn, DropColumn, AlterColumn
+RedefineTables(Vec<RedefineTable>) // drop-and-recreate with INSERT...SELECT
 CreateTable(CreateTable)
 DropTable(DropTable)
 RenameIndex(RenameIndex)
@@ -315,9 +315,9 @@ Data probes (`COUNT(*)`, `COUNT(*) WHERE col IS NOT NULL`) run against the **pro
 1. Walk `src/**/*.rs` via `glob::glob("src/**/*.rs")` and `syn::parse_file`. Collect all structs annotated `#[model]` or `#[model(model_type = "application")]` as `app_models`. (`migration_generator.rs:303-428`)
 2. Collect all structs annotated `#[model(model_type = "migration")]` from `src/migrations/m_*.rs` as `migration_models` (the "from" snapshot). (`migration_generator.rs:198-213`)
 3. In `generate_operations()` (`migration_generator.rs:448-503`):
-   - Model in app but not in snapshots → `CreateModel`
-   - Model in both, fields differ → per-field diff: `AddField` or `RemoveField`
-   - Model in snapshots but not in app → `RemoveModel`
+  - Model in app but not in snapshots → `CreateModel`
+  - Model in both, fields differ → per-field diff: `AddField` or `RemoveField`
+  - Model in snapshots but not in app → `RemoveModel`
 
 **Dependency ordering** (`migration_generator.rs:1058-1115`): Circular FK dependencies are detected and broken by removing the FK from the `CreateModel` and emitting it as a later `AddField` operation — so both tables are created before the FK is added. Non-circular FK dependencies are resolved by topological sort.
 
@@ -389,13 +389,13 @@ A naive approach — compare the live database's schema directly against `schema
 
 ### ENUMs (Postgres)
 
-**Alembic:** `autocommit_block()` must be used for `ALTER TYPE ... ADD VALUE` on Postgres < 12 because this statement cannot run inside a transaction. Alembic's `PostgresqlParser` (analogous) detects this. In `env.py`, users must use `op.get_context().autocommit_block()` for `ALTER TYPE ... ADD VALUE` when targeting older Postgres. (`runtime/migration.py:279-370`)
+**Alembic:** `autocommit_block()` must be used for `ALTER TYPE... ADD VALUE` on Postgres < 12 because this statement cannot run inside a transaction. Alembic's `PostgresqlParser` (analogous) detects this. In `env.py`, users must use `op.get_context().autocommit_block()` for `ALTER TYPE... ADD VALUE` when targeting older Postgres. (`runtime/migration.py:279-370`)
 
 **Prisma:** `EnumValueRemoval` is a warning-class destructive change (always warns, no data probe) in the two-bucket classifier. (`warning_check.rs:7-48`). The Rust engine emits DDL to remove enum values, but warns the user because removing an enum value may fail at runtime if any rows contain that value.
 
-**sea-query:** `TypeCreateStatement`, `TypeDropStatement`, `TypeAlterStatement` are first-class builders. `ALTER TYPE ... ADD VALUE IF NOT EXISTS` is supported. (`src/backend/postgres/types.rs`) cot and Djogi do not currently support ENUM types in their migration generators.
+**sea-query:** `TypeCreateStatement`, `TypeDropStatement`, `TypeAlterStatement` are first-class builders. `ALTER TYPE... ADD VALUE IF NOT EXISTS` is supported. (`src/backend/postgres/types.rs`) cot and Djogi do not currently support ENUM types in their migration generators.
 
-**Djogi implication:** ENUMs are not handled in the descriptor diff for v0.1.0. When Djogi adds ENUM support, the diff must account for `ALTER TYPE ... ADD VALUE` being non-transactional on Postgres < 14.
+**Djogi implication:** ENUMs are not handled in the descriptor diff for v0.1.0. When Djogi adds ENUM support, the diff must account for `ALTER TYPE... ADD VALUE` being non-transactional on Postgres < 14.
 
 ### Arrays
 
@@ -419,7 +419,7 @@ A naive approach — compare the live database's schema directly against `schema
 
 ### Composite types
 
-No surveyed system autogenerates migrations for Postgres composite types (`CREATE TYPE ... AS (col1 type1, col2 type2)`). Liquibase has a `CreateTypeDependentTableChange` for some cases, but composite type creation is generally hand-written in all systems.
+No surveyed system autogenerates migrations for Postgres composite types (`CREATE TYPE... AS (col1 type1, col2 type2)`). Liquibase has a `CreateTypeDependentTableChange` for some cases, but composite type creation is generally hand-written in all systems.
 
 ---
 

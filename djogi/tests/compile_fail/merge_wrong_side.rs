@@ -14,24 +14,24 @@ use djogi::query::MergeWhenCondition;
 #[model(table = "merge_wrong_side_sources", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct WrongSideSource {
-    pub label: String,
+ pub label: String,
 }
 
 #[model(table = "merge_wrong_side_targets", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct WrongSideTarget {
-    pub label: String,
+ pub label: String,
 }
 
 fn main() {
-    let _stmt = WrongSideSource::objects()
-        .merge_into::<WrongSideTarget, _, _>(|target, source| {
-            target.label().merge_on_eq(source.label())
-        })
-        .when_matched_and_update(None::<MergeWhenCondition<WrongSideSource, WrongSideTarget>>, vec![
-            // Reversed: target field from source, source field from target.
-            WrongSideSource::fields()
-                .label()
-                .merge_copy_from(WrongSideTarget::fields().label())
-        ]);
+ let _stmt = WrongSideSource::objects()
+ .merge_into::<WrongSideTarget, _, _>(|target, source| {
+   target.label().merge_on_eq(source.label())
+  })
+ .when_matched_and_update(None::<MergeWhenCondition<WrongSideSource, WrongSideTarget>>, vec![
+   // Reversed: target field from source, source field from target.
+   WrongSideSource::fields()
+   .label()
+   .merge_copy_from(WrongSideTarget::fields().label())
+  ]);
 }

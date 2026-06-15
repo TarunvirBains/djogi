@@ -9,8 +9,8 @@ use djogi::prelude::*;
 
 #[derive(JsonbSchema, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Payload {
-    pub foo: String,
-    pub bar: i64,
+ pub foo: String,
+ pub bar: i64,
 }
 
 fn main() {}

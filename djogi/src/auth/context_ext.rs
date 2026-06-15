@@ -15,9 +15,9 @@ use crate::{DjogiContext, DjogiError};
 #[track_caller]
 fn warn_auth_bypass(auth: &AuthContext, method: &'static str) {
     tracing::warn!(
-        user_id = ?auth.user_id,
-        caller = %std::panic::Location::caller(),
-        "auth guard bypassed via {method}",
+     user_id = ?auth.user_id,
+     caller = %std::panic::Location::caller(),
+     "auth guard bypassed via {method}",
     );
 }
 
@@ -57,8 +57,8 @@ impl DjogiContext {
     /// `&mut DjogiContext` rather than an owned context.
     /// ```ignore
     /// djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
-    ///     ctx.set_auth(AuthContext::new(user_id).with_tenant("org_a"));
-    ///     TenantPost::objects().fetch_all(ctx).await
+    ///  ctx.set_auth(AuthContext::new(user_id).with_tenant("org_a"));
+    ///  TenantPost::objects().fetch_all(ctx).await
     /// })).await
     /// ```
     pub fn set_auth(&mut self, auth: AuthContext) {
@@ -79,7 +79,7 @@ impl DjogiContext {
     /// ```ignore
     /// let ctx = DjogiContext::from_pool(pool).with_no_tenant_scope();
     /// ```
-    /// For `atomic(&mut ctx, |ctx| ...)` closures where the closure has
+    /// For `atomic(&mut ctx, |ctx|...)` closures where the closure has
     /// `&mut DjogiContext`, use [`Self::set_no_tenant_scope`] instead.
     /// Intended for admin / batch / migration flows that legitimately want
     /// queries to span tenants without a `tenant_id` attached. A plain
@@ -92,7 +92,7 @@ impl DjogiContext {
     }
 
     /// Mutating form of [`Self::with_no_tenant_scope`] for use inside
-    /// `atomic(&mut ctx, |ctx| ...)` closures.
+    /// `atomic(&mut ctx, |ctx|...)` closures.
     pub fn set_no_tenant_scope(&mut self) {
         self.tenant_scope_suppressed = true;
     }

@@ -2,15 +2,15 @@
 //! # What this emits
 //! For every `#[derive(JsonbSchema)]` on a named struct, the macro emits:
 //! 1. A `{T}Path<M: Model>` struct carrying the JSONB column name and the
-//!    accumulated path segments so far.
+//! accumulated path segments so far.
 //! 2. One method per field on `{T}Path<M>`:
 //! - Scalar fields (from the cast-matrix allowlist OR fields annotated
-//!   `#[jsonb(scalar)]`) return `JsonbPathRef<M, FieldType>`.
+//! `#[jsonb(scalar)]`) return `JsonbPathRef<M, FieldType>`.
 //! - All other field types are assumed to implement `JsonbSchema`; the
-//!   method returns `<NestedT as JsonbSchema>::Path<M>` with the path
-//!   extended by the field's JSON key.
+//! method returns `<NestedT as JsonbSchema>::Path<M>` with the path
+//! extended by the field's JSON key.
 //! 3. `impl JsonbSchema for {T}` — wires `type Path<M> = {T}Path<M>` and
-//!    provides the `root_path` and `__new_from_slice` constructors.
+//! provides the `root_path` and `__new_from_slice` constructors.
 //! # Scalar allowlist
 //! Fields whose Rust type matches one of the following are treated as scalars
 //! (they produce a `JsonbPathRef<M, V>` leaf rather than descending into a
@@ -46,8 +46,8 @@
 //! - Empty named struct -> allowed (produces a `{T}Path<M>` with no methods).
 //! - Field with `#[serde(flatten)]` -> error.
 //! - `#[jsonb(scalar = "...")]` / `#[jsonb(scalar(...))]` -> error
-//!   (the marker is a bare word; rejecting value forms keeps the door
-//!   shut on adopter-supplied SQL cast text).
+//! (the marker is a bare word; rejecting value forms keeps the door
+//! shut on adopter-supplied SQL cast text).
 //! # Path routing
 //! All emitted type references go through `::djogi::*` paths so the user's
 //! crate only needs `djogi` as a dependency, not `heeranjid`, `time`, `uuid`,
@@ -80,8 +80,8 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
                 return Err(Error::new_spanned(
                     &input.ident,
                     "#[derive(JsonbSchema)] requires a named struct — \
-                     tuple structs are not supported. Use named fields: \
-                     `struct Foo { field: Type }`",
+      tuple structs are not supported. Use named fields: \
+      `struct Foo { field: Type }`",
                 ));
             }
             Fields::Unit => {
@@ -115,131 +115,131 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
     let mut jsonb_errors: Vec<Error> = Vec::new();
 
     let accessor_methods: Vec<TokenStream> = named_fields
-        .iter()
-        .filter_map(|field| {
-            let field_ident = field.ident.as_ref()?;
-            let field_ty = &field.ty;
+ .iter()
+ .filter_map(|field| {
+   let field_ident = field.ident.as_ref()?;
+   let field_ty = &field.ty;
 
-            // Determine the JSON key — priority order:
-            // 1. Field-level `#[serde(rename = "X")]` → use X.
-            // 2. Container-level `#[serde(rename_all = "...")]` →
-            // apply case conversion to the snake_case field ident.
-            // 3. Default → use the field ident as-is.
-            let json_key: String = match inspect_serde_field(field) {
-                SerdeFieldInfo::Flatten => {
-                    // Emit a span-precise compile error at the flatten attribute.
-                    let flatten_attr = field
-                        .attrs
-                        .iter()
-                        .find(|a| a.path().is_ident("serde"))
-                        .expect("serde attr must exist when Flatten is returned");
-                    serde_errors.push(Error::new_spanned(
-                        flatten_attr,
-                        "JsonbSchema does not support #[serde(flatten)] fields \
-                         — flattened keys cannot be addressed via a static path. \
-                         Either remove the flatten or opt the parent struct out of JsonbSchema.",
-                    ));
-                    return None;
-                }
-                SerdeFieldInfo::Rename(n) => n,
-                SerdeFieldInfo::NoRename => {
-                    let ident_str = field_ident.to_string();
-                    if let Some(rule) = container_rename_all {
-                        // Field idents are snake_case — use apply_to_field.
-                        rule.apply_to_field(&ident_str)
-                    } else {
-                        ident_str
-                    }
-                }
-            };
-            // json_key_str is a &str borrow of json_key for quote! interpolation.
-            let json_key_str: &str = &json_key;
+   // Determine the JSON key — priority order:
+   // 1. Field-level `#[serde(rename = "X")]` → use X.
+   // 2. Container-level `#[serde(rename_all = "...")]` →
+   // apply case conversion to the snake_case field ident.
+   // 3. Default → use the field ident as-is.
+   let json_key: String = match inspect_serde_field(field) {
+    SerdeFieldInfo::Flatten => {
+     // Emit a span-precise compile error at the flatten attribute.
+     let flatten_attr = field
+     .attrs
+     .iter()
+     .find(|a| a.path().is_ident("serde"))
+     .expect("serde attr must exist when Flatten is returned");
+     serde_errors.push(Error::new_spanned(
+      flatten_attr,
+      "JsonbSchema does not support #[serde(flatten)] fields \
+       — flattened keys cannot be addressed via a static path. \
+       Either remove the flatten or opt the parent struct out of JsonbSchema.",
+     ));
+     return None;
+    }
+    SerdeFieldInfo::Rename(n) => n,
+    SerdeFieldInfo::NoRename => {
+     let ident_str = field_ident.to_string();
+     if let Some(rule) = container_rename_all {
+      // Field idents are snake_case — use apply_to_field.
+      rule.apply_to_field(&ident_str)
+     } else {
+      ident_str
+     }
+    }
+   };
+   // json_key_str is a &str borrow of json_key for quote! interpolation.
+   let json_key_str: &str = &json_key;
 
-            // check the field-level `#[jsonb(...)]` attribute.
-            // The only supported marker is the bare word `scalar`, which
-            // opts the field out of the nested-schema branch and emits a
-            // `JsonbPathRef<M, FieldType>` leaf. Any other shape
-            // (`#[jsonb(scalar = "...")]`, `#[jsonb(unknown)]`, etc.) is
-            // rejected with a span-precise diagnostic.
-            let explicit_scalar = match inspect_jsonb_field(field) {
-                Ok(j) => j.scalar,
-                Err(err) => {
-                    jsonb_errors.push(err);
-                    return None;
-                }
-            };
+   // check the field-level `#[jsonb(...)]` attribute.
+   // The only supported marker is the bare word `scalar`, which
+   // opts the field out of the nested-schema branch and emits a
+   // `JsonbPathRef<M, FieldType>` leaf. Any other shape
+   // (`#[jsonb(scalar = "...")]`, `#[jsonb(unknown)]`, etc.) is
+   // rejected with a span-precise diagnostic.
+   let explicit_scalar = match inspect_jsonb_field(field) {
+    Ok(j) => j.scalar,
+    Err(err) => {
+     jsonb_errors.push(err);
+     return None;
+    }
+   };
 
-            // Polish (#28): peel `Option<...>` off at the
-            // macro layer so `Option<i32>` / `Option<NestedSchema>` work
-            // exactly like the bare inner type. Postgres JSONB `->>`
-            // returns NULL for missing-key, JSON-null, and
-            // non-stringifiable values identically — users wanting the
-            // explicit absence check call `.is_null()` / `.is_not_null()`
-            // on the resulting `JsonbPathRef` (already in the typed
-            // surface). Without this peeling, `#[derive(JsonbSchema)]`
-            // on a struct with `Option<T>` fields fails to compile
-            // because no blanket `impl<T: JsonbSchema> JsonbSchema for
-            // Option<T>` exists and one cannot be added without
-            // running into orphan-rule and trait-resolution surprises.
-            let effective_ty: Type =
-                unwrap_option(field_ty).unwrap_or_else(|| field_ty.clone());
+   // Polish (#28): peel `Option<...>` off at the
+   // macro layer so `Option<i32>` / `Option<NestedSchema>` work
+   // exactly like the bare inner type. Postgres JSONB `->>`
+   // returns NULL for missing-key, JSON-null, and
+   // non-stringifiable values identically — users wanting the
+   // explicit absence check call `.is_null()` / `.is_not_null()`
+   // on the resulting `JsonbPathRef` (already in the typed
+   // surface). Without this peeling, `#[derive(JsonbSchema)]`
+   // on a struct with `Option<T>` fields fails to compile
+   // because no blanket `impl<T: JsonbSchema> JsonbSchema for
+   // Option<T>` exists and one cannot be added without
+   // running into orphan-rule and trait-resolution surprises.
+   let effective_ty: Type =
+    unwrap_option(field_ty).unwrap_or_else(|| field_ty.clone());
 
-            if explicit_scalar || is_scalar_type(&effective_ty) {
-                // Scalar leaf: return JsonbPathRef<M, FieldType>.
-                // The path is base_path + [json_key_str], joined as dotted string.
-                // json_key_str is the serde rename if present, otherwise the Rust
-                // field name — this ensures the path matches the on-disk JSON key.
-                Some(quote! {
-                    /// Typed JSONB path accessor for this scalar field.
-                    /// Returns a [`JsonbPathRef`](::djogi::jsonb::JsonbPathRef) that
-                    /// exposes `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in_list`,
-                    /// `is_null`, `is_not_null` comparisons emitting the correct
-                    /// Postgres cast for the field's type. `Option<T>` fields use
-                    /// the inner type as the cast target — Postgres JSONB returns
-                    /// NULL identically for missing keys, JSON `null`, and
-                    /// non-stringifiable values, so use `.is_null()` /
-                    /// `.is_not_null()` for the explicit absence check.
-                    #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
-                    pub fn #field_ident(self) -> ::djogi::jsonb::JsonbPathRef<M, #effective_ty> {
-                        // Build the full segment list: base segments + JSON key.
-                        let mut segments: ::std::vec::Vec<&'static str> =
-                            ::std::vec::Vec::from(self.base_path);
-                        segments.push(#json_key_str);
-                        let dotted = ::djogi::jsonb::schema::intern_path(&segments);
-                        ::djogi::jsonb::JsonbPathRef::__from_macro(self.base_column, dotted)
-                    }
-                })
-            } else {
-                // Nested JsonbSchema: return <FieldType as JsonbSchema>::Path<M>
-                // with the path extended by the JSON key (serde rename or Rust ident).
-                // `Option<NestedSchema>` peels to `NestedSchema` per the comment
-                // above — traversal semantics are identical at the JSONB layer.
-                Some(quote! {
-                    /// Typed JSONB path accessor for this nested schema field.
-                    /// Returns the nested type's `Path<M>` with the path accumulator
-                    /// extended by the JSON key for this field. Further field accesses
-                    /// descend into the nested schema. `Option<NestedSchema>` is
-                    /// transparent at the JSONB layer — the `->`/`->>` chain returns
-                    /// NULL when the key is absent or the value is JSON null.
-                    #[must_use = "path handles are lazy — dropping one silently omits the filter"]
-                    pub fn #field_ident(self) -> <#effective_ty as ::djogi::jsonb::JsonbSchema>::Path<M> {
-                        // Extend the base path by the JSON key for this field.
-                        let mut extended: ::std::vec::Vec<&'static str> =
-                            ::std::vec::Vec::from(self.base_path);
-                        extended.push(#json_key_str);
-                        // Intern the extended segment slice — bounded by unique paths,
-                        // never leaks per call (Fix 1: path-slice interning).
-                        let interned_slice =
-                            ::djogi::jsonb::schema::intern_path_slice(&extended);
-                        <#effective_ty as ::djogi::jsonb::JsonbSchema>::__new_from_slice::<M>(
-                            self.base_column,
-                            interned_slice,
-                        )
-                    }
-                })
-            }
-        })
-        .collect();
+   if explicit_scalar || is_scalar_type(&effective_ty) {
+    // Scalar leaf: return JsonbPathRef<M, FieldType>.
+    // The path is base_path + [json_key_str], joined as dotted string.
+    // json_key_str is the serde rename if present, otherwise the Rust
+    // field name — this ensures the path matches the on-disk JSON key.
+    Some(quote! {
+     /// Typed JSONB path accessor for this scalar field.
+     /// Returns a [`JsonbPathRef`](::djogi::jsonb::JsonbPathRef) that
+     /// exposes `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in_list`,
+     /// `is_null`, `is_not_null` comparisons emitting the correct
+     /// Postgres cast for the field's type. `Option<T>` fields use
+     /// the inner type as the cast target — Postgres JSONB returns
+     /// NULL identically for missing keys, JSON `null`, and
+     /// non-stringifiable values, so use `.is_null()` /
+     /// `.is_not_null()` for the explicit absence check.
+     #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
+     pub fn #field_ident(self) -> ::djogi::jsonb::JsonbPathRef<M, #effective_ty> {
+      // Build the full segment list: base segments + JSON key.
+      let mut segments: ::std::vec::Vec<&'static str> =
+       ::std::vec::Vec::from(self.base_path);
+      segments.push(#json_key_str);
+      let dotted = ::djogi::jsonb::schema::intern_path(&segments);
+      ::djogi::jsonb::JsonbPathRef::__from_macro(self.base_column, dotted)
+     }
+    })
+   } else {
+    // Nested JsonbSchema: return <FieldType as JsonbSchema>::Path<M>
+    // with the path extended by the JSON key (serde rename or Rust ident).
+    // `Option<NestedSchema>` peels to `NestedSchema` per the comment
+    // above — traversal semantics are identical at the JSONB layer.
+    Some(quote! {
+     /// Typed JSONB path accessor for this nested schema field.
+     /// Returns the nested type's `Path<M>` with the path accumulator
+     /// extended by the JSON key for this field. Further field accesses
+     /// descend into the nested schema. `Option<NestedSchema>` is
+     /// transparent at the JSONB layer — the `->`/`->>` chain returns
+     /// NULL when the key is absent or the value is JSON null.
+     #[must_use = "path handles are lazy — dropping one silently omits the filter"]
+     pub fn #field_ident(self) -> <#effective_ty as ::djogi::jsonb::JsonbSchema>::Path<M> {
+      // Extend the base path by the JSON key for this field.
+      let mut extended: ::std::vec::Vec<&'static str> =
+       ::std::vec::Vec::from(self.base_path);
+      extended.push(#json_key_str);
+      // Intern the extended segment slice — bounded by unique paths,
+      // never leaks per call (Fix 1: path-slice interning).
+      let interned_slice =
+       ::djogi::jsonb::schema::intern_path_slice(&extended);
+      <#effective_ty as ::djogi::jsonb::JsonbSchema>::__new_from_slice::<M>(
+       self.base_column,
+       interned_slice,
+      )
+     }
+    })
+   }
+  })
+ .collect();
 
     // Surface any serde-flatten / `#[jsonb(...)]` parse errors collected
     // above. Both lists are folded into one combined diagnostic so the
@@ -264,59 +264,59 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
     // ── Emit {T}Path<M> struct ────────────────────────────────────────────────
 
     Ok(quote! {
-        /// Typed JSONB path tree for
-        #[doc = concat!("[`", stringify!(#name), "`].")]
-        /// Each method descends one level into the JSONB structure. Scalar
-        /// fields return a
-        /// [`JsonbPathRef`](::djogi::jsonb::JsonbPathRef) for comparisons;
-        /// nested fields return the nested type's `Path<M>`.
-        /// Constructed via [`JsonbSchema::root_path`] by calling
-        /// `.typed()` on a `FieldRef<M, Jsonb<T>>`.
-        #vis struct #path_name<M: ::djogi::model::Model> {
-            base_column: &'static str,
-            base_path: &'static [&'static str],
-            _phantom: ::std::marker::PhantomData<fn() -> M>,
-        }
+     /// Typed JSONB path tree for
+     #[doc = concat!("[`", stringify!(#name), "`].")]
+     /// Each method descends one level into the JSONB structure. Scalar
+     /// fields return a
+     /// [`JsonbPathRef`](::djogi::jsonb::JsonbPathRef) for comparisons;
+     /// nested fields return the nested type's `Path<M>`.
+     /// Constructed via [`JsonbSchema::root_path`] by calling
+     /// `.typed()` on a `FieldRef<M, Jsonb<T>>`.
+     #vis struct #path_name<M: ::djogi::model::Model> {
+      base_column: &'static str,
+      base_path: &'static [&'static str],
+      _phantom: ::std::marker::PhantomData<fn() -> M>,
+     }
 
-        impl<M: ::djogi::model::Model> #path_name<M> {
-            /// Internal constructor — called by `JsonbSchema::root_path` (root)
-            /// and by parent `{T}Path::field_name()` (nested).
-            #[doc(hidden)]
-            #[inline]
-            pub fn __new(base_column: &'static str, base_path: &'static [&'static str]) -> Self {
-                Self {
-                    base_column,
-                    base_path,
-                    _phantom: ::std::marker::PhantomData,
-                }
-            }
+     impl<M: ::djogi::model::Model> #path_name<M> {
+      /// Internal constructor — called by `JsonbSchema::root_path` (root)
+      /// and by parent `{T}Path::field_name()` (nested).
+      #[doc(hidden)]
+      #[inline]
+      pub fn __new(base_column: &'static str, base_path: &'static [&'static str]) -> Self {
+       Self {
+        base_column,
+        base_path,
+        _phantom: ::std::marker::PhantomData,
+       }
+      }
 
-            #(#accessor_methods)*
-        }
+      #(#accessor_methods)*
+     }
 
-        impl ::djogi::jsonb::JsonbSchema for #name {
-            type Path<M: ::djogi::model::Model> = #path_name<M>;
+     impl ::djogi::jsonb::JsonbSchema for #name {
+      type Path<M: ::djogi::model::Model> = #path_name<M>;
 
-            /// Construct the root of the typed path tree for the JSONB column
-            /// `base_column`. Called by `FieldRef<M, Jsonb<Self>>::typed()`.
-            fn root_path<M: ::djogi::model::Model>(base_column: &'static str) -> #path_name<M> {
-                #path_name::__new(base_column, &[])
-            }
+      /// Construct the root of the typed path tree for the JSONB column
+      /// `base_column`. Called by `FieldRef<M, Jsonb<Self>>::typed()`.
+      fn root_path<M: ::djogi::model::Model>(base_column: &'static str) -> #path_name<M> {
+       #path_name::__new(base_column, &[])
+      }
 
-            /// Internal: construct a nested path node from an already-interned
-            /// segment slice. Called by parent `{T}Path<M>` accessor methods.
-            /// `base_path` is a `&'static [&'static str]` returned by
-            /// `intern_path_slice` — allocated at most once per unique path
-            /// sequence, so calling this N times for the same path costs zero
-            /// additional allocation (Fix 1: path-slice interning).
-            #[doc(hidden)]
-            fn __new_from_slice<M: ::djogi::model::Model>(
-                base_column: &'static str,
-                base_path: &'static [&'static str],
-            ) -> #path_name<M> {
-                #path_name::__new(base_column, base_path)
-            }
-        }
+      /// Internal: construct a nested path node from an already-interned
+      /// segment slice. Called by parent `{T}Path<M>` accessor methods.
+      /// `base_path` is a `&'static [&'static str]` returned by
+      /// `intern_path_slice` — allocated at most once per unique path
+      /// sequence, so calling this N times for the same path costs zero
+      /// additional allocation (Fix 1: path-slice interning).
+      #[doc(hidden)]
+      fn __new_from_slice<M: ::djogi::model::Model>(
+       base_column: &'static str,
+       base_path: &'static [&'static str],
+      ) -> #path_name<M> {
+       #path_name::__new(base_column, base_path)
+      }
+     }
     })
 }
 
@@ -329,40 +329,40 @@ fn emit_empty_impl(
     vis: &syn::Visibility,
 ) -> TokenStream {
     quote! {
-        /// Typed JSONB path tree (no fields — empty schema).
-        #vis struct #path_name<M: ::djogi::model::Model> {
-            base_column: &'static str,
-            base_path: &'static [&'static str],
-            _phantom: ::std::marker::PhantomData<fn() -> M>,
-        }
+     /// Typed JSONB path tree (no fields — empty schema).
+     #vis struct #path_name<M: ::djogi::model::Model> {
+      base_column: &'static str,
+      base_path: &'static [&'static str],
+      _phantom: ::std::marker::PhantomData<fn() -> M>,
+     }
 
-        impl<M: ::djogi::model::Model> #path_name<M> {
-            #[doc(hidden)]
-            #[inline]
-            pub fn __new(base_column: &'static str, base_path: &'static [&'static str]) -> Self {
-                Self {
-                    base_column,
-                    base_path,
-                    _phantom: ::std::marker::PhantomData,
-                }
-            }
-        }
+     impl<M: ::djogi::model::Model> #path_name<M> {
+      #[doc(hidden)]
+      #[inline]
+      pub fn __new(base_column: &'static str, base_path: &'static [&'static str]) -> Self {
+       Self {
+        base_column,
+        base_path,
+        _phantom: ::std::marker::PhantomData,
+       }
+      }
+     }
 
-        impl ::djogi::jsonb::JsonbSchema for #name {
-            type Path<M: ::djogi::model::Model> = #path_name<M>;
+     impl ::djogi::jsonb::JsonbSchema for #name {
+      type Path<M: ::djogi::model::Model> = #path_name<M>;
 
-            fn root_path<M: ::djogi::model::Model>(base_column: &'static str) -> #path_name<M> {
-                #path_name::__new(base_column, &[])
-            }
+      fn root_path<M: ::djogi::model::Model>(base_column: &'static str) -> #path_name<M> {
+       #path_name::__new(base_column, &[])
+      }
 
-            #[doc(hidden)]
-            fn __new_from_slice<M: ::djogi::model::Model>(
-                base_column: &'static str,
-                base_path: &'static [&'static str],
-            ) -> #path_name<M> {
-                #path_name::__new(base_column, base_path)
-            }
-        }
+      #[doc(hidden)]
+      fn __new_from_slice<M: ::djogi::model::Model>(
+       base_column: &'static str,
+       base_path: &'static [&'static str],
+      ) -> #path_name<M> {
+       #path_name::__new(base_column, base_path)
+      }
+     }
     }
 }
 
@@ -429,7 +429,7 @@ enum SerdeFieldInfo {
 /// - `#[serde(rename = "X")]` -> `SerdeFieldInfo::Rename("X")`.
 /// - Any other serde attr (e.g. `skip_serializing_if`, `default`) -> ignored.
 /// - No serde attr -> `SerdeFieldInfo::NoRename`.
-///   Flatten takes priority over rename in the unlikely case both appear.
+/// Flatten takes priority over rename in the unlikely case both appear.
 fn inspect_serde_field(field: &syn::Field) -> SerdeFieldInfo {
     for attr in &field.attrs {
         if !attr.path().is_ident("serde") {
@@ -449,7 +449,7 @@ fn inspect_serde_field(field: &syn::Field) -> SerdeFieldInfo {
 
 /// Return true if the `#[serde(...)]` attribute contains the bare word `word`
 /// (e.g. `flatten`, `skip`). Matches `#[serde(word)]` and
-/// `#[serde(word, other = ...)]` but NOT `#[serde(word = "value")]`.
+/// `#[serde(word, other =...)]` but NOT `#[serde(word = "value")]`.
 fn has_serde_word(attr: &syn::Attribute, word: &str) -> bool {
     let Meta::List(list) = &attr.meta else {
         return false;
@@ -516,7 +516,7 @@ fn inspect_jsonb_field(field: &syn::Field) -> syn::Result<JsonbFieldInfo> {
             return Err(Error::new_spanned(
                 attr,
                 "expected `#[jsonb(...)]` with a parenthesised marker list \
-                 (e.g. `#[jsonb(scalar)]`)",
+     (e.g. `#[jsonb(scalar)]`)",
             ));
         };
         let nested = list.parse_args_with(
@@ -542,7 +542,7 @@ fn inspect_jsonb_field(field: &syn::Field) -> syn::Result<JsonbFieldInfo> {
                         item,
                         format!(
                             "unknown `#[jsonb({name})]` marker; the only supported \
-                             marker today is the bare word `scalar`"
+        marker today is the bare word `scalar`"
                         ),
                     ));
                 }
@@ -556,16 +556,16 @@ fn inspect_jsonb_field(field: &syn::Field) -> syn::Result<JsonbFieldInfo> {
                     return Err(Error::new_spanned(
                         nv,
                         "the `#[jsonb(scalar)]` marker takes no value; \
-                         remove the `= ...` suffix. Postgres cast selection \
-                         flows through `FieldType: IntoFilterValue`, not \
-                         through adopter-supplied SQL strings",
+       remove the `=...` suffix. Postgres cast selection \
+       flows through `FieldType: IntoFilterValue`, not \
+       through adopter-supplied SQL strings",
                     ));
                 }
                 Meta::List(l) => {
                     return Err(Error::new_spanned(
                         l,
                         "the `#[jsonb(scalar)]` marker takes no nested list; \
-                         use the bare form `#[jsonb(scalar)]`",
+       use the bare form `#[jsonb(scalar)]`",
                     ));
                 }
             }
@@ -637,8 +637,8 @@ fn unwrap_option(ty: &Type) -> Option<Type> {
     let prefix_ok = prefix.is_empty()
         || matches!(prefix.as_slice(), [a] if a == "option")
         || matches!(
-            prefix.as_slice(),
-            [a, b] if (a == "std" || a == "core") && b == "option"
+         prefix.as_slice(),
+         [a, b] if (a == "std" || a == "core") && b == "option"
         );
     if !prefix_ok {
         return None;
@@ -895,8 +895,8 @@ mod tests {
     #[test]
     fn inspect_serde_field_flatten_detected() {
         let field: syn::Field = syn::parse_quote! {
-            #[serde(flatten)]
-            pub extras: std::collections::HashMap<String, i32>
+         #[serde(flatten)]
+         pub extras: std::collections::HashMap<String, i32>
         };
         assert!(matches!(
             inspect_serde_field(&field),
@@ -1014,8 +1014,8 @@ mod tests {
     #[test]
     fn inspect_jsonb_field_scalar_marker_detected() {
         let field: syn::Field = syn::parse_quote! {
-            #[jsonb(scalar)]
-            pub id: MyAppId
+         #[jsonb(scalar)]
+         pub id: MyAppId
         };
         let info = inspect_jsonb_field(&field).expect("scalar marker must parse");
         assert!(info.scalar, "scalar flag must be set");
@@ -1027,8 +1027,8 @@ mod tests {
         // pattern this escape hatch was designed to avoid; the parser
         // must refuse the `#[jsonb(scalar = "...")]` shape.
         let field: syn::Field = syn::parse_quote! {
-            #[jsonb(scalar = "::int8")]
-            pub id: MyAppId
+         #[jsonb(scalar = "::int8")]
+         pub id: MyAppId
         };
         let err = inspect_jsonb_field(&field).expect_err("scalar = \"...\" must be rejected");
         let msg = err.to_string();
@@ -1041,8 +1041,8 @@ mod tests {
     #[test]
     fn inspect_jsonb_field_rejects_scalar_with_nested_list() {
         let field: syn::Field = syn::parse_quote! {
-            #[jsonb(scalar(int8))]
-            pub id: MyAppId
+         #[jsonb(scalar(int8))]
+         pub id: MyAppId
         };
         let err =
             inspect_jsonb_field(&field).expect_err("scalar(...) nested list must be rejected");
@@ -1056,22 +1056,22 @@ mod tests {
     #[test]
     fn inspect_jsonb_field_rejects_unknown_marker() {
         let field: syn::Field = syn::parse_quote! {
-            #[jsonb(future_marker)]
-            pub id: MyAppId
+         #[jsonb(future_marker)]
+         pub id: MyAppId
         };
         let err = inspect_jsonb_field(&field).expect_err("unknown marker must be rejected");
         let msg = err.to_string();
         assert!(
             msg.contains("unknown") && msg.contains("future_marker"),
-            "expected 'unknown ... future_marker' diagnostic, got: {msg}"
+            "expected 'unknown... future_marker' diagnostic, got: {msg}"
         );
     }
 
     #[test]
     fn inspect_jsonb_field_rejects_duplicate_scalar() {
         let field: syn::Field = syn::parse_quote! {
-            #[jsonb(scalar, scalar)]
-            pub id: MyAppId
+         #[jsonb(scalar, scalar)]
+         pub id: MyAppId
         };
         let err =
             inspect_jsonb_field(&field).expect_err("duplicate scalar marker must be rejected");

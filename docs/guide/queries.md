@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Queries
 
@@ -36,9 +36,9 @@ a partially-built queryset is idiomatic:
 ```rust
 let base = Post::objects().filter(|f| f.published().eq(true));
 let qs = if show_archive {
-    base.clone().order_by(|f| f.view_count().desc())
+ base.clone().order_by(|f| f.view_count().desc())
 } else {
-    base.clone().order_by(|f| f.created_at().desc()).limit(20)
+ base.clone().order_by(|f| f.created_at().desc()).limit(20)
 };
 ```
 
@@ -46,15 +46,15 @@ let qs = if show_archive {
 
 ## Filters
 
-`.filter(|f| ...)` AND-s a closure's return value onto the accumulating
+`.filter(|f|...)` AND-s a closure's return value onto the accumulating
 condition tree. The closure receives a default-constructed `T::Fields`
 (a ZST) whose methods return typed `FieldRef<T, V>` handles:
 
 ```rust
 Post::objects()
-    .filter(|f| f.published().eq(true))
-    .filter(|f| f.view_count().gte(100))
-    // published = $1 AND view_count >= $2
+.filter(|f| f.published().eq(true))
+.filter(|f| f.view_count().gte(100))
+ // published = $1 AND view_count >= $2
 ```
 
 Each lookup method consumes the `FieldRef` and returns a `Condition` leaf.
@@ -63,9 +63,9 @@ in one closure:
 
 ```rust
 Post::objects().filter(|f| {
-    let v = f.view_count();
-    v.gte(10).and_with(v.lte(100))
-    // view_count >= $1 AND view_count <= $2
+ let v = f.view_count();
+ v.gte(10).and_with(v.lte(100))
+ // view_count >= $1 AND view_count <= $2
 });
 ```
 
@@ -73,9 +73,9 @@ Fluent combinators `and_with` and `or_with` chain conditions
 left-to-right; `Condition::and(a, b)` / `Condition::or(a, b)` are the
 equivalent prefix-form constructors.
 
-### `.exclude(|f| ...)` — negation
+### `.exclude(|f|...)` — negation
 
-`.exclude(|f| ...)` is the logical inverse of `.filter` — the inner
+`.exclude(|f|...)` is the logical inverse of `.filter` — the inner
 condition is wrapped in SQL `NOT` and AND-ed onto the tree:
 
 ```rust
@@ -136,14 +136,14 @@ documentation.
 
 ## Ordering
 
-`.order_by(|f| ...)` accumulates ordering expressions. Successive calls
+`.order_by(|f|...)` accumulates ordering expressions. Successive calls
 **stack** (Django semantics) — they do not replace:
 
 ```rust
 Post::objects()
-    .order_by(|f| f.published().desc())
-    .order_by(|f| f.view_count().asc())
-    // ORDER BY published DESC, view_count ASC
+.order_by(|f| f.published().desc())
+.order_by(|f| f.view_count().asc())
+ // ORDER BY published DESC, view_count ASC
 ```
 
 This means library code can add a stable tiebreaker without clobbering
@@ -161,8 +161,8 @@ The closure returns either a single `OrderExpr` (`f.col.asc()` /
 
 ```rust
 Post::objects()
-    .order_by(|f| f.view_count().asc().nulls_first())
-    // ORDER BY view_count ASC NULLS FIRST
+.order_by(|f| f.view_count().asc().nulls_first())
+ // ORDER BY view_count ASC NULLS FIRST
 ```
 
 ---
@@ -176,9 +176,9 @@ stores them as `Option<i64>` to match Postgres' `BIGINT` bind type and
 
 ```rust
 Post::objects()
-    .order_by(|f| f.created_at().desc())
-    .limit(20)
-    .offset(40)
+.order_by(|f| f.created_at().desc())
+.limit(20)
+.offset(40)
 ```
 
 `.limit(n)` and `.offset(n)` replace any prior value — calling them
@@ -195,23 +195,23 @@ Post::objects().distinct().fetch_all(&mut ctx).await?;
 // SELECT DISTINCT * FROM posts
 ```
 
-`.distinct_on(|f| ...)` emits Postgres' `SELECT DISTINCT ON (cols...)`
+`.distinct_on(|f|...)` emits Postgres' `SELECT DISTINCT ON (cols...)`
 — keeps the first row per `(cols...)` tuple according to the query's
 `ORDER BY`. The closure returns a single `FieldRef` or a tuple of up to
 six `FieldRef`s:
 
 ```rust
 Post::objects()
-    .distinct_on(|f| f.author_id())
-    .order_by(|f| vec![f.author_id().asc(), f.created_at().desc()])
-    // SELECT DISTINCT ON (author_id) * FROM posts
-    // ORDER BY author_id ASC, created_at DESC
+.distinct_on(|f| f.author_id())
+.order_by(|f| vec![f.author_id().asc(), f.created_at().desc()])
+ // SELECT DISTINCT ON (author_id) * FROM posts
+ // ORDER BY author_id ASC, created_at DESC
 ```
 
 Both forms override any prior `.distinct` / `.distinct_on`.
 
 `.count()` on a `distinct_on` queryset wraps the query in a subquery
-(`SELECT COUNT(*) FROM (SELECT DISTINCT ON ...)`) so the count reflects
+(`SELECT COUNT(*) FROM (SELECT DISTINCT ON...)`) so the count reflects
 the deduplicated row set, not the raw one.
 
 ---
@@ -241,20 +241,20 @@ a transfer).
 ```rust
 // Exclusive: claim a job for processing.
 let job = Job::objects()
-    .filter(|f| f.status().eq(JobStatus::Pending))
-    .order_by(|f| f.created_at().asc())
-    .limit(1)
-    .select_for_update()
-    .skip_locked() // skip jobs another worker has already claimed
-    .first(&mut tx)
-    .await?;
+.filter(|f| f.status().eq(JobStatus::Pending))
+.order_by(|f| f.created_at().asc())
+.limit(1)
+.select_for_update()
+.skip_locked() // skip jobs another worker has already claimed
+.first(&mut tx)
+.await?;
 
 // Shared: every checker locks the row against writers but not each other.
 let balance = Account::objects()
-    .filter(|f| f.id().eq(account_id))
-    .select_for_share()
-    .fetch_one(&mut tx)
-    .await?;
+.filter(|f| f.id().eq(account_id))
+.select_for_share()
+.fetch_one(&mut tx)
+.await?;
 ```
 
 ### Pool-backed locks release immediately — wrap in `atomic`
@@ -317,11 +317,11 @@ Any filters / ordering / limits already chained are discarded.
 
 ```rust
 let qs = if user.is_authenticated {
-    Post::objects().filter(|f| f.published().eq(true))
+ Post::objects().filter(|f| f.published().eq(true))
 } else {
-    Post::objects().none()
+ Post::objects().none()
 };
-qs.fetch_all(&mut ctx).await?;  // returns `Ok(vec![])` on the `none()` branch
+qs.fetch_all(&mut ctx).await?; // returns `Ok(vec![])` on the `none()` branch
 ```
 
 Short-circuit identities per terminal:
@@ -329,7 +329,7 @@ Short-circuit identities per terminal:
 | Terminal | Short-circuit return |
 |---|---|
 | `fetch_all` | `Ok(vec![])` |
-| `fetch_one` | `Err(DjogiError::NotFound { .. })` |
+| `fetch_one` | `Err(DjogiError::NotFound {.. })` |
 | `first` | `Ok(None)` |
 | `count` | `Ok(0)` |
 | `exists` | `Ok(false)` |
@@ -355,14 +355,14 @@ struct alongside `{Model}Fields`. Each setter takes a `Lookup<V>` whose
 use djogi::prelude::*;
 
 let filter = PostFilter::new()
-    .published(Lookup::Eq(true))
-    .view_count(Lookup::Gte(50i32))
-    .title(Lookup::Contains("rust".to_string()));
+.published(Lookup::Eq(true))
+.view_count(Lookup::Gte(50i32))
+.title(Lookup::Contains("rust".to_string()));
 
 let rows = Post::objects()
-    .filter_struct(filter)
-    .fetch_all(&mut ctx)
-    .await?;
+.filter_struct(filter)
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 `Lookup<V>` variants: `Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`, `In(Vec<V>)`,
@@ -381,7 +381,7 @@ notes above).
 a breaking change.
 
 `filter_struct` preserves the same database result semantics as the same set
-of lookups expressed as `.filter(|f| ...)`. For cache and refresh admission,
+of lookups expressed as `.filter(|f|...)`. For cache and refresh admission,
 generated filters keep their stored `FilterClause` vector as the single source
 of truth and lazily reconstruct portable Q leaves for conservative
 bool/string equality and membership clauses. Unsupported fields, wrapped or
@@ -411,10 +411,10 @@ single `UpdateAssignment` or a `Vec<UpdateAssignment>` built via
 
 ```rust
 let n = Post::objects()
-    .filter(|f| f.published().eq(true))
-    .update(|f| f.view_count().set(999i32))
-    .execute(&mut ctx)
-    .await?;
+.filter(|f| f.published().eq(true))
+.update(|f| f.view_count().set(999i32))
+.execute(&mut ctx)
+.await?;
 // UPDATE posts SET view_count = $1, updated_at = now() WHERE published = $2
 ```
 
@@ -440,29 +440,29 @@ must be coordinated with commit/rollback behavior.
 
 > **Memory note — unbounded PK materialization.** When the bulk-update gate fires
 > (transaction-backed context + Punnu registered), `.execute()` issues
-> `UPDATE ... RETURNING id` and loads **all affected primary keys** into memory
+> `UPDATE... RETURNING id` and loads **all affected primary keys** into memory
 > before returning the row count. For updates touching millions of rows, this
 > allocation is proportional to the matched set. Use a scoped filter or batch the
 > update in smaller `QuerySet` slices when the matched set is unbounded.
 
 Empty-assignment short-circuit: `filter(...).update(|_| vec![])` returns
-`Ok(0)` without issuing SQL. An `UPDATE ... SET` with no assignments is
+`Ok(0)` without issuing SQL. An `UPDATE... SET` with no assignments is
 a Postgres syntax error, so the short-circuit is load-bearing.
 
 #### Expression-backed SET
 
-Three convenience forms avoid writing out the full `set_expr(field.as_expr() + ...)` pattern:
+Three convenience forms avoid writing out the full `set_expr(field.as_expr() +...)` pattern:
 
 **`field.set_expr(Expr<V>)`** — full expression IR:
 
 ```rust
 // col = col + 1 (explicit IR form)
 Post::objects()
-    .filter(|f| f.id().eq(post_id))
-    .update(|f| f.view_count().set_expr(
-        f.view_count().as_expr() + Expr::literal(1i32)
-    ))
-    .execute(&mut ctx).await?;
+.filter(|f| f.id().eq(post_id))
+.update(|f| f.view_count().set_expr(
+ f.view_count().as_expr() + Expr::literal(1i32)
+ ))
+.execute(&mut ctx).await?;
 ```
 
 **`field.set_field(other)`** — column-to-column copy (`SET self = other`):
@@ -470,9 +470,9 @@ Post::objects()
 ```rust
 // Reset working_balance to confirmed_balance on reconciliation.
 Account::objects()
-    .filter(|f| f.needs_reset().eq(true))
-    .update(|f| f.working_balance().set_field(f.confirmed_balance()))
-    .execute(&mut ctx).await?;
+.filter(|f| f.needs_reset().eq(true))
+.update(|f| f.working_balance().set_field(f.confirmed_balance()))
+.execute(&mut ctx).await?;
 ```
 
 **`field.increment(amount)` / `field.decrement(amount)`** — numeric add/subtract:
@@ -480,15 +480,15 @@ Account::objects()
 ```rust
 // Atomically bump the view counter.
 Post::objects()
-    .filter(|f| f.id().eq(post_id))
-    .update(|f| f.view_count().increment(1i32))
-    .execute(&mut ctx).await?;
+.filter(|f| f.id().eq(post_id))
+.update(|f| f.view_count().increment(1i32))
+.execute(&mut ctx).await?;
 
 // Deduct a withdrawal from the account balance.
 Account::objects()
-    .filter(|f| f.id().eq(account_id))
-    .update(|f| f.balance().decrement(withdrawal_amount))
-    .execute(&mut ctx).await?;
+.filter(|f| f.id().eq(account_id))
+.update(|f| f.balance().decrement(withdrawal_amount))
+.execute(&mut ctx).await?;
 ```
 
 `increment` and `decrement` are restricted to Djogi-blessed numeric types (`i16`,
@@ -502,9 +502,9 @@ described below.
 
 ```rust
 let n = Post::objects()
-    .filter(|f| f.published().eq(false))
-    .delete(&mut ctx)
-    .await?;
+.filter(|f| f.published().eq(false))
+.delete(&mut ctx)
+.await?;
 // DELETE FROM posts WHERE published = $1
 ```
 
@@ -535,25 +535,25 @@ Examples:
 ```rust
 // Rejected: limit is incompatible with bulk mutation.
 Post::objects()
-    .limit(1)
-    .update(|f| f.published().set(false))
-    .execute(&mut ctx)
-    .await
-// Err(DjogiError::Validation("update() does not support queryset read-tail modifiers (limit); ..."))
+.limit(1)
+.update(|f| f.published().set(false))
+.execute(&mut ctx)
+.await
+// Err(DjogiError::Validation("update() does not support queryset read-tail modifiers (limit);..."))
 
 // Rejected: inert paths still validate — none() does not bypass the guard.
 Post::objects()
-    .none()
-    .limit(1)
-    .delete(&mut ctx)
-    .await
-// Err(DjogiError::Validation("delete() does not support queryset read-tail modifiers (limit); ..."))
+.none()
+.limit(1)
+.delete(&mut ctx)
+.await
+// Err(DjogiError::Validation("delete() does not support queryset read-tail modifiers (limit);..."))
 
 // Ok — pure none(), no read-tail state.
 Post::objects()
-    .none()
-    .delete(&mut ctx)
-    .await
+.none()
+.delete(&mut ctx)
+.await
 // Ok(0) — short-circuits cleanly; no SQL issued.
 ```
 
@@ -597,13 +597,13 @@ Bulk UPDATE with per-row before/after pairs:
 
 ```rust
 let pairs: Vec<ReturningPair<Post>> = Post::objects()
-    .filter(|f| f.published().eq(true))
-    .update(|f| f.view_count().set(999i32))
-    .execute_returning_pairs(&mut ctx)
-    .await?;
+.filter(|f| f.published().eq(true))
+.update(|f| f.view_count().set(999i32))
+.execute_returning_pairs(&mut ctx)
+.await?;
 
 for pair in &pairs {
-    println!("id={} old={} new={}", pair.new.id, pair.old.view_count, pair.new.view_count);
+ println!("id={} old={} new={}", pair.new.id, pair.old.view_count, pair.new.view_count);
 }
 ```
 
@@ -637,9 +637,9 @@ Bulk DELETE returning one snapshot per deleted row:
 
 ```rust
 let deleted_rows: Vec<Post> = Post::objects()
-    .filter(|f| f.published().eq(false))
-    .delete_returning(&mut ctx)
-    .await?;
+.filter(|f| f.published().eq(false))
+.delete_returning(&mut ctx)
+.await?;
 ```
 
 > **Warning — unbounded materialization.** Applies the same as
@@ -656,14 +656,14 @@ short-circuit evaluation.
 
 - **PG18 only.** Djogi has a hard PostgreSQL 18 floor; no polyfill exists.
 - **INSERT** — `create()` already returns the DB post-image; the `OLD` side
-  is normally NULL for a simple INSERT. No pair type is needed or provided.
+ is normally NULL for a simple INSERT. No pair type is needed or provided.
 - **MERGE** — MERGE result hydration is not supported.
 - **Protected fields.** Both sides of `ReturningPair<T>` expose full model
-  values including `#[field(protected(...))]` fields. Field-level redaction
-  is not implemented — log or persist pairs with care.
+ values including `#[field(protected(...))]` fields. Field-level redaction
+ is not implemented — log or persist pairs with care.
 - **Outbox.** The `Save` outbox payload for `update_returning_pair` is the
-  DB post-image (`pair.new`) — the same single-payload schema as `save()`.
-  No diff-shaped outbox envelope is emitted.
+ DB post-image (`pair.new`) — the same single-payload schema as `save()`.
+ No diff-shaped outbox envelope is emitted.
 
 ---
 
@@ -682,23 +682,23 @@ use djogi::prelude::*;
 
 // UNION — de-duplicated union of both result sets.
 let rows: Vec<Dog> = Dog::objects().filter(|f| f.status().eq(Status::Adopted))
-    .union(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
-    .fetch_all(&mut ctx).await?;
+.union(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
+.fetch_all(&mut ctx).await?;
 
 // UNION ALL — duplicate-preserving union.
 let rows: Vec<Dog> = Dog::objects().filter(|f| f.status().eq(Status::Adopted))
-    .union_all(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
-    .fetch_all(&mut ctx).await?;
+.union_all(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
+.fetch_all(&mut ctx).await?;
 
 // INTERSECT — rows present in both arms (de-duplicated).
 let rows: Vec<Dog> = Dog::objects().filter(|f| f.status().eq(Status::Adopted))
-    .intersect(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
-    .fetch_all(&mut ctx).await?;
+.intersect(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
+.fetch_all(&mut ctx).await?;
 
 // EXCEPT — rows in the left arm not in the right arm (de-duplicated).
 let rows: Vec<Dog> = Dog::objects().filter(|f| f.status().eq(Status::Adopted))
-    .except(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
-    .fetch_all(&mut ctx).await?;
+.except(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
+.fetch_all(&mut ctx).await?;
 ```
 
 ### Outer modifiers
@@ -708,13 +708,13 @@ the **combined** result — after the set operator:
 
 ```rust
 let rows: Vec<Dog> = Dog::objects()
-    .filter(|f| f.status().eq(Status::Adopted))
-    .union(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
-    .order_by(|f| f.name().asc())
-    .limit(20)
-    .offset(0)
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|f| f.status().eq(Status::Adopted))
+.union(Dog::objects().filter(|f| f.status().eq(Status::Fostered)))
+.order_by(|f| f.name().asc())
+.limit(20)
+.offset(0)
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 Per-arm `.order_by(...)` / `.limit(...)` are legal and apply inside each
@@ -737,8 +737,8 @@ shape:
 - `.prefetch(...)` registrations
 - `.select_related(...)` registrations
 - `.select_for_update(...)` / `.nowait()` / `.skip_locked()` /
-  `.select_for_share(...)` / `.for_share_nowait()` /
-  `.for_share_skip_locked()` row locks
+ `.select_for_share(...)` / `.for_share_nowait()` /
+ `.for_share_skip_locked()` row locks
 These leak structural shape (extra projections, locks) into a context where
 the arm is emitted as a plain `SELECT t.* FROM t`. Silently dropping them
 would be a correctness bug.
@@ -776,14 +776,14 @@ let cutoff = /* some DateTime */;
 
 // Archive completed orders.
 let rows_copied: u64 = CompletedOrder::objects()
-    .filter(|f| f.completed_at().lt(cutoff))
-    .insert_into::<OrderArchive, _, _>(|target, source| vec![
-        target.order_id().copy_from(source.id().as_insert_source()),
-        target.title().copy_from(source.title().as_insert_source()),
-        target.completed_at().copy_from(source.completed_at().as_insert_source()),
-    ])
-    .execute(&mut ctx)
-    .await?;
+.filter(|f| f.completed_at().lt(cutoff))
+.insert_into::<OrderArchive, _, _>(|target, source| vec![
+ target.order_id().copy_from(source.id().as_insert_source()),
+ target.title().copy_from(source.title().as_insert_source()),
+ target.completed_at().copy_from(source.completed_at().as_insert_source()),
+ ])
+.execute(&mut ctx)
+.await?;
 ```
 
 The type parameters: `T` = target model (must be named at the call site —
@@ -837,31 +837,31 @@ a programming error does not hide behind a silent `Ok(0)`.
 **Column-mapping validations:**
 
 - **Empty mapping** — the closure returned zero column pairs. Postgres
-  rejects `INSERT INTO t () SELECT ...` as a syntax error; Djogi surfaces
-  the diagnostic with the target table name before the SQL leaves the
-  framework.
+ rejects `INSERT INTO t () SELECT...` as a syntax error; Djogi surfaces
+ the diagnostic with the target table name before the SQL leaves the
+ framework.
 - **Duplicate target column** — the same target column appears more than
-  once in the mapping (Postgres SQLSTATE `42701`). Pre-validated so the
-  error message names the offending column rather than the raw SQLSTATE.
+ once in the mapping (Postgres SQLSTATE `42701`). Pre-validated so the
+ error message names the offending column rather than the raw SQLSTATE.
 
 **Source-queryset state rejections:**
 
 - `.prefetch(...)` registrations — prefetch is a post-fetch row-stitching
-  step; INSERT SELECT returns no rows.
+ step; INSERT SELECT returns no rows.
 - `.select_related(...)` registrations — the join expands the SELECT list;
-  the column mapping closure references single-model columns and cannot
-  silently drop the join.
+ the column mapping closure references single-model columns and cannot
+ silently drop the join.
 - `.select_for_update(...)` / `.nowait()` / `.skip_locked()` /
-  `.select_for_share(...)` / `.for_share_nowait()` /
-  `.for_share_skip_locked()` row locks —
-  `SELECT ... FOR UPDATE` (or `... FOR SHARE`) inside INSERT SELECT is
-  valid Postgres semantics (locking source rows for the archival
-  duration), but row locks are not supported inside INSERT SELECT. Drop the lock call before `.insert_into(...)`.
+ `.select_for_share(...)` / `.for_share_nowait()` /
+ `.for_share_skip_locked()` row locks —
+ `SELECT... FOR UPDATE` (or `... FOR SHARE`) inside INSERT SELECT is
+ valid Postgres semantics (locking source rows for the archival
+ duration), but row locks are not supported inside INSERT SELECT. Drop the lock call before `.insert_into(...)`.
 - `.distinct()` / `.distinct_on(...)` — deduplication inside INSERT SELECT
-  is also valid Postgres, but `DISTINCT ON` requires the deduplication
-  columns to appear first in `ORDER BY` and in the SELECT projection —
-  neither of which the closure-built mapping guarantees. All non-default
-  distinct modes are rejected.
+ is also valid Postgres, but `DISTINCT ON` requires the deduplication
+ columns to appear first in `ORDER BY` and in the SELECT projection —
+ neither of which the closure-built mapping guarantees. All non-default
+ distinct modes are rejected.
 
 ### Return value and RETURNING
 
@@ -873,13 +873,13 @@ impl, and returns `Vec<T>`:
 
 ```rust
 let inserted: Vec<OrderArchive> = CompletedOrder::objects()
-    .filter(|f| f.completed_at().lt(cutoff))
-    .insert_into::<OrderArchive, _, _>(|target, source| vec![
-        target.order_id().copy_from(source.id().as_insert_source()),
-        target.title().copy_from(source.title().as_insert_source()),
-    ])
-    .execute_returning(&mut ctx)
-    .await?;
+.filter(|f| f.completed_at().lt(cutoff))
+.insert_into::<OrderArchive, _, _>(|target, source| vec![
+ target.order_id().copy_from(source.id().as_insert_source()),
+ target.title().copy_from(source.title().as_insert_source()),
+ ])
+.execute_returning(&mut ctx)
+.await?;
 ```
 
 `execute_returning` does **not** fire `before_save` / `after_save` hooks or
@@ -917,7 +917,7 @@ for examples, edge cases, and `RETURNING` behavior under `DO NOTHING` vs
 
 For self-referential data — file-system trees, org charts, message
 threads, biological pedigrees — Djogi exposes a typed recursive query
-surface that emits a Postgres `WITH RECURSIVE ... SELECT * FROM ...`
+surface that emits a Postgres `WITH RECURSIVE... SELECT * FROM...`
 CTE under the hood. No raw SQL, no `JUSTIFICATION` bypass.
 
 The typed surface has two layers:
@@ -934,19 +934,19 @@ use djogi::prelude::*;
 #[model(table = "categories", tree_edge = "parent_id")]
 #[derive(Debug, Clone)]
 pub struct Category {
-    pub name: String,
-    pub parent_id: Option<ForeignKey<Category>>,
+ pub name: String,
+ pub parent_id: Option<ForeignKey<Category>>,
 }
 
 // Every descendant of `root_id`, in DB-order.
 let subtree: Vec<Category> = Category::tree_descendants(root_id)?
-    .fetch_all(&mut ctx)
-    .await?;
+.fetch_all(&mut ctx)
+.await?;
 
 // Every ancestor of `node_id`, ending at the root.
 let chain: Vec<Category> = Category::tree_ancestors(node_id)?
-    .fetch_all(&mut ctx)
-    .await?;
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 Both sugar methods return `Result<RecursiveQuerySet<T>, DjogiError>`.
@@ -965,26 +965,26 @@ For multi-edge graphs (e.g., a pedigree where both `mother_id` and
 // `ElephantRelated::mother()` is the generated `RelationPath` for the
 // `mother_id` self-FK column (`_id` suffix is stripped by the macro).
 let mothers_descendants: RecursiveQuerySet<Elephant> = Elephant::objects()
-    .tree_descendants(ElephantRelated::mother(), root_id);
+.tree_descendants(ElephantRelated::mother(), root_id);
 ```
 
 `RecursiveQuerySet` ships three optional modifiers beyond the base
 `filter` / `order_by`:
 
 - **`.with_max_depth(n: u32)`** — adds `AND parent.depth < $n` in the
-  recursive term. When omitted, the walk runs to natural exhaustion or
-  until the always-on `CYCLE` clause fires.
+ recursive term. When omitted, the walk runs to natural exhaustion or
+ until the always-on `CYCLE` clause fires.
 - **`CYCLE id SET is_cycle USING cycle_path`** — emitted unconditionally
-  on every recursive query. Postgres marks cyclic paths and stops
-  re-visiting them, so a corrupt self-FK graph never hangs. The
-  de-cycling column is framework-internal (`__djogi_`-prefixed) and is
-  stripped before rows are decoded.
+ on every recursive query. Postgres marks cyclic paths and stops
+ re-visiting them, so a corrupt self-FK graph never hangs. The
+ de-cycling column is framework-internal (`__djogi_`-prefixed) and is
+ stripped before rows are decoded.
 - **`.search_breadth_first_by(field)`** / **`.search_depth_first_by(field)`**
-  — emit Postgres' `SEARCH BREADTH FIRST BY <col>` / `SEARCH DEPTH FIRST
-  BY <col>` annotation and prepend the framework-generated
-  `ORDER BY __djogi_search_seq` on the outer SELECT so callers see
-  traversal order without writing the sort term manually. These are
-  mutually exclusive (last call wins).
+ — emit Postgres' `SEARCH BREADTH FIRST BY <col>` / `SEARCH DEPTH FIRST
+ BY <col>` annotation and prepend the framework-generated
+ `ORDER BY __djogi_search_seq` on the outer SELECT so callers see
+ traversal order without writing the sort term manually. These are
+ mutually exclusive (last call wins).
 
 All three stack with `.filter(...)` and `.order_by(...)`, which append
 tiebreakers after the search-sequence column when both are present.
@@ -1001,28 +1001,28 @@ use djogi::prelude::*;
 #[model(table = "category_ancestries")]
 #[derive(Debug, Clone)]
 pub struct CategoryAncestry {
-    pub category_id: ForeignKey<Category>,
-    pub ancestor_id: ForeignKey<Category>,
-    pub depth: i32,
-    // COUNT(*) — always BIGINT on Postgres; must be i64.
-    pub path_count: i64,
+ pub category_id: ForeignKey<Category>,
+ pub ancestor_id: ForeignKey<Category>,
+ pub depth: i32,
+ // COUNT(*) — always BIGINT on Postgres; must be i64.
+ pub path_count: i64,
 }
 
 impl djogi::query::ClosureModel for CategoryAncestry {
-    type Source = Category;
+ type Source = Category;
 
-    fn source_column() -> &'static str { "category_id" }
-    fn ancestor_column() -> &'static str { "ancestor_id" }
-    fn depth_column() -> &'static str { "depth" }
-    fn path_count_column() -> &'static str { "path_count" }
+ fn source_column() -> &'static str { "category_id" }
+ fn ancestor_column() -> &'static str { "ancestor_id" }
+ fn depth_column() -> &'static str { "depth" }
+ fn path_count_column() -> &'static str { "path_count" }
 }
 
 // Walks the recursive CTE once and writes one row per
 // (descendant, ancestor, depth, path_count) tuple. `UNION ALL`
 // preserves multi-path multiplicity for kinship-style summations.
 let summary = Category::materialize_closure::<CategoryAncestry>(
-    &mut ctx,
-    Default::default(),
+ &mut ctx,
+ Default::default(),
 ).await?;
 ```
 
@@ -1050,50 +1050,50 @@ use djogi::query::PairClosureKinshipSum;
 // Every (female, male) candidate pair with its Wright F coefficient
 // in a single round-trip.
 let kinship_pairs: Vec<((Elephant, Elephant), f64)> = Elephant::objects()
-    .self_pairs()                                          // (L, R = L)
-    .filter_left(|f| f.id().in_(female_ids))               // narrow left
-    .filter_right(|m| m.id().in_(male_ids))                // narrow right
-    .left_join_closure_pair::<ElephantAncestry>()          // la / ra
-    .annotate(|_l, _r| PairClosureKinshipSum::<ElephantAncestry>::new())
-    .fetch_all(&mut ctx)
-    .await?;
+.self_pairs()      // (L, R = L)
+.filter_left(|f| f.id().in_(female_ids))  // narrow left
+.filter_right(|m| m.id().in_(male_ids))  // narrow right
+.left_join_closure_pair::<ElephantAncestry>()  // la / ra
+.annotate(|_l, _r| PairClosureKinshipSum::<ElephantAncestry>::new())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 What the substrate emits:
 
 ```sql
 SELECT l.<cols> AS l_<cols>, r.<cols> AS r_<cols>,
-       COALESCE(SUM(la.path_count * ra.path_count
-                    * POWER(0.5, la.depth + ra.depth + 1)), 0)
-       ::float8 AS __djogi_agg_0
-FROM   elephants AS l
+ COALESCE(SUM(la.path_count * ra.path_count
+   * POWER(0.5, la.depth + ra.depth + 1)), 0)
+ ::float8 AS __djogi_agg_0
+FROM elephants AS l
 CROSS JOIN elephants AS r
 LEFT JOIN elephant_ancestries AS la ON la.elephant_id = l.id
 LEFT JOIN elephant_ancestries AS ra ON ra.elephant_id = r.id
-                                   AND ra.ancestor_id = la.ancestor_id
-WHERE  l.id <> r.id
-  AND  l.id = ANY($1) AND r.id = ANY($2)
+     AND ra.ancestor_id = la.ancestor_id
+WHERE l.id <> r.id
+ AND l.id = ANY($1) AND r.id = ANY($2)
 GROUP BY l.id, r.id;
 ```
 
 Surface notes:
 
 - **`.filter_left(...)` / `.filter_right(...)`** accept the same closure
-  shape as `QuerySet::filter` — typed `FieldRef<L, V>` / `FieldRef<R, V>`
-  handles, fluent `and_with` / `or_with` combinators.
+ shape as `QuerySet::filter` — typed `FieldRef<L, V>` / `FieldRef<R, V>`
+ handles, fluent `and_with` / `or_with` combinators.
 - **`.left_join_closure_pair::<C>()`** requires `C` to be a closure-table
-  model (typically the output of `Model::materialize_closure::<C>`). The
-  per-pair `GROUP BY l.id, r.id` is auto-emitted because the closure-pair
-  annotations report `requires_closure_pair_join()` at validation time.
+ model (typically the output of `Model::materialize_closure::<C>`). The
+ per-pair `GROUP BY l.id, r.id` is auto-emitted because the closure-pair
+ annotations report `requires_closure_pair_join()` at validation time.
 - **`PairClosureKinshipSum<C>`** is the typed annotation slot for the
-  Wright F sum. Other pair-shaped aggregates live in `djogi::query` next
-  to it; adopters can add their own by implementing the
-  `PairClosureAnnotation` trait. The aggregate output lands under the
-  framework-reserved `__djogi_agg_0` alias and decodes to the
-  `(_, _, T)` slot of the `Vec<((L, R), T)>` terminal.
+ Wright F sum. Other pair-shaped aggregates live in `djogi::query` next
+ to it; adopters can add their own by implementing the
+ `PairClosureAnnotation` trait. The aggregate output lands under the
+ framework-reserved `__djogi_agg_0` alias and decodes to the
+ `(_, _, T)` slot of the `Vec<((L, R), T)>` terminal.
 - **`.include_equal_pk()`** opts in to the `l.id = r.id` self-pair —
-  useful for diagonal kinship lookups; the default `WHERE l.id <> r.id`
-  drops them.
+ useful for diagonal kinship lookups; the default `WHERE l.id <> r.id`
+ drops them.
 
 Composite scores that mix pair-aggregate output with Rust-side state
 (score from kinship × Rust-side overlap × Rust-side age product) land
@@ -1115,11 +1115,11 @@ use djogi::query::PairAreaOverlapRatio;
 
 // Per-pair territory overlap ratio across every herd-pair.
 let overlaps: Vec<((Herd, Herd), f64)> = Herd::objects()
-    .self_pairs()
-    .include_equal_pk()  // same-herd pairs report 1.0
-    .annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
-    .fetch_all(&mut ctx)
-    .await?;
+.self_pairs()
+.include_equal_pk() // same-herd pairs report 1.0
+.annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 The annotation emits
@@ -1148,17 +1148,17 @@ use djogi::prelude::*;
 // `Punnu<Post>` at `DjogiContext::from_pool` time — so adopters get
 // the pool handle through `ctx.punnu::<Post>()` without manual glue.
 let pool = ctx
-    .punnu::<Post>()
-    .expect("Punnu<Post> registered by the boot hook on default-derive")
-    .clone();
+.punnu::<Post>()
+.expect("Punnu<Post> registered by the boot hook on default-derive")
+.clone();
 
 let recent: Vec<Post> = Post::objects()
-    .filter(|f| f.published().eq(true))
-    .order_by(|f| f.created_at().desc())
-    .limit(20)
-    .cache(&pool)?                              // ← portable-gated binding
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|f| f.published().eq(true))
+.order_by(|f| f.created_at().desc())
+.limit(20)
+.cache(&pool)?    // ← portable-gated binding
+.fetch_all(&mut ctx)
+.await?;
 
 // Subsequent lookups against the same pool hit L1, no DB round-trip:
 let arc: Option<std::sync::Arc<Post>> = pool.get(&recent[0].id);
@@ -1167,30 +1167,30 @@ let arc: Option<std::sync::Arc<Post>> = pool.get(&recent[0].id);
 Surface contract:
 
 - `.cache(&pool)` returns
-  `Result<CachedPortableQuerySet<'_, T>, (QuerySet<T>, PortablePredicateError)>`.
-  The error variant returns ownership of the original queryset so the
-  caller can fall back to a non-cached path on the same call site.
+ `Result<CachedPortableQuerySet<'_, T>, (QuerySet<T>, PortablePredicateError)>`.
+ The error variant returns ownership of the original queryset so the
+ caller can fall back to a non-cached path on the same call site.
 - Cache binding is **portable-gated**: every filter must reduce to
-  `sassi::BasicPredicate<T>`. Ordinary closure filters using typed
-  `FieldRef<T, V>` lookups (`eq`, `lte`, `in_`, …) are portable today.
-  Filters that smuggle raw `Condition` payloads, JSONB-path lookups
-  beyond the typed surface, or expression-backed comparisons are
-  intentionally non-portable.
+ `sassi::BasicPredicate<T>`. Ordinary closure filters using typed
+ `FieldRef<T, V>` lookups (`eq`, `lte`, `in_`, …) are portable today.
+ Filters that smuggle raw `Condition` payloads, JSONB-path lookups
+ beyond the typed surface, or expression-backed comparisons are
+ intentionally non-portable.
 - Cache binding only applies to row-returning terminals (`fetch_all`,
-  `fetch_one`, `first`); `count` runs unchanged because `COUNT(*)`
-  returns no rows for the identity map to absorb.
+ `fetch_one`, `first`); `count` runs unchanged because `COUNT(*)`
+ returns no rows for the identity map to absorb.
 - Row mirroring happens at row-decode time in the existing terminal
-  pipeline — there is no separate post-fetch insertion loop, and no
-  "insert one row that succeeded but lost the second" failure mode
-  visible to the caller.
+ pipeline — there is no separate post-fetch insertion loop, and no
+ "insert one row that succeeded but lost the second" failure mode
+ visible to the caller.
 - `Punnu::insert` is invalidated automatically when `Model::create`,
-  `Model::save`, or `Model::delete` runs through djogi's hook
-  machinery. Adopters do not maintain a manual
-  write-through.
+ `Model::save`, or `Model::delete` runs through djogi's hook
+ machinery. Adopters do not maintain a manual
+ write-through.
 
 For adopters who need to inspect whether a queryset is
 cache-eligible ahead of binding, `QuerySet::try_portable()` returns
-the same `Result<PortableQuerySet<T>, ...>` as `.cache(...)` but
+the same `Result<PortableQuerySet<T>,...>` as `.cache(...)` but
 without consuming the pool handle.
 
 ---
@@ -1202,7 +1202,7 @@ set-returning functions, bespoke joins beyond what `select_related`
 covers — drop to `ctx.raw_query` / `ctx.raw_scalar` / `ctx.raw_execute`
 on `DjogiContext` only as a justified raw-SQL bypass: the enclosing item
 must carry `#[djogi::deliberately_bypass_convention_with_raw_sql]` and an
-adjacent `// JUSTIFICATION ...` comment. See [Models §Rule 3][models-raw]
+adjacent `// JUSTIFICATION...` comment. See [Models §Rule 3][models-raw]
 for the raw-query surface.
 
 The raw path sits next to the typed one: when a query needs SQL that the typed
@@ -1229,16 +1229,16 @@ Common use cases include:
 use djogi::prelude::*;
 
 source_qs.merge_into::<Target, _, _>(|target, source| {
-    target.external_id().merge_on_eq(source.external_id())
+ target.external_id().merge_on_eq(source.external_id())
 })
 .when_matched_and_update(Some(
-    Target::fields().payload().is_distinct_from_source(Source::fields().payload())
+ Target::fields().payload().is_distinct_from_source(Source::fields().payload())
 ), vec![
-    Target::fields().payload().merge_copy_from(Source::fields().payload()),
+ Target::fields().payload().merge_copy_from(Source::fields().payload()),
 ])
 .when_not_matched_then_insert(None, vec![
-    Target::fields().external_id().merge_insert_from(Source::fields().external_id()),
-    Target::fields().payload().merge_insert_from(Source::fields().payload()),
+ Target::fields().external_id().merge_insert_from(Source::fields().external_id()),
+ Target::fields().payload().merge_insert_from(Source::fields().payload()),
 ])
 .execute(&mut ctx).await?;
 ```
@@ -1251,12 +1251,12 @@ Djogi provides a convenience helper that automatically builds an
 
 ```rust
 .when_matched_update_changed(vec![
-    Target::fields().field_a().merge_copy_from(Source::fields().field_a()),
-    Target::fields().field_b().merge_copy_from(Source::fields().field_b()),
+ Target::fields().field_a().merge_copy_from(Source::fields().field_a()),
+ Target::fields().field_b().merge_copy_from(Source::fields().field_b()),
 ])
 // Emits: WHEN MATCHED AND (
-//   tgt.field_a IS DISTINCT FROM __djogi_src.field_a OR
-//   tgt.field_b IS DISTINCT FROM __djogi_src.field_b
+// tgt.field_a IS DISTINCT FROM __djogi_src.field_a OR
+// tgt.field_b IS DISTINCT FROM __djogi_src.field_b
 // )
 ```
 
@@ -1266,18 +1266,18 @@ To prevent accidental broad data loss or corruption, Djogi enforces several
 safety invariants on the `MERGE` surface:
 
 1. **Structural `.none()` Rejection**: If you attempt to run a `MERGE` with
-   source.none() and a `WHEN NOT MATCHED BY SOURCE` branch is present, Djogi
-   will return an error. This prevents accidentally deleting your entire target
-   table because the source happened to be empty.
+ source.none() and a `WHEN NOT MATCHED BY SOURCE` branch is present, Djogi
+ will return an error. This prevents accidentally deleting your entire target
+ table because the source happened to be empty.
 2. **Target-only predicates for BY SOURCE**: Branches that act on missing source
-   rows cannot reference source fields in their conditions. Use target-side
-   builders such as `Target::fields().active().merge_target_eq_value(true)` to
-   scope soft-delete or sync actions.
+ rows cannot reference source fields in their conditions. Use target-side
+ builders such as `Target::fields().active().merge_target_eq_value(true)` to
+ scope soft-delete or sync actions.
 3. **Source-only predicates for inserts**: `WHEN NOT MATCHED [BY TARGET]`
-   conditions cannot reference target fields. Use source-side builders such as
-   `Source::fields().payload().merge_source_eq_value("new")` when only some
-   missing source rows should be inserted.
+ conditions cannot reference target fields. Use source-side builders such as
+ `Source::fields().payload().merge_source_eq_value("new")` when only some
+ missing source rows should be inserted.
 4. **Auto-stamping**: All `UPDATE` actions in a `MERGE` automatically append
-   `updated_at = now()` to the set list, maintaining Djogi's audit integrity.
+ `updated_at = now()` to the set list, maintaining Djogi's audit integrity.
 5. **Source State**: The source queryset must not carry state that is incompatible
-   with a `USING` subquery (e.g., prefetch, cache, or locks).
+ with a `USING` subquery (e.g., prefetch, cache, or locks).

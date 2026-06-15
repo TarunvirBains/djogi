@@ -4,35 +4,35 @@
 //! tasks, the `djogi_ddl_audit` row payloads). The signature deters two
 //! attacker classes:
 //! 1. **Filesystem tamper.** An operator (or compromised CI cache) edits the
-//!    snapshot to suppress a drift warning or revert a schema change. The
-//!    differ would otherwise believe the edited file represents the
-//!    schema-of-record and silently mis-classify the next migration. With
-//!    signing enabled, the signature on the persisted file no longer
-//!    verifies and the differ refuses to trust the snapshot.
+//! snapshot to suppress a drift warning or revert a schema change. The
+//! differ would otherwise believe the edited file represents the
+//! schema-of-record and silently mis-classify the next migration. With
+//! signing enabled, the signature on the persisted file no longer
+//! verifies and the differ refuses to trust the snapshot.
 //! 2. **Timing side-channel.** A naive verify path that compares signature
-//!    bytes with `==` short-circuits on the first mismatching byte, leaking
-//!    one byte of secret per probe. We compute the full HMAC, then compare
-//!    via [`subtle::ConstantTimeEq`], so any two 32-byte signatures take the
-//!    same number of cycles to compare regardless of how many leading bytes
-//!    happen to agree.
+//! bytes with `==` short-circuits on the first mismatching byte, leaking
+//! one byte of secret per probe. We compute the full HMAC, then compare
+//! via [`subtle::ConstantTimeEq`], so any two 32-byte signatures take the
+//! same number of cycles to compare regardless of how many leading bytes
+//! happen to agree.
 //! # No-op key sentinel
 //! The framework supports unsigned snapshots — dev workflows, ephemeral CI,
 //! and any deployment that does not set `DJOGI_SNAPSHOT_SIGNING_KEY` should
 //! continue to work without ceremony. We encode "signing disabled" as the
 //! all-zeros key `[0u8; 32]`:
 //! - [`sign_snapshot`] short-circuits to `[0u8; 32]` — the signature is
-//!   never computed, and every snapshot persisted under the sentinel key
-//!   carries the same zero-byte signature.
+//! never computed, and every snapshot persisted under the sentinel key
+//! carries the same zero-byte signature.
 //! - [`verify_snapshot`] returns `true` for the exact pair `(zero_sig,
 //! zero_key)` and `false` for any other shape. Crucially, when an
-//!   attacker submits a non-zero forged signature against the no-op key,
-//!   the comparison still routes through the constant-time path so the
-//!   bypass attempt does not leak timing information.
-//!   Production deployments that care about integrity simply set
-//!   `DJOGI_SNAPSHOT_SIGNING_KEY` to a random 32-byte hex value. The same
-//!   key must round-trip to the verifier; key rotation is a future-task
-//!   concern.
-//!   See the parent module for the higher-level snapshot integrity story.
+//! attacker submits a non-zero forged signature against the no-op key,
+//! the comparison still routes through the constant-time path so the
+//! bypass attempt does not leak timing information.
+//! Production deployments that care about integrity simply set
+//! `DJOGI_SNAPSHOT_SIGNING_KEY` to a random 32-byte hex value. The same
+//! key must round-trip to the verifier; key rotation is a future-task
+//! concern.
+//! See the parent module for the higher-level snapshot integrity story.
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
@@ -97,11 +97,11 @@ pub fn sign_snapshot(json_bytes: &[u8], key: &[u8; 32]) -> [u8; 32] {
 /// of the secret signature material.
 /// # No-op key sentinel
 /// - When `key == [0u8; 32]` AND `signature == [0u8; 32]`, returns `true`
-///   (matches the [`sign_snapshot`] no-op path).
+/// (matches the [`sign_snapshot`] no-op path).
 /// - When `key == [0u8; 32]` AND `signature != [0u8; 32]`, the constant-time
-///   comparison still runs against the zero signature and returns `false`.
-///   An attacker forging a non-zero signature against the no-op key cannot
-///   short-circuit verification or leak timing information.
+/// comparison still runs against the zero signature and returns `false`.
+/// An attacker forging a non-zero signature against the no-op key cannot
+/// short-circuit verification or leak timing information.
 pub fn verify_snapshot(json_bytes: &[u8], signature: &[u8; 32], key: &[u8; 32]) -> bool {
     let expected = sign_snapshot(json_bytes, key);
     // `subtle::Choice` -> `bool` via `bool::from` keeps the comparison
@@ -205,7 +205,7 @@ impl std::fmt::Display for SnapshotKeyError {
             SnapshotKeyError::NonUnicodeEnvVar => write!(
                 f,
                 "DJOGI_SNAPSHOT_SIGNING_KEY is set but contains non-UTF-8 bytes; \
-                 fix the value or unset the variable to disable signing",
+     fix the value or unset the variable to disable signing",
             ),
         }
     }
@@ -227,7 +227,7 @@ mod tests {
     /// self-consistent and reproducible via:
     /// ```sh
     /// printf 'Hi There' | openssl dgst -sha256 \
-    ///     -mac HMAC -macopt hexkey:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b
+    ///  -mac HMAC -macopt hexkey:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b
     /// ```
     /// The 32-byte key is twenty `0x0b` bytes (RFC-4231 vector 1's key
     /// material) zero-padded to 32 bytes. The data is `b"Hi There"`.
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn load_key_from_env_valid_hex() {
         let _g = SIGNING_KEY_ENV_MUTEX.lock().unwrap();
-        // 64 hex chars = 32 bytes: 0x00, 0x11, 0x22, ..., 0xff (each byte
+        // 64 hex chars = 32 bytes: 0x00, 0x11, 0x22,..., 0xff (each byte
         // doubled). Mixes lower- and upper-case to exercise both arms of
         // the hex decoder.
         let hex = "00112233445566778899AABBCCDDEEFF00112233445566778899aabbccddeeff";

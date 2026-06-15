@@ -9,12 +9,12 @@ use djogi::prelude::*;
 #[model(table = "flip_probes")]
 #[derive(Debug, Clone)]
 pub struct FlipProbe {
-    pub kind: String,
+ pub kind: String,
 }
 
 fn _injected_id_is_heerid_desc_when_pk_is_omitted(p: &FlipProbe) {
-    let _: &::djogi::types::HeerIdDesc = &p.id;
-    let _: &::djogi::types::HeerIdRecencyBiased = &p.id;
+ let _: &::djogi::types::HeerIdDesc = &p.id;
+ let _: &::djogi::types::HeerIdRecencyBiased = &p.id;
 }
 
 fn main() {}

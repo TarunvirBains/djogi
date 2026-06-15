@@ -2,16 +2,16 @@
 //! Compose translates the descriptor inventory + the last-applied
 //! snapshot into one new pair of files per drifted bucket:
 //! 1. The committed migration SQL pair under
-//!    `migrations/<database>/<app>/<version>.sdjql` (up) +
-//!    `<version>.down.sdjql` (down).
+//! `migrations/<database>/<app>/<version>.sdjql` (up) +
+//! `<version>.down.sdjql` (down).
 //! 2. The pending JSON at
-//!    `target/djogi_pending/<database>/<app>.json` recording the
-//!    composed delta + checksum (build.rs reads it as the second leg
-//!    of the three-way match).
-//!    The two writes are **atomic** — both succeed or neither. We write
-//!    to `<final>.tmp.<pid>` siblings, fsync, then rename the SQL pair
-//!    into place, then rename the pending JSON. On any rename failure
-//!    the partial state is rolled back.
+//! `target/djogi_pending/<database>/<app>.json` recording the
+//! composed delta + checksum (build.rs reads it as the second leg
+//! of the three-way match).
+//! The two writes are **atomic** — both succeed or neither. We write
+//! to `<final>.tmp.<pid>` siblings, fsync, then rename the SQL pair
+//! into place, then rename the pending JSON. On any rename failure
+//! the partial state is rolled back.
 //! # — overwrite-on-same-slug
 //! Re-running `compose --name <slug>` against the same model state
 //! and snapshot overwrites both files. The same input produces
@@ -21,15 +21,15 @@
 //! because the differ produces an empty operation list.
 //! # / — lifecycle markers
 //! - `#[app(renamed_from = "old")]` → emit
-//!   [`SchemaOperation::RenameApp`](super::diff::SchemaOperation::RenameApp)
-//!   in addition to whatever the per-bucket diff produces, plus the
-//!   folder-rename + ledger-UPDATE pair (per the v3 plan amendment).
+//! [`SchemaOperation::RenameApp`](super::diff::SchemaOperation::RenameApp)
+//! in addition to whatever the per-bucket diff produces, plus the
+//! folder-rename + ledger-UPDATE pair (per the v3 plan amendment).
 //! - `#[app(tombstone)]` → require `--allow-destructive`; otherwise
-//!   fail with [`ComposeError::TombstonedAppRequiresAllowDestructive`]
-//!   carrying D011-shaped message text.
+//! fail with [`ComposeError::TombstonedAppRequiresAllowDestructive`]
+//! carrying D011-shaped message text.
 //! - `#[model(moved_from_app = OldApp)]` → emit
-//!   [`SchemaOperation::MoveModelBetweenApps`](super::diff::SchemaOperation::MoveModelBetweenApps)
-//!   (already handled by `diff_bucket_maps`).
+//! [`SchemaOperation::MoveModelBetweenApps`](super::diff::SchemaOperation::MoveModelBetweenApps)
+//! (already handled by `diff_bucket_maps`).
 //! # No regex
 //! The slug derivation goes through [`super::naming::sanitize_slug`]
 //! which is byte-level only.
@@ -86,22 +86,22 @@ struct RestorePoint {
 /// RAII rollback guard for atomic compose writes.
 /// Tracks three parallel cleanup queues:
 /// 1. `tmps` — staged `<final>.tmp.<pid>` files that have been
-///    written but not yet promoted. These are removed on failure.
+/// written but not yet promoted. These are removed on failure.
 /// 2. `restore_points` — files that have already been renamed into
-///    their final location, possibly OVER an existing file. On failure
-///    we restore the prior bytes (via the backup path) when one was
-///    captured, otherwise we delete the freshly-promoted file. The
-///    previous shape only deleted the final path on rollback, which
-///    silently lost the original content for overwrite cases.
+/// their final location, possibly OVER an existing file. On failure
+/// we restore the prior bytes (via the backup path) when one was
+/// captured, otherwise we delete the freshly-promoted file. The
+/// previous shape only deleted the final path on rollback, which
+/// silently lost the original content for overwrite cases.
 /// 3. `entry_renames` — entries that were moved from one directory to
-///    another by [`rename_old_bucket_folder`]. On failure we move them
-///    back. The merge loop touched many files and a mid-loop failure
-///    left partial state untracked.
-///    On a successful sequence the caller invokes [`commit`](Self::commit)
-///    to drain every queue (and delete the backups) — the [`Drop`] impl
-///    then runs as a no-op. On any failure path the guard goes out of
-///    scope without `commit` being called and every tracked artifact is
-///    rolled back via best-effort filesystem ops.
+/// another by [`rename_old_bucket_folder`]. On failure we move them
+/// back. The merge loop touched many files and a mid-loop failure
+/// left partial state untracked.
+/// On a successful sequence the caller invokes [`commit`](Self::commit)
+/// to drain every queue (and delete the backups) — the [`Drop`] impl
+/// then runs as a no-op. On any failure path the guard goes out of
+/// scope without `commit` being called and every tracked artifact is
+/// rolled back via best-effort filesystem ops.
 struct WriteRollback {
     tmps: Vec<PathBuf>,
     restore_points: Vec<RestorePoint>,
@@ -387,7 +387,7 @@ impl std::fmt::Display for ComposeError {
             } => write!(
                 f,
                 "folder rename would collide at {to_path}: entry \"{offending_entry}\" already exists \
-                 (source: {from_path}); resolve manually before re-running compose",
+     (source: {from_path}); resolve manually before re-running compose",
                 from_path = from.display(),
                 to_path = to.display(),
             ),
@@ -397,9 +397,9 @@ impl std::fmt::Display for ComposeError {
                 write!(
                     f,
                     "cross-app foreign keys in database `{database}` form a dependency cycle \
-                     between apps: {chain}. No slice apply order can satisfy the cycle. Move \
-                     the mutually-referencing models into one app, or remove one direction of \
-                     the reference",
+      between apps: {chain}. No slice apply order can satisfy the cycle. Move \
+      the mutually-referencing models into one app, or remove one direction of \
+      the reference",
                     chain = chain.join(", ")
                 )
             }
@@ -685,7 +685,7 @@ pub fn parse_pending_bytes(
     bytes: &[u8],
     path: Option<PathBuf>,
 ) -> Result<PendingPlan, PendingLoadError> {
-    // Phase 1 — peek at `format_version`. A future version with
+    // — peek at `format_version`. A future version with
     // additional fields would otherwise trip `deny_unknown_fields`
     // in phase 2 with a cryptic error.
     if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(bytes)
@@ -698,7 +698,7 @@ pub fn parse_pending_bytes(
             path,
         });
     }
-    // Phase 2 — strict structural parse.
+    // — strict structural parse.
     let plan: PendingPlan = serde_json::from_slice(bytes).map_err(|e| PendingLoadError::Parse {
         path: path.clone(),
         source: e,
@@ -782,9 +782,9 @@ fn fk_target_tables(op: &SchemaOperation) -> Vec<String> {
         // RenameTable — renames without adding references
         // DropColumn — removes a column
         // RenameColumn — renames without adding references
-        // AlterColumn { .. } — changes type/nullability/default; does not add FK
-        //   (FK changes go through AddForeignKey / DropForeignKey)
-        // DropForeignKey { .. } — removes a reference, doesn't create one
+        // AlterColumn {.. } — changes type/nullability/default; does not add FK
+        // (FK changes go through AddForeignKey / DropForeignKey)
+        // DropForeignKey {.. } — removes a reference, doesn't create one
         // AddIndex / DropIndex — index metadata only
         // AddExclusionConstraint / DropExclusionConstraint — constraint metadata
         // AddEnum / DropEnum / AddEnumVariant — enum type operations
@@ -856,7 +856,7 @@ fn reconcile_enum_ops_across_buckets(
         AddEnumVariant { variant: String },
     }
 
-    // Phase 1: Read — collect all data needed for decisions.
+    // : Read — collect all data needed for decisions.
     // Group deltas by database and gather per-database context.
     let mut db_context: BM<String, (Vec<usize>, DBContext)> = BM::new();
 
@@ -946,7 +946,7 @@ fn reconcile_enum_ops_across_buckets(
         }
     }
 
-    // Phase 2: Decide — compute which ops to remove and which edges to add.
+    // : Decide — compute which ops to remove and which edges to add.
     let mut removes: Vec<RemoveOp> = Vec::new();
     let mut enum_edges: BM<BucketKey, BS<String>> = BM::new();
 
@@ -1083,11 +1083,11 @@ fn reconcile_enum_ops_across_buckets(
         }
 
         // 3. AddEnumVariant dedup + ownership edge.
-        //    Two buckets adding the same (enum, variant) each emit
-        //    `ALTER TYPE <e> ADD VALUE '<v>'`, which has no IF NOT EXISTS
-        //    (REQ-396-11) — the second apply fails with "duplicate enum label".
-        //    Keep the op on exactly one owner bucket; remove from the rest;
-        //    wire the dependency edge so the owner's ADD VALUE runs first.
+        // Two buckets adding the same (enum, variant) each emit
+        // `ALTER TYPE <e> ADD VALUE '<v>'`, which has no IF NOT EXISTS
+        // (REQ-396-11) — the second apply fails with "duplicate enum label".
+        // Keep the op on exactly one owner bucket; remove from the rest;
+        // wire the dependency edge so the owner's ADD VALUE runs first.
         for ((enum_name, variant), contributors) in &ctx.add_enum_variant_ops {
             // Ordering anchor: AddEnum owner this run, or first projecting bucket
             // if the type was created by a prior migration.
@@ -1111,7 +1111,7 @@ fn reconcile_enum_ops_across_buckets(
 
             for (bucket, idx) in &adders {
                 // Remove AddEnumVariant from every non-variant-owner so only
-                // one ALTER TYPE ... ADD VALUE fires per (enum, variant).
+                // one ALTER TYPE... ADD VALUE fires per (enum, variant).
                 // Single-adder case: adders.len() == 1, sole entry IS the
                 // variant_owner, no RemoveOp pushed — existing ordering preserved.
                 if variant_owner.as_ref() != Some(bucket) {
@@ -1136,7 +1136,7 @@ fn reconcile_enum_ops_across_buckets(
         }
     }
 
-    // Phase 3: Apply — remove ops from deltas.
+    // : Apply — remove ops from deltas.
     for rm in &removes {
         match &rm.op_kind {
             OpKind::AddEnum => {
@@ -1152,9 +1152,9 @@ fn reconcile_enum_ops_across_buckets(
             OpKind::AddEnumVariant { variant } => {
                 deltas[rm.idx].operations.retain(|op| {
                     !matches!(
-                        op,
-                        SchemaOperation::AddEnumVariant { enum_name, variant: v, .. }
-                            if enum_name == &rm.enum_name && v == variant
+                     op,
+                     SchemaOperation::AddEnumVariant { enum_name, variant: v,.. }
+                      if enum_name == &rm.enum_name && v == variant
                     )
                 });
             }
@@ -1164,7 +1164,7 @@ fn reconcile_enum_ops_across_buckets(
     Ok(enum_edges)
 }
 
-/// Per-database context collected during Phase 1 (read).
+/// Per-database context collected during (read).
 #[derive(Default)]
 struct DBContext {
     projected_enums: std::collections::BTreeMap<BucketKey, std::collections::BTreeSet<String>>,
@@ -1436,9 +1436,9 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             let display_label = super::target::app_dirname(app);
             let text = format!(
                 "app \"{display_label}\" was previously registered (database \"{database}\") \
-                 but no models for it are linked now — did you forget to link its crate? \
-                 Refusing to emit DROPs. If this removal is intentional, mark the app \
-                 `#[app(tombstone)]`."
+     but no models for it are linked now — did you forget to link its crate? \
+     Refusing to emit DROPs. If this removal is intentional, mark the app \
+     `#[app(tombstone)]`."
             );
             return Err(ComposeError::LinkageDropWithoutModels {
                 app_label: app.to_string(),
@@ -1945,9 +1945,9 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
 /// - Up only edited → `path = up_path`, side label "up".
 /// - Down only edited → `path = down_path`, side label "down".
 /// - Both edited → `path = up_path`, side label "up and down" (the up
-///   path is reported because the operator typically inspects the up
-///   file first).
-///   Returns `Ok(())` when:
+/// path is reported because the operator typically inspects the up
+/// file first).
+/// Returns `Ok(())` when:
 /// - Both files do not exist (first compose for this bucket).
 /// - The existing files' bytes both match the freshly-emitted bytes.
 fn check_no_hand_edit(
@@ -1978,7 +1978,7 @@ fn check_no_hand_edit(
     };
     let text = format!(
         "D013: hand-edited migration would be overwritten ({side_label} side); \
-         pass --force-overwrite to discard your edits ({path})",
+   pass --force-overwrite to discard your edits ({path})",
         path = reported_path.display()
     );
     Err(ComposeError::HandEditedMigrationWouldBeOverwritten {
@@ -2007,13 +2007,13 @@ fn emit_rename_app_ledger_update(database: &str, from: &str, to: &str) -> Operat
     let to_escaped = sql_escape_string(to);
     let up = format!(
         "UPDATE djogi_schema_migrations \
-         SET app_label = '{to_escaped}' \
-         WHERE app_label = '{from_escaped}';"
+   SET app_label = '{to_escaped}' \
+   WHERE app_label = '{from_escaped}';"
     );
     let down = format!(
         "UPDATE djogi_schema_migrations \
-         SET app_label = '{from_escaped}' \
-         WHERE app_label = '{to_escaped}';"
+   SET app_label = '{from_escaped}' \
+   WHERE app_label = '{to_escaped}';"
     );
     OperationSql {
         label: format!("RenameAppLedger {from} -> {to}"),
@@ -2047,18 +2047,18 @@ fn sql_escape_string(s: &str) -> String {
 /// consistent on disk. Skips silently when:
 /// - The OLD directory does not exist (nothing to rename).
 /// - The OLD and NEW directories are identical (a same-app
-///   "self-rename" is a no-op — should not happen but defensive).
-///   When the NEW directory already exists (the typical case — compose
-///   just wrote artifacts there), we MOVE every entry from OLD to NEW.
-///   Each entry move is tracked through the supplied [`WriteRollback`]
-///   guard so a mid-loop failure rolls back every already-moved entry.
-///   We ALSO refuse fail-fast on a content collision: if any entry under
-///   OLD already exists under NEW with a different name-equivalent
-///   location, we return [`ComposeError::FolderRenameTargetCollision`]
-///   before moving any entry — the prior shape silently skipped
-///   collisions and dropped the OLD entry, which conflated two distinct
-///   files of the same name. The operator must resolve the collision
-///   manually before re-running compose.
+/// "self-rename" is a no-op — should not happen but defensive).
+/// When the NEW directory already exists (the typical case — compose
+/// just wrote artifacts there), we MOVE every entry from OLD to NEW.
+/// Each entry move is tracked through the supplied [`WriteRollback`]
+/// guard so a mid-loop failure rolls back every already-moved entry.
+/// We ALSO refuse fail-fast on a content collision: if any entry under
+/// OLD already exists under NEW with a different name-equivalent
+/// location, we return [`ComposeError::FolderRenameTargetCollision`]
+/// before moving any entry — the prior shape silently skipped
+/// collisions and dropped the OLD entry, which conflated two distinct
+/// files of the same name. The operator must resolve the collision
+/// manually before re-running compose.
 fn rename_old_bucket_folder(
     from_dir: &Path,
     to_dir: &Path,
@@ -2162,8 +2162,8 @@ fn empty_schema_for(bucket: &BucketKey) -> AppliedSchema {
 /// Why: an `#[app(renamed_from = "old")]` annotation tells compose
 /// that the app's logical label changed but its physical schema did
 /// not. The pre-rename snapshot was keyed under `BucketKey { app:
-/// "old", .. }`; the new model inventory keys the same tables under
-/// `BucketKey { app: "new", .. }`. If the differ sees both keys it
+/// "old",.. }`; the new model inventory keys the same tables under
+/// `BucketKey { app: "new",.. }`. If the differ sees both keys it
 /// emits `DropTable` on OLD and `AddTable` on NEW for every model in
 /// the bucket — escalating the rename to a destructive classification
 /// that wrongly demands `--allow-destructive` and re-creates every
@@ -2242,7 +2242,7 @@ fn compose_up_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql])
     out.push_str("-- Djogi composed migration — up\n");
     out.push_str(&format!("-- Version: {version}\n"));
     out.push_str(&format!(
-        "-- Bucket:  {database}/{app}\n",
+        "-- Bucket: {database}/{app}\n",
         database = delta.bucket.database,
         app = super::target::app_dirname(&delta.bucket.app),
     ));
@@ -2285,7 +2285,7 @@ fn compose_down_text(version: &str, delta: &SchemaDelta, lowered: &[OperationSql
     out.push_str("-- Djogi composed migration — down\n");
     out.push_str(&format!("-- Version: {version}\n"));
     out.push_str(&format!(
-        "-- Bucket:  {database}/{app}\n",
+        "-- Bucket: {database}/{app}\n",
         database = delta.bucket.database,
         app = super::target::app_dirname(&delta.bucket.app),
     ));
@@ -2351,20 +2351,20 @@ RETURNS pg_catalog.bool
 LANGUAGE sql
 IMMUTABLE STRICT PARALLEL SAFE
 AS $$
-    SELECT COALESCE(
-        pg_catalog.bool_and(
-            value IS NULL
-            OR (
-                pg_catalog.scale(value) IS NOT NULL
-                AND pg_catalog.scale(value) <= 28
-                AND pg_catalog.abs(value)
-                    * pg_catalog.power(10::pg_catalog.numeric, pg_catalog.scale(value))
-                    <= 79228162514264337593543950335::pg_catalog.numeric
-            )
-        ),
-        true
-    )
-    FROM pg_catalog.unnest(input_array) AS value(value);
+ SELECT COALESCE(
+  pg_catalog.bool_and(
+   value IS NULL
+   OR (
+    pg_catalog.scale(value) IS NOT NULL
+    AND pg_catalog.scale(value) <= 28
+    AND pg_catalog.abs(value)
+     * pg_catalog.power(10::pg_catalog.numeric, pg_catalog.scale(value))
+     <= 79228162514264337593543950335::pg_catalog.numeric
+   )
+  ),
+  true
+ )
+ FROM pg_catalog.unnest(input_array) AS value(value);
 $$;
 "#;
 
@@ -2416,17 +2416,17 @@ RETURNS pg_catalog.bool
 LANGUAGE sql
 IMMUTABLE STRICT PARALLEL SAFE
 AS $$
-    SELECT COALESCE(
-        pg_catalog.bool_and(
-            value IS NULL
-            OR (
-                pg_catalog.isfinite(value)
-                AND value <= '9999-12-31'::pg_catalog.date
-            )
-        ),
-        true
-    )
-    FROM pg_catalog.unnest(input_array) AS value(value);
+ SELECT COALESCE(
+  pg_catalog.bool_and(
+   value IS NULL
+   OR (
+    pg_catalog.isfinite(value)
+    AND value <= '9999-12-31'::pg_catalog.date
+   )
+  ),
+  true
+ )
+ FROM pg_catalog.unnest(input_array) AS value(value);
 $$;
 "#;
 
@@ -2446,17 +2446,17 @@ RETURNS pg_catalog.bool
 LANGUAGE sql
 IMMUTABLE STRICT PARALLEL SAFE
 AS $$
-    SELECT COALESCE(
-        pg_catalog.bool_and(
-            value IS NULL
-            OR (
-                pg_catalog.isfinite(value)
-                AND value <= '9999-12-31 23:59:59.999999+00'::pg_catalog.timestamptz
-            )
-        ),
-        true
-    )
-    FROM pg_catalog.unnest(input_array) AS value(value);
+ SELECT COALESCE(
+  pg_catalog.bool_and(
+   value IS NULL
+   OR (
+    pg_catalog.isfinite(value)
+    AND value <= '9999-12-31 23:59:59.999999+00'::pg_catalog.timestamptz
+   )
+  ),
+  true
+ )
+ FROM pg_catalog.unnest(input_array) AS value(value);
 $$;
 "#;
 
@@ -2550,16 +2550,16 @@ fn atomic_write(final_path: &Path, bytes: &[u8]) -> Result<PathBuf, ComposeError
 /// and the rollback path could only `remove_file(final_path)`
 /// losing the original bytes entirely. The new shape:
 /// 1. If `final_path` already exists, copy its bytes into a sibling
-///    `<final>.bak.<pid>.<counter>` backup. The counter is per-
-///    process atomic so two simultaneous promotes never collide.
+/// `<final>.bak.<pid>.<counter>` backup. The counter is per-
+/// process atomic so two simultaneous promotes never collide.
 /// 2. Rename `tmp` over `final_path`.
 /// 3. Return the backup path so the caller can hand it to the
-///    [`WriteRollback`] guard for restoration on failure.
-///    Returns `Ok(None)` when no prior file existed at `final_path`
-///    (fresh create — nothing to back up). Returns `Ok(Some(path))` when
-///    a backup was captured. Returns `Err` only if either I/O step
-///    fails; in that case any partial backup is removed before
-///    surfacing the error so the workspace is left clean.
+/// [`WriteRollback`] guard for restoration on failure.
+/// Returns `Ok(None)` when no prior file existed at `final_path`
+/// (fresh create — nothing to back up). Returns `Ok(Some(path))` when
+/// a backup was captured. Returns `Err` only if either I/O step
+/// fails; in that case any partial backup is removed before
+/// surfacing the error so the workspace is left clean.
 fn promote_tmp_with_backup(tmp: &Path, final_path: &Path) -> Result<Option<PathBuf>, ComposeError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static BACKUP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2619,12 +2619,12 @@ fn check_pending_path_compatible(
         return Ok(());
     }
     let pending = load_pending(pending_path).map_err(|e| ComposeError::PendingJsonWouldBeOverwritten {
-        path: pending_path.to_path_buf(),
-        text: format!(
-            "pending JSON would be overwritten at {}: existing file is not a compatible pending artifact ({e})",
-            pending_path.display()
-        ),
-    })?;
+  path: pending_path.to_path_buf(),
+  text: format!(
+   "pending JSON would be overwritten at {}: existing file is not a compatible pending artifact ({e})",
+   pending_path.display()
+  ),
+ })?;
     let same_bucket =
         pending.bucket_database == bucket.database && pending.bucket_app == bucket.app;
     let is_legacy_phase_zero =
@@ -3005,7 +3005,7 @@ mod tests {
         assert_eq!(
             pending.checksum_up, runner_style_checksum,
             "compose pending checksum must match runner-plan checksum when all three \
-             array helpers (numeric, date, tstz) are injected"
+    array helpers (numeric, date, tstz) are injected"
         );
 
         // Additionally verify that the three helpers appear in the on-disk SQL
@@ -3797,15 +3797,15 @@ mod tests {
     /// 'newname' WHERE app_label = 'oldname';` into the up SQL.
     /// 2. Emit the inverse UPDATE into the down SQL.
     /// 3. Move `migrations/main/oldname/` → `migrations/main/newname/`
-    ///    on disk.
+    /// on disk.
     /// 4. Succeed WITHOUT `--allow-destructive`. The on-disk SQL
-    ///    tables don't move when an app renames;
-    ///    `remap_snapshots_for_renames` relabels the OLD-bucket
-    ///    snapshot under NEW before diffing so no DropTable /
-    ///    AddTable pair appears, and the classification stays
-    ///    metadata-only.
+    /// tables don't move when an app renames;
+    /// `remap_snapshots_for_renames` relabels the OLD-bucket
+    /// snapshot under NEW before diffing so no DropTable /
+    /// AddTable pair appears, and the classification stays
+    /// metadata-only.
     /// 5. The SQL must NOT carry a DROP TABLE for the renamed-from
-    ///    bucket's tables — they aren't being dropped.
+    /// bucket's tables — they aren't being dropped.
     #[test]
     fn b5_rename_app_emits_ledger_update_and_renames_folder() {
         let work = temp_workspace("b5_rename_round_trip");
@@ -3902,25 +3902,25 @@ mod tests {
     #[test]
     fn b7_pending_format_version_peek_rejects_future_version() {
         let blob = r#"{
-            "format_version": "3",
-            "bucket_database": "main",
-            "bucket_app": "billing",
-            "version": "V20260425010203__add_invoices",
-            "slug": "add_invoices",
-            "model_snapshot": {
-                "djogi_version": "0.2.0",
-                "enums": {},
-                "format_version": "1",
-                "generated_at": "2027-01-01T00:00:00Z",
-                "indexes": [],
-                "models": {},
-                "registered_apps": []
-            },
-            "checksum_up": "V1:0000000000000000000000000000000000000000000000000000000000000000",
-            "checksum_down": null,
-            "composed_at": "2026-04-25T01:02:03Z",
-            "future_field_added_in_v3": "garbage"
-        }"#;
+   "format_version": "3",
+   "bucket_database": "main",
+   "bucket_app": "billing",
+   "version": "V20260425010203__add_invoices",
+   "slug": "add_invoices",
+   "model_snapshot": {
+    "djogi_version": "0.2.0",
+    "enums": {},
+    "format_version": "1",
+    "generated_at": "2027-01-01T00:00:00Z",
+    "indexes": [],
+    "models": {},
+    "registered_apps": []
+   },
+   "checksum_up": "V1:0000000000000000000000000000000000000000000000000000000000000000",
+   "checksum_down": null,
+   "composed_at": "2026-04-25T01:02:03Z",
+   "future_field_added_in_v3": "garbage"
+  }"#;
         let err = parse_pending_bytes(blob.as_bytes(), None).expect_err("must fail");
         match err {
             PendingLoadError::UnsupportedFormatVersion {
@@ -3963,24 +3963,24 @@ mod tests {
     #[test]
     fn format_one_pending_rejected_with_version_mismatch() {
         let blob = r#"{
-            "format_version": "1",
-            "bucket_database": "main",
-            "bucket_app": "billing",
-            "version": "V20260425010203__add_invoices",
-            "slug": "add_invoices",
-            "model_snapshot": {
-                "djogi_version": "0.2.0",
-                "enums": {},
-                "format_version": "1",
-                "generated_at": "2027-01-01T00:00:00Z",
-                "indexes": [],
-                "models": {},
-                "registered_apps": ["billing"]
-            },
-            "checksum_up": "V1:0000000000000000000000000000000000000000000000000000000000000000",
-            "checksum_down": null,
-            "composed_at": "2026-04-25T01:02:03Z"
-        }"#;
+   "format_version": "1",
+   "bucket_database": "main",
+   "bucket_app": "billing",
+   "version": "V20260425010203__add_invoices",
+   "slug": "add_invoices",
+   "model_snapshot": {
+    "djogi_version": "0.2.0",
+    "enums": {},
+    "format_version": "1",
+    "generated_at": "2027-01-01T00:00:00Z",
+    "indexes": [],
+    "models": {},
+    "registered_apps": ["billing"]
+   },
+   "checksum_up": "V1:0000000000000000000000000000000000000000000000000000000000000000",
+   "checksum_down": null,
+   "composed_at": "2026-04-25T01:02:03Z"
+  }"#;
         let err =
             parse_pending_bytes(blob.as_bytes(), None).expect_err("old format must be rejected");
         assert!(
@@ -4108,7 +4108,7 @@ mod tests {
         }
         assert!(
             tmp_files.is_empty(),
-            "no .tmp.<pid> file should remain: {tmp_files:?}"
+            "no.tmp.<pid> file should remain: {tmp_files:?}"
         );
         // Up SQL must NOT exist (the up rename had succeeded but the
         // guard rolled it back).
@@ -4129,17 +4129,17 @@ mod tests {
     /// promoted OVER an existing file. We simulate a mid-sequence
     /// failure by:
     /// 1. Pre-creating the up SQL file with content `"old"` (so the
-    ///    up promote is an OVERWRITE, not a fresh create).
+    /// up promote is an OVERWRITE, not a fresh create).
     /// 2. Pre-creating the down_path as a directory so the down
-    ///    promote fails. The up promote has already succeeded by
-    ///    that point, so its rollback path runs.
-    ///    Asserts:
+    /// promote fails. The up promote has already succeeded by
+    /// that point, so its rollback path runs.
+    /// Asserts:
     /// - tmp files cleaned up (contract still holds).
     /// - The up file's content is still `"old"` (restored from
-    ///   backup, NOT the freshly-emitted bytes).
+    /// backup, NOT the freshly-emitted bytes).
     /// - No `.bak.<pid>.<n>` sibling files remain on disk (the
-    ///   rollback's restore step renames the backup back over the
-    ///   final path; no backup file is left behind).
+    /// rollback's restore step renames the backup back over the
+    /// final path; no backup file is left behind).
     #[test]
     fn b10_rollback_restores_original_bytes_on_overwrite_failure() {
         let work = temp_workspace("b10_overwrite_restore");
@@ -4241,16 +4241,16 @@ mod tests {
     /// 1. Pre-create up SQL with "operator up content".
     /// 2. Pre-create down SQL with "operator down content".
     /// 3. Block the replay-plan promote by creating its target as a
-    ///    NON-EMPTY directory (so `fs::rename(<file>, <non-empty-dir>)`
-    ///    fails with a kernel-level error). The replay-plan sidecar
-    ///    lives alongside the SQL files, after the up/down promotes,
-    ///    and is not preflighted by the pending-authority guard.
-    ///    Asserts:
-    /// - The error variant matches `ComposeError::Io { .. }`.
+    /// NON-EMPTY directory (so `fs::rename(<file>, <non-empty-dir>)`
+    /// fails with a kernel-level error). The replay-plan sidecar
+    /// lives alongside the SQL files, after the up/down promotes,
+    /// and is not preflighted by the pending-authority guard.
+    /// Asserts:
+    /// - The error variant matches `ComposeError::Io {.. }`.
     /// - BOTH up and down files are restored to their original
-    ///   operator content (LIFO order: down restored before up; the
-    ///   final on-disk state must be identical to the pre-compose
-    ///   state).
+    /// operator content (LIFO order: down restored before up; the
+    /// final on-disk state must be identical to the pre-compose
+    /// state).
     /// - No `.tmp.<pid>.<n>` or `.bak.<pid>.<n>` siblings remain.
     #[test]
     fn b10_rollback_restores_multi_promote_lifo_order() {
@@ -4887,7 +4887,7 @@ mod tests {
             assert!(
                 old_dir.join("V20260101010101__a.sdjql").exists(),
                 "movable entry must remain under OLD — pre-flight \
-                 must pre-empt the entire merge loop"
+     must pre-empt the entire merge loop"
             );
             assert!(
                 !new_dir.join("V20260101010101__a.sdjql").exists(),
@@ -5065,13 +5065,13 @@ mod tests {
             classification: Classification::Reversible,
         };
         let lowered = vec![OperationSql {
-            label: "add metric check".into(),
-            up: r#"ALTER TABLE "invoices" ADD CONSTRAINT "metrics_check" CHECK (djogi.__djogi_numeric_array_is_rust_decimal_v1("metrics"));"#
-                .into(),
-            down: r#"ALTER TABLE "invoices" DROP CONSTRAINT "metrics_check";"#
-                .into(),
-            lossy: None,
-        }];
+   label: "add metric check".into(),
+   up: r#"ALTER TABLE "invoices" ADD CONSTRAINT "metrics_check" CHECK (djogi.__djogi_numeric_array_is_rust_decimal_v1("metrics"));"#
+   .into(),
+   down: r#"ALTER TABLE "invoices" DROP CONSTRAINT "metrics_check";"#
+   .into(),
+   lossy: None,
+  }];
         let version = "V20260518__numeric_array_helper";
         let up_sql = compose_up_text(version, &delta, &lowered);
         let down_sql = compose_down_text(version, &delta, &lowered);
@@ -5204,12 +5204,12 @@ mod tests {
             .await
             .unwrap();
         let row = tx
-            .query_one(
-                "SELECT djogi.__djogi_numeric_array_is_rust_decimal_v1(ARRAY[1::numeric, 2::numeric]::numeric[])",
-                &[],
-            )
-            .await
-            .unwrap();
+  .query_one(
+    "SELECT djogi.__djogi_numeric_array_is_rust_decimal_v1(ARRAY[1::numeric, 2::numeric]::numeric[])",
+    &[],
+   )
+  .await
+  .unwrap();
         assert!(row.get::<_, bool>(0));
         tx.rollback().await.unwrap();
         // Drop the client before awaiting the connection task; while the
@@ -5233,13 +5233,13 @@ mod tests {
             classification: Classification::Reversible,
         };
         let lowered = vec![OperationSql {
-            label: "add blackout dates check".into(),
-            up: r#"ALTER TABLE "calendars" ADD CONSTRAINT "blackout_dates_check" CHECK (djogi.__djogi_date_array_is_finite_v1("blackout_dates"));"#
-                .into(),
-            down: r#"ALTER TABLE "calendars" DROP CONSTRAINT "blackout_dates_check";"#
-                .into(),
-            lossy: None,
-        }];
+   label: "add blackout dates check".into(),
+   up: r#"ALTER TABLE "calendars" ADD CONSTRAINT "blackout_dates_check" CHECK (djogi.__djogi_date_array_is_finite_v1("blackout_dates"));"#
+   .into(),
+   down: r#"ALTER TABLE "calendars" DROP CONSTRAINT "blackout_dates_check";"#
+   .into(),
+   lossy: None,
+  }];
         let version = "V20260518__date_array_helper";
         let up_sql = compose_up_text(version, &delta, &lowered);
         let down_sql = compose_down_text(version, &delta, &lowered);
@@ -5278,12 +5278,12 @@ mod tests {
             classification: Classification::Reversible,
         };
         let lowered = vec![OperationSql {
-            label: "add scheduled slots check".into(),
-            up: r#"ALTER TABLE "sessions" ADD CONSTRAINT "slots_check" CHECK (djogi.__djogi_tstz_array_is_finite_v1("slots"));"#
-                .into(),
-            down: r#"ALTER TABLE "sessions" DROP CONSTRAINT "slots_check";"#.into(),
-            lossy: None,
-        }];
+   label: "add scheduled slots check".into(),
+   up: r#"ALTER TABLE "sessions" ADD CONSTRAINT "slots_check" CHECK (djogi.__djogi_tstz_array_is_finite_v1("slots"));"#
+   .into(),
+   down: r#"ALTER TABLE "sessions" DROP CONSTRAINT "slots_check";"#.into(),
+   lossy: None,
+  }];
         let version = "V20260518__tstz_array_helper";
         let up_sql = compose_up_text(version, &delta, &lowered);
         let down_sql = compose_down_text(version, &delta, &lowered);
@@ -5342,7 +5342,7 @@ mod tests {
         assert!(
             DATE_ARRAY_HELPER_PRELUDE.contains("pg_catalog.isfinite(value)"),
             "Date-array helper must guard against both ±infinity via isfinite: \
-             {DATE_ARRAY_HELPER_PRELUDE}"
+    {DATE_ARRAY_HELPER_PRELUDE}"
         );
         assert!(
             DATE_ARRAY_HELPER_PRELUDE.contains("'9999-12-31'::pg_catalog.date"),
@@ -5378,7 +5378,7 @@ mod tests {
         assert!(
             TSTZ_ARRAY_HELPER_PRELUDE.contains("pg_catalog.isfinite(value)"),
             "Tstz-array helper must guard against both ±infinity via isfinite: \
-             {TSTZ_ARRAY_HELPER_PRELUDE}"
+    {TSTZ_ARRAY_HELPER_PRELUDE}"
         );
         assert!(
             TSTZ_ARRAY_HELPER_PRELUDE
@@ -5412,12 +5412,12 @@ mod tests {
         tx.batch_execute(DATE_ARRAY_HELPER_PRELUDE).await.unwrap();
         // Finite dates: helper returns true.
         let row = tx
-            .query_one(
-                "SELECT djogi.__djogi_date_array_is_finite_v1(ARRAY['2026-05-18'::date, '2000-01-01'::date]::date[])",
-                &[],
-            )
-            .await
-            .unwrap();
+  .query_one(
+    "SELECT djogi.__djogi_date_array_is_finite_v1(ARRAY['2026-05-18'::date, '2000-01-01'::date]::date[])",
+    &[],
+   )
+  .await
+  .unwrap();
         assert!(
             row.get::<_, bool>(0),
             "finite date array must pass the helper check"
@@ -5492,36 +5492,36 @@ mod tests {
         tx.batch_execute(TSTZ_ARRAY_HELPER_PRELUDE).await.unwrap();
         // Finite timestamptz values: helper returns true.
         let row = tx
-            .query_one(
-                "SELECT djogi.__djogi_tstz_array_is_finite_v1(ARRAY['2026-05-18 00:00:00+00'::timestamptz, '2000-01-01 12:00:00+00'::timestamptz]::timestamptz[])",
-                &[],
-            )
-            .await
-            .unwrap();
+  .query_one(
+    "SELECT djogi.__djogi_tstz_array_is_finite_v1(ARRAY['2026-05-18 00:00:00+00'::timestamptz, '2000-01-01 12:00:00+00'::timestamptz]::timestamptz[])",
+    &[],
+   )
+  .await
+  .unwrap();
         assert!(
             row.get::<_, bool>(0),
             "finite timestamptz array must pass the helper check"
         );
         // Positive infinity: helper returns false (isfinite fails).
         let row = tx
-            .query_one(
-                "SELECT djogi.__djogi_tstz_array_is_finite_v1(ARRAY['infinity'::timestamptz]::timestamptz[])",
-                &[],
-            )
-            .await
-            .unwrap();
+  .query_one(
+    "SELECT djogi.__djogi_tstz_array_is_finite_v1(ARRAY['infinity'::timestamptz]::timestamptz[])",
+    &[],
+   )
+  .await
+  .unwrap();
         assert!(
             !row.get::<_, bool>(0),
             "timestamptz array containing +infinity must fail the helper check"
         );
         // Negative infinity: helper returns false (isfinite fails).
         let row = tx
-            .query_one(
-                "SELECT djogi.__djogi_tstz_array_is_finite_v1(ARRAY['-infinity'::timestamptz]::timestamptz[])",
-                &[],
-            )
-            .await
-            .unwrap();
+  .query_one(
+    "SELECT djogi.__djogi_tstz_array_is_finite_v1(ARRAY['-infinity'::timestamptz]::timestamptz[])",
+    &[],
+   )
+  .await
+  .unwrap();
         assert!(
             !row.get::<_, bool>(0),
             "timestamptz array containing -infinity must fail the helper check"
@@ -5725,7 +5725,7 @@ mod tests {
         let err =
             compose(req).expect_err("linkage guard must refuse even with --allow-destructive");
         assert!(
-            matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label == "billing"),
+            matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label,.. } if app_label == "billing"),
             "expected LinkageDropWithoutModels for billing, got: {err}"
         );
         let _ = fs::remove_dir_all(&work);
@@ -5884,7 +5884,7 @@ mod tests {
 
         let err = compose(req).expect_err("global bucket guard must fire");
         assert!(
-            matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label.is_empty()),
+            matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label,.. } if app_label.is_empty()),
             "expected LinkageDropWithoutModels for global bucket, got: {err}"
         );
         let _ = fs::remove_dir_all(&work);
@@ -5928,7 +5928,7 @@ mod tests {
 
         let err = compose(req).expect_err("guard must fire even when app absent from req.apps");
         assert!(
-            matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label == "orphan"),
+            matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label,.. } if app_label == "orphan"),
             "expected LinkageDropWithoutModels for orphan, got: {err}"
         );
         let _ = fs::remove_dir_all(&work);
@@ -6929,7 +6929,7 @@ mod tests {
     }
 
     /// REQ-396-11: Two buckets that both add the same new enum variant
-    /// must produce exactly one `ALTER TYPE ... ADD VALUE` across both
+    /// must produce exactly one `ALTER TYPE... ADD VALUE` across both
     /// buckets. The topo-first bucket (alpha) keeps it; the non-owner
     /// (beta) has it removed; beta gains a dependency edge on alpha.
     /// This test calls `reconcile_enum_ops_across_buckets` directly so
@@ -7003,9 +7003,9 @@ mod tests {
             .flat_map(|d| d.operations.iter())
             .filter(|op| {
                 matches!(
-                    op,
-                    SchemaOperation::AddEnumVariant { enum_name, variant, .. }
-                        if enum_name == "mood" && variant == "excited"
+                 op,
+                 SchemaOperation::AddEnumVariant { enum_name, variant,.. }
+                  if enum_name == "mood" && variant == "excited"
                 )
             })
             .count();
@@ -7017,16 +7017,16 @@ mod tests {
         // 2. Alpha (topo-first) keeps it; beta (non-owner) has it removed.
         let alpha_has_variant = deltas[0].operations.iter().any(|op| {
             matches!(
-                op,
-                SchemaOperation::AddEnumVariant { enum_name, variant, .. }
-                    if enum_name == "mood" && variant == "excited"
+             op,
+             SchemaOperation::AddEnumVariant { enum_name, variant,.. }
+              if enum_name == "mood" && variant == "excited"
             )
         });
         let beta_has_variant = deltas[1].operations.iter().any(|op| {
             matches!(
-                op,
-                SchemaOperation::AddEnumVariant { enum_name, variant, .. }
-                    if enum_name == "mood" && variant == "excited"
+             op,
+             SchemaOperation::AddEnumVariant { enum_name, variant,.. }
+              if enum_name == "mood" && variant == "excited"
             )
         });
         assert!(
@@ -7665,7 +7665,7 @@ mod tests {
             Err(ComposeError::DestructiveRequiresAllowDestructive { .. }) => {
                 panic!(
                     "DropEnum should have been suppressed and reclassified to non-destructive; \
-                     compose failed with DestructiveRequiresAllowDestructive"
+      compose failed with DestructiveRequiresAllowDestructive"
                 )
             }
             Err(e) => panic!("Unexpected error: {:?}", e),
@@ -7884,7 +7884,7 @@ mod tests {
     /// Verifies:
     /// 1. `ComposeReport::converged_snapshot_buckets` contains the bucket.
     /// 2. The snapshot file exists at the expected path and does NOT contain
-    ///    the now-absent enum (the bucket no longer projects it).
+    /// the now-absent enum (the bucket no longer projects it).
     /// 3. No migration SQL file was written for the converged bucket.
     #[test]
     fn suppressed_drop_enum_writes_convergence_snapshot() {
@@ -7906,10 +7906,10 @@ mod tests {
         };
 
         // Current model state:
-        //   Alpha: keeps the enum + adds a NEW table (posts) — alpha has a
-        //          real delta (AddTable) so compose.rs's step-5 filter passes.
-        //   Beta:  no longer projects the enum, no tables — its current scoped
-        //          models are empty. The diff produces DropEnum as beta's only op.
+        // Alpha: keeps the enum + adds a NEW table (posts) — alpha has a
+        //   real delta (AddTable) so compose.rs's step-5 filter passes.
+        // Beta: no longer projects the enum, no tables — its current scoped
+        //   models are empty. The diff produces DropEnum as beta's only op.
         let mut models = BTreeMap::new();
         {
             let mut alpha_schema = empty_snapshot(&alpha_bucket);
@@ -7928,12 +7928,12 @@ mod tests {
         }
 
         // Snapshots:
-        //   Alpha: has the enum but NO posts table yet (alpha gets AddTable + AddEnum
-        //          from the diff — AddEnum later suppressed by the snapshot check since
-        //          beta's snapshot already has it; AddTable survives).
-        //   Beta:  has the mood enum (stale from the old global-snapshot behaviour) —
-        //          diff produces DropEnum which gets suppressed because alpha still
-        //          projects mood. Beta's delta becomes empty → convergence.
+        // Alpha: has the enum but NO posts table yet (alpha gets AddTable + AddEnum
+        //   from the diff — AddEnum later suppressed by the snapshot check since
+        //   beta's snapshot already has it; AddTable survives).
+        // Beta: has the mood enum (stale from the old global-snapshot behaviour) —
+        //   diff produces DropEnum which gets suppressed because alpha still
+        //   projects mood. Beta's delta becomes empty → convergence.
         let mut snapshots = BTreeMap::new();
         snapshots.insert(
             alpha_bucket.clone(),
@@ -7977,7 +7977,7 @@ mod tests {
         let report = compose(req).expect("compose succeeds");
 
         // 1. Beta's bucket is recorded as converged (DropEnum was suppressed
-        //    and beta's delta became empty, prompting a snapshot advance).
+        // and beta's delta became empty, prompting a snapshot advance).
         assert!(
             report.converged_snapshot_buckets.contains(&beta_bucket),
             "beta should be in converged_snapshot_buckets; got: {:?}",
@@ -7992,7 +7992,7 @@ mod tests {
         );
 
         // 3. The snapshot does NOT contain the mood enum (beta no longer
-        //    projects it — the scoped snapshot reflects current beta models).
+        // projects it — the scoped snapshot reflects current beta models).
         let snap_bytes = fs::read(&snap_path).unwrap();
         let snap: crate::migrate::schema::AppliedSchema =
             serde_json::from_slice(&snap_bytes).expect("valid snapshot JSON");
@@ -8003,7 +8003,7 @@ mod tests {
         );
 
         // 4. No migration SQL file was written for beta (DropEnum suppressed,
-        //    no other ops survived).
+        // no other ops survived).
         assert!(
             !report
                 .composed_buckets

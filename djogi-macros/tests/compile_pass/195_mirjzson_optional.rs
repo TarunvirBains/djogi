@@ -11,9 +11,9 @@ use djogi::prelude::*;
 #[model(table = "phase85_mirjzson_optional_payloads")]
 #[derive(Debug, Clone)]
 pub struct OptionalPayload {
-    pub source: String,
-    #[mirjzson(justification = "schema lives in the downstream consumer service")]
-    pub payload: Option<MirJzSON>,
+ pub source: String,
+ #[mirjzson(justification = "schema lives in the downstream consumer service")]
+ pub payload: Option<MirJzSON>,
 }
 
 fn main() {}

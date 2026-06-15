@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Primary Keys — HeeRanjId
 
@@ -51,32 +51,32 @@ Opt in per model:
 #[model(table = "high_volume_events", pk = RanjId)]
 #[derive(Debug, Clone)]
 pub struct Event {
-    pub kind: String,
-    pub payload: Jsonb<EventPayload>,  // Jsonb<T> arrives in Phase 5
+ pub kind: String,
+ pub payload: Jsonb<EventPayload>, // Jsonb<T> arrives in 
 }
 ```
 HeerId tables (installed once per database, managed by the `heeranjid` crate):
 ```sql
 CREATE TABLE heer_nodes (
-    node_id       INTEGER PRIMARY KEY,
-    name          TEXT NOT NULL,
-    description   TEXT,
-    is_active     BOOLEAN DEFAULT true,
-    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_accessed TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+ node_id INTEGER PRIMARY KEY,
+ name  TEXT NOT NULL,
+ description TEXT,
+ is_active BOOLEAN DEFAULT true,
+ created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ last_accessed TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE heer_config (
-    id        INTEGER PRIMARY KEY CHECK (id = 1),
-    epoch     TIMESTAMP NOT NULL,           -- custom epoch per deployment
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+ id INTEGER PRIMARY KEY CHECK (id = 1),
+ epoch TIMESTAMP NOT NULL,  -- custom epoch per deployment
+ updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE heer_node_state (
-    node_id       INTEGER PRIMARY KEY REFERENCES heer_nodes(node_id) ON DELETE CASCADE,
-    last_id_time  BIGINT NOT NULL DEFAULT 0,
-    last_sequence SMALLINT NOT NULL DEFAULT 0,
-    updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+ node_id INTEGER PRIMARY KEY REFERENCES heer_nodes(node_id) ON DELETE CASCADE,
+ last_id_time BIGINT NOT NULL DEFAULT 0,
+ last_sequence SMALLINT NOT NULL DEFAULT 0,
+ updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ```
 ### 3.2 Node Identity
@@ -116,7 +116,7 @@ Small lookup/reference tables can opt into `Serial` where human-readable sequent
 #[model(table = "fuel_types", pk = Serial)]
 #[derive(Debug, Clone)]
 pub struct FuelType {
-    pub name: String,
+ pub name: String,
 }
 ```
 
@@ -133,13 +133,13 @@ Djogi fires the INSERT and reads the ID back via `RETURNING id`. The
 developer never thinks about ID generation.
 ```rust
 let car = Vehicle::create(&mut ctx, Vehicle {
-    make: "Toyota".into(),
-    model_name: "Camry".into(),
-    gas_fill: 50,
-    active: true,
+ make: "Toyota".into(),
+ model_name: "Camry".into(),
+ gas_fill: 50,
+ active: true,
 }).await?;
 
-println!("{}", car.id);   // populated by RETURNING id
+println!("{}", car.id); // populated by RETURNING id
 ```
 **Pattern 2 — Bulk pre-allocation (link tables and bulk relational inserts):**
 
@@ -153,9 +153,9 @@ concurrency-safe.
 let ids = HeerId::generate_many(&mut ctx, 3).await?;
 
 let memberships = vec![
-    PersonGroup { id: ids[0], person_id: alice.id, group_id: group.id, role: "admin".into() },
-    PersonGroup { id: ids[1], person_id: bob.id,   group_id: group.id, role: "member".into() },
-    PersonGroup { id: ids[2], person_id: carol.id, group_id: group.id, role: "member".into() },
+ PersonGroup { id: ids[0], person_id: alice.id, group_id: group.id, role: "admin".into() },
+ PersonGroup { id: ids[1], person_id: bob.id, group_id: group.id, role: "member".into() },
+ PersonGroup { id: ids[2], person_id: carol.id, group_id: group.id, role: "member".into() },
 ];
 
 PersonGroup::bulk_create(&mut ctx, memberships).await?;
@@ -179,29 +179,29 @@ With pre-generation:
 - The final INSERT becomes idempotent — retry or double-submit with the same ID is safe via `ON CONFLICT (id) DO NOTHING`
 ```rust
 async fn new_vehicle_form(
-    State(app): State<AppState>,
+ State(app): State<AppState>,
 ) -> impl IntoResponse {
-    // ID generated at form render — before any user input
-    let mut ctx = app.db_context().await?;
-    let id = HeerId::generate(&mut ctx).await?;
+ // ID generated at form render — before any user input
+ let mut ctx = app.db_context().await?;
+ let id = HeerId::generate(&mut ctx).await?;
 
-    Html(render_template("vehicles/new.html", context! {
-        form_id: id,
-    }))
+ Html(render_template("vehicles/new.html", context! {
+ form_id: id,
+ }))
 }
 
 async fn create_vehicle(
-    State(app): State<AppState>,
-    Form(input): Form<CreateVehicleInput>,
+ State(app): State<AppState>,
+ Form(input): Form<CreateVehicleInput>,
 ) -> impl IntoResponse {
-    let mut ctx = app.db_context().await?;
-    // ID arrives from the form — INSERT is idempotent
-    Vehicle::create_with_id(&mut ctx, input.form_id, Vehicle {
-        make: input.make,
-        model_name: input.model_name,
-        gas_fill: input.gas_fill,
-        active: true,
-    }).await?;
+ let mut ctx = app.db_context().await?;
+ // ID arrives from the form — INSERT is idempotent
+ Vehicle::create_with_id(&mut ctx, input.form_id, Vehicle {
+ make: input.make,
+ model_name: input.model_name,
+ gas_fill: input.gas_fill,
+ active: true,
+ }).await?;
 }
 ```
 The SQL underneath:
@@ -227,39 +227,39 @@ client-side).
 use djogi::prelude::*;
 
 djogi::primary_key! {
-    pub struct ULID(uuid::Uuid);
+ pub struct ULID(uuid::Uuid);
 
-    sql_type     = "UUID";
-    default_sql  = "gen_random_uuid()";    // emitted in CREATE TABLE
-    bulk_sql     = "SELECT gen_random_uuid() FROM generate_series(1, $1)";
-    generate     = || ULID(uuid::Uuid::new_v4());
+ sql_type = "UUID";
+ default_sql = "gen_random_uuid()"; // emitted in CREATE TABLE
+ bulk_sql = "SELECT gen_random_uuid() FROM generate_series(1, $1)";
+ generate = || ULID(uuid::Uuid::new_v4());
 }
 
 #[model(table = "events", pk = ULID)]
 pub struct Event {
-    pub kind: String,
+ pub kind: String,
 }
 ```
 
 Attribute grammar:
 
-| Attribute      | Required           | Purpose                                                                 |
+| Attribute | Required  | Purpose         |
 |----------------|--------------------|-------------------------------------------------------------------------|
-| `sql_type`     | always             | Postgres column type used in `CREATE TABLE`                             |
-| `default_sql`  | always             | column `DEFAULT` expression (used as the bulk-allocation fallback too)  |
-| `bulk_sql`     | optional           | bulk pre-allocation query — `$1` is the requested count                 |
-| `generate`     | optional           | client-side generation closure — enables `PrimaryKeyClientGen`          |
+| `sql_type` | always  | Postgres column type used in `CREATE TABLE`    |
+| `default_sql` | always  | column `DEFAULT` expression (used as the bulk-allocation fallback too) |
+| `bulk_sql` | optional  | bulk pre-allocation query — `$1` is the requested count   |
+| `generate` | optional  | client-side generation closure — enables `PrimaryKeyClientGen`  |
 
 Emission rules:
 
 - `bulk_sql` present → `PrimaryKeyDbGen::generate_many` runs the user
-  SQL and asserts the row count matches the requested count.
+ SQL and asserts the row count matches the requested count.
 - `bulk_sql` absent + `generate` present → `generate_many` falls back
-  to a per-row client-side loop using the closure.
+ to a per-row client-side loop using the closure.
 - both absent → `generate_many` synthesises
-  `SELECT (<default_sql>) FROM generate_series(1, $1)`, so every
-  custom PK is usable with `bulk_create` out of the box without a
-  dummy patch.
+ `SELECT (<default_sql>) FROM generate_series(1, $1)`, so every
+ custom PK is usable with `bulk_create` out of the box without a
+ dummy patch.
 
 Beyond the four built-ins (`HeerId` / `HeerIdRecencyBiased` / `RanjId` /
 `RanjIdRecencyBiased`) and the opt-in `Serial` variant, custom PK kinds
@@ -306,9 +306,9 @@ HeeRanjId-side `HeerIdDesc` / `RanjIdDesc` types and playbook wording.
 That split is intentional:
 
 - user-facing model declarations and docs should describe scan-order
-  intent, not bit-layout mechanics
+ intent, not bit-layout mechanics
 - migration internals still need to refer to the concrete desc variants
-  that HeeRanjId installs and migrates
+ that HeeRanjId installs and migrates
 ### 3.6 Clock and Sequence Edge Cases
 
 HeerId handles these at the database level — Djogi does not need to think about them:

@@ -42,27 +42,27 @@ use djogi::snapshot::sign::{sign_snapshot, verify_snapshot};
 /// on `serde_json::to_vec_pretty` we'd lose byte-stability.
 fn fixture_snapshot_bytes() -> Vec<u8> {
     let payload = br#"{
-  "snapshot": {
-    "version": 1,
-    "generated_at": "2026-05-05T00:00:00Z"
+ "snapshot": {
+  "version": 1,
+  "generated_at": "2026-05-05T00:00:00Z"
+ },
+ "models": [
+  {
+   "table": "widgets",
+   "fields": [
+    {"name": "id", "ty": "BIGINT", "nullable": false},
+    {"name": "name", "ty": "TEXT", "nullable": false},
+    {"name": "created_at", "ty": "TIMESTAMPTZ", "nullable": false}
+   ]
   },
-  "models": [
-    {
-      "table": "widgets",
-      "fields": [
-        {"name": "id", "ty": "BIGINT", "nullable": false},
-        {"name": "name", "ty": "TEXT", "nullable": false},
-        {"name": "created_at", "ty": "TIMESTAMPTZ", "nullable": false}
-      ]
-    },
-    {
-      "table": "categories",
-      "fields": [
-        {"name": "id", "ty": "BIGINT", "nullable": false},
-        {"name": "label", "ty": "TEXT", "nullable": false}
-      ]
-    }
-  ]
+  {
+   "table": "categories",
+   "fields": [
+    {"name": "id", "ty": "BIGINT", "nullable": false},
+    {"name": "label", "ty": "TEXT", "nullable": false}
+   ]
+  }
+ ]
 }
 "#;
     payload.to_vec()

@@ -17,16 +17,16 @@
 //! 1. [`StepKind::ExpandSchema`] — `ALTER TABLE <t> ADD CONSTRAINT
 //! <name> FOREIGN KEY (<col>) REFERENCES <ref_t>(<ref_col>) NOT
 //! VALID`. The `NOT VALID` suffix tells Postgres to skip the
-//!    validation pass that would otherwise scan every row under an
-//!    `AccessExclusiveLock`.
+//! validation pass that would otherwise scan every row under an
+//! `AccessExclusiveLock`.
 //! 2. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//!    while `ALTER TABLE <t> VALIDATE CONSTRAINT <name>` runs. The
-//!    `VALIDATE` pass takes a `ShareUpdateExclusiveLock` on the
-//!    target table — readers and writers continue while the scan
-//!    completes.
-//!    No backfill is needed — `VALIDATE` reads existing rows in place;
-//!    it never rewrites them. [`Pattern::IDEMPOTENT_PREDICATE`] is
-//!    `false` because no [`StepKind::BackfillChunked`] step is emitted.
+//! while `ALTER TABLE <t> VALIDATE CONSTRAINT <name>` runs. The
+//! `VALIDATE` pass takes a `ShareUpdateExclusiveLock` on the
+//! target table — readers and writers continue while the scan
+//! completes.
+//! No backfill is needed — `VALIDATE` reads existing rows in place;
+//! it never rewrites them. [`Pattern::IDEMPOTENT_PREDICATE`] is
+//! `false` because no [`StepKind::BackfillChunked`] step is emitted.
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};

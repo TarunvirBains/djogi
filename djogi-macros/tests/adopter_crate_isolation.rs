@@ -52,10 +52,10 @@
 //! is safe — the fixture's target subdir is isolated.
 //!
 //! Spec anchor:
-//!   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//!   §3 commit T7.4 — compile-fixture bullet (this driver invokes the
-//!   stronger sibling complementing the same-named lihaaf compile_pass
-//!   fixture).
+//! docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
+//! §3 commit T7.4 — compile-fixture bullet (this driver invokes the
+//! stronger sibling complementing the same-named lihaaf compile_pass
+//! fixture).
 //!
 //! GitHub: djogi#124.
 
@@ -72,7 +72,7 @@ fn fixture_compiles_with_only_djogi_as_direct_dep() {
     let workspace_root = manifest_dir.parent().unwrap_or_else(|| {
         panic!(
             "CARGO_MANIFEST_DIR ({}) has no parent — expected djogi-macros to live \
-             directly under djogi's workspace root",
+    directly under djogi's workspace root",
             manifest_dir.display(),
         )
     });
@@ -83,7 +83,7 @@ fn fixture_compiles_with_only_djogi_as_direct_dep() {
     assert!(
         fixture_manifest.is_file(),
         "fixture Cargo.toml not found at {} — the adopter-isolation fixture is missing \
-         from the worktree",
+   from the worktree",
         fixture_manifest.display(),
     );
 
@@ -103,54 +103,54 @@ fn fixture_compiles_with_only_djogi_as_direct_dep() {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
 
     let output = Command::new(&cargo)
-        .arg("check")
-        .arg("--all-targets")
-        .arg("--locked")
-        .arg("--manifest-path")
-        .arg(&fixture_manifest)
-        .arg("--target-dir")
-        .arg(&target_dir)
-        // `CARGO_TARGET_DIR` from the parent `cargo test` invocation
-        // would otherwise leak into the child cargo process. `--target-dir`
-        // takes precedence per cargo's CLI > env > config rule, but
-        // explicitly clearing the env var keeps the child's behaviour
-        // independent of how the parent was launched.
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .unwrap_or_else(|err| {
-            panic!(
-                "failed to spawn `{} check --all-targets --locked --manifest-path {} --target-dir {}`: {}",
-                PathBuf::from(&cargo).display(),
-                fixture_manifest.display(),
-                target_dir.display(),
-                err,
-            )
-        });
+ .arg("check")
+ .arg("--all-targets")
+ .arg("--locked")
+ .arg("--manifest-path")
+ .arg(&fixture_manifest)
+ .arg("--target-dir")
+ .arg(&target_dir)
+  // `CARGO_TARGET_DIR` from the parent `cargo test` invocation
+  // would otherwise leak into the child cargo process. `--target-dir`
+  // takes precedence per cargo's CLI > env > config rule, but
+  // explicitly clearing the env var keeps the child's behaviour
+  // independent of how the parent was launched.
+ .env_remove("CARGO_TARGET_DIR")
+ .output()
+ .unwrap_or_else(|err| {
+   panic!(
+    "failed to spawn `{} check --all-targets --locked --manifest-path {} --target-dir {}`: {}",
+    PathBuf::from(&cargo).display(),
+    fixture_manifest.display(),
+    target_dir.display(),
+    err,
+   )
+  });
 
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         panic!(
             "adopter_crate_isolation fixture failed to compile.\n\
-             \n\
-             A locked `cargo check --all-targets` against a fixture crate that depends on `djogi` \
-             alone could not resolve a name emitted by a macro expansion. \
-             The likely cause is a macro-emitted path that spells `::sassi::*` / \
-             `::heeranjid::*` / `::time::*` / `::uuid::*` / `::inventory::*` / \
-             `::serde::*` / `::tokio::*` / `::tokio_postgres::*` / \
-             `::postgres_types::*` etc. \
-             directly instead of routing through `::djogi::*` per \
-             `feedback_macro_path_routing.md`. Inspect the stderr below for the \
-             offending E0433 — the path appears in a macro expansion, not in \
-             handwritten fixture code.\n\
-             \n\
-             cargo:         {}\n\
-             manifest:      {}\n\
-             target-dir:    {}\n\
-             exit status:   {}\n\
-             \n\
-             ────── stdout ──────\n{}\n\
-             ────── stderr ──────\n{}\n",
+    \n\
+    A locked `cargo check --all-targets` against a fixture crate that depends on `djogi` \
+    alone could not resolve a name emitted by a macro expansion. \
+    The likely cause is a macro-emitted path that spells `::sassi::*` / \
+    `::heeranjid::*` / `::time::*` / `::uuid::*` / `::inventory::*` / \
+    `::serde::*` / `::tokio::*` / `::tokio_postgres::*` / \
+    `::postgres_types::*` etc. \
+    directly instead of routing through `::djogi::*` per \
+    `feedback_macro_path_routing.md`. Inspect the stderr below for the \
+    offending E0433 — the path appears in a macro expansion, not in \
+    handwritten fixture code.\n\
+    \n\
+    cargo:   {}\n\
+    manifest:  {}\n\
+    target-dir: {}\n\
+    exit status: {}\n\
+    \n\
+    ────── stdout ──────\n{}\n\
+    ────── stderr ──────\n{}\n",
             PathBuf::from(&cargo).display(),
             fixture_manifest.display(),
             target_dir.display(),

@@ -25,13 +25,13 @@ use crate::types::{HeerId, HeerIdDesc, RanjId, RanjIdDesc};
 
 macro_rules! impl_heeranjid_pk {
     (
-        $ty:ty,
-        $kind_tag:ident,
-        $sql_type:literal,
-        $default_sql:literal,
-        $single_sql:literal,
-        $batch_sql:literal $(,)?
-    ) => {
+  $ty:ty,
+  $kind_tag:ident,
+  $sql_type:literal,
+  $default_sql:literal,
+  $single_sql:literal,
+  $batch_sql:literal $(,)?
+ ) => {
         impl PrimaryKey for $ty {
             const __DJOGI_PK_SEAL: crate::primary_key::PkSealToken =
                 crate::__private::pk_seal::TOKEN;
@@ -89,7 +89,7 @@ impl_heeranjid_pk!(
     "heerid_next_desc()",
     "SELECT heerid_next_desc()",
     "SELECT heerid_to_desc(id) \
-     FROM generate_ids(current_heer_node_id(), $1::integer, true)",
+  FROM generate_ids(current_heer_node_id(), $1::integer, true)",
 );
 
 impl_heeranjid_pk!(
@@ -108,7 +108,7 @@ impl_heeranjid_pk!(
     "ranjid_next_desc()",
     "SELECT ranjid_next_desc()",
     "SELECT ranjid_to_desc(id) \
-     FROM generate_ranjids(current_heer_ranj_node_id(), $1::integer, true)",
+  FROM generate_ranjids(current_heer_ranj_node_id(), $1::integer, true)",
 );
 
 // ── Serial (i32) ───────────────────────────────────────────────────────

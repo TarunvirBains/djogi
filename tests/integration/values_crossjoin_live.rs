@@ -1,7 +1,7 @@
 // Djogi#299 — typed CROSS JOIN VALUES live tests.
 //
 // Exercises the full `QuerySet::cross_join_values` / `CrossValuesJoinedQuerySet`
-// surface against a real Postgres.  Each test seeds rows via `Model::create`,
+// surface against a real Postgres. Each test seeds rows via `Model::create`,
 // then asserts on the Cartesian product produced by `cross_join_values`.
 //
 // Test model: `C4bValuesCrossAnimal` — deliberately minimal so the

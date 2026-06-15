@@ -152,7 +152,7 @@ async fn rollback_suppresses_notify(mut ctx: djogi::DjogiContext) {
     assert!(
         outcome.is_err(),
         "rollback'd transaction must not surface a notify event; \
-         got an event when none was expected: {:?}",
+     got an event when none was expected: {:?}",
         outcome.ok().and_then(|r| r.ok().map(|e| (e.kind, e.id)))
     );
 }

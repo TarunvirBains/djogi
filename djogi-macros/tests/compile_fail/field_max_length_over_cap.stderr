@@ -1,7 +1,7 @@
 error: `#[field(max_length = 10485761)]` is invalid — Postgres caps `VARCHAR` at 10_485_760 (received N = 10485761)
-  --> $DIR/field_max_length_over_cap.rs:11:26
-   |
-11 |     #[field(max_length = 10485761)]
-   |                          ^^^^^^^^
+ --> $DIR/field_max_length_over_cap.rs:11:26
+ |
+11 |  #[field(max_length = 10485761)]
+ |       ^^^^^^^^
 
 error: aborting due to 1 previous error

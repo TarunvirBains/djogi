@@ -1,4 +1,4 @@
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md) | [Maahi](./index.md)
 
 # Maahi — Configuration and CLI
 
@@ -8,25 +8,25 @@ Maahi's configuration lives in the `[admin]` block of `Djogi.toml`:
 
 ```toml
 [admin]
-enabled               = true
-path                  = "/_admin/"            # URL mount point
-origin                = "https://app.example" # used in Origin/Referer check
-session_idle          = "30m"                 # idle timeout
-session_max           = "12h"                 # absolute timeout
-pending_action_ttl    = "24h"                 # approval-queue expiry
-inline_page_size      = 10                    # M2M inline default
-inline_bulk_threshold = 25                    # inline removals at-or-above this count route a parent save through the dual-control approval flow as an `InlineSave` pending action (sibling to `BulkDelete`)
-default_page_size     = 25                    # list view default
-fk_preload_threshold  = 200                   # FK target rowcount at-or-above which the dropdown switches from preload to typeahead — see UI Surface
-                                              # Auto-detected at startup from pg_class.reltuples; per-FK override via #[field(admin_fk_widget = "preload" | "typeahead")]
-login_rate_limit_per_ip    = "20/5m"          # per-IP limiter (caps total auth volume from one source)
-login_rate_limit_per_email = "10/5m"          # per-email limiter (caps total auth volume against one account)
-                                              # Both must accept; either failing returns 429.
-                                              # Multi-instance deployments require shared state — see security.md
-csrf_secret_env       = "DJOGI_ADMIN_CSRF_SECRET"     # env var holding signing key
-session_secret_env    = "DJOGI_ADMIN_SESSION_SECRET"  # env var holding signing key
-# multi_tenant       = false                          # auto-detected from registered RLS-enabled models;
-                                                      # override only if auto-detection is wrong for the deployment
+enabled  = true
+path   = "/_admin/"  # URL mount point
+origin  = "https://app.example" # used in Origin/Referer check
+session_idle  = "30m"   # idle timeout
+session_max  = "12h"   # absolute timeout
+pending_action_ttl = "24h"   # approval-queue expiry
+inline_page_size = 10   # M2M inline default
+inline_bulk_threshold = 25   # inline removals at-or-above this count route a parent save through the dual-control approval flow as an `InlineSave` pending action (sibling to `BulkDelete`)
+default_page_size = 25   # list view default
+fk_preload_threshold = 200   # FK target rowcount at-or-above which the dropdown switches from preload to typeahead — see UI Surface
+      # Auto-detected at startup from pg_class.reltuples; per-FK override via #[field(admin_fk_widget = "preload" | "typeahead")]
+login_rate_limit_per_ip = "20/5m"  # per-IP limiter (caps total auth volume from one source)
+login_rate_limit_per_email = "10/5m"  # per-email limiter (caps total auth volume against one account)
+      # Both must accept; either failing returns 429.
+      # Multi-instance deployments require shared state — see security.md
+csrf_secret_env = "DJOGI_ADMIN_CSRF_SECRET" # env var holding signing key
+session_secret_env = "DJOGI_ADMIN_SESSION_SECRET" # env var holding signing key
+# multi_tenant = false    # auto-detected from registered RLS-enabled models;
+       # override only if auto-detection is wrong for the deployment
 ```
 
 Secrets — CSRF signing key, session cookie signing key — live in environment variables only, never in `Djogi.toml`, consistent with the `DATABASE_URL` rule in [Configuration](../configuration.md).
@@ -39,16 +39,16 @@ Maahi's admin CLI commands are planned, but they are not registered in the shipp
 
 ```bash
 # Bootstrap the first administrator (one-time, requires audit DB access)
-djogi admin set-password --superuser <email>   # planned; not shipped today
+djogi admin set-password --superuser <email> # planned; not shipped today
 
 # Reset a user's password (operator-side fallback; users have no email-driven flow in v1)
-djogi admin reset-password <email>             # planned; not shipped today
+djogi admin reset-password <email>  # planned; not shipped today
 
 # Build the Maahi WASM bundle for production deployment
-djogi admin build [--release]                  # planned; not shipped today
+djogi admin build [--release]   # planned; not shipped today
 
 # Print the admin URL and current login status (development convenience)
-djogi admin info                               # planned; not shipped today
+djogi admin info    # planned; not shipped today
 ```
 
 Forgot-password via email is not part of v1 — the framework has no notification infrastructure to call into. Operators reset passwords via the CLI fallback. An `EmailSender` trait plus integrated forgot-password is anchored to a future Notification Infrastructure phase ([Phase Map](./phase-map.md)).
@@ -67,4 +67,4 @@ The bootstrap flow is one-time. Subsequent superuser additions go through Maahi 
 
 ---
 
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md) | [Maahi](./index.md)

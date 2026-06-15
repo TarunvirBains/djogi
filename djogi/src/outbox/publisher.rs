@@ -1,4 +1,4 @@
-//! The `Publisher` trait and `PublishError` enum — .
+//! The `Publisher` trait and `PublishError` enum —.
 //! Any struct that can deliver an outbox row to a downstream transport
 //! implements `Publisher`. The framework ships one built-in implementation
 //! ([`NotifyPublisher`](super::publishers::notify::NotifyPublisher)) that uses
@@ -11,11 +11,11 @@
 //! `PublishError` carries a `Transient` / `Permanent` distinction so the relay
 //! loop can decide whether to retry:
 //! - [`PublishError::Transient`] — downstream hiccup (network timeout, rate
-//!   limit, broker restart). Pass `retryable = true` to `mark_failed`.
+//! limit, broker restart). Pass `retryable = true` to `mark_failed`.
 //! - [`PublishError::Permanent`] — payload too large, schema violation, unknown
-//!   channel. Pass `retryable = false` to `mark_failed`.
+//! channel. Pass `retryable = false` to `mark_failed`.
 //! - [`PublishError::Provider`] — wraps an underlying provider error where the
-//!   transience is unknown; the relay should treat this as transient by default.
+//! transience is unknown; the relay should treat this as transient by default.
 
 use super::worker::OutboxRow;
 use async_trait::async_trait;
@@ -26,9 +26,9 @@ use async_trait::async_trait;
 /// # Error semantics
 /// - Return `Ok(())` only after the transport has durably accepted the message
 /// (or the implementation is fire-and-forget by design).
-/// - Return `Err(PublishError::Transient { .. })` for retriable failures so the
+/// - Return `Err(PublishError::Transient {.. })` for retriable failures so the
 /// relay can call `mark_failed(retryable = true)` and try again later.
-/// - Return `Err(PublishError::Permanent { .. })` for terminal failures so the
+/// - Return `Err(PublishError::Permanent {.. })` for terminal failures so the
 /// relay can call `mark_failed(retryable = false)`.
 #[async_trait]
 pub trait Publisher: Send + Sync + 'static {

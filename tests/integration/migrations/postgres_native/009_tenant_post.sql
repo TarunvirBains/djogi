@@ -14,15 +14,15 @@
 -- emitted here because the test user is not a superuser.
 
 CREATE TABLE IF NOT EXISTS tenant_post (
-    id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    org_id      BIGINT NOT NULL,
-    title       TEXT NOT NULL
+  id     BIGINT PRIMARY KEY DEFAULT generate_id(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  org_id   BIGINT NOT NULL,
+  title    TEXT NOT NULL
 );
 
 ALTER TABLE tenant_post ENABLE ROW LEVEL SECURITY;
 
 -- FORCE is not set so the table owner can still bypass RLS when needed.
 CREATE POLICY tenant_post_tenant_isolation ON tenant_post
-    USING (org_id = current_setting('app.tenant_id', true)::bigint);
+  USING (org_id = current_setting('app.tenant_id', true)::bigint);

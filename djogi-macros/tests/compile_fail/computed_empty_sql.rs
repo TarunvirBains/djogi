@@ -10,9 +10,9 @@ use djogi::prelude::*;
 #[model(table = "phase8_computed_empty_vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub base_price: f64,
-    #[computed(sql = "")]
-    pub empty: f64,
+ pub base_price: f64,
+ #[computed(sql = "")]
+ pub empty: f64,
 }
 
 fn main() {}

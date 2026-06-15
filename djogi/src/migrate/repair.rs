@@ -38,18 +38,18 @@
 //! `verify` cannot race with the ledger mutation.
 //! # Three repair flows
 //! 1. [`repair_checksum_drift`] — ledger row's `checksum_up` no longer
-//!    matches the migration file's content. Repair updates the row to
-//!    the freshly-computed checksum.
+//! matches the migration file's content. Repair updates the row to
+//! the freshly-computed checksum.
 //! 2. [`repair_partial_apply`] — non-transactional apply crashed
-//!    mid-segment. Repair rewrites the row's status / progress to
-//!    one of `RolledBack` / `Faked` / `Applied` based on the
-//!    operator's resolution choice.
+//! mid-segment. Repair rewrites the row's status / progress to
+//! one of `RolledBack` / `Faked` / `Applied` based on the
+//! operator's resolution choice.
 //! 3. [`repair_snapshot_rebuild`] — snapshot file is missing or
-//!    corrupt. Repair walks the ledger and re-projects the cumulative
-//!    schema, then writes the new snapshot.
-//!    All three return a [`RepairReport`] documenting exactly what
-//!    changed, so the operator can audit (and replay-via-shell-history
-//!    when needed).
+//! corrupt. Repair walks the ledger and re-projects the cumulative
+//! schema, then writes the new snapshot.
+//! All three return a [`RepairReport`] documenting exactly what
+//! changed, so the operator can audit (and replay-via-shell-history
+//! when needed).
 
 use std::path::{Path, PathBuf};
 
@@ -410,7 +410,7 @@ impl std::fmt::Display for RepairError {
             } => write!(
                 f,
                 "repair resolution {attempted:?} is not valid for version `{version}` \
-                 (current status: {current})",
+     (current status: {current})",
                 current = current_status.as_db_str(),
             ),
             RepairError::BucketAppMismatch {
@@ -420,8 +420,8 @@ impl std::fmt::Display for RepairError {
             } => write!(
                 f,
                 "repair refused for version `{version}`: supplied bucket app `{supplied_app}` \
-                 does not match ledger row app_label `{row_app_label}`; repair would hold \
-                 the advisory lock for the wrong bucket",
+     does not match ledger row app_label `{row_app_label}`; repair would hold \
+     the advisory lock for the wrong bucket",
             ),
             RepairError::LedgerIo { source } => write!(f, "repair ledger I/O failed: {source}"),
             RepairError::SnapshotIo { path, source } => {
@@ -434,7 +434,7 @@ impl std::fmt::Display for RepairError {
             RepairError::PlanVersionMismatch { ledger, plan } => write!(
                 f,
                 "repair_resume_partial_apply: plan version `{plan}` does not match \
-                 the ledger row's version `{ledger}`",
+     the ledger row's version `{ledger}`",
             ),
             RepairError::PlanChecksumMismatch {
                 version,
@@ -443,8 +443,8 @@ impl std::fmt::Display for RepairError {
             } => write!(
                 f,
                 "repair_resume_partial_apply on `{version}`: plan recomputed \
-                 checksum_up={plan_checksum} differs from ledger {ledger_checksum}; \
-                 the supplied plan does not match the original apply",
+     checksum_up={plan_checksum} differs from ledger {ledger_checksum}; \
+     the supplied plan does not match the original apply",
             ),
             RepairError::NothingToResume {
                 version,
@@ -454,12 +454,12 @@ impl std::fmt::Display for RepairError {
                 Some(t) => write!(
                     f,
                     "repair_resume_partial_apply on `{version}`: applied_steps_count={applied} \
-                     already equals total_steps={t}; nothing to resume",
+      already equals total_steps={t}; nothing to resume",
                 ),
                 None => write!(
                     f,
                     "repair_resume_partial_apply on `{version}`: total_steps is NULL — \
-                     this row was a transactional-only apply with no resumable steps",
+      this row was a transactional-only apply with no resumable steps",
                 ),
             },
             RepairError::ResumeStepFailed {
@@ -471,14 +471,14 @@ impl std::fmt::Display for RepairError {
             } => write!(
                 f,
                 "repair_resume_partial_apply on `{version}`: step {step_index} `{statement_label}` \
-                 failed after {applied_steps_count} successful step(s): {source}",
+     failed after {applied_steps_count} successful step(s): {source}",
             ),
             RepairError::ResumeBlockedByNonTxProgressClaim { version, note } => write!(
                 f,
                 "repair_resume_partial_apply on `{version}` refused: the ledger row carries an \
-                 outstanding non-tx progress claim, so the next step may already have \
-                 committed. Reconcile the row with `repair_partial_apply` or manual \
-                 inspection before resuming. Current note: {note}",
+     outstanding non-tx progress claim, so the next step may already have \
+     committed. Reconcile the row with `repair_partial_apply` or manual \
+     inspection before resuming. Current note: {note}",
             ),
             RepairError::ResumeProgressAckFailed {
                 version,
@@ -489,15 +489,15 @@ impl std::fmt::Display for RepairError {
             } => write!(
                 f,
                 "repair_resume_partial_apply on `{version}`: step {} `{statement_label}` \
-                 committed, but the ledger failed to durably acknowledge \
-                 applied_steps_count={applied_steps_count}; the claim note was preserved and \
-                 automatic resume is now blocked: {source}",
+     committed, but the ledger failed to durably acknowledge \
+     applied_steps_count={applied_steps_count}; the claim note was preserved and \
+     automatic resume is now blocked: {source}",
                 step_index + 1,
             ),
             RepairError::SuppliedSnapshotDiverges { differences } => write!(
                 f,
                 "repair_snapshot_rebuild: supplied / rebuilt snapshot diverges from \
-                 the live catalog projection: {differences:?}",
+     the live catalog projection: {differences:?}",
             ),
             RepairError::AdvisoryLockFailed {
                 bucket,
@@ -506,26 +506,26 @@ impl std::fmt::Display for RepairError {
             } => write!(
                 f,
                 "D274 repair advisory lock for bucket database={db} app={app} \
-                 (key=0x{key:016x}) could not be acquired after {attempts} attempts; \
-                 a concurrent runner or repair invocation holds the lock (GH #274)",
+     (key=0x{key:016x}) could not be acquired after {attempts} attempts; \
+     a concurrent runner or repair invocation holds the lock (GH #274)",
                 db = bucket.database,
                 app = bucket.app,
             ),
             RepairError::AdvisoryLockQueryFailed { app_label, source } => write!(
                 f,
                 "D274 repair pg_try_advisory_lock query failed for app `{app_label}`: \
-                 {source} (GH #274)",
+     {source} (GH #274)",
             ),
             RepairError::AdvisoryUnlockReturnedFalse { key } => write!(
                 f,
                 "D274 repair pg_advisory_unlock returned false for key=0x{key:016x}; \
-                 the advisory lock was not held on this session — session-pinning \
-                 correctness failure (GH #274/#280)",
+     the advisory lock was not held on this session — session-pinning \
+     correctness failure (GH #274/#280)",
             ),
             RepairError::PinnedSessionCheckoutFailed { source } => write!(
                 f,
                 "D274 repair failed to check out a pinned Postgres session from the \
-                 pool before the repair operation began (GH #274): {source}",
+     pool before the repair operation began (GH #274): {source}",
             ),
             RepairError::ResumePlanShapeMismatch {
                 version,
@@ -534,9 +534,9 @@ impl std::fmt::Display for RepairError {
             } => write!(
                 f,
                 "D317 repair resume on version {version}: plan shape mismatch — \
-                 ledger total_steps={ledger_total_steps}, \
-                 expanded replay non-transactional statements={replay_total_steps}; \
-                 refusing to replay a divergent plan (GH #317)",
+     ledger total_steps={ledger_total_steps}, \
+     expanded replay non-transactional statements={replay_total_steps}; \
+     refusing to replay a divergent plan (GH #317)",
             ),
             RepairError::ReplayPlanShapeMismatch {
                 version,
@@ -545,8 +545,8 @@ impl std::fmt::Display for RepairError {
             } => write!(
                 f,
                 "D317 repair replay finalization on version {version}: \
-                 completed {actual_step_count} step(s) but the materialized plan \
-                 expected {expected_step_count}; plan shape invariant violated (GH #317)",
+     completed {actual_step_count} step(s) but the materialized plan \
+     expected {expected_step_count}; plan shape invariant violated (GH #317)",
             ),
             RepairError::LeafIdentityMismatch {
                 version,
@@ -559,12 +559,12 @@ impl std::fmt::Display for RepairError {
             RepairError::PhaseZeroArtifactRefused { version } => write!(
                 f,
                 "repair refused: Phase 0 artifact for `{version}` is not identity-free \
-                 replay-current; replace with an identity-free Phase 0 artifact before repairing"
+     replay-current; replace with an identity-free Phase 0 artifact before repairing"
             ),
             RepairError::MissingResumeIdentity { version } => write!(
                 f,
                 "repair resume-partial refused: version '{version}' requires a binding-capable \
-                 runner identity for SQL replay",
+     runner identity for SQL replay",
             ),
             RepairError::Runner(e) => write!(f, "repair failed at runner level: {e}"),
         }
@@ -830,8 +830,8 @@ async fn repair_checksum_drift_pinned(
     let mutation_result = ctx
         .execute(
             "UPDATE djogi_schema_migrations \
-             SET checksum_up = $2, checksum_down = $3 \
-             WHERE version = $1 AND app_label = $4",
+    SET checksum_up = $2, checksum_down = $3 \
+    WHERE version = $1 AND app_label = $4",
             &[&version, &new_checksum_up, &new_down_owned, &bucket.app],
         )
         .await
@@ -998,8 +998,8 @@ async fn repair_partial_apply_pinned(
     let mutation_result = ctx
         .execute(
             "UPDATE djogi_schema_migrations \
-             SET status = $2, applied_steps_count = $3, partial_apply_note = $4 \
-             WHERE version = $1 AND app_label = $5",
+    SET status = $2, applied_steps_count = $3, partial_apply_note = $4 \
+    WHERE version = $1 AND app_label = $5",
             &[&version, &status_str, &target_steps, &note, &bucket.app],
         )
         .await
@@ -1015,7 +1015,7 @@ async fn repair_partial_apply_pinned(
     Ok(RepairReport {
         actions_taken: vec![format!(
             "partial-apply repair of `{version}`: status {old} -> {new}; \
-             applied_steps_count {old_steps} -> {new_steps}; note set",
+    applied_steps_count {old_steps} -> {new_steps}; note set",
             old = row.status.as_db_str(),
             new = target_status.as_db_str(),
             old_steps = row.applied_steps_count,
@@ -1057,27 +1057,27 @@ async fn repair_partial_apply_pinned(
 /// **Operator confirmation required.**
 /// **Safety checks.** Before any SQL runs, the function verifies:
 /// - `plan.version` (derived from the supplied `version` argument)
-///   matches the ledger row's `version`. (We also accept that the
-///   caller passes the ledger version directly; this argument is
-///   the resume-target.)
+/// matches the ledger row's `version`. (We also accept that the
+/// caller passes the ledger version directly; this argument is
+/// the resume-target.)
 /// - `plan`'s recomputed `checksum_up` matches the ledger row's
-///   `checksum_up`. A mismatch means a different plan than the one
-///   originally applied is being supplied — refusing to run is the
-///   only safe option.
+/// `checksum_up`. A mismatch means a different plan than the one
+/// originally applied is being supplied — refusing to run is the
+/// only safe option.
 /// - The ledger row's status is `failed` AND `total_steps` is set
-///   AND `applied_steps_count < total_steps`. Anything else has
-///   nothing to resume.
-///   **What it runs.** The non-transactional segment(s) in plan order.
-///   Each statement is executed via Djogi's internal batch executor
-///   (auto-commit).
-///   Resume now shares the runner's crash-safe claim/ack protocol:
-///   before a step runs, the ledger row records a structured in-flight
-///   claim in `partial_apply_note`; only after the SQL commits does the
-///   repair path acknowledge the new `applied_steps_count`. If the ack
-///   write fails, the claim note remains in place and future automatic
-///   resumes are refused until an operator reconciles the ambiguous
-///   boundary. On full success, the row is finalised to
-///   `status = 'applied'`.
+/// AND `applied_steps_count < total_steps`. Anything else has
+/// nothing to resume.
+/// **What it runs.** The non-transactional segment(s) in plan order.
+/// Each statement is executed via Djogi's internal batch executor
+/// (auto-commit).
+/// Resume now shares the runner's crash-safe claim/ack protocol:
+/// before a step runs, the ledger row records a structured in-flight
+/// claim in `partial_apply_note`; only after the SQL commits does the
+/// repair path acknowledge the new `applied_steps_count`. If the ack
+/// write fails, the claim note remains in place and future automatic
+/// resumes are refused until an operator reconciles the ambiguous
+/// boundary. On full success, the row is finalised to
+/// `status = 'applied'`.
 pub async fn repair_resume_partial_apply(
     ctx: &mut DjogiContext,
     _guard: &WorkspaceGuard,
@@ -1130,7 +1130,7 @@ pub async fn repair_resume_partial_apply(
             &mut pinned,
             identity.node_id().expect(
                 "INVARIANT: node_id is Some when requires_binding is true; \
-                 IdentityFree ruled out by refusal gate above",
+     IdentityFree ruled out by refusal gate above",
             ),
         )
         .await
@@ -1334,7 +1334,7 @@ async fn repair_resume_body(
                 // repair_resume_pinned after this function returns.
                 let note = format!(
                     "resume failed at segment {seg_idx} step {step_within}: \
-                     {label} — {e}",
+      {label} — {e}",
                     label = stmt.label,
                 );
                 let _ = ledger::mark_partial(ctx, ledger_id, applied, &note).await;
@@ -1381,8 +1381,8 @@ async fn repair_resume_body(
     let row_version = row.version.clone();
     ctx.execute(
         "UPDATE djogi_schema_migrations \
-         SET status = 'applied', applied_steps_count = $2, partial_apply_note = NULL \
-         WHERE version = $1 AND app_label = $3",
+   SET status = 'applied', applied_steps_count = $2, partial_apply_note = NULL \
+   WHERE version = $1 AND app_label = $3",
         &[&row_version, &applied, &bucket.app],
     )
     .await
@@ -1430,7 +1430,7 @@ async fn lookup_ledger_id_by_version(
     let row = ctx
         .query_one(
             "SELECT id FROM djogi_schema_migrations \
-             WHERE version = $1 AND app_label = $2",
+    WHERE version = $1 AND app_label = $2",
             &[&version, &app_label],
         )
         .await
@@ -1553,7 +1553,7 @@ async fn repair_snapshot_rebuild_pinned(
             .push("advisory: ledger table not readable; bucket apply-count unknown".to_string()),
         0 => actions.push(
             "advisory: bucket has 0 applied ledger rows; rebuild recorded \
-             as the snapshot for a fresh / empty migration history"
+    as the snapshot for a fresh / empty migration history"
                 .to_string(),
         ),
         n => actions.push(format!("advisory: bucket has {n} applied ledger row(s)")),
@@ -1584,16 +1584,16 @@ async fn repair_snapshot_rebuild_pinned(
 /// Uses a two-phase strategy:
 ///
 /// 1. **Exact composite lookup** — `(version, app_label)`. Returns the
-///    row directly when the caller's app owns this version; this is the
-///    common, correct-app path and requires only one query.
+/// row directly when the caller's app owns this version; this is the
+/// common, correct-app path and requires only one query.
 ///
 /// 2. **Version-only fallback** — when the exact composite key is
-///    absent, a second query (`WHERE version = $1 ORDER BY app_label
-///    LIMIT 1`) checks whether the version exists under a different app.
-///    If it does, that row is returned so the caller's
-///    `ensure_row_matches_bucket_app` can emit `BucketAppMismatch`.
-///    `ORDER BY app_label` makes the fallback row deterministic across
-///    multiple apps that share the same version.
+/// absent, a second query (`WHERE version = $1 ORDER BY app_label
+/// LIMIT 1`) checks whether the version exists under a different app.
+/// If it does, that row is returned so the caller's
+/// `ensure_row_matches_bucket_app` can emit `BucketAppMismatch`.
+/// `ORDER BY app_label` makes the fallback row deterministic across
+/// multiple apps that share the same version.
 ///
 /// Returns [`RepairError::VersionNotFound`] only when no row exists for
 /// this version in any app stream.
@@ -1602,7 +1602,7 @@ async fn load_row(
     version: &str,
     app_label: &str,
 ) -> Result<LedgerRow, RepairError> {
-    // Phase 1: exact composite key — the fast, common-case path.
+    // : exact composite key — the fast, common-case path.
     let pg_row = ctx
         .query_opt(
             &format!("{LEDGER_SELECT_COLS} WHERE version = $1 AND app_label = $2"),
@@ -1614,7 +1614,7 @@ async fn load_row(
         return LedgerRow::try_from(&r).map_err(io_err);
     }
 
-    // Phase 2: version exists under a different app — return that row so the
+    // : version exists under a different app — return that row so the
     // caller's `ensure_row_matches_bucket_app` can emit `BucketAppMismatch`
     // instead of the misleading `VersionNotFound`.
     // `ORDER BY app_label LIMIT 1` is deterministic even when multiple apps
@@ -1665,7 +1665,7 @@ async fn count_applied_for_app(ctx: &mut DjogiContext, app_label: &str) -> Resul
     let row = ctx
         .query_one(
             "SELECT COUNT(*)::bigint FROM djogi_schema_migrations \
-             WHERE app_label = $1 AND status = 'applied'",
+    WHERE app_label = $1 AND status = 'applied'",
             &[&app_label],
         )
         .await?;
@@ -1798,7 +1798,7 @@ mod tests {
         sql.replace_range(
             start..end,
             "ALTER DATABASE \"main\" SET heer.node_id = '1';\n\
-             ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
+    ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
         );
         sql
     }
@@ -2500,16 +2500,16 @@ mod tests {
     /// Verify the two-phase `load_row` semantics:
     ///
     /// 1. Exact composite key hit: `(version, app_label)` returns the
-    ///    matching row directly (Phase 1 fast path).
+    /// matching row directly ( fast path).
     /// 2. Multi-row scenario: two apps sharing the same version — each
-    ///    composite key resolves to its own row, not the other app's.
+    /// composite key resolves to its own row, not the other app's.
     /// 3. Fallback (mismatch) path: when only `(V1, "app_a")` exists,
-    ///    `load_row("V1", "app_b")` returns `Ok(row)` where `row.app_label
-    ///    == "app_a"`, enabling the caller's `ensure_row_matches_bucket_app`
-    ///    to emit `BucketAppMismatch` rather than the misleading
-    ///    `VersionNotFound`.
+    /// `load_row("V1", "app_b")` returns `Ok(row)` where `row.app_label
+    /// == "app_a"`, enabling the caller's `ensure_row_matches_bucket_app`
+    /// to emit `BucketAppMismatch` rather than the misleading
+    /// `VersionNotFound`.
     /// 4. True absence: `load_row("MISSING", "app_a")` returns
-    ///    `VersionNotFound`.
+    /// `VersionNotFound`.
     #[djogi::deliberately_bypass_convention_with_raw_sql]
     // JUSTIFICATION (PIN): Seeds migration ledger rows directly to isolate
     // load_row's two-phase lookup logic; no typed insert API exists for
@@ -2518,24 +2518,24 @@ mod tests {
     async fn load_row_two_phase_lookup(mut ctx: DjogiContext) {
         ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
 
-        // ── Phase 1 exact-hit path ──────────────────────────────────
+        // ── exact-hit path ──────────────────────────────────
         // Seed a single (V1, "app_a") row and verify direct hit.
         ctx.raw_execute(
             "INSERT INTO djogi_schema_migrations \
-             (version, description, checksum_up, status, run_id, \
-              snapshot_version, app_label) \
-             VALUES ($1, 'test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
-                     'applied', 1, '1', 'app_a')",
+    (version, description, checksum_up, status, run_id, \
+    snapshot_version, app_label) \
+    VALUES ($1, 'test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+      'applied', 1, '1', 'app_a')",
             &[&"V1"],
         )
         .await
         .expect("seed (V1, app_a) row");
 
         let result = load_row(&mut ctx, "V1", "app_a").await;
-        let row = result.expect("Phase 1: exact composite hit must return Ok");
+        let row = result.expect(": exact composite hit must return Ok");
         assert_eq!(
             row.app_label, "app_a",
-            "Phase 1: returned row must belong to app_a"
+            ": returned row must belong to app_a"
         );
 
         // ── Multi-row scenario ──────────────────────────────────────
@@ -2543,10 +2543,10 @@ mod tests {
         // keys must resolve independently.
         ctx.raw_execute(
             "INSERT INTO djogi_schema_migrations \
-             (version, description, checksum_up, status, run_id, \
-              snapshot_version, app_label) \
-             VALUES ($1, 'test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
-                     'applied', 2, '1', 'app_b')",
+    (version, description, checksum_up, status, run_id, \
+    snapshot_version, app_label) \
+    VALUES ($1, 'test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+      'applied', 2, '1', 'app_b')",
             &[&"V1"],
         )
         .await
@@ -2568,32 +2568,32 @@ mod tests {
             "multi-row: app_b key returns app_b row"
         );
 
-        // ── Phase 2 mismatch path ───────────────────────────────────
+        // ── mismatch path ───────────────────────────────────
         // V2 is owned by app_c only; querying for (V2, app_d) exercises the
-        // single-owner fallback path. Phase 2 must return app_c's row so the
+        // single-owner fallback path. must return app_c's row so the
         // caller can classify it as BucketAppMismatch.
         //
         // Seed a distinct version owned by "app_c" only.
         ctx.raw_execute(
             "INSERT INTO djogi_schema_migrations \
-             (version, description, checksum_up, status, run_id, \
-              snapshot_version, app_label) \
-             VALUES ($1, 'test', 'V2:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
-                     'applied', 3, '1', 'app_c')",
+    (version, description, checksum_up, status, run_id, \
+    snapshot_version, app_label) \
+    VALUES ($1, 'test', 'V2:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+      'applied', 3, '1', 'app_c')",
             &[&"V2"],
         )
         .await
         .expect("seed (V2, app_c) row for fallback test");
 
         // Query for (V2, "app_d") — V2 exists under app_c only.
-        // Phase 2 must return app_c's row so the caller can classify as BucketAppMismatch.
+        // must return app_c's row so the caller can classify as BucketAppMismatch.
         let fallback_result = load_row(&mut ctx, "V2", "app_d").await;
         let fallback_row = fallback_result.expect(
-            "Phase 2 fallback: version exists under a different app — must return Ok(row), not VersionNotFound",
-        );
+   " fallback: version exists under a different app — must return Ok(row), not VersionNotFound",
+  );
         assert_eq!(
             fallback_row.app_label, "app_c",
-            "Phase 2 fallback: returned row must belong to app_c (the actual owner)",
+            " fallback: returned row must belong to app_c (the actual owner)",
         );
 
         // Verify the fallback row triggers BucketAppMismatch via ensure_row_matches_bucket_app.

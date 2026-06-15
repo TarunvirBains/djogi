@@ -1,30 +1,30 @@
 //! `#[derive(DjogiEnum)]` proc macro — typed Postgres enum support.
 //! Emits four things per enum:
 //! 1. `impl postgres_types::ToSql for MyEnum` — encodes the Rust variant as its mapped
-//!    Postgres wire string. Uses `to_sql_checked!()` for the forwarded type-check path.
+//! Postgres wire string. Uses `to_sql_checked!()` for the forwarded type-check path.
 //! 2. `impl<'a> postgres_types::FromSql<'a> for MyEnum` — decodes the wire bytes as a
-//!    string, matches against known variants, returns `Err(EnumDecodeError { ... })` for
-//!    unknown labels.
-//! 3. `inventory::submit!(::djogi::descriptor::EnumDescriptor { ... })` — registers the
-//!    enum's metadata for the migration differ.
+//! string, matches against known variants, returns `Err(EnumDecodeError {... })` for
+//! unknown labels.
+//! 3. `inventory::submit!(::djogi::descriptor::EnumDescriptor {... })` — registers the
+//! enum's metadata for the migration differ.
 //! 4. `impl MyEnum { pub fn variants() -> &'static [&'static str] }` — convenience fn.
 //! # Attribute grammar
 //! ```rust,ignore
 //! #[derive(DjogiEnum, Clone, Copy, PartialEq, Eq, Debug)]
 //! #[djogi_enum(name = "vehicle_status", rename_all = "snake_case")]
 //! pub enum VehicleStatus {
-//!     Active,
-//!     InMaintenance,
-//!     #[djogi_enum_variant(name = "decommissioned")]
-//!     Retired,
+//!  Active,
+//!  InMaintenance,
+//!  #[djogi_enum_variant(name = "decommissioned")]
+//!  Retired,
 //! }
 //! ```
 //! - `name` (required) — the Postgres type name.
 //! - `rename_all` (optional, default `"snake_case"`) — case conversion applied to all
-//!   variants. Supported values: `snake_case`, `SCREAMING_SNAKE_CASE`, `lowercase`,
-//!   `UPPERCASE`, `PascalCase`, `camelCase`, `kebab-case`.
-//!   Per-variant override: `#[djogi_enum_variant(name = "...")]` takes precedence over
-//!   `rename_all`.
+//! variants. Supported values: `snake_case`, `SCREAMING_SNAKE_CASE`, `lowercase`,
+//! `UPPERCASE`, `PascalCase`, `camelCase`, `kebab-case`.
+//! Per-variant override: `#[djogi_enum_variant(name = "...")]` takes precedence over
+//! `rename_all`.
 //! # Compile-time validation
 //! - Empty enum → error: "requires at least one variant".
 //! - Non-unit variant (tuple/struct) → error: "variants must be unit-only".
@@ -61,7 +61,7 @@ fn parse_enum_attrs(input: &DeriveInput) -> syn::Result<EnumAttrs> {
         if !attr.path().is_ident("djogi_enum") {
             continue;
         }
-        // Parse as `#[djogi_enum(key = "value", ...)]`
+        // Parse as `#[djogi_enum(key = "value",...)]`
         let metas = attr.parse_args_with(
             syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
         )?;
@@ -223,7 +223,7 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
                 &variant.ident,
                 format!(
                     "#[derive(DjogiEnum)]: variant `{}` maps to the same Postgres string \
-                     `{wire}` as an earlier variant",
+      `{wire}` as an earlier variant",
                     variant.ident
                 ),
             ));
@@ -238,20 +238,20 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     // ── Emit ToSql wire-string match arms ───────────────────────────────────
     let to_sql_wire_lets = variant_pairs.iter().map(|(ident, wire)| {
         quote! {
-            #enum_name::#ident => #wire,
+         #enum_name::#ident => #wire,
         }
     });
 
     // ── Emit FromSql match arms ──────────────────────────────────────────────
     let from_sql_arms = variant_pairs.iter().map(|(ident, wire)| {
         quote! {
-            #wire => Ok(#enum_name::#ident),
+         #wire => Ok(#enum_name::#ident),
         }
     });
 
     // ── Emit static variant array ────────────────────────────────────────────
     let variants_array = quote! {
-        &[ #(#variant_strs,)* ]
+     &[ #(#variant_strs,)* ]
     };
 
     let postgres_type_str = postgres_type.as_str();
@@ -291,283 +291,283 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     // branch-free at the call site.
     let into_filter_value_arms = variant_pairs.iter().map(|(ident, wire)| {
         quote! {
-            #enum_name::#ident => #wire,
+         #enum_name::#ident => #wire,
         }
     });
 
     let expanded = quote! {
-        impl ::djogi::__private::postgres_types::ToSql for #enum_name {
-            fn to_sql(
-                &self,
-                ty: &::djogi::__private::postgres_types::Type,
-                out: &mut ::djogi::__private::bytes::BytesMut,
-            ) -> ::std::result::Result<
-                ::djogi::__private::postgres_types::IsNull,
-                ::std::boxed::Box<dyn ::std::error::Error + Sync + Send>,
-            > {
-                let wire_str: &str = match self {
-                    #(#to_sql_wire_lets)*
-                };
-                // Encode as a Postgres string (same encoding path as `&str`).
-                ::djogi::__private::postgres_types::ToSql::to_sql(
-                    &wire_str,
-                    ty,
-                    out,
-                )
-            }
+     impl ::djogi::__private::postgres_types::ToSql for #enum_name {
+      fn to_sql(
+       &self,
+       ty: &::djogi::__private::postgres_types::Type,
+       out: &mut ::djogi::__private::bytes::BytesMut,
+      ) -> ::std::result::Result<
+       ::djogi::__private::postgres_types::IsNull,
+       ::std::boxed::Box<dyn ::std::error::Error + Sync + Send>,
+      > {
+       let wire_str: &str = match self {
+        #(#to_sql_wire_lets)*
+       };
+       // Encode as a Postgres string (same encoding path as `&str`).
+       ::djogi::__private::postgres_types::ToSql::to_sql(
+        &wire_str,
+        ty,
+        out,
+       )
+      }
 
-            fn accepts(ty: &::djogi::__private::postgres_types::Type) -> bool {
-                ty.name() == #postgres_type_str
-            }
+      fn accepts(ty: &::djogi::__private::postgres_types::Type) -> bool {
+       ty.name() == #postgres_type_str
+      }
 
-            ::djogi::__private::postgres_types::to_sql_checked!();
-        }
+      ::djogi::__private::postgres_types::to_sql_checked!();
+     }
 
-        impl<'_sql> ::djogi::__private::postgres_types::FromSql<'_sql> for #enum_name {
-            fn from_sql(
-                ty: &::djogi::__private::postgres_types::Type,
-                raw: &'_sql [u8],
-            ) -> ::std::result::Result<
-                Self,
-                ::std::boxed::Box<dyn ::std::error::Error + Sync + Send>,
-            > {
-                // Decode wire bytes as a Postgres text string (borrowing from raw).
-                let s = <&str as ::djogi::__private::postgres_types::FromSql>::from_sql(ty, raw)?;
-                match s {
-                    #(#from_sql_arms)*
-                    other => Err(::std::boxed::Box::new(
-                        ::djogi::enum_::EnumDecodeError {
-                            postgres_type: #postgres_type_str,
-                            received: other.to_owned(),
-                            expected: #variants_array,
-                        }
-                    )),
-                }
-            }
+     impl<'_sql> ::djogi::__private::postgres_types::FromSql<'_sql> for #enum_name {
+      fn from_sql(
+       ty: &::djogi::__private::postgres_types::Type,
+       raw: &'_sql [u8],
+      ) -> ::std::result::Result<
+       Self,
+       ::std::boxed::Box<dyn ::std::error::Error + Sync + Send>,
+      > {
+       // Decode wire bytes as a Postgres text string (borrowing from raw).
+       let s = <&str as ::djogi::__private::postgres_types::FromSql>::from_sql(ty, raw)?;
+       match s {
+        #(#from_sql_arms)*
+        other => Err(::std::boxed::Box::new(
+         ::djogi::enum_::EnumDecodeError {
+          postgres_type: #postgres_type_str,
+          received: other.to_owned(),
+          expected: #variants_array,
+         }
+        )),
+       }
+      }
 
-            fn accepts(ty: &::djogi::__private::postgres_types::Type) -> bool {
-                ty.name() == #postgres_type_str
-            }
-        }
+      fn accepts(ty: &::djogi::__private::postgres_types::Type) -> bool {
+       ty.name() == #postgres_type_str
+      }
+     }
 
-        impl #enum_name {
-            /// Returns the ordered slice of Postgres wire strings for all variants.
-            /// The order matches the enum declaration order and the
-            /// [`::djogi::descriptor::EnumDescriptor::variants`] slice.
-            pub fn variants() -> &'static [&'static str] {
-                #variants_array
-            }
-        }
+     impl #enum_name {
+      /// Returns the ordered slice of Postgres wire strings for all variants.
+      /// The order matches the enum declaration order and the
+      /// [`::djogi::descriptor::EnumDescriptor::variants`] slice.
+      pub fn variants() -> &'static [&'static str] {
+       #variants_array
+      }
+     }
 
-        impl ::djogi::descriptor::DjogiSqlType for #enum_name {
-            const SQL_TYPE: &'static str = #postgres_type_str;
-        }
+     impl ::djogi::descriptor::DjogiSqlType for #enum_name {
+      const SQL_TYPE: &'static str = #postgres_type_str;
+     }
 
-        impl ::djogi::query::DjogiPortableEq for #enum_name {}
+     impl ::djogi::query::DjogiPortableEq for #enum_name {}
 
-        #[doc(hidden)]
-        fn #matches_field_type_fn(type_id: ::std::any::TypeId) -> bool {
-            type_id == ::std::any::TypeId::of::<#enum_name>()
-                || type_id == ::std::any::TypeId::of::<::std::option::Option<#enum_name>>()
-                || type_id == ::std::any::TypeId::of::<::djogi::Tracked<#enum_name>>()
-                || type_id
-                    == ::std::any::TypeId::of::<::djogi::Tracked<::std::option::Option<#enum_name>>>()
-                || type_id
-                    == ::std::any::TypeId::of::<::std::option::Option<::djogi::Tracked<#enum_name>>>()
-        }
+     #[doc(hidden)]
+     fn #matches_field_type_fn(type_id: ::std::any::TypeId) -> bool {
+      type_id == ::std::any::TypeId::of::<#enum_name>()
+       || type_id == ::std::any::TypeId::of::<::std::option::Option<#enum_name>>()
+       || type_id == ::std::any::TypeId::of::<::djogi::Tracked<#enum_name>>()
+       || type_id
+        == ::std::any::TypeId::of::<::djogi::Tracked<::std::option::Option<#enum_name>>>()
+       || type_id
+        == ::std::any::TypeId::of::<::std::option::Option<::djogi::Tracked<#enum_name>>>()
+     }
 
-        #[doc(hidden)]
-        fn #bind_value_fn(
-            value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
-        ) -> ::std::option::Option<::djogi::descriptor::BoxedSqlBind> {
-            if let ::std::option::Option::Some(value) = value.downcast_ref::<#enum_name>() {
-                return ::std::option::Option::Some(
-                    ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
-                        as ::djogi::descriptor::BoxedSqlBind,
-                );
-            }
-            if let ::std::option::Option::Some(value) =
-                value.downcast_ref::<::djogi::Tracked<#enum_name>>()
-            {
-                let value: &#enum_name = ::std::ops::Deref::deref(value);
-                return ::std::option::Option::Some(
-                    ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
-                        as ::djogi::descriptor::BoxedSqlBind,
-                );
-            }
-            ::std::option::Option::None
-        }
+     #[doc(hidden)]
+     fn #bind_value_fn(
+      value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
+     ) -> ::std::option::Option<::djogi::descriptor::BoxedSqlBind> {
+      if let ::std::option::Option::Some(value) = value.downcast_ref::<#enum_name>() {
+       return ::std::option::Option::Some(
+        ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
+         as ::djogi::descriptor::BoxedSqlBind,
+       );
+      }
+      if let ::std::option::Option::Some(value) =
+       value.downcast_ref::<::djogi::Tracked<#enum_name>>()
+      {
+       let value: &#enum_name = ::std::ops::Deref::deref(value);
+       return ::std::option::Option::Some(
+        ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
+         as ::djogi::descriptor::BoxedSqlBind,
+       );
+      }
+      ::std::option::Option::None
+     }
 
-        #[doc(hidden)]
-        fn #bind_list_fn(
-            value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
-        ) -> ::std::option::Option<::std::vec::Vec<::djogi::descriptor::BoxedSqlBind>> {
-            if let ::std::option::Option::Some(values) =
-                value.downcast_ref::<::std::vec::Vec<#enum_name>>()
-            {
-                return ::std::option::Option::Some(
-                    values
-                        .iter()
-                        .map(|value| {
-                            ::std::boxed::Box::new(
-                                <#enum_name as ::std::clone::Clone>::clone(value),
-                            )
-                                as ::djogi::descriptor::BoxedSqlBind
-                        })
-                        .collect(),
-                );
-            }
-            if let ::std::option::Option::Some(values) =
-                value.downcast_ref::<::std::vec::Vec<::djogi::Tracked<#enum_name>>>()
-            {
-                return ::std::option::Option::Some(
-                    values
-                        .iter()
-                        .map(|value| {
-                            let value: &#enum_name = ::std::ops::Deref::deref(value);
-                            ::std::boxed::Box::new(
-                                <#enum_name as ::std::clone::Clone>::clone(value),
-                            )
-                                as ::djogi::descriptor::BoxedSqlBind
-                        })
-                        .collect(),
-                );
-            }
-            ::std::option::Option::None
-        }
+     #[doc(hidden)]
+     fn #bind_list_fn(
+      value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
+     ) -> ::std::option::Option<::std::vec::Vec<::djogi::descriptor::BoxedSqlBind>> {
+      if let ::std::option::Option::Some(values) =
+       value.downcast_ref::<::std::vec::Vec<#enum_name>>()
+      {
+       return ::std::option::Option::Some(
+        values
+        .iter()
+        .map(|value| {
+          ::std::boxed::Box::new(
+           <#enum_name as ::std::clone::Clone>::clone(value),
+          )
+           as ::djogi::descriptor::BoxedSqlBind
+         })
+        .collect(),
+       );
+      }
+      if let ::std::option::Option::Some(values) =
+       value.downcast_ref::<::std::vec::Vec<::djogi::Tracked<#enum_name>>>()
+      {
+       return ::std::option::Option::Some(
+        values
+        .iter()
+        .map(|value| {
+          let value: &#enum_name = ::std::ops::Deref::deref(value);
+          ::std::boxed::Box::new(
+           <#enum_name as ::std::clone::Clone>::clone(value),
+          )
+           as ::djogi::descriptor::BoxedSqlBind
+         })
+        .collect(),
+       );
+      }
+      ::std::option::Option::None
+     }
 
-        #[doc(hidden)]
-        fn #bind_option_value_fn(
-            value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
-        ) -> ::std::option::Option<::std::option::Option<::djogi::descriptor::BoxedSqlBind>> {
-            if let ::std::option::Option::Some(value) =
-                value.downcast_ref::<::std::option::Option<#enum_name>>()
-            {
-                return ::std::option::Option::Some(value.as_ref().map(|value| {
-                    ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
-                        as ::djogi::descriptor::BoxedSqlBind
-                }));
-            }
-            if let ::std::option::Option::Some(value) =
-                value.downcast_ref::<::djogi::Tracked<::std::option::Option<#enum_name>>>()
-            {
-                let value: &::std::option::Option<#enum_name> = ::std::ops::Deref::deref(value);
-                return ::std::option::Option::Some(value.as_ref().map(|value| {
-                    ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
-                        as ::djogi::descriptor::BoxedSqlBind
-                }));
-            }
-            if let ::std::option::Option::Some(value) =
-                value.downcast_ref::<::std::option::Option<::djogi::Tracked<#enum_name>>>()
-            {
-                return ::std::option::Option::Some(value.as_ref().map(|value| {
-                    let value: &#enum_name = ::std::ops::Deref::deref(value);
-                    ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
-                        as ::djogi::descriptor::BoxedSqlBind
-                }));
-            }
-            ::std::option::Option::None
-        }
+     #[doc(hidden)]
+     fn #bind_option_value_fn(
+      value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
+     ) -> ::std::option::Option<::std::option::Option<::djogi::descriptor::BoxedSqlBind>> {
+      if let ::std::option::Option::Some(value) =
+       value.downcast_ref::<::std::option::Option<#enum_name>>()
+      {
+       return ::std::option::Option::Some(value.as_ref().map(|value| {
+        ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
+         as ::djogi::descriptor::BoxedSqlBind
+       }));
+      }
+      if let ::std::option::Option::Some(value) =
+       value.downcast_ref::<::djogi::Tracked<::std::option::Option<#enum_name>>>()
+      {
+       let value: &::std::option::Option<#enum_name> = ::std::ops::Deref::deref(value);
+       return ::std::option::Option::Some(value.as_ref().map(|value| {
+        ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
+         as ::djogi::descriptor::BoxedSqlBind
+       }));
+      }
+      if let ::std::option::Option::Some(value) =
+       value.downcast_ref::<::std::option::Option<::djogi::Tracked<#enum_name>>>()
+      {
+       return ::std::option::Option::Some(value.as_ref().map(|value| {
+        let value: &#enum_name = ::std::ops::Deref::deref(value);
+        ::std::boxed::Box::new(<#enum_name as ::std::clone::Clone>::clone(value))
+         as ::djogi::descriptor::BoxedSqlBind
+       }));
+      }
+      ::std::option::Option::None
+     }
 
-        #[doc(hidden)]
-        fn #bind_option_list_fn(
-            value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
-        ) -> ::std::option::Option<
-            ::std::vec::Vec<::std::option::Option<::djogi::descriptor::BoxedSqlBind>>,
-        > {
-            if let ::std::option::Option::Some(values) =
-                value.downcast_ref::<::std::vec::Vec<::std::option::Option<#enum_name>>>()
-            {
-                return ::std::option::Option::Some(
-                    values
-                        .iter()
-                        .map(|value| {
-                            value.as_ref().map(|value| {
-                                ::std::boxed::Box::new(
-                                    <#enum_name as ::std::clone::Clone>::clone(value),
-                                )
-                                    as ::djogi::descriptor::BoxedSqlBind
-                            })
-                        })
-                        .collect(),
-                );
-            }
-            if let ::std::option::Option::Some(values) = value
-                .downcast_ref::<::std::vec::Vec<::djogi::Tracked<::std::option::Option<#enum_name>>>>()
-            {
-                return ::std::option::Option::Some(
-                    values
-                        .iter()
-                        .map(|value| {
-                            let value: &::std::option::Option<#enum_name> =
-                                ::std::ops::Deref::deref(value);
-                            value.as_ref().map(|value| {
-                                ::std::boxed::Box::new(
-                                    <#enum_name as ::std::clone::Clone>::clone(value),
-                                )
-                                    as ::djogi::descriptor::BoxedSqlBind
-                            })
-                        })
-                        .collect(),
-                );
-            }
-            if let ::std::option::Option::Some(values) = value
-                .downcast_ref::<::std::vec::Vec<::std::option::Option<::djogi::Tracked<#enum_name>>>>()
-            {
-                return ::std::option::Option::Some(
-                    values
-                        .iter()
-                        .map(|value| {
-                            value.as_ref().map(|value| {
-                                let value: &#enum_name = ::std::ops::Deref::deref(value);
-                                ::std::boxed::Box::new(
-                                    <#enum_name as ::std::clone::Clone>::clone(value),
-                                )
-                                    as ::djogi::descriptor::BoxedSqlBind
-                            })
-                        })
-                        .collect(),
-                );
-            }
-            ::std::option::Option::None
-        }
+     #[doc(hidden)]
+     fn #bind_option_list_fn(
+      value: &(dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync),
+     ) -> ::std::option::Option<
+      ::std::vec::Vec<::std::option::Option<::djogi::descriptor::BoxedSqlBind>>,
+     > {
+      if let ::std::option::Option::Some(values) =
+       value.downcast_ref::<::std::vec::Vec<::std::option::Option<#enum_name>>>()
+      {
+       return ::std::option::Option::Some(
+        values
+        .iter()
+        .map(|value| {
+          value.as_ref().map(|value| {
+           ::std::boxed::Box::new(
+            <#enum_name as ::std::clone::Clone>::clone(value),
+           )
+            as ::djogi::descriptor::BoxedSqlBind
+          })
+         })
+        .collect(),
+       );
+      }
+      if let ::std::option::Option::Some(values) = value
+      .downcast_ref::<::std::vec::Vec<::djogi::Tracked<::std::option::Option<#enum_name>>>>()
+      {
+       return ::std::option::Option::Some(
+        values
+        .iter()
+        .map(|value| {
+          let value: &::std::option::Option<#enum_name> =
+           ::std::ops::Deref::deref(value);
+          value.as_ref().map(|value| {
+           ::std::boxed::Box::new(
+            <#enum_name as ::std::clone::Clone>::clone(value),
+           )
+            as ::djogi::descriptor::BoxedSqlBind
+          })
+         })
+        .collect(),
+       );
+      }
+      if let ::std::option::Option::Some(values) = value
+      .downcast_ref::<::std::vec::Vec<::std::option::Option<::djogi::Tracked<#enum_name>>>>()
+      {
+       return ::std::option::Option::Some(
+        values
+        .iter()
+        .map(|value| {
+          value.as_ref().map(|value| {
+           let value: &#enum_name = ::std::ops::Deref::deref(value);
+           ::std::boxed::Box::new(
+            <#enum_name as ::std::clone::Clone>::clone(value),
+           )
+            as ::djogi::descriptor::BoxedSqlBind
+          })
+         })
+        .collect(),
+       );
+      }
+      ::std::option::Option::None
+     }
 
-        ::djogi::__private::inventory::submit! {
-            ::djogi::descriptor::EnumDescriptor {
-                type_name: #type_name_str,
-                postgres_type: #postgres_type_str,
-                variants: #variants_array,
-            }
-        }
+     ::djogi::__private::inventory::submit! {
+      ::djogi::descriptor::EnumDescriptor {
+       type_name: #type_name_str,
+       postgres_type: #postgres_type_str,
+       variants: #variants_array,
+      }
+     }
 
-        ::djogi::__private::inventory::submit! {
-            ::djogi::descriptor::EnumPredicateCodec {
-                type_name: #type_name_str,
-                postgres_type: #postgres_type_str,
-                matches_field_type: #matches_field_type_fn,
-                bind_value: #bind_value_fn,
-                bind_list: #bind_list_fn,
-                bind_option_value: #bind_option_value_fn,
-                bind_option_list: #bind_option_list_fn,
-            }
-        }
+     ::djogi::__private::inventory::submit! {
+      ::djogi::descriptor::EnumPredicateCodec {
+       type_name: #type_name_str,
+       postgres_type: #postgres_type_str,
+       matches_field_type: #matches_field_type_fn,
+       bind_value: #bind_value_fn,
+       bind_list: #bind_list_fn,
+       bind_option_value: #bind_option_value_fn,
+       bind_option_list: #bind_option_list_fn,
+      }
+     }
 
-        // Filter-closure support. Encoding the enum
-        // variant as its Postgres wire string (`FilterValue::String`)
-        // matches how the `ToSql` impl sends it over the wire, so
-        // `.eq(MyEnum::Variant)` / `.neq(...)` / `.in_list([...])` in a
-        // filter closure produce the same bind shape the SELECT emitter
-        // itself uses for the column. No ordinal coupling — the match
-        // arms enumerate the same `(variant, wire)` pairs as the
-        // `ToSql` branch above.
-        impl ::djogi::IntoFilterValue for #enum_name {
-            fn into_filter_value(self) -> ::djogi::query::internal::FilterValue {
-                let wire: &'static str = match self {
-                    #(#into_filter_value_arms)*
-                };
-                ::djogi::query::internal::FilterValue::String(::std::string::String::from(wire))
-            }
-        }
+     // Filter-closure support. Encoding the enum
+     // variant as its Postgres wire string (`FilterValue::String`)
+     // matches how the `ToSql` impl sends it over the wire, so
+     // `.eq(MyEnum::Variant)` / `.neq(...)` / `.in_list([...])` in a
+     // filter closure produce the same bind shape the SELECT emitter
+     // itself uses for the column. No ordinal coupling — the match
+     // arms enumerate the same `(variant, wire)` pairs as the
+     // `ToSql` branch above.
+     impl ::djogi::IntoFilterValue for #enum_name {
+      fn into_filter_value(self) -> ::djogi::query::internal::FilterValue {
+       let wire: &'static str = match self {
+        #(#into_filter_value_arms)*
+       };
+       ::djogi::query::internal::FilterValue::String(::std::string::String::from(wire))
+      }
+     }
     };
 
     Ok(expanded)

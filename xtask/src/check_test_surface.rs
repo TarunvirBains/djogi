@@ -563,11 +563,11 @@ fn mask_block_comment(bytes: &[u8], start: usize, output: &mut Vec<u8>) -> usize
     while cursor < bytes.len() {
         if starts_with(bytes, cursor, b"/*") {
             depth += 1;
-            output.extend_from_slice(b"  ");
+            output.extend_from_slice(b" ");
             cursor += 2;
         } else if starts_with(bytes, cursor, b"*/") {
             depth = depth.saturating_sub(1);
-            output.extend_from_slice(b"  ");
+            output.extend_from_slice(b" ");
             cursor += 2;
             if depth == 0 {
                 break;
@@ -767,7 +767,7 @@ async fn hidden() {}
         let source = r#"
 #[djogi_test]
 #[
-    ignore
+  ignore
 ]
 async fn hidden() {}
 "#;
@@ -842,10 +842,10 @@ fn visible() {}
         let source = r#"
 name: CI
 jobs:
-  test:
-    steps:
-      - run: cargo test -- --ignored
-      - run: cargo test # --include-ignored in comment
+ test:
+  steps:
+   - run: cargo test -- --ignored
+   - run: cargo test # --include-ignored in comment
 "#;
 
         let findings = scan_workflow_no_quarantine(Path::new(".github/workflows/ci.yml"), source);
@@ -858,11 +858,11 @@ jobs:
     fn workflow_scanner_rejects_run_ignored_and_quarantine_word() {
         let source = r#"
 jobs:
-  test:
-    steps:
-      - run: cargo xtask run-ignored
-      - run: cargo test --skip-list quarantine.txt
-      - run: cargo test --skip-list Quarantine.txt
+ test:
+  steps:
+   - run: cargo xtask run-ignored
+   - run: cargo test --skip-list quarantine.txt
+   - run: cargo test --skip-list Quarantine.txt
 "#;
 
         let findings = scan_workflow_no_quarantine(Path::new(".github/workflows/ci.yml"), source);
@@ -882,12 +882,12 @@ jobs:
     fn workflow_scanner_allows_quarantined_prose_and_yaml_hash_literals() {
         let source = r##"
 jobs:
-  test:
-    steps:
-      - name: Check test surface (no quarantined/ignored tests)
-        run: printf '%s\n' "tag#not-a-comment"
-      - run: cargo test # --include-ignored in comment
-      # quarantine in pure comment
+ test:
+  steps:
+   - name: Check test surface (no quarantined/ignored tests)
+    run: printf '%s\n' "tag#not-a-comment"
+   - run: cargo test # --include-ignored in comment
+   # quarantine in pure comment
 "##;
 
         let findings = scan_workflow_no_quarantine(Path::new(".github/workflows/ci.yml"), source);

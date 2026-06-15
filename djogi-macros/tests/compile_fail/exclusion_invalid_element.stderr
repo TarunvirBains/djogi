@@ -1,7 +1,7 @@
 error: exclusion element "room_id" is missing the ` WITH ` delimiter — each element must look like `"<expr> WITH <op>"`, e.g. `"room_id WITH ="` / `"period WITH &&"`
-  --> $DIR/exclusion_invalid_element.rs:16:21
-   |
-16 |         elements = ["room_id"],
-   |                     ^^^^^^^^^
+ --> $DIR/exclusion_invalid_element.rs:16:21
+ |
+16 |   elements = ["room_id"],
+ |      ^^^^^^^^^
 
 error: aborting due to 1 previous error

@@ -1,7 +1,7 @@
 //! Orchestrates the `#[model]` attribute macro expansion.
 //! Each sub-module handles one concern. Modules that are not yet implemented
 //! expose a no-op `expand(...)` that returns an empty `TokenStream`, so the
-//! overall pipeline compiles in Task 3 and each subsequent task can replace its
+//! overall pipeline compiles in and each subsequent task can replace its
 //! stub in isolation without touching this file.
 
 pub mod attrs;
@@ -100,7 +100,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // generate `ADD COLUMN total_price FLOAT8` DDL — drift the
     // adopter never authored.
     // 3. The `Default` / `FromPgRow` impl bodies would reference
-    // `total_price: ...` as a real field assignment.
+    // `total_price:...` as a real field assignment.
     // `field_attrs` was collected upstream by zip-walking the same
     // field iterator, so its index alignment with `struct_item.fields`
     // is positional. After removal the indices shift; downstream
@@ -132,8 +132,8 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
                     field,
                     format!(
                         "field `{id}` appears as both a computed field and a \
-                         non-computed field — this should never happen under \
-                         normal Rust syntax; this is a djogi internal error"
+       non-computed field — this should never happen under \
+       normal Rust syntax; this is a djogi internal error"
                     ),
                 ));
             }
@@ -309,7 +309,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     let hooks_impl = hooks::expand(&struct_item.ident, &model_attrs);
 
     // 1c. Auditable opt-in — 4. Emits both the
-    // `impl ::djogi::Auditable for #ident { ... }` trait impl AND
+    // `impl ::djogi::Auditable for #ident {... }` trait impl AND
     // the `__djogi_auditable_populate` inherent helper invoked from
     // `Model::create` between `auto_set_tenant` and the user
     // `before_create` hook. Returns an empty `TokenStream` when
@@ -324,7 +324,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     let auditable_impl = crate::compose::auditable::expand(&struct_item.ident, &model_attrs);
 
     // 1d. SoftDeletable opt-in — 6. Emits the
-    // `impl ::djogi::SoftDeletable for #ident { ... }` trait impl
+    // `impl ::djogi::SoftDeletable for #ident {... }` trait impl
     // when `#[model(soft_deletable)]` is set; otherwise returns an
     // empty `TokenStream` so opt-out models pay zero macro-output
     // overhead.
@@ -451,7 +451,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // `emit_rust_getters` is now a no-op (returns
     // an empty token stream regardless of input). The earlier shape
     // emitted one inherent `pub fn <field>(&self) -> <T> {
-    // unimplemented!() }` stub per `#[computed(sql = ...)]` field on
+    // unimplemented!() }` stub per `#[computed(sql =...)]` field on
     // the premise that Rust would prefer a hand-written impl over the
     // stub — but Rust does not allow two inherent methods with the
     // same name on the same type (E0201). The wiring point is kept so
@@ -465,7 +465,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // 5 — `{Model}Computed` ZST + accessor methods +
     // `Vehicle::computed()` inherent constructor.
     // Adopters access computed fields via `Vehicle::computed()
-    // .total_price()` returning `Expr<f64>`, suitable for use in
+    //.total_price()` returning `Expr<f64>`, suitable for use in
     // `.annotate()`, `.filter_expr()`, `.order_by()`. The ZST is
     // independent of `{Model}Fields` for v0.1.0 simplicity (see the
     // module-level comment in `model::computed` for the bundling
@@ -480,24 +480,24 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     let schema_const = schema_const::emit(&struct_item, &model_attrs, &field_attrs);
 
     Ok(quote::quote! {
-        #expanded
-        #hooks_impl
-        #auditable_impl
-        #soft_deletable_impl
-        #from_row
-        #from_joined_row
-        #model_impl
-        #descriptor
-        #cacheable
-        #stubs
-        #filter
-        #related
-        #outer
-        #projections_ts
-        #rationale_advisories
-        #computed_getters
-        #computed_zst
-        #schema_const
+     #expanded
+     #hooks_impl
+     #auditable_impl
+     #soft_deletable_impl
+     #from_row
+     #from_joined_row
+     #model_impl
+     #descriptor
+     #cacheable
+     #stubs
+     #filter
+     #related
+     #outer
+     #projections_ts
+     #rationale_advisories
+     #computed_getters
+     #computed_zst
+     #schema_const
     })
 }
 
@@ -506,7 +506,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
 /// # Mechanism
 /// Stable Rust does not expose `proc_macro::Diagnostic` at warn level. The
 /// idiomatic stable-Rust approach is emitting a `#[deprecated]` const that is
-/// immediately referenced via a second `const _: () = ...;` expression. The
+/// immediately referenced via a second `const _: () =...;` expression. The
 /// compiler fires the deprecated-use lint at the reference site, which surfaces
 /// as a warning in the user's build output without preventing compilation.
 /// # Trigger today: `outbox = "ignore"` without `rationale`
@@ -561,18 +561,18 @@ fn emit_rationale_advisories(
 
         let deprecation_msg = format!(
             "field `{field_ident}` on `{struct_name}` uses \
-             `#[field(outbox = \"ignore\")]` without a `rationale`. \
-             Consider adding `#[field(outbox = \"ignore\", rationale = \"...\")]` \
-             to document why this field is excluded from the outbox payload \
-             (e.g. PII, derived data, ephemeral value)."
+    `#[field(outbox = \"ignore\")]` without a `rationale`. \
+    Consider adding `#[field(outbox = \"ignore\", rationale = \"...\")]` \
+    to document why this field is excluded from the outbox payload \
+    (e.g. PII, derived data, ephemeral value)."
         );
 
         // Emit the deprecated const and an immediate reference so the lint fires.
         ts.extend(quote::quote! {
-            #[deprecated(note = #deprecation_msg)]
-            #[allow(non_upper_case_globals)]
-            const #const_ident: () = ();
-            const _: () = #const_ident;
+         #[deprecated(note = #deprecation_msg)]
+         #[allow(non_upper_case_globals)]
+         const #const_ident: () = ();
+         const _: () = #const_ident;
         });
     }
 
@@ -583,23 +583,23 @@ fn emit_rationale_advisories(
 /// Rules enforced here (after `FieldAttrs::parse` accepts the bare `version`
 /// flag permissively):
 /// 1. At most one field per model may carry `#[field(version)]`.
-///    A second occurrence produces a span-precise compile error at the
-///    second field.
+/// A second occurrence produces a span-precise compile error at the
+/// second field.
 /// 2. The annotated field's type must be exactly `i32` or `i64`. Accepted
-///    spellings:
+/// spellings:
 /// - bare `i32` / `i64` (single-segment path);
 /// - `std::primitive::i32` / `std::primitive::i64`;
 /// - `core::primitive::i32` / `core::primitive::i64`.
-///   Any other multi-segment path — including user-defined module aliases
-///   like `my_mod::i32` — is rejected at macro-expansion time so a
-///   misleadingly named type alias cannot silently satisfy the contract.
-///   `Option<i32>` (last segment `Option`) is likewise rejected.
-///   Type resolution is unavailable at macro-expansion time. The validator
-///   therefore accepts a small, explicit allowlist of qualified primitive
-///   spellings plus the bare form. A user who writes `type i32 = String;`
-///   in scope of the annotated field can still fool the check; this is the
-///   inherent ceiling of syntactic detection and matches the limitation of
-///   every other macro in the ecosystem that inspects field types.
+/// Any other multi-segment path — including user-defined module aliases
+/// like `my_mod::i32` — is rejected at macro-expansion time so a
+/// misleadingly named type alias cannot silently satisfy the contract.
+/// `Option<i32>` (last segment `Option`) is likewise rejected.
+/// Type resolution is unavailable at macro-expansion time. The validator
+/// therefore accepts a small, explicit allowlist of qualified primitive
+/// spellings plus the bare form. A user who writes `type i32 = String;`
+/// in scope of the annotated field can still fool the check; this is the
+/// inherent ceiling of syntactic detection and matches the limitation of
+/// every other macro in the ecosystem that inspects field types.
 fn validate_version_fields(
     struct_item: &ItemStruct,
     field_attrs: &[attrs::FieldAttrs],
@@ -643,8 +643,8 @@ fn validate_version_fields(
                 field,
                 format!(
                     "#[field(version)] must be i32 or i64 (got {type_str}); \
-                     accepted spellings: bare `i32`/`i64`, \
-                     `std::primitive::i32`/`i64`, `core::primitive::i32`/`i64`"
+      accepted spellings: bare `i32`/`i64`, \
+      `std::primitive::i32`/`i64`, `core::primitive::i32`/`i64`"
                 ),
             ));
         }
@@ -660,8 +660,8 @@ fn validate_version_fields(
 /// - single-segment `i32` / `i64`
 /// - `std::primitive::i32` / `std::primitive::i64`
 /// - `core::primitive::i32` / `core::primitive::i64`
-///   Every other shape returns `false`, including `my_mod::i32` and other
-///   user-module paths that happen to end in `i32` / `i64`.
+/// Every other shape returns `false`, including `my_mod::i32` and other
+/// user-module paths that happen to end in `i32` / `i64`.
 fn is_version_primitive_path(path: &syn::Path) -> bool {
     // Reject any segment that carries angle-bracketed or parenthesized args
     // (e.g. a typo like `i32<()>`). Version fields must be exactly the
@@ -690,8 +690,8 @@ fn is_version_primitive_path(path: &syn::Path) -> bool {
 /// therefore carry at least two `ForeignKey<T>` columns.
 /// The relation macros depend on one FK back to each side of the relation.
 /// Treating `through` as a pure marker would let obviously-invalid junction
-/// structs compile and only fail much later when Task 7 macros tried to use
-/// them. Task 8 pins this earlier with a compile-fail fixture.
+/// structs compile and only fail much later when macros tried to use
+/// them. pins this earlier with a compile-fail fixture.
 fn validate_through_model_shape(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,

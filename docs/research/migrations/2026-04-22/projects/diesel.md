@@ -29,19 +29,19 @@
 Migration code lives in two crates:
 
 1. **`diesel_migrations/`** — the library crate that embeds into application code. Sub-structure:
-   - `src/migration_harness.rs` — `MigrationHarness` trait and its blanket impl on any `Connection`
-   - `src/file_based_migrations.rs` — `FileBasedMigrations` source; reads `up.sql`/`down.sql` pairs from disk
-   - `src/embedded_migrations.rs` — `EmbeddedMigrations`; `&'static str` pairs baked in at compile time
-   - `src/rust_migrations.rs` — `RustMigrationSource`; Rust closures/functions as migrations
-   - `src/errors.rs` — `MigrationError` and `RunMigrationsError` enums
-   - `migrations_internals/src/lib.rs` — `TomlMetadata`, directory scanning, `version_from_string`
-   - `migrations_macros/src/lib.rs` — `embed_migrations!` proc macro (reads filesystem at compile time)
+  - `src/migration_harness.rs` — `MigrationHarness` trait and its blanket impl on any `Connection`
+  - `src/file_based_migrations.rs` — `FileBasedMigrations` source; reads `up.sql`/`down.sql` pairs from disk
+  - `src/embedded_migrations.rs` — `EmbeddedMigrations`; `&'static str` pairs baked in at compile time
+  - `src/rust_migrations.rs` — `RustMigrationSource`; Rust closures/functions as migrations
+  - `src/errors.rs` — `MigrationError` and `RunMigrationsError` enums
+  - `migrations_internals/src/lib.rs` — `TomlMetadata`, directory scanning, `version_from_string`
+  - `migrations_macros/src/lib.rs` — `embed_migrations!` proc macro (reads filesystem at compile time)
 
 2. **`diesel_cli/src/`** — the CLI binary (`diesel`). Sub-structure:
-   - `migrations/mod.rs` — all subcommand dispatch: `Run`, `Revert`, `Redo`, `List`, `Pending`, `Generate`
-   - `migrations/diff_schema.rs` — `--diff-schema` code path that diffs `schema.rs` against live DB
-   - `print_schema.rs` — `diesel print-schema` introspection (reads DB, emits `schema.rs`)
-   - `database.rs` — `schema_table_exists`, `create_schema_table_and_run_migrations_if_needed`
+  - `migrations/mod.rs` — all subcommand dispatch: `Run`, `Revert`, `Redo`, `List`, `Pending`, `Generate`
+  - `migrations/diff_schema.rs` — `--diff-schema` code path that diffs `schema.rs` against live DB
+  - `print_schema.rs` — `diesel print-schema` introspection (reads DB, emits `schema.rs`)
+  - `database.rs` — `schema_table_exists`, `create_schema_table_and_run_migrations_if_needed`
 
 3. **`diesel/src/migration/mod.rs`** — the core traits (`Migration`, `MigrationSource`, `MigrationMetadata`, `MigrationConnection`, `MigrationVersion`) and the canonical `CREATE TABLE` SQL.
 
@@ -55,7 +55,7 @@ Migration code lives in two crates:
 
 **What is tracked in the filesystem:** The migration SQL and metadata. There is no snapshot file (like Djogi's `schema_snapshot.json`); instead, `schema.rs` is regenerated from the live DB by `diesel print-schema`.
 
-**Separation of applied-state from execution-history:** None. There is a single `run_on` timestamp column, but it records creation time of the row (i.e. when the migration ran), not a separate history table. Every applied version is exactly one row; reverted versions are deleted from the table (`diesel::delete(... .find(version))` — `diesel_migrations/src/migration_harness.rs:200-203`). There is no audit log of past operations.
+**Separation of applied-state from execution-history:** None. There is a single `run_on` timestamp column, but it records creation time of the row (i.e. when the migration ran), not a separate history table. Every applied version is exactly one row; reverted versions are deleted from the table (`diesel::delete(....find(version))` — `diesel_migrations/src/migration_harness.rs:200-203`). There is no audit log of past operations.
 
 **Pending computation (source-confirmed, high):**
 `pending_migrations` fetches `applied_migrations()` (a `SELECT version FROM __diesel_schema_migrations ORDER BY version DESC`), builds a `HashMap` of all filesystem migrations, removes applied ones by version key, then sorts the remainder ascending. The sort is lexicographic on the `version` string, which for timestamp-named directories produces chronological order.
@@ -69,8 +69,8 @@ Migration code lives in two crates:
 
 ```sql
 CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (
-       version VARCHAR(50) PRIMARY KEY NOT NULL,
-       run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    version VARCHAR(50) PRIMARY KEY NOT NULL,
+    run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -90,15 +90,15 @@ Source: `diesel/src/migration/mod.rs:185`, `diesel/src/migration/mod.rs:206-227`
 **Insert on apply:**
 ```rust
 diesel::insert_into(__diesel_schema_migrations::table)
-    .values(__diesel_schema_migrations::version.eq(migration.name().version().as_owned()))
-    .execute(conn)?;
+ .values(__diesel_schema_migrations::version.eq(migration.name().version().as_owned()))
+ .execute(conn)?;
 ```
 Source: `diesel_migrations/src/migration_harness.rs:178-182`
 
 **Delete on revert:**
 ```rust
 diesel::delete(
-    __diesel_schema_migrations::table.find(migration.name().version().as_owned()),
+  __diesel_schema_migrations::table.find(migration.name().version().as_owned()),
 )
 .execute(conn)?;
 ```
@@ -117,7 +117,7 @@ Source: `diesel_migrations/src/migration_harness.rs:200-203`
 The only lock present is a **filesystem lock on the migrations directory** (a `.diesel_lock` file), acquired exclusively during `diesel migration generate` to prevent concurrent generation of duplicate versions:
 ```rust
 let mut lock = RwLock::new(migration_folder_lock(migrations_folder.clone())?);
-let _ = lock.write().map_err(|err| { ... })?;
+let _ = lock.write().map_err(|err| {... })?;
 ```
 Source: `diesel_cli/src/migrations/mod.rs:268-273`. This is an `fd_lock::RwLock` — an OS-level file lock, not a database lock — and it is scoped to the `Generate` subcommand only, not to `Run` or `Revert`.
 
@@ -128,9 +128,9 @@ Source: `diesel_cli/src/migrations/mod.rs:268-273`. This is an `fd_lock::RwLock`
 **Default: each migration runs in its own transaction.** Source: `diesel_migrations/src/migration_harness.rs:186-189`:
 ```rust
 if migration.metadata().run_in_transaction() {
-    self.transaction(apply_migration)?;
+  self.transaction(apply_migration)?;
 } else {
-    apply_migration(self)?;
+  apply_migration(self)?;
 }
 ```
 The INSERT into `__diesel_schema_migrations` happens inside the same `apply_migration` closure as the migration SQL, so both the DDL and the ledger write are committed atomically or both are rolled back.
@@ -192,7 +192,7 @@ The diff produces three variant types:
 
 Source: `diesel_cli/src/migrations/diff_schema.rs:320-337`.
 
-The generated SQL uses `ALTER TABLE ... ADD COLUMN`, `ALTER TABLE ... DROP COLUMN`, `CREATE TABLE`, and `DROP TABLE IF EXISTS`. Source: `diesel_cli/src/migrations/diff_schema.rs:689-861`.
+The generated SQL uses `ALTER TABLE... ADD COLUMN`, `ALTER TABLE... DROP COLUMN`, `CREATE TABLE`, and `DROP TABLE IF EXISTS`. Source: `diesel_cli/src/migrations/diff_schema.rs:689-861`.
 
 **This is explicitly labeled not production-ready:** the comment in `MigrationCommand::Generate` says the generated migrations "are not expected to be perfect." Source: `diesel_cli/src/migrations/mod.rs:127-131`.
 
@@ -268,7 +268,7 @@ These generated types are used directly in application query code. The `schema.r
 `embed_migrations!` has a known limitation: the Rust proc-macro API does not support signaling a rebuild on external file changes. If only migration files change (without touching `Cargo.toml` or a `.rs` file that uses the macro), `embed_migrations!` will not re-run. The official workaround is to add a `build.rs`:
 ```rust
 fn main() {
-    println!("cargo:rerun-if-changed=path/to/migrations");
+  println!("cargo:rerun-if-changed=path/to/migrations");
 }
 ```
 Source: `diesel_migrations/migrations_macros/src/lib.rs:100-113`.

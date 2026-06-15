@@ -4,7 +4,7 @@
 - Clone path: `/home/tarunvir/projects/flyway-reference/`
 - Commit SHA inspected: `be2566341` ("Bump version to flyway-12.4.0")
 - Primary language: Java (Maven multi-module)
-- Total LOC of migration-relevant modules: ~5050 LOC across `flyway-core/src/main/java/org/flywaydb/core/internal/schemahistory/`, `flyway-core/src/main/java/org/flywaydb/core/internal/command/`, and `flyway-database/flyway-database-postgresql/src/main/java/` (counted with `find ... -name '*.java' | xargs wc -l`).
+- Total LOC of migration-relevant modules: ~5050 LOC across `flyway-core/src/main/java/org/flywaydb/core/internal/schemahistory/`, `flyway-core/src/main/java/org/flywaydb/core/internal/command/`, and `flyway-database/flyway-database-postgresql/src/main/java/` (counted with `find... -name '*.java' | xargs wc -l`).
 
 ## Architecture
 
@@ -36,45 +36,45 @@ Confidence: **high**.
 ```java
 @Override
 public String getRawCreateScript(Table table, boolean baseline) {
-    String tablespace = configuration.getTablespace() == null
-            ? ""
-            : " TABLESPACE \"" + configuration.getTablespace() + "\"";
+  String tablespace = configuration.getTablespace() == null
+      ? ""
+      : " TABLESPACE \"" + configuration.getTablespace() + "\"";
 
-    return "CREATE TABLE " + table + " (\n" +
-            "    \"installed_rank\" INT NOT NULL,\n" +
-            "    \"version\" VARCHAR(50),\n" +
-            "    \"description\" VARCHAR(200) NOT NULL,\n" +
-            "    \"type\" VARCHAR(20) NOT NULL,\n" +
-            "    \"script\" VARCHAR(1000) NOT NULL,\n" +
-            "    \"checksum\" INTEGER,\n" +
-            "    \"installed_by\" VARCHAR(100) NOT NULL,\n" +
-            "    \"installed_on\" TIMESTAMP NOT NULL DEFAULT now(),\n" +
-            "    \"execution_time\" INTEGER NOT NULL,\n" +
-            "    \"success\" BOOLEAN NOT NULL\n" +
-            ")" + tablespace + ";\n" +
-            (baseline ? getBaselineStatement(table) + ";\n" : "") +
-            "ALTER TABLE " + table + " ADD CONSTRAINT \"" + table.getName() + "_pk\" PRIMARY KEY (\"installed_rank\")" + (configuration.getTablespace() != null ? " USING INDEX" + tablespace : "" ) + ";\n" +
-            "CREATE INDEX \"" + table.getName() + "_s_idx\" ON " + table + " (\"success\")" + tablespace + ";";
+  return "CREATE TABLE " + table + " (\n" +
+      "  \"installed_rank\" INT NOT NULL,\n" +
+      "  \"version\" VARCHAR(50),\n" +
+      "  \"description\" VARCHAR(200) NOT NULL,\n" +
+      "  \"type\" VARCHAR(20) NOT NULL,\n" +
+      "  \"script\" VARCHAR(1000) NOT NULL,\n" +
+      "  \"checksum\" INTEGER,\n" +
+      "  \"installed_by\" VARCHAR(100) NOT NULL,\n" +
+      "  \"installed_on\" TIMESTAMP NOT NULL DEFAULT now(),\n" +
+      "  \"execution_time\" INTEGER NOT NULL,\n" +
+      "  \"success\" BOOLEAN NOT NULL\n" +
+      ")" + tablespace + ";\n" +
+      (baseline ? getBaselineStatement(table) + ";\n" : "") +
+      "ALTER TABLE " + table + " ADD CONSTRAINT \"" + table.getName() + "_pk\" PRIMARY KEY (\"installed_rank\")" + (configuration.getTablespace() != null ? " USING INDEX" + tablespace : "" ) + ";\n" +
+      "CREATE INDEX \"" + table.getName() + "_s_idx\" ON " + table + " (\"success\")" + tablespace + ";";
 }
 ```
 
 Column purposes (inferred from write site `JdbcTableSchemaHistory.java:193-195` and read site `JdbcTableSchemaHistory.java:237-245`):
 
-| Column            | Type           | Purpose |
+| Column      | Type      | Purpose |
 |-------------------|----------------|---------|
-| `installed_rank`  | `INT NOT NULL` | Monotonic sequence assigned by `SchemaHistory.calculateInstalledRank` (`SchemaHistory.java:231-237`) = `max(installed_rank) + 1`. Primary key. Also doubles as the anchor for `InsertRowLock` (see Execution below). |
-| `version`         | `VARCHAR(50)`  | Nullable; NULL for repeatable migrations. |
-| `description`     | `VARCHAR(200) NOT NULL` | Human description. If source has empty description on a DB that can't store empty strings (Oracle), Flyway substitutes `<< no description >>` (`SchemaHistory.java:46`). |
-| `type`            | `VARCHAR(20) NOT NULL` | Enum name from `CoreMigrationType` (SQL, BASELINE, SCHEMA, DELETE, UNDO_SQL, JDBC, etc.). Written as `type.name()` at `JdbcTableSchemaHistory.java:194`. |
-| `script`          | `VARCHAR(1000) NOT NULL` | File name (abbreviated via `AbbreviationUtils` at `SchemaHistory.java:219`). |
-| `checksum`        | `INTEGER` (nullable) | CRC-32, see "Recovery" below. |
-| `installed_by`    | `VARCHAR(100) NOT NULL` | Default is the DB current_user (`Database.java:428-432`). |
-| `installed_on`    | `TIMESTAMP NOT NULL DEFAULT now()` | Server-side default. |
-| `execution_time`  | `INTEGER NOT NULL` | Milliseconds of the migration body. |
-| `success`         | `BOOLEAN NOT NULL` | See "Partial-apply handling" below. |
+| `installed_rank` | `INT NOT NULL` | Monotonic sequence assigned by `SchemaHistory.calculateInstalledRank` (`SchemaHistory.java:231-237`) = `max(installed_rank) + 1`. Primary key. Also doubles as the anchor for `InsertRowLock` (see Execution below). |
+| `version`     | `VARCHAR(50)` | Nullable; NULL for repeatable migrations. |
+| `description`   | `VARCHAR(200) NOT NULL` | Human description. If source has empty description on a DB that can't store empty strings (Oracle), Flyway substitutes `<< no description >>` (`SchemaHistory.java:46`). |
+| `type`      | `VARCHAR(20) NOT NULL` | Enum name from `CoreMigrationType` (SQL, BASELINE, SCHEMA, DELETE, UNDO_SQL, JDBC, etc.). Written as `type.name()` at `JdbcTableSchemaHistory.java:194`. |
+| `script`     | `VARCHAR(1000) NOT NULL` | File name (abbreviated via `AbbreviationUtils` at `SchemaHistory.java:219`). |
+| `checksum`    | `INTEGER` (nullable) | CRC-32, see "Recovery" below. |
+| `installed_by`  | `VARCHAR(100) NOT NULL` | Default is the DB current_user (`Database.java:428-432`). |
+| `installed_on`  | `TIMESTAMP NOT NULL DEFAULT now()` | Server-side default. |
+| `execution_time` | `INTEGER NOT NULL` | Milliseconds of the migration body. |
+| `success`     | `BOOLEAN NOT NULL` | See "Partial-apply handling" below. |
 
 **Indexes / PK strategy:**
-- Primary key is `<table>_pk` on `(installed_rank)`, added via `ALTER TABLE ... ADD CONSTRAINT ... PRIMARY KEY`, not inline. This is deliberate so a single file is shared across dialects that don't allow inline PK, and because some dialects need `USING INDEX` with tablespace.
+- Primary key is `<table>_pk` on `(installed_rank)`, added via `ALTER TABLE... ADD CONSTRAINT... PRIMARY KEY`, not inline. This is deliberate so a single file is shared across dialects that don't allow inline PK, and because some dialects need `USING INDEX` with tablespace.
 - A secondary index `<table>_s_idx` on `(success)` is always created. It exists because `DbRepair` filters on `WHERE success = FALSE` (see `getDeleteStatement` at `Database.java:418-426`).
 - There is no unique constraint on `(version)` or `(script)` — the schema does not prevent re-inserting the same version as a separate `installed_rank`. This is load-bearing for the repair/delete flow (see Recovery).
 
@@ -88,19 +88,19 @@ Postgres uses **session-scoped advisory locks** by default (not row locks, not `
 
 ```java
 private static final long LOCK_MAGIC_NUM =
-        (0x46L << 40) // F
-                + (0x6CL << 32) // l
-                + (0x79L << 24) // y
-                + (0x77 << 16) // w
-                + (0x61 << 8) // a
-                + 0x79; // y
+    (0x46L << 40) // F
+        + (0x6CL << 32) // l
+        + (0x79L << 24) // y
+        + (0x77 << 16) // w
+        + (0x61 << 8) // a
+        + 0x79; // y
 ```
 
 The lock key is `LOCK_MAGIC_NUM + discriminator`, where the discriminator is `table.toString().hashCode()` passed in at `PostgreSQLConnection.java:104-106`:
 
 ```java
 public <T> T lock(Table table, Callable<T> callable) {
-    return new PostgreSQLAdvisoryLockTemplate(database.getConfiguration(), jdbcTemplate, table.toString().hashCode()).execute(callable);
+  return new PostgreSQLAdvisoryLockTemplate(database.getConfiguration(), jdbcTemplate, table.toString().hashCode()).execute(callable);
 }
 ```
 
@@ -114,12 +114,12 @@ Default: one migration per transaction. Implemented in `DbMigrate.applyMigration
 
 ```java
 if (executeGroupInTransaction) {
-    ExecutionTemplateFactory.createExecutionTemplate(connectionUserObjects.getJdbcConnection(), database).execute(() -> {
-        doMigrateGroup(group, stopWatch, skipExecutingMigrations, true);
-        return null;
-    });
+  ExecutionTemplateFactory.createExecutionTemplate(connectionUserObjects.getJdbcConnection(), database).execute(() -> {
+    doMigrateGroup(group, stopWatch, skipExecutingMigrations, true);
+    return null;
+  });
 } else {
-    doMigrateGroup(group, stopWatch, skipExecutingMigrations, false);
+  doMigrateGroup(group, stopWatch, skipExecutingMigrations, false);
 }
 ```
 
@@ -127,10 +127,10 @@ Whether the group runs in a transaction is decided per-group in `isExecuteGroupI
 
 ```java
 if (!configuration.isMixed() && executeGroupInTransaction != inTransaction) {
-    throw new FlywayMigrateException(entry.getKey(),
-                                     "Detected both transactional and non-transactional migrations within the same migration group"
-                                             + " (even though mixed is false). First offending migration: "
-                                             + ...);
+  throw new FlywayMigrateException(entry.getKey(),
+                   "Detected both transactional and non-transactional migrations within the same migration group"
+                       + " (even though mixed is false). First offending migration: "
+                       +...);
 }
 ```
 
@@ -143,7 +143,7 @@ private static final Pattern CREATE_INDEX_CONCURRENTLY_REGEX = Pattern.compile("
 private static final Pattern REINDEX_REGEX = Pattern.compile("^REINDEX( VERBOSE)? (SCHEMA|DATABASE|SYSTEM)");
 private static final Pattern VACUUM_REGEX = Pattern.compile("^VACUUM");
 private static final Pattern DISCARD_ALL_REGEX = Pattern.compile("^DISCARD ALL");
-private static final Pattern ALTER_TYPE_ADD_VALUE_REGEX = Pattern.compile("^ALTER TYPE( .*)? ADD VALUE");
+private static final Pattern ALTER_TYPE_ADD_VALUE_REGEX = Pattern.compile("^ALTER TYPE(.*)? ADD VALUE");
 // CREATE/DROP DATABASE, TABLESPACE, SUBSCRIPTION
 // ALTER SYSTEM
 ```
@@ -166,25 +166,25 @@ CRC-32, computed line-by-line over UTF-8 bytes **with line terminators stripped*
 
 ```java
 public static int calculate(LoadableResource... loadableResources) {
-    int checksum;
-    checksum = calculateChecksumForResource(loadableResources[0]);
-    return checksum;
+  int checksum;
+  checksum = calculateChecksumForResource(loadableResources[0]);
+  return checksum;
 }
 
 private static int calculateChecksumForResource(LoadableResource resource) {
-    final CRC32 crc32 = new CRC32();
-    BufferedReader bufferedReader = null;
-    try {
-        bufferedReader = new BufferedReader(resource.read(), 4096);
-        String line = bufferedReader.readLine();
-        if (line != null) {
-            line = BomFilter.FilterBomFromString(line);
-            do {
-                crc32.update(line.getBytes(StandardCharsets.UTF_8));
-            } while ((line = bufferedReader.readLine()) != null);
-        }
-    } catch (IOException e) { ... }
-    return (int) crc32.getValue();
+  final CRC32 crc32 = new CRC32();
+  BufferedReader bufferedReader = null;
+  try {
+    bufferedReader = new BufferedReader(resource.read(), 4096);
+    String line = bufferedReader.readLine();
+    if (line != null) {
+      line = BomFilter.FilterBomFromString(line);
+      do {
+        crc32.update(line.getBytes(StandardCharsets.UTF_8));
+      } while ((line = bufferedReader.readLine()) != null);
+    }
+  } catch (IOException e) {... }
+  return (int) crc32.getValue();
 }
 ```
 
@@ -203,26 +203,26 @@ This is *not* a normalized-SQL hash — whitespace changes, comment changes, and
 
 2. **`deleteMissingMigrations`** (`DbRepair.java:157-180`) — for any applied migration whose resolved counterpart has vanished from disk AND whose state is `MISSING_SUCCESS`/`MISSING_FAILED`/`FUTURE_SUCCESS`/`FUTURE_FAILED`, Flyway calls `schemaHistory.delete(applied)`. Despite the name, `delete()` **does not DELETE a row**; it *inserts a new row* of type `DELETE` (`JdbcTableSchemaHistory.java:372-399`):
 
-   ```java
-   jdbcTemplate.update(
-           database.getInsertStatement(table),
-           calculateInstalledRank(appliedMigration.getType()),
-           versionObj, appliedMigration.getDescription(), "DELETE", appliedMigration.getScript(),
-           checksumObj, database.getInstalledBy(), 0, appliedMigration.isSuccess());
-   ```
+  ```java
+  jdbcTemplate.update(
+      database.getInsertStatement(table),
+      calculateInstalledRank(appliedMigration.getType()),
+      versionObj, appliedMigration.getDescription(), "DELETE", appliedMigration.getScript(),
+      checksumObj, database.getInstalledBy(), 0, appliedMigration.isSuccess());
+  ```
 
-   So the ledger is append-only for non-failed rows — tombstones are written rather than rows mutated. This is a design choice, and it shows up in how `MigrationState` reads them (`BaseAppliedMigration.java:157-159` returns `SUCCESS` for DELETE rows, effectively masking the original).
+  So the ledger is append-only for non-failed rows — tombstones are written rather than rows mutated. This is a design choice, and it shows up in how `MigrationState` reads them (`BaseAppliedMigration.java:157-159` returns `SUCCESS` for DELETE rows, effectively masking the original).
 
 3. **`alignAppliedMigrationsWithResolvedMigrations`** (`DbRepair.java:182-218`) — for rows where resolved-vs-applied checksum, description, or type drifted, issue:
 
-   ```java
-   // Database.java:379-386
-   UPDATE <table>
-   SET "description" = ?, "type" = ?, "checksum" = ?
-   WHERE "installed_rank" = ?
-   ```
+  ```java
+  // Database.java:379-386
+  UPDATE <table>
+  SET "description" = ?, "type" = ?, "checksum" = ?
+  WHERE "installed_rank" = ?
+  ```
 
-   This *is* an in-place mutation (the only place repair physically edits a row). Called at `JdbcTableSchemaHistory.java:364`. Flyway refuses to realign synthetic (`BASELINE`/`SCHEMA`/`DELETE`) rows (`DbRepair.java:194,207`) and skips `UNDONE`/`IGNORED` rows.
+  This *is* an in-place mutation (the only place repair physically edits a row). Called at `JdbcTableSchemaHistory.java:364`. Flyway refuses to realign synthetic (`BASELINE`/`SCHEMA`/`DELETE`) rows (`DbRepair.java:194,207`) and skips `UNDONE`/`IGNORED` rows.
 
 **What repair refuses to do:**
 - It will never drop/truncate the history table (that's `clean`, gated behind `cleanDisabled`, `DbClean.java:63-66`).
@@ -245,21 +245,21 @@ The critical path is `DbMigrate.applyMigrations` (`DbMigrate.java:289-306`):
 
 ```java
 } catch (FlywayMigrateException e) {
-    MigrationInfo migration = e.getMigration();
-    String failedMsg = "Migration of " + toMigrationText(...) + " failed!";
-    ...
-    int executionTime = (int) stopWatch.getTotalTimeMillis();
-    migrateResult.putFailedMigration(migration, executionTime);
+  MigrationInfo migration = e.getMigration();
+  String failedMsg = "Migration of " + toMigrationText(...) + " failed!";
+ ...
+  int executionTime = (int) stopWatch.getTotalTimeMillis();
+  migrateResult.putFailedMigration(migration, executionTime);
 
-    if (database.supportsDdlTransactions() && executeGroupInTransaction) {
-        LOG.error(failedMsg + " Changes successfully rolled back.");
-        migrateResult.markAsRolledBack(group.keySet().stream().toList());
-    } else {
-        LOG.error(failedMsg + " Please restore backups and roll back database and code!");
-        schemaHistory.addAppliedMigration(migration.getVersion(), migration.getDescription(),
-                                          migration.getType(), migration.getScript(), migration.getChecksum(), executionTime, false);
-    }
-    throw e;
+  if (database.supportsDdlTransactions() && executeGroupInTransaction) {
+    LOG.error(failedMsg + " Changes successfully rolled back.");
+    migrateResult.markAsRolledBack(group.keySet().stream().toList());
+  } else {
+    LOG.error(failedMsg + " Please restore backups and roll back database and code!");
+    schemaHistory.addAppliedMigration(migration.getVersion(), migration.getDescription(),
+                     migration.getType(), migration.getScript(), migration.getChecksum(), executionTime, false);
+  }
+  throw e;
 }
 ```
 
@@ -276,11 +276,11 @@ Note: `schemaHistory.addAppliedMigration(...)` on the success path (`DbMigrate.j
 
 1. When building context (`MigrationInfoServiceImpl.java:321-334`): if an applied migration's version is ≤ context.lastApplied, it is tagged `outOfOrder = true` on its attributes.
 2. When selecting pending migrations in `DbMigrate.migrateGroup` (`DbMigrate.java:243-246`):
-   ```java
-   boolean isOutOfOrder = pendingMigration.getVersion() != null
-           && pendingMigration.getVersion().compareTo(currentSchemaVersion) < 0;
-   ```
-   A pending migration whose version is *less than* the current max applied version is only scheduled when `configuration.isOutOfOrder()` is true; otherwise it stays `IGNORED`. `DbMigrate.migrateGroup` at `DbMigrate.java:193-197` emits a loud warning: "outOfOrder mode is active. Migration of schema ... may not be reproducible."
+  ```java
+  boolean isOutOfOrder = pendingMigration.getVersion() != null
+      && pendingMigration.getVersion().compareTo(currentSchemaVersion) < 0;
+  ```
+  A pending migration whose version is *less than* the current max applied version is only scheduled when `configuration.isOutOfOrder()` is true; otherwise it stays `IGNORED`. `DbMigrate.migrateGroup` at `DbMigrate.java:193-197` emits a loud warning: "outOfOrder mode is active. Migration of schema... may not be reproducible."
 
 Once such a migration runs, it sits in the history with `installed_rank > max`, but `version < max applied version`. State resolution ends up at `MigrationState.OUT_OF_ORDER` (`BaseAppliedMigration.java:191-193`) and remains that way forever. The ledger is the record that this migration was applied out of order.
 
@@ -296,7 +296,7 @@ Destructive-operation detection and gating: the only gate is `cleanDisabled` (`D
 
 ```java
 if (configuration.isCleanDisabled()) {
-    throw new FlywayException("Unable to execute clean as it has been disabled with the 'flyway.cleanDisabled' property.");
+  throw new FlywayException("Unable to execute clean as it has been disabled with the 'flyway.cleanDisabled' property.");
 }
 ```
 

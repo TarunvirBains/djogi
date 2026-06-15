@@ -13,24 +13,24 @@ use djogi::query::MergeWhenCondition;
 #[model(table = "merge_source_expr_sources", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct SourceExprSource {
-    pub label: String,
+ pub label: String,
 }
 
 #[model(table = "merge_source_expr_targets", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct SourceExprTarget {
-    pub label: String,
+ pub label: String,
 }
 
 fn main() {
-    let _stmt = SourceExprSource::objects()
-        .merge_into::<SourceExprTarget, _, _>(|target, source| {
-            target.label().merge_on_eq(source.label())
-        })
-        .when_matched_and_update(
-            None::<MergeWhenCondition<SourceExprSource, SourceExprTarget>>,
-            SourceExprTarget::fields()
-                .label()
-                .merge_set_expr(SourceExprSource::fields().label().as_expr()),
-        );
+ let _stmt = SourceExprSource::objects()
+ .merge_into::<SourceExprTarget, _, _>(|target, source| {
+   target.label().merge_on_eq(source.label())
+  })
+ .when_matched_and_update(
+   None::<MergeWhenCondition<SourceExprSource, SourceExprTarget>>,
+   SourceExprTarget::fields()
+   .label()
+   .merge_set_expr(SourceExprSource::fields().label().as_expr()),
+  );
 }

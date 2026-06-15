@@ -1,16 +1,16 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Migration System — Team Review Proposal
 
-> **Historical — superseded 2026-04-23.** This proposal fed into the Phase 7 v3 and Phase 7-Zero v3 synthesis. Examples in this document (notably the `djogi::apps!` bare-label syntax, the single-level `migrations/<app>/schema_snapshot.json` path shape, the old `schema drift detected` warning text, and legacy `_up.sql` / `_down.sql` filename examples) predate the current rulings. For authoritative syntax and paths, see `docs/spec/decisions.md` (rows dated 2026-04-23), `docs/spec/apps-and-database-domains.md`, and `docs/spec/migrations.md`. Kept as a design-history record; do not implement against examples here.
+> **Historical — superseded 2026-04-23.** This proposal fed into the v3 and v3 synthesis. Examples in this document (notably the `djogi::apps!` bare-label syntax, the single-level `migrations/<app>/schema_snapshot.json` path shape, the old `schema drift detected` warning text, and legacy `_up.sql` / `_down.sql` filename examples) predate the current rulings. For authoritative syntax and paths, see `docs/spec/decisions.md` (rows dated 2026-04-23), `docs/spec/apps-and-database-domains.md`, and `docs/spec/migrations.md`. Kept as a design-history record; do not implement against examples here.
 
 **Date:** 2026-04-22
 **Status:** Proposal for team review — historical
 **Supersedes on acceptance:** `docs/spec/migrations.md` §10, two rows in `docs/spec/decisions.md`
-  ("Build drift diagnostic" and "Migration generation")
+ ("Build drift diagnostic" and "Migration generation")
 **Prior art:** `docs/research/migrations/2026-04-22/` — 16,198 lines of source-backed research
-  across 11 migration systems, 12 topic syntheses, 1 gap analysis, 1 locked-recommendations doc,
-  1 decision record
+ across 11 migration systems, 12 topic syntheses, 1 gap analysis, 1 locked-recommendations doc,
+ 1 decision record
 
 ---
 
@@ -18,7 +18,7 @@
 
 This proposal packages the locked migration-system design from
 `docs/research/migrations/2026-04-22/16-decision-record.md` as a reviewable document positioned
-alongside the existing `docs/spec/migrations.md`, `docs/spec/decisions.md`, and the Phase 7
+alongside the existing `docs/spec/migrations.md`, `docs/spec/decisions.md`, and the 
 architecture/plan pair. It does not rewrite the existing docs in-place. On team acceptance, the
 supersession table in Part IV drives the actual doc updates. Until then, existing docs stand.
 
@@ -45,10 +45,10 @@ The team is being asked to evaluate ten design pillars and their downstream cons
 special attention to:
 
 1. `build.rs` is diagnostic-only (re-opens two locked decisions — the only true re-open in
-   the whole proposal).
+ the whole proposal).
 2. The apps subsystem (`djogi::apps!` macro, per-app migration folders, lifecycle operations
-   for rename/remove/move) — entirely new, not in the Phase 7 plan, emerged from the walkthrough.
-3. The finalized ledger DDL — five columns beyond the Phase 7 v2 plan's draft DDL.
+ for rename/remove/move) — entirely new, not in the plan, emerged from the walkthrough.
+3. The finalized ledger DDL — five columns beyond the v2 plan's draft DDL.
 4. The three-file snapshot model — `target/` vs `migrations/` separation with atomic writes.
 5. The complete CLI surface under the `djogi migrations *` noun-grouped verb convention.
 
@@ -57,9 +57,9 @@ special attention to:
 ## How to Read This Document
 
 This proposal is designed to be read alongside `docs/spec/migrations.md` and the tracked
-Phase 7 migration research bundle in `docs/research/migrations/2026-04-22/`. Each section in Parts I
+ migration research bundle in `docs/research/migrations/2026-04-22/`. Each section in Parts I
 and II is structured as: current plan summary, proposed design, rationale, tradeoffs. Team
-members already familiar with the Phase 7 docs can skim the "Current plan" sub-sections and
+members already familiar with the docs can skim the "Current plan" sub-sections and
 focus on "Proposed" and "Rationale." Part III (Lifecycle Walkthrough) is the most persuasive
 section for any reviewer uncertain about the practical impact — read it before forming an
 opinion on the architecture sections.
@@ -97,7 +97,7 @@ survives.
 Rationale: `sqlx::migrate`'s minimalist two-column ledger cannot support the status column,
 `run_id`, `app_label`, or `applied_steps_count` columns required by this design. `sqlx::migrate`
 also does not use advisory locking, meaning a concurrent apply can corrupt the ledger silently
-(T12, T04). This decision was already locked in the Phase 7 design and v2 plan; it is listed
+(T12, T04). This decision was already locked in the design and v2 plan; it is listed
 here because `docs/spec/migrations.md` §10.1 still says "Execution is sqlx's built-in runner"
 and must be updated.
 
@@ -131,10 +131,10 @@ existing `V1:` rows remain valid (T03, R-05).
 Operations that generate SQL are classified into two buckets before file generation:
 
 - `unexecutableSteps` — hard-block generation; requires `djogi migrations compose
-  --allow-destructive`. Includes: `DROP TABLE`, `DROP COLUMN`, nullable-to-NOT NULL without
-  DEFAULT, enum value deletion, enum value reorder.
+ --allow-destructive`. Includes: `DROP TABLE`, `DROP COLUMN`, nullable-to-NOT NULL without
+ DEFAULT, enum value deletion, enum value reorder.
 - `warnings` — proceed with generation but emit `-- DJOGI WARNING:` comment in the UP file.
-  Includes: type narrowing, `DROP INDEX`, `DROP FOREIGN KEY`, annotated renames.
+ Includes: type narrowing, `DROP INDEX`, `DROP FOREIGN KEY`, annotated renames.
 
 Djogi escalates `DROP TABLE` and `DROP COLUMN` from Prisma's `warnings` bucket to
 `unexecutableSteps`. The research position: irreversible data loss requires explicit opt-in,
@@ -149,7 +149,7 @@ This is the only pillar that contradicts currently-locked decisions. It re-opens
 diagnostic" and "Migration generation" rows in `docs/spec/decisions.md`. The re-open rationale:
 `build.rs` writing to `migrations/` (a git submodule) on every `cargo build` causes IDE churn
 (directory watchers, LSP re-indexing) and bypasses the developer review step that is the primary
-safety gate for migration SQL. The Phase 7 design doc (`P7D §Core Model`) already states "`build.rs`
+safety gate for migration SQL. The design doc (`P7D §Core Model`) already states "`build.rs`
 may read the snapshot. It must never mutate it." Diagnostic-only extends that principle
 consistently (T12, R-12).
 
@@ -211,7 +211,7 @@ operators hand-editing the ledger table (T03, C-08 in doc 15).
 
 ### 2.1 The CLI Surface — `djogi migrations *`
 
-The existing Phase 7 v2 plan uses Django-inspired command names: `makemigrations`, `migrate`.
+The existing v2 plan uses Django-inspired command names: `makemigrations`, `migrate`.
 This proposal replaces them with noun-grouped verbs throughout. The shipped CLI surface is narrower than the full target design:
 
 | Command | What it does |
@@ -226,12 +226,12 @@ This proposal replaces them with noun-grouped verbs throughout. The shipped CLI 
 | `djogi migrations help [<subcommand>]` | Print help for the group or a specific subcommand |
 | `djogi migrations` (no subcommand) | Equivalent to `help` — prints subcommand list + common workflows |
 
-Every reference to `makemigrations` in existing Phase 7 docs and in the existing spec is
+Every reference to `makemigrations` in existing docs and in the existing spec is
 superseded by `migrations compose`. Every bare `migrate` is superseded by `migrations apply`.
 The noun-grouped form makes the command surface self-documenting: `djogi migrations <tab>`
 reveals the full surface; no knowledge of which verbs are standalone vs. subcommands is needed.
 
-**Current plan (Phase 7 v2):** `djogi makemigrations`, `djogi migrate`, `djogi
+**Current plan ( v2):** `djogi makemigrations`, `djogi migrate`, `djogi
 migrate show`, `djogi migrate repair`, `djogi migrate baseline`, `djogi plan`
 (the existing plan uses the cargo-subcommand prefix throughout).
 
@@ -240,7 +240,7 @@ its output is absorbed into `migrations status` with structured `HistoryDiagnost
 (R-25).
 
 **Binary and invocation forms.** The shipped `djogi-cli` package declares the standalone
-`djogi` binary. Canonical form throughout this proposal is `djogi migrations ...`; any
+`djogi` binary. Canonical form throughout this proposal is `djogi migrations...`; any
 cargo-subcommand wrapper is a future packaging decision, not a current install surface.
 
 **Help and discoverability.** Every subcommand supports `--help` / `-h`. Running `djogi
@@ -266,7 +266,7 @@ acquires a dedicated single `tokio-postgres` connection (not a pool connection) 
 apply window. Pool connections cannot hold advisory locks safely: if the connection is recycled,
 the lock persists until pool teardown (R-23, T04).
 
-**Key differences from Phase 7 v2 plan draft:** The v2 plan already states "No `sqlx::migrate`
+**Key differences from v2 plan draft:** The v2 plan already states "No `sqlx::migrate`
 compatibility layer survives" (Critical Design Decision 1). This proposal makes it explicit
 that the runner uses a dedicated non-pooled connection for the advisory lock lifecycle, which
 the v2 plan does not specify.
@@ -277,67 +277,67 @@ becomes achievable. `sqlx::migrate` cannot be extended to support them.
 
 ### 2.3 The Ledger
 
-The ledger table is named `djogi_schema_migrations`. The finalized DDL (supersedes the Phase 7
+The ledger table is named `djogi_schema_migrations`. The finalized DDL (supersedes the 
 v2 plan draft, which lacked five columns):
 
 ```sql
 CREATE TABLE IF NOT EXISTS djogi_schema_migrations (
-    -- Surrogate PK for stable row identity and temporal ordering
-    id                    BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+ -- Surrogate PK for stable row identity and temporal ordering
+ id  BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
 
-    -- Natural version key: one canonical ledger row per migration version
-    version               TEXT          NOT NULL UNIQUE,
-    description           TEXT          NOT NULL DEFAULT '',
+ -- Natural version key: one canonical ledger row per migration version
+ version TEXT NOT NULL UNIQUE,
+ description TEXT NOT NULL DEFAULT '',
 
-    -- Checksums: SHA-256 hex with V1: prefix (Pillar 4)
-    checksum_up           VARCHAR(68)   NOT NULL,
-    checksum_down         VARCHAR(68),   -- NULL only when no _down.sql paired file exists
+ -- Checksums: SHA-256 hex with V1: prefix (Pillar 4)
+ checksum_up VARCHAR(68) NOT NULL,
+ checksum_down VARCHAR(68), -- NULL only when no _down.sql paired file exists
 
-    -- Execution mode
-    execution_mode        TEXT          NOT NULL DEFAULT 'transactional'
-                              CHECK (execution_mode IN ('transactional', 'non_transactional')),
+ -- Execution mode
+ execution_mode TEXT NOT NULL DEFAULT 'transactional'
+  CHECK (execution_mode IN ('transactional', 'non_transactional')),
 
-    -- Lifecycle status (Prisma pre-write row pattern).
-    -- Out-of-order is tracked in `out_of_order_flag` below, NOT in this
-    -- enum — status describes lifecycle, the flag is orthogonal.
-    status                TEXT          NOT NULL DEFAULT 'pending'
-                              CHECK (status IN (
-                                  'pending', 'applied', 'baseline',
-                                  'faked', 'rolled_back', 'failed'
-                              )),
+ -- Lifecycle status (Prisma pre-write row pattern).
+ -- Out-of-order is tracked in `out_of_order_flag` below, NOT in this
+ -- enum — status describes lifecycle, the flag is orthogonal.
+ status TEXT NOT NULL DEFAULT 'pending'
+  CHECK (status IN (
+   'pending', 'applied', 'baseline',
+   'faked', 'rolled_back', 'failed'
+  )),
 
-    -- Timestamps
-    applied_at            TIMESTAMPTZ   NOT NULL DEFAULT now(),
-    applied_by            TEXT          NOT NULL DEFAULT current_user,
-    execution_time_ms     BIGINT        NOT NULL DEFAULT 0,
+ -- Timestamps
+ applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ applied_by TEXT NOT NULL DEFAULT current_user,
+ execution_time_ms BIGINT NOT NULL DEFAULT 0,
 
-    -- Out-of-order flag
-    out_of_order_flag     BOOLEAN       NOT NULL DEFAULT false,
+ -- Out-of-order flag
+ out_of_order_flag BOOLEAN NOT NULL DEFAULT false,
 
-    -- Partial-apply state (non-transactional migrations)
-    applied_steps_count   INTEGER       NOT NULL DEFAULT 0,
-    total_steps           INTEGER,       -- NULL for transactional; statement count otherwise
-    partial_apply_note    TEXT,          -- operator note written during repair
+ -- Partial-apply state (non-transactional migrations)
+ applied_steps_count INTEGER NOT NULL DEFAULT 0,
+ total_steps INTEGER, -- NULL for transactional; statement count otherwise
+ partial_apply_note TEXT, -- operator note written during repair
 
-    -- Deployment group: HeerId from SELECT heerid_next() at run start
-    run_id                BIGINT        NOT NULL,
+ -- Deployment group: HeerId from SELECT heerid_next() at run start
+ run_id BIGINT NOT NULL,
 
-    -- App label (empty string = global/flat layout)
-    app_label             TEXT          NOT NULL DEFAULT '',
+ -- App label (empty string = global/flat layout)
+ app_label TEXT NOT NULL DEFAULT '',
 
-    -- Snapshot version this migration was applied against
-    snapshot_version      TEXT          NOT NULL
+ -- Snapshot version this migration was applied against
+ snapshot_version TEXT NOT NULL
 );
 
 CREATE INDEX djogi_schema_migrations_status_idx
-    ON djogi_schema_migrations (version)
-    WHERE status != 'applied';
+ ON djogi_schema_migrations (version)
+ WHERE status != 'applied';
 
 CREATE INDEX djogi_schema_migrations_run_id_idx
-    ON djogi_schema_migrations (run_id);
+ ON djogi_schema_migrations (run_id);
 ```
 
-**Column-by-column differences from Phase 7 v2 plan draft:**
+**Column-by-column differences from v2 plan draft:**
 
 | Column | v2 plan draft | This proposal | Source |
 |---|---|---|---|
@@ -375,7 +375,7 @@ The `applied_at` column stores the moment the row was written, for all row types
 `djogi migrations apply` invocation produces a HeerId stamped into every ledger row
 written during that run. This is Liquibase's `DEPLOYMENT_ID` concept adapted to HeerId — no
 other Rust migration system provides deployment-level grouping. Post-mortems that ask "what
-changed in last Tuesday's deploy?" become `WHERE run_id = ...` queries. (OI-01)
+changed in last Tuesday's deploy?" become `WHERE run_id =...` queries. (OI-01)
 
 ### 2.4 The Snapshot Model
 
@@ -391,9 +391,9 @@ Three files, three roles:
 
 1. `djogi_models.json` equals `schema_snapshot.json` for all apps → silent.
 2. Mismatch detected, AND `target/djogi_pending/<app>.json` matches `djogi_models.json` for the
-   drifted app → `cargo:warning=djogi: migration pending — apply via djogi::migrate::apply_plan`.
+ drifted app → `cargo:warning=djogi: migration pending — apply via djogi::migrate::apply_plan`.
 3. Mismatch detected, AND no matching pending file → `cargo:warning=djogi: schema drift detected
-   — run \`djogi migrations compose\``.
+ — run \`djogi migrations compose\``.
 
 **Lifecycle:** `migrations compose` writes `target/djogi_pending/<app>.json` and generates the
 SQL pair. The library apply path consumes the pending file (atomic `tmp → fsync → rename` into the
@@ -413,7 +413,7 @@ conflicts, then run `djogi migrations compose` to rebuild the conflict-free snap
 
 ### 2.5 Apps Subsystem (New — Team Scrutiny Requested)
 
-This subsystem was not in the Phase 7 plan. It emerged from the `run_id`/app-label discussion
+This subsystem was not in the plan. It emerged from the `run_id`/app-label discussion
 during the research walkthrough and became a full design. It is the biggest additive piece of
 this proposal and the section the team should scrutinize most carefully before acceptance.
 
@@ -425,9 +425,9 @@ organizational metadata — they group migrations into per-app folders and tag l
 ```rust
 // src/apps/mod.rs
 djogi::apps! {
-    Vehicles,
-    Users,
-    Orders,
+ Vehicles,
+ Users,
+ Orders,
 }
 ```
 
@@ -441,11 +441,11 @@ same crate is a compile-time error.
 
 ```rust
 #[derive(Model)]
-#[model(app = Vehicles)]   // type reference, not a string
-pub struct Vehicle { ... }
+#[model(app = Vehicles)] // type reference, not a string
+pub struct Vehicle {... }
 ```
 
-Models without `#[model(app = ...)]` default to the global bucket (`app_label = ''`). Users who
+Models without `#[model(app =...)]` default to the global bucket (`app_label = ''`). Users who
 never invoke `djogi::apps!` see no change at all — the flat layout from the current spec is
 fully preserved as the default.
 
@@ -453,16 +453,16 @@ fully preserved as the default.
 
 ```
 migrations/
-├── 0001_initial_up.sql              <- global (flat, unchanged from current spec)
+├── 0001_initial_up.sql <- global (flat, unchanged from current spec)
 ├── 0001_initial_down.sql
 ├── vehicles/
-│   ├── 0001_initial_up.sql
-│   ├── 0001_initial_down.sql
-│   └── schema_snapshot.json
+│ ├── 0001_initial_up.sql
+│ ├── 0001_initial_down.sql
+│ └── schema_snapshot.json
 └── users/
-    ├── 0001_initial_up.sql
-    ├── 0001_initial_down.sql
-    └── schema_snapshot.json
+ ├── 0001_initial_up.sql
+ ├── 0001_initial_down.sql
+ └── schema_snapshot.json
 ```
 
 **Cross-app FK dependency inference:** Because `Model::App` is an associated type (a concrete
@@ -489,9 +489,9 @@ per R-20).
 
 ```json
 {
-  "format_version": 1,
-  "registered_apps": ["vehicles", "users", "orders"],
-  "models": { ... }
+ "format_version": 1,
+ "registered_apps": ["vehicles", "users", "orders"],
+ "models": {... }
 }
 ```
 
@@ -520,7 +520,7 @@ entry point (explicit invocation, can be rich; also available as `djogi migratio
 Override path at apply time: `--force-apply` (discouraged; writes an `orphan_handled` audit row).
 Standard reconciliation: run `djogi migrations verify`, then the relevant `djogi migrations repair <subcommand>` (or, from code, `djogi::migrate::verify` and the `djogi::migrate::repair_*` helpers).
 
-The `build.rs` surface emits plain `cargo:warning=djogi: ...` strings only. No spans, no ANSI
+The `build.rs` surface emits plain `cargo:warning=djogi:...` strings only. No spans, no ANSI
 codes — rustc does not expose rich diagnostic APIs from `build.rs` on stable. Rich colored output
 (via `owo-colors`/`termcolor`) is reserved for `djogi migrations *` subcommands, which
 have full TTY control. (Decision record Part I, R-12 rationale)
@@ -537,12 +537,12 @@ handful that Postgres explicitly forbids inside a transaction.
 - Placement anywhere else is a parse error, not silent acceptance.
 - When present, the runner treats the entire file as a single non-transactional segment.
 - Each of the `_up.sql` and `_down.sql` files carries its own directive; they are evaluated
-  independently.
+ independently.
 - When the differ determines that a migration contains non-transactional operations (e.g.,
-  `CREATE INDEX CONCURRENTLY`), the generator emits the directive automatically.
+ `CREATE INDEX CONCURRENTLY`), the generator emits the directive automatically.
 - If the runner detects a statement that Postgres would reject inside a transaction (e.g.,
-  `CREATE INDEX CONCURRENTLY`) in a file without the directive, it emits a hard error before
-  execution (R-08).
+ `CREATE INDEX CONCURRENTLY`) in a file without the directive, it emits a hard error before
+ execution (R-08).
 
 **Ledger behavior under non-transactional migrations:** The `status = 'pending'` INSERT is
 committed before DDL begins (because DDL cannot be inside a transaction). The INSERT remains
@@ -556,16 +556,16 @@ N+1 failed), the runner:
 
 1. Updates the ledger row: `status = 'failed'`, `applied_steps_count = N`, `total_steps = M`.
 2. Writes `migrations/.migration_failure.json`:
-   ```json
-   {
-     "failed_version": "0009_add_payment_index",
-     "failed_segment": 2,
-     "failed_at": "2026-04-22T10:30:00Z",
-     "expected_next_snapshot_version": "0009"
-   }
-   ```
+ ```json
+ {
+ "failed_version": "0009_add_payment_index",
+ "failed_segment": 2,
+ "failed_at": "2026-04-22T10:30:00Z",
+ "expected_next_snapshot_version": "0009"
+ }
+ ```
 3. Refuses to plan or apply further migrations until the marker is cleared by
-   `djogi migrations repair`.
+ `djogi migrations repair`.
 
 The marker file is the blocking signal — not the ledger row alone — because the runner may not
 be able to connect to the database in a post-crash state, but it can always read the local
@@ -586,31 +586,31 @@ don't need to remember the raw git commands or accidentally desync their submodu
 **What `pull` does, in order:**
 
 1. Preflight checks (refuse early, with specific diagnostics):
-    - `migrations/` is configured as a submodule (else `D022`).
-    - No uncommitted changes inside `migrations/` (else `D020`, overridable with `--force`).
-    - No unpushed commits inside `migrations/` (else `D021`, overridable with `--force`).
-    - Parent repo is clean if `--fetch-parent` is set (else `D024`; not overridable — user must
-      commit or stash parent-level changes first).
+ - `migrations/` is configured as a submodule (else `D022`).
+ - No uncommitted changes inside `migrations/` (else `D020`, overridable with `--force`).
+ - No unpushed commits inside `migrations/` (else `D021`, overridable with `--force`).
+ - Parent repo is clean if `--fetch-parent` is set (else `D024`; not overridable — user must
+ commit or stash parent-level changes first).
 2. Optional: `git pull --ff-only` on the parent repo (only if `--fetch-parent` given). Fast-forward
-   only — never creates merge commits on the parent from a Djogi command.
+ only — never creates merge commits on the parent from a Djogi command.
 3. `git submodule update --init --recursive migrations` — aligns the submodule working tree with
-   the parent's recorded pointer; fetches from the submodule's remote as needed.
+ the parent's recorded pointer; fetches from the submodule's remote as needed.
 4. Reports the file-level diff: which migration files were added or updated.
 5. Chains automatically into `djogi migrations status` (unless `--no-status`), so the developer
-   sees immediately what is now pending against their local DB.
+ sees immediately what is now pending against their local DB.
 6. Optional: chains into `djogi migrations apply` (only if `--apply` given).
 
 **What `pull` deliberately does NOT do:**
 
 - No implicit `git pull` on the parent repo. Parent-level state changes require explicit opt-in
-  via `--fetch-parent`. Consistent with the "conservative default, explicit override" ethos.
+ via `--fetch-parent`. Consistent with the "conservative default, explicit override" ethos.
 - No implicit `migrations apply` after a successful pull. File fetch is reversible; DB mutation
-  is not. Two separate decisions, two separate commands; `--apply` opt-in if the developer wants
-  the combined flow.
+ is not. Two separate decisions, two separate commands; `--apply` opt-in if the developer wants
+ the combined flow.
 - No `--branch` or `--commit` flag. The submodule has a configured tracked branch; we honour it.
-  Arbitrary commit checkout is a git-level operation.
+ Arbitrary commit checkout is a git-level operation.
 - No `migrations push` counterpart. Writing to the submodule is CI's job; developers push
-  migrations upstream through the parent-repo PR flow, with CI owning the submodule commit step.
+ migrations upstream through the parent-repo PR flow, with CI owning the submodule commit step.
 - No multi-submodule support. Djogi assumes exactly one `migrations/` submodule (§10.5).
 
 **Locking.** `djogi migrations {pull, apply, compose, repair}` all acquire an `fcntl` advisory
@@ -641,8 +641,8 @@ review — they demonstrate what the proposed system feels like in practice.
 // src/vehicles/models.rs
 #[derive(Model)]
 pub struct Vehicle {
-    pub make: String,
-    pub model_year: i32,
+ pub make: String,
+ pub model_year: i32,
 }
 ```
 
@@ -652,8 +652,8 @@ warning: djogi: schema drift detected — run `djogi migrations compose`
 
 $ djogi migrations compose
 Generated:
-  migrations/0001_initial_up.sql
-  migrations/0001_initial_down.sql
+ migrations/0001_initial_up.sql
+ migrations/0001_initial_down.sql
 
 Review the SQL, then apply when ready.
 
@@ -665,11 +665,11 @@ $ cat migrations/0001_initial_up.sql
 -- Snapshot-Base: (none)
 
 CREATE TABLE vehicles (
-    id           BIGINT NOT NULL PRIMARY KEY DEFAULT heerid_next_desc(),
-    make         TEXT   NOT NULL,
-    model_year   INTEGER NOT NULL,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+ id BIGINT NOT NULL PRIMARY KEY DEFAULT heerid_next_desc(),
+ make TEXT NOT NULL,
+ model_year INTEGER NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 $ djogi migrations apply
@@ -698,8 +698,8 @@ warning: djogi: schema drift detected — run `djogi migrations compose`
 
 $ djogi migrations compose
 Generated:
-  migrations/0002_add_vehicle_horsepower_up.sql
-  migrations/0002_add_vehicle_horsepower_down.sql
+ migrations/0002_add_vehicle_horsepower_up.sql
+ migrations/0002_add_vehicle_horsepower_down.sql
 
 $ cat migrations/0002_add_vehicle_horsepower_up.sql
 -- Migration: 0002_add_vehicle_horsepower
@@ -724,13 +724,13 @@ Snapshot updated.
 ```
 $ djogi migrations compose
 error[D002]: destructive migration requires confirmation
-  = DROP COLUMN horsepower — data is irrecoverable on rollback
-  = help: run with --allow-destructive to generate
+ = DROP COLUMN horsepower — data is irrecoverable on rollback
+ = help: run with --allow-destructive to generate
 
 $ djogi migrations compose --allow-destructive
 Generated:
-  migrations/0003_drop_vehicle_horsepower_up.sql
-  migrations/0003_drop_vehicle_horsepower_down.sql
+ migrations/0003_drop_vehicle_horsepower_up.sql
+ migrations/0003_drop_vehicle_horsepower_down.sql
 
 $ cat migrations/0003_drop_vehicle_horsepower_up.sql
 -- Migration: 0003_drop_vehicle_horsepower
@@ -738,7 +738,7 @@ $ cat migrations/0003_drop_vehicle_horsepower_up.sql
 -- Execution-Mode: transactional
 
 -- DJOGI WARNING: DROP COLUMN horsepower — data in this column will be permanently
---   destroyed. Rollback restores the column definition but not the data.
+-- destroyed. Rollback restores the column definition but not the data.
 ALTER TABLE vehicles DROP COLUMN horsepower;
 ```
 
@@ -750,16 +750,16 @@ The warning comment lands in the UP file where code reviewers see it, not just i
 ```rust
 // Add an index on vehicles.make flagged as concurrent:
 #[model(indexes(
-    index(fields = [make], name = "vehicles_make_idx", concurrently = true)
+ index(fields = [make], name = "vehicles_make_idx", concurrently = true)
 ))]
-pub struct Vehicle { ... }
+pub struct Vehicle {... }
 ```
 
 ```
 $ djogi migrations compose
 Generated:
-  migrations/0004_add_vehicles_make_idx_up.sql
-  migrations/0004_add_vehicles_make_idx_down.sql
+ migrations/0004_add_vehicles_make_idx_up.sql
+ migrations/0004_add_vehicles_make_idx_down.sql
 
 $ cat migrations/0004_add_vehicles_make_idx_up.sql
 -- Migration: 0004_add_vehicles_make_idx
@@ -773,7 +773,7 @@ $ djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345679
 Applying 0004_add_vehicles_make_idx (non-transactional)...
-  step 1/1: CREATE INDEX CONCURRENTLY... ok (2341ms)
+ step 1/1: CREATE INDEX CONCURRENTLY... ok (2341ms)
 applied_steps_count: 1/1
 Snapshot updated.
 ```
@@ -795,14 +795,14 @@ $ djogi migrations apply
 Acquiring advisory lock...ok
 run_id: 7823456789012345680
 Applying 0005_add_two_indexes (non-transactional)...
-  step 1/2: CREATE INDEX CONCURRENTLY vehicles_vin_idx... ok (1200ms)
-  step 2/2: CREATE INDEX CONCURRENTLY vehicles_active_idx... FAILED
-    detail: column "active" does not exist
+ step 1/2: CREATE INDEX CONCURRENTLY vehicles_vin_idx... ok (1200ms)
+ step 2/2: CREATE INDEX CONCURRENTLY vehicles_active_idx... FAILED
+ detail: column "active" does not exist
 
 error[M007]: migration 0005_add_two_indexes failed at step 2/2
-  = applied_steps_count: 1
-  = help: vehicles_vin_idx was created (step 1 committed)
-  = help: run `djogi migrations repair resume-partial 0005_add_two_indexes` to replay the remaining step (or `djogi migrations repair partial-apply` to resolve the row by hand) before applying further migrations
+ = applied_steps_count: 1
+ = help: vehicles_vin_idx was created (step 1 committed)
+ = help: run `djogi migrations repair resume-partial 0005_add_two_indexes` to replay the remaining step (or `djogi migrations repair partial-apply` to resolve the row by hand) before applying further migrations
 
 Wrote: migrations/.migration_failure.json
 ```
@@ -810,16 +810,16 @@ Wrote: migrations/.migration_failure.json
 ```
 $ djogi migrations apply
 error: migration failure marker present — resolve before applying
-  = help: run `djogi migrations repair resume-partial` (or `repair partial-apply`) to resolve
+ = help: run `djogi migrations repair resume-partial` (or `repair partial-apply`) to resolve
 
 $ djogi migrations repair partial-apply 0005_add_two_indexes applied
 Found failure: 0005_add_two_indexes at step 2/2
-  Step 1 committed: CREATE INDEX CONCURRENTLY vehicles_vin_idx
+ Step 1 committed: CREATE INDEX CONCURRENTLY vehicles_vin_idx
 
 Options:
-  [a] Mark step 2 as manually applied (if you ran it by hand)
-  [r] Mark entire migration as rolled back (if you dropped vehicles_vin_idx manually)
-  [q] Quit without changing anything
+ [a] Mark step 2 as manually applied (if you ran it by hand)
+ [r] Mark entire migration as rolled back (if you dropped vehicles_vin_idx manually)
+ [q] Quit without changing anything
 
 Choice: a
 Note (optional): ran step 2 manually after fixing the schema
@@ -832,19 +832,19 @@ Marker file cleared.
 ```rust
 // Rename the app variant in djogi::apps!
 djogi::apps! {
-    #[app(renamed_from = "vehicles")]
-    Fleet,   // was Vehicles
-    Users,
-    Orders,
+ #[app(renamed_from = "vehicles")]
+ Fleet, // was Vehicles
+ Users,
+ Orders,
 }
 ```
 
 ```
 $ djogi migrations compose
 Generated:
-  migrations/fleet/0002_rename_app_from_vehicles_up.sql
-  migrations/fleet/0002_rename_app_from_vehicles_down.sql
-  (git mv migrations/vehicles/ migrations/fleet/ — performed automatically)
+ migrations/fleet/0002_rename_app_from_vehicles_up.sql
+ migrations/fleet/0002_rename_app_from_vehicles_down.sql
+ (git mv migrations/vehicles/ migrations/fleet/ — performed automatically)
 
 $ cat migrations/fleet/0002_rename_app_from_vehicles_up.sql
 -- Migration: fleet/0002_rename_app_from_vehicles
@@ -852,8 +852,8 @@ $ cat migrations/fleet/0002_rename_app_from_vehicles_up.sql
 -- Execution-Mode: transactional
 
 UPDATE djogi_schema_migrations
-    SET app_label = 'fleet'
-    WHERE app_label = 'vehicles';
+ SET app_label = 'fleet'
+ WHERE app_label = 'vehicles';
 
 $ djogi migrations apply
 Applying fleet/0002_rename_app_from_vehicles...ok
@@ -867,25 +867,25 @@ $ # The differ will error if you forget (stale annotation detection).
 ```rust
 #[derive(Model)]
 #[model(
-    app = Orders,
-    moved_from_app = "fleet"   // was in Fleet app
+ app = Orders,
+ moved_from_app = "fleet" // was in Fleet app
 )]
-pub struct Shipment { ... }
+pub struct Shipment {... }
 ```
 
 ```
 $ djogi migrations compose
 Generated:
-  migrations/orders/0003_move_shipment_from_fleet_up.sql
-  migrations/orders/0003_move_shipment_from_fleet_down.sql
-  (both fleet and orders schema_snapshot.json updated)
+ migrations/orders/0003_move_shipment_from_fleet_up.sql
+ migrations/orders/0003_move_shipment_from_fleet_down.sql
+ (both fleet and orders schema_snapshot.json updated)
 
 $ cat migrations/orders/0003_move_shipment_from_fleet_up.sql
 -- Migration: orders/0003_move_shipment_from_fleet
 -- Direction: UP
 -- Execution-Mode: transactional
 -- Note: SQL no-op. The shipments table is unchanged on disk.
---   This migration records the organizational move in the ledger.
+-- This migration records the organizational move in the ledger.
 
 SELECT 1; -- marker
 
@@ -913,9 +913,9 @@ $ # Do NOT apply — the tables already exist and are now captured in the snapsh
 
 $ djogi migrations verify
 Comparing snapshot against live DB...
-  OK: all 4 tables match snapshot
-  OK: all 12 columns match snapshot
-  OK: all 3 indexes match snapshot
+ OK: all 4 tables match snapshot
+ OK: all 12 columns match snapshot
+ OK: all 3 indexes match snapshot
 Exit 0 — live DB matches snapshot exactly.
 ```
 
@@ -933,9 +933,9 @@ production DB. No migration was generated or applied.
 ```
 $ djogi migrations verify
 Comparing snapshot against live DB...
-  WARN: live DB has column vehicles.legacy_id — not in snapshot
-  OK: all other 11 columns match snapshot
-  OK: all 3 indexes match snapshot
+ WARN: live DB has column vehicles.legacy_id — not in snapshot
+ OK: all other 11 columns match snapshot
+ OK: all 3 indexes match snapshot
 Exit 1 — 1 discrepancy found.
 
 $ # Options:
@@ -955,36 +955,36 @@ CI pushed three new migrations to the `migrations/` submodule. The developer ret
 parent repo, and wants to catch up their local DB in one shot.
 
 ```
-$ git pull                                  # parent repo fast-forwards
+$ git pull   # parent repo fast-forwards
 Updating a1b2c3d..e4f5g6h
  migrations | 3 files changed, 128 insertions(+)
 
 $ djogi migrations pull --apply
 Fetching migrations submodule...
-  remote:   https://github.com/acme/djogi-migrations.git (branch: main)
-  previous: a1b2c3d  →  new: e4f5g6h
+ remote: https://github.com/acme/djogi-migrations.git (branch: main)
+ previous: a1b2c3d → new: e4f5g6h
 
 Files added:
-  migrations/vehicles/0004_add_mileage_up.sql
-  migrations/vehicles/0004_add_mileage_down.sql
-  migrations/vehicles/0005_add_vin_index_up.sql
-  migrations/vehicles/0005_add_vin_index_down.sql
-  migrations/users/0002_add_email_verified_up.sql
-  migrations/users/0002_add_email_verified_down.sql
-  migrations/vehicles/schema_snapshot.json        (updated)
-  migrations/users/schema_snapshot.json           (updated)
+ migrations/vehicles/0004_add_mileage_up.sql
+ migrations/vehicles/0004_add_mileage_down.sql
+ migrations/vehicles/0005_add_vin_index_up.sql
+ migrations/vehicles/0005_add_vin_index_down.sql
+ migrations/users/0002_add_email_verified_up.sql
+ migrations/users/0002_add_email_verified_down.sql
+ migrations/vehicles/schema_snapshot.json (updated)
+ migrations/users/schema_snapshot.json (updated)
 
 Status:
-  Applied:  3 migrations
-  Pending:  3 migrations
-    - vehicles/0004_add_mileage
-    - vehicles/0005_add_vin_index
-    - users/0002_add_email_verified
+ Applied: 3 migrations
+ Pending: 3 migrations
+ - vehicles/0004_add_mileage
+ - vehicles/0005_add_vin_index
+ - users/0002_add_email_verified
 
 Applying pending migrations (--apply)...
-  [1/3] vehicles/0004_add_mileage           ✓ applied in 12ms
-  [2/3] vehicles/0005_add_vin_index         ✓ applied in 34ms  (CREATE INDEX CONCURRENTLY)
-  [3/3] users/0002_add_email_verified        ✓ applied in 8ms
+ [1/3] vehicles/0004_add_mileage ✓ applied in 12ms
+ [2/3] vehicles/0005_add_vin_index ✓ applied in 34ms (CREATE INDEX CONCURRENTLY)
+ [3/3] users/0002_add_email_verified ✓ applied in 8ms
 
 Local database is up to date.
 ```
@@ -995,15 +995,15 @@ experiment — the command refuses with a specific diagnostic rather than clobbe
 ```
 $ djogi migrations pull
 error[D020]: migrations submodule has uncommitted changes
-  path: migrations/
-  modified: ['vehicles/0003_wip_temp.sql']
+ path: migrations/
+ modified: ['vehicles/0003_wip_temp.sql']
 
-  note: migrations/ is managed by CI — direct edits are unusual and usually a mistake.
+ note: migrations/ is managed by CI — direct edits are unusual and usually a mistake.
 
-  Resolution:
-    (a) commit the changes inside migrations/ (dangerous — CI owns this folder)
-    (b) reset: git -C migrations checkout -- .
-    (c) --force: discard local changes (destructive)
+ Resolution:
+ (a) commit the changes inside migrations/ (dangerous — CI owns this folder)
+ (b) reset: git -C migrations checkout --.
+ (c) --force: discard local changes (destructive)
 ```
 
 This mirrors the conservative-by-default philosophy: pull is non-destructive by construction;
@@ -1026,7 +1026,7 @@ anything that looks risky requires explicit override. (§2.9, R-12)
 | `docs/spec/migrations.md` | §10.3 | Add `.migration_failure.json` marker file protocol |
 | `docs/spec/migrations.md` | §10.4 | Add `-- djogi:no-transaction` directive specification |
 | `docs/spec/migrations.md` | §10.4 | Add `-- DJOGI WARNING:` comment format for UP files |
-| `docs/spec/migrations.md` | §10.6 | Rewrite `SchemaDelta` enum with complete Phase 7 variant list |
+| `docs/spec/migrations.md` | §10.6 | Rewrite `SchemaDelta` enum with complete variant list |
 | `docs/spec/migrations.md` | §10.7 (new) | Finalized ledger DDL |
 | `docs/spec/migrations.md` | §10.7 (new) | Advisory lock key and derivation |
 | `docs/spec/migrations.md` | §10.7 (new) | Pre-write row pattern |
@@ -1036,12 +1036,12 @@ anything that looks risky requires explicit override. (§2.9, R-12)
 | `docs/spec/decisions.md` | "Build drift diagnostic" | Re-written: diagnostic-only, not file-generating |
 | `docs/spec/decisions.md` | "Migration generation" | Re-written: explicit `migrations compose`, not auto-via-`build.rs` |
 | `docs/spec/decisions.md` | New rows (approx. 14) | Advisory lock key, ledger table name, checksum algorithm, runner ownership, rollback order, composite naming, rename lifecycle, etc. |
-| Phase 7 v2 plan | §Ledger shape | Replace draft DDL with finalized DDL from §2.3 |
-| Phase 7 v2 plan | §CLI Surface | Replace `makemigrations`/`migrate` nomenclature with `migrations compose`/`migrations apply` |
+| v2 plan | §Ledger shape | Replace draft DDL with finalized DDL from §2.3 |
+| v2 plan | §CLI Surface | Replace `makemigrations`/`migrate` nomenclature with `migrations compose`/`migrations apply` |
 
 ### 4.2 Additions (new concepts not in existing plan)
 
-**Apps subsystem** (`djogi::apps!` macro, `#[model(app = ...)]`, per-app migration folders,
+**Apps subsystem** (`djogi::apps!` macro, `#[model(app =...)]`, per-app migration folders,
 four lifecycle operations, compile-time FK graph): entirely new. See §2.5.
 
 **Drift detection D-codes** (D001–D011): structured taxonomy with precise fire-conditions.
@@ -1070,23 +1070,23 @@ The two rows in `docs/spec/decisions.md` that get re-opened and re-written:
 
 **"Build drift diagnostic"**
 - Current locked text: "Compiler-style `note` (not error) — migration generated, build continues,
-  developer reviews"
+ developer reviews"
 - Proposed text: "Plain cargo warning on drift — `build.rs` is diagnostic-only. Migration file
-  generation requires explicit `djogi migrations compose` invocation."
+ generation requires explicit `djogi migrations compose` invocation."
 
 **"Migration generation"**
 - Current locked text: "Automatic via `build.rs` on drift detection — generates pair, build
-  continues"
+ continues"
 - Proposed text: "`build.rs` detects drift and emits warning. Files generated only by
-  `djogi migrations compose`. `build.rs` never writes to `migrations/` or any submodule."
+ `djogi migrations compose`. `build.rs` never writes to `migrations/` or any submodule."
 
-**Why the re-open is the right call:** The Phase 7 design document already states "`build.rs`
+**Why the re-open is the right call:** The design document already states "`build.rs`
 may read the snapshot. It must never mutate it." The principle extends: if `build.rs` should not
 mutate the snapshot (applied-state truth), it should not mutate migration files (the review
 surface) either. `migrations/` is a git submodule; `build.rs` writing to a submodule without
 developer review is the wrong default. IDE churn from directory watchers re-triggering on every
 `cargo build` is a concrete developer-experience cost. The diagnostic-only model is cleaner, more
-consistent with the Phase 7 design's stated invariants, and does not reduce safety — the cargo
+consistent with the design's stated invariants, and does not reduce safety — the cargo
 warning is just as visible as a generated file appearing in the editor.
 
 If the team rejects this re-open, Pillars 1–5 and 7–10 are unaffected. Only the `build.rs`
@@ -1110,15 +1110,15 @@ This is a long list, intentionally so. The proposal is additive on top of a stab
 - Advisory locking before reading the pending set
 - Per-migration transaction as the default
 - Paired up/down file generation for all schema operations
-- Composite unique constraints via `ALTER TABLE ... ADD CONSTRAINT UNIQUE` (not `CREATE UNIQUE INDEX`)
+- Composite unique constraints via `ALTER TABLE... ADD CONSTRAINT UNIQUE` (not `CREATE UNIQUE INDEX`)
 - Composite index auto-naming: `<table>_<col1>_<col2>_key` / `_idx` with SHA-256 truncation
-  for names exceeding Postgres's 63-byte identifier limit
+ for names exceeding Postgres's 63-byte identifier limit
 - `build.rs` emits a compiler-style diagnostic (not an error) — the note vs. warning distinction
-  is the only change: note becomes warning, file-generation is removed
+ is the only change: note becomes warning, file-generation is removed
 - Out-of-order migrations: dev allows, CI/prod rejects by default
 - Rollback restores schema shape; data restoration is backup/restore territory
 - No shadow DB
-- Phase 7 task sequence (T1–T8) unchanged
+- task sequence (T1–T8) unchanged
 
 ---
 
@@ -1185,7 +1185,7 @@ These items were considered, scoped out for v0.1, and explicitly documented. The
 known limitations, not omissions.
 
 **P2 — Online-safe mode with automatic CONCURRENTLY injection (R-28):** No surveyed system
-fully automates zero-downtime DDL. Phase 7.5 is the planned home for the five staged live-migration
+fully automates zero-downtime DDL. is the planned home for the five staged live-migration
 patterns. v0.1 operators who need `CREATE INDEX CONCURRENTLY` hand-edit the generated SQL and
 add `-- djogi:no-transaction` (five minutes of work).
 
@@ -1200,7 +1200,7 @@ grammar; implementation deferred to v0.2.
 manual workflow (`djogi migrations compose` after merge) is documented. The automated
 command is a v0.2 convenience.
 
-**Deferred outside Phase 7 entirely:** composite primary keys, Rust data migrations with
+**Deferred outside entirely:** composite primary keys, Rust data migrations with
 historical model reconstruction, `inspectdb` reverse-introspection, migration squashing.
 
 ---
@@ -1210,15 +1210,15 @@ historical model reconstruction, `inspectdb` reverse-introspection, migration sq
 ### 6.1 If the team approves as-is
 
 1. Update `docs/spec/migrations.md` §10 per the supersession table in §4.1. This is primarily
-   rewriting §10.1–§10.6 and adding §10.7–§10.10.
+ rewriting §10.1–§10.6 and adding §10.7–§10.10.
 2. Update `docs/spec/decisions.md` — re-write the two re-opened rows (§4.3); add approximately
-   14 new rows for the newly-locked decisions (advisory lock key, checksum algorithm, ledger
-   table name, runner ownership, rollback ordering, app lifecycle semantics, etc.).
-3. Amend the Phase 7 v2 plan to reference the updated spec: replace the draft DDL, update the
-   CLI surface section, note the apps subsystem as a new T1 sub-task.
-4. Implementation proceeds against the finalized spec via Phase 7 T1–T8 task sequence.
+ 14 new rows for the newly-locked decisions (advisory lock key, checksum algorithm, ledger
+ table name, runner ownership, rollback ordering, app lifecycle semantics, etc.).
+3. Amend the v2 plan to reference the updated spec: replace the draft DDL, update the
+ CLI surface section, note the apps subsystem as a new T1 sub-task.
+4. Implementation proceeds against the finalized spec via T1–T8 task sequence.
 5. The research artifacts in `docs/research/migrations/2026-04-22/` remain as-is — they are the
-   audit trail, not the active spec.
+ audit trail, not the active spec.
 
 ### 6.2 If team wants modifications
 
@@ -1226,33 +1226,33 @@ The following pillars are highest-cost-to-change. Re-opening them requires new r
 or significant design re-work:
 
 - **Pillar 1 (descriptor-first + side-car snapshot):** Re-opening this is effectively re-doing
-  the source-of-truth (T01) and diff-algorithm (T11) topic research. This is an architectural
-  decision baked into `build.rs`, the differ, and the runner.
-- **Pillar 2 (Djogi-owned runner):** Already locked in Phase 7 design and v2 plan. Re-opening
-  requires justifying why `sqlx::migrate`'s missing columns, missing advisory lock, and missing
-  non-transactional segment awareness are acceptable for Djogi's requirements.
+ the source-of-truth (T01) and diff-algorithm (T11) topic research. This is an architectural
+ decision baked into `build.rs`, the differ, and the runner.
+- **Pillar 2 (Djogi-owned runner):** Already locked in design and v2 plan. Re-opening
+ requires justifying why `sqlx::migrate`'s missing columns, missing advisory lock, and missing
+ non-transactional segment awareness are acceptable for Djogi's requirements.
 - **Pillar 7 (apps subsystem):** The compile-time sealed enum and cross-app FK graph inference
-  require careful design; changes to the macro expansion affect `djogi-macros`, the differ, the
-  runner, and the snapshot format simultaneously.
+ require careful design; changes to the macro expansion affect `djogi-macros`, the differ, the
+ runner, and the snapshot format simultaneously.
 
 The following pillars are refinements — cheap to modify without cascading re-work:
 
 - **Pillar 6 (build.rs diagnostic-only):** If the team accepts file-generation from `build.rs`,
-  the rest of the design is unaffected. The `build.rs` three-way match logic still applies;
-  the pending file lifecycle is unchanged. The git-submodule concern and IDE-churn concern
-  are the only costs of keeping the old behavior.
+ the rest of the design is unaffected. The `build.rs` three-way match logic still applies;
+ the pending file lifecycle is unchanged. The git-submodule concern and IDE-churn concern
+ are the only costs of keeping the old behavior.
 - **Pillar 9 (lifecycle markers):** The specific attribute names (`moved_from_app`, `tombstone`)
-  are naming choices. Re-naming them does not affect the underlying mechanism.
+ are naming choices. Re-naming them does not affect the underlying mechanism.
 - **Pillar 10 (repair + baseline + verify + status):** The scope of these commands can be
-  adjusted. The only cross-cutting concern is that `verify` depends on the drift-detection
-  taxonomy (§2.6), and `repair` depends on the partial-apply structured counter (§2.8).
+ adjusted. The only cross-cutting concern is that `verify` depends on the drift-detection
+ taxonomy (§2.6), and `repair` depends on the partial-apply structured counter (§2.8).
 
 ### 6.3 If team rejects specific items
 
 If the team rejects any decision that was surfaced as an open item during the research walkthrough
 (OI-01 through OI-06), that item becomes open again and requires another decision round. The
 six open items are now all locked (per decision record Part VI); their re-opening would delay
-Phase 7 T1.
+ T1.
 
 If the team rejects the apps subsystem (Pillar 7) entirely, the rest of the proposal is
 unaffected. The ledger DDL loses `app_label`. The snapshot format loses `registered_apps`. The
@@ -1272,8 +1272,8 @@ One row per locked decision. Every claim in the proposal is auditable to a topic
 | Decision | Lock location | Primary citation |
 |---|---|---|
 | Runner is Djogi-owned, not `sqlx::migrate` | Decision record C-01; R-01 | T12 §Ecosystem contrast; T04 §Advisory locks |
-| Ledger table: `djogi_schema_migrations` | Decision record C-02; R-02 | Phase 7 v2 plan §Ledger shape |
-| `SchemaDelta` enum — complete Phase 7 variant list | Decision record C-03; R-11 | Phase 7 v2 plan §Canonical Scope |
+| Ledger table: `djogi_schema_migrations` | Decision record C-02; R-02 | v2 plan §Ledger shape |
+| `SchemaDelta` enum — complete variant list | Decision record C-03; R-11 | v2 plan §Canonical Scope |
 | Advisory lock key: `0x444A4F474D494752` | Decision record OI-01 subset; R-03 | T04 §Key derivation strategies |
 | `down_checksum` NULL only when `_down.sql` absent | Decision record OI-02 | R-05 §Repair semantics |
 | `applied_at = now()` for baseline/faked rows | Decision record OI-03 | T06 §Baseline/fake/stamp semantics |
@@ -1284,7 +1284,7 @@ One row per locked decision. Every claim in the proposal is auditable to a topic
 | `status = 'pending'` pre-write row pattern | Decision record R-06 | T02 §Status and failure flags |
 | `.migration_failure.json` marker file | Decision record R-07 | T01 §Open design gap; T05 §Non-transactional |
 | `-- djogi:no-transaction` directive spec | Decision record R-08 | T05 §Approaches |
-| Out-of-order policy: env-sensitive | Decision record R-09 | T06 §Out-of-order problem; Phase 7 design |
+| Out-of-order policy: env-sensitive | Decision record R-09 | T06 §Out-of-order problem; design |
 | Baseline and fake: first-class flows | Decision record R-10 | T06 §Comparison matrix |
 | Rollback ordering by `id` (temporal) | Decision record R-13 | T06 §Rollback ordering |
 | `#[model(indexes(...))]` attribute syntax | Decision record R-14 | T08 §Representation per system |
@@ -1300,7 +1300,7 @@ One row per locked decision. Every claim in the proposal is auditable to a topic
 | `HistoryDiagnostic` taxonomy | Decision record R-25 | T01 §Adopt: Three history-diagnostic states |
 | `schema_snapshot.json` `format_version` field | Decision record R-26 | T11 §Snapshot merge conflicts |
 | `run_id` is HeerId | Decision record OI-01 | Prisma pattern; HeerId consistency |
-| `build.rs` diagnostic-only (re-open) | Decision record Part II, R-12 | T12 §build.rs IDE-churn risk; Phase 7 design §Core Model |
+| `build.rs` diagnostic-only (re-open) | Decision record Part II, R-12 | T12 §build.rs IDE-churn risk; design §Core Model |
 | Apps subsystem — macro, sealed trait, lifecycle | Decision record Part IV | Gap G-22 (new); no prior-art topic citation |
 | App FK dependency from type graph | Decision record Part IV | Compile-time inference; no direct analog in surveyed systems |
 
@@ -1362,7 +1362,7 @@ locked in decision record Part III.
 **This appendix is empty. There are no unresolved items.**
 
 If team review produces new open items, they are added here and tracked through a follow-on
-decision session before Phase 7 implementation begins.
+decision session before implementation begins.
 
 ---
 

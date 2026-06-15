@@ -19,15 +19,15 @@ use djogi::prelude::*;
 #[model(table = "phase85_e009_consignments")]
 #[derive(Model, Debug, Clone)]
 #[derived(
-    name   = total_sites,
-    ty     = i64,
-    scopes = [public],
-    sql    = "COUNT(inbound_site)",
-    rust   = "1i64",
+ name = total_sites,
+ ty  = i64,
+ scopes = [public],
+ sql = "COUNT(inbound_site)",
+ rust = "1i64",
 )]
 pub struct Consignment {
-    #[field(expose(public))]
-    pub inbound_site: String,
+ #[field(expose(public))]
+ pub inbound_site: String,
 }
 
 fn main() {}

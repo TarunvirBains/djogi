@@ -7,8 +7,8 @@ use djogi::prelude::*;
 #[model(table = "tags")]
 #[derive(Debug, Clone)]
 pub struct Tag {
-    #[field(index = "spgist", unique)]
-    pub path: String,
+ #[field(index = "spgist", unique)]
+ pub path: String,
 }
 
 fn main() {}

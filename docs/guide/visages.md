@@ -1,4 +1,4 @@
-> [Back to Guides](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to Guides](./index.md) · [Back to README](../../README.md)
 
 # Visages (Transport-Safe Views)
 
@@ -13,12 +13,12 @@ appear in any transport visage.
 
 For every `#[model]` struct `Foo`, the macro emits:
 
-| Type         | Audience                              |
+| Type  | Audience    |
 |--------------|---------------------------------------|
-| `FooPublic`  | Unauthenticated API consumers         |
-| `FooSelfView`| The owning user                       |
-| `FooAdmin`   | Admin users / back-office tools       |
-| `FooExport`  | CSV / data-export pipelines           |
+| `FooPublic` | Unauthenticated API consumers  |
+| `FooSelfView`| The owning user   |
+| `FooAdmin` | Admin users / back-office tools |
+| `FooExport` | CSV / data-export pipelines  |
 
 Each carries framework columns (`id`, `created_at`, `updated_at`) by
 default and derives `Debug`, `Clone`, `Serialize`, `Deserialize`
@@ -36,15 +36,15 @@ use djogi::prelude::*;
 #[model(table = "users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(expose(public, self_view, admin, export))]
-    pub display_name: String,
+ #[field(expose(public, self_view, admin, export))]
+ pub display_name: String,
 
-    #[field(expose(self_view, admin, export))]
-    pub email: String,
+ #[field(expose(self_view, admin, export))]
+ pub email: String,
 
-    // No annotation = `internal`. Never appears in any transport
-    // visage. Safe default — data leaks require an explicit opt-in.
-    pub password_hash: String,
+ // No annotation = `internal`. Never appears in any transport
+ // visage. Safe default — data leaks require an explicit opt-in.
+ pub password_hash: String,
 }
 ```
 
@@ -52,18 +52,18 @@ Generates:
 
 ```rust
 pub struct UserPublic {
-    pub id: HeerIdRecencyBiased,
-    pub created_at: DateTime,
-    pub updated_at: DateTime,
-    pub display_name: String,
+ pub id: HeerIdRecencyBiased,
+ pub created_at: DateTime,
+ pub updated_at: DateTime,
+ pub display_name: String,
 }
 
 pub struct UserSelfView {
-    pub id: HeerIdRecencyBiased,
-    pub created_at: DateTime,
-    pub updated_at: DateTime,
-    pub display_name: String,
-    pub email: String,
+ pub id: HeerIdRecencyBiased,
+ pub created_at: DateTime,
+ pub updated_at: DateTime,
+ pub display_name: String,
+ pub email: String,
 }
 
 // UserAdmin and UserExport: same shape as UserSelfView.
@@ -78,7 +78,7 @@ Scalar-only visages (no relation-form entries) get an infallible
 `impl From<&Model>`:
 
 ```rust
-let user: User = /* ... load from DB ... */;
+let user: User = /*... load from DB... */;
 let public: UserPublic = UserPublic::from(&user);
 axum::Json(public) // send to a public API consumer
 ```
@@ -148,8 +148,8 @@ pull`. Exposing is always explicit.
 Sentinels for clarity:
 
 ```rust
-#[field(expose(none))]       // explicit "not exposed anywhere"
-#[field(expose(internal))]   // same as `none`, documents intent
+#[field(expose(none))] // explicit "not exposed anywhere"
+#[field(expose(internal))] // same as `none`, documents intent
 ```
 
 Both are equivalent to omitting the annotation. They exist only so
@@ -172,11 +172,11 @@ Relation-nesting `TryFrom` paths return this error:
 ```rust
 #[non_exhaustive]
 pub enum VisageError {
-    UnresolvedRelation {
-        model: &'static str,
-        field: &'static str,
-        scope: &'static str,
-    },
+ UnresolvedRelation {
+ model: &'static str,
+ field: &'static str,
+ scope: &'static str,
+ },
 }
 ```
 
@@ -189,13 +189,13 @@ Handler-level recovery pattern:
 
 ```rust
 async fn get_vehicle(id: HeerIdRecencyBiased, mut ctx: DjogiContext) -> Result<Json<VehiclePublic>, AppError> {
-    let vehicle = Vehicle::filter()
-        .id_eq(id)
-        .prefetch(|r| r.owner())   // <-- the fix site
-        .fetch_one(&mut ctx)
-        .await?;
-    let public = VehiclePublic::try_from(&vehicle)?;
-    Ok(Json(public))
+ let vehicle = Vehicle::filter()
+.id_eq(id)
+.prefetch(|r| r.owner()) // <-- the fix site
+.fetch_one(&mut ctx)
+.await?;
+ let public = VehiclePublic::try_from(&vehicle)?;
+ Ok(Json(public))
 }
 ```
 
@@ -207,9 +207,9 @@ backend and a Rust frontend:
 
 ```
 myapp/
-├── myapp_models/      ← defines #[model] structs. Depends on djogi.
-├── myapp_backend/     ← HTTP + DB. Depends on myapp_models + djogi.
-└── myapp_frontend/    ← e.g. Leptos/Dioxus. Depends on myapp_models ONLY.
+├── myapp_models/ ← defines #[model] structs. Depends on djogi.
+├── myapp_backend/ ← HTTP + DB. Depends on myapp_models + djogi.
+└── myapp_frontend/ ← e.g. Leptos/Dioxus. Depends on myapp_models ONLY.
 ```
 
 The frontend crate imports `FooPublic` / `FooSelfView` without
@@ -225,13 +225,13 @@ SELECTs that project only the visage's exposed columns:
 use djogi::prelude::*;
 
 let public_users: Vec<UserPublic> = UserPublic::filter(|u| u.display_name.eq("Ada".to_string()))
-    .fetch_all(&mut ctx)
-    .await?;
+.fetch_all(&mut ctx)
+.await?;
 
 // Emitted SQL (only the exposed columns are SELECTed):
-//   SELECT id, created_at, updated_at, display_name
-//     FROM users
-//    WHERE display_name = $1
+// SELECT id, created_at, updated_at, display_name
+// FROM users
+// WHERE display_name = $1
 ```
 
 The `filter` closure may return any Djogi predicate type implementing
@@ -307,8 +307,8 @@ fields. Referencing a non-exposed field is a compile error, not a
 runtime omission:
 
 ```rust
-UserPublic::filter(|u| u.email.eq(...))     // ERROR — `email` not exposed on UserPublic
-UserPublic::filter(|u| u.display_name.eq(...))  // OK
+UserPublic::filter(|u| u.email.eq(...)) // ERROR — `email` not exposed on UserPublic
+UserPublic::filter(|u| u.display_name.eq(...)) // OK
 ```
 
 **FK / O2O traversal stays on the visage boundary.** Forward
@@ -317,9 +317,9 @@ is constrained at compile time:
 
 ```rust
 PublicRegisteredOwner::filter(|o| o.address().city().eq("Toronto".to_string()))
-// OK — AddressPublic exposes .city
+// OK — AddressPublic exposes.city
 PublicRegisteredOwner::filter(|o| o.address().street().eq(...))
-// ERROR — AddressPublic does not expose .street
+// ERROR — AddressPublic does not expose.street
 ```
 
 Optional FKs / O2Os (`Option<ForeignKey<T>>` / `Option<OneToOneField<T>>`)
@@ -343,13 +343,13 @@ a peer visage, the reverse accessor returns a SELECT-narrowed
 `.stream(ctx)` and the queryset pushes everything down to Postgres:
 
 ```rust
-let address_public: AddressPublic = /* ... */;
+let address_public: AddressPublic = /*... */;
 let owners: Vec<PublicRegisteredOwner> = address_public
-    .public_registered_owners()
-    .filter(|o| o.display_name().eq("Ada".to_string()))
-    .limit(50)
-    .fetch_all(&mut ctx)
-    .await?;
+.public_registered_owners()
+.filter(|o| o.display_name().eq("Ada".to_string()))
+.limit(50)
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 The emitted SQL projects only `PublicRegisteredOwner`'s exposed
@@ -361,15 +361,15 @@ M2M stitching uses the same shape, lowering to an `EXISTS (...)`
 correlated subquery against the through table:
 
 ```rust
-let person_public: PersonPublic = /* ... */;
-let groups_qs = person_public.groups();   // VisageQuerySet<GroupPublic>
+let person_public: PersonPublic = /*... */;
+let groups_qs = person_public.groups(); // VisageQuerySet<GroupPublic>
 // Emits roughly:
-//   SELECT id, created_at, updated_at, name FROM groups
-//   WHERE EXISTS (
-//     SELECT 1 FROM person_groups
-//     WHERE person_groups.person_id = $1
-//       AND person_groups.group_id  = groups.id
-//   )
+// SELECT id, created_at, updated_at, name FROM groups
+// WHERE EXISTS (
+// SELECT 1 FROM person_groups
+// WHERE person_groups.person_id = $1
+// AND person_groups.group_id = groups.id
+// )
 let groups: Vec<GroupPublic> = groups_qs.fetch_all(&mut ctx).await?;
 ```
 
@@ -414,14 +414,14 @@ These compile-fail cases are pinned by djogi-macros's compile-fail
 fixture corpus (run by lihaaf in CI; lihaaf is the sole compile-fixture
 gate):
 
-| Annotation                                                | Error                                                                 |
+| Annotation      | Error         |
 |-----------------------------------------------------------|-----------------------------------------------------------------------|
-| `#[field(expose())]`                                      | `\`expose(...)\` requires at least one scope`                         |
-| `#[field(expose(notascope))]`                             | `unknown scope \`notascope\`; expected one of: public, self_view, ...`|
-| `#[field(expose(public, public -> X))]`                   | `scope \`public\` already declared`                                   |
-| `#[field(expose(none, public))]`                          | `\`none\` / \`internal\` cannot be combined with other scopes`        |
-| `#[field(expose(public -> X))]` on a `String`             | `the \`expose(public -> ...)\` form is only valid on relation fields` |
-| Nested-brace traversal (`expose(public -> P { ... })`) outside the documented full-struct shape | actionable error with span-precise location |
+| `#[field(expose())]`     | `\`expose(...)\` requires at least one scope`    |
+| `#[field(expose(notascope))]`    | `unknown scope \`notascope\`; expected one of: public, self_view,...`|
+| `#[field(expose(public, public -> X))]`   | `scope \`public\` already declared`     |
+| `#[field(expose(none, public))]`    | `\`none\` / \`internal\` cannot be combined with other scopes` |
+| `#[field(expose(public -> X))]` on a `String`  | `the \`expose(public ->...)\` form is only valid on relation fields` |
+| Nested-brace traversal (`expose(public -> P {... })`) outside the documented full-struct shape | actionable error with span-precise location |
 
 All errors carry span-precise locations. Fix the annotation and the
 error goes away.
@@ -431,14 +431,14 @@ error goes away.
 The following remain non-goals for the visage layer:
 
 - **`VisageQuerySet<V>` subquery embedding** — `VisageQuerySet<V>`
-  cannot be used as a sub-expression inside another query (e.g. as
-  the right-hand side of `IN` / `EXISTS` predicates authored at the
-  call site). The macro-emitted reverse-FK / M2M paths build their
-  own subquery predicates internally.
-- **Nested `expose(scope -> Peer { ... })` brace traversal** — the
-  parser rejects this grammar with an actionable compile error.
+ cannot be used as a sub-expression inside another query (e.g. as
+ the right-hand side of `IN` / `EXISTS` predicates authored at the
+ call site). The macro-emitted reverse-FK / M2M paths build their
+ own subquery predicates internally.
+- **Nested `expose(scope -> Peer {... })` brace traversal** — the
+ parser rejects this grammar with an actionable compile error.
 - **Field renaming inside `expose(...)`** — rename at the serde level
-  if you need a different JSON shape.
+ if you need a different JSON shape.
 - **JSONB subfield visages** — per-subfield masking of `Jsonb<T>`
-  fields is not supported.
+ fields is not supported.
 - **Admin UI / export UI** consuming visage metadata.

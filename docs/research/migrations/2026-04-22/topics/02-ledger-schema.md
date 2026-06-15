@@ -60,24 +60,24 @@ Django does not store raw DDL; the table is created through its ORM's `schema_ed
 
 ```python
 class Migration(models.Model):
-    app = models.CharField(max_length=255)
-    name = models.CharField(max_length=255)
-    applied = models.DateTimeField(default=now)
+  app = models.CharField(max_length=255)
+  name = models.CharField(max_length=255)
+  applied = models.DateTimeField(default=now)
 
-    class Meta:
-        apps = Apps()
-        app_label = "migrations"
-        db_table = "django_migrations"
+  class Meta:
+    apps = Apps()
+    app_label = "migrations"
+    db_table = "django_migrations"
 ```
 
 Reconstructed PostgreSQL DDL (from `projects/django.md` — confidence: high):
 
 ```sql
 CREATE TABLE "django_migrations" (
-    "id"      serial PRIMARY KEY,
-    "app"     varchar(255) NOT NULL,
-    "name"    varchar(255) NOT NULL,
-    "applied" timestamp with time zone NOT NULL
+  "id"   serial PRIMARY KEY,
+  "app"   varchar(255) NOT NULL,
+  "name"  varchar(255) NOT NULL,
+  "applied" timestamp with time zone NOT NULL
 );
 ```
 
@@ -89,25 +89,25 @@ The table is defined via SQLAlchemy's schema API. Verbatim Python source (from `
 
 ```python
 vt = Table(
-    version_table,
-    MetaData(),
-    Column("version_num", String(32), nullable=False),
-    schema=version_table_schema,
+  version_table,
+  MetaData(),
+  Column("version_num", String(32), nullable=False),
+  schema=version_table_schema,
 )
 if version_table_pk:
-    vt.append_constraint(
-        PrimaryKeyConstraint(
-            "version_num", name=f"{version_table}_pkc"
-        )
+  vt.append_constraint(
+    PrimaryKeyConstraint(
+      "version_num", name=f"{version_table}_pkc"
     )
+  )
 ```
 
 Equivalent PostgreSQL DDL (from `projects/alembic.md` — confidence: high):
 
 ```sql
 CREATE TABLE alembic_version (
-    version_num VARCHAR(32) NOT NULL,
-    CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+  version_num VARCHAR(32) NOT NULL,
+  CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
 ```
 
@@ -119,41 +119,41 @@ Verbatim Java source that generates the DDL (from `projects/flyway.md`, from `fl
 
 ```java
 return "CREATE TABLE " + table + " (\n" +
-        "    \"installed_rank\" INT NOT NULL,\n" +
-        "    \"version\" VARCHAR(50),\n" +
-        "    \"description\" VARCHAR(200) NOT NULL,\n" +
-        "    \"type\" VARCHAR(20) NOT NULL,\n" +
-        "    \"script\" VARCHAR(1000) NOT NULL,\n" +
-        "    \"checksum\" INTEGER,\n" +
-        "    \"installed_by\" VARCHAR(100) NOT NULL,\n" +
-        "    \"installed_on\" TIMESTAMP NOT NULL DEFAULT now(),\n" +
-        "    \"execution_time\" INTEGER NOT NULL,\n" +
-        "    \"success\" BOOLEAN NOT NULL\n" +
-        ")" + tablespace + ";\n" +
-        (baseline ? getBaselineStatement(table) + ";\n" : "") +
-        "ALTER TABLE " + table + " ADD CONSTRAINT \"" + table.getName() + "_pk\" PRIMARY KEY (\"installed_rank\")" + ...  + ";\n" +
-        "CREATE INDEX \"" + table.getName() + "_s_idx\" ON " + table + " (\"success\")" + tablespace + ";";
+    "  \"installed_rank\" INT NOT NULL,\n" +
+    "  \"version\" VARCHAR(50),\n" +
+    "  \"description\" VARCHAR(200) NOT NULL,\n" +
+    "  \"type\" VARCHAR(20) NOT NULL,\n" +
+    "  \"script\" VARCHAR(1000) NOT NULL,\n" +
+    "  \"checksum\" INTEGER,\n" +
+    "  \"installed_by\" VARCHAR(100) NOT NULL,\n" +
+    "  \"installed_on\" TIMESTAMP NOT NULL DEFAULT now(),\n" +
+    "  \"execution_time\" INTEGER NOT NULL,\n" +
+    "  \"success\" BOOLEAN NOT NULL\n" +
+    ")" + tablespace + ";\n" +
+    (baseline ? getBaselineStatement(table) + ";\n" : "") +
+    "ALTER TABLE " + table + " ADD CONSTRAINT \"" + table.getName() + "_pk\" PRIMARY KEY (\"installed_rank\")" +... + ";\n" +
+    "CREATE INDEX \"" + table.getName() + "_s_idx\" ON " + table + " (\"success\")" + tablespace + ";";
 ```
 
 Rendered as PostgreSQL DDL (from `projects/flyway.md` — confidence: high):
 
 ```sql
 CREATE TABLE flyway_schema_history (
-    "installed_rank" INT          NOT NULL,
-    "version"        VARCHAR(50),               -- NULL for repeatable migrations
-    "description"    VARCHAR(200) NOT NULL,
-    "type"           VARCHAR(20)  NOT NULL,      -- e.g. SQL, BASELINE, SCHEMA, DELETE
-    "script"         VARCHAR(1000) NOT NULL,     -- filename, abbreviated if >1000 chars
-    "checksum"       INTEGER,                    -- CRC-32 signed int, nullable
-    "installed_by"   VARCHAR(100) NOT NULL,      -- DB current_user by default
-    "installed_on"   TIMESTAMP    NOT NULL DEFAULT now(),
-    "execution_time" INTEGER      NOT NULL,      -- milliseconds
-    "success"        BOOLEAN      NOT NULL
+  "installed_rank" INT     NOT NULL,
+  "version"    VARCHAR(50),        -- NULL for repeatable migrations
+  "description"  VARCHAR(200) NOT NULL,
+  "type"      VARCHAR(20) NOT NULL,   -- e.g. SQL, BASELINE, SCHEMA, DELETE
+  "script"     VARCHAR(1000) NOT NULL,   -- filename, abbreviated if >1000 chars
+  "checksum"    INTEGER,          -- CRC-32 signed int, nullable
+  "installed_by"  VARCHAR(100) NOT NULL,   -- DB current_user by default
+  "installed_on"  TIMESTAMP  NOT NULL DEFAULT now(),
+  "execution_time" INTEGER   NOT NULL,   -- milliseconds
+  "success"    BOOLEAN   NOT NULL
 );
 ALTER TABLE flyway_schema_history
-    ADD CONSTRAINT flyway_schema_history_pk PRIMARY KEY ("installed_rank");
+  ADD CONSTRAINT flyway_schema_history_pk PRIMARY KEY ("installed_rank");
 CREATE INDEX flyway_schema_history_s_idx
-    ON flyway_schema_history ("success");
+  ON flyway_schema_history ("success");
 ```
 
 Important design notes:
@@ -169,20 +169,20 @@ The DDL is assembled programmatically from `CreateDatabaseChangeLogTableGenerato
 
 ```sql
 CREATE TABLE public.databasechangelog (
-    ID            VARCHAR(255) NOT NULL,
-    AUTHOR        VARCHAR(255) NOT NULL,
-    FILENAME      VARCHAR(255) NOT NULL,
-    DATEEXECUTED  TIMESTAMP    NOT NULL,
-    ORDEREXECUTED INT          NOT NULL,
-    EXECTYPE      VARCHAR(10)  NOT NULL,
-    MD5SUM        VARCHAR(35),
-    DESCRIPTION   VARCHAR(255),
-    COMMENTS      VARCHAR(255),
-    TAG           VARCHAR(255),
-    LIQUIBASE     VARCHAR(20),
-    CONTEXTS      VARCHAR(255),
-    LABELS        VARCHAR(255),
-    DEPLOYMENT_ID VARCHAR(10)
+  ID      VARCHAR(255) NOT NULL,
+  AUTHOR    VARCHAR(255) NOT NULL,
+  FILENAME   VARCHAR(255) NOT NULL,
+  DATEEXECUTED TIMESTAMP  NOT NULL,
+  ORDEREXECUTED INT     NOT NULL,
+  EXECTYPE   VARCHAR(10) NOT NULL,
+  MD5SUM    VARCHAR(35),
+  DESCRIPTION  VARCHAR(255),
+  COMMENTS   VARCHAR(255),
+  TAG      VARCHAR(255),
+  LIQUIBASE   VARCHAR(20),
+  CONTEXTS   VARCHAR(255),
+  LABELS    VARCHAR(255),
+  DEPLOYMENT_ID VARCHAR(10)
 );
 ```
 
@@ -194,14 +194,14 @@ DDL from `CreateDatabaseChangeLogLockTableGenerator.java:23-41`. For PostgreSQL 
 
 ```sql
 CREATE TABLE public.databasechangeloglock (
-    ID          INT          NOT NULL PRIMARY KEY,
-    LOCKED      BOOLEAN      NOT NULL,
-    LOCKGRANTED TIMESTAMP,
-    LOCKEDBY    VARCHAR(255)
+  ID     INT     NOT NULL PRIMARY KEY,
+  LOCKED   BOOLEAN   NOT NULL,
+  LOCKGRANTED TIMESTAMP,
+  LOCKEDBY  VARCHAR(255)
 );
 ```
 
-Initialised with a single row: `INSERT INTO databasechangeloglock (ID, LOCKED) VALUES (1, false)`. Lock acquisition is `UPDATE ... SET LOCKED=true WHERE ID=1 AND LOCKED=false`; the row-count check (must be 1) is the atomicity mechanism. No auto-release on crash. Source: `projects/liquibase.md` (from `CreateDatabaseChangeLogLockTableGenerator.java:23-41`, `InitializeDatabaseChangeLogLockTableGenerator.java:29-32`).
+Initialised with a single row: `INSERT INTO databasechangeloglock (ID, LOCKED) VALUES (1, false)`. Lock acquisition is `UPDATE... SET LOCKED=true WHERE ID=1 AND LOCKED=false`; the row-count check (must be 1) is the atomicity mechanism. No auto-release on crash. Source: `projects/liquibase.md` (from `CreateDatabaseChangeLogLockTableGenerator.java:23-41`, `InitializeDatabaseChangeLogLockTableGenerator.java:29-32`).
 
 **Ledger / lock relationship in Liquibase:** The ledger table (`DATABASECHANGELOG`) and the lock table (`DATABASECHANGELOGLOCK`) are separate and structurally unrelated. The lock table is created before the ledger table. Flyway merges both concerns in Postgres via advisory locks (no lock table), but falls back to `InsertRowLock` (a sentinel row in `flyway_schema_history` with `installed_rank = -100`) for non-Postgres databases — so the Postgres case keeps the tables cleanly separated.
 
@@ -211,14 +211,14 @@ Verbatim Rust DDL from `prisma-engines-reference` (`schema-engine/connectors/sql
 
 ```sql
 CREATE TABLE _prisma_migrations (
-    id                      VARCHAR(36) PRIMARY KEY NOT NULL,
-    checksum                VARCHAR(64) NOT NULL,
-    finished_at             TIMESTAMPTZ,
-    migration_name          VARCHAR(255) NOT NULL,
-    logs                    TEXT,
-    rolled_back_at          TIMESTAMPTZ,
-    started_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    applied_steps_count     INTEGER NOT NULL DEFAULT 0
+  id           VARCHAR(36) PRIMARY KEY NOT NULL,
+  checksum        VARCHAR(64) NOT NULL,
+  finished_at       TIMESTAMPTZ,
+  migration_name     VARCHAR(255) NOT NULL,
+  logs          TEXT,
+  rolled_back_at     TIMESTAMPTZ,
+  started_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  applied_steps_count   INTEGER NOT NULL DEFAULT 0
 );
 ```
 
@@ -237,8 +237,8 @@ Verbatim SQL from `diesel/src/migration/setup_migration_table.sql:1-4` (from `pr
 
 ```sql
 CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (
-       version VARCHAR(50) PRIMARY KEY NOT NULL,
-       run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    version VARCHAR(50) PRIMARY KEY NOT NULL,
+    run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -251,9 +251,9 @@ The entity definition drives DDL generation at runtime via `Schema::create_table
 ```rust
 #[sea_orm(table_name = "seaql_migrations")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub version: String,
-    pub applied_at: i64,
+  #[sea_orm(primary_key, auto_increment = false)]
+  pub version: String,
+  pub applied_at: i64,
 }
 ```
 
@@ -261,8 +261,8 @@ Rendered PostgreSQL DDL (from `projects/sea-orm.md` — confidence: high, inferr
 
 ```sql
 CREATE TABLE IF NOT EXISTS seaql_migrations (
-    version    TEXT    NOT NULL PRIMARY KEY,
-    applied_at BIGINT  NOT NULL
+  version  TEXT  NOT NULL PRIMARY KEY,
+  applied_at BIGINT NOT NULL
 );
 ```
 
@@ -274,10 +274,10 @@ Verbatim SQL DDL from `refinery_core/src/traits/mod.rs:107-112` (from `projects/
 
 ```sql
 CREATE TABLE IF NOT EXISTS %MIGRATION_TABLE_NAME%(
-         version %VERSION_TYPE% PRIMARY KEY,
-         name VARCHAR(255),
-         applied_on VARCHAR(255),
-         checksum VARCHAR(255));
+     version %VERSION_TYPE% PRIMARY KEY,
+     name VARCHAR(255),
+     applied_on VARCHAR(255),
+     checksum VARCHAR(255));
 ```
 
 Where `%VERSION_TYPE%` = `int4` by default (or `int8` with the `int8-versions` feature). `%MIGRATION_TABLE_NAME%` = `refinery_schema_history` by default.
@@ -286,12 +286,12 @@ Verbatim INSERT query (from `projects/refinery.md`, from `refinery_core/src/trai
 
 ```rust
 format!(
-    "INSERT INTO {} (version, name, applied_on, checksum) VALUES ({}, '{}', '{}', '{}')",
-    migration_table_name,
-    migration.version(),
-    migration.name(),
-    migration.applied_on().unwrap().format(&Rfc3339).unwrap(),
-    migration.checksum()
+  "INSERT INTO {} (version, name, applied_on, checksum) VALUES ({}, '{}', '{}', '{}')",
+  migration_table_name,
+  migration.version(),
+  migration.name(),
+  migration.applied_on().unwrap().format(&Rfc3339).unwrap(),
+  migration.checksum()
 )
 ```
 
@@ -307,11 +307,11 @@ Defined as a `#[model]`-annotated struct used by the same ORM that manages user 
 ```rust
 #[model(table_name = "cot__migrations", model_type = "internal")]
 struct AppliedMigration {
-    #[model(primary_key)]
-    id: Auto<i32>,
-    app: String,
-    name: String,
-    applied: chrono::DateTime<chrono::FixedOffset>,
+  #[model(primary_key)]
+  id: Auto<i32>,
+  app: String,
+  name: String,
+  applied: chrono::DateTime<chrono::FixedOffset>,
 }
 ```
 
@@ -319,10 +319,10 @@ Inferred PostgreSQL DDL (from `projects/cot.md` — confidence: high, from const
 
 ```sql
 CREATE TABLE IF NOT EXISTS cot__migrations (
-    id      SERIAL       PRIMARY KEY,
-    app     TEXT         NOT NULL,
-    name    TEXT         NOT NULL,
-    applied TIMESTAMPTZ  NOT NULL
+  id   SERIAL    PRIMARY KEY,
+  app   TEXT     NOT NULL,
+  name  TEXT     NOT NULL,
+  applied TIMESTAMPTZ NOT NULL
 );
 ```
 
@@ -568,45 +568,45 @@ Based on the cross-project analysis, the following DDL synthesizes the best choi
 
 ```sql
 CREATE TABLE IF NOT EXISTS djogi_migrations (
-    -- Identity
-    id              BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-    version         TEXT   NOT NULL UNIQUE,       -- e.g. "0001_create_users"
-    description     TEXT   NOT NULL DEFAULT '',
-    
-    -- Checksums (SHA-256 hex with V:hex version prefix, NOT NULL once applied)
-    up_checksum     VARCHAR(66) NOT NULL,          -- "1:" + 64 hex chars
-    down_checksum   VARCHAR(66),                   -- NULL if no _down.sql provided
-    
-    -- Execution tracking
-    execution_mode  TEXT   NOT NULL DEFAULT 'transactional'
-                        CHECK (execution_mode IN ('transactional', 'non_transactional')),
-    status          TEXT   NOT NULL DEFAULT 'applied'
-                        CHECK (status IN ('pending', 'applied', 'failed', 'rolled_back')),
-    
-    -- Timestamps (all TIMESTAMPTZ; applied_at set by DB, not application)
-    applied_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    
-    -- Attribution
-    applied_by      TEXT   NOT NULL DEFAULT current_user,
-    
-    -- Performance
-    execution_time_ms BIGINT NOT NULL DEFAULT 0,
-    
-    -- Audit flags
-    out_of_order_flag   BOOLEAN NOT NULL DEFAULT false,
-    partial_apply_info  TEXT,                      -- NULL for transactional; details for non-transactional failures
-    run_id              TEXT                       -- UUID grouping all migrations from one invocation
+  -- Identity
+  id       BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  version     TEXT  NOT NULL UNIQUE,    -- e.g. "0001_create_users"
+  description   TEXT  NOT NULL DEFAULT '',
+  
+  -- Checksums (SHA-256 hex with V:hex version prefix, NOT NULL once applied)
+  up_checksum   VARCHAR(66) NOT NULL,     -- "1:" + 64 hex chars
+  down_checksum  VARCHAR(66),          -- NULL if no _down.sql provided
+  
+  -- Execution tracking
+  execution_mode TEXT  NOT NULL DEFAULT 'transactional'
+            CHECK (execution_mode IN ('transactional', 'non_transactional')),
+  status     TEXT  NOT NULL DEFAULT 'applied'
+            CHECK (status IN ('pending', 'applied', 'failed', 'rolled_back')),
+  
+  -- Timestamps (all TIMESTAMPTZ; applied_at set by DB, not application)
+  applied_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  
+  -- Attribution
+  applied_by   TEXT  NOT NULL DEFAULT current_user,
+  
+  -- Performance
+  execution_time_ms BIGINT NOT NULL DEFAULT 0,
+  
+  -- Audit flags
+  out_of_order_flag  BOOLEAN NOT NULL DEFAULT false,
+  partial_apply_info TEXT,           -- NULL for transactional; details for non-transactional failures
+  run_id       TEXT            -- UUID grouping all migrations from one invocation
 );
 
 -- Fast lookup for "anything not cleanly applied"
 CREATE INDEX djogi_migrations_status_idx
-    ON djogi_migrations (version)
-    WHERE status != 'applied';
+  ON djogi_migrations (version)
+  WHERE status != 'applied';
 
 -- Fast lookup by deployment run
 CREATE INDEX djogi_migrations_run_id_idx
-    ON djogi_migrations (run_id)
-    WHERE run_id IS NOT NULL;
+  ON djogi_migrations (run_id)
+  WHERE run_id IS NOT NULL;
 ```
 
 This design:

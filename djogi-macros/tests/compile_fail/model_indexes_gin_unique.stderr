@@ -1,7 +1,7 @@
 error: `unique(..., using = "gin")` is rejected: PostgreSQL unique indexes are btree-only. Either use `using = "btree"` (or omit `using`), or drop `unique` if a non-unique `gin` lookup index is what you want.
-  --> $DIR/model_indexes_gin_unique.rs:11:5
-   |
-11 |     unique(fields = [payload], using = "gin"),
-   |     ^^^^^^
+ --> $DIR/model_indexes_gin_unique.rs:11:5
+ |
+11 |  unique(fields = [payload], using = "gin"),
+ |  ^^^^^^
 
 error: aborting due to 1 previous error

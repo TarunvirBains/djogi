@@ -6,9 +6,9 @@ use djogi::prelude::*;
 #[model(table = "phase85_aggregate89_plain_percentile_cont", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct PlainPercentileContModel {
-    pub score: f64,
+ pub score: f64,
 }
 
 fn main() {
-    let _ = PlainPercentileContModel::objects().annotate(|f| f.score().percentile_cont(0.5));
+ let _ = PlainPercentileContModel::objects().annotate(|f| f.score().percentile_cont(0.5));
 }

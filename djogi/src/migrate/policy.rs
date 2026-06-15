@@ -2,23 +2,23 @@
 //! # Scope
 //! Two responsibilities:
 //! 1. **Out-of-order detection / enforcement.** A migration applies
-//!    *out-of-order* when its `version` string lexically precedes some
-//!    already-applied migration's version inside the same
-//!    `(database, app)` bucket — practically, an operator picked up a
-//!    feature-branch migration after main shipped a later one. The
-//!    runner detects the conflict at apply time, sets the ledger row's
-//!    `out_of_order_flag = TRUE`, and then either:
+//! *out-of-order* when its `version` string lexically precedes some
+//! already-applied migration's version inside the same
+//! `(database, app)` bucket — practically, an operator picked up a
+//! feature-branch migration after main shipped a later one. The
+//! runner detects the conflict at apply time, sets the ledger row's
+//! `out_of_order_flag = TRUE`, and then either:
 //! - **Allows with diagnostic** (local/dev default): proceeds, emits
-//!   a `tracing::warn!` naming the conflicting peer.
+//! a `tracing::warn!` naming the conflicting peer.
 //! - **Rejects** (CI/prod default): refuses the apply with a typed
-//!   error before any DDL runs.
+//! error before any DDL runs.
 //! - **Allows with explicit override**: proceeds and records the
-//!   operator-supplied reason in `partial_apply_note`.
+//! operator-supplied reason in `partial_apply_note`.
 //! 2. **Localhost detection** for `attune --squash`. Squash is a hard
-//!    history rewrite (deletes / coalesces local migration files +
-//!    ledger rows) and is gated on `DATABASE_URL` resolving to the
-//!    local machine. The localhost predicate here is the same byte-
-//!    level scanner the `attune.rs` module uses.
+//! history rewrite (deletes / coalesces local migration files +
+//! ledger rows) and is gated on `DATABASE_URL` resolving to the
+//! local machine. The localhost predicate here is the same byte-
+//! level scanner the `attune.rs` module uses.
 //! # No regex
 //! Per the Djogi-wide no-regex rule, every parser in this module is a
 //! byte-level forward scan. The libpq parameter parser walks tokens
@@ -66,16 +66,16 @@ impl OutOfOrderPolicy {
     /// else defaults to `AllowWithDiagnostic`.
     /// **Detection rules:**
     /// - `config.is_production()` is the highest-precedence signal. A
-    ///   `Djogi.toml` with `profile = "production"` always picks
-    ///   `Reject`.
+    /// `Djogi.toml` with `profile = "production"` always picks
+    /// `Reject`.
     /// - Otherwise, `CI` env var equal to `"true"` (case-insensitive
-    ///   ASCII compare) selects `Reject`. CI runners universally set
-    ///   `CI=true`; the case-insensitive form catches the few that
-    ///   set `CI=TRUE` or `CI=True`.
+    /// ASCII compare) selects `Reject`. CI runners universally set
+    /// `CI=true`; the case-insensitive form catches the few that
+    /// set `CI=TRUE` or `CI=True`.
     /// - Otherwise: `AllowWithDiagnostic`.
-    ///   The function takes a `&DjogiConfig` rather than reading the
-    ///   global so tests can pin a deterministic config without env
-    ///   var contention.
+    /// The function takes a `&DjogiConfig` rather than reading the
+    /// global so tests can pin a deterministic config without env
+    /// var contention.
     pub fn default_for_config(config: &DjogiConfig) -> Self {
         if config.is_production() || ci_env_set() {
             OutOfOrderPolicy::Reject
@@ -153,18 +153,18 @@ const LOCALHOST_ALLOWLIST: &[&str] = &["", "127.0.0.1", "::1", "localhost"];
 /// local machine. Recognises both forms:
 /// - libpq parameter form: `host=localhost user=foo dbname=bar`
 /// - URL form: `postgres://[user[:pass]@]host[:port][/db]` (and the
-///   `postgresql://` alias)
-///   The host extraction is byte-level — explicit forward scans, no
-///   regex. Comparisons against [`LOCALHOST_ALLOWLIST`] use binary
-///   search; addresses in the IPv4 `127.0.0.0/8` loopback range (e.g.
-///   `127.5.10.20`) match via the byte-level [`is_ipv4_loopback_range`]
-///   helper that walks the four octets without parsing into a numeric
-///   type.
-///   **Used by `attune --squash`, `db reset`, and `db seed`.** The
-///   squash path refuses to run when this returns `false`, so a
-///   misconfigured DATABASE_URL pointing at a shared dev server cannot
-///   accidentally rewrite history that other developers also pull
-///   from.
+/// `postgresql://` alias)
+/// The host extraction is byte-level — explicit forward scans, no
+/// regex. Comparisons against [`LOCALHOST_ALLOWLIST`] use binary
+/// search; addresses in the IPv4 `127.0.0.0/8` loopback range (e.g.
+/// `127.5.10.20`) match via the byte-level [`is_ipv4_loopback_range`]
+/// helper that walks the four octets without parsing into a numeric
+/// type.
+/// **Used by `attune --squash`, `db reset`, and `db seed`.** The
+/// squash path refuses to run when this returns `false`, so a
+/// misconfigured DATABASE_URL pointing at a shared dev server cannot
+/// accidentally rewrite history that other developers also pull
+/// from.
 pub fn is_localhost_connection(conn: &str) -> bool {
     let host = extract_host(conn);
     if LOCALHOST_ALLOWLIST.binary_search(&host).is_ok() {
@@ -311,8 +311,8 @@ fn extract_url_host(body: &str) -> &str {
 /// grammar — a value may start with `'` or `"` and run until the next
 /// unescaped matching quote byte, with `\` escaping the following
 /// byte. Outside a quoted form, the value runs until the next ASCII
-/// whitespace byte. Round-2 A-2 added the double-quoted variant; the
-/// single-quoted path was wired up by .
+/// whitespace byte. added the double-quoted variant; the
+/// single-quoted path was wired up by.
 /// Empty input → empty host (the allowlist treats that as localhost
 /// since libpq defaults to a Unix-domain socket).
 /// **Empty-host edge case (.** A pathological
@@ -709,7 +709,7 @@ mod tests {
         // on the local machine ⇒ localhost for our purposes.
         assert!(is_localhost_connection("dbname=test"));
         assert!(is_localhost_connection(""));
-        assert!(is_localhost_connection("   "));
+        assert!(is_localhost_connection(" "));
     }
 
     #[test]
@@ -738,17 +738,17 @@ mod tests {
 
     #[test]
     fn extract_host_libpq_padded_equals_double_space_each_side() {
-        assert_eq!(extract_host("host  =  prod dbname=test"), "prod");
+        assert_eq!(extract_host("host = prod dbname=test"), "prod");
     }
 
     #[test]
     fn extract_host_libpq_padded_equals_only_after() {
-        assert_eq!(extract_host("host=  prod dbname=test"), "prod");
+        assert_eq!(extract_host("host= prod dbname=test"), "prod");
     }
 
     #[test]
     fn extract_host_libpq_padded_equals_only_before() {
-        assert_eq!(extract_host("host  =prod dbname=test"), "prod");
+        assert_eq!(extract_host("host =prod dbname=test"), "prod");
     }
 
     #[test]
@@ -780,19 +780,19 @@ mod tests {
         assert!(!is_localhost_connection(
             "host = db.prod.example.com dbname=test"
         ));
-        assert!(!is_localhost_connection("host  =  10.0.0.5 dbname=test"));
-        assert!(!is_localhost_connection("host=  prod dbname=test"));
-        assert!(!is_localhost_connection("host  =prod dbname=test"));
+        assert!(!is_localhost_connection("host = 10.0.0.5 dbname=test"));
+        assert!(!is_localhost_connection("host= prod dbname=test"));
+        assert!(!is_localhost_connection("host =prod dbname=test"));
     }
 
     #[test]
     fn is_localhost_connection_libpq_padded_equals_localhost_still_passes() {
         assert!(is_localhost_connection("host = localhost dbname=test"));
-        assert!(is_localhost_connection("host  =  127.0.0.1 dbname=test"));
-        assert!(is_localhost_connection("host=  ::1 dbname=test"));
+        assert!(is_localhost_connection("host = 127.0.0.1 dbname=test"));
+        assert!(is_localhost_connection("host= ::1 dbname=test"));
     }
 
-    // ── Round-2 double-quoted libpq values ──────────────────────────
+    // ── double-quoted libpq values ──────────────────────────
 
     /// `host="hostname"` must extract `hostname` — without the double
     /// quotes, exactly as the single-quoted form does. The pre-A-2
@@ -827,7 +827,7 @@ mod tests {
 
     /// `is_localhost_connection` must recognise double-quoted localhost
     /// the same way it recognises the single-quoted form (covered
-    /// the single-quoted path; A-2 closes the double-quoted gap).
+    /// the single-quoted path; closes the double-quoted gap).
     #[test]
     fn is_localhost_connection_libpq_double_quoted_localhost() {
         assert!(is_localhost_connection("host=\"localhost\" dbname=test"));
@@ -837,7 +837,7 @@ mod tests {
         ));
     }
 
-    /// Round-3 A-2 closeout: backslash escape inside a quoted value
+    /// closeout: backslash escape inside a quoted value
     /// does NOT terminate the quoted region. The parser tracks each
     /// backslash plus the next byte as a 2-byte unit, so a `\"`
     /// inside `"..."` keeps the value open through the inner `"`.
@@ -867,7 +867,7 @@ mod tests {
         assert!(!is_localhost_connection("host='foo\\'bar' dbname=test"));
     }
 
-    /// Round-3 A-2 closeout: the `host= dbname=test` empty-value edge
+    /// closeout: the `host= dbname=test` empty-value edge
     /// case. Per the libpq grammar documented at the parser, libpq
     /// itself skips whitespace after `=` and reads the next non-
     /// whitespace token as the value — so `host= dbname=test` parses

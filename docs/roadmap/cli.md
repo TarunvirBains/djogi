@@ -100,13 +100,13 @@ djogi plan
 ```
 Pending migrations (2):
 
-  0004_add_articles_rating
-    + ADD COLUMN rating DOUBLE PRECISION
-      table: articles
+ 0004_add_articles_rating
+ + ADD COLUMN rating DOUBLE PRECISION
+ table: articles
 
-  0005_create_tags
-    + CREATE TABLE tags (3 columns)
-      id BIGINT PK, name VARCHAR(100), slug VARCHAR(100)
+ 0005_create_tags
+ + CREATE TABLE tags (3 columns)
+ id BIGINT PK, name VARCHAR(100), slug VARCHAR(100)
 
 Use `djogi migrations apply` (or the library entry point `djogi::migrate::apply_plan`) to apply migration
 plans.
@@ -126,8 +126,8 @@ Manually triggers migration generation from current schema drift. Under normal d
 
 ```bash
 djogi migrations compose
-djogi migrations compose --allow-destructive  # permit DROP COLUMN / DROP TABLE
-djogi migrations compose --name "backfill_nulls"  # custom migration name
+djogi migrations compose --allow-destructive # permit DROP COLUMN / DROP TABLE
+djogi migrations compose --name "backfill_nulls" # custom migration name
 ```
 
 | Flag | Description |
@@ -158,8 +158,8 @@ OK: schema_snapshot.json is authentic (signed at 2026-04-15T10:00:00Z)
 
 ```
 ERROR: schema snapshot signature mismatch
-  Expected: 8f3c2a1b4e7d9f2c...
-  Found:    7e1d4f9c3a8b1e5d...
+ Expected: 8f3c2a1b4e7d9f2c...
+ Found: 7e1d4f9c3a8b1e5d...
 
 The schema snapshot may have been modified outside of Djogi's migration library.
 Do not run migrations until this is resolved.
@@ -171,7 +171,7 @@ Do not run migrations until this is resolved.
 
 ### `djogi shell`
 
-> **Current status:** planned (Phase 9), deferred in v0.1.0 shipped CLI. This section documents the target behavior.
+> **Current status:** planned (a future release), deferred in v0.1.0 shipped CLI. This section documents the target behavior.
 
 Starts an interactive Rhai REPL with all registered models pre-loaded, a live database connection, and persistent command history.
 
@@ -187,20 +187,20 @@ The shell holds a dedicated single-threaded Tokio runtime. All terminal methods 
 djogi shell v0.1.0
 Database: postgres://localhost/myapp (version 0003)
 Models: Post, Comment, User, Tag
-Type .help for available commands.
+Type.help for available commands.
 
 djogi> let posts = Post::objects()
-           .filter_struct(PostFilter::new().published(Eq(true)))
-           .order_by_desc("created_at")
-           .limit(5)
-           .fetch_all();
+ .filter_struct(PostFilter::new().published(Eq(true)))
+ .order_by_desc("created_at")
+ .limit(5)
+ .fetch_all();
 djogi> pp(posts)
 
 ┌────────────────┬──────────────────────┬───────────┐
-│ id             │ title                │ published │
+│ id  │ title  │ published │
 ├────────────────┼──────────────────────┼───────────┤
-│ 7493920192847  │ Getting Started      │ true      │
-│ 7493920192001  │ Model-first Rust     │ true      │
+│ 7493920192847 │ Getting Started │ true │
+│ 7493920192001 │ Model-first Rust │ true │
 └────────────────┴──────────────────────┴───────────┘
 
 djogi> let post = Post::get(7493920192847)
@@ -216,9 +216,9 @@ Errors print a one-liner and save a full traceback to `.djogi_shell_errors/`. Th
 ```
 djogi> let x = Post::get(99999)
 Error: record not found (posts where id = 99999)
-  → traceback saved to .djogi_shell_errors/2026-04-15T10-42-11_001.log
+ → traceback saved to.djogi_shell_errors/2026-04-15T10-42-11_001.log
 
-djogi>   ← session continues
+djogi> ← session continues
 ```
 
 **Transaction control:**
@@ -284,9 +284,9 @@ This runs the script in the full shell environment and exits. Useful for CI pipe
 Export the current session's meaningful history as a reusable script:
 
 ```
-djogi> .bookmark before_backfill
-djogi> // ... do some work ...
-djogi> .export backfill_slugs --from before_backfill
+djogi>.bookmark before_backfill
+djogi> //... do some work...
+djogi>.export backfill_slugs --from before_backfill
 Saved to scripts/backfill_slugs.rhai
 ```
 
@@ -310,9 +310,9 @@ djogi db reset
 
 ```
 Checking safety guards...
-  dev_mode = true      ✓
-  localhost URL         ✓
-  DJOGI_ENV = development ✓
+ dev_mode = true ✓
+ localhost URL  ✓
+ DJOGI_ENV = development ✓
 
 Dropping myapp...
 Creating myapp...
@@ -363,19 +363,19 @@ djogi analyze
 Table Health Report — 2026-04-15
 
 posts (1,240,482 rows)
-  Bloat estimate: 12% (acceptable)
-  Last autovacuum: 2026-04-15T08:12:00Z
-  Recommendation: none
+ Bloat estimate: 12% (acceptable)
+ Last autovacuum: 2026-04-15T08:12:00Z
+ Recommendation: none
 
 comments (8,903,211 rows)
-  Bloat estimate: 31% (elevated)
-  Last autovacuum: 2026-04-14T23:00:00Z
-  Recommendation: VACUUM ANALYZE comments
-  Missing index: filter on (post_id, created_at) detected in slow query log
+ Bloat estimate: 31% (elevated)
+ Last autovacuum: 2026-04-14T23:00:00Z
+ Recommendation: VACUUM ANALYZE comments
+ Missing index: filter on (post_id, created_at) detected in slow query log
 
 events (24,000,000 rows, partitioned by range:occurred_at)
-  Partitions: 12 active, 2 detachable
-  Recommendation: Consider detaching partitions older than 2025-10-01
+ Partitions: 12 active, 2 detachable
+ Recommendation: Consider detaching partitions older than 2025-10-01
 ```
 
 **Flags:**
@@ -390,7 +390,7 @@ events (24,000,000 rows, partitioned by range:occurred_at)
 
 ### `djogi repartition`
 
-Generates zero-downtime repartition SQL for a partitioned table. Djogi produces a script using the `CREATE TABLE ... PARTITION OF` pattern with concurrent index builds — no table lock for reads.
+Generates zero-downtime repartition SQL for a partitioned table. Djogi produces a script using the `CREATE TABLE... PARTITION OF` pattern with concurrent index builds — no table lock for reads.
 
 ```bash
 djogi repartition events --from "range:occurred_at" --to "hash:user_id:16"
@@ -409,7 +409,7 @@ Generating repartition SQL for events...
 Written to scripts/repartition_events_2026-04-15.sql
 
 Review carefully before running. Run with:
-  djogi shell --run scripts/repartition_events_2026-04-15.sql
+ djogi shell --run scripts/repartition_events_2026-04-15.sql
 ```
 
 > **Warning:** Repartition scripts are generated for review, not automatic execution. Always inspect the SQL and test on a staging environment before running on production data.
@@ -436,8 +436,8 @@ ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoices FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY invoices_tenant_isolation ON invoices
-    USING (org_id = current_setting('djogi.tenant_id')::bigint)
-    WITH CHECK (org_id = current_setting('djogi.tenant_id')::bigint);
+ USING (org_id = current_setting('djogi.tenant_id')::bigint)
+ WITH CHECK (org_id = current_setting('djogi.tenant_id')::bigint);
 ```
 
 **Flags:**
@@ -464,10 +464,10 @@ djogi docs
 ```
 Generating model documentation...
 
-  docs/models/Post.md
-  docs/models/Comment.md
-  docs/models/User.md
-  docs/models/Invoice.md
+ docs/models/Post.md
+ docs/models/Comment.md
+ docs/models/User.md
+ docs/models/Invoice.md
 
 4 files written to docs/models/.
 ```
@@ -496,9 +496,9 @@ djogi check-docs
 ```
 Checking docs/models/ against live ModelDescriptor inventory...
 
-  Post.md       ✓  up to date
-  Comment.md    ✓  up to date
-  User.md       ✓  up to date
+ Post.md ✓ up to date
+ Comment.md ✓ up to date
+ User.md ✓ up to date
 
 All docs are consistent.
 ```
@@ -508,10 +508,10 @@ All docs are consistent.
 ```
 Checking docs/models/ against live ModelDescriptor inventory...
 
-  Invoice.md    ✗  drift detected
+ Invoice.md ✗ drift detected
 
-    Invoice.md documents:  total_cents, status, due_date
-    ModelDescriptor has:   total_cents, status, due_date, paid_at (MISSING FROM DOCS)
+ Invoice.md documents: total_cents, status, due_date
+ ModelDescriptor has: total_cents, status, due_date, paid_at (MISSING FROM DOCS)
 
 Run `djogi docs` to regenerate.
 ```
@@ -534,22 +534,22 @@ djogi new my-project
 
 ```
 Creating my-project/
-  my-project/Cargo.toml
-  my-project/build.rs
-  my-project/Djogi.toml
-  my-project/docker-compose.yml
-  my-project/src/main.rs
-  my-project/src/apps/mod.rs
-  my-project/seeds/my_project/
-  my-project/.gitignore
-  my-project/migrations/  (git submodule initialized)
+ my-project/Cargo.toml
+ my-project/build.rs
+ my-project/Djogi.toml
+ my-project/docker-compose.yml
+ my-project/src/main.rs
+ my-project/src/apps/mod.rs
+ my-project/seeds/my_project/
+ my-project/.gitignore
+ my-project/migrations/ (git submodule initialized)
 
 Project created. Next steps:
-  cd my-project
-  docker compose up -d
-  export DATABASE_URL="postgres://djogi:djogi@localhost/my_project"
-  djogi db reset --single-node-dev --yes
-  djogi db seed --database my_project
+ cd my-project
+ docker compose up -d
+ export DATABASE_URL="postgres://djogi:djogi@localhost/my_project"
+ djogi db reset --single-node-dev --yes
+ djogi db seed --database my_project
 ```
 
 ### `djogi init`

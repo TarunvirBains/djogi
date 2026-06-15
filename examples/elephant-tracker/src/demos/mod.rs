@@ -9,5 +9,5 @@ pub mod cross_border_herds;
 pub mod herd_summaries;
 pub mod lineage;
 pub mod mating_pairs;
-// Phase 8.5 djogi#103 — inline VALUES join demo.
+// djogi#103 — inline VALUES join demo.
 pub mod values_scores;

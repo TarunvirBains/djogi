@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(djogi::JsonbSchema, Serialize, Deserialize, Default, Debug, Clone)]
 pub struct BadSpec {
-    #[jsonb(scalar = "::int8")]
-    pub id: i64,
+ #[jsonb(scalar = "::int8")]
+ pub id: i64,
 }
 
 fn main() {}

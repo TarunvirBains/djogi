@@ -7,19 +7,19 @@
 //! ## Why these three
 //!
 //! - **JSON** is the universal contract. Every demo emits valid JSON
-//!   that parses cleanly through `jq`; the shape is documented in
-//!   each demo's docstring. Adopters writing scripts against this
-//!   example pin their parsing to JSON.
+//! that parses cleanly through `jq`; the shape is documented in
+//! each demo's docstring. Adopters writing scripts against this
+//! example pin their parsing to JSON.
 //! - **Mermaid** is the human-readable graph format. Two demos
-//!   (`cross-border-herds` and `lineage`) describe relationships that
-//!   are easier to read as graphs than as tables; Mermaid's
-//!   `graph LR` / `graph TD` source pastes directly into Markdown
-//!   files and is rendered inline by GitHub, GitLab, and most
-//!   documentation tooling.
+//! (`cross-border-herds` and `lineage`) describe relationships that
+//! are easier to read as graphs than as tables; Mermaid's
+//! `graph LR` / `graph TD` source pastes directly into Markdown
+//! files and is rendered inline by GitHub, GitLab, and most
+//! documentation tooling.
 //! - **Markdown** combines Mermaid (where applicable) with one or
-//!   more tables and section headings — the right format for embedding
-//!   demo output directly into runbooks, post-mortems, or handover
-//!   docs.
+//! more tables and section headings — the right format for embedding
+//! demo output directly into runbooks, post-mortems, or handover
+//! docs.
 //!
 //! No format depends on a third-party crate beyond `serde_json`. The
 //! Mermaid and Markdown renderers are pure string builders; their

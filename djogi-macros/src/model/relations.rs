@@ -7,22 +7,22 @@
 //! - the column name on the source table (`"owner_id"`),
 //! - the target table name (via `Target::table_name()` at runtime),
 //! - the relation [`RelationKind`](::djogi::relation::RelationKind).
-//!   Tasks 4 + 5 consume these handles: `QuerySet::prefetch(path)` and
-//!   `QuerySet::select_related(path)` accept `RelationPath<Self, _>` and emit
-//!   the appropriate SQL strategy without further reflection on the source
-//!   struct.
+//! Tasks 4 + 5 consume these handles: `QuerySet::prefetch(path)` and
+//! `QuerySet::select_related(path)` accept `RelationPath<Self, _>` and emit
+//! the appropriate SQL strategy without further reflection on the source
+//! struct.
 //! # Why a separate module
 //! The `{Model}Related` surface is disjoint from `{Model}Fields` and
 //! `{Model}Filter`:
 //! - `{Model}Fields` covers every column (framework + user) and drives the
-//!   closure filter API;
+//! closure filter API;
 //! - `{Model}Filter` covers user columns only and drives the erased/
-//!   programmatic filter API;
+//! programmatic filter API;
 //! - `{Model}Related` covers *only* relation-typed fields (FK / O2O) and
-//!   drives prefetch / select_related.
-//!   Keeping each in its own module isolates the codegen surfaces: a future
-//!   change to relation detection or prefetch-path shape only touches this
-//!   file; a change to `FieldRef` or `Lookup` never reaches here.
+//! drives prefetch / select_related.
+//! Keeping each in its own module isolates the codegen surfaces: a future
+//! change to relation detection or prefetch-path shape only touches this
+//! file; a change to `FieldRef` or `Lookup` never reaches here.
 //! # Method-name convention
 //! By convention, users name relation columns `{target}_id` (e.g.
 //! `owner_id: ForeignKey<Owner>`). This module strips one trailing `_id`
@@ -110,32 +110,32 @@ pub fn expand(struct_item: &ItemStruct) -> TokenStream {
             };
 
             Some(quote! {
-                /// Typed relation path from `Self` to the related model.
-                /// Pass to `QuerySet::prefetch(...)` / `QuerySet::select_related(...)`
-                /// (Tasks 4 + 5) to eager-load the target row(s).
-                /// The returned
-                /// [`RelationPath`](::djogi::relation::RelationPath) is a
-                /// ZST plus three `&'static` members — free to pass around.
-                #[inline]
-                pub fn #method_ident() -> ::djogi::relation::RelationPath<
-                    #source_name,
-                    #target_type,
-                > {
-                    // Routes through the sealed macro-only entry point. The
-                    // `RelationPath::new` constructor itself is `pub(crate)`
-                    // in the djogi crate, so this helper is the only cross-
-                    // crate path — and it validates both identifiers before
-                    // constructing the path to close the SQL-injection
-                    // fabrication vector.
-                    ::djogi::relation::__macro_support::__make_relation_path::<
-                        #source_name,
-                        #target_type,
-                    >(
-                        #column_name,
-                        <#target_type as ::djogi::model::Model>::table_name(),
-                        #kind_path,
-                    )
-                }
+             /// Typed relation path from `Self` to the related model.
+             /// Pass to `QuerySet::prefetch(...)` / `QuerySet::select_related(...)`
+             /// (Tasks 4 + 5) to eager-load the target row(s).
+             /// The returned
+             /// [`RelationPath`](::djogi::relation::RelationPath) is a
+             /// ZST plus three `&'static` members — free to pass around.
+             #[inline]
+             pub fn #method_ident() -> ::djogi::relation::RelationPath<
+              #source_name,
+              #target_type,
+             > {
+              // Routes through the sealed macro-only entry point. The
+              // `RelationPath::new` constructor itself is `pub(crate)`
+              // in the djogi crate, so this helper is the only cross-
+              // crate path — and it validates both identifiers before
+              // constructing the path to close the SQL-injection
+              // fabrication vector.
+              ::djogi::relation::__macro_support::__make_relation_path::<
+               #source_name,
+               #target_type,
+              >(
+               #column_name,
+               <#target_type as ::djogi::model::Model>::table_name(),
+               #kind_path,
+              )
+             }
             })
         })
         .collect();
@@ -146,29 +146,29 @@ pub fn expand(struct_item: &ItemStruct) -> TokenStream {
         // currently carries any FK / O2O fields. A later edit that adds
         // such a field populates inherent methods without breaking imports.
         quote! {
-            /// Typed relation-path constructors for this model.
-            /// Currently empty — this model has no `ForeignKey<T>` or
-            /// `OneToOneField<T>` fields. Adding a relation field to the
-            /// struct will surface here as an inherent method that returns
-            /// a [`RelationPath`](::djogi::relation::RelationPath).
-            #[derive(Debug, Clone, Copy, Default)]
-            pub struct #related_name;
+         /// Typed relation-path constructors for this model.
+         /// Currently empty — this model has no `ForeignKey<T>` or
+         /// `OneToOneField<T>` fields. Adding a relation field to the
+         /// struct will surface here as an inherent method that returns
+         /// a [`RelationPath`](::djogi::relation::RelationPath).
+         #[derive(Debug, Clone, Copy, Default)]
+         pub struct #related_name;
         }
     } else {
         quote! {
-            /// Typed relation-path constructors for this model.
-            /// Each inherent method corresponds to one `ForeignKey<T>` or
-            /// `OneToOneField<T>` field on the struct and returns a
-            /// [`RelationPath<Self, Target>`](::djogi::relation::RelationPath)
-            /// a ZST handle proving source/target alignment at the type
-            /// level. Consume it via `QuerySet::prefetch(...)` /
-            /// `QuerySet::select_related(...)` (Tasks 4 + 5).
-            #[derive(Debug, Clone, Copy, Default)]
-            pub struct #related_name;
+         /// Typed relation-path constructors for this model.
+         /// Each inherent method corresponds to one `ForeignKey<T>` or
+         /// `OneToOneField<T>` field on the struct and returns a
+         /// [`RelationPath<Self, Target>`](::djogi::relation::RelationPath)
+         /// a ZST handle proving source/target alignment at the type
+         /// level. Consume it via `QuerySet::prefetch(...)` /
+         /// `QuerySet::select_related(...)` (Tasks 4 + 5).
+         #[derive(Debug, Clone, Copy, Default)]
+         pub struct #related_name;
 
-            impl #related_name {
-                #(#methods)*
-            }
+         impl #related_name {
+          #(#methods)*
+         }
         }
     }
 }

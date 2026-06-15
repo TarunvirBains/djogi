@@ -1,7 +1,7 @@
 error: `unique(..., using = "spgist")` is rejected: PostgreSQL unique indexes are btree-only. Either use `using = "btree"` (or omit `using`), or drop `unique` if a non-unique `spgist` lookup index is what you want.
-  --> $DIR/model_indexes_spgist_unique.rs:10:5
-   |
-10 |     unique(fields = [path], using = "spgist"),
-   |     ^^^^^^
+ --> $DIR/model_indexes_spgist_unique.rs:10:5
+ |
+10 |  unique(fields = [path], using = "spgist"),
+ |  ^^^^^^
 
 error: aborting due to 1 previous error

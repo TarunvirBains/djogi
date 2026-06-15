@@ -14,42 +14,42 @@ use djogi::prelude::*;
 #[model(table = "phase8_proxy_two_proxies_vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub name: String,
-    pub active: bool,
-    pub archived: bool,
-    pub price: i64,
+ pub name: String,
+ pub active: bool,
+ pub archived: bool,
+ pub price: i64,
 }
 
 #[model(
-    table = "phase8_proxy_two_proxies_vehicles",
-    proxy_for = Vehicle,
-    default_filter = |f| f.active.eq(true),
+ table = "phase8_proxy_two_proxies_vehicles",
+ proxy_for = Vehicle,
+ default_filter = |f| f.active.eq(true),
 )]
 #[derive(Debug, Clone)]
 pub struct ActiveVehicle {
-    pub name: String,
-    pub active: bool,
-    pub archived: bool,
-    pub price: i64,
+ pub name: String,
+ pub active: bool,
+ pub archived: bool,
+ pub price: i64,
 }
 
 #[model(
-    table = "phase8_proxy_two_proxies_vehicles",
-    proxy_for = Vehicle,
-    default_filter = |f| f.archived.eq(true),
+ table = "phase8_proxy_two_proxies_vehicles",
+ proxy_for = Vehicle,
+ default_filter = |f| f.archived.eq(true),
 )]
 #[derive(Debug, Clone)]
 pub struct ArchivedVehicle {
-    pub name: String,
-    pub active: bool,
-    pub archived: bool,
-    pub price: i64,
+ pub name: String,
+ pub active: bool,
+ pub archived: bool,
+ pub price: i64,
 }
 
 fn main() {
-    // Constructing all three querysets witnesses that the per-type
-    // default-filter overrides do not collide on a shared symbol.
-    let _parent_qs = Vehicle::objects();
-    let _active_qs = ActiveVehicle::objects();
-    let _archived_qs = ArchivedVehicle::objects();
+ // Constructing all three querysets witnesses that the per-type
+ // default-filter overrides do not collide on a shared symbol.
+ let _parent_qs = Vehicle::objects();
+ let _active_qs = ActiveVehicle::objects();
+ let _archived_qs = ArchivedVehicle::objects();
 }

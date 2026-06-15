@@ -3,7 +3,7 @@
 //
 // # What this fixture pins
 //
-// GPT-5.5 xhigh BLOCK (cluster-A follow-up, finding #2): the
+// a high-severity review xhigh BLOCK (cluster-A follow-up, finding #2): the
 // `PairAreaOverlapRatio<L, R>` annotation slot reports `is_joined_safe()
 // = true` (its emitted SQL alias-qualifies both column references
 // explicitly), but until this slice was added it did **not** override
@@ -22,15 +22,15 @@
 //
 // This fixture exercises the typed validation error directly:
 //
-//   1. `QuerySet::<Mini>::new().annotate(PairAreaOverlapRatio).fetch_all`
-//      MUST return `DjogiError::Validation` mentioning
-//      `PairAreaOverlapRatio` and the `self_pairs()` remediation.
-//   2. Same for `QuerySet::<Mini>::new().annotate(PairClosureKinshipSum)
-//      .fetch_all` — historically rejected via the narrower closure-pair
-//      signal, must remain rejected after the broader scope refactor.
-//   3. Grouped path: `Mini::objects().group_by(|f| (f.id(),))
-//      .annotate(|_| PairAreaOverlapRatio).fetch_all` MUST return the
-//      same validation error shape.
+//  1. `QuerySet::<Mini>::new().annotate(PairAreaOverlapRatio).fetch_all`
+//   MUST return `DjogiError::Validation` mentioning
+//   `PairAreaOverlapRatio` and the `self_pairs()` remediation.
+//  2. Same for `QuerySet::<Mini>::new().annotate(PairClosureKinshipSum)
+//   .fetch_all` — historically rejected via the narrower closure-pair
+//   signal, must remain rejected after the broader scope refactor.
+//  3. Grouped path: `Mini::objects().group_by(|f| (f.id(),))
+//   .annotate(|_| PairAreaOverlapRatio).fetch_all` MUST return the
+//   same validation error shape.
 //
 // The gate fires BEFORE any DB interaction (`AnnotatedQuerySet::fetch_all`
 // returns immediately when the queryset is non-empty and the aggregates
@@ -61,10 +61,10 @@ pub struct Mini {
 }
 
 #[model(
-    table = "c4a_rejected_mini_ancestries",
-    pk = HeerId,
-    no_default,
-    indexes(unique(fields = [node_id, ancestor_id, depth]))
+  table = "c4a_rejected_mini_ancestries",
+  pk = HeerId,
+  no_default,
+  indexes(unique(fields = [node_id, ancestor_id, depth]))
 )]
 #[derive(Debug, Clone)]
 pub struct MiniAncestry {
@@ -135,8 +135,8 @@ fn assert_pair_only_rejection(err: DjogiError) {
 // ── 1. PairAreaOverlapRatio on single-Model QuerySet::annotate ──────
 
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Mini],
+  extensions = ["postgis"],
+  sync_models = [Mini],
 )]
 async fn pair_area_overlap_ratio_rejected_on_single_model_annotate(mut ctx: djogi::DjogiContext) {
     seed_one(&mut ctx).await;
@@ -157,8 +157,8 @@ async fn pair_area_overlap_ratio_rejected_on_single_model_annotate(mut ctx: djog
 // boolean OR of both signals.
 
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Mini, MiniAncestry],
+  extensions = ["postgis"],
+  sync_models = [Mini, MiniAncestry],
 )]
 async fn pair_closure_kinship_sum_rejected_on_single_model_annotate(mut ctx: djogi::DjogiContext) {
     seed_one(&mut ctx).await;
@@ -185,8 +185,8 @@ async fn pair_closure_kinship_sum_rejected_on_single_model_annotate(mut ctx: djo
 // between "one key" and "a tuple of keys".
 
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Mini],
+  extensions = ["postgis"],
+  sync_models = [Mini],
 )]
 async fn pair_area_overlap_ratio_rejected_on_grouped_annotate(mut ctx: djogi::DjogiContext) {
     seed_one(&mut ctx).await;

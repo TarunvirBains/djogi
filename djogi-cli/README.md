@@ -53,9 +53,9 @@ Or write the entry point by hand:
 
 ```rust
 fn main() -> std::process::ExitCode {
-    // Force-link the model crate so its descriptors survive linking.
-    let _ = <my_models::Vehicle as djogi::model::Model>::descriptor();
-    djogi_cli::run_from_env()
+ // Force-link the model crate so its descriptors survive linking.
+ let _ = <my_models::Vehicle as djogi::model::Model>::descriptor();
+ djogi_cli::run_from_env()
 }
 ```
 

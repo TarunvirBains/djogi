@@ -10,5 +10,5 @@
 use djogi::geo::GeoPoint;
 
 fn main() {
-    let _ = GeoPoint::new(0.0, 0.0);
+ let _ = GeoPoint::new(0.0, 0.0);
 }

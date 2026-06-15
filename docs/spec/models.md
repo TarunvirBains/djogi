@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Models & Field System
 
@@ -14,10 +14,10 @@ use djogi::prelude::*;
 #[model(table = "vehicles")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vehicle {
-    pub make: String,
-    pub model_name: String,
-    pub gas_fill: i32,
-    pub active: bool,
+ pub make: String,
+ pub model_name: String,
+ pub gas_fill: i32,
+ pub active: bool,
 }
 ```
 
@@ -27,16 +27,16 @@ After macro expansion the struct effectively becomes:
 
 ```rust
 pub struct Vehicle {
-    // Injected by macro — real fields, real DB columns
-    pub id: HeerIdRecencyBiased,
-    pub created_at: DateTime,
-    pub updated_at: DateTime,
+ // Injected by macro — real fields, real DB columns
+ pub id: HeerIdRecencyBiased,
+ pub created_at: DateTime,
+ pub updated_at: DateTime,
 
-    // Developer-defined
-    pub make: String,
-    pub model_name: String,
-    pub gas_fill: i32,
-    pub active: bool,
+ // Developer-defined
+ pub make: String,
+ pub model_name: String,
+ pub gas_fill: i32,
+ pub active: bool,
 }
 ```
 
@@ -47,16 +47,16 @@ Models may also declare schema-ownership metadata used by migrations and databas
 ```rust
 #[model(table = "vehicles", app = Vehicles)]
 pub struct Vehicle {
-    pub make: String,
+ pub make: String,
 }
 ```
 
 Rules:
 
-- `app = ...` assigns the model to a compile-time schema ownership domain declared via `djogi::apps!`
+- `app =...` assigns the model to a compile-time schema ownership domain declared via `djogi::apps!`
 - database target is an app/domain-level concern, not a model-level attribute
 - a model inherits the database target of its app/domain
-- models without `app = ...` belong to the global/default bucket and therefore default to the `main` database target
+- models without `app =...` belong to the global/default bucket and therefore default to the `main` database target
 
 This metadata is part of descriptor validation and migration planning. See [Apps & Database Domains](./apps-and-database-domains.md).
 
@@ -66,45 +66,45 @@ The `#[model]` attribute generates an implementation of the `Model` trait for th
 
 ```rust
 pub trait Model: Sized + Send + Sync + 'static {
-    type Pk: Clone + Send + Sync
-        + postgres_types::ToSql
-        + for<'a> postgres_types::FromSql<'a>
-        + 'static;
+ type Pk: Clone + Send + Sync
+ + postgres_types::ToSql
+ + for<'a> postgres_types::FromSql<'a>
+ + 'static;
 
-    fn table_name() -> &'static str;
-    fn pk_value(&self) -> &Self::Pk;
-    fn descriptor() -> &'static ModelDescriptor;
+ fn table_name() -> &'static str;
+ fn pk_value(&self) -> &Self::Pk;
+ fn descriptor() -> &'static ModelDescriptor;
 
-    fn get(
-        ctx: &mut DjogiContext,
-        id: Self::Pk,
-    ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
+ fn get(
+ ctx: &mut DjogiContext,
+ id: Self::Pk,
+ ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
-    fn create(
-        ctx: &mut DjogiContext,
-        value: Self,
-    ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
+ fn create(
+ ctx: &mut DjogiContext,
+ value: Self,
+ ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
-    fn save<'ctx>(
-        &'ctx mut self,
-        ctx: &'ctx mut DjogiContext,
-    ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx;
+ fn save<'ctx>(
+ &'ctx mut self,
+ ctx: &'ctx mut DjogiContext,
+ ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx;
 
-    fn delete(
-        self,
-        ctx: &mut DjogiContext,
-    ) -> impl Future<Output = Result<(), DjogiError>> + Send;
+ fn delete(
+ self,
+ ctx: &mut DjogiContext,
+ ) -> impl Future<Output = Result<(), DjogiError>> + Send;
 
-    fn refresh_from_db<'ctx>(
-        &'ctx self,
-        ctx: &'ctx mut DjogiContext,
-    ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx;
+ fn refresh_from_db<'ctx>(
+ &'ctx self,
+ ctx: &'ctx mut DjogiContext,
+ ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx;
 }
 ```
 
 `create()` takes the struct directly — no separate `CreateVehicle` wrapper. Framework-injected fields (`id`, `created_at`, `updated_at`) are **public** — they are visible in struct literals, auto-complete, and pattern matches, just like developer-defined fields. The database overwrites whatever values are passed; callers must supply something syntactically valid.
 
-The context parameter is a `&mut DjogiContext`, which carries either a pool handle or an active transaction. The same call site works against either; the framework pattern-matches on the inner variant at each `tokio-postgres` boundary. `djogi::transaction::atomic(&mut ctx, |tx| Box::pin(async move { ... }))` is the canonical scope helper — it commits on `Ok`, rolls back on `Err`, and pushes savepoints for nested calls. Callers that need to drop below `atomic()` reach for the raw escape hatches on `RawAccessExt` / `RawPoolAccessExt` under the `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute (see [Raw SQL escape hatches](raw-sql-escape-hatches.md)).
+The context parameter is a `&mut DjogiContext`, which carries either a pool handle or an active transaction. The same call site works against either; the framework pattern-matches on the inner variant at each `tokio-postgres` boundary. `djogi::transaction::atomic(&mut ctx, |tx| Box::pin(async move {... }))` is the canonical scope helper — it commits on `Ok`, rolls back on `Err`, and pushes savepoints for nested calls. Callers that need to drop below `atomic()` reach for the raw escape hatches on `RawAccessExt` / `RawPoolAccessExt` under the `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute (see [Raw SQL escape hatches](raw-sql-escape-hatches.md)).
 
 #### 4.2.0a PG18 OLD/NEW RETURNING
 
@@ -112,13 +112,13 @@ In addition to the five base trait methods, `#[model]` emits two PG18-only retur
 
 ```rust
 fn update_returning_pair(
-    self,
-    ctx: &mut DjogiContext,
+ self,
+ ctx: &mut DjogiContext,
 ) -> impl Future<Output = Result<ReturningPair<Self>, DjogiError>> + Send;
 
 fn delete_returning(
-    self,
-    ctx: &mut DjogiContext,
+ self,
+ ctx: &mut DjogiContext,
 ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 ```
 
@@ -151,12 +151,12 @@ Users set framework fields to any value; `create()` ignores them and the databas
 ```rust
 let mut ctx = DjogiContext::from_pool(pool.clone());
 let article = Article::create(&mut ctx, Article {
-    id: <HeerIdRecencyBiased as PrimaryKey>::sentinel(), // ignored — DB generates
-    created_at: DateTime::UNIX_EPOCH, // ignored — DB generates via now()
-    updated_at: DateTime::UNIX_EPOCH, // ignored — DB generates via now()
-    title: "Hello".into(),
-    body: "World".into(),
-    published: true,
+ id: <HeerIdRecencyBiased as PrimaryKey>::sentinel(), // ignored — DB generates
+ created_at: DateTime::UNIX_EPOCH, // ignored — DB generates via now()
+ updated_at: DateTime::UNIX_EPOCH, // ignored — DB generates via now()
+ title: "Hello".into(),
+ body: "World".into(),
+ published: true,
 }).await?;
 ```
 
@@ -164,10 +164,10 @@ For models whose user fields all implement `Default`, the macro emits an `impl D
 
 ```rust
 let article = Article::create(&mut ctx, Article {
-    title: "Hello".into(),
-    body: "World".into(),
-    published: true,
-    ..Default::default()  // only works if every user field implements Default
+ title: "Hello".into(),
+ body: "World".into(),
+ published: true,
+..Default::default() // only works if every user field implements Default
 }).await?;
 ```
 
@@ -188,7 +188,7 @@ The public API does NOT require user-defined field types to implement `Default`.
 - `<Name>Fields` / `<Name>Filter` — typed field accessors and programmatic filter builder
 - `ModelDescriptor` via `inventory::submit!` — for app registration and migration differ
 - `<Name>::create_with_id(...)` — HeerId models only; pre-allocates the ID before INSERT (used in form pre-generation and bulk workflows)
-- `impl djogi::label::Label for <Name>` — visibility-aware row label, consumed by FK dropdowns, list-view default columns, audit-log entry rendering, and shell `pp()` defaults. The trait method takes a `VisibleFields` parameter; the emitted impl never returns values from fields outside that set. Resolution order: `#[model(label_fn = "...")]` > `#[field(label)]` > first non-id `String`-like field > ID-only fallback. Concurrent `label_fn` and `#[field(label)]` is a compile error. Phase 10 / Maahi consumes the trait but the trait itself lives in `djogi` so non-admin surfaces use it without depending on the admin crate. See [Maahi field-visibility](./maahi/field-visibility.md) for usage detail.
+- `impl djogi::label::Label for <Name>` — visibility-aware row label, consumed by FK dropdowns, list-view default columns, audit-log entry rendering, and shell `pp()` defaults. The trait method takes a `VisibleFields` parameter; the emitted impl never returns values from fields outside that set. Resolution order: `#[model(label_fn = "...")]` > `#[field(label)]` > first non-id `String`-like field > ID-only fallback. Concurrent `label_fn` and `#[field(label)]` is a compile error. 0 / Maahi consumes the trait but the trait itself lives in `djogi` so non-admin surfaces use it without depending on the admin crate. See [Maahi field-visibility](./maahi/field-visibility.md) for usage detail.
 
 ### 4.4 Field Types
 
@@ -234,10 +234,10 @@ pub email: String,
 #[field(index)]
 pub slug: String,
 
-#[field(max_length = 100)]          // emits VARCHAR(100) instead of TEXT
+#[field(max_length = 100)]  // emits VARCHAR(100) instead of TEXT
 pub slug: String,
 
-pub bio: Option<String>,            // Option<T> implies nullable
+pub bio: Option<String>,  // Option<T> implies nullable
 
 #[field(on_delete = "cascade")]
 pub owner_id: ForeignKey<Owner>,
@@ -245,7 +245,7 @@ pub owner_id: ForeignKey<Owner>,
 #[field(renamed_from = "old_name")] // informs differ: rename not drop+add
 pub new_name: String,
 
-#[field(check = "weight_kg > 0")]   // arbitrary CHECK constraint — raw SQL, adopter responsibility
+#[field(check = "weight_kg > 0")] // arbitrary CHECK constraint — raw SQL, adopter responsibility
 pub weight_kg: f64,
 ```
 
@@ -263,12 +263,12 @@ as real type-change drift, producing the appropriate
 
 ```rust
 #[model(table = "orders", indexes(
-    index(fields = [tenant_id, created_at]),
-    unique(fields = [tenant_id, external_id]),
-    index(fields = [tenant_id], where = "deleted_at IS NULL"),
-    index(expr = "lower(email)"),
+ index(fields = [tenant_id, created_at]),
+ unique(fields = [tenant_id, external_id]),
+ index(fields = [tenant_id], where = "deleted_at IS NULL"),
+ index(expr = "lower(email)"),
 ))]
-pub struct Order { /* ... */ }
+pub struct Order { /*... */ }
 ```
 
 The full grammar — including the per-column record form, the unique-constraint-vs-unique-index lowering rules, predicate validation policy, deterministic index naming, and the eight-item `concurrently = true` documentation contract — lives in the [indexing spec](./indexing.md). See there for the authoritative surface.

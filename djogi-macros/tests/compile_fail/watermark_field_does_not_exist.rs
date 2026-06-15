@@ -19,7 +19,7 @@
 // snapshot drifts and the lihaaf gate fails with `SNAPSHOT_DIFF`.
 // Regenerate with
 // `cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
-//     --filter watermark_field_does_not_exist --bless -j 4`. The fixture decouples from
+//  --filter watermark_field_does_not_exist --bless -j 4`. The fixture decouples from
 // neighbouring-file edits because lihaaf compiles each `.rs` as a
 // standalone rustc invocation; only edits inside *this* file shift the
 // recorded line number.
@@ -29,12 +29,12 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "phase8_t7_watermark_missing_rows",
-    watermark_field = "no_such_field",
+ table = "phase8_t7_watermark_missing_rows",
+ watermark_field = "no_such_field",
 )]
 #[derive(Debug, Clone)]
 pub struct WatermarkMissingRow {
-    pub label: String,
+ pub label: String,
 }
 
 fn main() {}

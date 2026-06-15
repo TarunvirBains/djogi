@@ -1,8 +1,8 @@
 error: #[field(version)] must be i32 or i64 (got Option<i32>); accepted spellings: bare `i32`/`i64`, `std::primitive::i32`/`i64`, `core::primitive::i32`/`i64`
-  --> $DIR/version_field_wrong_type.rs:10:5
-   |
-10 | /     #[field(version)]
-11 | |     pub revision: Option<i32>,
-   | |_____________________________^
+ --> $DIR/version_field_wrong_type.rs:10:5
+ |
+10 | /  #[field(version)]
+11 | |  pub revision: Option<i32>,
+ | |_____________________________^
 
 error: aborting due to 1 previous error

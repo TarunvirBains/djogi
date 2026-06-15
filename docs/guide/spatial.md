@@ -1,29 +1,29 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Spatial
 
 The `spatial` feature ships a typed PostGIS surface — coordinate types,
 shape predicates, geo-aware aggregation, and a bbox/distance toolkit —
-built on the Phase 4 expression substrate.
+built on the expression substrate.
 
 ## Scope at a glance
 
-**Phase 6 (the coordinate core):**
+** (the coordinate core):**
 - `GeoPoint` — validated WGS-84 coordinate with Haversine helper,
-  `GEOGRAPHY(Point, 4326)` codec, `within_km` radius filter, and
-  `order_by_distance` with a primary-key tiebreak.
+ `GEOGRAPHY(Point, 4326)` codec, `within_km` radius filter, and
+ `order_by_distance` with a primary-key tiebreak.
 
-**Phase 6.5 (the polish layer):**
+** (the polish layer):**
 - Non-point geometries — `LineString`, `Polygon`, `MultiPoint`,
-  `MultiLineString`, `MultiPolygon` — each with a manual EWKB codec.
+ `MultiLineString`, `MultiPolygon` — each with a manual EWKB codec.
 - Shape predicates on `FieldRef` — `contains`, `intersects`, `touches`,
-  `within` — across any two compatible `GeographyValue` types.
+ `within` — across any two compatible `GeographyValue` types.
 - Bounding-box prefilter (`bounded_by`) and a first-class `distance_to`
-  expression composable into `filter_expr` and expression-aware ordering.
+ expression composable into `filter_expr` and expression-aware ordering.
 - Spatial grouping — `group_by_region` / `count_by_region`,
-  `cluster_by_proximity` (DBSCAN), `bucket_by_cell` (geohash).
+ `cluster_by_proximity` (DBSCAN), `bucket_by_cell` (geohash).
 - `#[djogi_test(extensions = [...])]` auto-provisions PostGIS (or any
-  other extension name) before each test database runs its setup.
+ other extension name) before each test database runs its setup.
 
 ### PostGIS constructor coverage policy (v0.1.0 anchor)
 
@@ -32,13 +32,13 @@ canonical surface (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
 `MultiLineString`, `MultiPolygon`) plus the shipped relationship / distance /
 aggregation expressions. PostGIS constructors are intentionally delayed:
 
-- `ST_TileEnvelope` (escalate only if Cluster 4C [#92](https://github.com/TarunvirBains/djogi/issues/92) makes it a hard requirement for MVT/Geobuf row-shape work)
+- `ST_TileEnvelope` (escalate only if [#92](https://github.com/TarunvirBains/djogi/issues/92) makes it a hard requirement for MVT/Geobuf row-shape work)
 - `ST_HexagonGrid`, `ST_SquareGrid`, `ST_Letters`, `ST_MakePointM`,
-  `ST_MakeValid`, `ST_IsValidDetail`, `ST_IsValidReason`
+ `ST_MakeValid`, `ST_IsValidDetail`, `ST_IsValidReason`
 - Long-tail clustering, coverage, trajectory, and I/O constructors (`ST_CoverageUnion`,
-  `ST_CoverageSimplify`, `ST_CoverageClean`, `ST_IsValidTrajectory`,
-  `ST_ClosestPointOfApproach`, `ST_CPAWithin`, `ST_AsFlatGeobuf`,
-  `ST_AsMARC21`, `ST_AsTWKB`, GeoHash variants, encoded polyline, Geobuf)
+ `ST_CoverageSimplify`, `ST_CoverageClean`, `ST_IsValidTrajectory`,
+ `ST_ClosestPointOfApproach`, `ST_CPAWithin`, `ST_AsFlatGeobuf`,
+ `ST_AsMARC21`, `ST_AsTWKB`, GeoHash variants, encoded polyline, Geobuf)
 - **K-Means clustering** — `ST_ClusterKMeans` remains deferred.
 
 Interim escape hatch remains raw SQL via `ctx.raw_query(...)` and related
@@ -60,19 +60,19 @@ djogi = { version = "...", features = ["spatial"] }
 **Requirements:**
 
 - PostgreSQL 18 (the Djogi floor) with the `postgis` extension installed.
-  PostGIS 3.x is the tested version.
+ PostGIS 3.x is the tested version.
 - Install the extension once at the cluster or database level before running
-  your first migration:
+ your first migration:
 
-  ```sql
-  CREATE EXTENSION IF NOT EXISTS postgis;
-  ```
+ ```sql
+ CREATE EXTENSION IF NOT EXISTS postgis;
+ ```
 
-  If your application role does not have `CREATE EXTENSION` privileges, a
+ If your application role does not have `CREATE EXTENSION` privileges, a
  database administrator must install it. When the migration that introduces a
-   spatial index is applied (via `djogi migrations apply` or the library entry
-   point `djogi::migrate::apply_plan`), the runner reads the `extension_dependency` metadata on the
-  index and surfaces a clear error if PostGIS is absent.
+ spatial index is applied (via `djogi migrations apply` or the library entry
+ point `djogi::migrate::apply_plan`), the runner reads the `extension_dependency` metadata on the
+ index and surfaces a clear error if PostGIS is absent.
 
 ---
 
@@ -88,8 +88,8 @@ Always use `GeoPoint::new(lat, lon)` — it validates coordinates and returns
 ```rust
 use djogi::GeoPoint;
 
-let sfo = GeoPoint::new(37.6189, -122.3750)?;  // San Francisco airport
-let jfk = GeoPoint::new(40.6413, -73.7781)?;   // JFK airport
+let sfo = GeoPoint::new(37.6189, -122.3750)?; // San Francisco airport
+let jfk = GeoPoint::new(40.6413, -73.7781)?; // JFK airport
 ```
 
 Validation rules:
@@ -123,7 +123,7 @@ and ordering, use `within_km` and `order_by_distance` (see below).
 
 ```rust
 let p = GeoPoint::new(37.7749, -122.4194)?;
-println!("{p}");  // POINT(-122.4194 37.7749)
+println!("{p}"); // POINT(-122.4194 37.7749)
 ```
 
 This matches PostGIS's `ST_AsText` output for `GEOGRAPHY` points.
@@ -138,17 +138,17 @@ use djogi::prelude::*;
 #[model(table = "places")]
 #[derive(Debug, Clone)]
 pub struct Place {
-    pub name: String,
-    pub location: GeoPoint,
+ pub name: String,
+ pub location: GeoPoint,
 }
 ```
 
 The macro emits:
 
 - `FieldSqlType::Geography { srid: 4326 }` for the `location` field in the
-  `ModelDescriptor`.
+ `ModelDescriptor`.
 - A GiST `IndexSpec` for the column, with `requires_out_of_transaction = true`
-  and `extension_dependency = Some("postgis")`.
+ and `extension_dependency = Some("postgis")`.
 
 `GeoPoint` does not implement `Default`, so the macro skips the blanket
 `Default` derivation for `Place`. Struct-update syntax is unavailable on
@@ -166,9 +166,9 @@ use djogi::prelude::*;
 let center = GeoPoint::new(37.7749, -122.4194)?;
 
 let nearby = Place::objects()
-    .filter(|p| p.location().within_km(center, 10.0))
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|p| p.location().within_km(center, 10.0))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -186,18 +186,18 @@ The radius is converted from kilometers to meters before binding so the
 parameter type matches `ST_DWithin`'s `GEOGRAPHY` distance-in-meters signature.
 
 `within_km` returns a `Condition::Expr(Expr<bool>)` — the same IR node type
-the Phase 4 expression substrate uses for all typed predicates. It composes
+the expression substrate uses for all typed predicates. It composes
 with `.and_with` / `.or_with` and with any other `Condition` in a filter
 closure:
 
 ```rust
 let results = Place::objects()
-    .filter(|p| {
-        p.location().within_km(center, 10.0)
-            .and_with(p.name().contains("airport"))
-    })
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|p| {
+ p.location().within_km(center, 10.0)
+.and_with(p.name().contains("airport"))
+ })
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 ---
@@ -210,9 +210,9 @@ Order rows by ascending distance from a center point:
 let center = GeoPoint::new(37.7749, -122.4194)?;
 
 let by_distance = Place::objects()
-    .order_by(|p| p.location().order_by_distance(center))
-    .fetch_all(&mut ctx)
-    .await?;
+.order_by(|p| p.location().order_by_distance(center))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -230,15 +230,15 @@ pagination. Callers who chain additional `.order_by(...)` after
 
 ```rust
 Place::objects()
-    .order_by(|p| p.location().order_by_distance(center))
-    .order_by(|p| p.name().asc())   // appended after PK tiebreak
-    .fetch_all(&mut ctx)
-    .await?;
+.order_by(|p| p.location().order_by_distance(center))
+.order_by(|p| p.name().asc()) // appended after PK tiebreak
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 ---
 
-## Non-point geometries (Phase 6.5)
+## Non-point geometries ()
 
 `GeoPoint` is one of six `GeographyValue` types Djogi ships. Each has a
 manual EWKB codec in `djogi::geo::ewkb` and a `postgres_types::{ToSql,
@@ -261,15 +261,15 @@ use djogi::geo::{LineString, MultiPolygon, Polygon};
 use djogi::GeoPoint;
 
 let line = LineString::new(&[
-    GeoPoint::new(37.7, -122.4)?,
-    GeoPoint::new(37.8, -122.3)?,
+ GeoPoint::new(37.7, -122.4)?,
+ GeoPoint::new(37.8, -122.3)?,
 ])?;
 
 let polygon = Polygon::with_ring(vec![
-    GeoPoint::new(37.7, -122.4)?,
-    GeoPoint::new(37.7, -122.3)?,
-    GeoPoint::new(37.8, -122.3)?,
-    GeoPoint::new(37.7, -122.4)?,  // OGC simple features: closing point = opening point
+ GeoPoint::new(37.7, -122.4)?,
+ GeoPoint::new(37.7, -122.3)?,
+ GeoPoint::new(37.8, -122.3)?,
+ GeoPoint::new(37.7, -122.4)?, // OGC simple features: closing point = opening point
 ])?;
 
 let coverage = MultiPolygon::new(vec![polygon.clone()])?;
@@ -288,7 +288,7 @@ of these types; the same GiST `IndexSpec` is emitted (out-of-transaction,
 
 ---
 
-## Shape predicates (Phase 6.5)
+## Shape predicates ()
 
 Any `FieldRef<M, G: GeographyValue>` exposes four shape predicates that
 compose into filter closures:
@@ -297,31 +297,31 @@ compose into filter closures:
 use djogi::prelude::*;
 
 let sfo_point = GeoPoint::new(37.618, -122.375)?;
-let sfo_box   = some_polygon();
+let sfo_box = some_polygon();
 
 // ST_Contains — polygon field contains point / geometry.
 let matches = Neighborhood::objects()
-    .filter(|n| n.boundary().contains(&sfo_point))
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|n| n.boundary().contains(&sfo_point))
+.fetch_all(&mut ctx)
+.await?;
 
 // ST_Intersects — two geometries share at least one point.
 let crossing = Route::objects()
-    .filter(|r| r.path().intersects(&sfo_box))
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|r| r.path().intersects(&sfo_box))
+.fetch_all(&mut ctx)
+.await?;
 
 // ST_Touches — share boundary points but no interior points.
 let adjacent = Parcel::objects()
-    .filter(|p| p.shape().touches(&left))
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|p| p.shape().touches(&left))
+.fetch_all(&mut ctx)
+.await?;
 
 // ST_Within — field geometry is entirely inside the argument.
 let inside = Parcel::objects()
-    .filter(|p| p.shape().within(&region))
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|p| p.shape().within(&region))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 ### Cast discipline (why `::bytea::geometry` vs `::bytea::geography`)
@@ -329,14 +329,14 @@ let inside = Parcel::objects()
 PostGIS 3.x splits these four functions across two type families:
 
 - **`ST_Intersects`** has a native `geography` overload. Djogi emits:
-  ```sql
-  ST_Intersects(<col>, $1::bytea::geography)
-  ```
+ ```sql
+ ST_Intersects(<col>, $1::bytea::geography)
+ ```
 - **`ST_Contains` / `ST_Touches` / `ST_Within`** are *geometry-only* — the
-  geography overloads do not exist in PostGIS 3.x. Djogi casts both sides:
-  ```sql
-  ST_Contains(<col>::geometry, $1::bytea::geometry)
-  ```
+ geography overloads do not exist in PostGIS 3.x. Djogi casts both sides:
+ ```sql
+ ST_Contains(<col>::geometry, $1::bytea::geometry)
+ ```
 
 The `$n::bytea::<type>` double-cast is required because `Vec<u8>: ToSql`
 binds as `bytea`. Without the `bytea` stage, `tokio_postgres` prepares
@@ -349,7 +349,7 @@ across geometry types (`contains(&point)`, `intersects(&polygon)`,
 
 ---
 
-## Bounding-box prefilter and `distance_to` (Phase 6.5)
+## Bounding-box prefilter and `distance_to` ()
 
 ### `bounded_by` — GiST-accelerated bbox prefilter
 
@@ -360,10 +360,10 @@ expensive shape predicates:
 
 ```rust
 let in_box = Store::objects()
-    .filter_expr(|f| f.location().bounded_by(37.0, -123.0, 38.0, -122.0))
-    .order_by(|f| f.location().order_by_distance(sfo))
-    .fetch_all(&mut ctx)
-    .await?;
+.filter_expr(|f| f.location().bounded_by(37.0, -123.0, 38.0, -122.0))
+.order_by(|f| f.location().order_by_distance(sfo))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -388,9 +388,9 @@ convention internally.
 let sfo = GeoPoint::new(37.618, -122.375)?;
 
 let near = Store::objects()
-    .filter_expr(|f| f.location().distance_to(&sfo).lt(Expr::literal(50_000.0_f64)))
-    .fetch_all(&mut ctx)
-    .await?;
+.filter_expr(|f| f.location().distance_to(&sfo).lt(Expr::literal(50_000.0_f64)))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -425,10 +425,10 @@ use djogi::prelude::*;
 
 // Hull around every sighting in each herd's territory.
 let hulls: Vec<(HeerId, Polygon)> = Sighting::objects()
-    .group_by(|f| f.herd_id())
-    .annotate(|f| f.location().convex_hull())
-    .fetch_all(&mut ctx)
-    .await?;
+.group_by(|f| f.herd_id())
+.annotate(|f| f.location().convex_hull())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -452,9 +452,9 @@ Spatial aggregates compose with every grouping mode — plain `group_by`,
 `group_by_region`, `cluster_by_proximity`, `bucket_by_cell`. The
 `cluster_by_proximity` examples in the next section show the pattern.
 
-### Other PostGIS aggregates (Cluster E)
+### Other PostGIS aggregates ()
 
-Cluster E (#88) extended the typed PostGIS aggregate surface beyond
+ (#88) extended the typed PostGIS aggregate surface beyond
 `convex_hull`. Each method returns `AggregateExpr<ReturnType>` and
 composes with `.distinct()` / `.filter()` / `.over(...)` /
 `.order_by(...)` modifiers identically to numeric / collection
@@ -484,16 +484,16 @@ full retrofit.
 
 ```rust
 let rows: Vec<(ClusterId, (i64, GeoPoint, Vec<HeerId>))> = Sighting::objects()
-    .cluster_by_proximity(
-        |f| f.location(),
-        ClusterRadius::meters(50_000.0).min_points(3),
-    )
-    .annotate(|f| (
-        f.id().count_star(),
-        f.location().centroid(),
-        f.id().array_agg().order_by(f.id().asc()),
-    ))
-    .fetch_all(&mut ctx).await?;
+.cluster_by_proximity(
+ |f| f.location(),
+ ClusterRadius::meters(50_000.0).min_points(3),
+ )
+.annotate(|f| (
+ f.id().count_star(),
+ f.location().centroid(),
+ f.id().array_agg().order_by(f.id().asc()),
+ ))
+.fetch_all(&mut ctx).await?;
 ```
 
 #### Vector-tile / Geobuf output
@@ -507,19 +507,19 @@ surface:
 use djogi::prelude::*;
 
 let tile: Vec<u8> = Store::objects()
-    .filter(|s| s.name().icontains("airport".to_string()))
-    .as_mvt_with_options(
-        MvtOptions::new("stores")
-            .with_geom_name("location")
-            .with_feature_id_name("id"),
-    )
-    .fetch_one(&mut ctx)
-    .await?;
+.filter(|s| s.name().icontains("airport".to_string()))
+.as_mvt_with_options(
+ MvtOptions::new("stores")
+.with_geom_name("location")
+.with_feature_id_name("id"),
+ )
+.fetch_one(&mut ctx)
+.await?;
 
 let geobuf: Vec<u8> = Store::objects()
-    .as_geobuf("location")
-    .fetch_one(&mut ctx)
-    .await?;
+.as_geobuf("location")
+.fetch_one(&mut ctx)
+.await?;
 ```
 
 The annotated form uses the same terminal after `.annotate(...)`, so
@@ -528,10 +528,10 @@ result:
 
 ```rust
 let tile: Vec<u8> = Store::objects()
-    .annotate(|s| s.id().count_star())
-    .as_mvt("stores")
-    .fetch_one(&mut ctx)
-    .await?;
+.annotate(|s| s.id().count_star())
+.as_mvt("stores")
+.fetch_one(&mut ctx)
+.await?;
 ```
 
 Both terminals return Postgres `bytea` as `Vec<u8>`. `QuerySet::none()`
@@ -552,7 +552,7 @@ column-shape aggregates.
 
 ---
 
-## Intersection expressions (Phase 8-Zero T17)
+## Intersection expressions ( T17)
 
 Two static constructors on `Expr` expose PostGIS's `ST_Intersection` /
 `ST_Area` pair as typed expressions composable with `filter_expr` and
@@ -575,7 +575,7 @@ arithmetic operators.
 use djogi::{prelude::*, geo::Polygon};
 
 let overlap_shape: Expr<Polygon> =
-    Expr::intersection_of(&hull_a, &hull_b);
+ Expr::intersection_of(&hull_a, &hull_b);
 ```
 
 Emitted SQL:
@@ -611,7 +611,7 @@ overload for `ST_Intersection`); the result is cast `::geography` so
 ```rust
 // Overlap percentage — safe for disjoint polygons (yields 0.0).
 let pct: Expr<f64> =
-    Expr::area_of_intersection(&hull_a, &hull_b) / Expr::area_of(&hull_a);
+ Expr::area_of_intersection(&hull_a, &hull_b) / Expr::area_of(&hull_a);
 ```
 
 Emitted SQL:
@@ -636,12 +636,12 @@ expressible in one typed chain:
 ```rust
 // Is a at least 50 % covered by b?
 let heavily_overlapping = Zone::objects()
-    .filter_expr(|_| {
-        Expr::area_of_intersection(&hull_a, &hull_b)
-            .gte(Expr::area_of(&hull_a) * Expr::literal(0.5_f64))
-    })
-    .fetch_all(&mut ctx)
-    .await?;
+.filter_expr(|_| {
+ Expr::area_of_intersection(&hull_a, &hull_b)
+.gte(Expr::area_of(&hull_a) * Expr::literal(0.5_f64))
+ })
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 When the inputs are disjoint, `ST_Intersection` returns an empty geometry
@@ -676,8 +676,8 @@ fills this gap. It is the pair-tuple annotation slot that emits
 
 ```sql
 COALESCE(ST_Area(ST_Intersection(l.<lcol>::geometry,
-                                  r.<rcol>::geometry)::geography), 0)::float8
-  / NULLIF(ST_Area(l.<lcol>::geography), 0)::float8
+   r.<rcol>::geometry)::geography), 0)::float8
+ / NULLIF(ST_Area(l.<lcol>::geography), 0)::float8
 ```
 
 as one SELECT-list column per pair on a `JoinedQuerySet<L, R>`.
@@ -688,11 +688,11 @@ use djogi::query::PairAreaOverlapRatio;
 
 // Per-pair territory overlap ratio in [0, 1] across every herd-pair.
 let overlaps: Vec<((Herd, Herd), f64)> = Herd::objects()
-    .self_pairs()
-    .include_equal_pk()
-    .annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
-    .fetch_all(&mut ctx)
-    .await?;
+.self_pairs()
+.include_equal_pk()
+.annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 ### What the ratio means
@@ -733,14 +733,14 @@ use djogi::query::{PairAreaOverlapRatio, PairClosureKinshipSum};
 
 // One query — kinship + overlap per (left, right) pair.
 let combined: Vec<((Elephant, Elephant), (f64, f64))> = Elephant::objects()
-    .self_pairs()
-    .left_join_closure_pair::<ElephantAncestry>()
-    .annotate(|l, r| (
-        PairClosureKinshipSum::<ElephantAncestry>::new(),
-        PairAreaOverlapRatio::new(l.territory(), r.territory()),
-    ))
-    .fetch_all(&mut ctx)
-    .await?;
+.self_pairs()
+.left_join_closure_pair::<ElephantAncestry>()
+.annotate(|l, r| (
+ PairClosureKinshipSum::<ElephantAncestry>::new(),
+ PairAreaOverlapRatio::new(l.territory(), r.territory()),
+ ))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 The composition requires both slots to share the same `(L, R)` pair
@@ -764,7 +764,7 @@ when an adopter models a per-elephant territory polygon).
 
 ---
 
-## Spatial grouping (Phase 6.5)
+## Spatial grouping ()
 
 Three entry points integrate spatial reasoning with the grouped-aggregation
 surface documented in the [query-aggregation guide](./query-aggregation.md).
@@ -777,10 +777,10 @@ Point-in-polygon JOIN using PostGIS's geography-native `ST_Covers`:
 use djogi::query::spatial_grouping::RegionKey;
 
 let counts: Vec<(RegionKey<Neighborhood>, i64)> = Store::objects()
-    .group_by_region(|f| f.location(), Neighborhood::objects())
-    .annotate(|f| f.id().count_star())
-    .fetch_all(&mut ctx)
-    .await?;
+.group_by_region(|f| f.location(), Neighborhood::objects())
+.annotate(|f| f.id().count_star())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -815,22 +815,22 @@ GiST-index usage on the geography column.
 use djogi::query::spatial_grouping::{ClusterId, ClusterRadius};
 
 let clusters: Vec<(ClusterId, i64)> = Store::objects()
-    .cluster_by_proximity(
-        |f| f.location(),
-        ClusterRadius::meters(5_000.0).min_points(3),
-    )
-    .annotate(|f| f.id().count_star())
-    .fetch_all(&mut ctx)
-    .await?;
+.cluster_by_proximity(
+ |f| f.location(),
+ ClusterRadius::meters(5_000.0).min_points(3),
+ )
+.annotate(|f| f.id().count_star())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
 > ```sql
 > SELECT cluster_id, COUNT(*) AS __djogi_agg_0
 > FROM (
->     SELECT t.*,
->            ST_ClusterDBSCAN(t.location::geometry, $1, $2) OVER () AS cluster_id
->     FROM stores AS t
+> SELECT t.*,
+> ST_ClusterDBSCAN(t.location::geometry, $1, $2) OVER () AS cluster_id
+> FROM stores AS t
 > ) AS t
 > GROUP BY cluster_id
 > ```
@@ -844,7 +844,7 @@ using the equator-circumference identity `(2·π·R_earth)/360` with WGS84
 is DBSCAN's population floor. The unit conversion degrades at high
 latitudes — for production use, tune `min_points` to compensate.
 
-**Why the subquery wrap:** `ST_ClusterDBSCAN(...) OVER () ... GROUP BY
+**Why the subquery wrap:** `ST_ClusterDBSCAN(...) OVER ()... GROUP BY
 cluster_id` is rejected by Postgres with `ERROR: window functions are
 not allowed in GROUP BY`. Djogi materialises the window call in an inner
 subquery so the outer `GROUP BY cluster_id` references a plain column.
@@ -855,10 +855,10 @@ subquery so the outer `GROUP BY cluster_id` references a plain column.
 use djogi::query::spatial_grouping::{GeohashKey, GeohashPrecision};
 
 let buckets: Vec<(GeohashKey, i64)> = Store::objects()
-    .bucket_by_cell(|f| f.location(), GeohashPrecision::P5)
-    .annotate(|f| f.id().count_star())
-    .fetch_all(&mut ctx)
-    .await?;
+.bucket_by_cell(|f| f.location(), GeohashPrecision::P5)
+.annotate(|f| f.id().count_star())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -868,7 +868,7 @@ let buckets: Vec<(GeohashKey, i64)> = Store::objects()
 > GROUP BY geohash
 > ```
 
-`GeohashPrecision::{P1 .. P12}` — each `P` step increases resolution by
+`GeohashPrecision::{P1.. P12}` — each `P` step increases resolution by
 roughly 4×. Approximate cell sizes at the equator: `P5` ≈ 4.9 km,
 `P7` ≈ 150 m, `P9` ≈ 5 m.
 
@@ -885,7 +885,7 @@ regardless of call count.
 
 ---
 
-## `#[djogi_test(extensions = [...])]` (Phase 6.5)
+## `#[djogi_test(extensions = [...])]` ()
 
 The test harness macro accepts an `extensions` array of Postgres
 extension names. Each per-test database runs
@@ -896,9 +896,9 @@ projects the schema from the descriptor — no `raw_ddl`, no setup helper:
 ```rust
 #[djogi::djogi_test(extensions = ["postgis"], sync_models = [Place])]
 async fn within_km_filters_correctly(mut ctx: djogi::DjogiContext) {
-    // postgis is already installed in this per-test database, and the
-    // `places` table has been synced from the Place descriptor.
-    // … run the test …
+ // postgis is already installed in this per-test database, and the
+ // `places` table has been synced from the Place descriptor.
+ // … run the test …
 }
 ```
 
@@ -917,7 +917,7 @@ Multiple extensions can be provisioned together:
 
 ## SRID 4326 lock and the raw-SQL escape hatch
 
-The typed surface is locked to `GEOGRAPHY(Point, 4326)` in Phase 6. This
+The typed surface is locked to `GEOGRAPHY(Point, 4326)` in. This
 covers the overwhelming majority of location-based use cases (WGS-84, the
 coordinate system used by GPS and mapping APIs).
 
@@ -926,7 +926,7 @@ geography — use the raw-SQL escape hatch. The `raw_*` methods live on the
 sealed `djogi::__bypass::RawAccessExt` extension trait, so every call site
 must decorate the enclosing item with
 `#[djogi::deliberately_bypass_convention_with_raw_sql]` and pair it with an
-adjacent `// JUSTIFICATION (djogi#<n>): ...` comment naming the
+adjacent `// JUSTIFICATION (djogi#<n>):...` comment naming the
 typed-surface gap (see [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)).
 
 ```rust
@@ -940,18 +940,18 @@ use djogi::prelude::*;
 // JUSTIFICATION (djogi#234): typed spatial surface is locked to GEOGRAPHY(Point, 4326);
 // custom-SRID GEOMETRY columns and ST_Contains have no QuerySet equivalent.
 async fn parcels_containing(
-    ctx: &mut DjogiContext,
-    lon: f64,
-    lat: f64,
+ ctx: &mut DjogiContext,
+ lon: f64,
+ lat: f64,
 ) -> djogi::Result<Vec<YourRow>> {
-    let rows: Vec<YourRow> = ctx
-        .raw_query(
-            "SELECT id, ST_AsText(boundary) FROM parcels WHERE \
-             ST_Contains(boundary, ST_Point($1, $2)::geometry)",
-            &[&lon, &lat],
-        )
-        .await?;
-    Ok(rows)
+ let rows: Vec<YourRow> = ctx
+.raw_query(
+ "SELECT id, ST_AsText(boundary) FROM parcels WHERE \
+ ST_Contains(boundary, ST_Point($1, $2)::geometry)",
+ &[&lon, &lat],
+ )
+.await?;
+ Ok(rows)
 }
 ```
 
@@ -971,7 +971,7 @@ run `djogi migrations compose --name add_places_location` to write
 the reviewable migration pair under
 `migrations/<database>/<app>/`. The composer emits the geography column
 plus the GiST index in the correct transactional / non-transactional
-segments — you do not hand-write `ALTER TABLE ... ADD COLUMN GEOGRAPHY` or
+segments — you do not hand-write `ALTER TABLE... ADD COLUMN GEOGRAPHY` or
 `CREATE INDEX CONCURRENTLY`. Operators apply through the shipped CLI —
 `djogi migrations apply` (with `--fake` / `--reason` for existing-database
 adoption), `rollback`, `baseline`, `verify`, and `repair` — and library
@@ -995,9 +995,9 @@ e.g. `places_location_gix`.
 The spatial GiST index emitted by `#[model(...)]` sets:
 
 - `requires_out_of_transaction = true` — the runner places this index into a
-  `CREATE INDEX CONCURRENTLY` step that runs outside any transaction.
+ `CREATE INDEX CONCURRENTLY` step that runs outside any transaction.
 - `extension_dependency = Some("postgis")` — the runner verifies the
-  extension is installed before emitting the index DDL.
+ extension is installed before emitting the index DDL.
 
 These fields live on `IndexSpec` in `ModelDescriptor::indexes`. The
 `MigrationShape` contract helper (used in tests) validates that the descriptor
@@ -1017,11 +1017,11 @@ use djogi::prelude::*;
 
 #[djogi::djogi_test(extensions = ["postgis"], sync_models = [Place])]
 async fn within_km_filters_correctly(mut ctx: DjogiContext) {
-    let sfo = GeoPoint::new(37.6189, -122.3750).unwrap();
-    let oak = GeoPoint::new(37.7213, -122.2207).unwrap();  // ~20 km from SFO
-    let jfk = GeoPoint::new(40.6413, -73.7781).unwrap();   // ~4151 km from SFO
+ let sfo = GeoPoint::new(37.6189, -122.3750).unwrap();
+ let oak = GeoPoint::new(37.7213, -122.2207).unwrap(); // ~20 km from SFO
+ let jfk = GeoPoint::new(40.6413, -73.7781).unwrap(); // ~4151 km from SFO
 
-    // ... create, filter, assert ...
+ //... create, filter, assert...
 }
 ```
 
@@ -1035,27 +1035,27 @@ the canonical reference for this pattern.
 The following are candidates for a future spatial phase — not committed:
 
 - **Arbitrary SRIDs** — `GeoPoint<const SRID: u32>` generalization. Non-4326
-  work still goes through raw SQL today (see the escape-hatch section above).
-- **KNN optimization** — `ST_DWithin` index hints, `ORDER BY ... <->`
-  operator for index-accelerated nearest-neighbor queries.
+ work still goes through raw SQL today (see the escape-hatch section above).
+- **KNN optimization** — `ST_DWithin` index hints, `ORDER BY... <->`
+ operator for index-accelerated nearest-neighbor queries.
 - **Raster and topology types** — `RASTER`, PostGIS topology, `pgRouting`
-  integration. Out of scope for the typed surface.
+ integration. Out of scope for the typed surface.
 - **Migration execution for spatial changes** — the descriptor-driven
-  composer already emits the geography column and the
-  `CREATE INDEX CONCURRENTLY` segment from `IndexSpec` metadata
-  (`requires_out_of_transaction`, `extension_dependency`); apply, rollback,
-  baseline, verify, and repair all ship on the CLI and drive the same library
-  entry points without changing the emitted DDL.
+ composer already emits the geography column and the
+ `CREATE INDEX CONCURRENTLY` segment from `IndexSpec` metadata
+ (`requires_out_of_transaction`, `extension_dependency`); apply, rollback,
+ baseline, verify, and repair all ship on the CLI and drive the same library
+ entry points without changing the emitted DDL.
 
-Shipped in Phase 6.5 (previously deferred):
+Shipped in (previously deferred):
 
 - Non-point geometries — `LineString`, `Polygon`, `MultiPoint`,
-  `MultiLineString`, `MultiPolygon`.
+ `MultiLineString`, `MultiPolygon`.
 - Shape predicates — `ST_Contains`, `ST_Intersects`, `ST_Touches`,
-  `ST_Within` typed on any `GeographyValue`.
+ `ST_Within` typed on any `GeographyValue`.
 - Bounding-box operators — `bounded_by` using `&&` under GiST.
 - Spatial aggregation — `group_by_region` / `count_by_region`,
-  `cluster_by_proximity`, `bucket_by_cell`.
+ `cluster_by_proximity`, `bucket_by_cell`.
 - `#[djogi_test(extensions = [...])]` extension auto-provisioning.
 
 ---
@@ -1064,6 +1064,6 @@ Shipped in Phase 6.5 (previously deferred):
 
 - [Queries guide](./queries.md) — `QuerySet`, filter closures, ordering
 - [Expressions guide](./expressions.md) — `Expr<T>` substrate that spatial
-  predicates extend
+ predicates extend
 - [Transactions guide](./transactions.md) — `atomic()` and `DjogiContext` for
-  combining spatial writes with other operations
+ combining spatial writes with other operations

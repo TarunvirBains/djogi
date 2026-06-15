@@ -15,31 +15,31 @@ use djogi::prelude::*;
 #[model(table = "users_multi_attr_merge", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct User {
-    // Two attrs, disjoint scope sets — should merge into {public, admin}.
-    #[field(expose(public))]
-    #[field(expose(admin))]
-    pub display_name: String,
+ // Two attrs, disjoint scope sets — should merge into {public, admin}.
+ #[field(expose(public))]
+ #[field(expose(admin))]
+ pub display_name: String,
 
-    // Three attrs, disjoint scopes across scalar forms.
-    #[field(expose(public))]
-    #[field(expose(self_view))]
-    #[field(expose(export))]
-    pub email: String,
+ // Three attrs, disjoint scopes across scalar forms.
+ #[field(expose(public))]
+ #[field(expose(self_view))]
+ #[field(expose(export))]
+ pub email: String,
 }
 
 fn main() {
-    // Round-trip the generated scalar-only projection through the
-    // emitted `From<&User>` impl to confirm codegen observed the merged
-    // scope set (display_name appears in both UserPublic and UserAdmin).
-    let u = User {
-        id: HeerId::from_i64(1).expect("valid heerid"),
-        created_at: ::djogi::DateTime::UNIX_EPOCH,
-        updated_at: ::djogi::DateTime::UNIX_EPOCH,
-        display_name: "alice".into(),
-        email: "a@b.c".into(),
-    };
-    let _: UserPublic = (&u).into();
-    let _: UserAdmin = (&u).into();
-    let _: UserSelfView = (&u).into();
-    let _: UserExport = (&u).into();
+ // Round-trip the generated scalar-only projection through the
+ // emitted `From<&User>` impl to confirm codegen observed the merged
+ // scope set (display_name appears in both UserPublic and UserAdmin).
+ let u = User {
+  id: HeerId::from_i64(1).expect("valid heerid"),
+  created_at: ::djogi::DateTime::UNIX_EPOCH,
+  updated_at: ::djogi::DateTime::UNIX_EPOCH,
+  display_name: "alice".into(),
+  email: "a@b.c".into(),
+ };
+ let _: UserPublic = (&u).into();
+ let _: UserAdmin = (&u).into();
+ let _: UserSelfView = (&u).into();
+ let _: UserExport = (&u).into();
 }

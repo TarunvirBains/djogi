@@ -37,10 +37,10 @@ For partial-apply handling, Flyway is the only system that records a `success=fa
 ```rust
 // prisma-engines-reference/schema-engine/connectors/schema-connector/src/checksum.rs:43-48
 fn compute_checksum(script: &str) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(script);
-    hasher.finalize().into()
+  use sha2::{Digest, Sha256};
+  let mut hasher = Sha256::new();
+  hasher.update(script);
+  hasher.finalize().into()
 }
 ```
 
@@ -61,19 +61,19 @@ Why SHA-256? No source-level rationale is given. The `sha2` crate is a well-audi
 ```java
 // flyway-reference/flyway-core/src/main/java/org/flywaydb/core/internal/resolver/ChecksumCalculator.java:64-87
 private static int calculateChecksumForResource(LoadableResource resource) {
-    final CRC32 crc32 = new CRC32();
-    BufferedReader bufferedReader = null;
-    try {
-        bufferedReader = new BufferedReader(resource.read(), 4096);
-        String line = bufferedReader.readLine();
-        if (line != null) {
-            line = BomFilter.FilterBomFromString(line);
-            do {
-                crc32.update(line.getBytes(StandardCharsets.UTF_8));
-            } while ((line = bufferedReader.readLine()) != null);
-        }
-    } catch (IOException e) { ... }
-    return (int) crc32.getValue();
+  final CRC32 crc32 = new CRC32();
+  BufferedReader bufferedReader = null;
+  try {
+    bufferedReader = new BufferedReader(resource.read(), 4096);
+    String line = bufferedReader.readLine();
+    if (line != null) {
+      line = BomFilter.FilterBomFromString(line);
+      do {
+        crc32.update(line.getBytes(StandardCharsets.UTF_8));
+      } while ((line = bufferedReader.readLine()) != null);
+    }
+  } catch (IOException e) {... }
+  return (int) crc32.getValue();
 }
 ```
 
@@ -90,9 +90,9 @@ Liquibase also historically used an MD5-based scheme but wraps it in a version p
 ```rust
 // refinery-reference/refinery_core/src/runner.rs:92-96
 let mut hasher = SipHasher13::new();
-name.hash(&mut hasher);    // migration name string
+name.hash(&mut hasher);  // migration name string
 version.hash(&mut hasher); // migration version integer
-sql.hash(&mut hasher);     // full SQL content as &str
+sql.hash(&mut hasher);   // full SQL content as &str
 let checksum = hasher.finish(); // u64
 ```
 
@@ -111,11 +111,11 @@ A critical weakness: SipHash-1-3 hashes the raw `&str` bytes without line-ending
 ```java
 // liquibase-reference/liquibase-standard/src/main/java/liquibase/change/CheckSum.java:85-91
 public static CheckSum compute(String valueToChecksum) {
-    return new CheckSum(MD5Util.computeMD5(
-        StringUtil.standardizeLineEndings(valueToChecksum) // normalizes \r\n -> \n
-            .replaceAll("�", "")                      // strips Unicode replacement char
-            // ... NFC normalization
-    ), Scope.getCurrentScope().getChecksumVersion().getVersion());
+  return new CheckSum(MD5Util.computeMD5(
+    StringUtil.standardizeLineEndings(valueToChecksum) // normalizes \r\n -> \n
+     .replaceAll("�", "")           // strips Unicode replacement char
+      //... NFC normalization
+  ), Scope.getCurrentScope().getChecksumVersion().getVersion());
 }
 ```
 
@@ -262,10 +262,10 @@ For any applied migration whose source file has vanished from disk (state `MISSI
 ```java
 // JdbcTableSchemaHistory.java:372-399
 jdbcTemplate.update(
-    database.getInsertStatement(table),
-    calculateInstalledRank(appliedMigration.getType()),
-    versionObj, appliedMigration.getDescription(), "DELETE", appliedMigration.getScript(),
-    checksumObj, database.getInstalledBy(), 0, appliedMigration.isSuccess());
+  database.getInsertStatement(table),
+  calculateInstalledRank(appliedMigration.getType()),
+  versionObj, appliedMigration.getDescription(), "DELETE", appliedMigration.getScript(),
+  checksumObj, database.getInstalledBy(), 0, appliedMigration.isSuccess());
 ```
 
 Confidence: **high** — read from `JdbcTableSchemaHistory.java:372-399`. The ledger is append-only for non-failed rows. Tombstones are written rather than rows mutated.
@@ -397,10 +397,10 @@ Confidence: **high** — read from `executor.py:241-413`, `migrate.py:52-65`.
 ```rust
 // refinery-reference/refinery_core/src/runner.rs:44-50
 pub enum Target {
-    Latest,
-    Version(u32),
-    Fake,
-    FakeVersion(u32),
+  Latest,
+  Version(u32),
+  Fake,
+  FakeVersion(u32),
 }
 ```
 
@@ -442,7 +442,7 @@ Two distinct paths based on whether the migration was transactional:
 
 ```java
 schemaHistory.addAppliedMigration(migration.getVersion(), migration.getDescription(),
-    migration.getType(), migration.getScript(), migration.getChecksum(), executionTime, false);
+  migration.getType(), migration.getScript(), migration.getChecksum(), executionTime, false);
 ```
 
 The `success=false` row is what makes `repair` useful: `DbRepair.removeFailedMigrations` targets exactly `WHERE success = FALSE`. The user must call `repair` before re-running.
@@ -457,8 +457,8 @@ Prisma records partial progress via `applied_steps_count` in `_prisma_migrations
 
 ```rust
 .set(
-    "applied_steps_count",
-    Expression::from(Column::from("applied_steps_count")) + Expression::from(1),
+  "applied_steps_count",
+  Expression::from(Column::from("applied_steps_count")) + Expression::from(1),
 )
 ```
 

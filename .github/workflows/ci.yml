@@ -1,458 +1,458 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+ push:
+ branches: [main]
+ pull_request:
+ branches: [main]
 
 env:
-  CARGO_TERM_COLOR: always
-  DATABASE_URL: postgres://djogi:djogi@localhost:5432/djogi_test
-  # Required by the `presentation_codec` integration test binary, which links
-  # `UserWithHmac` — a model whose `HmacSha256HexString` codec calls
-  # `validate_startup()` and checks this env var before any pool can open.
-  # This is the conventional 64-lowercase-hex-char test key documented in
-  # `tests/integration/presentation_codec.rs`; it is not a production secret.
-  DJOGI_PRESENTATION_HMAC_KEY: aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899
+ CARGO_TERM_COLOR: always
+ DATABASE_URL: postgres://djogi:djogi@localhost:5432/djogi_test
+ # Required by the `presentation_codec` integration test binary, which links
+ # `UserWithHmac` — a model whose `HmacSha256HexString` codec calls
+ # `validate_startup()` and checks this env var before any pool can open.
+ # This is the conventional 64-lowercase-hex-char test key documented in
+ # `tests/integration/presentation_codec.rs`; it is not a production secret.
+ DJOGI_PRESENTATION_HMAC_KEY: aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899
 
 # dorny/paths-filter needs pull-requests:read to call GitHub's listFiles API.
 # Without this, fork/contributor PRs (and first-party PRs under default-
 # restricted GITHUB_TOKEN) fail with "Resource not accessible by integration".
 permissions:
-  contents: read
-  pull-requests: read
+ contents: read
+ pull-requests: read
 
 jobs:
-  check:
-    name: Check
-    runs-on: ubuntu-latest
+ check:
+ name: Check
+ runs-on: ubuntu-latest
 
-    steps:
-      - uses: actions/checkout@v6
+ steps:
+  - uses: actions/checkout@v6
 
-      # Ubuntu-latest GHA runners ship with ~14GB of free disk. The growing
-      # workspace test footprint pushed past that ceiling — many
-      # `#[djogi_test]`s (each provisioning a per-test Postgres DB) + the
-      # integration test suite fill the disk partway into
-      # `cargo test --workspace`. The runner dies with "No space left on
-      # device" before it can finish or emit useful logs. Freeing ~30GB of
-      # preinstalled tooling Djogi doesn't need (dotnet, Haskell, hosted
-      # toolcache) restores headroom for the full test surface. Cheap enough
-      # (~10s) to keep in every run rather than gate.
-      #
-      # Note: the macro-fixture gate is lihaaf, which builds one shared
-      # dylib and dispatches per-fixture rustc invocations — its disk
-      # footprint is bounded by the dylib plus a transient per-fixture
-      # work directory. Disk pressure is primarily from integration tests
-      # + Postgres.
-      #
-      # Skipped under `act` (local CI emulation): act bind-mounts the
-      # hostedtoolcache from the runner image (read-only), so the rm
-      # call fails with "Device or resource busy", and disk pressure
-      # is not a concern locally. `env.ACT` is set automatically by act.
-      - name: Free disk space on GHA runner
-        if: ${{ !env.ACT }}
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/local/share/boost
-          df -h /
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          # rust-src is required to keep lihaaf compile-fail snapshot bytes
-          # stable between CI and local dev. When rust-src is installed,
-          # rustc inlines stdlib source excerpts in error output (e.g.
-          # `$RUST/lib/rustlib/src/rust/library/alloc/src/string.rs:353:1`);
-          # without it, those lines are absent and committed `.stderr`
-          # snapshots that reference `$RUST` diverge. Removing rust-src from
-          # CI would invalidate the committed lihaaf snapshots under
-          # `djogi-macros/tests/compile_fail/` and
-          # `djogi/tests/compile_fail/`.
-          components: clippy, rustfmt, rust-src
-
-      # Two-cache layout: registry/git share across jobs (same Cargo.lock
-      # → same .crate downloads), but `target/` is isolated per job because
-      # different feature sets produce incompatible incremental artifacts.
-      # Sharing a `target/` would force one job's cache to evict the other's,
-      # doubling cache misses. Splitting only the build output keeps the
-      # 10 GB repo cache budget healthy.
-      - name: Cache cargo registry/git (shared)
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
-
-      - name: Cache cargo target (check)
-        uses: actions/cache@v5
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-check-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-target-check-
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Raw SQL bypass justifications
-        run: cargo xtask check-justifications
-
-      - name: Test surface policy
-        run: cargo xtask check-test-surface
-
-      - name: Spatial CI manifest policy
-        run: cargo xtask check-spatial-ci
-
-      # Secret-hygiene preflight — flags obvious credential-shaped strings
-      # (URLs with embedded `user:pass`, well-known secret env-var
-      # assignments, PEM private-key headers). Intentional CI / dev fixtures
-      # are allowlisted via in-repo `djogi-allow-secret:` markers. See
-      # `docs/guide/secrets-hygiene.md` for the suppression mechanism.
-      - name: Secret-hygiene preflight
-        run: cargo xtask check-secrets
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --features spatial,outbox,notify,testing,hmac-codec -- -D warnings
-
-      # cargo-deny only runs when dependencies actually change. The license
-      # / advisory check is deterministic given the lockfile, so re-running
-      # it on every PR that touches only Rust sources or docs is waste.
-      # Path filter scopes execution to PRs that modify a Cargo.toml /
-      # Cargo.lock / deny.toml — i.e. where the policy could change.
-      #
-      # Skipped under act: `dorny/paths-filter` calls `git branch
-      # --show-current` against the runner workspace, which act
-      # populates via `docker cp` (no git history). The cargo-deny
-      # step below treats `env.ACT == true` as "always run" so local
-      # vetting still gets the license/advisory check.
-      - name: Detect dependency changes
-        id: dep-changes
-        if: ${{ !env.ACT }}
-        uses: dorny/paths-filter@v4.0.1
-        with:
-          filters: |
-            deps:
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '**/Cargo.toml'
-              - 'deny.toml'
-
-      - name: cargo-deny (license + advisory check)
-        if: ${{ env.ACT || steps.dep-changes.outputs.deps == 'true' }}
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    needs: [check]
-
-    services:
-      postgres:
-        # Use the same PostGIS-backed Postgres image as the spatial lane so
-        # extension availability does not drift between local dev, default CI,
-        # and all-features CI. Individual tests still create extensions per
-        # database through `#[djogi_test(extensions = [...])]` or migration
-        # bootstrap; image availability is not database installation.
-        image: postgis/postgis:18-3.6
-        env:
-          POSTGRES_USER: djogi
-          # djogi-allow-secret: GHA service-container fixture; this Postgres
-          # binds only to the runner-local network, never to the public
-          # internet, and is destroyed at job end.
-          POSTGRES_PASSWORD: djogi
-          POSTGRES_DB: djogi_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U djogi"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 10
-
-    steps:
-      - uses: actions/checkout@v6
-
-      # Ubuntu-latest GHA runners ship with ~14GB of free disk. The growing
-      # workspace test footprint pushed past that ceiling — many
-      # `#[djogi_test]`s (each provisioning a per-test Postgres DB) + the
-      # integration test suite fill the disk partway into
-      # `cargo test --workspace`. The runner dies with "No space left on
-      # device" before it can finish or emit useful logs. Freeing ~30GB of
-      # preinstalled tooling Djogi doesn't need (dotnet, Haskell, hosted
-      # toolcache) restores headroom for the full test surface. Cheap enough
-      # (~10s) to keep in every run rather than gate.
-      #
-      # Note: the macro-fixture gate is lihaaf, which builds one shared
-      # dylib and dispatches per-fixture rustc invocations — its disk
-      # footprint is bounded by the dylib plus a transient per-fixture
-      # work directory. Disk pressure is primarily from integration tests
-      # + Postgres.
-      #
-      # Skipped under `act` (local CI emulation): act bind-mounts the
-      # hostedtoolcache from the runner image (read-only), so the rm
-      # call fails with "Device or resource busy", and disk pressure
-      # is not a concern locally. `env.ACT` is set automatically by act.
-      - name: Free disk space on GHA runner
-        if: ${{ !env.ACT }}
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/local/share/boost
-          df -h /
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          # rust-src is required to keep lihaaf compile-fail snapshot bytes
-          # stable between CI and local dev. When rust-src is installed,
-          # rustc inlines stdlib source excerpts in error output (e.g.
-          # `$RUST/lib/rustlib/src/rust/library/alloc/src/string.rs:353:1`);
-          # without it, those lines are absent and committed `.stderr`
-          # snapshots that reference `$RUST` diverge. Removing rust-src from
-          # CI would invalidate the committed lihaaf snapshots under
-          # `djogi-macros/tests/compile_fail/` and
-          # `djogi/tests/compile_fail/`.
-          components: rustfmt, rust-src
-
-      # Two-cache layout: registry/git share across jobs (same Cargo.lock
-      # → same .crate downloads), but `target/` is isolated per job because
-      # different feature sets produce incompatible incremental artifacts.
-      # Sharing a `target/` would force one job's cache to evict the other's,
-      # doubling cache misses. Splitting only the build output keeps the
-      # 10 GB repo cache budget healthy.
-      - name: Cache cargo registry/git (shared)
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
-
-      - name: Cache cargo target (test)
-        uses: actions/cache@v5
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-target-test-
-
-      # Install lihaaf, the sole compile-fixture CI gate for djogi (both
-      # macro fixtures in djogi-macros and the raw-SQL bypass fixtures in
-      # djogi). Pinned to the same version used to bless the committed
-      # `.stderr` snapshots under `djogi-macros/tests/compile_fail/` and
-      # `djogi/tests/compile_fail/`. Bump this pin when upgrading lihaaf
-      # and re-blessing snapshots locally.
-      #
-      # `--locked` ensures the install uses the exact dependency versions
-      # in lihaaf's published Cargo.lock rather than resolving fresh; this
-      # makes the install deterministic across CI runs.
-      - name: Install lihaaf (compile-fixture CI gate)
-        run: cargo install lihaaf --version 0.1.2 --locked
-
-      - name: Build
-        run: cargo build --workspace
-
-      # Macro-fixture gate — currently 323 proc-macro fixtures using
-      # lihaaf's build-once-dylib + per-fixture-rustc model:
-      #   • default suite: 318 fixtures (116 compile_pass + 202 compile_fail)
-      #   • named suites:    4 compile_pass_spatial, 1 compile_pass_network
-      #   • djogi is built once as a dylib per session
-      #   • per-fixture rustc invocations are parallel (-j 2 on 2-vCPU GHA)
-      #
-      # Committed `.stderr` snapshots mean `--bless` is never needed here.
-      # If this step fails with `SNAPSHOT_DIFF`, re-bless locally:
-      #   cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
-      #     --filter compile_fail --bless -j 4
-      # then commit the updated `.stderr` files alongside the macro change.
-      - name: Macro fixture gate (lihaaf, djogi-macros)
-        run: cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 2
-
-      # Raw-SQL bypass compile-fail gate — currently 42 fixtures pinning
-      # the `pool()` / `conn()` / `with_client` / `raw_*` private/extension-
-      # trait-gated APIs on `DjogiContext` and `DjogiPool`:
-      #   • default suite: 39 compile_fail fixtures
-      #   • named suite:    3 compile_fail_spatial fixtures
-      # Same dylib + per-fixture rustc shape as the macro gate; lihaaf
-      # reuses the djogi dylib it just built.
-      - name: Raw-SQL bypass gate (lihaaf, djogi)
-        run: cargo lihaaf --manifest-path djogi/Cargo.toml -j 2
-
-      - name: Test
-        # Excluding `elephant-tracker` here is load-bearing. Its
-        # `Cargo.toml` activates djogi's `spatial` + `outbox` features,
-        # and under cargo's resolver-2 workspace feature unification a
-        # `cargo test --workspace` would cascade those activations onto
-        # djogi globally. That would mix the default-features lane with
-        # the all-features spatial lane and bypass the manifest contract
-        # in `tests/spatial-ci-tests.txt`. The Spatial (PostGIS) job below
-        # runs those tests intentionally with `--all-features`; here we
-        # keep elephant-tracker out of the unified feature graph so the
-        # default-features sweep stays default-features. The Build step
-        # above still covers `--workspace`. Tracked in issue #80.
-        run: cargo test --workspace --exclude elephant-tracker -- --test-threads=1
-
-      - name: Cache modifier
-        # This target pins SQL-shape parity through djogi's test-only SQL
-        # renderer, so Cargo skips it in the default-feature workspace sweep.
-        run: cargo test -p djogi --features testing --test cache_modifier -- --test-threads=1
-
-      - name: Raw SQL bypass pin tests
-        run: >
-          cargo test -p djogi --features testing
-          --test raw_execute_pin
-          --test raw_query_pin
-          --test raw_rows_pin
-          --test raw_fetch_one_pin
-          --test raw_scalar_pin
-          --test raw_ddl_pin
-          --test raw_ddl_begin_atomic_pin
-          --test raw_stream_pin
-          --test raw_stream_with_fetch_size_pin
-          --test raw_pool_access_pin
-          -- --test-threads=1
-
-      - name: Presentation codec HMAC feature gate
-        # `presentation_codec` always runs in the workspace default-feature lane,
-        # but HMAC-specific assertions are gated behind `feature = "hmac-codec"`.
-        # Run the target once with that feature enabled so keyed-codec startup
-        # and round-trip behavior stay covered in CI.
-        run: cargo test -p djogi --features hmac-codec --test presentation_codec -- --test-threads=1
-
-  # MSRV gate — verifies the code still compiles on the toolchain
-  # declared in `workspace.package.rust-version`. The main `check`
-  # job runs on `@stable` so new clippy lints surface proactively
-  # as the toolchain advances; this separate job pins to the
-  # adopter-contract minimum so a stray `extract_if` (or any other
-  # post-MSRV stdlib API) lights up here before it lands. No tests
-  # run — test-deps drift higher than the library itself, and the
-  # contract is "library code compiles on MSRV", not "test stack
-  # works on MSRV". Default features only; spatial users have their
-  # own feature-specific MSRV expectation.
-  msrv:
-    name: MSRV (Rust 1.95)
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install MSRV toolchain (matches workspace.package.rust-version)
-        uses: dtolnay/rust-toolchain@1.95.0
-
-      - name: Cache cargo registry/git/target (MSRV)
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-msrv-
-
-      - name: cargo check (default features)
-        run: cargo check --workspace
-
-  # Spatial / PostGIS coverage — runs every test listed in
-  # `tests/spatial-ci-tests.txt` with `--all-features`. The default
-  # `test` job above uses the same PostGIS-backed service image, but
-  # it intentionally runs default features only; tests with
-  # `required-features = ["spatial"]` do not execute there, and mixed
-  # tests with `#[cfg(feature = "spatial")]` compile out their spatial
-  # scenarios. `cargo xtask check-spatial-ci` keeps this manifest in
-  # sync with Cargo test metadata and included source files.
+  # Ubuntu-latest GHA runners ship with ~14GB of free disk. The growing
+  # workspace test footprint pushed past that ceiling — many
+  # `#[djogi_test]`s (each provisioning a per-test Postgres DB) + the
+  # integration test suite fill the disk partway into
+  # `cargo test --workspace`. The runner dies with "No space left on
+  # device" before it can finish or emit useful logs. Freeing ~30GB of
+  # preinstalled tooling Djogi doesn't need (dotnet, Haskell, hosted
+  # toolcache) restores headroom for the full test surface. Cheap enough
+  # (~10s) to keep in every run rather than gate.
   #
-  # Kept as a separate job rather than a feature toggle inside `test`
-  # so all-features spatial runtime coverage remains explicit and easy
-  # to attribute.
-  spatial:
-    name: Spatial (PostGIS)
-    runs-on: ubuntu-latest
+  # Note: the macro-fixture gate is lihaaf, which builds one shared
+  # dylib and dispatches per-fixture rustc invocations — its disk
+  # footprint is bounded by the dylib plus a transient per-fixture
+  # work directory. Disk pressure is primarily from integration tests
+  # + Postgres.
+  #
+  # Skipped under `act` (local CI emulation): act bind-mounts the
+  # hostedtoolcache from the runner image (read-only), so the rm
+  # call fails with "Device or resource busy", and disk pressure
+  # is not a concern locally. `env.ACT` is set automatically by act.
+  - name: Free disk space on GHA runner
+  if: ${{ !env.ACT }}
+  run: |
+   sudo rm -rf /usr/share/dotnet
+   sudo rm -rf /opt/ghc
+   sudo rm -rf /opt/hostedtoolcache
+   sudo rm -rf /usr/local/lib/android
+   sudo rm -rf /usr/local/share/boost
+   df -h /
 
-    services:
-      postgres:
-        # `postgis/postgis` provides Postgres + PostGIS preinstalled.
-        # The `:18-3.6` tag pins to Postgres 18 (Djogi's supported
-        # version) with PostGIS 3.6. The image is officially maintained
-        # by the PostGIS team and is the standard choice for CI. The
-        # `:18-3.5` tag is not published; the upstream image registry
-        # ships PostGIS 3.5 against Postgres 17 and PostGIS 3.6
-        # against Postgres 18.
-        image: postgis/postgis:18-3.6
-        env:
-          POSTGRES_USER: djogi
-          # djogi-allow-secret: GHA service-container fixture; identical
-          # to the `test` job above. See that rationale.
-          POSTGRES_PASSWORD: djogi
-          POSTGRES_DB: djogi_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U djogi"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 10
+  - name: Install Rust toolchain
+  uses: dtolnay/rust-toolchain@stable
+  with:
+   # rust-src is required to keep lihaaf compile-fail snapshot bytes
+   # stable between CI and local dev. When rust-src is installed,
+   # rustc inlines stdlib source excerpts in error output (e.g.
+   # `$RUST/lib/rustlib/src/rust/library/alloc/src/string.rs:353:1`);
+   # without it, those lines are absent and committed `.stderr`
+   # snapshots that reference `$RUST` diverge. Removing rust-src from
+   # CI would invalidate the committed lihaaf snapshots under
+   # `djogi-macros/tests/compile_fail/` and
+   # `djogi/tests/compile_fail/`.
+   components: clippy, rustfmt, rust-src
 
-    env:
-      DATABASE_URL: postgres://djogi:djogi@localhost:5432/djogi_test
+  # Two-cache layout: registry/git share across jobs (same Cargo.lock
+  # → same.crate downloads), but `target/` is isolated per job because
+  # different feature sets produce incompatible incremental artifacts.
+  # Sharing a `target/` would force one job's cache to evict the other's,
+  # doubling cache misses. Splitting only the build output keeps the
+  # 10 GB repo cache budget healthy.
+  - name: Cache cargo registry/git (shared)
+  uses: actions/cache@v5
+  with:
+   path: |
+   ~/.cargo/registry
+   ~/.cargo/git
+   key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+   restore-keys: ${{ runner.os }}-cargo-
 
-    steps:
-      - uses: actions/checkout@v6
+  - name: Cache cargo target (check)
+  uses: actions/cache@v5
+  with:
+   path: target
+   key: ${{ runner.os }}-cargo-target-check-${{ hashFiles('**/Cargo.lock') }}
+   restore-keys: ${{ runner.os }}-cargo-target-check-
 
-      - name: Free disk space on GHA runner
-        if: ${{ !env.ACT }}
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/local/share/boost
-          df -h /
+  - name: Check formatting
+  run: cargo fmt --all -- --check
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt, rust-src
+  - name: Raw SQL bypass justifications
+  run: cargo xtask check-justifications
 
-      # Two-cache layout: registry/git share with the `check` and
-      # `test` jobs (same Cargo.lock → same .crate downloads), but
-      # `target/` is isolated per feature set — `check` runs a clippy
-      # build, `test` builds with default features, and `spatial`
-      # builds with `--all-features`. Sharing a `target/` would force
-      # one job's incremental artifacts to evict the other's, doubling
-      # cache misses. Splitting only the build output keeps the 10 GB
-      # repo cache budget healthy.
-      - name: Cache cargo registry/git (shared with check/test jobs)
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+  - name: Test surface policy
+  run: cargo xtask check-test-surface
 
-      - name: Cache cargo target (spatial feature set)
-        uses: actions/cache@v5
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-spatial-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-target-spatial-
+  - name: Spatial CI manifest policy
+  run: cargo xtask check-spatial-ci
 
-      - name: Spatial manifest tests
-        run: |
-          while IFS= read -r test_name; do
-            case "$test_name" in
-              ""|\#*) continue ;;
-            esac
-            echo "::group::cargo test -p djogi --test ${test_name} --all-features"
-            cargo test -p djogi --test "$test_name" --all-features -- --test-threads=1
-            echo "::endgroup::"
-          done < tests/spatial-ci-tests.txt
+  # Secret-hygiene preflight — flags obvious credential-shaped strings
+  # (URLs with embedded `user:pass`, well-known secret env-var
+  # assignments, PEM private-key headers). Intentional CI / dev fixtures
+  # are allowlisted via in-repo `djogi-allow-secret:` markers. See
+  # `docs/guide/secrets-hygiene.md` for the suppression mechanism.
+  - name: Secret-hygiene preflight
+  run: cargo xtask check-secrets
+
+  - name: Clippy
+  run: cargo clippy --workspace --all-targets --features spatial,outbox,notify,testing,hmac-codec -- -D warnings
+
+  # cargo-deny only runs when dependencies actually change. The license
+  # / advisory check is deterministic given the lockfile, so re-running
+  # it on every PR that touches only Rust sources or docs is waste.
+  # Path filter scopes execution to PRs that modify a Cargo.toml /
+  # Cargo.lock / deny.toml — i.e. where the policy could change.
+  #
+  # Skipped under act: `dorny/paths-filter` calls `git branch
+  # --show-current` against the runner workspace, which act
+  # populates via `docker cp` (no git history). The cargo-deny
+  # step below treats `env.ACT == true` as "always run" so local
+  # vetting still gets the license/advisory check.
+  - name: Detect dependency changes
+  id: dep-changes
+  if: ${{ !env.ACT }}
+  uses: dorny/paths-filter@v4.0.1
+  with:
+   filters: |
+   deps:
+    - 'Cargo.toml'
+    - 'Cargo.lock'
+    - '**/Cargo.toml'
+    - 'deny.toml'
+
+  - name: cargo-deny (license + advisory check)
+  if: ${{ env.ACT || steps.dep-changes.outputs.deps == 'true' }}
+  uses: EmbarkStudios/cargo-deny-action@v2
+  with:
+   command: check
+
+ test:
+ name: Test
+ runs-on: ubuntu-latest
+ needs: [check]
+
+ services:
+  postgres:
+  # Use the same PostGIS-backed Postgres image as the spatial lane so
+  # extension availability does not drift between local dev, default CI,
+  # and all-features CI. Individual tests still create extensions per
+  # database through `#[djogi_test(extensions = [...])]` or migration
+  # bootstrap; image availability is not database installation.
+  image: postgis/postgis:18-3.6
+  env:
+   POSTGRES_USER: djogi
+   # djogi-allow-secret: GHA service-container fixture; this Postgres
+   # binds only to the runner-local network, never to the public
+   # internet, and is destroyed at job end.
+   POSTGRES_PASSWORD: djogi
+   POSTGRES_DB: djogi_test
+  ports:
+   - 5432:5432
+  options: >-
+   --health-cmd "pg_isready -U djogi"
+   --health-interval 2s
+   --health-timeout 5s
+   --health-retries 10
+
+ steps:
+  - uses: actions/checkout@v6
+
+  # Ubuntu-latest GHA runners ship with ~14GB of free disk. The growing
+  # workspace test footprint pushed past that ceiling — many
+  # `#[djogi_test]`s (each provisioning a per-test Postgres DB) + the
+  # integration test suite fill the disk partway into
+  # `cargo test --workspace`. The runner dies with "No space left on
+  # device" before it can finish or emit useful logs. Freeing ~30GB of
+  # preinstalled tooling Djogi doesn't need (dotnet, Haskell, hosted
+  # toolcache) restores headroom for the full test surface. Cheap enough
+  # (~10s) to keep in every run rather than gate.
+  #
+  # Note: the macro-fixture gate is lihaaf, which builds one shared
+  # dylib and dispatches per-fixture rustc invocations — its disk
+  # footprint is bounded by the dylib plus a transient per-fixture
+  # work directory. Disk pressure is primarily from integration tests
+  # + Postgres.
+  #
+  # Skipped under `act` (local CI emulation): act bind-mounts the
+  # hostedtoolcache from the runner image (read-only), so the rm
+  # call fails with "Device or resource busy", and disk pressure
+  # is not a concern locally. `env.ACT` is set automatically by act.
+  - name: Free disk space on GHA runner
+  if: ${{ !env.ACT }}
+  run: |
+   sudo rm -rf /usr/share/dotnet
+   sudo rm -rf /opt/ghc
+   sudo rm -rf /opt/hostedtoolcache
+   sudo rm -rf /usr/local/lib/android
+   sudo rm -rf /usr/local/share/boost
+   df -h /
+
+  - name: Install Rust toolchain
+  uses: dtolnay/rust-toolchain@stable
+  with:
+   # rust-src is required to keep lihaaf compile-fail snapshot bytes
+   # stable between CI and local dev. When rust-src is installed,
+   # rustc inlines stdlib source excerpts in error output (e.g.
+   # `$RUST/lib/rustlib/src/rust/library/alloc/src/string.rs:353:1`);
+   # without it, those lines are absent and committed `.stderr`
+   # snapshots that reference `$RUST` diverge. Removing rust-src from
+   # CI would invalidate the committed lihaaf snapshots under
+   # `djogi-macros/tests/compile_fail/` and
+   # `djogi/tests/compile_fail/`.
+   components: rustfmt, rust-src
+
+  # Two-cache layout: registry/git share across jobs (same Cargo.lock
+  # → same.crate downloads), but `target/` is isolated per job because
+  # different feature sets produce incompatible incremental artifacts.
+  # Sharing a `target/` would force one job's cache to evict the other's,
+  # doubling cache misses. Splitting only the build output keeps the
+  # 10 GB repo cache budget healthy.
+  - name: Cache cargo registry/git (shared)
+  uses: actions/cache@v5
+  with:
+   path: |
+   ~/.cargo/registry
+   ~/.cargo/git
+   key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+   restore-keys: ${{ runner.os }}-cargo-
+
+  - name: Cache cargo target (test)
+  uses: actions/cache@v5
+  with:
+   path: target
+   key: ${{ runner.os }}-cargo-target-test-${{ hashFiles('**/Cargo.lock') }}
+   restore-keys: ${{ runner.os }}-cargo-target-test-
+
+  # Install lihaaf, the sole compile-fixture CI gate for djogi (both
+  # macro fixtures in djogi-macros and the raw-SQL bypass fixtures in
+  # djogi). Pinned to the same version used to bless the committed
+  # `.stderr` snapshots under `djogi-macros/tests/compile_fail/` and
+  # `djogi/tests/compile_fail/`. Bump this pin when upgrading lihaaf
+  # and re-blessing snapshots locally.
+  #
+  # `--locked` ensures the install uses the exact dependency versions
+  # in lihaaf's published Cargo.lock rather than resolving fresh; this
+  # makes the install deterministic across CI runs.
+  - name: Install lihaaf (compile-fixture CI gate)
+  run: cargo install lihaaf --version 0.1.2 --locked
+
+  - name: Build
+  run: cargo build --workspace
+
+  # Macro-fixture gate — currently 323 proc-macro fixtures using
+  # lihaaf's build-once-dylib + per-fixture-rustc model:
+  # • default suite: 318 fixtures (116 compile_pass + 202 compile_fail)
+  # • named suites: 4 compile_pass_spatial, 1 compile_pass_network
+  # • djogi is built once as a dylib per session
+  # • per-fixture rustc invocations are parallel (-j 2 on 2-vCPU GHA)
+  #
+  # Committed `.stderr` snapshots mean `--bless` is never needed here.
+  # If this step fails with `SNAPSHOT_DIFF`, re-bless locally:
+  # cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
+  #  --filter compile_fail --bless -j 4
+  # then commit the updated `.stderr` files alongside the macro change.
+  - name: Macro fixture gate (lihaaf, djogi-macros)
+  run: cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 2
+
+  # Raw-SQL bypass compile-fail gate — currently 42 fixtures pinning
+  # the `pool()` / `conn()` / `with_client` / `raw_*` private/extension-
+  # trait-gated APIs on `DjogiContext` and `DjogiPool`:
+  # • default suite: 39 compile_fail fixtures
+  # • named suite: 3 compile_fail_spatial fixtures
+  # Same dylib + per-fixture rustc shape as the macro gate; lihaaf
+  # reuses the djogi dylib it just built.
+  - name: Raw-SQL bypass gate (lihaaf, djogi)
+  run: cargo lihaaf --manifest-path djogi/Cargo.toml -j 2
+
+  - name: Test
+  # Excluding `elephant-tracker` here is load-bearing. Its
+  # `Cargo.toml` activates djogi's `spatial` + `outbox` features,
+  # and under cargo's resolver-2 workspace feature unification a
+  # `cargo test --workspace` would cascade those activations onto
+  # djogi globally. That would mix the default-features lane with
+  # the all-features spatial lane and bypass the manifest contract
+  # in `tests/spatial-ci-tests.txt`. The Spatial (PostGIS) job below
+  # runs those tests intentionally with `--all-features`; here we
+  # keep elephant-tracker out of the unified feature graph so the
+  # default-features sweep stays default-features. The Build step
+  # above still covers `--workspace`. Tracked in issue #80.
+  run: cargo test --workspace --exclude elephant-tracker -- --test-threads=1
+
+  - name: Cache modifier
+  # This target pins SQL-shape parity through djogi's test-only SQL
+  # renderer, so Cargo skips it in the default-feature workspace sweep.
+  run: cargo test -p djogi --features testing --test cache_modifier -- --test-threads=1
+
+  - name: Raw SQL bypass pin tests
+  run: >
+   cargo test -p djogi --features testing
+   --test raw_execute_pin
+   --test raw_query_pin
+   --test raw_rows_pin
+   --test raw_fetch_one_pin
+   --test raw_scalar_pin
+   --test raw_ddl_pin
+   --test raw_ddl_begin_atomic_pin
+   --test raw_stream_pin
+   --test raw_stream_with_fetch_size_pin
+   --test raw_pool_access_pin
+   -- --test-threads=1
+
+  - name: Presentation codec HMAC feature gate
+  # `presentation_codec` always runs in the workspace default-feature lane,
+  # but HMAC-specific assertions are gated behind `feature = "hmac-codec"`.
+  # Run the target once with that feature enabled so keyed-codec startup
+  # and round-trip behavior stay covered in CI.
+  run: cargo test -p djogi --features hmac-codec --test presentation_codec -- --test-threads=1
+
+ # MSRV gate — verifies the code still compiles on the toolchain
+ # declared in `workspace.package.rust-version`. The main `check`
+ # job runs on `@stable` so new clippy lints surface proactively
+ # as the toolchain advances; this separate job pins to the
+ # adopter-contract minimum so a stray `extract_if` (or any other
+ # post-MSRV stdlib API) lights up here before it lands. No tests
+ # run — test-deps drift higher than the library itself, and the
+ # contract is "library code compiles on MSRV", not "test stack
+ # works on MSRV". Default features only; spatial users have their
+ # own feature-specific MSRV expectation.
+ msrv:
+ name: MSRV (Rust 1.95)
+ runs-on: ubuntu-latest
+
+ steps:
+  - uses: actions/checkout@v6
+
+  - name: Install MSRV toolchain (matches workspace.package.rust-version)
+  uses: dtolnay/rust-toolchain@1.95.0
+
+  - name: Cache cargo registry/git/target (MSRV)
+  uses: actions/cache@v5
+  with:
+   path: |
+   ~/.cargo/registry
+   ~/.cargo/git
+   target
+   key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+   restore-keys: ${{ runner.os }}-cargo-msrv-
+
+  - name: cargo check (default features)
+  run: cargo check --workspace
+
+ # Spatial / PostGIS coverage — runs every test listed in
+ # `tests/spatial-ci-tests.txt` with `--all-features`. The default
+ # `test` job above uses the same PostGIS-backed service image, but
+ # it intentionally runs default features only; tests with
+ # `required-features = ["spatial"]` do not execute there, and mixed
+ # tests with `#[cfg(feature = "spatial")]` compile out their spatial
+ # scenarios. `cargo xtask check-spatial-ci` keeps this manifest in
+ # sync with Cargo test metadata and included source files.
+ #
+ # Kept as a separate job rather than a feature toggle inside `test`
+ # so all-features spatial runtime coverage remains explicit and easy
+ # to attribute.
+ spatial:
+ name: Spatial (PostGIS)
+ runs-on: ubuntu-latest
+
+ services:
+  postgres:
+  # `postgis/postgis` provides Postgres + PostGIS preinstalled.
+  # The `:18-3.6` tag pins to Postgres 18 (Djogi's supported
+  # version) with PostGIS 3.6. The image is officially maintained
+  # by the PostGIS team and is the standard choice for CI. The
+  # `:18-3.5` tag is not published; the upstream image registry
+  # ships PostGIS 3.5 against Postgres 17 and PostGIS 3.6
+  # against Postgres 18.
+  image: postgis/postgis:18-3.6
+  env:
+   POSTGRES_USER: djogi
+   # djogi-allow-secret: GHA service-container fixture; identical
+   # to the `test` job above. See that rationale.
+   POSTGRES_PASSWORD: djogi
+   POSTGRES_DB: djogi_test
+  ports:
+   - 5432:5432
+  options: >-
+   --health-cmd "pg_isready -U djogi"
+   --health-interval 2s
+   --health-timeout 5s
+   --health-retries 10
+
+ env:
+  DATABASE_URL: postgres://djogi:djogi@localhost:5432/djogi_test
+
+ steps:
+  - uses: actions/checkout@v6
+
+  - name: Free disk space on GHA runner
+  if: ${{ !env.ACT }}
+  run: |
+   sudo rm -rf /usr/share/dotnet
+   sudo rm -rf /opt/ghc
+   sudo rm -rf /opt/hostedtoolcache
+   sudo rm -rf /usr/local/lib/android
+   sudo rm -rf /usr/local/share/boost
+   df -h /
+
+  - name: Install Rust toolchain
+  uses: dtolnay/rust-toolchain@stable
+  with:
+   components: clippy, rustfmt, rust-src
+
+  # Two-cache layout: registry/git share with the `check` and
+  # `test` jobs (same Cargo.lock → same.crate downloads), but
+  # `target/` is isolated per feature set — `check` runs a clippy
+  # build, `test` builds with default features, and `spatial`
+  # builds with `--all-features`. Sharing a `target/` would force
+  # one job's incremental artifacts to evict the other's, doubling
+  # cache misses. Splitting only the build output keeps the 10 GB
+  # repo cache budget healthy.
+  - name: Cache cargo registry/git (shared with check/test jobs)
+  uses: actions/cache@v5
+  with:
+   path: |
+   ~/.cargo/registry
+   ~/.cargo/git
+   key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+   restore-keys: ${{ runner.os }}-cargo-
+
+  - name: Cache cargo target (spatial feature set)
+  uses: actions/cache@v5
+  with:
+   path: target
+   key: ${{ runner.os }}-cargo-target-spatial-${{ hashFiles('**/Cargo.lock') }}
+   restore-keys: ${{ runner.os }}-cargo-target-spatial-
+
+  - name: Spatial manifest tests
+  run: |
+   while IFS= read -r test_name; do
+   case "$test_name" in
+    ""|\#*) continue ;;
+   esac
+   echo "::group::cargo test -p djogi --test ${test_name} --all-features"
+   cargo test -p djogi --test "$test_name" --all-features -- --test-threads=1
+   echo "::endgroup::"
+   done < tests/spatial-ci-tests.txt

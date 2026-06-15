@@ -16,21 +16,21 @@
 //! # Step graph
 //! 1. [`StepKind::ExpandSchema`] — `ALTER TABLE <t> ADD COLUMN <c>
 //! <type> NULL` (no `DEFAULT` clause yet — the volatile fragment
-//!    cannot land in catalog metadata without rewriting every row).
+//! cannot land in catalog metadata without rewriting every row).
 //! 2. [`StepKind::BeginCompatibilityWindow`] — install a `BEFORE
 //! INSERT` trigger that runs the volatile expression for new
-//!    rows. Existing rows still see `NULL` until the backfill
-//!    catches up; the dual-write hook flags the column as
-//!    transitionally nullable.
+//! rows. Existing rows still see `NULL` until the backfill
+//! catches up; the dual-write hook flags the column as
+//! transitionally nullable.
 //! 3. [`StepKind::BackfillChunked`] — populate the column for
-//!    existing rows. The pattern emits a complete UPDATE-tail
-//!    fragment of the shape
-//!    ```sql
-//!    SET <col> = <default-expression>
-//!    WHERE id IN (SELECT id FROM <table>
-//!                 WHERE <col> IS NULL
-//!                 LIMIT $1)
-//!    ```
+//! existing rows. The pattern emits a complete UPDATE-tail
+//! fragment of the shape
+//! ```sql
+//! SET <col> = <default-expression>
+//! WHERE id IN (SELECT id FROM <table>
+//!     WHERE <col> IS NULL
+//!     LIMIT $1)
+//! ```
 //! The default expression evaluates per-row inside the chunk
 //! transaction — the volatility we are staging around is precisely
 //! the reason the column had to be added without an inline
@@ -43,7 +43,7 @@
 //! 5. [`StepKind::FinalizeConstraints`] — `ALTER TABLE <t> ALTER
 //! COLUMN <c> SET DEFAULT <expr>` then `ALTER TABLE <t> ALTER
 //! COLUMN <c> SET NOT NULL`.
-//! 6. [`StepKind::CleanupLegacyState`] — `DROP TRIGGER ... ON <t>`
+//! 6. [`StepKind::CleanupLegacyState`] — `DROP TRIGGER... ON <t>`
 //! (the `BEFORE INSERT` trigger is no longer needed once the
 //! column carries the default).
 

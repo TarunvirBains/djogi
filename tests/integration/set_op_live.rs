@@ -5,16 +5,16 @@
 // semantics promise, against a real database:
 //
 // 1. `union` — de-duplicated union; rows appearing in both arms surface
-//    once.
+//  once.
 // 2. `union_all` — duplicate-preserving union; row counts add up.
 // 3. `intersect` — only rows present in both arms.
 // 4. `except` — rows in the left arm not in the right; non-symmetric.
 // 5. Outer `ORDER BY` / `LIMIT` / `OFFSET` apply to the combined result.
 // 6. `.count()` reports the cardinality of the combined set, not the
-//    arms.
+//  arms.
 // 7. Empty arms (`.none()`) compose correctly through every operator.
 // 8. Nested chaining (`a.union(b).intersect(c)`) evaluates
-//    left-associatively.
+//  left-associatively.
 //
 // All test bodies use the typed surface only — `Animal::create` for
 // seeding, `Animal::objects()` for arms, `SetOpQuerySet::fetch_all` /
@@ -348,8 +348,8 @@ async fn set_op_nested_chain_evaluates_left_associatively(mut ctx: djogi::DjogiC
     let adopted = Animal::objects().filter(|f| f.adopted().eq(true));
 
     // (dogs UNION cats) INTERSECT adopted — left-associative:
-    //   dogs UNION cats = {alpha, beta, epsilon, gamma, delta}
-    //   INTERSECT adopted = {alpha, gamma, epsilon} (the adopted dogs+cats)
+    //  dogs UNION cats = {alpha, beta, epsilon, gamma, delta}
+    //  INTERSECT adopted = {alpha, gamma, epsilon} (the adopted dogs+cats)
     let nested = dogs.union(cats).intersect(adopted);
     let rows = nested.fetch_all(&mut ctx).await.unwrap();
     let mut names: Vec<String> = rows.iter().map(|a| a.name.clone()).collect();
@@ -462,8 +462,8 @@ async fn set_op_invalid_arm_rejects_before_tenant_set(mut ctx: djogi::DjogiConte
     assert!(
         tx.applied_tenant_id().is_none(),
         "applied_tenant_id must remain None when set-op validation \
-         fails — auto_set_tenant should not have run on an invalid \
-         arm. Got: {:?}",
+     fails — auto_set_tenant should not have run on an invalid \
+     arm. Got: {:?}",
         tx.applied_tenant_id()
     );
     assert!(

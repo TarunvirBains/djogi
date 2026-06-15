@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 ## 9. Automated Audit & Event Logging — Two Parallel Databases
 
@@ -40,7 +40,7 @@ Enabling:
 ```toml
 # Djogi.toml
 [database]
-url          = "postgres://localhost/myapp"
+url  = "postgres://localhost/myapp"
 crud_log_url = "postgres://localhost/myapp_crud_logs"
 event_log_url = "postgres://localhost/myapp_event_logs"
 
@@ -48,29 +48,29 @@ event_log_url = "postgres://localhost/myapp_event_logs"
 profile = "balanced"
 
 [features]
-crud_log = false   # global default — opt in per model or globally
+crud_log = false # global default — opt in per model or globally
 ```
 ```rust
 // Per model
 #[model(table = "vehicles", crud_log = true)]
 #[derive(Debug, Clone)]
-pub struct Vehicle { ... }
+pub struct Vehicle {... }
 
 // Opt out a specific model when globally enabled
 #[model(table = "internal_tokens", crud_log = false)]
 #[derive(Debug, Clone)]
-pub struct InternalToken { ... }
+pub struct InternalToken {... }
 ```
 The mirror log table schema (auto-provisioned per model):
 ```sql
 CREATE TABLE vehicle_logs (
-    id          BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
-    record_id   BIGINT NOT NULL,
-    event       TEXT NOT NULL CHECK (event IN ('created', 'updated', 'deleted')),
-    changes     JSONB,               -- array of FieldChange — null for created/deleted
-    snapshot    JSONB,               -- full record snapshot for created/deleted
-    actor       TEXT,                -- optional — who made the change
-    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+ id  BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
+ record_id BIGINT NOT NULL,
+ event TEXT NOT NULL CHECK (event IN ('created', 'updated', 'deleted')),
+ changes JSONB,  -- array of FieldChange — null for created/deleted
+ snapshot JSONB,  -- full record snapshot for created/deleted
+ actor TEXT,  -- optional — who made the change
+ occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_vehicle_logs_record ON vehicle_logs (record_id);
@@ -80,12 +80,12 @@ JSON-aware diffing — changes to both regular model fields and nested `Jsonb<T>
 ```rust
 // CrudEvent::Updated written to vehicle_logs:
 // changes: [
-//   { path: "make",                    before: "Toyota", after: "Lexus"  },
-//   { path: "engine.horsepower",       before: 450,      after: 500      },
-//   { path: "engine.turbo.boost_psi",  before: 15.0,     after: 18.5    },
+// { path: "make",   before: "Toyota", after: "Lexus" },
+// { path: "engine.horsepower", before: 450, after: 500 },
+// { path: "engine.turbo.boost_psi", before: 15.0, after: 18.5 },
 // ]
 ```
-Redaction in diffs (Phase 6.5 — see [Protected Data Metadata & Field Codecs](./protected-data.md)): fields annotated with `#[field(sensitive)]` or `#[field(redact_in(logs))]` have their before/after values replaced with a masked marker in `changes` and `snapshot`. Fields declared with `#[field(codec = "...")]` are captured in their codec-encoded form — the CRUD log never sees plaintext. This keeps the audit trail complete (which field changed, when, by whom) without the log database becoming a secondary plaintext store of sensitive data.
+Redaction in diffs ( — see [Protected Data Metadata & Field Codecs](./protected-data.md)): fields annotated with `#[field(sensitive)]` or `#[field(redact_in(logs))]` have their before/after values replaced with a masked marker in `changes` and `snapshot`. Fields declared with `#[field(codec = "...")]` are captured in their codec-encoded form — the CRUD log never sees plaintext. This keeps the audit trail complete (which field changed, when, by whom) without the log database becoming a secondary plaintext store of sensitive data.
 
 CRUD delivery semantics by profile:
 
@@ -104,17 +104,17 @@ Querying from the shell:
 ```rhai
 // Full history for a record — uses the crud_log pool automatically
 let history = VehicleLog::objects()
-    .filter(|f| f.record_id.eq(car.id))
-    .order_by(|f| f.occurred_at.desc())
-    .fetch_all();
+.filter(|f| f.record_id.eq(car.id))
+.order_by(|f| f.occurred_at.desc())
+.fetch_all();
 
 pp(history);
 
 // Changes to a specific nested field
 let changes = VehicleLog::objects()
-    .filter(|f| f.event.eq("updated"))
-    .json_path_changed("engine.horsepower")
-    .fetch_all();
+.filter(|f| f.event.eq("updated"))
+.json_path_changed("engine.horsepower")
+.fetch_all();
 ```
 
 Startup and outage behavior:

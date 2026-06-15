@@ -13,35 +13,35 @@
 //! The daemon's responsibility ends at the first operator gate.
 //! Specifically:
 //! - Auto-resumes [`StepKind::BackfillChunked`] (chunk-loop
-//!   continuation; idempotent by the pattern's `WHERE` predicate
-//!   contract).
+//! continuation; idempotent by the pattern's `WHERE` predicate
+//! contract).
 //! - Auto-resumes [`StepKind::ValidateBackfill`] only as a re-runnable
-//!   gate query — the daemon does NOT auto-promote the plan past the
-//!   validation gate; that decision stays with the operator via
-//!   `live run`.
+//! gate query — the daemon does NOT auto-promote the plan past the
+//! validation gate; that decision stays with the operator via
+//! `live run`.
 //! - Refuses to advance through [`StepKind::CutoverReads`],
-//!   [`StepKind::CutoverWrites`], and [`StepKind::FinalizeConstraints`].
-//!   Those gates are operator-only (`live run` / `live finalize`); the
-//!   daemon would have no way to confirm the production application's
-//!   read / write traffic has been re-routed before flipping the
-//!   cutover, and an automated finalize would side-step the operator
-//!   review of the post-backfill state. Any plan whose `current_step`
-//!   has advanced into a cutover / finalize gate is invisible to the
-//!   daemon's candidate filter.
+//! [`StepKind::CutoverWrites`], and [`StepKind::FinalizeConstraints`].
+//! Those gates are operator-only (`live run` / `live finalize`); the
+//! daemon would have no way to confirm the production application's
+//! read / write traffic has been re-routed before flipping the
+//! cutover, and an automated finalize would side-step the operator
+//! review of the post-backfill state. Any plan whose `current_step`
+//! has advanced into a cutover / finalize gate is invisible to the
+//! daemon's candidate filter.
 //! - Refuses to auto-resume [`PlanStatus::Paused`] plans. `Paused` is
-//!   the operator's checkpoint state — the daemon never overrides an
-//!   explicit operator pause.
+//! the operator's checkpoint state — the daemon never overrides an
+//! explicit operator pause.
 //! # Triple-gate
 //! Mirrors `db reset` semantics. A daemon invocation refuses to start
 //! when:
 //! 1. `DJOGI_ENV` is set to `production` (case-insensitive). The daemon
-//!    is not approved for production deployments in the v1 surface;
-//!    operator-driven `live resume` remains the sole production
-//!    surface.
+//! is not approved for production deployments in the v1 surface;
+//! operator-driven `live resume` remains the sole production
+//! surface.
 //! 2. The application database URL does not resolve to localhost AND
-//!    the operator did not pass `--allow-non-localhost`. Mirrors the
-//!    seed / reset gate so a misconfigured `DATABASE_URL` cannot have
-//!    the daemon hammering a remote production box.
+//! the operator did not pass `--allow-non-localhost`. Mirrors the
+//! seed / reset gate so a misconfigured `DATABASE_URL` cannot have
+//! the daemon hammering a remote production box.
 //! # Coordination
 //! Two daemons may legitimately race on the same plan (failover to a
 //! new host while the original daemon is still draining). The poll
@@ -155,7 +155,7 @@ pub enum DaemonError {
     /// does not resolve to localhost and `allow_non_localhost = false`.
     #[error(
         "daemon refused to start: not running on localhost \
-         (--allow-non-localhost not passed)"
+   (--allow-non-localhost not passed)"
     )]
     NotLocalhost,
     /// Refused on the production-environment gate.
@@ -198,34 +198,34 @@ impl From<DbError> for DaemonError {
 /// a `Duration` directly, but seconds-as-i64 round-trips cleanly.
 /// The candidate filter is two AND-ed predicates:
 /// 1. **Eligible step / status.** `status = 'running'` AND
-///    `current_step IN ('backfill_chunked', 'validate_backfill')`.
-///    Pending plans are operator-promoted via `live run`; Paused
-///    plans are explicit operator checkpoints; terminal states
-///    (Complete / Abandoned / Failed) are never auto-resumed.
+/// `current_step IN ('backfill_chunked', 'validate_backfill')`.
+/// Pending plans are operator-promoted via `live run`; Paused
+/// plans are explicit operator checkpoints; terminal states
+/// (Complete / Abandoned / Failed) are never auto-resumed.
 /// 2. **Stale (or never-progressed) AND free-to-claim.** The row must
-///    be stale — `last_progress_at < now() - $1::interval OR
+/// be stale — `last_progress_at < now() - $1::interval OR
 /// last_progress_at IS NULL` (a row that has never recorded
-///    progress is treated as stale by definition). The row must also
-///    be free to claim — `claimed_by_pid IS NULL OR claimed_by_pid =
+/// progress is treated as stale by definition). The row must also
+/// be free to claim — `claimed_by_pid IS NULL OR claimed_by_pid =
 /// $2`: unclaimed, OR already claimed by THIS daemon (so a
-///    restarted daemon process can re-claim its own previous work
-///    rather than waiting for the stale threshold).
-///    `$2` binds the running daemon's PID — passing it explicitly keeps
-///    the predicate self-contained without smuggling state through the
-///    SQL session.
-///    The query is documented as a constant so tests can assert its
-///    shape without reaching into private internals.
+/// restarted daemon process can re-claim its own previous work
+/// rather than waiting for the stale threshold).
+/// `$2` binds the running daemon's PID — passing it explicitly keeps
+/// the predicate self-contained without smuggling state through the
+/// SQL session.
+/// The query is documented as a constant so tests can assert its
+/// shape without reaching into private internals.
 const CANDIDATE_QUERY_SQL: &str = "\
 SELECT plan_id, target_database, app_label, slug, current_step \
 FROM djogi_live_plans \
 WHERE status = 'running' \
-  AND current_step IN ('backfill_chunked', 'validate_backfill') \
-  AND ( \
-       claimed_by_pid = $2 \
-    OR ( claimed_by_pid IS NULL \
-         AND ( last_progress_at IS NULL \
-               OR last_progress_at < now() - (INTERVAL '1 second' * $1) ) ) \
-  )";
+ AND current_step IN ('backfill_chunked', 'validate_backfill') \
+ AND ( \
+  claimed_by_pid = $2 \
+ OR ( claimed_by_pid IS NULL \
+   AND ( last_progress_at IS NULL \
+    OR last_progress_at < now() - (INTERVAL '1 second' * $1) ) ) \
+ )";
 
 /// Update statement that records a successful claim. Sets `claimed_by_pid`,
 /// `claimed_by_host`, and `claimed_at = now()` for the row identified by
@@ -241,8 +241,8 @@ const CLAIM_UPDATE_SQL: &str = "\
 UPDATE djogi_live_plans \
 SET claimed_by_pid = $4, claimed_by_host = $5, claimed_at = now() \
 WHERE target_database = $1 AND app_label = $2 AND plan_id = $3 \
-  AND status = 'running' \
-  AND current_step IN ('backfill_chunked', 'validate_backfill')";
+ AND status = 'running' \
+ AND current_step IN ('backfill_chunked', 'validate_backfill')";
 
 /// Update statement that releases a previously-recorded claim. Cleared
 /// when the daemon is done with the row (either the resume succeeded
@@ -266,11 +266,11 @@ pub async fn run_daemon(ctx: &mut DjogiContext, config: DaemonConfig) -> Result<
     enforce_environment_gates(&config)?;
 
     tracing::info!(
-        host = %config.host,
-        pid = config.pid,
-        poll_interval_secs = config.poll_interval.as_secs(),
-        claim_stale_after_secs = config.claim_stale_after.as_secs(),
-        "live-migrate daemon started",
+     host = %config.host,
+     pid = config.pid,
+     poll_interval_secs = config.poll_interval.as_secs(),
+     claim_stale_after_secs = config.claim_stale_after.as_secs(),
+     "live-migrate daemon started",
     );
 
     // Production daemons typically receive SIGTERM from systemd /
@@ -292,41 +292,41 @@ pub async fn run_daemon(ctx: &mut DjogiContext, config: DaemonConfig) -> Result<
         #[cfg(unix)]
         {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("live-migrate daemon: SIGINT received");
-                    return Err(DaemonError::Shutdown);
-                }
-                _ = sigterm.recv() => {
-                    tracing::info!("live-migrate daemon: SIGTERM received");
-                    return Err(DaemonError::Shutdown);
-                }
-                _ = tokio::time::sleep(config.poll_interval) => {
-                    if let Err(e) = poll_once(ctx, &config).await {
-                        tracing::warn!(
-                            error = %e,
-                            "live-migrate daemon: poll iteration failed; \
-                             continuing to next interval",
-                        );
-                    }
-                }
+             _ = tokio::signal::ctrl_c() => {
+              tracing::info!("live-migrate daemon: SIGINT received");
+              return Err(DaemonError::Shutdown);
+             }
+             _ = sigterm.recv() => {
+              tracing::info!("live-migrate daemon: SIGTERM received");
+              return Err(DaemonError::Shutdown);
+             }
+             _ = tokio::time::sleep(config.poll_interval) => {
+              if let Err(e) = poll_once(ctx, &config).await {
+               tracing::warn!(
+                error = %e,
+                "live-migrate daemon: poll iteration failed; \
+                 continuing to next interval",
+               );
+              }
+             }
             }
         }
         #[cfg(not(unix))]
         {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("live-migrate daemon: shutdown signal received");
-                    return Err(DaemonError::Shutdown);
-                }
-                _ = tokio::time::sleep(config.poll_interval) => {
-                    if let Err(e) = poll_once(ctx, &config).await {
-                        tracing::warn!(
-                            error = %e,
-                            "live-migrate daemon: poll iteration failed; \
-                             continuing to next interval",
-                        );
-                    }
-                }
+             _ = tokio::signal::ctrl_c() => {
+              tracing::info!("live-migrate daemon: shutdown signal received");
+              return Err(DaemonError::Shutdown);
+             }
+             _ = tokio::time::sleep(config.poll_interval) => {
+              if let Err(e) = poll_once(ctx, &config).await {
+               tracing::warn!(
+                error = %e,
+                "live-migrate daemon: poll iteration failed; \
+                 continuing to next interval",
+               );
+              }
+             }
             }
         }
     }
@@ -338,13 +338,13 @@ pub async fn run_daemon(ctx: &mut DjogiContext, config: DaemonConfig) -> Result<
 /// Three independent refusals fire here:
 /// 1. `DJOGI_ENV` set to `production` (case-insensitive).
 /// 2. `DjogiConfig::profile` set to the literal lowercase
-///    `"production"` — mirrors the predicate `db reset` and
-///    `db cleanup-test-dbs` use so every long-running destructive
-///    surface follows the same rule. Strict lowercase match: a typo
-///    (`"Production"`, `"PROD"`) falls back to the safe-for-dev
-///    default rather than silently flipping the gate.
+/// `"production"` — mirrors the predicate `db reset` and
+/// `db cleanup-test-dbs` use so every long-running destructive
+/// surface follows the same rule. Strict lowercase match: a typo
+/// (`"Production"`, `"PROD"`) falls back to the safe-for-dev
+/// default rather than silently flipping the gate.
 /// 3. Application URL is not localhost AND `--allow-non-localhost`
-///    was not passed.
+/// was not passed.
 fn enforce_environment_gates(config: &DaemonConfig) -> Result<(), DaemonError> {
     if production_env_set() {
         return Err(DaemonError::Production);
@@ -387,8 +387,8 @@ async fn poll_once(ctx: &mut DjogiContext, config: &DaemonConfig) -> Result<(), 
     let pool = ctx.share_pool().ok_or_else(|| {
         DaemonError::Database(DjogiError::Db(DbError::other(
             "daemon poll requires a pool-backed DjogiContext (built via \
-             DjogiContext::from_pool); cannot resume backfills without a pool \
-             to open per-chunk transactions on",
+    DjogiContext::from_pool); cannot resume backfills without a pool \
+    to open per-chunk transactions on",
         )))
     })?;
     tracing::debug!(
@@ -398,11 +398,11 @@ async fn poll_once(ctx: &mut DjogiContext, config: &DaemonConfig) -> Result<(), 
     for candidate in candidates {
         if let Err(e) = drive_candidate(ctx, &pool, config, &candidate).await {
             tracing::warn!(
-                plan_id = candidate.plan_id,
-                target_database = %candidate.target_database,
-                app_label = %candidate.app_label,
-                error = %e,
-                "live-migrate daemon: candidate skipped",
+             plan_id = candidate.plan_id,
+             target_database = %candidate.target_database,
+             app_label = %candidate.app_label,
+             error = %e,
+             "live-migrate daemon: candidate skipped",
             );
         }
     }
@@ -548,7 +548,7 @@ async fn drive_under_lock(
             tracing::debug!(
                 plan_id = candidate.plan_id,
                 "live-migrate daemon: validate_backfill is operator-only; \
-                 daemon does not advance past the gate",
+     daemon does not advance past the gate",
             );
             Ok(())
         }
@@ -558,9 +558,9 @@ async fn drive_under_lock(
             // current_step changed between SELECT and UPDATE — skip
             // rather than guess.
             tracing::debug!(
-                plan_id = candidate.plan_id,
-                step = %other,
-                "live-migrate daemon: step changed between SELECT and claim; skipping",
+             plan_id = candidate.plan_id,
+             step = %other,
+             "live-migrate daemon: step changed between SELECT and claim; skipping",
             );
             Ok(())
         }
@@ -571,9 +571,9 @@ async fn drive_under_lock(
     // operator's `live show` output.
     if let Err(e) = clear_claim(ctx, candidate).await {
         tracing::warn!(
-            plan_id = candidate.plan_id,
-            error = %e,
-            "live-migrate daemon: clear_claim failed; columns will reset on next claim",
+         plan_id = candidate.plan_id,
+         error = %e,
+         "live-migrate daemon: clear_claim failed; columns will reset on next claim",
         );
     }
     outcome
@@ -584,7 +584,7 @@ async fn drive_under_lock(
 /// CLI's `live resume` calls.
 /// Runs on a FRESH pool-backed context built from `pool` — NOT the
 /// daemon's advisory-lock pinned (connection-backed) context. The
-/// chunk loop opens its own per-chunk transaction via `atomic(pool, ..)`
+/// chunk loop opens its own per-chunk transaction via `atomic(pool,..)`
 /// and therefore requires a pool to draw connections from; the pinned
 /// connection is reserved for the session-scoped advisory lock. See
 /// CLASS B.
@@ -663,11 +663,11 @@ async fn resume_backfill_for_candidate(
     match result {
         Ok(chunks) => {
             tracing::info!(
-                plan_id = %plan_id,
-                target_database = %candidate.target_database,
-                app_label = %candidate.app_label,
-                chunks_processed = chunks.len(),
-                "live-migrate daemon: backfill completed successfully",
+             plan_id = %plan_id,
+             target_database = %candidate.target_database,
+             app_label = %candidate.app_label,
+             chunks_processed = chunks.len(),
+             "live-migrate daemon: backfill completed successfully",
             );
             Ok(())
         }
@@ -690,9 +690,9 @@ async fn resume_backfill_for_candidate(
             .await;
             if let Err(record_err) = record_outcome {
                 tracing::warn!(
-                    plan_id = %plan_id,
-                    error = %record_err,
-                    "live-migrate daemon: failed to record backfill failure on row",
+                 plan_id = %plan_id,
+                 error = %record_err,
+                 "live-migrate daemon: failed to record backfill failure on row",
                 );
             }
             Err(match e {
@@ -709,9 +709,9 @@ async fn try_acquire_advisory_lock(
     assert!(
         !ctx.is_pool_backed(),
         "daemon advisory lock called on a pool-backed context — \
-         the lock would be acquired on an arbitrary pool connection \
-         and subsequent operations would run on different connections. \
-         Callers must use ctx.pin_for_migration() first (GH #274 / #331).",
+   the lock would be acquired on an arbitrary pool connection \
+   and subsequent operations would run on different connections. \
+   Callers must use ctx.pin_for_migration() first (GH #274 / #331).",
     );
     let row = ctx
         .raw_rows("SELECT pg_try_advisory_lock($1)", &[&lock_key])
@@ -735,17 +735,17 @@ async fn release_advisory_lock(ctx: &mut PinnedCtx<'_>, lock_key: i64) {
     assert!(
         !ctx.is_pool_backed(),
         "daemon advisory unlock called on a pool-backed context — \
-         session-pinning correctness failure (GH #274 / #331).",
+   session-pinning correctness failure (GH #274 / #331).",
     );
     if let Err(e) = ctx
         .raw_execute("SELECT pg_advisory_unlock($1)", &[&lock_key])
         .await
     {
         tracing::warn!(
-            error = %e,
-            lock_key,
-            "live-migrate daemon: pg_advisory_unlock failed; \
-             lock will release on session close",
+         error = %e,
+         lock_key,
+         "live-migrate daemon: pg_advisory_unlock failed; \
+          lock will release on session close",
         );
     }
 }

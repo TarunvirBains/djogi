@@ -7,30 +7,30 @@
 //! (matching the `ModelAttrs` pattern). Three §5 constructs sit
 //! outside darling's derive grammar:
 //! 1. `where = "..."` uses a Rust keyword as a key — darling's derive
-//!    reduces to `syn::Path`, which rejects keywords. Only
-//!    `syn::ext::IdentExt::parse_any` accepts the keyword.
+//! reduces to `syn::Path`, which rejects keywords. Only
+//! `syn::ext::IdentExt::parse_any` accepts the keyword.
 //! 2. The per-column record literal
-//!    `(col = ident, opclass = "…", order = desc, nulls = first)` is a
-//!    tuple / paren expression, not an attribute meta list. Darling has
-//!    no built-in decoder for it.
+//! `(col = ident, opclass = "…", order = desc, nulls = first)` is a
+//! tuple / paren expression, not an attribute meta list. Darling has
+//! no built-in decoder for it.
 //! 3. The mixed `fields = [ident, (col = …)]` list interleaves two
-//!    different shapes whose common supertype is `syn::Expr`.
-//!    Rather than fight darling's macro machinery — or bolt on three
-//!    `FromMeta` impls whose body is a hand-rolled `syn::Expr` walk anyway
-//!    the whole parser lives here as a `syn::ParseStream` walk over the
-//!    inner token stream. Error spans stay precise; the plan will be
-//!    amended in a later docstring pass to reflect this deviation.
+//! different shapes whose common supertype is `syn::Expr`.
+//! Rather than fight darling's macro machinery — or bolt on three
+//! `FromMeta` impls whose body is a hand-rolled `syn::Expr` walk anyway
+//! the whole parser lives here as a `syn::ParseStream` walk over the
+//! inner token stream. Error spans stay precise; the plan will be
+//! amended in a later docstring pass to reflect this deviation.
 //! # Pipeline
 //! 1. `ModelAttrs::parse` extracts the `indexes(...)` `Meta::List` and
-//!    hands it to [`parse_indexes_meta_list`], which produces
-//!    `Vec<ModelIndexDecl>`.
+//! hands it to [`parse_indexes_meta_list`], which produces
+//! `Vec<ModelIndexDecl>`.
 //! 2. `descriptor::expand` consumes the Vec, calls
-//!    [`emit_index_spec_tokens`] to lower each decl into an `IndexSpec`
-//!    struct-literal token stream, and appends the result to the spatial
-//!    GiST indexes already emitted by the descriptor module.
+//! [`emit_index_spec_tokens`] to lower each decl into an `IndexSpec`
+//! struct-literal token stream, and appends the result to the spatial
+//! GiST indexes already emitted by the descriptor module.
 //! 3. The final `indexes: &[IndexSpec { … }, …]` slice is emitted in a
-//!    deterministic (alphabetised-by-name) order so minor reorderings in
-//!    the user's source do not produce spurious migration diffs.
+//! deterministic (alphabetised-by-name) order so minor reorderings in
+//! the user's source do not produce spurious migration diffs.
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -243,7 +243,7 @@ fn parse_index_body(list: &MetaList) -> syn::Result<IndexDeclBody> {
                 if seen_nulls_not_distinct {
                     return Err(syn::Error::new_spanned(
                         key,
-                        "duplicate `nulls_not_distinct = ..`",
+                        "duplicate `nulls_not_distinct =..`",
                     ));
                 }
                 seen_nulls_not_distinct = true;
@@ -251,10 +251,7 @@ fn parse_index_body(list: &MetaList) -> syn::Result<IndexDeclBody> {
             }
             "concurrently" => {
                 if seen_concurrently {
-                    return Err(syn::Error::new_spanned(
-                        key,
-                        "duplicate `concurrently = ..`",
-                    ));
+                    return Err(syn::Error::new_spanned(key, "duplicate `concurrently =..`"));
                 }
                 seen_concurrently = true;
                 concurrently = require_bool_lit(value, "concurrently")?;
@@ -270,8 +267,8 @@ fn parse_index_body(list: &MetaList) -> syn::Result<IndexDeclBody> {
                     key,
                     format!(
                         "unknown key `{other}` inside index(...); \
-                         expected one of: fields, expr, using, opclass, include, \
-                         where, nulls_not_distinct, concurrently, name"
+       expected one of: fields, expr, using, opclass, include, \
+       where, nulls_not_distinct, concurrently, name"
                     ),
                 ));
             }
@@ -348,7 +345,7 @@ fn parse_field_col_spec(elem: &Expr) -> syn::Result<FieldColSpec> {
             let ident = p.path.segments[0].ident.unraw().to_string();
             Ok(FieldColSpec::Simple(ident))
         }
-        // `(col = x, ...)` — record literal. `syn` parses this as
+        // `(col = x,...)` — record literal. `syn` parses this as
         // `Expr::Tuple` when there are multiple comma-separated assignment
         // expressions inside parentheses; a single `(key = val)` is
         // parsed as `Expr::Paren(Expr::Assign(...))`.
@@ -361,7 +358,7 @@ fn parse_field_col_spec(elem: &Expr) -> syn::Result<FieldColSpec> {
         _ => Err(syn::Error::new_spanned(
             elem,
             "`fields` entries must be either a bare column ident or a record \
-             `(col = ident, opclass = \"..\", order = asc|desc, nulls = first|last|default)`",
+    `(col = ident, opclass = \"..\", order = asc|desc, nulls = first|last|default)`",
         )),
     }
 }
@@ -548,7 +545,7 @@ pub struct LoweringCtx<'a> {
 }
 
 /// Whether a `unique(...)` declaration carries any feature that
-/// `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` cannot express — in
+/// `ALTER TABLE... ADD CONSTRAINT... UNIQUE` cannot express — in
 /// which case the macro escalates the kind to `UniqueIndex`
 /// (plan §6.2 + §6.4). Shared by [`emit_index_spec_tokens`] (which
 /// selects the `IndexKind` token) and [`generate_index_name`] (which
@@ -575,16 +572,16 @@ pub struct LoweringCtx<'a> {
 /// escalation table above.
 fn forces_unique_index(body: &IndexDeclBody) -> bool {
     body.predicate.is_some()
-        || body.nulls_not_distinct
-        || matches!(body.target, IndexDeclTarget::Expr(_))
-        || !body.include.is_empty()
-        || body.concurrently
-        // Top-level opclass is index-element syntax — not valid in the
-        // table-constraint UNIQUE column list.
-        || body.opclass.is_some()
-        // Any per-column modifier (opclass / DESC / NULLS FIRST|LAST) is also
-        // index-element syntax and must escalate to CREATE UNIQUE INDEX.
-        || unique_columns_have_index_only_modifiers(&body.target)
+  || body.nulls_not_distinct
+  || matches!(body.target, IndexDeclTarget::Expr(_))
+  || !body.include.is_empty()
+  || body.concurrently
+  // Top-level opclass is index-element syntax — not valid in the
+  // table-constraint UNIQUE column list.
+  || body.opclass.is_some()
+  // Any per-column modifier (opclass / DESC / NULLS FIRST|LAST) is also
+  // index-element syntax and must escalate to CREATE UNIQUE INDEX.
+  || unique_columns_have_index_only_modifiers(&body.target)
     // Non-btree `using` on `unique(...)` is rejected at validation time
     // (PostgreSQL unique indexes are btree-only). See `validate_decl`.
     // Lowering never sees that combination from a well-formed parse.
@@ -653,7 +650,7 @@ pub fn emit_index_spec_tokens(
                 decl.head_span,
                 format!(
                     "unknown index method `using = \"{other}\"`; \
-                     expected one of btree, gin, gist, brin, hash, spgist"
+      expected one of btree, gin, gist, brin, hash, spgist"
                 ),
             ));
         }
@@ -667,9 +664,9 @@ pub fn emit_index_spec_tokens(
                 .map(|spec| emit_index_column_spec(spec, body.opclass.as_deref()))
                 .collect();
             quote! {
-                ::djogi::descriptor::IndexTarget::Columns(&[
-                    #(#col_tokens,)*
-                ])
+             ::djogi::descriptor::IndexTarget::Columns(&[
+              #(#col_tokens,)*
+             ])
             }
         }
         IndexDeclTarget::Expr(expr) => {
@@ -706,17 +703,17 @@ pub fn emit_index_spec_tokens(
     let name_tokens = generated_name.as_str();
 
     let spec_tokens = quote! {
-        ::djogi::descriptor::IndexSpec {
-            name: #name_tokens,
-            target: #target_tokens,
-            kind: #kind_tokens,
-            index_type: #index_type_tokens,
-            predicate: #predicate_tokens,
-            include: #include_tokens,
-            nulls_not_distinct: #nulls_not_distinct_tokens,
-            requires_out_of_transaction: #requires_out_of_transaction_tokens,
-            extension_dependency: #extension_tokens,
-        }
+     ::djogi::descriptor::IndexSpec {
+      name: #name_tokens,
+      target: #target_tokens,
+      kind: #kind_tokens,
+      index_type: #index_type_tokens,
+      predicate: #predicate_tokens,
+      include: #include_tokens,
+      nulls_not_distinct: #nulls_not_distinct_tokens,
+      requires_out_of_transaction: #requires_out_of_transaction_tokens,
+      extension_dependency: #extension_tokens,
+     }
     };
 
     Ok((generated_name, spec_tokens))
@@ -765,12 +762,12 @@ fn emit_index_column_spec(spec: &FieldColSpec, top_level_opclass: Option<&str>) 
     };
 
     quote! {
-        ::djogi::descriptor::IndexColumnSpec {
-            name: #name_lit,
-            opclass: #opclass_tokens,
-            order: #order_tokens,
-            nulls: #nulls_tokens,
-        }
+     ::djogi::descriptor::IndexColumnSpec {
+      name: #name_lit,
+      opclass: #opclass_tokens,
+      order: #order_tokens,
+      nulls: #nulls_tokens,
+     }
     }
 }
 
@@ -801,8 +798,8 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
             span,
             format!(
                 "`unique(..., using = \"{method}\")` is rejected: PostgreSQL unique indexes \
-                 are btree-only. Either use `using = \"btree\"` (or omit `using`), or drop \
-                 `unique` if a non-unique `{method}` lookup index is what you want."
+     are btree-only. Either use `using = \"btree\"` (or omit `using`), or drop \
+     `unique` if a non-unique `{method}` lookup index is what you want."
             ),
         ));
     }
@@ -831,7 +828,7 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
                 span,
                 format!(
                     "`using = \"hash\"` is incompatible with {r}. Postgres hash indexes do not \
-                     support this combination — drop the combination or switch to a btree index."
+      support this combination — drop the combination or switch to a btree index."
                 ),
             ));
         }
@@ -842,7 +839,7 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
         return Err(syn::Error::new(
             span,
             "`nulls_not_distinct = true` is only meaningful on `unique(...)`; \
-             move this declaration into `unique(...)` or drop `nulls_not_distinct`.",
+    move this declaration into `unique(...)` or drop `nulls_not_distinct`.",
         ));
     }
 
@@ -853,10 +850,10 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
         return Err(syn::Error::new(
             span,
             "`expr = \"..\"` indexes do not accept `opclass = \"..\"` in 0.1.0 — \
-             to use a non-default opclass on an expression index, issue the CREATE INDEX \
-             statement directly via `raw_ddl` under \
-             `#[djogi::deliberately_bypass_convention_with_raw_sql]` \
-             (see docs/spec/raw-sql-escape-hatches.md §2).",
+    to use a non-default opclass on an expression index, issue the CREATE INDEX \
+    statement directly via `raw_ddl` under \
+    `#[djogi::deliberately_bypass_convention_with_raw_sql]` \
+    (see docs/spec/raw-sql-escape-hatches.md §2).",
         ));
     }
 
@@ -908,7 +905,7 @@ fn validate_decl(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> syn::Result<()
                 span,
                 format!(
                     "`name = \"{explicit}\"` collides with a macro-generated index name — \
-                     pick a different explicit name or remove the override."
+      pick a different explicit name or remove the override."
                 ),
             ));
         }
@@ -965,13 +962,13 @@ fn validate_index_name_shape(s: &str, span: Span) -> syn::Result<()> {
 /// implementations is caught immediately.
 /// Logic kept deliberately identical to §6.4 + D5 in the v3 plan:
 /// - `NonUnique` / `UniqueConstraint` / `UniqueIndex` stems → `_idx` /
-///   `_key` / `_uidx`.
+/// `_key` / `_uidx`.
 /// - Expression targets render with the literal `expr` body; column
-///   lists render as underscore-joined column names in declaration
-///   order.
+/// lists render as underscore-joined column names in declaration
+/// order.
 /// - When the naïve name exceeds 63 bytes, truncate the stem to 55
-///   bytes and append `_<8-char hex digest>` of the pre-truncation
-///   name (SipHash-1-3 low 32 bits).
+/// bytes and append `_<8-char hex digest>` of the pre-truncation
+/// name (SipHash-1-3 low 32 bits).
 fn generate_index_name(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> String {
     let table = ctx.table_name;
     let body = &decl.body;
@@ -1029,7 +1026,7 @@ mod tests {
     #[test]
     fn parses_simple_index() {
         let decls = parse_indexes_from_attr(quote! {
-            index(fields = [last_name, first_name])
+         index(fields = [last_name, first_name])
         })
         .expect("should parse");
         assert_eq!(decls.len(), 1);
@@ -1047,7 +1044,7 @@ mod tests {
     #[test]
     fn parses_unique_constraint() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [org_id, external_id])
+         unique(fields = [org_id, external_id])
         })
         .unwrap();
         assert_eq!(decls.len(), 1);
@@ -1057,7 +1054,7 @@ mod tests {
     #[test]
     fn parses_expression_target() {
         let decls = parse_indexes_from_attr(quote! {
-            index(expr = "lower(email)")
+         index(expr = "lower(email)")
         })
         .unwrap();
         match &decls[0].body.target {
@@ -1069,8 +1066,8 @@ mod tests {
     #[test]
     fn parses_covering_and_partial() {
         let decls = parse_indexes_from_attr(quote! {
-            index(fields = [created_at], include = [status, priority]),
-            unique(fields = [email], where = "deleted_at IS NULL")
+         index(fields = [created_at], include = [status, priority]),
+         unique(fields = [email], where = "deleted_at IS NULL")
         })
         .unwrap();
         assert_eq!(decls.len(), 2);
@@ -1084,7 +1081,7 @@ mod tests {
     #[test]
     fn parses_method_and_opclass() {
         let decls = parse_indexes_from_attr(quote! {
-            index(fields = [payload], using = "gin", opclass = "jsonb_path_ops")
+         index(fields = [payload], using = "gin", opclass = "jsonb_path_ops")
         })
         .unwrap();
         assert_eq!(decls[0].body.using.as_deref(), Some("gin"));
@@ -1094,10 +1091,10 @@ mod tests {
     #[test]
     fn parses_per_column_record_form() {
         let decls = parse_indexes_from_attr(quote! {
-            index(fields = [
-                (col = created_at, order = desc, nulls = first),
-                (col = status, opclass = "text_pattern_ops"),
-            ])
+         index(fields = [
+          (col = created_at, order = desc, nulls = first),
+          (col = status, opclass = "text_pattern_ops"),
+         ])
         })
         .unwrap();
         match &decls[0].body.target {
@@ -1128,14 +1125,14 @@ mod tests {
     #[test]
     fn parses_mixed_simple_and_record_forms() {
         let decls = parse_indexes_from_attr(quote! {
-            index(fields = [tenant_id, (col = created_at, order = desc)])
+         index(fields = [tenant_id, (col = created_at, order = desc)])
         })
         .unwrap();
         match &decls[0].body.target {
             IndexDeclTarget::Fields(fs) => {
                 assert_eq!(fs.len(), 2);
                 assert!(matches!(&fs[0], FieldColSpec::Simple(c) if c == "tenant_id"));
-                assert!(matches!(&fs[1], FieldColSpec::Record { col, .. } if col == "created_at"));
+                assert!(matches!(&fs[1], FieldColSpec::Record { col,.. } if col == "created_at"));
             }
             _ => panic!("expected fields target"),
         }
@@ -1144,8 +1141,8 @@ mod tests {
     #[test]
     fn parses_nulls_not_distinct_and_concurrent_build() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [tenant_id, slug], nulls_not_distinct = true),
-            index(fields = [email], concurrently = true)
+         unique(fields = [tenant_id, slug], nulls_not_distinct = true),
+         index(fields = [email], concurrently = true)
         })
         .unwrap();
         assert!(decls[0].body.nulls_not_distinct);
@@ -1155,7 +1152,7 @@ mod tests {
     #[test]
     fn rejects_fields_and_expr_both() {
         let err = parse_indexes_from_attr(quote! {
-            index(fields = [a], expr = "lower(email)")
+         index(fields = [a], expr = "lower(email)")
         })
         .unwrap_err();
         assert!(
@@ -1167,7 +1164,7 @@ mod tests {
     #[test]
     fn rejects_missing_target() {
         let err = parse_indexes_from_attr(quote! {
-            index(using = "btree")
+         index(using = "btree")
         })
         .unwrap_err();
         assert!(err.to_string().contains("missing target"));
@@ -1176,7 +1173,7 @@ mod tests {
     #[test]
     fn rejects_unknown_top_level_entry() {
         let err = parse_indexes_from_attr(quote! {
-            bogus(fields = [a])
+         bogus(fields = [a])
         })
         .unwrap_err();
         assert!(err.to_string().contains("unknown indexes entry `bogus`"));
@@ -1301,14 +1298,14 @@ mod tests {
     #[test]
     fn rejects_unknown_body_key() {
         let err = parse_indexes_from_attr(quote! {
-            index(fields = [a], wrongkey = "x")
+         index(fields = [a], wrongkey = "x")
         })
         .unwrap_err();
         assert!(err.to_string().contains("unknown key `wrongkey`"));
     }
 
     /// Plan §6.2: `unique(..., concurrently = true)` escalates to
-    /// `UniqueIndex` because `ALTER TABLE ADD CONSTRAINT ... UNIQUE`
+    /// `UniqueIndex` because `ALTER TABLE ADD CONSTRAINT... UNIQUE`
     /// has no `CONCURRENTLY` form — emitting `UniqueConstraint` +
     /// non-transactional would generate invalid DDL. The name stem
     /// has to escalate with the kind — a `_key` stem against a
@@ -1317,7 +1314,7 @@ mod tests {
     #[test]
     fn unique_with_concurrently_escalates_kind_to_unique_index() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [email], concurrently = true)
+         unique(fields = [email], concurrently = true)
         })
         .unwrap();
         let ctx = LoweringCtx {
@@ -1346,7 +1343,7 @@ mod tests {
     #[test]
     fn plain_unique_stays_as_unique_constraint() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [email])
+         unique(fields = [email])
         })
         .unwrap();
         let ctx = LoweringCtx {
@@ -1370,7 +1367,7 @@ mod tests {
     #[test]
     fn unique_with_top_level_opclass_escalates_to_unique_index() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [email], opclass = "text_pattern_ops")
+         unique(fields = [email], opclass = "text_pattern_ops")
         })
         .unwrap();
         let ctx = LoweringCtx {
@@ -1398,7 +1395,7 @@ mod tests {
     #[test]
     fn unique_with_per_column_opclass_escalates_to_unique_index() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [(col = email, opclass = "text_pattern_ops")])
+         unique(fields = [(col = email, opclass = "text_pattern_ops")])
         })
         .unwrap();
         let ctx = LoweringCtx {
@@ -1420,7 +1417,7 @@ mod tests {
     #[test]
     fn unique_with_per_column_desc_order_escalates_to_unique_index() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [(col = created_at, order = desc)])
+         unique(fields = [(col = created_at, order = desc)])
         })
         .unwrap();
         let ctx = LoweringCtx {
@@ -1443,7 +1440,7 @@ mod tests {
     #[test]
     fn unique_with_per_column_nulls_first_escalates_to_unique_index() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [(col = slug, nulls = first)])
+         unique(fields = [(col = slug, nulls = first)])
         })
         .unwrap();
         let ctx = LoweringCtx {
@@ -1464,7 +1461,7 @@ mod tests {
     #[test]
     fn unique_with_per_column_nulls_last_escalates_to_unique_index() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [(col = slug, nulls = last)])
+         unique(fields = [(col = slug, nulls = last)])
         })
         .unwrap();
         let ctx = LoweringCtx {
@@ -1486,7 +1483,7 @@ mod tests {
     #[test]
     fn unique_with_per_column_asc_and_default_nulls_stays_as_unique_constraint() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [(col = email, order = asc, nulls = default)])
+         unique(fields = [(col = email, order = asc, nulls = default)])
         })
         .unwrap();
         let ctx = LoweringCtx {
@@ -1546,7 +1543,7 @@ mod tests {
     #[test]
     fn unique_with_explicit_btree_using_stays_as_unique_constraint() {
         let decls = parse_indexes_from_attr(quote! {
-            unique(fields = [email], using = "btree")
+         unique(fields = [email], using = "btree")
         })
         .unwrap();
         let ctx = LoweringCtx {

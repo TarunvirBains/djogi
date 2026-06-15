@@ -21,15 +21,15 @@ use djogi::relation::{ForeignKey, ManyToMany};
 #[model(table = "phase7_zero2_t9_persons")]
 #[derive(Debug, Clone)]
 pub struct Person {
-    #[field(expose(public))]
-    pub name: String,
+ #[field(expose(public))]
+ pub name: String,
 }
 
 #[model(table = "phase7_zero2_t9_groups")]
 #[derive(Debug, Clone)]
 pub struct Group {
-    #[field(expose(public))]
-    pub name: String,
+ #[field(expose(public))]
+ pub name: String,
 }
 
 // Through-row needs a visage at the same scope; otherwise the
@@ -38,10 +38,10 @@ pub struct Group {
 #[model(table = "phase7_zero2_t9_person_groups", through, no_default)]
 #[derive(Debug, Clone)]
 pub struct PersonGroup {
-    pub person_id: ForeignKey<Person>,
-    pub group_id: ForeignKey<Group>,
-    #[field(expose(public))]
-    pub role: String,
+ pub person_id: ForeignKey<Person>,
+ pub group_id: ForeignKey<Group>,
+ #[field(expose(public))]
+ pub role: String,
 }
 
 // Extended grammar — `expose(public -> GroupPublic)` piggybacks on
@@ -49,12 +49,12 @@ pub struct PersonGroup {
 // emitter for an additional `impl PersonPublic { pub fn groups(...)
 // -> Vec<GroupPublic> }` method.
 djogi::many_to_many!(
-    Person, Group,
-    through = PersonGroup,
-    this_fk = person_id,
-    that_fk = group_id,
-    relation = "groups",
-    expose(public -> GroupPublic)
+ Person, Group,
+ through = PersonGroup,
+ this_fk = person_id,
+ that_fk = group_id,
+ relation = "groups",
+ expose(public -> GroupPublic)
 );
 
 // The baseline trait impl and model-scoped accessor stay intact. This
@@ -62,10 +62,10 @@ djogi::many_to_many!(
 // pre-T9 code alongside the new visage-scoped method.
 #[allow(dead_code)]
 fn _model_scoped_accessor_preserved<'a>(
-    person: &'a Person,
-    ctx: &'a mut DjogiContext,
+ person: &'a Person,
+ ctx: &'a mut DjogiContext,
 ) -> impl std::future::Future<Output = Result<Vec<Group>, DjogiError>> + Send + 'a {
-    person.groups(ctx)
+ person.groups(ctx)
 }
 
 // T9 acceptance (post-T13b) — visage-scoped accessor on `PersonPublic`
@@ -74,15 +74,15 @@ fn _model_scoped_accessor_preserved<'a>(
 // method signature without needing a live Postgres pool.
 #[allow(dead_code)]
 fn _visage_scoped_accessor_returns_peer_visage(
-    person_public: &PersonPublic,
+ person_public: &PersonPublic,
 ) -> djogi::query::VisageQuerySet<GroupPublic> {
-    person_public.groups()
+ person_public.groups()
 }
 
 fn main() {
-    // Trait impl unchanged — consume RELATION / this_fk / that_fk
-    // through the trait at runtime to pin the baseline invariants.
-    assert_eq!(<Person as ManyToMany<Group>>::RELATION, "groups");
-    assert_eq!(<Person as ManyToMany<Group>>::this_fk(), "person_id");
-    assert_eq!(<Person as ManyToMany<Group>>::that_fk(), "group_id");
+ // Trait impl unchanged — consume RELATION / this_fk / that_fk
+ // through the trait at runtime to pin the baseline invariants.
+ assert_eq!(<Person as ManyToMany<Group>>::RELATION, "groups");
+ assert_eq!(<Person as ManyToMany<Group>>::this_fk(), "person_id");
+ assert_eq!(<Person as ManyToMany<Group>>::that_fk(), "group_id");
 }

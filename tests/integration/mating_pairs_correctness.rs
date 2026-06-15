@@ -4,29 +4,29 @@
 // What this file pins:
 //
 // 1. `Elephant::objects().self_pairs().left_join_closure_pair::<…>()
-//    .annotate(PairClosureKinshipSum::<…>::new()).fetch_all(ctx)` produces
-//    the SAME Wright F values the demo's now-retrofitted Step 3 emits,
-//    against KNOWN reference values from population genetics.
+//  .annotate(PairClosureKinshipSum::<…>::new()).fetch_all(ctx)` produces
+//  the SAME Wright F values the demo's now-retrofitted Step 3 emits,
+//  against KNOWN reference values from population genetics.
 //
 // 2. Reference matings covered (offspring F coefficient, from Wright 1922):
 //
-//        Pair                         Expected F      Where computed
-//        ─────────────────────────────────────────────────────────────────
-//        Unrelated                    0.000           No common ancestor
-//        Parent × child               0.250           parent is common at d=0
-//        Full siblings                0.250           two common ancestors d=1
-//        Half siblings (one parent)   0.125           one common ancestor d=1
-//        First cousins                0.0625          two common ancestors d=2
+//    Pair             Expected F   Where computed
+//    ─────────────────────────────────────────────────────────────────
+//    Unrelated          0.000      No common ancestor
+//    Parent × child        0.250      parent is common at d=0
+//    Full siblings        0.250      two common ancestors d=1
+//    Half siblings (one parent)  0.125      one common ancestor d=1
+//    First cousins        0.0625     two common ancestors d=2
 //
-//    These are demo-side correctness anchors for the typed pair-tuple
-//    closure self-join surface (gh#85). They live alongside the framework's
-//    pair-tuple substrate tests (`materialize_closure_live.rs`)
-//    rather than under `examples/elephant-tracker/tests/` because the
-//    fixture's payload is the typed pair-tuple closure self-join — a
-//    framework substrate concern — and the same Postgres + djogi_test
-//    harness the other zero_* live tests use applies directly.
-//    The demo's end-to-end JSON-output behavioural validation is a
-//    separate slice tracked in the same issue.
+//  These are demo-side correctness anchors for the typed pair-tuple
+//  closure self-join surface (gh#85). They live alongside the framework's
+//  pair-tuple substrate tests (`materialize_closure_live.rs`)
+//  rather than under `examples/elephant-tracker/tests/` because the
+//  fixture's payload is the typed pair-tuple closure self-join — a
+//  framework substrate concern — and the same Postgres + djogi_test
+//  harness the other zero_* live tests use applies directly.
+//  The demo's end-to-end JSON-output behavioural validation is a
+//  separate slice tracked in the same issue.
 //
 // # Why a minimal local pedigree model
 //
@@ -40,18 +40,18 @@
 //
 // # SQL emitted under the hood (recap)
 //
-//     SELECT l.<cols> AS l_<cols>, r.<cols> AS r_<cols>,
-//            COALESCE(SUM(la.path_count * ra.path_count
-//                         * POWER(0.5, la.depth + ra.depth + 1)), 0)
-//            ::float8 AS __djogi_agg_0
-//     FROM c4a_mating_nodes AS l
-//     CROSS JOIN c4a_mating_nodes AS r
-//     LEFT JOIN c4a_mating_ancestries AS la ON la.node_id = l.id
-//     LEFT JOIN c4a_mating_ancestries AS ra ON ra.node_id = r.id
-//                                                    AND ra.ancestor_id = la.ancestor_id
-//     WHERE l.id <> r.id
-//       AND l.id = ANY($n) AND r.id = ANY($m)
-//     GROUP BY l.id, r.id
+//   SELECT l.<cols> AS l_<cols>, r.<cols> AS r_<cols>,
+//      COALESCE(SUM(la.path_count * ra.path_count
+//             * POWER(0.5, la.depth + ra.depth + 1)), 0)
+//      ::float8 AS __djogi_agg_0
+//   FROM c4a_mating_nodes AS l
+//   CROSS JOIN c4a_mating_nodes AS r
+//   LEFT JOIN c4a_mating_ancestries AS la ON la.node_id = l.id
+//   LEFT JOIN c4a_mating_ancestries AS ra ON ra.node_id = r.id
+//                          AND ra.ancestor_id = la.ancestor_id
+//   WHERE l.id <> r.id
+//    AND l.id = ANY($n) AND r.id = ANY($m)
+//   GROUP BY l.id, r.id
 
 use djogi::prelude::*;
 use djogi::query::PairClosureKinshipSum;
@@ -67,10 +67,10 @@ pub struct MatingNode {
 }
 
 #[model(
-    table = "c4a_mating_ancestries",
-    pk = HeerId,
-    no_default,
-    indexes(unique(fields = [node_id, ancestor_id, depth]))
+  table = "c4a_mating_ancestries",
+  pk = HeerId,
+  no_default,
+  indexes(unique(fields = [node_id, ancestor_id, depth]))
 )]
 #[derive(Debug, Clone)]
 pub struct MatingAncestry {
@@ -148,8 +148,8 @@ async fn kinship_f_for_pair(
         .unwrap_or_else(|| {
             panic!(
                 "no pair-tuple row for (left={:?}, right={:?}) — substrate \
-                 regression in JoinedQuerySet::fetch_all (closure-pair branch). \
-                 Found {} pairs total.",
+         regression in JoinedQuerySet::fetch_all (closure-pair branch). \
+         Found {} pairs total.",
                 left_id.as_i64(),
                 right_id.as_i64(),
                 pairs.len(),
@@ -187,7 +187,7 @@ async fn wright_f_unrelated_is_zero(mut ctx: djogi::DjogiContext) {
         f,
         0.0,
         "unrelated parents must yield F = 0 (PairClosureKinshipSum sums over \
-         common ancestors; there are none, so SUM is 0 and COALESCE keeps it 0)",
+     common ancestors; there are none, so SUM is 0 and COALESCE keeps it 0)",
     );
 }
 
@@ -239,7 +239,7 @@ async fn wright_f_full_siblings_is_one_quarter(mut ctx: djogi::DjogiContext) {
         f,
         0.25,
         "full siblings must yield F = 0.25 (two shared ancestors at d=1,1 \
-         contributing 1/8 each)",
+     contributing 1/8 each)",
     );
 }
 
@@ -267,7 +267,7 @@ async fn wright_f_half_siblings_is_one_eighth(mut ctx: djogi::DjogiContext) {
         f,
         0.125,
         "half siblings (shared mother only) must yield F = 0.125 (single \
-         shared ancestor at d=1,1 → 1/8)",
+     shared ancestor at d=1,1 → 1/8)",
     );
 }
 
@@ -309,12 +309,12 @@ async fn wright_f_first_cousins_is_one_sixteenth(mut ctx: djogi::DjogiContext) {
         f,
         0.0625,
         "first cousins must yield F = 1/16 = 0.0625 (two shared grandparents \
-         at d=2,2 → 1/32 each)",
+     at d=2,2 → 1/32 each)",
     );
 }
 
 // ── 6. Multi-path multiplicity — F doubles when a common ancestor is reached
-//     through two distinct edge sequences ───────────────────────────────────
+//   through two distinct edge sequences ───────────────────────────────────
 
 #[djogi::djogi_test(sync_models = [MatingNode, MatingAncestry])]
 async fn wright_f_path_multiplicity_doubles_term(mut ctx: djogi::DjogiContext) {
@@ -323,19 +323,19 @@ async fn wright_f_path_multiplicity_doubles_term(mut ctx: djogi::DjogiContext) {
     // father). `materialize_closure` records this as path_count = 2
     // for the (parent, C, depth=2) closure row. The Wright sum picks
     // up the multiplicity:
-    //   term = path_count_left * path_count_right * 0.5^(d_l + d_r + 1)
-    //        = 2 * 2 * 0.5^(2+2+1)
-    //        = 4 * 1/32
-    //        = 1/8
+    //  term = path_count_left * path_count_right * 0.5^(d_l + d_r + 1)
+    //    = 2 * 2 * 0.5^(2+2+1)
+    //    = 4 * 1/32
+    //    = 1/8
     //
     // Pedigree shape:
-    //                 common (C)
-    //                /          \
-    //              mom            dad
-    //             /  \           /  \
-    //           a_m   a_f       b_m  b_f
-    //            ^     ^         ^     ^
-    //         A's mom  A's dad  B's mom B's dad   (NOT — see below)
+    //         common (C)
+    //        /     \
+    //       mom      dad
+    //       / \      / \
+    //      a_m  a_f    b_m b_f
+    //      ^   ^     ^   ^
+    //     A's mom A's dad B's mom B's dad  (NOT — see below)
     //
     // Simpler version: A's mother and A's father are both children of
     // C (full siblings); A is thus the offspring of a full-sibling
@@ -370,16 +370,16 @@ async fn wright_f_path_multiplicity_doubles_term(mut ctx: djogi::DjogiContext) {
     // is documented by computing F manually from the closure rows.
     //
     // (node_a, common):
-    //   - mother-mother:  d=2 via a_mom → common (mother edge of common)
-    //   - mother-father:  d=2 via a_mom → common (father edge of common)
-    //   - father-mother:  d=2 via a_dad → common (mother edge of common)
-    //   - father-father:  d=2 via a_dad → common (father edge of common)
-    //   So path_count(node_a, common, d=2) = 4.
+    //  - mother-mother: d=2 via a_mom → common (mother edge of common)
+    //  - mother-father: d=2 via a_mom → common (father edge of common)
+    //  - father-mother: d=2 via a_dad → common (mother edge of common)
+    //  - father-father: d=2 via a_dad → common (father edge of common)
+    //  So path_count(node_a, common, d=2) = 4.
     //
     // Symmetrically, path_count(node_b, common, d=2) = 4.
     //
     // PairClosureKinshipSum term for ancestor `common`:
-    //   4 * 4 * 0.5^(2+2+1) = 16 * 1/32 = 0.5
+    //  4 * 4 * 0.5^(2+2+1) = 16 * 1/32 = 0.5
     //
     // (a_mom is NOT an ancestor of node_b, and b_mom is NOT an
     // ancestor of node_a — the only shared ancestor is `common`.)
@@ -390,6 +390,6 @@ async fn wright_f_path_multiplicity_doubles_term(mut ctx: djogi::DjogiContext) {
         f,
         expected,
         "linebreeding via shared great-grandparent must surface path-count \
-         multiplicity (4 × 4 × 0.5^5 = 0.5)",
+     multiplicity (4 × 4 × 0.5^5 = 0.5)",
     );
 }

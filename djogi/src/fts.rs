@@ -18,7 +18,7 @@
 //! dispatch.
 //! # FTS query descriptor
 //! `FtsDescriptor` and `FtsSpec` are the runtime-descriptor types consumed by
-//! the migration differ . They are declared here alongside the
+//! the migration differ. They are declared here alongside the
 //! wire types so the full FTS story lives in one module.
 //! # Path routing
 //! These types are re-exported from `djogi::types::fts` and from the crate
@@ -239,7 +239,7 @@ pub fn validate_dictionary_name(name: &str) -> Result<(), String> {
         }
         IdentError::BadByte { idx, byte } => format!(
             "dictionary name `{name}` contains invalid character `{}` at position {idx} — \
-             only ASCII letters, digits, and underscores are allowed",
+    only ASCII letters, digits, and underscores are allowed",
             byte as char
         ),
         IdentError::Reserved => {
@@ -247,7 +247,7 @@ pub fn validate_dictionary_name(name: &str) -> Result<(), String> {
         }
         IdentError::ReservedDjogiPrefix => format!(
             "dictionary name `{name}` starts with the framework-reserved `__djogi_` prefix; \
-             choose a different name"
+    choose a different name"
         ),
     })
 }
@@ -276,8 +276,8 @@ pub fn validate_source_column(col: &str) -> Result<(), String> {
         }
         IdentError::ReservedDjogiPrefix => format!(
             "source column `{col}` starts with the framework-reserved `__djogi_` prefix; \
-             rename the column or use `#[field(renamed_from = \"…\")]` to map to a non-\
-             reserved name"
+    rename the column or use `#[field(renamed_from = \"…\")]` to map to a non-\
+    reserved name"
         ),
     })
 }
@@ -310,7 +310,7 @@ pub fn parse_source_columns(source: &str) -> Result<Vec<String>, String> {
 /// ALWAYS AS expression embeds the dictionary name literally:
 /// ```sql
 /// search TSVECTOR GENERATED ALWAYS AS (
-///     to_tsvector('<dictionary>', title || ' ' || body)
+///  to_tsvector('<dictionary>', title || ' ' || body)
 /// ) STORED
 /// ```
 /// Altering `dictionary` from, say, `"english"` to `"spanish"` requires
@@ -323,7 +323,7 @@ pub fn parse_source_columns(source: &str) -> Result<Vec<String>, String> {
 /// removed.
 /// # deferred items
 /// Full differ wiring (comparing two `FtsDescriptor` values and emitting
-/// `DROP COLUMN` + `ADD COLUMN`) is deferred to . This struct
+/// `DROP COLUMN` + `ADD COLUMN`) is deferred to. This struct
 /// establishes the shape so the differ authors have a stable target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FtsDescriptor {
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn validate_dictionary_name_rejects_djogi_reserved_prefix() {
         // Issue #82 — uniform reservation. The dictionary name flows
-        // into emitted SQL (`to_tsvector('<dict>', ...)`) as an
+        // into emitted SQL (`to_tsvector('<dict>',...)`) as an
         // adopter-supplied name, so it follows the same public
         // `__djogi_*` reservation contract as aliases and columns.
         let err = validate_dictionary_name("__djogi_english")
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn parse_source_columns_trims_whitespace() {
-        let cols = parse_source_columns("  title  ,  body  ").unwrap();
+        let cols = parse_source_columns(" title, body ").unwrap();
         assert_eq!(cols, vec!["title", "body"]);
     }
 

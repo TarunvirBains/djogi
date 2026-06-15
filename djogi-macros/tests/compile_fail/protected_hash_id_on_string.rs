@@ -10,12 +10,12 @@ use djogi::prelude::*;
 #[model(table = "users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(protected(
-        sensitivity = "pii",
-        rationale = "Owner email",
-        redaction = "hash_id"
-    ))]
-    pub email: String,
+ #[field(protected(
+  sensitivity = "pii",
+  rationale = "Owner email",
+  redaction = "hash_id"
+ ))]
+ pub email: String,
 }
 
 fn main() {}

@@ -9,19 +9,19 @@
 //! Two things to notice when reading the code:
 //!
 //! 1. The summary projection is constructed without a database round
-//!    trip beyond the initial `Herd` fetch. Visages are pure
-//!    projections.
+//! trip beyond the initial `Herd` fetch. Visages are pure
+//! projections.
 //! 2. The aggregate (`herd_size`) is opt-in per call site — adopters
-//!    pay for the side query exactly when they want the count, never
-//!    on every read of the summary.
+//! pay for the side query exactly when they want the count, never
+//! on every read of the summary.
 //!
 //! ## Output formats
 //!
 //! - `json` (default): a flat list of
-//!   `{id, name, estimated_population, actual_size}`.
+//! `{id, name, estimated_population, actual_size}`.
 //! - `markdown`: a table with the same columns plus a `delta` column
-//!   showing `actual_size - estimated_population`, useful for spotting
-//!   herds that have outgrown their last census.
+//! showing `actual_size - estimated_population`, useful for spotting
+//! herds that have outgrown their last census.
 
 use anyhow::Result;
 use djogi::DjogiContext;

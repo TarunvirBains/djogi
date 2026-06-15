@@ -1,9 +1,9 @@
-//  — joined-row decode through the typed `select_related`
+// — joined-row decode through the typed `select_related`
 // surface on a foreign-key chain.
 
 use djogi::prelude::*;
 
-//  default flip — pin HeerId across the three linked
+// default flip — pin HeerId across the three linked
 // models; the joined-decode test uses BIGINT `generate_id()` DDL and
 // explicit HeerId wiring through FK columns.
 #[model(table = "chain_c", pk = HeerId)]

@@ -1,4 +1,4 @@
-// Compile-fail fixture: `default_filter = |f| ...`
+// Compile-fail fixture: `default_filter = |f|...`
 // without `proxy_for = ParentType` on the same model.
 //
 // `default_filter` and `default_order` only make sense on proxy
@@ -11,13 +11,13 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "phase8_proxy_orphan_filter_widgets",
-    default_filter = |f| f.active.eq(true),
+ table = "phase8_proxy_orphan_filter_widgets",
+ default_filter = |f| f.active.eq(true),
 )]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub name: String,
-    pub active: bool,
+ pub name: String,
+ pub active: bool,
 }
 
 fn main() {}

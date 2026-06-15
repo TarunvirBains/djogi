@@ -12,9 +12,9 @@
 //! Expands to:
 //! ```ignore
 //! fn main() -> std::process::ExitCode {
-//!     let _ = <tracker::Elephant as ::djogi::model::Model>::descriptor();
-//!     let _ = <billing::Invoice as ::djogi::model::Model>::descriptor();
-//!     ::djogi_cli::run_from_env()
+//!  let _ = <tracker::Elephant as ::djogi::model::Model>::descriptor();
+//!  let _ = <billing::Invoice as ::djogi::model::Model>::descriptor();
+//!  ::djogi_cli::run_from_env()
 //! }
 //! ```
 
@@ -59,8 +59,8 @@ pub fn djogi_main(input: TokenStream) -> TokenStream {
             proc_macro2::Span::call_site(),
             "djogi_main!() requires at least one model type.\
  \nDjogi models are why an adopter uses djogi. If you have\
-  no #[derive(Model)] types, you do not need this macro —\
-   write your own entry point that calls `djogi_cli::run_from_env()` instead.",
+ no #[derive(Model)] types, you do not need this macro —\
+ write your own entry point that calls `djogi_cli::run_from_env()` instead.",
         )
         .to_compile_error();
     }
@@ -69,19 +69,19 @@ pub fn djogi_main(input: TokenStream) -> TokenStream {
         .iter()
         .map(|path| {
             quote! {
-                // Forces `inventory::submit!` from this type's crate into the binary.
-                // Without this reference, LTO/linker may drop the entire crate.
-                let _ = <#path as ::djogi::model::Model>::descriptor();
+             // Forces `inventory::submit!` from this type's crate into the binary.
+             // Without this reference, LTO/linker may drop the entire crate.
+             let _ = <#path as ::djogi::model::Model>::descriptor();
             }
         })
         .collect();
 
     quote! {
-        fn main() -> std::process::ExitCode {
-            // Force all model crates into the linkage graph so inventory data survives LTO.
-            #(#refs)*
-            ::djogi_cli::run_from_env()
-        }
+     fn main() -> std::process::ExitCode {
+      // Force all model crates into the linkage graph so inventory data survives LTO.
+      #(#refs)*
+      ::djogi_cli::run_from_env()
+     }
     }
 }
 
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_expand_multiple_models() {
-        let input: TokenStream = quote! { tracker::Elephant , billing::Invoice };
+        let input: TokenStream = quote! { tracker::Elephant, billing::Invoice };
         let out = djogi_main(input);
         let s = out.to_string();
 

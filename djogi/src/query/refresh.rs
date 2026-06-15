@@ -28,36 +28,36 @@
 //! source table:
 //! 1. Acquire a connection from the captured pool.
 //! 2. Construct a fresh `DjogiContext::from_connection(conn)` and apply the
-//!    captured `AuthContext` via `.with_auth(...)` — auth-locked-to-
-//!    subscription per spec §677.
+//! captured `AuthContext` via `.with_auth(...)` — auth-locked-to-
+//! subscription per spec §677.
 //! 3. Build SQL: `SELECT <COLUMN_LIST> FROM <table_name> WHERE
 //! [<portable filter on full baseline> | <watermark_col> >= $1]
 //! [OR id IN ($2, …)] ORDER BY <watermark_col>`.
 //! 4. For filtered full-baseline ticks, also observe
-//!    `SELECT MAX(<watermark_col>) FROM <table_name>` inside the same
-//!    transaction so source progress advances even when the filter excludes
-//!    the newest row.
+//! `SELECT MAX(<watermark_col>) FROM <table_name>` inside the same
+//! transaction so source progress advances even when the filter excludes
+//! the newest row.
 //! 5. Execute via `ctx.raw_query::<T>(sql, &binds).await`.
 //! 6. Split items into `(live_items, tombstones)` via the per-row
-//!    `Model::__delta_should_tombstone()` check (Pattern 1,
-//!    SoftDeletable-derived); return `DeltaResult::with_high_watermark(...)`
-//!    when a source watermark was observed.
+//! `Model::__delta_should_tombstone()` check (Pattern 1,
+//! SoftDeletable-derived); return `DeltaResult::with_high_watermark(...)`
+//! when a source watermark was observed.
 //! 7. Drop ctx (releases connection back to pool on drop).
 //! # Tombstone collection patterns
 //! - **Pattern 1 (SoftDeletable-derived):** per-row
-//!   `__delta_should_tombstone()` walks soft-deleted rows into the
-//!   tombstones set. Anti-regression: NO `deleted_at IS NULL` filter
-//!   in the WHERE clause — the deletion signal must flow through the
-//!   watermark per spec §415.
+//! `__delta_should_tombstone()` walks soft-deleted rows into the
+//! tombstones set. Anti-regression: NO `deleted_at IS NULL` filter
+//! in the WHERE clause — the deletion signal must flow through the
+//! watermark per spec §415.
 //! - **Pattern 2 (outbox-derived):** per-tick poll of
-//!   `<table>_outbox` for `action='delete'` rows whose `created_at`
-//!   advances past a per-fetcher watermark; gated on
-//!   `T::descriptor().has_outbox && t_id_decodes_from_outbox_bigint::<T::Id>()`
-//!   (`HeerId` and `HeerIdDesc` both round-trip through the outbox's
-//!   BIGINT `row_id` column; other PK types would already have failed
-//!   at `emit_event`'s INSERT). The poll runs inside the same
-//!   `transaction::atomic` as the data SELECT so it inherits the
-//!   `auto_set_tenant` scope. Closes GH #128.
+//! `<table>_outbox` for `action='delete'` rows whose `created_at`
+//! advances past a per-fetcher watermark; gated on
+//! `T::descriptor().has_outbox && t_id_decodes_from_outbox_bigint::<T::Id>()`
+//! (`HeerId` and `HeerIdDesc` both round-trip through the outbox's
+//! BIGINT `row_id` column; other PK types would already have failed
+//! at `emit_event`'s INSERT). The poll runs inside the same
+//! `transaction::atomic` as the data SELECT so it inherits the
+//! `auto_set_tenant` scope. Closes GH #128.
 //! # LRU eviction warn (spec §674 Knob 1)
 //! Always-on, one-shot per `(Punnu, Subscription)`: on the first observed
 //! `LruEvict` event, emit one `tracing::warn!` on the `djogi::cache`
@@ -75,9 +75,9 @@
 //! so once the gate succeeds the chain is on the sassi handle itself:
 //! ```text
 //! let handle = MyModel::objects()
-//!     .refresh_into(&punnu, pool, auth)?
-//!     .with_eviction_recovery(true)
-//!     .with_periodic_full_refresh(NonZeroUsize::new(10));
+//! .refresh_into(&punnu, pool, auth)?
+//! .with_eviction_recovery(true)
+//! .with_periodic_full_refresh(NonZeroUsize::new(10));
 //! ```
 //! No djogi-side wrappers are needed.
 //! # Portable filter pushdown
@@ -92,6 +92,7 @@
 use crate::__bypass::RawAccessExt as _;
 use crate::auth::AuthContext;
 use crate::cache::DjogiDeltaSyncMeta;
+use crate::migrate::naming::outbox_table_name;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::FromPgRow;
 use crate::pg::pool::DjogiPool;
@@ -227,12 +228,12 @@ where
                     }) => {
                         if !self.lru_warn_issued.swap(true, Ordering::AcqRel) {
                             tracing::warn!(
-                                target: "djogi::cache",
-                                model = std::any::type_name::<T>(),
-                                "Punnu LRU eviction detected — `lru_size` may be \
-                                 undersized for this subscription's working set. \
-                                 Tune via `PunnuConfig::lru_size` if eviction \
-                                 collisions become frequent.",
+                             target: "djogi::cache",
+                             model = std::any::type_name::<T>(),
+                             "Punnu LRU eviction detected — `lru_size` may be \
+                              undersized for this subscription's working set. \
+                              Tune via `PunnuConfig::lru_size` if eviction \
+                              collisions become frequent.",
                             );
                         }
                         break 'drain; // one-shot — no need to drain further
@@ -248,13 +249,13 @@ where
                         // to surface.
                         if !self.lru_warn_issued.swap(true, Ordering::AcqRel) {
                             tracing::warn!(
-                                target: "djogi::cache",
-                                model = std::any::type_name::<T>(),
-                                "Punnu event stream lagged — LRU eviction events \
-                                 may have been dropped. `lru_size` may be \
-                                 undersized for this subscription's working set. \
-                                 Tune via `PunnuConfig::lru_size` if eviction \
-                                 collisions become frequent.",
+                             target: "djogi::cache",
+                             model = std::any::type_name::<T>(),
+                             "Punnu event stream lagged — LRU eviction events \
+                              may have been dropped. `lru_size` may be \
+                              undersized for this subscription's working set. \
+                              Tune via `PunnuConfig::lru_size` if eviction \
+                              collisions become frequent.",
                             );
                         }
                         break 'drain;
@@ -443,7 +444,7 @@ where
                 {
                     // Defense-in-depth ident check before SQL embedding,
                     // mirroring `outbox/worker.rs::validate_table_ident`.
-                    let outbox_table = format!("{table_name}_outbox");
+                    let outbox_table = outbox_table_name(table_name);
                     crate::ident::check_plain_ident(&outbox_table, false).map_err(|e| {
                         crate::DjogiError::Db(crate::error::DbError::other(format!(
                             "outbox poll: invalid outbox table name {outbox_table:?}: {e:?}"
@@ -452,8 +453,8 @@ where
 
                     let outbox_sql = format!(
                         "SELECT row_id, created_at FROM {outbox_table} \
-                         WHERE action = 'delete' AND created_at >= $1 \
-                         ORDER BY created_at"
+       WHERE action = 'delete' AND created_at >= $1 \
+       ORDER BY created_at"
                     );
                     let rows = ctx
                         .query_all(&outbox_sql, &[&watermark as &(dyn ToSql + Sync)])

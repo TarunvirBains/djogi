@@ -1,22 +1,22 @@
 error[E0599]: `AsGeobufTerminal<TileFeature, djogi::query::EmptyAnnotation>` is not an iterator
-  --> $DIR/row_aggregate_terminal_no_filter.rs:16:10
-   |
-14 |       let _ = TileFeature::objects()
-   |  _____________-
-15 | |         .as_geobuf("location")
-16 | |         .filter(Expr::literal(true));
-   | |         -^^^^^^ `AsGeobufTerminal<TileFeature, djogi::query::EmptyAnnotation>` is not an iterator
-   | |_________|
-   |
-   |
-  ::: djogi/src/query/row_aggregate_terminal.rs:82:1
-   |
-82 |   pub struct AsGeobufTerminal<T: Model, A: IntoAggregateTuple> {
-   |   ------------------------------------------------------------ doesn't satisfy `_: Iterator`
-   |
-   = note: the following trait bounds were not satisfied:
-           `AsGeobufTerminal<TileFeature, djogi::query::EmptyAnnotation>: Iterator`
-           which is required by `&mut AsGeobufTerminal<TileFeature, djogi::query::EmptyAnnotation>: Iterator`
+ --> $DIR/row_aggregate_terminal_no_filter.rs:16:10
+ |
+14 |  let _ = TileFeature::objects()
+ | _____________-
+15 | |  .as_geobuf("location")
+16 | |  .filter(Expr::literal(true));
+ | |   -^^^^^^ `AsGeobufTerminal<TileFeature, djogi::query::EmptyAnnotation>` is not an iterator
+ | |_________|
+ |
+ |
+ ::: djogi/src/query/row_aggregate_terminal.rs:82:1
+ |
+82 | pub struct AsGeobufTerminal<T: Model, A: IntoAggregateTuple> {
+ | ------------------------------------------------------------ doesn't satisfy `_: Iterator`
+ |
+ = note: the following trait bounds were not satisfied:
+   `AsGeobufTerminal<TileFeature, djogi::query::EmptyAnnotation>: Iterator`
+   which is required by `&mut AsGeobufTerminal<TileFeature, djogi::query::EmptyAnnotation>: Iterator`
 
 error: aborting due to 1 previous error
 

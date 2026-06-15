@@ -1,11 +1,11 @@
 error[E0599]: no method named `facility_site` found for struct `ConsignmentPublicFields<RootModel>` in the current scope
-  --> $DIR/derived_tier1_accessor_excluded.rs:53:11
-   |
+ --> $DIR/derived_tier1_accessor_excluded.rs:53:11
+ |
 22 | #[model(table = "phase85_derived_tier1_accessor_excluded_consignments")]
-   | ------------------------------------------------------------------------ method `facility_site` not found for this struct
+ | ------------------------------------------------------------------------ method `facility_site` not found for this struct
 ...
-53 |         f.facility_site().eq(String::from("FAC-1"))
-   |           ^^^^^^^^^^^^^ method not found in `ConsignmentPublicFields`
+53 |   f.facility_site().eq(String::from("FAC-1"))
+ |   ^^^^^^^^^^^^^ method not found in `ConsignmentPublicFields`
 
 error: aborting due to 1 previous error
 

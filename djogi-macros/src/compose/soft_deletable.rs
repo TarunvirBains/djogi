@@ -14,9 +14,9 @@
 //! Given a struct `MyModel` with `pub deleted_at: Option<djogi::DateTime>`:
 //! ```rust,ignore
 //! impl ::djogi::SoftDeletable for MyModel {
-//!     fn deleted_at(&self) -> ::std::option::Option<::djogi::types::DateTime> {
-//!         self.deleted_at
-//!     }
+//!  fn deleted_at(&self) -> ::std::option::Option<::djogi::types::DateTime> {
+//!   self.deleted_at
+//!  }
 //! }
 //! ```
 //! No fields are added, removed, or renamed. The adopter still
@@ -36,7 +36,7 @@
 //! attribute, but field injection still does not happen. When the
 //! field is missing, the emitted `self.deleted_at` produces an
 //! actionable rustc diagnostic (`error[E0609]: no field "deleted_at"
-//! on type ...`).
+//! on type...`).
 //! # Default-filter composition deferred
 //! The current implementation ships **only** the trait impl. The runtime helper
 //! `QuerySet::not_deleted()` (in `djogi/src/query/queryset.rs`) is a
@@ -55,8 +55,8 @@
 //! #[model(table = "posts", soft_deletable)]
 //! #[derive(Debug, Clone)]
 //! pub struct Post {
-//!     pub title: String,
-//!     pub deleted_at: Option<djogi::DateTime>,
+//!  pub title: String,
+//!  pub deleted_at: Option<djogi::DateTime>,
 //! }
 //! ```
 //! `#[model(soft_deletable)]` and `#[model(auditable)]` / `#[model(hooks)]`
@@ -93,14 +93,14 @@ pub fn expand(model_ident: &Ident, model_attrs: &ModelAttrs) -> TokenStream {
         return TokenStream::new();
     }
     quote! {
-        // Trait impl — `SoftDeletable` getter exposing the adopter-declared
-        // `deleted_at: Option<DateTime>` as `Option<DateTime>` (copy
-        // `OffsetDateTime` is `Copy`-bounded under the `time` crate's
-        // surface).
-        impl ::djogi::SoftDeletable for #model_ident {
-            fn deleted_at(&self) -> ::std::option::Option<::djogi::types::DateTime> {
-                self.deleted_at
-            }
-        }
+     // Trait impl — `SoftDeletable` getter exposing the adopter-declared
+     // `deleted_at: Option<DateTime>` as `Option<DateTime>` (copy
+     // `OffsetDateTime` is `Copy`-bounded under the `time` crate's
+     // surface).
+     impl ::djogi::SoftDeletable for #model_ident {
+      fn deleted_at(&self) -> ::std::option::Option<::djogi::types::DateTime> {
+       self.deleted_at
+      }
+     }
     }
 }

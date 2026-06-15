@@ -11,13 +11,13 @@ use djogi::prelude::*;
 #[model(table = "plain")]
 #[derive(Debug, Clone)]
 pub struct Plain {
-    pub name: String,
+ pub name: String,
 }
 
 fn _must_not_compile() {
-    // `Plain::get_insecurely` must NOT exist — `_insecurely` methods are
-    // only emitted for tenant-keyed models.
-    let _ = Plain::get_insecurely;
+ // `Plain::get_insecurely` must NOT exist — `_insecurely` methods are
+ // only emitted for tenant-keyed models.
+ let _ = Plain::get_insecurely;
 }
 
 fn main() {}

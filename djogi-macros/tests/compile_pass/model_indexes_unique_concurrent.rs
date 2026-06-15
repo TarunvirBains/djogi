@@ -8,12 +8,12 @@
 use djogi::prelude::*;
 
 #[model(table = "accounts", indexes(
-    unique(fields = [tenant_id, email], concurrently = true),
+ unique(fields = [tenant_id, email], concurrently = true),
 ))]
 #[derive(Debug, Clone)]
 pub struct Account {
-    pub tenant_id: String,
-    pub email: String,
+ pub tenant_id: String,
+ pub email: String,
 }
 
 fn main() {}

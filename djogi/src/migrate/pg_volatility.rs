@@ -32,7 +32,7 @@
 //! identifier routed through the 3-step ExpandContract path is
 //! slower than necessary; the inverse mistake (assuming `IMMUTABLE`
 //! when the function is in fact `VOLATILE`) would silently emit a
-//! catalog-only `ADD COLUMN ... DEFAULT <volatile>()` that Postgres
+//! catalog-only `ADD COLUMN... DEFAULT <volatile>()` that Postgres
 //! accepts but the classifier promised would not require backfill,
 //! producing the wrong runtime behaviour.
 //! Adopters with a known-safe UDF override per-field via
@@ -41,11 +41,11 @@
 //! [`crate::descriptor::DefaultVolatility`]).
 //! # §7 routing
 //! - `IMMUTABLE` / `STABLE` defaults: `OnlineSafe` (Pg18 catalog-only
-//!   fast-path).
+//! fast-path).
 //! - `VOLATILE` defaults: `ExpandContract` (3-step pattern — add
-//!   nullable column with no default → SET DEFAULT → chunked
-//!   backfill).
-//!   See `docs/spec/live-migrations.md` for the full routing matrix.
+//! nullable column with no default → SET DEFAULT → chunked
+//! backfill).
+//! See `docs/spec/live-migrations.md` for the full routing matrix.
 
 /// Postgres `provolatile` category lifted into Rust.
 /// Mirrors the Pg18 `pg_proc.provolatile` axis; the variant order
@@ -112,18 +112,18 @@ const BUILTIN_VOLATILITY: &[(&str, Volatility)] = &[
 /// Resolution order:
 /// 1. Trim ASCII whitespace.
 /// 2. Recognise literal shapes — string literals (`'...'` /
-///    `E'...'` / dollar-quoted), numeric literals, boolean
-///    literals (`true` / `false`), and `NULL`. Literals are pure
-///    constants with no runtime evaluation; classify as
-///    [`Volatility::Immutable`].
+/// `E'...'` / dollar-quoted), numeric literals, boolean
+/// literals (`true` / `false`), and `NULL`. Literals are pure
+/// constants with no runtime evaluation; classify as
+/// [`Volatility::Immutable`].
 /// 3. Look up the trimmed expression against [`BUILTIN_VOLATILITY`]
-///    via `binary_search_by_key`. A match returns the catalog
-///    category.
+/// via `binary_search_by_key`. A match returns the catalog
+/// category.
 /// 4. Fall through to [`Volatility::Volatile`] — the conservative
-///    default. Per the module-level docs, unknown identifiers must
-///    route through the 3-step ExpandContract path because we cannot
-///    prove they are safe to catalog-fast-path.
-///    The classifier never reads `pg_catalog`. Compose stays pure.
+/// default. Per the module-level docs, unknown identifiers must
+/// route through the 3-step ExpandContract path because we cannot
+/// prove they are safe to catalog-fast-path.
+/// The classifier never reads `pg_catalog`. Compose stays pure.
 /// # Examples
 /// ```ignore
 /// use djogi::migrate::pg_volatility::{Volatility, classify_default_expression};
@@ -162,19 +162,19 @@ pub fn classify_default_expression(expr: &str) -> Volatility {
 /// pattern Pg18 requires.
 /// Plain-English shape rules, implemented with byte-level checks only:
 /// - **String literal.** Trimmed expression starts AND ends with a
-///   single quote `'`, OR is `E'...'` / `e'...'` (escape-string
-///   syntax) starting with the prefix and ending with `'`, OR is
-///   dollar-quoted (`$tag$...$tag$`) starting and ending with `$`.
-///   The trimmed form must have no characters following the closing
-///   quote. Internal escaping is not validated here — Postgres
-///   rejects malformed literals at the `ALTER TABLE` site.
+/// single quote `'`, OR is `E'...'` / `e'...'` (escape-string
+/// syntax) starting with the prefix and ending with `'`, OR is
+/// dollar-quoted (`$tag$...$tag$`) starting and ending with `$`.
+/// The trimmed form must have no characters following the closing
+/// quote. Internal escaping is not validated here — Postgres
+/// rejects malformed literals at the `ALTER TABLE` site.
 /// - **Numeric literal.** Trimmed expression is an optional `+` /
-///   `-` sign, followed by one or more ASCII digits, optionally a
-///   single `.` and more digits, optionally a single `e` / `E`
-///   followed by an optional sign and digits. Anything beyond that
-///   (operators, whitespace, parens, additional tokens) disqualifies.
+/// `-` sign, followed by one or more ASCII digits, optionally a
+/// single `.` and more digits, optionally a single `e` / `E`
+/// followed by an optional sign and digits. Anything beyond that
+/// (operators, whitespace, parens, additional tokens) disqualifies.
 /// - **Boolean literal.** Exactly `true` or `false` (case-insensitive,
-///   matching Postgres' own behaviour).
+/// matching Postgres' own behaviour).
 /// - **NULL.** Exactly `NULL` or `null` (case-insensitive).
 fn is_literal_shape(expr: &str) -> bool {
     let bytes = expr.as_bytes();
@@ -542,13 +542,13 @@ mod tests {
 
     #[test]
     fn surrounding_whitespace_is_trimmed() {
-        assert_eq!(classify_default_expression("  now()  "), Volatility::Stable);
+        assert_eq!(classify_default_expression(" now() "), Volatility::Stable);
         assert_eq!(
             classify_default_expression("\tnull\n"),
             Volatility::Immutable
         );
         assert_eq!(
-            classify_default_expression("  clock_timestamp()  "),
+            classify_default_expression(" clock_timestamp() "),
             Volatility::Volatile
         );
     }
@@ -560,7 +560,7 @@ mod tests {
         // malformed declaration anyway — this test only pins the
         // observable behaviour.)
         assert_eq!(classify_default_expression(""), Volatility::Volatile);
-        assert_eq!(classify_default_expression("   "), Volatility::Volatile);
+        assert_eq!(classify_default_expression(" "), Volatility::Volatile);
     }
 
     #[test]

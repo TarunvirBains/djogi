@@ -4,19 +4,19 @@
 // What this file pins:
 //
 // 1. `before_delete(&mut self, ctx)` fires before the DELETE composes —
-//    while the row is still queryable from the database. The hook can
-//    inspect (and mutate) the in-memory snapshot before it is consumed.
+//  while the row is still queryable from the database. The hook can
+//  inspect (and mutate) the in-memory snapshot before it is consumed.
 // 2. `after_delete(&self, ctx)` fires AFTER the DELETE statement runs
-//    AND after the outbox row is emitted — the hook can read the
-//    canonical pre-delete payload via the outbox while observing that
-//    the primary row is gone.
+//  AND after the outbox row is emitted — the hook can read the
+//  canonical pre-delete payload via the outbox while observing that
+//  the primary row is gone.
 // 3. Returning `Err` from `before_delete` short-circuits the entire
-//    sequence: no DELETE composes, no outbox row is written; a follow-up
-//    typed re-fetch confirms the row still exists unchanged.
+//  sequence: no DELETE composes, no outbox row is written; a follow-up
+//  typed re-fetch confirms the row still exists unchanged.
 // 4. Even though `delete(self, ctx)` consumes `self`, `after_delete`
-//    still sees mutations the `before_delete` body made to `self` —
-//    the macro re-binds `self` as `mut self` inside the body so both
-//    hooks share the same in-memory value.
+//  still sees mutations the `before_delete` body made to `self` —
+//  the macro re-binds `self` as `mut self` inside the body so both
+//  hooks share the same in-memory value.
 //
 // §D3 lines 118-129 fix the canonical sequence as
 // `before_delete -> DELETE -> outbox -> after_delete -> on_commit drain`.
@@ -55,7 +55,7 @@ pub struct DelPreWitness {
 }
 
 tokio::task_local! {
-    static DPW_BEFORE_SAW_ROW: Cell<bool>;
+  static DPW_BEFORE_SAW_ROW: Cell<bool>;
 }
 
 impl djogi::hooks::ModelHooks for DelPreWitness {
@@ -92,7 +92,7 @@ async fn before_delete_fires_pre_db_delete(mut ctx: djogi::DjogiContext) {
             assert!(
                 DPW_BEFORE_SAW_ROW.with(Cell::get),
                 "before_delete must fire BEFORE the DELETE composes — \
-                 the typed get inside the hook body must observe the row",
+         the typed get inside the hook body must observe the row",
             );
 
             // Sanity: after delete() returns, the row is gone.
@@ -123,8 +123,8 @@ pub struct DelOutboxWitness {
 }
 
 tokio::task_local! {
-    static DOW_AFTER_SAW_OUTBOX: Cell<bool>;
-    static DOW_AFTER_OUTBOX_ACTION_OK: Cell<bool>;
+  static DOW_AFTER_SAW_OUTBOX: Cell<bool>;
+  static DOW_AFTER_OUTBOX_ACTION_OK: Cell<bool>;
 }
 
 impl djogi::hooks::ModelHooks for DelOutboxWitness {
@@ -169,8 +169,8 @@ async fn after_delete_runs_post_outbox(mut ctx: djogi::DjogiContext) {
                     assert!(
                         DOW_AFTER_SAW_OUTBOX.with(Cell::get),
                         "after_delete must observe the outbox row — \
-                         outbox emission (D3 step 3) precedes after_delete \
-                         (D3 step 4)",
+             outbox emission (D3 step 3) precedes after_delete \
+             (D3 step 4)",
                     );
                     assert!(
                         DOW_AFTER_OUTBOX_ACTION_OK.with(Cell::get),
@@ -258,8 +258,8 @@ pub struct DelSelfInspect {
 }
 
 tokio::task_local! {
-    static DSI_AFTER_SAW_FLAG: Cell<bool>;
-    static DSI_AFTER_SAW_NOTE_LEN: Cell<usize>;
+  static DSI_AFTER_SAW_FLAG: Cell<bool>;
+  static DSI_AFTER_SAW_NOTE_LEN: Cell<usize>;
 }
 
 impl djogi::hooks::ModelHooks for DelSelfInspect {
@@ -306,15 +306,15 @@ async fn delete_consumes_self_hook_can_inspect(mut ctx: djogi::DjogiContext) {
                     assert!(
                         DSI_AFTER_SAW_FLAG.with(Cell::get),
                         "after_delete must observe before_delete's mutation \
-                         to `self.flag` even though the DB row is gone — \
-                         proves the macro re-binds `self` as `mut self` so \
-                         both hooks share the same in-memory value",
+             to `self.flag` even though the DB row is gone — \
+             proves the macro re-binds `self` as `mut self` so \
+             both hooks share the same in-memory value",
                     );
                     assert_eq!(
                         DSI_AFTER_SAW_NOTE_LEN.with(Cell::get),
                         "set-by-before-delete".len(),
                         "after_delete must observe before_delete's mutation \
-                         to `self.note`",
+             to `self.note`",
                     );
                 })
                 .await
@@ -335,9 +335,9 @@ pub struct DelSelfInspectReturning {
 }
 
 tokio::task_local! {
-    static DSR_AFTER_SAW_FLAG: Cell<bool>;
-    static DSR_AFTER_SAW_NOTE_LEN: Cell<usize>;
-    static DSR_AFTER_SAW_OUTBOX_NOTE_MATCH: Cell<bool>;
+  static DSR_AFTER_SAW_FLAG: Cell<bool>;
+  static DSR_AFTER_SAW_NOTE_LEN: Cell<usize>;
+  static DSR_AFTER_SAW_OUTBOX_NOTE_MATCH: Cell<bool>;
 }
 
 impl djogi::hooks::ModelHooks for DelSelfInspectReturning {
@@ -381,53 +381,53 @@ impl djogi::hooks::ModelHooks for DelSelfInspectReturning {
 #[djogi::djogi_test(sync_models = [DelSelfInspectReturning])]
 async fn delete_returning_runs_hooks_after_before_delete(mut ctx: djogi::DjogiContext) {
     DSR_AFTER_SAW_FLAG
-        .scope(Cell::new(false), async {
-            DSR_AFTER_SAW_NOTE_LEN
-                .scope(Cell::new(0), async {
-                    DSR_AFTER_SAW_OUTBOX_NOTE_MATCH
-                        .scope(Cell::new(false), async {
-                            let row = DelSelfInspectReturning::create(
-                                &mut ctx,
-                                DelSelfInspectReturning {
-                                    flag: false,
-                                    note: "initial-note".to_string(),
-                                    ..Default::default()
-                                },
-                            )
-                            .await
-                            .expect("create should succeed");
+    .scope(Cell::new(false), async {
+      DSR_AFTER_SAW_NOTE_LEN
+        .scope(Cell::new(0), async {
+          DSR_AFTER_SAW_OUTBOX_NOTE_MATCH
+            .scope(Cell::new(false), async {
+              let row = DelSelfInspectReturning::create(
+                &mut ctx,
+                DelSelfInspectReturning {
+                  flag: false,
+                  note: "initial-note".to_string(),
+                  ..Default::default()
+                },
+              )
+              .await
+              .expect("create should succeed");
 
-                            let deleted = row
-                                .delete_returning(&mut ctx)
-                                .await
-                                .expect("delete_returning should succeed");
+              let deleted = row
+                .delete_returning(&mut ctx)
+                .await
+                .expect("delete_returning should succeed");
 
-                            assert!(
-                                !deleted.flag,
-                                "returned snapshot should come from DB OLD, not hook mutation",
-                            );
-                            assert_eq!(
-                                deleted.note,
-                                "initial-note",
-                                "returned snapshot should preserve original DB payload",
-                            );
-                            assert!(
-                                DSR_AFTER_SAW_FLAG.with(Cell::get),
-                                "after_delete should observe before_delete's mutation to `self.flag` even though DB row is gone",
-                            );
-                            assert_eq!(
-                                DSR_AFTER_SAW_NOTE_LEN.with(Cell::get),
-                                "set-by-before-delete".len(),
-                                "after_delete should observe before_delete's mutation to `self.note`",
-                            );
-                            assert!(
-                                DSR_AFTER_SAW_OUTBOX_NOTE_MATCH.with(Cell::get),
-                                "delete outbox payload should come from self after before_delete",
-                            );
-                        })
-                        .await
-                })
-                .await;
+              assert!(
+                !deleted.flag,
+                "returned snapshot should come from DB OLD, not hook mutation",
+              );
+              assert_eq!(
+                deleted.note,
+                "initial-note",
+                "returned snapshot should preserve original DB payload",
+              );
+              assert!(
+                DSR_AFTER_SAW_FLAG.with(Cell::get),
+                "after_delete should observe before_delete's mutation to `self.flag` even though DB row is gone",
+              );
+              assert_eq!(
+                DSR_AFTER_SAW_NOTE_LEN.with(Cell::get),
+                "set-by-before-delete".len(),
+                "after_delete should observe before_delete's mutation to `self.note`",
+              );
+              assert!(
+                DSR_AFTER_SAW_OUTBOX_NOTE_MATCH.with(Cell::get),
+                "delete outbox payload should come from self after before_delete",
+              );
+            })
+            .await
         })
         .await;
+    })
+    .await;
 }

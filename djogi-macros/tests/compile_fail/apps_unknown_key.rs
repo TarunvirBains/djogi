@@ -3,8 +3,8 @@
 // in T8.
 
 djogi::apps! {
-    #[app(database = "main", ghost = "no")]
-    pub struct Vehicles;
+ #[app(database = "main", ghost = "no")]
+ pub struct Vehicles;
 }
 
 fn main() {}

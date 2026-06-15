@@ -7,13 +7,13 @@ mod gc_target_cache;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: cargo xtask <subcommand>\n\
-                     \n\
-                     subcommands:\n\
-                     \x20 check-justifications\n\
-                     \x20 check-secrets [--staged | --stdin]\n\
-                     \x20 check-spatial-ci\n\
-                     \x20 check-test-surface [--list]\n\
-                     \x20 gc-target-cache [--dry-run]";
+           \n\
+           subcommands:\n\
+           \x20 check-justifications\n\
+           \x20 check-secrets [--staged | --stdin]\n\
+           \x20 check-spatial-ci\n\
+           \x20 check-test-surface [--list]\n\
+           \x20 gc-target-cache [--dry-run]";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);

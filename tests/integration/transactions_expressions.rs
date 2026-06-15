@@ -4,20 +4,20 @@
 // What this file pins:
 //
 // 1. `run_atomic(&mut ctx, |ctx| Box::pin(async move { ... }))` opens a
-//    transaction, runs the closure, and commits on `Ok`. Rows written
-//    inside are visible after the scope returns.
+// transaction, runs the closure, and commits on `Ok`. Rows written
+// inside are visible after the scope returns.
 // 2. Returning `Err` from the closure rolls the transaction back — no
-//    rows survive.
+// rows survive.
 // 3. Nested `atomic(&mut *ctx, ...)` emits `SAVEPOINT sp_<depth>`. An
-//    inner rollback leaves the outer rows intact (the framework issues
-//    `ROLLBACK TO SAVEPOINT sp_<depth>` + `RELEASE SAVEPOINT`).
+// inner rollback leaves the outer rows intact (the framework issues
+// `ROLLBACK TO SAVEPOINT sp_<depth>` + `RELEASE SAVEPOINT`).
 // 4. `on_commit` callbacks fire in FIFO order after the outermost
-//    commit, never on rollback.
+// commit, never on rollback.
 // 5. Callbacks registered inside a nested `atomic()` that rolled back
-//    are discarded — only the outer-scope callbacks fire.
+// are discarded — only the outer-scope callbacks fire.
 // 6. Prefetch stitching works inside `atomic()` — proves the generalised
-//    `PrefetchLoaderFn` threads `&mut ContextInner` correctly through
-//    transaction-backed contexts.
+// `PrefetchLoaderFn` threads `&mut ContextInner` correctly through
+// transaction-backed contexts.
 //
 // # Closure shape — `Box::pin(async move { ... })`
 //
@@ -51,7 +51,7 @@ use tokio::sync::oneshot;
 // Test models
 // ---------------------------------------------------------------------------
 
-//  default flip — pin ascending HeerId across these
+// default flip — pin ascending HeerId across these
 // models so HeerId-typed construction and cross-model FK relations
 // (`ledger_id: ForeignKey<Ledger>` etc.) stay homogeneous.
 #[model(table = "accounts", pk = HeerId)]
@@ -90,7 +90,7 @@ pub struct Entry {
 // Events-enabled model. `kind` is the payload-
 // visible column; `internal_notes` is excluded from the outbox payload
 // via `#[field(outbox = "ignore")]`. Kept separate from `Account` so
-// Tasks 1-5 assertions that count rows in `accounts_outbox` stay
+// assertions that count rows in `accounts_outbox` stay
 // unaffected (non-events models write nothing there).
 #[model(table = "notifications", pk = HeerId, events)]
 #[derive(Debug, Clone, serde::Serialize)]
@@ -318,8 +318,8 @@ async fn atomic_pool_context_cancellation_detaches_dirty_connection() {
             tokio::pin!(fut);
 
             tokio::select! {
-                result = &mut fut => panic!("atomic future completed before cancellation: {result:?}"),
-                ready = ready_rx => ready.expect("dirty transaction should signal readiness"),
+             result = &mut fut => panic!("atomic future completed before cancellation: {result:?}"),
+             ready = ready_rx => ready.expect("dirty transaction should signal readiness"),
             };
 
             let result = tokio::time::timeout(Duration::from_millis(25), &mut fut).await;
@@ -333,7 +333,7 @@ async fn atomic_pool_context_cancellation_detaches_dirty_connection() {
         assert_eq!(
             status.size, 0,
             "cancelled dirty atomic(&mut pool_ctx, ...) must detach the \
-             physical connection; pool.size should drop to 0, got: {status:?}"
+    physical connection; pool.size should drop to 0, got: {status:?}"
         );
         assert!(
             !ctx.tenant_set,
@@ -350,13 +350,11 @@ async fn atomic_pool_context_cancellation_detaches_dirty_connection() {
             "pool-context cancellation must not mutate parent auth user_id"
         );
         assert_eq!(
-            auth_after.tenant_id,
-            auth_before.tenant_id,
+            auth_after.tenant_id, auth_before.tenant_id,
             "pool-context cancellation must not mutate parent auth tenant_id"
         );
         assert_eq!(
-            auth_after.scopes,
-            auth_before.scopes,
+            auth_after.scopes, auth_before.scopes,
             "pool-context cancellation must not mutate parent auth scopes"
         );
         assert_eq!(
@@ -432,8 +430,8 @@ async fn atomic_pool_reference_cancellation_detaches_dirty_connection() {
             tokio::pin!(fut);
 
             tokio::select! {
-                result = &mut fut => panic!("atomic future completed before cancellation: {result:?}"),
-                ready = ready_rx => ready.expect("dirty transaction should signal readiness"),
+             result = &mut fut => panic!("atomic future completed before cancellation: {result:?}"),
+             ready = ready_rx => ready.expect("dirty transaction should signal readiness"),
             };
 
             let result = tokio::time::timeout(Duration::from_millis(25), &mut fut).await;
@@ -447,7 +445,7 @@ async fn atomic_pool_reference_cancellation_detaches_dirty_connection() {
         assert_eq!(
             status.size, 0,
             "cancelled dirty atomic(&pool, ...) must detach the physical \
-             connection; pool.size should drop to 0, got: {status:?}"
+    connection; pool.size should drop to 0, got: {status:?}"
         );
 
         let count_after_cancel: i64 = Account::objects()
@@ -496,141 +494,141 @@ async fn nested_atomic_cancellation_poisons_outer_transaction(mut ctx: djogi::Dj
     let outer_result = {
         let callbacks = Arc::clone(&callbacks);
         atomic(&mut ctx, |outer| {
-            Box::pin(async move {
-                Account::create(
-                    outer,
-                    Account {
-                        balance: 281_201,
-                        ..Default::default()
-                    },
-                )
-                .await?;
-                outer.set_auth(
-                    AuthContext::new(djogi::HeerId::from_i64(281).expect("HeerId(281) is valid"))
-                        .with_tenant("outer-tenant"),
-                );
-                outer.set_tenant("outer-tenant").await?;
-                let auth_before = outer.auth().cloned().expect("outer auth snapshot");
-                let tenant_scope_before = outer.__tenant_scope_suppressed_for_macros();
-                let tenant_set_before = outer.tenant_set;
-                let applied_tenant_before = outer.applied_tenant_id().map(str::to_owned);
+   Box::pin(async move {
+    Account::create(
+     outer,
+     Account {
+      balance: 281_201,
+      ..Default::default()
+     },
+    )
+    .await?;
+    outer.set_auth(
+     AuthContext::new(djogi::HeerId::from_i64(281).expect("HeerId(281) is valid"))
+      .with_tenant("outer-tenant"),
+    );
+    outer.set_tenant("outer-tenant").await?;
+    let auth_before = outer.auth().cloned().expect("outer auth snapshot");
+    let tenant_scope_before = outer.__tenant_scope_suppressed_for_macros();
+    let tenant_set_before = outer.tenant_set;
+    let applied_tenant_before = outer.applied_tenant_id().map(str::to_owned);
 
-                {
-                    let callbacks = Arc::clone(&callbacks);
-                    outer.on_commit(move || async move {
-                        callbacks.fetch_add(1, Ordering::SeqCst);
-                        Ok(())
-                    });
-                }
+    {
+     let callbacks = Arc::clone(&callbacks);
+     outer.on_commit(move || async move {
+      callbacks.fetch_add(1, Ordering::SeqCst);
+      Ok(())
+     });
+    }
 
-                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
-                {
-                    let callbacks = Arc::clone(&callbacks);
-                    let inner = atomic(&mut *outer, |inner| {
-                        Box::pin(async move {
-                            Account::create(
-                                inner,
-                                Account {
-                                    balance: 281_202,
-                                    ..Default::default()
-                                },
-                            )
-                            .await?;
-                            inner.set_auth(
-                                AuthContext::new(
-                                    djogi::HeerId::from_i64(282).expect("HeerId(282) is valid"),
-                                )
-                                .with_tenant("inner-tenant"),
-                            );
-                            inner.set_tenant("inner-tenant").await?;
-                            inner.set_no_tenant_scope();
-                            inner.on_commit(move || async move {
-                                callbacks.fetch_add(1, Ordering::SeqCst);
-                                Ok(())
-                            });
-                            let _ = ready_tx.send(());
-                            pending::<()>().await;
-                            #[allow(unreachable_code)]
-                            Ok::<_, DjogiError>(())
-                        })
-                    });
-                    tokio::pin!(inner);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+    {
+     let callbacks = Arc::clone(&callbacks);
+     let inner = atomic(&mut *outer, |inner| {
+      Box::pin(async move {
+       Account::create(
+        inner,
+        Account {
+         balance: 281_202,
+         ..Default::default()
+        },
+       )
+       .await?;
+       inner.set_auth(
+        AuthContext::new(
+         djogi::HeerId::from_i64(282).expect("HeerId(282) is valid"),
+        )
+        .with_tenant("inner-tenant"),
+       );
+       inner.set_tenant("inner-tenant").await?;
+       inner.set_no_tenant_scope();
+       inner.on_commit(move || async move {
+        callbacks.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+       });
+       let _ = ready_tx.send(());
+       pending::<()>().await;
+       #[allow(unreachable_code)]
+       Ok::<_, DjogiError>(())
+      })
+     });
+     tokio::pin!(inner);
 
-                    tokio::select! {
-                        result = &mut inner => {
-                            panic!("nested atomic future completed before cancellation: {result:?}")
-                        }
-                        ready = ready_rx => ready.expect("inner transaction should signal readiness"),
-                    }
+     tokio::select! {
+      result = &mut inner => {
+       panic!("nested atomic future completed before cancellation: {result:?}")
+      }
+      ready = ready_rx => ready.expect("inner transaction should signal readiness"),
+     }
 
-                    let timeout = tokio::time::timeout(Duration::from_millis(25), &mut inner).await;
-                    assert!(
-                        timeout.is_err(),
-                        "timeout must leave the nested atomic future to be dropped"
-                    );
-                }
+     let timeout = tokio::time::timeout(Duration::from_millis(25), &mut inner).await;
+     assert!(
+      timeout.is_err(),
+      "timeout must leave the nested atomic future to be dropped"
+     );
+    }
 
-                let auth_after = outer.auth().expect("outer auth must be restored");
-                assert_eq!(auth_after.user_id, auth_before.user_id);
-                assert_eq!(auth_after.tenant_id, auth_before.tenant_id);
-                assert_eq!(auth_after.scopes, auth_before.scopes);
-                assert_eq!(auth_after.ext, auth_before.ext);
-                assert_eq!(
-                    outer.__tenant_scope_suppressed_for_macros(),
-                    tenant_scope_before
-                );
-                assert_eq!(outer.tenant_set, tenant_set_before);
-                assert_eq!(
-                    outer.applied_tenant_id(),
-                    applied_tenant_before.as_deref()
-                );
+    let auth_after = outer.auth().expect("outer auth must be restored");
+    assert_eq!(auth_after.user_id, auth_before.user_id);
+    assert_eq!(auth_after.tenant_id, auth_before.tenant_id);
+    assert_eq!(auth_after.scopes, auth_before.scopes);
+    assert_eq!(auth_after.ext, auth_before.ext);
+    assert_eq!(
+     outer.__tenant_scope_suppressed_for_macros(),
+     tenant_scope_before
+    );
+    assert_eq!(outer.tenant_set, tenant_set_before);
+    assert_eq!(
+     outer.applied_tenant_id(),
+     applied_tenant_before.as_deref()
+    );
 
-                let later_query = Account::objects().count(outer).await;
-                assert!(
-                    matches!(
-                        later_query,
-                        Err(DjogiError::TransactionPoisoned {
-                            reason: "nested atomic future dropped before savepoint cleanup",
-                            ..
-                        })
-                    ),
-                    "framework-owned work after nested cancellation must return TransactionPoisoned, got: {later_query:?}"
-                );
+    let later_query = Account::objects().count(outer).await;
+    assert!(
+     matches!(
+      later_query,
+      Err(DjogiError::TransactionPoisoned {
+       reason: "nested atomic future dropped before savepoint cleanup",
+       ..
+      })
+     ),
+     "framework-owned work after nested cancellation must return TransactionPoisoned, got: {later_query:?}"
+    );
 
-                let joined_err = Entry::objects()
-                    .select_related(EntryRelated::ledger())
-                    .fetch_all_joined(outer)
-                    .await;
-                assert!(
-                    matches!(
-                        joined_err,
-                        Err(DjogiError::TransactionPoisoned {
-                            reason: "nested atomic future dropped before savepoint cleanup",
-                            ..
-                        })
-                    ),
-                    "joined fetch after nested cancellation must return TransactionPoisoned, got: {joined_err:?}"
-                );
+    let joined_err = Entry::objects()
+     .select_related(EntryRelated::ledger())
+     .fetch_all_joined(outer)
+     .await;
+    assert!(
+     matches!(
+      joined_err,
+      Err(DjogiError::TransactionPoisoned {
+       reason: "nested atomic future dropped before savepoint cleanup",
+       ..
+      })
+     ),
+     "joined fetch after nested cancellation must return TransactionPoisoned, got: {joined_err:?}"
+    );
 
-                let prefetch_err = Entry::objects()
-                    .prefetch(EntryRelated::ledger())
-                    .fetch_all_prefetched(outer)
-                    .await;
-                assert!(
-                    matches!(
-                        prefetch_err,
-                        Err(DjogiError::TransactionPoisoned {
-                            reason: "nested atomic future dropped before savepoint cleanup",
-                            ..
-                        })
-                    ),
-                    "prefetch fetch after nested cancellation must return TransactionPoisoned, got: {prefetch_err:?}"
-                );
+    let prefetch_err = Entry::objects()
+     .prefetch(EntryRelated::ledger())
+     .fetch_all_prefetched(outer)
+     .await;
+    assert!(
+     matches!(
+      prefetch_err,
+      Err(DjogiError::TransactionPoisoned {
+       reason: "nested atomic future dropped before savepoint cleanup",
+       ..
+      })
+     ),
+     "prefetch fetch after nested cancellation must return TransactionPoisoned, got: {prefetch_err:?}"
+    );
 
-                Ok::<_, DjogiError>(())
-            })
-        })
-        .await
+    Ok::<_, DjogiError>(())
+   })
+  })
+  .await
     };
 
     assert!(
@@ -720,136 +718,136 @@ async fn nested_atomic_cancellation_poisoned_outer_transaction_rolls_back_all_wo
     let outer_result = {
         let callback_count = callback_count.clone();
         atomic(&mut ctx, |outer| {
-            Box::pin(async move {
-                outer.set_auth(
-                    AuthContext::new(djogi::HeerId::from_i64(7).expect("HeerId(7) is valid"))
-                        .with_tenant("1000"),
-                );
-                let auth_before = outer.auth().cloned().expect("outer auth snapshot");
-                let tenant_scope_before = outer.__tenant_scope_suppressed_for_macros();
+   Box::pin(async move {
+    outer.set_auth(
+     AuthContext::new(djogi::HeerId::from_i64(7).expect("HeerId(7) is valid"))
+      .with_tenant("1000"),
+    );
+    let auth_before = outer.auth().cloned().expect("outer auth snapshot");
+    let tenant_scope_before = outer.__tenant_scope_suppressed_for_macros();
 
-                outer
-                    .set_tenant("1000")
-                    .await
-                    .expect("outer tenant priming must succeed");
-                let tenant_set_before = outer.tenant_set;
-                let applied_tenant_before = outer.applied_tenant_id().map(str::to_owned);
+    outer
+     .set_tenant("1000")
+     .await
+     .expect("outer tenant priming must succeed");
+    let tenant_set_before = outer.tenant_set;
+    let applied_tenant_before = outer.applied_tenant_id().map(str::to_owned);
 
-                Account::create(
-                    outer,
-                    Account {
-                        balance: 281_201,
-                        ..Default::default()
-                    },
-                )
-                .await?;
+    Account::create(
+     outer,
+     Account {
+      balance: 281_201,
+      ..Default::default()
+     },
+    )
+    .await?;
 
-                {
-                    let callback_count = callback_count.clone();
-                    outer.on_commit(move || async move {
-                        callback_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(())
-                    });
-                }
+    {
+     let callback_count = callback_count.clone();
+     outer.on_commit(move || async move {
+      callback_count.fetch_add(1, Ordering::SeqCst);
+      Ok(())
+     });
+    }
 
-                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
-                let inner_result = {
-                    let fut = atomic(&mut *outer, |inner| {
-                        Box::pin(async move {
-                            Account::create(
-                                inner,
-                                Account {
-                                    balance: 281_202,
-                                    ..Default::default()
-                                },
-                            )
-                            .await?;
-                            inner.set_auth(
-                                AuthContext::new(
-                                    djogi::HeerId::from_i64(8).expect("HeerId(8) is valid"),
-                                )
-                                .with_tenant("2000"),
-                            );
-                            inner.set_no_tenant_scope();
-                            inner
-                                .set_tenant("2000")
-                                .await
-                                .expect("inner tenant mutation must succeed");
-                            {
-                                let callback_count = callback_count.clone();
-                                inner.on_commit(move || async move {
-                                    callback_count.fetch_add(10, Ordering::SeqCst);
-                                    Ok(())
-                                });
-                            }
-                            let _ = ready_tx.send(());
-                            pending::<()>().await;
-                            #[allow(unreachable_code)]
-                            Ok::<_, DjogiError>(())
-                        })
-                    });
-                    tokio::pin!(fut);
-
-                    tokio::select! {
-                        result = &mut fut => panic!("inner atomic completed before cancellation: {result:?}"),
-                        ready = ready_rx => ready.expect("inner atomic should signal dirty readiness"),
-                    };
-
-                    tokio::time::timeout(Duration::from_millis(25), &mut fut).await
-                };
-                assert!(
-                    inner_result.is_err(),
-                    "timeout must drop the nested atomic future before it resolves"
-                );
-
-                assert_eq!(
-                    outer.tenant_set,
-                    tenant_set_before,
-                    "nested cancellation must restore outer tenant_set tracker"
-                );
-                assert_eq!(
-                    outer.applied_tenant_id().map(str::to_owned),
-                    applied_tenant_before,
-                    "nested cancellation must restore outer applied_tenant_id"
-                );
-                let auth_after = outer.auth().expect("outer auth must remain attached");
-                assert_eq!(
-                    auth_after.user_id, auth_before.user_id,
-                    "nested cancellation must restore outer auth user_id"
-                );
-                assert_eq!(
-                    auth_after.tenant_id,
-                    auth_before.tenant_id,
-                    "nested cancellation must restore outer auth tenant_id"
-                );
-                assert_eq!(
-                    auth_after.scopes,
-                    auth_before.scopes,
-                    "nested cancellation must restore outer auth scopes"
-                );
-                assert_eq!(
-                    auth_after.ext, auth_before.ext,
-                    "nested cancellation must restore outer auth ext"
-                );
-                assert_eq!(
-                    outer.__tenant_scope_suppressed_for_macros(),
-                    tenant_scope_before,
-                    "nested cancellation must restore outer tenant-scope suppression"
-                );
-
-                let poison_err = Account::objects()
-                    .count(outer)
-                    .await
-                    .expect_err("poisoned outer context must reject further helper-path work");
-                assert!(
-                    matches!(poison_err, DjogiError::TransactionPoisoned { .. }),
-                    "expected TransactionPoisoned after nested cancellation, got: {poison_err:?}"
-                );
-
-                Ok::<_, DjogiError>(())
-            })
-        })
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+    let inner_result = {
+     let fut = atomic(&mut *outer, |inner| {
+      Box::pin(async move {
+       Account::create(
+        inner,
+        Account {
+         balance: 281_202,
+         ..Default::default()
+        },
+       )
+       .await?;
+       inner.set_auth(
+        AuthContext::new(
+         djogi::HeerId::from_i64(8).expect("HeerId(8) is valid"),
+        )
+        .with_tenant("2000"),
+       );
+       inner.set_no_tenant_scope();
+       inner
+        .set_tenant("2000")
         .await
+        .expect("inner tenant mutation must succeed");
+       {
+        let callback_count = callback_count.clone();
+        inner.on_commit(move || async move {
+         callback_count.fetch_add(10, Ordering::SeqCst);
+         Ok(())
+        });
+       }
+       let _ = ready_tx.send(());
+       pending::<()>().await;
+       #[allow(unreachable_code)]
+       Ok::<_, DjogiError>(())
+      })
+     });
+     tokio::pin!(fut);
+
+     tokio::select! {
+      result = &mut fut => panic!("inner atomic completed before cancellation: {result:?}"),
+      ready = ready_rx => ready.expect("inner atomic should signal dirty readiness"),
+     };
+
+     tokio::time::timeout(Duration::from_millis(25), &mut fut).await
+    };
+    assert!(
+     inner_result.is_err(),
+     "timeout must drop the nested atomic future before it resolves"
+    );
+
+    assert_eq!(
+     outer.tenant_set,
+     tenant_set_before,
+     "nested cancellation must restore outer tenant_set tracker"
+    );
+    assert_eq!(
+     outer.applied_tenant_id().map(str::to_owned),
+     applied_tenant_before,
+     "nested cancellation must restore outer applied_tenant_id"
+    );
+    let auth_after = outer.auth().expect("outer auth must remain attached");
+    assert_eq!(
+     auth_after.user_id, auth_before.user_id,
+     "nested cancellation must restore outer auth user_id"
+    );
+    assert_eq!(
+     auth_after.tenant_id,
+     auth_before.tenant_id,
+     "nested cancellation must restore outer auth tenant_id"
+    );
+    assert_eq!(
+     auth_after.scopes,
+     auth_before.scopes,
+     "nested cancellation must restore outer auth scopes"
+    );
+    assert_eq!(
+     auth_after.ext, auth_before.ext,
+     "nested cancellation must restore outer auth ext"
+    );
+    assert_eq!(
+     outer.__tenant_scope_suppressed_for_macros(),
+     tenant_scope_before,
+     "nested cancellation must restore outer tenant-scope suppression"
+    );
+
+    let poison_err = Account::objects()
+     .count(outer)
+     .await
+     .expect_err("poisoned outer context must reject further helper-path work");
+    assert!(
+     matches!(poison_err, DjogiError::TransactionPoisoned { .. }),
+     "expected TransactionPoisoned after nested cancellation, got: {poison_err:?}"
+    );
+
+    Ok::<_, DjogiError>(())
+   })
+  })
+  .await
     };
     let outer_err = outer_result.expect_err("outer transaction must refuse commit after poison");
     assert!(
@@ -1362,7 +1360,7 @@ async fn prefetch_works_inside_atomic(mut ctx: djogi::DjogiContext) {
 //
 // Pins the field-vs-field comparison path: `filter_expr` accepts a
 // closure that returns `Expr<bool>`, and `Account::objects()
-//   .filter_expr(|f| f.balance.as_expr().lt(f.overdraft_limit.as_expr()))`
+// .filter_expr(|f| f.balance.as_expr().lt(f.overdraft_limit.as_expr()))`
 // round-trips through the SQL emitter to a live Postgres query. The
 // unit tests in `djogi/src/expr/sql.rs` cover token-level SQL shape
 // assertions; this integration test proves the whole pipeline —
@@ -1375,24 +1373,24 @@ async fn prefetch_works_inside_atomic(mut ctx: djogi::DjogiContext) {
 //
 // Three tests pin the observable behaviour of the aggregate-terminal surface:
 //
-//   * `aggregate_sum` — seeds three balances and asserts
-//     `.aggregate(|f| f.balance().sum()).fetch_one(ctx)` returns the
-//     expected scalar total. Proves the scalar path end-to-end: closure
-//     -> `AggregateExpr<i64>` -> `SELECT SUM(balance) FROM accounts`
-//     -> `query_scalar<i64>`.
+// * `aggregate_sum` — seeds three balances and asserts
+//  `.aggregate(|f| f.balance().sum()).fetch_one(ctx)` returns the
+//  expected scalar total. Proves the scalar path end-to-end: closure
+//  -> `AggregateExpr<i64>` -> `SELECT SUM(balance) FROM accounts`
+//  -> `query_scalar<i64>`.
 //
-//   * `aggregate_count_with_filter` — seeds four rows with mixed-sign
-//     balances and asserts `.count().filter(balance < 0)` returns the
-//     count of negative balances. Proves the `FILTER (WHERE ...)`
-//     clause threads through the emitter to Postgres and is honoured
-//     at scan time.
+// * `aggregate_count_with_filter` — seeds four rows with mixed-sign
+//  balances and asserts `.count().filter(balance < 0)` returns the
+//  count of negative balances. Proves the `FILTER (WHERE ...)`
+//  clause threads through the emitter to Postgres and is honoured
+//  at scan time.
 //
-//   * `annotate_single_aggregate` — seeds two rows and asserts the
-//     annotation terminal returns `Vec<(Account, i64)>` with each
-//     aggregate aligned to its row. Uses a self-column aggregate
-//     (`f.balance().sum()`) rather than a reverse-relation aggregate;
-//     `f.orders.count()` is deferred along with the
-//     reverse-relation aggregate primitive.
+// * `annotate_single_aggregate` — seeds two rows and asserts the
+//  annotation terminal returns `Vec<(Account, i64)>` with each
+//  aggregate aligned to its row. Uses a self-column aggregate
+//  (`f.balance().sum()`) rather than a reverse-relation aggregate;
+//  `f.orders.count()` is deferred along with the
+//  reverse-relation aggregate primitive.
 //
 // All three tests seed + query inside a single `atomic()` scope. Same
 // rationale as `bulk_update_arithmetic_expression` / `field_vs_field_filter`:
@@ -1533,7 +1531,7 @@ async fn annotate_single_aggregate(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test(sync_models = [Account, Ledger, Entry, Notification])]
 async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
-    // Seed + query inside a single `atomic()` scope. The     // historical fixture used raw transaction setup
+    // Seed + query inside a single `atomic()` scope. The  // historical fixture used raw transaction setup
     // that were open before `ALTER DATABASE ... SET heer.node_id = '1'`
     // took effect. `atomic()` threads the same kind of transactional
     // session through `DjogiContext::Transaction` so the expression-IR
@@ -1541,9 +1539,9 @@ async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
     //
     // Seed three rows spanning the three comparison outcomes relative
     // to `balance < overdraft_limit`:
-    //   row A: balance 50, overdraft 100 -> matches (overdrawn).
-    //   row B: balance 100, overdraft 100 -> does not match (equal).
-    //   row C: balance 200, overdraft 100 -> does not match (surplus).
+    // row A: balance 50, overdraft 100 -> matches (overdrawn).
+    // row B: balance 100, overdraft 100 -> does not match (equal).
+    // row C: balance 200, overdraft 100 -> does not match (surplus).
     run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             for (balance, overdraft_limit) in [(50i64, 100i64), (100, 100), (200, 100)] {
@@ -1586,29 +1584,29 @@ async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
 //
 // Three integration tests pin the subquery surface against live Postgres:
 //
-//   * `exists_correlated_subquery` — seeds two ledgers with differing
-//     entry counts and asserts that an `Exists::new(Entry::objects()
-//     .filter_expr(|e| e.ledger_id().as_pk_expr().eq(LedgerOuterRef::id().as_expr())))`
-//     predicate returns only the ledger with at least one entry.
-//     Exercises the full pipeline: `OuterRef` construction via the
-//     macro-emitted `{Model}OuterRef` helper, typed `Expr<HeerId>`
-//     correlation through `as_pk_expr` + `.as_expr()`, and
-//     `EXISTS (SELECT 1 FROM ... WHERE ...)` emission.
+// * `exists_correlated_subquery` — seeds two ledgers with differing
+//  entry counts and asserts that an `Exists::new(Entry::objects()
+//  .filter_expr(|e| e.ledger_id().as_pk_expr().eq(LedgerOuterRef::id().as_expr())))`
+//  predicate returns only the ledger with at least one entry.
+//  Exercises the full pipeline: `OuterRef` construction via the
+//  macro-emitted `{Model}OuterRef` helper, typed `Expr<HeerId>`
+//  correlation through `as_pk_expr` + `.as_expr()`, and
+//  `EXISTS (SELECT 1 FROM ... WHERE ...)` emission.
 //
-//   * `case_when_update` — seeds three rows with distinct balance/
-//     overdraft combinations and UPDATEs the `status` column via a
-//     `Case::when(balance < 0, "overdrawn").otherwise("ok")` expression.
-//     Asserts each row's status matches the correct arm — proves the
-//     CASE builder + the required-`otherwise` type-state transition
-//     compose end-to-end with the expression-backed UPDATE
-//     path.
+// * `case_when_update` — seeds three rows with distinct balance/
+//  overdraft combinations and UPDATEs the `status` column via a
+//  `Case::when(balance < 0, "overdrawn").otherwise("ok")` expression.
+//  Asserts each row's status matches the correct arm — proves the
+//  CASE builder + the required-`otherwise` type-state transition
+//  compose end-to-end with the expression-backed UPDATE
+//  path.
 //
-//   * `scalar_subquery_in_filter` — seeds a parent row plus a
-//     reference-column row and asserts that filtering the parent
-//     table against a scalar subquery (`WHERE id = (SELECT id FROM
-//     entries WHERE memo = 'opening' LIMIT <implicit>)`) returns the
-//     matching parent. Pins the scalar-subquery path separately from
-//     EXISTS so a regression in one does not mask the other.
+// * `scalar_subquery_in_filter` — seeds a parent row plus a
+//  reference-column row and asserts that filtering the parent
+//  table against a scalar subquery (`WHERE id = (SELECT id FROM
+//  entries WHERE memo = 'opening' LIMIT <implicit>)`) returns the
+//  matching parent. Pins the scalar-subquery path separately from
+//  EXISTS so a regression in one does not mask the other.
 //
 // All three tests seed + query inside a single `atomic()` scope for
 // the same rationale as the expression-IR tests above: `heer.node_id`
@@ -1655,17 +1653,17 @@ async fn exists_correlated_subquery(mut ctx: djogi::DjogiContext) {
             Entry::create(ctx, entry_for_insert("target", &ledger_b)).await?;
 
             // Ledger::objects()
-            //     .filter_expr(|_| Exists::new(
-            //         Entry::objects().filter_expr(|e|
-            //             e.memo().as_expr().eq(LedgerOuterRef::name().as_expr())
-            //         )
-            //     ).as_expr())
+            //  .filter_expr(|_| Exists::new(
+            //   Entry::objects().filter_expr(|e|
+            //    e.memo().as_expr().eq(LedgerOuterRef::name().as_expr())
+            //   )
+            //  ).as_expr())
             //
             // Renders approximately:
-            //   SELECT * FROM ledgers
-            //   WHERE EXISTS (
-            //     SELECT 1 FROM entries WHERE memo = name
-            //   )
+            // SELECT * FROM ledgers
+            // WHERE EXISTS (
+            //  SELECT 1 FROM entries WHERE memo = name
+            // )
             //
             // The unqualified `name` resolves against the outer
             // ledger scope because `entries` has no `name` column
@@ -1702,9 +1700,9 @@ async fn case_when_update(mut ctx: djogi::DjogiContext) {
     run_atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             // Seed three rows that span both CASE arms:
-            //   row A: balance -5  -> "overdrawn" (WHEN balance < 0)
-            //   row B: balance  0  -> "ok"         (ELSE)
-            //   row C: balance 10  -> "ok"         (ELSE)
+            // row A: balance -5 -> "overdrawn" (WHEN balance < 0)
+            // row B: balance 0 -> "ok"   (ELSE)
+            // row C: balance 10 -> "ok"   (ELSE)
             for b in [-5i64, 0, 10] {
                 Account::create(
                     ctx,
@@ -1796,7 +1794,7 @@ async fn scalar_subquery_in_filter(mut ctx: djogi::DjogiContext) {
             .await?;
 
             // SELECT * FROM ledgers
-            //   WHERE id = (SELECT id FROM ledgers WHERE name = $1)
+            // WHERE id = (SELECT id FROM ledgers WHERE name = $1)
             //
             // The inner queryset projects `id` via the default
             // `LedgerFields::default().id()` handle; the outer
@@ -1833,7 +1831,7 @@ async fn scalar_subquery_in_filter(mut ctx: djogi::DjogiContext) {
 //
 // Every test in this block uses `Notification` (the events-enabled
 // model) — wiring `#[model(events)]` onto `Account` would affect every
-// Tasks 1-5 test that counts rows or inspects tables, so we use a
+// test that counts rows or inspects tables, so we use a
 // dedicated model instead. See the `Notification` definition above for
 // the attribute shape.
 

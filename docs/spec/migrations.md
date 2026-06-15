@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 ## 10. Migrations
 
@@ -122,13 +122,13 @@ Snapshot format — the complete `AppliedSchema` top-level shape (keys alphabeti
 
 ```json
 {
-  "djogi_version": "0.1.0",
-  "enums": {},
-  "format_version": "1",
-  "generated_at": "2026-04-25T00:00:00Z",
-  "indexes": [],
-  "models": {},
-  "registered_apps": [""]
+ "djogi_version": "0.1.0",
+ "enums": {},
+ "format_version": "1",
+ "generated_at": "2026-04-25T00:00:00Z",
+ "indexes": [],
+ "models": {},
+ "registered_apps": [""]
 }
 ```
 
@@ -142,7 +142,7 @@ Field semantics:
 | `generated_at` | string | RFC 3339 UTC timestamp of the last successful apply that wrote this snapshot. Informational only. |
 | `indexes` | array | Flat index list, sorted by `(table, name)` for determinism. Each entry carries its owning `table` name. |
 | `models` | object | Per-table snapshots for this `(target, app)` bucket, keyed by Postgres table name. |
-| `registered_apps` | array | App labels registered when this snapshot was written. The synthetic global bucket (no `#[model(app = ...)]`) is represented by `""`. Sorted alphabetically. |
+| `registered_apps` | array | App labels registered when this snapshot was written. The synthetic global bucket (no `#[model(app =...)]`) is represented by `""`. Sorted alphabetically. |
 
 **Snapshot parsing contract.**
 
@@ -236,12 +236,12 @@ Although cross-**database** foreign keys are rejected, cross-**app** foreign key
 
 ```json
 {
-  "format_version": "2",
-  "bucket_database": "main",
-  "bucket_app": "system",
-  "version": "V20260610000000__cross_bucket_fk",
-  "depends_on": ["users"],
-  ...
+ "format_version": "2",
+ "bucket_database": "main",
+ "bucket_app": "system",
+ "version": "V20260610000000__cross_bucket_fk",
+ "depends_on": ["users"],
+...
 }
 ```
 
@@ -265,30 +265,30 @@ The public differ surface is:
 
 ```rust
 enum SchemaDelta {
-    CreateTable { table: TableDef },
-    DropTable { name: String },
-    RenameTable { old_name: String, new_name: String },
+ CreateTable { table: TableDef },
+ DropTable { name: String },
+ RenameTable { old_name: String, new_name: String },
 
-    AddColumn { table: String, column: ColumnDef },
-    DropColumn { table: String, name: String },
-    AlterColumn { table: String, name: String, change: ColumnChange },
-    RenameColumn { table: String, old_name: String, new_name: String },
+ AddColumn { table: String, column: ColumnDef },
+ DropColumn { table: String, name: String },
+ AlterColumn { table: String, name: String, change: ColumnChange },
+ RenameColumn { table: String, old_name: String, new_name: String },
 
-    AddUniqueConstraint { table: String, constraint: UniqueConstraintDef },
-    DropUniqueConstraint { table: String, name: String },
+ AddUniqueConstraint { table: String, constraint: UniqueConstraintDef },
+ DropUniqueConstraint { table: String, name: String },
 
-    AddIndex { table: String, index: IndexDef },
-    DropIndex { name: String },
+ AddIndex { table: String, index: IndexDef },
+ DropIndex { name: String },
 
-    AddForeignKey { table: String, fk: ForeignKeyDef },
-    DropForeignKey { table: String, name: String },
+ AddForeignKey { table: String, fk: ForeignKeyDef },
+ DropForeignKey { table: String, name: String },
 
-    CreateEnum { name: String, variants: Vec<String> },
-    AlterEnum { name: String, change: EnumChange },
-    DropEnum { name: String },
+ CreateEnum { name: String, variants: Vec<String> },
+ AlterEnum { name: String, change: EnumChange },
+ DropEnum { name: String },
 
-    CreateExtension { name: String, version: Option<String> },
-    DropExtension { name: String },
+ CreateExtension { name: String, version: Option<String> },
+ DropExtension { name: String },
 }
 ```
 
@@ -311,13 +311,13 @@ family (`time::Date` / `time::OffsetDateTime`) end-to-end through
 
 - `rust_type_to_sql` macro arms for all five narrow / unsigned types.
 - `rust_source_type: Option<RustSourceType>` discriminator on
-  `FieldDescriptor` — distinguishes `i8 → SMALLINT` from `i16 → SMALLINT`,
-  `u32 → BIGINT` from `i64 → BIGINT`, etc.
+ `FieldDescriptor` — distinguishes `i8 → SMALLINT` from `i16 → SMALLINT`,
+ `u32 → BIGINT` from `i64 → BIGINT`, etc.
 - Bind shims in the `#[model]` macro emitter (crud.rs): each field type
-  widens to the matching `tokio_postgres::ToSql`-compatible wire type.
+ widens to the matching `tokio_postgres::ToSql`-compatible wire type.
 - Decode shims with bounds-checked narrowing (from_row.rs, from_joined_row.rs).
 - `field_type_check` dispatch gated on the discriminator so only the five
-  widened types receive a range CHECK; direct-mapped types keep `check: None`.
+ widened types receive a range CHECK; direct-mapped types keep `check: None`.
 
 djogi#188 wires the Decimal arm with a discriminator-only path —
 `RustSourceType::Decimal` rides on the same descriptor slot but signals only
@@ -355,16 +355,16 @@ literal (`+00`) so the bound is timezone-invariant (a plain `TIMESTAMP '...'`
 literal against a `TIMESTAMPTZ` column is interpreted in the session timezone,
 widening the effective UTC upper bound by the session UTC offset).
 
-| Rust source              | Postgres column | Type-derived CHECK expression                                                                          | Status   |
+| Rust source  | Postgres column | Type-derived CHECK expression          | Status |
 |--------------------------|-----------------|--------------------------------------------------------------------------------------------------------|----------|
-| `time::Date`             | `DATE`          | `<col> <= DATE '9999-12-31'`                                                                           | **Live** |
-| `time::OffsetDateTime`   | `TIMESTAMPTZ`   | `<col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`                                                 | **Live** |
-| `i8`                     | `SMALLINT`      | `<col> >= -128 AND <col> <= 127`                                                                       | **Live** |
-| `u8`                     | `SMALLINT`      | `<col> >= 0 AND <col> <= 255`                                                                          | **Live** |
-| `u16`                    | `INTEGER`       | `<col> >= 0 AND <col> <= 65535`                                                                        | **Live** |
-| `u32`                    | `BIGINT`        | `<col> >= 0 AND <col> <= 4294967295`                                                                   | **Live** |
-| `u64`                    | `NUMERIC`       | `<col> >= 0 AND <col> <= 18446744073709551615 AND <col> = trunc(<col>)`                                | **Live** |
-| `rust_decimal::Decimal`  | `NUMERIC`       | `scale(<col>) <= 28 AND abs(<col>) * power(10::numeric, scale(<col>)) <= 79228162514264337593543950335` | **Live** |
+| `time::Date`  | `DATE`  | `<col> <= DATE '9999-12-31'`          | **Live** |
+| `time::OffsetDateTime` | `TIMESTAMPTZ` | `<col> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'`       | **Live** |
+| `i8`   | `SMALLINT` | `<col> >= -128 AND <col> <= 127`         | **Live** |
+| `u8`   | `SMALLINT` | `<col> >= 0 AND <col> <= 255`          | **Live** |
+| `u16`   | `INTEGER` | `<col> >= 0 AND <col> <= 65535`         | **Live** |
+| `u32`   | `BIGINT` | `<col> >= 0 AND <col> <= 4294967295`         | **Live** |
+| `u64`   | `NUMERIC` | `<col> >= 0 AND <col> <= 18446744073709551615 AND <col> = trunc(<col>)`    | **Live** |
+| `rust_decimal::Decimal` | `NUMERIC` | `scale(<col>) <= 28 AND abs(<col>) * power(10::numeric, scale(<col>)) <= 79228162514264337593543950335` | **Live** |
 
 Identity-mapped widths (`i16`, `i32`, `i64`, `bool`, `String`, `f32`, `f64`,
 ...) project no CHECK because the column type already covers their full range.
@@ -452,21 +452,21 @@ empty tables. On populated tables, the v0.1.0-alpha apply path
 single-statement `ALTER TABLE … ADD CONSTRAINT … CHECK (…)`, which acquires
 `AccessExclusiveLock` for the duration of validation. The two-phase
 constraint validation default (per the `Two-phase constraint validation
-default (Phase 7.5)` decision row) — `ADD CONSTRAINT … NOT VALID` followed
+default ()` decision row) — `ADD CONSTRAINT … NOT VALID` followed
 by a separate `VALIDATE CONSTRAINT` step under `ShareUpdateExclusiveLock` —
-is the planned Phase 7.5 live-plan rollout shape. The pattern catalogue at
+is the planned live-plan rollout shape. The pattern catalogue at
 `live_migrate::patterns::TwoPhaseValidate` covers the foreign-key arm today;
 the CHECK / NOT NULL arms are queued behind the live-plan runner surface
 (`djogi live run` / `djogi live finalize`), which remains stubbed / deferred
-in v0.1.0 per the `Live-plan dashboard deferral (Phase 10 / Maahi)` decision
+in v0.1.0 per the `Live-plan dashboard deferral (0 / Maahi)` decision
 row. DROP is always catalog-only.
 
 **Inline CHECK on CREATE TABLE.** The SQL emitter renders the projected
 CHECK inline on the column definition using the
-`<col> <type> ... CONSTRAINT <name> CHECK (<expr>)` form rather than the
+`<col> <type>... CONSTRAINT <name> CHECK (<expr>)` form rather than the
 unnamed `CHECK (<expr>)` form. The explicit `CONSTRAINT` keyword makes
 the constraint name deterministic — Postgres's auto-naming for unnamed
-inline CHECKs is `{table}_check` / `{table}_check1` / ..., which would
+inline CHECKs is `{table}_check` / `{table}_check1` /..., which would
 diverge from the differ's ALTER TABLE DROP CONSTRAINT path
 (`{table}_{column}_check`). With the explicit name on inline emission,
 the CREATE TABLE and ALTER TABLE pathways reach the same constraint slot
@@ -484,28 +484,28 @@ relation columns — not on `FieldSqlType` or the resolved SQL type
 string. The semantic-family dispatch keeps Custom PKs whose inner
 SQL_TYPE coincidentally matches BIGINT / UUID from being coerced into
 the HeerRanjID family by SQL-carrier collision. See §10.6.3 for that
-surface. See `decisions.md` "Type-derived CHECK projection (Phase 8.5
-v3 Cluster 2)" for the type-derived contract and "HeerId / RanjId
+surface. See `decisions.md` "Type-derived CHECK projection (
+v3 )" for the type-derived contract and "HeerId / RanjId
 structural CHECK (djogi#189)" for the opt-in surface.
 
 **Currently shipped.** The full projection contract is now live:
 
-  * djogi#186 — contract scaffolding: `field_type_check` helper,
-    AMEND DROP+ADD lifecycle, `FieldSqlType::NumericPrecision`,
-    `IntoFilterValue for u64`.
-  * djogi#187 — temporal wiring: `time::Date` / `time::OffsetDateTime`
-    year upper-bound CHECKs reach `ColumnSchema.check`,
-    `schema_snapshot.json`, and generated migration SQL.
-  * djogi#188 — Decimal wiring: `rust_decimal::Decimal` model fields
-    project a structural CHECK enforcing the 96-bit mantissa / scale-≤-28
-    representable range. The column stays bare `NUMERIC`; the CHECK is
-    discriminator-driven via `RustSourceType::Decimal` so adopter
-    `Decimal` fields are distinguished from `u64 → NUMERIC` columns at
-    projection time without a bind / decode shim.
-  * djogi#190 — integer widening: `i8 / u8 / u16 / u32 / u64` model
-    fields compile, bind, decode, and receive type-derived CHECKs.
-    `RustSourceType` discriminator on `FieldDescriptor` gates dispatch
-    so direct-mapped types (`i16 / i32 / i64`) never receive spurious CHECKs.
+ * djogi#186 — contract scaffolding: `field_type_check` helper,
+ AMEND DROP+ADD lifecycle, `FieldSqlType::NumericPrecision`,
+ `IntoFilterValue for u64`.
+ * djogi#187 — temporal wiring: `time::Date` / `time::OffsetDateTime`
+ year upper-bound CHECKs reach `ColumnSchema.check`,
+ `schema_snapshot.json`, and generated migration SQL.
+ * djogi#188 — Decimal wiring: `rust_decimal::Decimal` model fields
+ project a structural CHECK enforcing the 96-bit mantissa / scale-≤-28
+ representable range. The column stays bare `NUMERIC`; the CHECK is
+ discriminator-driven via `RustSourceType::Decimal` so adopter
+ `Decimal` fields are distinguished from `u64 → NUMERIC` columns at
+ projection time without a bind / decode shim.
+ * djogi#190 — integer widening: `i8 / u8 / u16 / u32 / u64` model
+ fields compile, bind, decode, and receive type-derived CHECKs.
+ `RustSourceType` discriminator on `FieldDescriptor` gates dispatch
+ so direct-mapped types (`i16 / i32 / i64`) never receive spurious CHECKs.
 
 The integer bound strings are pinned in `migrate/sql.rs::alter_column_set_check_for_*`
 tests (`i8`, `u32`, `u64` shapes) and in the new unit tests inside
@@ -535,9 +535,9 @@ into the column's CHECK constraint inside both inline `CREATE TABLE` form
 #[derive(djogi::Model)]
 #[model(table = "animals")]
 pub struct Animal {
-    pub name: String,
-    #[field(check = "weight_kg > 0")]
-    pub weight_kg: f64,
+ pub name: String,
+ #[field(check = "weight_kg > 0")]
+ pub weight_kg: f64,
 }
 ```
 
@@ -548,12 +548,12 @@ time. Adopters are responsible for:
 
 - The expression's syntactic correctness against the column's Postgres type.
 - Its idempotency — CHECK predicates must be `IMMUTABLE` to be acceptable
-  to Postgres (no `now()`, no volatile function calls, no references to
-  other tables / rows).
+ to Postgres (no `now()`, no volatile function calls, no references to
+ other tables / rows).
 - Identifier handling — column names referenced inside the expression
-  must be the Postgres column name. If the field name happens to collide
-  with a reserved keyword, the expression author quotes the identifier
-  manually (e.g. `"\"order\" >= 0"`).
+ must be the Postgres column name. If the field name happens to collide
+ with a reserved keyword, the expression author quotes the identifier
+ manually (e.g. `"\"order\" >= 0"`).
 
 The same `unsafe`-style cultural posture from
 `docs/spec/raw-sql-escape-hatches.md` applies — every callsite is
@@ -566,7 +566,7 @@ with logical `AND` into a single constraint slot:
 
 ```sql
 CONSTRAINT "<table>_<column>_check" CHECK (
-    (<type-derived-expr>) AND (<adopter-expr>)
+ (<type-derived-expr>) AND (<adopter-expr>)
 )
 ```
 
@@ -618,18 +618,18 @@ at two granularities:
 #[derive(djogi::Model)]
 #[model(table = "vehicles", strict_ids)]
 pub struct Vehicle {
-    pub owner_id: ForeignKey<Owner>,    // structural CHECK applied
-    pub plate_id: ::djogi::RanjId,      // structural CHECK applied
-    pub name: String,                   // no CHECK — not HeerId/RanjId
+ pub owner_id: ForeignKey<Owner>, // structural CHECK applied
+ pub plate_id: ::djogi::RanjId, // structural CHECK applied
+ pub name: String,   // no CHECK — not HeerId/RanjId
 }
 
 // Field-level — single column scope.
 #[derive(djogi::Model)]
 #[model(table = "vehicles")]
 pub struct Vehicle {
-    #[field(strict_id_check)]
-    pub external_owner: ::djogi::HeerId,  // structural CHECK applied
-    pub other_id: ::djogi::HeerId,         // no CHECK — opt-in is per field
+ #[field(strict_id_check)]
+ pub external_owner: ::djogi::HeerId, // structural CHECK applied
+ pub other_id: ::djogi::HeerId,  // no CHECK — opt-in is per field
 }
 ```
 
@@ -647,11 +647,11 @@ column, from the FK target's `PkType` (via `type_to_pk_family`) for
 relation columns, and from `f.sql_type` for explicit `#[field(strict_id_check)]`
 on bare HeerId / RanjId user scalars — and dispatches:
 
-| HeerRanjID semantic family                                                              | Projected CHECK                                                                                                            |
+| HeerRanjID semantic family        | Projected CHECK              |
 |-----------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|
-| `HeerId` (`PkType::HeerId` / `PkType::HeerIdDesc`, BIGINT carrier)                      | `<col> >= 0`                                                                                                               |
-| `RanjId` (`PkType::RanjId` / `PkType::RanjIdDesc`, UUID carrier)                        | `pg_catalog.substring(<col>::text, 15, 1) = '8' AND pg_catalog.substring(<col>::text, 20, 1) IN ('8','9','a','b')`         |
-| None — `PkType::Serial`, `PkType::Custom`, `PkType::Composite`, `PkType::None`          | no CHECK (silently skipped — see "FK propagation" and "Custom PK semantics" below)                                         |
+| `HeerId` (`PkType::HeerId` / `PkType::HeerIdDesc`, BIGINT carrier)   | `<col> >= 0`              |
+| `RanjId` (`PkType::RanjId` / `PkType::RanjIdDesc`, UUID carrier)   | `pg_catalog.substring(<col>::text, 15, 1) = '8' AND pg_catalog.substring(<col>::text, 20, 1) IN ('8','9','a','b')`  |
+| None — `PkType::Serial`, `PkType::Custom`, `PkType::Composite`, `PkType::None`  | no CHECK (silently skipped — see "FK propagation" and "Custom PK semantics" below)      |
 
 The HeerId family CHECK enforces `HeerId::from_i64`'s only structural
 invariant (`bit 63 = 0`, i.e. non-negative i64). The 41 timestamp + 9
@@ -744,7 +744,7 @@ temporal arms of `field_type_check` are inert on them.
 **Lifecycle.** ADD / DROP / AMEND all ride the existing `SetCheck { from,
 to }` lifecycle from §10.6.1. Toggling `#[model(strict_ids)]` (or
 `#[field(strict_id_check)]`) on or off triggers the same `DROP
-CONSTRAINT ... ADD CONSTRAINT ...` shape Postgres handles for every
+CONSTRAINT... ADD CONSTRAINT...` shape Postgres handles for every
 other CHECK transition. Rollback through `compose_down_text` reinstates
 the prior expression losslessly because the IR carries both the old and
 new sides of the transition.
@@ -755,8 +755,8 @@ layout. A future HeeRanjID release will ship `IMMUTABLE PARALLEL SAFE`
 Postgres validator functions:
 
 ```sql
-CREATE FUNCTION heeranjid.is_valid_heerid(BIGINT) RETURNS BOOLEAN ...;
-CREATE FUNCTION heeranjid.is_valid_ranjid(UUID)   RETURNS BOOLEAN ...;
+CREATE FUNCTION heeranjid.is_valid_heerid(BIGINT) RETURNS BOOLEAN...;
+CREATE FUNCTION heeranjid.is_valid_ranjid(UUID) RETURNS BOOLEAN...;
 ```
 
 When those land, djogi will migrate to projecting:
@@ -797,35 +797,35 @@ The migration ledger table is `djogi_schema_migrations`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS djogi_schema_migrations (
-    id                    BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-    version               TEXT        NOT NULL,
-    description           TEXT        NOT NULL DEFAULT '',
-    checksum_up           VARCHAR(68) NOT NULL,
-    checksum_down         VARCHAR(68),
-    execution_mode        TEXT        NOT NULL DEFAULT 'transactional'
-                                  CHECK (execution_mode IN ('transactional', 'non_transactional')),
-    status                TEXT        NOT NULL DEFAULT 'pending'
-                                  CHECK (status IN ('pending', 'applied', 'baseline', 'faked', 'rolled_back', 'failed')),
-    applied_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    applied_by            TEXT        NOT NULL DEFAULT current_user,
-    execution_time_ms     BIGINT      NOT NULL DEFAULT 0,
-    out_of_order_flag     BOOLEAN     NOT NULL DEFAULT false,
-    applied_steps_count   INTEGER     NOT NULL DEFAULT 0,
-    total_steps           INTEGER,
-    partial_apply_note    TEXT,
-    run_id                BIGINT      NOT NULL,
-    snapshot_version      TEXT        NOT NULL,
-    app_label             TEXT        NOT NULL DEFAULT '',
-    CONSTRAINT djogi_schema_migrations_version_app_key
-        UNIQUE (version, app_label)
+ id   BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+ version  TEXT NOT NULL,
+ description  TEXT NOT NULL DEFAULT '',
+ checksum_up  VARCHAR(68) NOT NULL,
+ checksum_down  VARCHAR(68),
+ execution_mode TEXT NOT NULL DEFAULT 'transactional'
+     CHECK (execution_mode IN ('transactional', 'non_transactional')),
+ status  TEXT NOT NULL DEFAULT 'pending'
+     CHECK (status IN ('pending', 'applied', 'baseline', 'faked', 'rolled_back', 'failed')),
+ applied_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+ applied_by  TEXT NOT NULL DEFAULT current_user,
+ execution_time_ms BIGINT NOT NULL DEFAULT 0,
+ out_of_order_flag BOOLEAN NOT NULL DEFAULT false,
+ applied_steps_count INTEGER NOT NULL DEFAULT 0,
+ total_steps  INTEGER,
+ partial_apply_note TEXT,
+ run_id  BIGINT NOT NULL,
+ snapshot_version TEXT NOT NULL,
+ app_label  TEXT NOT NULL DEFAULT '',
+ CONSTRAINT djogi_schema_migrations_version_app_key
+ UNIQUE (version, app_label)
 );
 
 CREATE INDEX djogi_schema_migrations_status_idx
-    ON djogi_schema_migrations (version)
-    WHERE status != 'applied';
+ ON djogi_schema_migrations (version)
+ WHERE status != 'applied';
 
 CREATE INDEX djogi_schema_migrations_run_id_idx
-    ON djogi_schema_migrations (run_id);
+ ON djogi_schema_migrations (run_id);
 ```
 
 **Version streams are per app.** A version label is unique within one `(database, app_label)` stream, enforced by `djogi_schema_migrations_version_app_key UNIQUE (version, app_label)`. One `compose` run stamps a single version across every bucket it touches; each bucket's migration applies and is ledgered independently. The synthetic global bucket participates as the empty app label. Out-of-order detection, verify diagnostics, attune, and repair all operate within a single stream.
@@ -862,14 +862,14 @@ djogi migrations attune <target> --apply --record
 djogi migrations attune --record-ledger --apply
 djogi migrations attune --squash --from V<ts> --apply
 djogi migrations apply
-djogi migrations apply --fake --reason "existing schema"  # mark applied without running SQL
-djogi migrations verify                # compare snapshot expectations to the live DB
-djogi migrations verify --strict       # upgrade out-of-order (D622) to an error
-djogi migrations repair checksum-drift V<ts>__<slug> --checksum-up V1:<hex>  # re-checksum an edited applied row
-djogi migrations repair partial-apply V<ts>__<slug> rolled-back  # resolve a partial-apply ledger row
-djogi migrations repair resume-partial V<ts>__<slug>  # resume an interrupted non-transactional apply
-djogi migrations repair snapshot-rebuild --app <label>  # rebuild a bucket snapshot from ledger + live DB
-djogi migrations baseline V<ts>__baseline --reason "existing schema"  # adopt an existing DB — project live schema into a baseline row + snapshot
+djogi migrations apply --fake --reason "existing schema" # mark applied without running SQL
+djogi migrations verify  # compare snapshot expectations to the live DB
+djogi migrations verify --strict # upgrade out-of-order (D622) to an error
+djogi migrations repair checksum-drift V<ts>__<slug> --checksum-up V1:<hex> # re-checksum an edited applied row
+djogi migrations repair partial-apply V<ts>__<slug> rolled-back # resolve a partial-apply ledger row
+djogi migrations repair resume-partial V<ts>__<slug> # resume an interrupted non-transactional apply
+djogi migrations repair snapshot-rebuild --app <label> # rebuild a bucket snapshot from ledger + live DB
+djogi migrations baseline V<ts>__baseline --reason "existing schema" # adopt an existing DB — project live schema into a baseline row + snapshot
 djogi migrations rollback --single-node-dev
 djogi migrations rollback --to V<ts>__<slug> --node-id 7
 djogi migrations rollback --dry-run
@@ -1010,11 +1010,11 @@ For `0.1.0`, `DROP TABLE` and `DROP COLUMN` require explicit destructive confirm
 Composite boundary:
 
 - supported:
-  - composite unique constraints
-  - composite unique indexes
-  - composite non-unique indexes
+ - composite unique constraints
+ - composite unique indexes
+ - composite non-unique indexes
 - not supported as a first-class ORM/migration contract:
-  - composite primary keys
+ - composite primary keys
 
 For supported composite unique/index cases, Djogi must preserve declared column order in both diffs and generated SQL.
 
@@ -1024,20 +1024,20 @@ The `pk_flip` family that lives under `djogi::migrate::pk_flip`
 ships migration playbooks for the four built-in asc↔desc primary-key
 pairs only:
 
-| Before                  | After                   | Supported? | Mechanism                  |
+| Before   | After   | Supported? | Mechanism   |
 |-------------------------|-------------------------|------------|----------------------------|
-| `HeerId`                | `HeerIdRecencyBiased`   | yes        | `pk_flip` Heer family      |
-| `HeerIdRecencyBiased`   | `HeerId`                | yes        | `pk_flip` Heer family      |
-| `RanjId`                | `RanjIdRecencyBiased`   | yes        | `pk_flip` Ranj family      |
-| `RanjIdRecencyBiased`   | `RanjId`                | yes        | `pk_flip` Ranj family      |
-| any custom newtype A    | any custom newtype B    | rejected   | hand-written migration     |
-| any built-in            | any custom newtype      | rejected   | hand-written migration     |
-| any custom newtype      | any built-in            | rejected   | hand-written migration     |
-| `HeerId` ↔ `Serial`     | (any cross-family pair) | rejected   | hand-written migration     |
-| anything                | composite reshape       | rejected   | hand-written migration     |
+| `HeerId`  | `HeerIdRecencyBiased` | yes | `pk_flip` Heer family |
+| `HeerIdRecencyBiased` | `HeerId`  | yes | `pk_flip` Heer family |
+| `RanjId`  | `RanjIdRecencyBiased` | yes | `pk_flip` Ranj family |
+| `RanjIdRecencyBiased` | `RanjId`  | yes | `pk_flip` Ranj family |
+| any custom newtype A | any custom newtype B | rejected | hand-written migration |
+| any built-in  | any custom newtype | rejected | hand-written migration |
+| any custom newtype | any built-in  | rejected | hand-written migration |
+| `HeerId` ↔ `Serial` | (any cross-family pair) | rejected | hand-written migration |
+| anything  | composite reshape | rejected | hand-written migration |
 
 A "custom newtype" is a primary-key type declared through the
-`djogi::primary_key! { ... }` macro — see the
+`djogi::primary_key! {... }` macro — see the
 [primary keys spec](./primary-keys.md#35b-custom-primary-key-types-djogiprimary_key)
 for the macro grammar.
 
@@ -1048,15 +1048,15 @@ generator. A safe migration between two custom shapes must answer
 three questions the framework cannot derive on its own:
 
 1. **The value-preserving cast.** `BIGINT → UUID` has no implicit cast
-   in Postgres; a wrong `USING` clause silently truncates row IDs.
+ in Postgres; a wrong `USING` clause silently truncates row IDs.
 2. **The FK cascade strategy.** Every column that holds a foreign key
-   to the migrating table must be re-typed in lockstep. The asc↔desc
-   flips can do this safely because the inner SQL type does not change;
-   custom shape changes can.
+ to the migrating table must be re-typed in lockstep. The asc↔desc
+ flips can do this safely because the inner SQL type does not change;
+ custom shape changes can.
 3. **The DEFAULT generator's bulk-allocation contract.** Pre-existing
-   pre-allocated IDs (Pattern 2 / Pattern 3 from the
-   [primary keys spec §3.5](./primary-keys.md#35-id-generation-patterns))
-   may need re-issuing under the new generator.
+ pre-allocated IDs (Pattern 2 / Pattern 3 from the
+ [primary keys spec §3.5](./primary-keys.md#35-id-generation-patterns))
+ may need re-issuing under the new generator.
 
 When the differ encounters any transition involving a custom PK kind
 on either side, it emits a typed `SchemaOperation::Unsupported` whose
@@ -1082,7 +1082,7 @@ attributes and lowered by `djogi migrations compose`.
 |---|---|---|---|
 | `COMMENT ON TABLE` | `#[model(table_comment = "...")]` | `COMMENT ON TABLE <t> IS '...'`; `IS NULL` when cleared | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
 | `COMMENT ON COLUMN` | `#[field(comment = "...")]` | `COMMENT ON COLUMN <t>.<c> IS '...'`; `IS NULL` when cleared | [#217](https://github.com/TarunvirBains/djogi/issues/217) |
-| Per-table storage parameters (`fillfactor`, `autovacuum_*`, …) | `#[model(storage_params = "key=val, ...")]` | `ALTER TABLE <t> SET (key=val, ...)`; prior keys are reset when changed or cleared | [#218](https://github.com/TarunvirBains/djogi/issues/218) |
+| Per-table storage parameters (`fillfactor`, `autovacuum_*`, …) | `#[model(storage_params = "key=val,...")]` | `ALTER TABLE <t> SET (key=val,...)`; prior keys are reset when changed or cleared | [#218](https://github.com/TarunvirBains/djogi/issues/218) |
 | `CREATE TABLE … TABLESPACE <name>` | `#[model(tablespace = "...")]` | `ALTER TABLE <t> SET TABLESPACE <name>` after table creation; clearing lowers to `pg_default` | [#219](https://github.com/TarunvirBains/djogi/issues/219) |
 | `ALTER COLUMN … TYPE … USING <expr>` | `#[field(type_change_using = "...")]` | one-time directive, see §10.10b.1 below | [#220](https://github.com/TarunvirBains/djogi/issues/220) |
 | Generated column expression changes (PG 17+) | differ-automatic | in-place `ALTER COLUMN … SET EXPRESSION AS (<new_expr>)`, see §10.10b.2 below | [#221](https://github.com/TarunvirBains/djogi/issues/221) |
@@ -1102,10 +1102,10 @@ ALTER TABLE <t> ALTER COLUMN <c> TYPE <new> USING <c>::<new>;
 ```
 
 Postgres performs the explicit cast for every pair that has one defined
-(widenings like `INTEGER → BIGINT`, `varchar(N) → text`, ...). For
+(widenings like `INTEGER → BIGINT`, `varchar(N) → text`,...). For
 **non-default cast paths** — `TEXT → UUID`, `TEXT → INTEGER`, custom
 domain changes, citext flips — the explicit cast `<from>::<to>` is
-still defined by Postgres (text→uuid, text→integer, ... are valid
+still defined by Postgres (text→uuid, text→integer,... are valid
 explicit casts), so the framework's emitted statement is accepted at
 parse time. The failure mode is per-row: the cast rejects any row whose
 value does not parse as a syntactically valid `<to>` literal, surfacing
@@ -1126,31 +1126,31 @@ the cast direction, that causes the apply to fail.
 The framework's lowering rule:
 
 1. The adopter annotates the field with
-   `#[field(type_change_using = "<sql expr>")]`. The expression is the
-   `USING` body — the framework wraps it in `USING (<expr>)` verbatim,
-   with no parsing, sanitisation, or escaping.
+ `#[field(type_change_using = "<sql expr>")]`. The expression is the
+ `USING` body — the framework wraps it in `USING (<expr>)` verbatim,
+ with no parsing, sanitisation, or escaping.
 2. The migration composer emits the typed column-type change as
-   `ALTER COLUMN <c> TYPE <new> USING (<expr>);`. The
-   adopter-supplied expression fully replaces the default
-   `<col>::<new_type>` fallback.
+ `ALTER COLUMN <c> TYPE <new> USING (<expr>);`. The
+ adopter-supplied expression fully replaces the default
+ `<col>::<new_type>` fallback.
 3. The down (rollback) side ALWAYS falls back to the default cast —
-   symmetric down-side `USING` expressions are not modelled. The
-   rollback path is operator-owned in practice; an adopter whose
-   rollback also requires a special cast hand-edits the emitted down
-   SQL. **When the forward step uses an adopter `USING (<expr>)`,
-   the emitter additionally attaches a `LossyRollbackWarning` of kind
-   `CustomCast`** so `LossyRollbackPolicy::Refuse` (the default)
-   engages and requires explicit operator opt-in before rolling
-   back — see [`crate::migrate::sql::LossyRollbackKind::CustomCast`].
+ symmetric down-side `USING` expressions are not modelled. The
+ rollback path is operator-owned in practice; an adopter whose
+ rollback also requires a special cast hand-edits the emitted down
+ SQL. **When the forward step uses an adopter `USING (<expr>)`,
+ the emitter additionally attaches a `LossyRollbackWarning` of kind
+ `CustomCast`** so `LossyRollbackPolicy::Refuse` (the default)
+ engages and requires explicit operator opt-in before rolling
+ back — see [`crate::migrate::sql::LossyRollbackKind::CustomCast`].
 4. When `#[field(type_change_using = "...")]` is absent and the differ
-   detects a known-incompatible cast pair (`TEXT ↔ UUID`,
-   `TEXT ↔ INTEGER/SMALLINT/BIGINT`, `UUID ↔ integer family`), the
-   emitter prepends a `-- WARNING:` SQL comment to the migration that
-   names the corrective attribute. The comment is a soft signal — the
-   default cast still emits and Postgres still rejects the migration at
-   apply time (per-row `invalid input syntax for type ...`). The
-   warning helps adopters discover the corrective attribute before the
-   apply-time error surfaces in CI.
+ detects a known-incompatible cast pair (`TEXT ↔ UUID`,
+ `TEXT ↔ INTEGER/SMALLINT/BIGINT`, `UUID ↔ integer family`), the
+ emitter prepends a `-- WARNING:` SQL comment to the migration that
+ names the corrective attribute. The comment is a soft signal — the
+ default cast still emits and Postgres still rejects the migration at
+ apply time (per-row `invalid input syntax for type...`). The
+ warning helps adopters discover the corrective attribute before the
+ apply-time error surfaces in CI.
 
 **Raw SQL escape.** The expression is treated identically to a raw SQL
 fragment — djogi performs no parsing, sanitisation, or validation
@@ -1169,12 +1169,12 @@ the moment the differ emits a `ChangeType` for this column. The
 from the manual `PartialEq` impl, so:
 
 - Leaving the attribute on the field after the migration applies
-  produces no phantom diff — the next compose run sees the same
-  `sql_type` on both sides and emits nothing.
+ produces no phantom diff — the next compose run sees the same
+ `sql_type` on both sides and emits nothing.
 - The snapshot on disk never carries the value.
 - Adopters are encouraged (but not required) to remove the attribute
-  from source after the migration applies. The framework does not
-  enforce removal.
+ from source after the migration applies. The framework does not
+ enforce removal.
 
 **Live-plan limitation.** `#[field(type_change_using = "...")]` forces
 the migration to the **offline-apply path**. The live-plan
@@ -1184,7 +1184,7 @@ default SQL cast (`SET <shadow> = <col>::<to>`) in its chunked
 backfill — it cannot replicate an adopter-supplied USING expression
 in a per-row `SET`. The classifier
 ([`crate::live_migrate::classify::classify_column_change`]) therefore
-routes `ColumnChange::ChangeType { using: Some(_), .. }` to
+routes `ColumnChange::ChangeType { using: Some(_),.. }` to
 `OnlineSafetyClassification::OfflineOnly` so the dispatcher never
 sees a non-default-cast change. The dispatcher and both relevant
 pattern emitters
@@ -1203,17 +1203,17 @@ at the offending string. The validator also rejects the following
 attribute combinations:
 
 - `type_change_using` paired with `#[field(generated = "...")]` — a
-  stored generated column derives its storage type from the
-  expression. `ALTER COLUMN TYPE` on a generated column re-evaluates
-  the generation expression with the new storage type, and Postgres'
-  semantics for USING on a stored generated column are surprising at
-  best. Hand-edit the migration if a stored generated column needs
-  to flip storage type.
+ stored generated column derives its storage type from the
+ expression. `ALTER COLUMN TYPE` on a generated column re-evaluates
+ the generation expression with the new storage type, and Postgres'
+ semantics for USING on a stored generated column are surprising at
+ best. Hand-edit the migration if a stored generated column needs
+ to flip storage type.
 - `type_change_using` on a `ForeignKey<T>` or `OneToOneField<T>`
-  field — FK type changes happen via PK flips on the parent model
-  (Phase 7 PK-flip orchestration), not as direct column type changes
-  on the child side. An adopter USING here cannot drive the typed
-  PK-flip apparatus.
+ field — FK type changes happen via PK flips on the parent model
+ ( PK-flip orchestration), not as direct column type changes
+ on the child side. An adopter USING here cannot drive the typed
+ PK-flip apparatus.
 
 Field-level `#[field(identity)]` does not exist as a user-facing
 attribute — the projection assigns
@@ -1258,15 +1258,15 @@ Postgres' intended in-place change form is the single statement.
 **Other generated-column transitions.**
 
 - `(None, Some(_))` — ADD generation to an existing regular column:
-  Postgres has no `ALTER COLUMN ADD GENERATED` for stored expressions.
-  The emitter keeps a SQL-comment placeholder documenting the required
-  `DROP COLUMN + ADD COLUMN` sequence; the classifier routes the
-  operation to `OfflineOnly` and the live-migration runner refuses the
-  path entirely.
+ Postgres has no `ALTER COLUMN ADD GENERATED` for stored expressions.
+ The emitter keeps a SQL-comment placeholder documenting the required
+ `DROP COLUMN + ADD COLUMN` sequence; the classifier routes the
+ operation to `OfflineOnly` and the live-migration runner refuses the
+ path entirely.
 - `(Some(_), None)` — DROP generation: `ALTER COLUMN <c> DROP EXPRESSION;`
-  (PG 13+). The column becomes a regular column with the
-  previously-computed values frozen as data. Rollback is structurally
-  lossy — restoring the expression in place is impossible
-  (`SET EXPRESSION AS` requires a generated column), so the inverse
-  requires `DROP COLUMN + ADD COLUMN`, destroying the post-DROP-EXPRESSION
-  row data. The emitter marks the rollback `lossy`.
+ (PG 13+). The column becomes a regular column with the
+ previously-computed values frozen as data. Rollback is structurally
+ lossy — restoring the expression in place is impossible
+ (`SET EXPRESSION AS` requires a generated column), so the inverse
+ requires `DROP COLUMN + ADD COLUMN`, destroying the post-DROP-EXPRESSION
+ row data. The emitter marks the rollback `lossy`.

@@ -1,28 +1,28 @@
 error[E0599]: the method `eq` exists for struct `JsonbPathRef<Doc, Vec<u8>>`, but its trait bounds were not satisfied
-   --> $DIR/jsonb_path_bytea_not_comparable.rs:31:14
-    |
- 28 | /         f.meta()
- 29 | |             .explicit_pg_predicate()
- 30 | |             .path::<Vec<u8>>("blob")
- 31 | |             .eq(vec![1, 2])
-    | |             -^^ method cannot be called on `JsonbPathRef<Doc, Vec<u8>>` due to unsatisfied trait bounds
-    | |_____________|
-    |
-    |
-   ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:438:1
-    |
-438 |   pub struct Vec<T, #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global> {
-    |   ------------------------------------------------------------------------------------------------ doesn't satisfy `Vec<u8>: JsonbPathComparable`
-    |
-   ::: djogi/src/jsonb/path.rs:79:1
-    |
- 79 |   pub struct JsonbPathRef<M, V> {
-    |   ----------------------------- doesn't satisfy `JsonbPathRef<Doc, Vec<u8>>: Iterator`
-    |
-    = note: the following trait bounds were not satisfied:
-            `Vec<u8>: JsonbPathComparable`
-            `JsonbPathRef<Doc, Vec<u8>>: Iterator`
-            which is required by `&mut JsonbPathRef<Doc, Vec<u8>>: Iterator`
+ --> $DIR/jsonb_path_bytea_not_comparable.rs:31:14
+ |
+ 28 | /   f.meta()
+ 29 | |   .explicit_pg_predicate()
+ 30 | |   .path::<Vec<u8>>("blob")
+ 31 | |   .eq(vec![1, 2])
+ | |    -^^ method cannot be called on `JsonbPathRef<Doc, Vec<u8>>` due to unsatisfied trait bounds
+ | |_____________|
+ |
+ |
+ ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:438:1
+ |
+438 | pub struct Vec<T, #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global> {
+ | ------------------------------------------------------------------------------------------------ doesn't satisfy `Vec<u8>: JsonbPathComparable`
+ |
+ ::: djogi/src/jsonb/path.rs:79:1
+ |
+ 79 | pub struct JsonbPathRef<M, V> {
+ | ----------------------------- doesn't satisfy `JsonbPathRef<Doc, Vec<u8>>: Iterator`
+ |
+ = note: the following trait bounds were not satisfied:
+   `Vec<u8>: JsonbPathComparable`
+   `JsonbPathRef<Doc, Vec<u8>>: Iterator`
+   which is required by `&mut JsonbPathRef<Doc, Vec<u8>>: Iterator`
 
 error: aborting due to 1 previous error
 

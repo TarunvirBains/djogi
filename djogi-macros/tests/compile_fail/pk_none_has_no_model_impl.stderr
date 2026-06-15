@@ -1,16 +1,16 @@
 error[E0599]: no associated function or constant named `create` found for struct `Custom` in the current scope
-  --> $DIR/pk_none_has_no_model_impl.rs:29:21
-   |
+ --> $DIR/pk_none_has_no_model_impl.rs:29:21
+ |
 14 | pub struct Custom {
-   | ----------------- associated function or constant `create` not found for this struct
+ | ----------------- associated function or constant `create` not found for this struct
 ...
-29 |     let _ = Custom::create;
-   |                     ^^^^^^ associated function or constant not found in `Custom`
-   |
-   = help: items from traits can only be used if the trait is implemented and in scope
-   = note: the following traits define an item `create`, perhaps you need to implement one of them:
-           candidate $TYPEID: `deadpool::managed::manager::Manager`
-           candidate $TYPEID: `djogi::model::Model`
+29 |  let _ = Custom::create;
+ |      ^^^^^^ associated function or constant not found in `Custom`
+ |
+ = help: items from traits can only be used if the trait is implemented and in scope
+ = note: the following traits define an item `create`, perhaps you need to implement one of them:
+   candidate $TYPEID: `deadpool::managed::manager::Manager`
+   candidate $TYPEID: `djogi::model::Model`
 
 error: aborting due to 1 previous error
 

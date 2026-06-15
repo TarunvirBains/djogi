@@ -9,24 +9,24 @@
 //! variant tree to walk.
 //! # Why separate the typed wrapper from the node?
 //! - **One emitter walk.** [`super::sql::emit_expr`] matches this enum
-//!   exhaustively. If `ExprNode` were polymorphic in `T`, every emitter
-//!   call site would monomorphise per-type; by erasing `T` at the enum
-//!   boundary we get one codegen path and one set of tests.
+//! exhaustively. If `ExprNode` were polymorphic in `T`, every emitter
+//! call site would monomorphise per-type; by erasing `T` at the enum
+//! boundary we get one codegen path and one set of tests.
 //! - **Arithmetic composition.** `Expr<i32> + Expr<i32>` yields `Expr<i32>`
-//!   the typed wrapper enforces the operator is only available for
-//!   numeric `T`, but the node it wraps stores a plain `Add(Box<_>, Box<_>)`
-//!   regardless of `T`. Same pattern for comparisons (`Expr<T>.eq(Expr<T>)
+//! the typed wrapper enforces the operator is only available for
+//! numeric `T`, but the node it wraps stores a plain `Add(Box<_>, Box<_>)`
+//! regardless of `T`. Same pattern for comparisons (`Expr<T>.eq(Expr<T>)
 //! -> Expr<bool>` — the wrapper changes `T` from `T` to `bool`, the node
-//!   is a `Cmp { op: Eq, .. }`).
+//! is a `Cmp { op: Eq,.. }`).
 //! - **Phase expansion.** Tasks 4 / 5 add `Case`, `Exists`, `Subquery`,
-//!   `Aggregate`, and `OuterRef` variants. Keeping the enum untyped means
-//!   those additions don't ripple into every type-parameterised site; only
-//!   the emitter and a few typed constructors grow.
+//! `Aggregate`, and `OuterRef` variants. Keeping the enum untyped means
+//! those additions don't ripple into every type-parameterised site; only
+//! the emitter and a few typed constructors grow.
 //! # Where
 //! - [`super::Expr`] — typed wrapper, the public surface.
 //! - [`super::sql::emit_expr`] — the matching emitter (one arm per variant).
 //! - [`crate::query::condition::Condition::Expr`] — the bridge that promotes
-//!   an `Expr<bool>` into the filter tree.
+//! an `Expr<bool>` into the filter tree.
 
 use crate::query::condition::FilterValue;
 use std::any::TypeId;
@@ -126,7 +126,7 @@ pub(crate) enum ExprNode {
     /// current row under `GROUP BY ROLLUP` / `CUBE` / `GROUPING SETS`,
     /// else `0`.
     /// The single-column form `GROUPING(col)` continues to use
-    /// `ExprNode::Aggregate { op: AggOp::Grouping, ... }` — the variadic
+    /// `ExprNode::Aggregate { op: AggOp::Grouping,... }` — the variadic
     /// IR layout adds a new variant rather than retrofitting an N-arg
     /// slot onto `Aggregate` because GROUPING is the only aggregate
     /// taking 2+ column args and Postgres rejects every aggregate
@@ -147,7 +147,7 @@ pub(crate) enum ExprNode {
 
     /// Aggregate function call — `COUNT(*)` / `COUNT(col)` / `SUM(col)`
     /// / `AVG(col)` / `MIN(col)` / `MAX(col)` with an optional
-    /// `FILTER (WHERE ...)` post-filter clause and an optional window
+    /// `FILTER (WHERE...)` post-filter clause and an optional window
     /// (`OVER (...)`) clause. The typed
     /// [`super::aggregate::AggregateExpr<Out>`] wrapper carries the Rust
     /// return type (`i64` for `COUNT`, `f64` for `AVG`, `V` for
@@ -168,7 +168,7 @@ pub(crate) enum ExprNode {
     /// `.distinct` builder method. Always `false` when not set.
     /// `window` is an optional [`super::window::WindowSpec`] that promotes
     /// this aggregate to a window function via `OVER (...)`. Supplied by
-    /// the `.over(|w| ...)` method on
+    /// the `.over(|w|...)` method on
     /// [`super::aggregate::AggregateExpr`]. `None` leaves the
     /// aggregate bare; the terminal-layer helpers in `query::sql` add
     /// `OVER ()` for the plain ungrouped annotate path only after the
@@ -200,7 +200,7 @@ pub(crate) enum ExprNode {
         /// on the unary family and renders the comma-separated second
         /// arg only when the variant is recognised as binary.
         arg2: Option<Box<ExprNode>>,
-        /// Optional `FILTER (WHERE ...)` clause. `None` emits the bare
+        /// Optional `FILTER (WHERE...)` clause. `None` emits the bare
         /// aggregate; `Some(cond)` emits
         /// `AGG(arg) FILTER (WHERE <cond>)`.
         filter: Option<Box<ExprNode>>,
@@ -227,7 +227,7 @@ pub(crate) enum ExprNode {
         /// reject `.distinct()` at compile time through the type-state
         /// (#89). Fetch-time validation in
         /// [`super::sql::check_aggregate_legality`] still catches
-        /// COUNT(DISTINCT *) and `STRING_AGG(DISTINCT ...)` without
+        /// COUNT(DISTINCT *) and `STRING_AGG(DISTINCT...)` without
         /// per-aggregate `ORDER BY` because those share the `ValueAgg`
         /// kind with their modifier-eligible siblings.
         distinct: bool,
@@ -238,13 +238,13 @@ pub(crate) enum ExprNode {
         /// in `OVER ()` for backwards compatibility. Non-windowable aggregate
         /// kinds are rejected by the plain-annotation type-state before SQL
         /// emission. `Some(spec)` emits the full
-        /// `OVER (PARTITION BY ... ORDER BY ... frame)` from the spec.
+        /// `OVER (PARTITION BY... ORDER BY... frame)` from the spec.
         window: Option<crate::expr::window::WindowSpec>,
         /// Per-aggregate `ORDER BY` clause(s). Set via
         /// [`super::aggregate::AggregateExpr::order_by`]. Empty `Vec`
         /// emits no ORDER BY; non-empty emits
-        /// `AGG(arg ORDER BY <ord1>, <ord2>, ...)` (or for STRING_AGG:
-        /// `STRING_AGG(arg, sep ORDER BY ...)`).
+        /// `AGG(arg ORDER BY <ord1>, <ord2>,...)` (or for STRING_AGG:
+        /// `STRING_AGG(arg, sep ORDER BY...)`).
         /// Some aggregates' result depends on input order — `ARRAY_AGG`,
         /// `JSONB_AGG`, `STRING_AGG`, plus the ordered-set / hypothetical-
         /// set families (PERCENTILE_CONT, MODE, etc., per the
@@ -257,16 +257,16 @@ pub(crate) enum ExprNode {
         /// Postgres rejects that combination unless an ORDER BY is
         /// supplied; the fetch-time check in
         /// [`super::sql::check_aggregate_legality`] still rejects
-        /// `STRING_AGG(DISTINCT ...)` with no ORDER BY but accepts the
+        /// `STRING_AGG(DISTINCT...)` with no ORDER BY but accepts the
         /// combination with one.
         order_by: Vec<crate::query::order::OrderExpr>,
-        /// `WITHIN GROUP (ORDER BY ...)` clause for ordered-set
+        /// `WITHIN GROUP (ORDER BY...)` clause for ordered-set
         /// aggregates ([`AggOp::PercentileCont`] / [`AggOp::PercentileDisc`]
         /// / [`AggOp::Mode`]) and (eventually) hypothetical-set
         /// aggregates. Empty for every other aggregate.
         /// Distinct from the per-aggregate [`order_by`](Self::Aggregate::order_by)
         /// slot — that one renders ORDER BY *inside* the aggregate's
-        /// parens (`AGG(arg ORDER BY ...)` for value aggregates like
+        /// parens (`AGG(arg ORDER BY...)` for value aggregates like
         /// `array_agg`). This slot renders ORDER BY *after* the parens
         /// in a `WITHIN GROUP` clause:
         /// ```sql
@@ -282,12 +282,12 @@ pub(crate) enum ExprNode {
         /// slot for these ops, and debug builds assert against that bypass in
         /// [`super::sql::check_aggregate_legality`].
         /// Ordered-set and hypothetical-set aggregates
-        /// (`RANK(args) WITHIN GROUP (ORDER BY ...)`)
+        /// (`RANK(args) WITHIN GROUP (ORDER BY...)`)
         /// use this slot.
         within_group_order_by: Vec<crate::query::order::OrderExpr>,
     },
 
-    /// `CASE WHEN <cond> THEN <val> [WHEN <cond> THEN <val> ...] ELSE
+    /// `CASE WHEN <cond> THEN <val> [WHEN <cond> THEN <val>...] ELSE
     /// <default> END` — multi-armed conditional expression.
     /// The typed builder [`super::case::Case`] / [`super::case::CaseBuilder`]
     /// is the sole construction path. Every arm is a
@@ -295,7 +295,7 @@ pub(crate) enum ExprNode {
     /// [`ExprNode`] that evaluates to boolean (typed as `Expr<bool>` at
     /// the builder surface), the value is the expression whose result
     /// becomes the CASE output when that arm fires. `otherwise` is
-    /// **required** (not `Option`) per the Task 5 plan — forcing the
+    /// **required** (not `Option`) per the plan — forcing the
     /// user to decide on the default avoids the silent-NULL footgun
     /// where a CASE with no matching arm produces NULL against a column
     /// the user expected to be non-null.
@@ -319,7 +319,7 @@ pub(crate) enum ExprNode {
     /// EXISTS only cares about row-presence, never scalar values.
     Exists(Box<SubqueryNode>),
 
-    /// Scalar subquery — `(SELECT <col> FROM ... WHERE ... [LIMIT 1])`
+    /// Scalar subquery — `(SELECT <col> FROM... WHERE... [LIMIT 1])`
     /// usable as any other `Expr<V>` in the outer tree.
     /// The typed surface [`super::subquery::Subquery<T, V>`] owns the
     /// construction path. `select_column` is always `Some(col)` for
@@ -391,7 +391,7 @@ pub(crate) enum ExprNode {
     /// against the enclosing query scope when there is no matching
     /// column in the subquery's own `FROM` list. When both inner and
     /// outer tables expose a same-named column, the unqualified
-    /// emission is ambiguous and Postgres raises `42702`. Task 5 ships
+    /// emission is ambiguous and Postgres raises `42702`. ships
     /// the unqualified form; a qualified variant (carrying the outer
     /// table alias) is deferred alongside the broader `parent_table`
     /// threading needed for `select_related + filter_expr` composition.
@@ -469,7 +469,7 @@ pub(crate) enum ExprNode {
     /// `ts_rank(<col>, to_tsquery('<dictionary>', $n))` — relevance score.
     /// Produced by `FtsFieldRef::rank(query)`. Returns an `f32` scalar
     /// that Postgres computes per-row as the document's relevance against
-    /// the query. Useful in `ORDER BY ... DESC` to surface the most
+    /// the query. Useful in `ORDER BY... DESC` to surface the most
     /// relevant results first.
     /// The emitter renders: `ts_rank(<column>, to_tsquery('<dictionary>', $n))`
     TsRank {
@@ -595,9 +595,9 @@ pub(crate) enum ExprNode {
     /// Column aggregates take a single column expression (`AGG(col)`) and
     /// honour a modifier set (`.distinct()`, `.filter(...)`, `.over(...)`,
     /// `.order_by(...)`, `.within_group_order_by(...)`). Row aggregates take
-    /// **the entire row** (`AGG(record, ...)`) and reject every modifier in
+    /// **the entire row** (`AGG(record,...)`) and reject every modifier in
     /// that set — Postgres would error if you tried `ST_AsMVT(DISTINCT t)` or
-    /// `ST_AsGeobuf(t ORDER BY ...)`. Sharing the [`Self::Aggregate`] variant
+    /// `ST_AsGeobuf(t ORDER BY...)`. Sharing the [`Self::Aggregate`] variant
     /// would silently expose those slots through the [`super::aggregate::AggregateExpr`]
     /// modifier impl blocks; a dedicated variant keeps the kind discipline
     /// crisp.
@@ -610,8 +610,8 @@ pub(crate) enum ExprNode {
     /// ```sql
     /// SELECT ST_AsMVT(__djogi_row, $1, $2, $3, $4)
     /// FROM (
-    ///     SELECT t.col1, t.col2, …, <annotations…>
-    ///     FROM <table> AS t [WHERE …] [ORDER BY …] [LIMIT …]
+    ///  SELECT t.col1, t.col2, …, <annotations…>
+    ///  FROM <table> AS t [WHERE …] [ORDER BY …] [LIMIT …]
     /// ) AS __djogi_row
     /// ```
     /// # Construction
@@ -648,19 +648,19 @@ pub(crate) enum ExprNode {
 /// Carries the minimum the emitter needs to render
 /// `SELECT <col or 1> FROM <table> [WHERE <condition>]`:
 /// - `table` — always `<T as Model>::table_name()` from the typed
-///   surface (a `&'static str`; never user input).
+/// surface (a `&'static str`; never user input).
 /// - `select_column` — `Some(col)` for scalar subqueries (the typed
-///   wrapper pins it via [`crate::query::field::FieldRef`] so the
-///   identifier is always validated); `None` for EXISTS, where the
-///   emitter renders `SELECT 1`.
+/// wrapper pins it via [`crate::query::field::FieldRef`] so the
+/// identifier is always validated); `None` for EXISTS, where the
+/// emitter renders `SELECT 1`.
 /// - `where_clause` — the correlated predicate, stored as a
-///   type-erased [`ErasedSubqueryPredicate`] handle.
-///   replaced the pre-flip `Option<Condition>` storage so expression
-///   subqueries carry full `Q<T>` predicates — including portable root
-///   field leaves — without round-tripping through `q_to_condition`.
-///   The handle owns a `Q<T>` for some concrete `T: Model`; the
-///   trait-object dispatch hides the model parameter so `SubqueryNode`
-///   stays type-erased.
+/// type-erased [`ErasedSubqueryPredicate`] handle.
+/// replaced the pre-flip `Option<Condition>` storage so expression
+/// subqueries carry full `Q<T>` predicates — including portable root
+/// field leaves — without round-tripping through `q_to_condition`.
+/// The handle owns a `Q<T>` for some concrete `T: Model`; the
+/// trait-object dispatch hides the model parameter so `SubqueryNode`
+/// stays type-erased.
 #[derive(Debug, Clone)]
 pub(crate) struct SubqueryNode {
     /// Subquery's `FROM` table — `<T as Model>::table_name()` from the
@@ -824,7 +824,7 @@ pub(crate) enum AggOp {
     /// The separator is stored inline in the variant so the emitter can
     /// push it as a bind parameter without a separate `ExprNode`. Carrying
     /// the separator directly on the variant rather than as a second
-    /// `ExprNode` child of `Aggregate { arg, .. }` keeps the existing
+    /// `ExprNode` child of `Aggregate { arg,.. }` keeps the existing
     /// `Aggregate` layout unchanged — no other variant needs a second
     /// operand.
     /// The separator is user-supplied at `.string_agg("sep")` call time

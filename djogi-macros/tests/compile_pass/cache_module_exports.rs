@@ -30,20 +30,20 @@
 // check. The aliases are never referenced — their existence is the
 // proof.
 use djogi::cache::{
-    BackendInvalidation as _UseBackendInvalidation,
-    BackendInvalidationStream as _UseBackendInvalidationStream,
-    BackendKeyspace as _UseBackendKeyspace, BasicPredicate as _UseBasicPredicate,
-    CacheBackend as _UseCacheBackend, Cacheable as _UseCacheable,
-    DeltaApplyStats as _UseDeltaApplyStats, DeltaPunnuFetcher as _UseDeltaPunnuFetcher,
-    DeltaQuery as _UseDeltaQuery, DeltaRefreshHandle as _UseDeltaRefreshHandle,
-    DeltaResult as _UseDeltaResult, DeltaSyncCacheable as _UseDeltaSyncCacheable,
-    EventReason as _UseEventReason, FetchError as _UseFetchError, InsertError as _UseInsertError,
-    InvalidationReason as _UseInvalidationReason, MemQ as _UseMemQ,
-    MonotonicWatermark as _UseMonotonicWatermark, OnConflict as _UseOnConflict, Punnu as _UsePunnu,
-    PunnuBuilder as _UsePunnuBuilder, PunnuConfig as _UsePunnuConfig,
-    PunnuEvent as _UsePunnuEvent, PunnuMetrics as _UsePunnuMetrics, PunnuScope as _UsePunnuScope,
-    RefreshHandle as _UseRefreshHandle, Sassi as _UseSassi, TenantKey as _UseTenantKey,
-    UpdateResult as _UseUpdateResult,
+ BackendInvalidation as _UseBackendInvalidation,
+ BackendInvalidationStream as _UseBackendInvalidationStream,
+ BackendKeyspace as _UseBackendKeyspace, BasicPredicate as _UseBasicPredicate,
+ CacheBackend as _UseCacheBackend, Cacheable as _UseCacheable,
+ DeltaApplyStats as _UseDeltaApplyStats, DeltaPunnuFetcher as _UseDeltaPunnuFetcher,
+ DeltaQuery as _UseDeltaQuery, DeltaRefreshHandle as _UseDeltaRefreshHandle,
+ DeltaResult as _UseDeltaResult, DeltaSyncCacheable as _UseDeltaSyncCacheable,
+ EventReason as _UseEventReason, FetchError as _UseFetchError, InsertError as _UseInsertError,
+ InvalidationReason as _UseInvalidationReason, MemQ as _UseMemQ,
+ MonotonicWatermark as _UseMonotonicWatermark, OnConflict as _UseOnConflict, Punnu as _UsePunnu,
+ PunnuBuilder as _UsePunnuBuilder, PunnuConfig as _UsePunnuConfig,
+ PunnuEvent as _UsePunnuEvent, PunnuMetrics as _UsePunnuMetrics, PunnuScope as _UsePunnuScope,
+ RefreshHandle as _UseRefreshHandle, Sassi as _UseSassi, TenantKey as _UseTenantKey,
+ UpdateResult as _UseUpdateResult,
 };
 
 // One additional usage check: the `Cacheable` trait is reachable as a
@@ -54,7 +54,7 @@ use djogi::cache::{
 // the type-level surface only.)
 fn _bound_check<T>()
 where
-    T: djogi::cache::Cacheable,
+ T: djogi::cache::Cacheable,
 {
 }
 

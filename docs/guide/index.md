@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD)
+> [Back to README](../../README.md)
 
 # Djogi Guides
 
@@ -10,7 +10,7 @@ For design history and items still on the horizon, see
 |---|---|
 | [Getting Started](./getting-started.md) | Installation, first model, first CRUD, first test |
 | [Connection Pool](./pool.md) | `DjogiPool` builder, `post_connect` hook, `raw_with_client` raw-driver bypass (via `RawPoolAccessExt`), env > TOML > default sizing |
-| [Models](./models.md) | `#[model(...)]` attributes, `#[field(...)]` attributes, Phase 1 field types |
+| [Models](./models.md) | `#[model(...)]` attributes, `#[field(...)]` attributes, field types |
 | [Queries](./queries.md) | `QuerySet<T>`, filter closures, programmatic filters, bulk update/delete, set operations (`union`/`intersect`/`except`), INSERT SELECT bulk copy, recursive/tree queries, pair-tuple closure self-joins, `.cache(&pool)?` |
 | [Bulk Upsert: INSERT...SELECT ON CONFLICT](./insert-select-on-conflict.md) | `insert_into(...).on_conflict_do_nothing(...)`, `on_conflict_do_update(...)`, conflict targets, `EXCLUDED`, conditional upserts |
 | [Query Aggregation](./query-aggregation.md) | `group_by` / `rollup` / `cube` / `group_by_sets`, `annotate`, `having`, window frames, DISTINCT aggregates, spatial grouping |

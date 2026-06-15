@@ -6,54 +6,54 @@
 // Cover the live-PG behaviours of `atomic_with`:
 //
 // 1. **Each isolation variant successfully opens a transaction.**
-//    Postgres parses `BEGIN ISOLATION LEVEL <kw>` and rejects
-//    malformed keywords with a syntax error; a successful BEGIN +
-//    completed closure proves the framework's SQL composition
-//    survives the round trip. The level-keyword pins in
-//    `djogi/src/transaction.rs::tests::begin_with_isolation_sql_*`
-//    cover the textual emission; this file proves Postgres accepts
-//    the emitted text.
+//  Postgres parses `BEGIN ISOLATION LEVEL <kw>` and rejects
+//  malformed keywords with a syntax error; a successful BEGIN +
+//  completed closure proves the framework's SQL composition
+//  survives the round trip. The level-keyword pins in
+//  `djogi/src/transaction.rs::tests::begin_with_isolation_sql_*`
+//  cover the textual emission; this file proves Postgres accepts
+//  the emitted text.
 //
 // 2. **Observed `transaction_isolation` matches the requested
-//    [`IsolationLevel`]** inside the open transaction. This is the
-//    GPT-5.5 xhigh follow-up: the prior coverage only proved BEGIN
-//    didn't syntax-error, not that the requested level actually
-//    bound to the session. Read the `current_setting('transaction_isolation')`
-//    GUC back inside `atomic_with`. Uses
-//    `#[djogi::deliberately_bypass_convention_with_raw_sql]` because
-//    djogi has no typed `SHOW` / `current_setting` surface today
-//    (tracking: djogi#168). JUSTIFICATION comments attach to the
-//    decorated test items per CLAUDE.md raw-SQL convention.
+//  [`IsolationLevel`]** inside the open transaction. This is the
+//  a high-severity review xhigh follow-up: the prior coverage only proved BEGIN
+//  didn't syntax-error, not that the requested level actually
+//  bound to the session. Read the `current_setting('transaction_isolation')`
+//  GUC back inside `atomic_with`. Uses
+//  `#[djogi::deliberately_bypass_convention_with_raw_sql]` because
+//  djogi has no typed `SHOW` / `current_setting` surface today
+//  (tracking: djogi#168). JUSTIFICATION comments attach to the
+//  decorated test items per CLAUDE.md raw-SQL convention.
 //
 // 3. **Pool-path commit and rollback semantics mirror `atomic`** —
-//    writes persist on Ok, vanish on Err.
+//  writes persist on Ok, vanish on Err.
 //
 // 4. **Nested `atomic_with(level, &mut tx_ctx, ...)` rejects with
-//    `DjogiError::IsolationLevelOnNestedScope`.** Postgres pins
-//    isolation at the outer BEGIN; the typed-error rejection
-//    surfaces synchronously before any SQL flies, mirroring the
-//    `SetRoleOutsideTransaction` discipline.
+//  `DjogiError::IsolationLevelOnNestedScope`.** Postgres pins
+//  isolation at the outer BEGIN; the typed-error rejection
+//  surfaces synchronously before any SQL flies, mirroring the
+//  `SetRoleOutsideTransaction` discipline.
 //
 // 5. **`retry_on_conflict` composes with `atomic_with` for the
-//    `Serializable` / `RepeatableRead` SQLSTATE-40001 retry loop.**
-//    Verified by wiring a one-attempt `retry_on_conflict` around a
-//    serializable atomic_with closure that runs to completion.
+//  `Serializable` / `RepeatableRead` SQLSTATE-40001 retry loop.**
+//  Verified by wiring a one-attempt `retry_on_conflict` around a
+//  serializable atomic_with closure that runs to completion.
 //
 // 6. **Real 40001 retry through `atomic_with` + `retry_on_conflict`.**
-//    GPT-5.5 xhigh follow-up: drive two concurrent SERIALIZABLE
-//    transactions through SSI-incompatible reads/writes so Postgres
-//    raises `40001` (serialization_failure) at COMMIT on the second
-//    one. The retry budget then re-runs the closure (which observes
-//    the first transaction's committed state and proceeds cleanly).
-//    Without `retry_on_conflict` the 40001 would surface to the
-//    caller; with it, the retry loop classifies and re-runs.
+//  a high-severity review xhigh follow-up: drive two concurrent SERIALIZABLE
+//  transactions through SSI-incompatible reads/writes so Postgres
+//  raises `40001` (serialization_failure) at COMMIT on the second
+//  one. The retry budget then re-runs the closure (which observes
+//  the first transaction's committed state and proceeds cleanly).
+//  Without `retry_on_conflict` the 40001 would surface to the
+//  caller; with it, the retry loop classifies and re-runs.
 //
 // # Spec / memory anchors
 //
 // - djogi#168 issue body (closing-condition checklist).
 // - `docs/guide/transactions.md` §"Isolation levels — `atomic_with`".
 // - `feedback_djogi_local_postgres.md` — `#[djogi_test]` provisions a
-//   fresh DB per test.
+//  fresh DB per test.
 
 use djogi::prelude::*;
 use djogi::transaction::{IsolationLevel, atomic, atomic_with, retry_on_conflict};
@@ -89,9 +89,9 @@ async fn assert_atomic_with_opens_at_level(ctx: &mut DjogiContext, level: Isolat
 /// Map a [`IsolationLevel`] to the lowercase string Postgres returns
 /// from `current_setting('transaction_isolation')`. The GUC returns
 /// the level in lowercase regardless of how it was set:
-///   `READ COMMITTED` → `"read committed"`
-///   `REPEATABLE READ` → `"repeatable read"`
-///   `SERIALIZABLE`   → `"serializable"`
+///  `READ COMMITTED` → `"read committed"`
+///  `REPEATABLE READ` → `"repeatable read"`
+///  `SERIALIZABLE`  → `"serializable"`
 fn expected_guc_for_level(level: IsolationLevel) -> &'static str {
     match level {
         IsolationLevel::ReadCommitted => "read committed",
@@ -105,7 +105,7 @@ fn expected_guc_for_level(level: IsolationLevel) -> &'static str {
 /// transaction — proves the requested level actually bound to the
 /// session, not just that BEGIN didn't syntax-error.
 ///
-/// This is the GPT-5.5 xhigh fix for djogi#168 finding #4: prior
+/// This is the a high-severity review xhigh fix for djogi#168 finding #4: prior
 /// coverage proved the SQL parsed; this proves the level applies at
 /// runtime. The raw-SQL bypass is justified inline at every call
 /// site because djogi does not (yet) expose a typed `SHOW` /
@@ -130,7 +130,7 @@ async fn assert_atomic_with_observes_level(ctx: &mut DjogiContext, level: Isolat
     assert_eq!(
         observed, expected,
         "atomic_with({level}) must bind transaction_isolation = {expected:?}; \
-         observed: {observed:?}"
+     observed: {observed:?}"
     );
 }
 
@@ -155,7 +155,7 @@ async fn atomic_with_read_committed_opens_transaction(mut ctx: djogi::DjogiConte
 }
 
 // ---------------------------------------------------------------------------
-// GPT-5.5 xhigh follow-up: observe the actual `transaction_isolation`
+// a high-severity review xhigh follow-up: observe the actual `transaction_isolation`
 // GUC inside the open transaction. The prior tests only proved BEGIN
 // did not syntax-error; these tests prove the requested level
 // actually bound to the session.
@@ -309,22 +309,22 @@ async fn atomic_with_composes_with_retry_on_conflict(mut ctx: djogi::DjogiContex
 }
 
 // ---------------------------------------------------------------------------
-// GPT-5.5 xhigh follow-up: real `40001` serialization-failure retry
+// a high-severity review xhigh follow-up: real `40001` serialization-failure retry
 // driven through `atomic_with(Serializable, ...)` + `retry_on_conflict`.
 //
 // Drives two concurrent SERIALIZABLE transactions through an SSI-
 // incompatible read/write pattern:
 //
-//   1. Each transaction reads the current `IsoWidget` count.
-//   2. A `tokio::sync::Barrier` of capacity 2 forces both readers to
-//      observe their snapshots BEFORE either writes — Postgres needs
-//      the two snapshots to be concurrent for SSI to flag the
-//      anomaly at commit.
-//   3. Each transaction inserts one row whose label depends on the
-//      snapshot count it observed.
-//   4. Both transactions commit. Under SSI, one commit succeeds and
-//      the other raises `40001` because each transaction's write
-//      makes the other's snapshot count stale.
+//  1. Each transaction reads the current `IsoWidget` count.
+//  2. A `tokio::sync::Barrier` of capacity 2 forces both readers to
+//   observe their snapshots BEFORE either writes — Postgres needs
+//   the two snapshots to be concurrent for SSI to flag the
+//   anomaly at commit.
+//  3. Each transaction inserts one row whose label depends on the
+//   snapshot count it observed.
+//  4. Both transactions commit. Under SSI, one commit succeeds and
+//   the other raises `40001` because each transaction's write
+//   makes the other's snapshot count stale.
 //
 // `retry_on_conflict(attempts = 4)` wraps each side. The loser's
 // closure re-runs against the winner's committed state, observes
@@ -399,16 +399,16 @@ async fn atomic_with_with_retry_on_conflict_recovers_from_real_40001(mut ctx: dj
                         "ssi-serializable: snapshot read",
                     );
                     // 2. First attempt synchronises with the other
-                    //    side to guarantee concurrent snapshots.
-                    //    Retries don't need the sync (the other side
-                    //    has already committed by then).
+                    //  side to guarantee concurrent snapshots.
+                    //  Retries don't need the sync (the other side
+                    //  has already committed by then).
                     if attempt == 1 {
                         barrier.wait().await;
                     }
                     // 3. Write a row whose label depends on the
-                    //    observed snapshot. SSI flags the anomaly:
-                    //    both sides read N, both write a row that
-                    //    counts in the other's snapshot.
+                    //  observed snapshot. SSI flags the anomaly:
+                    //  both sides read N, both write a row that
+                    //  counts in the other's snapshot.
                     IsoWidget::create(
                         tx,
                         IsoWidget {
@@ -442,7 +442,7 @@ async fn atomic_with_with_retry_on_conflict_recovers_from_real_40001(mut ctx: dj
         count,
         2,
         "both transactions must commit a row after SSI retry resolves; \
-         saw {count} rows (runs_a = {a_runs}, runs_b = {b_runs})",
+     saw {count} rows (runs_a = {a_runs}, runs_b = {b_runs})",
         a_runs = runs_a.load(Ordering::SeqCst),
         b_runs = runs_b.load(Ordering::SeqCst),
     );
@@ -458,8 +458,8 @@ async fn atomic_with_with_retry_on_conflict_recovers_from_real_40001(mut ctx: dj
     assert!(
         a_runs >= 2 || b_runs >= 2,
         "expected at least one side to re-run its closure after a real 40001 \
-         (runs_a = {a_runs}, runs_b = {b_runs}). If both counters are 1, the \
-         test environment did not surface a serialization failure — the \
-         barrier-coordinated SSI scenario must drive Postgres to raise it.",
+     (runs_a = {a_runs}, runs_b = {b_runs}). If both counters are 1, the \
+     test environment did not surface a serialization failure — the \
+     barrier-coordinated SSI scenario must drive Postgres to raise it.",
     );
 }

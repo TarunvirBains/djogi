@@ -3,12 +3,12 @@
 //! An [`OrderExpr`] is the minimal description of a single `ORDER BY`
 //! clause element. There are two variants:
 //! - [`OrderExpr::Column`] — a column name, sort direction, and optional NULLS
-//!   position. Produced by [`FieldRef::asc`] / [`FieldRef::desc`] and the fluent
-//!   [`OrderExpr::nulls_first`] / [`OrderExpr::nulls_last`] modifiers.
+//! position. Produced by [`FieldRef::asc`] / [`FieldRef::desc`] and the fluent
+//! [`OrderExpr::nulls_first`] / [`OrderExpr::nulls_last`] modifiers.
 //! - [`OrderExpr::SpatialDistance`] — an expression-backed ordering that emits
-//!   `ST_Distance(col, ST_Point($lon, $lat)::geography) ASC, <pk> ASC`. Produced
-//!   by [`crate::query::field::FieldRef<M, GeoPoint>::order_by_distance`] when
-//!   the `spatial` feature flag is enabled.
+//! `ST_Distance(col, ST_Point($lon, $lat)::geography) ASC, <pk> ASC`. Produced
+//! by [`crate::query::field::FieldRef<M, GeoPoint>::order_by_distance`] when
+//! the `spatial` feature flag is enabled.
 //! # Why an enum
 //! The `Column` variant covers ordinary `column ASC|DESC NULLS FIRST|LAST`
 //! ordering. The `SpatialDistance` variant carries the
@@ -29,7 +29,7 @@
 //! # Where
 //! - Accumulated by [`crate::query::queryset::QuerySet::order_by`].
 //! - Emitted to SQL by [`OrderExpr::emit`], called from `query::sql`'s
-//!   ordering tail helpers.
+//! ordering tail helpers.
 
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
@@ -71,7 +71,7 @@ pub enum NullsOrder {
 /// produces `SpatialDistance`). All construction paths ensure the column string
 /// has already been validated by [`crate::ident::assert_plain_ident`].
 /// # Note on `Copy`
-/// `OrderExpr` was `Copy` before . The `SpatialDistance` variant stores a
+/// `OrderExpr` was `Copy` before. The `SpatialDistance` variant stores a
 /// `GeoPoint`, which is `Clone` but not `Copy`. `Copy` is therefore not derived
 /// on the enum — callers that need a second handle should `.clone()` explicitly.
 #[derive(Debug, Clone)]
@@ -281,7 +281,7 @@ impl OrderExpr {
     /// `#[non_exhaustive]` on the variant prevents downstream
     /// (user-crate) `OrderExpr::Column { column, direction, nulls }`
     /// literals; the proxy macro emits `default_order = [(field,
-    /// Asc|Desc), ...]` overrides in the *user's* crate, so we expose
+    /// Asc|Desc),...]` overrides in the *user's* crate, so we expose
     /// this `#[doc(hidden)]` constructor as the macro-only path. Mirrors
     /// the [`crate::query::Condition::__from_raw_sql_fragment`] pattern
     /// from the same task.

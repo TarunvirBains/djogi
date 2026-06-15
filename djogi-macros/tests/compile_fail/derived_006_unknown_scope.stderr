@@ -1,7 +1,7 @@
 error: unknown scope `internal` in `scopes = [...]` — expected one of `public`, `self_view`, `admin`, `export` (E_DJG_VDF_006)
-  --> $DIR/derived_006_unknown_scope.rs:17:23
-   |
-17 |     scopes = [public, internal],
-   |                       ^^^^^^^^
+ --> $DIR/derived_006_unknown_scope.rs:17:23
+ |
+17 |  scopes = [public, internal],
+ |      ^^^^^^^^
 
 error: aborting due to 1 previous error

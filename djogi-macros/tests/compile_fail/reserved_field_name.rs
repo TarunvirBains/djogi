@@ -5,8 +5,8 @@ use djogi::prelude::*;
 
 #[model(table = "posts")]
 struct Bad {
-    pub title: String,
-    pub created_at: String,
+ pub title: String,
+ pub created_at: String,
 }
 
 fn main() {}

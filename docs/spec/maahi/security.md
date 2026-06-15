@@ -1,4 +1,4 @@
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md) | [Maahi](./index.md)
 
 # Maahi — Security
 
@@ -51,7 +51,7 @@ CSRF signing key and session-cookie signing key live in environment variables, n
 
 ```toml
 [admin]
-csrf_secret_env    = "DJOGI_ADMIN_CSRF_SECRET"
+csrf_secret_env = "DJOGI_ADMIN_CSRF_SECRET"
 session_secret_env = "DJOGI_ADMIN_SESSION_SECRET"
 ```
 
@@ -59,4 +59,4 @@ Missing env vars at startup cause Maahi to refuse to mount, with a clear diagnos
 
 ---
 
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md) | [Maahi](./index.md)

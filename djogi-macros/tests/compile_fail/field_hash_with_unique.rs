@@ -13,8 +13,8 @@ use djogi::prelude::*;
 #[model(table = "posts")]
 #[derive(Debug, Clone)]
 pub struct Post {
-    #[field(index = "hash", unique)]
-    pub slug: String,
+ #[field(index = "hash", unique)]
+ pub slug: String,
 }
 
 fn main() {}

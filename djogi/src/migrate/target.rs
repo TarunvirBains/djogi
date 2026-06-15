@@ -1,37 +1,37 @@
 //! Filesystem layout helpers for the migration tree.
 //! Two responsibilities:
 //! 1. **Path resolution.** Map a `(database, app)` [`BucketKey`] to
-//!    the canonical on-disk paths for that bucket — committed
-//!    migration files under `migrations/<database>/<app>/`, the
-//!    snapshot at `migrations/<database>/<app>/schema_snapshot.json`,
-//!    and the pending JSON staging file at
-//!    `target/djogi_pending/<database>/<app>.json`.
+//! the canonical on-disk paths for that bucket — committed
+//! migration files under `migrations/<database>/<app>/`, the
+//! snapshot at `migrations/<database>/<app>/schema_snapshot.json`,
+//! and the pending JSON staging file at
+//! `target/djogi_pending/<database>/<app>.json`.
 //! 2. **Filesystem scanning.** For the build.rs three-way match and
-//!    the D004 (folder drift) diagnostic, walk the on-disk
-//!    `migrations/` tree and report which `(database, app)` pairs
-//!    actually exist as directories. Compared against the snapshot's
-//!    `registered_apps` to surface orphaned / missing folders.
+//! the D004 (folder drift) diagnostic, walk the on-disk
+//! `migrations/` tree and report which `(database, app)` pairs
+//! actually exist as directories. Compared against the snapshot's
+//! `registered_apps` to surface orphaned / missing folders.
 //! # Workspace layout (frozen)
 //! ```text
 //! <workspace-root>/
-//! ├── migrations/                              committed; git submodule
-//! │   ├── main/
-//! │   │   ├── billing/
-//! │   │   │   ├── V20260425010203__add_invoices.sdjql
-//! │   │   │   ├── V20260425010203__add_invoices.down.sdjql
-//! │   │   │   └── schema_snapshot.json
-//! │   │   └── _global_/                        synthetic bucket
-//! │   │       └── …
-//! │   └── crud_log/
-//! │       └── audit/
-//! │           └── …
-//! └── target/                                  build artifact; gitignored
-//!     ├── djogi_models.json                    written by `#[derive(Model)]`
-//!     └── djogi_pending/                       written by `migrations compose`
-//!         ├── main/
-//!         │   └── billing.json
-//!         └── crud_log/
-//!             └── audit.json
+//! ├── migrations/        committed; git submodule
+//! │ ├── main/
+//! │ │ ├── billing/
+//! │ │ │ ├── V20260425010203__add_invoices.sdjql
+//! │ │ │ ├── V20260425010203__add_invoices.down.sdjql
+//! │ │ │ └── schema_snapshot.json
+//! │ │ └── _global_/      synthetic bucket
+//! │ │  └── …
+//! │ └── crud_log/
+//! │  └── audit/
+//! │   └── …
+//! └── target/         build artifact; gitignored
+//!  ├── djogi_models.json     written by `#[derive(Model)]`
+//!  └── djogi_pending/      written by `migrations compose`
+//!   ├── main/
+//!   │ └── billing.json
+//!   └── crud_log/
+//!    └── audit.json
 //! ```
 //! The synthetic global bucket (empty-string app label) lives at
 //! `<database>/_global_/` on disk so file-system tooling does not have
@@ -259,23 +259,23 @@ fn scan_filesystem_filtered(
 /// `database_filter`:
 /// - `Some(name)` — only buckets whose `database` matches are included.
 /// - `None` — every bucket discovered by [`scan_filesystem`] is included.
-///   Filtering rules (shared by every consumer of this helper):
+/// Filtering rules (shared by every consumer of this helper):
 /// - Down-side files (suffix `.down.sdjql`) are skipped — the up-side
-///   filename is the canonical version identifier.
+/// filename is the canonical version identifier.
 /// - Files whose stem does not match the `V<14-digit>__<slug>` /
-///   `V<14-digit>` grammar (per [`recover_version_from_stem`]) are
-///   silently skipped.
+/// `V<14-digit>` grammar (per [`recover_version_from_stem`]) are
+/// silently skipped.
 /// - Buckets containing zero up-side migrations are absent from the
-///   returned map (the per-bucket inner map is only created on first
-///   insert).
-///   **Legacy rejection.** Schema migration files with a `.sql` extension
-///   (up or down side) are rejected with `io::ErrorKind::InvalidData` and
-///   a diagnostic naming the file and version. Duplicate same-version
-///   artifacts (e.g., `V1__x.sql` + `V1__x.sdjql`) produce a duplicate
-///   diagnostic before single-file legacy rejection.
-///   Returns `io::Error` directly so each caller can wrap it in a
-///   crate-local error variant (`AttuneError::FilesystemScanFailed`,
-///   `ResetError::MigrationScanFailed`, etc.).
+/// returned map (the per-bucket inner map is only created on first
+/// insert).
+/// **Legacy rejection.** Schema migration files with a `.sql` extension
+/// (up or down side) are rejected with `io::ErrorKind::InvalidData` and
+/// a diagnostic naming the file and version. Duplicate same-version
+/// artifacts (e.g., `V1__x.sql` + `V1__x.sdjql`) produce a duplicate
+/// diagnostic before single-file legacy rejection.
+/// Returns `io::Error` directly so each caller can wrap it in a
+/// crate-local error variant (`AttuneError::FilesystemScanFailed`,
+/// `ResetError::MigrationScanFailed`, etc.).
 pub fn scan_filesystem_with_files(
     workspace_root: &Path,
     database_filter: Option<&str>,
@@ -322,7 +322,7 @@ pub fn scan_filesystem_with_files(
                     format!("legacy schema migration down file rejected: {name}"),
                 ));
             }
-            // Classify extension: .sdjql (current) or .sql (legacy).
+            // Classify extension:.sdjql (current) or.sql (legacy).
             let ext = if name.ends_with(MIGRATION_FILE_EXT) {
                 MIGRATION_FILE_EXT
             } else if name.ends_with(".sql") {
@@ -352,7 +352,7 @@ pub fn scan_filesystem_with_files(
             }
         }
 
-        // Insert into output, rejecting any remaining legacy .sql files.
+        // Insert into output, rejecting any remaining legacy.sql files.
         for (version, paths) in &version_candidates {
             let path = &paths[0]; // safe: we checked for duplicates above
             if path.extension().and_then(|e| e.to_str()) == Some("sql") {
@@ -360,7 +360,7 @@ pub fn scan_filesystem_with_files(
                     io::ErrorKind::InvalidData,
                     format!(
                         "legacy schema migration file rejected for {version}: {:?}; \
-                         schema migrations must use .sdjql",
+       schema migrations must use.sdjql",
                         path
                     ),
                 ));
@@ -631,7 +631,7 @@ mod tests {
             database: "main".to_string(),
             app: "myapp".to_string(),
         };
-        assert!(result.contains_key(&bk), "scanner must find .sdjql files");
+        assert!(result.contains_key(&bk), "scanner must find.sdjql files");
         assert_eq!(result[&bk].len(), 1); // up only, down is skipped
     }
 
@@ -645,7 +645,7 @@ mod tests {
         let result = scan_filesystem_with_files(&root, None);
         assert!(
             result.is_err(),
-            "scanner must reject .sql schema migration files"
+            "scanner must reject.sql schema migration files"
         );
         let err = result.unwrap_err().to_string();
         assert!(

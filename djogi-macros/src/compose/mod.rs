@@ -31,21 +31,21 @@
 //! #[model(table = "posts", auditable, soft_deletable, hooks)]
 //! #[derive(Debug, Clone)]
 //! pub struct Post {
-//!     pub title: String,
-//!     pub created_by: Option<String>,         // adopter declares the field
-//!     pub deleted_at: Option<djogi::DateTime>, // adopter declares the field
+//!  pub title: String,
+//!  pub created_by: Option<String>,   // adopter declares the field
+//!  pub deleted_at: Option<djogi::DateTime>, // adopter declares the field
 //! }
 //!
 //! impl djogi::hooks::ModelHooks for Post {
-//!     async fn before_create(
-//!         &mut self,
-//!         _ctx: &mut djogi::DjogiContext,
-//!     ) -> Result<(), djogi::DjogiError> {
-//!         // self.created_by has already been populated from auth (or
-//!         // left as the user-set value). Hook can override or
-//!         // validate freely.
-//!         Ok(())
-//!     }
+//!  async fn before_create(
+//!   &mut self,
+//!   _ctx: &mut djogi::DjogiContext,
+//!  ) -> Result<(), djogi::DjogiError> {
+//!   // self.created_by has already been populated from auth (or
+//!   // left as the user-set value). Hook can override or
+//!   // validate freely.
+//!   Ok(())
+//!  }
 //! }
 //! ```
 

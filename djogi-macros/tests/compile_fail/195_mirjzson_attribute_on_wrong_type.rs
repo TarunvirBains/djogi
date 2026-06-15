@@ -10,8 +10,8 @@ use djogi::prelude::*;
 #[model(table = "phase85_mirjzson_attribute_on_wrong_type")]
 #[derive(Debug, Clone)]
 pub struct WrongType {
-    #[mirjzson(justification = "this attribute does not belong on a String")]
-    pub title: String,
+ #[mirjzson(justification = "this attribute does not belong on a String")]
+ pub title: String,
 }
 
 fn main() {}

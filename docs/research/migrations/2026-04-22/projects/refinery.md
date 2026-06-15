@@ -44,7 +44,7 @@ The macro runs **at compile time** inside `refinery_macros/src/lib.rs:98-155`:
 2. Calls `find_migration_files(location, MigrationType::All)` — a walkdir scan that filters file names against the regex `^([U|V])(\d+(?:\.\d+)?)__(\w+)\.(rs|sql)$`.
 3. For `.sql` files: emits `include_str!(path)` — content is baked into the binary at compile time.
 4. For `.rs` files: emits the source as an inline `mod` and also `include_str!` (to trigger recompilation on change).
-5. Generates a `pub mod migrations { pub fn runner() -> Runner { ... } }` module that constructs `Migration::unapplied(name, sql)` for each file and hands them to `Runner::new(&migrations)`.
+5. Generates a `pub mod migrations { pub fn runner() -> Runner {... } }` module that constructs `Migration::unapplied(name, sql)` for each file and hands them to `Runner::new(&migrations)`.
 
 **Confidence: high** (read source)
 
@@ -79,10 +79,10 @@ The runner applies only migrations with version > current, in ascending version 
 
 ```sql
 CREATE TABLE IF NOT EXISTS %MIGRATION_TABLE_NAME%(
-         version %VERSION_TYPE% PRIMARY KEY,
-         name VARCHAR(255),
-         applied_on VARCHAR(255),
-         checksum VARCHAR(255));
+     version %VERSION_TYPE% PRIMARY KEY,
+     name VARCHAR(255),
+     applied_on VARCHAR(255),
+     checksum VARCHAR(255));
 ```
 
 Source: `refinery_core/src/traits/mod.rs:107-112`
@@ -93,12 +93,12 @@ Source: `refinery_core/src/traits/mod.rs:107-112`
 
 ```rust
 format!(
-    "INSERT INTO {} (version, name, applied_on, checksum) VALUES ({}, '{}', '{}', '{}')",
-    migration_table_name,
-    migration.version(),
-    migration.name(),
-    migration.applied_on().unwrap().format(&Rfc3339).unwrap(),
-    migration.checksum()
+  "INSERT INTO {} (version, name, applied_on, checksum) VALUES ({}, '{}', '{}', '{}')",
+  migration_table_name,
+  migration.version(),
+  migration.name(),
+  migration.applied_on().unwrap().format(&Rfc3339).unwrap(),
+  migration.checksum()
 )
 ```
 
@@ -188,9 +188,9 @@ What is hashed (in order, `runner.rs:92-96`):
 
 ```rust
 let mut hasher = SipHasher13::new();
-name.hash(&mut hasher);       // migration name string (e.g. "initial")
-version.hash(&mut hasher);    // migration version integer
-sql.hash(&mut hasher);        // full SQL content as &str
+name.hash(&mut hasher);    // migration name string (e.g. "initial")
+version.hash(&mut hasher);  // migration version integer
+sql.hash(&mut hasher);    // full SQL content as &str
 let checksum = hasher.finish(); // u64
 ```
 
@@ -287,21 +287,21 @@ The macro panics at compile time if file names do not match the naming conventio
 From `refinery-core/Cargo.toml`:
 
 ```toml
-rusqlite          # sqlite via rusqlite (sync)
-rusqlite-bundled  # rusqlite with bundled SQLite
-postgres          # postgres crate (sync)
-postgres-tls      # postgres + native-tls
-tokio-postgres    # tokio-postgres (async)
+rusqlite     # sqlite via rusqlite (sync)
+rusqlite-bundled # rusqlite with bundled SQLite
+postgres     # postgres crate (sync)
+postgres-tls   # postgres + native-tls
+tokio-postgres  # tokio-postgres (async)
 tokio-postgres-tls
-mysql             # mysql crate (sync)
-mysql_async       # mysql_async (async)
-tiberius          # SQL Server via tiberius (async)
-tiberius-config   # tiberius + config struct
-int8-versions     # use i64 for version numbers
-enums             # generate EmbeddedMigration enum
-config            # enable Config struct and file-based setup
-toml              # enable TOML config file parsing
-serde             # enable serde derives on public types
+mysql       # mysql crate (sync)
+mysql_async    # mysql_async (async)
+tiberius     # SQL Server via tiberius (async)
+tiberius-config  # tiberius + config struct
+int8-versions   # use i64 for version numbers
+enums       # generate EmbeddedMigration enum
+config      # enable Config struct and file-based setup
+toml       # enable TOML config file parsing
+serde       # enable serde derives on public types
 ```
 
 ### Driver abstraction design
@@ -313,11 +313,11 @@ Two separate trait hierarchies gated by feature flags:
 **Sync path:**
 ```rust
 pub trait Transaction {
-    type Error: std::error::Error + Send + Sync + 'static;
-    fn execute<'a, T: Iterator<Item = &'a str>>(&mut self, queries: T) -> Result<usize, Self::Error>;
+  type Error: std::error::Error + Send + Sync + 'static;
+  fn execute<'a, T: Iterator<Item = &'a str>>(&mut self, queries: T) -> Result<usize, Self::Error>;
 }
 pub trait Query<T>: Transaction {
-    fn query(&mut self, query: &str) -> Result<T, Self::Error>;
+  fn query(&mut self, query: &str) -> Result<T, Self::Error>;
 }
 pub trait Migrate: Query<Vec<Migration>> where Self: Sized { /* default methods */ }
 ```
@@ -327,12 +327,12 @@ Source: `traits/sync.rs:8-19`, `105-199`
 ```rust
 #[async_trait]
 pub trait AsyncTransaction {
-    type Error: std::error::Error + Send + Sync + 'static;
-    async fn execute<'a, T: Iterator<Item = &'a str> + Send>(&mut self, queries: T) -> Result<usize, Self::Error>;
+  type Error: std::error::Error + Send + Sync + 'static;
+  async fn execute<'a, T: Iterator<Item = &'a str> + Send>(&mut self, queries: T) -> Result<usize, Self::Error>;
 }
 #[async_trait]
 pub trait AsyncQuery<T>: AsyncTransaction {
-    async fn query(&mut self, query: &str) -> Result<T, Self::Error>;
+  async fn query(&mut self, query: &str) -> Result<T, Self::Error>;
 }
 pub trait AsyncMigrate: AsyncQuery<Vec<Migration>> where Self: Sized { /* default methods */ }
 ```
@@ -349,29 +349,29 @@ Djogi Q5 answer: driver abstraction is trait-based (`Transaction` / `AsyncTransa
 ### Adopt
 
 - **`U`-prefix for unversioned (out-of-order) migrations** (`util.rs:15`, `runner.rs:18-21`): The `V`/`U` prefix distinction is a clean way to expose configurable out-of-order semantics without a global flag. Djogi could adopt a similar prefix convention for migration files that are explicitly intended to be replayed without strict ordering (e.g., idempotent seed data).
-  Citation: `refinery_core/src/runner.rs:18-21`, `traits/mod.rs:76-85`
+ Citation: `refinery_core/src/runner.rs:18-21`, `traits/mod.rs:76-85`
 
 - **Separated `Transaction` / `Query` primitives** (`traits/sync.rs:8-19`): Splitting write and read operations into separate trait bounds keeps the driver interface minimal. Djogi's `tokio-postgres` adapter can adopt the same pattern: implement a thin `execute` wrapper that handles `pg_advisory_lock` + transaction lifecycle, leaving all migration logic in trait defaults.
-  Citation: `refinery_core/src/traits/sync.rs:8-19`
+ Citation: `refinery_core/src/traits/sync.rs:8-19`
 
 - **`Target::Fake` / `Target::FakeVersion`** (`runner.rs:44-50`): Fake-apply is the minimum viable "stamp" workflow needed when bootstrapping a new runner against a database that already has schema applied manually. Djogi's design spec calls this "baseline/fake" and should implement it with the same semantics — record without executing.
-  Citation: `refinery_core/src/runner.rs:44-50`
+ Citation: `refinery_core/src/runner.rs:44-50`
 
 - **Report struct returning applied migrations** (`runner.rs:203-218`): Returning a `Report` with the list of applied `Migration` structs from `Runner::run` gives callers structured feedback without them having to re-query the ledger. Djogi should do the same.
-  Citation: `refinery_core/src/runner.rs:203-218`
+ Citation: `refinery_core/src/runner.rs:203-218`
 
 - **Explicit `SipHasher13` instead of `DefaultHasher`** (`runner.rs:84-96`): The comment at `runner.rs:84-91` explains exactly why `DefaultHasher` is unsuitable for migration checksums across Rust versions. Djogi must not use `DefaultHasher`. However, Djogi should use a content-only hash (SHA-256 of SQL) rather than a composite hash of name + version + SQL, to allow safe file renames.
-  Citation: `refinery_core/src/runner.rs:84-96`
+ Citation: `refinery_core/src/runner.rs:84-96`
 
 ### Reject
 
 - **No advisory lock** (proved by grep, zero hits for `pg_advisory_lock` / `advisory` / `LOCK TABLE`): Djogi's design requires `pg_advisory_lock(...)` for session-scoped concurrency safety. refinery's absence of any lock means concurrent runners will silently double-execute migrations in the pathological case. Djogi must not inherit this design.
 
 - **Ledger INSERT outside the migration transaction** (`traits/sync.rs:85-99`): In default (non-grouped) mode, refinery sends the migration SQL and the ledger INSERT as two separate `execute` calls, each wrapped in its own transaction. A crash between them orphans the migration. Djogi should always write the ledger row atomically with the migration SQL in a single transaction, or prove it cannot with the affected DDL class (CONCURRENTLY).
-  Citation: `refinery_core/src/traits/sync.rs:85-99`
+ Citation: `refinery_core/src/traits/sync.rs:85-99`
 
 - **Checksum over name + version + SQL** (`runner.rs:92-96`): Including `name` and `version` in the checksum means a file rename or version number change breaks the checksum even if SQL is identical. Djogi's `V:hex` checksum format should hash only the SQL content (normalized for line endings).
-  Citation: `refinery_core/src/runner.rs:92-96`
+ Citation: `refinery_core/src/runner.rs:92-96`
 
 - **No line-ending normalization**: `sql.hash(&mut hasher)` hashes raw bytes. Cross-OS development teams will see checksum drift between Windows (`\r\n`) and Linux (`\n`) builds in CLI mode. Djogi must normalize SQL to `\n` before hashing.
 

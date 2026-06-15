@@ -11,9 +11,9 @@
 -- the test does not exercise cascade behavior.
 
 CREATE TABLE IF NOT EXISTS entries (
-    id         BIGINT PRIMARY KEY DEFAULT generate_id(),
-    ledger_id  BIGINT NOT NULL REFERENCES ledgers(id) ON DELETE RESTRICT,
-    memo       TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  id     BIGINT PRIMARY KEY DEFAULT generate_id(),
+  ledger_id BIGINT NOT NULL REFERENCES ledgers(id) ON DELETE RESTRICT,
+  memo    TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

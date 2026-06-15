@@ -7,10 +7,10 @@
 - **Primary language:** Rust
 - **Version:** `2.0.0-rc.38` (`sea-orm-migration/Cargo.toml:14`)
 - **Total LOC of migration-relevant modules:**
-  - `sea-orm-migration/src/` (all files): 2,171 lines
-  - `sea-orm-cli/src/` (all files): 1,312 lines (migrate-related subset: `commands/migrate.rs` = 331 lines, `cli.rs` = 463 lines)
-  - `sea-orm-macros/src/derives/migration.rs`: 32 lines
-  - **Total: ~3,515 lines**
+ - `sea-orm-migration/src/` (all files): 2,171 lines
+ - `sea-orm-cli/src/` (all files): 1,312 lines (migrate-related subset: `commands/migrate.rs` = 331 lines, `cli.rs` = 463 lines)
+ - `sea-orm-macros/src/derives/migration.rs`: 32 lines
+ - **Total: ~3,515 lines**
 
 ---
 
@@ -19,20 +19,20 @@
 **Migration code lives in two main crates:**
 
 1. `sea-orm-migration/` — the runtime migration crate. Exposes `MigrationTrait`, `MigratorTrait`, `SchemaManager`, and the ledger entity. This is what user code depends on.
-   - `sea-orm-migration/src/lib.rs` — top-level module, re-exports, defines `MigrationName` and `MigrationTrait`
-   - `sea-orm-migration/src/migrator.rs` — `MigratorTrait` (static-dispatch version) and the `Migration` wrapper struct
-   - `sea-orm-migration/src/migrator/exec.rs` — all async execution logic: `install`, `uninstall`, `exec_up_with`, `exec_down_with`, `drop_everything`, `get_migration_with_status`, `insert_migration_record`, `delete_migration_record`
-   - `sea-orm-migration/src/migrator/queries.rs` — DB-specific introspection queries: `query_tables`, `query_pg_types`, `query_mysql_foreign_keys`, `get_current_schema`
-   - `sea-orm-migration/src/migrator/with_self.rs` — `MigratorTraitSelf` (instance-dispatch version, blanket-impl'd over `MigratorTrait`)
-   - `sea-orm-migration/src/seaql_migrations.rs` — the entity definition for the ledger table
-   - `sea-orm-migration/src/manager.rs` — `SchemaManager`, the helper passed to user `up`/`down` methods; wraps DDL statement execution
-   - `sea-orm-migration/src/connection.rs` — thin re-export: `SchemaManagerConnection = DatabaseExecutor`, `IntoSchemaManagerConnection = IntoDatabaseExecutor`
-   - `sea-orm-migration/src/schema.rs` — helper column-definition shorthands (e.g. `pk_auto`, `string_uniq`, `table_auto`)
-   - `sea-orm-migration/src/cli.rs` — embeds a Clap CLI into the migration crate itself; user's `main.rs` just calls `cli::run_cli(Migrator).await`
+  - `sea-orm-migration/src/lib.rs` — top-level module, re-exports, defines `MigrationName` and `MigrationTrait`
+  - `sea-orm-migration/src/migrator.rs` — `MigratorTrait` (static-dispatch version) and the `Migration` wrapper struct
+  - `sea-orm-migration/src/migrator/exec.rs` — all async execution logic: `install`, `uninstall`, `exec_up_with`, `exec_down_with`, `drop_everything`, `get_migration_with_status`, `insert_migration_record`, `delete_migration_record`
+  - `sea-orm-migration/src/migrator/queries.rs` — DB-specific introspection queries: `query_tables`, `query_pg_types`, `query_mysql_foreign_keys`, `get_current_schema`
+  - `sea-orm-migration/src/migrator/with_self.rs` — `MigratorTraitSelf` (instance-dispatch version, blanket-impl'd over `MigratorTrait`)
+  - `sea-orm-migration/src/seaql_migrations.rs` — the entity definition for the ledger table
+  - `sea-orm-migration/src/manager.rs` — `SchemaManager`, the helper passed to user `up`/`down` methods; wraps DDL statement execution
+  - `sea-orm-migration/src/connection.rs` — thin re-export: `SchemaManagerConnection = DatabaseExecutor`, `IntoSchemaManagerConnection = IntoDatabaseExecutor`
+  - `sea-orm-migration/src/schema.rs` — helper column-definition shorthands (e.g. `pk_auto`, `string_uniq`, `table_auto`)
+  - `sea-orm-migration/src/cli.rs` — embeds a Clap CLI into the migration crate itself; user's `main.rs` just calls `cli::run_cli(Migrator).await`
 
 2. `sea-orm-cli/` — the `sea-orm-cli` binary used externally.
-   - `sea-orm-cli/src/cli.rs` — defines `MigrateSubcommands` enum and `GenerateSubcommands`
-   - `sea-orm-cli/src/commands/migrate.rs` — `run_migrate_command` (shells out to `cargo run --manifest-path`), `run_migrate_init`, `run_migrate_generate`
+  - `sea-orm-cli/src/cli.rs` — defines `MigrateSubcommands` enum and `GenerateSubcommands`
+  - `sea-orm-cli/src/commands/migrate.rs` — `run_migrate_command` (shells out to `cargo run --manifest-path`), `run_migrate_init`, `run_migrate_generate`
 
 3. `sea-orm-macros/src/derives/migration.rs` — `DeriveMigrationName` proc macro; the only macro in the migration path.
 
@@ -70,9 +70,9 @@ use sea_orm::entity::prelude::*;
 // One should override the name of migration table via `MigratorTrait::migration_table_name` method
 #[sea_orm(table_name = "seaql_migrations")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub version: String,
-    pub applied_at: i64,
+  #[sea_orm(primary_key, auto_increment = false)]
+  pub version: String,
+  pub applied_at: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -109,10 +109,10 @@ impl ActiveModelBehavior for ActiveModel {}
 
 ```rust
 fn should_use_transaction(migration: &dyn crate::MigrationTrait, backend: DbBackend) -> bool {
-    match migration.use_transaction() {
-        Some(v) => v,
-        None => backend == DbBackend::Postgres,
-    }
+  match migration.use_transaction() {
+    Some(v) => v,
+    None => backend == DbBackend::Postgres,
+  }
 }
 ```
 
@@ -122,12 +122,12 @@ So on Postgres, `use_transaction()` defaults to `None` → `true`. On MySQL and 
 
 ```rust
 if use_txn {
-    let transaction = db.begin().await?;
-    let txn_manager = SchemaManager::new(&transaction);
-    migration.up(&txn_manager).await?;
-    // ...
-    insert_migration_record(&transaction, migration.name(), migration_table_name.clone()).await?;
-    transaction.commit().await?;
+  let transaction = db.begin().await?;
+  let txn_manager = SchemaManager::new(&transaction);
+  migration.up(&txn_manager).await?;
+  //...
+  insert_migration_record(&transaction, migration.name(), migration_table_name.clone()).await?;
+  transaction.commit().await?;
 }
 ```
 
@@ -146,7 +146,7 @@ SeaORM is fully async. `MigrationTrait::up` and `down` are `async fn` via `async
 
 `sea-orm-migration/Cargo.toml:48-76`. The migration crate itself has no `#[tokio::main]` or `#[async_std::main]` at the library level — this is the user's choice in their `main.rs`.
 
-Migration ordering is sequential within a single `exec_up_with` call — it iterates the pending list in order (`for Migration { migration, .. } in pending_migrations`), awaiting each one before proceeding. `sea-orm-migration/src/migrator/exec.rs:243-268`. No parallelism.
+Migration ordering is sequential within a single `exec_up_with` call — it iterates the pending list in order (`for Migration { migration,.. } in pending_migrations`), awaiting each one before proceeding. `sea-orm-migration/src/migrator/exec.rs:243-268`. No parallelism.
 
 ---
 
@@ -222,12 +222,12 @@ User-side: in a `MigrationTrait::up()`, composite unique constraints are express
 
 ```rust
 Index::create()
-    .unique()
-    .name("idx_user_email_name")
-    .table(User::Table)
-    .col(User::Email)
-    .col(User::Name)
-    .to_owned()
+ .unique()
+ .name("idx_user_email_name")
+ .table(User::Table)
+ .col(User::Email)
+ .col(User::Name)
+ .to_owned()
 ```
 
 Naming is fully manual. No naming convention is enforced or generated by the framework.
@@ -292,25 +292,25 @@ pub struct Migration;
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
-    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .create_table(
-                Table::create()
-                    .table("post")
-                    .if_not_exists()
-                    .col(pk_auto("id"))
-                    .col(string("title"))
-                    .col(string("text"))
-                    .to_owned(),
-            )
-            .await
-    }
+  async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+    manager
+     .create_table(
+        Table::create()
+         .table("post")
+         .if_not_exists()
+         .col(pk_auto("id"))
+         .col(string("title"))
+         .col(string("text"))
+         .to_owned(),
+      )
+     .await
+  }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .drop_table(Table::drop().table("post").to_owned())
-            .await
-    }
+  async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+    manager
+     .drop_table(Table::drop().table("post").to_owned())
+     .await
+  }
 }
 ```
 

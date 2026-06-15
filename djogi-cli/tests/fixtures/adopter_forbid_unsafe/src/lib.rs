@@ -11,5 +11,5 @@ djogi::link_anchor!();
 #[derive(Model)]
 #[model(table = "forbid_unsafe_things")]
 pub struct Thing {
-    pub name: String,
+ pub name: String,
 }

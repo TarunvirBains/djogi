@@ -3,22 +3,22 @@
 //! expand → backfill → flip → contract sequence the live-plan layer
 //! drives:
 //! - `live plan` — generate plan files for pending schema deltas
-//!   classified [`OnlineSafetyClassification::ExpandContract`](djogi::live_migrate::OnlineSafetyClassification::ExpandContract).
+//! classified [`OnlineSafetyClassification::ExpandContract`](djogi::live_migrate::OnlineSafetyClassification::ExpandContract).
 //! - `live show` — render plan-file metadata + persisted runtime state
-//!   side by side, plus the active hook snapshot at the current step.
+//! side by side, plus the active hook snapshot at the current step.
 //! - `live run` — drive the plan forward until the next operator gate,
-//!   refusing destructive work without `--allow-destructive`
-//!   `--justify "<reason>"`.
+//! refusing destructive work without `--allow-destructive`
+//! `--justify "<reason>"`.
 //! - `live resume` — pick up after an interruption; reads
-//!   `backfill_rows_done` from the row and continues at the same step.
+//! `backfill_rows_done` from the row and continues at the same step.
 //! - `live finalize` — execute remaining
-//!   [`StepKind::FinalizeConstraints`](djogi::live_migrate::StepKind::FinalizeConstraints)
-//!   /
-//!   [`StepKind::CleanupLegacyState`](djogi::live_migrate::StepKind::CleanupLegacyState)
-//!   steps, drop compatibility hooks, and promote the row to
-//!   [`PlanStatus::Complete`](djogi::live_migrate::PlanStatus::Complete).
+//! [`StepKind::FinalizeConstraints`](djogi::live_migrate::StepKind::FinalizeConstraints)
+//! /
+//! [`StepKind::CleanupLegacyState`](djogi::live_migrate::StepKind::CleanupLegacyState)
+//! steps, drop compatibility hooks, and promote the row to
+//! [`PlanStatus::Complete`](djogi::live_migrate::PlanStatus::Complete).
 //! - `live abandon` — terminal opt-out; gated on confirmation OR
-//!   `--force` plus a non-production `DJOGI_ENV`.
+//! `--force` plus a non-production `DJOGI_ENV`.
 //! # Exit codes
 //! Per of the plan:
 //! | Code | Meaning |
@@ -31,13 +31,13 @@
 //! | 5 | Plan state conflicts with request (e.g. `run` on `complete`). |
 //! # Out of scope
 //! - **Live-DB integration tests.** This module ships clap parsing,
-//!   helpers, and exit-code mapping; end-to-end coverage lives in the
-//!   integration suite.
+//! helpers, and exit-code mapping; end-to-end coverage lives in the
+//! integration suite.
 //! - **`djogi_codec_recode(...)`** — still a placeholder.
 //! - **`djogi_schema_migrations.justification` persistence.** Adding
-//!   the column requires a separate ALTER TABLE migration; this module
-//!   accepts `--justify` and routes the value through to the runner,
-//!   but the actual column write lands in a follow-up phase.
+//! the column requires a separate ALTER TABLE migration; this module
+//! accepts `--justify` and routes the value through to the runner,
+//! but the actual column write lands in a follow-up phase.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -414,14 +414,14 @@ fn require_destructive_gate_for_plan(
     if !allow_destructive {
         return Err(LiveCmdError::ArgRefused(
             "plan contains a destructive step (DROP / TRUNCATE class); \
-             pass `--allow-destructive --justify \"<reason>\"` to proceed"
+    pass `--allow-destructive --justify \"<reason>\"` to proceed"
                 .to_string(),
         ));
     }
     if justify_is_empty(justify) {
         return Err(LiveCmdError::ArgRefused(
             "plan contains a destructive step; `--allow-destructive` requires \
-             `--justify \"<reason>\"`"
+    `--justify \"<reason>\"`"
                 .to_string(),
         ));
     }
@@ -610,15 +610,15 @@ async fn plan_cmd(version: Option<&str>, workspace: Option<PathBuf>) -> Result<i
     {
         return Err(refuse_offline_only(format!(
             "live plan: explicit version filter `{v}` requires the live-plan compose engine; \
-             this CLI build ships the dispatch + parsing surface only"
+    this CLI build ships the dispatch + parsing surface only"
         )));
     }
     Err(LiveCmdError::Runtime(
-        "live plan: descriptor → snapshot → classify → dispatch pipeline lands in a follow-up task; \
-         this CLI build shipped the dispatch + parsing surface only. Use `djogi migrations compose` \
-         today; the live-plan emitter wraps that in a forthcoming task"
-            .to_string(),
-    ))
+  "live plan: descriptor → snapshot → classify → dispatch pipeline lands in a follow-up task; \
+   this CLI build shipped the dispatch + parsing surface only. Use `djogi migrations compose` \
+   today; the live-plan emitter wraps that in a forthcoming task"
+  .to_string(),
+ ))
 }
 
 /// Refuse the live-plan compose path when the delta carries an
@@ -651,12 +651,12 @@ async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, 
     let hooks = active_hooks_at_step(&plan, current_index)
         .map_err(|e| LiveCmdError::Runtime(format!("hook walker: {e}")))?;
 
-    println!("plan_id        : {}", row.plan_id);
-    println!("slug           : {}", row.slug);
+    println!("plan_id  : {}", row.plan_id);
+    println!("slug   : {}", row.slug);
     println!("classification : {}", row.classification.as_db_str());
-    println!("status         : {}", row.status.as_db_str());
+    println!("status   : {}", row.status.as_db_str());
     println!(
-        "current_step   : {} (index {})",
+        "current_step : {} (index {})",
         row.current_step.as_deref().unwrap_or("<none>"),
         row.current_step_index,
     );
@@ -665,17 +665,17 @@ async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, 
         .map(|n| n.to_string())
         .unwrap_or_else(|| "<unknown>".to_string());
     println!(
-        "backfill_rows  : {} done / {} total",
+        "backfill_rows : {} done / {} total",
         row.backfill_rows_done, total,
     );
-    println!("originating    : {}", row.originating_migration.as_str(),);
+    println!("originating : {}", row.originating_migration.as_str(),);
     if let Some(progress) = row.last_progress_at.as_ref() {
-        println!("last_progress  : {progress}");
+        println!("last_progress : {progress}");
     }
     if let Some(err) = row.last_error.as_deref() {
-        println!("last_error     : {err}");
+        println!("last_error  : {err}");
     }
-    println!("plan_file      : {}", path.display());
+    println!("plan_file  : {}", path.display());
     println!();
     println!("steps ({} total):", plan.steps.len(),);
     for step in &plan.steps {
@@ -687,14 +687,14 @@ async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, 
             "[ todo]"
         };
         println!(
-            "  {marker} {ordinal:>3}: {kind:?}",
+            " {marker} {ordinal:>3}: {kind:?}",
             ordinal = step.ordinal,
             kind = step.kind,
         );
     }
     println!();
     println!(
-        "active hooks   : dual_read={}, dual_write={}, suppress_events={}",
+        "active hooks : dual_read={}, dual_write={}, suppress_events={}",
         hooks.dual_read.len(),
         hooks.dual_write.len(),
         hooks.side_effects_suppressed,
@@ -868,8 +868,8 @@ fn assert_run_status_allows_progress(status: PlanStatus) -> Result<(), LiveCmdEr
         PlanStatus::Pending | PlanStatus::Running => Ok(()),
         PlanStatus::Paused => Err(LiveCmdError::StateConflict(
             "plan is in `paused`; use `live resume` to re-enter the run loop \
-             (paused is an explicit operator checkpoint and `live run` does \
-             not auto-advance through it)"
+    (paused is an explicit operator checkpoint and `live run` does \
+    not auto-advance through it)"
                 .to_string(),
         )),
         PlanStatus::Validating
@@ -908,7 +908,7 @@ fn assert_resume_status_allows_progress(status: PlanStatus) -> Result<(), LiveCm
         | PlanStatus::Abandoned
         | PlanStatus::Failed => Err(LiveCmdError::StateConflict(format!(
             "plan is in `{}`; resume is for interrupted Running / Paused plans \
-             (use `live run` past gates, `live finalize` to complete, or `live abandon` to walk away)",
+    (use `live run` past gates, `live finalize` to complete, or `live abandon` to walk away)",
             status.as_db_str()
         ))),
         _ => Err(LiveCmdError::StateConflict(format!(
@@ -950,7 +950,7 @@ async fn finalize_cmd(
     if !justify_present {
         return Err(LiveCmdError::ArgRefused(
             "live finalize runs destructive cleanup steps; pass \
-             --justify \"<reason>\""
+    --justify \"<reason>\""
                 .to_string(),
         ));
     }
@@ -1058,7 +1058,7 @@ async fn abandon_cmd(
 
     println!(
         "live abandon: plan {plan_id} marked abandoned (was `{}`); plan file \
-         preserved on disk for audit",
+   preserved on disk for audit",
         row.status.as_db_str(),
     );
     Ok(0)
@@ -1082,8 +1082,8 @@ fn assert_abandon_status(status: PlanStatus) -> Result<(), LiveCmdError> {
         )),
         PlanStatus::Failed => Err(LiveCmdError::StateConflict(
             "plan is `failed`; the failure is recorded for audit and the \
-             plan is terminal — generate a fresh plan after addressing the \
-             underlying cause"
+    plan is terminal — generate a fresh plan after addressing the \
+    underlying cause"
                 .to_string(),
         )),
         PlanStatus::Pending
@@ -1131,21 +1131,21 @@ async fn daemon_cmd(
     };
     let mut ctx = connect(&config.database.url).await?;
     match run_daemon(&mut ctx, cfg).await {
-        Ok(()) => Ok(0),
-        Err(DaemonError::Shutdown) => Ok(0),
-        Err(DaemonError::NotLocalhost) => Err(LiveCmdError::ArgRefused(
-            "live daemon refused: not running on localhost (pass --allow-non-localhost to override)"
-                .to_string(),
-        )),
-        Err(DaemonError::Production) => Err(LiveCmdError::ArgRefused(
-            "live daemon refused: DJOGI_ENV=production".to_string(),
-        )),
-        Err(DaemonError::Backfill(e)) => {
-            Err(LiveCmdError::Runtime(format!("daemon backfill: {e}")))
-        }
-        Err(DaemonError::Database(e)) => Err(LiveCmdError::Runtime(format!("daemon db: {e}"))),
-        Err(other) => Err(LiveCmdError::Runtime(format!("daemon: {other}"))),
-    }
+  Ok(()) => Ok(0),
+  Err(DaemonError::Shutdown) => Ok(0),
+  Err(DaemonError::NotLocalhost) => Err(LiveCmdError::ArgRefused(
+   "live daemon refused: not running on localhost (pass --allow-non-localhost to override)"
+   .to_string(),
+  )),
+  Err(DaemonError::Production) => Err(LiveCmdError::ArgRefused(
+   "live daemon refused: DJOGI_ENV=production".to_string(),
+  )),
+  Err(DaemonError::Backfill(e)) => {
+   Err(LiveCmdError::Runtime(format!("daemon backfill: {e}")))
+  }
+  Err(DaemonError::Database(e)) => Err(LiveCmdError::Runtime(format!("daemon db: {e}"))),
+  Err(other) => Err(LiveCmdError::Runtime(format!("daemon: {other}"))),
+ }
 }
 
 /// Read the running host's name for the daemon's claim columns. Falls
@@ -1164,8 +1164,8 @@ fn interactive_confirm_abandon(plan_id: HeerId) -> std::io::Result<bool> {
     writeln!(
         handle,
         "WARNING: live abandon will mark plan {plan_id} as `abandoned`. Schema state \
-         remains at the last completed step; the plan file stays on disk. Resume is \
-         refused after abandonment — generate a fresh plan instead."
+   remains at the last completed step; the plan file stays on disk. Resume is \
+   refused after abandonment — generate a fresh plan instead."
     )?;
     write!(handle, "Type `yes` to confirm, anything else to abort: ")?;
     handle.flush()?;
@@ -1485,7 +1485,7 @@ mod tests {
     fn parse_humantime_duration_rejects_empty_input() {
         let err = parse_humantime_duration("").unwrap_err();
         assert!(err.contains("empty"), "{err}");
-        let err = parse_humantime_duration("   ").unwrap_err();
+        let err = parse_humantime_duration(" ").unwrap_err();
         assert!(err.contains("empty"), "{err}");
     }
 
@@ -1528,7 +1528,7 @@ mod tests {
         // Outer whitespace is trimmed so `--poll-interval " 30s "`
         // (e.g. from a quoted shell var) round-trips.
         assert_eq!(
-            parse_humantime_duration("  30s  ").unwrap(),
+            parse_humantime_duration(" 30s ").unwrap(),
             std::time::Duration::from_secs(30),
         );
     }
@@ -1570,7 +1570,7 @@ mod tests {
     fn justify_is_empty_handles_none_and_blank() {
         assert!(justify_is_empty(None));
         assert!(justify_is_empty(Some("")));
-        assert!(justify_is_empty(Some("   ")));
+        assert!(justify_is_empty(Some(" ")));
         assert!(!justify_is_empty(Some("real reason")));
     }
 
@@ -1578,7 +1578,7 @@ mod tests {
     fn require_justify_for_destructive_refuses_without_reason() {
         let err = require_justify_for_destructive(true, None).unwrap_err();
         assert!(matches!(err, LiveCmdError::ArgRefused(_)));
-        let err = require_justify_for_destructive(true, Some("   ")).unwrap_err();
+        let err = require_justify_for_destructive(true, Some(" ")).unwrap_err();
         assert!(matches!(err, LiveCmdError::ArgRefused(_)));
         // Without `--allow-destructive`, missing `--justify` is fine.
         require_justify_for_destructive(false, None).unwrap();
@@ -1648,7 +1648,7 @@ mod tests {
         // `--allow-destructive` without `--justify` → refuse.
         let err = require_destructive_gate_for_plan(&plan, true, None).unwrap_err();
         assert!(matches!(err, LiveCmdError::ArgRefused(_)));
-        let err = require_destructive_gate_for_plan(&plan, true, Some("   ")).unwrap_err();
+        let err = require_destructive_gate_for_plan(&plan, true, Some(" ")).unwrap_err();
         assert!(matches!(err, LiveCmdError::ArgRefused(_)));
         // Both set → accepts.
         require_destructive_gate_for_plan(&plan, true, Some("ops runbook RB-19")).unwrap();

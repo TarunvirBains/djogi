@@ -11,12 +11,12 @@
 //! the HMAC-SHA256 sign-and-verify primitives that detect such tampering.
 //! The higher-level surfaces built on this module:
 //! - `djogi_ddl_audit` table and the `record_ddl` wiring inside
-//!   `apply_plan_inner`. Every applied DDL plan writes a tamper-evident
-//!   audit row that pairs with the snapshot signature stored alongside
-//!   `schema_snapshot.json`.
+//! `apply_plan_inner`. Every applied DDL plan writes a tamper-evident
+//! audit row that pairs with the snapshot signature stored alongside
+//! `schema_snapshot.json`.
 //! - `djogi verify` — the CLI subcommand that reads the on-disk snapshot,
-//!   recomputes its HMAC-SHA256 signature, and compares it constant-time
-//!   against the value the runner persisted.
+//! recomputes its HMAC-SHA256 signature, and compares it constant-time
+//! against the value the runner persisted.
 //! # Key model
 //! Signing is **opt-in** via the `DJOGI_SNAPSHOT_SIGNING_KEY` environment
 //! variable (64 hex characters, decoding to a 32-byte HMAC key). Without

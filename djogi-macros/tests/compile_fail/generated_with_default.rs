@@ -11,9 +11,9 @@ use djogi::prelude::*;
 #[model(table = "users", no_default)]
 #[derive(Debug, Clone)]
 pub struct User {
-    pub email: String,
-    #[field(generated = "LOWER(email)", default = "''")]
-    pub email_lower: String,
+ pub email: String,
+ #[field(generated = "LOWER(email)", default = "''")]
+ pub email_lower: String,
 }
 
 fn main() {}

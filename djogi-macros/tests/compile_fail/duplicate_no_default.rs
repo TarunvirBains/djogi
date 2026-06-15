@@ -5,7 +5,7 @@ use djogi::prelude::*;
 
 #[model(table = "x", no_default, no_default)]
 pub struct Bad {
-    pub name: String,
+ pub name: String,
 }
 
 fn main() {}

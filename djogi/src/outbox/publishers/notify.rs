@@ -1,4 +1,4 @@
-//! Postgres `NOTIFY`-based publisher — .
+//! Postgres `NOTIFY`-based publisher —.
 //! `NotifyPublisher` delivers outbox rows by issuing `SELECT pg_notify($1, $2)`
 //! over a regular database connection. It requires no external broker and is
 //! available whenever the `outbox` feature is enabled.
@@ -58,10 +58,10 @@ pub struct NotifyPublisher {
 impl NotifyPublisher {
     /// Create a new `NotifyPublisher`.
     /// - `pool` — the connection pool to acquire a connection from on each
-    ///   `publish` call.
+    /// `publish` call.
     /// - `channel` — the Postgres channel name (first argument to
-    ///   `pg_notify`). Passed as a bind parameter, not interpolated into
-    ///   SQL, so arbitrary content is safe.
+    /// `pg_notify`). Passed as a bind parameter, not interpolated into
+    /// SQL, so arbitrary content is safe.
     pub fn new(pool: DjogiPool, channel: String) -> Self {
         Self { pool, channel }
     }

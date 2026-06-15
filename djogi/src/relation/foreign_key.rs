@@ -11,7 +11,7 @@
 //! deliberately no cached child — the struct fits in a register (it
 //! holds only `T::Pk`) and stays `Copy` when the PK is `Copy`.
 //! `ForeignKeyResolved<T>` is the post-eager-load shape.
-//! Task 4 (`prefetch`) and Task 5 (`select_related`) produce these
+//! (`prefetch`) and (`select_related`) produce these
 //! after issuing the extra SELECT / LEFT JOIN, so the `Option<Box<T>>`
 //! box only exists on rows that actually carry a cached child.
 //! Keeping the two separate avoids a common ORM footgun: a
@@ -101,7 +101,7 @@ where
 impl<T: Model> ForeignKey<T> {
     /// Construct an unresolved foreign-key reference to `key`.
     /// This is the constructor user code calls when building a row for
-    /// insert: `Vehicle { owner: ForeignKey::new(owner.id), ... }`.
+    /// insert: `Vehicle { owner: ForeignKey::new(owner.id),... }`.
     /// Row decode (via the `postgres_types::FromSql` impl below) funnels through this.
     #[inline]
     pub fn new(key: T::Pk) -> Self {
@@ -257,7 +257,7 @@ where
     }
 
     /// Delegate JSONB path LHS cast metadata to the target PK type
-    /// . Without this override the default body would walk
+    ///. Without this override the default body would walk
     /// `type_name::<ForeignKey<T>>()` (e.g.
     /// `djogi::relation::foreign_key::ForeignKey<adopter::Owner>`),
     /// which is not in the built-in cast table, so JSONB path
@@ -339,7 +339,7 @@ impl<M: Model, T: Model> crate::query::field::DjogiField<M, ForeignKey<T>> {
 
 /// Post-eager-load variant of [`ForeignKey<T>`] that carries a cached child.
 /// Produced by `QuerySet::prefetch` and
-/// `QuerySet::select_related` . Never constructed by
+/// `QuerySet::select_related`. Never constructed by
 /// user code directly — the `new` constructor is `pub(crate)` on purpose.
 pub struct ForeignKeyResolved<T: Model> {
     key: T::Pk,

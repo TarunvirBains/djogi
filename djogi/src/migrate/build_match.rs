@@ -7,40 +7,40 @@
 //! # The three sources
 //! Per the v3 plan §6 amendment:
 //! 1. **`models`** — the descriptor inventory at compile time.
-//!    Source: `target/djogi_models.json` written by `#[derive(Model)]`
-//!    on every `cargo build`. In the build.rs caller this is parsed
-//!    fresh every build; here we accept it as an `Option<&AppliedSchema>`
-//!    keyed per-bucket.
+//! Source: `target/djogi_models.json` written by `#[derive(Model)]`
+//! on every `cargo build`. In the build.rs caller this is parsed
+//! fresh every build; here we accept it as an `Option<&AppliedSchema>`
+//! keyed per-bucket.
 //! 2. **`pending`** — a composed (but not yet applied) delta selected
-//!    for the public bucket. Source:
-//!    `target/djogi_pending/<database>/<app>.json` plus the hidden
-//!    Phase 0 namespace
-//!    `target/djogi_pending/<database>/.phase_zero/<version>.json`
-//!    written by `migrations compose`. Build-side ingestion keeps
-//!    those two source kinds distinct before selecting one pending
-//!    artifact for the `(database, app)` outcome. `None` when no
-//!    compose is pending.
+//! for the public bucket. Source:
+//! `target/djogi_pending/<database>/<app>.json` plus the hidden
+//! Phase 0 namespace
+//! `target/djogi_pending/<database>/.phase_zero/<version>.json`
+//! written by `migrations compose`. Build-side ingestion keeps
+//! those two source kinds distinct before selecting one pending
+//! artifact for the `(database, app)` outcome. `None` when no
+//! compose is pending.
 //! 3. **`snapshot`** — the last successfully-applied schema. Source:
-//!    `migrations/<database>/<app>/schema_snapshot.json` committed
-//!    to the migrations submodule. `None` for a fresh
-//!    `(database, app)` pair (zero migrations applied).
+//! `migrations/<database>/<app>/schema_snapshot.json` committed
+//! to the migrations submodule. `None` for a fresh
+//! `(database, app)` pair (zero migrations applied).
 //! # The four outcomes
 //! Per the v3 amendment, the match produces exactly one of these
 //! outcomes for each bucket:
 //! - **Outcome 1 — synced.** `models == pending == snapshot` (or
-//!   pending is `None` and `models == snapshot`). No drift, no
-//!   warning.
+//! pending is `None` and `models == snapshot`). No drift, no
+//! warning.
 //! - **Outcome 2 — composed not applied.** `models == pending`,
-//!   `snapshot != models`. Warning: a composed migration is pending
-//!   apply.
+//! `snapshot != models`. Warning: a composed migration is pending
+//! apply.
 //! - **Outcome 3 — drift.** `models != pending` AND `models !=
 //! snapshot`. Warning: model drift; suggest `compose`.
 //! - **Outcome 4 — pending invalid.** `pending != models` AND
-//!   `pending != snapshot` AND `models != snapshot`. The pending
-//!   file is stale — warning suggests re-running compose.
-//!   The warning *wording* is frozen — see the `format_warning_*`
-//!   helpers below — so the expectation-style integration test can
-//!   match on exact stderr output.
+//! `pending != snapshot` AND `models != snapshot`. The pending
+//! file is stale — warning suggests re-running compose.
+//! The warning *wording* is frozen — see the `format_warning_*`
+//! helpers below — so the expectation-style integration test can
+//! match on exact stderr output.
 //! # No regex
 //! The match is structural — `==` between owned [`AppliedSchema`]
 //! values. No string scanning, no regex.
@@ -158,10 +158,10 @@ pub struct PendingArtifact<'a> {
 /// situations:
 ///
 /// - **Inventory present, this bucket declares no models** — a real,
-///   model-relative `None` the classifier can reason about.
+/// model-relative `None` the classifier can reason about.
 /// - **Inventory unavailable for the whole build** — there is no basis
-///   for *any* model-relative assertion, so emitting Outcome 3 / 4
-///   ("drift" / "stale pending") would misdirect the operator.
+/// for *any* model-relative assertion, so emitting Outcome 3 / 4
+/// ("drift" / "stale pending") would misdirect the operator.
 ///
 /// `ModelInventory` makes that distinction a first-class input so the
 /// classifier never launders an unavailable inventory into a confident
@@ -181,43 +181,43 @@ pub struct PendingArtifact<'a> {
 ///
 /// ```
 /// use djogi::migrate::build_match::{
-///     ModelInventory, PendingArtifact, PendingArtifactKind,
-///     classify_bucket_with_inventory,
+///  ModelInventory, PendingArtifact, PendingArtifactKind,
+///  classify_bucket_with_inventory,
 /// };
 /// use djogi::migrate::projection::BucketKey;
 /// use djogi::migrate::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
 /// use std::collections::BTreeMap;
 ///
 /// fn schema(tag: &str) -> AppliedSchema {
-///     AppliedSchema {
-///         djogi_version: tag.to_string(),
-///         enums: BTreeMap::new(),
-///         format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
-///         generated_at: "2026-04-25T00:00:00Z".to_string(),
-///         indexes: Vec::new(),
-///         models: BTreeMap::new(),
-///         registered_apps: vec![String::new()],
-///     }
+///  AppliedSchema {
+///   djogi_version: tag.to_string(),
+///   enums: BTreeMap::new(),
+///   format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+///   generated_at: "2026-04-25T00:00:00Z".to_string(),
+///   indexes: Vec::new(),
+///   models: BTreeMap::new(),
+///   registered_apps: vec![String::new()],
+///  }
 /// }
 ///
 /// let bucket = BucketKey { database: "main".into(), app: String::new() };
 /// let pending = schema("pending");
 /// let snapshot = schema("snapshot");
 /// let artifact = PendingArtifact {
-///     kind: PendingArtifactKind::HiddenPhaseZero,
-///     schema: &pending,
-///     version: Some("V00000000000000__phase_zero_bootstrap"),
+///  kind: PendingArtifactKind::HiddenPhaseZero,
+///  schema: &pending,
+///  version: Some("V00000000000000__phase_zero_bootstrap"),
 /// };
 ///
 /// // Inventory unavailable: a composed-but-unapplied pending must read
 /// // as "apply me", never as "stale / drift".
 /// let diag = classify_bucket_with_inventory(
-///     &bucket,
-///     ModelInventory::Absent,
-///     Some(artifact),
-///     Some(&snapshot),
+///  &bucket,
+///  ModelInventory::Absent,
+///  Some(artifact),
+///  Some(&snapshot),
 /// )
-/// .expect("composed-not-applied diagnostic");
+///.expect("composed-not-applied diagnostic");
 /// assert!(diag.text.contains("composed migration not yet applied"));
 /// ```
 #[derive(Debug, Clone, Copy)]
@@ -268,18 +268,18 @@ pub fn classify_bucket(
 /// 2 warning includes the filename + version (per).
 /// **Caller mapping:**
 /// - `migrations status` (CLI): threads the real `version` from each
-///   pending JSON it loads; the operator sees an actionable filename.
+/// pending JSON it loads; the operator sees an actionable filename.
 /// - `build.rs`: walks pending JSON files itself (build scripts cannot
-///   import the crate they are compiling), reads the `version` field
-///   directly, and emits the same wording. The
-///   `phase7_t6_build_warning_agreement` integration test pins the
-///   agreement byte-for-byte.
+/// import the crate they are compiling), reads the `version` field
+/// directly, and emits the same wording. The
+/// `phase7_t6_build_warning_agreement` integration test pins the
+/// agreement byte-for-byte.
 /// - `build_classify_bucket` re-export (the convenience wrapper): used
-///   by tests and the rare caller that genuinely lacks a version
-///   string. Surfaces the `<unknown>` placeholder so the message is
-///   still well-formed.
-///   Both entry points route through this function so the four-outcome
-///   classification logic lives in one place.
+/// by tests and the rare caller that genuinely lacks a version
+/// string. Surfaces the `<unknown>` placeholder so the message is
+/// still well-formed.
+/// Both entry points route through this function so the four-outcome
+/// classification logic lives in one place.
 pub fn classify_bucket_with_pending(
     bucket: &BucketKey,
     models: Option<&AppliedSchema>,
@@ -308,17 +308,17 @@ pub fn classify_bucket_with_pending(
 /// # Behaviour
 ///
 /// - [`ModelInventory::Present`] runs the full three-way match
-///   (Outcomes 1–4) exactly as [`classify_bucket_with_pending_artifact`]
-///   always has.
+/// (Outcomes 1–4) exactly as [`classify_bucket_with_pending_artifact`]
+/// always has.
 /// - [`ModelInventory::Absent`] runs the **reduced** classification:
-///   the model-vs-* legs are skipped (there is no trustworthy model
-///   state), and only the pending↔snapshot relationship is reported:
-///   - pending present and `pending != snapshot` →
-///     [`DriftKind::Outcome2ComposedNotApplied`] (apply the composed
-///     migration);
-///   - pending present and `pending == snapshot` → `None` (synced);
-///   - no pending → `None` (the snapshot↔filesystem D004 leg owns any
-///     remaining signal).
+/// the model-vs-* legs are skipped (there is no trustworthy model
+/// state), and only the pending↔snapshot relationship is reported:
+/// - pending present and `pending != snapshot` →
+///  [`DriftKind::Outcome2ComposedNotApplied`] (apply the composed
+///  migration);
+/// - pending present and `pending == snapshot` → `None` (synced);
+/// - no pending → `None` (the snapshot↔filesystem D004 leg owns any
+///  remaining signal).
 ///
 /// Returns `None` whenever there is nothing to warn about.
 ///
@@ -469,14 +469,14 @@ pub fn classify_bucket_with_pending_artifact(
 /// `(database, app)` pair the snapshot tree knows about. Walks both
 /// directions:
 /// 1. Each filesystem bucket whose `(database, app)` is not in
-///    `snapshots` (under any registered_apps list for that database)
-///    surfaces as `D004FilesystemUnregistered`.
+/// `snapshots` (under any registered_apps list for that database)
+/// surfaces as `D004FilesystemUnregistered`.
 /// 2. Each `registered_apps` entry that has no matching filesystem
-///    directory surfaces as `D004RegisteredMissingFolder`.
-///    The snapshot's `registered_apps` list is the source of truth for
-///    "what apps existed when the snapshot was last saved". Walking it
-///    per-database ensures the diagnostic surfaces the right database
-///    even when one DB has fully-synced apps and another is drifting.
+/// directory surfaces as `D004RegisteredMissingFolder`.
+/// The snapshot's `registered_apps` list is the source of truth for
+/// "what apps existed when the snapshot was last saved". Walking it
+/// per-database ensures the diagnostic surfaces the right database
+/// even when one DB has fully-synced apps and another is drifting.
 pub fn classify_filesystem_drift(
     filesystem: &std::collections::BTreeSet<FilesystemBucket>,
     snapshots: &BTreeMap<BucketKey, AppliedSchema>,
@@ -641,7 +641,7 @@ pub fn format_warning_d004_missing(bucket: &BucketKey) -> String {
 /// use djogi::migrate::build_match::format_warning_inventory_malformed;
 ///
 /// let text =
-///     format_warning_inventory_malformed("target/djogi_models.json", "not a JSON object");
+///  format_warning_inventory_malformed("target/djogi_models.json", "not a JSON object");
 /// assert!(text.contains("target/djogi_models.json"));
 /// assert!(text.contains("not a JSON object"));
 /// ```
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn outcome2_composed_not_applied_with_pending_version() {
-        // ,
+        //,
         // the message names both the migration filename AND the version ID
         // alongside the bucket. Production build.rs / status callers
         // always supply this.
@@ -751,7 +751,7 @@ mod tests {
         assert_eq!(
             diag.text,
             "composed migration not yet applied: V20260425010203__add_widgets.sdjql \
-              (version V20260425010203__add_widgets; bucket main/_global_)"
+    (version V20260425010203__add_widgets; bucket main/_global_)"
         );
     }
 
@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(
             diag.text,
             "composed migration not yet applied: V00000000000000__phase_zero_bootstrap.sdjql \
-              (version V00000000000000__phase_zero_bootstrap; bucket main/_global_)"
+    (version V00000000000000__phase_zero_bootstrap; bucket main/_global_)"
         );
     }
 
@@ -944,7 +944,7 @@ mod tests {
         assert_eq!(
             diag.text,
             "composed migration not yet applied: V00000000000000__phase_zero_bootstrap.sdjql \
-             (version V00000000000000__phase_zero_bootstrap; bucket main/_global_)"
+    (version V00000000000000__phase_zero_bootstrap; bucket main/_global_)"
         );
     }
 
@@ -1051,7 +1051,7 @@ mod tests {
         assert_eq!(
             format_warning_inventory_malformed("target/djogi_models.json", "not a JSON object"),
             "descriptor inventory at target/djogi_models.json is malformed (not a JSON object); \
-             model state is treated as unavailable, so model-vs-snapshot checks are skipped for this build"
+    model state is treated as unavailable, so model-vs-snapshot checks are skipped for this build"
         );
     }
 }

@@ -1,33 +1,33 @@
-error[E0277]: the trait bound `Vec<MergeUpdateAssignment<..., ...>>: IntoMergeUpdates<..., ...>` is not satisfied
-   --> $DIR/merge_wrong_side.rs:31:96
-    |
- 31 |           .when_matched_and_update(None::<MergeWhenCondition<WrongSideSource, WrongSideTarget>>, vec![
-    |  __________-----------------------_______________________________________________________________^
-    | |          |
-    | |          required by a bound introduced by this call
- 32 | |             // Reversed: target field from source, source field from target.
- 33 | |             WrongSideSource::fields()
- 34 | |                 .label()
- 35 | |                 .merge_copy_from(WrongSideTarget::fields().label())
- 36 | |         ]);
-    | |_________^ unsatisfied trait bound
-    |
+error[E0277]: the trait bound `Vec<MergeUpdateAssignment<...,...>>: IntoMergeUpdates<...,...>` is not satisfied
+ --> $DIR/merge_wrong_side.rs:31:96
+ |
+ 31 |  .when_matched_and_update(None::<MergeWhenCondition<WrongSideSource, WrongSideTarget>>, vec![
+ | __________-----------------------_______________________________________________________________^
+ | |   |
+ | |   required by a bound introduced by this call
+ 32 | |    // Reversed: target field from source, source field from target.
+ 33 | |    WrongSideSource::fields()
+ 34 | |    .label()
+ 35 | |    .merge_copy_from(WrongSideTarget::fields().label())
+ 36 | |   ]);
+ | |_________^ unsatisfied trait bound
+ |
 help: the trait `IntoMergeUpdates<WrongSideSource, WrongSideTarget>` is not implemented for `Vec<MergeUpdateAssignment<WrongSideTarget, WrongSideSource>>`
-      but trait `IntoMergeUpdates<WrongSideTarget, WrongSideSource>` is implemented for it
-   --> djogi/src/query/merge.rs:869:1
-    |
+  but trait `IntoMergeUpdates<WrongSideTarget, WrongSideSource>` is implemented for it
+ --> djogi/src/query/merge.rs:869:1
+ |
 869 | impl<S: Model, T: Model> IntoMergeUpdates<S, T> for Vec<MergeUpdateAssignment<S, T>> {
-    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `MergeStmt::<S, T>::when_matched_and_update`
-   --> djogi/src/query/merge.rs:97:12
-    |
- 94 |     pub fn when_matched_and_update<C, U>(mut self, condition: Option<C>, updates: U) -> Self
-    |            ----------------------- required by a bound in this associated function
+ --> djogi/src/query/merge.rs:97:12
+ |
+ 94 |  pub fn when_matched_and_update<C, U>(mut self, condition: Option<C>, updates: U) -> Self
+ |   ----------------------- required by a bound in this associated function
 ...
- 97 |         U: IntoMergeUpdates<S, T>,
-    |            ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `MergeStmt::<S, T>::when_matched_and_update`
-    = note: the full name for the type has been written to '$LONGTYPE_FILE'
-    = note: consider using `--verbose` to print the full type name to the console
+ 97 |   U: IntoMergeUpdates<S, T>,
+ |   ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `MergeStmt::<S, T>::when_matched_and_update`
+ = note: the full name for the type has been written to '$LONGTYPE_FILE'
+ = note: consider using `--verbose` to print the full type name to the console
 
 error: aborting due to 1 previous error
 

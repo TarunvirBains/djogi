@@ -4,8 +4,8 @@
 // error at parse time.
 
 djogi::primary_key! {
-    pub struct Bad(i64);
-    sql_type = "BIGINT";
+ pub struct Bad(i64);
+ sql_type = "BIGINT";
 }
 
 fn main() {}

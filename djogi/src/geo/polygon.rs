@@ -6,12 +6,12 @@
 //! # Wire format
 //! EWKB layout (little-endian, SRID 4326):
 //! ```text
-//! Offset  Size  Content
-//!      0     1  Endianness marker: 0x01 (little-endian)
-//!      1     4  Geometry type word: 0x20000003 (Polygon | SRID flag), LE
-//!      5     4  SRID 4326, LE  → [0xE6, 0x10, 0x00, 0x00]
-//!      9     4  Number of rings (u32 LE)
-//!     13   var  Rings: each ring = [num_points u32 LE, point_data 16*n bytes]
+//! Offset Size Content
+//!  0  1 Endianness marker: 0x01 (little-endian)
+//!  1  4 Geometry type word: 0x20000003 (Polygon | SRID flag), LE
+//!  5  4 SRID 4326, LE → [0xE6, 0x10, 0x00, 0x00]
+//!  9  4 Number of rings (u32 LE)
+//!  13 var Rings: each ring = [num_points u32 LE, point_data 16*n bytes]
 //! ```
 //! The outer ring is first; hole rings follow in order.
 
@@ -25,7 +25,7 @@ use crate::geo::{GeoError, GeoPoint, ewkb};
 /// Stored as `GEOGRAPHY(Polygon, 4326)` in Postgres.
 /// # Ring invariants
 /// - Every ring must have at least 4 points (3 distinct vertices + closing
-///   repeat of the first point).
+/// repeat of the first point).
 /// - Every ring must be closed: first point equals last point.
 /// - `rings[0]` is the outer boundary; `rings[1..]` are holes.
 /// # Constructors
@@ -34,7 +34,7 @@ use crate::geo::{GeoError, GeoPoint, ewkb};
 /// - [`Polygon::with_ring`] — outer ring that must already be closed.
 /// - [`Polygon::with_holes`] — outer ring plus one or more hole rings.
 /// # Display
-/// `Display` emits `POLYGON((<lon> <lat>, ...), ...)` per OGC WKT.
+/// `Display` emits `POLYGON((<lon> <lat>,...),...)` per OGC WKT.
 /// # Serde
 /// Serializes as an array of rings, each ring an array of
 /// `{"lat": f64, "lon": f64}` objects. Deserialization validates each ring.
@@ -157,7 +157,7 @@ impl Polygon {
 // ── Display (WKT) ─────────────────────────────────────────────────────────────
 
 impl fmt::Display for Polygon {
-    /// Emit `POLYGON((<lon> <lat>, ...), ...)` per OGC WKT.
+    /// Emit `POLYGON((<lon> <lat>,...),...)` per OGC WKT.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("POLYGON(")?;
         for (i, ring) in self.rings.iter().enumerate() {

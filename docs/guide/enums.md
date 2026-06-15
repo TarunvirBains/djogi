@@ -1,6 +1,6 @@
-> [Back to Guides](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to Guides](./index.md) · [Back to README](../../README.md)
 
-Spec: [`docs/spec/models.md`](../spec/models.md) — Phase 5 enum type support.
+Spec: [`docs/spec/models.md`](../spec/models.md) — enum type support.
 
 # Enums
 
@@ -8,7 +8,7 @@ Spec: [`docs/spec/models.md`](../spec/models.md) — Phase 5 enum type support.
 type. One derive emits both the `postgres_types` codec (so the value round-trips
 as a Postgres TEXT/ENUM wire string) and an `inventory::submit!` of an
 `EnumDescriptor` (so the migration projection can emit
-`CREATE TYPE ... AS ENUM (...)` alongside your schema). It also implements
+`CREATE TYPE... AS ENUM (...)` alongside your schema). It also implements
 Djogi's SQL-type bridge so model fields of that enum project to the named
 Postgres enum type. Single source of truth — add a variant once, and the
 codec, descriptor, and model projection stay in sync.
@@ -18,18 +18,18 @@ codec, descriptor, and model projection stay in sync.
 ## Contract
 
 - You derive `DjogiEnum` on a plain C-like enum (unit variants only — no tuple
-  or struct variants).
+ or struct variants).
 - Default variant-to-string mapping is `snake_case`. You override the mapping
-  at the enum level with `#[djogi_enum(rename_all = "...")]` or per variant
-  with `#[djogi_enum_variant(name = "...")]`.
+ at the enum level with `#[djogi_enum(rename_all = "...")]` or per variant
+ with `#[djogi_enum_variant(name = "...")]`.
 - **`#[djogi_enum(name = "...")]` is required.** There is no default Postgres
-  type name — omitting it is a compile error. Name the Postgres enum type
-  explicitly every time.
+ type name — omitting it is a compile error. Name the Postgres enum type
+ explicitly every time.
 - `FromSql` returns `EnumDecodeError` when the wire string does not match any
-  known variant — no silent unknown-variant handling.
-- DDL (`CREATE TYPE ... AS ENUM (...)`) is emitted by the migration projection
-  from `EnumDescriptor` metadata before tables reference the enum type. Ordinary
-  `#[djogi_test(sync_models = [...])]` tests do not need hand-written enum DDL.
+ known variant — no silent unknown-variant handling.
+- DDL (`CREATE TYPE... AS ENUM (...)`) is emitted by the migration projection
+ from `EnumDescriptor` metadata before tables reference the enum type. Ordinary
+ `#[djogi_test(sync_models = [...])]` tests do not need hand-written enum DDL.
 
 ---
 
@@ -43,34 +43,34 @@ use djogi::DjogiEnum;
 #[derive(DjogiEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[djogi_enum(name = "post_status")]
 pub enum PostStatus {
-    Active,
-    InReview,
-    Retired,
+ Active,
+ InReview,
+ Retired,
 }
 
 #[model(table = "posts")]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub title: String,
-    pub status: PostStatus,
+ pub title: String,
+ pub status: PostStatus,
 }
 
 async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
+ let mut ctx = DjogiContext::from_pool(pool.clone());
 
-    let post = Post::create(&mut ctx, Post {
-        title: "Getting started with Djogi".to_string(),
-        status: PostStatus::Active,
-        ..Default::default()
-    }).await?;
+ let post = Post::create(&mut ctx, Post {
+ title: "Getting started with Djogi".to_string(),
+ status: PostStatus::Active,
+..Default::default()
+ }).await?;
 
-    // Filter by enum value.
-    let active_posts = Post::objects()
-        .filter(|f| f.status().eq(PostStatus::Active))
-        .fetch_all(&mut ctx).await?;
+ // Filter by enum value.
+ let active_posts = Post::objects()
+.filter(|f| f.status().eq(PostStatus::Active))
+.fetch_all(&mut ctx).await?;
 
-    assert_eq!(active_posts[0].status, PostStatus::Active);
-    Ok(())
+ assert_eq!(active_posts[0].status, PostStatus::Active);
+ Ok(())
 }
 ```
 
@@ -97,9 +97,9 @@ matching an existing Postgres enum whose variants are uppercase:
 #[derive(DjogiEnum, Debug, Clone, Copy, PartialEq, Eq)]
 #[djogi_enum(name = "severity_level", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Severity {
-    Low,       // => "LOW"
-    Medium,    // => "MEDIUM"
-    Critical,  // => "CRITICAL"
+ Low, // => "LOW"
+ Medium, // => "MEDIUM"
+ Critical, // => "CRITICAL"
 }
 ```
 
@@ -112,10 +112,10 @@ When one variant needs a name that does not follow the enum-level rule, use
 #[derive(DjogiEnum, Debug, Clone, Copy, PartialEq, Eq)]
 #[djogi_enum(name = "vehicle_status")]
 pub enum VehicleStatus {
-    Active,           // => "active"
-    InMaintenance,    // => "in_maintenance"
-    #[djogi_enum_variant(name = "decommissioned")]
-    Retired,          // => "decommissioned"  (overrides the default "retired")
+ Active,  // => "active"
+ InMaintenance, // => "in_maintenance"
+ #[djogi_enum_variant(name = "decommissioned")]
+ Retired,  // => "decommissioned" (overrides the default "retired")
 }
 ```
 
@@ -145,7 +145,7 @@ store arbitrary string values from an external system), declare the column as
 ```rust
 #[model(table = "events")]
 pub struct Event {
-    pub kind: String,   // unconstrained — any Postgres text value
+ pub kind: String, // unconstrained — any Postgres text value
 }
 ```
 

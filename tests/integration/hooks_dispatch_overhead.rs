@@ -2,22 +2,22 @@
 //!
 //! Two models live here side-by-side:
 //!
-//!   * [`NoHooksModel`] — plain `#[model]`, no `#[model(hooks)]`, no
-//!     `impl ModelHooks for NoHooksModel`. Its `Model::create()` body
-//!     calls into the [`HasHooks::before_create`] / `after_create`
-//!     glue exactly the same way [`WithHooksModel`]'s does, but those
-//!     calls go to the default no-op `ModelHooks` provided-method
-//!     bodies. The compiler — release mode, codegen-units = 1 once
-//!     monomorphisation collapses — must elide the no-op call entirely
-//!     so the §D2 zero-overhead promise holds.
+//!  * [`NoHooksModel`] — plain `#[model]`, no `#[model(hooks)]`, no
+//!   `impl ModelHooks for NoHooksModel`. Its `Model::create()` body
+//!   calls into the [`HasHooks::before_create`] / `after_create`
+//!   glue exactly the same way [`WithHooksModel`]'s does, but those
+//!   calls go to the default no-op `ModelHooks` provided-method
+//!   bodies. The compiler — release mode, codegen-units = 1 once
+//!   monomorphisation collapses — must elide the no-op call entirely
+//!   so the §D2 zero-overhead promise holds.
 //!
-//!   * [`WithHooksModel`] — `#[model(hooks)]` plus an
-//!     `impl ModelHooks for WithHooksModel` whose `before_create`
-//!     body is **non-trivial enough to defeat dead-code-elimination**
-//!     (writes through a static-mutable counter via `OnceLock<Mutex<…>>`).
-//!     The optimiser cannot fold this into a no-op, so the asm artefact
-//!     should show a real `call` referencing `<WithHooksModel as
-//!     ModelHooks>::before_create` (or its mangled equivalent).
+//!  * [`WithHooksModel`] — `#[model(hooks)]` plus an
+//!   `impl ModelHooks for WithHooksModel` whose `before_create`
+//!   body is **non-trivial enough to defeat dead-code-elimination**
+//!   (writes through a static-mutable counter via `OnceLock<Mutex<…>>`).
+//!   The optimiser cannot fold this into a no-op, so the asm artefact
+//!   should show a real `call` referencing `<WithHooksModel as
+//!   ModelHooks>::before_create` (or its mangled equivalent).
 //!
 //! # The committed artefact
 //!
@@ -30,15 +30,15 @@
 //! Regenerate it from a clean checkout via:
 //!
 //! ```bash
-//! cargo install cargo-asm   # or `cargo install cargo-show-asm --locked`
+//! cargo install cargo-asm  # or `cargo install cargo-show-asm --locked`
 //!
 //! cargo asm --release -p djogi --lib \
-//!   '<hooks_dispatch_overhead::NoHooksModel as djogi::model::Model>::create' \
-//!   > the hooks dispatch overhead benchmark assembly snapshot
+//!  '<hooks_dispatch_overhead::NoHooksModel as djogi::model::Model>::create' \
+//!  > the hooks dispatch overhead benchmark assembly snapshot
 //!
 //! cargo asm --release -p djogi --lib \
-//!   '<hooks_dispatch_overhead::WithHooksModel as djogi::model::Model>::create' \
-//!   >> the hooks dispatch overhead benchmark assembly snapshot
+//!  '<hooks_dispatch_overhead::WithHooksModel as djogi::model::Model>::create' \
+//!  >> the hooks dispatch overhead benchmark assembly snapshot
 //! ```
 //!
 //! (The exact mangled symbol path is documented in the artefact's
@@ -48,7 +48,7 @@
 //! # Why this is a compile-only test
 //!
 //! There is nothing to assert at runtime. The asm capture is the
-//! assertion: a human (or Codex, per the spec) reads the artefact and
+//! assertion: a human (or an internal review, per the spec) reads the artefact and
 //! confirms the no-hooks branch contains zero `call` instructions
 //! referencing `ModelHooks::*` while the with-hooks branch contains at
 //! least one such call. Keeping a `#[test]` here forces the test
@@ -98,7 +98,7 @@ impl djogi::hooks::ModelHooks for WithHooksModel {
     // this attribute LLVM happily inlines the hook body straight into
     // the `create` site — that's perfectly correct for runtime
     // performance, but it obscures the dispatch *symbol* from a reader
-    // (human or Codex) auditing the artefact for the §D2 invariant.
+    // (human or an internal review) auditing the artefact for the §D2 invariant.
     //
     // Per .md line 725 the FORBIDDEN attribute is
     // `#[inline(always)]` (which would also obscure dispatch by inlining
@@ -207,7 +207,7 @@ pub fn anchor_with_hooks_save<'a>(
 #[test]
 fn release_build_compiles() {
     // Compile-only test. The verification artefact lives at
-    //   the hooks dispatch overhead benchmark assembly snapshot
+    //  the hooks dispatch overhead benchmark assembly snapshot
     // and is regenerated via the `cargo asm` commands documented in
     // the module header above.
     //

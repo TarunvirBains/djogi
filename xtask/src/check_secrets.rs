@@ -11,41 +11,41 @@
 // set rather than broad heuristics that would drown adopters in false positives.
 //
 // What is checked:
-//   1. URLs of the form `scheme://user:password@host[:port][/path]`
-//      where scheme is a known credential-bearing scheme (postgres, mysql,
-//      mongodb, redis, http, ssh, …), and the password is not a placeholder
-//      or a known intentional dummy pair (`djogi:djogi` on localhost, etc.).
-//   2. Assignments of well-known secret-bearing environment variables
-//      (`DATABASE_URL`, `PGPASSWORD`, `POSTGRES_PASSWORD`, …) and any
-//      variable whose name ends in a credential-shaped suffix
-//      (`_PASSWORD`, `_TOKEN`, `_SECRET`, `_API_KEY`, …), to a value that
-//      is not a placeholder.
-//   3. PEM private-key block headers (`-----BEGIN … PRIVATE KEY-----`).
+//  1. URLs of the form `scheme://user:password@host[:port][/path]`
+//   where scheme is a known credential-bearing scheme (postgres, mysql,
+//   mongodb, redis, http, ssh, …), and the password is not a placeholder
+//   or a known intentional dummy pair (`djogi:djogi` on localhost, etc.).
+//  2. Assignments of well-known secret-bearing environment variables
+//   (`DATABASE_URL`, `PGPASSWORD`, `POSTGRES_PASSWORD`, …) and any
+//   variable whose name ends in a credential-shaped suffix
+//   (`_PASSWORD`, `_TOKEN`, `_SECRET`, `_API_KEY`, …), to a value that
+//   is not a placeholder.
+//  3. PEM private-key block headers (`-----BEGIN … PRIVATE KEY-----`).
 //
 // What is not checked:
-//   - Generic high-entropy strings — too noisy without a curated allowlist
-//     of "this is intentionally a base64 fixture" sites. Out of scope for
-//     #193's preflight-prevention goal.
-//   - Historical commits, branch contents, remote GitHub bodies — those are
-//     a separate later sweep. This module only runs against working-tree
-//     content, staged diffs, or stdin pasted by an adopter.
+//  - Generic high-entropy strings — too noisy without a curated allowlist
+//   of "this is intentionally a base64 fixture" sites. Out of scope for
+//   #193's preflight-prevention goal.
+//  - Historical commits, branch contents, remote GitHub bodies — those are
+//   a separate later sweep. This module only runs against working-tree
+//   content, staged diffs, or stdin pasted by an adopter.
 //
 // Suppression — two markers, deliberately verbose so they are easy to grep
 // and review. The trailing colon is required and is what distinguishes the
 // line marker from the file marker (so a file marker on the previous line
 // does not accidentally fire the line-marker check on the following line):
-//   - `djogi-allow-secret: <reason>`         — line-scoped. Skips findings
-//                                              on the same line, or on any
-//                                              line whose contiguous comment
-//                                              block immediately above
-//                                              contains the marker (walk-back
-//                                              capped at 20 lines, stopped
-//                                              by any non-comment / blank
-//                                              line).
-//   - `djogi-allow-secret-file: <reason>`    — file-scoped. Anywhere in the
-//                                              first 20 lines of a file
-//                                              removes the whole file from
-//                                              scanning.
+//  - `djogi-allow-secret: <reason>`     — line-scoped. Skips findings
+//                       on the same line, or on any
+//                       line whose contiguous comment
+//                       block immediately above
+//                       contains the marker (walk-back
+//                       capped at 20 lines, stopped
+//                       by any non-comment / blank
+//                       line).
+//  - `djogi-allow-secret-file: <reason>`  — file-scoped. Anywhere in the
+//                       first 20 lines of a file
+//                       removes the whole file from
+//                       scanning.
 // The colon and rationale are required; reviewers should reject suppressions
 // without a rationale.
 //
@@ -399,8 +399,8 @@ fn report(findings: &[Finding], mode: ScanMode) -> ExitCode {
     } else {
         eprintln!(
             "check-secrets: {label}: {n} finding{plural}; \
-             redact and remove before commit / before pasting into public text. \
-             For intentional examples, add `// {marker} <reason>` on the line above.",
+       redact and remove before commit / before pasting into public text. \
+       For intentional examples, add `// {marker} <reason>` on the line above.",
             n = findings.len(),
             plural = if findings.len() == 1 { "" } else { "s" },
             marker = ALLOW_LINE_MARKER,
@@ -899,12 +899,12 @@ fn scan_env_assignment(
     }
 
     // Normalise leading shape so the same `KEY=value` parser handles all of:
-    //   FOO=bar                              (bare)
-    //   export FOO=bar                       (shell)
-    //   set FOO=bar                          (cmd.exe / some POSIX shells)
-    //   - FOO=bar                            (YAML / compose env list)
-    //   - "FOO=bar"                          (YAML quoted env list)
-    //   - export FOO=bar                     (compose env list of shell line)
+    //  FOO=bar               (bare)
+    //  export FOO=bar            (shell)
+    //  set FOO=bar             (cmd.exe / some POSIX shells)
+    //  - FOO=bar              (YAML / compose env list)
+    //  - "FOO=bar"             (YAML quoted env list)
+    //  - export FOO=bar           (compose env list of shell line)
     // YAML list-item entries were previously missed because the trimmed line
     // started with `- ` and the env-var-shape check rejected the dash.
     let active = if let Some(rest) = trimmed.strip_prefix("- ") {
@@ -1453,7 +1453,7 @@ mod tests {
 
     #[test]
     fn flags_postgres_password_yaml_form() {
-        let findings = scan("  POSTGRES_PASSWORD: somethingreal");
+        let findings = scan(" POSTGRES_PASSWORD: somethingreal");
         assert!(
             findings
                 .iter()
@@ -1592,7 +1592,7 @@ mod tests {
 
     #[test]
     fn line_marker_on_same_line_suppresses_finding() {
-        let line = "PGPASSWORD=foobar  # djogi-allow-secret: doctest fixture";
+        let line = "PGPASSWORD=foobar # djogi-allow-secret: doctest fixture";
         assert!(scan(line).is_empty());
     }
 
@@ -1601,7 +1601,7 @@ mod tests {
         let mut findings = Vec::new();
         scan_text(
             "// djogi-allow-secret: anti-pattern example\n\
-             postgres://alice:realpassword@prod.example.com/myapp\n",
+       postgres://alice:realpassword@prod.example.com/myapp\n",
             Some(Path::new("docs/security.md")),
             &mut findings,
         );
@@ -1615,11 +1615,11 @@ mod tests {
         // written in YAML / shell / Rust review comments.
         let mut findings = Vec::new();
         scan_text(
-            "          POSTGRES_USER: djogi\n\
-             # djogi-allow-secret: GHA service-container fixture; this Postgres\n\
-             # binds only to the runner-local network, never to the public\n\
-             # internet, and is destroyed at job end.\n\
-             POSTGRES_PASSWORD: djogi\n",
+            "     POSTGRES_USER: djogi\n\
+       # djogi-allow-secret: GHA service-container fixture; this Postgres\n\
+       # binds only to the runner-local network, never to the public\n\
+       # internet, and is destroyed at job end.\n\
+       POSTGRES_PASSWORD: djogi\n",
             Some(Path::new(".github/workflows/ci.yml")),
             &mut findings,
         );
@@ -1633,8 +1633,8 @@ mod tests {
         let mut findings = Vec::new();
         scan_text(
             "# This is unrelated documentation.\n\
-             # It explains the surrounding YAML.\n\
-             POSTGRES_PASSWORD: realvalue\n",
+       # It explains the surrounding YAML.\n\
+       POSTGRES_PASSWORD: realvalue\n",
             Some(Path::new(".github/workflows/ci.yml")),
             &mut findings,
         );
@@ -1654,8 +1654,8 @@ mod tests {
         let mut findings = Vec::new();
         scan_text(
             "# djogi-allow-secret: stale marker that no longer attaches\n\
-             \n\
-             POSTGRES_PASSWORD: realvalue\n",
+       \n\
+       POSTGRES_PASSWORD: realvalue\n",
             Some(Path::new(".github/workflows/ci.yml")),
             &mut findings,
         );
@@ -1691,9 +1691,9 @@ mod tests {
         let mut findings = Vec::new();
         scan_text(
             "// djogi-allow-secret-file: scanner self-fixture\n\
-             // line 2\n\
-             // line 3\n\
-             PGPASSWORD=this-would-otherwise-fire\n",
+       // line 2\n\
+       // line 3\n\
+       PGPASSWORD=this-would-otherwise-fire\n",
             Some(Path::new("xtask/src/check_secrets.rs")),
             &mut findings,
         );
@@ -1709,8 +1709,8 @@ mod tests {
         let prefix: String = (0..21).map(|_| "// padding\n").collect();
         let source = format!(
             "{prefix}\
-             // djogi-allow-secret-file: too late, falls past line 20\n\
-             PGPASSWORD=somethingreal\n",
+       // djogi-allow-secret-file: too late, falls past line 20\n\
+       PGPASSWORD=somethingreal\n",
         );
         let mut findings = Vec::new();
         scan_text(&source, Some(Path::new("test.rs")), &mut findings);
@@ -1731,10 +1731,10 @@ diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
 @@ -10,0 +11,2 @@ fn main() {
-+    let db = \"postgres://alice:hunter2@host/db\";
-+    let token = \"abc123\";
++  let db = \"postgres://alice:hunter2@host/db\";
++  let token = \"abc123\";
 @@ -42,0 +50,1 @@ fn other() {
-+    let key = \"xyz\";
++  let key = \"xyz\";
 ";
         let lines = parse_staged_diff(diff);
         assert_eq!(lines.len(), 3);
@@ -1825,7 +1825,7 @@ deleted file mode 100644
 
     #[test]
     fn urls_inside_strings_with_trailing_chars_still_detected() {
-        let line = r#"  url: "postgres://alice:secretpw@host:5432/db" # production"#;
+        let line = r#" url: "postgres://alice:secretpw@host:5432/db" # production"#;
         let findings = scan(line);
         assert!(
             findings
@@ -1840,7 +1840,7 @@ deleted file mode 100644
 
     // ---- BLOCK-regression tests (do not delete) ----
     //
-    // These cover the three blocker classes flagged in the GPT-5.5 xhigh
+    // These cover the three blocker classes flagged in the a high-severity review xhigh
     // review of #193: unsafe URL redaction, missed YAML list-item env
     // entries, and over-broad URL-shaped suppression of env findings.
 
@@ -1931,13 +1931,13 @@ deleted file mode 100644
     }
 
     /// BLOCK 2 — YAML / docker-compose list-item form
-    /// `  - POSTGRES_PASSWORD=value` was previously missed because the
+    /// ` - POSTGRES_PASSWORD=value` was previously missed because the
     /// trimmed line started with `- ` and the env-var-shape check
     /// rejected the dash. The list-item prefix must be stripped before
     /// validating the key.
     #[test]
     fn flags_env_assignment_in_yaml_list_item() {
-        let findings = scan("      - POSTGRES_PASSWORD=actualleakedvalue");
+        let findings = scan("   - POSTGRES_PASSWORD=actualleakedvalue");
         assert!(
             findings
                 .iter()
@@ -1958,7 +1958,7 @@ deleted file mode 100644
     /// assignment, so the inner content must be unquoted before split.
     #[test]
     fn flags_env_assignment_in_quoted_yaml_list_item() {
-        let findings = scan("  - \"PGPASSWORD=actualleakedvalue\"");
+        let findings = scan(" - \"PGPASSWORD=actualleakedvalue\"");
         assert!(
             findings
                 .iter()
@@ -1971,7 +1971,7 @@ deleted file mode 100644
     /// invoking a shell `export`) must also parse cleanly.
     #[test]
     fn flags_env_assignment_in_yaml_list_with_export() {
-        let findings = scan("  - export DATABASE_PASSWORD=actualleakedvalue");
+        let findings = scan(" - export DATABASE_PASSWORD=actualleakedvalue");
         assert!(
             findings
                 .iter()
@@ -1995,7 +1995,7 @@ deleted file mode 100644
                 .iter()
                 .any(|f| matches!(f.kind, SecretKind::EnvAssignmentKnown("DATABASE_URL"))),
             "expected DATABASE_URL env finding (scheme `tcp` is not recognised \
-             by the url scanner, so the env scanner must report), got {findings:#?}",
+       by the url scanner, so the env scanner must report), got {findings:#?}",
         );
     }
 
@@ -2031,7 +2031,7 @@ deleted file mode 100644
             (url_count, env_count),
             (1, 0),
             "expected exactly one URL finding and zero env findings (dedup), \
-             got {findings:#?}",
+       got {findings:#?}",
         );
     }
 
@@ -2083,13 +2083,13 @@ deleted file mode 100644
 
         /// Return the slice of `yaml` that constitutes the body of the
         /// top-level job named `name`. A job header is the literal
-        /// `  <name>:` line at 2-space indent. The body continues until
+        /// ` <name>:` line at 2-space indent. The body continues until
         /// the next 2-space-indented sibling key (next job) or EOF.
         ///
         /// Panics if no header is found — that signals a workflow rename
         /// or restructure and the test should fail loudly.
         fn job_body<'a>(yaml: &'a str, name: &str) -> &'a str {
-            let header = format!("  {name}:");
+            let header = format!(" {name}:");
 
             // Locate the header line by byte offset.
             let mut offset = 0usize;
@@ -2132,10 +2132,10 @@ deleted file mode 100644
 
         /// Split a job body into per-step slices. A step starts with a
         /// 6-space-indented `- ` (the YAML sequence dash for items under
-        /// `    steps:`). Each returned slice begins at that step's dash
+        /// `  steps:`). Each returned slice begins at that step's dash
         /// line and ends at the next step's dash line (or job body end).
         fn steps_of(body: &str) -> Vec<&str> {
-            const STEP_PREFIX: &str = "      - ";
+            const STEP_PREFIX: &str = "   - ";
             let mut steps = Vec::new();
             let mut current_start: Option<usize> = None;
             let mut offset = 0usize;
@@ -2170,7 +2170,7 @@ deleted file mode 100644
             for line in yaml.lines() {
                 assert_ne!(
                     line.trim_end(),
-                    "  pull_request:",
+                    " pull_request:",
                     "untrusted `pull_request` trigger is forbidden; use `pull_request_target`",
                 );
             }
@@ -2183,11 +2183,11 @@ deleted file mode 100644
         #[test]
         fn workflow_top_level_permissions_are_contents_read_only() {
             let yaml = workflow_yaml();
-            let needle = "\npermissions:\n  contents: read\n";
+            let needle = "\npermissions:\n contents: read\n";
             assert!(
                 yaml.contains(needle),
                 "top-level permissions block must be exactly `contents: read`; \
-                 found workflow without it",
+         found workflow without it",
             );
             // The block ends at the next top-level key (no leading space).
             // Verify no write scope is granted at the workflow level by
@@ -2210,7 +2210,7 @@ deleted file mode 100644
                 assert!(
                     !trimmed.contains(": write"),
                     "top-level permissions block must not grant any write \
-                     scope; offending line: `{line}`",
+           scope; offending line: `{line}`",
                 );
             }
         }
@@ -2247,7 +2247,7 @@ deleted file mode 100644
                 assert!(
                     !trimmed.starts_with("GITHUB_TOKEN:"),
                     "scan job must not bind GITHUB_TOKEN to any step or job env; \
-                     offending line: `{line}`",
+           offending line: `{line}`",
                 );
             }
         }
@@ -2263,14 +2263,14 @@ deleted file mode 100644
                     assert!(
                         step.contains("persist-credentials: false"),
                         "every scan-job checkout step must set \
-                         `persist-credentials: false`; offending step:\n{step}",
+             `persist-credentials: false`; offending step:\n{step}",
                     );
                 }
             }
             assert!(
                 checkout_steps == 1,
                 "expected exactly the trusted djogi checkout in \
-                 the scan job, found {checkout_steps}",
+         the scan job, found {checkout_steps}",
             );
         }
 
@@ -2286,8 +2286,8 @@ deleted file mode 100644
             assert!(
                 djogi_checkout.contains("ref: ${{ github.event.repository.default_branch }}"),
                 "scanner checkout must pin an explicit trusted `ref:` (the \
-                 repository's default branch) on every trigger; offending \
-                 step:\n{djogi_checkout}",
+         repository's default branch) on every trigger; offending \
+         step:\n{djogi_checkout}",
             );
         }
 
@@ -2300,7 +2300,7 @@ deleted file mode 100644
             assert!(
                 !body.contains("uses: actions/checkout@"),
                 "comment_and_fail job must NOT run actions/checkout (no \
-                 source code on disk, no path for cargo to walk)",
+         source code on disk, no path for cargo to walk)",
             );
         }
 
@@ -2370,7 +2370,7 @@ deleted file mode 100644
             assert!(
                 hard_fail_step.contains("if: always()"),
                 "hard-fail step must run with `if: always()` so post-step \
-                 failures do not mask the red workflow status:\n{hard_fail_step}",
+         failures do not mask the red workflow status:\n{hard_fail_step}",
             );
             assert!(
                 hard_fail_step.contains("exit 1"),

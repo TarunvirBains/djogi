@@ -1,4 +1,4 @@
-// djogi#220 — `#[field(type_change_using = "   ")]`
+// djogi#220 — `#[field(type_change_using = " ")]`
 // is rejected.
 //
 // Whitespace-only is structurally equivalent to empty — the parser
@@ -10,8 +10,8 @@ use djogi::prelude::*;
 #[model(table = "items_220_ws", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Item220Whitespace {
-    #[field(type_change_using = "   \t  ")]
-    pub kind: String,
+ #[field(type_change_using = " \t ")]
+ pub kind: String,
 }
 
 fn main() {}

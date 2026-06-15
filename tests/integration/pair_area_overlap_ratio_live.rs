@@ -10,12 +10,12 @@
 // Postgres instance and verifying the decoded `f64` matches the
 // geometry-arithmetic shape the docstring promises:
 //
-//   - Coincident polygons → ratio = 1.0
-//   - Disjoint polygons → ratio = 0.0
-//   - Half-overlap polygons → ratio in (0, 1), centred on 0.5
-//   - NULL geography column on either side → ratio = 0.0 (via the
-//     NULLIF/COALESCE shape that the slot's `decode_column` folds to
-//     `Option<f64>::unwrap_or(0.0)`)
+//  - Coincident polygons → ratio = 1.0
+//  - Disjoint polygons → ratio = 0.0
+//  - Half-overlap polygons → ratio in (0, 1), centred on 0.5
+//  - NULL geography column on either side → ratio = 0.0 (via the
+//   NULLIF/COALESCE shape that the slot's `decode_column` folds to
+//   `Option<f64>::unwrap_or(0.0)`)
 //
 // The fixture also exercises a 4-way pair-tuple terminal: the slot
 // receives each `(L, R)` combination from the cross-join and the
@@ -93,25 +93,25 @@ async fn make_zone(ctx: &mut djogi::DjogiContext, label: &str, boundary: Option<
 /// boundary)) and asserts the four canonical ratio values across each
 /// pair combination:
 ///
-///   - `(A, A)` → 1.0 (coincident with itself)
-///   - `(A, B)` → 1.0 (coincident different rows)
-///   - `(A, disjoint)` → 0.0 (no overlap)
-///   - `(A, null)` → 0.0 (NULL right side via NULLIF/COALESCE/decode shape)
-///   - `(null, A)` → 0.0 (NULL left side via the same shape)
-///   - `(disjoint, A)` → 0.0 (no overlap, asymmetric form)
+///  - `(A, A)` → 1.0 (coincident with itself)
+///  - `(A, B)` → 1.0 (coincident different rows)
+///  - `(A, disjoint)` → 0.0 (no overlap)
+///  - `(A, null)` → 0.0 (NULL right side via NULLIF/COALESCE/decode shape)
+///  - `(null, A)` → 0.0 (NULL left side via the same shape)
+///  - `(disjoint, A)` → 0.0 (no overlap, asymmetric form)
 ///
 /// Tolerance is `1e-9` for the `f64` round-trip on coincident
 /// geometries; the NULL / disjoint paths decode as exact `0.0`.
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Zone],
+  extensions = ["postgis"],
+  sync_models = [Zone],
 )]
 async fn pair_area_overlap_ratio_emits_correct_ratios_on_postgis(mut ctx: djogi::DjogiContext) {
     // Seed four zones with controlled geometry:
     //
-    //   coincident_a / coincident_b: identical polygons → ratio = 1
-    //   disjoint_far:               10° east of A → ratio = 0
-    //   null_zone:                  NULL boundary → ratio = 0 on either side
+    //  coincident_a / coincident_b: identical polygons → ratio = 1
+    //  disjoint_far:        10° east of A → ratio = 0
+    //  null_zone:         NULL boundary → ratio = 0 on either side
     let coincident_a = make_zone(&mut ctx, "a", Some(square(0.0, 0.0, 0.1))).await;
     let coincident_b = make_zone(&mut ctx, "b", Some(square(0.0, 0.0, 0.1))).await;
     let disjoint_far = make_zone(&mut ctx, "far", Some(square(0.0, 10.0, 0.1))).await;
@@ -206,20 +206,20 @@ async fn pair_area_overlap_ratio_emits_correct_ratios_on_postgis(mut ctx: djogi:
 // per-step in the assertion body.
 
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Zone],
+  extensions = ["postgis"],
+  sync_models = [Zone],
 )]
 async fn pair_area_overlap_ratio_partial_overlap_in_open_interval(mut ctx: djogi::DjogiContext) {
     // `a` is a 0.2° × 0.2° square centered at (0, 0):
-    //   lat ∈ [-0.1, 0.1], lon ∈ [-0.1, 0.1]
+    //  lat ∈ [-0.1, 0.1], lon ∈ [-0.1, 0.1]
     // `b` is a 0.2° × 0.2° square centered at (0, 0.1):
-    //   lat ∈ [-0.1, 0.1], lon ∈ [0.0, 0.2]
+    //  lat ∈ [-0.1, 0.1], lon ∈ [0.0, 0.2]
     //
     // Their intersection is a 0.2° × 0.1° rectangle:
-    //   lat ∈ [-0.1, 0.1], lon ∈ [0.0, 0.1]
+    //  lat ∈ [-0.1, 0.1], lon ∈ [0.0, 0.1]
     //
     // Area ratio `area(A ∩ B) / area(A)` = (0.2 × 0.1) / (0.2 × 0.2)
-    //                                    = 0.5 exactly (in the lat/lon
+    //                  = 0.5 exactly (in the lat/lon
     // square approximation; PostGIS's `geography` cast uses spheroid
     // arithmetic so the actual value drifts slightly from 0.5).
     //

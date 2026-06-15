@@ -55,37 +55,37 @@ use crate::model::attrs::{
 /// Categorisation of one model field for portable SQL lowering.
 /// The variants split into three groups:
 /// 1. **Portable scalar leaves** — [`Scalar`], [`String`], [`Bool`].
-///    Get specific `(field, op)` arms emitted by `crud.rs` for the
-///    operators their `DjogiField` surface exposes.
+/// Get specific `(field, op)` arms emitted by `crud.rs` for the
+/// operators their `DjogiField` surface exposes.
 /// 2. **Portable optional leaves** — [`OptionScalar`], [`OptionString`],
-///    [`OptionBool`]. Same as above plus null-test arms and option-aware
-///    eq/neq/in/not_in arm bodies that try `Option<U>` first and fall
-///    back to the inner `U` (matching `DjogiField::eq(None|Some(_))`
-///    versus `DjogiField::some().eq(_)`).
+/// [`OptionBool`]. Same as above plus null-test arms and option-aware
+/// eq/neq/in/not_in arm bodies that try `Option<U>` first and fall
+/// back to the inner `U` (matching `DjogiField::eq(None|Some(_))`
+/// versus `DjogiField::some().eq(_)`).
 /// 3. **Portable root relation leaves** — [`RelationOrVisage`] and
-///    [`OptionRelationOrVisage`]. These cover FK/O2O physical columns
-///    only; dotted relation traversal stays on the SQL-only field view.
+/// [`OptionRelationOrVisage`]. These cover FK/O2O physical columns
+/// only; dotted relation traversal stays on the SQL-only field view.
 /// 4. **SQL-only / non-portable kinds** — [`Jsonb`], [`Array`],
-///    [`Spatial`], [`FtsComputed`], [`Unsupported`]. Get a single catch-all
-///    `(field, _) => UnsupportedFieldType { field }` arm. The portable
-///    cache/refresh boundary already rejects the constructed predicate
-///    upstream of SQL emission for every `Q::Portable` payload that
-///    would mention these fields, so emitting the typed error is
-///    belt-and-braces against a future macro addition that mistakenly
-///    wrapped one of them in `DjogiField`.
-///    [`Scalar`]: PortableFieldKind::Scalar
-///    [`String`]: PortableFieldKind::String
-///    [`Bool`]: PortableFieldKind::Bool
-///    [`OptionScalar`]: PortableFieldKind::OptionScalar
-///    [`OptionString`]: PortableFieldKind::OptionString
-///    [`OptionBool`]: PortableFieldKind::OptionBool
-///    [`Jsonb`]: PortableFieldKind::Jsonb
-///    [`Array`]: PortableFieldKind::Array
-///    [`Spatial`]: PortableFieldKind::Spatial
-///    [`FtsComputed`]: PortableFieldKind::FtsComputed
-///    [`RelationOrVisage`]: PortableFieldKind::RelationOrVisage
-///    [`OptionRelationOrVisage`]: PortableFieldKind::OptionRelationOrVisage
-///    [`Unsupported`]: PortableFieldKind::Unsupported
+/// [`Spatial`], [`FtsComputed`], [`Unsupported`]. Get a single catch-all
+/// `(field, _) => UnsupportedFieldType { field }` arm. The portable
+/// cache/refresh boundary already rejects the constructed predicate
+/// upstream of SQL emission for every `Q::Portable` payload that
+/// would mention these fields, so emitting the typed error is
+/// belt-and-braces against a future macro addition that mistakenly
+/// wrapped one of them in `DjogiField`.
+/// [`Scalar`]: PortableFieldKind::Scalar
+/// [`String`]: PortableFieldKind::String
+/// [`Bool`]: PortableFieldKind::Bool
+/// [`OptionScalar`]: PortableFieldKind::OptionScalar
+/// [`OptionString`]: PortableFieldKind::OptionString
+/// [`OptionBool`]: PortableFieldKind::OptionBool
+/// [`Jsonb`]: PortableFieldKind::Jsonb
+/// [`Array`]: PortableFieldKind::Array
+/// [`Spatial`]: PortableFieldKind::Spatial
+/// [`FtsComputed`]: PortableFieldKind::FtsComputed
+/// [`RelationOrVisage`]: PortableFieldKind::RelationOrVisage
+/// [`OptionRelationOrVisage`]: PortableFieldKind::OptionRelationOrVisage
+/// [`Unsupported`]: PortableFieldKind::Unsupported
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortableFieldKind {
     /// Plain scalar that binds through `postgres_types::ToSql + Clone +
@@ -350,28 +350,28 @@ pub fn build(
 /// framework fields injected at the front of the struct.
 /// Order matters:
 /// 1. `#[field(protected(...))]` short-circuits to
-///    [`PortableFieldKind::Unsupported`] regardless of the underlying
-///    Rust type — protected codecs change the bound shape between
-///    plaintext (Punnu) and ciphertext (SQL), which 8eta has not
-///    parity-tested.
+/// [`PortableFieldKind::Unsupported`] regardless of the underlying
+/// Rust type — protected codecs change the bound shape between
+/// plaintext (Punnu) and ciphertext (SQL), which 8eta has not
+/// parity-tested.
 /// 2. Strip a single `Tracked<...>` layer; the SQL bind operates on
-///    the inner type and the macro emission should follow.
+/// the inner type and the macro emission should follow.
 /// 3. Strip a single `Option<...>` layer and remember whether one was
-///    stripped. The inner type drives the kind; the option flag turns
-///    [`Scalar`]/[`String`]/[`Bool`] into their `Option*` siblings.
+/// stripped. The inner type drives the kind; the option flag turns
+/// [`Scalar`]/[`String`]/[`Bool`] into their `Option*` siblings.
 /// 4. `ForeignKey<T>` / `OneToOneField<T>` root columns lower to
-///    [`PortableFieldKind::RelationOrVisage`] or
-///    [`PortableFieldKind::OptionRelationOrVisage`]. This is physical
-///    column equality/membership only; relation traversal remains
-///    SQL-only.
+/// [`PortableFieldKind::RelationOrVisage`] or
+/// [`PortableFieldKind::OptionRelationOrVisage`]. This is physical
+/// column equality/membership only; relation traversal remains
+/// SQL-only.
 /// 5. Match the inner type's last path segment against the curated
-///    portable-scalar set; fall through to [`Unsupported`] for
-///    anything else (including user enums, custom newtypes, and any
-///    multi-segment path Djogi has not parity-tested).
-///    [`Scalar`]: PortableFieldKind::Scalar
-///    [`String`]: PortableFieldKind::String
-///    [`Bool`]: PortableFieldKind::Bool
-///    [`Unsupported`]: PortableFieldKind::Unsupported
+/// portable-scalar set; fall through to [`Unsupported`] for
+/// anything else (including user enums, custom newtypes, and any
+/// multi-segment path Djogi has not parity-tested).
+/// [`Scalar`]: PortableFieldKind::Scalar
+/// [`String`]: PortableFieldKind::String
+/// [`Bool`]: PortableFieldKind::Bool
+/// [`Unsupported`]: PortableFieldKind::Unsupported
 fn classify(ty: &Type, field_attrs: Option<&FieldAttrs>) -> (PortableFieldKind, Option<Type>) {
     // Protected-field short-circuit — codec semantics are not yet
     // portable, so any predicate against the field becomes a typed
@@ -467,7 +467,7 @@ fn classify_inner(ty: &Type) -> PortableFieldKind {
     // Portable scalar primitives. The list mirrors the `ToSql`
     // implementations Djogi already binds for these types and is
     // intentionally curated rather than a blanket
-    // `impl<T: ToSql + ...>` so a future user newtype that happens to
+    // `impl<T: ToSql +...>` so a future user newtype that happens to
     // satisfy the bounds does not silently get a portable arm without
     // parity-testing.
     if ident == "String" {

@@ -9,27 +9,27 @@
 //! the two are NOT byte-identical. The regression net is split
 //! into two layers:
 //! * **Emitter-output drift detector** — fixtures under
-//!   `fixtures/pk_flip_emitter_output_section_*.sql` capture the
-//!   CURRENT emitter's whitespace-normalised output for the
-//!   canonical worked examples. Tests under
-//!   `tests::whole_plan_byte_equality_section_*` and
-//!   `tests::emitter_output_drift_check_section_*` assert the
-//!   emitter's output equals these fixtures byte-for-byte after
-//!   normalisation. ANY emitter change without a paired fixture
-//!   update fails loud.
+//! `fixtures/pk_flip_emitter_output_section_*.sql` capture the
+//! CURRENT emitter's whitespace-normalised output for the
+//! canonical worked examples. Tests under
+//! `tests::whole_plan_byte_equality_section_*` and
+//! `tests::emitter_output_drift_check_section_*` assert the
+//! emitter's output equals these fixtures byte-for-byte after
+//! normalisation. ANY emitter change without a paired fixture
+//! update fails loud.
 //! * **Playbook structural anchors** — tests under
-//!   `tests::fixture_section_*_carries_every_playbook_anchor_substring`
-//!   walk each fixture and assert the presence of every
-//!   load-bearing playbook substring (specific
-//!   `CALL heeranjid_bulk_backfill(...)` / `ALTER TABLE ... SET
+//! `tests::fixture_section_*_carries_every_playbook_anchor_substring`
+//! walk each fixture and assert the presence of every
+//! load-bearing playbook substring (specific
+//! `CALL heeranjid_bulk_backfill(...)` / `ALTER TABLE... SET
 //! NOT NULL` / `CREATE UNIQUE INDEX CONCURRENTLY` shapes). If
-//!   the playbook adds or removes a step, that test must be
-//!   updated. The two-sided invariant catches both emitter
-//!   drift AND playbook drift.
-//!   The playbook lives at
-//!   `../HeeRanjID/docs/migrations/asc-to-desc.md`. Where this module
-//!   and the playbook disagree on a load-bearing rule, the playbook
-//!   wins.
+//! the playbook adds or removes a step, that test must be
+//! updated. The two-sided invariant catches both emitter
+//! drift AND playbook drift.
+//! The playbook lives at
+//! `../HeeRanjID/docs/migrations/asc-to-desc.md`. Where this module
+//! and the playbook disagree on a load-bearing rule, the playbook
+//! wins.
 //! # Plan shape (single-table flip — playbook §3)
 //! | Segment | Kind | Statements |
 //! |---------|-----------------|-------------------------------------------------------------------------|
@@ -110,9 +110,9 @@ impl std::fmt::Display for PkFlipError {
             } => write!(
                 f,
                 "PK-flip group for `{parent_table}` has mismatched self-FK metadata lengths: \
-                 fk_columns={fk_columns}, fk_constraint_names={fk_constraint_names}, \
-                 fk_deferrable={fk_deferrable}, \
-                 fk_initially_deferred={fk_initially_deferred}"
+     fk_columns={fk_columns}, fk_constraint_names={fk_constraint_names}, \
+     fk_deferrable={fk_deferrable}, \
+     fk_initially_deferred={fk_initially_deferred}"
             ),
         }
     }
@@ -123,7 +123,7 @@ impl std::error::Error for PkFlipError {}
 /// Lower a [`PkTypeFlipGroup`] into the multi-segment migration plan
 /// per the HeeRanjID playbook.
 /// **Whole-migration kind.** The plan returned is always
-/// non-transactional overall (per .2 deterministic
+/// non-transactional overall (per.2 deterministic
 /// A): segment classifications alternate Transactional / NonTransactional
 /// as the playbook requires, but the migration as a whole is recorded
 /// as `non_transactional` in the ledger because at least one segment
@@ -499,11 +499,11 @@ pub(crate) fn build_segments_multi(
     }
     let cut_down = format!(
         "-- POINT OF NO RETURN — segment 5 (cutover) for cluster [{cluster_label}] cannot be\n\
-         -- reversed by `down` SQL alone. Rollback requires an inverse\n\
-         -- migration: add the previous-direction columns back, install\n\
-         -- reverse autofill triggers, re-run heeranjid_bulk_backfill on\n\
-         -- every member, and run a second cutover. Plan that contingency\n\
-         -- BEFORE running the forward cutover.",
+   -- reversed by `down` SQL alone. Rollback requires an inverse\n\
+   -- migration: add the previous-direction columns back, install\n\
+   -- reverse autofill triggers, re-run heeranjid_bulk_backfill on\n\
+   -- every member, and run a second cutover. Plan that contingency\n\
+   -- BEFORE running the forward cutover.",
     );
     segments.push(Segment {
         kind: SegmentKind::Transactional,
@@ -515,8 +515,8 @@ pub(crate) fn build_segments_multi(
                 kind: LossyRollbackKind::PkTypeFlipPostCutover,
                 detail: format!(
                     "POINT OF NO RETURN: cutover for cluster [{cluster_label}] removes \
-                     prior PK columns and triggers across every member; rollback \
-                     requires an inverse migration",
+      prior PK columns and triggers across every member; rollback \
+      requires an inverse migration",
                 ),
             }),
         }],
@@ -802,14 +802,14 @@ fn emit_partitioned_cutover_with_cascade(
         up,
         down: format!(
             "-- POINT OF NO RETURN — partitioned cutover for {parent} cannot be\n\
-             -- reversed by `down` SQL alone. Inverse migration required.",
+    -- reversed by `down` SQL alone. Inverse migration required.",
         ),
         lossy: Some(LossyRollbackWarning {
             kind: LossyRollbackKind::PkTypeFlipPostCutover,
             detail: format!(
                 "POINT OF NO RETURN: partitioned cutover for `{parent}` removes the prior \
-                 PK column and trigger; rollback requires an inverse migration. \
-                 Partitioned-table cutover is seconds-to-minutes class — benchmark first.",
+     PK column and trigger; rollback requires an inverse migration. \
+     Partitioned-table cutover is seconds-to-minutes class — benchmark first.",
             ),
         }),
     }
@@ -954,16 +954,16 @@ fn render_autofill_trigger(
     for (src, dst) in pairs {
         let _ = writeln!(
             insert_body,
-            "        IF NEW.{dst} IS NULL THEN NEW.{dst} := {flip}(NEW.{src}); END IF;",
+            "  IF NEW.{dst} IS NULL THEN NEW.{dst} := {flip}(NEW.{src}); END IF;",
             dst = dst,
             flip = flip_fn,
             src = src,
         );
         let _ = write!(
             update_body,
-            "        IF NEW.{src} IS DISTINCT FROM OLD.{src} THEN\n            \
-             NEW.{dst} := {flip}(NEW.{src});\n        ELSIF NEW.{dst} IS NULL THEN\n            \
-             NEW.{dst} := {flip}(NEW.{src});\n        END IF;\n",
+            "  IF NEW.{src} IS DISTINCT FROM OLD.{src} THEN\n   \
+    NEW.{dst} := {flip}(NEW.{src});\n  ELSIF NEW.{dst} IS NULL THEN\n   \
+    NEW.{dst} := {flip}(NEW.{src});\n  END IF;\n",
             src = src,
             dst = dst,
             flip = flip_fn,
@@ -971,19 +971,19 @@ fn render_autofill_trigger(
     }
     format!(
         "CREATE OR REPLACE FUNCTION {fn_name}() RETURNS trigger AS $body$\n\
-         BEGIN\n    \
-         IF TG_OP = 'INSERT' THEN\n\
-         {insert_body}    \
-         ELSIF TG_OP = 'UPDATE' THEN\n\
-         {update_body}    \
-         END IF;\n    \
-         RETURN NEW;\n\
-         END;\n\
-         $body$ LANGUAGE plpgsql;\n\n\
-         DROP TRIGGER IF EXISTS {fn_name} ON {table};\n\
-         CREATE TRIGGER {fn_name}\n    \
-         BEFORE INSERT OR UPDATE ON {table}\n    \
-         FOR EACH ROW EXECUTE FUNCTION {fn_name}();\n",
+   BEGIN\n \
+   IF TG_OP = 'INSERT' THEN\n\
+   {insert_body} \
+   ELSIF TG_OP = 'UPDATE' THEN\n\
+   {update_body} \
+   END IF;\n \
+   RETURN NEW;\n\
+   END;\n\
+   $body$ LANGUAGE plpgsql;\n\n\
+   DROP TRIGGER IF EXISTS {fn_name} ON {table};\n\
+   CREATE TRIGGER {fn_name}\n \
+   BEFORE INSERT OR UPDATE ON {table}\n \
+   FOR EACH ROW EXECUTE FUNCTION {fn_name}();\n",
         fn_name = fn_name,
         insert_body = insert_body,
         update_body = update_body,
@@ -1296,9 +1296,9 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
             // missed rows and stale rows).
             let _ = writeln!(
                 up,
-                "SELECT count(*) FROM {parent}\n  \
-                 WHERE ({col} IS NULL) IS DISTINCT FROM ({dst} IS NULL)\n     \
-                 OR ({col} IS NOT NULL AND {dst} <> {flip}({col}));",
+                "SELECT count(*) FROM {parent}\n \
+     WHERE ({col} IS NULL) IS DISTINCT FROM ({dst} IS NULL)\n  \
+     OR ({col} IS NOT NULL AND {dst} <> {flip}({col}));",
                 parent = parent,
                 col = col,
                 dst = dst,
@@ -1325,9 +1325,9 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
             // Nullable FK — emit §3.3 NULL-tracking invariant.
             let _ = writeln!(
                 up,
-                "SELECT count(*) FROM {tbl}\n  \
-                 WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL)\n     \
-                 OR ({src} IS NOT NULL AND {dst} <> {flip}({src}));",
+                "SELECT count(*) FROM {tbl}\n \
+     WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL)\n  \
+     OR ({src} IS NOT NULL AND {dst} <> {flip}({src}));",
                 tbl = child.table,
                 src = child.fk_column,
                 dst = dst,
@@ -1370,9 +1370,9 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
             );
             let _ = writeln!(
                 up,
-                "SELECT count(*) FROM {tbl}\n  \
-                 WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL)\n     \
-                 OR ({src} IS NOT NULL AND {dst} <> {flip}({src}));",
+                "SELECT count(*) FROM {tbl}\n \
+     WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL)\n  \
+     OR ({src} IS NOT NULL AND {dst} <> {flip}({src}));",
                 tbl = jt.table,
                 src = pair.col,
                 dst = dst,
@@ -1397,8 +1397,8 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
         label: format!("PkFlipBackfill {parent}"),
         up,
         down: "-- Backfill is idempotent under `WHERE dst IS NULL`; the\n\
-               -- down side has no inverse beyond dropping the shadow\n\
-               -- column itself, which segment 1's down already covers."
+    -- down side has no inverse beyond dropping the shadow\n\
+    -- column itself, which segment 1's down already covers."
             .to_string(),
         lossy: None,
     }
@@ -1420,7 +1420,7 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
 /// NOT cover this — its `kind` switch only handles the desc flip
 /// primitives. Rather than depend on an unreleased
 /// `heeranjid_bulk_backfill_to_asc`, we emit a hand-rolled `DO $$
-/// ... $$` block that mirrors the procedure's two-loop pattern:
+///... $$` block that mirrors the procedure's two-loop pattern:
 /// fast-path with `SKIP LOCKED`, cleanup pass without. Both reissue
 /// `SET LOCAL lock_timeout = '30s'` per batch (transaction-scoped).
 /// This keeps the reverse path self-contained and reviewable.
@@ -1438,8 +1438,8 @@ fn emit_backfill_statements_with_mode(
     let mut out: Vec<OperationSql> = Vec::new();
 
     let down_note = "-- Backfill is idempotent under `WHERE dst IS NULL`; the\n\
-                     -- down side has no inverse beyond dropping the shadow\n\
-                     -- column itself, which segment 1's down already covers."
+      -- down side has no inverse beyond dropping the shadow\n\
+      -- column itself, which segment 1's down already covers."
         .to_string();
 
     if mode.includes_parent() {
@@ -1560,39 +1560,39 @@ fn emit_reverse_backfill(
     };
     format!(
         "DO $$\n\
-         DECLARE\n    \
-         rows_done int;\n\
-         BEGIN\n    \
-         LOOP\n        \
-         SET LOCAL lock_timeout = '30s';\n        \
-         WITH batch AS (\n            \
-         SELECT ctid FROM {table}\n            \
-         WHERE {dst} IS NULL AND {src} IS NOT NULL\n            \
-         LIMIT 10000\n            \
-         FOR UPDATE SKIP LOCKED\n        \
-         )\n        \
-         UPDATE {table} t SET {dst} = {flip}(t.{src})\n        \
-         FROM batch WHERE t.ctid = batch.ctid;\n        \
-         GET DIAGNOSTICS rows_done = ROW_COUNT;\n        \
-         COMMIT;\n        \
-         EXIT WHEN rows_done = 0;\n    \
-         END LOOP;\n    \
-         LOOP\n        \
-         SET LOCAL lock_timeout = '30s';\n        \
-         WITH batch AS (\n            \
-         SELECT ctid FROM {table}\n            \
-         WHERE {dst} IS NULL AND {src} IS NOT NULL\n            \
-         LIMIT 10000\n            \
-         FOR UPDATE\n        \
-         )\n        \
-         UPDATE {table} t SET {dst} = {flip}(t.{src})\n        \
-         FROM batch WHERE t.ctid = batch.ctid;\n        \
-         GET DIAGNOSTICS rows_done = ROW_COUNT;\n        \
-         COMMIT;\n        \
-         EXIT WHEN rows_done = 0;\n    \
-         END LOOP;\n\
-         END;\n\
-         $$",
+   DECLARE\n \
+   rows_done int;\n\
+   BEGIN\n \
+   LOOP\n  \
+   SET LOCAL lock_timeout = '30s';\n  \
+   WITH batch AS (\n   \
+   SELECT ctid FROM {table}\n   \
+   WHERE {dst} IS NULL AND {src} IS NOT NULL\n   \
+   LIMIT 10000\n   \
+   FOR UPDATE SKIP LOCKED\n  \
+   )\n  \
+   UPDATE {table} t SET {dst} = {flip}(t.{src})\n  \
+   FROM batch WHERE t.ctid = batch.ctid;\n  \
+   GET DIAGNOSTICS rows_done = ROW_COUNT;\n  \
+   COMMIT;\n  \
+   EXIT WHEN rows_done = 0;\n \
+   END LOOP;\n \
+   LOOP\n  \
+   SET LOCAL lock_timeout = '30s';\n  \
+   WITH batch AS (\n   \
+   SELECT ctid FROM {table}\n   \
+   WHERE {dst} IS NULL AND {src} IS NOT NULL\n   \
+   LIMIT 10000\n   \
+   FOR UPDATE\n  \
+   )\n  \
+   UPDATE {table} t SET {dst} = {flip}(t.{src})\n  \
+   FROM batch WHERE t.ctid = batch.ctid;\n  \
+   GET DIAGNOSTICS rows_done = ROW_COUNT;\n  \
+   COMMIT;\n  \
+   EXIT WHEN rows_done = 0;\n \
+   END LOOP;\n\
+   END;\n\
+   $$",
         table = table,
         dst = dst_col,
         src = src_col,
@@ -1641,8 +1641,8 @@ fn emit_verification_statements_with_mode(
                 label: format!("PkFlipVerify {parent} {col}"),
                 up: format!(
                     "SELECT count(*) FROM {parent} \
-                     WHERE ({col} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
-                        OR ({col} IS NOT NULL AND {dst} <> {flip}({col}))",
+      WHERE ({col} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
+      OR ({col} IS NOT NULL AND {dst} <> {flip}({col}))",
                     parent = parent,
                     col = col,
                     dst = dst,
@@ -1667,8 +1667,8 @@ fn emit_verification_statements_with_mode(
                 ),
                 up: format!(
                     "SELECT count(*) FROM {tbl} \
-                     WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
-                        OR ({src} IS NOT NULL AND {dst} <> {flip}({src}))",
+      WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
+      OR ({src} IS NOT NULL AND {dst} <> {flip}({src}))",
                     tbl = child.table,
                     src = child.fk_column,
                     dst = dst,
@@ -1705,8 +1705,8 @@ fn emit_verification_statements_with_mode(
                 label: format!("PkFlipVerify {tbl} {col}", tbl = jt.table, col = pair.col),
                 up: format!(
                     "SELECT count(*) FROM {tbl} \
-                     WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
-                        OR ({src} IS NOT NULL AND {dst} <> {flip}({src}))",
+      WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
+      OR ({src} IS NOT NULL AND {dst} <> {flip}({src}))",
                     tbl = jt.table,
                     src = pair.col,
                     dst = dst,
@@ -1758,7 +1758,7 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
                 label: format!("PkFlipAddFk {parent} {col}"),
                 up: format!(
                     "ALTER TABLE {parent} ADD CONSTRAINT {parent}_{col}{suffix}_fkey \
-                     FOREIGN KEY ({col}{suffix}) REFERENCES {parent}(id{suffix}){cycle} NOT VALID",
+      FOREIGN KEY ({col}{suffix}) REFERENCES {parent}(id{suffix}){cycle} NOT VALID",
                     parent = parent,
                     col = col,
                     suffix = SHADOW_SUFFIX,
@@ -1802,7 +1802,7 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
             ),
             up: format!(
                 "ALTER TABLE {tbl} ADD CONSTRAINT {tbl}_{dst}_fkey \
-                 FOREIGN KEY ({dst}) REFERENCES {parent}(id{suffix}){cycle} NOT VALID",
+     FOREIGN KEY ({dst}) REFERENCES {parent}(id{suffix}){cycle} NOT VALID",
                 tbl = child.table,
                 dst = dst,
                 parent = parent,
@@ -1847,9 +1847,9 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
             } else {
                 jt.fk_to_partner_table.clone().expect(
                     "PkFlipJoinTable invariant: fk_to_partner_table is Some \
-                     whenever fk_to_partner_column is Some; jt_shadow_pairs \
-                     only emits a partner-side pair when fk_to_partner_column \
-                     is Some",
+      whenever fk_to_partner_column is Some; jt_shadow_pairs \
+      only emits a partner-side pair when fk_to_partner_column \
+      is Some",
                 )
             };
             // Per-FK deferrability on segment-3b NOT VALID
@@ -1873,7 +1873,7 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
                 label: format!("PkFlipAddFk {tbl} {col}", tbl = jt.table, col = pair.col),
                 up: format!(
                     "ALTER TABLE {tbl} ADD CONSTRAINT {tbl}_{dst}_fkey \
-                     FOREIGN KEY ({dst}) REFERENCES {target}(id{suffix}){deferrable} NOT VALID",
+      FOREIGN KEY ({dst}) REFERENCES {target}(id{suffix}){deferrable} NOT VALID",
                     tbl = jt.table,
                     dst = dst,
                     target = target,
@@ -1952,21 +1952,21 @@ fn emit_concurrent_index_statements_with_mode(
     {
         for col in &self_fk.fk_columns {
             out.push(OperationSql {
-                label: format!("PkFlipConcurrentIndex {parent} {col}"),
-                up: format!(
-                    "CREATE INDEX CONCURRENTLY idx_{parent}_{col}{suffix} ON {parent} ({col}{suffix})",
-                    parent = parent,
-                    col = col,
-                    suffix = SHADOW_SUFFIX,
-                ),
-                down: format!(
-                    "DROP INDEX IF EXISTS idx_{parent}_{col}{suffix}",
-                    parent = parent,
-                    col = col,
-                    suffix = SHADOW_SUFFIX,
-                ),
-                lossy: None,
-            });
+    label: format!("PkFlipConcurrentIndex {parent} {col}"),
+    up: format!(
+     "CREATE INDEX CONCURRENTLY idx_{parent}_{col}{suffix} ON {parent} ({col}{suffix})",
+     parent = parent,
+     col = col,
+     suffix = SHADOW_SUFFIX,
+    ),
+    down: format!(
+     "DROP INDEX IF EXISTS idx_{parent}_{col}{suffix}",
+     parent = parent,
+     col = col,
+     suffix = SHADOW_SUFFIX,
+    ),
+    lossy: None,
+   });
         }
     }
 
@@ -2135,7 +2135,7 @@ fn emit_not_null_proof(group: &PkTypeFlipGroup) -> OperationSql {
     let _ = writeln!(
         up,
         "ALTER TABLE {parent} ADD CONSTRAINT {parent}_id{suffix}_nn \
-         CHECK (id{suffix} IS NOT NULL) NOT VALID;",
+   CHECK (id{suffix} IS NOT NULL) NOT VALID;",
         parent = parent,
         suffix = SHADOW_SUFFIX,
     );
@@ -2167,7 +2167,7 @@ fn emit_not_null_proof(group: &PkTypeFlipGroup) -> OperationSql {
         let _ = writeln!(
             up,
             "ALTER TABLE {tbl} ADD CONSTRAINT {tbl}_{dst}_nn \
-             CHECK ({dst} IS NOT NULL) NOT VALID;",
+    CHECK ({dst} IS NOT NULL) NOT VALID;",
             tbl = child.table,
             dst = dst,
         );
@@ -2260,11 +2260,11 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
 
     let down = format!(
         "-- POINT OF NO RETURN — segment 5 (cutover) for {parent} cannot be\n\
-         -- reversed by `down` SQL alone. Rollback requires an inverse\n\
-         -- migration: add the previous-direction column back, install a\n\
-         -- reverse autofill trigger, re-run heeranjid_bulk_backfill, and\n\
-         -- run a second cutover. Plan that contingency BEFORE running\n\
-         -- the forward cutover.",
+   -- reversed by `down` SQL alone. Rollback requires an inverse\n\
+   -- migration: add the previous-direction column back, install a\n\
+   -- reverse autofill trigger, re-run heeranjid_bulk_backfill, and\n\
+   -- run a second cutover. Plan that contingency BEFORE running\n\
+   -- the forward cutover.",
         parent = parent,
     );
 
@@ -2276,7 +2276,7 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
             kind: LossyRollbackKind::PkTypeFlipPostCutover,
             detail: format!(
                 "POINT OF NO RETURN: cutover for `{parent}` removes the prior PK column \
-                 and trigger; rollback requires an inverse migration",
+     and trigger; rollback requires an inverse migration",
             ),
         }),
     }
@@ -2321,11 +2321,11 @@ fn cutover_add_fk_constraint(
     let _ = writeln!(
         up,
         "ALTER TABLE {table} ADD CONSTRAINT {constraint} \
-         FOREIGN KEY ({column}) REFERENCES {target}({target_column}){trailing_clause};",
+   FOREIGN KEY ({column}) REFERENCES {target}({target_column}){trailing_clause};",
     );
 }
 
-/// Phase 1: drop every old FK pointing at the parent.
+/// : drop every old FK pointing at the parent.
 fn cutover_phase_drop_old_fks(group: &PkTypeFlipGroup, up: &mut String) {
     let parent = group.parent_table.as_str();
     for child in &group.children {
@@ -2350,7 +2350,7 @@ fn cutover_phase_drop_old_fks(group: &PkTypeFlipGroup, up: &mut String) {
     }
 }
 
-/// Phase 2: promote the parent — swap shadow PK to live PK.
+/// : promote the parent — swap shadow PK to live PK.
 fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
     let parent = group.parent_table.as_str();
     let p_family = parent_family(group);
@@ -2365,7 +2365,7 @@ fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
     let _ = writeln!(
         up,
         "ALTER TABLE {parent} ADD CONSTRAINT {parent}_pkey \
-         PRIMARY KEY USING INDEX idx_{parent}_id{suffix};",
+   PRIMARY KEY USING INDEX idx_{parent}_id{suffix};",
         parent = parent,
         suffix = SHADOW_SUFFIX,
     );
@@ -2450,7 +2450,7 @@ fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
     }
 }
 
-/// Phase 3: finalise every child — drop old FK column, drop the
+/// : finalise every child — drop old FK column, drop the
 /// `_desc_fkey` shadow constraint that segment 3b VALIDATEd, rename
 /// shadow → live, ADD CONSTRAINT pointing at the parent's new `id`.
 /// **Why drop the `_desc_fkey` constraint before re-adding the
@@ -2545,7 +2545,7 @@ fn render_deferrable_clause(deferrable: bool, initially_deferred: bool) -> &'sta
     }
 }
 
-/// Phase 4: finalise every join table this group owns. Under
+/// : finalise every join table this group owns. Under
 /// Option A + cross-flipping in a multi-parent cluster this fires
 /// only on the winner; the loser's `join_tables` list is empty
 /// after the merger transferred ownership, so this no-ops there.
@@ -2608,9 +2608,9 @@ fn cutover_phase_finalise_join_tables(group: &PkTypeFlipGroup, up: &mut String) 
             } else {
                 jt.fk_to_partner_table.clone().expect(
                     "PkFlipJoinTable invariant: fk_to_partner_table is Some \
-                     whenever fk_to_partner_column is Some; jt_shadow_pairs \
-                     only emits a partner-side pair when fk_to_partner_column \
-                     is Some",
+      whenever fk_to_partner_column is Some; jt_shadow_pairs \
+      only emits a partner-side pair when fk_to_partner_column \
+      is Some",
                 )
             };
             let (def, init_def) = if is_parent_side {
@@ -2766,11 +2766,11 @@ fn emit_partitioned_backfill_only(
     let _ = writeln!(
         up,
         "-- Partitioned parent: invoke the backfill primitive once per leaf\n\
-         -- partition. The runner enumerates leaves from pg_inherits at apply\n\
-         -- time and emits one statement per leaf in deterministic\n\
-         -- regclass::text order, replacing the <EACH_LEAF_TABLE> placeholder\n\
-         -- with the concrete partition name. Operators hand-running this\n\
-         -- file MUST expand the placeholder themselves before executing.",
+   -- partition. The runner enumerates leaves from pg_inherits at apply\n\
+   -- time and emits one statement per leaf in deterministic\n\
+   -- regclass::text order, replacing the <EACH_LEAF_TABLE> placeholder\n\
+   -- with the concrete partition name. Operators hand-running this\n\
+   -- file MUST expand the placeholder themselves before executing.",
     );
     // Direction-aware body: forward dispatches to the shipped CALL,
     // reverse uses the hand-rolled DO block.
@@ -2786,7 +2786,7 @@ fn emit_partitioned_backfill_only(
         label: format!("PkFlipPartitionedBackfill {parent}"),
         up,
         down: "-- Partitioned backfill is idempotent under `WHERE dst IS NULL`;\n\
-               -- the down side has no inverse beyond dropping the shadow column."
+    -- the down side has no inverse beyond dropping the shadow column."
             .to_string(),
         lossy: None,
     }
@@ -2794,7 +2794,7 @@ fn emit_partitioned_backfill_only(
 
 /// Emit the partitioned-parent verification SELECT as a standalone
 /// `PkFlipVerify` step. The runner's transactional-segment dispatcher
-/// matches the `PkFlipVerify <table> ...` label prefix, runs the
+/// matches the `PkFlipVerify <table>...` label prefix, runs the
 /// statement as `query_one`, and surfaces
 /// [`super::runner::RunnerError::PkFlipVerificationFailed`] on any
 /// non-zero count. The SELECT runs against the partitioned parent and
@@ -2830,8 +2830,8 @@ fn emit_partitioned_indexes(
     let mut down = String::new();
     let _ = writeln!(
         up,
-        "CREATE UNIQUE INDEX {parent}_{pkey}_id{suffix}_idx\n  \
-         ON ONLY {parent} ({pkey}, id{suffix});",
+        "CREATE UNIQUE INDEX {parent}_{pkey}_id{suffix}_idx\n \
+   ON ONLY {parent} ({pkey}, id{suffix});",
         parent = parent,
         pkey = part_col,
         suffix = SHADOW_SUFFIX,
@@ -2839,11 +2839,11 @@ fn emit_partitioned_indexes(
     let _ = writeln!(
         up,
         "-- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_{pkey}_id{suffix}_idx\n\
-         --             ON <leaf> ({pkey}, id{suffix});\n\
-         -- Then ALTER INDEX {parent}_{pkey}_id{suffix}_idx ATTACH PARTITION\n\
-         --             <leaf>_{pkey}_id{suffix}_idx;\n\
-         -- The runner enumerates leaves from pg_inherits and emits these\n\
-         -- per-leaf statements at apply time.",
+   --    ON <leaf> ({pkey}, id{suffix});\n\
+   -- Then ALTER INDEX {parent}_{pkey}_id{suffix}_idx ATTACH PARTITION\n\
+   --    <leaf>_{pkey}_id{suffix}_idx;\n\
+   -- The runner enumerates leaves from pg_inherits and emits these\n\
+   -- per-leaf statements at apply time.",
         pkey = part_col,
         suffix = SHADOW_SUFFIX,
         parent = parent,
@@ -2891,8 +2891,8 @@ fn emit_partitioned_self_fk_indexes(group: &PkTypeFlipGroup) -> Vec<OperationSql
         let mut up = String::new();
         let _ = writeln!(
             up,
-            "CREATE INDEX idx_{parent}_{col}{suffix}\n  \
-             ON ONLY {parent} ({col}{suffix});",
+            "CREATE INDEX idx_{parent}_{col}{suffix}\n \
+    ON ONLY {parent} ({col}{suffix});",
             parent = parent,
             col = col,
             suffix = SHADOW_SUFFIX,
@@ -2900,11 +2900,11 @@ fn emit_partitioned_self_fk_indexes(group: &PkTypeFlipGroup) -> Vec<OperationSql
         let _ = writeln!(
             up,
             "-- Per leaf: CREATE INDEX CONCURRENTLY <leaf>_{col}{suffix}_idx\n\
-             --             ON <leaf> ({col}{suffix});\n\
-             -- Then ALTER INDEX idx_{parent}_{col}{suffix} ATTACH PARTITION\n\
-             --             <leaf>_{col}{suffix}_idx;\n\
-             -- The runner enumerates leaves from pg_inherits and emits these\n\
-             -- per-leaf statements at apply time.",
+    --    ON <leaf> ({col}{suffix});\n\
+    -- Then ALTER INDEX idx_{parent}_{col}{suffix} ATTACH PARTITION\n\
+    --    <leaf>_{col}{suffix}_idx;\n\
+    -- The runner enumerates leaves from pg_inherits and emits these\n\
+    -- per-leaf statements at apply time.",
             parent = parent,
             col = col,
             suffix = SHADOW_SUFFIX,
@@ -2927,7 +2927,7 @@ fn emit_partitioned_self_fk_indexes(group: &PkTypeFlipGroup) -> Vec<OperationSql
 
 // `emit_partitioned_cutover` (the parent-only cutover for a
 // partitioned flip without cascade members) was folded into
-// [`emit_partitioned_cutover_with_cascade`] as part of . The
+// [`emit_partitioned_cutover_with_cascade`] as part of. The
 // composed emitter handles both the cascade-empty and
 // cascade-populated cases — when `group.children`, `self_fk`,
 // `join_tables`, and `cycles` are all empty the body matches the
@@ -3470,7 +3470,7 @@ mod tests {
         let nfk = whitespace_normalize(&fk_text);
         assert!(nfk.contains(
             "ALTER TABLE c ADD CONSTRAINT c_p_id_desc_fkey \
-             FOREIGN KEY (p_id_desc) REFERENCES tbl(id_desc) NOT VALID"
+    FOREIGN KEY (p_id_desc) REFERENCES tbl(id_desc) NOT VALID"
         ));
         assert!(nfk.contains("ALTER TABLE c VALIDATE CONSTRAINT c_p_id_desc_fkey"));
 
@@ -3490,8 +3490,8 @@ mod tests {
         assert!(ncut.contains("ALTER TABLE c DROP CONSTRAINT c_p_id_fkey;"));
         // Re-add of the FK with original cascade discipline.
         assert!(ncut.contains(
-            "ALTER TABLE c ADD CONSTRAINT c_p_id_fkey FOREIGN KEY (p_id) REFERENCES tbl(id) ON DELETE RESTRICT;"
-        ));
+   "ALTER TABLE c ADD CONSTRAINT c_p_id_fkey FOREIGN KEY (p_id) REFERENCES tbl(id) ON DELETE RESTRICT;"
+  ));
     }
 
     // ── §6 self-FK ───────────────────────────────────────────────────
@@ -3533,7 +3533,7 @@ mod tests {
         );
         assert!(nfk.contains(
             "ALTER TABLE nodes ADD CONSTRAINT nodes_parent_id_desc_fkey \
-             FOREIGN KEY (parent_id_desc) REFERENCES nodes(id_desc) NOT VALID"
+    FOREIGN KEY (parent_id_desc) REFERENCES nodes(id_desc) NOT VALID"
         ));
         let cut = emit_cutover(&group);
         let ncut = whitespace_normalize(&cut.up);
@@ -3544,8 +3544,8 @@ mod tests {
         ));
         assert!(ncut.contains("ALTER TABLE nodes RENAME COLUMN parent_id_desc TO parent_id;"));
         assert!(ncut.contains(
-            "ALTER TABLE nodes ADD CONSTRAINT nodes_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES nodes(id);"
-        ));
+   "ALTER TABLE nodes ADD CONSTRAINT nodes_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES nodes(id);"
+  ));
     }
 
     // ── §7 join tables ───────────────────────────────────────────────
@@ -3747,7 +3747,7 @@ mod tests {
             },
         });
         let segments = build_segments(&group).expect("build_segments");
-        // Index segment is at position 3 ([prep, backfill, verify, index, ...]).
+        // Index segment is at position 3 ([prep, backfill, verify, index,...]).
         let index_segment = &segments[3];
         let index_bodies: Vec<&str> = index_segment
             .statements
@@ -3763,11 +3763,11 @@ mod tests {
         );
         // Must use the ON ONLY partitioned-parent form.
         assert!(
-            n.contains(
-                "CREATE INDEX idx_events_origin_event_id_desc ON ONLY events (origin_event_id_desc);"
-            ),
-            "self-FK index must use ON ONLY parent form; got: {n}"
-        );
+   n.contains(
+    "CREATE INDEX idx_events_origin_event_id_desc ON ONLY events (origin_event_id_desc);"
+   ),
+   "self-FK index must use ON ONLY parent form; got: {n}"
+  );
         // Must carry the partitioned self-FK label so the runner
         // expands to per-leaf CONCURRENTLY + ATTACH at apply time.
         let labels: Vec<&str> = index_segment
@@ -3943,7 +3943,7 @@ mod tests {
     /// anchor tests further down assert the fixture carries each
     /// load-bearing playbook substring (e.g. `CALL
     /// heeranjid_bulk_backfill`, `CREATE UNIQUE INDEX
-    /// CONCURRENTLY`, `ALTER TABLE ... ALTER COLUMN ... SET NOT
+    /// CONCURRENTLY`, `ALTER TABLE... ALTER COLUMN... SET NOT
     /// NULL`) so emitter divergence from the playbook is caught
     /// even when the new emitter output happens to byte-match the
     /// fixture (which would be impossible — the emitter generated
@@ -4129,7 +4129,7 @@ mod tests {
         assert_eq!(
             actual, expected,
             "whole-plan §3 forward output drifted from fixture; \
-             update tests/fixtures/pk_flip_emitter_output_section_3.sql or fix emitter",
+    update tests/fixtures/pk_flip_emitter_output_section_3.sql or fix emitter",
         );
     }
 
@@ -4151,7 +4151,7 @@ mod tests {
         assert_eq!(
             actual, expected,
             "whole-plan §3 reverse output drifted from fixture; \
-             update tests/fixtures/pk_flip_emitter_output_section_3_reverse.sql or fix emitter",
+    update tests/fixtures/pk_flip_emitter_output_section_3_reverse.sql or fix emitter",
         );
     }
 
@@ -4444,8 +4444,8 @@ mod tests {
         // Child preparation: shadow column on c, NOT VALID FK.
         assert!(fx.contains("ALTER TABLE c ADD COLUMN p_id_desc bigint"));
         assert!(fx.contains(
-            "ADD CONSTRAINT c_p_id_desc_fkey FOREIGN KEY (p_id_desc) REFERENCES parent(id_desc) NOT VALID"
-        ));
+   "ADD CONSTRAINT c_p_id_desc_fkey FOREIGN KEY (p_id_desc) REFERENCES parent(id_desc) NOT VALID"
+  ));
         // Child backfill + validate.
         assert!(
             fx.contains("CALL heeranjid_bulk_backfill('c', 'p_id', 'p_id_desc', 'heer', 10000)")
@@ -4477,8 +4477,8 @@ mod tests {
         assert!(fx.contains("zzz_nodes_autofill_desc"));
         // Self-FK NOT VALID.
         assert!(fx.contains(
-            "ADD CONSTRAINT nodes_parent_id_desc_fkey FOREIGN KEY (parent_id_desc) REFERENCES nodes(id_desc) NOT VALID"
-        ));
+   "ADD CONSTRAINT nodes_parent_id_desc_fkey FOREIGN KEY (parent_id_desc) REFERENCES nodes(id_desc) NOT VALID"
+  ));
         // Both backfills.
         assert!(
             fx.contains("CALL heeranjid_bulk_backfill('nodes', 'id', 'id_desc', 'heer', 10000)")
@@ -4515,8 +4515,8 @@ mod tests {
         assert!(fx.contains("ALTER TABLE book_tags ADD COLUMN tag_id_desc bigint"));
         assert!(fx.contains("zzz_book_tags_autofill_desc"));
         assert!(fx.contains(
-            "ADD CONSTRAINT book_tags_tag_id_desc_fkey FOREIGN KEY (tag_id_desc) REFERENCES tags(id_desc) NOT VALID"
-        ));
+   "ADD CONSTRAINT book_tags_tag_id_desc_fkey FOREIGN KEY (tag_id_desc) REFERENCES tags(id_desc) NOT VALID"
+  ));
         // Both backfills.
         assert!(
             fx.contains("CALL heeranjid_bulk_backfill('tags', 'id', 'id_desc', 'heer', 10000)")
@@ -4614,7 +4614,7 @@ mod tests {
     // from what the playbook actually says — a regression that
     // would slip past the substring anchors because both sides
     // agree on the (wrong) text.
-    // **Path probe + skip.** The playbook .md file is NOT
+    // **Path probe + skip.** The playbook.md file is NOT
     // distributed with the djogi crate — it lives in the sibling
     // `HeeRanjID-reference` repo (or at the workspace root via a
     // symlink, per the project memory rule). When the test runs
@@ -4628,13 +4628,13 @@ mod tests {
     /// `CARGO_MANIFEST_DIR` (the djogi crate). Tries two well-
     /// known locations:
     /// 1. `<workspace>/HeeRanjID-reference/docs/migrations/asc-to-desc.md`
-    ///    the symlink at the project root (per project
-    ///    memory rule).
+    /// the symlink at the project root (per project
+    /// memory rule).
     /// 2. `<workspace>/../HeeRanjID/docs/migrations/asc-to-desc.md`
-    ///    the sibling-workspace layout (per CLAUDE.md
-    ///    "Workspace Layout" section).
-    ///    Returns `None` if neither path resolves to an existing
-    ///    file. Caller skips the test with a clear message.
+    /// the sibling-workspace layout (per CLAUDE.md
+    /// "Workspace Layout" section).
+    /// Returns `None` if neither path resolves to an existing
+    /// file. Caller skips the test with a clear message.
     fn locate_playbook_md() -> Option<std::path::PathBuf> {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         // djogi/Cargo.toml → workspace root is one up.
@@ -4648,19 +4648,19 @@ mod tests {
         candidates.into_iter().find(|p| p.is_file())
     }
 
-    /// Locate the SQL block at `start_line .. end_line` in the
-    /// playbook .md file (1-based inclusive line numbers). The
+    /// Locate the SQL block at `start_line.. end_line` in the
+    /// playbook.md file (1-based inclusive line numbers). The
     /// test fixture must equal this excerpt byte-for-byte.
     fn extract_playbook_lines(md: &str, start_line: usize, end_line: usize) -> String {
         md.lines()
-            .skip(start_line - 1)
-            .take(end_line - start_line + 1)
-            .collect::<Vec<_>>()
-            .join("\n")
-            // Trailing newline matches the fixture file's UNIX
-            // line ending convention (every `cat` of an SQL
-            // fixture appends one).
-            + "\n"
+  .skip(start_line - 1)
+  .take(end_line - start_line + 1)
+  .collect::<Vec<_>>()
+  .join("\n")
+   // Trailing newline matches the fixture file's UNIX
+   // line ending convention (every `cat` of an SQL
+   // fixture appends one).
+   + "\n"
     }
 
     /// Run a single canonical-fixture byte-equality check. The
@@ -4682,13 +4682,13 @@ mod tests {
             // signal readable.
             panic!(
                 "Canonical fixture for {section_label} \
-                 drifted from playbook text (lines {start_line}..={end_line}).\n\
-                 Either the playbook edited a load-bearing SQL block — update\n\
-                 the matching `playbook_canonical_section_*.sql` fixture to\n\
-                 the new excerpt — or the fixture itself drifted, in which\n\
-                 case revert the fixture.\n\n\
-                 ---- playbook excerpt ({start_line}..={end_line}) ----\n{excerpt}\n\
-                 ---- fixture ----\n{fixture_bytes}",
+     drifted from playbook text (lines {start_line}..={end_line}).\n\
+     Either the playbook edited a load-bearing SQL block — update\n\
+     the matching `playbook_canonical_section_*.sql` fixture to\n\
+     the new excerpt — or the fixture itself drifted, in which\n\
+     case revert the fixture.\n\n\
+     ---- playbook excerpt ({start_line}..={end_line}) ----\n{excerpt}\n\
+     ---- fixture ----\n{fixture_bytes}",
             );
         }
     }
@@ -4697,10 +4697,10 @@ mod tests {
     fn playbook_canonical_section_3_locks_against_silent_edits() {
         let Some(md_path) = locate_playbook_md() else {
             eprintln!(
-                "[skip] B-5r canonical fixture §3 — playbook asc-to-desc.md not\n\
-                 reachable from djogi/. Set up the HeeRanjID-reference symlink at\n\
-                 the workspace root (or the sibling HeeRanjID workspace) to\n\
-                 enable this lock.",
+                "[skip]r canonical fixture §3 — playbook asc-to-desc.md not\n\
+     reachable from djogi/. Set up the HeeRanjID-reference symlink at\n\
+     the workspace root (or the sibling HeeRanjID workspace) to\n\
+     enable this lock.",
             );
             return;
         };
@@ -4720,7 +4720,7 @@ mod tests {
     #[test]
     fn playbook_canonical_section_4_locks_against_silent_edits() {
         let Some(md_path) = locate_playbook_md() else {
-            eprintln!("[skip] B-5r §4 — see §3 skip note for setup");
+            eprintln!("[skip]r §4 — see §3 skip note for setup");
             return;
         };
         let md = std::fs::read_to_string(&md_path).expect("read playbook");
@@ -4737,7 +4737,7 @@ mod tests {
     #[test]
     fn playbook_canonical_section_6_locks_against_silent_edits() {
         let Some(md_path) = locate_playbook_md() else {
-            eprintln!("[skip] B-5r §6 — see §3 skip note for setup");
+            eprintln!("[skip]r §6 — see §3 skip note for setup");
             return;
         };
         let md = std::fs::read_to_string(&md_path).expect("read playbook");
@@ -4754,7 +4754,7 @@ mod tests {
     #[test]
     fn playbook_canonical_section_8_locks_against_silent_edits() {
         let Some(md_path) = locate_playbook_md() else {
-            eprintln!("[skip] B-5r §8 — see §3 skip note for setup");
+            eprintln!("[skip]r §8 — see §3 skip note for setup");
             return;
         };
         let md = std::fs::read_to_string(&md_path).expect("read playbook");
@@ -4775,7 +4775,7 @@ mod tests {
     #[test]
     fn playbook_canonical_section_9_locks_against_silent_edits() {
         let Some(md_path) = locate_playbook_md() else {
-            eprintln!("[skip] B-5r §9 — see §3 skip note for setup");
+            eprintln!("[skip]r §9 — see §3 skip note for setup");
             return;
         };
         let md = std::fs::read_to_string(&md_path).expect("read playbook");

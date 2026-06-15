@@ -9,7 +9,7 @@
 //! 3. Node ID range: `0..=511` (HeerId range).
 //! 4. Missing identity for non-dev operations refuses with exit code 2.
 //! 5. `--single-node-dev` is refused in production profile or
-//!    `DJOGI_ENV=production`.
+//! `DJOGI_ENV=production`.
 
 use std::process::ExitCode;
 
@@ -44,7 +44,7 @@ impl std::fmt::Display for CliIdentityResolveError {
             Self::ConflictingFlags => write!(
                 f,
                 "--node-id and --single-node-dev are mutually exclusive; \
-                 supply only one"
+     supply only one"
             ),
             Self::NodeIdOutOfRange { value } => write!(
                 f,
@@ -54,17 +54,17 @@ impl std::fmt::Display for CliIdentityResolveError {
             Self::MissingNodeIdentity => write!(
                 f,
                 "missing node identity for this operation — \
-                 supply --node-id <id> or --single-node-dev"
+     supply --node-id <id> or --single-node-dev"
             ),
             Self::SingleNodeDevRefusedInProduction => write!(
                 f,
                 "--single-node-dev is not permitted in production; \
-                 use --node-id with a registered cluster node identity"
+     use --node-id with a registered cluster node identity"
             ),
             Self::InvalidEnvFormat { value } => write!(
                 f,
                 "HEER_NODE_ID value {:?} is not a valid integer; \
-                 supply a numeric node ID or unset the variable",
+     supply a numeric node ID or unset the variable",
                 value
             ),
         }
@@ -97,11 +97,11 @@ fn is_production_env() -> bool {
 /// 1. If both `--node-id` and `--single-node-dev` are set → `ConflictingFlags`.
 /// 2. If `--node-id` is set, validate range `0..=511` → `Selected(id)`.
 /// 3. If `--single-node-dev` is set:
-///    - Refuse in production profile or `DJOGI_ENV=production` → `SingleNodeDevRefusedInProduction`.
-///    - Otherwise → `SingleNodeDev`.
+/// - Refuse in production profile or `DJOGI_ENV=production` → `SingleNodeDevRefusedInProduction`.
+/// - Otherwise → `SingleNodeDev`.
 /// 4. Fall back to `HEER_NODE_ID` env var:
-///    - If present and valid → `Selected(parsed)`.
-///    - If present but out of range or unparseable → refusal.
+/// - If present and valid → `Selected(parsed)`.
+/// - If present but out of range or unparseable → refusal.
 /// 5. If no identity resolved and operation requires it → `MissingNodeIdentity`.
 pub fn resolve_identity(
     cli_node_id: Option<u32>,

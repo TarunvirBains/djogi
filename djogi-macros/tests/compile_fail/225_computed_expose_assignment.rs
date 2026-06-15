@@ -16,9 +16,9 @@ use djogi::prelude::*;
 #[model(table = "phase85_225_expose_asgn_vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub base_price: f64,
-    #[computed(sql = "base_price * 2", expose = "public")]
-    pub double_price: f64,
+ pub base_price: f64,
+ #[computed(sql = "base_price * 2", expose = "public")]
+ pub double_price: f64,
 }
 
 fn main() {}

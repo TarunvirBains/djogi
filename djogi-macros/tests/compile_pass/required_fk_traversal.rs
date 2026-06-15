@@ -23,17 +23,17 @@ use djogi::query::internal::Condition;
 #[model(table = "phase7_zero2_t8_depts")]
 #[derive(Debug, Clone)]
 pub struct Dept {
-    #[field(expose(public))]
-    pub name: String,
+ #[field(expose(public))]
+ pub name: String,
 }
 
 #[model(table = "phase7_zero2_t8_emps", no_default)]
 #[derive(Debug, Clone)]
 pub struct Emp {
-    #[field(expose(public))]
-    pub display_name: String,
-    #[field(expose(public -> DeptPublic))]
-    pub department: ForeignKey<Dept>,
+ #[field(expose(public))]
+ pub display_name: String,
+ #[field(expose(public -> DeptPublic))]
+ pub department: ForeignKey<Dept>,
 }
 
 /// Proves `.department().name().eq(…)` composes through visage-scoped Fields.
@@ -42,17 +42,17 @@ pub struct Emp {
 /// leaf comparison, all under the source-model `FieldRef<Dept, String>`.
 #[allow(dead_code)]
 fn traversal_composes(e: &EmpPublicFields) -> Condition {
-    e.department().name().eq("Engineering".to_string())
+ e.department().name().eq("Engineering".to_string())
 }
 
 fn main() {
-    // Root-level scalar accessor still composes (sanity check).
-    let fields = EmpPublicFields::default();
-    let _own: Condition = fields.display_name().eq("Ada".to_string());
+ // Root-level scalar accessor still composes (sanity check).
+ let fields = EmpPublicFields::default();
+ let _own: Condition = fields.display_name().eq("Ada".to_string());
 
-    // Required-FK traversal composes via the helper. Reaching this line
-    // means rustc resolved every method on the chain — that is the
-    // compile-pass gate T8 needs.
-    let _traversed: Condition = traversal_composes(&fields);
+ // Required-FK traversal composes via the helper. Reaching this line
+ // means rustc resolved every method on the chain — that is the
+ // compile-pass gate T8 needs.
+ let _traversed: Condition = traversal_composes(&fields);
 
 }

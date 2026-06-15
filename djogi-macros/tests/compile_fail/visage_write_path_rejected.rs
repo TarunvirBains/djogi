@@ -14,17 +14,17 @@ use djogi::prelude::*;
 #[model(table = "x")]
 #[derive(Debug, Clone)]
 pub struct X {
-    #[field(expose(public))]
-    pub name: String,
+ #[field(expose(public))]
+ pub name: String,
 }
 
 async fn _probe_visage_write_path(ctx: &mut DjogiContext) {
-    // Visage queries are read-only — `bulk_create` is not emitted on
-    // the visage struct. The compiler reports it as missing. The
-    // function form (vs an `async {}` block with `todo!()`) avoids the
-    // `unreachable_code` warning that fires after a diverging
-    // expression, which would otherwise drift the stored stderr.
-    let _ = XPublic::bulk_create(ctx, ::std::vec![]).await;
+ // Visage queries are read-only — `bulk_create` is not emitted on
+ // the visage struct. The compiler reports it as missing. The
+ // function form (vs an `async {}` block with `todo!()`) avoids the
+ // `unreachable_code` warning that fires after a diverging
+ // expression, which would otherwise drift the stored stderr.
+ let _ = XPublic::bulk_create(ctx, ::std::vec![]).await;
 }
 
 fn main() {}

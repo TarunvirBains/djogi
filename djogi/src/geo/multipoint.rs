@@ -4,13 +4,13 @@
 //! # Wire format
 //! EWKB layout (little-endian, SRID 4326):
 //! ```text
-//! Offset  Size  Content
-//!      0     1  Endianness marker: 0x01 (little-endian)
-//!      1     4  Geometry type word: 0x20000004 (MultiPoint | SRID flag), LE
-//!      5     4  SRID 4326, LE  → [0xE6, 0x10, 0x00, 0x00]
-//!      9     4  Number of sub-points (u32 LE)
-//!     13  21*n  Sub-points: each is a headerless EWKB point —
-//!               [endian_byte(1), point_type_word_no_srid(4), lon_f64_LE(8), lat_f64_LE(8)]
+//! Offset Size Content
+//!  0  1 Endianness marker: 0x01 (little-endian)
+//!  1  4 Geometry type word: 0x20000004 (MultiPoint | SRID flag), LE
+//!  5  4 SRID 4326, LE → [0xE6, 0x10, 0x00, 0x00]
+//!  9  4 Number of sub-points (u32 LE)
+//!  13 21*n Sub-points: each is a headerless EWKB point —
+//!    [endian_byte(1), point_type_word_no_srid(4), lon_f64_LE(8), lat_f64_LE(8)]
 //! ```
 //! Each sub-point carries its own endianness byte and type word (`0x00000001`,
 //! no SRID flag) but no SRID — the outer container holds the SRID for the
@@ -25,7 +25,7 @@ use crate::geo::{GeoError, GeoPoint, ewkb};
 /// An unordered collection of at least 1 `GeoPoint`.
 /// Stored as `GEOGRAPHY(MultiPoint, 4326)` in Postgres.
 /// # Display
-/// `Display` emits `MULTIPOINT((<lon> <lat>), ...)` per OGC WKT.
+/// `Display` emits `MULTIPOINT((<lon> <lat>),...)` per OGC WKT.
 /// # Serde
 /// Serializes as a JSON array of `{"lat": f64, "lon": f64}` objects.
 /// Deserialization validates via `MultiPoint::new`, so an empty array yields a
@@ -70,7 +70,7 @@ impl MultiPoint {
 // ── Display (WKT) ─────────────────────────────────────────────────────────────
 
 impl fmt::Display for MultiPoint {
-    /// Emit `MULTIPOINT((<lon> <lat>), ...)` per OGC WKT.
+    /// Emit `MULTIPOINT((<lon> <lat>),...)` per OGC WKT.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("MULTIPOINT(")?;
         for (i, p) in self.points.iter().enumerate() {

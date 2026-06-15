@@ -13,25 +13,25 @@ use std::pin::Pin;
 pub struct MyProvider;
 
 impl DjogiAuth for MyProvider {
-    fn authenticate<'a>(
-        &'a self,
-        token: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>> {
-        let _ = token;
-        Box::pin(async { Err(AuthError::InvalidToken) })
-    }
+ fn authenticate<'a>(
+  &'a self,
+  token: &'a str,
+ ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>> {
+  let _ = token;
+  Box::pin(async { Err(AuthError::InvalidToken) })
+ }
 
-    fn verify<'a>(
-        &'a self,
-        ctx: &'a AuthContext,
-        action: &'a dyn std::any::Any,
-    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
-        let _ = (ctx, action);
-        Box::pin(async { Ok(()) })
-    }
+ fn verify<'a>(
+  &'a self,
+  ctx: &'a AuthContext,
+  action: &'a dyn std::any::Any,
+ ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
+  let _ = (ctx, action);
+  Box::pin(async { Ok(()) })
+ }
 }
 
 fn main() {
-    // Object-safe: can be used behind a trait object.
-    let _: std::sync::Arc<dyn DjogiAuth> = std::sync::Arc::new(MyProvider);
+ // Object-safe: can be used behind a trait object.
+ let _: std::sync::Arc<dyn DjogiAuth> = std::sync::Arc::new(MyProvider);
 }

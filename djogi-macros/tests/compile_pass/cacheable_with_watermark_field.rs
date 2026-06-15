@@ -21,27 +21,27 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "phase8_t7_cacheable_with_watermark_rows",
-    watermark_field = "expires_at",
-    no_default,
+ table = "phase8_t7_cacheable_with_watermark_rows",
+ watermark_field = "expires_at",
+ no_default,
 )]
 #[derive(Debug, Clone)]
 pub struct WatermarkedRow {
-    pub label: String,
-    pub expires_at: ::djogi::types::DateTime,
+ pub label: String,
+ pub expires_at: ::djogi::types::DateTime,
 }
 
 // `DeltaSyncCacheable<Watermark = DateTime>` reachable on
 // `WatermarkedRow` proves the macro emitted the impl pointing at
 // `expires_at` (whose declared type is `DateTime`). The
-// `Watermark = ...` constraint binds at impl-resolution time, so a
+// `Watermark =...` constraint binds at impl-resolution time, so a
 // macro that emitted the wrong field's type would fail this check
 // at monomorphisation.
 fn _accept_delta_sync<
-    T: ::djogi::types::DeltaSyncCacheable<Watermark = ::djogi::types::DateTime>,
+ T: ::djogi::types::DeltaSyncCacheable<Watermark = ::djogi::types::DateTime>,
 >() {
 }
 
 fn main() {
-    _accept_delta_sync::<WatermarkedRow>();
+ _accept_delta_sync::<WatermarkedRow>();
 }

@@ -1,7 +1,7 @@
 error: `#[field(type_change_using = "")]` is not allowed — expression must be a non-empty SQL fragment. The string is emitted verbatim into the migration's `USING (<expr>)` clause; an empty literal produces invalid SQL that fails only at apply time.
-  --> $DIR/type_change_using_empty.rs:16:33
-   |
-16 |     #[field(type_change_using = "")]
-   |                                 ^^
+ --> $DIR/type_change_using_empty.rs:16:33
+ |
+16 |  #[field(type_change_using = "")]
+ |         ^^
 
 error: aborting due to 1 previous error

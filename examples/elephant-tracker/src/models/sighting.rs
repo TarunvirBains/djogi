@@ -3,19 +3,19 @@
 //! ## What this demonstrates
 //!
 //! - `GeoPoint` — spatial type with EWKB codec. The migration differ
-//!   emits a `GEOGRAPHY(Point, 4326)` column and a GiST index on it, so
-//!   the `cluster-sightings` and any `within_km` demos run on real index
-//!   plans rather than sequential scans.
+//! emits a `GEOGRAPHY(Point, 4326)` column and a GiST index on it, so
+//! the `cluster-sightings` and any `within_km` demos run on real index
+//! plans rather than sequential scans.
 //! - Model-level FTS on `notes` — adopters get an `@@`-style match
-//!   accelerator and a typed `SightingFields::search()` accessor without
-//!   touching tsvector boilerplate by hand.
+//! accelerator and a typed `SightingFields::search()` accessor without
+//! touching tsvector boilerplate by hand.
 //! - Transactional outbox — `#[model(... events)]` causes every
-//!   `Sighting::create` / `save` / `delete` to enqueue a row in
-//!   `sightings_outbox` inside the same transaction as the data write.
-//!   An external worker drains the queue into whatever downstream
-//!   consumer the operator wires up. The example does not run the worker.
+//! `Sighting::create` / `save` / `delete` to enqueue a row in
+//! `sightings_outbox` inside the same transaction as the data write.
+//! An external worker drains the queue into whatever downstream
+//! consumer the operator wires up. The example does not run the worker.
 //! - `no_default` — both `ForeignKey` and `GeoPoint` lack `Default`, so
-//!   the macro's `Default` derivation is suppressed.
+//! the macro's `Default` derivation is suppressed.
 //!
 //! Why no `created_at` field is declared explicitly — the `#[model]`
 //! macro injects `id`, `created_at`, and `updated_at` automatically.
@@ -27,11 +27,11 @@ use djogi::prelude::*;
 use time::OffsetDateTime;
 
 #[model(
-    table = "sightings",
-    pk = HeerId,
-    no_default,
-    events,
-    fts(source = "notes", dictionary = "english"),
+ table = "sightings",
+ pk = HeerId,
+ no_default,
+ events,
+ fts(source = "notes", dictionary = "english"),
 )]
 #[derive(Debug, Clone, Serialize)]
 pub struct Sighting {
@@ -45,7 +45,7 @@ pub struct Sighting {
 
     /// Denormalized herd FK — duplicates `elephant.herd_id` for query
     /// convenience. The mating-pairs demo's typed `Sighting::objects()
-    /// .group_by(|s| s.herd_id()).annotate(|s| s.location().convex_hull())`
+    ///.group_by(|s| s.herd_id()).annotate(|s| s.location().convex_hull())`
     /// path needs `herd_id` directly on Sighting; without this column,
     /// the typed `group_by` would have to traverse `s.elephant().herd_id()`,
     /// which the framework's grouped-aggregate surface doesn't model.

@@ -19,32 +19,32 @@
 //! # Public surface
 //! Today the public entry points are:
 //! - [`AppliedSchema`] / [`TableSchema`] / [`ColumnSchema`] etc.
-//!   the snapshot data model.
+//! the snapshot data model.
 //! - [`SNAPSHOT_FORMAT_VERSION`] — the current snapshot version
-//!   string (loaders reject anything else).
+//! string (loaders reject anything else).
 //! - [`save_snapshot`] / [`load_snapshot`] / [`parse_snapshot_bytes`]
-//!   / [`serialize_snapshot`] — file I/O helpers.
+//! / [`serialize_snapshot`] — file I/O helpers.
 //! - [`SnapshotError`] — error variants surfaced by I/O paths.
 //! - [`BucketKey`] — `(database, app)` identity that keys per-bucket
-//!   snapshots.
+//! snapshots.
 //! - [`ProjectionError`] — error variants surfaced when projecting
-//!   the descriptor inventory.
+//! the descriptor inventory.
 //! - [`project_from_inventory`] — production entry point; walks the
-//!   global `inventory::iter` collectors and produces one
-//!   [`AppliedSchema`] per [`BucketKey`].
-//!   The lower-level [`projection::project_from_iters`] is `pub(crate)`
-//!   and exists for tests + the `#[djogi_test(sync_models)]`
-//!   helper. External consumers use [`project_from_inventory`].
-//!   Diff entry points: external consumers use [`diff_bucket_maps`]
-//!   which correctly handles cross-bucket moves. The per-bucket
-//!   `diff_schemas` is `pub(crate)` and only used by the bucket-walk
-//!   worker.
-//!   SQL + segment entry points: external consumers use
-//!   [`plan_delta`] (typically) or [`lower_delta`] (when only the
-//!   per-operation SQL pairs are needed without segment grouping).
-//!   [`MigrationPlan`] is the canonical output the runner
-//!   consumes; segment kinds tell the runner how to dispatch each
-//!   group of statements.
+//! global `inventory::iter` collectors and produces one
+//! [`AppliedSchema`] per [`BucketKey`].
+//! The lower-level [`projection::project_from_iters`] is `pub(crate)`
+//! and exists for tests + the `#[djogi_test(sync_models)]`
+//! helper. External consumers use [`project_from_inventory`].
+//! Diff entry points: external consumers use [`diff_bucket_maps`]
+//! which correctly handles cross-bucket moves. The per-bucket
+//! `diff_schemas` is `pub(crate)` and only used by the bucket-walk
+//! worker.
+//! SQL + segment entry points: external consumers use
+//! [`plan_delta`] (typically) or [`lower_delta`] (when only the
+//! per-operation SQL pairs are needed without segment grouping).
+//! [`MigrationPlan`] is the canonical output the runner
+//! consumes; segment kinds tell the runner how to dispatch each
+//! group of statements.
 
 pub mod attune;
 pub mod audit;

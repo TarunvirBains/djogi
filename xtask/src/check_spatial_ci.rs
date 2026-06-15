@@ -289,7 +289,7 @@ mod tests {
             name: Some("phase6_spatial".to_string()),
             path: None,
             required_spatial: false,
-            cargo_block: "required-features = [\n    \"spatial\",\n]\n".to_string(),
+            cargo_block: "required-features = [\n  \"spatial\",\n]\n".to_string(),
         };
         finalize_cargo_test(&mut test);
         assert!(test.required_spatial);
@@ -309,10 +309,10 @@ mod tests {
     fn active_yaml_lines_drop_comments_before_workflow_checks() {
         let lines = active_yaml_lines(
             r#"
-            # run: cargo xtask check-spatial-ci
-            run: cargo xtask check-spatial-ci
-            echo "::group::cargo test -p djogi --test ${test_name} --all-features"
-            "#,
+      # run: cargo xtask check-spatial-ci
+      run: cargo xtask check-spatial-ci
+      echo "::group::cargo test -p djogi --test ${test_name} --all-features"
+      "#,
         );
         assert_eq!(lines[0], "run: cargo xtask check-spatial-ci");
         assert_eq!(lines.len(), 2);

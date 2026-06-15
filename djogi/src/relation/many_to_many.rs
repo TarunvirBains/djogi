@@ -21,8 +21,8 @@
 //! is trivially expressible in the framework's typed closure filter:
 //! ```ignore
 //! let through_rows = PersonGroup::objects()
-//!     .filter(|f| f.person_id().eq(::djogi::relation::ForeignKey::new(self.id.clone())))
-//!     .fetch_all(&pool).await?;
+//! .filter(|f| f.person_id().eq(::djogi::relation::ForeignKey::new(self.id.clone())))
+//! .fetch_all(&pool).await?;
 //! ```
 //! but only with a compile-time-known column identifier on the `{Through}Fields`
 //! handle. The trait cannot synthesise that identifier generically without
@@ -38,8 +38,8 @@
 //! a single invocation:
 //! ```ignore
 //! many_to_many!(Person, Group, through = PersonGroup,
-//!               this_fk = person_id, that_fk = group_id,
-//!               relation = "groups");
+//!    this_fk = person_id, that_fk = group_id,
+//!    relation = "groups");
 //! ```
 //! That invocation stamps out both directions. Until the macro lands, the
 //! hand-written form documented on each trait method is the supported path.
@@ -49,7 +49,7 @@
 //! restricts **which types can be the implementor**: a downstream crate
 //! cannot fabricate a type that satisfies the `Model` bound without going
 //! through `#[derive(Model)]` first (the sole path that emits the `Sealed`
-//! impl). A hand-rolled `impl Model for Hostile { ... }` fails to compile
+//! impl). A hand-rolled `impl Model for Hostile {... }` fails to compile
 //! and so does a hand-rolled `impl ManyToMany<…> for Hostile`.
 //! What the inherited seal does **not** cover: the **return values** of
 //! [`this_fk`](ManyToMany::this_fk) / [`that_fk`](ManyToMany::that_fk) on a
@@ -69,14 +69,14 @@
 //! string-based filter-bypass surface in disguise.
 //! # Where
 //! - [`ForeignKey<T>`](crate::relation::ForeignKey) — the FK wrapper types
-//!   junction-model columns use; both FK columns on [`Through`] are
-//!   `ForeignKey<Source>` / `ForeignKey<Target>` and decode the target PK
-//!   via `postgres_types::FromSql`.
+//! junction-model columns use; both FK columns on [`Through`] are
+//! `ForeignKey<Source>` / `ForeignKey<Target>` and decode the target PK
+//! via `postgres_types::FromSql`.
 //! - [`QuerySet::filter`](crate::query::QuerySet::filter) — the typed
-//!   closure API hand-written / macro-generated `related()` bodies call
-//!   into.
+//! closure API hand-written / macro-generated `related()` bodies call
+//! into.
 //! - `docs/guide/relations.md` (landing in) — user-facing
-//!   guide once the macro side lands.
+//! guide once the macro side lands.
 
 use crate::DjogiError;
 use crate::model::Model;
@@ -107,44 +107,44 @@ use std::future::Future;
 /// #[model(table = "person_groups", through, no_default)]
 /// #[derive(Debug, Clone)]
 /// pub struct PersonGroup {
-///     pub person_id: ForeignKey<Person>,
-///     pub group_id: ForeignKey<Group>,
-///     pub role: String,
+///  pub person_id: ForeignKey<Person>,
+///  pub group_id: ForeignKey<Group>,
+///  pub role: String,
 /// }
 ///
 /// impl ManyToMany<Group> for Person {
-///     type Through = PersonGroup;
-///     const RELATION: &'static str = "groups";
-///     fn this_fk() -> &'static str { "person_id" }
-///     fn that_fk() -> &'static str { "group_id" }
+///  type Through = PersonGroup;
+///  const RELATION: &'static str = "groups";
+///  fn this_fk() -> &'static str { "person_id" }
+///  fn that_fk() -> &'static str { "group_id" }
 ///
-///     async fn related<'ctx>(
-///         &'ctx self,
-///         ctx: &'ctx mut DjogiContext,
-///     ) -> Result<Vec<Group>, DjogiError>
-///     {
-///         // ... typed-filter body; see module docs.
-///         # unimplemented!()
-///     }
+///  async fn related<'ctx>(
+///   &'ctx self,
+///   ctx: &'ctx mut DjogiContext,
+///  ) -> Result<Vec<Group>, DjogiError>
+///  {
+///   //... typed-filter body; see module docs.
+///   # unimplemented!()
+///  }
 ///
-///     async fn add_related<'ctx>(
-///         &'ctx self,
-///         ctx: &'ctx mut DjogiContext,
-///         target: &'ctx Group,
-///         extras: PersonGroup,
-///     ) -> Result<PersonGroup, DjogiError>
-///     {
-///         # unimplemented!()
-///     }
+///  async fn add_related<'ctx>(
+///   &'ctx self,
+///   ctx: &'ctx mut DjogiContext,
+///   target: &'ctx Group,
+///   extras: PersonGroup,
+///  ) -> Result<PersonGroup, DjogiError>
+///  {
+///   # unimplemented!()
+///  }
 ///
-///     async fn remove_related<'ctx>(
-///         &'ctx self,
-///         ctx: &'ctx mut DjogiContext,
-///         target: &'ctx Group,
-///     ) -> Result<u64, DjogiError>
-///     {
-///         # unimplemented!()
-///     }
+///  async fn remove_related<'ctx>(
+///   &'ctx self,
+///   ctx: &'ctx mut DjogiContext,
+///   target: &'ctx Group,
+///  ) -> Result<u64, DjogiError>
+///  {
+///   # unimplemented!()
+///  }
 /// }
 /// ```
 pub trait ManyToMany<Target>: Model

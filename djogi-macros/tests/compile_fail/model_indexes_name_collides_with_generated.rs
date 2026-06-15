@@ -4,12 +4,12 @@
 use djogi::prelude::*;
 
 #[model(table = "places", indexes(
-    index(fields = [label], name = "places_location_gix"),
+ index(fields = [label], name = "places_location_gix"),
 ))]
 #[derive(Debug, Clone)]
 pub struct Place {
-    pub label: String,
-    pub location: djogi::GeoPoint,
+ pub label: String,
+ pub location: djogi::GeoPoint,
 }
 
 fn main() {}

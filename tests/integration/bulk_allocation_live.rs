@@ -3,12 +3,12 @@
 // The emission dispatches on `pk_kind`:
 //
 // - `HeerId` / `HeerIdDesc` / `RanjId` / `RanjIdDesc` / custom DB-gen:
-//   pre-allocate `N` ids in one round-trip through
-//   `PrimaryKeyDbGen::generate_many(ctx, n)`, then `INSERT` with
-//   explicit id values — no per-row column `DEFAULT` fires.
+//  pre-allocate `N` ids in one round-trip through
+//  `PrimaryKeyDbGen::generate_many(ctx, n)`, then `INSERT` with
+//  explicit id values — no per-row column `DEFAULT` fires.
 // - `Serial`: no `PrimaryKeyDbGen` impl exists; keep the per-row
-//   `DEFAULT` path (exercised by other earlier fixtures, not
-//   retested here).
+//  `DEFAULT` path (exercised by other earlier fixtures, not
+//  retested here).
 //
 // The ordinary-surface witness is behavioral: `bulk_create` returns
 // non-sentinel ids with the ordering/distinctness guarantees that

@@ -5,8 +5,8 @@
 -- The on-disk JSON keys are "engineType" and "weightKg".
 
 CREATE TABLE IF NOT EXISTS camel_posts (
-    id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    spec        JSONB NULL
+  id     BIGINT PRIMARY KEY DEFAULT generate_id(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  spec    JSONB NULL
 );

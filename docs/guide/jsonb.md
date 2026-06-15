@@ -1,4 +1,4 @@
-> [Back to Guides](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to Guides](./index.md) · [Back to README](../../README.md)
 
 Spec: [`docs/spec/jsonb.md`](../spec/jsonb.md) — full JSONB schema field specification.
 
@@ -11,9 +11,9 @@ merges both halves back into a single JSON object so no key is ever silently
 dropped — even keys added by a newer service version or a manual migration are
 preserved across round-trips.
 
-Phase 5 adds two query surfaces for filtering on JSONB subfields: a flat
+ adds two query surfaces for filtering on JSONB subfields: a flat
 `path::<V>("dot.path")` escape hatch (available now) and a
-`#[derive(JsonbSchema)]` typed deep-path tree (Task 6).
+`#[derive(JsonbSchema)]` typed deep-path tree.
 
 ---
 
@@ -21,13 +21,13 @@ Phase 5 adds two query surfaces for filtering on JSONB subfields: a flat
 
 - `T` must implement `serde::Serialize` and `serde::Deserialize`.
 - Unknown keys (present in the JSON, absent from `T`) land in `Jsonb::extra`
-  as `serde_json::Value` entries. They are never dropped.
+ as `serde_json::Value` entries. They are never dropped.
 - `Jsonb::new(value)` constructs a fresh instance with an empty `extra` map.
 - `ToSql` serializes `data` and `extra` directly with no built-in validation
-  hook. Call `serde_json::to_value` or `validator::Validate::validate` yourself
-  before `save()` if you want pre-write validation.
+ hook. Call `serde_json::to_value` or `validator::Validate::validate` yourself
+ before `save()` if you want pre-write validation.
 - `FromSql` constructs `Jsonb<T>` from the wire bytes. `ToSql` merges `data`
-  and `extra` before encoding.
+ and `extra` before encoding.
 
 ---
 
@@ -40,41 +40,41 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMeta {
-    pub timezone: String,
-    pub locale: String,
+ pub timezone: String,
+ pub locale: String,
 }
 
 #[model(table = "users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    pub name: String,
-    pub meta: Jsonb<UserMeta>,
+ pub name: String,
+ pub meta: Jsonb<UserMeta>,
 }
 
 async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
+ let mut ctx = DjogiContext::from_pool(pool.clone());
 
-    let user = User::create(&mut ctx, User {
-        name: "Alice".to_string(),
-        meta: Jsonb::new(UserMeta {
-            timezone: "UTC".to_string(),
-            locale: "en-US".to_string(),
-        }),
-        ..Default::default()
-    }).await?;
+ let user = User::create(&mut ctx, User {
+ name: "Alice".to_string(),
+ meta: Jsonb::new(UserMeta {
+  timezone: "UTC".to_string(),
+  locale: "en-US".to_string(),
+ }),
+..Default::default()
+ }).await?;
 
-    // Filter on a known JSONB subfield via the flat path escape hatch.
-    let utc_users = User::objects()
-        .filter(|f| f.meta().path::<String>("timezone").eq("UTC".to_string()))
-        .fetch_all(&mut ctx).await?;
-    // Emits: WHERE (meta->>'timezone') = $1
+ // Filter on a known JSONB subfield via the flat path escape hatch.
+ let utc_users = User::objects()
+.filter(|f| f.meta().path::<String>("timezone").eq("UTC".to_string()))
+.fetch_all(&mut ctx).await?;
+ // Emits: WHERE (meta->>'timezone') = $1
 
-    // Access unknown fields that the current schema does not declare.
-    if let Some(val) = user.meta.extra().get("experimental_flag") {
-        let _ = val.try_as_bool();  // fallible — never implicit coercion
-    }
+ // Access unknown fields that the current schema does not declare.
+ if let Some(val) = user.meta.extra().get("experimental_flag") {
+ let _ = val.try_as_bool(); // fallible — never implicit coercion
+ }
 
-    Ok(())
+ Ok(())
 }
 ```
 
@@ -98,13 +98,13 @@ compile-time literals — do not interpolate user input into path strings.
 ```rust
 // Single-level
 User::objects()
-    .filter(|f| f.meta().path::<String>("locale").eq("en-US".to_string()))
-    // WHERE (meta->>'locale') = $1
+.filter(|f| f.meta().path::<String>("locale").eq("en-US".to_string()))
+ // WHERE (meta->>'locale') = $1
 
 // Two-level nesting
 Vehicle::objects()
-    .filter(|f| f.specs().path::<i32>("engine.cylinders").gt(4))
-    // WHERE (specs->'engine'->>'cylinders')::int > $1
+.filter(|f| f.specs().path::<i32>("engine.cylinders").gt(4))
+ // WHERE (specs->'engine'->>'cylinders')::int > $1
 ```
 
 Supported comparison methods on the returned `JsonbPathRef<M, V>`:
@@ -121,27 +121,27 @@ use djogi::prelude::*;
 
 #[derive(JsonbSchema, Serialize, Deserialize)]
 pub struct EngineSpec {
-    pub cylinders: i32,
-    pub displacement_cc: f32,
+ pub cylinders: i32,
+ pub displacement_cc: f32,
 }
 
 #[derive(JsonbSchema, Serialize, Deserialize)]
 pub struct VehicleSpec {
-    pub engine: EngineSpec,
-    pub weight_kg: f32,
+ pub engine: EngineSpec,
+ pub weight_kg: f32,
 }
 
 #[model(table = "vehicles")]
 pub struct Vehicle {
-    pub make: String,
-    pub spec: Jsonb<VehicleSpec>,
+ pub make: String,
+ pub spec: Jsonb<VehicleSpec>,
 }
 
-// Typed path — compile-checked. Call .typed() to enter the path tree,
+// Typed path — compile-checked. Call.typed() to enter the path tree,
 // then drill down with method calls (not field access).
 Vehicle::objects()
-    .filter(|f| f.spec().typed().engine().cylinders().gt(4))
-    // WHERE (spec->'engine'->>'cylinders')::int > $1
+.filter(|f| f.spec().typed().engine().cylinders().gt(4))
+ // WHERE (spec->'engine'->>'cylinders')::int > $1
 ```
 
 The derive generates a `{T}Path<M>` struct with one method per field.
@@ -169,17 +169,17 @@ use djogi::prelude::*;
 use serde::{Deserialize, Serialize};
 
 djogi::primary_key! {
-    pub struct OwnerId(i64);
-    sql_type = "BIGINT";
-    default_sql = "0";
-    bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
+ pub struct OwnerId(i64);
+ sql_type = "BIGINT";
+ default_sql = "0";
+ bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
 }
 
 #[derive(JsonbSchema, Serialize, Deserialize)]
 pub struct Spec {
-    #[jsonb(scalar)]
-    pub owner_id: OwnerId,
-    pub displacement_cc: f32,    // built-in scalar — no marker needed
+ #[jsonb(scalar)]
+ pub owner_id: OwnerId,
+ pub displacement_cc: f32, // built-in scalar — no marker needed
 }
 ```
 
@@ -226,13 +226,13 @@ let user = User::get(&mut ctx, user_id).await?;
 
 // "beta_features" landed in extra — access it:
 if let Some(val) = user.meta.extra().get("beta_features") {
-    let arr = val.try_as_array()?;
-    println!("{} beta features", arr.len());
+ let arr = val.try_as_array()?;
+ println!("{} beta features", arr.len());
 }
 
 // Iterate all unknown keys:
 for (key, val) in user.meta.extra() {
-    println!("unknown: {key} = {val:?}");
+ println!("unknown: {key} = {val:?}");
 }
 ```
 
@@ -255,8 +255,8 @@ stored in the database follow the serde names, not the Rust field names.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrontendMeta {
-    pub dark_mode: bool,         // stored as "darkMode"
-    pub items_per_page: u32,     // stored as "itemsPerPage"
+ pub dark_mode: bool,  // stored as "darkMode"
+ pub items_per_page: u32, // stored as "itemsPerPage"
 }
 ```
 
@@ -272,7 +272,7 @@ For advanced JSONB predicates that `path()` does not cover — `?` key existence
 `ctx.raw_execute` or `ctx.raw_query` with hand-written SQL. The raw API is
 djogi's `unsafe`-equivalent: every call site must decorate the enclosing item
 with `#[djogi::deliberately_bypass_convention_with_raw_sql]` and pair it with
-an adjacent `// JUSTIFICATION (djogi#<n>): ...` comment naming the
+an adjacent `// JUSTIFICATION (djogi#<n>):...` comment naming the
 typed-surface gap (see [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)).
 
 ```rust
@@ -281,11 +281,11 @@ use djogi::prelude::*;
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): JSONB `@>` containment is not yet exposed by the typed path API.
 async fn users_in_locale(ctx: &mut DjogiContext) -> djogi::Result<Vec<User>> {
-    let rows = ctx.raw_query::<User>(
-        "SELECT * FROM users WHERE meta @> $1::jsonb",
-        &[&serde_json::json!({ "locale": "en-US" })],
-    ).await?;
-    Ok(rows)
+ let rows = ctx.raw_query::<User>(
+ "SELECT * FROM users WHERE meta @> $1::jsonb",
+ &[&serde_json::json!({ "locale": "en-US" })],
+ ).await?;
+ Ok(rows)
 }
 ```
 
@@ -338,8 +338,8 @@ let mir1: MirJzSON = JSahibON::I64(42).into();
 // From a `serde_json::Value` (fallible — rejects non-finite f64,
 // out-of-range arbitrary-precision numbers):
 let mir2: MirJzSON = serde_json::Value::try_into(json!({"a": 1, "b": "two"}))
-    .or_else(|err: MirJzSONError| panic!("unsupported: {err}"))
-    .unwrap();
+.or_else(|err: MirJzSONError| panic!("unsupported: {err}"))
+.unwrap();
 // or with `TryFrom` directly:
 let mir3 = MirJzSON::try_from(json!({"c": 3}))?;
 
@@ -370,9 +370,9 @@ equality goes through the JSON predicate methods, not the root `eq()` surface:
 // Compiles — uses Sassi's object equality (order-insensitive on objects,
 // numeric-softening across I64/U64/F64).
 Post::objects().filter(|f| {
-    f.payload()
-        .jsahibon()
-        .eq_json(sassi::JSahibON::I64(42))
+ f.payload()
+.jsahibon()
+.eq_json(sassi::JSahibON::I64(42))
 });
 
 // Does NOT compile — the root `eq()` is intentionally absent on MirJzSON
@@ -393,40 +393,40 @@ use djogi::prelude::*;
 
 #[model(table = "events", no_default)]
 pub struct Event {
-    pub kind: String,
-    // `MirJzSON` requires the per-field justification — see
-    // [Model gating](#model-gating--mirjzsonjustification--) below.
-    #[mirjzson(justification = "event payload schema is owned by upstream emitter SDK")]
-    pub payload: MirJzSON,
+ pub kind: String,
+ // `MirJzSON` requires the per-field justification — see
+ // [Model gating](#model-gating--mirjzsonjustification--) below.
+ #[mirjzson(justification = "event payload schema is owned by upstream emitter SDK")]
+ pub payload: MirJzSON,
 }
 
 // Plain dotted identifier path — same shape as `Jsonb<T>::path`:
 Event::objects().filter(|f| {
-    f.payload()
-        .jsahibon()
-        .path("engine.cylinders")
-        .value::<i64>()
-        .gte(4)
+ f.payload()
+.jsahibon()
+.path("engine.cylinders")
+.value::<i64>()
+.gte(4)
 });
 // SQL: CASE WHEN jsonb_typeof((payload #> $1)) = 'number' THEN
-//        ((payload #> $2) #>> '{}'::text[])::numeric >= $3
-//      ELSE FALSE END
+// ((payload #> $2) #>> '{}'::text[])::numeric >= $3
+// ELSE FALSE END
 
 // Arbitrary key (hyphen, digits, embedded dots) — use `.key(...)`:
 Event::objects().filter(|f| {
-    f.payload()
-        .jsahibon()
-        .key("content-type")
-        .value::<String>()
-        .eq("application/json".to_string())
+ f.payload()
+.jsahibon()
+.key("content-type")
+.value::<String>()
+.eq("application/json".to_string())
 });
 
 // Multi-segment literal path including non-identifier segments:
 Event::objects().filter(|f| {
-    f.payload()
-        .jsahibon()
-        .path_segments(["a.b", "0", "cafe"])
-        .exists()
+ f.payload()
+.jsahibon()
+.path_segments(["a.b", "0", "cafe"])
+.exists()
 });
 ```
 
@@ -434,13 +434,13 @@ The full predicate surface mirrors Sassi's typed builders:
 
 - **Existence**: `exists()`, `missing()`, `is_json_null()`, `is_not_json_null()`.
 - **Type tests**: `is_bool()`, `is_number()`, `is_string()`, `is_array()`,
-  `is_object()` (or `is_type(JTypeKind::…)` for the parametric form).
+ `is_object()` (or `is_type(JTypeKind::…)` for the parametric form).
 - **Object keys**: `has_key(k)`, `has_any_key([…])`, `has_all_keys([…])` — all
-  guard `jsonb_typeof = 'object'`.
+ guard `jsonb_typeof = 'object'`.
 - **Scalar comparison**: `value::<V>().eq(x)` / `neq` / `in_(vec)` /
-  `not_in(vec)` for `V` in `{ i64, u64, f64, String, bool }`; plus `gt` /
-  `gte` / `lt` / `lte` / `between(low, high)` for numeric `V` only (string
-  ordering is intentionally absent — locale collation is out of scope).
+ `not_in(vec)` for `V` in `{ i64, u64, f64, String, bool }`; plus `gt` /
+ `gte` / `lt` / `lte` / `between(low, high)` for numeric `V` only (string
+ ordering is intentionally absent — locale collation is out of scope).
 - **Whole-value equality**: `eq_json(JSahibON)`, `neq_json(JSahibON)`.
 - **Arrays**: `array_contains(JSahibON)`, `array_len_eq/gt/gte/lt/lte(usize)`.
 
@@ -459,11 +459,11 @@ correctly:
 
 ```rust
 Event::objects().filter(|f| {
-    f.payload()
-        .jsahibon()
-        .path("counter")
-        .value::<u64>()
-        .eq(u64::MAX)
+ f.payload()
+.jsahibon()
+.path("counter")
+.value::<u64>()
+.eq(u64::MAX)
 });
 // Binds u64::MAX through Decimal, not `as i64`.
 ```
@@ -476,12 +476,12 @@ The optional case distinguishes `None` (column SQL NULL) from
 ```rust
 #[model(table = "events")]
 pub struct Event {
-    // `Option<MirJzSON>` inherits `None` from `Option::default()`, so the
-    // model does not need `#[model(no_default)]`. The per-field
-    // justification gate still applies — every `Option<MirJzSON>` field
-    // records why the schema is external.
-    #[mirjzson(justification = "optional cache key payload owned by the upstream emitter")]
-    pub maybe_payload: Option<MirJzSON>,
+ // `Option<MirJzSON>` inherits `None` from `Option::default()`, so the
+ // model does not need `#[model(no_default)]`. The per-field
+ // justification gate still applies — every `Option<MirJzSON>` field
+ // records why the schema is external.
+ #[mirjzson(justification = "optional cache key payload owned by the upstream emitter")]
+ pub maybe_payload: Option<MirJzSON>,
 }
 
 // `missing()` is true only on SQL NULL.
@@ -502,8 +502,8 @@ use sassi::JSahibON;
 
 let jsonb: Jsonb<UserMeta> = /* loaded from DB */;
 let portable: JSahibON = jsonb
-    .to_jsahibon()
-    .expect("typed schema must round-trip through Sassi");
+.to_jsahibon()
+.expect("typed schema must round-trip through Sassi");
 // → carries the merged `data` + unknown `extra` document.
 ```
 
@@ -543,9 +543,9 @@ specific justification recorded on the field itself:
 #[model(table = "audit_logs", no_default)]
 #[derive(Debug, Clone)]
 pub struct AuditLog {
-    pub source: String,
-    #[mirjzson(justification = "payload schema is owned by upstream partner SDK")]
-    pub payload: MirJzSON,
+ pub source: String,
+ #[mirjzson(justification = "payload schema is owned by upstream partner SDK")]
+ pub payload: MirJzSON,
 }
 ```
 
@@ -553,18 +553,18 @@ The macro consumes the attribute at expand time — adopters never see a
 stray `unknown attribute mirjzson` rustc error — and enforces three rules:
 
 1. **Required on every `MirJzSON` / `Option<MirJzSON>` field.** A field
-   typed `MirJzSON` (or its nullable form) without `#[mirjzson(...)]`
-   fails at expand time with a span at the field, naming the missing
-   attribute.
+ typed `MirJzSON` (or its nullable form) without `#[mirjzson(...)]`
+ fails at expand time with a span at the field, naming the missing
+ attribute.
 2. **Rejected on any other field type.** A `#[mirjzson(...)]` annotation
-   on a `String`, `i64`, `Jsonb<T>`, or other non-`MirJzSON` field fails
-   at expand time. `Jsonb<T>` is the typed-schema sibling — the schema
-   IS the justification, and the gate would be redundant.
+ on a `String`, `i64`, `Jsonb<T>`, or other non-`MirJzSON` field fails
+ at expand time. `Jsonb<T>` is the typed-schema sibling — the schema
+ IS the justification, and the gate would be redundant.
 3. **The justification must be a specific reason.** Empty strings, an
-   ASCII case-insensitive denylist of placeholders (`TODO`, `TBD`,
-   `FIXME`, `?`, `none`, `external`, `see comment`, and similar), and
-   values shorter than 12 trimmed bytes are rejected with a message
-   pointing back at the spec example.
+ ASCII case-insensitive denylist of placeholders (`TODO`, `TBD`,
+ `FIXME`, `?`, `none`, `external`, `see comment`, and similar), and
+ values shorter than 12 trimmed bytes are rejected with a message
+ pointing back at the spec example.
 
 The bar exists because reaching for `MirJzSON` is stepping off the
 typed-schema invariant `Jsonb<T>` carries. That step deserves a deliberate,
@@ -585,6 +585,6 @@ fall back to `ctx.raw_execute` / `ctx.raw_query` per the
 [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md) convention. The
 raw API is djogi's `unsafe`-equivalent — every call site decorates the
 enclosing item with `#[djogi::deliberately_bypass_convention_with_raw_sql]`
-and pairs it with an adjacent `// JUSTIFICATION (djogi#<n>): ...` comment
+and pairs it with an adjacent `// JUSTIFICATION (djogi#<n>):...` comment
 naming the typed-surface gap. File the issue against djogi (not your
 application) — every reach for raw SQL signals a gap in djogi's typed surface.

@@ -1,4 +1,4 @@
-> [Back to README](../ReadMe.MD) | [All Specs](./spec/index.md)
+> [Back to README](../README.md) | [All Specs](./spec/index.md)
 
 # Django, Explicitness, and the Agentic Shift
 

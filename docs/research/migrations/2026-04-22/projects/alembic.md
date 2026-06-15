@@ -5,25 +5,25 @@
 - Commit SHA inspected: `0ab90276fc583d52e31e95d3f59b4b6c00ec39ee`
 - Primary language: Python
 - Migration-relevant modules:
-  - `alembic/command.py` — top-level CLI verbs (upgrade, downgrade, stamp, merge, revision, check)
-  - `alembic/runtime/migration.py` — `MigrationContext`, `HeadMaintainer`, `RevisionStep`, `StampStep`
-  - `alembic/runtime/environment.py` — `EnvironmentContext`, all `configure()` options
-  - `alembic/ddl/impl.py` — `DefaultImpl`, `version_table_impl()`
-  - `alembic/ddl/postgresql.py` — `PostgresqlImpl` (transactional_ddl)
-  - `alembic/script/revision.py` — `RevisionMap`, `Revision`, DAG traversal
-  - `alembic/script/base.py` — `ScriptDirectory`, `Script`, file generation
-  - `alembic/autogenerate/api.py` — `AutogenContext`, `compare_metadata()`, `produce_migrations()`
-  - `alembic/autogenerate/compare/__init__.py` — `comparators` registry, `_populate_migration_script()`
-  - `alembic/autogenerate/compare/tables.py` — table/column diff
-  - `alembic/autogenerate/compare/constraints.py` — indexes, unique constraints, FK diff
-  - `alembic/autogenerate/compare/types.py` — type comparison dispatch
-  - `alembic/autogenerate/compare/server_defaults.py` — server default comparison
-  - `alembic/autogenerate/compare/schema.py` — schema-level orchestration
-  - `alembic/autogenerate/render.py` — Python code emission from ops
-  - `alembic/operations/ops.py` — operation classes (`CreateTableOp`, `AlterColumnOp`, etc.)
-  - `alembic/operations/batch.py` — `BatchOperationsImpl`, `ApplyBatchImpl` (copy-modify-swap)
-  - `alembic/util/langhelpers.py` — `rev_id()` generation
-  - `alembic/templates/generic/env.py` — canonical `env.py` template
+ - `alembic/command.py` — top-level CLI verbs (upgrade, downgrade, stamp, merge, revision, check)
+ - `alembic/runtime/migration.py` — `MigrationContext`, `HeadMaintainer`, `RevisionStep`, `StampStep`
+ - `alembic/runtime/environment.py` — `EnvironmentContext`, all `configure()` options
+ - `alembic/ddl/impl.py` — `DefaultImpl`, `version_table_impl()`
+ - `alembic/ddl/postgresql.py` — `PostgresqlImpl` (transactional_ddl)
+ - `alembic/script/revision.py` — `RevisionMap`, `Revision`, DAG traversal
+ - `alembic/script/base.py` — `ScriptDirectory`, `Script`, file generation
+ - `alembic/autogenerate/api.py` — `AutogenContext`, `compare_metadata()`, `produce_migrations()`
+ - `alembic/autogenerate/compare/__init__.py` — `comparators` registry, `_populate_migration_script()`
+ - `alembic/autogenerate/compare/tables.py` — table/column diff
+ - `alembic/autogenerate/compare/constraints.py` — indexes, unique constraints, FK diff
+ - `alembic/autogenerate/compare/types.py` — type comparison dispatch
+ - `alembic/autogenerate/compare/server_defaults.py` — server default comparison
+ - `alembic/autogenerate/compare/schema.py` — schema-level orchestration
+ - `alembic/autogenerate/render.py` — Python code emission from ops
+ - `alembic/operations/ops.py` — operation classes (`CreateTableOp`, `AlterColumnOp`, etc.)
+ - `alembic/operations/batch.py` — `BatchOperationsImpl`, `ApplyBatchImpl` (copy-modify-swap)
+ - `alembic/util/langhelpers.py` — `rev_id()` generation
+ - `alembic/templates/generic/env.py` — canonical `env.py` template
 - Approximate LOC of migration-relevant code: ~21,000 (sum of the above modules as measured by `wc -l`)
 
 ---
@@ -34,48 +34,48 @@
 
 ```
 alembic/
-  command.py          CLI entry points; thin wrappers over EnvironmentContext
-  config.py           Config object (alembic.ini / pyproject.toml parsing)
-  context.py          Module-level proxy to EnvironmentContext (the `alembic.context` object)
-  environment.py      (root-level shim) re-exports runtime/environment
-  migration.py        (root-level shim) re-exports runtime/migration
-  op.py               Module-level proxy to Operations
-  ddl/
-    impl.py           DefaultImpl base: DDL execution, version_table_impl()
-    postgresql.py     PostgresqlImpl (transactional_ddl=True, compare_type, batch prep)
-    sqlite.py         SQLiteImpl (requires_recreate_in_batch)
-    mysql.py, mssql.py, oracle.py
-  runtime/
-    migration.py      MigrationContext, HeadMaintainer, RevisionStep, StampStep
-    environment.py    EnvironmentContext, all configure() hooks
-    plugins.py        Plugin system (autogenerate comparator dispatch)
-  script/
-    revision.py       RevisionMap, Revision, DAG logic (branches, merges, traversal)
-    base.py           ScriptDirectory, Script — file scanning, generate_revision()
-    write_hooks.py    Post-write hooks (e.g. black formatting)
-  autogenerate/
-    api.py            AutogenContext, compare_metadata(), produce_migrations(), RevisionContext
-    render.py         Python code generation from operation objects
-    rewriter.py       MigrationRewriter (post-process script AST)
-    compare/
-      __init__.py     comparators registry (PriorityDispatcher), _populate_migration_script()
-      schema.py       schema-level fan-out to table comparator
-      tables.py       _autogen_for_tables(), _compare_tables(), _compare_columns()
-      constraints.py  _compare_indexes_and_uniques(), _compare_foreign_keys()
-      types.py        _user_compare_type(), _dialect_impl_compare_type()
-      server_defaults.py  _compare_server_default(), _compare_computed_default()
-      comments.py     table/column comment comparison
-      util.py         _InspectorConv (caching inspector wrapper)
-  operations/
-    ops.py            All operation classes (2918 LOC); CreateTableOp, AlterColumnOp, etc.
-    batch.py          BatchOperationsImpl, ApplyBatchImpl (copy-modify-swap for SQLite)
-    base.py           Operations, BatchOperations base classes
-    toimpl.py         Operation -> DDL dispatch
-    schemaobj.py      schema object helpers
-  templates/
-    generic/env.py    canonical env.py template
-    multidb/          multi-database env.py variant
-    async/            asyncio variant
+ command.py     CLI entry points; thin wrappers over EnvironmentContext
+ config.py      Config object (alembic.ini / pyproject.toml parsing)
+ context.py     Module-level proxy to EnvironmentContext (the `alembic.context` object)
+ environment.py   (root-level shim) re-exports runtime/environment
+ migration.py    (root-level shim) re-exports runtime/migration
+ op.py        Module-level proxy to Operations
+ ddl/
+  impl.py      DefaultImpl base: DDL execution, version_table_impl()
+  postgresql.py   PostgresqlImpl (transactional_ddl=True, compare_type, batch prep)
+  sqlite.py     SQLiteImpl (requires_recreate_in_batch)
+  mysql.py, mssql.py, oracle.py
+ runtime/
+  migration.py   MigrationContext, HeadMaintainer, RevisionStep, StampStep
+  environment.py  EnvironmentContext, all configure() hooks
+  plugins.py    Plugin system (autogenerate comparator dispatch)
+ script/
+  revision.py    RevisionMap, Revision, DAG logic (branches, merges, traversal)
+  base.py      ScriptDirectory, Script — file scanning, generate_revision()
+  write_hooks.py  Post-write hooks (e.g. black formatting)
+ autogenerate/
+  api.py      AutogenContext, compare_metadata(), produce_migrations(), RevisionContext
+  render.py     Python code generation from operation objects
+  rewriter.py    MigrationRewriter (post-process script AST)
+  compare/
+   __init__.py   comparators registry (PriorityDispatcher), _populate_migration_script()
+   schema.py    schema-level fan-out to table comparator
+   tables.py    _autogen_for_tables(), _compare_tables(), _compare_columns()
+   constraints.py _compare_indexes_and_uniques(), _compare_foreign_keys()
+   types.py    _user_compare_type(), _dialect_impl_compare_type()
+   server_defaults.py _compare_server_default(), _compare_computed_default()
+   comments.py   table/column comment comparison
+   util.py     _InspectorConv (caching inspector wrapper)
+ operations/
+  ops.py      All operation classes (2918 LOC); CreateTableOp, AlterColumnOp, etc.
+  batch.py     BatchOperationsImpl, ApplyBatchImpl (copy-modify-swap for SQLite)
+  base.py      Operations, BatchOperations base classes
+  toimpl.py     Operation -> DDL dispatch
+  schemaobj.py   schema object helpers
+ templates/
+  generic/env.py  canonical env.py template
+  multidb/     multi-database env.py variant
+  async/      asyncio variant
 ```
 
 ### Key relationships
@@ -113,10 +113,10 @@ The table stores only the **currently active head revision identifiers**. It is 
 
 ```python
 return tuple(
-    row[0]
-    for row in self.connection.execute(
-        select(self._version.c.version_num)
-    )
+  row[0]
+  for row in self.connection.execute(
+    select(self._version.c.version_num)
+  )
 )
 ```
 
@@ -142,27 +142,27 @@ The table is created in Python via SQLAlchemy's schema API, not as raw SQL. The 
 
 ```python
 def version_table_impl(
-    self,
-    *,
-    version_table: str,
-    version_table_schema: Optional[str],
-    version_table_pk: bool,
-    **kw: Any,
+  self,
+  *,
+  version_table: str,
+  version_table_schema: Optional[str],
+  version_table_pk: bool,
+  **kw: Any,
 ) -> Table:
-    vt = Table(
-        version_table,
-        MetaData(),
-        Column("version_num", String(32), nullable=False),
-        schema=version_table_schema,
+  vt = Table(
+    version_table,
+    MetaData(),
+    Column("version_num", String(32), nullable=False),
+    schema=version_table_schema,
+  )
+  if version_table_pk:
+    vt.append_constraint(
+      PrimaryKeyConstraint(
+        "version_num", name=f"{version_table}_pkc"
+      )
     )
-    if version_table_pk:
-        vt.append_constraint(
-            PrimaryKeyConstraint(
-                "version_num", name=f"{version_table}_pkc"
-            )
-        )
 
-    return vt
+  return vt
 ```
 
 `alembic/ddl/impl.py:151-183`
@@ -171,8 +171,8 @@ The equivalent DDL for PostgreSQL (with `version_table_pk=True`, the default) is
 
 ```sql
 CREATE TABLE alembic_version (
-    version_num VARCHAR(32) NOT NULL,
-    CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+  version_num VARCHAR(32) NOT NULL,
+  CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
 ```
 
@@ -216,9 +216,9 @@ The logic in `begin_transaction()` (`runtime/migration.py:372-470`):
 
 ```python
 if self.impl.transactional_ddl:
-    transaction_now = _per_migration == self._transaction_per_migration
+  transaction_now = _per_migration == self._transaction_per_migration
 else:
-    transaction_now = _per_migration is True
+  transaction_now = _per_migration is True
 ```
 
 `runtime/migration.py:419-422`
@@ -238,8 +238,8 @@ This is a significant gap relative to Djogi's design, which uses `pg_advisory_lo
 `batch_alter_table()` works via `ApplyBatchImpl` (`operations/batch.py:212-481`). The copy-modify-swap pattern:
 
 1. Build a new table definition (named `_alembic_tmp_<tablename>`, max 50 chars: `batch.py:244`)
-2. `CREATE TABLE _alembic_tmp_<tablename> (...)`  (`batch.py:447`)
-3. `INSERT INTO _alembic_tmp_<tablename> SELECT ... FROM <tablename>` (`batch.py:450-467`)
+2. `CREATE TABLE _alembic_tmp_<tablename> (...)` (`batch.py:447`)
+3. `INSERT INTO _alembic_tmp_<tablename> SELECT... FROM <tablename>` (`batch.py:450-467`)
 4. `DROP TABLE <tablename>` (`batch.py:468`)
 5. `ALTER TABLE _alembic_tmp_<tablename> RENAME TO <tablename>` (`batch.py:473-475`)
 6. Recreate indexes (`batch.py:478-479`)
@@ -372,7 +372,7 @@ All four are parameters to `EnvironmentContext.configure()` (`runtime/environmen
 
 `render.py` maintains a `renderers` dispatcher. Each operation class is decorated with `@renderers.dispatch_for(OpClass)` to register its renderer. Examples:
 - `CreateUniqueConstraintOp` → `_add_unique_constraint` → calls `_uq_constraint()` which renders `op.create_unique_constraint(name, table, [cols])` (`render.py:381-385`, `657-697`)
-- `CreateForeignKeyOp` → `_add_fk_constraint` → renders `op.create_foreign_key(name, src, ref, local_cols, remote_cols, ...)` (`render.py:388-432`)
+- `CreateForeignKeyOp` → `_add_fk_constraint` → renders `op.create_foreign_key(name, src, ref, local_cols, remote_cols,...)` (`render.py:388-432`)
 - `AlterColumnOp` → rendered with `modify_type`, `modify_nullable`, `modify_server_default`, `existing_*` kwargs
 
 Composite unique constraints render their column list as a Python list: `repr([_ident(col.name) for col in constraint.columns])` (`render.py:683`). Composite FK constraints also render both column lists (`render.py:397-402`).
@@ -395,7 +395,7 @@ Alembic's autogenerate consumes SQLAlchemy metadata objects:
 
 SQLAlchemy's `conv()` wrapper is used in `_InspectorConv` to mark reflected constraint names so Alembic knows they were assigned by the naming convention, not hand-coded. This prevents false "name changed" diffs (`compare/util.py:87-102`). The batch module passes `naming_convention` to the temp-table `MetaData` (`batch.py:117-120`), ensuring constraints created during the copy retain correct generated names.
 
-Without naming conventions, anonymous constraints generate different names per run, causing spurious diffs. This is the primary motivation for `MetaData(naming_convention={"ix": "ix_%(table_name)s_%(column_0_label)s", ...})`.
+Without naming conventions, anonymous constraints generate different names per run, causing spurious diffs. This is the primary motivation for `MetaData(naming_convention={"ix": "ix_%(table_name)s_%(column_0_label)s",...})`.
 
 ### Composite constraints rendering
 
@@ -413,8 +413,8 @@ Alembic documents `autocommit_block()` for Postgres DDL that must run outside tr
 
 ```python
 def upgrade():
-    with op.get_context().autocommit_block():
-        op.execute("ALTER TYPE mood ADD VALUE 'soso'")
+  with op.get_context().autocommit_block():
+    op.execute("ALTER TYPE mood ADD VALUE 'soso'")
 ```
 
 `runtime/migration.py:279-370`
@@ -472,7 +472,7 @@ DDL committed before the error is permanent. The `alembic_version` row is not up
 
 The generic template (`templates/generic/env.py:29-78`) defines both functions:
 
-- **`run_migrations_offline()`**: Calls `context.configure(url=..., ...)` with just a URL, then `context.begin_transaction()` + `context.run_migrations()`. Produces SQL output without a live connection.
+- **`run_migrations_offline()`**: Calls `context.configure(url=...,...)` with just a URL, then `context.begin_transaction()` + `context.run_migrations()`. Produces SQL output without a live connection.
 - **`run_migrations_online()`**: Creates an `Engine`, gets a `Connection`, calls `context.configure(connection=connection, target_metadata=target_metadata)`, then `context.begin_transaction()` + `context.run_migrations()`.
 
 `context.is_offline_mode()` selects the branch (`templates/generic/env.py:75-78`).
@@ -534,11 +534,11 @@ Alembic is the only tool in common use that models migrations as a true DAG with
 
 - **Dispatch-based comparator architecture** (`compare/__init__.py:23`, `53-62`): Plugin-based, priority-ordered, dialect-qualified dispatch allows extending the diff pipeline without modifying core code. Djogi doesn't need plugins for 0.1.0, but the architecture is worth emulating — a dispatch table per comparison type (tables, columns, constraints, types) is cleaner than one monolithic diff function.
 
-- **`include_object` / `include_name` hooks** (`runtime/environment.py:428-429`): Letting users filter what gets diffed is essential for mixed-owner schemas. Djogi should expose equivalent hooks in its config (e.g., `[djogi] include_tables = ...` or a callback).
+- **`include_object` / `include_name` hooks** (`runtime/environment.py:428-429`): Letting users filter what gets diffed is essential for mixed-owner schemas. Djogi should expose equivalent hooks in its config (e.g., `[djogi] include_tables =...` or a callback).
 
 - **Offline SQL generation without connection** (`runtime/migration.py:151-156`, `669-675`): The `--sql` / `as_sql=True` mode is directly analogous to Djogi's `build.rs` model. Djogi goes further by generating SQL at compile time, not runtime. This is strictly better — no dialect object needed at generation time.
 
-- **`autocommit_block()` pattern for non-transactional DDL** (`runtime/migration.py:279-370`): For Postgres DDL that must run outside transactions (`CREATE INDEX CONCURRENTLY`, `ALTER TYPE ... ADD VALUE`), expose an explicit escape hatch. Djogi's non-transactional DDL auto-split is related — but Alembic's `autocommit_block()` is more surgical.
+- **`autocommit_block()` pattern for non-transactional DDL** (`runtime/migration.py:279-370`): For Postgres DDL that must run outside transactions (`CREATE INDEX CONCURRENTLY`, `ALTER TYPE... ADD VALUE`), expose an explicit escape hatch. Djogi's non-transactional DDL auto-split is related — but Alembic's `autocommit_block()` is more surgical.
 
 ### Reject
 

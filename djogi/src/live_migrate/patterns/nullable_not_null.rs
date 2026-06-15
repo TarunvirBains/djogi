@@ -10,23 +10,23 @@
 //! against live writers.
 //! # Step graph
 //! 1. [`StepKind::ExpandSchema`] — sentinel record. The actual
-//!    `ADD COLUMN` happened in (or in a previous live plan
-//!    via [`replacement_column`](super::replacement_column)); this
-//!    pattern records a no-op expand fragment so the plan-file shape
-//!    matches the canonical expand → validate → finalize sequence
-//!    other patterns share.
+//! `ADD COLUMN` happened in (or in a previous live plan
+//! via [`replacement_column`](super::replacement_column)); this
+//! pattern records a no-op expand fragment so the plan-file shape
+//! matches the canonical expand → validate → finalize sequence
+//! other patterns share.
 //! 2. [`StepKind::ValidateBackfill`] — operator gate. The runner
-//!    pauses until `SELECT count(*) FROM <table> WHERE <col> IS
+//! pauses until `SELECT count(*) FROM <table> WHERE <col> IS
 //! NULL` returns zero. Filling existing NULL rows is the
-//!    operator's responsibility — the
-//!    [`SchemaOperation::AlterColumn`] delta carrying
-//!    [`ColumnChange::SetNullable(false)`] does NOT itself supply a
-//!    backfill expression, so this pattern intentionally omits a
-//!    [`StepKind::BackfillChunked`] step. The operator either backfills
-//!    the column out-of-band (e.g. via an application-side migration
-//!    that writes the missing values) or routes the change through
-//!    [`super::three_step_default`] / [`super::replacement_column`]
-//!    when an expression is available.
+//! operator's responsibility — the
+//! [`SchemaOperation::AlterColumn`] delta carrying
+//! [`ColumnChange::SetNullable(false)`] does NOT itself supply a
+//! backfill expression, so this pattern intentionally omits a
+//! [`StepKind::BackfillChunked`] step. The operator either backfills
+//! the column out-of-band (e.g. via an application-side migration
+//! that writes the missing values) or routes the change through
+//! [`super::three_step_default`] / [`super::replacement_column`]
+//! when an expression is available.
 //! 3. [`StepKind::FinalizeConstraints`] — `ALTER TABLE <table> ALTER
 //! COLUMN <col> SET NOT NULL`.
 //! # Idempotency

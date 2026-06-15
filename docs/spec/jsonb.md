@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # JSONB Schema Fields
 
@@ -11,23 +11,23 @@ use djogi::prelude::*;
 
 #[derive(JsonSchema, Serialize, Deserialize, Validate)]
 pub struct TurboSpec {
-    pub boost_psi: f64,
-    #[validate(length(min = 1))]
-    pub manufacturer: String,
+ pub boost_psi: f64,
+ #[validate(length(min = 1))]
+ pub manufacturer: String,
 }
 
 #[derive(JsonSchema, Serialize, Deserialize, Validate)]
 pub struct EngineSpec {
-    pub cylinders: i32,
-    #[validate(range(min = 0, max = 2000))]
-    pub horsepower: i32,
-    pub turbo: Option<Jsonb<TurboSpec>>,   // nested schema — fully typed
+ pub cylinders: i32,
+ #[validate(range(min = 0, max = 2000))]
+ pub horsepower: i32,
+ pub turbo: Option<Jsonb<TurboSpec>>, // nested schema — fully typed
 }
 
 #[model(table = "vehicles")]
 pub struct Vehicle {
-    pub make: String,
-    pub engine: Jsonb<EngineSpec>,         // JSONB column in Postgres
+ pub make: String,
+ pub engine: Jsonb<EngineSpec>,  // JSONB column in Postgres
 }
 ```
 `Jsonb<T>` stores a typed value plus preserved unknown keys. Database encode/decode uses serde; typed path querying requires `T: JsonbSchema` (normally via `#[derive(JsonbSchema)]`).
@@ -35,8 +35,8 @@ Nested `Jsonb<T>` is fully supported — each level of nesting has its own typed
 ### 6.2 Internal Layout
 ```rust
 pub struct Jsonb<T> {
-    pub data: T,                            // fully typed value
-    extra: IndexMap<String, UnknownField>,  // unknown fields — preserved, never dropped
+ pub data: T,    // fully typed value
+ extra: IndexMap<String, UnknownField>, // unknown fields — preserved, never dropped
 }
 ```
 ### 6.3 Unknown Field Preservation
@@ -46,14 +46,14 @@ Fields present in the stored JSON but absent from the schema are never dropped o
 Given this JSON in the database:
 ```json
 {
-  "cylinders": 8,
-  "horsepower": 450,
-  "turbo": {
-    "boost_psi": 18.5,
-    "manufacturer": "Garrett",
-    "part_number": "GT3582R"
-  },
-  "legacy_ecu_code": "M62B44"
+ "cylinders": 8,
+ "horsepower": 450,
+ "turbo": {
+ "boost_psi": 18.5,
+ "manufacturer": "Garrett",
+ "part_number": "GT3582R"
+ },
+ "legacy_ecu_code": "M62B44"
 }
 ```
 - `cylinders`, `horsepower`, `turbo` — known fields, fully typed via `EngineSpec`
@@ -73,34 +73,34 @@ pub type UnknownField = serde_json::Value;
 All conversions return `Result` — never `Option` or a raw panicking value. Implicit coercion between types is never performed. A string that looks like a number is not silently converted.
 ```rust
 pub enum UnknownFieldError {
-    // Field key does not exist at this schema level
-    FieldNotFound { field: String },
-    // Asked for f64, it is stored as String
-    TypeMismatch { field: String, expected: &'static str, actual: &'static str },
-    // String value that looks like the requested type — coercion refused
-    NoImplicitCoercion { field: String, value: String, into: &'static str },
+ // Field key does not exist at this schema level
+ FieldNotFound { field: String },
+ // Asked for f64, it is stored as String
+ TypeMismatch { field: String, expected: &'static str, actual: &'static str },
+ // String value that looks like the requested type — coercion refused
+ NoImplicitCoercion { field: String, value: String, into: &'static str },
 }
 ```
 Examples:
 ```rust
 // DB has: "legacy_ecu_code": "M62B44"
 car.engine.extra()
-    .get("legacy_ecu_code")
-    .ok_or(JsonbError::FieldNotFound { field: "legacy_ecu_code".into() })?
-    .try_as_str()
+.get("legacy_ecu_code")
+.ok_or(JsonbError::FieldNotFound { field: "legacy_ecu_code".into() })?
+.try_as_str()
 // Ok("M62B44")
 
 car.engine.extra()
-    .get("legacy_ecu_code")
-    .ok_or(JsonbError::FieldNotFound { field: "legacy_ecu_code".into() })?
-    .try_as_f64()
+.get("legacy_ecu_code")
+.ok_or(JsonbError::FieldNotFound { field: "legacy_ecu_code".into() })?
+.try_as_f64()
 // Err(TypeMismatch { field: "legacy_ecu_code", expected: "f64", actual: "String" })
 
-// DB has: "boost_psi": "18.5"  ← string, not float — data quality problem
+// DB has: "boost_psi": "18.5" ← string, not float — data quality problem
 turbo.extra()
-    .get("boost_psi")
-    .ok_or(JsonbError::FieldNotFound { field: "boost_psi".into() })?
-    .try_as_f64()
+.get("boost_psi")
+.ok_or(JsonbError::FieldNotFound { field: "boost_psi".into() })?
+.try_as_f64()
 // Err(NoImplicitCoercion { field: "boost_psi", value: "18.5", into: "f64" })
 // Not silently Ok(18.5) — the caller must fix the data
 
@@ -110,27 +110,27 @@ car.engine.extra().get("nonexistent")
 
 // Nested unknown traversal
 car.engine.data.turbo
-    .as_ref()
-    .and_then(|t| t.extra().get("part_number"))
-    .and_then(|f| f.as_str())
+.as_ref()
+.and_then(|t| t.extra().get("part_number"))
+.and_then(|f| f.as_str())
 // Some("GT3582R")
 
 // Inspect all unknown fields at a level
 for (key, val) in car.engine.extra() {
-    println!("{}: {:?}", key, val);
+ println!("{}: {:?}", key, val);
 }
 ```
 ### 6.6 Validation on Save
 
 Validation runs through the full schema tree before any write touches the database. If any level fails, the save is aborted with a structured error — nothing is written.
 ```rust
-car.engine.data.horsepower = 5000;  // exceeds range(max = 2000)
+car.engine.data.horsepower = 5000; // exceeds range(max = 2000)
 car.save(&mut ctx).await?;
 // Err: validation failed: engine.horsepower must be <= 2000
 
 car.engine.data.turbo = Some(Jsonb::new(TurboSpec {
-    boost_psi: 18.5,
-    manufacturer: "".into(),   // violates length(min = 1)
+ boost_psi: 18.5,
+ manufacturer: "".into(), // violates length(min = 1)
 }));
 car.save(&mut ctx).await?;
 // Err: validation failed: engine.turbo.manufacturer must not be empty
@@ -142,17 +142,17 @@ The proc macro generates typed filter accessors for all known fields at every ne
 ```rust
 // Known field at root level
 Vehicle::objects()
-    .filter(|f| f.engine().typed().horsepower().gte(300))
-    // WHERE (engine->>'horsepower')::integer >= 300
+.filter(|f| f.engine().typed().horsepower().gte(300))
+ // WHERE (engine->>'horsepower')::integer >= 300
 
 // Known field in a nested plain-struct schema (EngineSpec has a `turbo: TurboSpec`)
 Vehicle::objects()
-    .filter(|f| f.engine().typed().turbo().boost_psi().gte(15.0))
-    // WHERE (engine->'turbo'->>'boost_psi')::float >= 15.0
+.filter(|f| f.engine().typed().turbo().boost_psi().gte(15.0))
+ // WHERE (engine->'turbo'->>'boost_psi')::float >= 15.0
 
 Vehicle::objects()
-    .filter(|f| f.engine().typed().turbo().manufacturer().eq("Garrett"))
-    // WHERE engine->'turbo'->>'manufacturer' = 'Garrett'
+.filter(|f| f.engine().typed().turbo().manufacturer().eq("Garrett"))
+ // WHERE engine->'turbo'->>'manufacturer' = 'Garrett'
 ```
 Unknown fields cannot be used in typed filter closures because they are not known at compile time. Query them through an explicit raw-SQL helper guarded by `#[djogi::deliberately_bypass_convention_with_raw_sql]` and a local `JUSTIFICATION` comment.
 
@@ -174,8 +174,8 @@ wrapper overrides `jsonb_sql_cast` to delegate to its inner SQL value
 type:
 
 - `primary_key!` emits the override on every custom PK; the inner Rust
-  type the macro declared (`i64` / `uuid::Uuid` / …) determines the
-  emitted cast.
+ type the macro declared (`i64` / `uuid::Uuid` / …) determines the
+ emitted cast.
 - `ForeignKey<T>` and `OneToOneField<T>` delegate to `T::Pk`.
 
 `u64` is bound through `FilterValue::Decimal` (bare NUMERIC) at the
@@ -210,6 +210,6 @@ pp(car.engine.extra());
 
 // Filter by nested known field
 let powerful = Vehicle::objects()
-    .filter_struct(VehicleFilter::new().engine_horsepower(Gte(300)))
-    .fetch_all();
+.filter_struct(VehicleFilter::new().engine_horsepower(Gte(300)))
+.fetch_all();
 ```

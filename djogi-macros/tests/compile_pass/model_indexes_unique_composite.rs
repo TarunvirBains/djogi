@@ -2,12 +2,12 @@
 use djogi::prelude::*;
 
 #[model(table = "orgs_externals", no_default, indexes(
-    unique(fields = [org_id, external_id]),
+ unique(fields = [org_id, external_id]),
 ))]
 #[derive(Debug, Clone)]
 pub struct OrgExternal {
-    pub org_id: HeerId,
-    pub external_id: String,
+ pub org_id: HeerId,
+ pub external_id: String,
 }
 
 fn main() {}

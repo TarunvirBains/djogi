@@ -2,8 +2,8 @@
 // §3 ASCII-shape rule (no spaces, no `!`).
 
 djogi::apps! {
-    #[app(label = "bad char!", database = "main")]
-    pub struct Vehicles;
+ #[app(label = "bad char!", database = "main")]
+ pub struct Vehicles;
 }
 
 fn main() {}

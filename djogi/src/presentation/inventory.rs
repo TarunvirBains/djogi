@@ -3,16 +3,16 @@
 //! runtime startup validation and audit/debug visibility.
 //! ## Record types
 //! - [`ProtectedPresentationScopeMetadata`] — per-scope metadata inside a
-//!   field's presentation declaration. One entry per `(field, scope)` pair
-//!   declared in `protected(per_scope = { ... })`.
+//! field's presentation declaration. One entry per `(field, scope)` pair
+//! declared in `protected(per_scope = {... })`.
 //! - [`ProtectedPresentationFieldMetadata`] — per-field aggregate carrying
-//!   a static slice of scope entries. This is a Stage-facing shape for richer
-//!   introspection tooling; startup validation currently consumes
-//!   `PresentationCodecUsage` entries directly.
+//! a static slice of scope entries. This is a Stage-facing shape for richer
+//! introspection tooling; startup validation currently consumes
+//! `PresentationCodecUsage` entries directly.
 //! - [`PresentationCodecUsage`] — one submission per `(model, field, scope,
 //! codec)` usage. Consumed by [`super::validate_startup_inventory`] to call
-//!   each codec's [`validate_startup`](super::PresentationCodecInfo::validate_startup)
-//!   before the framework accepts traffic.
+//! each codec's [`validate_startup`](super::PresentationCodecInfo::validate_startup)
+//! before the framework accepts traffic.
 //! ## Design note
 //! All structs are `Copy` (enforced by the `Copy` derive) so macro-emitted
 //! `inventory::submit!` blocks and static slice initializers can embed values
@@ -24,7 +24,7 @@ use crate::presentation::{PresentationStartupError, Queryability, Reversibility}
 
 /// Per-scope presentation metadata for a single protected field.
 /// Emitted by `#[model]` for every `(field, scope)` entry inside a
-/// `protected(per_scope = { ... })` block. Aggregated into a static slice
+/// `protected(per_scope = {... })` block. Aggregated into a static slice
 /// inside [`ProtectedPresentationFieldMetadata`].
 /// # Audit and debug use only
 /// This struct is **not** consulted at runtime to decide presentation
@@ -35,7 +35,7 @@ use crate::presentation::{PresentationStartupError, Queryability, Reversibility}
 /// # Invariants
 /// - `scope` matches one of the model's declared scope keys.
 /// - `codec_path` is a Rust type path to the codec implementing
-///   [`PresentationCodecInfo`](super::PresentationCodecInfo).
+/// [`PresentationCodecInfo`](super::PresentationCodecInfo).
 /// - `reversible` and `queryability` reflect the codec's trait constants.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -89,7 +89,7 @@ impl ProtectedPresentationScopeMetadata {
 /// Per-field inventory record for protected presentation behavior.
 /// The `scopes` slice holds one
 /// [`ProtectedPresentationScopeMetadata`] entry per scope entry in the
-/// `protected(per_scope = { ... })` block.
+/// `protected(per_scope = {... })` block.
 /// # Inventory semantics
 /// `ProtectedPresentationFieldMetadata` is a per-field aggregate for future
 /// tooling. The current implementation does not emit this type with
@@ -136,7 +136,7 @@ impl ProtectedPresentationFieldMetadata {
 
 /// Per-usage inventory record consumed by startup validation.
 /// Emitted by `#[model]` for each concrete `(model, field, scope, codec)`
-/// usage in a `protected(per_scope = { ... })` block. Startup validation
+/// usage in a `protected(per_scope = {... })` block. Startup validation
 /// walks all `PresentationCodecUsage` entries via
 /// `inventory::iter::<PresentationCodecUsage>` and calls
 /// `validate_startup` on each one.

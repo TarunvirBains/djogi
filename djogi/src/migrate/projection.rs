@@ -13,13 +13,13 @@
 //! (`("main", "")`) always present (per §4B). The
 //! projection therefore returns a [`BTreeMap`] keyed by [`BucketKey`]
 //! rather than a single [`AppliedSchema`]. The mapping rule:
-//! - Models with no `#[model(app = ...)]` declaration land in the
-//!   synthetic global bucket — `("main", "")`.
+//! - Models with no `#[model(app =...)]` declaration land in the
+//! synthetic global bucket — `("main", "")`.
 //! - Models with `#[model(app = SomeApp)]` land in
-//!   `(SomeApp::DATABASE, SomeApp::LABEL)`.
+//! `(SomeApp::DATABASE, SomeApp::LABEL)`.
 //! - Enums and FK targets are placed alongside the models that
-//!   reference them — see "Cross-bucket FK targets" below for the
-//!   resolution rule.
+//! reference them — see "Cross-bucket FK targets" below for the
+//! resolution rule.
 //! # Determinism
 //! Each per-bucket [`AppliedSchema`] is sorted alphabetically:
 //! `models` is a `BTreeMap` (alphabetical by table name), `enums` is
@@ -42,14 +42,14 @@
 //! Three uniqueness rules are enforced; violations return
 //! [`ProjectionError`] without partial state:
 //! 1. Every [`crate::descriptor::ModelDescriptor::type_name`] is
-//!    globally unique. Two models cannot share a Rust type name even
-//!    across modules — otherwise FK target resolution would silently
-//!    pick the wrong table.
+//! globally unique. Two models cannot share a Rust type name even
+//! across modules — otherwise FK target resolution would silently
+//! pick the wrong table.
 //! 2. Every `(database, app, table_name)` is unique within a
-//!    bucket. Two models cannot land at the same Postgres table
-//!    inside the same `(database, app)` bucket.
+//! bucket. Two models cannot land at the same Postgres table
+//! inside the same `(database, app)` bucket.
 //! 3. Every [`crate::descriptor::EnumDescriptor::postgres_type`] is
-//!    globally unique. Two enums cannot share a `CREATE TYPE` name.
+//! globally unique. Two enums cannot share a `CREATE TYPE` name.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -61,6 +61,7 @@ use crate::descriptor::{
     ModelDescriptor, PartitionSpec, PkType, RustSourceType,
 };
 use crate::fts::FtsDescriptor;
+use crate::migrate::naming::outbox_table_name;
 use crate::migrate::provider::{DescriptorProvider, InventoryDescriptorProvider};
 use crate::relation::{OnDelete, RelationKind};
 
@@ -84,7 +85,7 @@ pub struct BucketKey {
     pub database: String,
     /// App label — the `#[djogi::apps!]` `LABEL` value. Empty
     /// string `""` for the synthetic global bucket (models without
-    /// `#[model(app = ...)]`).
+    /// `#[model(app =...)]`).
     pub app: String,
 }
 
@@ -217,9 +218,9 @@ impl std::fmt::Display for ProjectionError {
             } => write!(
                 f,
                 "two `#[model]`s share the Rust type name `{type_name}`: \
-                 tables `{first_table}` and `{second_table}`. Type names must \
-                 be globally unique because FK target resolution keys off \
-                 `type_name`. Rename one of the structs."
+     tables `{first_table}` and `{second_table}`. Type names must \
+     be globally unique because FK target resolution keys off \
+     `type_name`. Rename one of the structs."
             ),
             ProjectionError::DuplicateTableInBucket {
                 bucket,
@@ -229,8 +230,8 @@ impl std::fmt::Display for ProjectionError {
             } => write!(
                 f,
                 "two models in bucket (database={}, app={}) land at the same \
-                 Postgres table `{table}`: types `{first_type}` and `{second_type}`. \
-                 Each `(database, app, table)` triple may carry at most one model.",
+     Postgres table `{table}`: types `{first_type}` and `{second_type}`. \
+     Each `(database, app, table)` triple may carry at most one model.",
                 bucket.database, bucket.app
             ),
             ProjectionError::DuplicateEnumPostgresType {
@@ -240,17 +241,17 @@ impl std::fmt::Display for ProjectionError {
             } => write!(
                 f,
                 "two `#[derive(DjogiEnum)]` types share the Postgres type \
-                 name `{postgres_type}`: `{first_rust_type}` and `{second_rust_type}`. \
-                 Postgres `CREATE TYPE` names must be globally unique."
+     name `{postgres_type}`: `{first_rust_type}` and `{second_rust_type}`. \
+     Postgres `CREATE TYPE` names must be globally unique."
             ),
             ProjectionError::UnknownAppLabel {
                 app_label,
                 model_table,
             } => write!(
                 f,
-                "model `{model_table}` declares `#[model(app = ...)]` resolving \
-                 to label `{app_label}`, but no app with that label is registered \
-                 via `djogi::apps!`. Either declare the app or fix the label."
+                "model `{model_table}` declares `#[model(app =...)]` resolving \
+     to label `{app_label}`, but no app with that label is registered \
+     via `djogi::apps!`. Either declare the app or fix the label."
             ),
             ProjectionError::CrossDatabaseForeignKey {
                 source_bucket,
@@ -261,9 +262,9 @@ impl std::fmt::Display for ProjectionError {
             } => write!(
                 f,
                 "cross-database foreign key rejected: `{}.{source_table}.{source_column}` \
-                 (database `{}`) references `{target_table}` (database `{}`). \
-                 Postgres FK constraints cannot span databases. Use an application-\
-                 level join or the outbox pattern instead.",
+     (database `{}`) references `{target_table}` (database `{}`). \
+     Postgres FK constraints cannot span databases. Use an application-\
+     level join or the outbox pattern instead.",
                 source_bucket.app, source_bucket.database, target_bucket.database
             ),
             ProjectionError::ConflictingDeferrabilitySpec {
@@ -274,10 +275,10 @@ impl std::fmt::Display for ProjectionError {
             } => write!(
                 f,
                 "two `DeferrabilitySpec` entries for `{model_type_name}::{field_name}` \
-                 disagree: first=(deferrable={}, initially_deferred={}), \
-                 second=(deferrable={}, initially_deferred={}). Inventory iteration \
-                 order is not deterministic — the macro must emit at most one spec \
-                 per `(model_type_name, field_name)`.",
+     disagree: first=(deferrable={}, initially_deferred={}), \
+     second=(deferrable={}, initially_deferred={}). Inventory iteration \
+     order is not deterministic — the macro must emit at most one spec \
+     per `(model_type_name, field_name)`.",
                 first.0, first.1, second.0, second.1
             ),
             ProjectionError::ProxyParentNotRegistered {
@@ -289,29 +290,29 @@ impl std::fmt::Display for ProjectionError {
             } => write!(
                 f,
                 "foreign key `{}.{source_table}.{source_column}` (database `{}`) \
-                 targets proxy `{proxy_type}` whose `proxy_for = {parent_type}` parent \
-                 is not registered in the inventory. Proxies never project DDL — \
-                 the parent owns the table — so the FK target table cannot be \
-                 resolved without the parent's descriptor. Register `{parent_type}` \
-                 via `#[model(...)]` in a crate that participates in the migration \
-                 inventory.",
+     targets proxy `{proxy_type}` whose `proxy_for = {parent_type}` parent \
+     is not registered in the inventory. Proxies never project DDL — \
+     the parent owns the table — so the FK target table cannot be \
+     resolved without the parent's descriptor. Register `{parent_type}` \
+     via `#[model(...)]` in a crate that participates in the migration \
+     inventory.",
                 source_bucket.app, source_bucket.database
             ),
             ProjectionError::ProxyCycle { type_name } => write!(
                 f,
                 "proxy chain forms a cycle starting at `{type_name}` — \
-                 `proxy_for` references must terminate at a concrete (non-proxy) \
-                 parent. Break the cycle by removing one of the `proxy_for` \
-                 declarations in the loop."
+     `proxy_for` references must terminate at a concrete (non-proxy) \
+     parent. Break the cycle by removing one of the `proxy_for` \
+     declarations in the loop."
             ),
             ProjectionError::RelationAccessorCollisions(inner) => write!(
                 f,
                 "relation-accessor collisions detected before projection \
-                 (GH #158); the framework gates `project_from_inventory` on \
-                 the global `inventory::iter::<ReverseRelationMarker>` walk \
-                 so cross-kind clashes surface with relation metadata \
-                 rather than at a downstream `ambiguous method call` site:\n\
-                 {inner}"
+     (GH #158); the framework gates `project_from_inventory` on \
+     the global `inventory::iter::<ReverseRelationMarker>` walk \
+     so cross-kind clashes surface with relation metadata \
+     rather than at a downstream `ambiguous method call` site:\n\
+     {inner}"
             ),
         }
     }
@@ -460,7 +461,7 @@ where
 {
     let models: Vec<&ModelDescriptor> = models.into_iter().collect();
     let apps: Vec<&AppDescriptor> = apps.into_iter().collect();
-    // .collect` with explicit
+    //.collect` with explicit
     // duplicate detection. Inventory iteration order is not
     // deterministic across builds, so silent last-writer-wins on a
     // disagreeing duplicate would produce non-byte-stable migrations.
@@ -718,7 +719,7 @@ where
             // `CREATE TABLE`. Skip projection entirely (table + indexes)
             // so the differ never sees the proxy descriptor as a schema
             // source; index ownership belongs to the parent in v0.1.0.
-            // A proxy/parent `table = ...` mismatch is caught at
+            // A proxy/parent `table =...` mismatch is caught at
             // descriptor-lookup time (`T::table_name`), not here
             // see `docs/guide/proxy.md`.
             if m.proxy_for.is_some() {
@@ -995,7 +996,7 @@ fn project_outbox_table(
         .get(m.type_name)
         .cloned()
         .unwrap_or_else(|| pk_sql_type_text(&m.pk_type));
-    let table = format!("{}_outbox", m.table_name);
+    let table = outbox_table_name(m.table_name);
 
     TableSchema {
         app: m.app.map(|s| s.to_string()),
@@ -1037,7 +1038,7 @@ fn project_outbox_table(
 }
 
 fn project_outbox_pending_index(table: &str) -> IndexSchema {
-    let outbox_table = format!("{table}_outbox");
+    let outbox_table = outbox_table_name(table);
     IndexSchema {
         extension_dependency: None,
         include: Vec::new(),
@@ -1168,7 +1169,7 @@ fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema
 /// to the Rust source type's representable range.
 /// Returns `None` for columns whose Rust type maps identity-width to
 /// the Postgres column type (`i16`, `i32`, `i64`, `bool`, `String`,
-/// `f32`, `f64`, ...) — the column type already enforces the range,
+/// `f32`, `f64`,...) — the column type already enforces the range,
 /// and a redundant CHECK would inflate every snapshot for no safety
 /// win.
 /// **Active arms (— temporal year bounds + finite guard).** Each
@@ -1306,7 +1307,7 @@ fn field_type_check(
         // already enforces the relevant range. Adopter `Decimal → NUMERIC`
         // columns reach the `FieldSqlType::Numeric` arm below — they carry
         // `Some(RustSourceType::Decimal)` and project a structural CHECK
-        // , not None.
+        //, not None.
         FieldSqlType::SmallInt => match rust_source_type {
             Some(RustSourceType::I8) => Some(format!("{qcol} >= -128 AND {qcol} <= 127")),
             Some(RustSourceType::U8) => Some(format!("{qcol} >= 0 AND {qcol} <= 255")),
@@ -1450,7 +1451,7 @@ fn field_type_check(
         // `DoublePrecision`, `Boolean`, `Uuid`, `Jsonb`, `Bytea`
         // (— raw binary has no representable-range constraint),
         // arrays, `Citext`, `Geography`, `Custom`, and every
-        // `NumericPrecision { .. }` instance — ships
+        // `NumericPrecision {.. }` instance — ships
         // `rust_decimal::Decimal` as bare `Numeric` + structural CHECK,
         // not as `NumericPrecision`) carry their own type bounds via
         // the column type itself; no Rust-derived CHECK applies. Future
@@ -1464,26 +1465,26 @@ fn field_type_check(
 /// to a `time::Date`-storable value.
 /// Two clauses, both required:
 /// 1. `pg_catalog.isfinite(<expr>)` — rejects Postgres's two non-finite
-///    DATE special values (`'infinity'::date` and `'-infinity'::date`)
-///    that `time::Date` cannot represent at all. Without this guard a
-///    raw `INSERT … DATE '-infinity'` lands successfully and poisons
-///    the next typed `time::Date::from_sql` decode with
-///    `DjogiError::Decode`. `pg_catalog.isfinite(date)` is documented
-///    to return FALSE for both `+/-infinity` and NULL for NULL input,
-///    so the standard CHECK NULL-as-satisfied rule still passes SQL
-///    NULL through.
+/// DATE special values (`'infinity'::date` and `'-infinity'::date`)
+/// that `time::Date` cannot represent at all. Without this guard a
+/// raw `INSERT … DATE '-infinity'` lands successfully and poisons
+/// the next typed `time::Date::from_sql` decode with
+/// `DjogiError::Decode`. `pg_catalog.isfinite(date)` is documented
+/// to return FALSE for both `+/-infinity` and NULL for NULL input,
+/// so the standard CHECK NULL-as-satisfied rule still passes SQL
+/// NULL through.
 /// 2. `<expr> <= DATE '9999-12-31'` — caps the year at `time::Date`'s
-///    default MAX (`Date::MAX_YEAR = 9999`). Postgres DATE accepts
-///    much higher years (up to 5874897 AD); the upper-bound clause
-///    rejects writes that exceed the Rust type's representable range.
-///    **Callers are responsible for the NULL pass-through.** The helper
-///    returns a bare conjunction with no `<expr> IS NULL OR` outer wrap.
-///    At the scalar `FieldSqlType::Date` arm Postgres CHECK's
-///    NULL-treated-as-satisfied semantics handles SQL NULL (both clauses
-///    evaluate to NULL, the conjunction is NULL, CHECK is satisfied).
-///    At the range-endpoint arm `range_endpoint_checks` wraps the helper
-///    with `<endpoint> IS NULL OR (...)` so empty / unbounded / NULL
-///    ranges short-circuit before the helper runs.
+/// default MAX (`Date::MAX_YEAR = 9999`). Postgres DATE accepts
+/// much higher years (up to 5874897 AD); the upper-bound clause
+/// rejects writes that exceed the Rust type's representable range.
+/// **Callers are responsible for the NULL pass-through.** The helper
+/// returns a bare conjunction with no `<expr> IS NULL OR` outer wrap.
+/// At the scalar `FieldSqlType::Date` arm Postgres CHECK's
+/// NULL-treated-as-satisfied semantics handles SQL NULL (both clauses
+/// evaluate to NULL, the conjunction is NULL, CHECK is satisfied).
+/// At the range-endpoint arm `range_endpoint_checks` wraps the helper
+/// with `<endpoint> IS NULL OR (...)` so empty / unbounded / NULL
+/// ranges short-circuit before the helper runs.
 fn date_range_expr(column_expr: &str) -> String {
     format!("pg_catalog.isfinite({column_expr}) AND {column_expr} <= DATE '9999-12-31'")
 }
@@ -1492,28 +1493,28 @@ fn date_range_expr(column_expr: &str) -> String {
 /// resolves to a `time::OffsetDateTime`-storable value.
 /// Two clauses, both required:
 /// 1. `pg_catalog.isfinite(<expr>)` — rejects Postgres's two non-finite
-///    TIMESTAMPTZ special values (`'infinity'::timestamptz` and
-///    `'-infinity'::timestamptz`) that `time::OffsetDateTime` cannot
-///    represent. `pg_catalog.isfinite(timestamptz)` returns FALSE for
-///    both infinities and NULL for NULL input, so the standard CHECK
-///    NULL-as-satisfied rule still passes SQL NULL through.
+/// TIMESTAMPTZ special values (`'infinity'::timestamptz` and
+/// `'-infinity'::timestamptz`) that `time::OffsetDateTime` cannot
+/// represent. `pg_catalog.isfinite(timestamptz)` returns FALSE for
+/// both infinities and NULL for NULL input, so the standard CHECK
+/// NULL-as-satisfied rule still passes SQL NULL through.
 /// 2. `<expr> <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'` — caps
-///    the value at `time::OffsetDateTime`'s default upper bound.
-///    Postgres TIMESTAMPTZ accepts much higher years (up to 294276 AD);
-///    the upper-bound clause rejects writes that exceed the Rust type's
-///    representable range. The literal uses the `TIMESTAMPTZ` keyword
-///    with explicit `+00` UTC offset so the comparison is
-///    timezone-invariant — using plain `TIMESTAMP '...'` (without TZ)
-///    would make Postgres interpret the literal in the session
-///    timezone, shifting the effective upper bound.
-///    **Callers are responsible for the NULL pass-through.** Same shape
-///    as `date_range_expr`: the scalar `FieldSqlType::Timestamptz` arm
-///    relies on CHECK's NULL semantics, and `range_endpoint_checks` adds
-///    the `<endpoint> IS NULL OR (...)` wrap for the range case.
+/// the value at `time::OffsetDateTime`'s default upper bound.
+/// Postgres TIMESTAMPTZ accepts much higher years (up to 294276 AD);
+/// the upper-bound clause rejects writes that exceed the Rust type's
+/// representable range. The literal uses the `TIMESTAMPTZ` keyword
+/// with explicit `+00` UTC offset so the comparison is
+/// timezone-invariant — using plain `TIMESTAMP '...'` (without TZ)
+/// would make Postgres interpret the literal in the session
+/// timezone, shifting the effective upper bound.
+/// **Callers are responsible for the NULL pass-through.** Same shape
+/// as `date_range_expr`: the scalar `FieldSqlType::Timestamptz` arm
+/// relies on CHECK's NULL semantics, and `range_endpoint_checks` adds
+/// the `<endpoint> IS NULL OR (...)` wrap for the range case.
 fn timestamptz_range_expr(column_expr: &str) -> String {
     format!(
         "pg_catalog.isfinite({column_expr}) AND \
-         {column_expr} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+   {column_expr} <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
     )
 }
 
@@ -1526,7 +1527,7 @@ fn timestamptz_range_expr(column_expr: &str) -> String {
 fn timestamp_range_expr(column_expr: &str) -> String {
     format!(
         "pg_catalog.isfinite({column_expr}) AND \
-         {column_expr} <= TIMESTAMP '9999-12-31 23:59:59.999999'"
+   {column_expr} <= TIMESTAMP '9999-12-31 23:59:59.999999'"
     )
 }
 
@@ -1552,8 +1553,8 @@ fn timestamp_range_expr(column_expr: &str) -> String {
 fn decimal_repr_expr(column_expr: &str) -> String {
     format!(
         "scale({column_expr}) IS NOT NULL AND \
-         scale({column_expr}) <= 28 AND \
-         abs({column_expr}) * power(10::numeric, scale({column_expr})) <= 79228162514264337593543950335"
+   scale({column_expr}) <= 28 AND \
+   abs({column_expr}) * power(10::numeric, scale({column_expr})) <= 79228162514264337593543950335"
     )
 }
 
@@ -1579,16 +1580,16 @@ fn range_endpoint_checks(range_column: &str, bound_check: fn(&str) -> String) ->
 /// `pg_catalog.bool_and(value IS NULL OR (pg_catalog.isfinite(value) AND value <=
 /// '9999-12-31'::pg_catalog.date))` over all unnested elements:
 /// - Rejects both `+infinity` and `-infinity` date elements — `pg_catalog.isfinite(date)`
-///   returns FALSE for both non-finite DATE special values, not just the upper one.
-///   The previous `upper_bound >= ALL(col)` strategy passed `-infinity` because
-///   `-infinity < upper_bound`, making `upper_bound >= -infinity` TRUE.
+/// returns FALSE for both non-finite DATE special values, not just the upper one.
+/// The previous `upper_bound >= ALL(col)` strategy passed `-infinity` because
+/// `-infinity < upper_bound`, making `upper_bound >= -infinity` TRUE.
 /// - Admits `NULL` elements (consistent with SQL array-element NULL semantics).
 /// - Admits empty arrays (COALESCE inside the helper maps the empty-set `bool_and`
-///   NULL to TRUE).
-///   **Why a helper function and not a direct expression?** Postgres CHECK clauses may not
-///   contain subqueries or `unnest(...)` aggregate forms directly; the helper function
-///   encapsulates the `unnest` + `bool_and` loop in a valid IMMUTABLE SQL function.
-///   This mirrors the `NumericArray` precedent in [`numeric_array_is_rust_decimal_check`].
+/// NULL to TRUE).
+/// **Why a helper function and not a direct expression?** Postgres CHECK clauses may not
+/// contain subqueries or `unnest(...)` aggregate forms directly; the helper function
+/// encapsulates the `unnest` + `bool_and` loop in a valid IMMUTABLE SQL function.
+/// This mirrors the `NumericArray` precedent in [`numeric_array_is_rust_decimal_check`].
 fn date_array_is_finite_check(array_column: &str) -> String {
     format!("{array_column} IS NULL OR djogi.__djogi_date_array_is_finite_v1({array_column})")
 }
@@ -1615,20 +1616,20 @@ fn numeric_array_is_rust_decimal_check(array_column: &str) -> String {
 /// - Neither present → `None` (no CHECK constraint).
 /// - Only one present → the present one verbatim (no extra parentheses).
 /// - Both present → `({type-derived}) AND ({adopter})` — single SQL
-///   expression, both clauses must pass.
-///   The single constraint slot keeps the ADD / DROP / AMEND lifecycle in
-///   the differ unchanged: a column has at most one CHECK at
-///   `<table>_<column>_check`. Constraint name uniqueness is guaranteed by
-///   `migrate/sql.rs::check_constraint_name`. The combined-expression
-///   approach loses a small amount of fault-diagnostic granularity (a CHECK
-///   violation surfaces the whole `(A) AND (B)` expression rather than
-///   pinpointing which clause failed), but Postgres includes the full
-///   expression text in the error message so adopters can still tell the
-///   type bound from the adopter bound on inspection.
-///   Defensive normalisation: both inputs are `trim()`'d to avoid
-///   `"(expr1) AND (expr2)"` whitespace artefacts in snapshot output.
-///   The differ compares CHECK expressions by string equality, so any
-///   drift in whitespace would emit a spurious AMEND on every compose.
+/// expression, both clauses must pass.
+/// The single constraint slot keeps the ADD / DROP / AMEND lifecycle in
+/// the differ unchanged: a column has at most one CHECK at
+/// `<table>_<column>_check`. Constraint name uniqueness is guaranteed by
+/// `migrate/sql.rs::check_constraint_name`. The combined-expression
+/// approach loses a small amount of fault-diagnostic granularity (a CHECK
+/// violation surfaces the whole `(A) AND (B)` expression rather than
+/// pinpointing which clause failed), but Postgres includes the full
+/// expression text in the error message so adopters can still tell the
+/// type bound from the adopter bound on inspection.
+/// Defensive normalisation: both inputs are `trim()`'d to avoid
+/// `"(expr1) AND (expr2)"` whitespace artefacts in snapshot output.
+/// The differ compares CHECK expressions by string equality, so any
+/// drift in whitespace would emit a spurious AMEND on every compose.
 fn combine_check_expressions(
     type_derived: Option<String>,
     adopter: Option<&str>,
@@ -1657,16 +1658,16 @@ fn combine_check_expressions(
 /// * [`PkType::HeerId`] / [`PkType::HeerIdDesc`] → [`StrictIdFamily::HeerId`]
 /// * [`PkType::RanjId`] / [`PkType::RanjIdDesc`] → [`StrictIdFamily::RanjId`]
 /// * [`PkType::Serial`] / [`PkType::None`] /
-///   [`PkType::Composite`] / [`PkType::Custom`] → [`StrictIdFamily::None`]
-///   The mapping is computed once per descriptor at projection entry and
-///   flows through [`project_model`] / [`project_column`] alongside
-///   [`pk_sql_type_text`]'s SQL-type substitution. This keeps the
-///   semantic-family and FK SQL-type substitutions parallel — both are
-///   resolved at the same projection-time crossing where every
-///   descriptor in the inventory is visible.
-///   (post-review hardening: SQL-type → semantic-family
-///   dispatch so `PkType::Custom` is never coerced into a HeerId / RanjId
-///   CHECK based on a coincidental SQL carrier match).
+/// [`PkType::Composite`] / [`PkType::Custom`] → [`StrictIdFamily::None`]
+/// The mapping is computed once per descriptor at projection entry and
+/// flows through [`project_model`] / [`project_column`] alongside
+/// [`pk_sql_type_text`]'s SQL-type substitution. This keeps the
+/// semantic-family and FK SQL-type substitutions parallel — both are
+/// resolved at the same projection-time crossing where every
+/// descriptor in the inventory is visible.
+/// (post-review hardening: SQL-type → semantic-family
+/// dispatch so `PkType::Custom` is never coerced into a HeerId / RanjId
+/// CHECK based on a coincidental SQL carrier match).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StrictIdFamily {
     /// HeerId / HeerIdDesc — BIGINT carrier, structural invariant
@@ -1690,7 +1691,7 @@ enum StrictIdFamily {
 /// unconditionally — the framework cannot inspect a third-party
 /// `PrimaryKey::SQL_TYPE`'s semantic identity, so the only safe default
 /// is "no HeerRanjID invariant to enforce."
-/// .
+///.
 fn strict_id_family_of_pk(pk: &PkType) -> StrictIdFamily {
     match pk {
         PkType::HeerId | PkType::HeerIdDesc => StrictIdFamily::HeerId,
@@ -1710,7 +1711,7 @@ fn strict_id_family_of_pk(pk: &PkType) -> StrictIdFamily {
 }
 
 /// Project the opt-in structural CHECK for HeerId / RanjId columns
-/// .
+///.
 /// Returns `Some(<sql expression>)` when the column's HeerRanjID
 /// semantic family is [`StrictIdFamily::HeerId`] or
 /// [`StrictIdFamily::RanjId`], and `None` for [`StrictIdFamily::None`].
@@ -1719,31 +1720,31 @@ fn strict_id_family_of_pk(pk: &PkType) -> StrictIdFamily {
 /// pure family → CHECK mapper.
 /// # CHECK shape
 /// * [`StrictIdFamily::HeerId`] (BIGINT carrier) → `<col> >= 0`. The
-///   Rust `HeerId::from_i64` rejects every negative `i64` (bit 63 = 1),
-///   and the constructor for `HeerId::new` masks the remaining 63 bits
-///   (41 timestamp + 9 node + 13 sequence) into a valid layout without
-///   any reserved-bit slot to enforce. The only structural invariant
-///   is therefore `bit 63 = 0`, which lowers to `col >= 0` on the
-///   Postgres signed `BIGINT` carrier.
+/// Rust `HeerId::from_i64` rejects every negative `i64` (bit 63 = 1),
+/// and the constructor for `HeerId::new` masks the remaining 63 bits
+/// (41 timestamp + 9 node + 13 sequence) into a valid layout without
+/// any reserved-bit slot to enforce. The only structural invariant
+/// is therefore `bit 63 = 0`, which lowers to `col >= 0` on the
+/// Postgres signed `BIGINT` carrier.
 /// * [`StrictIdFamily::RanjId`] (UUID carrier) → `version=8 AND
 /// variant=RFC4122`. `RanjId::from_uuid` rejects every UUID whose
-///   version nibble (bits 76-79) is not `0b1000` or whose variant
-///   high bits (bits 62-63) are not `0b10`. The flip mask for
-///   `RanjIdDesc` (`0xFFFF_FFFF_FFFF_0FFF_0FFF_FFFF_8000_FFFF`)
-///   preserves both fields, so the ascending and descending variants
-///   share the same structural CHECK.
-///   The UUID CHECK extracts the two relevant nibbles from the canonical
-///   8-4-4-4-12 lowercase text form Postgres emits via the `::text` cast:
-///   position 15 is the version hex digit (`'8'` for UUIDv8), position 20
-///   is the variant high nibble (`'8'`, `'9'`, `'a'`, `'b'` for RFC4122
-///   `10xx`). Postgres `uuid_out` canonicalises every UUID to lowercase
-///   hex, so case folding on the literal set is unnecessary. The
-///   substring path adds ~1–3 µs per row vs `<1 µs` for the BIGINT
-///   comparison — both are opt-in because automatic emission would break
-///   existing models that carry externally-generated IDs.
+/// version nibble (bits 76-79) is not `0b1000` or whose variant
+/// high bits (bits 62-63) are not `0b10`. The flip mask for
+/// `RanjIdDesc` (`0xFFFF_FFFF_FFFF_0FFF_0FFF_FFFF_8000_FFFF`)
+/// preserves both fields, so the ascending and descending variants
+/// share the same structural CHECK.
+/// The UUID CHECK extracts the two relevant nibbles from the canonical
+/// 8-4-4-4-12 lowercase text form Postgres emits via the `::text` cast:
+/// position 15 is the version hex digit (`'8'` for UUIDv8), position 20
+/// is the variant high nibble (`'8'`, `'9'`, `'a'`, `'b'` for RFC4122
+/// `10xx`). Postgres `uuid_out` canonicalises every UUID to lowercase
+/// hex, so case folding on the literal set is unnecessary. The
+/// substring path adds ~1–3 µs per row vs `<1 µs` for the BIGINT
+/// comparison — both are opt-in because automatic emission would break
+/// existing models that carry externally-generated IDs.
 /// # NULL pass-through
 /// Both CHECK shapes evaluate to NULL on a NULL column value (`col >=
-/// 0` returns NULL on `col IS NULL`; `substring(NULL::text, ...)`
+/// 0` returns NULL on `col IS NULL`; `substring(NULL::text,...)`
 /// returns NULL; the equality / `IN` comparisons against NULL also
 /// produce NULL). Postgres CHECK constraints treat NULL as satisfied,
 /// so nullable HeerId / RanjId columns work unchanged. No explicit
@@ -1763,7 +1764,7 @@ fn strict_id_family_of_pk(pk: &PkType) -> StrictIdFamily {
 /// can still propagate the opt-in flag broadly when `#[model(strict_ids)]`
 /// fires; the projection layer's family lookup is where applicability
 /// is filtered.
-/// .
+///.
 fn strict_id_check_expr(family: StrictIdFamily, column_name: &str) -> Option<String> {
     let qcol = quote_ident_for_check(column_name);
     match family {
@@ -1801,7 +1802,7 @@ fn strict_id_check_expr(family: StrictIdFamily, column_name: &str) -> Option<Str
         // intact without losing semantic parity.
         StrictIdFamily::RanjId => Some(format!(
             "pg_catalog.substring({qcol}::text, 15, 1) = '8' AND \
-             pg_catalog.substring({qcol}::text, 20, 1) IN ('8','9','a','b')"
+    pg_catalog.substring({qcol}::text, 20, 1) IN ('8','9','a','b')"
         )),
 
         // Every other semantic family — Serial, Custom, Composite, None
@@ -2011,7 +2012,7 @@ fn project_column(
     // Distinct from `type_derived_check` because the strict-ID CHECK:
     // 1. Dispatches on the column's **HeerRanjID semantic family**
     // (HeerId / RanjId / None), NOT on the resolved SQL type
-    // string. A `PkType::Custom { sql_type: "BIGINT", .. }` shares
+    // string. A `PkType::Custom { sql_type: "BIGINT",.. }` shares
     // the BIGINT SQL carrier with HeerId but carries no HeeRanjID
     // bit-layout invariant; the semantic-family dispatch ensures
     // the CHECK only fires where the family is actually HeerId or
@@ -2118,7 +2119,7 @@ fn project_column(
 /// `HeerId` / `HeerIdRecencyBiased` → `BIGINT`,
 /// `RanjId` / `RanjIdRecencyBiased` → `UUID`,
 /// `Serial` → `INTEGER`,
-/// `Custom { sql_type, .. }` → that text verbatim,
+/// `Custom { sql_type,.. }` → that text verbatim,
 /// `Composite` / `None` → `TEXT` (placeholder; FK references against
 /// composite or no-PK tables are rejected upstream by the descriptor
 /// contract — the placeholder lets the projection complete instead
@@ -2126,7 +2127,7 @@ fn project_column(
 /// This helper resolves the SQL carrier only. The HeerRanjID semantic
 /// family — the dispatch key for strict-ID CHECK projection
 /// is carried separately via [`strict_id_family_of_pk`]. A
-/// `PkType::Custom { sql_type: "BIGINT", .. }` reports `"BIGINT"` here
+/// `PkType::Custom { sql_type: "BIGINT",.. }` reports `"BIGINT"` here
 /// (the FK source column needs the correct SQL type), but reports
 /// [`StrictIdFamily::None`] there (no HeerRanjID invariant applies).
 /// Keeping the two resolutions parallel prevents SQL-carrier
@@ -2328,8 +2329,8 @@ fn project_index(idx: &IndexSpec, table: &str) -> IndexSchema {
             IndexKind::UniqueConstraint | IndexKind::UniqueIndex
         ) || matches!(idx.index_type, IndexType::BTree),
         "project_index: PostgreSQL unique indexes are btree-only; \
-         IndexSpec {name:?} on table {table:?} carries kind {kind:?} \
-         with non-btree index_type {ty:?} (djogi#83).",
+   IndexSpec {name:?} on table {table:?} carries kind {kind:?} \
+   with non-btree index_type {ty:?} (djogi#83).",
         name = idx.name,
         table = table,
         kind = idx.kind,
@@ -2773,7 +2774,7 @@ mod tests {
     #[test]
     fn fk_cascade_round_trips_through_foreign_key_schema() {
         // populate `ForeignKeySchema.on_delete` so the SQL emitter
-        // can render the right `ON DELETE ...` clause without
+        // can render the right `ON DELETE...` clause without
         // silently coercing to RESTRICT.
         const RESTRICT: &[FieldDescriptor] = &[fk_field_descriptor(OnDelete::Restrict)];
         const CASCADE: &[FieldDescriptor] = &[fk_field_descriptor(OnDelete::Cascade)];
@@ -3175,9 +3176,9 @@ mod tests {
     /// #86 — Serial PK must emit auto-increment IDENTITY clause via
     /// the dedicated `identity` field on `ColumnSchema` (not by
     /// inlining the clause into `sql_type`, which would route through
-    /// `ColumnChange::ChangeType` and emit invalid `ALTER COLUMN ...
+    /// `ColumnChange::ChangeType` and emit invalid `ALTER COLUMN...
     /// TYPE INTEGER GENERATED BY DEFAULT AS IDENTITY` for snapshot
-    /// upgrades — .
+    /// upgrades —.
     /// The DDL emitter renders `INTEGER GENERATED BY DEFAULT AS
     /// IDENTITY NOT NULL` from `sql_type = "INTEGER"` plus
     /// `identity = Some(IdentityKindSchema::ByDefault)`. The differ
@@ -3852,7 +3853,7 @@ mod tests {
             assert!(
                 !matches!(e, ProjectionError::RelationAccessorCollisions(_)),
                 "validator returned Ok(()) but projection still produced \
-                 RelationAccessorCollisions: {e}"
+     RelationAccessorCollisions: {e}"
             );
         }
     }
@@ -3985,7 +3986,7 @@ mod tests {
         assert!(
             expr.contains("pg_catalog.isfinite(\"occurred_at\") AND"),
             "TIMESTAMPTZ CHECK must place the finite guard before the year bound under AND: \
-             {expr}"
+    {expr}"
         );
         // The whole expression also asserts the formatter's whitespace
         // shape (single space around AND, line continuation in the
@@ -3994,7 +3995,7 @@ mod tests {
         assert_eq!(
             normalized,
             "pg_catalog.isfinite(\"occurred_at\") AND \
-             \"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'",
+    \"occurred_at\" <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'",
             "TIMESTAMPTZ CHECK expression shape (full, whitespace-normalized): {expr}"
         );
     }
@@ -4086,7 +4087,7 @@ mod tests {
             assert!(
                 field_type_check(&ty, None, "col").is_none(),
                 "direct-mapped integer/numeric SQL type {ty:?} with no rust_source_type \
-                 must not carry a Rust-derived CHECK",
+     must not carry a Rust-derived CHECK",
             );
         }
     }
@@ -4550,7 +4551,7 @@ mod tests {
         assert!(
             owner_fk.check.is_none(),
             "FK column must never carry a Rust-derived CHECK \
-             regardless of declared sql_type: {:?}",
+    regardless of declared sql_type: {:?}",
             owner_fk.check
         );
     }
@@ -4593,7 +4594,7 @@ mod tests {
         // 2. `scale({qcol}) IS NOT NULL` (special-value guard);
         // 3. `scale({qcol}) <= 28` (scale bound);
         // 4. `abs({qcol})` (coefficient base);
-        // 5. `scale({qcol})` inside `power(10::numeric, ...)` (coefficient
+        // 5. `scale({qcol})` inside `power(10::numeric,...)` (coefficient
         // exponent).
         // All five must round-trip the column name through
         // `quote_ident_for_check` so a reserved-word column name parses
@@ -4629,14 +4630,14 @@ mod tests {
         assert!(
             expr.contains("scale(\"price\") IS NOT NULL"),
             "Decimal CHECK must carry the `scale(...) IS NOT NULL` guard to reject NaN / \
-             Infinity / -Infinity: {expr}"
+    Infinity / -Infinity: {expr}"
         );
         // The pass-through wrap keeps SQL NULL satisfied (the `scale IS NOT
         // NULL` guard alone would also reject NULL on nullable Decimal columns).
         assert!(
             expr.contains("(\"price\") IS NULL OR ("),
             "Decimal CHECK must wrap with `(<col>) IS NULL OR (...)` so nullable Decimal \
-             columns are unaffected by the special-value guard: {expr}"
+    columns are unaffected by the special-value guard: {expr}"
         );
     }
 
@@ -4728,13 +4729,13 @@ mod tests {
             "NUMRANGE upper endpoint must get Decimal scale bound: {expr}"
         );
         assert!(
-            expr.contains("scale(lower(\"price_range\")) <= 28 AND abs(lower(\"price_range\")) * power(10::numeric, scale(lower(\"price_range\"))) <= 79228162514264337593543950335"),
-            "NUMRANGE lower endpoint should reuse Decimal element checks: {expr}"
-        );
+   expr.contains("scale(lower(\"price_range\")) <= 28 AND abs(lower(\"price_range\")) * power(10::numeric, scale(lower(\"price_range\"))) <= 79228162514264337593543950335"),
+   "NUMRANGE lower endpoint should reuse Decimal element checks: {expr}"
+  );
         assert!(
-            expr.contains("scale(upper(\"price_range\")) <= 28 AND abs(upper(\"price_range\")) * power(10::numeric, scale(upper(\"price_range\"))) <= 79228162514264337593543950335"),
-            "NUMRANGE upper endpoint should reuse Decimal element checks: {expr}"
-        );
+   expr.contains("scale(upper(\"price_range\")) <= 28 AND abs(upper(\"price_range\")) * power(10::numeric, scale(upper(\"price_range\"))) <= 79228162514264337593543950335"),
+   "NUMRANGE upper endpoint should reuse Decimal element checks: {expr}"
+  );
         assert!(
             expr.contains("lower(\"price_range\") IS NULL OR"),
             "NUMRANGE lower endpoint check must keep NULL/unbounded pass-through: {expr}"
@@ -4884,18 +4885,18 @@ mod tests {
         .expect("TSTZRANGE must carry Timestamptz representability checks on both endpoints");
         // Lower endpoint conjunction.
         assert!(
-            expr.contains(
-                "lower(\"booking_window\") IS NULL OR (pg_catalog.isfinite(lower(\"booking_window\")) AND lower(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00')"
-            ),
-            "TSTZRANGE lower endpoint conjunction shape: {expr}"
-        );
+   expr.contains(
+    "lower(\"booking_window\") IS NULL OR (pg_catalog.isfinite(lower(\"booking_window\")) AND lower(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00')"
+   ),
+   "TSTZRANGE lower endpoint conjunction shape: {expr}"
+  );
         // Upper endpoint conjunction.
         assert!(
-            expr.contains(
-                "upper(\"booking_window\") IS NULL OR (pg_catalog.isfinite(upper(\"booking_window\")) AND upper(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00')"
-            ),
-            "TSTZRANGE upper endpoint conjunction shape: {expr}"
-        );
+   expr.contains(
+    "upper(\"booking_window\") IS NULL OR (pg_catalog.isfinite(upper(\"booking_window\")) AND upper(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00')"
+   ),
+   "TSTZRANGE upper endpoint conjunction shape: {expr}"
+  );
     }
 
     #[test]
@@ -4911,17 +4912,17 @@ mod tests {
         )
         .expect("DATERANGE must carry Date representability checks on both endpoints");
         assert!(
-            expr.contains(
-                "lower(\"validity\") IS NULL OR (pg_catalog.isfinite(lower(\"validity\")) AND lower(\"validity\") <= DATE '9999-12-31')"
-            ),
-            "DATERANGE lower endpoint conjunction shape: {expr}"
-        );
+   expr.contains(
+    "lower(\"validity\") IS NULL OR (pg_catalog.isfinite(lower(\"validity\")) AND lower(\"validity\") <= DATE '9999-12-31')"
+   ),
+   "DATERANGE lower endpoint conjunction shape: {expr}"
+  );
         assert!(
-            expr.contains(
-                "upper(\"validity\") IS NULL OR (pg_catalog.isfinite(upper(\"validity\")) AND upper(\"validity\") <= DATE '9999-12-31')"
-            ),
-            "DATERANGE upper endpoint conjunction shape: {expr}"
-        );
+   expr.contains(
+    "upper(\"validity\") IS NULL OR (pg_catalog.isfinite(upper(\"validity\")) AND upper(\"validity\") <= DATE '9999-12-31')"
+   ),
+   "DATERANGE upper endpoint conjunction shape: {expr}"
+  );
     }
 
     #[test]
@@ -4976,7 +4977,7 @@ mod tests {
         assert!(
             !expr.contains(">= ALL(\"slots\")"),
             "TIMESTAMPTZ[] check must not fall back to upper-bound-only ALL strategy \
-             (admits -infinity): {expr}"
+    (admits -infinity): {expr}"
         );
     }
 
@@ -5000,7 +5001,7 @@ mod tests {
         assert!(
             !expr.contains(">= ALL(\"validity\")"),
             "DATE[] check must not fall back to upper-bound-only ALL strategy \
-             (admits -infinity): {expr}"
+    (admits -infinity): {expr}"
         );
     }
 
@@ -5102,69 +5103,69 @@ mod tests {
 
         assert!(slots.check.is_none(), "INT4RANGE should stay no-op");
         assert!(
-            money
-                .check
-                .as_deref()
-                .expect("NUMRANGE must carry endpoint checks")
-                .contains("lower(\"money\") IS NULL OR (scale(lower(\"money\")) IS NOT NULL AND scale(lower(\"money\")) <= 28"),
-            "NUMRANGE lower endpoint must use DECIMAL element check with special-value guard"
-        );
+   money
+   .check
+   .as_deref()
+   .expect("NUMRANGE must carry endpoint checks")
+   .contains("lower(\"money\") IS NULL OR (scale(lower(\"money\")) IS NOT NULL AND scale(lower(\"money\")) <= 28"),
+   "NUMRANGE lower endpoint must use DECIMAL element check with special-value guard"
+  );
         assert!(
-            money
-                .check
-                .as_deref()
-                .expect("NUMRANGE must carry endpoint checks")
-                .contains("upper(\"money\") IS NULL OR (scale(upper(\"money\")) IS NOT NULL AND scale(upper(\"money\")) <= 28"),
-            "NUMRANGE upper endpoint must use DECIMAL element check with special-value guard"
-        );
+   money
+   .check
+   .as_deref()
+   .expect("NUMRANGE must carry endpoint checks")
+   .contains("upper(\"money\") IS NULL OR (scale(upper(\"money\")) IS NOT NULL AND scale(upper(\"money\")) <= 28"),
+   "NUMRANGE upper endpoint must use DECIMAL element check with special-value guard"
+  );
         assert!(
-            window.check.as_deref().expect("TSRANGE must carry endpoint checks").contains(
-                "lower(\"window\") IS NULL OR (pg_catalog.isfinite(lower(\"window\")) AND lower(\"window\") <= TIMESTAMP '9999-12-31 23:59:59.999999'"
-            ),
-            "TSRANGE lower endpoint must use finite-guarded TIMESTAMP upper bound"
-        );
+   window.check.as_deref().expect("TSRANGE must carry endpoint checks").contains(
+    "lower(\"window\") IS NULL OR (pg_catalog.isfinite(lower(\"window\")) AND lower(\"window\") <= TIMESTAMP '9999-12-31 23:59:59.999999'"
+   ),
+   "TSRANGE lower endpoint must use finite-guarded TIMESTAMP upper bound"
+  );
         assert!(
-            window
-                .check
-                .as_deref()
-                .expect("TSRANGE must carry endpoint checks")
-                .contains("upper(\"window\") IS NULL OR (pg_catalog.isfinite(upper(\"window\")) AND upper(\"window\") <= TIMESTAMP '9999-12-31 23:59:59.999999'"),
-            "TSRANGE upper endpoint must use finite-guarded TIMESTAMP upper bound"
-        );
+   window
+   .check
+   .as_deref()
+   .expect("TSRANGE must carry endpoint checks")
+   .contains("upper(\"window\") IS NULL OR (pg_catalog.isfinite(upper(\"window\")) AND upper(\"window\") <= TIMESTAMP '9999-12-31 23:59:59.999999'"),
+   "TSRANGE upper endpoint must use finite-guarded TIMESTAMP upper bound"
+  );
         assert!(
-            booking_window.check.as_deref().expect("TSTZRANGE must carry endpoint checks").contains(
-                "lower(\"booking_window\") IS NULL OR (pg_catalog.isfinite(lower(\"booking_window\")) AND lower(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
-            ),
-            "TSTZRANGE lower endpoint must use finite-guarded TIMESTAMPTZ upper bound"
-        );
+   booking_window.check.as_deref().expect("TSTZRANGE must carry endpoint checks").contains(
+    "lower(\"booking_window\") IS NULL OR (pg_catalog.isfinite(lower(\"booking_window\")) AND lower(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"
+   ),
+   "TSTZRANGE lower endpoint must use finite-guarded TIMESTAMPTZ upper bound"
+  );
         assert!(
-            booking_window
-                .check
-                .as_deref()
-                .expect("TSTZRANGE must carry endpoint checks")
-                .contains("upper(\"booking_window\") IS NULL OR (pg_catalog.isfinite(upper(\"booking_window\")) AND upper(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
-            "TSTZRANGE upper endpoint must use finite-guarded TIMESTAMPTZ upper bound"
-        );
+   booking_window
+   .check
+   .as_deref()
+   .expect("TSTZRANGE must carry endpoint checks")
+   .contains("upper(\"booking_window\") IS NULL OR (pg_catalog.isfinite(upper(\"booking_window\")) AND upper(\"booking_window\") <= TIMESTAMPTZ '9999-12-31 23:59:59.999999+00'"),
+   "TSTZRANGE upper endpoint must use finite-guarded TIMESTAMPTZ upper bound"
+  );
         assert!(
-            validity
-                .check
-                .as_deref()
-                .expect("DATERANGE must carry endpoint checks")
-                .contains(
-                    "lower(\"validity\") IS NULL OR (pg_catalog.isfinite(lower(\"validity\")) AND lower(\"validity\") <= DATE '9999-12-31'"
-                ),
-            "DATERANGE lower endpoint must use finite-guarded DATE upper bound"
-        );
+   validity
+   .check
+   .as_deref()
+   .expect("DATERANGE must carry endpoint checks")
+   .contains(
+     "lower(\"validity\") IS NULL OR (pg_catalog.isfinite(lower(\"validity\")) AND lower(\"validity\") <= DATE '9999-12-31'"
+    ),
+   "DATERANGE lower endpoint must use finite-guarded DATE upper bound"
+  );
         assert!(
-            validity
-                .check
-                .as_deref()
-                .expect("DATERANGE must carry endpoint checks")
-                .contains(
-                    "upper(\"validity\") IS NULL OR (pg_catalog.isfinite(upper(\"validity\")) AND upper(\"validity\") <= DATE '9999-12-31'"
-                ),
-            "DATERANGE upper endpoint must use finite-guarded DATE upper bound"
-        );
+   validity
+   .check
+   .as_deref()
+   .expect("DATERANGE must carry endpoint checks")
+   .contains(
+     "upper(\"validity\") IS NULL OR (pg_catalog.isfinite(upper(\"validity\")) AND upper(\"validity\") <= DATE '9999-12-31'"
+    ),
+   "DATERANGE upper endpoint must use finite-guarded DATE upper bound"
+  );
     }
 
     #[test]
@@ -5219,7 +5220,7 @@ mod tests {
         assert!(
             !slot_check.contains(">= ALL(\"slots\")"),
             "TIMESTAMPTZ[] projection must not use upper-bound-only ALL (admits -infinity): \
-             {slot_check}"
+    {slot_check}"
         );
         assert!(
             validity_check.contains("djogi.__djogi_date_array_is_finite_v1(\"validity\")"),
@@ -5228,7 +5229,7 @@ mod tests {
         assert!(
             !validity_check.contains(">= ALL(\"validity\")"),
             "DATE[] projection must not use upper-bound-only ALL (admits -infinity): \
-             {validity_check}"
+    {validity_check}"
         );
         assert!(
             metrics_check.contains("djogi.__djogi_numeric_array_is_rust_decimal_v1(\"metrics\")"),
@@ -5280,7 +5281,7 @@ mod tests {
         // Snapshot comparison is byte-equality; any whitespace drift
         // between projection runs would emit a spurious AMEND.
         let combined =
-            combine_check_expressions(Some("  type_clause  ".into()), Some("   adopter_clause   "));
+            combine_check_expressions(Some(" type_clause ".into()), Some(" adopter_clause "));
         assert_eq!(
             combined.as_deref(),
             Some("(type_clause) AND (adopter_clause)")
@@ -5568,7 +5569,7 @@ mod tests {
             let check = col.check.as_ref().unwrap_or_else(|| {
                 panic!(
                     "framework Timestamptz column {} must carry the \
-                     OffsetDateTime representability CHECK (djogi#187)",
+      OffsetDateTime representability CHECK (djogi#187)",
                     col.name
                 )
             });
@@ -5900,7 +5901,7 @@ mod tests {
     #[test]
     fn project_column_strict_id_check_skipped_on_custom_bigint_pk_id() {
         // (post-review hardening) — the framework `id` column
-        // on a `PkType::Custom { sql_type: "BIGINT", .. }` model must
+        // on a `PkType::Custom { sql_type: "BIGINT",.. }` model must
         // NOT receive the HeerId `col >= 0` CHECK even when
         // `strict_id_check: true` propagated to the descriptor. The
         // Custom PK has no HeerRanjID bit-layout invariant; emitting
@@ -5946,7 +5947,7 @@ mod tests {
     #[test]
     fn project_column_strict_id_check_skipped_on_custom_uuid_pk_id() {
         // (post-review hardening) — symmetric to the
-        // Custom-BIGINT case: a `PkType::Custom { sql_type: "UUID", .. }`
+        // Custom-BIGINT case: a `PkType::Custom { sql_type: "UUID",.. }`
         // (e.g. an adopter using UUIDv4 application IDs) must NOT
         // receive the RanjId UUIDv8 + RFC 4122 CHECK. The CHECK would
         // reject every valid UUIDv4 the adopter inserts, breaking the
@@ -6039,7 +6040,7 @@ mod tests {
         assert!(
             fk_col.check.is_none(),
             "FK to a Custom BIGINT-shaped PK must NOT receive the HeerId positivity CHECK; \
-             found: {:?}",
+    found: {:?}",
             fk_col.check
         );
     }
@@ -6095,7 +6096,7 @@ mod tests {
         assert!(
             fk_col.check.is_none(),
             "FK to a Custom UUID-shaped PK must NOT receive the RanjId UUIDv8 CHECK; \
-             found: {:?}",
+    found: {:?}",
             fk_col.check
         );
     }

@@ -10,18 +10,18 @@ use djogi::prelude::*;
 #[model(table = "recency_a", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct RecencyA {
-    pub data: String,
+ pub data: String,
 }
 
 #[model(table = "internal_b", pk = HeerIdDesc)]
 #[derive(Debug, Clone)]
 pub struct InternalB {
-    pub data: String,
+ pub data: String,
 }
 
 fn _both_inject_heerid_desc(a: &RecencyA, b: &InternalB) {
-    let _: &::djogi::types::HeerIdDesc = &a.id;
-    let _: &::djogi::types::HeerIdDesc = &b.id;
+ let _: &::djogi::types::HeerIdDesc = &a.id;
+ let _: &::djogi::types::HeerIdDesc = &b.id;
 }
 
 fn main() {}

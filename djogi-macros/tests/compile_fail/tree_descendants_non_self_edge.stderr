@@ -1,18 +1,18 @@
 error[E0308]: mismatched types
-    --> $DIR/tree_descendants_non_self_edge.rs:41:50
-     |
-  41 |     let _qs = NodeB5::objects().tree_descendants(NodeB5Related::owner(), id);
-     |                                 ---------------- ^^^^^^^^^^^^^^^^^^^^^^ expected `RelationPath<NodeB5, NodeB5>`, found `RelationPath<NodeB5, OwnerB5>`
-     |                                 |
-     |                                 arguments to this method are incorrect
-     |
-     = note: expected struct `RelationPath<_, NodeB5>`
-                found struct `RelationPath<_, OwnerB5>`
+ --> $DIR/tree_descendants_non_self_edge.rs:41:50
+  |
+ 41 |  let _qs = NodeB5::objects().tree_descendants(NodeB5Related::owner(), id);
+  |         ---------------- ^^^^^^^^^^^^^^^^^^^^^^ expected `RelationPath<NodeB5, NodeB5>`, found `RelationPath<NodeB5, OwnerB5>`
+  |         |
+  |         arguments to this method are incorrect
+  |
+  = note: expected struct `RelationPath<_, NodeB5>`
+    found struct `RelationPath<_, OwnerB5>`
 note: method defined here
-    --> djogi/src/query/queryset.rs:1626:12
-     |
-1626 |     pub fn tree_descendants(
-     |            ^^^^^^^^^^^^^^^^
+ --> djogi/src/query/queryset.rs:1600:12
+  |
+1600 |  pub fn tree_descendants(
+  |   ^^^^^^^^^^^^^^^^
 
 error: aborting due to 1 previous error
 

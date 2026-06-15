@@ -15,8 +15,8 @@ use djogi::prelude::*;
 #[model(table = "orders_216_invalid", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Order216Invalid {
-    #[field(domain = "123bad")]
-    pub amount: rust_decimal::Decimal,
+ #[field(domain = "123bad")]
+ pub amount: rust_decimal::Decimal,
 }
 
 fn main() {}

@@ -1,5 +1,5 @@
 // Live-Postgres integration tests for the spatial-polish
-// surface ( /  /  / ).
+// surface ( / / / ).
 //
 // # Scope
 //
@@ -11,57 +11,57 @@
 // ## Scenarios
 //
 // 1. **`contains_point_in_polygon_matches`** — `FieldRef::contains`
-//    selects only the neighborhood polygon that contains the query point.
+//  selects only the neighborhood polygon that contains the query point.
 // 2. **`intersects_linestring_polygon`** — `FieldRef::intersects`
-//    selects only the route that crosses the query polygon.
+//  selects only the route that crosses the query polygon.
 // 3. **`contains_point_in_multipolygon`** — `FieldRef::contains` on a
-//    `MultiPolygon` finds a point that lives in one of its member polygons.
+//  `MultiPolygon` finds a point that lives in one of its member polygons.
 // 4. **`touches_adjacent_polygons`** — `FieldRef::touches` selects the
-//    polygon that shares an edge with the query polygon but does not
-//    overlap it.
+//  polygon that shares an edge with the query polygon but does not
+//  overlap it.
 // 5. **`bounded_by_with_order_by_distance_returns_expected_rows`** — bbox
-//    prefilter composed with `order_by_distance`.
+//  prefilter composed with `order_by_distance`.
 // 6. **`distance_to_in_filter_expr`** — `FieldRef::distance_to` composed
-//    into `filter_expr` as a `lt` predicate against 50 km from SFO.
+//  into `filter_expr` as a `lt` predicate against 50 km from SFO.
 // 7. **`group_by_region_counts_stores_per_neighborhood`** — per-region
-//    counts including the `None` bucket for stores outside every region.
+//  counts including the `None` bucket for stores outside every region.
 // 8. **`count_by_region_matches_group_by_region`** — the scalar-count
-//    sugar matches its `.annotate(|f| f.id().count_star())` equivalent.
+//  sugar matches its `.annotate(|f| f.id().count_star())` equivalent.
 // 9. **`cluster_by_proximity_dbscan_three_clusters_plus_noise`** — DBSCAN
-//    over 3 tight clusters + 1 outlier yields exactly 3 non-null cluster
-//    ids and one noise bucket.
+//  over 3 tight clusters + 1 outlier yields exactly 3 non-null cluster
+//  ids and one noise bucket.
 // 10. **`bucket_by_cell_tight_cluster_single_bucket`** — geohash
-//     bucketing at `P5` collapses 5 tightly-clustered points into one cell.
+//   bucketing at `P5` collapses 5 tightly-clustered points into one cell.
 //
 // # .5 emitter fixes (landed before these tests ran green)
 //
-// The initial  run surfaced four pre-existing emitter defects; all four
+// The initial run surfaced four pre-existing emitter defects; all four
 // were fixed in the .5 follow-up commit so every scenario above now
 // runs end-to-end. The defects and their fixes:
 //
 // - ** `$1::geography` bind mismatch** → `$n::bytea::geography` double
-//   cast so bound EWKB bytes are prepared as `bytea` and Postgres casts to
-//   `geography` at query time.
+//  cast so bound EWKB bytes are prepared as `bytea` and Postgres casts to
+//  `geography` at query time.
 // - ** `ST_Contains` / `ST_Touches` / `ST_Within` wrong argument type**
-//   → `emit_binary_predicate` now casts both the column and the bind to
-//   `::geometry` for these three functions, keeping `::geography` only for
-//   `ST_Intersects` (which has a native geography overload).
+//  → `emit_binary_predicate` now casts both the column and the bind to
+//  `::geometry` for these three functions, keeping `::geography` only for
+//  `ST_Intersects` (which has a native geography overload).
 // - ** `ST_Contains(geography, geography)` in the JOIN** →
-//   `build_spatial_join_grouped_select` now emits `ST_Covers(...)` instead,
-//   which has a native `geography` overload and identical semantics for
-//   the point-in-polygon use case.
+//  `build_spatial_join_grouped_select` now emits `ST_Covers(...)` instead,
+//  which has a native `geography` overload and identical semantics for
+//  the point-in-polygon use case.
 // - ** window-function in GROUP BY** → `build_cluster_grouped_select`
-//   now wraps the `ST_ClusterDBSCAN(...) OVER ()` call in an inner subquery
-//   so the outer `GROUP BY cluster_id` references a materialised column.
+//  now wraps the `ST_ClusterDBSCAN(...) OVER ()` call in an inner subquery
+//  so the outer `GROUP BY cluster_id` references a materialised column.
 //
 // # Infrastructure notes
 //
 // - `sync_models` creates every table used by this file from the model
-//   descriptors. PostGIS provisioning still flows through
-//   `#[djogi_test(extensions = ["postgis"])]`.
+//  descriptors. PostGIS provisioning still flows through
+//  `#[djogi_test(extensions = ["postgis"])]`.
 // - The missing-GiST warn test uses a stack-allocated custom
-//   `tracing::Subscriber` scoped via `set_default` — matching the pattern
-//   established in `queryset.rs`'s once-warn unit test.
+//  `tracing::Subscriber` scoped via `set_default` — matching the pattern
+//  established in `queryset.rs`'s once-warn unit test.
 
 use djogi::geo::{GeoPoint, LineString, MultiPolygon, Polygon};
 use djogi::prelude::*;
@@ -75,7 +75,7 @@ use djogi::query::spatial_grouping::{
 
 /// Store with a single-point `location` — used as the "data" side in all
 /// group-by-region / cluster / bucket tests.
-//  default flip — every model in this file is pinned to
+// default flip — every model in this file is pinned to
 // ascending HeerId so the explicit `djogi::HeerId::from_i64(0)` sentinels
 // in the seed helpers and per-test constructions stay type-compatible
 // with the injected `id` field.
@@ -384,9 +384,9 @@ async fn touches_adjacent_polygons(mut ctx: djogi::DjogiContext) {
 /// Confirms two things:
 ///
 /// 1. A `.filter_expr(|f| f.location().bounded_by(...))` predicate composed
-///    with `.order_by(|f| f.location().order_by_distance(center))` returns the
-///    expected rows (every bay-area store inside the bbox; every remote store
-///    excluded).
+///  with `.order_by(|f| f.location().order_by_distance(center))` returns the
+///  expected rows (every bay-area store inside the bbox; every remote store
+///  excluded).
 #[djogi::djogi_test(extensions = ["postgis"], sync_models = [Store])]
 async fn bounded_by_with_order_by_distance_returns_expected_rows(mut ctx: djogi::DjogiContext) {
     // Seed 20 stores: 10 inside the SF Bay box, 10 scattered worldwide.

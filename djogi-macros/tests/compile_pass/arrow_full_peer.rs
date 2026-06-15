@@ -18,28 +18,28 @@ use djogi::__private::serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(crate = "::djogi::__private::serde")]
 pub struct Department {
-    #[field(expose(public))]
-    pub name: String,
-    #[field(expose(public))]
-    pub budget: i64,
+ #[field(expose(public))]
+ pub name: String,
+ #[field(expose(public))]
+ pub budget: i64,
 }
 
 #[model(table = "employees_t6_full_peer", no_default)]
 #[derive(Debug, Clone)]
 pub struct Employee {
-    #[field(expose(public))]
-    pub display_name: String,
+ #[field(expose(public))]
+ pub display_name: String,
 
-    // `-> Department` (full peer model) — emitter clones the resolved
-    // target instead of routing through DepartmentAdmin.
-    #[field(expose(admin -> Department))]
-    pub department: ForeignKey<Department>,
+ // `-> Department` (full peer model) — emitter clones the resolved
+ // target instead of routing through DepartmentAdmin.
+ #[field(expose(admin -> Department))]
+ pub department: ForeignKey<Department>,
 }
 
 fn main() {
-    // EmployeeAdmin must carry a Department (the full model) under
-    // `department`, not a `DepartmentAdmin` narrow visage.
-    let _build = |emp: &Employee| -> Result<EmployeeAdmin, djogi::VisageError> {
-        EmployeeAdmin::try_from(emp)
-    };
+ // EmployeeAdmin must carry a Department (the full model) under
+ // `department`, not a `DepartmentAdmin` narrow visage.
+ let _build = |emp: &Employee| -> Result<EmployeeAdmin, djogi::VisageError> {
+  EmployeeAdmin::try_from(emp)
+ };
 }

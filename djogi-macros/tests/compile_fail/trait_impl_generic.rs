@@ -7,14 +7,14 @@
 // Every compile-fixture has `fn main() {}` so lihaaf's per-fixture rustc invocation produces a linkable artifact.
 
 trait Searchable {
-    fn searchable_columns(&self) -> &'static [&'static str];
+ fn searchable_columns(&self) -> &'static [&'static str];
 }
 
 #[djogi::trait_impl]
 impl<T> Searchable for Vec<T> {
-    fn searchable_columns(&self) -> &'static [&'static str] {
-        &[]
-    }
+ fn searchable_columns(&self) -> &'static [&'static str] {
+  &[]
+ }
 }
 
 fn main() {}

@@ -90,7 +90,7 @@ fn default_cli_bin() -> String {
 /// Migration-engine settings. Controls the runner's relpages-probe
 /// behaviour for `CREATE INDEX` statements that lack
 /// `requires_out_of_transaction = true`.
-/// Per .5 — when a transactional `CREATE INDEX` is
+/// Per.5 — when a transactional `CREATE INDEX` is
 /// about to run against a table whose `pg_class.relpages` exceeds
 /// `concurrent_warn_relpages`, the runner emits a
 /// `tracing::warn!` advising the operator to opt the index into
@@ -322,18 +322,18 @@ mod tests {
             jail.create_file(
                 "Djogi.toml",
                 r#"
-                [database]
-                url = "postgres://localhost/test"
-                dev_mode = false
+    [database]
+    url = "postgres://localhost/test"
+    dev_mode = false
 
-                [server]
-                host = "0.0.0.0"
-                port = 8000
+    [server]
+    host = "0.0.0.0"
+    port = 8000
 
-                [cli]
-                package = "my-workspace-bin"
-                bin = "my-djogi"
-                "#,
+    [cli]
+    package = "my-workspace-bin"
+    bin = "my-djogi"
+    "#,
             )?;
             let cfg = DjogiConfig::load().expect("load");
             assert_eq!(cfg.cli.package, "my-workspace-bin");
@@ -377,14 +377,14 @@ mod tests {
             jail.create_file(
                 "Djogi.toml",
                 r#"
-                [database]
-                url = "postgres://localhost/test"
-                dev_mode = false
+    [database]
+    url = "postgres://localhost/test"
+    dev_mode = false
 
-                [server]
-                host = "0.0.0.0"
-                port = 8000
-                "#,
+    [server]
+    host = "0.0.0.0"
+    port = 8000
+    "#,
             )?;
             // No DATABASE_URL or DJOGI_DATABASE_MAX_CONNECTIONS in jail.
             let cfg = DjogiConfig::load().expect("load should succeed");
@@ -411,16 +411,16 @@ mod tests {
             jail.create_file(
                 "Djogi.toml",
                 r#"
-                [database]
-                url = "postgres://localhost/app"
-                crud_log_url = "postgres://localhost/crud_log"
-                event_log_url = "postgres://localhost/event_log"
-                dev_mode = false
+    [database]
+    url = "postgres://localhost/app"
+    crud_log_url = "postgres://localhost/crud_log"
+    event_log_url = "postgres://localhost/event_log"
+    dev_mode = false
 
-                [server]
-                host = "0.0.0.0"
-                port = 8000
-                "#,
+    [server]
+    host = "0.0.0.0"
+    port = 8000
+    "#,
             )?;
 
             let cfg = DjogiConfig::load().expect("load should succeed");
@@ -448,16 +448,16 @@ mod tests {
             jail.create_file(
                 "Djogi.toml",
                 r#"
-                [database]
-                url = "postgres://localhost/app"
-                crud_log_url = "postgres://localhost/toml_crud_log"
-                event_log_url = "postgres://localhost/toml_event_log"
-                dev_mode = false
+    [database]
+    url = "postgres://localhost/app"
+    crud_log_url = "postgres://localhost/toml_crud_log"
+    event_log_url = "postgres://localhost/toml_event_log"
+    dev_mode = false
 
-                [server]
-                host = "0.0.0.0"
-                port = 8000
-                "#,
+    [server]
+    host = "0.0.0.0"
+    port = 8000
+    "#,
             )?;
 
             let cfg = DjogiConfig::load().expect("load should succeed");

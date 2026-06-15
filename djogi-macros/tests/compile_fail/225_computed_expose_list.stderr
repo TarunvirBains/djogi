@@ -1,7 +1,7 @@
 error: `expose(...)` is not accepted inside `#[computed(...)]` — visage exposure is declared as a struct-level `#[derived(name, ty, scopes, sql, rust)]` attribute instead. See docs/spec/visage-derived-fields.md (issue $TYPEID / $TYPEID).
-  --> $DIR/225_computed_expose_list.rs:19:40
-   |
-19 |     #[computed(sql = "base_price * 2", expose(public, admin))]
-   |                                        ^^^^^^
+ --> $DIR/225_computed_expose_list.rs:19:40
+ |
+19 |  #[computed(sql = "base_price * 2", expose(public, admin))]
+ |          ^^^^^^
 
 error: aborting due to 1 previous error

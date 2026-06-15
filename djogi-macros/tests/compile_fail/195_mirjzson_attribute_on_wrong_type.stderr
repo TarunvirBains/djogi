@@ -1,7 +1,7 @@
 error: `#[mirjzson(...)]` is only valid on `MirJzSON` or `Option<MirJzSON>` fields; `title` is `String`. For `Jsonb<T>` the typed schema IS the justification — drop the `#[mirjzson(...)]` attribute. For any other type the attribute has no meaning.
-  --> $DIR/195_mirjzson_attribute_on_wrong_type.rs:13:5
-   |
-13 |     #[mirjzson(justification = "this attribute does not belong on a String")]
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ --> $DIR/195_mirjzson_attribute_on_wrong_type.rs:13:5
+ |
+13 |  #[mirjzson(justification = "this attribute does not belong on a String")]
+ |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 1 previous error

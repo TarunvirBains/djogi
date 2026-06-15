@@ -12,14 +12,14 @@ use djogi::prelude::*;
 #[model(table = "owners_216_fk", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Owner216Fk {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "vehicles_216_fk", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Vehicle216Fk {
-    #[field(domain = "positive_amount")]
-    pub owner: ForeignKey<Owner216Fk>,
+ #[field(domain = "positive_amount")]
+ pub owner: ForeignKey<Owner216Fk>,
 }
 
 fn main() {}

@@ -14,7 +14,7 @@
 - **CLI package:** `packages/migrate/src/commands/` — one file per subcommand: `MigrateDev.ts`, `MigrateDeploy.ts`, `MigrateReset.ts`, `MigrateResolve.ts`, `MigrateStatus.ts`, `MigrateDiff.ts`, `DbPush.ts`, `DbPull.ts`, `DbExecute.ts` (`packages/migrate/src/commands/` directory listing).
 - **Orchestration:** `packages/migrate/src/Migrate.ts:30-214` — the `Migrate` class coordinates fs I/O (reading the migrations directory) and delegates every non-trivial operation to an `engine: SchemaEngine` instance.
 - **Two engine backends:** `SchemaEngineCLI` (spawns the Rust binary as a child process, `packages/migrate/src/SchemaEngineCLI.ts:54`) and `SchemaEngineWasm` (loads a WebAssembly build in-process, `packages/migrate/src/SchemaEngineWasm.ts:46`). Both implement the `SchemaEngine` interface at `packages/migrate/src/SchemaEngine.ts:5-129`. The CLI flow the Djogi team will care about uses `SchemaEngineCLI`.
-- **Transport:** JSON-RPC 2.0 over stdin/stdout of the child process. Concrete evidence at `packages/migrate/src/SchemaEngineCLI.ts:405-416` (the `spawn(binaryPath, args, { stdio: ['pipe', 'pipe', ...], ... })` call) and `packages/migrate/src/SchemaEngineCLI.ts:586-597` (the `getRPCPayload` helper emitting `{ id, jsonrpc: '2.0', method, params }`). Responses are parsed in `handleResponse` at `packages/migrate/src/SchemaEngineCLI.ts:326-364`. Log lines arrive as newline-delimited JSON on stderr (`packages/migrate/src/SchemaEngineCLI.ts:474-493`), and stdout carries the JSON-RPC frames (`packages/migrate/src/SchemaEngineCLI.ts:495-502`).
+- **Transport:** JSON-RPC 2.0 over stdin/stdout of the child process. Concrete evidence at `packages/migrate/src/SchemaEngineCLI.ts:405-416` (the `spawn(binaryPath, args, { stdio: ['pipe', 'pipe',...],... })` call) and `packages/migrate/src/SchemaEngineCLI.ts:586-597` (the `getRPCPayload` helper emitting `{ id, jsonrpc: '2.0', method, params }`). Responses are parsed in `handleResponse` at `packages/migrate/src/SchemaEngineCLI.ts:326-364`. Log lines arrive as newline-delimited JSON on stderr (`packages/migrate/src/SchemaEngineCLI.ts:474-493`), and stdout carries the JSON-RPC frames (`packages/migrate/src/SchemaEngineCLI.ts:495-502`).
 - **The CLI is stateless between RPCs.** The engine child process is long-lived for the duration of one CLI invocation; messages are tagged by an incrementing `messageId` (`packages/migrate/src/SchemaEngineCLI.ts:41`), registered in `this.listeners` (`packages/migrate/src/SchemaEngineCLI.ts:59`), and resolved when the matching response arrives.
 - **Exit codes from the engine:** defined in `packages/internals/src/schemaEngineCommands.ts:11-15` — `Success = 0`, `Error = 1`, `Panic = 101` (`101` being Rust's default panic exit code, which also matches `SchemaEngineExitCode.Panic` handling at `packages/migrate/src/SchemaEngineCLI.ts:459-464`).
 - **Key RPC methods** (each method becomes a named JSON-RPC call): `applyMigrations`, `createDatabase`, `createMigration`, `dbExecute`, `debugPanic`, `devDiagnostic`, `diagnoseMigrationHistory`, `ensureConnectionValidity`, `evaluateDataLoss`, `getDatabaseDescription`, `getDatabaseVersion`, `introspect`, `diff` (exposed as `migrateDiff`), `markMigrationApplied`, `markMigrationRolledBack`, `reset`, `schemaPush`, `introspectSql` — see `packages/migrate/src/SchemaEngineCLI.ts:105-277` for the full method list.
@@ -25,23 +25,23 @@
 
 - **`schema.prisma` is the canonical declarative state.** A user edits their Prisma schema files; everything downstream is derived. `packages/migrate/src/commands/MigrateDev.ts:99-105` shows schema loading via `loadSchemaContext`, and the schema context is passed into every engine call.
 - **Three kinds of persisted state:**
-  1. **Filesystem migrations directory** (default `prisma/migrations/`): a directory per migration containing `migration.sql` and a top-level `migration_lock.toml`. See `packages/migrate/src/utils/listMigrations.ts:20-78` for the read logic and `packages/migrate/src/utils/createMigration.ts:30-53` for the write logic.
-  2. **Database ledger table** `_prisma_migrations` — inferred references at `packages/client/tests/e2e/external-tables/src/init.sql:2`, `packages/cli/src/mcp/MCP.ts:58`, `packages/cli/src/mcp/MCP.ts:88`, and `packages/migrate/src/__tests__/MigrateDev.test.ts:1067` (error `relation "_prisma_migrations" already exists`).
-  3. **Schema files** in-memory as `MigrateTypes.SchemasContainer` (`packages/internals/src/migrateTypes.ts:79-81`).
+ 1. **Filesystem migrations directory** (default `prisma/migrations/`): a directory per migration containing `migration.sql` and a top-level `migration_lock.toml`. See `packages/migrate/src/utils/listMigrations.ts:20-78` for the read logic and `packages/migrate/src/utils/createMigration.ts:30-53` for the write logic.
+ 2. **Database ledger table** `_prisma_migrations` — inferred references at `packages/client/tests/e2e/external-tables/src/init.sql:2`, `packages/cli/src/mcp/MCP.ts:58`, `packages/cli/src/mcp/MCP.ts:88`, and `packages/migrate/src/__tests__/MigrateDev.test.ts:1067` (error `relation "_prisma_migrations" already exists`).
+ 3. **Schema files** in-memory as `MigrateTypes.SchemasContainer` (`packages/internals/src/migrateTypes.ts:79-81`).
 - **Separation of applied state vs execution history:** partial — the ledger (see DDL below) tracks both applied migrations (identified by `migration_name` + `checksum`) and failure/rollback metadata (`finished_at`, `rolled_back_at`, `logs`, `applied_steps_count`). There is no separate audit log.
 - **Shadow database** (`packages/migrate/src/SchemaEngineCLI.ts:119`, doc comment: *"This will use the shadow database on the connectors where we need one"*; also `packages/migrate/src/SchemaEngineCLI.ts:225`, *"Connection to a shadow database is only necessary when either the from or the to params is a migrations directory"*). For Postgres, it is a separately-named database created by the test harness at `packages/migrate/src/utils/setupPostgres.ts:22-23`:
-  ```javascript
-  await dbDefault.query(`DROP DATABASE IF EXISTS "${credentials.database}-shadowdb";`)
-  await dbDefault.query(`CREATE DATABASE "${credentials.database}-shadowdb";`)
-  ```
-  For MySQL (`packages/migrate/src/utils/setupMysql.ts:27`) and MSSQL (`packages/migrate/src/utils/setupMSSQL.ts:37`) similarly.
+ ```javascript
+ await dbDefault.query(`DROP DATABASE IF EXISTS "${credentials.database}-shadowdb";`)
+ await dbDefault.query(`CREATE DATABASE "${credentials.database}-shadowdb";`)
+ ```
+ For MySQL (`packages/migrate/src/utils/setupMysql.ts:27`) and MSSQL (`packages/migrate/src/utils/setupMSSQL.ts:37`) similarly.
 - **User-configurable shadow DB URL:** `packages/config/src/PrismaConfig.ts:21-29` defines the `Datasource` shape:
-  ```typescript
-  const DatasourceShape = Shape.Struct({
-    url: Shape.optional(Shape.String),
-    shadowDatabaseUrl: Shape.optional(Shape.String),
-  })
-  ```
+ ```typescript
+ const DatasourceShape = Shape.Struct({
+  url: Shape.optional(Shape.String),
+  shadowDatabaseUrl: Shape.optional(Shape.String),
+ })
+ ```
 - **Shadow DB init script** (used with "external tables" feature to seed the shadow DB before the engine applies the migration history): `migrations.initShadowDb` string in `prisma.config.ts` (`packages/config/src/PrismaConfig.ts:49-69`) is flowed down through `packages/migrate/src/Migrate.ts:17` → `listMigrations(... shadowDbInitScript)` → `packages/internals/src/migrateTypes.ts:62-66`. The Rust engine reads this and runs it against the shadow DB. This is the mechanism that prevents drift detection from flagging tables the user declared as externally-managed.
 
 **What the shadow DB is for:** replay the entire migration history against a disposable DB, then diff that against (a) the current `schema.prisma` to compute the next migration, or (b) the real DB to detect drift. This is explicit in the method doc at `packages/migrate/src/SchemaEngine.ts:21-23` (*"Note: This will use the shadow database on the connectors where we need one"*) and in the MCP server's docstring at `packages/cli/src/mcp/MCP.ts:85` (*"Reruns the existing migration history in the shadow database in order to detect schema drift"*).
@@ -55,44 +55,44 @@
 What can be verified from source here:
 
 - **Table name:** `_prisma_migrations` — observed at `packages/cli/src/mcp/MCP.ts:58`, `packages/cli/src/mcp/MCP.ts:88`, and the test panic at `packages/migrate/src/__tests__/MigrateDev.test.ts:1094`:
-  ```
-  db error: ERROR: relation "_prisma_migrations" already exists
-     0: migration_core::state::ApplyMigrations
-               at schema-engine/core/src/state.rs:199
-  ```
+ ```
+ db error: ERROR: relation "_prisma_migrations" already exists
+   0: migration_core::state::ApplyMigrations
+        at schema-engine/core/src/state.rs:199
+ ```
 - **Columns (from test expectations and RPC shapes):** the engine exposes these fields indirectly through the `DiagnoseMigrationHistoryOutput` and error messages:
-  - `migration_name` — referenced in error P3008 *"The migration `20201231000000_draft_123` is already recorded as applied in the database"* (`packages/migrate/src/__tests__/rpc.test.ts:601`).
-  - `applied_steps_count` — mentioned in the `SchemaEngine.markMigrationApplied` doc at `packages/migrate/src/SchemaEngine.ts:92-94`: *"The migration is already in the table, but in a failed state. In this case, we will mark it as rolled back, then create a new entry. [...] The started_at and finished_at will be the same."*
-  - `started_at`, `finished_at` — same doc, and surfaced in the error text at `packages/migrate/src/__tests__/rpc.test.ts:531` (P3012: *"cannot be rolled back because it is not in a failed state"*).
-  - `rolled_back_at` — inferred from the `markMigrationRolledBack` RPC at `packages/migrate/src/SchemaEngine.ts:99-102`: *"Mark an existing failed migration as rolled back in the migrations table. It will still be there, but ignored for all purposes except as audit trail."*
-  - `logs`, `checksum` — neither column name appears in the TS code, but both are universally assumed in Prisma documentation; unverified from this clone.
+ - `migration_name` — referenced in error P3008 *"The migration `20201231000000_draft_123` is already recorded as applied in the database"* (`packages/migrate/src/__tests__/rpc.test.ts:601`).
+ - `applied_steps_count` — mentioned in the `SchemaEngine.markMigrationApplied` doc at `packages/migrate/src/SchemaEngine.ts:92-94`: *"The migration is already in the table, but in a failed state. In this case, we will mark it as rolled back, then create a new entry. [...] The started_at and finished_at will be the same."*
+ - `started_at`, `finished_at` — same doc, and surfaced in the error text at `packages/migrate/src/__tests__/rpc.test.ts:531` (P3012: *"cannot be rolled back because it is not in a failed state"*).
+ - `rolled_back_at` — inferred from the `markMigrationRolledBack` RPC at `packages/migrate/src/SchemaEngine.ts:99-102`: *"Mark an existing failed migration as rolled back in the migrations table. It will still be there, but ignored for all purposes except as audit trail."*
+ - `logs`, `checksum` — neither column name appears in the TS code, but both are universally assumed in Prisma documentation; unverified from this clone.
 
 - **Primary key and indexing strategy:** Not found in source; see Open questions.
 
 - **DDL quote attempt:** The only Prisma-migration DDL I can quote verbatim from this clone is the **legacy `_Migration` table** (Prisma 1.x's schema, not the current `_prisma_migrations`), captured in a MigrateDiff test snapshot at `packages/migrate/src/__tests__/MigrateDiff.test.ts:559-571`:
-  ```sql
-  CREATE TABLE "_Migration" (
-      "revision" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-      "name" TEXT NOT NULL,
-      "datamodel" TEXT NOT NULL,
-      "status" TEXT NOT NULL,
-      "applied" INTEGER NOT NULL,
-      "rolled_back" INTEGER NOT NULL,
-      "datamodel_steps" TEXT NOT NULL,
-      "database_migration" TEXT NOT NULL,
-      "errors" TEXT NOT NULL,
-      "started_at" DATETIME NOT NULL,
-      "finished_at" DATETIME
-  );
-  ```
-  This table is **not** the current ledger — it is the legacy lift table that Prisma 2 introspection may encounter in fixtures. The current `_prisma_migrations` DDL must be read from `prisma-engines`.
+ ```sql
+ CREATE TABLE "_Migration" (
+   "revision" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+   "name" TEXT NOT NULL,
+   "datamodel" TEXT NOT NULL,
+   "status" TEXT NOT NULL,
+   "applied" INTEGER NOT NULL,
+   "rolled_back" INTEGER NOT NULL,
+   "datamodel_steps" TEXT NOT NULL,
+   "database_migration" TEXT NOT NULL,
+   "errors" TEXT NOT NULL,
+   "started_at" DATETIME NOT NULL,
+   "finished_at" DATETIME
+ );
+ ```
+ This table is **not** the current ledger — it is the legacy lift table that Prisma 2 introspection may encounter in fixtures. The current `_prisma_migrations` DDL must be read from `prisma-engines`.
 
 **Per-migration on-disk format** (`packages/migrate/src/__tests__/fixtures/existing-db-1-migration/prisma/migrations/20201014154943_init/migration.sql`):
 ```sql
 -- CreateTable
 CREATE TABLE "Blog" (
-    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    "viewCount20" INTEGER NOT NULL
+  "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  "viewCount20" INTEGER NOT NULL
 );
 ```
 Directory name format: `{yyyyMMddHHmmss}_{slug}` (enforced lexicographic sort at `packages/migrate/src/utils/listMigrations.ts:71`: *"Sort lexicographically by name"*).
@@ -113,12 +113,12 @@ The lockfile pins the DB provider so switching providers mid-history is caught. 
 - **Lock strategy:** **Not found in this clone.** No advisory lock, table lock, or coordination primitive appears in TypeScript. The engine is the only actor holding DB connections. Advisory locking (if any) is the Rust engine's concern.
 - **Transaction boundaries:** The `applyMigrations` RPC returns `{ appliedMigrationNames: string[] }` (`packages/migrate/src/types.ts:242-244`). The return shape does not expose per-statement transaction info. Test behavior (`packages/migrate/src/__tests__/rpc.test.ts:20-45`) shows that `applyMigrations` is all-or-nothing per migration: each migration is applied and recorded in `_prisma_migrations` sequentially.
 - **Partial-apply semantics:** Evidenced by `SchemaEngine.markMigrationApplied` doc at `packages/migrate/src/SchemaEngine.ts:91-95`:
-  > *"There are two possible outcomes: 1) The migration is already in the table, but in a failed state. In this case, we will mark it as rolled back, then create a new entry. 2) The migration is not in the table. We will create a new entry in the migrations table. The started_at and finished_at will be the same."*
+ > *"There are two possible outcomes: 1) The migration is already in the table, but in a failed state. In this case, we will mark it as rolled back, then create a new entry. 2) The migration is not in the table. We will create a new entry in the migrations table. The started_at and finished_at will be the same."*
 
-  And `markMigrationRolledBack` at `packages/migrate/src/SchemaEngine.ts:99-102`:
-  > *"Mark an existing failed migration as rolled back in the migrations table. It will still be there, but ignored for all purposes except as audit trail."*
+ And `markMigrationRolledBack` at `packages/migrate/src/SchemaEngine.ts:99-102`:
+ > *"Mark an existing failed migration as rolled back in the migrations table. It will still be there, but ignored for all purposes except as audit trail."*
 
-  This confirms: **failed migrations remain in the ledger** with non-null `rolled_back_at`, and subsequent attempts create fresh rows. The `applied_steps_count` field tracks progress through a multi-statement migration: when a DDL in the middle fails (e.g., `CREATE BROKEN` at `packages/migrate/src/__tests__/fixtures/existing-db-1-failed-migration/prisma/migrations/20201106130852_failed/migration.sql:2`), the engine records how many statements succeeded before the failure.
+ This confirms: **failed migrations remain in the ledger** with non-null `rolled_back_at`, and subsequent attempts create fresh rows. The `applied_steps_count` field tracks progress through a multi-statement migration: when a DDL in the middle fails (e.g., `CREATE BROKEN` at `packages/migrate/src/__tests__/fixtures/existing-db-1-failed-migration/prisma/migrations/20201106130852_failed/migration.sql:2`), the engine records how many statements succeeded before the failure.
 - **Concurrency posture:** single-process, single-engine. No multi-writer coordination is implemented at the TS level. The engine child process is started once per CLI invocation (`packages/migrate/src/SchemaEngineCLI.ts:405-416`). The `isRunning` flag (`packages/migrate/src/SchemaEngineCLI.ts:71`) is a process-local guard, not a distributed lock.
 - **Error code P3006** (failed migration) is raised when a migration *"failed to apply cleanly to the shadow database"* (`packages/migrate/src/__tests__/MigrateDev.test.ts:594,612,636`). Error code P3008 (*"already recorded as applied"*, `packages/migrate/src/__tests__/rpc.test.ts:601`) guards against double-applying. P3012 (*"cannot be rolled back because it is not in a failed state"*, `packages/migrate/src/__tests__/rpc.test.ts:531`) guards against rolling back successful migrations.
 
@@ -128,74 +128,74 @@ The lockfile pins the DB provider so switching providers mid-history is caught. 
 
 - **Checksum algorithm:** **Not found in this clone.** The `checksum` column is universally present in Prisma's `_prisma_migrations` (confirmed by documentation), but the hashing code lives in `prisma-engines`. I cannot quote the exact bytes hashed or the digest algorithm. The `downloadZip.ts` sha256 logic at `packages/fetch-engine/src/downloadZip.ts:42-47` is unrelated — it verifies the engine binary, not migration scripts. *See Open questions.*
 - **`migrate resolve`:**
-  - `--applied <name>` calls the `markMigrationApplied` RPC (`packages/migrate/src/commands/MigrateResolve.ts:135-140`), which per `SchemaEngine.ts:91-95` *"create[s] a new entry in the migrations table. The started_at and finished_at will be the same"* (i.e., stamps the migration as completed instantly). If the migration exists in a failed state, it first marks it as rolled back, then inserts the new entry.
-  - `--rolled-back <name>` calls `markMigrationRolledBack` (`packages/migrate/src/commands/MigrateResolve.ts:164-167`), which sets `rolled_back_at` on the failed row and leaves it as audit trail.
-  - These are exactly the primitives needed for (a) baselining an existing database, and (b) recovering from a mid-migration failure.
+ - `--applied <name>` calls the `markMigrationApplied` RPC (`packages/migrate/src/commands/MigrateResolve.ts:135-140`), which per `SchemaEngine.ts:91-95` *"create[s] a new entry in the migrations table. The started_at and finished_at will be the same"* (i.e., stamps the migration as completed instantly). If the migration exists in a failed state, it first marks it as rolled back, then inserts the new entry.
+ - `--rolled-back <name>` calls `markMigrationRolledBack` (`packages/migrate/src/commands/MigrateResolve.ts:164-167`), which sets `rolled_back_at` on the failed row and leaves it as audit trail.
+ - These are exactly the primitives needed for (a) baselining an existing database, and (b) recovering from a mid-migration failure.
 - **`migrate reset`:** `packages/migrate/src/commands/MigrateReset.ts:144-153`. Calls `migrate.reset()` then `migrate.applyMigrations()`. `SchemaEngine.reset` doc at `packages/migrate/src/SchemaEngine.ts:104-111`:
-  > *"Try to make the database empty: no data and no schema. On most connectors, this is implemented by dropping and recreating the database. If that fails (most likely because of insufficient permissions), the engine attempts a 'best effort reset' by inspecting the contents of the database and dropping them individually."*
+ > *"Try to make the database empty: no data and no schema. On most connectors, this is implemented by dropping and recreating the database. If that fails (most likely because of insufficient permissions), the engine attempts a 'best effort reset' by inspecting the contents of the database and dropping them individually."*
 
-  Reset is full — there's no targeted-reset flag. Protected by an interactive prompt (`packages/migrate/src/commands/MigrateReset.ts:108-126`) and an AI-agent confirmation checkpoint (`packages/migrate/src/commands/MigrateReset.ts:128`).
+ Reset is full — there's no targeted-reset flag. Protected by an interactive prompt (`packages/migrate/src/commands/MigrateReset.ts:108-126`) and an AI-agent confirmation checkpoint (`packages/migrate/src/commands/MigrateReset.ts:128`).
 
 - **`migrate diff`:** `packages/migrate/src/commands/MigrateDiff.ts:280-291`. Invokes the `diff` RPC with a `from` and `to` source. Each source can be: `empty`, `url` (live DB), `schemaDatamodel` (PSL files), `schemaDatasource` (PSL with datasource config), or `migrations` (a filesystem migrations dir). Types at `packages/migrate/src/types.ts:197-203`:
-  ```typescript
-  export type MigrateDiffTarget =
-    | MigrateDiffTargetUrl
-    | MigrateDiffTargetEmpty
-    | MigrateDiffTargetSchemaDatamodel
-    | MigrateDiffTargetSchemaDatasource
-    | MigrateDiffTargetMigrations
-  ```
-  When one side is `migrations`, a shadow DB is used to replay the history (`packages/migrate/src/types.ts:195-196`): *"The migrations will be applied to a shadow database, and the resulting schema considered for diffing."*
+ ```typescript
+ export type MigrateDiffTarget =
+  | MigrateDiffTargetUrl
+  | MigrateDiffTargetEmpty
+  | MigrateDiffTargetSchemaDatamodel
+  | MigrateDiffTargetSchemaDatasource
+  | MigrateDiffTargetMigrations
+ ```
+ When one side is `migrations`, a shadow DB is used to replay the history (`packages/migrate/src/types.ts:195-196`): *"The migrations will be applied to a shadow database, and the resulting schema considered for diffing."*
 
-  Output: either a human-readable summary or, with `--script`, an executable SQL script. Exit codes with `--exit-code`: `0` empty / `1` error / `2` non-empty diff (`packages/migrate/src/types.ts:300-308`).
+ Output: either a human-readable summary or, with `--script`, an executable SQL script. Exit codes with `--exit-code`: `0` empty / `1` error / `2` non-empty diff (`packages/migrate/src/types.ts:300-308`).
 
-  **Diff computation is AST-based, not string-based.** Strong evidence from the test snapshot at `packages/migrate/src/__tests__/rpc.test.ts:245-251` showing structured output like `[+] Added tables\n  - Blog\n  - _Migration` — this is a rendered tree, not a string diff. Further evidence from the structured drift output at `packages/migrate/src/__tests__/rpc.test.ts:233-252`.
+ **Diff computation is AST-based, not string-based.** Strong evidence from the test snapshot at `packages/migrate/src/__tests__/rpc.test.ts:245-251` showing structured output like `[+] Added tables\n - Blog\n - _Migration` — this is a rendered tree, not a string diff. Further evidence from the structured drift output at `packages/migrate/src/__tests__/rpc.test.ts:233-252`.
 
 - **Drift detection:** Drift is reported through the `DriftDiagnostic` discriminated union in `packages/migrate/src/types.ts:54-61`:
-  ```typescript
-  export type DriftDiagnostic =
-    /// The current database schema does not match the schema that would be expected from applying the migration history.
-    | { diagnostic: 'driftDetected'; rollback: string }
-    // A migration failed to cleanly apply to a temporary database.
-    | {
-        diagnostic: 'migrationFailedToApply'
-        error: UserFacingError
-      }
-  ```
-  The `rollback` field is a string — a human-readable description of what's different. Actual drift output from `packages/migrate/src/__tests__/rpc.test.ts:236-248`:
-  ```
-  Drift detected: Your database schema is not in sync with your migration history.
+ ```typescript
+ export type DriftDiagnostic =
+  /// The current database schema does not match the schema that would be expected from applying the migration history.
+  | { diagnostic: 'driftDetected'; rollback: string }
+  // A migration failed to cleanly apply to a temporary database.
+  | {
+    diagnostic: 'migrationFailedToApply'
+    error: UserFacingError
+   }
+ ```
+ The `rollback` field is a string — a human-readable description of what's different. Actual drift output from `packages/migrate/src/__tests__/rpc.test.ts:236-248`:
+ ```
+ Drift detected: Your database schema is not in sync with your migration history.
 
-  The following is a summary of the differences between the expected database schema given your migrations files, and the actual schema of the database.
+ The following is a summary of the differences between the expected database schema given your migrations files, and the actual schema of the database.
 
-  It should be understood as the set of changes to get from the expected schema to the actual schema.
+ It should be understood as the set of changes to get from the expected schema to the actual schema.
 
-  [+] Added tables
-    - Blog
-    - _Migration
-  ```
-  **How drift is computed:** (1) create or use a shadow DB; (2) apply the migration history to it; (3) diff the shadow DB against the real DB. Anything in the real DB that isn't in the shadow DB (= isn't described by the migrations on disk) is drift. Confirmed narratively at `packages/cli/src/mcp/MCP.ts:85`.
+ [+] Added tables
+  - Blog
+  - _Migration
+ ```
+ **How drift is computed:** (1) create or use a shadow DB; (2) apply the migration history to it; (3) diff the shadow DB against the real DB. Anything in the real DB that isn't in the shadow DB (= isn't described by the migrations on disk) is drift. Confirmed narratively at `packages/cli/src/mcp/MCP.ts:85`.
 
 - **Baseline flow** (stamp):
-  1. `db pull` to introspect the existing DB into PSL.
-  2. `migrate dev --create-only` to create a migration without applying it.
-  3. `migrate resolve --applied <name>` to stamp it as already-applied in the ledger.
+ 1. `db pull` to introspect the existing DB into PSL.
+ 2. `migrate dev --create-only` to create a migration without applying it.
+ 3. `migrate resolve --applied <name>` to stamp it as already-applied in the ledger.
 
-  Captured end-to-end in `packages/migrate/src/__tests__/Baseline.test.ts:23-80`. Also documented by `MigrateStatus.ts:170-198` which detects the "no migrations table" case and suggests the baseline flow.
+ Captured end-to-end in `packages/migrate/src/__tests__/Baseline.test.ts:23-80`. Also documented by `MigrateStatus.ts:170-198` which detects the "no migrations table" case and suggests the baseline flow.
 
 - **History divergence** vs **database behind** vs **migrations dir behind** (`packages/migrate/src/types.ts:63-74`):
-  ```typescript
-  export type HistoryDiagnostic =
-    | { diagnostic: 'databaseIsBehind'; unappliedMigrationNames: string[] }
-    | { diagnostic: 'migrationsDirectoryIsBehind'; unpersistedMigrationNames: string[] }
-    | {
-        diagnostic: 'historiesDiverge'
-        lastCommonMigrationName: string | null
-        unpersistedMigrationNames: string[]
-        unappliedMigrationNames: string[]
-      }
-  ```
-  These are the three canonical history states. Note `lastCommonMigrationName` in `historiesDiverge` — Prisma finds the LCA of the two histories, which is exactly what a git-style reconciliation needs.
+ ```typescript
+ export type HistoryDiagnostic =
+  | { diagnostic: 'databaseIsBehind'; unappliedMigrationNames: string[] }
+  | { diagnostic: 'migrationsDirectoryIsBehind'; unpersistedMigrationNames: string[] }
+  | {
+    diagnostic: 'historiesDiverge'
+    lastCommonMigrationName: string | null
+    unpersistedMigrationNames: string[]
+    unappliedMigrationNames: string[]
+   }
+ ```
+ These are the three canonical history states. Note `lastCommonMigrationName` in `historiesDiverge` — Prisma finds the LCA of the two histories, which is exactly what a git-style reconciliation needs.
 
 - **Out-of-order policy:** Migrations are sorted lexicographically by directory name (`packages/migrate/src/utils/listMigrations.ts:71`). The engine expects monotonically-increasing lexicographic order (hence the `yyyyMMddHHmmss_` prefix); an applied migration appearing later in the sort order than an unapplied one is treated as divergence (`historiesDiverge` above).
 
@@ -206,46 +206,46 @@ The lockfile pins the DB provider so switching providers mid-history is caught. 
 - **Schema introspection:** Delegated to the engine's `introspect` RPC (`packages/migrate/src/SchemaEngineCLI.ts:194-219`). Reads the live DB into PSL, which is written back to `schema.prisma`. The canonical code path is in `prisma-engines/schema-engine/sql-schema-describer`, which is not in this clone. At the TS level, `introspect` returns `{ schema: SchemasContainer, warnings: string | null, views: IntrospectionViewDefinition[] | null }` (`packages/migrate/src/types.ts:136-150`).
 - **Desired schema computation:** PSL files → engine parses to DMM/datamodel → engine computes the target SQL schema → engine diffs against the current SQL schema → emits migration steps as SQL. All of this happens in Rust. At the TS boundary, the flow is: `schemaContext.schemaFiles` (filesystem) → `toSchemasContainer` (`packages/migrate/src/Migrate.ts:61-65`) → JSON-RPC `createMigration`/`diff` call → SQL script returned.
 - **Rename handling:** **Heuristic-free at the engine level.** Evidence: the draft migration at `packages/migrate/src/__tests__/fixtures/existing-db-1-draft/prisma/migrations/20201203153838_draft/migration.sql:1-19`:
-  ```sql
-  /*
-    Warnings:
+ ```sql
+ /*
+  Warnings:
 
-    - You are about to drop the column `viewCount20` on the `Blog` table. All the data in the column will be lost.
-    - Added the required column `viewCount` to the `Blog` table without a default value. This is not possible if the table is not empty.
+  - You are about to drop the column `viewCount20` on the `Blog` table. All the data in the column will be lost.
+  - Added the required column `viewCount` to the `Blog` table without a default value. This is not possible if the table is not empty.
 
-  */
-  -- RedefineTables
-  PRAGMA foreign_keys=OFF;
-  CREATE TABLE "new_Blog" (...);
-  INSERT INTO "new_Blog" ("id") SELECT "id" FROM "Blog";
-  DROP TABLE "Blog";
-  ALTER TABLE "new_Blog" RENAME TO "Blog";
-  PRAGMA foreign_key_check;
-  PRAGMA foreign_keys=ON;
-  ```
-  A rename `viewCount20 → viewCount` is treated as **drop + add**, not as a rename. This is the correct behavior for Djogi: explicit descriptors-only.
+ */
+ -- RedefineTables
+ PRAGMA foreign_keys=OFF;
+ CREATE TABLE "new_Blog" (...);
+ INSERT INTO "new_Blog" ("id") SELECT "id" FROM "Blog";
+ DROP TABLE "Blog";
+ ALTER TABLE "new_Blog" RENAME TO "Blog";
+ PRAGMA foreign_key_check;
+ PRAGMA foreign_keys=ON;
+ ```
+ A rename `viewCount20 → viewCount` is treated as **drop + add**, not as a rename. This is the correct behavior for Djogi: explicit descriptors-only.
 - **Destructive-operation detection:** The engine returns two buckets, not one:
-  - **`warnings`** (recoverable with `--accept-data-loss` / `--force`): e.g., *"You are about to drop the `Blog` table, which is not empty (1 rows)."* — produced when data loss is possible but the migration is executable. Observed at `packages/migrate/src/__tests__/rpc.test.ts:729`.
-  - **`unexecutableSteps`** (hard-blocked, no `--force` override): e.g., *"Made the column `fullname` on table `Blog` required, but there are 1 existing NULL values."* — produced when the DDL cannot run at all given the current data state. Observed at `packages/migrate/src/__tests__/MigrateDev.test.ts:704`.
+ - **`warnings`** (recoverable with `--accept-data-loss` / `--force`): e.g., *"You are about to drop the `Blog` table, which is not empty (1 rows)."* — produced when data loss is possible but the migration is executable. Observed at `packages/migrate/src/__tests__/rpc.test.ts:729`.
+ - **`unexecutableSteps`** (hard-blocked, no `--force` override): e.g., *"Made the column `fullname` on table `Blog` required, but there are 1 existing NULL values."* — produced when the DDL cannot run at all given the current data state. Observed at `packages/migrate/src/__tests__/MigrateDev.test.ts:704`.
 
-  Return types at `packages/migrate/src/types.ts:285-293`:
-  ```typescript
-  export interface EvaluateDataLossOutput {
-    migrationSteps: number
-    warnings: MigrationFeedback[]
-    unexecutableSteps: MigrationFeedback[]
-  }
-  ```
-  Where `MigrationFeedback = { message: string; stepIndex: number }` (`packages/migrate/src/types.ts:76-79`).
+ Return types at `packages/migrate/src/types.ts:285-293`:
+ ```typescript
+ export interface EvaluateDataLossOutput {
+  migrationSteps: number
+  warnings: MigrationFeedback[]
+  unexecutableSteps: MigrationFeedback[]
+ }
+ ```
+ Where `MigrationFeedback = { message: string; stepIndex: number }` (`packages/migrate/src/types.ts:76-79`).
 
-  **The classifier lives in the Rust engine** (`SqlDestructiveChangeChecker` referenced in the task brief but not locatable in this clone). At the TS level, the CLI only chooses whether to prompt/block based on which bucket the feedback is in. See `packages/migrate/src/utils/handleEvaluateDataloss.ts:6-30`:
-  - If `unexecutableSteps.length > 0` and NOT `--create-only`: hard error, abort.
-  - If `unexecutableSteps.length > 0` and `--create-only`: write to console.error, but continue — the user can manually edit.
-  - Warnings are prompted interactively via `prompts` (`packages/migrate/src/commands/MigrateDev.ts:227-256`) or gated behind `--accept-data-loss` for `db push` (`packages/migrate/src/commands/DbPush.ts:218-247`).
+ **The classifier lives in the Rust engine** (`SqlDestructiveChangeChecker` referenced in the task brief but not locatable in this clone). At the TS level, the CLI only chooses whether to prompt/block based on which bucket the feedback is in. See `packages/migrate/src/utils/handleEvaluateDataloss.ts:6-30`:
+ - If `unexecutableSteps.length > 0` and NOT `--create-only`: hard error, abort.
+ - If `unexecutableSteps.length > 0` and `--create-only`: write to console.error, but continue — the user can manually edit.
+ - Warnings are prompted interactively via `prompts` (`packages/migrate/src/commands/MigrateDev.ts:227-256`) or gated behind `--accept-data-loss` for `db push` (`packages/migrate/src/commands/DbPush.ts:218-247`).
 
 - **`--create-only`:** Creates the migration directory and file but does not apply. Implemented by passing `draft: true` to `createMigration` (`packages/migrate/src/commands/MigrateDev.ts:275-287`). The engine still generates the SQL — it just doesn't execute it. This is how users can hand-edit a migration before applying.
 
-- **Warnings are embedded as SQL comments** in the generated migration file (see the `/* Warnings: ... */` block above). This is a paper trail in source control — future engineers reading git history see exactly what risks the migration carries.
+- **Warnings are embedded as SQL comments** in the generated migration file (see the `/* Warnings:... */` block above). This is a paper trail in source control — future engineers reading git history see exactly what risks the migration carries.
 
 **Confidence: high** on warnings-vs-unexecutable bifurcation and the rename-as-drop-add behavior; **medium** on the internal classifier.
 
@@ -263,7 +263,7 @@ The lockfile pins the DB provider so switching providers mid-history is caught. 
 
 - **`--create-only`** as an escape hatch: generate SQL, let the user edit, then apply (`packages/migrate/src/commands/MigrateDev.ts:281-287`). This is the recommended path for online-safe migrations — users hand-write the expand/contract steps.
 - **`prisma db execute`** to run arbitrary SQL scripts against a datasource (`packages/migrate/src/commands/DbExecute.ts`). Intended for users who need full control outside the migration engine's diff framework.
-- **`prisma migrate diff --script ... | prisma db execute --stdin`** pipe pattern (`packages/migrate/src/commands/MigrateDiff.ts:100-109`) — lets users review the SQL before applying.
+- **`prisma migrate diff --script... | prisma db execute --stdin`** pipe pattern (`packages/migrate/src/commands/MigrateDiff.ts:100-109`) — lets users review the SQL before applying.
 
 No warnings about long-locking DDL, no IF NOT EXISTS preflight, no documented online-DDL patterns. The engine produces single-shot DDL scripts; making them online-safe is entirely the user's responsibility.
 
@@ -287,9 +287,9 @@ No warnings about long-locking DDL, no IF NOT EXISTS preflight, no documented on
 - **JSON-RPC over stdio for engine↔CLI separation, if Djogi ever splits.** Clean message framing, log lines on stderr as JSON (`packages/migrate/src/SchemaEngineCLI.ts:474-493`), response matching by ID (`packages/migrate/src/SchemaEngineCLI.ts:41,322-324`). The protocol is fully specified in the engine's `json_rpc` module per the comment at `packages/migrate/src/SchemaEngineCLI.ts:97-99`. *If Djogi stays single-binary, the lesson is still valuable: keep the diff/apply engine behind a structured interface, not wired into the CLI via direct calls.*
 
 - **The two-bucket destructive classifier: `warnings` vs `unexecutableSteps`** (`packages/migrate/src/types.ts:285-293`). This is the killer pattern. `warnings` = "you will lose data, are you sure?"; `unexecutableSteps` = "this will not run at all." The former has `--accept-data-loss` override; the latter only has `--create-only` (hand-edit-and-retry). Djogi should adopt this exact bifurcation. Concrete examples:
-  - warning: dropping a non-empty table (rows > 0)
-  - unexecutable: NOT NULL on a column with existing NULLs, missing default when making column required
-  The classifier takes the proposed diff AND samples the current data to decide. Djogi's descriptor diff should do the same.
+ - warning: dropping a non-empty table (rows > 0)
+ - unexecutable: NOT NULL on a column with existing NULLs, missing default when making column required
+ The classifier takes the proposed diff AND samples the current data to decide. Djogi's descriptor diff should do the same.
 
 - **Failed migrations stay in the ledger with `rolled_back_at` as audit trail** (`packages/migrate/src/SchemaEngine.ts:91-102`). Do not silently delete failed rows. Retry creates a new row. Rolling back stamps `rolled_back_at` but leaves the row as historical evidence. This is exactly what production postmortems need.
 
@@ -301,7 +301,7 @@ No warnings about long-locking DDL, no IF NOT EXISTS preflight, no documented on
 
 - **Rename-as-drop-add.** Prisma generates RedefineTables / DROP + CREATE + INSERT...SELECT for rename operations (`fixtures/existing-db-1-draft/prisma/migrations/20201203153838_draft/migration.sql`). No heuristic rename detection. Djogi has already decided this — Prisma validates the choice.
 
-- **Embed warnings as SQL comments in the generated migration.** The `/* Warnings: - You are about to drop ... */` block at the top of the file (`fixtures/existing-db-1-draft/prisma/migrations/20201203153838_draft/migration.sql:1-7`). Git-archaeology-friendly.
+- **Embed warnings as SQL comments in the generated migration.** The `/* Warnings: - You are about to drop... */` block at the top of the file (`fixtures/existing-db-1-draft/prisma/migrations/20201203153838_draft/migration.sql:1-7`). Git-archaeology-friendly.
 
 - **`--create-only` as the universal escape hatch.** When the engine can't generate a safe migration, emit the naïve one and let the user hand-edit (`packages/migrate/src/commands/MigrateDev.ts:281-287`). Djogi should have the equivalent mode for cases the typed-diff can't resolve (online-safe multi-step migrations, data backfills, etc.).
 
@@ -339,7 +339,7 @@ No warnings about long-locking DDL, no IF NOT EXISTS preflight, no documented on
 
 - **AI-agent confirmation checkpoint** (`packages/migrate/src/commands/MigrateReset.ts:128`, `packages/migrate/src/utils/ai-safety.ts`). Destructive commands have a special hook to catch LLM agents that were granted shell access. This is a 2024-era addition; shows the industry moving toward "treat the AI as a hostile user" gating. Djogi should think about this.
 
-- **Logs arrive as newline-delimited JSON on stderr** (`packages/internals/src/schemaEngineCommands.ts:20-21`) — each log line is a full JSON object `{ timestamp, level, fields: { message, ... }, target }`. Errors with `is_panic: true` field are the panic-indicator.
+- **Logs arrive as newline-delimited JSON on stderr** (`packages/internals/src/schemaEngineCommands.ts:20-21`) — each log line is a full JSON object `{ timestamp, level, fields: { message,... }, target }`. Errors with `is_panic: true` field are the panic-indicator.
 
 ## Confidence
 
@@ -361,9 +361,9 @@ No warnings about long-locking DDL, no IF NOT EXISTS preflight, no documented on
 
 2. **Checksum algorithm for migration integrity.** Is it SHA-256 of the raw `migration.sql` bytes, or of a normalized representation (whitespace-collapsed, comment-stripped)? Either way, where is the compute code? The TS side only carries the value through as an opaque string. Resolve by grepping the `prisma-engines` repo for `checksum` in `schema-engine/core/` and `schema-engine/connectors/`.
 
-3. **Advisory lock / lock table on apply.** Does the engine take a `pg_advisory_lock(key)` before running migrations on Postgres? Or a `SELECT ... FOR UPDATE` on `_prisma_migrations`? Or nothing (first-writer-wins)? This matters enormously for concurrent deployment safety. Not resolvable from this clone.
+3. **Advisory lock / lock table on apply.** Does the engine take a `pg_advisory_lock(key)` before running migrations on Postgres? Or a `SELECT... FOR UPDATE` on `_prisma_migrations`? Or nothing (first-writer-wins)? This matters enormously for concurrent deployment safety. Not resolvable from this clone.
 
-4. **Transactional framing per migration.** Does `applyMigrations` wrap each migration in `BEGIN ... COMMIT`, or does it apply each statement individually? How is non-transactional DDL (e.g., `CREATE INDEX CONCURRENTLY`, `ALTER TYPE ... ADD VALUE` on older Postgres) handled? Inspection of `schema-engine/core/src/commands/apply_migrations.rs` needed.
+4. **Transactional framing per migration.** Does `applyMigrations` wrap each migration in `BEGIN... COMMIT`, or does it apply each statement individually? How is non-transactional DDL (e.g., `CREATE INDEX CONCURRENTLY`, `ALTER TYPE... ADD VALUE` on older Postgres) handled? Inspection of `schema-engine/core/src/commands/apply_migrations.rs` needed.
 
 5. **`SqlMigrationStep` enum structure.** The internal typed representation of a single DDL step before it becomes SQL text. This is what the task brief asked about and what Djogi wants to model. Would be in `schema-engine/connectors/sql-schema-connector/src/sql_migration.rs` or similar. Not in this clone.
 
@@ -392,14 +392,14 @@ No warnings about long-locking DDL, no IF NOT EXISTS preflight, no documented on
 
 ```sql
 CREATE TABLE _prisma_migrations (
-    id                      VARCHAR(36) PRIMARY KEY NOT NULL,
-    checksum                VARCHAR(64) NOT NULL,
-    finished_at             TIMESTAMPTZ,
-    migration_name          VARCHAR(255) NOT NULL,
-    logs                    TEXT,
-    rolled_back_at          TIMESTAMPTZ,
-    started_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    applied_steps_count     INTEGER NOT NULL DEFAULT 0
+  id           VARCHAR(36) PRIMARY KEY NOT NULL,
+  checksum        VARCHAR(64) NOT NULL,
+  finished_at       TIMESTAMPTZ,
+  migration_name     VARCHAR(255) NOT NULL,
+  logs          TEXT,
+  rolled_back_at     TIMESTAMPTZ,
+  started_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  applied_steps_count   INTEGER NOT NULL DEFAULT 0
 );
 ```
 
@@ -416,42 +416,42 @@ Column notes:
 SQLite (`flavour/sqlite.rs:194-208`):
 ```sql
 CREATE TABLE "_prisma_migrations" (
-    "id"                    TEXT PRIMARY KEY NOT NULL,
-    "checksum"              TEXT NOT NULL,
-    "finished_at"           DATETIME,
-    "migration_name"        TEXT NOT NULL,
-    "logs"                  TEXT,
-    "rolled_back_at"        DATETIME,
-    "started_at"            DATETIME NOT NULL DEFAULT current_timestamp,
-    "applied_steps_count"   INTEGER UNSIGNED NOT NULL DEFAULT 0
+  "id"          TEXT PRIMARY KEY NOT NULL,
+  "checksum"       TEXT NOT NULL,
+  "finished_at"      DATETIME,
+  "migration_name"    TEXT NOT NULL,
+  "logs"         TEXT,
+  "rolled_back_at"    DATETIME,
+  "started_at"      DATETIME NOT NULL DEFAULT current_timestamp,
+  "applied_steps_count"  INTEGER UNSIGNED NOT NULL DEFAULT 0
 );
 ```
 
 MySQL (`flavour/mysql.rs:292-307`):
 ```sql
 CREATE TABLE _prisma_migrations (
-    id                      VARCHAR(36) PRIMARY KEY NOT NULL,
-    checksum                VARCHAR(64) NOT NULL,
-    finished_at             DATETIME(3),
-    migration_name          VARCHAR(255) NOT NULL,
-    logs                    TEXT,
-    rolled_back_at          DATETIME(3),
-    started_at              DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    applied_steps_count     INTEGER UNSIGNED NOT NULL DEFAULT 0
+  id           VARCHAR(36) PRIMARY KEY NOT NULL,
+  checksum        VARCHAR(64) NOT NULL,
+  finished_at       DATETIME(3),
+  migration_name     VARCHAR(255) NOT NULL,
+  logs          TEXT,
+  rolled_back_at     DATETIME(3),
+  started_at       DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  applied_steps_count   INTEGER UNSIGNED NOT NULL DEFAULT 0
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
 MSSQL (`flavour/mssql.rs:238-250`):
 ```sql
 CREATE TABLE [<schema>].[_prisma_migrations] (
-    id                      VARCHAR(36) PRIMARY KEY NOT NULL,
-    checksum                VARCHAR(64) NOT NULL,
-    finished_at             DATETIMEOFFSET,
-    migration_name          NVARCHAR(250) NOT NULL,
-    logs                    NVARCHAR(MAX) NULL,
-    rolled_back_at          DATETIMEOFFSET,
-    started_at              DATETIMEOFFSET NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    applied_steps_count     INT NOT NULL DEFAULT 0
+  id           VARCHAR(36) PRIMARY KEY NOT NULL,
+  checksum        VARCHAR(64) NOT NULL,
+  finished_at       DATETIMEOFFSET,
+  migration_name     NVARCHAR(250) NOT NULL,
+  logs          NVARCHAR(MAX) NULL,
+  rolled_back_at     DATETIMEOFFSET,
+  started_at       DATETIMEOFFSET NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  applied_steps_count   INT NOT NULL DEFAULT 0
 );
 ```
 
@@ -465,10 +465,10 @@ File: `schema-engine/connectors/schema-connector/src/checksum.rs`
 
 ```rust
 fn compute_checksum(script: &str) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(script);
-    hasher.finalize().into()
+  use sha2::{Digest, Sha256};
+  let mut hasher = Sha256::new();
+  hasher.update(script);
+  hasher.finalize().into()
 }
 ```
 (`checksum.rs:43-48`)
@@ -498,11 +498,11 @@ render_checksum("hello") == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e730
 **`UnexecutableStepCheck` enum** (`sql_destructive_change_checker/unexecutable_step_check.rs:7-13`):
 ```rust
 pub(crate) enum UnexecutableStepCheck {
-    AddedRequiredFieldToTable(Column),
-    AddedRequiredFieldToTableWithPrismaLevelDefault(Column),
-    MadeOptionalFieldRequired(Column),
-    MadeScalarFieldIntoArrayField(Column),
-    DropAndRecreateRequiredColumn(Column),
+  AddedRequiredFieldToTable(Column),
+  AddedRequiredFieldToTableWithPrismaLevelDefault(Column),
+  MadeOptionalFieldRequired(Column),
+  MadeScalarFieldIntoArrayField(Column),
+  DropAndRecreateRequiredColumn(Column),
 }
 ```
 
@@ -516,14 +516,14 @@ Rules for each unexecutable variant (from `evaluate()` at `unexecutable_step_che
 **`SqlMigrationWarningCheck` enum** (`sql_destructive_change_checker/warning_check.rs:7-48`):
 ```rust
 pub(crate) enum SqlMigrationWarningCheck {
-    DropAndRecreateColumn { table, namespace, column },
-    NonEmptyColumnDrop { table, namespace, column },
-    NonEmptyTableDrop { table, namespace },
-    RiskyCast { table, namespace, column, previous_type, next_type },
-    NotCastable { table, namespace, column, previous_type, next_type },
-    PrimaryKeyChange { table, namespace },
-    UniqueConstraintAddition { table, columns },
-    EnumValueRemoval { enm, values },
+  DropAndRecreateColumn { table, namespace, column },
+  NonEmptyColumnDrop { table, namespace, column },
+  NonEmptyTableDrop { table, namespace },
+  RiskyCast { table, namespace, column, previous_type, next_type },
+  NotCastable { table, namespace, column, previous_type, next_type },
+  PrimaryKeyChange { table, namespace },
+  UniqueConstraintAddition { table, columns },
+  EnumValueRemoval { enm, values },
 }
 ```
 
@@ -585,7 +585,7 @@ Postgres `apply_migration_script` (`flavour/postgres/connector/native/mod.rs:146
 // in a transaction, which is sometimes undesirable (e.g. when the script contains
 // statements that cannot be run inside a transaction like `CREATE INDEX CONCURRENTLY`).
 for stmt in split_script_into_statements(script) {
-    match client.simple_query(stmt).await { ... }
+  match client.simple_query(stmt).await {... }
 }
 ```
 
@@ -629,7 +629,7 @@ The `SqlMigrationStep` enum (`sql_migration.rs:481-516`) has no `RenameColumn` v
 - `RedefineTables` (drop-and-recreate the table using INSERT...SELECT for data migration)
 - `CreateTable` / `DropTable`
 
-There is a `RenameIndex` and `RenameForeignKey` step, but **no `RenameColumn`**. A column rename with `@map` (the PSL `@@map` / `@map` annotation for field-to-column name mapping) is handled purely at the PSL layer: the column's DB name is changed in the schema, so the differ sees a column with the old name disappeared and a column with the new name appeared — which is `DropColumn` + `AddColumn` under `AlterTable`. The data in the renamed column is lost unless the user hand-edits the generated migration to use `ALTER TABLE ... RENAME COLUMN`.
+There is a `RenameIndex` and `RenameForeignKey` step, but **no `RenameColumn`**. A column rename with `@map` (the PSL `@@map` / `@map` annotation for field-to-column name mapping) is handled purely at the PSL layer: the column's DB name is changed in the schema, so the differ sees a column with the old name disappeared and a column with the new name appeared — which is `DropColumn` + `AddColumn` under `AlterTable`. The data in the renamed column is lost unless the user hand-edits the generated migration to use `ALTER TABLE... RENAME COLUMN`.
 
 This confirms the original note's "heuristic-free" claim and Djogi's `#[field(renamed_from = "old_name")]` approach — but note that Djogi's annotation explicitly handles the rename at the differ level, which Prisma does **not** do. That is a Djogi advantage.
 
@@ -656,15 +656,15 @@ If the migrations table does not yet exist, `baseline_initialize()` is called fi
 `apply_migrations.rs:36-45` (the unapplied-migration filter):
 ```rust
 let unapplied_migrations: Vec<&MigrationDirectory> = migrations_from_filesystem
-    .migration_directories
-    .iter()
-    .filter(|fs_migration| {
-        !migrations_from_database
-            .iter()
-            .filter(|db_migration| db_migration.rolled_back_at.is_none())
-            .any(|db_migration| db_migration.migration_name == fs_migration.migration_name())
-    })
-    .collect();
+ .migration_directories
+ .iter()
+ .filter(|fs_migration| {
+    !migrations_from_database
+     .iter()
+     .filter(|db_migration| db_migration.rolled_back_at.is_none())
+     .any(|db_migration| db_migration.migration_name == fs_migration.migration_name())
+  })
+ .collect();
 ```
 
 The filter simply checks: "is this filesystem migration absent from the non-rolled-back DB rows?" It does not check ordering. A migration that is on-disk but not in the DB will be applied regardless of its lexicographic position relative to already-applied migrations.

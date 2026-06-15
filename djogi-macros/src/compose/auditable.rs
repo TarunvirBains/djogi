@@ -1,6 +1,6 @@
 //! `#[model(auditable)]` — emit the `Auditable` trait impl plus the
 //! `__djogi_auditable_populate` helper invoked from `Model::create`.
-//! .4.
+//!.4.
 //! # 2026-05-03 design pivot
 //! Commit 939b9ab shipped `#[derive(Auditable)]` as the opt-in
 //! surface; the current design supersedes it with `#[model(auditable)]` per spec
@@ -32,7 +32,7 @@
 //! ) {
 //! if self.created_by.is_none() {
 //! self.created_by = ctx.auth()
-//! .map(|a| ::std::format!("{}", a.user_id));
+//!.map(|a| ::std::format!("{}", a.user_id));
 //! }
 //! }
 //! }
@@ -48,7 +48,7 @@
 //! an attribute, but field injection still does not happen. When the
 //! field is missing, the emitted `self.created_by.as_deref()` /
 //! `self.created_by.is_none()` produces an actionable rustc
-//! diagnostic (`error[E0609]: no field "created_by" on type ...`).
+//! diagnostic (`error[E0609]: no field "created_by" on type...`).
 //! # Composition with `#[model(hooks)]`
 //! `#[model(auditable)]` and `#[model(hooks)]` compose orthogonally.
 //! The composition populator runs BEFORE any user
@@ -61,7 +61,7 @@
 //! #auditable_populate ← composition populator
 //! #before_create_call ← user hook
 //! #sequence_upsert_preamble ← fix
-//! ... INSERT, outbox, after_create ...
+//!... INSERT, outbox, after_create...
 //! ```
 //! # Display vs Debug for `user_id`
 //! The populator emits `format!("{}", a.user_id)` — Display — not
@@ -115,39 +115,39 @@ pub fn expand(model_ident: &Ident, model_attrs: &ModelAttrs) -> TokenStream {
         return TokenStream::new();
     }
     quote! {
-        // Trait impl — `Auditable` getter exposing the adopter-declared
-        // `created_by: Option<String>` as `Option<&str>`. Borrowed
-        // no allocation, no copy.
-        impl ::djogi::Auditable for #model_ident {
-            fn created_by(&self) -> ::std::option::Option<&str> {
-                self.created_by.as_deref()
-            }
-        }
+     // Trait impl — `Auditable` getter exposing the adopter-declared
+     // `created_by: Option<String>` as `Option<&str>`. Borrowed
+     // no allocation, no copy.
+     impl ::djogi::Auditable for #model_ident {
+      fn created_by(&self) -> ::std::option::Option<&str> {
+       self.created_by.as_deref()
+      }
+     }
 
-        // Populator helper — invoked from `Model::create` between
-        // `auto_set_tenant` and the user `before_create` hook (
-        // §D6). The `is_none()` guard is load-bearing: a user-set
-        // `created_by` is never clobbered. Spec line 1062.
-        // `#[doc(hidden)] pub(crate)` per spec line 1003: the helper
-        // is a macro-call surface, not adopter API. Both this `impl`
-        // block and the call site (`value.__djogi_auditable_populate(ctx)`
-        // in `crud.rs::create_body`) expand into the SAME downstream
-        // crate where `#[model(auditable)] struct M { ... }` is
-        // declared, so `pub(crate)` is reachable from the call site
-        // without leaking the helper as adopter-callable public API.
-        // `#[doc(hidden)]` doubles up to keep it out of rustdoc.
-        impl #model_ident {
-            #[doc(hidden)]
-            pub(crate) fn __djogi_auditable_populate(
-                &mut self,
-                ctx: &mut ::djogi::DjogiContext,
-            ) {
-                if self.created_by.is_none() {
-                    self.created_by = ctx
-                        .auth()
-                        .map(|a| ::std::format!("{}", a.user_id));
-                }
-            }
-        }
+     // Populator helper — invoked from `Model::create` between
+     // `auto_set_tenant` and the user `before_create` hook (
+     // §D6). The `is_none()` guard is load-bearing: a user-set
+     // `created_by` is never clobbered. Spec line 1062.
+     // `#[doc(hidden)] pub(crate)` per spec line 1003: the helper
+     // is a macro-call surface, not adopter API. Both this `impl`
+     // block and the call site (`value.__djogi_auditable_populate(ctx)`
+     // in `crud.rs::create_body`) expand into the SAME downstream
+     // crate where `#[model(auditable)] struct M {... }` is
+     // declared, so `pub(crate)` is reachable from the call site
+     // without leaking the helper as adopter-callable public API.
+     // `#[doc(hidden)]` doubles up to keep it out of rustdoc.
+     impl #model_ident {
+      #[doc(hidden)]
+      pub(crate) fn __djogi_auditable_populate(
+       &mut self,
+       ctx: &mut ::djogi::DjogiContext,
+      ) {
+       if self.created_by.is_none() {
+        self.created_by = ctx
+        .auth()
+        .map(|a| ::std::format!("{}", a.user_id));
+       }
+      }
+     }
     }
 }

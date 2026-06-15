@@ -11,14 +11,14 @@ use djogi::prelude::*;
 #[model(table = "users_216_opt_o2o", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct User216OptO2o {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "profiles_216_opt_o2o", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Profile216OptO2o {
-    #[field(domain = "positive_amount")]
-    pub user: Option<OneToOneField<User216OptO2o>>,
+ #[field(domain = "positive_amount")]
+ pub user: Option<OneToOneField<User216OptO2o>>,
 }
 
 fn main() {}

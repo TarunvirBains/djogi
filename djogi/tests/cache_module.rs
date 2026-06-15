@@ -1,4 +1,4 @@
-//! Cluster 8δ T7.1 — `djogi::cache` re-export module tests.
+//! δ T7.1 — `djogi::cache` re-export module tests.
 //!
 //! Pins the surface at the type level: every test compiles a value of
 //! the re-exported type to prove the symbol is reachable through

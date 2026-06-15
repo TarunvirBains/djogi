@@ -3,11 +3,11 @@
 use djogi::prelude::*;
 
 #[model(table = "users", indexes(
-    index(expr = "lower(email)", opclass = "text_pattern_ops"),
+ index(expr = "lower(email)", opclass = "text_pattern_ops"),
 ))]
 #[derive(Debug, Clone)]
 pub struct User {
-    pub email: String,
+ pub email: String,
 }
 
 fn main() {}

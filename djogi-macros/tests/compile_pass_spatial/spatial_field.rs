@@ -19,8 +19,8 @@ use djogi::prelude::*;
 #[model(table = "places", no_default)]
 #[derive(Debug, Clone)]
 pub struct Place {
-    pub name: String,
-    pub location: djogi::GeoPoint,
+ pub name: String,
+ pub location: djogi::GeoPoint,
 }
 
 fn main() {}

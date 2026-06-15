@@ -23,14 +23,14 @@ use djogi::prelude::*;
 #[model(table = "phase8eta_string_widgets")]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub name: String,
+ pub name: String,
 }
 
 fn main() {
-    // Direct portable string ordering is omitted. Adopters who need
-    // database-locale ordering route through
-    // `f.name().explicit_pg_predicate().gt("m".to_string())` (which
-    // is rejected at cache boundaries because PG-locale ordering is
-    // not portable to Punnu's byte-lexicographic comparison).
-    let _bad = Widget::objects().filter(|f| f.name().gt("m"));
+ // Direct portable string ordering is omitted. Adopters who need
+ // database-locale ordering route through
+ // `f.name().explicit_pg_predicate().gt("m".to_string())` (which
+ // is rejected at cache boundaries because PG-locale ordering is
+ // not portable to Punnu's byte-lexicographic comparison).
+ let _bad = Widget::objects().filter(|f| f.name().gt("m"));
 }

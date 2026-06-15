@@ -7,12 +7,12 @@ Determine how the Rust linker handles `inventory::submit!` registrations across 
 ## Fixture Structure
 
 ```
-crates/tracker/   — two models: Elephant, Herd (both #[model])
-crates/billing/   — one model: Invoice (#[model])
+crates/tracker/ — two models: Elephant, Herd (both #[model])
+crates/billing/ — one model: Invoice (#[model])
 
-bin_one_ref/      — depends on tracker + billing; references ONLY Elephant::descriptor
-bin_all_ref/      — depends on tracker + billing; references BOTH Elephant + Herd descriptors
-bin_no_ref/       — depends on billing only; references NOTHING from billing
+bin_one_ref/  — depends on tracker + billing; references ONLY Elephant::descriptor
+bin_all_ref/  — depends on tracker + billing; references BOTH Elephant + Herd descriptors
+bin_no_ref/  — depends on billing only; references NOTHING from billing
 ```
 
 Each bin iterates `inventory::iter::<ModelDescriptor>()` and prints all registered model descriptors, grouped by crate (filtered via table_name prefix).
@@ -25,14 +25,14 @@ Each bin iterates `inventory::iter::<ModelDescriptor>()` and prints all register
 Total descriptors: 2
 
 tracker crate models (table_name starts with 'tracker_'):
-  Elephant -> tracker_elephant
-  Herd -> tracker_herd
+ Elephant -> tracker_elephant
+ Herd -> tracker_herd
 billing crate models (table_name starts with 'billing_'):
-  (none)
+ (none)
 
 All descriptors:
-  Elephant -> tracker_elephant
-  Herd -> tracker_herd
+ Elephant -> tracker_elephant
+ Herd -> tracker_herd
 ```
 
 **Observation:** Both Elephant AND Herd appear, despite only referencing Elephant.
@@ -44,14 +44,14 @@ The billing crate contributes zero descriptors (it is a dependency but unreferen
 Total descriptors: 2
 
 tracker crate models (table_name starts with 'tracker_'):
-  Elephant -> tracker_elephant
-  Herd -> tracker_herd
+ Elephant -> tracker_elephant
+ Herd -> tracker_herd
 billing crate models (table_name starts with 'billing_'):
-  (none)
+ (none)
 
 All descriptors:
-  Elephant -> tracker_elephant
-  Herd -> tracker_herd
+ Elephant -> tracker_elephant
+ Herd -> tracker_herd
 ```
 
 **Observation:** Same result as bin_one_ref. Both tracker models present. Billing absent.
@@ -62,10 +62,10 @@ All descriptors:
 Total descriptors: 0
 
 billing crate models (table_name starts with 'billing_'):
-  (none — billing crate was dropped by linker)
+ (none — billing crate was dropped by linker)
 
 All descriptors:
-  (none)
+ (none)
 ```
 
 **Observation:** Zero descriptors. The billing crate was entirely dropped by the linker.
@@ -76,14 +76,14 @@ All descriptors:
 Total descriptors: 2
 
 tracker crate models (table_name starts with 'tracker_'):
-  Elephant -> tracker_elephant
-  Herd -> tracker_herd
+ Elephant -> tracker_elephant
+ Herd -> tracker_herd
 billing crate models (table_name starts with 'billing_'):
-  (none)
+ (none)
 
 All descriptors:
-  Elephant -> tracker_elephant
-  Herd -> tracker_herd
+ Elephant -> tracker_elephant
+ Herd -> tracker_herd
 ```
 
 **Observation:** Identical to debug. Fat LTO does not change the behavior.
@@ -94,14 +94,14 @@ All descriptors:
 Total descriptors: 2
 
 tracker crate models (table_name starts with 'tracker_'):
-  Elephant -> tracker_elephant
-  Herd -> tracker_herd
+ Elephant -> tracker_elephant
+ Herd -> tracker_herd
 billing crate models (table_name starts with 'billing_'):
-  (none)
+ (none)
 
 All descriptors:
-  Elephant -> tracker_elephant
-  Herd -> tracker_herd
+ Elephant -> tracker_elephant
+ Herd -> tracker_herd
 ```
 
 **Observation:** Identical to debug. Fat LTO does not change the behavior.
@@ -112,10 +112,10 @@ All descriptors:
 Total descriptors: 0
 
 billing crate models (table_name starts with 'billing_'):
-  (none — billing crate was dropped by linker)
+ (none — billing crate was dropped by linker)
 
 All descriptors:
-  (none)
+ (none)
 ```
 
 **Observation:** Identical to debug. Fat LTO does not change the behavior.
@@ -161,7 +161,7 @@ For the `djogi_main!` contract: requiring one type per crate covers this edge ca
 
 ## Mechanism Explanation
 
-`inventory::submit!(ModelDescriptor { ... })` expands to a static variable placed in a special linker section (`.rodata.inventory`). The `inventory::iter::<T>()` function iterates over this section at runtime using linker-defined start/end symbols.
+`inventory::submit!(ModelDescriptor {... })` expands to a static variable placed in a special linker section (`.rodata.inventory`). The `inventory::iter::<T>()` function iterates over this section at runtime using linker-defined start/end symbols.
 
 The key insight is that the Rust linker operates at the **crate level**, not the individual static level, under normal conditions:
 

@@ -7,8 +7,8 @@ use djogi::prelude::*;
 #[model(table = "posts")]
 #[derive(Debug, Clone)]
 pub struct Post {
-    #[field(max_length = 0)]
-    pub title: String,
+ #[field(max_length = 0)]
+ pub title: String,
 }
 
 fn main() {}

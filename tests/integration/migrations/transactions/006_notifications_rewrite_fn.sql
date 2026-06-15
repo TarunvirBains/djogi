@@ -18,7 +18,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    NEW.kind := NEW.kind || ' (db-rewritten)';
-    RETURN NEW;
+  NEW.kind := NEW.kind || ' (db-rewritten)';
+  RETURN NEW;
 END;
 $$;

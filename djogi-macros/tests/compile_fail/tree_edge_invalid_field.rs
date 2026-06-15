@@ -7,7 +7,7 @@
 // instructing the caller to declare the FK first.
 //
 // `fn main() {}` is required for lihaaf compile-fail fixtures (see
-// lihaaf compile-fixture contract) — the .stderr would otherwise carry an
+// lihaaf compile-fixture contract) — the.stderr would otherwise carry an
 // E0601 noise line for the missing main.
 
 use djogi::prelude::*;
@@ -15,7 +15,7 @@ use djogi::prelude::*;
 #[model(table = "phase8_invalid_field_nodes", tree_edge = "nonexistent_field")]
 #[derive(Debug, Clone)]
 pub struct InvalidEdgeNode {
-    pub label: String,
+ pub label: String,
 }
 
 fn main() {}

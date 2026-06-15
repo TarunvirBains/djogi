@@ -9,8 +9,8 @@ use djogi::prelude::*;
 #[model(table = "places")]
 #[derive(Debug, Clone)]
 pub struct Place {
-    #[field(index = "gist", unique)]
-    pub location: String,
+ #[field(index = "gist", unique)]
+ pub location: String,
 }
 
 fn main() {}

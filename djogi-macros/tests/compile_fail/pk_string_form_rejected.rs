@@ -6,7 +6,7 @@ use djogi::prelude::*;
 
 #[model(table = "foo", pk = "heerid")]
 pub struct Foo {
-    pub bar: String,
+ pub bar: String,
 }
 
 fn main() {}

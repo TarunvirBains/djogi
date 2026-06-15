@@ -41,7 +41,7 @@
 //! whole table, which matters for unbounded-cardinality filters (e.g.
 //! `published = true` on a posts table). Zero rows -> `NotFound`.
 //! # Why RPITIT (not `async fn`)
-//! Every terminal returns `impl Future<Output = ...> + Send` rather than
+//! Every terminal returns `impl Future<Output =...> + Send` rather than
 //! using bare `async fn`. The explicit `+ Send` bound matches the
 //! `Model` trait shape (`model.rs`) and guarantees the returned future can
 //! be `.await`ed across task boundaries — required for any async runtime
@@ -81,18 +81,18 @@ use std::hash::Hash;
 /// Behavior by case:
 /// - `T::descriptor().tenant_key` is `None` → no-op (model has no RLS column).
 /// - `ctx.auth()` is `None` → no-op (no auth context attached; pre-auth
-///   or non-tenant code path).
+/// or non-tenant code path).
 /// - `ctx.auth().tenant_id` is `Some(tid)` → delegates to
-///   `ctx.ensure_tenant_set(tid)` which re-issues `SET LOCAL` when the
-///   requested tid differs from the currently-applied one.
+/// `ctx.ensure_tenant_set(tid)` which re-issues `SET LOCAL` when the
+/// requested tid differs from the currently-applied one.
 /// - `ctx.auth().tenant_id` is `None` AND a previous tid is still applied
-///   → clears the `app.tenant_id` GUC via `ctx.clear_tenant()`. Without
-///   this reset, a `set_auth(auth_with_tenant)` followed by
-///   `set_auth(auth_without_tenant)` inside one transaction would leave
-///   the earlier tenant's `SET LOCAL` active silently — a cross-tenant
-///   leak. A `tracing::warn!` is also emitted (unless
-///   `ctx.with_no_tenant_scope()` was called) so the caller sees the
-///   transition.
+/// → clears the `app.tenant_id` GUC via `ctx.clear_tenant()`. Without
+/// this reset, a `set_auth(auth_with_tenant)` followed by
+/// `set_auth(auth_without_tenant)` inside one transaction would leave
+/// the earlier tenant's `SET LOCAL` active silently — a cross-tenant
+/// leak. A `tracing::warn!` is also emitted (unless
+/// `ctx.with_no_tenant_scope()` was called) so the caller sees the
+/// transition.
 pub(crate) async fn auto_set_tenant<T: Model>(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
     if T::descriptor().tenant_key.is_none() {
         return Ok(());
@@ -120,7 +120,7 @@ pub(crate) async fn auto_set_tenant<T: Model>(ctx: &mut DjogiContext) -> Result<
                 tracing::warn!(
                     model = std::any::type_name::<T>(),
                     "auth attached but tenant_id is None on a tenant-keyed model; \
-                     queries will span tenants — call ctx.with_no_tenant_scope() to suppress",
+      queries will span tenants — call ctx.with_no_tenant_scope() to suppress",
                 );
             }
         }
@@ -220,9 +220,9 @@ where
     /// Execute the query and require **exactly one** matching row.
     /// - Zero rows -> [`DjogiError::NotFound`].
     /// - Two or more rows -> [`DjogiError::MultipleObjects`] (via `LIMIT 2`;
-    ///   `count_seen = 2`).
-    ///   User-supplied `limit` on the queryset is ignored — this terminal
-    ///   owns the row-count probe.
+    /// `count_seen = 2`).
+    /// User-supplied `limit` on the queryset is ignored — this terminal
+    /// owns the row-count probe.
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -298,7 +298,7 @@ where
     /// Preserving [`fetch_all`](Self::fetch_all)'s `Vec<T>` return type
     /// keeps the terminal stable across : a queryset
     /// built without prefetches and fetched via `fetch_all` returns
-    /// exactly what it did before Task 4 landed. Prefetches are an
+    /// exactly what it did before landed. Prefetches are an
     /// opt-in extension reachable through the dedicated
     /// `fetch_all_prefetched` entry — no pre-existing call site is
     /// forced into `Vec<PrefetchedRow<T>>`. This also makes prefetch
@@ -371,7 +371,7 @@ where
     /// Preserving [`fetch_all`](Self::fetch_all)'s `Vec<T>` return
     /// type keeps the terminal stable across : a
     /// queryset built without select_related and fetched via
-    /// `fetch_all` returns exactly what it did before Task 5 landed.
+    /// `fetch_all` returns exactly what it did before landed.
     /// select_related is an opt-in extension reachable through the
     /// dedicated `fetch_all_joined` entry — no pre-existing call site
     /// is forced into `Vec<JoinedRow<T>>`. Registrations on the
@@ -382,17 +382,17 @@ where
     /// When the queryset carries both select_related and prefetch
     /// registrations, the terminal runs:
     /// 1. The main query with the LEFT JOINs + aliased child columns.
-    ///    Each row decodes into a `JoinedRow<T>` carrying the joined
-    ///    children under their `source_column` keys.
+    /// Each row decodes into a `JoinedRow<T>` carrying the joined
+    /// children under their `source_column` keys.
     /// 2. The prefetch fan-out — one follow-up query per registered
-    ///    `prefetch_paths` entry — whose resolved targets are
-    ///    stitched into the same `JoinedRow<T>` values. The two
-    ///    paths never collide on the same `source_column` in practice
-    ///    because `.select_related(path)` and `.prefetch(path)`
-    ///    target different relations on any realistic queryset, but
-    ///    if they did, the prefetch stitcher would overwrite the
-    ///    select_related entry — documented on
-    ///    [`crate::relation::select_related::stitch_prefetches_into_joined`].
+    /// `prefetch_paths` entry — whose resolved targets are
+    /// stitched into the same `JoinedRow<T>` values. The two
+    /// paths never collide on the same `source_column` in practice
+    /// because `.select_related(path)` and `.prefetch(path)`
+    /// target different relations on any realistic queryset, but
+    /// if they did, the prefetch stitcher would overwrite the
+    /// select_related entry — documented on
+    /// [`crate::relation::select_related::stitch_prefetches_into_joined`].
     /// # Short-circuit contract
     /// Honours the same `is_empty` short-circuit as every other
     /// terminal — a structural-none queryset returns `Ok(Vec::new())`
@@ -435,7 +435,7 @@ where
             // Build and execute the joined main query. `build_select_joined`
             // emits the aliased projection + LEFT JOINs when
             // `select_related_paths` is non-empty; with an empty path
-            // list it degenerates to `SELECT {parent}.* FROM ...` — same
+            // list it degenerates to `SELECT {parent}.* FROM...` — same
             // shape as `build_select` minus the `*` shortcut. The
             // decoded rows come back as raw `tokio_postgres::Row`s so
             // both parent and (per registered path) child can be
@@ -522,8 +522,8 @@ where
     /// [`atomic`](crate::transaction::atomic) + one of:
     /// - `select_for_update()` on the queryset to serialise lookups
     /// - an `ON CONFLICT` clause on the underlying table
-    ///   when the caller needs strict once-only semantics.
-    ///   Task 7.5 adds `create_or_find` for the conflict-key path.
+    /// when the caller needs strict once-only semantics.
+    ///.5 adds `create_or_find` for the conflict-key path.
     /// # Short-circuit
     /// A `QuerySet::none()`-derived queryset short-circuits the
     /// lookup to `Ok(None)`, so the factory **runs and a row is
@@ -555,14 +555,14 @@ where
     /// row was updated in place.
     /// # Semantics
     /// - Found branch: `updater(&mut row)` runs, then
-    ///   [`save`](crate::model::Model::save) rehydrates the row from
-    ///   `UPDATE ... RETURNING *` — `updated_at` advances and any
-    ///   trigger-mutated column surfaces in the returned `T`.
+    /// [`save`](crate::model::Model::save) rehydrates the row from
+    /// `UPDATE... RETURNING *` — `updated_at` advances and any
+    /// trigger-mutated column surfaces in the returned `T`.
     /// - Missing branch: `factory()` runs and
-    ///   [`create`](crate::model::Model::create) inserts the new row;
-    ///   the returned `T` is the `RETURNING *` rehydration.
-    ///   `updater` takes `&mut T` so callers can mutate multiple fields
-    ///   in one pass without needing to rebuild the struct.
+    /// [`create`](crate::model::Model::create) inserts the new row;
+    /// the returned `T` is the `RETURNING *` rehydration.
+    /// `updater` takes `&mut T` so callers can mutate multiple fields
+    /// in one pass without needing to rebuild the struct.
     /// # Race caveat
     /// Same non-atomic caveat as [`get_or_create`](Self::get_or_create)
     /// the SELECT and the UPDATE/INSERT are distinct statements.
@@ -593,7 +593,7 @@ where
     /// Fetch every row whose primary key is in `ids` and return them
     /// keyed by PK in a `HashMap`.
     /// One round trip. The generated SQL is
-    /// `SELECT * FROM <table> WHERE id IN ($1, $2, ...)` — one bound
+    /// `SELECT * FROM <table> WHERE id IN ($1, $2,...)` — one bound
     /// parameter per id. Postgres' bind-parameter cap is 65_535; larger
     /// id batches should be chunked by the caller.
     /// # Why on `QuerySet`, not `Model`
@@ -601,9 +601,9 @@ where
     /// orderings before the PK probe:
     /// ```rust,ignore
     /// Account::objects()
-    ///     .filter(|f| f.tenant_id.eq(tenant))
-    ///     .in_bulk(&mut ctx, ids)
-    ///     .await?;
+    /// .filter(|f| f.tenant_id.eq(tenant))
+    /// .in_bulk(&mut ctx, ids)
+    /// .await?;
     /// ```
     /// A bare `Account::in_bulk(ctx, ids)` is still reachable as
     /// `Account::objects().in_bulk(ctx, ids)`.
@@ -667,7 +667,7 @@ where
 // ── Scalar terminals (no FromPgRow bound needed) ─────────────────────────────
 
 impl<T: Model> QuerySet<T> {
-    /// `SELECT COUNT(*) FROM <table> [WHERE ...]`.
+    /// `SELECT COUNT(*) FROM <table> [WHERE...]`.
     /// Returns `i64` to match Postgres' `BIGINT` result of `COUNT(*)` and to
     /// leave headroom for tables that grow past `i32::MAX` rows. User code
     /// that needs a `usize` converts at the call site.
@@ -693,7 +693,7 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
-    /// `SELECT EXISTS(SELECT 1 FROM <table> [WHERE ...] LIMIT 1)`.
+    /// `SELECT EXISTS(SELECT 1 FROM <table> [WHERE...] LIMIT 1)`.
     /// The `LIMIT 1` is inside the EXISTS subquery (see
     /// [`crate::query::sql::build_exists`]) so Postgres stops scanning at
     /// the first match — meaningful for large tables where even a count
@@ -746,16 +746,16 @@ where
     /// use futures::StreamExt;
     ///
     /// atomic(&mut ctx, |ctx| Box::pin(async move {
-    ///     let mut stream = Post::objects()
-    ///         .filter(|f| f.published.eq(true))
-    ///         .stream(ctx)
-    ///         .await?;
+    ///  let mut stream = Post::objects()
+    ///  .filter(|f| f.published.eq(true))
+    ///  .stream(ctx)
+    ///  .await?;
     ///
-    ///     while let Some(result) = stream.next().await {
-    ///         let post = result?;
-    ///         // process post …
-    ///     }
-    ///     Ok(())
+    ///  while let Some(result) = stream.next().await {
+    ///   let post = result?;
+    ///   // process post …
+    ///  }
+    ///  Ok(())
     /// })).await?;
     /// ```
     // TODO: stream surfaces (`stream`,

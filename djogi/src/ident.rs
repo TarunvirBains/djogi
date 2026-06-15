@@ -9,18 +9,18 @@
 //! The validator enforces the Postgres unquoted-identifier contract:
 //! 1. Non-empty.
 //! 2. Length ≤ 63 bytes (`NAMEDATALEN - 1`), so Rust-level and
-//!    Postgres-level identifier identity cannot diverge through
-//!    server-side truncation.
+//! Postgres-level identifier identity cannot diverge through
+//! server-side truncation.
 //! 3. First byte is an ASCII letter or underscore; every remaining
-//!    byte is ASCII alphanumeric or underscore. Djogi additionally
-//!    rejects the `$` byte that Postgres tolerates in unquoted
-//!    identifiers, to keep the class trivial to reason about.
-//!    (Implementation is pure `u8::is_ascii_alphabetic` /
-//!    `u8::is_ascii_alphanumeric` — no regex engine, no dependency.)
+//! byte is ASCII alphanumeric or underscore. Djogi additionally
+//! rejects the `$` byte that Postgres tolerates in unquoted
+//! identifiers, to keep the class trivial to reason about.
+//! (Implementation is pure `u8::is_ascii_alphabetic` /
+//! `u8::is_ascii_alphanumeric` — no regex engine, no dependency.)
 //! 4. Not a reserved Postgres keyword (case-insensitive; catcode `R`
-//!    in `pg_get_keywords()` as of Postgres 18).
-//!    Callers that emit literals from `#[derive(Model)]` are the intended
-//!    audience; the panic messages read as framework bugs or bypass attempts.
+//! in `pg_get_keywords()` as of Postgres 18).
+//! Callers that emit literals from `#[derive(Model)]` are the intended
+//! audience; the panic messages read as framework bugs or bypass attempts.
 
 /// Postgres's usable identifier length — `NAMEDATALEN - 1` on a default
 /// build. Identifiers longer than this are silently truncated by the
@@ -195,14 +195,14 @@ pub(crate) const fn const_assert_plain_ident(value: &'static str, role: &'static
     assert!(
         bytes.len() <= MAX_IDENT_LEN,
         "djogi::ident: macro-emitted identifier exceeds Postgres's 63-byte usable length \
-         (NAMEDATALEN - 1) — either the proc-macro emission is broken or downstream code \
-         bypassed the macro-support seal"
+   (NAMEDATALEN - 1) — either the proc-macro emission is broken or downstream code \
+   bypassed the macro-support seal"
     );
     assert!(
         bytes[0].is_ascii_alphabetic() || bytes[0] == b'_',
         "djogi::ident: macro-emitted identifier must start with a letter or underscore \
-         — either the proc-macro emission is broken or downstream code bypassed the \
-         macro-support seal"
+   — either the proc-macro emission is broken or downstream code bypassed the \
+   macro-support seal"
     );
     // Const-friendly indexed byte scan — `for` over a slice works in
     // const fn on current stable but requires indexing, not iteration
@@ -213,8 +213,8 @@ pub(crate) const fn const_assert_plain_ident(value: &'static str, role: &'static
         assert!(
             byte.is_ascii_alphanumeric() || byte == b'_',
             "djogi::ident: macro-emitted identifier contains a non-identifier character \
-             — either the proc-macro emission is broken or downstream code bypassed the \
-             macro-support seal"
+    — either the proc-macro emission is broken or downstream code bypassed the \
+    macro-support seal"
         );
         i += 1;
     }
@@ -227,14 +227,14 @@ pub(crate) const fn const_assert_plain_ident(value: &'static str, role: &'static
     while k < RESERVED_KEYWORDS.len() {
         let kw = RESERVED_KEYWORDS[k].as_bytes();
         if const_eq_ignore_ascii_case(bytes, kw) {
-            // Const-panic path — `panic!` (not `assert!(false, ...)`)
+            // Const-panic path — `panic!` (not `assert!(false,...)`)
             // both satisfies `clippy::assertions_on_constants` and
             // matches the "unreachable under a well-formed emission"
             // intent of the seal.
             panic!(
                 "djogi::ident: macro-emitted identifier is a reserved Postgres keyword and \
-                 cannot appear unquoted in generated SQL — either the proc-macro emission \
-                 is broken or downstream code bypassed the macro-support seal"
+     cannot appear unquoted in generated SQL — either the proc-macro emission \
+     is broken or downstream code bypassed the macro-support seal"
             );
         }
         k += 1;
@@ -259,7 +259,7 @@ pub(crate) const fn const_assert_user_supplied_ident(value: &'static str, role: 
     if starts_with_reserved_djogi_prefix(value.as_bytes()) {
         panic!(
             "djogi::ident: user-supplied identifier starts with the framework-reserved \
-             `__djogi_` prefix"
+    `__djogi_` prefix"
         );
     }
     const_assert_plain_ident(value, role);
@@ -395,8 +395,8 @@ pub(crate) fn assert_plain_ident(value: &'static str, role: &'static str) {
     assert!(
         value.len() <= MAX_IDENT_LEN,
         "djogi::ident: macro-emitted {role} {value:?} is {len} bytes, exceeding Postgres's \
-         {max}-byte usable identifier length (NAMEDATALEN - 1) — either the proc-macro emission \
-         is broken or downstream code bypassed the macro-support seal",
+   {max}-byte usable identifier length (NAMEDATALEN - 1) — either the proc-macro emission \
+   is broken or downstream code bypassed the macro-support seal",
         len = value.len(),
         max = MAX_IDENT_LEN,
     );
@@ -404,15 +404,15 @@ pub(crate) fn assert_plain_ident(value: &'static str, role: &'static str) {
     assert!(
         bytes[0].is_ascii_alphabetic() || bytes[0] == b'_',
         "djogi::ident: macro-emitted {role} {value:?} must start with a letter or underscore \
-         — either the proc-macro emission is broken or downstream code bypassed the \
-         macro-support seal"
+   — either the proc-macro emission is broken or downstream code bypassed the \
+   macro-support seal"
     );
     for &byte in &bytes[1..] {
         assert!(
             byte.is_ascii_alphanumeric() || byte == b'_',
             "djogi::ident: macro-emitted {role} {value:?} contains a non-identifier character \
-             — either the proc-macro emission is broken or downstream code bypassed the \
-             macro-support seal"
+    — either the proc-macro emission is broken or downstream code bypassed the \
+    macro-support seal"
         );
     }
     // Stack-allocated lowercase for the reserved-keyword lookup. The length
@@ -429,8 +429,8 @@ pub(crate) fn assert_plain_ident(value: &'static str, role: &'static str) {
     assert!(
         RESERVED_KEYWORDS.binary_search(&lower).is_err(),
         "djogi::ident: macro-emitted {role} {value:?} is a reserved Postgres keyword and cannot \
-         appear unquoted in generated SQL — either the proc-macro emission is broken or \
-         downstream code bypassed the macro-support seal"
+   appear unquoted in generated SQL — either the proc-macro emission is broken or \
+   downstream code bypassed the macro-support seal"
     );
 }
 
@@ -483,9 +483,9 @@ pub(crate) fn assert_user_supplied_ident(value: &'static str, role: &'static str
     assert!(
         !starts_with_reserved_djogi_prefix(value.as_bytes()),
         "djogi::ident: user-supplied {role} {value:?} is reserved — the `__djogi_` prefix \
-         is used for framework-internal identifiers (recursive CTE names like `__djogi_tree`, \
-         derived-table aliases like `__djogi_q`, aggregate-tuple slot aliases like \
-         `__djogi_agg_N`). Choose a different name."
+   is used for framework-internal identifiers (recursive CTE names like `__djogi_tree`, \
+   derived-table aliases like `__djogi_q`, aggregate-tuple slot aliases like \
+   `__djogi_agg_N`). Choose a different name."
     );
     assert_plain_ident(value, role);
 }
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn rejects_leading_digit() {
         // Closes the pre-fix hole: the old byte check accepted "123",
-        // which would emit `SELECT p.123 ...` or `LEFT JOIN 9table ...`.
+        // which would emit `SELECT p.123...` or `LEFT JOIN 9table...`.
         assert!(try_assert("123").is_err());
         assert!(try_assert("9col").is_err());
     }
@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn rejects_metacharacter_payload() {
-        // The original SQL-injection shape from the Task 4 seal fixture.
+        // The original SQL-injection shape from the seal fixture.
         assert!(try_assert("owner_id) OR 1=1 --").is_err());
     }
 

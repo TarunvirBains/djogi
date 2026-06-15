@@ -7,5 +7,5 @@ use djogi::prelude::*;
 #[derive(Model)]
 #[model(table = "invoices")]
 pub struct Invoice {
-    pub reference: String,
+ pub reference: String,
 }

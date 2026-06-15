@@ -6,11 +6,11 @@
 //! `distinct`, `distinct_on`) consumes `self` and returns `Self`, so a
 //! `QuerySet` is immutable-by-convention: composition never mutates an
 //! existing queryset in place.
-//! `T::objects()` (default method on the `Model` trait, added in Task 5)
+//! `T::objects()` (default method on the `Model` trait, added in )
 //! constructs an empty `QuerySet<T>` — no filters, no ordering, no limit.
 //! This is the entry point for every query.
 //! # Why
-//! Terminal methods (Task 6 — `fetch_all`, `fetch_one`, `count`, `exists`,
+//! Terminal methods ( — `fetch_all`, `fetch_one`, `count`, `exists`,
 //! `first`, `update`, `delete`) are the **only** place SQL is generated or
 //! executed. Everything else is a cheap structural transformation: `Condition`
 //! trees shared across clones, small `Vec`s for ordering and distinct_on
@@ -21,7 +21,7 @@
 //! clobbering the caller's primary ordering. Replace semantics would force
 //! every caller to know every prior `order_by` call, which composes poorly.
 //! [`QuerySet::none`] is a structural short-circuit — `is_empty = true`
-//! causes every terminal method (Task 6) to return the empty result without
+//! causes every terminal method () to return the empty result without
 //! a database round-trip. Useful for authorization branches
 //! (`if !can_read { return qs.none(); }`) that would otherwise hit the DB
 //! just to prove the obvious.
@@ -36,11 +36,11 @@
 //! use djogi::prelude::*;
 //!
 //! let qs = Post::objects()
-//!     .filter(|f| f.published.eq(true))
-//!     .exclude(|f| f.title.eq("draft".to_string()))
-//!     .order_by(|f| f.view_count.desc())
-//!     .limit(20);
-//! // Nothing has hit the DB yet — terminal methods (Task 6) do that.
+//! .filter(|f| f.published.eq(true))
+//! .exclude(|f| f.title.eq("draft".to_string()))
+//! .order_by(|f| f.view_count.desc())
+//! .limit(20);
+//! // Nothing has hit the DB yet — terminal methods () do that.
 //! ```
 
 use crate::model::Model;
@@ -57,19 +57,19 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 
 /// `DISTINCT` mode for a QuerySet.
-/// `None` emits a plain `SELECT ...`. `Plain` emits `SELECT DISTINCT ...`.
-/// `On(cols)` emits `SELECT DISTINCT ON (col_a, col_b) ...` — the Postgres
+/// `None` emits a plain `SELECT...`. `Plain` emits `SELECT DISTINCT...`.
+/// `On(cols)` emits `SELECT DISTINCT ON (col_a, col_b)...` — the Postgres
 /// extension that keeps the first row per `(col_a, col_b)` tuple, where
 /// "first" is determined by the query's `ORDER BY`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DistinctMode {
-    /// `SELECT ...` — no DISTINCT clause.
+    /// `SELECT...` — no DISTINCT clause.
     #[default]
     None,
-    /// `SELECT DISTINCT ...`.
+    /// `SELECT DISTINCT...`.
     Plain,
-    /// `SELECT DISTINCT ON (col_a, col_b) ...` — Postgres extension.
+    /// `SELECT DISTINCT ON (col_a, col_b)...` — Postgres extension.
     /// Column names are macro-baked `&'static str` literals, never user input.
     On(Vec<&'static str>),
 }
@@ -168,9 +168,9 @@ impl<T: crate::types::Cacheable + Clone> CacheTarget<T> for PunnuCacheTarget<T> 
             // caller.
             if let Err(e) = punnu.insert(value).await {
                 tracing::warn!(
-                    target: "djogi::cache",
-                    error = ?e,
-                    "Punnu::insert failed during QuerySet::cache hook; continuing",
+                 target: "djogi::cache",
+                 error = ?e,
+                 "Punnu::insert failed during QuerySet::cache hook; continuing",
                 );
             }
         })
@@ -280,7 +280,7 @@ pub struct QuerySet<T: Model> {
     /// (`sassi-reference/sassi/src/punnu/pool.rs` lines 112–122 — the
     /// struct holds a single `Arc<PunnuInner<T>>` and `Clone` clones
     /// the `Arc`). The boxed [`CacheTarget`] underneath similarly
-    /// clones a single `Arc<dyn ...>` handle. Binding a queryset to a
+    /// clones a single `Arc<dyn...>` handle. Binding a queryset to a
     /// Punnu therefore records "this QuerySet feeds that Punnu
     /// instance" rather than taking a snapshot of the pool's contents.
     /// # Why outside the SQL emit path
@@ -612,7 +612,7 @@ impl<T: Model> Default for QuerySet<T> {
 /// flattens through the trusted Sassi reducer.
 /// `Q::Portable(PortablePredicate::True)` (the unfiltered identity)
 /// short-circuits to the addition unchanged so unfiltered querysets do
-/// not pick up a redundant `TRUE AND ...` wrapper.
+/// not pick up a redundant `TRUE AND...` wrapper.
 fn and_q_into_q<T: Model, A: crate::query::IntoQ<T>>(current: Q<T>, addition: A) -> Q<T> {
     let added = addition.into_q();
     if is_q_vacuously_true(&current) {
@@ -742,7 +742,7 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
-    /// Structural empty QuerySet — every terminal method (Task 6) short-
+    /// Structural empty QuerySet — every terminal method () short-
     /// circuits to the empty result without touching the database.
     /// Takes `self` as an instance transform (matching Django's
     /// `queryset.none()` ergonomics) so `Post::objects().none()` compiles
@@ -753,9 +753,9 @@ impl<T: Model> QuerySet<T> {
     /// Useful for authorization / feature-flag branches:
     /// ```ignore
     /// let qs = if user.is_authenticated {
-    ///     Post::objects().filter(|f| f.published.eq(true))
+    ///  Post::objects().filter(|f| f.published.eq(true))
     /// } else {
-    ///     Post::objects().none()
+    ///  Post::objects().none()
     /// };
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
@@ -815,17 +815,17 @@ impl<T: Model> QuerySet<T> {
     /// - Field-vs-field comparisons (`balance < overdraft_limit`).
     /// - Arithmetic predicates (`balance + pending_credit > 0`).
     /// - Predicates that build on [`crate::expr::Expr`] composition
-    ///   future tasks extend this surface with aggregates, subqueries,
-    ///   and `CASE` (Tasks 4/5).
-    ///   The two methods compose: a queryset may have any mix of
-    ///   `filter` and `filter_expr` clauses, and every call is AND-ed
-    ///   onto the same tree.
+    /// future tasks extend this surface with aggregates, subqueries,
+    /// and `CASE` (Tasks 4/5).
+    /// The two methods compose: a queryset may have any mix of
+    /// `filter` and `filter_expr` clauses, and every call is AND-ed
+    /// onto the same tree.
     /// ```ignore
     /// use djogi::prelude::*;
     ///
     /// let overdrawn = Account::objects()
-    ///     .filter_expr(|f| f.balance().as_expr().lt(f.overdraft_limit().as_expr()))
-    ///     .fetch_all(&mut ctx).await?;
+    /// .filter_expr(|f| f.balance().as_expr().lt(f.overdraft_limit().as_expr()))
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn filter_expr<F>(mut self, f: F) -> Self
@@ -899,8 +899,8 @@ impl<T: Model> QuerySet<T> {
     /// ```ignore
     /// // ModelFilter — closure-free
     /// let filter = PostFilter::new()
-    ///     .published(Lookup::Eq(true))
-    ///     .view_count(Lookup::Gte(50i32));
+    /// .published(Lookup::Eq(true))
+    /// .view_count(Lookup::Gte(50i32));
     /// let rows = Post::objects().filter_struct(filter).fetch_all(&pool).await?;
     ///
     /// // Q<T> — public algebra
@@ -913,7 +913,7 @@ impl<T: Model> QuerySet<T> {
         // round-tripping through `q_to_condition`. The vacuous-truth
         // short-circuit fires before `Q<T>::bitand` so an empty filter
         // (e.g. an unfiltered `{Model}Filter` body) does not pick up a
-        // synthetic `TRUE AND ...` wrapper at the SQL emit time.
+        // synthetic `TRUE AND...` wrapper at the SQL emit time.
         let q = filter.into_q();
         if is_q_vacuously_true(&q) {
             return self;
@@ -924,7 +924,7 @@ impl<T: Model> QuerySet<T> {
 
     /// AND the **negation** of a [`Q<T>`] predicate onto the condition
     /// tree. The struct-API counterpart of [`QuerySet::exclude`]
-    /// the closure-free version of `.exclude(|f| ...)`.
+    /// the closure-free version of `.exclude(|f|...)`.
     /// Pure portable predicates are negated inside
     /// [`PortablePredicate`](crate::query::PortablePredicate), so Sassi can
     /// preserve Rust-side evaluability and simplify identities (`NOT TRUE`
@@ -937,8 +937,8 @@ impl<T: Model> QuerySet<T> {
     /// freely:
     /// ```ignore
     /// Post::objects()
-    ///     .filter_struct(PostFilter::new().published(Lookup::Eq(true)))
-    ///     .exclude_struct(PostFilter::new().title(Lookup::Eq("draft".to_string())))
+    /// .filter_struct(PostFilter::new().published(Lookup::Eq(true)))
+    /// .exclude_struct(PostFilter::new().title(Lookup::Eq("draft".to_string())))
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn exclude_struct<F: crate::query::IntoQ<T>>(mut self, filter: F) -> Self {
@@ -1146,7 +1146,7 @@ impl<T: Model> QuerySet<T> {
     /// silently swaps the base lock back to FOR UPDATE, which is a
     /// footgun. Use the FOR SHARE-named modifiers when the base lock
     /// is FOR SHARE.
-    /// .
+    ///.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn select_for_share(mut self) -> Self {
         self.lock = crate::query::lock::LockMode::ForShare;
@@ -1164,7 +1164,7 @@ impl<T: Model> QuerySet<T> {
     /// See [`select_for_share`](QuerySet::select_for_share) for the
     /// pool-backed footgun and the rationale for keeping the FOR
     /// SHARE and FOR UPDATE contention modifiers on separate methods.
-    /// .
+    ///.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn for_share_nowait(mut self) -> Self {
         self.lock = crate::query::lock::LockMode::ForShareNowait;
@@ -1182,21 +1182,21 @@ impl<T: Model> QuerySet<T> {
     /// with [`for_share_nowait`](QuerySet::for_share_nowait) — last
     /// call wins.
     /// See [`select_for_share`](QuerySet::select_for_share) for the
-    /// pool-backed footgun. .
+    /// pool-backed footgun..
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn for_share_skip_locked(mut self) -> Self {
         self.lock = crate::query::lock::LockMode::ForShareSkipLocked;
         self
     }
 
-    /// Switch to `SELECT DISTINCT ...`. Overrides any prior `distinct_on`.
+    /// Switch to `SELECT DISTINCT...`. Overrides any prior `distinct_on`.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn distinct(mut self) -> Self {
         self.distinct = DistinctMode::Plain;
         self
     }
 
-    /// Switch to Postgres' `SELECT DISTINCT ON (cols...) ...`. The closure
+    /// Switch to Postgres' `SELECT DISTINCT ON (cols...)...`. The closure
     /// returns either a single [`FieldRef`] or a tuple of up to six
     /// `FieldRef`s; column order matters because Postgres uses the first row
     /// per `(cols...)` tuple according to the query's `ORDER BY`.
@@ -1240,13 +1240,13 @@ impl<T: Model> QuerySet<T> {
     /// bound (not on `Model` itself, just on the prefetch path).
     /// ```ignore
     /// let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
-    ///     .filter(|f| f.make.eq("Toyota"))
-    ///     .prefetch(VehicleRelated::owner())
-    ///     .fetch_all_prefetched(&pool).await?;
+    /// .filter(|f| f.make.eq("Toyota"))
+    /// .prefetch(VehicleRelated::owner())
+    /// .fetch_all_prefetched(&pool).await?;
     ///
     /// for row in &rows {
-    ///     let owner: &Owner = row.get(VehicleRelated::owner()).unwrap();
-    ///     println!("{} owned by {}", row.row.make, owner.name);
+    ///  let owner: &Owner = row.get(VehicleRelated::owner()).unwrap();
+    ///  println!("{} owned by {}", row.row.make, owner.name);
     /// }
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
@@ -1321,13 +1321,13 @@ impl<T: Model> QuerySet<T> {
     /// carries a single hop at the type level.
     /// ```ignore
     /// let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
-    ///     .filter(|f| f.make.eq("Tesla"))
-    ///     .select_related(VehicleRelated::owner())
-    ///     .fetch_all_joined(&pool).await?;
+    /// .filter(|f| f.make.eq("Tesla"))
+    /// .select_related(VehicleRelated::owner())
+    /// .fetch_all_joined(&pool).await?;
     ///
     /// for row in &rows {
-    ///     let owner: &Owner = row.get(VehicleRelated::owner()).unwrap();
-    ///     println!("{} owned by {}", row.row.make, owner.name);
+    ///  let owner: &Owner = row.get(VehicleRelated::owner()).unwrap();
+    ///  println!("{} owned by {}", row.row.make, owner.name);
     /// }
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
@@ -1370,7 +1370,7 @@ impl<T: Model> QuerySet<T> {
     }
 
     /// Structural emptiness check — `true` only for querysets built via
-    /// [`QuerySet::none`]. Used by Task 6's terminal methods to short-
+    /// [`QuerySet::none`]. Used by 's terminal methods to short-
     /// circuit the DB round-trip.
     /// `pub(crate)` because it is an implementation detail of the terminal
     /// methods, not user-facing API; users who need "does this queryset
@@ -1393,9 +1393,9 @@ impl<T: Model> QuerySet<T> {
     /// # Example
     /// ```ignore
     /// let rows: Vec<(i64, i64)> = Txn::objects()
-    ///     .group_by(|f| f.org_id())
-    ///     .annotate(|f| f.amount().sum())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .group_by(|f| f.org_id())
+    /// .annotate(|f| f.amount().sum())
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
     pub fn group_by<F, K>(self, f: F) -> crate::query::grouped::GroupedQuerySet<T, K>
@@ -1426,9 +1426,9 @@ impl<T: Model> QuerySet<T> {
     /// // Emits: GROUP BY ROLLUP (org_id)
     /// // Produces subtotals per org_id plus the grand total in one query.
     /// let rows = Txn::objects()
-    ///     .rollup(|f| f.org_id())
-    ///     .annotate(|f| f.amount().sum())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .rollup(|f| f.org_id())
+    /// .annotate(|f| f.amount().sum())
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
     pub fn rollup<F, K>(self, f: F) -> crate::query::grouped::GroupedQuerySet<T, K>
@@ -1454,9 +1454,9 @@ impl<T: Model> QuerySet<T> {
     /// // Produces subtotals for (org_id, region_id), (org_id), (region_id),
     /// // and the grand total — all four combinations.
     /// let rows = Txn::objects()
-    ///     .cube(|f| (f.org_id(), f.region_id()))
-    ///     .annotate(|f| f.amount().sum())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .cube(|f| (f.org_id(), f.region_id()))
+    /// .annotate(|f| f.amount().sum())
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
     pub fn cube<F, K>(self, f: F) -> crate::query::grouped::GroupedQuerySet<T, K>
@@ -1472,7 +1472,7 @@ impl<T: Model> QuerySet<T> {
     /// Enter grouped state with GROUPING SETS semantics. Takes a closure
     /// that returns `[&'static str; N]` — each element becomes one
     /// single-column grouping set. Emits `GROUP BY GROUPING SETS ((col_a),
-    /// (col_b), ...)`.
+    /// (col_b),...)`.
     /// The key type is `()` — there are no statically-typed key columns to
     /// decode because each row's "key" depends on which grouping set matched.
     /// Call `.annotate(...)` on the result to attach aggregate expressions;
@@ -1485,9 +1485,9 @@ impl<T: Model> QuerySet<T> {
     /// // Emits: GROUP BY GROUPING SETS ((org_id), (region))
     /// // Each result row is grouped by exactly one of the listed columns.
     /// let rows = Txn::objects()
-    ///     .group_by_sets(|_| ["org_id", "region"])
-    ///     .annotate(|f| f.amount().sum())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .group_by_sets(|_| ["org_id", "region"])
+    /// .annotate(|f| f.amount().sum())
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
     pub fn group_by_sets<F, const N: usize>(
@@ -1519,17 +1519,17 @@ impl<T: Model> QuerySet<T> {
     /// each `FieldRef`'s `.column()` method:
     /// ```ignore
     /// // Equivalent SQL:
-    /// //   GROUP BY GROUPING SETS ((region, dept), (region), ())
+    /// // GROUP BY GROUPING SETS ((region, dept), (region), ())
     /// // Each result row is grouped by exactly one of the listed
     /// // tuples; the empty tuple yields the grand-total row.
     /// let rows = Sales::objects()
-    ///     .grouping_sets(|f| vec![
-    ///         vec![f.region().column(), f.dept().column()],
-    ///         vec![f.region().column()],
-    ///         vec![],
-    ///     ])
-    ///     .annotate(|f| f.amount().sum())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .grouping_sets(|f| vec![
+    ///   vec![f.region().column(), f.dept().column()],
+    ///   vec![f.region().column()],
+    ///   vec![],
+    ///  ])
+    /// .annotate(|f| f.amount().sum())
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     /// Use [`Self::group_by_sets`] for the simpler arity-1-per-set
     /// shape (one column per set, no nested tuples). Use
@@ -1540,14 +1540,14 @@ impl<T: Model> QuerySet<T> {
     /// inside `.annotate(...)` to flag which dimensions were rolled
     /// up in each result row:
     /// ```ignore
-    /// .annotate(|f| (
-    ///     f.amount().sum(),
-    ///     f.region().grouping(),    // 1 if region rolled up, else 0
-    ///     f.dept().grouping(),
+    ///.annotate(|f| (
+    ///  f.amount().sum(),
+    ///  f.region().grouping(), // 1 if region rolled up, else 0
+    ///  f.dept().grouping(),
     /// ))
     /// ```
     /// # Why `Vec<Vec<...>>` rather than typed tuple-of-tuples
-    /// A typed signature like `qs.grouping_sets((set1), (set2), ...)`
+    /// A typed signature like `qs.grouping_sets((set1), (set2),...)`
     /// would need a `IntoGroupingSets` trait implemented for tuples
     /// of varying inner arity — not expressible in stable Rust without
     /// macros. The runtime `Vec<Vec<&'static str>>` shape preserves
@@ -1682,13 +1682,13 @@ impl<T: Model> QuerySet<T> {
     /// If `R` has no GiST index on its geography column, this method warns
     /// once per process via `tracing::warn!`. A spatial JOIN without a GiST
     /// index performs a full table scan on `R` for every row in `T`, scaling
-    /// as O(|T| × |R|). Add `#[model(index = ...)]` on the region model's
+    /// as O(|T| × |R|). Add `#[model(index =...)]` on the region model's
     /// geography field or declare an `IndexSpec` with `IndexType::Gist`.
     /// ## Type parameters
     /// - `F` — closure that picks the geography column on `T`.
     /// - `G` — the concrete geography type (e.g. `GeoPoint`, `Polygon`).
     /// - `R` — the region model. Must have at least one `Geography`-typed field
-    ///   in its descriptor.
+    /// in its descriptor.
     /// ## Panics
     /// Panics at call time if `R`'s descriptor contains no
     /// `FieldSqlType::Geography` field. This is a programming error (missing
@@ -1715,12 +1715,12 @@ impl<T: Model> QuerySet<T> {
             static ONCE: std::sync::Once = std::sync::Once::new();
             ONCE.call_once(|| {
                 tracing::warn!(
-                    target: "djogi::spatial",
-                    model = R::table_name(),
-                    "group_by_region called against a region model with no GiST index on a \
-                     geography column; spatial JOINs without GiST scale linearly in both \
-                     table sizes — add IndexType::Gist on the region model's geography field \
-                     or declare an IndexSpec with extension_dependency = Some(\"postgis\")"
+                 target: "djogi::spatial",
+                 model = R::table_name(),
+                 "group_by_region called against a region model with no GiST index on a \
+                  geography column; spatial JOINs without GiST scale linearly in both \
+                  table sizes — add IndexType::Gist on the region model's geography field \
+                  or declare an IndexSpec with extension_dependency = Some(\"postgis\")"
                 );
             });
         }
@@ -1751,7 +1751,7 @@ impl<T: Model> QuerySet<T> {
             .map(|f| f.name)
             .expect(
                 "region model R must have at least one Geography-typed field; \
-                 add a GeoPoint / Polygon / … field before calling group_by_region",
+     add a GeoPoint / Polygon / … field before calling group_by_region",
             );
 
         // ── PK column for the region model ───────────────────────────────────
@@ -1820,9 +1820,9 @@ impl<T: Model> QuerySet<T> {
     /// Emits:
     /// ```sql
     /// SELECT ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER () AS cluster_id,
-    ///        <aggregates>
+    ///  <aggregates>
     /// FROM <table> AS t
-    /// [WHERE ...]
+    /// [WHERE...]
     /// GROUP BY cluster_id
     /// ```
     /// `cluster_id = NULL` for noise points (isolated rows with fewer than
@@ -1839,9 +1839,9 @@ impl<T: Model> QuerySet<T> {
     /// # Example
     /// ```ignore
     /// let counts = Store::objects()
-    ///     .cluster_by_proximity(|f| f.location(), ClusterRadius::meters(500.0).min_points(3))
-    ///     .annotate(|f| f.id.count_star())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .cluster_by_proximity(|f| f.location(), ClusterRadius::meters(500.0).min_points(3))
+    /// .annotate(|f| f.id.count_star())
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Type parameters
     /// - `F` — closure that resolves the geography column from `T::Fields`.
@@ -1883,7 +1883,7 @@ impl<T: Model> QuerySet<T> {
     /// ```sql
     /// SELECT ST_GeoHash(t.<col>::geometry, $precision) AS geohash, <aggregates>
     /// FROM <table> AS t
-    /// [WHERE ...]
+    /// [WHERE...]
     /// GROUP BY geohash
     /// ```
     /// Geohash strings are prefix-ordered: a `P5` key is a prefix of any
@@ -1901,9 +1901,9 @@ impl<T: Model> QuerySet<T> {
     /// # Example
     /// ```ignore
     /// let heatmap = Store::objects()
-    ///     .bucket_by_cell(|f| f.location(), GeohashPrecision::P5)
-    ///     .annotate(|f| f.id.count_star())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .bucket_by_cell(|f| f.location(), GeohashPrecision::P5)
+    /// .annotate(|f| f.id.count_star())
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Type parameters
     /// - `F` — closure that resolves the geography column from `T::Fields`.
@@ -1988,15 +1988,15 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
     /// // Soft-deletable model with the attribute on `#[model]`:
     /// #[model(table = "posts", soft_deletable)]
     /// pub struct Post {
-    ///     pub title: String,
-    ///     pub deleted_at: Option<djogi::DateTime>,
+    ///  pub title: String,
+    ///  pub deleted_at: Option<djogi::DateTime>,
     /// }
     ///
     /// // Exclude trashed rows explicitly:
     /// let live = Post::objects()
-    ///     .not_deleted()
-    ///     .fetch_all(&mut ctx)
-    ///     .await?;
+    /// .not_deleted()
+    /// .fetch_all(&mut ctx)
+    /// .await?;
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn not_deleted(mut self) -> Self {
@@ -2049,7 +2049,7 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     /// target so the next terminal method sends each materialised row
     /// through [`sassi::Punnu::insert`] before returning to the caller.
     /// `pub(crate)` because the public adopter surface is [`QuerySet::cache`]
-    /// , which gates entry through the trusted portable
+    ///, which gates entry through the trusted portable
     /// predicate reducer. `bind_cache` runs unconditionally with no gate, so
     /// only framework code that has already proven the queryset's predicate
     /// is portable (e.g. [`CachedPortableQuerySet`]'s terminal methods) may
@@ -2164,12 +2164,12 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
     ///
     /// let pool: Punnu<Post> = Punnu::<Post>::builder().build();
     /// let recent = Post::objects()
-    ///     .filter(|f| f.published().eq(true))
-    ///     .order_by(|f| f.created_at().desc())
-    ///     .limit(20)
-    ///     .cache(&pool)?              // ← portable-gated cache binding
-    ///     .fetch_all(&mut ctx)
-    ///     .await?;
+    /// .filter(|f| f.published().eq(true))
+    /// .order_by(|f| f.created_at().desc())
+    /// .limit(20)
+    /// .cache(&pool)?    // ← portable-gated cache binding
+    /// .fetch_all(&mut ctx)
+    /// .await?;
     /// // `pool.len() == recent.len()` — the 20 rows are now in
     /// // the bound Punnu's L1 identity map, ready for `pool.get(id)`.
     /// ```
@@ -2200,7 +2200,7 @@ impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
 /// module is crate-private, downstream crates cannot add their own
 /// impls. That closes the identifier-smuggling route a hostile
 /// downstream would otherwise have via
-/// `impl IntoDistinctColumns for MyStruct { fn into_distinct_columns(self) -> Vec<&'static str> { vec!["1; DROP TABLE ..."] } }`.
+/// `impl IntoDistinctColumns for MyStruct { fn into_distinct_columns(self) -> Vec<&'static str> { vec!["1; DROP TABLE..."] } }`.
 mod distinct_seal {
     pub trait Sealed {}
 }
@@ -2251,16 +2251,16 @@ impl<M: Model, V> IntoDistinctColumns for crate::query::field::DjogiField<M, V> 
 /// `FieldRef` in the tuple because `distinct_on` only ever sees one
 /// model's columns at a time.
 macro_rules! impl_into_distinct_columns_tuple {
-    ($($name:ident),+) => {
-        impl<M: Model, $($name),+> distinct_seal::Sealed for ($(FieldRef<M, $name>,)+) {}
-        impl<M: Model, $($name),+> IntoDistinctColumns for ($(FieldRef<M, $name>,)+) {
-            fn into_distinct_columns(self) -> Vec<&'static str> {
-                #[allow(non_snake_case)]
-                let ($($name,)+) = self;
-                vec![$($name.column()),+]
-            }
-        }
-    };
+ ($($name:ident),+) => {
+  impl<M: Model, $($name),+> distinct_seal::Sealed for ($(FieldRef<M, $name>,)+) {}
+  impl<M: Model, $($name),+> IntoDistinctColumns for ($(FieldRef<M, $name>,)+) {
+   fn into_distinct_columns(self) -> Vec<&'static str> {
+    #[allow(non_snake_case)]
+    let ($($name,)+) = self;
+    vec![$($name.column()),+]
+   }
+  }
+ };
 }
 impl_into_distinct_columns_tuple!(A);
 impl_into_distinct_columns_tuple!(A, B);
@@ -2271,25 +2271,25 @@ impl_into_distinct_columns_tuple!(A, B, C, D, E, F);
 
 /// Generate `IntoDistinctColumns` (plus the sealed marker) for a tuple
 /// of `DjogiField`s. The tuple impls mirror the `FieldRef` set above so
-/// post-PR3 root closures can return `(f.col_a(), f.col_b(), ...)`
+/// post-PR3 root closures can return `(f.col_a(), f.col_b(),...)`
 /// directly without unwrapping each accessor through `__sql_field()`.
 /// Identifier safety stays sealed by the same mechanism — every
 /// `DjogiField` carries a column string the validator already accepted.
 macro_rules! impl_into_distinct_columns_djogi_tuple {
-    ($($name:ident),+) => {
-        impl<M: Model, $($name),+> distinct_seal::Sealed
-            for ($(crate::query::field::DjogiField<M, $name>,)+)
-        {}
-        impl<M: Model, $($name),+> IntoDistinctColumns
-            for ($(crate::query::field::DjogiField<M, $name>,)+)
-        {
-            fn into_distinct_columns(self) -> Vec<&'static str> {
-                #[allow(non_snake_case)]
-                let ($($name,)+) = self;
-                vec![$($name.column()),+]
-            }
-        }
-    };
+ ($($name:ident),+) => {
+  impl<M: Model, $($name),+> distinct_seal::Sealed
+   for ($(crate::query::field::DjogiField<M, $name>,)+)
+  {}
+  impl<M: Model, $($name),+> IntoDistinctColumns
+   for ($(crate::query::field::DjogiField<M, $name>,)+)
+  {
+   fn into_distinct_columns(self) -> Vec<&'static str> {
+    #[allow(non_snake_case)]
+    let ($($name,)+) = self;
+    vec![$($name.column()),+]
+   }
+  }
+ };
 }
 impl_into_distinct_columns_djogi_tuple!(A);
 impl_into_distinct_columns_djogi_tuple!(A, B);
@@ -2486,23 +2486,23 @@ impl<T: crate::model::Model> QuerySet<T> {
             Ok(predicate) => Some(predicate),
             Err(PortablePredicateError::CacheInvalidNode { kind }) => {
                 tracing::warn!(
-                    target: "djogi::cache",
-                    model = std::any::type_name::<T>(),
-                    reason = kind,
-                    "QuerySet condition has non-portable predicates and cannot be \
-                     reduced to a Sassi BasicPredicate. The cache and refresh paths \
-                     reject non-portable querysets with a typed error; restructure \
-                     the filter using only Djogi portable predicate operations to \
-                     pass the cache/refresh boundary.",
+                 target: "djogi::cache",
+                 model = std::any::type_name::<T>(),
+                 reason = kind,
+                 "QuerySet condition has non-portable predicates and cannot be \
+                  reduced to a Sassi BasicPredicate. The cache and refresh paths \
+                  reject non-portable querysets with a typed error; restructure \
+                  the filter using only Djogi portable predicate operations to \
+                  pass the cache/refresh boundary.",
                 );
                 None
             }
             Err(err) => {
                 tracing::warn!(
-                    target: "djogi::cache",
-                    model = std::any::type_name::<T>(),
-                    error = ?err,
-                    "QuerySet condition could not be reduced to a portable cache predicate.",
+                 target: "djogi::cache",
+                 model = std::any::type_name::<T>(),
+                 error = ?err,
+                 "QuerySet condition could not be reduced to a portable cache predicate.",
                 );
                 None
             }
@@ -2554,19 +2554,19 @@ where
     /// The returned `DeltaRefreshHandle<T>` exposes two adopter-facing knobs
     /// from sassi's native API — no djogi-side wrappers required:
     /// - **`with_eviction_recovery(bool)`** — when enabled, LRU evictions of
-    ///   IDs this subscription has observed are passed to the fetcher as
-    ///   `DeltaQuery::recover_ids` on a later delta tick. Opt in via
-    ///   `handle.with_eviction_recovery(true)`.
+    /// IDs this subscription has observed are passed to the fetcher as
+    /// `DeltaQuery::recover_ids` on a later delta tick. Opt in via
+    /// `handle.with_eviction_recovery(true)`.
     /// - **`with_periodic_full_refresh(Option<NonZeroUsize>)`** — schedule
-    ///   full (non-delta) refreshes every N ticks. `Some(n)` makes every nth
-    ///   scheduled tick use `since = None`. Opt in via
-    ///   `handle.with_periodic_full_refresh(NonZeroUsize::new(10))`.
-    ///   Both methods return `Self` for chaining:
+    /// full (non-delta) refreshes every N ticks. `Some(n)` makes every nth
+    /// scheduled tick use `since = None`. Opt in via
+    /// `handle.with_periodic_full_refresh(NonZeroUsize::new(10))`.
+    /// Both methods return `Self` for chaining:
     /// ```text
     /// let handle = MyModel::objects()
-    ///     .refresh_into(&punnu, pool, auth)?
-    ///     .with_eviction_recovery(true)
-    ///     .with_periodic_full_refresh(NonZeroUsize::new(10));
+    /// .refresh_into(&punnu, pool, auth)?
+    /// .with_eviction_recovery(true)
+    /// .with_periodic_full_refresh(NonZeroUsize::new(10));
     /// ```
     /// Additionally, the fetcher always monitors the Punnu event stream for
     /// LRU eviction events and emits a one-shot `tracing::warn!` on

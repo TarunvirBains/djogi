@@ -15,9 +15,9 @@ use djogi::prelude::*;
 #[model(table = "phase8eta_float_array_widgets")]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub samples: Vec<f64>,
+ pub samples: Vec<f64>,
 }
 
 fn main() {
-    let _bad = Widget::objects().filter(|f| f.samples().eq(vec![1.0, f64::NAN]));
+ let _bad = Widget::objects().filter(|f| f.samples().eq(vec![1.0, f64::NAN]));
 }

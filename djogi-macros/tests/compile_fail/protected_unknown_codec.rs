@@ -7,12 +7,12 @@ use djogi::prelude::*;
 #[model(table = "users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(protected(
-        sensitivity = "pii",
-        rationale = "Email confirmation flow",
-        codec = "unknown_codec_v1"
-    ))]
-    pub email: String,
+ #[field(protected(
+  sensitivity = "pii",
+  rationale = "Email confirmation flow",
+  codec = "unknown_codec_v1"
+ ))]
+ pub email: String,
 }
 
 fn main() {}

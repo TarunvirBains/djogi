@@ -17,9 +17,9 @@ use djogi::prelude::*;
 #[model(table = "phase85_mirjzson_audit_logs", no_default)]
 #[derive(Debug, Clone)]
 pub struct AuditLog {
-    pub source: String,
-    #[mirjzson(justification = "payload is externally owned by partner API")]
-    pub payload: MirJzSON,
+ pub source: String,
+ #[mirjzson(justification = "payload is externally owned by partner API")]
+ pub payload: MirJzSON,
 }
 
 fn main() {}

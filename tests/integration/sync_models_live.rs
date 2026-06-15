@@ -1,32 +1,32 @@
-//  — live-PG integration tests for
+// — live-PG integration tests for
 // `#[djogi_test(sync_models = [...])]` (closes #18).
 //
 // Each test provisions a fresh `djogi_test_<uuid>` database via the
 // Harness (`#[djogi_test]`), opts into `sync_models`
 // to auto-create the listed tables through the migration
-// engine ( projection →  diff →  SQL emit + segment plan),
+// engine ( projection → diff → SQL emit + segment plan),
 // then exercises the resulting schema with typed CRUD/query round-trips.
 //
 // # What these tests prove
 //
 // - Single-model `sync_models` materialises one `CREATE TABLE` plus
-//   the framework columns and runs CRUD round-trip cleanly.
+//  the framework columns and runs CRUD round-trip cleanly.
 // - Multi-model `sync_models` topologically sorts FK-dependent
-//   tables (parent before child) regardless of attribute argument
-//   order.
+//  tables (parent before child) regardless of attribute argument
+//  order.
 // - `Jsonb<T>` fields lower to a `jsonb` column.
 // - `extensions = [...]` provisioning happens BEFORE `sync_models`
-//   in the macro emission order, so spatial-field tables can
-//   reference PostGIS types.
+//  in the macro emission order, so spatial-field tables can
+//  reference PostGIS types.
 // - M2M through-models (composite shape with paired FKs) materialise
-//   alongside their targets.
+//  alongside their targets.
 // - FK cycles (A → B → A) materialise via the migration engine's
-//   cycle-breaking path.
+//  cycle-breaking path.
 // - Calling `sync_models` directly with an FK target NOT in the
-//   list returns a clean runtime error naming the missing model
-//   and the referencing column.
+//  list returns a clean runtime error naming the missing model
+//  and the referencing column.
 // - User-declared `IndexSpec` entries are visible on the model
-//   descriptor used by the migration engine.
+//  descriptor used by the migration engine.
 
 // Test models reference their descriptors; some fields are populated via DB
 // defaults, never constructed in Rust. The wrapper module carries allow(dead_code).
@@ -57,7 +57,7 @@ fn sentinel_dt() -> DateTime {
 /// KEY` constraint automatically — Djogi's projection does not emit
 /// a redundant `CREATE INDEX` for the PK column.
 #[model(table = "widgets_solo", pk = HeerId, indexes(
-    index(fields = [name]),
+  index(fields = [name]),
 ))]
 #[derive(Debug, Clone)]
 pub struct WidgetSolo {
@@ -100,8 +100,8 @@ async fn single_model_sync_creates_table_and_supports_crud(mut ctx: djogi::Djogi
     let descriptor = <WidgetSolo as djogi::prelude::Model>::descriptor();
     let has_name_index = descriptor.indexes.iter().any(|spec| {
         matches!(
-            spec.target,
-            IndexTarget::Columns(cols) if cols.iter().any(|col| col.name == "name")
+          spec.target,
+          IndexTarget::Columns(cols) if cols.iter().any(|col| col.name == "name")
         )
     });
     assert!(
@@ -491,7 +491,7 @@ async fn fk_target_missing_returns_named_runtime_error(mut ctx: djogi::DjogiCont
 /// `sync_models` routes through the same SQL emitter the migration
 /// engine uses for `IndexSpec`, not a parallel index emitter.
 #[model(table = "documents", pk = HeerId, indexes(
-    index(fields = [tags], using = "gin"),
+  index(fields = [tags], using = "gin"),
 ))]
 #[derive(Debug, Clone)]
 pub struct Document {

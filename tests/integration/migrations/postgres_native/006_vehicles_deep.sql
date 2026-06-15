@@ -6,9 +6,9 @@
 -- (specs -> engine -> performance -> horsepower).
 
 CREATE TABLE IF NOT EXISTS vehicles_deep (
-    id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    name        TEXT NOT NULL,
-    specs       JSONB NULL
+  id     BIGINT PRIMARY KEY DEFAULT generate_id(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  name    TEXT NOT NULL,
+  specs    JSONB NULL
 );

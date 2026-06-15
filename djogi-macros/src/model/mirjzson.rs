@@ -10,22 +10,22 @@
 //! recorded justification.
 //! This module owns the macro-side enforcement of that contract:
 //! - Every `MirJzSON` and `Option<MirJzSON>` field MUST carry
-//!   `#[mirjzson(justification = "...")]`. A missing attribute fails
-//!   at expand time with a span-precise error.
+//! `#[mirjzson(justification = "...")]`. A missing attribute fails
+//! at expand time with a span-precise error.
 //! - The justification literal must be present, non-empty, and not a
-//!   placeholder token (`TODO`, `TBD`, `FIXME`, `...`, `none`, etc.).
-//!   The denylist is small and ASCII case-insensitive; a minimum
-//!   length of 12 trimmed bytes weeds out one-word non-answers.
+//! placeholder token (`TODO`, `TBD`, `FIXME`, `...`, `none`, etc.).
+//! The denylist is small and ASCII case-insensitive; a minimum
+//! length of 12 trimmed bytes weeds out one-word non-answers.
 //! - The attribute is consumed by the macro before the struct is
-//!   re-emitted, mirroring how `#[field(...)]` and `#[computed(...)]`
-//!   are stripped — rustc has no notion of `mirjzson` as a helper
-//!   attribute on the `#[model]` attribute macro, so leaving it in
-//!   place produces an `unknown attribute` rustc error rather than the
-//!   typed diagnostic this module emits.
+//! re-emitted, mirroring how `#[field(...)]` and `#[computed(...)]`
+//! are stripped — rustc has no notion of `mirjzson` as a helper
+//! attribute on the `#[model]` attribute macro, so leaving it in
+//! place produces an `unknown attribute` rustc error rather than the
+//! typed diagnostic this module emits.
 //! - `#[mirjzson(...)]` on a non-`MirJzSON` field is rejected at
-//!   expand time with a span at the misplaced attribute.
+//! expand time with a span at the misplaced attribute.
 //! - `Jsonb<T>` (the typed-schema sibling) is **not** subject to this
-//!   gate. The typed schema IS the justification.
+//! gate. The typed schema IS the justification.
 //! # No regex
 //! Per `feedback_no_regex_in_djogi.md`: detection uses byte-level
 //! checks (`str::eq_ignore_ascii_case`, `str::trim`, last-segment
@@ -61,16 +61,16 @@ pub struct MirJzSONAttr {
 /// generation) can read the justification without re-parsing.
 /// Errors with a span-precise diagnostic on:
 /// - A `MirJzSON` / `Option<MirJzSON>` field without a
-///   `#[mirjzson(...)]` attribute.
+/// `#[mirjzson(...)]` attribute.
 /// - A `#[mirjzson(...)]` attribute on a field whose type is not
-///   `MirJzSON` / `Option<MirJzSON>`.
+/// `MirJzSON` / `Option<MirJzSON>`.
 /// - A missing, malformed, or placeholder `justification` value
-///   (see [`validate_justification`]).
+/// (see [`validate_justification`]).
 /// - A duplicate `#[mirjzson(...)]` attribute on the same field.
 /// - The bare `#[mirjzson]` form (no argument list).
 /// - Any key other than `justification` inside the argument list.
-///   Returns `Ok(Vec::new())` for structs that declare no `MirJzSON`
-///   fields and carry no stray `#[mirjzson(...)]` attributes.
+/// Returns `Ok(Vec::new())` for structs that declare no `MirJzSON`
+/// fields and carry no stray `#[mirjzson(...)]` attributes.
 pub fn parse_mirjzson_attrs(
     struct_item: &syn::ItemStruct,
 ) -> syn::Result<Vec<(syn::Ident, MirJzSONAttr)>> {
@@ -102,10 +102,10 @@ pub fn parse_mirjzson_attrs(
                     attr,
                     format!(
                         "`#[mirjzson(...)]` is only valid on `MirJzSON` or `Option<MirJzSON>` \
-                         fields; `{field_ident}` is `{type_str}`. \
-                         For `Jsonb<T>` the typed schema IS the justification — drop the \
-                         `#[mirjzson(...)]` attribute. For any other type the attribute has \
-                         no meaning."
+       fields; `{field_ident}` is `{type_str}`. \
+       For `Jsonb<T>` the typed schema IS the justification — drop the \
+       `#[mirjzson(...)]` attribute. For any other type the attribute has \
+       no meaning."
                     ),
                 ));
             }
@@ -116,8 +116,8 @@ pub fn parse_mirjzson_attrs(
                 return Err(syn::Error::new_spanned(
                     attr,
                     "`#[mirjzson]` requires `justification = \"...\"` — \
-                     e.g. `#[mirjzson(justification = \"payload schema is \
-                     owned by the upstream partner SDK\")]`",
+      e.g. `#[mirjzson(justification = \"payload schema is \
+      owned by the upstream partner SDK\")]`",
                 ));
             }
 
@@ -129,7 +129,7 @@ pub fn parse_mirjzson_attrs(
                     attr,
                     format!(
                         "duplicate `#[mirjzson(...)]` attribute on field `{field_ident}` — \
-                         declare the justification once per MirJzSON field"
+       declare the justification once per MirJzSON field"
                     ),
                 ));
             }
@@ -145,11 +145,11 @@ pub fn parse_mirjzson_attrs(
                     field,
                     format!(
                         "`{field_ident}: MirJzSON` requires \
-                         `#[mirjzson(justification = \"...\")]` on the field. \
-                         `MirJzSON` is Djogi's raw / unschemed JSONB escape hatch; every \
-                         use site must record why the schema is not represented as a \
-                         typed `Jsonb<T>` (e.g. \"payload is externally owned by partner \
-                         API\"). For typed schemas, switch the field to `Jsonb<YourSchema>`."
+       `#[mirjzson(justification = \"...\")]` on the field. \
+       `MirJzSON` is Djogi's raw / unschemed JSONB escape hatch; every \
+       use site must record why the schema is not represented as a \
+       typed `Jsonb<T>` (e.g. \"payload is externally owned by partner \
+       API\"). For typed schemas, switch the field to `Jsonb<YourSchema>`."
                     ),
                 ));
             }
@@ -193,16 +193,16 @@ fn parse_mirjzson_args(
             Meta::NameValue(nv) if nv.path.is_ident("justification") => {
                 return Err(syn::Error::new_spanned(
                     &nv.value,
-                    "`justification = ...` value must be a string literal — \
-                     e.g. `#[mirjzson(justification = \"payload is externally \
-                     owned by partner API\")]`",
+                    "`justification =...` value must be a string literal — \
+      e.g. `#[mirjzson(justification = \"payload is externally \
+      owned by partner API\")]`",
                 ));
             }
             other => {
                 return Err(syn::Error::new_spanned(
                     other,
                     "unsupported key in `#[mirjzson(...)]`; only \
-                     `justification = \"...\"` is accepted",
+      `justification = \"...\"` is accepted",
                 ));
             }
         }
@@ -211,8 +211,8 @@ fn parse_mirjzson_args(
         syn::Error::new_spanned(
             attr_for_span,
             "`#[mirjzson(...)]` requires `justification = \"...\"` — \
-             e.g. `#[mirjzson(justification = \"payload schema is owned by \
-             the upstream partner SDK\")]`",
+    e.g. `#[mirjzson(justification = \"payload schema is owned by \
+    the upstream partner SDK\")]`",
         )
     })?;
     validate_justification(&lit_str, &value)?;
@@ -284,20 +284,20 @@ const MIN_JUSTIFICATION_BYTES: usize = 12;
 /// 1. Trim leading/trailing ASCII whitespace.
 /// 2. Reject empty-after-trim with `"justification is empty"`.
 /// 3. Reject the trimmed value if it matches one of
-///    [`PLACEHOLDER_JUSTIFICATIONS`] under ASCII case-insensitive
-///    comparison.
+/// [`PLACEHOLDER_JUSTIFICATIONS`] under ASCII case-insensitive
+/// comparison.
 /// 4. Reject when the trimmed length is below
-///    [`MIN_JUSTIFICATION_BYTES`] with a "too short" message.
-///    Errors carry the `lit_str` span so the diagnostic underlines the
-///    adopter's literal, not the enclosing attribute.
+/// [`MIN_JUSTIFICATION_BYTES`] with a "too short" message.
+/// Errors carry the `lit_str` span so the diagnostic underlines the
+/// adopter's literal, not the enclosing attribute.
 fn validate_justification(lit_str: &LitStr, value: &str) -> syn::Result<()> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(syn::Error::new_spanned(
             lit_str,
             "`#[mirjzson(justification = \"\")]` — the justification must be a \
-             non-empty, specific reason for reaching for `MirJzSON` instead of \
-             `Jsonb<T>` (e.g. \"payload is externally owned by partner API\")",
+    non-empty, specific reason for reaching for `MirJzSON` instead of \
+    `Jsonb<T>` (e.g. \"payload is externally owned by partner API\")",
         ));
     }
     if PLACEHOLDER_JUSTIFICATIONS
@@ -308,9 +308,9 @@ fn validate_justification(lit_str: &LitStr, value: &str) -> syn::Result<()> {
             lit_str,
             format!(
                 "`#[mirjzson(justification = \"{trimmed}\")]` — that value is a \
-                 placeholder, not a specific reason. Replace it with the actual \
-                 reason `MirJzSON` is preferable to `Jsonb<T>` for this field \
-                 (e.g. \"payload schema is owned by the upstream partner SDK\")"
+     placeholder, not a specific reason. Replace it with the actual \
+     reason `MirJzSON` is preferable to `Jsonb<T>` for this field \
+     (e.g. \"payload schema is owned by the upstream partner SDK\")"
             ),
         ));
     }
@@ -319,10 +319,10 @@ fn validate_justification(lit_str: &LitStr, value: &str) -> syn::Result<()> {
             lit_str,
             format!(
                 "`#[mirjzson(justification = \"{trimmed}\")]` is too short — \
-                 give a specific reason `MirJzSON` is preferable to `Jsonb<T>` \
-                 for this field (minimum {MIN_JUSTIFICATION_BYTES} characters \
-                 after trim; the spec example is \"payload is externally owned \
-                 by partner API\")"
+     give a specific reason `MirJzSON` is preferable to `Jsonb<T>` \
+     for this field (minimum {MIN_JUSTIFICATION_BYTES} characters \
+     after trim; the spec example is \"payload is externally owned \
+     by partner API\")"
             ),
         ));
     }
@@ -437,10 +437,10 @@ mod tests {
     #[test]
     fn accepts_valid_justification() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson(justification = "payload is externally owned by partner API")]
-                pub payload: MirJzSON,
-            }
+         struct Post {
+          #[mirjzson(justification = "payload is externally owned by partner API")]
+          pub payload: MirJzSON,
+         }
         });
         let parsed = parse_mirjzson_attrs(&s).expect("ok");
         assert_eq!(parsed.len(), 1);
@@ -454,10 +454,10 @@ mod tests {
     #[test]
     fn accepts_valid_justification_on_optional() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson(justification = "schema lives in the downstream consumer service")]
-                pub maybe_payload: Option<MirJzSON>,
-            }
+         struct Post {
+          #[mirjzson(justification = "schema lives in the downstream consumer service")]
+          pub maybe_payload: Option<MirJzSON>,
+         }
         });
         let parsed = parse_mirjzson_attrs(&s).expect("ok");
         assert_eq!(parsed.len(), 1);
@@ -466,9 +466,9 @@ mod tests {
     #[test]
     fn rejects_mirjzson_field_without_attribute() {
         let s = parse_struct(quote! {
-            struct Post {
-                pub payload: MirJzSON,
-            }
+         struct Post {
+          pub payload: MirJzSON,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         let msg = err.to_string();
@@ -483,9 +483,9 @@ mod tests {
     #[test]
     fn rejects_optional_mirjzson_field_without_attribute() {
         let s = parse_struct(quote! {
-            struct Post {
-                pub maybe: Option<MirJzSON>,
-            }
+         struct Post {
+          pub maybe: Option<MirJzSON>,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         assert!(err.to_string().contains("requires"));
@@ -494,10 +494,10 @@ mod tests {
     #[test]
     fn rejects_attribute_on_non_mirjzson_field() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson(justification = "this should not be allowed on a String field")]
-                pub title: String,
-            }
+         struct Post {
+          #[mirjzson(justification = "this should not be allowed on a String field")]
+          pub title: String,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         let msg = err.to_string();
@@ -508,10 +508,10 @@ mod tests {
     #[test]
     fn rejects_empty_justification() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson(justification = "")]
-                pub payload: MirJzSON,
-            }
+         struct Post {
+          #[mirjzson(justification = "")]
+          pub payload: MirJzSON,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         assert!(err.to_string().contains("non-empty"));
@@ -520,10 +520,10 @@ mod tests {
     #[test]
     fn rejects_whitespace_only_justification() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson(justification = "   ")]
-                pub payload: MirJzSON,
-            }
+         struct Post {
+          #[mirjzson(justification = " ")]
+          pub payload: MirJzSON,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         assert!(err.to_string().contains("non-empty"));
@@ -550,9 +550,9 @@ mod tests {
         ] {
             let attr_ts: proc_macro2::TokenStream = format!(
                 "{{ struct Post {{ \
-                  #[mirjzson(justification = {value:?})] \
-                  pub payload: MirJzSON, \
-                 }} }}",
+     #[mirjzson(justification = {value:?})] \
+     pub payload: MirJzSON, \
+     }} }}",
                 value = raw,
             )
             .parse()
@@ -579,10 +579,10 @@ mod tests {
     #[test]
     fn rejects_too_short_justification() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson(justification = "short")]
-                pub payload: MirJzSON,
-            }
+         struct Post {
+          #[mirjzson(justification = "short")]
+          pub payload: MirJzSON,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         assert!(err.to_string().contains("too short"));
@@ -591,10 +591,10 @@ mod tests {
     #[test]
     fn rejects_bare_attribute() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson]
-                pub payload: MirJzSON,
-            }
+         struct Post {
+          #[mirjzson]
+          pub payload: MirJzSON,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         assert!(err.to_string().contains("requires"));
@@ -603,10 +603,10 @@ mod tests {
     #[test]
     fn rejects_unknown_key() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson(reason = "payload is externally owned by partner API")]
-                pub payload: MirJzSON,
-            }
+         struct Post {
+          #[mirjzson(reason = "payload is externally owned by partner API")]
+          pub payload: MirJzSON,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         assert!(err.to_string().contains("unsupported key"));
@@ -615,10 +615,10 @@ mod tests {
     #[test]
     fn rejects_non_string_justification() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson(justification = 42)]
-                pub payload: MirJzSON,
-            }
+         struct Post {
+          #[mirjzson(justification = 42)]
+          pub payload: MirJzSON,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         assert!(err.to_string().contains("string literal"));
@@ -627,11 +627,11 @@ mod tests {
     #[test]
     fn rejects_duplicate_attribute() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson(justification = "payload is externally owned by partner API")]
-                #[mirjzson(justification = "second annotation should be rejected as duplicate")]
-                pub payload: MirJzSON,
-            }
+         struct Post {
+          #[mirjzson(justification = "payload is externally owned by partner API")]
+          #[mirjzson(justification = "second annotation should be rejected as duplicate")]
+          pub payload: MirJzSON,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         assert!(err.to_string().contains("duplicate"));
@@ -640,13 +640,13 @@ mod tests {
     #[test]
     fn rejects_duplicate_justification_key_within_attribute() {
         let s = parse_struct(quote! {
-            struct Post {
-                #[mirjzson(
-                    justification = "payload is externally owned by partner API",
-                    justification = "duplicate key should be rejected within one attribute"
-                )]
-                pub payload: MirJzSON,
-            }
+         struct Post {
+          #[mirjzson(
+           justification = "payload is externally owned by partner API",
+           justification = "duplicate key should be rejected within one attribute"
+          )]
+          pub payload: MirJzSON,
+         }
         });
         let err = parse_mirjzson_attrs(&s).expect_err("must error");
         assert!(err.to_string().contains("duplicate"));
@@ -655,10 +655,10 @@ mod tests {
     #[test]
     fn accepts_struct_with_no_mirjzson_fields() {
         let s = parse_struct(quote! {
-            struct Post {
-                pub title: String,
-                pub body: String,
-            }
+         struct Post {
+          pub title: String,
+          pub body: String,
+         }
         });
         let parsed = parse_mirjzson_attrs(&s).expect("ok");
         assert!(parsed.is_empty());
@@ -667,11 +667,11 @@ mod tests {
     #[test]
     fn accepts_mixed_jsonb_and_mirjzson_fields() {
         let s = parse_struct(quote! {
-            struct Post {
-                pub typed: Jsonb<MySchema>,
-                #[mirjzson(justification = "raw audit blob with shape varying per row")]
-                pub raw: MirJzSON,
-            }
+         struct Post {
+          pub typed: Jsonb<MySchema>,
+          #[mirjzson(justification = "raw audit blob with shape varying per row")]
+          pub raw: MirJzSON,
+         }
         });
         let parsed = parse_mirjzson_attrs(&s).expect("ok");
         assert_eq!(parsed.len(), 1);

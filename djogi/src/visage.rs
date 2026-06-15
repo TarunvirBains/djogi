@@ -5,37 +5,37 @@
 //! plus conversion impls. This module holds the runtime-side types
 //! those emissions depend on:
 //! - [`DjogiVisage`] — #231 — projection metadata
-//!   trait. Every emitted visage carries `type Model`, `SCOPE`,
-//!   `COLUMNS`, `PROJECTIONS`, and `PROJECTION_LIST` items so
-//!   framework-internal code (lints, debug formatters, future
-//!   Tier-2 predicate rendering) can read the projection shape
-//!   and reach the source-model table via
-//!   `<V::Model as Model>::table_name()` — through a single bound.
-//!   Sealed against arbitrary downstream impls via the metadata
-//!   seal `private::Sealed` (re-exported as
-//!   `::djogi::__private::DjogiVisageSealed` for macro emission);
-//!   see the trait's own rustdoc for the convention-boundary
-//!   discussion.
+//! trait. Every emitted visage carries `type Model`, `SCOPE`,
+//! `COLUMNS`, `PROJECTIONS`, and `PROJECTION_LIST` items so
+//! framework-internal code (lints, debug formatters, future
+//! Tier-2 predicate rendering) can read the projection shape
+//! and reach the source-model table via
+//! `<V::Model as Model>::table_name()` — through a single bound.
+//! Sealed against arbitrary downstream impls via the metadata
+//! seal `private::Sealed` (re-exported as
+//! `::djogi::__private::DjogiVisageSealed` for macro emission);
+//! see the trait's own rustdoc for the convention-boundary
+//! discussion.
 //! - [`projection::ProjectionEntry`] — sealed `__private` enum
-//!   discriminating column entries from derived-expression entries
-//!   inside `PROJECTIONS`. The `pub` visibility is mandated by the
-//!   trait constant's type; the `__private` module path and
-//!   `#[non_exhaustive]` attribute carry the convention seal.
+//! discriminating column entries from derived-expression entries
+//! inside `PROJECTIONS`. The `pub` visibility is mandated by the
+//! trait constant's type; the `__private` module path and
+//! `#[non_exhaustive]` attribute carry the convention seal.
 //! - [`VisageError`] — the fallible-conversion error type, returned
-//!   by every `TryFrom<&Model>` impl that nests a relation-form peer
-//!   visage OR has a fallible derived entry. `#[non_exhaustive]`.
+//! by every `TryFrom<&Model>` impl that nests a relation-form peer
+//! visage OR has a fallible derived entry. `#[non_exhaustive]`.
 //! - `impl From<Infallible> for VisageError` — glue that lets
-//!   generated code propagate `Infallible` with `?` when mixed-
-//!   fallibility visages embed an infallible derived entry alongside
-//!   a fallible one.
-//!   No runtime execution happens here — every path is straight-line
-//!   error construction or formatting.
+//! generated code propagate `Infallible` with `?` when mixed-
+//! fallibility visages embed an infallible derived entry alongside
+//! a fallible one.
+//! No runtime execution happens here — every path is straight-line
+//! error construction or formatting.
 
 use std::convert::Infallible;
 
 /// Visage projection-metadata trait.
 /// #231 — every emitted visage struct (`UserPublic`,
-/// `UserSelfView`, `UserAdmin`, `UserExport`, ...) carries a single
+/// `UserSelfView`, `UserAdmin`, `UserExport`,...) carries a single
 /// impl of this trait so framework-internal code can read the
 /// projection shape — and the source-model pairing — without
 /// hand-rolling parallel items per visage. Adopter code rarely
@@ -44,24 +44,24 @@ use std::convert::Infallible;
 /// generation, traversal helpers that need the source table name).
 /// # Items
 /// - [`Model`](Self::Model) — the source model `M` the visage is a
-///   projection of. The bound is `M: Model`, so generic consumers
-///   reach the source table at compile time via
-///   `<V::Model as crate::model::Model>::table_name()` — no parallel
-///   `TABLE` constant on this trait.
+/// projection of. The bound is `M: Model`, so generic consumers
+/// reach the source table at compile time via
+/// `<V::Model as crate::model::Model>::table_name()` — no parallel
+/// `TABLE` constant on this trait.
 /// - [`SCOPE`](Self::SCOPE) — stable scope key matching the visage's
-///   audience.
+/// audience.
 /// - [`COLUMNS`](Self::COLUMNS) — names appearing at each ordinal
-///   position of the visage's SELECT row, in struct-field order.
-///   Column entries: the raw column name. Derived entries: the
-///   entry's `name` (which equals the SELECT alias).
+/// position of the visage's SELECT row, in struct-field order.
+/// Column entries: the raw column name. Derived entries: the
+/// entry's `name` (which equals the SELECT alias).
 /// - [`PROJECTIONS`](Self::PROJECTIONS) — sealed `ProjectionEntry`
-///   list. Walked by framework-internal consumers only — the
-///   queryset hot path uses `PROJECTION_LIST` instead.
+/// list. Walked by framework-internal consumers only — the
+/// queryset hot path uses `PROJECTION_LIST` instead.
 /// - [`PROJECTION_LIST`](Self::PROJECTION_LIST) — pre-rendered
-///   comma-joined SELECT-list string. Column entries render
-///   verbatim; derived entries render as `(<sql>) AS <alias>`.
-///   `VisageQuerySet` splices this directly into the SELECT slot at
-///   query time.
+/// comma-joined SELECT-list string. Column entries render
+/// verbatim; derived entries render as `(<sql>) AS <alias>`.
+/// `VisageQuerySet` splices this directly into the SELECT slot at
+/// query time.
 /// # Consignment walkthrough — #231
 /// The motivating scenario from the spec: a `Consignment` model
 /// with three storage columns (`inbound_site`, `outbound_site`,
@@ -86,25 +86,25 @@ use std::convert::Infallible;
 /// #[model(table = "consignments_djogi_visage_doctest")]
 /// #[derive(Model, Debug, Clone, PartialEq)]
 /// #[derived(
-///     name   = facility_site,
-///     ty     = String,
-///     scopes = [public, admin, export],
-///     sql    = "CASE WHEN direction = 'inbound' \
-///                   THEN inbound_site \
-///                   ELSE outbound_site END",
-///     rust   = "if model.direction == \"inbound\" { \
-///                   model.inbound_site.clone() \
-///               } else { \
-///                   model.outbound_site.clone() \
-///               }",
+///  name = facility_site,
+///  ty  = String,
+///  scopes = [public, admin, export],
+///  sql = "CASE WHEN direction = 'inbound' \
+///     THEN inbound_site \
+///     ELSE outbound_site END",
+///  rust = "if model.direction == \"inbound\" { \
+///     model.inbound_site.clone() \
+///    } else { \
+///     model.outbound_site.clone() \
+///    }",
 /// )]
 /// pub struct Consignment {
-///     #[field(expose(public, admin, export))]
-///     pub inbound_site: String,
-///     #[field(expose(public, admin, export))]
-///     pub outbound_site: String,
-///     #[field(expose(public, admin, export))]
-///     pub direction: String,
+///  #[field(expose(public, admin, export))]
+///  pub inbound_site: String,
+///  #[field(expose(public, admin, export))]
+///  pub outbound_site: String,
+///  #[field(expose(public, admin, export))]
+///  pub direction: String,
 /// }
 ///
 /// // The trait constants are populated by the macro per visage scope.
@@ -121,11 +121,11 @@ use std::convert::Infallible;
 /// // = Consignment` on every emitted impl, so consumers never have
 /// // to thread the source model in as a separate type parameter.
 /// fn source_table<V: DjogiVisage>() -> &'static str {
-///     <<V as DjogiVisage>::Model as djogi::prelude::Model>::table_name()
+///  <<V as DjogiVisage>::Model as djogi::prelude::Model>::table_name()
 /// }
 /// assert_eq!(
-///     source_table::<ConsignmentPublic>(),
-///     "consignments_djogi_visage_doctest",
+///  source_table::<ConsignmentPublic>(),
+///  "consignments_djogi_visage_doctest",
 /// );
 ///
 /// // The infallible `From<&Model>` builds the visage in-memory.
@@ -133,10 +133,10 @@ use std::convert::Infallible;
 /// // `let model: &Consignment = src;` rebind so `model.<field>`
 /// // resolves without retouching the emitter's `src` parameter.
 /// let row = Consignment {
-///     inbound_site: "FAC-1".to_string(),
-///     outbound_site: "WH-2".to_string(),
-///     direction: "inbound".to_string(),
-///     ..Default::default()
+///  inbound_site: "FAC-1".to_string(),
+///  outbound_site: "WH-2".to_string(),
+///  direction: "inbound".to_string(),
+/// ..Default::default()
 /// };
 /// let in_memory: ConsignmentPublic = (&row).into();
 /// assert_eq!(in_memory.facility_site, "FAC-1");
@@ -151,13 +151,13 @@ use std::convert::Infallible;
 /// // `tests/integration/visage_derived_projection.rs`
 /// // executes the same shape against Postgres.
 /// # async fn _fetch_workflow(
-/// #     ctx: &mut DjogiContext,
-/// #     in_memory: &ConsignmentPublic,
-/// #     row: &Consignment,
+/// #  ctx: &mut DjogiContext,
+/// #  in_memory: &ConsignmentPublic,
+/// #  row: &Consignment,
 /// # ) -> djogi::Result<()> {
 /// let from_db: ConsignmentPublic = ConsignmentPublic::filter(|f| f.id().eq(row.id))
-///     .fetch_one(ctx)
-///     .await?;
+/// .fetch_one(ctx)
+/// .await?;
 ///
 /// // The sync per-visage parity helper compares ONLY derived
 /// // fields — framework columns and storage columns are never
@@ -172,12 +172,12 @@ use std::convert::Infallible;
 /// // failures into `DerivedParityError::Fetch`.
 /// let target_id = row.id;
 /// assert_derived_parity_fetched(in_memory, || async {
-///     ConsignmentPublic::filter(|f| f.id().eq(target_id))
-///         .fetch_one(ctx)
-///         .await
+///  ConsignmentPublic::filter(|f| f.id().eq(target_id))
+///  .fetch_one(ctx)
+///  .await
 /// })
-/// .await
-/// .unwrap();
+///.await
+///.unwrap();
 /// # Ok(())
 /// # }
 /// ```
@@ -201,23 +201,23 @@ use std::convert::Infallible;
 /// `type Model` associated type instead, so generic code can pick
 /// the spelling that fits the call site:
 /// - `fn foo<V: DjogiVisageOf<M>, M: Model>(...)` — explicit `M`
-///   parameter, ergonomic when the caller already has an `M` in
-///   scope.
+/// parameter, ergonomic when the caller already has an `M` in
+/// scope.
 /// - `fn foo<V: DjogiVisage>(...)` — `V::Model` is reachable
-///   internally, ergonomic when the caller only ever names the
-///   visage.
-///   The reflexive blanket
-///   `impl<M: Model> DjogiVisageOf<M> for M` lets the marker accept
-///   the model itself as a "degenerate visage". That blanket is the
-///   reason `DjogiVisageOf<Self::Model>` alone is **not** a closed-
-///   world seal on `DjogiVisage` — any `M: Model` already satisfies
-///   `DjogiVisageOf<M>` reflexively, so a hand-rolled
-///   `impl DjogiVisage for MyModel { type Model = Self; ... }` would
-///   otherwise pass the pairing supertrait. The closed-world gate for
-///   `DjogiVisage` therefore lives on a separate metadata-only seal
-///   described in the next section; the `DjogiVisageOf<Self::Model>`
-///   supertrait stays because it carries the visage ↔ source-model
-///   pairing useful for generic code that only names `V`.
+/// internally, ergonomic when the caller only ever names the
+/// visage.
+/// The reflexive blanket
+/// `impl<M: Model> DjogiVisageOf<M> for M` lets the marker accept
+/// the model itself as a "degenerate visage". That blanket is the
+/// reason `DjogiVisageOf<Self::Model>` alone is **not** a closed-
+/// world seal on `DjogiVisage` — any `M: Model` already satisfies
+/// `DjogiVisageOf<M>` reflexively, so a hand-rolled
+/// `impl DjogiVisage for MyModel { type Model = Self;... }` would
+/// otherwise pass the pairing supertrait. The closed-world gate for
+/// `DjogiVisage` therefore lives on a separate metadata-only seal
+/// described in the next section; the `DjogiVisageOf<Self::Model>`
+/// supertrait stays because it carries the visage ↔ source-model
+/// pairing useful for generic code that only names `V`.
 /// # Sealed via `private::Sealed` — metadata-only seal
 /// `DjogiVisage` carries `private::Sealed` (module-private to
 /// [`crate::visage`]) as its second supertrait. Unlike the
@@ -306,7 +306,7 @@ pub trait DjogiVisage:
     const PROJECTIONS: &'static [crate::__private::ProjectionEntry];
 
     /// Rendered SQL projection list rendered once at macro time
-    /// (e.g. `"id, name, (CASE ... END) AS facility_site"`).
+    /// (e.g. `"id, name, (CASE... END) AS facility_site"`).
     /// `VisageQuerySet` splices this single string into the SELECT
     /// slot at query time — no runtime walk over `PROJECTIONS`.
     /// Equal to `COLUMNS.join(", ")` when there are no derived
@@ -335,7 +335,7 @@ pub trait DjogiVisage:
 /// has no reflexive blanket** — only `#[model]`-emitted
 /// `impl DjogiVisageSealed for {Visage}` blocks satisfy it, which
 /// closes the convention-level gate against downstream code writing
-/// `impl DjogiVisage for MyModel { type Model = Self; ... }` to
+/// `impl DjogiVisage for MyModel { type Model = Self;... }` to
 /// fabricate a visage that never went through the macro's emission
 /// path.
 pub(crate) mod private {
@@ -443,7 +443,7 @@ pub enum VisageError {
     /// `TryFrom::try_from(&model)`.
     #[error(
         "visage of {model}.{field} for scope `{scope}` failed: \
-         relation is not resolved (call .prefetch() before projecting)"
+   relation is not resolved (call.prefetch() before projecting)"
     )]
     UnresolvedRelation {
         /// Name of the owning model (`struct` ident).
@@ -462,14 +462,14 @@ pub enum VisageError {
     /// whose Rust type is not `Option<_>`. Wrapped via the existing
     /// `impl From<VisageError> for DjogiError` blanket — callers
     /// fetching through `VisageQuerySet` see this as
-    /// `DjogiError::Visage(VisageError::DbComputedNullForNonOptional { .. })`.
+    /// `DjogiError::Visage(VisageError::DbComputedNullForNonOptional {.. })`.
     /// Fix: either declare `ty = Option<T>` on the `#[derived(...)]`
     /// attribute (the spec's null-tolerant shape) or fix the SQL
     /// expression to coalesce the NULL on the server side
     /// (`COALESCE(<expr>, <default>)`).
     #[error(
         "visage `{visage}` derived field `{field}` returned NULL but is declared \
-         as a non-optional type (use `ty = Option<...>` to permit NULL)"
+   as a non-optional type (use `ty = Option<...>` to permit NULL)"
     )]
     DbComputedNullForNonOptional {
         /// Visage type name (e.g. `"ConsignmentPublic"`).
@@ -486,12 +486,12 @@ pub enum VisageError {
     /// `expected` carries the declared type's name; `actual` carries
     /// the Postgres-side type description as best as the row-
     /// decoder can recover.
-    /// Fix: align the `ty = ...` on the `#[derived(...)]` attribute
+    /// Fix: align the `ty =...` on the `#[derived(...)]` attribute
     /// with the SQL expression's result type, or cast the SQL
     /// expression on the server side to the expected type.
     #[error(
         "visage `{visage}` derived field `{field}` type mismatch: \
-         expected {expected}, got {actual}"
+   expected {expected}, got {actual}"
     )]
     DbComputedTypeMismatch {
         /// Visage type name (e.g. `"ConsignmentPublic"`).
@@ -520,7 +520,7 @@ pub enum VisageError {
     /// downcast.
     #[error(
         "visage of {model}.{field} for scope `{scope}` failed: \
-         codec `{codec}` presentation error"
+   codec `{codec}` presentation error"
     )]
     PresentationCodec {
         /// Rust type name of the owning model (e.g. `"User"`).

@@ -209,12 +209,12 @@ fn scan_items(
 
         if has_cfg_attr_bypass {
             violations.push(Violation {
-                path: path.to_owned(),
-                line: first_attr_line(attrs),
-                message: format!(
-                    "`cfg_attr` cannot carry `{BYPASS_ATTR}` in tests; use a concrete outer attribute",
-                ),
-            });
+        path: path.to_owned(),
+        line: first_attr_line(attrs),
+        message: format!(
+          "`cfg_attr` cannot carry `{BYPASS_ATTR}` in tests; use a concrete outer attribute",
+        ),
+      });
         }
 
         if has_bypass {
@@ -356,10 +356,10 @@ fn attached_justification(
     }
 
     found.ok_or_else(|| {
-        format!(
-            "missing attached `// JUSTIFICATION (djogi#<digits>): <reason>` or `// JUSTIFICATION (PIN): <reason>` for `{BYPASS_ATTR}`",
-        )
-    })
+    format!(
+      "missing attached `// JUSTIFICATION (djogi#<digits>): <reason>` or `// JUSTIFICATION (PIN): <reason>` for `{BYPASS_ATTR}`",
+    )
+  })
 }
 
 fn validate_continuation_lines(
@@ -512,7 +512,7 @@ mod tests {
     fn parses_djogi_issue_justification() {
         assert_eq!(
             parse_justification_line(
-                "    // JUSTIFICATION (djogi#234): citext needs LOWER()",
+                "  // JUSTIFICATION (djogi#234): citext needs LOWER()",
                 false,
             ),
             Ok(Justification::DjogiIssue("234".to_owned())),
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_reason() {
-        assert!(parse_justification_line("// JUSTIFICATION (djogi#1):   ", false).is_err());
+        assert!(parse_justification_line("// JUSTIFICATION (djogi#1):  ", false).is_err());
     }
 
     #[test]

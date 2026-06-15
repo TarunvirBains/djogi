@@ -6,9 +6,9 @@
 -- ("cannot insert multiple commands into a prepared statement").
 
 CREATE TABLE IF NOT EXISTS notifications (
-    id             BIGINT      PRIMARY KEY DEFAULT generate_id(),
-    created_at     TIMESTAMPTZ NOT NULL    DEFAULT now(),
-    updated_at     TIMESTAMPTZ NOT NULL    DEFAULT now(),
-    kind           TEXT        NOT NULL,
-    internal_notes TEXT
+  id       BIGINT   PRIMARY KEY DEFAULT generate_id(),
+  created_at   TIMESTAMPTZ NOT NULL  DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL  DEFAULT now(),
+  kind      TEXT    NOT NULL,
+  internal_notes TEXT
 );

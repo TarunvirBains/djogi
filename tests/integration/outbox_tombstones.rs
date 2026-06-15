@@ -123,9 +123,9 @@ async fn hard_delete_propagates_via_outbox_to_tombstone(mut ctx: djogi::DjogiCon
     assert!(
         punnu.get(&row_id).is_none(),
         "Punnu entry must be evicted via outbox tombstone after hard-delete; \
-         present-ness here would mean either the outbox poll is gated off \
-         incorrectly, or the HeerId → T::Id cast returned None despite the \
-         TypeId gate"
+     present-ness here would mean either the outbox poll is gated off \
+     incorrectly, or the HeerId → T::Id cast returned None despite the \
+     TypeId gate"
     );
 }
 
@@ -182,8 +182,8 @@ async fn hard_delete_propagates_for_default_heerid_desc_pk(mut ctx: djogi::Djogi
     assert!(
         punnu.get(&row_id).is_none(),
         "default-PK (HeerIdDesc) events models must propagate outbox tombstones; \
-         a remaining entry here means the gate excluded HeerIdDesc or the \
-         row_id → HeerIdDesc cast dropped the value"
+     a remaining entry here means the gate excluded HeerIdDesc or the \
+     row_id → HeerIdDesc cast dropped the value"
     );
 }
 

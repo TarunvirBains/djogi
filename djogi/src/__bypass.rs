@@ -3,7 +3,7 @@
 //! is public only so adopters, pin tests, and sibling workspace crates can opt
 //! in consciously; it is hidden from rustdoc and its traits are sealed. The
 //! supported unlock is `#[djogi::deliberately_bypass_convention_with_raw_sql]`
-//! plus an adjacent `// JUSTIFICATION ...` comment. Under `tests/`, `cargo
+//! plus an adjacent `// JUSTIFICATION...` comment. Under `tests/`, `cargo
 //! xtask check-justifications` enforces that convention.
 //! Adopter code reaches these methods through the bypass attribute, not by
 //! importing `djogi::__bypass::*` directly:
@@ -51,8 +51,8 @@
 //! - `UNLISTEN`
 //! - `PREPARE`
 //! - `DEALLOCATE`
-//! Transaction-local forms remain allowed: `SET LOCAL ...`,
-//! `SET CONSTRAINTS ...`, and `SET TRANSACTION ...`.
+//! Transaction-local forms remain allowed: `SET LOCAL...`,
+//! `SET CONSTRAINTS...`, and `SET TRANSACTION...`.
 //! Transaction-control statements are also rejected with
 //! [`crate::DjogiError::RawTransactionControlDisallowedInTransaction`] to
 //! prevent callers from bypassing framework bookkeeping (on_commit callback
@@ -69,7 +69,7 @@
 //! - empty/trivia-only SQL passes through unchanged
 //! - `raw_ddl` scans real top-level statements, respecting line comments,
 //! block comments, quoted strings, dollar-quoted bodies, and
-//! `BEGIN ATOMIC ... END` compound-statement boundaries
+//! `BEGIN ATOMIC... END` compound-statement boundaries
 //! - `raw_stream` / `raw_stream_with_fetch_size` keep their existing
 //! transaction-required contract and do not run this classifier
 //! # Cancellation and poison
@@ -375,11 +375,11 @@ fn classify_raw_ddl_transaction_backed_refusal(
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     let mut dollar_quote: Option<String> = None;
-    // Depth of open `BEGIN ATOMIC ... END` compound-statement blocks. Inside
+    // Depth of open `BEGIN ATOMIC... END` compound-statement blocks. Inside
     // them, semicolons do not split statements and the closing END is not
     // transaction control.
     let mut begin_atomic_depth = 0usize;
-    // Depth of open `CASE ... END` expressions inside the current atomic block,
+    // Depth of open `CASE... END` expressions inside the current atomic block,
     // so a CASE's END does not prematurely close the BEGIN ATOMIC block.
     let mut case_depth = 0usize;
 
@@ -443,11 +443,11 @@ fn classify_raw_ddl_transaction_backed_refusal(
             continue;
         }
 
-        // Track BEGIN ATOMIC ... END compound-statement boundaries. Quote and
+        // Track BEGIN ATOMIC... END compound-statement boundaries. Quote and
         // comment state is handled above, so this runs only on real, unquoted
         // SQL text.
         if begin_atomic_depth > 0 {
-            // CASE ... END is the only bare-END construct that appears unquoted
+            // CASE... END is the only bare-END construct that appears unquoted
             // inside a SQL-standard atomic body (e.g. SELECT CASE WHEN x > 0
             // THEN 1 ELSE 0 END). Count CASE opens so their END does not
             // prematurely close the atomic block. A qualified END such as
@@ -565,7 +565,7 @@ fn classify_raw_ddl_transaction_backed_refusal(
 /// that is actually inside a multibyte identifier character.
 /// This is used for the word-boundary checks around keyword matches, so that
 /// `BEGIN` in `x$begin`, `begin$x`, or a non-ASCII-adjacent identifier is not
-/// mistaken for the standalone `BEGIN` keyword. See .
+/// mistaken for the standalone `BEGIN` keyword. See.
 fn is_identifier_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b > 127
 }
@@ -579,7 +579,7 @@ fn is_identifier_byte(b: u8) -> bool {
 /// `dividend`, `BEGIN` inside `xBEGIN`, `END` inside `ENDPOINT`, and (because
 /// PostgreSQL allows `$` and non-ASCII letters in identifiers) `BEGIN` inside
 /// `x$begin` / `begin$x` or alongside a multibyte identifier character are all
-/// rejected. See .
+/// rejected. See.
 fn match_keyword_at(bytes: &[u8], idx: usize, target: &str) -> Option<usize> {
     // Leading boundary: the previous byte must not be an identifier byte.
     if idx > 0 && is_identifier_byte(bytes[idx - 1]) {
@@ -602,7 +602,7 @@ fn match_keyword_at(bytes: &[u8], idx: usize, target: &str) -> Option<usize> {
 }
 
 /// Skips SQL trivia (ASCII whitespace, `--` line comments, and nestable
-/// `/* ... */` block comments) starting at `idx`, then checks whether `target`
+/// `/*... */` block comments) starting at `idx`, then checks whether `target`
 /// keyword matches at the first significant byte.
 /// Returns the index just past the keyword on a match, or `None`.
 /// This is O(N) in the run of trivia it skips, so it is only safe to call
@@ -628,7 +628,7 @@ fn skip_whitespace_and_match(bytes: &[u8], idx: usize, target: &str) -> Option<u
             continue;
         }
 
-        // Block comment: `/* ... */`, nestable to match `skip_sql_trivia`.
+        // Block comment: `/*... */`, nestable to match `skip_sql_trivia`.
         if bytes.get(i) == Some(&b'/') && bytes.get(i + 1) == Some(&b'*') {
             i += 2;
             let mut depth = 1usize;
@@ -752,7 +752,7 @@ pub trait RawAccessExtBase: sealed::Sealed {
     /// set-returning functions, bespoke joins).
     /// `T: FromPgRow` decodes positionally against the wire row, so the
     /// `SELECT` projection list must match the model's column order. The
-    /// canonical order is `id, created_at, updated_at, ...user_fields` for
+    /// canonical order is `id, created_at, updated_at,...user_fields` for
     /// `#[model]`-derived structs; ad-hoc rowtypes implement
     /// [`FromPgRow`](crate::pg::decode::FromPgRow) with whatever shape they
     /// need.
@@ -939,7 +939,7 @@ pub trait RawAccessExtBase: sealed::Sealed {
     /// `SAVEPOINT`, `RELEASE`) with
     /// [`DjogiError::RawTransactionControlDisallowedInTransaction`] before SQL
     /// reaches Postgres. The scanner respects comments, string literals,
-    /// dollar-quoted bodies, and `BEGIN ATOMIC ... END` compound-statement
+    /// dollar-quoted bodies, and `BEGIN ATOMIC... END` compound-statement
     /// boundaries; it is not a naive `split(';')`.
     /// Tests that need to set up tables MUST use
     /// `#[djogi::djogi_test(sync_models = [...])]` instead — `sync_models`
@@ -972,7 +972,7 @@ pub trait RawAccessExtBase: sealed::Sealed {
     /// returns [`DjogiError::StreamOutsideTransaction`] at construction time
     /// (not at the first `poll_next`), so the misuse surfaces immediately.
     /// Wrap the consumer in `atomic(&mut ctx, |tx| Box::pin(async move {
-    /// ... }))` so the `tx` argument is transaction-backed.
+    ///... }))` so the `tx` argument is transaction-backed.
     /// Uses the framework default fetch size (chunk-size for the
     /// `FETCH FORWARD` calls under the cursor). For control over the chunk
     /// shape, use [`raw_stream_with_fetch_size`](RawAccessExtBase::raw_stream_with_fetch_size).
@@ -1264,7 +1264,7 @@ pub trait RawPoolAccessExtBase: sealed::Sealed {
     /// async fn copy_in_orders(pool: &DjogiPool) -> djogi::Result<()> {
     /// pool.raw_with_client(|client| Box::pin(async move {
     /// let _sink = client.copy_in("COPY orders FROM STDIN").await?;
-    /// // write rows to the sink ...
+    /// // write rows to the sink...
     /// Ok(())
     /// })).await
     /// }
@@ -1362,7 +1362,7 @@ mod tests {
 
     #[test]
     fn classify_transaction_session_statement_rejects_plain_set_after_leading_comments() {
-        let sql = "  /* prelude ; */ -- line comment\n  sEt search_path = public";
+        let sql = " /* prelude ; */ -- line comment\n sEt search_path = public";
         assert_eq!(classify_transaction_session_statement(sql), Some("SET"));
     }
 
@@ -1405,15 +1405,15 @@ mod tests {
     #[test]
     fn classify_raw_ddl_transaction_session_statement_ignores_semicolons_inside_bodies() {
         let sql = r#"
-            DO $body$
-            BEGIN
-                PERFORM '; still inside the body';
-                PERFORM $$nested ; dollar quote$$;
-            END
-            $body$;
-            /* scanner must only inspect the real next statement */
-            LISTEN djogi_updates;
-        "#;
+   DO $body$
+   BEGIN
+    PERFORM '; still inside the body';
+    PERFORM $$nested ; dollar quote$$;
+   END
+   $body$;
+   /* scanner must only inspect the real next statement */
+   LISTEN djogi_updates;
+  "#;
 
         assert_eq!(
             classify_raw_ddl_transaction_session_statement(sql),
@@ -1424,14 +1424,14 @@ mod tests {
     #[test]
     fn classify_raw_ddl_transaction_session_statement_handles_utf8_inside_dollar_quote() {
         let sql = r#"
-            DO $body$
-            BEGIN
-                -- Unicode comment inside the body: bootstrap — extensions
-                PERFORM 1;
-            END
-            $body$;
-            CREATE TEMP TABLE djogi_282_classifier_utf8_ok (value integer);
-        "#;
+   DO $body$
+   BEGIN
+    -- Unicode comment inside the body: bootstrap — extensions
+    PERFORM 1;
+   END
+   $body$;
+   CREATE TEMP TABLE djogi_282_classifier_utf8_ok (value integer);
+  "#;
 
         assert_eq!(classify_raw_ddl_transaction_session_statement(sql), None);
     }
@@ -1446,22 +1446,22 @@ mod tests {
         );
 
         let sql = r#"
-            DO $body$
-            BEGIN
-                PERFORM '; safe body';
-            END
-            $body$;
-            CREATE TEMP TABLE djogi_282_classifier_ok (value integer);
-        "#;
+   DO $body$
+   BEGIN
+    PERFORM '; safe body';
+   END
+   $body$;
+   CREATE TEMP TABLE djogi_282_classifier_ok (value integer);
+  "#;
         assert_eq!(classify_raw_ddl_transaction_session_statement(sql), None);
     }
 
     #[test]
     fn classify_raw_ddl_transaction_session_statement_rejects_session_set_in_batch() {
         let sql = r#"
-            CREATE TEMP TABLE djogi_282_classifier_set_rejected (value integer);
-            SET statement_timeout = '1ms';
-        "#;
+   CREATE TEMP TABLE djogi_282_classifier_set_rejected (value integer);
+   SET statement_timeout = '1ms';
+  "#;
 
         assert_eq!(
             classify_raw_ddl_transaction_session_statement(sql),
@@ -1578,11 +1578,11 @@ mod tests {
     #[test]
     fn classify_transaction_control_statement_handles_leading_trivia() {
         assert_eq!(
-            classify_transaction_control_statement("  COMMIT"),
+            classify_transaction_control_statement(" COMMIT"),
             Some("COMMIT")
         );
         assert_eq!(
-            classify_transaction_control_statement("  \n  \t  rollback"),
+            classify_transaction_control_statement(" \n \t rollback"),
             Some("ROLLBACK")
         );
         assert_eq!(
@@ -1673,23 +1673,23 @@ mod tests {
     #[test]
     fn classify_raw_ddl_batch_ignores_transaction_keywords_in_dollar_quoted_body() {
         let sql = r#"
-            DO $body$
-            BEGIN
-                PERFORM 'COMMIT should be ignored here';
-                PERFORM $$nested ROLLBACK$$;
-            END
-            $body$;
-            SELECT 1;
-        "#;
+   DO $body$
+   BEGIN
+    PERFORM 'COMMIT should be ignored here';
+    PERFORM $$nested ROLLBACK$$;
+   END
+   $body$;
+   SELECT 1;
+  "#;
         assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
     }
 
     #[test]
     fn classify_raw_ddl_batch_detects_transaction_control_after_safe_ddl() {
         let sql = r#"
-            CREATE TEMP TABLE foo (value integer);
-            COMMIT;
-        "#;
+   CREATE TEMP TABLE foo (value integer);
+   COMMIT;
+  "#;
         match classify_raw_ddl_transaction_backed_refusal(sql) {
             Some(TransactionBackedRawSqlRefusal::TransactionControl(s)) => {
                 assert_eq!(s, "COMMIT");
@@ -1701,9 +1701,9 @@ mod tests {
     #[test]
     fn classify_raw_ddl_batch_detects_session_statement_after_safe_ddl() {
         let sql = r#"
-            CREATE TEMP TABLE foo (value integer);
-            RESET ALL;
-        "#;
+   CREATE TEMP TABLE foo (value integer);
+   RESET ALL;
+  "#;
         match classify_raw_ddl_transaction_backed_refusal(sql) {
             Some(TransactionBackedRawSqlRefusal::SessionStatement(s)) => {
                 assert_eq!(s, "RESET");
@@ -1722,13 +1722,13 @@ mod tests {
         );
 
         let sql = r#"
-            DO $body$
-            BEGIN
-                PERFORM '; safe body';
-            END
-            $body$;
-            CREATE TEMP TABLE djogi_306_classifier_ok (value integer);
-        "#;
+   DO $body$
+   BEGIN
+    PERFORM '; safe body';
+   END
+   $body$;
+   CREATE TEMP TABLE djogi_306_classifier_ok (value integer);
+  "#;
         assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
     }
 
@@ -1749,17 +1749,17 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // BEGIN ATOMIC ... END compound-statement scanning.
-    // The raw_ddl batch scanner must treat `BEGIN ATOMIC ... END` as a single
+    // BEGIN ATOMIC... END compound-statement scanning.
+    // The raw_ddl batch scanner must treat `BEGIN ATOMIC... END` as a single
     // compound statement: internal semicolons do not split, and the closing
-    // END is not transaction control. CASE ... END nesting inside the block,
+    // END is not transaction control. CASE... END nesting inside the block,
     // string / comment / quote contexts, and word boundaries must all be
     // handled without falsely opening or closing a block.
     // -----------------------------------------------------------------------
 
     #[test]
     fn classify_raw_ddl_batch_begin_atomic_block_allowed() {
-        // BEGIN ATOMIC ... END is valid SQL-standard compound statement syntax.
+        // BEGIN ATOMIC... END is valid SQL-standard compound statement syntax.
         // The scanner must not classify the closing END as transaction control,
         // nor the head BEGIN as transaction control (BEGIN ATOMIC != bare BEGIN).
         let sql = "BEGIN ATOMIC SELECT 1; END";
@@ -1770,16 +1770,16 @@ mod tests {
     fn classify_raw_ddl_batch_create_function_then_atomic_block_allowed() {
         // Realistic migration shape: CREATE FUNCTION followed by atomic compound.
         let sql = r#"
-            CREATE FUNCTION f() RETURNS integer AS $$ SELECT 1; END $$ LANGUAGE sql;
-            BEGIN ATOMIC SELECT 2; END;
-            SELECT 3;
-        "#;
+   CREATE FUNCTION f() RETURNS integer AS $$ SELECT 1; END $$ LANGUAGE sql;
+   BEGIN ATOMIC SELECT 2; END;
+   SELECT 3;
+  "#;
         assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
     }
 
     #[test]
     fn classify_raw_ddl_batch_case_inside_atomic_allowed() {
-        // CASE ... END inside an atomic block must not prematurely close it.
+        // CASE... END inside an atomic block must not prematurely close it.
         let sql = "BEGIN ATOMIC SELECT CASE WHEN x > 0 THEN 'pos' ELSE 'neg' END; END";
         assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
     }
@@ -1864,11 +1864,11 @@ mod tests {
         // Dollar-quoted CREATE FUNCTION with a BEGIN ATOMIC body (regression
         // guard: existing dollar-quote tracking already makes the body opaque).
         let sql = r#"
-            CREATE FUNCTION f() RETURNS integer
-                LANGUAGE SQL
-                AS $$ BEGIN ATOMIC SELECT 1; END $$;
-            SELECT 1;
-        "#;
+   CREATE FUNCTION f() RETURNS integer
+    LANGUAGE SQL
+    AS $$ BEGIN ATOMIC SELECT 1; END $$;
+   SELECT 1;
+  "#;
         assert_eq!(classify_raw_ddl_transaction_backed_refusal(sql), None);
     }
 

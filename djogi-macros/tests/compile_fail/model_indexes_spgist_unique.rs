@@ -7,11 +7,11 @@
 use djogi::prelude::*;
 
 #[model(table = "tags", indexes(
-    unique(fields = [path], using = "spgist"),
+ unique(fields = [path], using = "spgist"),
 ))]
 #[derive(Debug, Clone)]
 pub struct Tag {
-    pub path: String,
+ pub path: String,
 }
 
 fn main() {}

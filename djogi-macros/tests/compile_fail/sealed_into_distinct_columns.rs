@@ -15,11 +15,11 @@ use djogi::query::IntoDistinctColumns;
 pub struct Hostile;
 
 fn main() {
-    // This must not compile — `Sealed` is crate-private, so the impl
-    // block can't name its supertrait.
-    impl IntoDistinctColumns for Hostile {
-        fn into_distinct_columns(self) -> Vec<&'static str> {
-            vec!["1) DROP TABLE users --"]
-        }
-    }
+ // This must not compile — `Sealed` is crate-private, so the impl
+ // block can't name its supertrait.
+ impl IntoDistinctColumns for Hostile {
+  fn into_distinct_columns(self) -> Vec<&'static str> {
+   vec!["1) DROP TABLE users --"]
+  }
+ }
 }

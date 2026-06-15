@@ -7,42 +7,42 @@
 //! the SQL emitter can lower them deterministically. Operations come in three
 //! categories:
 //! - **Table-level**: `AddTable` / `DropTable` / `RenameTable` /
-//!   `MoveModelBetweenApps`.
+//! `MoveModelBetweenApps`.
 //! - **Column-level**: `AddColumn` / `DropColumn` / `RenameColumn` /
-//!   `AlterColumn` / `AddForeignKey` / `DropForeignKey`.
+//! `AlterColumn` / `AddForeignKey` / `DropForeignKey`.
 //! - **Other**: `AddIndex` / `DropIndex` / `AddEnum` / `DropEnum` /
-//!   `AddEnumVariant` / `RenameApp` / `PkTypeFlip`.
-//!   `RenameTable` and `RenameColumn` are emitted only when the new
-//!   schema's `renamed_from` field flags the change as a rename. Without
-//!   the annotation the differ emits a destructive `DropTable` +
-//!   `AddTable` (or `DropColumn` + `AddColumn`) pair so unannotated
-//!   "renames" cannot silently destroy data.
+//! `AddEnumVariant` / `RenameApp` / `PkTypeFlip`.
+//! `RenameTable` and `RenameColumn` are emitted only when the new
+//! schema's `renamed_from` field flags the change as a rename. Without
+//! the annotation the differ emits a destructive `DropTable` +
+//! `AddTable` (or `DropColumn` + `AddColumn`) pair so unannotated
+//! "renames" cannot silently destroy data.
 //! # Classification
 //! Each [`SchemaDelta`] carries a [`Classification`]:
 //! - `NoOp` — schemas are equal (no operations).
 //! - `Additive` — every op is non-destructive: new tables, new
-//!   nullable columns, new indexes, new enum variants. Safe to ship.
+//! nullable columns, new indexes, new enum variants. Safe to ship.
 //! - `Reversible` — contains operations that are destructive in one
-//!   direction but have a clean inverse (e.g. a `RenameTable` whose
-//!   inverse is the symmetric rename). The runner treats reversible
-//!   deltas the same as destructive but the down-migration is
-//!   well-defined.
+//! direction but have a clean inverse (e.g. a `RenameTable` whose
+//! inverse is the symmetric rename). The runner treats reversible
+//! deltas the same as destructive but the down-migration is
+//! well-defined.
 //! - `Destructive` — at least one operation removes data
-//!   structurally (`DropTable`, `DropColumn`, `DropEnum`,
-//!   `DropIndex`, `DropForeignKey`). The runner gates these behind
-//!   `--allow-destructive`; the gate is runner-side state, not
-//!   differ output, so the variant carries no payload.
+//! structurally (`DropTable`, `DropColumn`, `DropEnum`,
+//! `DropIndex`, `DropForeignKey`). The runner gates these behind
+//! `--allow-destructive`; the gate is runner-side state, not
+//! differ output, so the variant carries no payload.
 //! - `Lossy` — a destructive op that would also lose row data with
-//!   no recovery path (e.g. dropping a non-nullable column that has
-//!   no default). Stricter than `Destructive`.
+//! no recovery path (e.g. dropping a non-nullable column that has
+//! no default). Stricter than `Destructive`.
 //! - `Unsupported { reason }` — the differ cannot lower the change
-//!   safely (e.g. partition method change). Operator must hand-edit
-//!   the migration.
+//! safely (e.g. partition method change). Operator must hand-edit
+//! the migration.
 //! - `PkTypeFlip` — at least one table changed its PK type variant
-//!   (HeerId ↔ HeerIdRecencyBiased, RanjId ↔ RanjIdRecencyBiased).
-//!   This is a **native classification** for PK type flips. It owns the full
-//!   expand/contract orchestration including FK cascade composition.
-//!   The migration engine handles it directly.
+//! (HeerId ↔ HeerIdRecencyBiased, RanjId ↔ RanjIdRecencyBiased).
+//! This is a **native classification** for PK type flips. It owns the full
+//! expand/contract orchestration including FK cascade composition.
+//! The migration engine handles it directly.
 //! # No-op detection
 //! [`diff_schemas`] returns a delta with `Classification::NoOp` and an
 //! empty operations vector when the two schemas compare equal. The
@@ -128,7 +128,7 @@ pub enum SchemaOperation {
     /// [`ForeignKeySchema`] (including the cascade discipline that
     /// existed on the old side) is carried so the SQL emitter can produce a
     /// reversible rollback that restores the original `FOREIGN KEY
-    /// ... REFERENCES ... ON DELETE ...` clause without operator
+    ///... REFERENCES... ON DELETE...` clause without operator
     /// hand-edit.
     /// drop carried only `(table, column)` and the rollback was a
     /// SQL comment.
@@ -173,13 +173,13 @@ pub enum SchemaOperation {
         exclusion: ExclusionConstraintSchema,
     },
 
-    /// `CREATE TYPE ... AS ENUM` for a new Postgres enum.
+    /// `CREATE TYPE... AS ENUM` for a new Postgres enum.
     AddEnum(EnumSchema),
 
     /// `DROP TYPE` for an enum no longer referenced. **Destructive.**
     DropEnum(String),
 
-    /// `ALTER TYPE ... ADD VALUE` — adding a variant to an existing
+    /// `ALTER TYPE... ADD VALUE` — adding a variant to an existing
     /// enum. Removing variants is rejected (Postgres has no native
     /// `DROP VALUE`).
     AddEnumVariant {
@@ -189,37 +189,37 @@ pub enum SchemaOperation {
         /// means "append at the tail" (no positional clause). The
         /// differ chooses, in priority order:
         /// 1. `Some(EnumVariantAnchor { kind: Before, variant: post })`
-        ///    when there is a post-anchor variant in the new list
-        ///    that already existed in the old list. This places the
-        ///    new variant immediately before that anchor.
+        /// when there is a post-anchor variant in the new list
+        /// that already existed in the old list. This places the
+        /// new variant immediately before that anchor.
         /// 2. `Some(EnumVariantAnchor { kind: After, variant: pre })`
-        ///    when there is no usable post-anchor but a pre-anchor
-        ///    exists in both old and new lists. This is the case for
-        ///    a tail-append onto an enum that already has variants
-        ///    from the old list — the new variant lands `AFTER` the
-        ///    last existing one. (`ALTER TYPE ... ADD VALUE 'x' AFTER
+        /// when there is no usable post-anchor but a pre-anchor
+        /// exists in both old and new lists. This is the case for
+        /// a tail-append onto an enum that already has variants
+        /// from the old list — the new variant lands `AFTER` the
+        /// last existing one. (`ALTER TYPE... ADD VALUE 'x' AFTER
         /// 'y'` is deterministic Postgres DDL, so anchoring beats
-        ///    bare append even though both produce the same physical
-        ///    ordering.)
+        /// bare append even though both produce the same physical
+        /// ordering.)
         /// 3. `None` only on degenerate or malformed inputs where no
-        ///    anchor exists in the old list in either direction
-        ///    e.g. every old variant has been concurrently dropped
-        ///    (`Unsupported` upstream) OR a malformed snapshot where
-        ///    the existing enum's variant list is empty (Postgres
-        ///    rejects an empty-variant enum at `CREATE TYPE`, so this
-        ///    is malformed-snapshot territory only — the runtime
-        ///    enum-creation path also rejects it). In practice
-        ///    [`pick_enum_variant_anchor`] returns `None` only on
-        ///    these inputs; tail-appends with prior real variants
-        ///    always land in case (2).
-        ///    emitter unconditionally appended (no `BEFORE`/`AFTER`
-        ///    clause) regardless of where the differ placed the variant.
-        ///    Carrying an anchor variant name (rather than a positional
-        ///    integer) makes the emission self-contained — the emitter
-        ///    no longer needs the full new-variant list to resolve a
-        ///    position.
-        ///    description here to match the helper's actual behaviour
-        ///    for tail-appends onto a non-empty enum.
+        /// anchor exists in the old list in either direction
+        /// e.g. every old variant has been concurrently dropped
+        /// (`Unsupported` upstream) OR a malformed snapshot where
+        /// the existing enum's variant list is empty (Postgres
+        /// rejects an empty-variant enum at `CREATE TYPE`, so this
+        /// is malformed-snapshot territory only — the runtime
+        /// enum-creation path also rejects it). In practice
+        /// [`pick_enum_variant_anchor`] returns `None` only on
+        /// these inputs; tail-appends with prior real variants
+        /// always land in case (2).
+        /// emitter unconditionally appended (no `BEFORE`/`AFTER`
+        /// clause) regardless of where the differ placed the variant.
+        /// Carrying an anchor variant name (rather than a positional
+        /// integer) makes the emission self-contained — the emitter
+        /// no longer needs the full new-variant list to resolve a
+        /// position.
+        /// description here to match the helper's actual behaviour
+        /// for tail-appends onto a non-empty enum.
         anchor: Option<EnumVariantAnchor>,
     },
 
@@ -379,7 +379,7 @@ pub enum ColumnChange {
     /// `SET DEFAULT <expr>` / `DROP DEFAULT`.
     SetDefault(Option<String>),
 
-    /// `ALTER COLUMN ... TYPE <new>`. Carries both old and new
+    /// `ALTER COLUMN... TYPE <new>`. Carries both old and new
     /// rendered SQL types so the emitter can decide whether a `USING`
     /// clause is needed, plus the optional adopter-supplied `using`
     /// expression for non-default cast paths.
@@ -437,16 +437,16 @@ pub enum ColumnChange {
     /// Variant semantics — `(from, to)` pair:
     /// - `(None, None)` — never emitted; the differ filters no-op.
     /// - `(Some(b), Some(a))` with `b == a` — never emitted; differ
-    ///   filters identical.
-    /// - `(None, Some(expr))` — ADD CHECK. Up: `ADD CONSTRAINT ...
-    /// CHECK (expr)`. Down: `DROP CONSTRAINT ...`.
-    /// - `(Some(prior), None)` — DROP CHECK. Up: `DROP CONSTRAINT ...`.
-    ///   Down: `ADD CONSTRAINT ... CHECK (prior)` — fully recoverable.
+    /// filters identical.
+    /// - `(None, Some(expr))` — ADD CHECK. Up: `ADD CONSTRAINT...
+    /// CHECK (expr)`. Down: `DROP CONSTRAINT...`.
+    /// - `(Some(prior), None)` — DROP CHECK. Up: `DROP CONSTRAINT...`.
+    /// Down: `ADD CONSTRAINT... CHECK (prior)` — fully recoverable.
     /// - `(Some(b), Some(a))` with `b != a` — currently the differ
-    ///   splits AMEND into two emissions: `(Some(b), None)` then
-    ///   `(None, Some(a))`. The SQL emitter handles the merged form
-    ///   too (DROP+ADD in one statement pair) for callers that may
-    ///   want it later.
+    /// splits AMEND into two emissions: `(Some(b), None)` then
+    /// `(None, Some(a))`. The SQL emitter handles the merged form
+    /// too (DROP+ADD in one statement pair) for callers that may
+    /// want it later.
     SetCheck {
         /// Prior CHECK expression (the constraint already on the column).
         /// `None` when no CHECK existed before the operation.
@@ -482,7 +482,7 @@ pub enum ColumnChange {
     },
 
     /// Set / change / clear the column-level `COMMENT ON COLUMN`
-    /// metadata. .
+    /// metadata..
     /// Carries both `from` and `to` so the SQL emitter renders a
     /// fully reversible down side — `from = Some(prev)` restores the
     /// pre-operation comment, `from = None` rolls back to the
@@ -502,17 +502,17 @@ pub enum ColumnChange {
     /// (`GENERATED BY DEFAULT / ALWAYS AS IDENTITY`).
     /// Transitions:
     /// - `from = None, to = Some(kind)` — add identity to existing
-    ///   column. Lowered to
-    ///   `ALTER TABLE t ALTER COLUMN c ADD <kind sql_clause>`.
+    /// column. Lowered to
+    /// `ALTER TABLE t ALTER COLUMN c ADD <kind sql_clause>`.
     /// - `from = Some(_), to = None` — drop identity. Lowered to
-    ///   `ALTER TABLE t ALTER COLUMN c DROP IDENTITY`.
+    /// `ALTER TABLE t ALTER COLUMN c DROP IDENTITY`.
     /// - `from = Some(a), to = Some(b)` (a ≠ b) — kind change
-    ///   (BY DEFAULT ↔ ALWAYS). Lowered to
-    ///   `ALTER TABLE t ALTER COLUMN c SET GENERATED <kind>`.
-    ///   Identity columns are sequence-backed at the Postgres level;
-    ///   the ADD migration triggers Postgres's own sequence allocation
-    ///   and starts the sequence after MAX(c) for existing rows. No
-    ///   Djogi-side backfill needed.
+    /// (BY DEFAULT ↔ ALWAYS). Lowered to
+    /// `ALTER TABLE t ALTER COLUMN c SET GENERATED <kind>`.
+    /// Identity columns are sequence-backed at the Postgres level;
+    /// the ADD migration triggers Postgres's own sequence allocation
+    /// and starts the sequence after MAX(c) for existing rows. No
+    /// Djogi-side backfill needed.
     SetIdentity {
         from: Option<crate::migrate::schema::IdentityKindSchema>,
         to: Option<crate::migrate::schema::IdentityKindSchema>,
@@ -520,7 +520,7 @@ pub enum ColumnChange {
 }
 
 /// Anchor variant for an [`SchemaOperation::AddEnumVariant`] insertion.
-/// Postgres `ALTER TYPE ... ADD VALUE 'new' [BEFORE|AFTER 'anchor']`
+/// Postgres `ALTER TYPE... ADD VALUE 'new' [BEFORE|AFTER 'anchor']`
 /// requires a real existing variant as the anchor. The differ
 /// picks the anchor by walking the new variant list around the
 /// inserted variant and finding the nearest neighbour that already
@@ -539,10 +539,10 @@ pub struct EnumVariantAnchor {
 /// Direction of an [`EnumVariantAnchor`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnumVariantAnchorKind {
-    /// `ALTER TYPE ... ADD VALUE 'new' BEFORE 'anchor'` — anchor is
+    /// `ALTER TYPE... ADD VALUE 'new' BEFORE 'anchor'` — anchor is
     /// the variant that should sort immediately AFTER the new one.
     Before,
-    /// `ALTER TYPE ... ADD VALUE 'new' AFTER 'anchor'` — anchor is
+    /// `ALTER TYPE... ADD VALUE 'new' AFTER 'anchor'` — anchor is
     /// the variant that should sort immediately BEFORE the new one.
     After,
 }
@@ -901,8 +901,8 @@ impl std::fmt::Display for DiffError {
             } => write!(
                 f,
                 "PK-flip transitive FK closure exceeded {max_depth} levels rooted at \
-                 {parent_table}; table_chain={chain:?}; graph likely has a pathological \
-                 cycle or unbounded fan-out — refusing to compose the migration",
+     {parent_table}; table_chain={chain:?}; graph likely has a pathological \
+     cycle or unbounded fan-out — refusing to compose the migration",
             ),
             DiffError::PkFlipMalformedSelfFkMetadata(err) => {
                 write!(f, "diff lowering rejected a malformed PK-flip group: {err}")
@@ -913,8 +913,8 @@ impl std::fmt::Display for DiffError {
             } => write!(
                 f,
                 "PK-flip cross-flipping cluster mixes partitioned parents \
-                 {partitioned_parents:?} with partners {cross_flipping_partners:?}; \
-                 this unsupported multi-parent partitioned shape is rejected",
+     {partitioned_parents:?} with partners {cross_flipping_partners:?}; \
+     this unsupported multi-parent partitioned shape is rejected",
             ),
         }
     }
@@ -989,8 +989,8 @@ fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) -> Result<(),
             .operations
             .extract_if(.., |op| {
                 matches!(
-                    op,
-                    SchemaOperation::PkTypeFlipGroup(g) if mem_set.contains(&g.parent_table)
+                 op,
+                 SchemaOperation::PkTypeFlipGroup(g) if mem_set.contains(&g.parent_table)
                 )
             })
             .filter_map(|op| match op {
@@ -1390,7 +1390,7 @@ pub fn diff_bucket_maps(
     before: &BTreeMap<BucketKey, AppliedSchema>,
     after: &BTreeMap<BucketKey, AppliedSchema>,
 ) -> Result<Vec<SchemaDelta>, DiffError> {
-    // Phase 1 — pre-scan for cross-bucket moves driven by
+    // — pre-scan for cross-bucket moves driven by
     // `TableSchema.moved_from_app`. A model with `moved_from_app =
     // Some("billing")` in the after-schema, whose table name was
     // present in the before-schema's `(database, "billing")` bucket,
@@ -2020,8 +2020,8 @@ fn diff_tables(
 /// - `table_comment` → [`SchemaOperation::SetTableComment`]
 /// - `storage_params` → [`SchemaOperation::SetStorageParams`]
 /// - `tablespace` → [`SchemaOperation::SetTablespace`]
-///   Each slot emits one `SchemaOperation` when the before / after
-///   values diverge; identical values produce no operation.
+/// Each slot emits one `SchemaOperation` when the before / after
+/// values diverge; identical values produce no operation.
 fn diff_table_metadata_in_table(
     before: &TableSchema,
     after: &TableSchema,
@@ -2359,7 +2359,7 @@ fn emit_alter_column(
         }
         // snapshots (where `identity: None`) projected against new
         // schemas (where `identity: Some(ByDefault)` for Serial PKs)
-        // emit the correct `ALTER COLUMN ADD GENERATED ... AS IDENTITY`
+        // emit the correct `ALTER COLUMN ADD GENERATED... AS IDENTITY`
         // migration. Without this comparison the diff is silent and
         // adopters on existing tables don't get IDENTITY added,
         // leaving INSERT-without-id failing.
@@ -2418,28 +2418,28 @@ fn emit_alter_column(
 /// surface it cleanly. Non-flip transitions handled here include:
 /// - kind changes outside the flip pairs (e.g. `HeerId → Serial`)
 /// - column-set changes (composite ↔ single, or composite reshape
-///   that survives column-rename normalisation)
+/// that survives column-rename normalisation)
 /// - custom PK shape changes (any transition involving
-///   `PkKindSchema::Custom` on either side; see
-///   [`custom_pk_unsupported_reason`] for the typed diagnostic shape)
-///   **Custom PK transitions.** A model declared with a
-///   `djogi::primary_key!` newtype on either side of the diff is rejected
-///   with a dedicated message that names which side carries the custom
-///   kind, the inner SQL types, and the type names. The stock
-///   `pk_flip` family routes (`PkFlipFamily::Heer` / `Ranj`) only know
-///   how to migrate the four built-in asc↔desc pairs — no playbook
-///   exists for arbitrary `Custom → Custom`, `Custom → built-in`, or
-///   `built-in → Custom` shape changes, and quietly emitting a generic
-///   `ALTER COLUMN TYPE` would risk silent data loss when the inner SQL
-///   types differ. See `docs/spec/migrations.md` §10.10a for the v0.1.0
-///   support matrix.
-///   **PK column rename + supported flip** is recognised as a flip:
-///   the `column_renames` map is applied to `before.primary_key.columns`
-///   before comparing against `after.primary_key.columns`, so a single
-///   `RenameColumn` op + a kind flip together still produce
-///   `SchemaOperation::PkTypeFlip` rather than `Unsupported`. The
-///   `RenameColumn` was already emitted by `diff_columns_in_table`
-///   before this fn runs.
+/// `PkKindSchema::Custom` on either side; see
+/// [`custom_pk_unsupported_reason`] for the typed diagnostic shape)
+/// **Custom PK transitions.** A model declared with a
+/// `djogi::primary_key!` newtype on either side of the diff is rejected
+/// with a dedicated message that names which side carries the custom
+/// kind, the inner SQL types, and the type names. The stock
+/// `pk_flip` family routes (`PkFlipFamily::Heer` / `Ranj`) only know
+/// how to migrate the four built-in asc↔desc pairs — no playbook
+/// exists for arbitrary `Custom → Custom`, `Custom → built-in`, or
+/// `built-in → Custom` shape changes, and quietly emitting a generic
+/// `ALTER COLUMN TYPE` would risk silent data loss when the inner SQL
+/// types differ. See `docs/spec/migrations.md` §10.10a for the v0.1.0
+/// support matrix.
+/// **PK column rename + supported flip** is recognised as a flip:
+/// the `column_renames` map is applied to `before.primary_key.columns`
+/// before comparing against `after.primary_key.columns`, so a single
+/// `RenameColumn` op + a kind flip together still produce
+/// `SchemaOperation::PkTypeFlip` rather than `Unsupported`. The
+/// `RenameColumn` was already emitted by `diff_columns_in_table`
+/// before this fn runs.
 fn diff_pk_in_table(
     before: &TableSchema,
     after: &TableSchema,
@@ -2502,9 +2502,9 @@ fn diff_pk_in_table(
     ops.push(SchemaOperation::Unsupported {
         reason: format!(
             "table `{}`: primary key change is not auto-supported \
-             ({:?} → {:?}). Recognised auto-flips: HeerId ↔ \
-             HeerIdRecencyBiased, RanjId ↔ RanjIdRecencyBiased \
-             with identical column lists. Hand-write this migration.",
+    ({:?} → {:?}). Recognised auto-flips: HeerId ↔ \
+    HeerIdRecencyBiased, RanjId ↔ RanjIdRecencyBiased \
+    with identical column lists. Hand-write this migration.",
             after.table, before.primary_key, after.primary_key
         ),
     });
@@ -2549,15 +2549,15 @@ fn custom_pk_unsupported_reason(
     };
     format!(
         "table `{table}`: primary key change involves a \
-         `djogi::primary_key!` custom newtype ({bucket}: {before_desc} → \
-         {after_desc}) and is not auto-supported in v0.1.0. The \
-         `pk_flip` family only ships migration playbooks for the four \
-         built-in asc↔desc pairs (HeerId ↔ HeerIdRecencyBiased, \
-         RanjId ↔ RanjIdRecencyBiased); transitions involving a custom \
-         PK newtype must be hand-written so the operator can decide on \
-         the value-preserving cast and the FK cascade strategy. See \
-         `docs/spec/migrations.md` §10.10a for the v0.1.0 support \
-         matrix and rationale."
+   `djogi::primary_key!` custom newtype ({bucket}: {before_desc} → \
+   {after_desc}) and is not auto-supported in v0.1.0. The \
+   `pk_flip` family only ships migration playbooks for the four \
+   built-in asc↔desc pairs (HeerId ↔ HeerIdRecencyBiased, \
+   RanjId ↔ RanjIdRecencyBiased); transitions involving a custom \
+   PK newtype must be hand-written so the operator can decide on \
+   the value-preserving cast and the FK cascade strategy. See \
+   `docs/spec/migrations.md` §10.10a for the v0.1.0 support \
+   matrix and rationale."
     )
 }
 
@@ -2681,10 +2681,10 @@ fn diff_enums(before: &AppliedSchema, after: &AppliedSchema, ops: &mut Vec<Schem
                         ops.push(SchemaOperation::Unsupported {
                             reason: format!(
                                 "enum `{name}`: variant `{v}` removed. Postgres has \
-                                 no `DROP VALUE`; rebuild the type via a hand-written \
-                                 migration (drop dependent columns, drop type, \
-                                 recreate type without the variant, add columns \
-                                 back)."
+         no `DROP VALUE`; rebuild the type via a hand-written \
+         migration (drop dependent columns, drop type, \
+         recreate type without the variant, add columns \
+         back)."
                             ),
                         });
                     }
@@ -2752,7 +2752,7 @@ fn pick_enum_variant_anchor(
 /// `AddColumn` is classified per the column's actual shape:
 /// - nullable, OR has a default → Additive
 /// - non-nullable + no default → Lossy (existing rows would violate
-///   the constraint immediately on apply)
+/// the constraint immediately on apply)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Severity {
     Additive = 0,
@@ -2945,8 +2945,8 @@ mod tests {
         let delta = diff_schemas(&before, &after, empty_global());
         assert_eq!(delta.classification, Classification::Additive);
         assert!(matches!(
-            delta.operations.first(),
-            Some(SchemaOperation::AddTable(t)) if t.table == "widgets"
+         delta.operations.first(),
+         Some(SchemaOperation::AddTable(t)) if t.table == "widgets"
         ));
     }
 
@@ -2958,8 +2958,8 @@ mod tests {
         let delta = diff_schemas(&before, &after, empty_global());
         assert_eq!(delta.classification, Classification::Destructive);
         assert!(matches!(
-            delta.operations.first(),
-            Some(SchemaOperation::DropTable(t)) if t == "widgets"
+         delta.operations.first(),
+         Some(SchemaOperation::DropTable(t)) if t == "widgets"
         ));
     }
 
@@ -2977,8 +2977,8 @@ mod tests {
         assert_eq!(delta.classification, Classification::Reversible);
         assert_eq!(delta.operations.len(), 1);
         assert!(matches!(
-            &delta.operations[0],
-            SchemaOperation::RenameTable { from, to } if from == "widgets" && to == "gadgets"
+         &delta.operations[0],
+         SchemaOperation::RenameTable { from, to } if from == "widgets" && to == "gadgets"
         ));
     }
 
@@ -3019,8 +3019,8 @@ mod tests {
         let delta = diff_schemas(&before, &after, empty_global());
         assert_eq!(delta.classification, Classification::Additive);
         assert!(matches!(
-            delta.operations.first(),
-            Some(SchemaOperation::AddColumn { table, column }) if table == "widgets" && column.name == "name"
+         delta.operations.first(),
+         Some(SchemaOperation::AddColumn { table, column }) if table == "widgets" && column.name == "name"
         ));
     }
 
@@ -3101,7 +3101,7 @@ mod tests {
     // custom newtype on either side gets the typed reject diagnostic
     // from `custom_pk_unsupported_reason`. We pin the bucket label
     // and the type-name surfacing so operators see WHICH custom kind
-    // changed, not a generic `PrimaryKeySchema { ... }` debug dump.
+    // changed, not a generic `PrimaryKeySchema {... }` debug dump.
     // The four cases below cover the matrix the issue calls out:
     // 1. same inner SQL type, different Rust newtype name
     // 2. same Rust newtype name, different inner SQL type
@@ -3232,7 +3232,7 @@ mod tests {
         assert!(
             reason.contains("user_id_next()") && reason.contains("user_id_next_v2()"),
             "diagnostic must surface both default_sql generators so the \
-             operator can see what changed; got: {reason}"
+    operator can see what changed; got: {reason}"
         );
     }
 
@@ -3310,8 +3310,8 @@ mod tests {
         let delta = diff_schemas(&before, &after, empty_global());
         assert_eq!(delta.classification, Classification::Additive);
         assert!(matches!(
-            delta.operations.first(),
-            Some(SchemaOperation::AddIndex(idx)) if idx.name == "widgets_name_idx"
+         delta.operations.first(),
+         Some(SchemaOperation::AddIndex(idx)) if idx.name == "widgets_name_idx"
         ));
     }
 
@@ -3427,8 +3427,8 @@ mod tests {
         let delta = diff_schemas(&before, &after, empty_global());
         assert_eq!(delta.classification, Classification::Reversible);
         assert!(matches!(
-            delta.operations.first(),
-            Some(SchemaOperation::RenameColumn { from, to, .. }) if from == "old_name" && to == "new_name"
+         delta.operations.first(),
+         Some(SchemaOperation::RenameColumn { from, to,.. }) if from == "old_name" && to == "new_name"
         ));
     }
 
@@ -3662,8 +3662,8 @@ mod tests {
         );
         assert!(
             matches!(
-                changes.first(),
-                Some(ColumnChange::SetCheck { from: None, to: Some(s) }) if s == after_expr
+             changes.first(),
+             Some(ColumnChange::SetCheck { from: None, to: Some(s) }) if s == after_expr
             ),
             "ADD CHECK emits SetCheck {{ from: None, to: Some(new) }}: {changes:?}"
         );
@@ -3685,30 +3685,30 @@ mod tests {
         let delta = diff_schemas(&before, &after, empty_global());
 
         assert!(delta.operations.iter().any(|op| matches!(
-            op,
-            SchemaOperation::SetTableComment {
-                table,
-                from: Some(from),
-                to: Some(to),
-            } if table == "widgets" && from == "old comment" && to == "new comment"
+         op,
+         SchemaOperation::SetTableComment {
+          table,
+          from: Some(from),
+          to: Some(to),
+         } if table == "widgets" && from == "old comment" && to == "new comment"
         )));
         assert!(delta.operations.iter().any(|op| matches!(
-            op,
-            SchemaOperation::SetStorageParams {
-                table,
-                from: Some(from),
-                to: Some(to),
-            } if table == "widgets"
-                && from == "fillfactor=80"
-                && to == "fillfactor=70, autovacuum_enabled=false"
+         op,
+         SchemaOperation::SetStorageParams {
+          table,
+          from: Some(from),
+          to: Some(to),
+         } if table == "widgets"
+          && from == "fillfactor=80"
+          && to == "fillfactor=70, autovacuum_enabled=false"
         )));
         assert!(delta.operations.iter().any(|op| matches!(
-            op,
-            SchemaOperation::SetTablespace {
-                table,
-                from: Some(from),
-                to: Some(to),
-            } if table == "widgets" && from == "slowspace" && to == "fastspace"
+         op,
+         SchemaOperation::SetTablespace {
+          table,
+          from: Some(from),
+          to: Some(to),
+         } if table == "widgets" && from == "slowspace" && to == "fastspace"
         )));
     }
 
@@ -3731,8 +3731,8 @@ mod tests {
         );
         assert!(
             matches!(
-                changes.first(),
-                Some(ColumnChange::SetCheck { from: Some(s), to: None }) if s == prior_expr
+             changes.first(),
+             Some(ColumnChange::SetCheck { from: Some(s), to: None }) if s == prior_expr
             ),
             "DROP CHECK emits SetCheck {{ from: Some(prior), to: None }}: {changes:?}"
         );
@@ -3764,15 +3764,15 @@ mod tests {
         );
         assert!(
             matches!(
-                changes.first(),
-                Some(ColumnChange::SetCheck { from: Some(b), to: None }) if b == before_expr
+             changes.first(),
+             Some(ColumnChange::SetCheck { from: Some(b), to: None }) if b == before_expr
             ),
             "AMEND step 1: SetCheck {{ from: Some(prior), to: None }}: {changes:?}"
         );
         assert!(
             matches!(
-                changes.get(1),
-                Some(ColumnChange::SetCheck { from: None, to: Some(a) }) if a == after_expr
+             changes.get(1),
+             Some(ColumnChange::SetCheck { from: None, to: Some(a) }) if a == after_expr
             ),
             "AMEND step 2: SetCheck {{ from: None, to: Some(new) }}: {changes:?}"
         );
@@ -3797,24 +3797,24 @@ mod tests {
         );
         assert!(
             matches!(
-                changes.first(),
-                Some(ColumnChange::SetCheck { from: Some(b), to: None }) if b == check_expr
+             changes.first(),
+             Some(ColumnChange::SetCheck { from: Some(b), to: None }) if b == check_expr
             ),
             "existing CHECK must be dropped before ALTER TYPE \
-             (carrying `from` for rollback): {changes:?}"
+    (carrying `from` for rollback): {changes:?}"
         );
         assert!(
-            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to, .. }) if from == "INTEGER" && to == "BIGINT"),
+            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to,.. }) if from == "INTEGER" && to == "BIGINT"),
             "ALTER TYPE should be between drop and re-add: {changes:?}"
         );
         assert!(
             matches!(
-                changes.get(2),
-                Some(ColumnChange::SetCheck { from: None, to: Some(s) }) if s == check_expr
+             changes.get(2),
+             Some(ColumnChange::SetCheck { from: None, to: Some(s) }) if s == check_expr
             ),
             "same CHECK should be re-added after type conversion \
-             (forward-only `to`; the prior is restored by step 0's down): \
-             {changes:?}"
+    (forward-only `to`; the prior is restored by step 0's down): \
+    {changes:?}"
         );
     }
 
@@ -3838,23 +3838,23 @@ mod tests {
         );
         assert!(
             matches!(
-                changes.first(),
-                Some(ColumnChange::SetCheck { from: Some(b), to: None }) if b == before_expr
+             changes.first(),
+             Some(ColumnChange::SetCheck { from: Some(b), to: None }) if b == before_expr
             ),
             "existing CHECK must be dropped before ALTER TYPE \
-             with `from` carrying the OLD expression for rollback: {changes:?}"
+    with `from` carrying the OLD expression for rollback: {changes:?}"
         );
         assert!(
-            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to, .. }) if from == "INTEGER" && to == "BIGINT"),
+            matches!(changes.get(1), Some(ColumnChange::ChangeType { from, to,.. }) if from == "INTEGER" && to == "BIGINT"),
             "ALTER TYPE should be between drop and re-add: {changes:?}"
         );
         assert!(
             matches!(
-                changes.get(2),
-                Some(ColumnChange::SetCheck { from: None, to: Some(s) }) if s == after_expr
+             changes.get(2),
+             Some(ColumnChange::SetCheck { from: None, to: Some(s) }) if s == after_expr
             ),
             "new CHECK should be re-added after type conversion \
-             (the OLD expression is restored by step 0's down side): {changes:?}"
+    (the OLD expression is restored by step 0's down side): {changes:?}"
         );
     }
 
@@ -4170,9 +4170,9 @@ mod tests {
         let users_delta = deltas.iter().find(|d| d.bucket == users_bucket).unwrap();
         assert!(
             users_delta.operations.iter().any(|op| matches!(
-                op,
-                SchemaOperation::MoveModelBetweenApps { model, from_app, to_app }
-                    if model == "user_settings" && from_app == "billing" && to_app == "users"
+             op,
+             SchemaOperation::MoveModelBetweenApps { model, from_app, to_app }
+              if model == "user_settings" && from_app == "billing" && to_app == "users"
             )),
             "destination bucket must emit MoveModelBetweenApps"
         );
@@ -4280,9 +4280,9 @@ mod tests {
 
         assert!(
             delta.operations.iter().any(|op| matches!(
-                op,
-                SchemaOperation::RenameColumn { from, to, .. }
-                    if from == "old_id" && to == "new_id"
+             op,
+             SchemaOperation::RenameColumn { from, to,.. }
+              if from == "old_id" && to == "new_id"
             )),
             "RenameColumn must be emitted before the PK comparison"
         );
@@ -4296,7 +4296,7 @@ mod tests {
                 }
             )),
             "PK rename + kind flip must classify as PkTypeFlip, not Unsupported. \
-             Operations were: {:?}",
+    Operations were: {:?}",
             delta.operations
         );
         assert!(
@@ -4893,15 +4893,15 @@ mod tests {
     /// proving the depth-65 contract holds when the differ owns op
     /// promotion.
     /// Test setup:
-    /// * `before`: 70-level FK chain (P → T1 → ... → T70) with
-    ///   P's PK kind set to `HeerId`.
+    /// * `before`: 70-level FK chain (P → T1 →... → T70) with
+    /// P's PK kind set to `HeerId`.
     /// * `after`: SAME 70-level chain with P's PK kind flipped
-    ///   to `HeerIdRecencyBiased`. The differ emits one
-    ///   `PkTypeFlip` op for `p` and the closure walks the
-    ///   chain.
+    /// to `HeerIdRecencyBiased`. The differ emits one
+    /// `PkTypeFlip` op for `p` and the closure walks the
+    /// chain.
     /// * Assert `diff_bucket_maps` returns
-    ///   `Err(DiffError::PkFlipCascadeDepthExceeded { ... })`
-    ///   with the chain populated.
+    /// `Err(DiffError::PkFlipCascadeDepthExceeded {... })`
+    /// with the chain populated.
     #[test]
     fn diff_bucket_maps_emits_pk_flip_cascade_depth_exceeded_on_deep_graph() {
         use crate::migrate::projection::BucketKey;
@@ -5057,9 +5057,9 @@ mod tests {
         let changes = alter_column_changes_for(&delta, "slug");
         assert!(
             changes.iter().any(|c| matches!(
-                c,
-                ColumnChange::ChangeType { from, to, .. }
-                    if from == "TEXT" && to == "VARCHAR(100)"
+             c,
+             ColumnChange::ChangeType { from, to,.. }
+              if from == "TEXT" && to == "VARCHAR(100)"
             )),
             "TEXT → VARCHAR(100) must emit ColumnChange::ChangeType; got: {changes:?}"
         );
@@ -5085,9 +5085,9 @@ mod tests {
         let changes = alter_column_changes_for(&delta, "slug");
         assert!(
             changes.iter().any(|c| matches!(
-                c,
-                ColumnChange::ChangeType { from, to, .. }
-                    if from == "VARCHAR(100)" && to == "VARCHAR(200)"
+             c,
+             ColumnChange::ChangeType { from, to,.. }
+              if from == "VARCHAR(100)" && to == "VARCHAR(200)"
             )),
             "VARCHAR(100) → VARCHAR(200) must emit ColumnChange::ChangeType; got: {changes:?}"
         );
@@ -5205,9 +5205,9 @@ mod tests {
         );
         assert!(
             matches!(
-                &changes[0],
-                ColumnChange::CodecChange { from_codec: Some(f), to_codec: Some(t) }
-                    if f == "aes256_gcm_v1" && t == "aes256_gcm_v2"
+             &changes[0],
+             ColumnChange::CodecChange { from_codec: Some(f), to_codec: Some(t) }
+              if f == "aes256_gcm_v1" && t == "aes256_gcm_v2"
             ),
             "expected a CodecChange(v1 -> v2); got: {:?}",
             changes[0]
@@ -5232,9 +5232,9 @@ mod tests {
         let changes = alter_column_changes_for(&delta, "token");
         assert!(
             changes.iter().any(|c| matches!(
-                c,
-                ColumnChange::CodecChange { from_codec: None, to_codec: Some(t) }
-                    if t == "aes256_gcm_v1"
+             c,
+             ColumnChange::CodecChange { from_codec: None, to_codec: Some(t) }
+              if t == "aes256_gcm_v1"
             )),
             "plaintext->codec must emit CodecChange(None -> v1); got: {changes:?}"
         );
@@ -5243,7 +5243,7 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, ColumnChange::ChangeType { .. })),
             "ChangeType must be suppressed when the type change is codec-driven \
-             (no ::BYTEA cast); got: {changes:?}"
+    (no ::BYTEA cast); got: {changes:?}"
         );
     }
 
@@ -5256,9 +5256,9 @@ mod tests {
         let changes = alter_column_changes_for(&delta, "token");
         assert!(
             changes.iter().any(|c| matches!(
-                c,
-                ColumnChange::CodecChange { from_codec: Some(f), to_codec: None }
-                    if f == "aes256_gcm_v1"
+             c,
+             ColumnChange::CodecChange { from_codec: Some(f), to_codec: None }
+              if f == "aes256_gcm_v1"
             )),
             "codec->plaintext must emit CodecChange(v1 -> None); got: {changes:?}"
         );

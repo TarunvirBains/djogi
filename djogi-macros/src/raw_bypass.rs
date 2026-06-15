@@ -49,9 +49,9 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
                 return Err(syn::Error::new_spanned(
                     &module,
                     "`#[djogi::deliberately_bypass_convention_with_raw_sql]` cannot decorate a \
-                     file-loaded module declaration (`mod foo;`). Either inline the module body \
-                     (`mod foo { ... }`) and decorate that, or attach the attribute to specific \
-                     `fn` or `impl` items inside the module's source file.",
+      file-loaded module declaration (`mod foo;`). Either inline the module body \
+      (`mod foo {... }`) and decorate that, or attach the attribute to specific \
+      `fn` or `impl` items inside the module's source file.",
                 ));
             };
 
@@ -62,7 +62,7 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
         other => Err(syn::Error::new_spanned(
             other,
             "`#[djogi::deliberately_bypass_convention_with_raw_sql]` may only decorate `fn`, \
-             `impl`, or `mod` (with inline body) items.",
+    `impl`, or `mod` (with inline body) items.",
         )),
     }
 }

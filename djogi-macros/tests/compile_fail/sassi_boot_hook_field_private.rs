@@ -32,7 +32,7 @@
 // `SassiBootHook(...)` / `hook.0` lines move, the snapshot drifts and
 // the lihaaf gate fails with `SNAPSHOT_DIFF`. Regenerate with
 // `cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
-//     --filter phase8_5_c2_125 --bless -j 4`.
+//  --filter phase8_5_c2_125 --bless -j 4`.
 //
 // Spec anchor: GH #125 "v0.1.0 doc surface: narrow SassiBootHook public field".
 
@@ -41,19 +41,19 @@ use djogi::SassiBootHook;
 fn registration_fn(_sassi: &mut djogi::cache::Sassi) {}
 
 fn read_inner(hook: &SassiBootHook) -> fn(&mut djogi::cache::Sassi) {
-    // Field `0` is `pub(crate)` — adopter crates cannot read it.
-    hook.0
+ // Field `0` is `pub(crate)` — adopter crates cannot read it.
+ hook.0
 }
 
 fn build_hook() -> SassiBootHook {
-    // Tuple-struct constructor is gated by the field privacy — adopter
-    // crates cannot call `SassiBootHook(fn_ptr)` directly. Macro-emitted
-    // code routes through `SassiBootHook::__djogi_from_model_macro(fn_ptr)`
-    // instead.
-    SassiBootHook(registration_fn)
+ // Tuple-struct constructor is gated by the field privacy — adopter
+ // crates cannot call `SassiBootHook(fn_ptr)` directly. Macro-emitted
+ // code routes through `SassiBootHook::__djogi_from_model_macro(fn_ptr)`
+ // instead.
+ SassiBootHook(registration_fn)
 }
 
 fn main() {
-    let hook = build_hook();
-    let _f = read_inner(&hook);
+ let hook = build_hook();
+ let _f = read_inner(&hook);
 }

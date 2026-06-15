@@ -5,8 +5,8 @@
 //! ```sql
 //! UPDATE posts SET title = $1
 //! RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)
-//!   __djogi_old.id AS "o0", ...,
-//!   __djogi_new.id AS "n0", ...
+//! __djogi_old.id AS "o0",...,
+//! __djogi_new.id AS "n0",...
 //! ```
 //! `ReturningPair<T>` carries both snapshots as fully-typed model instances.
 //! Djogi emits the projection using its `__djogi_` reserved namespace and

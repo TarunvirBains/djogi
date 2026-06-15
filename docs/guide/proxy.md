@@ -1,6 +1,6 @@
 # Proxy Models
 
-> **Phase**: 8 Cluster 8β — Proxy + Computed Properties
+> **Phase**: 8 β — Proxy + Computed Properties
 > **Status**: v0.1.0
 > **Spec anchor**: `docs/spec/implementation-plan.md` §628
 
@@ -16,9 +16,9 @@ This guide covers:
 - When to reach for a proxy versus a regular model with `.filter(...)`.
 - The `#[model(proxy_for, default_filter, default_order)]` attribute set.
 - How proxy querysets compose with adopter-side `.filter(...)` /
-  `.order_by(...)` calls.
+ `.order_by(...)` calls.
 - The migration-differ schema-passthrough behaviour (proxies do not emit
-  DDL).
+ DDL).
 - Constraints adopters must respect.
 
 ## When to use a proxy model
@@ -26,17 +26,17 @@ This guide covers:
 Reach for a proxy when **all four** apply:
 
 1. The behavioural slice has a stable name worth modelling at the type level
-   (`ActiveVehicle`, not `Vehicle::objects().filter(|f| f.active.eq(true))`
-   sprinkled across the codebase).
+ (`ActiveVehicle`, not `Vehicle::objects().filter(|f| f.active.eq(true))`
+ sprinkled across the codebase).
 2. The slice always applies — every query against `ActiveVehicle` should
-   include the `active = TRUE` filter; forgetting the filter would be a
-   correctness bug, not a feature.
+ include the `active = TRUE` filter; forgetting the filter would be a
+ correctness bug, not a feature.
 3. The slice is invariant in scope — the filter does not depend on the
-   adopter, request context, or runtime state. Use a regular `.filter(...)`
-   call when the predicate carries an `Arc<AuthContext>` or similar.
+ adopter, request context, or runtime state. Use a regular `.filter(...)`
+ call when the predicate carries an `Arc<AuthContext>` or similar.
 4. You want per-type lifecycle hooks (`before_create`, `after_save`, etc.)
-   that fire for the slice but not for the parent — for example, `ActiveVehicle`
-   may carry an audit-log hook that `Vehicle` itself does not.
+ that fire for the slice but not for the parent — for example, `ActiveVehicle`
+ may carry an audit-log hook that `Vehicle` itself does not.
 
 If any of those conditions fail, prefer a regular `.filter(...)` call at the
 query site over a proxy declaration.
@@ -51,11 +51,11 @@ use djogi::prelude::*;
 #[model(table = "vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub make: String,
-    pub model: String,
-    pub price: i64,
-    pub active: bool,
-    pub archived: bool,
+ pub make: String,
+ pub model: String,
+ pub price: i64,
+ pub active: bool,
+ pub archived: bool,
 }
 ```
 
@@ -65,30 +65,30 @@ storage; the field shape must match):
 
 ```rust
 #[model(
-    table = "vehicles",
-    proxy_for = Vehicle,
-    default_filter = |f| f.active.eq(true),
-    default_order = [(price, Desc)],
+ table = "vehicles",
+ proxy_for = Vehicle,
+ default_filter = |f| f.active.eq(true),
+ default_order = [(price, Desc)],
 )]
 #[derive(Debug, Clone)]
 pub struct ActiveVehicle {
-    pub make: String,
-    pub model: String,
-    pub price: i64,
-    pub active: bool,
-    pub archived: bool,
+ pub make: String,
+ pub model: String,
+ pub price: i64,
+ pub active: bool,
+ pub archived: bool,
 }
 ```
 
 Two attributes drive proxy behaviour:
 
 - **`default_filter = |f| ...`** — a closure returning a filter
-  predicate over the model's field accessors. AND-composed into every
-  `QuerySet<ProxyModel>` on construction.
+ predicate over the model's field accessors. AND-composed into every
+ `QuerySet<ProxyModel>` on construction.
 - **`default_order = [(field, Asc|Desc), ...]`** — ordering applied to every
-  freshly constructed queryset. Adopter `.order_by(...)` calls **append**,
-  not replace (matching the existing queryset convention; one rule for every
-  queryset shape).
+ freshly constructed queryset. Adopter `.order_by(...)` calls **append**,
+ not replace (matching the existing queryset convention; one rule for every
+ queryset shape).
 
 Both are optional — declaring `proxy_for = Parent` without either is valid
 (useful when you only want per-type hooks).
@@ -99,7 +99,7 @@ The closure body parses through a closed grammar at macro-expand time. The
 v0.1.0 surface accepts:
 
 - Field accessors `f.<column>` (single-segment ident; the binding identifier
-  matches the closure's parameter name).
+ matches the closure's parameter name).
 - Comparison predicates: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`.
 - Null predicates: `is_null`, `is_not_null`.
 - Range predicates: `between(lo, hi)`.
@@ -118,8 +118,8 @@ the rejection path either:
 
 - Use an inline literal where possible.
 - Implement `Model::default_filter_condition` by hand (returns
-  `Option<Condition>` constructed via the typed `Condition::and()` /
-  `Condition::or()` builders).
+ `Option<Condition>` constructed via the typed `Condition::and()` /
+ `Condition::or()` builders).
 
 ## What `default_order` accepts
 
@@ -145,12 +145,12 @@ The proxy default filter is the **prefix** that no adopter call can drop:
 
 ```rust
 ActiveVehicle::objects()
-    .filter(|f| f.price.gte(50000))
-    .fetch_all(&mut ctx).await?;
+ .filter(|f| f.price.gte(50000))
+ .fetch_all(&mut ctx).await?;
 
 // Emits SQL roughly:
-//   SELECT ... FROM vehicles WHERE ((active = TRUE) AND price >= $1)
-//   ORDER BY price DESC
+// SELECT ... FROM vehicles WHERE ((active = TRUE) AND price >= $1)
+// ORDER BY price DESC
 ```
 
 The proxy default ordering is the **prefix** to which adopter `.order_by(...)`
@@ -158,12 +158,12 @@ calls append:
 
 ```rust
 ActiveVehicle::objects()
-    .order_by(|f| f.id.asc())
-    .fetch_all(&mut ctx).await?;
+ .order_by(|f| f.id.asc())
+ .fetch_all(&mut ctx).await?;
 
 // Emits SQL roughly:
-//   SELECT ... FROM vehicles WHERE (active = TRUE)
-//   ORDER BY price DESC, id ASC
+// SELECT ... FROM vehicles WHERE (active = TRUE)
+// ORDER BY price DESC, id ASC
 ```
 
 The append rule keeps one consistent ordering rule across every queryset
@@ -226,8 +226,8 @@ soft-deleted rows should be excluded:
 ```rust
 // Correct: call .not_deleted() on the proxy queryset when needed.
 ActiveVehicle::objects()
-    .not_deleted()
-    .fetch_all(&mut ctx).await?;
+ .not_deleted()
+ .fetch_all(&mut ctx).await?;
 ```
 
 Automatic soft-delete default-filter composition (making `objects()`
@@ -243,13 +243,13 @@ fire alongside in the normal hook sequence.
 
 - The proxy's `table = "..."` MUST match the parent's.
 - The proxy's field set + types SHOULD match the parent's (storage is
-  shared; mismatched types fail decode).
+ shared; mismatched types fail decode).
 - `default_filter` accepts only inline-literal RHS (bool / integer / float /
-  string / `null`); runtime-bound RHS requires hand-implementing
-  `Model::default_filter_condition`.
+ string / `null`); runtime-bound RHS requires hand-implementing
+ `Model::default_filter_condition`.
 - `default_order` requires a non-empty array if present.
 - Generic proxies (`#[model(proxy_for = Vehicle<T>)]`) are not yet
-  supported — concrete-type proxies only in v0.1.0.
+ supported — concrete-type proxies only in v0.1.0.
 
 ## Related documents
 

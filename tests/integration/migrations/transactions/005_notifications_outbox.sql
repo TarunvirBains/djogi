@@ -7,9 +7,9 @@
 -- for later development); this file stands in until then.
 
 CREATE TABLE IF NOT EXISTS notifications_outbox (
-    id         BIGINT      PRIMARY KEY DEFAULT generate_id(),
-    row_id     BIGINT      NOT NULL,
-    action     TEXT        NOT NULL,
-    payload    JSONB       NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  id     BIGINT   PRIMARY KEY DEFAULT generate_id(),
+  row_id   BIGINT   NOT NULL,
+  action   TEXT    NOT NULL,
+  payload  JSONB    NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

@@ -1,6 +1,6 @@
 # Computed Properties
 
-> **Phase**: 8 Cluster 8β — Proxy + Computed Properties
+> **Phase**: 8 β — Proxy + Computed Properties
 > **Status**: v0.1.0 (SQL-projectable half + Rust-trait registration)
 > **Spec anchor**: `docs/spec/implementation-plan.md` §637–650
 
@@ -9,14 +9,14 @@ other columns at query time, not stored as its own column. Computed
 properties come in two flavours:
 
 - **SQL-projectable** — defined via `#[computed(sql = "...")]` on a struct
-  field. Used in `.filter_expr()` through the `{Model}Computed` ZST in
-  v0.1.0. The expression evaluates server-side; no storage column is
-  allocated. (`.annotate()` and `.order_by()` support for bare `Expr<T>`
-  is deferred — see the limitations note below.)
+ field. Used in `.filter_expr()` through the `{Model}Computed` ZST in
+ v0.1.0. The expression evaluates server-side; no storage column is
+ allocated. (`.annotate()` and `.order_by()` support for bare `Expr<T>`
+ is deferred — see the limitations note below.)
 - **Rust-trait** — defined by implementing a Rust trait via
-  `#[djogi::trait_impl] impl Trait for Model { ... }`. Used for
-  cross-cutting predicates that depend on Rust logic rather than SQL
-  expressions.
+ `#[djogi::trait_impl] impl Trait for Model {... }`. Used for
+ cross-cutting predicates that depend on Rust logic rather than SQL
+ expressions.
 
 This guide covers both, with a section at the end on how to choose between
 them.
@@ -33,26 +33,26 @@ use djogi::prelude::*;
 #[model(table = "vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub base_price: f64,
-    pub tax_rate: f64,
+ pub base_price: f64,
+ pub tax_rate: f64,
 
-    #[computed(sql = "base_price * (1.0 + tax_rate)")]
-    pub total_price: f64,
+ #[computed(sql = "base_price * (1.0 + tax_rate)")]
+ pub total_price: f64,
 }
 ```
 
 The macro:
 
 1. Removes the computed field from the struct entirely — no `total_price`
-   column on the Rust struct, no slot in `Vehicle::COLUMN_LIST`, no entry
-   in the migration differ's column set, no INSERT/UPDATE binding. The
-   field name lives on only inside the macro inputs and the SQL-side ZST
-   accessor described below.
+ column on the Rust struct, no slot in `Vehicle::COLUMN_LIST`, no entry
+ in the migration differ's column set, no INSERT/UPDATE binding. The
+ field name lives on only inside the macro inputs and the SQL-side ZST
+ accessor described below.
 2. Emits a `{Model}Computed` ZST with a typed accessor returning
-   `Expr<f64>`: adopters call `Vehicle::computed().total_price()` to thread
-   the computed expression through the typed query API.
+ `Expr<f64>`: adopters call `Vehicle::computed().total_price()` to thread
+ the computed expression through the typed query API.
 3. Records the field in `ModelDescriptor.computed_fields` for `djogi docs`
-   to render alongside regular columns.
+ to render alongside regular columns.
 
 ### Using in queries
 
@@ -67,8 +67,8 @@ the computed accessor with a literal:
 ```rust
 // Filter by a computed expression:
 Vehicle::objects()
-    .filter_expr(|_| Vehicle::computed().total_price().gte(Expr::literal(100.0_f64)))
-    .fetch_all(&mut ctx).await?;
+.filter_expr(|_| Vehicle::computed().total_price().gte(Expr::literal(100.0_f64)))
+.fetch_all(&mut ctx).await?;
 ```
 
 The emitted SQL splices the user-authored fragment in outer parens at every
@@ -88,7 +88,7 @@ tuple. Neither surface accepts a bare `Expr<T>` today — there is no
 to sort or project by a computed expression in v0.1.0 use a justified
 raw-SQL bypass (`DjogiContext::raw_query` under
 `#[djogi::deliberately_bypass_convention_with_raw_sql]` plus an adjacent
-`// JUSTIFICATION ...` comment) with the SQL fragment inlined.
+`// JUSTIFICATION...` comment) with the SQL fragment inlined.
 
 A future cluster (T6's `Q<T>` algebra refactor in 8γ, or the
 follow-up surface task tracked alongside the `{Model}Computed` ZST)
@@ -112,9 +112,9 @@ any name that suits the call site:
 
 ```rust
 impl Vehicle {
-    pub fn total_price(&self) -> f64 {
-        self.base_price * (1.0 + self.tax_rate)
-    }
+ pub fn total_price(&self) -> f64 {
+ self.base_price * (1.0 + self.tax_rate)
+ }
 }
 ```
 
@@ -145,7 +145,7 @@ Adopters who need stored computed columns in v0.1.0 can:
 
 - Ship a non-stored computed for now; revisit in a future release.
 - Hand-roll a regular column + a `BEFORE INSERT/UPDATE` trigger via raw SQL
-  in a migration. The framework does not auto-generate the trigger.
+ in a migration. The framework does not auto-generate the trigger.
 
 ## Rust-trait registration
 
@@ -157,37 +157,37 @@ trait and register implementing models via `#[djogi::trait_impl]`:
 use djogi::prelude::*;
 
 trait Searchable {
-    fn searchable_columns(&self) -> &'static [&'static str];
+ fn searchable_columns(&self) -> &'static [&'static str];
 }
 
 #[model(table = "vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub title: String,
-    pub description: String,
+ pub title: String,
+ pub description: String,
 }
 
 #[djogi::trait_impl]
 impl Searchable for Vehicle {
-    fn searchable_columns(&self) -> &'static [&'static str] {
-        &["title", "description"]
-    }
+ fn searchable_columns(&self) -> &'static [&'static str] {
+ &["title", "description"]
+ }
 }
 ```
 
 The macro emits the impl block verbatim plus an
-`inventory::submit!(TraitRegistration { ... })` block. Cross-cutting
+`inventory::submit!(TraitRegistration {... })` block. Cross-cutting
 consumers walk the registry via `djogi::trait_registry::iter_for_trait::<dyn
 Searchable>()` to enumerate every model that implements the trait, without
 hard-coding model names in the consumer's path.
 
 ### Constraints
 
-- Trait impls only — inherent `impl Type { ... }` rejected.
+- Trait impls only — inherent `impl Type {... }` rejected.
 - Concrete impls only — `impl<T> Trait for Vec<T>` rejected (generic impls
-  are deferred to a future phase).
+ are deferred to a future phase).
 - The self-type must be a named type (`Vehicle`, `crate::module::Vehicle`),
-  not a tuple, reference, or function-pointer type.
+ not a tuple, reference, or function-pointer type.
 
 ### Sassi integration
 
@@ -240,7 +240,7 @@ pub double_price: f64,
 Both forms produce a span-precise compile error:
 
 ```
-`expose = ...` is not accepted inside `#[computed(...)]` — visage
+`expose =...` is not accepted inside `#[computed(...)]` — visage
 exposure is declared as a struct-level `#[derived(name, ty, scopes,
 sql, rust)]` attribute instead. See docs/spec/visage-derived-fields.md
 ```
@@ -265,16 +265,16 @@ the same model:
 #[derive(Model, Debug, Clone)]
 #[model(table = "consignments")]
 #[derived(
-    name = facility_site,
-    ty = Site,
-    scopes = [public],
-    sql = "CASE WHEN direction = 'inbound' THEN inbound_site ELSE outbound_site END",
-    rust = "match model.direction { Direction::Inbound => model.inbound_site.clone(), _ => model.outbound_site.clone() }",
+ name = facility_site,
+ ty = Site,
+ scopes = [public],
+ sql = "CASE WHEN direction = 'inbound' THEN inbound_site ELSE outbound_site END",
+ rust = "match model.direction { Direction::Inbound => model.inbound_site.clone(), _ => model.outbound_site.clone() }",
 )]
 pub struct Consignment {
-    pub inbound_site: Site,
-    pub outbound_site: Site,
-    pub direction: Direction,
+ pub inbound_site: Site,
+ pub outbound_site: Site,
+ pub direction: Direction,
 }
 ```
 
@@ -285,22 +285,22 @@ declare the `#[computed(sql = "...")]` field separately:
 
 ```rust
 #[derived(
-    name = total_price,
-    ty = f64,
-    scopes = [public],
-    sql = "base_price * (1.0 + tax_rate)",
-    rust = "model.base_price * (1.0 + model.tax_rate)",
+ name = total_price,
+ ty = f64,
+ scopes = [public],
+ sql = "base_price * (1.0 + tax_rate)",
+ rust = "model.base_price * (1.0 + model.tax_rate)",
 )]
 #[derive(Model, Debug, Clone)]
 #[model(table = "vehicles")]
 pub struct Vehicle {
-    pub base_price: f64,
-    pub tax_rate: f64,
+ pub base_price: f64,
+ pub tax_rate: f64,
 
-    // Model-side: used in .filter_expr() via
-    // Vehicle::computed().total_price() returning Expr<f64>.
-    #[computed(sql = "base_price * (1.0 + tax_rate)")]
-    pub total_price: f64,
+ // Model-side: used in.filter_expr() via
+ // Vehicle::computed().total_price() returning Expr<f64>.
+ #[computed(sql = "base_price * (1.0 + tax_rate)")]
+ pub total_price: f64,
 }
 ```
 

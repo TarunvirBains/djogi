@@ -10,13 +10,13 @@ use djogi::prelude::*;
 #[model(table = "users_t7_non_exposed_field")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(expose(public))]
-    pub display_name: String,
-    #[field(expose(self_view))]
-    pub email: String,
+ #[field(expose(public))]
+ pub display_name: String,
+ #[field(expose(self_view))]
+ pub email: String,
 }
 
 fn main() {
-    // UserPublic does NOT expose email — accessor is not generated.
-    let _bad = UserPublicFields::email();
+ // UserPublic does NOT expose email — accessor is not generated.
+ let _bad = UserPublicFields::email();
 }

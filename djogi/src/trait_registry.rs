@@ -8,7 +8,7 @@
 //! adopter to enumerate the implementations by hand.
 //! # Why
 //! Adopters writing `#[djogi::trait_impl] impl Searchable for Vehicle
-//! { ... }` get Vehicle visible to every cross-cutting query against
+//! {... }` get Vehicle visible to every cross-cutting query against
 //! `dyn Searchable` without naming Vehicle in the consumer's path.
 //! Mirrors the established `inventory`-based registry pattern from
 //! `djogi::apps::AppRegistry` — compile-time submission, one-shot
@@ -52,19 +52,19 @@ pub type ErasedArc = std::sync::Arc<dyn std::any::Any + Send + Sync>;
 pub type CasterFn = fn(&ErasedArc) -> Option<ErasedArc>;
 
 /// One trait-impl registration entry. Emitted via
-/// `inventory::submit!(TraitRegistration { ... })` by the
+/// `inventory::submit!(TraitRegistration {... })` by the
 /// `#[djogi::trait_impl]` attribute macro.
 /// # Fields
 /// - `model_type_id` — the `TypeId` of the implementing model
-///   (`Vehicle` for `impl Searchable for Vehicle`). Returned by a
-///   `fn() -> TypeId` so the registration is `const`-constructible
-///   at the macro emission site without touching `TypeId::of` (which
-///   is `const`-only on nightly).
+/// (`Vehicle` for `impl Searchable for Vehicle`). Returned by a
+/// `fn() -> TypeId` so the registration is `const`-constructible
+/// at the macro emission site without touching `TypeId::of` (which
+/// is `const`-only on nightly).
 /// - `trait_type_id` — the `TypeId` of the registered trait
-///   (`dyn Searchable`). Same `fn() -> TypeId` discipline.
+/// (`dyn Searchable`). Same `fn() -> TypeId` discipline.
 /// - `model_type_name` / `trait_type_name` — human-readable names
-///   for diagnostic / introspection paths. `&'static str` so the
-///   registration stays `const`-submittable.
+/// for diagnostic / introspection paths. `&'static str` so the
+/// registration stays `const`-submittable.
 /// - `caster` — the type-erased downcast helper emitted by the macro.
 /// # Layout stability
 /// Same convention as `ModelDescriptor` and the other inventory-

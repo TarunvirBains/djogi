@@ -14,7 +14,7 @@ use djogi::prelude::*;
 #[model(table = "users; DROP TABLE x; --")]
 #[derive(Debug, Clone)]
 pub struct User {
-    pub display_name: String,
+ pub display_name: String,
 }
 
 fn main() {}

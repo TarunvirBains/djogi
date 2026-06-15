@@ -1,7 +1,7 @@
 // Compile-fail fixture: `impl ModelHooks` with the wrong
 // receiver mutability on `before_create`. The trait declares
 //
-//     fn before_create(&mut self, ctx: &mut DjogiContext) -> impl Future<…>
+//  fn before_create(&mut self, ctx: &mut DjogiContext) -> impl Future<…>
 //
 // The override below uses `&self` instead of `&mut self`. Rust rejects
 // the impl with a method-receiver mismatch error — exactly the
@@ -20,17 +20,17 @@ use djogi::{DjogiContext, DjogiError};
 #[model(table = "phase8_hooks_invalid_sig_widgets", hooks)]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub name: String,
+ pub name: String,
 }
 
 impl ModelHooks for Widget {
-    // Wrong receiver: trait says `&mut self`, override says `&self`.
-    async fn before_create(
-        &self,
-        _ctx: &mut DjogiContext,
-    ) -> Result<(), DjogiError> {
-        Ok(())
-    }
+ // Wrong receiver: trait says `&mut self`, override says `&self`.
+ async fn before_create(
+  &self,
+  _ctx: &mut DjogiContext,
+ ) -> Result<(), DjogiError> {
+  Ok(())
+ }
 }
 
 fn main() {}

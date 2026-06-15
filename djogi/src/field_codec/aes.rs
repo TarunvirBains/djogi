@@ -11,8 +11,8 @@
 //!
 //! ```text
 //! +---------+-----------+--------+------------------+
-//! | version | key_index | nonce  | ciphertext + tag |
-//! | 1 B     | 1 B       | 12 B   | variable length  |
+//! | version | key_index | nonce | ciphertext + tag |
+//! | 1 B  | 1 B  | 12 B | variable length |
 //! +---------+-----------+--------+------------------+
 //! ```
 //!
@@ -21,10 +21,10 @@
 //! ciphertext length is 30 bytes (empty plaintext).
 //!
 //! - **version** (`0x01`): future layouts increment this byte; an unrecognized
-//!   value is rejected with [`CodecError::UnknownVersion`].
+//! value is rejected with [`CodecError::UnknownVersion`].
 //! - **key_index** (`0..=31`): the ring position the ciphertext was encrypted
-//!   under; an out-of-range index is rejected with
-//!   [`CodecError::UnknownKeyIndex`].
+//! under; an out-of-range index is rejected with
+//! [`CodecError::UnknownKeyIndex`].
 //!
 //! ## Key management (key ring)
 //!
@@ -106,9 +106,9 @@ pub(crate) static TEST_CODEC_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex:
 /// # Errors
 /// - [`CodecError::RingEmpty`] when no `DJOGI_FIELD_CODEC_KEY_*` variable is set.
 /// - [`CodecError::MissingKey`] with [`MissingKeyKind::Gap`] when a lower index
-///   is absent while a higher one is present (names the missing index).
+/// is absent while a higher one is present (names the missing index).
 /// - [`CodecError::MissingKey`] with [`MissingKeyKind::Malformed`] when an entry
-///   is not 64 lowercase hex characters / does not decode to 32 bytes.
+/// is not 64 lowercase hex characters / does not decode to 32 bytes.
 #[doc(hidden)]
 pub fn load_ring() -> Result<(), CodecError> {
     // Fast path: already cached from startup or a prior call.

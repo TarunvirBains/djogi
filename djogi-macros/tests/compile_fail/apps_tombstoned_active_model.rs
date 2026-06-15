@@ -4,13 +4,13 @@
 use djogi::prelude::*;
 
 djogi::apps! {
-    #[app(database = "main", tombstone)]
-    pub struct OldBilling;
+ #[app(database = "main", tombstone)]
+ pub struct OldBilling;
 }
 
 #[model(table = "invoices", app = OldBilling)]
 pub struct Invoice {
-    pub amount_cents: i64,
+ pub amount_cents: i64,
 }
 
 fn main() {}

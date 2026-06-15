@@ -2,23 +2,23 @@
 //! Holds parsers and the SQL-lowering pass for the three `#[model(...)]`
 //! keys that opt a model into proxy semantics:
 //! - `proxy_for = ParentType` — bare-identifier path naming the parent
-//!   model (whose table this proxy shares).
-//! - `default_order = [(field, dir), ...]` — list of `(ident, OrderDir)`
-//!   pairs declaring the default ordering applied to every
-//!   `QuerySet<ProxyModel>` on construction.
-//! - `default_filter = |f| ...` — closure expression lowered to a SQL
-//!   fragment and AND-composed into every `QuerySet<ProxyModel>` via the
-//!   `Model::default_filter_condition` override.
-//!   Parsing: `proxy_for`, `default_order`, `default_filter` attribute keys
-//!   parsed from `#[model(...)]`. Cross-attribute validation rejects orphan
-//!   `default_order`/`default_filter` without `proxy_for`.
-//!   SQL lowering: `lower_default_filter_to_sql` walks the closure body via
-//!   recursive descent over `syn::Expr` and lowers recognised patterns
-//!   (eq/neq/null/range/literal and/or chains) to a SQL fragment string.
-//!   Unrecognised patterns surface a span-precise compile error.
-//!   QuerySet wiring: the lowered SQL fragment feeds into
-//!   `Model::default_filter_condition` which `QuerySet::new()` AND-composes
-//!   with any user-supplied filter at queryset construction time.
+//! model (whose table this proxy shares).
+//! - `default_order = [(field, dir),...]` — list of `(ident, OrderDir)`
+//! pairs declaring the default ordering applied to every
+//! `QuerySet<ProxyModel>` on construction.
+//! - `default_filter = |f|...` — closure expression lowered to a SQL
+//! fragment and AND-composed into every `QuerySet<ProxyModel>` via the
+//! `Model::default_filter_condition` override.
+//! Parsing: `proxy_for`, `default_order`, `default_filter` attribute keys
+//! parsed from `#[model(...)]`. Cross-attribute validation rejects orphan
+//! `default_order`/`default_filter` without `proxy_for`.
+//! SQL lowering: `lower_default_filter_to_sql` walks the closure body via
+//! recursive descent over `syn::Expr` and lowers recognised patterns
+//! (eq/neq/null/range/literal and/or chains) to a SQL fragment string.
+//! Unrecognised patterns surface a span-precise compile error.
+//! QuerySet wiring: the lowered SQL fragment feeds into
+//! `Model::default_filter_condition` which `QuerySet::new()` AND-composes
+//! with any user-supplied filter at queryset construction time.
 //! # Identifier validation
 //! Per `feedback_no_regex_in_djogi` — no regex engine, no regex notation
 //! in this module's text. The `proxy_for` identifier validator uses the
@@ -61,14 +61,14 @@ pub enum OrderDir {
 /// 1. Non-empty.
 /// 2. ≤ 63 bytes (Postgres `NAMEDATALEN - 1`).
 /// 3. First byte is an ASCII letter (uppercase or lowercase) or
-///    underscore.
+/// underscore.
 /// 4. Every remaining byte is ASCII alphanumeric or underscore.
-///    Spelled out in plain English per `feedback_no_regex_in_djogi`. The
-///    byte-level implementation mirrors `check_ident` in
-///    `djogi-macros/src/ident.rs` so the safety contract stays in sync
-///    with the column / table validators.
-///    Returns `Err` with a span-precise diagnostic on the offending span
-///    when the identifier shape is wrong.
+/// Spelled out in plain English per `feedback_no_regex_in_djogi`. The
+/// byte-level implementation mirrors `check_ident` in
+/// `djogi-macros/src/ident.rs` so the safety contract stays in sync
+/// with the column / table validators.
+/// Returns `Err` with a span-precise diagnostic on the offending span
+/// when the identifier shape is wrong.
 pub fn validate_proxy_for_ident(ident: &syn::Ident) -> syn::Result<()> {
     let s = ident.to_string();
     let bytes = s.as_bytes();
@@ -85,7 +85,7 @@ pub fn validate_proxy_for_ident(ident: &syn::Ident) -> syn::Result<()> {
             ident,
             format!(
                 "`proxy_for = …` parent type name {s:?} exceeds 63 bytes \
-                 (Postgres unquoted-identifier cap)",
+     (Postgres unquoted-identifier cap)",
             ),
         ));
     }
@@ -96,7 +96,7 @@ pub fn validate_proxy_for_ident(ident: &syn::Ident) -> syn::Result<()> {
             ident,
             format!(
                 "`proxy_for = …` parent type name {s:?} must start with an \
-                 ASCII letter or underscore",
+     ASCII letter or underscore",
             ),
         ));
     }
@@ -110,7 +110,7 @@ pub fn validate_proxy_for_ident(ident: &syn::Ident) -> syn::Result<()> {
             ident,
             format!(
                 "`proxy_for = …` parent type name {s:?} must contain only ASCII \
-                 alphanumerics or underscores after the first byte",
+     alphanumerics or underscores after the first byte",
             ),
         ));
     }
@@ -118,7 +118,7 @@ pub fn validate_proxy_for_ident(ident: &syn::Ident) -> syn::Result<()> {
     Ok(())
 }
 
-/// Parse a `default_order = [(field, Asc), (field2, Desc), ...]` list.
+/// Parse a `default_order = [(field, Asc), (field2, Desc),...]` list.
 /// Each list entry is a tuple expression `(ident, dir_ident)` where
 /// `dir_ident` is the bare identifier `Asc` or `Desc`. The list itself
 /// must be non-empty (an empty `default_order = []` would silently emit
@@ -129,7 +129,7 @@ pub fn validate_proxy_for_ident(ident: &syn::Ident) -> syn::Result<()> {
 /// descriptor emitter because the user-field list is
 /// only available at expansion time, not in this attribute-only parser.
 pub fn parse_default_order_list(expr: &syn::Expr) -> syn::Result<Vec<(syn::Ident, OrderDir)>> {
-    // The expected shape is `[(ident, dir_ident), ...]` — a Rust array
+    // The expected shape is `[(ident, dir_ident),...]` — a Rust array
     // expression containing tuple expressions. Anything else is a
     // parse error pointing at the offending span.
     let array = match expr {
@@ -138,8 +138,8 @@ pub fn parse_default_order_list(expr: &syn::Expr) -> syn::Result<Vec<(syn::Ident
             return Err(syn::Error::new_spanned(
                 expr,
                 "`default_order = …` value must be an array of \
-                 `(field, Asc|Desc)` tuples — e.g. \
-                 `default_order = [(name, Asc), (created_at, Desc)]`",
+     `(field, Asc|Desc)` tuples — e.g. \
+     `default_order = [(name, Asc), (created_at, Desc)]`",
             ));
         }
     };
@@ -148,7 +148,7 @@ pub fn parse_default_order_list(expr: &syn::Expr) -> syn::Result<Vec<(syn::Ident
         return Err(syn::Error::new_spanned(
             expr,
             "`default_order = []` is empty — either provide at least one \
-             `(field, Asc|Desc)` tuple or omit the attribute entirely",
+    `(field, Asc|Desc)` tuple or omit the attribute entirely",
         ));
     }
 
@@ -160,7 +160,7 @@ pub fn parse_default_order_list(expr: &syn::Expr) -> syn::Result<Vec<(syn::Ident
                 return Err(syn::Error::new_spanned(
                     elem,
                     "each `default_order` entry must be a `(field, Asc|Desc)` \
-                     tuple",
+      tuple",
                 ));
             }
         };
@@ -169,7 +169,7 @@ pub fn parse_default_order_list(expr: &syn::Expr) -> syn::Result<Vec<(syn::Ident
             return Err(syn::Error::new_spanned(
                 tuple,
                 "each `default_order` tuple must have exactly two elements: \
-                 `(field, Asc|Desc)`",
+     `(field, Asc|Desc)`",
             ));
         }
 
@@ -187,7 +187,7 @@ pub fn parse_default_order_list(expr: &syn::Expr) -> syn::Result<Vec<(syn::Ident
                     &dir_ident,
                     format!(
                         "expected `Asc` or `Desc` as the direction \
-                         identifier; got `{other}`",
+       identifier; got `{other}`",
                     ),
                 ));
             }
@@ -214,7 +214,7 @@ pub fn parse_default_filter_closure(expr: &syn::Expr) -> syn::Result<ExprClosure
                 return Err(syn::Error::new_spanned(
                     c,
                     "`default_filter` closure must take exactly one parameter \
-                     (the `{Model}Fields` accessor binding, conventionally `f`)",
+      (the `{Model}Fields` accessor binding, conventionally `f`)",
                 ));
             }
             Ok(c.clone())
@@ -222,7 +222,7 @@ pub fn parse_default_filter_closure(expr: &syn::Expr) -> syn::Result<ExprClosure
         _ => Err(syn::Error::new_spanned(
             expr,
             "`default_filter = …` value must be a closure expression — e.g. \
-             `default_filter = |f| f.active.eq(true)`",
+    `default_filter = |f| f.active.eq(true)`",
         )),
     }
 }
@@ -239,7 +239,7 @@ fn expect_ident_expr(expr: &syn::Expr, role: &str) -> syn::Result<syn::Ident> {
                 p,
                 format!(
                     "expected a single-segment identifier for {role}; \
-                         got a multi-segment path",
+       got a multi-segment path",
                 ),
             )
         }),
@@ -409,7 +409,7 @@ mod tests {
 // ```text
 // pred := <field>.<op>(<lit>)
 // | <field>.<op>(<lit>, <lit>) // for `between`
-// | <field>.<unary_op>()                     // for `is_null`/`is_not_null`
+// | <field>.<unary_op>()      // for `is_null`/`is_not_null`
 // | <pred>.and_with(<pred>) // explicit AND
 // | <pred>.or_with(<pred>) // explicit OR
 // | (<pred>)
@@ -448,7 +448,7 @@ mod tests {
 /// - The accessor binding is mis-spelled or shadowed.
 /// - An unrecognised method name appears in the predicate position.
 /// - A literal value type is outside the supported set
-///   (`bool`/integer/float/string/`null`).
+/// (`bool`/integer/float/string/`null`).
 pub fn lower_default_filter_to_sql(closure: &ExprClosure) -> syn::Result<String> {
     // The single input pattern must be a simple ident — the binding the
     // walker uses to recognise field-accessor expressions.
@@ -456,7 +456,7 @@ pub fn lower_default_filter_to_sql(closure: &ExprClosure) -> syn::Result<String>
         return Err(syn::Error::new_spanned(
             closure,
             "`default_filter` closure must take exactly one parameter \
-             (the `{Model}Fields` accessor binding, conventionally `f`)",
+    (the `{Model}Fields` accessor binding, conventionally `f`)",
         ));
     }
     let f_binding = match &closure.inputs[0] {
@@ -465,7 +465,7 @@ pub fn lower_default_filter_to_sql(closure: &ExprClosure) -> syn::Result<String>
             return Err(syn::Error::new_spanned(
                 other,
                 "`default_filter` closure parameter must be a simple \
-                 identifier — e.g. `|f| f.active.eq(true)`",
+     identifier — e.g. `|f| f.active.eq(true)`",
             ));
         }
     };
@@ -486,9 +486,9 @@ fn lower_pred_expr(expr: &Expr, f_binding: &syn::Ident) -> syn::Result<String> {
         other => Err(syn::Error::new_spanned(
             other,
             "unsupported expression shape in `default_filter` closure; \
-             expected a chain of field-accessor predicates combined with \
-             `.and_with(...)` / `.or_with(...)` — e.g. \
-             `|f| f.active.eq(true).and_with(f.price.gte(100))`",
+    expected a chain of field-accessor predicates combined with \
+    `.and_with(...)` / `.or_with(...)` — e.g. \
+    `|f| f.active.eq(true).and_with(f.price.gte(100))`",
         )),
     }
 }
@@ -508,7 +508,7 @@ fn lower_method_call(mc: &syn::ExprMethodCall, f_binding: &syn::Ident) -> syn::R
                 mc,
                 format!(
                     "`{method}` takes exactly one predicate argument \
-                     in `default_filter` closures",
+      in `default_filter` closures",
                 ),
             ));
         }
@@ -564,7 +564,7 @@ fn lower_method_call(mc: &syn::ExprMethodCall, f_binding: &syn::Ident) -> syn::R
                 return Err(syn::Error::new_spanned(
                     mc,
                     "`between` takes exactly two literal arguments \
-                     (lower and upper bound)",
+      (lower and upper bound)",
                 ));
             }
             let lo = lower_literal_arg(&mc.args[0])?;
@@ -575,8 +575,8 @@ fn lower_method_call(mc: &syn::ExprMethodCall, f_binding: &syn::Ident) -> syn::R
             &mc.method,
             format!(
                 "unsupported predicate `{other}` in `default_filter` closure; \
-                 supported: eq, neq, gt, gte, lt, lte, is_null, is_not_null, \
-                 between, and_with, or_with",
+     supported: eq, neq, gt, gte, lt, lte, is_null, is_not_null, \
+     between, and_with, or_with",
             ),
         )),
     }
@@ -593,15 +593,15 @@ fn lower_field_accessor(expr: &Expr, f_binding: &syn::Ident) -> syn::Result<Stri
                     syn::Error::new_spanned(
                         &fld.base,
                         "`default_filter` field accessor base must be the \
-                         single-ident closure binding (conventionally `f`)",
+       single-ident closure binding (conventionally `f`)",
                     )
                 })?,
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
                         "`default_filter` field accessor base must be the \
-                         closure's input ident (conventionally `f`); \
-                         multi-segment paths are not supported",
+       closure's input ident (conventionally `f`); \
+       multi-segment paths are not supported",
                     ));
                 }
             };
@@ -610,7 +610,7 @@ fn lower_field_accessor(expr: &Expr, f_binding: &syn::Ident) -> syn::Result<Stri
                     &fld.base,
                     format!(
                         "`default_filter` field accessor must use the \
-                         closure's input binding `{f_binding}`; got `{base}`",
+       closure's input binding `{f_binding}`; got `{base}`",
                     ),
                 ));
             }
@@ -620,7 +620,7 @@ fn lower_field_accessor(expr: &Expr, f_binding: &syn::Ident) -> syn::Result<Stri
                     return Err(syn::Error::new_spanned(
                         u,
                         "`default_filter` field accessor must use a named \
-                         field — tuple-index access is not supported",
+       field — tuple-index access is not supported",
                     ));
                 }
             };
@@ -637,7 +637,7 @@ fn lower_field_accessor(expr: &Expr, f_binding: &syn::Ident) -> syn::Result<Stri
                     &col_ident,
                     format!(
                         "`default_filter` column name {col:?} length \
-                         outside the 1..=63-byte unquoted-identifier range",
+       outside the 1..=63-byte unquoted-identifier range",
                     ),
                 ));
             }
@@ -646,7 +646,7 @@ fn lower_field_accessor(expr: &Expr, f_binding: &syn::Ident) -> syn::Result<Stri
                     &col_ident,
                     format!(
                         "`default_filter` column name {col:?} must start \
-                         with an ASCII letter or underscore",
+       with an ASCII letter or underscore",
                     ),
                 ));
             }
@@ -659,8 +659,8 @@ fn lower_field_accessor(expr: &Expr, f_binding: &syn::Ident) -> syn::Result<Stri
                     &col_ident,
                     format!(
                         "`default_filter` column name {col:?} must contain \
-                         only ASCII alphanumerics or underscores after the \
-                         first byte",
+       only ASCII alphanumerics or underscores after the \
+       first byte",
                     ),
                 ));
             }
@@ -669,7 +669,7 @@ fn lower_field_accessor(expr: &Expr, f_binding: &syn::Ident) -> syn::Result<Stri
         other => Err(syn::Error::new_spanned(
             other,
             "`default_filter` predicate receiver must be a single \
-             field accessor — e.g. `f.active` or `f.price`",
+    field accessor — e.g. `f.active` or `f.price`",
         )),
     }
 }
@@ -702,7 +702,7 @@ fn lower_literal_arg(expr: &Expr) -> syn::Result<String> {
             syn::Lit::Int(i) => {
                 // Re-emit the raw digits — `LitInt::base10_digits` strips
                 // any suffix (e.g. `100i64` → `"100"`). Negative literals
-                // flow through the `Expr::Unary(Neg, ...)` arm below; here
+                // flow through the `Expr::Unary(Neg,...)` arm below; here
                 // we only see the magnitude.
                 Ok(i.base10_digits().to_string())
             }
@@ -713,7 +713,7 @@ fn lower_literal_arg(expr: &Expr) -> syn::Result<String> {
             other => Err(syn::Error::new_spanned(
                 other,
                 "`default_filter` literal must be one of: bool, integer, \
-                 float, string, or the bare keyword `null`",
+     float, string, or the bare keyword `null`",
             )),
         },
 
@@ -729,9 +729,9 @@ fn lower_literal_arg(expr: &Expr) -> syn::Result<String> {
         other => Err(syn::Error::new_spanned(
             other,
             "`default_filter` argument must be an inline literal \
-             (bool/integer/float/string/`null`); runtime-bound values \
-             are not supported in v0.1.0 — for non-literal RHS, \
-             implement `Model::default_filter_condition` by hand",
+    (bool/integer/float/string/`null`); runtime-bound values \
+    are not supported in v0.1.0 — for non-literal RHS, \
+    implement `Model::default_filter_condition` by hand",
         )),
     }
 }
@@ -749,8 +749,8 @@ fn escape_sql_string(s: &str) -> Result<String, String> {
         if !b.is_ascii() {
             return Err(format!(
                 "non-ASCII byte at position {i} (0x{b:02X}); \
-                 v0.1.0 accepts ASCII-only strings — for non-ASCII \
-                 RHS, implement `Model::default_filter_condition` by hand",
+     v0.1.0 accepts ASCII-only strings — for non-ASCII \
+     RHS, implement `Model::default_filter_condition` by hand",
             ));
         }
     }
@@ -834,7 +834,7 @@ mod sql_lowering_tests {
     #[test]
     fn lowers_and_combinator() {
         let c = parse_closure(quote! {
-            |f| f.active.eq(true).and_with(f.price.gte(100))
+         |f| f.active.eq(true).and_with(f.price.gte(100))
         });
         assert_eq!(
             lower_default_filter_to_sql(&c).unwrap(),
@@ -846,7 +846,7 @@ mod sql_lowering_tests {
     #[test]
     fn lowers_or_combinator() {
         let c = parse_closure(quote! {
-            |f| f.active.eq(true).or_with(f.archived.eq(false))
+         |f| f.active.eq(true).or_with(f.archived.eq(false))
         });
         assert_eq!(
             lower_default_filter_to_sql(&c).unwrap(),

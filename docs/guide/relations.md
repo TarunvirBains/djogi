@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Relations
 
@@ -42,15 +42,15 @@ use djogi::relation::ForeignKey;
 #[model(table = "owners")]
 #[derive(Debug, Clone)]
 pub struct Owner {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "vehicles", no_default)]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub make: String,
-    #[field(on_delete = "cascade")]
-    pub owner_id: ForeignKey<Owner>,
+ pub make: String,
+ #[field(on_delete = "cascade")]
+ pub owner_id: ForeignKey<Owner>,
 }
 ```
 
@@ -79,8 +79,8 @@ access an already-prefetched row without issuing SQL:
 
 ```rust
 match vehicle.owner_id.resolved() {
-    Some(owner) => /* prefetch already hydrated this */,
-    None => /* not loaded — call .fetch(...) or prefetch() upstream */,
+ Some(owner) => /* prefetch already hydrated this */,
+ None => /* not loaded — call.fetch(...) or prefetch() upstream */,
 }
 ```
 
@@ -108,8 +108,8 @@ Field access on `ForeignKey<T>` never issues SQL. The explicit verbs:
 
 | Verb | Query shape | When to use |
 |---|---|---|
-| `prefetch(relation)` | `SELECT * FROM parents WHERE ...; SELECT * FROM children WHERE parent_id IN ($1, ...)` | Avoids row explosion — preferred when parent rows are wide or when one parent has many children |
-| `select_related(relation)` | `SELECT parents.*, children.* FROM parents LEFT JOIN children ON ...` | Single round-trip — preferred for singular FK / O2O where each parent has at most one related row |
+| `prefetch(relation)` | `SELECT * FROM parents WHERE...; SELECT * FROM children WHERE parent_id IN ($1,...)` | Avoids row explosion — preferred when parent rows are wide or when one parent has many children |
+| `select_related(relation)` | `SELECT parents.*, children.* FROM parents LEFT JOIN children ON...` | Single round-trip — preferred for singular FK / O2O where each parent has at most one related row |
 
 Both consume a `{Model}Related` entry emitted by the `#[model]` macro.
 For a `Vehicle` model with a `ForeignKey<Owner>` on `owner_id`, the macro
@@ -121,7 +121,7 @@ accessor name matches the target struct, not the column):
 pub struct VehicleRelated;
 
 impl VehicleRelated {
-    pub fn owner() -> RelationPath { /* ... */ }
+ pub fn owner() -> RelationPath { /*... */ }
 }
 ```
 
@@ -132,11 +132,11 @@ reach for the `_prefetched` terminal when you want the stitched output:
 
 ```rust
 let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
-    .prefetch(VehicleRelated::owner())
-    .fetch_all_prefetched(&mut ctx)
-    .await?;
+.prefetch(VehicleRelated::owner())
+.fetch_all_prefetched(&mut ctx)
+.await?;
 // Query 1: SELECT * FROM vehicles
-// Query 2: SELECT * FROM owners WHERE id IN ($1, $2, ...)
+// Query 2: SELECT * FROM owners WHERE id IN ($1, $2,...)
 // Then row.get(VehicleRelated::owner()) returns Some(&owner) on each row.
 ```
 
@@ -145,9 +145,9 @@ rationale:
 
 ```rust
 let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
-    .select_related(VehicleRelated::owner())
-    .fetch_all_joined(&mut ctx)
-    .await?;
+.select_related(VehicleRelated::owner())
+.fetch_all_joined(&mut ctx)
+.await?;
 // SELECT vehicles.*, owners.* FROM vehicles
 // LEFT JOIN owners ON vehicles.owner_id = owners.id
 ```
@@ -162,7 +162,7 @@ bulk mutation terminals (`delete`, `update(...).execute(...)`, `delete_returning
 and join projection are read-only operations. Use filter / exclude conditions to
 select the rows a mutation should affect.
 
-[relations-roadmap]: ../roadmap/relations.md
+[relations-roadmap]:../roadmap/relations.md
 
 ---
 
@@ -177,14 +177,14 @@ use djogi::relation::OneToOneField;
 #[model(table = "users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    pub email: String,
+ pub email: String,
 }
 
 #[model(table = "profiles", no_default)]
 #[derive(Debug, Clone)]
 pub struct Profile {
-    pub bio: String,
-    pub user_id: OneToOneField<User>,
+ pub bio: String,
+ pub user_id: OneToOneField<User>,
 }
 ```
 
@@ -214,29 +214,29 @@ Effective emission:
 ```rust
 // Effective emission — do not write this by hand
 pub trait OwnerVehiclesReverseRelation {
-    fn vehicles<'ctx>(
-        &'ctx self,
-        ctx: &'ctx mut DjogiContext,
-    ) -> impl std::future::Future<Output = Result<Vec<Vehicle>, DjogiError>>
-    + Send
-    + 'ctx;
+ fn vehicles<'ctx>(
+ &'ctx self,
+ ctx: &'ctx mut DjogiContext,
+ ) -> impl std::future::Future<Output = Result<Vec<Vehicle>, DjogiError>>
+ + Send
+ + 'ctx;
 }
 
 impl OwnerVehiclesReverseRelation for Owner {
-    fn vehicles<'ctx>(
-        &'ctx self,
-        ctx: &'ctx mut DjogiContext,
-    ) -> impl std::future::Future<Output = Result<Vec<Vehicle>, DjogiError>>
-    + Send
-    + 'ctx {
-        let pk = self.pk_value().clone();
-        async move {
-            Vehicle::objects()
-                .filter(move |f| f.owner_id().eq(ForeignKey::new(pk)))
-                .fetch_all(ctx)
-                .await
-        }
-    }
+ fn vehicles<'ctx>(
+ &'ctx self,
+ ctx: &'ctx mut DjogiContext,
+ ) -> impl std::future::Future<Output = Result<Vec<Vehicle>, DjogiError>>
+ + Send
+ + 'ctx {
+ let pk = self.pk_value().clone();
+ async move {
+  Vehicle::objects()
+ .filter(move |f| f.owner_id().eq(ForeignKey::new(pk)))
+ .fetch_all(ctx)
+ .await
+ }
+ }
 }
 ```
 
@@ -272,7 +272,7 @@ trait twice and trip rustc's `E0428` / `E0119` errors:
 
 ```rust
 djogi::reverse_one_to_many!(Owner, vehicles -> Vehicle by owner_id);
-djogi::reverse_one_to_many!(Owner, vehicles -> Truck   by owner_id);
+djogi::reverse_one_to_many!(Owner, vehicles -> Truck by owner_id);
 // error[E0428]: the name `OwnerVehiclesReverseRelation` is defined multiple times
 ```
 
@@ -306,21 +306,21 @@ use djogi::relation::{ForeignKey, ManyToMany};
 #[model(table = "people")]
 #[derive(Debug, Clone)]
 pub struct Person {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "groups")]
 #[derive(Debug, Clone)]
 pub struct Group {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "person_groups", through, no_default)]
 #[derive(Debug, Clone)]
 pub struct PersonGroup {
-    pub person_id: ForeignKey<Person>,
-    pub group_id:  ForeignKey<Group>,
-    pub role:      String,
+ pub person_id: ForeignKey<Person>,
+ pub group_id: ForeignKey<Group>,
+ pub role: String,
 }
 ```
 
@@ -335,19 +335,19 @@ surface junction models distinctly from application tables.
 
 ```rust
 djogi::many_to_many!(
-    Person, Group,
-    through = PersonGroup,
-    this_fk = person_id,
-    that_fk = group_id,
-    relation = "groups"
+ Person, Group,
+ through = PersonGroup,
+ this_fk = person_id,
+ that_fk = group_id,
+ relation = "groups"
 );
 
 djogi::many_to_many!(
-    Group, Person,
-    through = PersonGroup,
-    this_fk = group_id,
-    that_fk = person_id,
-    relation = "members"
+ Group, Person,
+ through = PersonGroup,
+ this_fk = group_id,
+ that_fk = person_id,
+ relation = "members"
 );
 ```
 
@@ -377,20 +377,20 @@ as the reverse-relation accessors.
 // The `relation = "groups"` argument becomes the accessor method name:
 let groups: Vec<Group> = person.groups(&mut ctx).await?;
 // SELECT * FROM person_groups WHERE person_id = $1;
-// SELECT * FROM groups WHERE id IN ($1, $2, ...);
+// SELECT * FROM groups WHERE id IN ($1, $2,...);
 
 // Attach:
 let group = Group::get(&mut ctx, group_id).await?;
 let junction = person.add_related(
-    &mut ctx,
-    &group,
-    PersonGroup {
-        role: "admin".into(),
-        ..Default::default()
-    },
+ &mut ctx,
+ &group,
+ PersonGroup {
+ role: "admin".into(),
+..Default::default()
+ },
 ).await?;
-// INSERT INTO person_groups (person_id, group_id, role, ...)
-// VALUES ($1, $2, $3, ...) RETURNING *;
+// INSERT INTO person_groups (person_id, group_id, role,...)
+// VALUES ($1, $2, $3,...) RETURNING *;
 
 // Detach:
 let removed: u64 = person.remove_related(&mut ctx, &group).await?;
@@ -410,9 +410,9 @@ you need to filter or join on junction-specific data:
 
 ```rust
 let admins: Vec<PersonGroup> = PersonGroup::objects()
-    .filter(|f| f.role().eq("admin".to_string()))
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|f| f.role().eq("admin".to_string()))
+.fetch_all(&mut ctx)
+.await?;
 // SELECT * FROM person_groups WHERE role = $1
 ```
 
@@ -437,13 +437,13 @@ To close that cross-kind gap, Djogi gates the global relation accessor
 registry inside its production projection and per-test sync helpers:
 
 - `djogi::migrate::project_from_inventory` — the entry point used by
-  `djogi migrations compose` and the migration runner — validates the
-  registry before producing any snapshot output. A collision surfaces
-  as `ProjectionError::RelationAccessorCollisions(..)`.
+ `djogi migrations compose` and the migration runner — validates the
+ registry before producing any snapshot output. A collision surfaces
+ as `ProjectionError::RelationAccessorCollisions(..)`.
 - `djogi::testing::sync_models` (and the underlying `build_sync_plans`)
-  — the helper invoked by `#[djogi::djogi_test(sync_models = [...])]`
-  — runs the same gate before composing per-bucket DDL. A collision
-  surfaces as `DjogiError::Db(..)` carrying the registry diagnostic.
+ — the helper invoked by `#[djogi::djogi_test(sync_models = [...])]`
+ — runs the same gate before composing per-bucket DDL. A collision
+ surfaces as `DjogiError::Db(..)` carrying the registry diagnostic.
 
 Typical Djogi migration composition and synced integration-test setup
 therefore catch the collision automatically; no extra wiring is required
@@ -466,11 +466,11 @@ inventories before deciding whether the result is collision-free):
 
 ```rust
 use djogi::relation::registry::{
-    validate_relation_accessor_collisions, ReverseRelationMarker,
+ validate_relation_accessor_collisions, ReverseRelationMarker,
 };
 
 validate_relation_accessor_collisions(
-    inventory::iter::<ReverseRelationMarker>(),
+ inventory::iter::<ReverseRelationMarker>(),
 )?;
 ```
 
@@ -496,9 +496,9 @@ descriptor. Iterate them with:
 
 ```rust
 for desc in inventory::iter::<djogi::ModelDescriptor> {
-    for rel in desc.relations {
-        println!("{}.{} -> {} ({:?})", desc.type_name, rel.name, rel.target, rel.kind);
-    }
+ for rel in desc.relations {
+ println!("{}.{} -> {} ({:?})", desc.type_name, rel.name, rel.target, rel.kind);
+ }
 }
 ```
 

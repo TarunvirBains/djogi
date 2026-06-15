@@ -22,25 +22,25 @@ The rest of cornucopia (codegen, parser, validation, CLI) is irrelevant to djogi
 
 ```rust
 let (rust_name, is_copy) = match *ty {
-    Type::BOOL => ("bool", true),
-    Type::CHAR => ("i8", true),
-    Type::INT2 => ("i16", true),
-    Type::INT4 => ("i32", true),
-    Type::INT8 => ("i64", true),
-    Type::FLOAT4 => ("f32", true),
-    Type::FLOAT8 => ("f64", true),
-    Type::TEXT | Type::VARCHAR => ("String", false),
-    Type::BYTEA => ("Vec<u8>", false),
-    Type::TIMESTAMP => ("time::PrimitiveDateTime", true),
-    Type::TIMESTAMPTZ => ("time::OffsetDateTime", true),
-    Type::DATE => ("time::Date", true),
-    Type::TIME => ("time::Time", true),
-    Type::JSON | Type::JSONB => ("serde_json::Value", false),
-    Type::UUID => ("uuid::Uuid", true),
-    Type::INET => ("std::net::IpAddr", true),
-    Type::MACADDR => ("eui48::MacAddress", true),
-    Type::NUMERIC => ("rust_decimal::Decimal", true),
-    _ => return Err(Error::UnsupportedPostgresType { ... })
+  Type::BOOL => ("bool", true),
+  Type::CHAR => ("i8", true),
+  Type::INT2 => ("i16", true),
+  Type::INT4 => ("i32", true),
+  Type::INT8 => ("i64", true),
+  Type::FLOAT4 => ("f32", true),
+  Type::FLOAT8 => ("f64", true),
+  Type::TEXT | Type::VARCHAR => ("String", false),
+  Type::BYTEA => ("Vec<u8>", false),
+  Type::TIMESTAMP => ("time::PrimitiveDateTime", true),
+  Type::TIMESTAMPTZ => ("time::OffsetDateTime", true),
+  Type::DATE => ("time::Date", true),
+  Type::TIME => ("time::Time", true),
+  Type::JSON | Type::JSONB => ("serde_json::Value", false),
+  Type::UUID => ("uuid::Uuid", true),
+  Type::INET => ("std::net::IpAddr", true),
+  Type::MACADDR => ("eui48::MacAddress", true),
+  Type::NUMERIC => ("rust_decimal::Decimal", true),
+  _ => return Err(Error::UnsupportedPostgresType {... })
 };
 ```
 
@@ -52,12 +52,12 @@ Eighteen entries. Anything else returns a typed error with location info. No fan
 
 ```rust
 match ty.kind() {
-    Kind::Enum(_)       => insert as Custom (is_copy=true, is_params=true),
-    Kind::Array(inner)  => recurse inner, wrap as Array,
-    Kind::Domain(inner) => recurse inner, wrap as Domain,
-    Kind::Composite(fields) => recurse each field, propagate is_copy/is_params,
-    Kind::Simple        => big match table from Finding 1,
-    _                   => UnsupportedPostgresType error,
+  Kind::Enum(_)    => insert as Custom (is_copy=true, is_params=true),
+  Kind::Array(inner) => recurse inner, wrap as Array,
+  Kind::Domain(inner) => recurse inner, wrap as Domain,
+  Kind::Composite(fields) => recurse each field, propagate is_copy/is_params,
+  Kind::Simple    => big match table from Finding 1,
+  _          => UnsupportedPostgresType error,
 }
 ```
 
@@ -69,16 +69,16 @@ This is the biggest single finding for djogi. From `crates/cornucopia/src/prepar
 
 ```rust
 pub(crate) fn new(
-    db_ident: String,
-    ty: Rc<CornucopiaType>,
-    nullity: Option<&NullableIdent>,
+  db_ident: String,
+  ty: Rc<CornucopiaType>,
+  nullity: Option<&NullableIdent>,
 ) -> Self {
-    Self {
-        ident: Ident::new(db_ident),
-        ty,
-        is_nullable: nullity.map_or(false, |it| it.nullable),
-        is_inner_nullable: nullity.map_or(false, |it| it.inner_nullable),
-    }
+  Self {
+    ident: Ident::new(db_ident),
+    ty,
+    is_nullable: nullity.map_or(false, |it| it.nullable),
+    is_inner_nullable: nullity.map_or(false, |it| it.inner_nullable),
+  }
 }
 ```
 
@@ -101,8 +101,8 @@ From `crates/cornucopia/src/prepare_queries.rs:366-432`, the full extraction log
 
 ```rust
 let stmt = client.prepare(&sql_str)?;
-let stmt_params: &[Type] = stmt.params();      // parameter types
-let stmt_cols:   &[Column] = stmt.columns();   // result columns
+let stmt_params: &[Type] = stmt.params();   // parameter types
+let stmt_cols:  &[Column] = stmt.columns();  // result columns
 // each Column: column.name() -> &str, column.type_() -> &Type
 ```
 
@@ -114,12 +114,12 @@ That's the complete surface. The `Column` struct exposes name and type. No nulla
 
 ```rust
 pub enum Error {
-    UnsupportedPostgresType {
-        src: NamedSource,
-        query: SourceSpan,        // points at the offending query in source
-        col_name: String,
-        col_ty: String,
-    },
+  UnsupportedPostgresType {
+    src: NamedSource,
+    query: SourceSpan,    // points at the offending query in source
+    col_name: String,
+    col_ty: String,
+  },
 }
 ```
 

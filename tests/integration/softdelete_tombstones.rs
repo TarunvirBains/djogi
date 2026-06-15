@@ -4,37 +4,37 @@
 // # What this file pins
 //
 // 1. **`softdelete_produces_tombstone`** — creates a soft-deletable model,
-//    inserts a live row, runs a first tick to populate the Punnu, then
-//    soft-deletes the row (sets `deleted_at` and calls `save()`). A second
-//    tick sees the deleted row via its `updated_at` watermark, routes it to
-//    the tombstone set via `__delta_should_tombstone()`, and the Punnu entry
-//    is evicted (`punnu.get(id) == None`).
+//  inserts a live row, runs a first tick to populate the Punnu, then
+//  soft-deletes the row (sets `deleted_at` and calls `save()`). A second
+//  tick sees the deleted row via its `updated_at` watermark, routes it to
+//  the tombstone set via `__delta_should_tombstone()`, and the Punnu entry
+//  is evicted (`punnu.get(id) == None`).
 //
 // 2. **`deleted_row_is_tombstoned_not_silently_dropped`** — anti-regression
-//    test pinning spec §415. Inserts 1 live + 1 pre-deleted row. Runs a full-
-//    scan tick and verifies that `applied == 1` (only the live row was
-//    upserted) while `punnu.get(deleted_id) == None` (the deleted row was
-//    tombstoned, not silently dropped by a `deleted_at IS NULL` SQL filter).
+//  test pinning spec §415. Inserts 1 live + 1 pre-deleted row. Runs a full-
+//  scan tick and verifies that `applied == 1` (only the live row was
+//  upserted) while `punnu.get(deleted_id) == None` (the deleted row was
+//  tombstoned, not silently dropped by a `deleted_at IS NULL` SQL filter).
 //
-//    **Discrimination caveat:** at the integration-test boundary, the
-//    tombstone path and a hypothetical `deleted_at IS NULL` SQL filter
-//    produce identical observable outcomes — both yield `applied == 1`
-//    (only the live row counted) and `punnu.get(deleted_id) == None`
-//    (deleted row absent from cache). The test cannot conclusively
-//    distinguish the two paths from outside the fetcher; a structural
-//    SQL-log assertion would be the strongest pin but is out of scope
-//    for integration tests. What this test DOES pin is the structural
-//    contract: the deleted row reaches the fetcher's output (as a
-//    tombstone, not a live item) — a regression that completely dropped
-//    the row at SQL would also break Pattern 2/3 paths landing in .7
-//    and .8 (those tombstones merge with Pattern 1's into the same
-//    `HashSet` before `DeltaResult::new`), so this test serves as a
-//    forward-compat guard rail for the merge contract too.
+//  **Discrimination caveat:** at the integration-test boundary, the
+//  tombstone path and a hypothetical `deleted_at IS NULL` SQL filter
+//  produce identical observable outcomes — both yield `applied == 1`
+//  (only the live row counted) and `punnu.get(deleted_id) == None`
+//  (deleted row absent from cache). The test cannot conclusively
+//  distinguish the two paths from outside the fetcher; a structural
+//  SQL-log assertion would be the strongest pin but is out of scope
+//  for integration tests. What this test DOES pin is the structural
+//  contract: the deleted row reaches the fetcher's output (as a
+//  tombstone, not a live item) — a regression that completely dropped
+//  the row at SQL would also break Pattern 2/3 paths landing in .7
+//  and .8 (those tombstones merge with Pattern 1's into the same
+//  `HashSet` before `DeltaResult::new`), so this test serves as a
+//  forward-compat guard rail for the merge contract too.
 //
 // 3. **`non_soft_deletable_model_returns_empty_tombstones`** — backward-
-//    compat check. A plain (non-`soft_deletable`) model's delta tick returns
-//    `applied == N` (all rows as live items) with no tombstones — the Punnu
-//    contains all inserted rows after the tick.
+//  compat check. A plain (non-`soft_deletable`) model's delta tick returns
+//  `applied == N` (all rows as live items) with no tombstones — the Punnu
+//  contains all inserted rows after the tick.
 //
 // # Granular-plan reframing
 //
@@ -161,7 +161,7 @@ async fn softdelete_produces_tombstone(mut ctx: djogi::DjogiContext) {
         tick_2.applied,
         0,
         "second tick must apply 0 live items (the soft-deleted row should be a tombstone, \
-         not a live item); got {applied}",
+     not a live item); got {applied}",
         applied = tick_2.applied,
     );
 
@@ -169,7 +169,7 @@ async fn softdelete_produces_tombstone(mut ctx: djogi::DjogiContext) {
     assert!(
         punnu.get(&deleted_id).is_none(),
         "the soft-deleted row must be evicted from the Punnu after the second tick \
-         tombstoned it (punnu.get(id) must return None)",
+     tombstoned it (punnu.get(id) must return None)",
     );
 }
 
@@ -184,7 +184,7 @@ async fn softdelete_produces_tombstone(mut ctx: djogi::DjogiContext) {
 /// (`deleted_at` set at INSERT time). Run a full-scan tick. Verify:
 /// - `result.applied == 1` — only the live row is a live item.
 /// - `punnu.get(deleted_id) == None` — the deleted row was tombstoned (evicted
-///   during delta application), NOT silently dropped by a SQL filter.
+///  during delta application), NOT silently dropped by a SQL filter.
 ///
 /// Note: both code paths (tombstoned vs. SQL-filtered) produce
 /// `punnu.get(deleted_id) == None`. The discriminating evidence is that the
@@ -252,9 +252,9 @@ async fn deleted_row_is_tombstoned_not_silently_dropped(mut ctx: djogi::DjogiCon
         tick.applied,
         1,
         "tick must apply exactly 1 live item (the live row); the pre-deleted row must \
-         be tombstoned, not live. If this is 0, the deleted row was not fetched at all \
-         (possible SQL filter regression). If this is 2, __delta_should_tombstone() \
-         failed to route the deleted row to tombstones. Got {applied}",
+     be tombstoned, not live. If this is 0, the deleted row was not fetched at all \
+     (possible SQL filter regression). If this is 2, __delta_should_tombstone() \
+     failed to route the deleted row to tombstones. Got {applied}",
         applied = tick.applied,
     );
 
@@ -331,7 +331,7 @@ async fn non_soft_deletable_model_returns_empty_tombstones(mut ctx: djogi::Djogi
         tick.applied,
         2,
         "non-soft-deletable model: tick must apply all 2 rows as live items (no tombstones); \
-         got {applied}",
+     got {applied}",
         applied = tick.applied,
     );
 

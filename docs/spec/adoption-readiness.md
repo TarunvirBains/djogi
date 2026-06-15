@@ -19,8 +19,8 @@ This document maps common app patterns to the earliest Djogi phase at which they
 | Row locks + bulk upsert / bulk update | 4 | `select_for_update` + `bulk_upsert`; critical for queue claim flows and high-write systems |
 | Transactional outbox (write side) | 4 | `#[model(events)]` + ctx-aware CRUD |
 | Idempotent creates | 4 | `#[model(idempotency_key)]` + `create_or_find` |
-| Scoped sequence numbers | 4 | `#[field(sequence_within)]` — Phase 4 v3 Task 7.6 |
-| Error classification (retry on transient) | 4 | `DjogiError::is_transient` / `is_terminal` — Phase 4 v3 Task 7.7 |
+| Scoped sequence numbers | 4 | `#[field(sequence_within)]` — v3.6 |
+| Error classification (retry on transient) | 4 | `DjogiError::is_transient` / `is_terminal` — v3.7 |
 | Projection structs for HTTP boundaries | 4.5 | `#[field(expose)]` + generated DTOs; transport-safe boundary, not query-time aggregation shape |
 | Dirty tracking + optimistic locking | 5 | `Tracked<T>` + `#[field(version)]`; write-side correctness under concurrency |
 | Bounded string vs text schema primitives | 5 | Distinct `VARCHAR(n)` / `TEXT` modeling so migrations preserve intent instead of flattening both into generic `String` |
@@ -29,7 +29,7 @@ This document maps common app patterns to the earliest Djogi phase at which they
 | `Jsonb<T>` with unknown-field preservation | 5 | Both flat `.path::<V>("...")` and typed `#[derive(JsonbSchema)]`; keeps JSON-heavy query paths typed and native |
 | Multi-tenancy (RLS + `set_tenant`) | 5 | `#[model(tenant_key)]` + `ctx.set_tenant` |
 | `_insecurely()` bypass surface | 5 | Searchable + observable via `tracing::warn!` |
-| Outbox worker + publishers | 5 | Phase 5 v3 Task 11.5 — NOTIFY default; Redis / Kafka / NATS feature-gated; exponential backoff on retryable failures |
+| Outbox worker + publishers | 5 | v3 1.5 — NOTIFY default; Redis / Kafka / NATS feature-gated; exponential backoff on retryable failures |
 | Cursor-backed streaming terminals | 5 | `QuerySet::stream` / `DjogiContext::raw_stream` over Postgres named cursors; transaction-scoped |
 | Full-text search | 5 | `#[model(fts = { source, dictionary })]` + `TsVector` / `TsQuery`; GIN index emitted for the tsvector column |
 | Authentication + session management | 5.5 | `DjogiAuth` + `EnvAuth` + `SessionStore` |
@@ -61,7 +61,7 @@ A pattern is "safe at Phase N" when all four of the following hold:
 
 For performance-sensitive patterns, "safe" also means the phase exposes the efficient Postgres form in-framework. If the only practical way to keep query count, lock behavior, or write throughput acceptable is to fall back to raw SQL for routine cases, the pattern is not yet safe to adopt.
 
-Patterns that straddle phases (e.g., "outbox" — write side lands in Phase 4, worker side lands in Phase 5) are listed at the phase where the full end-to-end flow becomes usable in app code.
+Patterns that straddle phases (e.g., "outbox" — write side lands in, worker side lands in ) are listed at the phase where the full end-to-end flow becomes usable in app code.
 
 The table is intentionally primitive-first, but several large-scale workload families depend on multiple rows together rather than one isolated feature:
 

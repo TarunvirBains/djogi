@@ -4,15 +4,15 @@
 //! ```text
 //! pub const VEHICLE_SCHEMA: &str = "table: vehicles
 //! fields:
-//!   id: HeerId (PK)
-//!   created_at: DateTime
-//!   updated_at: DateTime
-//!   vin: String NOT NULL
-//!   ...
+//! id: HeerId (PK)
+//! created_at: DateTime
+//! updated_at: DateTime
+//! vin: String NOT NULL
+//!...
 //! indexes:
-//!   - vin (UNIQUE)
+//! - vin (UNIQUE)
 //! relations:
-//!   - owner_id -> Owner (FK)
+//! - owner_id -> Owner (FK)
 //! ";
 //! ```
 //! Adopters and tooling lift the const without going through the
@@ -27,8 +27,8 @@
 //! - `Vehicle` → `VEHICLE_SCHEMA`
 //! - `OrgUser` → `ORG_USER_SCHEMA`
 //! - `HTTPSProxy` → `HTTPS_PROXY_SCHEMA`
-//!   Adopters declaring their own `VEHICLE_SCHEMA` at the same scope
-//!   see a Rust "duplicate definition" error — a feature, not a bug.
+//! Adopters declaring their own `VEHICLE_SCHEMA` at the same scope
+//! see a Rust "duplicate definition" error — a feature, not a bug.
 
 use crate::case::pascal_to_snake;
 use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
@@ -51,9 +51,9 @@ pub fn emit(
     );
     let body = render_schema(struct_item, model_attrs, field_attrs);
     quote! {
-        #[doc = "Compile-time, byte-deterministic schema summary for this model."]
-        #[doc(hidden)]
-        pub const #const_ident: &str = #body;
+     #[doc = "Compile-time, byte-deterministic schema summary for this model."]
+     #[doc(hidden)]
+     pub const #const_ident: &str = #body;
     }
 }
 
@@ -75,7 +75,7 @@ fn render_schema(
     if !indexes.is_empty() {
         out.push_str("indexes:\n");
         for line in &indexes {
-            out.push_str("  - ");
+            out.push_str(" - ");
             out.push_str(line);
             out.push('\n');
         }
@@ -85,7 +85,7 @@ fn render_schema(
     if !relations.is_empty() {
         out.push_str("relations:\n");
         for line in &relations {
-            out.push_str("  - ");
+            out.push_str(" - ");
             out.push_str(line);
             out.push('\n');
         }
@@ -108,12 +108,12 @@ fn render_framework_fields(out: &mut String, model_attrs: &ModelAttrs) {
         PkStrategy::None => None,
     };
     if let Some(label) = pk_label {
-        out.push_str("  id: ");
+        out.push_str(" id: ");
         out.push_str(label);
         out.push_str(" (PK)\n");
     }
-    out.push_str("  created_at: DateTime\n");
-    out.push_str("  updated_at: DateTime\n");
+    out.push_str(" created_at: DateTime\n");
+    out.push_str(" updated_at: DateTime\n");
 }
 
 fn render_user_fields(
@@ -128,7 +128,7 @@ fn render_user_fields(
         let Some(name) = field.ident.as_ref() else {
             continue;
         };
-        out.push_str("  ");
+        out.push_str(" ");
         out.push_str(name.to_string().trim_start_matches("r#"));
         out.push_str(": ");
         out.push_str(&render_type(&field.ty));
@@ -231,8 +231,8 @@ fn on_delete_attr_to_label(attr: &str) -> &'static str {
         // regression in `MODEL_SCHEMA` output.
         _ => unreachable!(
             "schema_const: unknown on_delete attr {attr:?} reached the renderer; \
-             FieldAttrs::parse should have rejected it. Add a label arm above \
-             when introducing a new on_delete spelling."
+    FieldAttrs::parse should have rejected it. Add a label arm above \
+    when introducing a new on_delete spelling."
         ),
     }
 }

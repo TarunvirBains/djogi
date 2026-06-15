@@ -14,18 +14,18 @@ use djogi::prelude::*;
 #[model(table = "posts_desc", pk = HeerIdDesc)]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub title: String,
+ pub title: String,
 }
 
 fn _injected_id_is_heerid_desc(p: &Post) {
-    let _: &::djogi::types::HeerIdDesc = &p.id;
-    let _: &DateTime = &p.created_at;
-    let _: &DateTime = &p.updated_at;
-    let _: &str = &p.title;
+ let _: &::djogi::types::HeerIdDesc = &p.id;
+ let _: &DateTime = &p.created_at;
+ let _: &DateTime = &p.updated_at;
+ let _: &str = &p.title;
 }
 
 fn _default_constructs() {
-    let _p = Post::default();
+ let _p = Post::default();
 }
 
 fn main() {}

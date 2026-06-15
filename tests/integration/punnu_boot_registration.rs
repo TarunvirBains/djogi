@@ -4,23 +4,23 @@
 // What this file pins:
 //
 // 1. `ctx.punnu::<MyModel>()` returns `Some` for any `#[model]` struct
-//    that derives a `Cacheable` impl (every model with a PK). The boot
-//    hook emitted by `#[derive(Model)]` runs before the first
-//    `DjogiContext::from_pool` call and registers the pool.
+//  that derives a `Cacheable` impl (every model with a PK). The boot
+//  hook emitted by `#[derive(Model)]` runs before the first
+//  `DjogiContext::from_pool` call and registers the pool.
 //
 // 2. Two calls to `ctx.punnu::<T>()` on the same context return the same
-//    `Arc<Punnu<T>>` — `Arc::ptr_eq` returns `true`, proving that the
-//    registry hands out the same handle on every access.
+//  `Arc<Punnu<T>>` — `Arc::ptr_eq` returns `true`, proving that the
+//  registry hands out the same handle on every access.
 //
 // 3. Two distinct top-level `DjogiContext` instances (from the same pool)
-//    each hold independent `Sassi` instances. Inserting into one context's
-//    `Punnu<T>` does NOT affect the other context's `Punnu<T>`. This is
-//    the "DjogiContext IS the tenant boundary" contract.
+//  each hold independent `Sassi` instances. Inserting into one context's
+//  `Punnu<T>` does NOT affect the other context's `Punnu<T>`. This is
+//  the "DjogiContext IS the tenant boundary" contract.
 //
-//    NOTE: Test 3 uses `ctx.share_pool()` to obtain the underlying pool for
-//    constructing two sibling contexts via `DjogiContext::from_pool`. This
-//    is a genuine typed-surface gap — there is no public non-bypass API to
-//    `DjogiContext::share_pool() -> DjogiPool` (or `DjogiContext::sibling()`)
+//  NOTE: Test 3 uses `ctx.share_pool()` to obtain the underlying pool for
+//  constructing two sibling contexts via `DjogiContext::from_pool`. This
+//  is a genuine typed-surface gap — there is no public non-bypass API to
+//  `DjogiContext::share_pool() -> DjogiPool` (or `DjogiContext::sibling()`)
 //
 // # Spec anchor
 //
@@ -66,9 +66,9 @@ async fn punnu_registered_for_default_model(mut ctx: djogi::DjogiContext) {
     assert!(
         pool.is_some(),
         "ctx.punnu::<PunnuBootRow>() must return Some — the #[model] macro emits \
-         an inventory::submit! SassiBootHook that DjogiContext::from_pool walks; \
-         None here means the boot hook was not emitted or the inventory was not \
-         walked at context construction time",
+     an inventory::submit! SassiBootHook that DjogiContext::from_pool walks; \
+     None here means the boot hook was not emitted or the inventory was not \
+     walked at context construction time",
     );
 }
 
@@ -89,9 +89,9 @@ async fn punnu_returns_same_pool_across_calls(mut ctx: djogi::DjogiContext) {
     assert!(
         std::sync::Arc::ptr_eq(&a, &b),
         "two calls to ctx.punnu::<T>() on the same context must return the same Arc — \
-         the Punnu is registered once at boot time and the same handle is returned \
-         on every access. Arc::ptr_eq failure means a new Punnu is allocated per \
-         call, which would silently split the cache into N disjoint pools",
+     the Punnu is registered once at boot time and the same handle is returned \
+     on every access. Arc::ptr_eq failure means a new Punnu is allocated per \
+     call, which would silently split the cache into N disjoint pools",
     );
 }
 
@@ -132,9 +132,9 @@ async fn cross_tenant_requires_separate_context(mut ctx: djogi::DjogiContext) {
     assert!(
         !std::sync::Arc::ptr_eq(&pool_a, &pool_b),
         "pool_a and pool_b must be distinct Arc<Punnu<T>> instances — different \
-         DjogiContext instances each own independent Sassi registries; if this \
-         assertion fails it means the framework is sharing a single Sassi across \
-         unrelated contexts, which would violate the tenant-boundary contract",
+     DjogiContext instances each own independent Sassi registries; if this \
+     assertion fails it means the framework is sharing a single Sassi across \
+     unrelated contexts, which would violate the tenant-boundary contract",
     );
 
     // Insert a value into pool_a. pool_b must remain empty — they are
@@ -153,8 +153,8 @@ async fn cross_tenant_requires_separate_context(mut ctx: djogi::DjogiContext) {
         pool_b.len(),
         0,
         "pool_b must remain empty after inserting into pool_a — the two Punnu \
-         instances are independent; a non-zero count here means sassi's Punnu \
-         internals are accidentally sharing state across Arc clones, or the \
-         framework is incorrectly sharing the same Arc<Punnu<T>> between contexts",
+     instances are independent; a non-zero count here means sassi's Punnu \
+     internals are accidentally sharing state across Arc clones, or the \
+     framework is incorrectly sharing the same Arc<Punnu<T>> between contexts",
     );
 }

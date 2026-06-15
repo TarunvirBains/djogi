@@ -19,9 +19,9 @@
 //!
 //! // In the adopter's src/bin/djogi.rs, one reference per model crate:
 //! fn main() -> std::process::ExitCode {
-//!     tracker::__djogi_link_anchor();
-//!     billing::__djogi_link_anchor();
-//!     djogi_cli::run_from_env()
+//!  tracker::__djogi_link_anchor();
+//!  billing::__djogi_link_anchor();
+//!  djogi_cli::run_from_env()
 //! }
 //! ```
 
@@ -37,7 +37,7 @@ pub fn link_anchor(input: TokenStream) -> TokenStream {
         return syn::Error::new(
             proc_macro2::Span::call_site(),
             "djogi::link_anchor! takes no arguments — invoke it once per model \
-             crate's lib.rs as `djogi::link_anchor!();`.",
+    crate's lib.rs as `djogi::link_anchor!();`.",
         )
         .to_compile_error();
     }
@@ -63,15 +63,15 @@ pub fn link_anchor(input: TokenStream) -> TokenStream {
     // callable symbol the reference cannot be optimized away to nothing
     // before the crate is pulled.
     quote! {
-        #[doc(hidden)]
-        #[used]
-        static __DJOGI_LINK_ANCHOR: () = ();
+     #[doc(hidden)]
+     #[used]
+     static __DJOGI_LINK_ANCHOR: () = ();
 
-        #[doc(hidden)]
-        #[inline(never)]
-        pub fn __djogi_link_anchor() -> &'static () {
-            &__DJOGI_LINK_ANCHOR
-        }
+     #[doc(hidden)]
+     #[inline(never)]
+     pub fn __djogi_link_anchor() -> &'static () {
+      &__DJOGI_LINK_ANCHOR
+     }
     }
 }
 

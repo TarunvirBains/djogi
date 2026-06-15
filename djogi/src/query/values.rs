@@ -8,47 +8,47 @@
 //! use djogi::prelude::*;
 //!
 //! let weights = InlineValues::new(
-//!     vec![(1_i64, 0.91_f64), (2_i64, 0.72_f64)],
-//!     "weights",
-//!     ("animal_id", "score"),
+//!  vec![(1_i64, 0.91_f64), (2_i64, 0.72_f64)],
+//!  "weights",
+//!  ("animal_id", "score"),
 //! )?;
 //!
 //! let pairs: Vec<(Animal, (i64, f64))> = Animal::objects()
-//!     .join_values(weights, |animal, values| {
-//!         animal.id().eq_values(values.col0())
-//!     })
-//!     .fetch_all(&mut ctx)
-//!     .await?;
+//! .join_values(weights, |animal, values| {
+//!   animal.id().eq_values(values.col0())
+//!  })
+//! .fetch_all(&mut ctx)
+//! .await?;
 //! ```
 //! # SQL shape
 //! For a two-column row `(A, B)` and user alias `weights`:
 //! ```sql
 //! SELECT
-//!     __djogi_m.id   AS id,
-//!     __djogi_m.name AS name,
-//!     ...,
-//!     weights.animal_id AS __djogi_values_0,
-//!     weights.score     AS __djogi_values_1
+//!  __djogi_m.id AS id,
+//!  __djogi_m.name AS name,
+//! ...,
+//!  weights.animal_id AS __djogi_values_0,
+//!  weights.score  AS __djogi_values_1
 //! FROM animals AS __djogi_m
 //! INNER JOIN (VALUES
-//!     ($1::BIGINT, $2::DOUBLE PRECISION),
-//!     ($3, $4)
+//!  ($1::BIGINT, $2::DOUBLE PRECISION),
+//!  ($3, $4)
 //! ) AS weights(animal_id, score)
-//!   ON __djogi_m.id = weights.animal_id
+//! ON __djogi_m.id = weights.animal_id
 //! [WHERE __djogi_m.status = $5]
 //! [ORDER BY __djogi_m.created_at DESC]
 //! [LIMIT $6] [OFFSET $7]
 //! ```
 //! # Safety model
 //! - All row data flows through [`SqlAccumulator::push_bind`] — never
-//!   string-interpolated.
+//! string-interpolated.
 //! - Alias and column names are validated with
-//!   [`crate::ident::check_user_supplied_ident`] at [`InlineValues::new`] time,
-//!   rejecting the `__djogi_` prefix and Postgres reserved keywords.
+//! [`crate::ident::check_user_supplied_ident`] at [`InlineValues::new`] time,
+//! rejecting the `__djogi_` prefix and Postgres reserved keywords.
 //! - SQL type casts (e.g. `::BIGINT`) come from sealed framework constants on
-//!   [`ValuesScalar`] — not from user input.
+//! [`ValuesScalar`] — not from user input.
 //! - No implicit `ON TRUE`. The join predicate is always a structured typed
-//!   predicate, never a raw SQL string.
+//! predicate, never a raw SQL string.
 //! # Empty behaviour
 //! Empty `InlineValues` is valid. Terminal methods short-circuit after
 //! validation:
@@ -74,11 +74,11 @@
 //! | [`QuerySet::cross_join_values`] | CROSS JOIN | `Vec<(T, Row)>` |
 //! # Non-goals
 //! - No implicit `ON TRUE` joins; cartesian products require the explicit
-//!   [`QuerySet::cross_join_values`] API.
+//! [`QuerySet::cross_join_values`] API.
 //! - No struct rows — only tuples.
 //! - Very large value lists should be loaded through a temp/staging table; Postgres
-//!   plans large `VALUES` clauses expensively. Keep per-query VALUES under ~1 000
-//!   rows; chunk larger inputs or use `COPY` + temp table.
+//! plans large `VALUES` clauses expensively. Keep per-query VALUES under ~1 000
+//! rows; chunk larger inputs or use `COPY` + temp table.
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
@@ -135,9 +135,9 @@ mod sealed {
 /// they do not implement this trait directly.
 /// # Contract
 /// - `SQL_CAST` is the Postgres type name used to cast the *first-row*
-///   placeholder: `$1::BIGINT`, `$1::TEXT`, etc.
+/// placeholder: `$1::BIGINT`, `$1::TEXT`, etc.
 /// - `push_bind_owned` pushes exactly one positional bind slot, performing any
-///   widening conversion required (e.g. `u32 → i64`).
+/// widening conversion required (e.g. `u32 → i64`).
 /// - `push_null` pushes a typed `NULL` bind for the same wire type.
 /// - `decode_values_col` decodes the scalar from a positional row column.
 pub trait ValuesScalar: sealed::SealedValuesScalar + Clone + Send + Sync + 'static {
@@ -416,10 +416,10 @@ pub trait ValuesRow: sealed::SealedValuesRow + Clone + Send + Sync + 'static {
     /// Postgres type cast strings for each column, in positional order.
     fn sql_casts() -> Vec<&'static str>;
 
-    /// Push one row with first-row casts: `($n::CAST_A, $m::CAST_B, ...)`.
+    /// Push one row with first-row casts: `($n::CAST_A, $m::CAST_B,...)`.
     fn push_row_binds_first(self, acc: &mut SqlAccumulator);
 
-    /// Push one row without casts: `($n, $m, ...)`.
+    /// Push one row without casts: `($n, $m,...)`.
     fn push_row_binds_rest(self, acc: &mut SqlAccumulator);
 
     /// Decode this row type from a `tokio_postgres::Row` starting at `start_idx`.
@@ -439,47 +439,47 @@ fn push_bind_with_cast<V: ValuesScalar>(v: V, acc: &mut SqlAccumulator) {
 // ── ValuesRow tuple impls ─────────────────────────────────────────────────────
 
 macro_rules! impl_values_row {
-    ( $arity:expr ; $col_tuple:ty ; $( $idx:tt $T:ident ),+ ) => {
-        impl< $($T: ValuesScalar),+ > sealed::SealedValuesRow for ( $($T,)+ ) {}
+ ( $arity:expr ; $col_tuple:ty ; $( $idx:tt $T:ident ),+ ) => {
+  impl< $($T: ValuesScalar),+ > sealed::SealedValuesRow for ( $($T,)+ ) {}
 
-        impl< $($T: ValuesScalar),+ > ValuesRow for ( $($T,)+ ) {
-            type Columns = $col_tuple;
-            const ARITY: usize = $arity;
+  impl< $($T: ValuesScalar),+ > ValuesRow for ( $($T,)+ ) {
+   type Columns = $col_tuple;
+   const ARITY: usize = $arity;
 
-            fn sql_casts() -> Vec<&'static str> {
-                vec![ $($T::SQL_CAST),+ ]
-            }
+   fn sql_casts() -> Vec<&'static str> {
+    vec![ $($T::SQL_CAST),+ ]
+   }
 
-            fn push_row_binds_first(self, acc: &mut SqlAccumulator) {
-                acc.push_sql("(");
-                let mut _first = true;
-                $(
-                    if !_first { acc.push_sql(", "); }
-                    push_bind_with_cast::<$T>(self.$idx, acc);
-                    _first = false;
-                )+
-                acc.push_sql(")");
-            }
+   fn push_row_binds_first(self, acc: &mut SqlAccumulator) {
+    acc.push_sql("(");
+    let mut _first = true;
+    $(
+     if !_first { acc.push_sql(", "); }
+     push_bind_with_cast::<$T>(self.$idx, acc);
+     _first = false;
+    )+
+    acc.push_sql(")");
+   }
 
-            fn push_row_binds_rest(self, acc: &mut SqlAccumulator) {
-                acc.push_sql("(");
-                let mut _first = true;
-                $(
-                    if !_first { acc.push_sql(", "); }
-                    self.$idx.push_bind_owned(acc);
-                    _first = false;
-                )+
-                acc.push_sql(")");
-            }
+   fn push_row_binds_rest(self, acc: &mut SqlAccumulator) {
+    acc.push_sql("(");
+    let mut _first = true;
+    $(
+     if !_first { acc.push_sql(", "); }
+     self.$idx.push_bind_owned(acc);
+     _first = false;
+    )+
+    acc.push_sql(")");
+   }
 
-            fn decode_from(
-                row: &tokio_postgres::Row,
-                start_idx: usize,
-            ) -> Result<Self, DjogiError> {
-                Ok(( $( $T::decode_values_col(row, start_idx + $idx, VALUES_ALIASES[$idx])?, )+ ))
-            }
-        }
-    };
+   fn decode_from(
+    row: &tokio_postgres::Row,
+    start_idx: usize,
+   ) -> Result<Self, DjogiError> {
+    Ok(( $( $T::decode_values_col(row, start_idx + $idx, VALUES_ALIASES[$idx])?, )+ ))
+   }
+  }
+ };
 }
 
 impl_values_row!(1; (&'static str,); 0 A);
@@ -723,7 +723,7 @@ impl<M: Model, V: ValuesScalar> crate::query::field::FieldRef<M, V> {
 /// `DjogiField` path must support `eq_values`, so adopters can write:
 /// ```ignore
 /// Animal::objects().join_values(weights, |a, v| {
-///     a.id().eq_values(v.col0())  // a.id() returns DjogiField<Animal, HeerIdDesc>
+///  a.id().eq_values(v.col0()) // a.id() returns DjogiField<Animal, HeerIdDesc>
 /// })
 /// ```
 impl<M: Model, V: ValuesScalar> crate::query::field::DjogiField<M, V> {
@@ -734,9 +734,9 @@ impl<M: Model, V: ValuesScalar> crate::query::field::DjogiField<M, V> {
     /// Root-table columns are supported; relation-path fields are rejected
     /// when the terminal executes for the same reason as [`FieldRef::eq_values`].
     /// ```ignore
-    /// .join_values(weights, |animal, v| {
-    ///     animal.id().eq_values(v.col0())      // HeerIdDesc matches col0 ✓
-    ///     // animal.id().eq_values(v.col1())   // different V → compile error
+    ///.join_values(weights, |animal, v| {
+    ///  animal.id().eq_values(v.col0())  // HeerIdDesc matches col0 ✓
+    ///  // animal.id().eq_values(v.col1()) // different V → compile error
     /// })
     /// ```
     pub fn eq_values(self, rhs: ValuesFieldRef<V>) -> ValuesOn<M> {
@@ -783,30 +783,30 @@ impl<Row: ValuesRow> InlineValues<Row> {
     /// # Arguments
     /// - `rows` — the value data; may be empty (valid zero-row relation).
     /// - `alias` — SQL alias for the VALUES sub-relation (e.g. `"weights"`).
-    ///   Must be a plain SQL identifier that does not start with `__djogi_`.
+    /// Must be a plain SQL identifier that does not start with `__djogi_`.
     /// - `columns` — arity-checked tuple of `&'static str` column names.
-    ///   Each name must pass the same validation as `alias`. No duplicates
-    ///   after Postgres unquoted-identifier case folding.
+    /// Each name must pass the same validation as `alias`. No duplicates
+    /// after Postgres unquoted-identifier case folding.
     /// # Errors
     /// Returns [`DjogiError::Validation`] if:
     /// - `alias` or any column name fails identifier validation.
     /// - Column names contain duplicates, including mixed-case spellings that
-    ///   fold to the same unquoted Postgres identifier.
+    /// fold to the same unquoted Postgres identifier.
     /// - `rows.len() × Row::ARITY` exceeds the Postgres parameter ceiling
-    ///   (65 535). Chunk the list or use a staging table instead.
+    /// (65 535). Chunk the list or use a staging table instead.
     /// # Example
     /// ```ignore
     /// let weights: InlineValues<(i64, f64)> = InlineValues::new(
-    ///     vec![(1_i64, 0.91_f64), (2_i64, 0.72_f64)],
-    ///     "weights",
-    ///     ("animal_id", "score"),
+    ///  vec![(1_i64, 0.91_f64), (2_i64, 0.72_f64)],
+    ///  "weights",
+    ///  ("animal_id", "score"),
     /// )?;
     /// ```
     pub fn new(rows: Vec<Row>, alias: &str, columns: Row::Columns) -> Result<Self, DjogiError> {
         check_user_supplied_ident(alias, true).map_err(|e| {
             DjogiError::Validation(format!(
                 "InlineValues alias {alias:?} is invalid: {e:?}. \
-                 Supply a plain SQL identifier that does not start with `__djogi_`."
+     Supply a plain SQL identifier that does not start with `__djogi_`."
             ))
         })?;
 
@@ -821,7 +821,7 @@ impl<Row: ValuesRow> InlineValues<Row> {
             check_user_supplied_ident(col, true).map_err(|e| {
                 DjogiError::Validation(format!(
                     "InlineValues column name {col:?} is invalid: {e:?}. \
-                     Supply plain SQL identifiers that do not start with `__djogi_`."
+      Supply plain SQL identifiers that do not start with `__djogi_`."
                 ))
             })?;
         }
@@ -833,8 +833,8 @@ impl<Row: ValuesRow> InlineValues<Row> {
                 if !seen.insert(folded) {
                     return Err(DjogiError::Validation(format!(
                         "InlineValues column {col:?} appears more than once \
-                         after Postgres identifier case folding; duplicate \
-                         column names are not allowed."
+       after Postgres identifier case folding; duplicate \
+       column names are not allowed."
                     )));
                 }
             }
@@ -843,16 +843,16 @@ impl<Row: ValuesRow> InlineValues<Row> {
         let param_count = rows.len().checked_mul(Row::ARITY).ok_or_else(|| {
             DjogiError::Validation(
                 "InlineValues parameter count overflowed; \
-                     chunk the list or use a staging table."
+      chunk the list or use a staging table."
                     .into(),
             )
         })?;
         if param_count > PG_MAX_PARAMS {
             return Err(DjogiError::Validation(format!(
                 "InlineValues would require {param_count} bind parameters \
-                 ({} rows × {} columns), exceeding Postgres' limit of {PG_MAX_PARAMS}. \
-                 Chunk the list into smaller batches or load it into a \
-                 temporary/staging table before joining.",
+     ({} rows × {} columns), exceeding Postgres' limit of {PG_MAX_PARAMS}. \
+     Chunk the list into smaller batches or load it into a \
+     temporary/staging table before joining.",
                 rows.len(),
                 Row::ARITY,
             )));
@@ -1025,37 +1025,37 @@ fn validate_left_qs<T: Model>(qs: &QuerySet<T>, site: &str) -> Result<(), DjogiE
     if !qs.prefetch_paths.is_empty() {
         return Err(DjogiError::Validation(format!(
             "{site}: left queryset has prefetch paths, which change the row shape. \
-             Drop .prefetch(…) calls before \
-             .join_values(…) / .left_join_values(…) / .cross_join_values(…)."
+    Drop.prefetch(…) calls before \
+   .join_values(…) /.left_join_values(…) /.cross_join_values(…)."
         )));
     }
     if !qs.select_related_paths.is_empty() {
         return Err(DjogiError::Validation(format!(
             "{site}: left queryset has select_related paths, which expand the \
-             SELECT list incompatibly.  Drop .select_related(…) calls before \
-             .join_values(…) / .left_join_values(…) / .cross_join_values(…)."
+    SELECT list incompatibly. Drop.select_related(…) calls before \
+   .join_values(…) /.left_join_values(…) /.cross_join_values(…)."
         )));
     }
     if qs.cache_target.is_some() {
         return Err(DjogiError::Validation(format!(
-            "{site}: left queryset is bound to a Punnu via .cache(…). \
-             VALUES join terminals return pairs, not bare model rows.  \
-             Drop the .cache(…) call before \
-             .join_values(…) / .left_join_values(…) / .cross_join_values(…)."
+            "{site}: left queryset is bound to a Punnu via.cache(…). \
+    VALUES join terminals return pairs, not bare model rows. \
+    Drop the.cache(…) call before \
+   .join_values(…) /.left_join_values(…) /.cross_join_values(…)."
         )));
     }
     if !matches!(qs.lock, crate::query::lock::LockMode::None) {
         return Err(DjogiError::Validation(format!(
             "{site}: left queryset carries a row-level lock, which is not \
-             supported on VALUES joins.  Drop the row-lock call before \
-             .join_values(…) / .left_join_values(…) / .cross_join_values(…)."
+    supported on VALUES joins. Drop the row-lock call before \
+   .join_values(…) /.left_join_values(…) /.cross_join_values(…)."
         )));
     }
     if !matches!(qs.distinct, DistinctMode::None) {
         return Err(DjogiError::Validation(format!(
             "{site}: left queryset carries a non-default DISTINCT mode, which \
-             is not supported on VALUES joins.  Drop .distinct…() calls before \
-             .join_values(…) / .left_join_values(…) / .cross_join_values(…)."
+    is not supported on VALUES joins. Drop.distinct…() calls before \
+   .join_values(…) /.left_join_values(…) /.cross_join_values(…)."
         )));
     }
     Ok(())
@@ -1069,9 +1069,9 @@ fn validate_total_bind_count(
     if bind_count > PG_MAX_PARAMS {
         return Err(DjogiError::Validation(format!(
             "{site}: query would require {bind_count} bind parameters after \
-             composing VALUES rows with filters/pagination, exceeding \
-             Postgres' limit of {PG_MAX_PARAMS}. Chunk the VALUES input or \
-             reduce extra bind-producing filters/limit/offset."
+    composing VALUES rows with filters/pagination, exceeding \
+    Postgres' limit of {PG_MAX_PARAMS}. Chunk the VALUES input or \
+    reduce extra bind-producing filters/limit/offset."
         )));
     }
     Ok(acc)
@@ -1087,7 +1087,7 @@ fn validate_values_on_kind<T: Model>(on: &ValuesOnKind<T>, site: &str) -> Result
             if model_col.contains('.') {
                 return Err(DjogiError::Validation(format!(
                     "{site}: VALUES join predicates only support root-model columns; \
-                     relation-path field `{model_col}` is not supported in `.eq_values(...)`."
+      relation-path field `{model_col}` is not supported in `.eq_values(...)`."
                 )));
             }
             Ok(())
@@ -1150,20 +1150,20 @@ where
 /// to the non-empty path.
 /// Emitted shape (arity-2 example):
 /// ```sql
-/// SELECT __djogi_m.id   AS id,
-///        __djogi_m.name AS name, ...,
-///        weights.animal_id AS __djogi_values_0,
-///        weights.score     AS __djogi_values_1,
-///        weights.__djogi_present AS __djogi_values_present
+/// SELECT __djogi_m.id AS id,
+///  __djogi_m.name AS name,...,
+///  weights.animal_id AS __djogi_values_0,
+///  weights.score  AS __djogi_values_1,
+///  weights.__djogi_present AS __djogi_values_present
 /// FROM animals AS __djogi_m
 /// LEFT JOIN (
-///     SELECT NULL::BIGINT         AS animal_id,
-///            NULL::DOUBLE PRECISION AS score,
-///            NULL::BOOLEAN          AS __djogi_present
-///     WHERE 1=0
+///  SELECT NULL::BIGINT   AS animal_id,
+///   NULL::DOUBLE PRECISION AS score,
+///   NULL::BOOLEAN   AS __djogi_present
+///  WHERE 1=0
 /// ) AS weights
 /// ON __djogi_m.id = weights.animal_id
-/// [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]
+/// [WHERE...] [ORDER BY...] [LIMIT $n] [OFFSET $n]
 /// ```
 /// The `WHERE 1=0` in the subquery is a constant-false predicate; the Postgres
 /// planner folds it away (zero rows, no scan), but the column definitions
@@ -1397,7 +1397,7 @@ fn emit_select_projection<T: Model + FromPgRow, Row: ValuesRow>(
     }
 }
 
-/// Emit `INNER JOIN (VALUES ...) AS alias(cols) ON ...`.
+/// Emit `INNER JOIN (VALUES...) AS alias(cols) ON...`.
 fn push_inner_join_values<Row: ValuesRow, T: Model>(
     values: &InlineValues<Row>,
     on: &ValuesOn<T>,
@@ -1412,7 +1412,7 @@ fn push_inner_join_values<Row: ValuesRow, T: Model>(
     push_on_predicate(on, values, acc);
 }
 
-/// Emit `LEFT JOIN (VALUES ...) AS alias(cols, __djogi_present) ON ...`.
+/// Emit `LEFT JOIN (VALUES...) AS alias(cols, __djogi_present) ON...`.
 fn push_left_join_values<Row: ValuesRow, T: Model>(
     values: &InlineValues<Row>,
     on: &ValuesOn<T>,
@@ -1427,7 +1427,7 @@ fn push_left_join_values<Row: ValuesRow, T: Model>(
     push_on_predicate(on, values, acc);
 }
 
-/// Emit `CROSS JOIN (VALUES ...) AS alias(cols)`.
+/// Emit `CROSS JOIN (VALUES...) AS alias(cols)`.
 /// No `ON` predicate — cross joins are unconditional Cartesian products.
 /// No sentinel column — every VALUES row pairs with every model row; there
 /// is no "no match" case to detect.
@@ -1465,7 +1465,7 @@ fn push_values_rows<Row: ValuesRow>(
     }
 }
 
-/// Emit `(col0, col1, ...)` for the VALUES AS clause.
+/// Emit `(col0, col1,...)` for the VALUES AS clause.
 fn push_col_list<Row: ValuesRow>(
     values: &InlineValues<Row>,
     acc: &mut SqlAccumulator,

@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Getting Started
 
@@ -29,29 +29,29 @@ covers connection pooling, transactions, and the raw-SQL escape hatch.
 ```yaml
 # docker-compose.yml
 services:
-  postgres:
-    image: postgres:18
-    ports:
-      # Bind to loopback explicitly. The unqualified `"5432:5432"` shorthand
-      # listens on `0.0.0.0` and would expose the dev DB to anything that can
-      # reach the host's IP; loopback keeps the weak local credentials
-      # behind the host's network stack.
-      - "127.0.0.1:5432:5432"
-    environment:
-      POSTGRES_USER: djogi
-      # djogi-allow-secret: local-dev example, intentionally weak.
-      POSTGRES_PASSWORD: djogi
-      POSTGRES_DB: myapp
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U djogi"]
-      interval: 2s
-      timeout: 5s
-      retries: 10
+ postgres:
+ image: postgres:18
+ ports:
+ # Bind to loopback explicitly. The unqualified `"5432:5432"` shorthand
+ # listens on `0.0.0.0` and would expose the dev DB to anything that can
+ # reach the host's IP; loopback keeps the weak local credentials
+ # behind the host's network stack.
+ - "127.0.0.1:5432:5432"
+ environment:
+ POSTGRES_USER: djogi
+ # djogi-allow-secret: local-dev example, intentionally weak.
+ POSTGRES_PASSWORD: djogi
+ POSTGRES_DB: myapp
+ volumes:
+ - pgdata:/var/lib/postgresql/data
+ healthcheck:
+ test: ["CMD-SHELL", "pg_isready -U djogi"]
+ interval: 2s
+ timeout: 5s
+ retries: 10
 
 volumes:
-  pgdata:
+ pgdata:
 ```
 
 ```bash
@@ -93,11 +93,11 @@ use djogi::prelude::*;
 #[model(table = "articles")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Article {
-    pub title: String,
-    pub slug: String,
-    pub body: String,
-    pub published: bool,
-    pub view_count: i32,
+ pub title: String,
+ pub slug: String,
+ pub body: String,
+ pub published: bool,
+ pub view_count: i32,
 }
 ```
 
@@ -106,16 +106,16 @@ After `#[model]` expands, the struct effectively gains three injected fields:
 ```rust
 // What the struct looks like after macro expansion (not written by hand):
 pub struct Article {
-    pub id: HeerIdRecencyBiased,        // BIGINT HeerIdDesc-backed injected PK
-    pub created_at: time::OffsetDateTime,  // TIMESTAMPTZ DEFAULT now(), injected
-    pub updated_at: time::OffsetDateTime,  // TIMESTAMPTZ DEFAULT now(), injected
+ pub id: HeerIdRecencyBiased, // BIGINT HeerIdDesc-backed injected PK
+ pub created_at: time::OffsetDateTime, // TIMESTAMPTZ DEFAULT now(), injected
+ pub updated_at: time::OffsetDateTime, // TIMESTAMPTZ DEFAULT now(), injected
 
-    // Developer-defined fields:
-    pub title: String,
-    pub slug: String,
-    pub body: String,
-    pub published: bool,
-    pub view_count: i32,
+ // Developer-defined fields:
+ pub title: String,
+ pub slug: String,
+ pub body: String,
+ pub published: bool,
+ pub view_count: i32,
 }
 ```
 
@@ -147,24 +147,24 @@ builder's `post_connect` hook:
 ```rust
 let node_id = std::env::var("HEER_NODE_ID").unwrap_or_else(|_| "1".to_string());
 let pool = djogi::DjogiPool::builder(&database_url)
-    .post_connect(move |client| {
-        let node_id = node_id.clone();
-        Box::pin(async move {
-            client
-                .execute(
-                    "SELECT set_config('heer.node_id', $1, false), \
-                            set_config('heer.ranj_node_id', $1, false)",
-                    &[&node_id],
-                )
-                .await?;
-            Ok(())
-        })
-    })
-    .build()
-    .await?;
+.post_connect(move |client| {
+ let node_id = node_id.clone();
+ Box::pin(async move {
+  client
+ .execute(
+   "SELECT set_config('heer.node_id', $1, false), \
+    set_config('heer.ranj_node_id', $1, false)",
+   &[&node_id],
+  )
+ .await?;
+  Ok(())
+ })
+ })
+.build()
+.await?;
 ```
 
-`ALTER DATABASE ... SET heer.node_id = ...` is a fallback for operators
+`ALTER DATABASE... SET heer.node_id =...` is a fallback for operators
 who intentionally want a database-level default and have owner privileges.
 Application examples should not require it; `post_connect` makes the setup
 explicit at the pool boundary and works in restricted CI/dev databases. Set
@@ -198,9 +198,9 @@ struct definition.
 differ to compose a migration from descriptor drift:
 
 ```bash
-djogi migrations compose          # generate up/down SQL from descriptor drift
-djogi migrations status           # show ledger / snapshot / live-DB state
-djogi migrations attune           # reconcile disk / ledger / live DB
+djogi migrations compose  # generate up/down SQL from descriptor drift
+djogi migrations status  # show ledger / snapshot / live-DB state
+djogi migrations attune  # reconcile disk / ledger / live DB
 ```
 
 Apply the composed plan with `djogi migrations apply` (or through the
@@ -218,7 +218,7 @@ production runner, no hand-written DDL:
 ```rust
 #[djogi::djogi_test(sync_models = [Article])]
 async fn create_articles(mut ctx: DjogiContext) {
-    let _article = Article::create(&mut ctx, /* ... */).await.unwrap();
+ let _article = Article::create(&mut ctx, /*... */).await.unwrap();
 }
 ```
 
@@ -239,20 +239,20 @@ With the table created, use the generated `Model` trait methods:
 use djogi::prelude::*;
 
 async fn create_article(ctx: &mut DjogiContext) -> djogi::Result<Article> {
-    let article = Article::create(ctx, Article {
-        title: "Getting Started with Djogi".into(),
-        slug: "getting-started".into(),
-        body: "Djogi is a Model-first framework for Rust...".into(),
-        published: false,
-        view_count: 0,
-        // Framework fields — use ..Default::default().
-        // The macro replaces them before the INSERT regardless.
-        ..Default::default()
-    }).await?;
+ let article = Article::create(ctx, Article {
+ title: "Getting Started with Djogi".into(),
+ slug: "getting-started".into(),
+ body: "Djogi is a Model-first framework for Rust...".into(),
+ published: false,
+ view_count: 0,
+ // Framework fields — use..Default::default().
+ // The macro replaces them before the INSERT regardless.
+..Default::default()
+ }).await?;
 
-    // id is populated by RETURNING after INSERT
-    println!("Created article: {}", article.id);
-    Ok(article)
+ // id is populated by RETURNING after INSERT
+ println!("Created article: {}", article.id);
+ Ok(article)
 }
 ```
 
@@ -267,9 +267,9 @@ RETURNING id, created_at, updated_at, title, slug, body, published, view_count
 
 ```rust
 async fn fetch_article(ctx: &mut DjogiContext, id: HeerIdRecencyBiased) -> djogi::Result<Article> {
-    let article = Article::get(ctx, id).await?;
-    println!("{}: {}", article.id, article.title);
-    Ok(article)
+ let article = Article::get(ctx, id).await?;
+ println!("{}: {}", article.id, article.title);
+ Ok(article)
 }
 ```
 
@@ -279,12 +279,12 @@ Returns `Err(DjogiError::NotFound)` when no row matches.
 
 ```rust
 async fn publish_article(ctx: &mut DjogiContext, id: HeerIdRecencyBiased) -> djogi::Result<()> {
-    let mut article = Article::get(ctx, id).await?;
-    article.published = true;
-    article.view_count += 1;
-    // Issues a full-row UPDATE; updated_at is refreshed automatically
-    article.save(ctx).await?;
-    Ok(())
+ let mut article = Article::get(ctx, id).await?;
+ article.published = true;
+ article.view_count += 1;
+ // Issues a full-row UPDATE; updated_at is refreshed automatically
+ article.save(ctx).await?;
+ Ok(())
 }
 ```
 
@@ -292,10 +292,10 @@ async fn publish_article(ctx: &mut DjogiContext, id: HeerIdRecencyBiased) -> djo
 
 ```rust
 async fn remove_article(ctx: &mut DjogiContext, id: HeerIdRecencyBiased) -> djogi::Result<()> {
-    let article = Article::get(ctx, id).await?;
-    article.delete(ctx).await?;
-    // article is moved — cannot be used after this point
-    Ok(())
+ let article = Article::get(ctx, id).await?;
+ article.delete(ctx).await?;
+ // article is moved — cannot be used after this point
+ Ok(())
 }
 ```
 
@@ -303,9 +303,9 @@ async fn remove_article(ctx: &mut DjogiContext, id: HeerIdRecencyBiased) -> djog
 
 ```rust
 async fn reload(ctx: &mut DjogiContext, article: Article) -> djogi::Result<Article> {
-    // Returns a fresh copy of the row — useful after out-of-band DB changes
-    let fresh = article.refresh_from_db(ctx).await?;
-    Ok(fresh)
+ // Returns a fresh copy of the row — useful after out-of-band DB changes
+ let fresh = article.refresh_from_db(ctx).await?;
+ Ok(fresh)
 }
 ```
 
@@ -333,26 +333,26 @@ use djogi::prelude::*;
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): bespoke ranking query not exposed by QuerySet.
 async fn published_articles(ctx: &mut DjogiContext) -> djogi::Result<Vec<Article>> {
-    // raw_query — returns Vec<T> for any T: FromPgRow
-    let articles: Vec<Article> = ctx.raw_query(
-        "SELECT id, created_at, updated_at, title, slug, body, published, view_count
-         FROM articles WHERE published = $1",
-        &[&true],
-    ).await?;
+ // raw_query — returns Vec<T> for any T: FromPgRow
+ let articles: Vec<Article> = ctx.raw_query(
+ "SELECT id, created_at, updated_at, title, slug, body, published, view_count
+  FROM articles WHERE published = $1",
+ &[&true],
+ ).await?;
 
-    // raw_scalar — returns a single scalar value
-    let _count: i64 = ctx.raw_scalar(
-        "SELECT COUNT(*) FROM articles",
-        &[],
-    ).await?;
+ // raw_scalar — returns a single scalar value
+ let _count: i64 = ctx.raw_scalar(
+ "SELECT COUNT(*) FROM articles",
+ &[],
+ ).await?;
 
-    // raw_execute — runs a statement without returning rows; returns rows-affected
-    let _updated = ctx.raw_execute(
-        "UPDATE articles SET view_count = view_count + 1 WHERE published = $1",
-        &[&true],
-    ).await?;
+ // raw_execute — runs a statement without returning rows; returns rows-affected
+ let _updated = ctx.raw_execute(
+ "UPDATE articles SET view_count = view_count + 1 WHERE published = $1",
+ &[&true],
+ ).await?;
 
-    Ok(articles)
+ Ok(articles)
 }
 ```
 
@@ -373,7 +373,7 @@ rare deliberate pin tests under `tests/pin/` carry
 ## 7. Transactions
 
 Model CRUD methods take `&mut DjogiContext`. Wrap a call site in
-`atomic(ctx, |tx| Box::pin(async move { ... }))` (the free function
+`atomic(ctx, |tx| Box::pin(async move {... }))` (the free function
 re-exported from `djogi::prelude`) to run a closure inside a
 transaction with savepoint nesting and on-commit callbacks. The
 closure must return `Pin<Box<dyn Future<…>>>` — the `Box::pin(async
@@ -383,20 +383,20 @@ move { … })` wrapper is how you spell it:
 use djogi::prelude::*;
 
 async fn transfer_views(ctx: &mut DjogiContext, from_id: HeerIdRecencyBiased, to_id: HeerIdRecencyBiased)
-    -> djogi::Result<()>
+ -> djogi::Result<()>
 {
-    atomic(ctx, |tx| Box::pin(async move {
-        let mut source = Article::get(tx, from_id).await?;
-        let mut dest = Article::get(tx, to_id).await?;
+ atomic(ctx, |tx| Box::pin(async move {
+ let mut source = Article::get(tx, from_id).await?;
+ let mut dest = Article::get(tx, to_id).await?;
 
-        dest.view_count += source.view_count;
-        source.view_count = 0;
+ dest.view_count += source.view_count;
+ source.view_count = 0;
 
-        source.save(tx).await?;
-        dest.save(tx).await?;
+ source.save(tx).await?;
+ dest.save(tx).await?;
 
-        Ok(())
-    })).await
+ Ok(())
+ })).await
 }
 ```
 
@@ -428,69 +428,69 @@ use djogi::prelude::*;
 
 #[djogi::djogi_test(sync_models = [Article])]
 async fn create_and_get(mut ctx: DjogiContext) {
-    let article = Article::create(&mut ctx, Article {
-        title: "Test Article".into(),
-        slug: "test".into(),
-        body: "Body text".into(),
-        published: false,
-        view_count: 0,
-        ..Default::default()
-    })
-    .await
-    .expect("create should succeed");
+ let article = Article::create(&mut ctx, Article {
+ title: "Test Article".into(),
+ slug: "test".into(),
+ body: "Body text".into(),
+ published: false,
+ view_count: 0,
+..Default::default()
+ })
+.await
+.expect("create should succeed");
 
-    // id is DB-generated — positive and non-zero
-    assert!(article.id.as_i64() > 0);
-    assert_eq!(article.title, "Test Article");
-    assert!(!article.published);
+ // id is DB-generated — positive and non-zero
+ assert!(article.id.as_i64() > 0);
+ assert_eq!(article.title, "Test Article");
+ assert!(!article.published);
 
-    // Fetch back by PK
-    let fetched = Article::get(&mut ctx, article.id).await.unwrap();
-    assert_eq!(fetched.slug, "test");
+ // Fetch back by PK
+ let fetched = Article::get(&mut ctx, article.id).await.unwrap();
+ assert_eq!(fetched.slug, "test");
 }
 
 #[djogi::djogi_test(sync_models = [Article])]
 async fn save_updates_fields(mut ctx: DjogiContext) {
-    let mut article = Article::create(&mut ctx, Article {
-        title: "Draft".into(),
-        slug: "draft".into(),
-        body: "".into(),
-        published: false,
-        view_count: 0,
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+ let mut article = Article::create(&mut ctx, Article {
+ title: "Draft".into(),
+ slug: "draft".into(),
+ body: "".into(),
+ published: false,
+ view_count: 0,
+..Default::default()
+ })
+.await
+.unwrap();
 
-    article.published = true;
-    article.title = "Published".into();
-    article.save(&mut ctx).await.unwrap();
+ article.published = true;
+ article.title = "Published".into();
+ article.save(&mut ctx).await.unwrap();
 
-    let reloaded = Article::get(&mut ctx, article.id).await.unwrap();
-    assert!(reloaded.published);
-    assert_eq!(reloaded.title, "Published");
+ let reloaded = Article::get(&mut ctx, article.id).await.unwrap();
+ assert!(reloaded.published);
+ assert_eq!(reloaded.title, "Published");
 }
 
 #[djogi::djogi_test(sync_models = [Article])]
 async fn delete_removes_row(mut ctx: DjogiContext) {
-    let article = Article::create(&mut ctx, Article {
-        title: "To Delete".into(),
-        slug: "to-delete".into(),
-        body: "".into(),
-        published: false,
-        view_count: 0,
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+ let article = Article::create(&mut ctx, Article {
+ title: "To Delete".into(),
+ slug: "to-delete".into(),
+ body: "".into(),
+ published: false,
+ view_count: 0,
+..Default::default()
+ })
+.await
+.unwrap();
 
-    let id = article.id;
-    article.delete(&mut ctx).await.unwrap();
+ let id = article.id;
+ article.delete(&mut ctx).await.unwrap();
 
-    assert!(matches!(
-        Article::get(&mut ctx, id).await,
-        Err(DjogiError::NotFound)
-    ));
+ assert!(matches!(
+ Article::get(&mut ctx, id).await,
+ Err(DjogiError::NotFound)
+ ));
 }
 ```
 
@@ -513,15 +513,15 @@ node-id config — should keep the serialized flag.
 ## What's Next
 
 - [Models guide](./models.md) — every `#[model(...)]` and `#[field(...)]`
-  attribute, including alternate PK types (`serial`, `ranjid`,
-  `ranjid_recency_biased`, custom via `djogi::primary_key!`) and the rich
-  field types (`Decimal`, `Vec<T>`, `time::Date`, `Jsonb<T>`, `GeoPoint`).
+ attribute, including alternate PK types (`serial`, `ranjid`,
+ `ranjid_recency_biased`, custom via `djogi::primary_key!`) and the rich
+ field types (`Decimal`, `Vec<T>`, `time::Date`, `Jsonb<T>`, `GeoPoint`).
 - [Queries guide](./queries.md) — the lazy `QuerySet<T>` API: typed
-  filters via `FieldRef`, eager loading via `prefetch` /
-  `select_related`, aggregates and annotations, raw-SQL escape hatch.
+ filters via `FieldRef`, eager loading via `prefetch` /
+ `select_related`, aggregates and annotations, raw-SQL escape hatch.
 - [Migrations guide](./migrations.md) — the descriptor-driven differ,
-  `djogi migrations compose / status / attune`, online-safety
-  classification, and the `djogi live` backfill-orchestrator surface
-  (declared, with `run` / `resume` / `status` behavior deferred in v0.1.0).
+ `djogi migrations compose / status / attune`, online-safety
+ classification, and the `djogi live` backfill-orchestrator surface
+ (declared, with `run` / `resume` / `status` behavior deferred in v0.1.0).
 - [Agent guide](./agent-guide.md) — if you are an AI coding agent working
-  in a Djogi codebase, start here.
+ in a Djogi codebase, start here.

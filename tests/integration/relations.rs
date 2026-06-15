@@ -5,21 +5,21 @@
 // What this file pins:
 //
 // 1. The macro-generated `FromRow` decodes `ForeignKey<T>` and
-//    `Option<ForeignKey<T>>` columns transparently via the
-//    `Decode`/`Type` impls the framework shipped — no special-case handling
-//    required in the macro's emission.
+//  `Option<ForeignKey<T>>` columns transparently via the
+//  `Decode`/`Type` impls the framework shipped — no special-case handling
+//  required in the macro's emission.
 // 2. `Vehicle::create` encodes a `ForeignKey<T>` field as the target
-//    model's PK type (BIGINT here), matching the `Encode` impl.
+//  model's PK type (BIGINT here), matching the `Encode` impl.
 // 3. `.key()` returns the stored PK on both freshly-constructed and
-//    re-fetched rows; `.resolved()` returns `None` unconditionally on
-//    the unresolved wrapper (spec's no-lazy-loading invariant).
+//  re-fetched rows; `.resolved()` returns `None` unconditionally on
+//  the unresolved wrapper (spec's no-lazy-loading invariant).
 // 4. `.fetch(executor)` issues exactly one `SELECT` via `T::get` and
-//    returns the fully-materialised target row.
+//  returns the fully-materialised target row.
 // 5. Nullable FKs round-trip `None`/`Some` cleanly through the
-//    `Option<ForeignKey<T>>` branch.
+//  `Option<ForeignKey<T>>` branch.
 // 6. Inserts with a non-existent FK value surface cleanly as a
-//    `DjogiError::Db` — proving the PG constraint violation
-//    doesn't panic through the Djogi error machinery.
+//  `DjogiError::Db` — proving the PG constraint violation
+//  doesn't panic through the Djogi error machinery.
 //
 // # Fixture strategy (Q10 resolution in the plan)
 //
@@ -553,11 +553,11 @@ async fn prefetch_same_relation_twice_is_idempotent(mut ctx: djogi::DjogiContext
 /// Happy path: one vehicle, one owner. `select_related(owner)` emits a
 /// single `LEFT JOIN` and the resulting `JoinedRow<Vehicle>` exposes the
 /// joined owner via the typed accessor. Pins:
-///   1. Main row decodes correctly from the joined result set (no
-///      column-name collision with the child `id` / `created_at` /
-///      `updated_at`).
-///   2. Child row is materialised — `row.get(path)` returns `Some(&Owner)`
-///      with the seeded name.
+///  1. Main row decodes correctly from the joined result set (no
+///   column-name collision with the child `id` / `created_at` /
+///   `updated_at`).
+///  2. Child row is materialised — `row.get(path)` returns `Some(&Owner)`
+///   with the seeded name.
 #[djogi::djogi_test(sync_models = [Owner, FuelType, Vehicle])]
 async fn select_related_fk_emits_join_and_populates(mut ctx: djogi::DjogiContext) {
     let owner = seed_owner(&mut ctx, "Alice").await;

@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Distributed Topology & Residency
 
@@ -19,7 +19,7 @@ This spec defines the framework boundary for those needs.
 
 ## Minimal Public Surface
 
-Phase 12 should stabilize only these public contracts:
+2 should stabilize only these public contracts:
 
 Read-mode API:
 

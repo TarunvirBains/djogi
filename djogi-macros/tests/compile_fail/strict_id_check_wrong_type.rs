@@ -13,8 +13,8 @@ use djogi::prelude::*;
 #[model(table = "wrong_strict_id_189", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct WrongStrictId189 {
-    #[field(strict_id_check)]
-    pub label: String,
+ #[field(strict_id_check)]
+ pub label: String,
 }
 
 fn main() {}

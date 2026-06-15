@@ -327,8 +327,8 @@ pub async fn check_no_active_plan(
     };
 
     let sql = "SELECT 1 FROM djogi_live_plans \
-                WHERE target_database = $1 AND app_label = $2 \
-                  AND status IN ('pending', 'running', 'paused')";
+    WHERE target_database = $1 AND app_label = $2 \
+     AND status IN ('pending', 'running', 'paused')";
     let exists = ctx
         .query_opt(sql, &[&target_db, &app_label])
         .await

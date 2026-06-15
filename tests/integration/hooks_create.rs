@@ -4,13 +4,13 @@
 // What this file pins:
 //
 // 1. `before_create(&mut value, ctx)` fires before the INSERT and may
-//    mutate the in-memory value — the mutation round-trips through the
-//    `RETURNING` clause back into the row the caller receives.
+//  mutate the in-memory value — the mutation round-trips through the
+//  `RETURNING` clause back into the row the caller receives.
 // 2. `after_create(&row, ctx)` fires after the INSERT — the hook can
-//    use typed model APIs to observe the just-inserted row.
+//  use typed model APIs to observe the just-inserted row.
 // 3. Returning `Err` from `before_create` short-circuits the entire
-//    sequence: no INSERT lands, and a follow-up `objects().count()`
-//    confirms zero rows landed.
+//  sequence: no INSERT lands, and a follow-up `objects().count()`
+//  confirms zero rows landed.
 //
 // §D3 lines 118-129 fix the canonical sequence as
 // `before_create -> INSERT -> outbox -> after_create -> on_commit drain`.
@@ -103,9 +103,9 @@ pub struct ObserveCounter {
 // hook bodies. `#[djogi_test]` runs each test on its own task so these
 // `Cell`s are private to this single test.
 tokio::task_local! {
-    static BEFORE_FIRED: Cell<bool>;
-    static AFTER_FIRED: Cell<bool>;
-    static AFTER_OBSERVED_VALUE: Cell<i32>;
+  static BEFORE_FIRED: Cell<bool>;
+  static AFTER_FIRED: Cell<bool>;
+  static AFTER_OBSERVED_VALUE: Cell<i32>;
 }
 
 impl djogi::hooks::ModelHooks for ObserveCounter {
@@ -228,7 +228,7 @@ async fn before_create_err_aborts_no_row(mut ctx: djogi::DjogiContext) {
 // `#[field(sequence_within = ...)]` counter upsert.
 //
 // Adversarial-review counter-signal ( cluster review,
-// Codex 2026-05-04 BLOCK-1): the macro previously emitted the
+// an internal review 2026-05-04 ): the macro previously emitted the
 // sequence-counter upsert AHEAD of `before_create`, so an aborted
 // hook on the test context would still increment
 // the per-parent counter — leaking sequence numbers on validation

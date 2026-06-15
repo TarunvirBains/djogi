@@ -3,19 +3,19 @@
 // What this file pins:
 //
 // 1. `save_invalidates_on_commit` — after `Model::save` inside `atomic`, the
-//    entry that was pre-inserted into the bound `Punnu` is gone after commit
-//    (the `on_commit` hook fired and called `Punnu::invalidate`).
+//  entry that was pre-inserted into the bound `Punnu` is gone after commit
+//  (the `on_commit` hook fired and called `Punnu::invalidate`).
 //
 // 2. `save_does_not_invalidate_on_rollback` — when the `atomic` closure
-//    returns `Err`, the `on_commit` hook is dropped along with the queued
-//    callbacks and the Punnu entry survives (never invalidated).
+//  returns `Err`, the `on_commit` hook is dropped along with the queued
+//  callbacks and the Punnu entry survives (never invalidated).
 //
 // 3. `delete_invalidates_on_commit` — analogous to test 1, but exercises
-//    the `Model::delete` path with `InvalidationReason::OnDelete`.
+//  the `Model::delete` path with `InvalidationReason::OnDelete`.
 //
 // 4. `nested_savepoint_save_invalidates_only_on_outer_commit` — calling
-//    `Model::save` inside a nested `atomic` (savepoint) only fires the
-//    invalidation at outermost commit, not at savepoint RELEASE.
+//  `Model::save` inside a nested `atomic` (savepoint) only fires the
+//  invalidation at outermost commit, not at savepoint RELEASE.
 //
 // # Fixture strategy
 //
@@ -55,10 +55,10 @@ pub struct InvalRow {
 // Test 1 — `Model::save` enqueues on_commit invalidation.
 //
 // Flow:
-//  a. Create a row in the DB (committed).
-//  b. In a second atomic: capture the Punnu Arc, manually insert the row into
-//     Punnu to simulate a warm cache entry, then call `Model::save`.
-//  c. After the atomic commits, assert the Punnu entry is gone.
+// a. Create a row in the DB (committed).
+// b. In a second atomic: capture the Punnu Arc, manually insert the row into
+//   Punnu to simulate a warm cache entry, then call `Model::save`.
+// c. After the atomic commits, assert the Punnu entry is gone.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [InvalRow])]
@@ -138,9 +138,9 @@ async fn save_invalidates_on_commit(ctx: djogi::DjogiContext) {
     assert!(
         punnu.get(&row_id).is_none(),
         "Punnu entry for the saved row must be gone after commit — \
-         Model::save enqueues an on_commit callback that calls \
-         Punnu::invalidate(id, InvalidationReason::OnSave); \
-         if Some(_) is still returned, the callback was not registered or not drained",
+     Model::save enqueues an on_commit callback that calls \
+     Punnu::invalidate(id, InvalidationReason::OnSave); \
+     if Some(_) is still returned, the callback was not registered or not drained",
     );
 }
 
@@ -148,10 +148,10 @@ async fn save_invalidates_on_commit(ctx: djogi::DjogiContext) {
 // Test 2 — rollback drops the on_commit hook; entry survives.
 //
 // Flow:
-//  a. Create a row in the DB.
-//  b. In a second atomic: pre-insert into Punnu, call `Model::save`, then
-//     return Err to trigger rollback.
-//  c. After rollback, the Punnu entry must still be present.
+// a. Create a row in the DB.
+// b. In a second atomic: pre-insert into Punnu, call `Model::save`, then
+//   return Err to trigger rollback.
+// c. After rollback, the Punnu entry must still be present.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [InvalRow])]
@@ -226,8 +226,8 @@ async fn save_does_not_invalidate_on_rollback(ctx: djogi::DjogiContext) {
     assert!(
         punnu.get(&row_id).is_some(),
         "Punnu must still contain the stale entry under row_id after rollback — \
-         on_commit callbacks queued inside a rolled-back atomic are discarded; \
-         a None here would mean the invalidation fired despite rollback",
+     on_commit callbacks queued inside a rolled-back atomic are discarded; \
+     a None here would mean the invalidation fired despite rollback",
     );
 }
 
@@ -235,9 +235,9 @@ async fn save_does_not_invalidate_on_rollback(ctx: djogi::DjogiContext) {
 // Test 3 — `Model::delete` enqueues on_commit invalidation.
 //
 // Flow:
-//  a. Create a row in the DB.
-//  b. In a second atomic: pre-insert into Punnu, call `Model::delete`.
-//  c. After commit, Punnu entry must be gone.
+// a. Create a row in the DB.
+// b. In a second atomic: pre-insert into Punnu, call `Model::delete`.
+// c. After commit, Punnu entry must be gone.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [InvalRow])]
@@ -307,9 +307,9 @@ async fn delete_invalidates_on_commit(ctx: djogi::DjogiContext) {
     assert!(
         punnu.get(&row_id).is_none(),
         "Punnu entry for the deleted row must be gone after commit — \
-         Model::delete enqueues an on_commit callback that calls \
-         Punnu::invalidate(id, InvalidationReason::OnDelete); \
-         if Some(_) is still returned, the callback was not registered or not drained",
+     Model::delete enqueues an on_commit callback that calls \
+     Punnu::invalidate(id, InvalidationReason::OnDelete); \
+     if Some(_) is still returned, the callback was not registered or not drained",
     );
 }
 
@@ -318,12 +318,12 @@ async fn delete_invalidates_on_commit(ctx: djogi::DjogiContext) {
 // commit, not at savepoint RELEASE.
 //
 // Flow:
-//  a. Create a row in the DB.
-//  b. Open an outer atomic. Inside it, open a nested atomic (savepoint).
-//     In the nested scope: pre-insert into Punnu, call `Model::save`.
-//     After RELEASE (nested commit), Punnu entry still present (outer not
-//     committed yet).
-//  c. Commit the outer. Now the on_commit hook fires and entry is gone.
+// a. Create a row in the DB.
+// b. Open an outer atomic. Inside it, open a nested atomic (savepoint).
+//   In the nested scope: pre-insert into Punnu, call `Model::save`.
+//   After RELEASE (nested commit), Punnu entry still present (outer not
+//   committed yet).
+// c. Commit the outer. Now the on_commit hook fires and entry is gone.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [InvalRow])]
@@ -395,10 +395,10 @@ async fn nested_savepoint_save_invalidates_only_on_outer_commit(ctx: djogi::Djog
                     assert!(
                         punnu.get(&row_id).is_some(),
                         "Punnu entry under row_id must still be present after the \
-                         inner RELEASE SAVEPOINT — the nested save enqueued an \
-                         on_commit callback that promotes to the outer queue but \
-                         is NOT drained until the outer COMMIT. If None here, the \
-                         drain fired prematurely on the savepoint release.",
+             inner RELEASE SAVEPOINT — the nested save enqueued an \
+             on_commit callback that promotes to the outer queue but \
+             is NOT drained until the outer COMMIT. If None here, the \
+             drain fired prematurely on the savepoint release.",
                     );
                 }
 
@@ -419,9 +419,9 @@ async fn nested_savepoint_save_invalidates_only_on_outer_commit(ctx: djogi::Djog
     assert!(
         punnu.get(&row_id).is_none(),
         "Punnu entry must be gone after outer commit — the nested save enqueued \
-         an on_commit callback that was promoted to the outer queue and drained \
-         at outer COMMIT. If Some(_) is returned, the callback queue promotion \
-         failed or the drain did not fire.",
+     an on_commit callback that was promoted to the outer queue and drained \
+     at outer COMMIT. If Some(_) is returned, the callback queue promotion \
+     failed or the drain did not fire.",
     );
 }
 
@@ -509,7 +509,7 @@ async fn bulk_execute_returning_pairs_invalidates_on_commit(ctx: djogi::DjogiCon
         assert!(
             punnu.get(&id).is_none(),
             "Punnu entry for each bulk-updated row must be gone after commit; \
-             execute_returning_pairs enqueues per-row OnSave invalidation via on_commit"
+       execute_returning_pairs enqueues per-row OnSave invalidation via on_commit"
         );
     }
 }
@@ -607,8 +607,8 @@ async fn bulk_update_execute_invalidates_on_commit(ctx: djogi::DjogiContext) {
         assert!(
             punnu.get(&id).is_none(),
             "Punnu entry for each bulk-updated row must be gone after commit; \
-             plain execute in a transaction-backed context collects affected IDs \
-             via UPDATE ... RETURNING id and enqueues one on_commit invalidation"
+       plain execute in a transaction-backed context collects affected IDs \
+       via UPDATE ... RETURNING id and enqueues one on_commit invalidation"
         );
     }
 }
@@ -700,8 +700,8 @@ async fn bulk_update_execute_does_not_invalidate_on_rollback(ctx: djogi::DjogiCo
         assert!(
             punnu.get(&id).is_some(),
             "Punnu entry under row_id must still be present after rollback — \
-             on_commit callbacks queued inside a rolled-back atomic are discarded; \
-             a None here would mean the invalidation fired despite rollback"
+       on_commit callbacks queued inside a rolled-back atomic are discarded; \
+       a None here would mean the invalidation fired despite rollback"
         );
     }
 }
@@ -793,9 +793,9 @@ async fn bulk_execute_returning_pairs_does_not_invalidate_on_rollback(ctx: djogi
         assert!(
             punnu.get(&id).is_some(),
             "Punnu entry under row_id must still be present after rollback — \
-             execute_returning_pairs enqueues per-row OnSave invalidation via \
-             on_commit, but a rolled-back atomic discards those callbacks; \
-             a None here would mean the invalidation fired despite rollback"
+       execute_returning_pairs enqueues per-row OnSave invalidation via \
+       on_commit, but a rolled-back atomic discards those callbacks; \
+       a None here would mean the invalidation fired despite rollback"
         );
     }
 }

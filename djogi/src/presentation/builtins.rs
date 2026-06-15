@@ -86,8 +86,8 @@ pub(crate) static TEST_HMAC_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::
 /// - Every character must be in `0`–`9` or `a`–`f` (lowercase only).
 /// - Uppercase `A`–`F` are explicitly rejected with [`PresentationStartupError::NonLowercaseHexByte`].
 /// - Invalid non-hex bytes produce [`PresentationStartupError::InvalidHexByte`].
-///   Failed parses are never cached. The caller may retry after fixing the
-///   environment variable.
+/// Failed parses are never cached. The caller may retry after fixing the
+/// environment variable.
 #[cfg(feature = "hmac-codec")]
 fn parse_hmac_key(hex: &str, env_name: &'static str) -> Result<[u8; 32], PresentationStartupError> {
     let bytes = hex.as_bytes();

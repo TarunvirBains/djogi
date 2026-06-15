@@ -19,12 +19,12 @@
 // not found)` noise alongside the real diagnostic.
 
 fn main() {
-    // Attempt to construct a `Regex` variant on sassi's `LookupOp`.
-    // Sassi's `LookupOp` enum (`sassi/src/predicate/field_predicate.rs:42`)
-    // exposes Eq, Neq, Gt, Gte, Lt, Lte, In, NotIn, IsNull, IsNotNull,
-    // Between, Contains, IContains, StartsWith, IStartsWith, EndsWith,
-    // IEndsWith, IExact — but not Regex/IRegex. The build MUST fail
-    // with `error[E0599]: no variant or associated item named `Regex`
-    // found for enum `sassi::LookupOp``.
-    let _ = sassi::LookupOp::Regex;
+ // Attempt to construct a `Regex` variant on sassi's `LookupOp`.
+ // Sassi's `LookupOp` enum (`sassi/src/predicate/field_predicate.rs:42`)
+ // exposes Eq, Neq, Gt, Gte, Lt, Lte, In, NotIn, IsNull, IsNotNull,
+ // Between, Contains, IContains, StartsWith, IStartsWith, EndsWith,
+ // IEndsWith, IExact — but not Regex/IRegex. The build MUST fail
+ // with `error[E0599]: no variant or associated item named `Regex`
+ // found for enum `sassi::LookupOp``.
+ let _ = sassi::LookupOp::Regex;
 }

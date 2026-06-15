@@ -16,7 +16,7 @@
 //! Rust derive conventions (`#[serde(skip)]`, `#[doc = "..."]`) and
 //! keeps locality of reasoning — the computed declaration sits next
 //! to its sibling fields. The struct-level alternative
-//! (`#[derive(Model)] #[computed(name = ..., sql = ...)]`) would
+//! (`#[derive(Model)] #[computed(name =..., sql =...)]`) would
 //! force adopters to repeat the field name in the attribute and
 //! split the computed declaration from its return type.
 //! # Stored variant (`#[computed(sql, stored)]`)
@@ -61,11 +61,11 @@ pub struct ComputedAttr {
 /// Errors surface span-precise diagnostics on:
 /// - The `stored` keyword (rejected with a deferral message).
 /// - Empty `sql = ""` (silent-no-op surface; rejected at parse time).
-/// - Unknown keys inside `#[computed(...)]` (e.g. `index = ...`).
+/// - Unknown keys inside `#[computed(...)]` (e.g. `index =...`).
 /// - The bare `#[computed]` form (without the required `sql = "..."`).
 /// - A field with both `#[computed(...)]` and `#[field(...)]`
-///   computed fields are virtual and must not double up with regular
-///   field metadata.
+/// computed fields are virtual and must not double up with regular
+/// field metadata.
 pub fn parse_computed_attrs(
     struct_item: &syn::ItemStruct,
 ) -> syn::Result<Vec<(syn::Ident, ComputedAttr)>> {
@@ -92,7 +92,7 @@ pub fn parse_computed_attrs(
                 return Err(syn::Error::new_spanned(
                     attr,
                     "`#[computed]` requires `sql = \"...\"` — e.g. \
-                     `#[computed(sql = \"base_price * (1.0 + tax_rate)\")]`",
+      `#[computed(sql = \"base_price * (1.0 + tax_rate)\")]`",
                 ));
             }
             let attr_parsed =
@@ -102,7 +102,7 @@ pub fn parse_computed_attrs(
                 return Err(syn::Error::new_spanned(
                     attr,
                     "duplicate `#[computed(...)]` attribute on the same \
-                     field — every computed field declares its SQL once",
+      field — every computed field declares its SQL once",
                 ));
             }
             found = Some(ComputedAttr {
@@ -116,9 +116,9 @@ pub fn parse_computed_attrs(
                 return Err(syn::Error::new_spanned(
                     field_ident,
                     "field carries both `#[field(...)]` and `#[computed(...)]` \
-                     — computed fields are virtual (no storage) and must not \
-                     mix with regular-field metadata; remove one of the \
-                     attributes",
+      — computed fields are virtual (no storage) and must not \
+      mix with regular-field metadata; remove one of the \
+      attributes",
                 ));
             }
             out.push((field_ident.clone(), attr));
@@ -145,8 +145,8 @@ fn parse_computed_args(
                 let Lit::Str(lit_str) = &lit_expr.lit else {
                     return Err(syn::Error::new_spanned(
                         &lit_expr.lit,
-                        "`sql = ...` value must be a string literal — \
-                         e.g. `#[computed(sql = \"base_price * 2\")]`",
+                        "`sql =...` value must be a string literal — \
+       e.g. `#[computed(sql = \"base_price * 2\")]`",
                     ));
                 };
                 let value = lit_str.value();
@@ -154,8 +154,8 @@ fn parse_computed_args(
                     return Err(syn::Error::new_spanned(
                         lit_str,
                         "`sql = \"\"` is empty — either provide a non-empty \
-                         SQL expression or remove the `#[computed(...)]` \
-                         attribute",
+       SQL expression or remove the `#[computed(...)]` \
+       attribute",
                     ));
                 }
                 if sql.is_some() {
@@ -171,11 +171,11 @@ fn parse_computed_args(
                 return Err(syn::Error::new_spanned(
                     path,
                     "`stored` computed columns are not yet supported — \
-                     the migration differ has not yet accumulated 6+ months \
-                     of long-running stability evidence, so generating \
-                     column DDL from `#[computed(stored)]` is out of scope \
-                     for now; ship a non-stored computed (drop the `stored` \
-                     keyword)",
+      the migration differ has not yet accumulated 6+ months \
+      of long-running stability evidence, so generating \
+      column DDL from `#[computed(stored)]` is out of scope \
+      for now; ship a non-stored computed (drop the `stored` \
+      keyword)",
                 ));
             }
             // Reject `stored = true|false` and any other shape.
@@ -183,15 +183,15 @@ fn parse_computed_args(
                 return Err(syn::Error::new_spanned(
                     nv,
                     "`stored` computed columns are not yet supported — \
-                     neither `stored` (flag) nor `stored = ...` shapes are \
-                     accepted; ship a non-stored computed",
+      neither `stored` (flag) nor `stored =...` shapes are \
+      accepted; ship a non-stored computed",
                 ));
             }
             Meta::NameValue(nv) if nv.path.is_ident("sql") => {
                 return Err(syn::Error::new_spanned(
                     &nv.value,
-                    "`sql = ...` value must be a string literal — \
-                     e.g. `#[computed(sql = \"base_price * 2\")]`",
+                    "`sql =...` value must be a string literal — \
+      e.g. `#[computed(sql = \"base_price * 2\")]`",
                 ));
             }
             // #225 — `expose = "..."` / `expose(...)` is
@@ -212,31 +212,31 @@ fn parse_computed_args(
             Meta::NameValue(nv) if nv.path.is_ident("expose") => {
                 return Err(syn::Error::new_spanned(
                     &nv.path,
-                    "`expose = ...` is not accepted inside `#[computed(...)]` — \
-                     visage exposure is declared as a struct-level \
-                     `#[derived(name, ty, scopes, sql, rust)]` attribute \
-                     instead. See docs/spec/visage-derived-fields.md \
-                     (issue #225 / #231).",
+                    "`expose =...` is not accepted inside `#[computed(...)]` — \
+      visage exposure is declared as a struct-level \
+      `#[derived(name, ty, scopes, sql, rust)]` attribute \
+      instead. See docs/spec/visage-derived-fields.md \
+      (issue #225 / #231).",
                 ));
             }
             Meta::List(list) if list.path.is_ident("expose") => {
                 return Err(syn::Error::new_spanned(
                     &list.path,
                     "`expose(...)` is not accepted inside `#[computed(...)]` — \
-                     visage exposure is declared as a struct-level \
-                     `#[derived(name, ty, scopes, sql, rust)]` attribute \
-                     instead. See docs/spec/visage-derived-fields.md \
-                     (issue #225 / #231).",
+      visage exposure is declared as a struct-level \
+      `#[derived(name, ty, scopes, sql, rust)]` attribute \
+      instead. See docs/spec/visage-derived-fields.md \
+      (issue #225 / #231).",
                 ));
             }
             other => {
                 return Err(syn::Error::new_spanned(
                     other,
                     "unsupported key in `#[computed(...)]`; only `sql = \"...\"` \
-                     is accepted (`stored` is not yet supported; \
-                     `expose` was reshaped to the struct-level `#[derived(...)]` \
-                     attribute per issue #225 / #231 — see \
-                     docs/spec/visage-derived-fields.md)",
+      is accepted (`stored` is not yet supported; \
+      `expose` was reshaped to the struct-level `#[derived(...)]` \
+      attribute per issue #225 / #231 — see \
+      docs/spec/visage-derived-fields.md)",
                 ));
             }
         }
@@ -245,7 +245,7 @@ fn parse_computed_args(
         syn::Error::new_spanned(
             attr_for_span,
             "`#[computed(...)]` requires `sql = \"...\"` — e.g. \
-             `#[computed(sql = \"base_price * (1.0 + tax_rate)\")]`",
+    `#[computed(sql = \"base_price * (1.0 + tax_rate)\")]`",
         )
     })?;
     Ok(sql)
@@ -255,10 +255,10 @@ fn parse_computed_args(
 // Earlier shapes of this task emitted one inherent method per
 // `#[computed(sql = "...")]` field with an `unimplemented!()` body so
 // adopters could "override the stub" with a hand-written
-// `pub fn total_price(&self) -> f64 { ... }`. That design rests on a
+// `pub fn total_price(&self) -> f64 {... }`. That design rests on a
 // false premise: Rust does not allow two inherent methods with the
 // same name on the same type. Adding a second
-// `pub fn total_price(&self) -> f64 { self.base_price * ... }`
+// `pub fn total_price(&self) -> f64 { self.base_price *... }`
 // would be E0201 (duplicate definition), not a silent override.
 // The Rust-side getter emission is removed entirely.
 // The SQL-side path stays the canonical surface: adopters call
@@ -300,8 +300,8 @@ pub fn emit_rust_getters(
 // emit on `#name`), giving adopters the call-site pattern:
 // ```rust
 // Vehicle::objects()
-// .filter_expr(|_| Vehicle::computed().total_price().gte(Expr::literal(100.0)))
-// .fetch_all(ctx).await?;
+//.filter_expr(|_| Vehicle::computed().total_price().gte(Expr::literal(100.0)))
+//.fetch_all(ctx).await?;
 // ```
 // # Why a separate ZST rather than bundling into `T::Fields`
 // Plan §7 #10 (resolved 2026-05-03) recommended bundling computed
@@ -311,7 +311,7 @@ pub fn emit_rust_getters(
 // (Column | RawSql), which is a substantial surface-area change
 // touching every method. This ships the simpler ZST split for
 // v0.1.0 — the call-site difference is `Vehicle::computed()
-// .total_price()` vs `f.total_price()`. Adopter ergonomics drift
+//.total_price()` vs `f.total_price()`. Adopter ergonomics drift
 // slightly but the API surface stays narrow. The Q-Algebra refactor
 // is the natural place to bundle if real adopter feedback warrants.
 
@@ -334,45 +334,45 @@ pub fn emit_computed_zst(
             let sql = &attr.sql;
             let doc_comment = format!(
                 " Accessor for the `#[computed(sql = \"{sql}\")]` field.\n\
-                 Returns an `Expr<{}>` for use in `.annotate()`, \
-                 `.filter_expr()`, and `.order_by()`.",
+     Returns an `Expr<{}>` for use in `.annotate()`, \
+     `.filter_expr()`, and `.order_by()`.",
                 quote::quote!(#return_type),
             );
             quote::quote! {
-                #[doc = #doc_comment]
-                #[allow(clippy::wrong_self_convention)]
-                pub fn #field_ident(self) -> ::djogi::expr::Expr<#return_type> {
-                    ::djogi::expr::Expr::<#return_type>::__raw_sql_fragment(#sql)
-                }
+             #[doc = #doc_comment]
+             #[allow(clippy::wrong_self_convention)]
+             pub fn #field_ident(self) -> ::djogi::expr::Expr<#return_type> {
+              ::djogi::expr::Expr::<#return_type>::__raw_sql_fragment(#sql)
+             }
             }
         })
         .collect();
     quote::quote! {
-        // {Model}Computed — 5 ZST holding one accessor per
-        // computed field. Default + Copy + Clone so adopters can
-        // construct it without naming the type.
-        #[derive(::core::default::Default, ::core::marker::Copy, ::core::clone::Clone, ::core::fmt::Debug)]
-        pub struct #zst_name;
+     // {Model}Computed — 5 ZST holding one accessor per
+     // computed field. Default + Copy + Clone so adopters can
+     // construct it without naming the type.
+     #[derive(::core::default::Default, ::core::marker::Copy, ::core::clone::Clone, ::core::fmt::Debug)]
+     pub struct #zst_name;
 
-        impl #zst_name {
-            #(#accessors)*
-        }
+     impl #zst_name {
+      #(#accessors)*
+     }
 
-        impl #struct_name {
-            // Adopter-facing constructor for the computed accessor ZST.
-            // Returns the freshly-constructed ZST; the call site is
-            // `Vehicle::computed().total_price()` returning `Expr<f64>`.
-            #[doc = " Accessor for the model's computed fields."]
-            #[doc = ""]
-            #[doc = " Returns a `{Model}Computed` ZST whose methods return `Expr<V>`"]
-            #[doc = " typed values suitable for `.annotate()`, `.filter_expr()`,"]
-            #[doc = " and `.order_by()`. Each method's `V` is the computed field's"]
-            #[doc = " declared Rust return type."]
-            #[must_use]
-            pub fn computed() -> #zst_name {
-                #zst_name
-            }
-        }
+     impl #struct_name {
+      // Adopter-facing constructor for the computed accessor ZST.
+      // Returns the freshly-constructed ZST; the call site is
+      // `Vehicle::computed().total_price()` returning `Expr<f64>`.
+      #[doc = " Accessor for the model's computed fields."]
+      #[doc = ""]
+      #[doc = " Returns a `{Model}Computed` ZST whose methods return `Expr<V>`"]
+      #[doc = " typed values suitable for `.annotate()`, `.filter_expr()`,"]
+      #[doc = " and `.order_by()`. Each method's `V` is the computed field's"]
+      #[doc = " declared Rust return type."]
+      #[must_use]
+      pub fn computed() -> #zst_name {
+       #zst_name
+      }
+     }
     }
 }
 
@@ -391,10 +391,10 @@ mod tests {
     #[test]
     fn parses_computed_sql_attribute() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[computed(sql = "base_price * 2")]
-                pub double_price: f64,
-            }
+         struct Vehicle {
+          #[computed(sql = "base_price * 2")]
+          pub double_price: f64,
+         }
         });
         let parsed = parse_computed_attrs(&s).expect("ok");
         assert_eq!(parsed.len(), 1);
@@ -414,10 +414,10 @@ mod tests {
     #[test]
     fn rejects_computed_stored_keyword() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[computed(sql = "x", stored)]
-                pub stored_value: f64,
-            }
+         struct Vehicle {
+          #[computed(sql = "x", stored)]
+          pub stored_value: f64,
+         }
         });
         let err = parse_computed_attrs(&s).expect_err("stored rejected");
         let msg = err.to_string();
@@ -428,10 +428,10 @@ mod tests {
     #[test]
     fn rejects_computed_stored_assignment() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[computed(sql = "x", stored = true)]
-                pub stored_value: f64,
-            }
+         struct Vehicle {
+          #[computed(sql = "x", stored = true)]
+          pub stored_value: f64,
+         }
         });
         let err = parse_computed_attrs(&s).expect_err("stored = true rejected");
         assert!(err.to_string().contains("not yet supported"));
@@ -441,10 +441,10 @@ mod tests {
     #[test]
     fn rejects_empty_sql_string() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[computed(sql = "")]
-                pub empty: f64,
-            }
+         struct Vehicle {
+          #[computed(sql = "")]
+          pub empty: f64,
+         }
         });
         let err = parse_computed_attrs(&s).expect_err("empty sql rejected");
         assert!(err.to_string().contains("empty"));
@@ -454,10 +454,10 @@ mod tests {
     #[test]
     fn rejects_bare_computed_attribute() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[computed]
-                pub bad: f64,
-            }
+         struct Vehicle {
+          #[computed]
+          pub bad: f64,
+         }
         });
         let err = parse_computed_attrs(&s).expect_err("bare attribute rejected");
         assert!(err.to_string().contains("sql"));
@@ -468,10 +468,10 @@ mod tests {
     #[test]
     fn rejects_unknown_computed_key() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[computed(sql = "x", foo = "bar")]
-                pub bad: f64,
-            }
+         struct Vehicle {
+          #[computed(sql = "x", foo = "bar")]
+          pub bad: f64,
+         }
         });
         let err = parse_computed_attrs(&s).expect_err("unknown key rejected");
         assert!(err.to_string().contains("unsupported key"));
@@ -485,10 +485,10 @@ mod tests {
     #[test]
     fn rejects_expose_assignment_inside_computed_attribute() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[computed(sql = "base_price * 2", expose = "public")]
-                pub double_price: f64,
-            }
+         struct Vehicle {
+          #[computed(sql = "base_price * 2", expose = "public")]
+          pub double_price: f64,
+         }
         });
         let err = parse_computed_attrs(&s).expect_err("expose= rejected");
         let msg = err.to_string();
@@ -504,10 +504,10 @@ mod tests {
     #[test]
     fn rejects_expose_list_inside_computed_attribute() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[computed(sql = "base_price * 2", expose(public, admin))]
-                pub double_price: f64,
-            }
+         struct Vehicle {
+          #[computed(sql = "base_price * 2", expose(public, admin))]
+          pub double_price: f64,
+         }
         });
         let err = parse_computed_attrs(&s).expect_err("expose(...) rejected");
         let msg = err.to_string();
@@ -520,11 +520,11 @@ mod tests {
     #[test]
     fn rejects_mixed_field_and_computed_attrs() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[field(unique)]
-                #[computed(sql = "x")]
-                pub bad: f64,
-            }
+         struct Vehicle {
+          #[field(unique)]
+          #[computed(sql = "x")]
+          pub bad: f64,
+         }
         });
         let err = parse_computed_attrs(&s).expect_err("mix rejected");
         assert!(err.to_string().contains("computed"));
@@ -541,10 +541,10 @@ mod tests {
     #[test]
     fn rust_getters_emit_empty_token_stream() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[computed(sql = "base_price * 2")]
-                pub double_price: f64,
-            }
+         struct Vehicle {
+          #[computed(sql = "base_price * 2")]
+          pub double_price: f64,
+         }
         });
         let parsed = parse_computed_attrs(&s).expect("ok");
         let struct_name: syn::Ident = parse2(quote! { Vehicle }).unwrap();
@@ -571,10 +571,10 @@ mod tests {
     #[test]
     fn emits_computed_zst_with_accessors() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                #[computed(sql = "base_price * 2")]
-                pub double_price: f64,
-            }
+         struct Vehicle {
+          #[computed(sql = "base_price * 2")]
+          pub double_price: f64,
+         }
         });
         let parsed = parse_computed_attrs(&s).expect("ok");
         let struct_name: syn::Ident = parse2(quote! { Vehicle }).unwrap();
@@ -604,14 +604,14 @@ mod tests {
     #[test]
     fn preserves_declared_order_across_multiple_computed_fields() {
         let s = parse_struct(quote! {
-            struct Vehicle {
-                pub base_price: f64,
-                #[computed(sql = "base_price * 1.1")]
-                pub with_tax: f64,
-                pub tax_rate: f64,
-                #[computed(sql = "base_price * 2.0")]
-                pub double_price: f64,
-            }
+         struct Vehicle {
+          pub base_price: f64,
+          #[computed(sql = "base_price * 1.1")]
+          pub with_tax: f64,
+          pub tax_rate: f64,
+          #[computed(sql = "base_price * 2.0")]
+          pub double_price: f64,
+         }
         });
         let parsed = parse_computed_attrs(&s).expect("ok");
         assert_eq!(parsed.len(), 2);

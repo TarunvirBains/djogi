@@ -8,30 +8,30 @@ use djogi::prelude::*;
 #[model(table = "custom_pk", pk = None)]
 #[derive(Debug, Clone)]
 struct Custom {
-    pub id: String,
-    pub label: String,
+ pub id: String,
+ pub label: String,
 }
 
 fn _check_user_id_field(c: &Custom) {
-    // User's own id type, not HeerId.
-    let _: &String = &c.id;
-    let _: &DateTime = &c.created_at;
-    let _: &DateTime = &c.updated_at;
-    let _: &str = &c.label;
+ // User's own id type, not HeerId.
+ let _: &String = &c.id;
+ let _: &DateTime = &c.created_at;
+ let _: &DateTime = &c.updated_at;
+ let _: &str = &c.label;
 }
 
 fn _check_default_includes_user_id() {
-    let c = Custom::default();
-    // Default::default() on String gives "", so the user's id initializes cleanly.
-    assert_eq!(c.id, String::default());
+ let c = Custom::default();
+ // Default::default() on String gives "", so the user's id initializes cleanly.
+ assert_eq!(c.id, String::default());
 }
 
 fn _check_struct_update() {
-    let _c = Custom {
-        id: "user-supplied".to_string(),
-        label: "hello".to_string(),
-        ..Custom::default()
-    };
+ let _c = Custom {
+  id: "user-supplied".to_string(),
+  label: "hello".to_string(),
+ ..Custom::default()
+ };
 }
 
 fn main() {}

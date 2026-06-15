@@ -12,25 +12,25 @@ use djogi::prelude::*;
 #[model(table = "departments_t6_narrow")]
 #[derive(Debug, Clone)]
 pub struct Department {
-    #[field(expose(public))]
-    pub name: String,
+ #[field(expose(public))]
+ pub name: String,
 }
 
 #[model(table = "employees_t6_narrow", no_default)]
 #[derive(Debug, Clone)]
 pub struct Employee {
-    #[field(expose(public))]
-    pub display_name: String,
+ #[field(expose(public))]
+ pub display_name: String,
 
-    #[field(expose(public -> DepartmentPublic))]
-    pub department: ForeignKey<Department>,
+ #[field(expose(public -> DepartmentPublic))]
+ pub department: ForeignKey<Department>,
 }
 
 fn main() {
-    // Compile-time only: the parser must accept the `->` form, the emitter
-    // must produce an `EmployeePublic` carrying a `DepartmentPublic` peer
-    // populated via `<DepartmentPublic as TryFrom<&Department>>::try_from(...)`.
-    let _build = |emp: &Employee| -> Result<EmployeePublic, djogi::VisageError> {
-        EmployeePublic::try_from(emp)
-    };
+ // Compile-time only: the parser must accept the `->` form, the emitter
+ // must produce an `EmployeePublic` carrying a `DepartmentPublic` peer
+ // populated via `<DepartmentPublic as TryFrom<&Department>>::try_from(...)`.
+ let _build = |emp: &Employee| -> Result<EmployeePublic, djogi::VisageError> {
+  EmployeePublic::try_from(emp)
+ };
 }

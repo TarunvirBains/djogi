@@ -7,10 +7,10 @@
 - **Primary language:** Rust
 - **Version:** `0.6.0` (`cot/Cargo.toml:3`)
 - **Workspace crates relevant to migrations:**
-  - `cot` — runtime runner, ledger model, `Operation` types, `MigrationEngine` (2,453 LOC in `migrations.rs` + 372 LOC in `sorter.rs`)
-  - `cot-cli` — static-analysis diff engine, code generation, CLI commands (2,213 LOC in `migration_generator.rs`)
-  - `cot-macros` — `#[migration_op]` attribute macro (40 LOC)
-  - `cot-codegen` — model/field parsing shared between CLI and macros (`model.rs`, `expr.rs`, `symbol_resolver.rs`)
+ - `cot` — runtime runner, ledger model, `Operation` types, `MigrationEngine` (2,453 LOC in `migrations.rs` + 372 LOC in `sorter.rs`)
+ - `cot-cli` — static-analysis diff engine, code generation, CLI commands (2,213 LOC in `migration_generator.rs`)
+ - `cot-macros` — `#[migration_op]` attribute macro (40 LOC)
+ - `cot-codegen` — model/field parsing shared between CLI and macros (`model.rs`, `expr.rs`, `symbol_resolver.rs`)
 - **Stability:** Pre-1.0, actively maintained. No explicit stability disclaimer in README. Version `0.6.0` implies pre-stable API. The `make_alter_field_operation` function contains a hard `todo!()` panic (`cot-cli/src/migration_generator.rs:835`), indicating field-type-change migrations are not yet implemented.
 - **Driver stack:** `sqlx` (via `sea-query-binder`) + `sea-query` for DDL. Feature flags: `sqlite`, `postgres`, `mysql` (all enabled by default). `cot/Cargo.toml:100-108`.
 
@@ -21,11 +21,11 @@
 **Workspace layout** (`Cargo.toml:1-19`):
 
 ```
-cot/src/db/migrations.rs          # MigrationEngine, Operation, ledger model
-cot/src/db/migrations/sorter.rs   # Topological sort of migration graph
+cot/src/db/migrations.rs     # MigrationEngine, Operation, ledger model
+cot/src/db/migrations/sorter.rs  # Topological sort of migration graph
 cot-cli/src/migration_generator.rs # Static-AST diff + Rust code generation
-cot-macros/src/migration_op.rs    # #[migration_op] attribute macro
-cot-codegen/src/model.rs          # Model/field descriptor parsing
+cot-macros/src/migration_op.rs  # #[migration_op] attribute macro
+cot-codegen/src/model.rs     # Model/field descriptor parsing
 cot-codegen/src/symbol_resolver.rs # Use-statement resolution for AST parsing
 ```
 
@@ -42,7 +42,7 @@ cot-codegen/src/symbol_resolver.rs # Use-statement resolution for AST parsing
 **Derive/macro pipeline at high level:**
 
 1. User annotates a struct with `#[model]` attribute macro (`cot-macros/src/lib.rs` → `cot-macros/src/model.rs`)
-2. Macro expands struct into `impl Model for Foo { const TABLE_NAME; const COLUMNS; fn from_db(...); ... }`
+2. Macro expands struct into `impl Model for Foo { const TABLE_NAME; const COLUMNS; fn from_db(...);... }`
 3. CLI `cot migration make` calls `MigrationGenerator`, which walks `src/**/*.rs` using `syn::parse_file`, finds all `#[model]` structs, and also finds structs annotated with `#[model(model_type = "migration")]` (the snapshot structs embedded in prior migration files)
 4. Diff is computed in memory; a new `.rs` file is emitted containing both the `impl Migration { OPERATIONS: &[...] }` block and a snapshot copy of each modified struct
 
@@ -82,28 +82,28 @@ The ledger table is defined as a `struct` with `#[model(table_name = "cot__migra
 #[derive(Debug)]
 #[model(table_name = "cot__migrations", model_type = "internal")]
 struct AppliedMigration {
-    #[model(primary_key)]
-    id: Auto<i32>,
-    app: String,
-    name: String,
-    applied: chrono::DateTime<chrono::FixedOffset>,
+  #[model(primary_key)]
+  id: Auto<i32>,
+  app: String,
+  name: String,
+  applied: chrono::DateTime<chrono::FixedOffset>,
 }
 
 const CREATE_APPLIED_MIGRATIONS_MIGRATION: Operation = Operation::create_model()
-    .table_name(Identifier::new("cot__migrations"))
-    .fields(&[
-        Field::new(Identifier::new("id"), <Auto<i32> as DatabaseField>::TYPE)
-            .primary_key()
-            .auto(),
-        Field::new(Identifier::new("app"), <String as DatabaseField>::TYPE),
-        Field::new(Identifier::new("name"), <String as DatabaseField>::TYPE),
-        Field::new(
-            Identifier::new("applied"),
-            <chrono::DateTime<chrono::FixedOffset> as DatabaseField>::TYPE,
-        ),
-    ])
-    .if_not_exists()
-    .build();
+ .table_name(Identifier::new("cot__migrations"))
+ .fields(&[
+    Field::new(Identifier::new("id"), <Auto<i32> as DatabaseField>::TYPE)
+     .primary_key()
+     .auto(),
+    Field::new(Identifier::new("app"), <String as DatabaseField>::TYPE),
+    Field::new(Identifier::new("name"), <String as DatabaseField>::TYPE),
+    Field::new(
+      Identifier::new("applied"),
+      <chrono::DateTime<chrono::FixedOffset> as DatabaseField>::TYPE,
+    ),
+  ])
+ .if_not_exists()
+ .build();
 ```
 
 **Columns and their purposes:**
@@ -227,7 +227,7 @@ Between migrations, topological sort is done by `MigrationDependency` declaratio
 
 ### Destructive-operation detection
 
-**None.** `RemoveField` and `RemoveModel` are generated silently. There is no warning system, no "unexecutable steps" bucket, and no Prisma-style destructive classifier. The `make_remove_field_operation` function simply constructs the operation without any diagnostic output beyond a `print_status_msg(StatusType::Removing, ...)`. (`cot-cli/src/migration_generator.rs:848-875`)
+**None.** `RemoveField` and `RemoveModel` are generated silently. There is no warning system, no "unexecutable steps" bucket, and no Prisma-style destructive classifier. The `make_remove_field_operation` function simply constructs the operation without any diagnostic output beyond a `print_status_msg(StatusType::Removing,...)`. (`cot-cli/src/migration_generator.rs:848-875`)
 
 ### Field-type-change migrations
 
@@ -236,17 +236,17 @@ Between migrations, topological sort is done by `MigrationDependency` declaratio
 ```rust
 // cot-cli/src/migration_generator.rs:817-845
 fn make_alter_field_operation(
-    _app_model: &ModelInSource,
-    app_field: &Field,
-    migration_model: &ModelInSource,
-    migration_field: &Field,
+  _app_model: &ModelInSource,
+  app_field: &Field,
+  migration_model: &ModelInSource,
+  migration_field: &Field,
 ) -> Option<DynOperation> {
-    if app_field == migration_field {
-        return None;
-    }
-    // ...
-    todo!();
-    // ...
+  if app_field == migration_field {
+    return None;
+  }
+  //...
+  todo!();
+  //...
 }
 ```
 
@@ -320,9 +320,9 @@ Tokio, multi-thread runtime. `CustomOperationFn` is defined as:
 ```rust
 // cot/src/db/migrations.rs:654-657
 pub type CustomOperationFn =
-    for<'a> fn(
-        MigrationContext<'a>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+  for<'a> fn(
+    MigrationContext<'a>,
+  ) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 ```
 
 The `#[migration_op]` macro rewrites `async fn` into this boxed-pin form.
@@ -334,10 +334,10 @@ The `Migration` trait uses `const` fields, meaning migration definitions are ful
 ```rust
 // cot/src/db/migrations.rs:1697-1709
 pub trait Migration {
-    const APP_NAME: &'static str;
-    const MIGRATION_NAME: &'static str;
-    const DEPENDENCIES: &'static [MigrationDependency];
-    const OPERATIONS: &'static [Operation];
+  const APP_NAME: &'static str;
+  const MIGRATION_NAME: &'static str;
+  const DEPENDENCIES: &'static [MigrationDependency];
+  const OPERATIONS: &'static [Operation];
 }
 ```
 
@@ -358,9 +358,9 @@ pub trait Migration {
 [features]
 default = ["sqlite", "postgres", "mysql", "json"]
 db = ["dep:sea-query", "dep:sea-query-binder", "dep:sqlx"]
-sqlite = ["db", "sea-query/backend-sqlite", ...]
-postgres = ["db", "sea-query/backend-postgres", ...]
-mysql  = ["db", "sea-query/backend-mysql", ...]
+sqlite = ["db", "sea-query/backend-sqlite",...]
+postgres = ["db", "sea-query/backend-postgres",...]
+mysql = ["db", "sea-query/backend-mysql",...]
 ```
 
 All three backends are enabled by default. The database backend is selected at runtime from the connection URL string.
@@ -475,7 +475,7 @@ Migration tests are split between unit and integration:
 
 2. **No sea-schema despite sea-query.** Given that cot uses sea-query for DDL, the natural extension would be sea-schema for introspection. cot explicitly does not use it. This validates Djogi's descriptor-only approach — live schema introspection is not required to build a functional migration system.
 
-3. **Snapshot structs inside migration files create a two-column truth.** The migration file contains both the operational plan (`const OPERATIONS`) and the model snapshot (`struct _TodoItem { ... }`). The CLI reads the snapshot to know "what was the model at migration N". This is elegant but means the snapshot must be kept in sync with the operations — if you hand-edit the operations but forget the snapshot, the next `migration make` will generate incorrect diffs. Djogi's external `djogi_models.json` avoids this coupling.
+3. **Snapshot structs inside migration files create a two-column truth.** The migration file contains both the operational plan (`const OPERATIONS`) and the model snapshot (`struct _TodoItem {... }`). The CLI reads the snapshot to know "what was the model at migration N". This is elegant but means the snapshot must be kept in sync with the operations — if you hand-edit the operations but forget the snapshot, the next `migration make` will generate incorrect diffs. Djogi's external `djogi_models.json` avoids this coupling.
 
 4. **Table naming convention (`app__model`) is load-bearing.** The `{app}__{model}` naming is not merely cosmetic — the CLI uses the crate name as `app`, and the table name is `{crate_name_as_snake_case}__{model_name_as_snake_case}`. In a workspace with multiple apps, each gets its own prefix. Djogi's Postgres-schema approach achieves similar isolation differently, but cot proves the double-underscore convention is sufficient for single-schema deployments.
 

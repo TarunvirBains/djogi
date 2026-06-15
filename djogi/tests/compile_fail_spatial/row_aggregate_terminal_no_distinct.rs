@@ -6,12 +6,12 @@ use djogi::prelude::*;
 #[model(table = "phase85_row_aggregate_no_distinct", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct TileFeature {
-    pub name: String,
-    pub location: GeoPoint,
+ pub name: String,
+ pub location: GeoPoint,
 }
 
 fn main() {
-    let _ = TileFeature::objects()
-        .as_mvt_with_options(MvtOptions::new("tiles").with_geom_name("location"))
-        .distinct();
+ let _ = TileFeature::objects()
+ .as_mvt_with_options(MvtOptions::new("tiles").with_geom_name("location"))
+ .distinct();
 }

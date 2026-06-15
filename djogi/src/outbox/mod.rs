@@ -24,31 +24,31 @@
 //! but using the authoritative DB snapshot rather than the consumed `self`.
 //! # Module layout
 //! - `mod.rs` (this file) — write side: `emit_event`, `OutboxAction`, payload shaping.
-//!   All exports are unchanged.
+//! All exports are unchanged.
 //! - `worker` — claim-pending, mark-published/failed, recover-stale. Feature-gated
-//!   on the `outbox` cargo feature.
+//! on the `outbox` cargo feature.
 //! - `publisher` — `Publisher` trait + `PublishError` enum. Feature-gated on `outbox`.
 //! - `publishers` — concrete publisher implementations. `NotifyPublisher` is always
-//!   available under `outbox`; Redis/Kafka/NATS ship behind their own sub-feature flags.
+//! available under `outbox`; Redis/Kafka/NATS ship behind their own sub-feature flags.
 //! # Why this lives here (not inside the macro body)
 //! The macro emits a **one-line call** into this module after every
 //! successful CRUD:
 //! ```ignore
 //! if Self::descriptor().has_outbox {
-//!     ::djogi::outbox::emit_event(ctx, &row, ::djogi::outbox::OutboxAction::Create).await?;
+//!  ::djogi::outbox::emit_event(ctx, &row, ::djogi::outbox::OutboxAction::Create).await?;
 //! }
 //! ```
 //! Keeping the payload shaping + dispatch out of the macro has three
 //! benefits:
 //! 1. **Easier to audit.** Reviewers read plain Rust rather than a
-//!    `quote! { ... }` block to understand payload exclusion, bind
-//!    layout, and error flow.
+//! `quote! {... }` block to understand payload exclusion, bind
+//! layout, and error flow.
 //! 2. **One place to evolve.** Later-phase additions (encrypted payload
-//!    fields, tenant partitioning, per-action `rationale` columns) land
-//!    here without touching the macro.
+//! fields, tenant partitioning, per-action `rationale` columns) land
+//! here without touching the macro.
 //! 3. **Unit-testable.** `emit_event` is a plain async function; its
-//!    payload-shaping helper is testable without bringing up a proc-macro
-//!    harness.
+//! payload-shaping helper is testable without bringing up a proc-macro
+//! harness.
 //! # How it composes with `atomic()`
 //! The emitter takes `&mut DjogiContext` and dispatches via the same
 //! `__inner_mut_for_macros` pattern the macro CRUD uses. A pool-backed
@@ -100,6 +100,7 @@ pub use worker::OutboxRow;
 use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::descriptor::ModelDescriptor;
+use crate::migrate::naming::outbox_table_name;
 use crate::model::Model;
 use postgres_types::ToSql;
 use serde::Serialize;
@@ -122,7 +123,7 @@ const BULK_SAVE_INSERT_ROWS_PER_CHUNK: usize = BULK_SAVE_INSERT_MAX_BINDS / 3;
 pub enum OutboxAction {
     /// `Model::create` — new row inserted into the primary table.
     Create,
-    /// `Model::save` — existing row updated via `UPDATE ... RETURNING *`.
+    /// `Model::save` — existing row updated via `UPDATE... RETURNING *`.
     /// Payload carries the DB-refreshed values (post-trigger, post-
     /// default) because `save` rehydrates the receiver before the
     /// outbox call runs.
@@ -155,8 +156,8 @@ impl OutboxAction {
 /// # Error flow
 /// - `serde_json::to_value` failure → `DjogiError::Serde`.
 /// - Database execute failure → `DjogiError::Pg`.
-///   Both are propagated verbatim so the calling CRUD method's `?`
-///   rolls the transaction back on any failure.
+/// Both are propagated verbatim so the calling CRUD method's `?`
+/// rolls the transaction back on any failure.
 /// # Payload shape
 /// `serde_json::to_value(row)` produces a `Value::Object` keyed by
 /// the struct's field names (serde's default `rename_all`). The
@@ -180,7 +181,7 @@ where
     // valid 57-63 byte table name past Postgres's 63-byte identifier
     // limit. Matches the defense-in-depth check in
     // `query::refresh::fetch_delta` and `outbox::worker::validate_table_ident`.
-    let outbox_table = format!("{}_outbox", T::table_name());
+    let outbox_table = outbox_table_name(T::table_name());
     crate::ident::check_plain_ident(&outbox_table, false).map_err(|e| {
         DjogiError::Db(crate::error::DbError::other(format!(
             "outbox emit_event: invalid outbox table name {outbox_table:?}: {e:?}"
@@ -225,7 +226,7 @@ where
 }
 
 /// Emit one `Save` outbox row per entry in `rows` using a single batched
-/// `INSERT ... VALUES (...), (...), ...` statement.
+/// `INSERT... VALUES (...), (...),...` statement.
 /// This is used by bulk `execute_returning_pairs` to preserve per-row outbox
 /// semantics without issuing one INSERT round-trip per updated row.
 pub async fn emit_save_events_batch<T: Model + Serialize>(
@@ -239,7 +240,7 @@ where
         return Ok(());
     }
 
-    let outbox_table = format!("{}_outbox", T::table_name());
+    let outbox_table = outbox_table_name(T::table_name());
     crate::ident::check_plain_ident(&outbox_table, false).map_err(|e| {
         DjogiError::Db(crate::error::DbError::other(format!(
             "outbox emit_save_events_batch: invalid outbox table name {outbox_table:?}: {e:?}"
@@ -304,8 +305,8 @@ where
 #[cfg(feature = "notify")]
 pub(crate) fn build_notify_payload(action: OutboxAction, id_str: &str) -> String {
     serde_json::json!({
-        "kind": action.as_sql_str(),
-        "id": id_str,
+     "kind": action.as_sql_str(),
+     "id": id_str,
     })
     .to_string()
 }

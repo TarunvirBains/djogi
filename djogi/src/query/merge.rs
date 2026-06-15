@@ -1,4 +1,4 @@
-//! Typed `MERGE INTO ... USING ...` query surface.
+//! Typed `MERGE INTO... USING...` query surface.
 //! Djogi targets PostgreSQL 18+; the `WHEN NOT MATCHED BY SOURCE` form is
 //! available in PostgreSQL 17 and later.
 //! # What
@@ -12,19 +12,19 @@
 //! use djogi::prelude::*;
 //!
 //! source_qs.merge_into::<Target, _, _>(|target, source| {
-//!     target.external_id().merge_on_eq(source.external_id())
+//!  target.external_id().merge_on_eq(source.external_id())
 //! })
-//! .when_matched_and_update(Some(
-//!     Target::fields().payload().is_distinct_from_source(Source::fields().payload())
+//!.when_matched_and_update(Some(
+//!  Target::fields().payload().is_distinct_from_source(Source::fields().payload())
 //! ), vec![
-//!     Target::fields().payload().merge_copy_from(Source::fields().payload()),
+//!  Target::fields().payload().merge_copy_from(Source::fields().payload()),
 //! ])
-//! .when_not_matched_then_insert(None, vec![
-//!     Target::fields().external_id().merge_insert_from(Source::fields().external_id()),
-//!     Target::fields().payload().merge_insert_from(Source::fields().payload()),
+//!.when_not_matched_then_insert(None, vec![
+//!  Target::fields().external_id().merge_insert_from(Source::fields().external_id()),
+//!  Target::fields().payload().merge_insert_from(Source::fields().payload()),
 //! ])
-//! .execute(&mut ctx)
-//! .await?;
+//!.execute(&mut ctx)
+//!.await?;
 //! ```
 
 use crate::DjogiError;
@@ -90,7 +90,7 @@ impl<S: Model + FromPgRow, T: Model> std::fmt::Debug for MergeStmt<S, T> {
 }
 
 impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
-    /// Add a `WHEN MATCHED [AND condition] THEN UPDATE SET ...` branch.
+    /// Add a `WHEN MATCHED [AND condition] THEN UPDATE SET...` branch.
     pub fn when_matched_and_update<C, U>(mut self, condition: Option<C>, updates: U) -> Self
     where
         C: IntoMergeWhenCondition<S, T>,
@@ -131,7 +131,7 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
         self
     }
 
-    /// Add a `WHEN NOT MATCHED BY SOURCE [AND condition] THEN UPDATE SET ...` branch.
+    /// Add a `WHEN NOT MATCHED BY SOURCE [AND condition] THEN UPDATE SET...` branch.
     pub fn when_not_matched_by_source_then_update<C, U>(
         mut self,
         condition: Option<C>,
@@ -162,7 +162,7 @@ impl<S: Model + FromPgRow, T: Model> MergeStmt<S, T> {
         self
     }
 
-    /// Convenience for `WHEN MATCHED AND (tgt.col IS DISTINCT FROM __djogi_src.col OR ...) THEN UPDATE SET ...`.
+    /// Convenience for `WHEN MATCHED AND (tgt.col IS DISTINCT FROM __djogi_src.col OR...) THEN UPDATE SET...`.
     /// Automatically builds a condition that only updates rows where at least one of the
     /// mapped columns has changed. Only columns mapped with `merge_copy_from` are
     /// included in the change check.
@@ -944,7 +944,7 @@ where
 }
 
 impl<T: Model, V> FieldRef<T, V> {
-    /// Bind this target column to a source column for the `MERGE ... ON` clause.
+    /// Bind this target column to a source column for the `MERGE... ON` clause.
     pub fn merge_on_eq<S: Model>(self, source: FieldRef<S, V>) -> MergeOnEq<S, T> {
         MergeOnEq {
             target_col: self.column(),
@@ -1021,7 +1021,7 @@ impl<T: Model, V> FieldRef<T, V> {
         }
     }
 
-    /// `tgt.col IS DISTINCT FROM __djogi_src.col` condition for `WHEN MATCHED AND ...`.
+    /// `tgt.col IS DISTINCT FROM __djogi_src.col` condition for `WHEN MATCHED AND...`.
     pub fn is_distinct_from_source<S: Model>(
         self,
         source: FieldRef<S, V>,
@@ -1786,10 +1786,10 @@ mod tests {
         let sql = acc.sql();
 
         assert!(
-            sql.contains(
-                "WHEN MATCHED AND tgt.id IS DISTINCT FROM __djogi_src.id AND (tgt.payload IS DISTINCT FROM __djogi_src.payload OR tgt.id IS DISTINCT FROM __djogi_src.id) THEN DELETE"
-            ),
-            "SQL did not preserve nested OR grouping: {sql}"
-        );
+   sql.contains(
+    "WHEN MATCHED AND tgt.id IS DISTINCT FROM __djogi_src.id AND (tgt.payload IS DISTINCT FROM __djogi_src.payload OR tgt.id IS DISTINCT FROM __djogi_src.id) THEN DELETE"
+   ),
+   "SQL did not preserve nested OR grouping: {sql}"
+  );
     }
 }

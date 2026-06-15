@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Raw SQL Escape Hatches
 
@@ -48,56 +48,56 @@ sealed extension trait:
 
 ```rust
 pub trait RawAccessExt: sealed::Sealed {
-    async fn raw_query<T>(
-        &mut self,
-        sql: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<Vec<T>, DjogiError>
-    where
-        T: FromPgRow;
+ async fn raw_query<T>(
+ &mut self,
+ sql: &str,
+ params: &[&(dyn ToSql + Sync)],
+ ) -> Result<Vec<T>, DjogiError>
+ where
+ T: FromPgRow;
 
-    async fn raw_rows(
-        &mut self,
-        sql: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<Vec<tokio_postgres::Row>, DjogiError>;
+ async fn raw_rows(
+ &mut self,
+ sql: &str,
+ params: &[&(dyn ToSql + Sync)],
+ ) -> Result<Vec<tokio_postgres::Row>, DjogiError>;
 
-    async fn raw_fetch_one<T>(
-        &mut self,
-        sql: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<T, DjogiError>
-    where
-        T: FromPgRow;
+ async fn raw_fetch_one<T>(
+ &mut self,
+ sql: &str,
+ params: &[&(dyn ToSql + Sync)],
+ ) -> Result<T, DjogiError>
+ where
+ T: FromPgRow;
 
-    async fn raw_scalar<T>(
-        &mut self,
-        sql: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<T, DjogiError>
-    where
-        T: FromSqlOwned;
+ async fn raw_scalar<T>(
+ &mut self,
+ sql: &str,
+ params: &[&(dyn ToSql + Sync)],
+ ) -> Result<T, DjogiError>
+ where
+ T: FromSqlOwned;
 
-    async fn raw_execute(
-        &mut self,
-        sql: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<u64, DjogiError>;
+ async fn raw_execute(
+ &mut self,
+ sql: &str,
+ params: &[&(dyn ToSql + Sync)],
+ ) -> Result<u64, DjogiError>;
 
-    async fn raw_ddl(&mut self, sql: &str) -> Result<(), DjogiError>;
+ async fn raw_ddl(&mut self, sql: &str) -> Result<(), DjogiError>;
 
-    async fn raw_stream<'ctx>(
-        &'ctx mut self,
-        sql: &str,
-        params: &[&(dyn ToSql + Sync)],
-    ) -> Result<RawCursorStream<'ctx>, DjogiError>;
+ async fn raw_stream<'ctx>(
+ &'ctx mut self,
+ sql: &str,
+ params: &[&(dyn ToSql + Sync)],
+ ) -> Result<RawCursorStream<'ctx>, DjogiError>;
 
-    async fn raw_stream_with_fetch_size<'ctx>(
-        &'ctx mut self,
-        sql: &str,
-        params: &[&(dyn ToSql + Sync)],
-        fetch_size: u32,
-    ) -> Result<RawCursorStream<'ctx>, DjogiError>;
+ async fn raw_stream_with_fetch_size<'ctx>(
+ &'ctx mut self,
+ sql: &str,
+ params: &[&(dyn ToSql + Sync)],
+ fetch_size: u32,
+ ) -> Result<RawCursorStream<'ctx>, DjogiError>;
 }
 ```
 
@@ -119,13 +119,13 @@ Tests and adopter-side helpers unlock raw SQL by decorating the enclosing item:
 // JUSTIFICATION (djogi#234): citext column needs case-insensitive equality;
 // QuerySet does not expose LOWER(col) equality yet.
 async fn my_test(mut ctx: DjogiContext) {
-    let rows = ctx.raw_query::<MyRow>("SELECT ...", &[]).await?;
+ let rows = ctx.raw_query::<MyRow>("SELECT...", &[]).await?;
 }
 ```
 
 The macro injects the hidden bypass traits into the decorated item. Adopter
 code must not import `djogi::__bypass` directly; use the bypass attribute plus
-an adjacent `// JUSTIFICATION ...` comment instead.
+an adjacent `// JUSTIFICATION...` comment instead.
 
 When stacked with `#[djogi::djogi_test]`, the bypass attribute is the outer
 attribute so the raw imports land in the test body before `djogi_test` rewrites
@@ -136,7 +136,7 @@ that body:
 #[djogi::djogi_test(sync_models = [Vehicle])]
 // JUSTIFICATION (PIN): exercises raw_query itself.
 async fn raw_query_pin(mut ctx: DjogiContext) {
-    // ...
+ //...
 }
 ```
 
@@ -232,7 +232,7 @@ use crate::__bypass::RawPoolAccessExt as DjogiRawPoolAccessExt;
 Sibling workspace crates and examples should follow the same public bypass
 contract as adopters: decorate the enclosing item with
 `#[djogi::deliberately_bypass_convention_with_raw_sql]` and explain the gap in
-an adjacent `// JUSTIFICATION ...` comment. Direct hidden-trait imports are
+an adjacent `// JUSTIFICATION...` comment. Direct hidden-trait imports are
 reserved for framework-internal modules.
 
 ## 8. Migration philosophy
@@ -253,10 +253,10 @@ connection through the framework's execution helpers. Each pool checkout is
 wrapped in a dirty-by-default guard that mirrors `DjogiPool::with_client`:
 
 - **Clean exit (`Ok`).** The connection returns to the pool the normal way;
-  the next checkout reuses it.
+ the next checkout reuses it.
 - **Dirty exit (`Err`, panic, future cancellation).** The connection is
-  detached via `deadpool_postgres::Object::take` and dropped immediately.
-  The pool will create a fresh physical connection on the next demand.
+ detached via `deadpool_postgres::Object::take` and dropped immediately.
+ The pool will create a fresh physical connection on the next demand.
 
 This is required because djogi runs its pools with
 `deadpool_postgres::RecyclingMethod::Fast`, which only checks `is_closed()`
@@ -279,8 +279,8 @@ produce an SQL `Ok` paired with a decode `Err`. Example:
 
 ```rust,ignore
 let _: i32 = ctx
-    .raw_scalar("SELECT set_config('application_name', 'poisoned', false)", &[])
-    .await?;
+.raw_scalar("SELECT set_config('application_name', 'poisoned', false)", &[])
+.await?;
 ```
 
 The SQL succeeds and mutates the session GUC; `set_config` returns text, so
@@ -311,10 +311,10 @@ preflight applies to `raw_query`, `raw_rows`, `raw_fetch_one`,
 - `PREPARE`
 - `DEALLOCATE`
 
-`SET LOCAL ...`, `SET CONSTRAINTS ...`, and `SET TRANSACTION ...` remain
+`SET LOCAL...`, `SET CONSTRAINTS...`, and `SET TRANSACTION...` remain
 allowed. For `raw_ddl`, the preflight scans real top-level statements while
 respecting comments, quoted strings, dollar-quoted bodies, and
-`BEGIN ATOMIC ... END` compound-statement boundaries; empty or trivia-only
+`BEGIN ATOMIC... END` compound-statement boundaries; empty or trivia-only
 batches pass through.
 
 Transaction-control statements are also refused with
@@ -327,11 +327,11 @@ Transaction-control statements are also refused with
 - `SAVEPOINT`
 - `RELEASE SAVEPOINT` / bare `RELEASE`
 
-`BEGIN ATOMIC ... END` is **not** refused. It is the SQL-standard
+`BEGIN ATOMIC... END` is **not** refused. It is the SQL-standard
 compound-statement delimiter used in `LANGUAGE SQL` function bodies, not a
 transaction-control statement, so it carries none of the bookkeeping hazards
-described below. The scanner tracks `BEGIN ATOMIC ... END` depth — including
-`CASE ... END` nesting inside the block — so internal semicolons are not split
+described below. The scanner tracks `BEGIN ATOMIC... END` depth — including
+`CASE... END` nesting inside the block — so internal semicolons are not split
 and the closing `END` is not misclassified as transaction control. Postgres
 rejects a bare top-level `BEGIN ATOMIC` outside a function body, so a malformed
 unterminated block cannot smuggle a trailing `COMMIT` past this guard (the
@@ -351,15 +351,15 @@ Adopters who run session-state-affecting raw SQL on the clean path must wrap
 the call in `djogi::transaction::atomic(...)` **and** either:
 
 - use a TRANSACTION-LOCAL form so a `COMMIT` or `ROLLBACK` clears the
-  state automatically — `SET LOCAL key = value` instead of `SET key =
-  value`, `set_config(name, value, true)` instead of
-  `set_config(name, value, false)`, `pg_advisory_xact_lock(...)` instead
-  of `pg_advisory_lock(...)`, etc.; or
+ state automatically — `SET LOCAL key = value` instead of `SET key =
+ value`, `set_config(name, value, true)` instead of
+ `set_config(name, value, false)`, `pg_advisory_xact_lock(...)` instead
+ of `pg_advisory_lock(...)`, etc.; or
 - explicitly reset / unlock / `UNLISTEN` / `DEALLOCATE` the
-  session-level mutation on **every non-cancel exit** of the closure —
-  before returning `Ok`, in every error branch, and in any panic
-  recovery. `atomic()` will NOT do this cleanup for you on `Err` /
-  panic; the next paragraph explains why.
+ session-level mutation on **every non-cancel exit** of the closure —
+ before returning `Ok`, in every error branch, and in any panic
+ recovery. `atomic()` will NOT do this cleanup for you on `Err` /
+ panic; the next paragraph explains why.
 
 `atomic()` is a transaction guard, not a session-state reset guard. Its
 `ROLLBACK` path on `Err` / panic only unwinds TRANSACTION-SCOPED state
@@ -374,12 +374,12 @@ statements bypass transactional rollback entirely.
 Two worked examples:
 
 - A `SET search_path = 'audit'` inside an `atomic()` closure that
-  returns `Ok` commits but the new `search_path` survives `COMMIT` and
-  rides the connection back to the pool.
+ returns `Ok` commits but the new `search_path` survives `COMMIT` and
+ rides the connection back to the pool.
 - A `pg_advisory_lock(424242)` acquired inside an `atomic()` closure
-  that subsequently returns `Err` is NOT released by `ROLLBACK`; the
-  next pool checkout can still see the lock held and would have to call
-  `pg_advisory_unlock(424242)` (which `atomic()` will not do for you).
+ that subsequently returns `Err` is NOT released by `ROLLBACK`; the
+ next pool checkout can still see the lock held and would have to call
+ `pg_advisory_unlock(424242)` (which `atomic()` will not do for you).
 
 Adopters must choose transaction-local forms or run explicit reset on
 every non-cancel exit for the contract to hold.
@@ -409,10 +409,10 @@ dirty-detach on dirty exit.
 The public pool surface for v0.1 is:
 
 - `DjogiPool::builder(url)` for `max_size`, checkout `timeout`, and
-  per-physical-connection `post_connect` setup.
+ per-physical-connection `post_connect` setup.
 - `DjogiPool::status()` for a Djogi-owned snapshot of pool counters.
 - `RawPoolAccessExt::raw_with_client` for the rare driver-level operations
-  that cannot be represented by `DjogiContext`.
+ that cannot be represented by `DjogiContext`.
 
 `raw_with_client` is the canonical public route for `COPY FROM STDIN`,
 `COPY TO STDOUT`, server-side cursor protocol work, cold-start

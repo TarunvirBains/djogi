@@ -1,6 +1,6 @@
 //! `#[djogi_test(extensions = ["postgis"], extensions = ["pg_trgm"])]` — the
 //! same `extensions` key specified twice. Sibling case to
-//! `djogi_test_sync_models_duplicate_key.rs` (Codex round-2 B-2): both
+//! `djogi_test_sync_models_duplicate_key.rs` (a past review): both
 //! duplicate-key branches share the same parser at testing.rs:288–306, so
 //! both need lihaaf fixtures to lock the caret column. Without this,
 //! a refactor that swaps `Error::new_spanned(meta.path(), ...)` for

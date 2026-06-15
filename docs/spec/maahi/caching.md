@@ -1,23 +1,23 @@
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md) | [Maahi](./index.md)
 
 # Maahi — Caching and Cross-Runtime State
 
-Maahi is a hydrated WASM client backed by Dioxus server functions. Latency between operator action and visible response matters; so does cross-tab coherence in multi-operator deployments. Maahi delegates caching, cross-runtime predicate evaluation, and cross-process invalidation to the [sassi](https://github.com/TarunvirBains/sassi) sibling crate — a typed in-memory pool with composable predicate algebra and pluggable cache backends. Sassi ships ahead of Maahi (sassi v0.1.0 alongside djogi v0.1.0; Maahi is djogi v0.3.0), so by Phase 10 every primitive below is on crates.io.
+Maahi is a hydrated WASM client backed by Dioxus server functions. Latency between operator action and visible response matters; so does cross-tab coherence in multi-operator deployments. Maahi delegates caching, cross-runtime predicate evaluation, and cross-process invalidation to the [sassi](https://github.com/TarunvirBains/sassi) sibling crate — a typed in-memory pool with composable predicate algebra and pluggable cache backends. Sassi ships ahead of Maahi (sassi v0.1.0 alongside djogi v0.1.0; Maahi is djogi v0.3.0), so by 0 every primitive below is on crates.io.
 
 ## Why sassi
 
 Maahi's UI patterns map cleanly onto sassi primitives:
 
-| Maahi pattern                       | sassi primitive                                                 |
+| Maahi pattern   | sassi primitive       |
 |-------------------------------------|-----------------------------------------------------------------|
-| List view page state                | `Punnu<{Model}Visage>`                                          |
-| FK preload tier                     | `Punnu<TargetVisage>` with TTL                                  |
-| FK typeahead                        | `Punnu::get_or_fetch` with single-flight coalescing             |
-| Filter widget composition           | Djogi `PortablePredicate<T>` lowered to Sassi `BasicPredicate<T>` |
-| Per-(role, model, visage) isolation | Doctrine A — type-monomorphic Punnu per visage                  |
-| Multi-tab cache coherence           | `sassi-cache-redis` pub/sub fan-out                             |
-| Save-on-commit cache invalidation   | Sassi's `on_commit` hook on the existing Phase 4 outbox path    |
-| Audit log paging                    | `Punnu<AuditEntry>` with the same visibility filter as live views |
+| List view page state  | `Punnu<{Model}Visage>`      |
+| FK preload tier   | `Punnu<TargetVisage>` with TTL     |
+| FK typeahead   | `Punnu::get_or_fetch` with single-flight coalescing  |
+| Filter widget composition  | Djogi `PortablePredicate<T>` lowered to Sassi `BasicPredicate<T>` |
+| Per-(role, model, visage) isolation | Doctrine A — type-monomorphic Punnu per visage   |
+| Multi-tab cache coherence  | `sassi-cache-redis` pub/sub fan-out    |
+| Save-on-commit cache invalidation | Sassi's `on_commit` hook on the existing outbox path |
+| Audit log paging   | `Punnu<AuditEntry>` with the same visibility filter as live views |
 
 Each integration point below traces back to one of these. Maahi adds zero new caching code; everything below is configuration + dispatch.
 
@@ -40,9 +40,9 @@ URL state stays authoritative — bookmarks, deep links, and shareable URLs work
 
 ## Delta-sync — incremental refresh
 
-List-view freshness without round-tripping the whole result set on every refresh: sassi's [`DeltaSyncCacheable` and delta-refresh primitives](https://github.com/TarunvirBains/sassi/blob/main/docs/concepts.md#delta-sync-and-watermarks) are the primitives, djogi's `QuerySet::refresh_into` (Phase 8f) is the backend wrapper, and Maahi exposes a Dioxus server function that bridges the wire.
+List-view freshness without round-tripping the whole result set on every refresh: sassi's [`DeltaSyncCacheable` and delta-refresh primitives](https://github.com/TarunvirBains/sassi/blob/main/docs/concepts.md#delta-sync-and-watermarks) are the primitives, djogi's `QuerySet::refresh_into` (f) is the backend wrapper, and Maahi exposes a Dioxus server function that bridges the wire.
 
-Every djogi `Model` carries `updated_at` as a framework-injected column (CLAUDE.md guarantee, non-negotiable); `#[derive(Model)]` auto-emits the `DeltaSyncCacheable` impl pointing at `updated_at`. Maahi inherits whatever watermark the adopter declared on the Model — override mechanics (alternate field, composite, domain-monotonic, custom newtype) live in Sassi's delta-refresh contract and djogi Phase 8f, not here. The watermark is tracked per-`RefreshSubscription`, not per-Punnu — a single `Punnu<T>` may be the target of multiple subscriptions for different filter shapes, each with its own independent watermark. On each refresh tick:
+Every djogi `Model` carries `updated_at` as a framework-injected column (CLAUDE.md guarantee, non-negotiable); `#[derive(Model)]` auto-emits the `DeltaSyncCacheable` impl pointing at `updated_at`. Maahi inherits whatever watermark the adopter declared on the Model — override mechanics (alternate field, composite, domain-monotonic, custom newtype) live in Sassi's delta-refresh contract and djogi f, not here. The watermark is tracked per-`RefreshSubscription`, not per-Punnu — a single `Punnu<T>` may be the target of multiple subscriptions for different filter shapes, each with its own independent watermark. On each refresh tick:
 
 1. Maahi's WASM client calls the `delta_<model>` Dioxus server function with `(filter_envelope, watermark)`. The filter envelope carries the operator's current Djogi-provenanced portable predicate, serialized via the adopter-facing predicate transport envelope, the same envelope the [Filter algebra — cross-runtime](#filter-algebra--cross-runtime) section uses for predicate transport.
 2. Server-side, the function deserializes the predicate, validates it against the operator's RBAC (visage scope check via the existing per-(role, model, visage) gate), and runs the fetch under a freshly-constructed per-request `DjogiContext` (built from a pool connection + the request's `AuthContext`). Initial no-watermark loads apply `WHERE <portable_filter>`. Delta ticks do not re-apply that filter; they fetch by watermark and eviction-recovery id clauses, upsert every changed live row, and return `DeltaResult { items: Vec<{Model}Visage>, tombstones: HashSet<{Model}::Id>, watermark: Watermark }`.
@@ -60,7 +60,7 @@ Per sassi §3.9.1's three independent knobs, Maahi's `[admin]` block exposes:
 
 - **Always on (no config) — sized-to-fit + warn-on-eviction.** A `tracing::warn!` fires once per `(Punnu, RefreshSubscription)` pair on first eviction collision, telling the operator (or the operator's monitoring) that `punnu_list_lru_size` may be undersized for the working set.
 - **`punnu_eviction_recovery = bool`, default `false`** — flips the sassi `with_eviction_recovery(true)` knob. Wires per-subscription event subscriber + recovery query branch. Best-fit shape: high-churn admin browsing where eviction is frequent and gap latency matters.
-- **`punnu_periodic_full_refresh_every = Option<usize>`, default `None`** — flips the sassi `with_periodic_full_refresh(Some(n))` knob. Every Nth tick replaces the delta query with a full re-fetch; watermark re-baselined + LRU/schema drift refreshed. Best-fit shape: bandwidth-capped deployments where occasional spikes are acceptable for guaranteed coherence; deletion cleanup still flows through tombstones (soft-delete via Tracked or — for hard-deletes — future cross-runtime push from Phase 11+).
+- **`punnu_periodic_full_refresh_every = Option<usize>`, default `None`** — flips the sassi `with_periodic_full_refresh(Some(n))` knob. Every Nth tick replaces the delta query with a full re-fetch; watermark re-baselined + LRU/schema drift refreshed. Best-fit shape: bandwidth-capped deployments where occasional spikes are acceptable for guaranteed coherence; deletion cleanup still flows through tombstones (soft-delete via Tracked or — for hard-deletes — future cross-runtime push from 1+).
 
 Adopters compose. A typical admin browse over a few-hundred-row working set runs on the default (no config); a deployment browsing a 50k-row table with frequent third-party-edits enables `punnu_eviction_recovery = true`; an audit-log Maahi pulling from a write-heavy log database adds `punnu_periodic_full_refresh_every = 30` to amortise consistency spikes.
 
@@ -71,14 +71,14 @@ Watermark delta-sync catches inserts + updates + soft-deletes through the waterm
 **Backend-side Punnus** (server-process caches): two patterns adopters compose.
 
 1. Soft-delete via `Tracked` (default for cached models). The fetcher includes soft-deleted rows in `items` so the delta-sync layer derives tombstones via `collect_tombstones`; sassi's `apply_delta` tombstone-precedence rule evicts soft-deleted rows at the commit boundary. The cache state at commit excludes soft-deleted rows. The adopter's QuerySet filter passed to `refresh_into` does NOT include `deleted_at IS NULL` (that would exclude the deletion signal). At render time, the UI's `MemQ::filter` predicate (e.g., `deleted_at.is_null()`) is the defensive equivalent of a visibility filter — useful for code that reads through a partial tick boundary, but the canonical post-commit state never holds soft-deleted rows.
-2. Outbox event subscription for hard-deletes (models without `Tracked`, or hard-deletes outside the soft-delete contract). The backend Punnu's fetcher subscribes to djogi's outbox `OnDelete` stream (Phase 4), accumulates IDs locally, drains them as `tombstones` on the next `fetch_delta` call.
+2. Outbox event subscription for hard-deletes (models without `Tracked`, or hard-deletes outside the soft-delete contract). The backend Punnu's fetcher subscribes to djogi's outbox `OnDelete` stream (), accumulates IDs locally, drains them as `tombstones` on the next `fetch_delta` call.
 
 **WASM-tier Punnus** (Maahi browser session caches): the outbox is a backend-only concept — there is no in-process channel between djogi's outbox writer and a WASM-runtime Punnu. WASM Punnus rely on:
 
 1. Soft-delete via `Tracked` (default — covers ~95% of cached models). Same pattern as backend: fetcher includes soft-deleted rows in `items`; the delta-sync layer derives tombstones from `deleted_at`; `apply_delta` commits both atomically with tombstone precedence. The Dioxus server function returns `DeltaResult { items, tombstones, watermark }` over the wire envelope; the WASM client applies the delta via `Punnu::apply_delta` with the same precedence rule.
-2. `punnu_periodic_full_refresh_every` for re-baselining; combined with (1) covers most cases. Hard-deletes (no soft-delete trail) on WASM-tier Punnus are not caught until cross-runtime push (Phase 11+) is specced.
+2. `punnu_periodic_full_refresh_every` for re-baselining; combined with (1) covers most cases. Hard-deletes (no soft-delete trail) on WASM-tier Punnus are not caught until cross-runtime push (1+) is specced.
 
-A future Phase 11 amendment may introduce a server→WASM event push channel (WebSocket / SSE) carrying outbox events; until then, WASM Punnus rely on the soft-delete + tombstone-derivation pattern (server function returns DeltaResult, WASM client applies via apply_delta); hard-deletes outside the soft-delete contract are covered only via cross-runtime push (Phase 11+).
+A future 1 amendment may introduce a server→WASM event push channel (WebSocket / SSE) carrying outbox events; until then, WASM Punnus rely on the soft-delete + tombstone-derivation pattern (server function returns DeltaResult, WASM client applies via apply_delta); hard-deletes outside the soft-delete contract are covered only via cross-runtime push (1+).
 
 ### AuthContext and RLS coherence
 
@@ -102,7 +102,7 @@ Batch FK label rendering (e.g., a list view showing 25 rows each with FK referen
 
 The headline cross-runtime Sassi win for Maahi. [UI Surface — List Views](./ui.md) describes per-field filter widgets auto-typed from `FieldDescriptor::ty`. Each widget produces a Djogi `PortablePredicate<T>`; composed predicates use the `&`, `|`, `^`, `!` operators. The same portable predicate intent runs in two places:
 
-- **Server-side**, lowering to SQL via djogi's `Q::Portable(PortablePredicate<T>)` walker (Phase 8e), for cache-boundary filter evaluation that crosses pagination
+- **Server-side**, lowering to SQL via djogi's `Q::Portable(PortablePredicate<T>)` walker (e), for cache-boundary filter evaluation that crosses pagination
 - **Client-side**, lowering the trusted portable predicate to Sassi `BasicPredicate<T>` and evaluating against the cached `Punnu<T>` for instant filter feedback within the loaded set
 
 A single source of truth — the portable predicate value — drives both runtimes. Maahi writes filter logic once and gets server-side and client-side evaluation for free. Djogi owns provenance and SQL lowering; Sassi owns in-memory replay. The operator sees identical filter semantics regardless of which side the evaluation happens on.
@@ -119,7 +119,7 @@ Single-tenant single-operator deployments can run on the default `NoBackend` (L1
 
 ## Save-on-commit cache coherence
 
-Phase 4's outbox already rides the `on_commit` substrate. Sassi's invalidation hook (Phase 8f, djogi-side) integrates through the same callback registry. Every Maahi save path — single-row `Update`, M2M inline edits, bulk-delete approval execution — wraps in a transaction. On commit, the relevant Punnu instances invalidate the affected ids automatically.
+'s outbox already rides the `on_commit` substrate. Sassi's invalidation hook (f, djogi-side) integrates through the same callback registry. Every Maahi save path — single-row `Update`, M2M inline edits, bulk-delete approval execution — wraps in a transaction. On commit, the relevant Punnu instances invalidate the affected ids automatically.
 
 Maahi writes zero cache-invalidation code. The combination of `on_commit` registration + `Cacheable::Id`-keyed invalidation gives transactional cache coherence by construction. On rollback, neither outbox nor Punnu invalidation fires, so cache state stays consistent with the rolled-back transaction.
 
@@ -153,9 +153,9 @@ punnu_list_lru_size = 1000
 fk_preload_ttl = "5min"
 
 # Cross-process invalidation backend.
-# - "none"  = L1-only; single-instance / single-tab deployments
+# - "none" = L1-only; single-instance / single-tab deployments
 # - "redis" = sassi-cache-redis pub/sub fan-out; required for any
-#             deployment with multiple operator sessions or tabs
+#  deployment with multiple operator sessions or tabs
 # Default: "none".
 cache_backend = "none"
 cache_redis_url = "redis://localhost:6379"
@@ -177,7 +177,7 @@ Maahi's hydrated WASM client requires sassi's `runtime-wasm` feature; sassi WASM
 
 ## Phase boundary
 
-Cache substrate is a Phase 10 v1 deliverable; the eight integration points above ship together. Phase 10.5 candidates include:
+Cache substrate is a 0 v1 deliverable; the eight integration points above ship together. 0.5 candidates include:
 
 - Collection-aggregate caches for batched FK label rendering (the `Punnu<BlockedSet>`-style wrapper pattern from sassi spec §3.1.1 Doctrine B)
 - Per-session metrics dashboards via `sassi::PunnuMetrics` — operator-facing cache hit rate / eviction / fetch latency surfaced in the admin UI
@@ -188,4 +188,4 @@ None of those are v1; v1 ships the integration above and stops there.
 
 ---
 
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md) | [Maahi](./index.md)

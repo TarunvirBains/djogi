@@ -23,7 +23,7 @@ use super::window::WindowSpec;
 /// The correct variant is selected by the window type's comparison helpers;
 /// adopters do not construct `QualifyCondition` directly.
 #[derive(Debug, Clone)]
-#[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+#[must_use = "qualify conditions are only meaningful once handed to.qualify(...)"]
 pub struct QualifyCondition {
     pub(crate) alias: &'static str,
     pub(crate) op: QualifyOp,
@@ -92,7 +92,7 @@ impl QualifyCondition {
 fn build_qualify(alias: Option<&'static str>, op: QualifyOp, value: i64) -> QualifyCondition {
     QualifyCondition {
         alias: alias.expect(
-            "qualify can only reference a window annotation that was registered with .alias(\"…\")",
+            "qualify can only reference a window annotation that was registered with.alias(\"…\")",
         ),
         op,
         value: QualifyValue::Int(value),
@@ -107,7 +107,7 @@ fn build_qualify(alias: Option<&'static str>, op: QualifyOp, value: i64) -> Qual
 fn build_qualify_f64(alias: Option<&'static str>, op: QualifyOp, value: f64) -> QualifyCondition {
     QualifyCondition {
         alias: alias.expect(
-            "qualify can only reference a window annotation that was registered with .alias(\"…\")",
+            "qualify can only reference a window annotation that was registered with.alias(\"…\")",
         ),
         op,
         value: QualifyValue::Float(value),
@@ -165,238 +165,238 @@ pub trait WindowRanking: sealed_ranking::Sealed {
 }
 
 macro_rules! define_window_rank_fn {
-    ($type_name:ident, $sql_name:literal, $example_name:literal) => {
-        #[doc = concat!(
-            "`",
-            $sql_name,
-            "() OVER (...)` window-only annotation returning `i64`.\n\n",
-            "# What\n\n",
-            "Use this type inside [`QuerySet::annotate`](crate::query::QuerySet::annotate) ",
-            "when each returned model row needs a per-partition ranking value. ",
-            "The function is window-only: Djogi always emits `OVER (...)`; it never ",
-            "lowers to a bare function call.\n\n",
-            "# Why\n\n",
-            "PostgreSQL 18 does not support a `QUALIFY` clause, so filters over ",
-            "window outputs are lowered by [`AnnotatedQuerySet::qualify`](crate::query::AnnotatedQuerySet::qualify) ",
-            "to an outer `WHERE` over a derived table. The alias supplied with ",
-            "[`alias`](Self::alias) becomes the column name that outer filter can reference.\n\n",
-            "# How\n\n",
-            "Build the window with [`partition_by`](Self::partition_by), ",
-            "[`order_by`](Self::order_by), and a required [`alias`](Self::alias). ",
-            "The alias must be a plain unquoted PostgreSQL identifier.\n\n",
-            "# Example\n\n",
-            "```ignore\n",
-            "use djogi::prelude::*;\n\n",
-            "let rows = Elephant::objects()\n",
-            "    .annotate(|e| ", stringify!($type_name), "::new()\n",
-            "        .partition_by(e.herd_id())\n",
-            "        .order_by(e.score().desc())\n",
-            "        .alias(\"", $example_name, "\"))\n",
-            "    .qualify(|w| w.lte(3))\n",
-            "    .fetch_all(&mut ctx)\n",
-            "    .await?;\n",
-            "# Ok::<_, djogi::DjogiError>(())\n",
-            "```\n\n",
-            "The SQL shape is a derived table rather than `QUALIFY`:\n\n",
-            "```sql\n",
-            "SELECT * FROM (\n",
-            "    SELECT t.id, ",
-            $sql_name,
-            "() OVER (PARTITION BY herd_id ORDER BY score DESC) AS ",
-            $example_name,
-            "\n",
-            "    FROM elephants AS t\n",
-            ") AS __djogi_q\n",
-            "WHERE ",
-            $example_name,
-            " <= $1\n",
-            "```"
-        )]
-        #[must_use = "window functions are lazy annotations - dropping one omits the column"]
-        #[derive(Debug, Clone, Default)]
-        pub struct $type_name {
-            pub(crate) window: WindowSpec,
-            pub(crate) alias: Option<&'static str>,
-        }
+ ($type_name:ident, $sql_name:literal, $example_name:literal) => {
+  #[doc = concat!(
+   "`",
+   $sql_name,
+   "() OVER (...)` window-only annotation returning `i64`.\n\n",
+   "# What\n\n",
+   "Use this type inside [`QuerySet::annotate`](crate::query::QuerySet::annotate) ",
+   "when each returned model row needs a per-partition ranking value. ",
+   "The function is window-only: Djogi always emits `OVER (...)`; it never ",
+   "lowers to a bare function call.\n\n",
+   "# Why\n\n",
+   "PostgreSQL 18 does not support a `QUALIFY` clause, so filters over ",
+   "window outputs are lowered by [`AnnotatedQuerySet::qualify`](crate::query::AnnotatedQuerySet::qualify) ",
+   "to an outer `WHERE` over a derived table. The alias supplied with ",
+   "[`alias`](Self::alias) becomes the column name that outer filter can reference.\n\n",
+   "# How\n\n",
+   "Build the window with [`partition_by`](Self::partition_by), ",
+   "[`order_by`](Self::order_by), and a required [`alias`](Self::alias). ",
+   "The alias must be a plain unquoted PostgreSQL identifier.\n\n",
+   "# Example\n\n",
+   "```ignore\n",
+   "use djogi::prelude::*;\n\n",
+   "let rows = Elephant::objects()\n",
+   ".annotate(|e| ", stringify!($type_name), "::new()\n",
+   " .partition_by(e.herd_id())\n",
+   " .order_by(e.score().desc())\n",
+   " .alias(\"", $example_name, "\"))\n",
+   ".qualify(|w| w.lte(3))\n",
+   ".fetch_all(&mut ctx)\n",
+   ".await?;\n",
+   "# Ok::<_, djogi::DjogiError>(())\n",
+   "```\n\n",
+   "The SQL shape is a derived table rather than `QUALIFY`:\n\n",
+   "```sql\n",
+   "SELECT * FROM (\n",
+   " SELECT t.id, ",
+   $sql_name,
+   "() OVER (PARTITION BY herd_id ORDER BY score DESC) AS ",
+   $example_name,
+   "\n",
+   " FROM elephants AS t\n",
+   ") AS __djogi_q\n",
+   "WHERE ",
+   $example_name,
+   " <= $1\n",
+   "```"
+  )]
+  #[must_use = "window functions are lazy annotations - dropping one omits the column"]
+  #[derive(Debug, Clone, Default)]
+  pub struct $type_name {
+   pub(crate) window: WindowSpec,
+   pub(crate) alias: Option<&'static str>,
+  }
 
-        impl $type_name {
-            #[doc = concat!(
-                "Construct an empty `",
-                $sql_name,
-                "() OVER ()` window annotation.\n\n",
-                "# What\n\n",
-                "The returned builder has no partitioning, ordering, frame, or alias yet.\n\n",
-                "# Why\n\n",
-                "The window spec starts empty so callers can opt into the exact ",
-                "partition and order required by the ranking query. The function still ",
-                "remains window-only because emission appends `OVER ()` even when no ",
-                "builder methods are called.\n\n",
-                "# How\n\n",
-                "Chain [`partition_by`](Self::partition_by), [`order_by`](Self::order_by), ",
-                "and the required [`alias`](Self::alias) before passing it to `.annotate(...)`.\n\n",
-                "# Example\n\n",
-                "```ignore\n",
-                "let rank = ", stringify!($type_name), "::new()\n",
-                "    .order_by(fields.score().desc())\n",
-                "    .alias(\"", $example_name, "\");\n",
-                "```"
-            )]
-            pub fn new() -> Self {
-                Self {
-                    window: WindowSpec::default(),
-                    alias: None,
-                }
-            }
+  impl $type_name {
+   #[doc = concat!(
+    "Construct an empty `",
+    $sql_name,
+    "() OVER ()` window annotation.\n\n",
+    "# What\n\n",
+    "The returned builder has no partitioning, ordering, frame, or alias yet.\n\n",
+    "# Why\n\n",
+    "The window spec starts empty so callers can opt into the exact ",
+    "partition and order required by the ranking query. The function still ",
+    "remains window-only because emission appends `OVER ()` even when no ",
+    "builder methods are called.\n\n",
+    "# How\n\n",
+    "Chain [`partition_by`](Self::partition_by), [`order_by`](Self::order_by), ",
+    "and the required [`alias`](Self::alias) before passing it to `.annotate(...)`.\n\n",
+    "# Example\n\n",
+    "```ignore\n",
+    "let rank = ", stringify!($type_name), "::new()\n",
+    ".order_by(fields.score().desc())\n",
+    ".alias(\"", $example_name, "\");\n",
+    "```"
+   )]
+   pub fn new() -> Self {
+    Self {
+     window: WindowSpec::default(),
+     alias: None,
+    }
+   }
 
-            /// Add a `PARTITION BY` column to this window function.
-            /// # What
-            /// The column comes from a typed [`FieldRef`], so it has already
-            /// passed Djogi's identifier validation path.
-            /// # Why
-            /// Partitioning restarts the row numbering or ranking per group,
-            /// which is the common "top N per parent" shape.
-            /// # How
-            /// Call this once per partition key before `.alias(...)`.
-            /// ```ignore
-            /// RowNumber::new()
-            ///     .partition_by(fields.herd_id())
-            ///     .order_by(fields.score().desc())
-            ///     .alias("rank");
-            /// ```
-            /// PR3: accepts `FieldRef<M, V>` or the post-flip root
-            /// accessor return type `DjogiField<M, V>` through
-            /// [`IntoSqlField`](crate::query::field::IntoSqlField).
-            /// Window partitions are SQL-only emission boundaries.
-            #[must_use = "window functions are immutable builders - use the returned value"]
-            pub fn partition_by<M, V, S>(mut self, field: S) -> Self
-            where
-                M: Model,
-                S: crate::query::field::IntoSqlField<M, V>,
-            {
-                self.window.partition_by.push(field.into_sql_field().column());
-                self
-            }
+   /// Add a `PARTITION BY` column to this window function.
+   /// # What
+   /// The column comes from a typed [`FieldRef`], so it has already
+   /// passed Djogi's identifier validation path.
+   /// # Why
+   /// Partitioning restarts the row numbering or ranking per group,
+   /// which is the common "top N per parent" shape.
+   /// # How
+   /// Call this once per partition key before `.alias(...)`.
+   /// ```ignore
+   /// RowNumber::new()
+   /// .partition_by(fields.herd_id())
+   /// .order_by(fields.score().desc())
+   /// .alias("rank");
+   /// ```
+   /// PR3: accepts `FieldRef<M, V>` or the post-flip root
+   /// accessor return type `DjogiField<M, V>` through
+   /// [`IntoSqlField`](crate::query::field::IntoSqlField).
+   /// Window partitions are SQL-only emission boundaries.
+   #[must_use = "window functions are immutable builders - use the returned value"]
+   pub fn partition_by<M, V, S>(mut self, field: S) -> Self
+   where
+    M: Model,
+    S: crate::query::field::IntoSqlField<M, V>,
+   {
+    self.window.partition_by.push(field.into_sql_field().column());
+    self
+   }
 
-            /// Add an `ORDER BY` term to this window function.
-            /// # What
-            /// Accepts the [`OrderExpr`] produced by `FieldRef::asc()` or
-            /// `FieldRef::desc()` and stores its column and direction in the
-            /// window spec.
-            /// # Why
-            /// Ranking functions are only deterministic when the partition has
-            /// an explicit order. Djogi keeps the order typed by reusing the
-            /// same `OrderExpr` surface as `QuerySet::order_by`.
-            /// # How
-            /// Pass `field.asc()` or `field.desc()`:
-            /// ```ignore
-            /// Rank::new()
-            ///     .partition_by(fields.herd_id())
-            ///     .order_by(fields.score().desc())
-            ///     .alias("rank");
-            /// ```
-            /// # Panics
-            /// Panics if called with a spatial-distance ordering. The current
-            /// [`WindowSpec`] stores column-name ordering terms, which is enough
-            /// for typed ranking functions but not expression-backed spatial
-            /// ordering.
-            #[must_use = "window functions are immutable builders - use the returned value"]
-            pub fn order_by(mut self, order: OrderExpr) -> Self {
-                push_order_expr(&mut self.window, order);
-                self
-            }
+   /// Add an `ORDER BY` term to this window function.
+   /// # What
+   /// Accepts the [`OrderExpr`] produced by `FieldRef::asc()` or
+   /// `FieldRef::desc()` and stores its column and direction in the
+   /// window spec.
+   /// # Why
+   /// Ranking functions are only deterministic when the partition has
+   /// an explicit order. Djogi keeps the order typed by reusing the
+   /// same `OrderExpr` surface as `QuerySet::order_by`.
+   /// # How
+   /// Pass `field.asc()` or `field.desc()`:
+   /// ```ignore
+   /// Rank::new()
+   /// .partition_by(fields.herd_id())
+   /// .order_by(fields.score().desc())
+   /// .alias("rank");
+   /// ```
+   /// # Panics
+   /// Panics if called with a spatial-distance ordering. The current
+   /// [`WindowSpec`] stores column-name ordering terms, which is enough
+   /// for typed ranking functions but not expression-backed spatial
+   /// ordering.
+   #[must_use = "window functions are immutable builders - use the returned value"]
+   pub fn order_by(mut self, order: OrderExpr) -> Self {
+    push_order_expr(&mut self.window, order);
+    self
+   }
 
-            /// Set the output alias used by annotation decode and outer filters.
-            /// # What
-            /// The alias is emitted as `AS <alias>` in the inner annotated
-            /// select and becomes the column referenced by
-            /// [`AnnotatedQuerySet::qualify`](crate::query::AnnotatedQuerySet::qualify).
-            /// # Why
-            /// PostgreSQL 18 has no `QUALIFY` clause, so Djogi lowers
-            /// `.qualify(...)` into `SELECT * FROM (<annotated select>) AS
-            /// __djogi_q WHERE <alias predicate>`. A stable alias is required
-            /// for that outer predicate and for row decoding.
-            /// # How
-            /// Pass a plain unquoted PostgreSQL identifier:
-            /// ```ignore
-            /// DenseRank::new()
-            ///     .order_by(fields.score().desc())
-            ///     .alias("dense_rank");
-            /// ```
-            /// # Panics
-            /// Panics when `alias` is empty, longer than PostgreSQL's usable
-            /// identifier length, starts with an invalid byte, contains an
-            /// invalid byte, or is a reserved PostgreSQL keyword. Also panics
-            /// when the alias starts with the `__djogi_` framework-reserved
-            /// prefix (e.g. `__djogi_q` would shadow the derived-table name
-            /// used by qualify lowering; `__djogi_agg_N` would collide with
-            /// the aggregate-tuple slot aliases used by row decode).
-            /// User-chosen aliases SHOULD also avoid colliding with the
-            /// model's own column names — the outer `WHERE <alias>` would
-            /// then reference the underlying column instead of the window
-            /// output. The framework cannot enforce this here because
-            /// [`alias`](Self::alias) does not know the eventual `T`; it is
-            /// the caller's responsibility to pick a non-colliding alias.
-            #[must_use = "window functions are immutable builders - use the returned value"]
-            pub fn alias(mut self, alias: &'static str) -> Self {
-                crate::ident::assert_user_supplied_ident(alias, "window_alias");
-                self.alias = Some(alias);
-                self
-            }
+   /// Set the output alias used by annotation decode and outer filters.
+   /// # What
+   /// The alias is emitted as `AS <alias>` in the inner annotated
+   /// select and becomes the column referenced by
+   /// [`AnnotatedQuerySet::qualify`](crate::query::AnnotatedQuerySet::qualify).
+   /// # Why
+   /// PostgreSQL 18 has no `QUALIFY` clause, so Djogi lowers
+   /// `.qualify(...)` into `SELECT * FROM (<annotated select>) AS
+   /// __djogi_q WHERE <alias predicate>`. A stable alias is required
+   /// for that outer predicate and for row decoding.
+   /// # How
+   /// Pass a plain unquoted PostgreSQL identifier:
+   /// ```ignore
+   /// DenseRank::new()
+   /// .order_by(fields.score().desc())
+   /// .alias("dense_rank");
+   /// ```
+   /// # Panics
+   /// Panics when `alias` is empty, longer than PostgreSQL's usable
+   /// identifier length, starts with an invalid byte, contains an
+   /// invalid byte, or is a reserved PostgreSQL keyword. Also panics
+   /// when the alias starts with the `__djogi_` framework-reserved
+   /// prefix (e.g. `__djogi_q` would shadow the derived-table name
+   /// used by qualify lowering; `__djogi_agg_N` would collide with
+   /// the aggregate-tuple slot aliases used by row decode).
+   /// User-chosen aliases SHOULD also avoid colliding with the
+   /// model's own column names — the outer `WHERE <alias>` would
+   /// then reference the underlying column instead of the window
+   /// output. The framework cannot enforce this here because
+   /// [`alias`](Self::alias) does not know the eventual `T`; it is
+   /// the caller's responsibility to pick a non-colliding alias.
+   #[must_use = "window functions are immutable builders - use the returned value"]
+   pub fn alias(mut self, alias: &'static str) -> Self {
+    crate::ident::assert_user_supplied_ident(alias, "window_alias");
+    self.alias = Some(alias);
+    self
+   }
 
-            pub(crate) fn alias_name(&self) -> Option<&'static str> {
-                self.alias
-            }
+   pub(crate) fn alias_name(&self) -> Option<&'static str> {
+    self.alias
+   }
 
-            pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
-                acc.push_sql($sql_name);
-                acc.push_sql("()");
-                self.window.emit(acc);
-                acc.push_sql(" AS ");
-                acc.push_sql(
-                    self.alias
-                        .expect("window function annotations are checked before SQL emission"),
-                );
-            }
+   pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+    acc.push_sql($sql_name);
+    acc.push_sql("()");
+    self.window.emit(acc);
+    acc.push_sql(" AS ");
+    acc.push_sql(
+     self.alias
+     .expect("window function annotations are checked before SQL emission"),
+    );
+   }
 
-            // Inherent comparison wrappers — keep `use djogi::RowNumber; w.lte(3)`
-            // working without forcing callers to also import [`WindowRanking`].
-            // Each one-liner delegates to the trait's default body so the actual
-            // qualify-lowering logic is written exactly once (in the trait).
+   // Inherent comparison wrappers — keep `use djogi::RowNumber; w.lte(3)`
+   // working without forcing callers to also import [`WindowRanking`].
+   // Each one-liner delegates to the trait's default body so the actual
+   // qualify-lowering logic is written exactly once (in the trait).
 
-            /// `<alias> < value` — see [`WindowRanking::lt`].
-            pub fn lt(&self, value: i64) -> QualifyCondition {
-                <Self as WindowRanking>::lt(self, value)
-            }
+   /// `<alias> < value` — see [`WindowRanking::lt`].
+   pub fn lt(&self, value: i64) -> QualifyCondition {
+    <Self as WindowRanking>::lt(self, value)
+   }
 
-            /// `<alias> <= value` — see [`WindowRanking::lte`].
-            pub fn lte(&self, value: i64) -> QualifyCondition {
-                <Self as WindowRanking>::lte(self, value)
-            }
+   /// `<alias> <= value` — see [`WindowRanking::lte`].
+   pub fn lte(&self, value: i64) -> QualifyCondition {
+    <Self as WindowRanking>::lte(self, value)
+   }
 
-            /// `<alias> = value` — see [`WindowRanking::eq`].
-            pub fn eq(&self, value: i64) -> QualifyCondition {
-                <Self as WindowRanking>::eq(self, value)
-            }
+   /// `<alias> = value` — see [`WindowRanking::eq`].
+   pub fn eq(&self, value: i64) -> QualifyCondition {
+    <Self as WindowRanking>::eq(self, value)
+   }
 
-            /// `<alias> >= value` — see [`WindowRanking::gte`].
-            pub fn gte(&self, value: i64) -> QualifyCondition {
-                <Self as WindowRanking>::gte(self, value)
-            }
+   /// `<alias> >= value` — see [`WindowRanking::gte`].
+   pub fn gte(&self, value: i64) -> QualifyCondition {
+    <Self as WindowRanking>::gte(self, value)
+   }
 
-            /// `<alias> > value` — see [`WindowRanking::gt`].
-            pub fn gt(&self, value: i64) -> QualifyCondition {
-                <Self as WindowRanking>::gt(self, value)
-            }
-        }
+   /// `<alias> > value` — see [`WindowRanking::gt`].
+   pub fn gt(&self, value: i64) -> QualifyCondition {
+    <Self as WindowRanking>::gt(self, value)
+   }
+  }
 
-        impl sealed_ranking::Sealed for $type_name {}
+  impl sealed_ranking::Sealed for $type_name {}
 
-        impl WindowRanking for $type_name {
-            fn alias_name(&self) -> Option<&'static str> {
-                self.alias
-            }
-        }
-    };
+  impl WindowRanking for $type_name {
+   fn alias_name(&self) -> Option<&'static str> {
+    self.alias
+   }
+  }
+ };
 }
 
 define_window_rank_fn!(RowNumber, "ROW_NUMBER", "rank");
@@ -422,32 +422,32 @@ define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 /// ```ignore
 /// // Top half of each region by amount (ORDER BY amount DESC ⇒ rank 0 = highest).
 /// let rows = Sale::objects()
-///     .annotate(|f| PercentRankWindow::new()
-///         .partition_by(f.region_id())
-///         .order_by(f.amount().desc())
-///         .alias("amount_pct"))
-///     .qualify(|w| w.lt(0.5))
-///     .fetch_all(&mut ctx).await?;
+/// .annotate(|f| PercentRankWindow::new()
+///  .partition_by(f.region_id())
+///  .order_by(f.amount().desc())
+///  .alias("amount_pct"))
+/// .qualify(|w| w.lt(0.5))
+/// .fetch_all(&mut ctx).await?;
 /// ```
 /// The SQL shape is a derived table rather than `QUALIFY`:
 /// ```sql
 /// SELECT * FROM (
-///     SELECT t.id, ...,
-///            PERCENT_RANK() OVER (PARTITION BY region_id ORDER BY amount DESC)
-///                AS amount_pct
-///     FROM sales AS t
+///  SELECT t.id,...,
+///   PERCENT_RANK() OVER (PARTITION BY region_id ORDER BY amount DESC)
+///    AS amount_pct
+///  FROM sales AS t
 /// ) AS __djogi_q
 /// WHERE amount_pct < $1
 /// ```
 /// # Example
 /// ```ignore
 /// let rows = Sale::objects()
-///     .annotate(|f| PercentRankWindow::new()
-///         .partition_by(f.region_id())
-///         .order_by(f.amount().desc())
-///         .alias("amount_pct"))
-///     .qualify(|w| w.gte(0.9))
-///     .fetch_all(&mut ctx).await?;
+/// .annotate(|f| PercentRankWindow::new()
+///  .partition_by(f.region_id())
+///  .order_by(f.amount().desc())
+///  .alias("amount_pct"))
+/// .qualify(|w| w.gte(0.9))
+/// .fetch_all(&mut ctx).await?;
 /// ```
 #[must_use = "window functions are lazy annotations - dropping one omits the column"]
 #[derive(Debug, Clone, Default)]
@@ -473,21 +473,21 @@ pub struct PercentRankWindow {
 /// ```ignore
 /// // Rows in the top 10 % by cumulative distribution.
 /// let rows = Sale::objects()
-///     .annotate(|f| CumeDistWindow::new()
-///         .partition_by(f.region_id())
-///         .order_by(f.amount().asc())
-///         .alias("cume_dist"))
-///     .qualify(|w| w.gte(0.9))
-///     .fetch_all(&mut ctx).await?;
+/// .annotate(|f| CumeDistWindow::new()
+///  .partition_by(f.region_id())
+///  .order_by(f.amount().asc())
+///  .alias("cume_dist"))
+/// .qualify(|w| w.gte(0.9))
+/// .fetch_all(&mut ctx).await?;
 /// ```
 /// # Example
 /// ```ignore
 /// let rows = Sale::objects()
-///     .annotate(|f| CumeDistWindow::new()
-///         .partition_by(f.region_id())
-///         .order_by(f.amount().asc())
-///         .alias("cume_dist"))
-///     .fetch_all(&mut ctx).await?;
+/// .annotate(|f| CumeDistWindow::new()
+///  .partition_by(f.region_id())
+///  .order_by(f.amount().asc())
+///  .alias("cume_dist"))
+/// .fetch_all(&mut ctx).await?;
 /// ```
 #[must_use = "window functions are lazy annotations - dropping one omits the column"]
 #[derive(Debug, Clone, Default)]
@@ -567,19 +567,19 @@ macro_rules! impl_zero_arg_f64_window {
             /// # Example
             /// ```ignore
             /// Sale::objects()
-            ///     .annotate(|f| PercentRankWindow::new()
-            ///         .order_by(f.amount().desc())
-            ///         .alias("pct"))
-            ///     .qualify(|w| w.lt(0.5))
-            ///     .fetch_all(&mut ctx).await?;
+            /// .annotate(|f| PercentRankWindow::new()
+            ///  .order_by(f.amount().desc())
+            ///  .alias("pct"))
+            /// .qualify(|w| w.lt(0.5))
+            /// .fetch_all(&mut ctx).await?;
             /// ```
-            #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+            #[must_use = "qualify conditions are only meaningful once handed to.qualify(...)"]
             pub fn lt(&self, value: f64) -> QualifyCondition {
                 build_qualify_f64(self.alias_name(), QualifyOp::Lt, value)
             }
 
             /// `<alias> <= value` — see [`Self::lt`] for the lowering shape.
-            #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+            #[must_use = "qualify conditions are only meaningful once handed to.qualify(...)"]
             pub fn lte(&self, value: f64) -> QualifyCondition {
                 build_qualify_f64(self.alias_name(), QualifyOp::Lte, value)
             }
@@ -592,19 +592,19 @@ macro_rules! impl_zero_arg_f64_window {
             /// for the last `CUME_DIST` row), but not for intermediate
             /// fractions. Prefer [`lt`](Self::lt) / [`lte`](Self::lte) /
             /// [`gte`](Self::gte) / [`gt`](Self::gt) for thresholds.
-            #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+            #[must_use = "qualify conditions are only meaningful once handed to.qualify(...)"]
             pub fn eq(&self, value: f64) -> QualifyCondition {
                 build_qualify_f64(self.alias_name(), QualifyOp::Eq, value)
             }
 
             /// `<alias> >= value` — see [`Self::lt`] for the lowering shape.
-            #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+            #[must_use = "qualify conditions are only meaningful once handed to.qualify(...)"]
             pub fn gte(&self, value: f64) -> QualifyCondition {
                 build_qualify_f64(self.alias_name(), QualifyOp::Gte, value)
             }
 
             /// `<alias> > value` — see [`Self::lt`] for the lowering shape.
-            #[must_use = "qualify conditions are only meaningful once handed to .qualify(...)"]
+            #[must_use = "qualify conditions are only meaningful once handed to.qualify(...)"]
             pub fn gt(&self, value: f64) -> QualifyCondition {
                 build_qualify_f64(self.alias_name(), QualifyOp::Gt, value)
             }
@@ -624,11 +624,11 @@ impl_zero_arg_f64_window!(CumeDistWindow, "CUME_DIST");
 /// ```ignore
 /// // Quartile salary placement per department
 /// let rows = Employee::objects()
-///     .annotate(|f| NtileWindow::new(4)
-///         .partition_by(f.dept_id())
-///         .order_by(f.salary().desc())
-///         .alias("salary_quartile"))
-///     .fetch_all(&mut ctx).await?;
+/// .annotate(|f| NtileWindow::new(4)
+///  .partition_by(f.dept_id())
+///  .order_by(f.salary().desc())
+///  .alias("salary_quartile"))
+/// .fetch_all(&mut ctx).await?;
 /// ```
 /// `n` is bound as a literal in the SQL; values must fit in `i32`.
 #[must_use = "window functions are lazy annotations - dropping one omits the column"]
@@ -808,11 +808,11 @@ define_column_arg_window_fn!(LastValueWindow, "LAST_VALUE");
 /// ```ignore
 /// // Compare each event to the next event in the same session
 /// let rows = Event::objects()
-///     .annotate(|f| LeadWindow::new(f.timestamp())
-///         .partition_by(f.session_id())
-///         .order_by(f.timestamp().asc())
-///         .alias("next_ts"))
-///     .fetch_all(&mut ctx).await?;
+/// .annotate(|f| LeadWindow::new(f.timestamp())
+///  .partition_by(f.session_id())
+///  .order_by(f.timestamp().asc())
+///  .alias("next_ts"))
+/// .fetch_all(&mut ctx).await?;
 /// ```
 #[must_use = "window functions are lazy annotations - dropping one omits the column"]
 #[derive(Debug, Clone)]
@@ -832,10 +832,10 @@ pub struct LeadWindow<V> {
 /// ```ignore
 /// // Compute revenue delta day-over-day
 /// let rows = Day::objects()
-///     .annotate(|f| LagWindow::new(f.revenue())
-///         .order_by(f.date().asc())
-///         .alias("prev_revenue"))
-///     .fetch_all(&mut ctx).await?;
+/// .annotate(|f| LagWindow::new(f.revenue())
+///  .order_by(f.date().asc())
+///  .alias("prev_revenue"))
+/// .fetch_all(&mut ctx).await?;
 /// ```
 #[must_use = "window functions are lazy annotations - dropping one omits the column"]
 #[derive(Debug, Clone)]
@@ -946,11 +946,11 @@ impl_lead_lag!(LagWindow, "LAG");
 /// ```ignore
 /// // Score of the third-highest entry per category
 /// let rows = Entry::objects()
-///     .annotate(|f| NthValueWindow::new(f.score(), 3)
-///         .partition_by(f.category_id())
-///         .order_by(f.score().desc())
-///         .alias("third_best"))
-///     .fetch_all(&mut ctx).await?;
+/// .annotate(|f| NthValueWindow::new(f.score(), 3)
+///  .partition_by(f.category_id())
+///  .order_by(f.score().desc())
+///  .alias("third_best"))
+/// .fetch_all(&mut ctx).await?;
 /// ```
 #[must_use = "window functions are lazy annotations - dropping one omits the column"]
 #[derive(Debug, Clone)]

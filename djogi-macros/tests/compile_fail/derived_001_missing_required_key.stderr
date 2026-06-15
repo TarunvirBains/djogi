@@ -1,12 +1,12 @@
 error: `#[derived(...)]` missing required `name` key (E_DJG_VDF_001)
-  --> $DIR/derived_001_missing_required_key.rs:14:1
-   |
+ --> $DIR/derived_001_missing_required_key.rs:14:1
+ |
 14 | / #[derived(
-15 | |     ty     = String,
-16 | |     scopes = [public],
-17 | |     sql    = "inbound_site",
-18 | |     rust   = "model.inbound_site.clone()",
+15 | |  ty  = String,
+16 | |  scopes = [public],
+17 | |  sql = "inbound_site",
+18 | |  rust = "model.inbound_site.clone()",
 19 | | )]
-   | |__^
+ | |__^
 
 error: aborting due to 1 previous error

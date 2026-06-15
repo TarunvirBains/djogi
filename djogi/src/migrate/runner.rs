@@ -13,7 +13,7 @@
 //! - NonTransactional → autocommit each statement; update progress.
 //! - MetadataOnly → no SQL runs; metadata path is `compose`'s job.
 //! 7. Phase 0 + `SingleNodeDev` only: provision node 1 after SQL and
-//!    before terminal ledger status.
+//! before terminal ledger status.
 //! 8. On success: mark_applied + persist snapshot.
 //! 9. On failure: mark_failed (or mark_partial for split-apply)
 //! and propagate. Snapshot is NOT moved forward.
@@ -380,7 +380,7 @@ pub enum RunnerError {
     /// not let one backend introspect another backend's GUC settings
     /// from `pg_stat_activity`, so we surface the broader replication
     /// signal as the hazard. Operator action: pause the apply
-    /// worker(s) (or `ALTER TABLE ... ENABLE ALWAYS TRIGGER zzz_*`)
+    /// worker(s) (or `ALTER TABLE... ENABLE ALWAYS TRIGGER zzz_*`)
     /// before retrying.
     PkFlipHazardReplicaSessions {
         /// Active walsenders observed via `pg_stat_replication`.
@@ -516,15 +516,15 @@ impl RunnerError {
     /// use djogi::migrate::{RunnerError, ledger::ChecksumMismatch};
     ///
     /// let refusal = RunnerError::ChecksumMismatch(ChecksumMismatch {
-    ///     version: "V20260101000000__add_users".to_string(),
-    ///     expected: "V1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-    ///     actual: "V1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+    ///  version: "V20260101000000__add_users".to_string(),
+    ///  expected: "V1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+    ///  actual: "V1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
     /// });
     /// assert!(refusal.is_operator_actionable());
     ///
     /// let transient = RunnerError::LockTimeout {
-    ///     path: std::path::PathBuf::from("/tmp/.djogi-migrations-lock"),
-    ///     holder_pid: None,
+    ///  path: std::path::PathBuf::from("/tmp/.djogi-migrations-lock"),
+    ///  holder_pid: None,
     /// };
     /// assert!(!transient.is_operator_actionable());
     /// ```
@@ -584,13 +584,13 @@ impl std::fmt::Display for RunnerError {
                 Some(pid) => write!(
                     f,
                     "D025 lock held by another invocation (PID {pid}) at {}; \
-                     refusing to apply",
+      refusing to apply",
                     path.display(),
                 ),
                 None => write!(
                     f,
                     "D025 lock held by another invocation at {}; refusing to apply \
-                     (PID unknown)",
+      (PID unknown)",
                     path.display(),
                 ),
             },
@@ -602,7 +602,7 @@ impl std::fmt::Display for RunnerError {
             } => write!(
                 f,
                 "Postgres advisory lock for bucket database={db} app={app} \
-                 (key=0x{key:016x}) could not be acquired after {attempts} attempts",
+     (key=0x{key:016x}) could not be acquired after {attempts} attempts",
                 db = bucket.database,
                 app = bucket.app,
             ),
@@ -625,12 +625,12 @@ impl std::fmt::Display for RunnerError {
             RunnerError::RunIdGenerationFailed { source } => write!(
                 f,
                 "run_id generation via `SELECT heerid_next()` failed before any \
-                 migration ran: {source}",
+     migration ran: {source}",
             ),
             RunnerError::NodeIdentityBindingFailed { node_id, source } => write!(
                 f,
                 "runner node identity binding failed for node {node_id} \
-                 (unregistered/inactive or SQL error): {source}",
+     (unregistered/inactive or SQL error): {source}",
             ),
             RunnerError::SingleNodeDevProvisioningFailed {
                 node_id,
@@ -643,7 +643,7 @@ impl std::fmt::Display for RunnerError {
             RunnerError::LedgerBootstrapFailed { source } => write!(
                 f,
                 "ledger bootstrap (CREATE TABLE IF NOT EXISTS djogi_schema_migrations) \
-                 failed: {source}",
+     failed: {source}",
             ),
             RunnerError::VersionAlreadyApplied {
                 version,
@@ -652,12 +652,12 @@ impl std::fmt::Display for RunnerError {
                 Some(when) => write!(
                     f,
                     "migration version `{version}` was already applied at {when}; \
-                     re-running is rejected — use `djogi migrations status` to confirm",
+      re-running is rejected — use `djogi migrations status` to confirm",
                 ),
                 None => write!(
                     f,
                     "migration version `{version}` was already applied; \
-                     re-running is rejected — use `djogi migrations status` to confirm",
+      re-running is rejected — use `djogi migrations status` to confirm",
                 ),
             },
             RunnerError::VersionCollisionNonTerminal {
@@ -684,8 +684,8 @@ impl std::fmt::Display for RunnerError {
                 write!(
                     f,
                     "migration version `{version}` collided with an existing non-terminal \
-                     ledger row (status `{status}`, run_id {run_id}); re-running is rejected \
-                     until that run is reconciled — {guidance}",
+      ledger row (status `{status}`, run_id {run_id}); re-running is rejected \
+      until that run is reconciled — {guidance}",
                     status = status.as_db_str(),
                 )
             }
@@ -696,8 +696,8 @@ impl std::fmt::Display for RunnerError {
             } => write!(
                 f,
                 "relpages probe for `{index}` could not locate target table `{table}` \
-                 (bucket database={db} app={app}); the index plan does not create \
-                 this table either — check for a typo or a mis-quoted identifier",
+     (bucket database={db} app={app}); the index plan does not create \
+     this table either — check for a typo or a mis-quoted identifier",
                 index = index_name,
                 table = target_table,
                 db = bucket.database,
@@ -712,9 +712,9 @@ impl std::fmt::Display for RunnerError {
             } => write!(
                 f,
                 "relpages probe rejected `CREATE INDEX {index}` on `{table}` (bucket \
-                 database={db} app={app}): {relpages} > {threshold}; \
-                 set `requires_out_of_transaction = true` on the IndexSpec, or \
-                 lower `migrate.strict_concurrent_warnings`",
+     database={db} app={app}): {relpages} > {threshold}; \
+     set `requires_out_of_transaction = true` on the IndexSpec, or \
+     lower `migrate.strict_concurrent_warnings`",
                 index = index_name,
                 table = target_table,
                 db = bucket.database,
@@ -729,15 +729,15 @@ impl std::fmt::Display for RunnerError {
                 SegmentSqlExecutionModeProblem::TransactionControl { keyword } => write!(
                     f,
                     "{} segment {segment_index} statement `{statement_label}` embeds top-level \
-                     transaction control `{keyword}`; djogi owns migration transaction boundaries \
-                     and refuses inline BEGIN/COMMIT/SAVEPOINT control",
+      transaction control `{keyword}`; djogi owns migration transaction boundaries \
+      and refuses inline BEGIN/COMMIT/SAVEPOINT control",
                     segment_kind_name(*segment_kind),
                 ),
                 SegmentSqlExecutionModeProblem::RequiresNonTransactional { statement_shape } => {
                     write!(
                         f,
                         "{} segment {segment_index} statement `{statement_label}` uses `{statement_shape}`, \
-                     which must run in a non-transactional segment",
+      which must run in a non-transactional segment",
                         segment_kind_name(*segment_kind),
                     )
                 }
@@ -759,7 +759,7 @@ impl std::fmt::Display for RunnerError {
             } => write!(
                 f,
                 "non-transactional segment {segment_index} step {step_index} `{statement_label}` \
-                 failed after {applied_steps_count} successful step(s): {source}",
+     failed after {applied_steps_count} successful step(s): {source}",
             ),
             RunnerError::NonTransactionalProgressAckFailed {
                 segment_index,
@@ -770,9 +770,9 @@ impl std::fmt::Display for RunnerError {
             } => write!(
                 f,
                 "non-transactional segment {segment_index} step {} `{statement_label}` \
-                 committed, but the runner failed to durably acknowledge \
-                 applied_steps_count={applied_steps_count}; the row now carries a \
-                 non-tx progress claim and must be reconciled before resume: {source}",
+     committed, but the runner failed to durably acknowledge \
+     applied_steps_count={applied_steps_count}; the row now carries a \
+     non-tx progress claim and must be reconciled before resume: {source}",
                 step_index + 1,
             ),
             RunnerError::ConfigLoadFailed { source } => {
@@ -783,7 +783,7 @@ impl std::fmt::Display for RunnerError {
             }
             RunnerError::BaselineSnapshotShouldNotBeProvided => f.write_str(
                 "baseline_plan rejects caller-supplied snapshots: baseline projects the \
-                 live database itself; pass `runner_ctx.snapshot = None`",
+     live database itself; pass `runner_ctx.snapshot = None`",
             ),
             RunnerError::StalePhaseZeroArtifact {
                 version,
@@ -805,11 +805,11 @@ impl std::fmt::Display for RunnerError {
                 write!(
                     f,
                     "drift pre-flight refused apply for database={db} app={app}: \
-                     {errors} error-severity drift diagnostic(s) between the \
-                     recorded snapshot and the live database; no migration SQL \
-                     was executed and no pending ledger row was written. Inspect \
-                     with `djogi migrations verify`; reconcile intentional drift \
-                     with `djogi migrations attune`.",
+      {errors} error-severity drift diagnostic(s) between the \
+      recorded snapshot and the live database; no migration SQL \
+      was executed and no pending ledger row was written. Inspect \
+      with `djogi migrations verify`; reconcile intentional drift \
+      with `djogi migrations attune`.",
                     db = bucket.database,
                     app = bucket.app,
                 )
@@ -817,23 +817,23 @@ impl std::fmt::Display for RunnerError {
             RunnerError::DriftBaselineMissing { bucket } => write!(
                 f,
                 "drift pre-flight refused apply for database={db} app={app}: \
-                 the bucket has applied migration history but no recorded \
-                 snapshot baseline (`schema_snapshot.json`) was found; no \
-                 migration SQL was executed and no pending ledger row was \
-                 written. Restore the snapshot from version control, or \
-                 rebuild it from the live database with `djogi migrations \
-                 repair snapshot-rebuild`.",
+     the bucket has applied migration history but no recorded \
+     snapshot baseline (`schema_snapshot.json`) was found; no \
+     migration SQL was executed and no pending ledger row was \
+     written. Restore the snapshot from version control, or \
+     rebuild it from the live database with `djogi migrations \
+     repair snapshot-rebuild`.",
                 db = bucket.database,
                 app = bucket.app,
             ),
             RunnerError::DriftBaselineCorrupted { bucket, reason } => write!(
                 f,
                 "drift pre-flight refused apply for database={db} app={app}: \
-                 the recorded snapshot baseline (`schema_snapshot.json`) exists \
-                 but could not be read: {reason}. No migration SQL was executed \
-                 and no pending ledger row was written. Restore the snapshot \
-                 from version control or rebuild it with \
-                 `djogi migrations repair snapshot-rebuild`.",
+     the recorded snapshot baseline (`schema_snapshot.json`) exists \
+     but could not be read: {reason}. No migration SQL was executed \
+     and no pending ledger row was written. Restore the snapshot \
+     from version control or rebuild it with \
+     `djogi migrations repair snapshot-rebuild`.",
                 db = bucket.database,
                 app = bucket.app,
             ),
@@ -846,11 +846,11 @@ impl std::fmt::Display for RunnerError {
             } => write!(
                 f,
                 "D060 PK-flip cutover refused: logical-replication machinery is active and \
-                 may be applying changes with session_replication_role = 'replica' (which \
-                 suppresses BEFORE row triggers and would leave the autofill skipped). \
-                 Pause the apply worker(s) or `ALTER TABLE ... ENABLE ALWAYS TRIGGER zzz_*` \
-                 before retrying. Walsenders ({nw}): {walsenders:?}; \
-                 enabled subscriptions ({ns}): {subscriptions:?}",
+     may be applying changes with session_replication_role = 'replica' (which \
+     suppresses BEFORE row triggers and would leave the autofill skipped). \
+     Pause the apply worker(s) or `ALTER TABLE... ENABLE ALWAYS TRIGGER zzz_*` \
+     before retrying. Walsenders ({nw}): {walsenders:?}; \
+     enabled subscriptions ({ns}): {subscriptions:?}",
                 nw = walsenders.len(),
                 ns = subscriptions.len(),
             ),
@@ -860,14 +860,14 @@ impl std::fmt::Display for RunnerError {
             } => write!(
                 f,
                 "D061 PK-flip cutover refused: pre-existing zzz_* trigger(s) on `{table}` \
-                 collide with the autofill install: {trigger_names:?}. Rename or drop them \
-                 before retrying.",
+     collide with the autofill install: {trigger_names:?}. Rename or drop them \
+     before retrying.",
             ),
             RunnerError::PkFlipHazardDisabledTriggers { table, triggers } => write!(
                 f,
                 "D062 PK-flip cutover refused: disabled trigger(s) on `{table}` would \
-                 silently bypass the autofill: {triggers:?}. Re-enable them or pause \
-                 whatever process disabled them before retrying.",
+     silently bypass the autofill: {triggers:?}. Re-enable them or pause \
+     whatever process disabled them before retrying.",
             ),
             RunnerError::PkFlipHazardLongRunningTx {
                 offenders,
@@ -875,9 +875,9 @@ impl std::fmt::Display for RunnerError {
             } => write!(
                 f,
                 "D063 PK-flip cutover refused: {n} transaction(s) have been open longer \
-                 than {threshold_secs}s and would block AccessExclusiveLock or trigger \
-                 lock_timeout. Cancel or terminate them via pg_cancel_backend / \
-                 pg_terminate_backend, then retry. Offenders (pid, age_secs): {offenders:?}",
+     than {threshold_secs}s and would block AccessExclusiveLock or trigger \
+     lock_timeout. Cancel or terminate them via pg_cancel_backend / \
+     pg_terminate_backend, then retry. Offenders (pid, age_secs): {offenders:?}",
                 n = offenders.len(),
             ),
             RunnerError::PkFlipVerificationFailed {
@@ -886,8 +886,8 @@ impl std::fmt::Display for RunnerError {
             } => write!(
                 f,
                 "D064 PK-flip verification halt: table `{table}` has {count_violating} row(s) \
-                 with NULL or stale shadow values. Re-run the backfill (and audit any DISABLE \
-                 TRIGGER / replica writes during the window) before retrying the cutover.",
+     with NULL or stale shadow values. Re-run the backfill (and audit any DISABLE \
+     TRIGGER / replica writes during the window) before retrying the cutover.",
             ),
             RunnerError::OutOfOrderRejected {
                 version,
@@ -897,18 +897,18 @@ impl std::fmt::Display for RunnerError {
                 Some(when) => write!(
                     f,
                     "version `{version}` would apply out-of-order: peer \
-                     `{conflicting_version}` was already applied at {when}; \
-                     the active OutOfOrderPolicy is Reject. Either rebase \
-                     this migration to a later timestamp, supply \
-                     OutOfOrderPolicy::AllowExplicit with an override reason, \
-                     or run on a non-CI / non-production profile to inherit \
-                     AllowWithDiagnostic."
+      `{conflicting_version}` was already applied at {when}; \
+      the active OutOfOrderPolicy is Reject. Either rebase \
+      this migration to a later timestamp, supply \
+      OutOfOrderPolicy::AllowExplicit with an override reason, \
+      or run on a non-CI / non-production profile to inherit \
+      AllowWithDiagnostic."
                 ),
                 None => write!(
                     f,
                     "version `{version}` would apply out-of-order: peer \
-                     `{conflicting_version}` is already applied; \
-                     the active OutOfOrderPolicy is Reject."
+      `{conflicting_version}` is already applied; \
+      the active OutOfOrderPolicy is Reject."
                 ),
             },
             RunnerError::CatalogQueryFailed {
@@ -918,17 +918,17 @@ impl std::fmt::Display for RunnerError {
             RunnerError::PinnedSessionCheckoutFailed { source } => write!(
                 f,
                 "failed to check out a pinned Postgres session from the pool before \
-                 the migration operation began (GH #274): {source}",
+     the migration operation began (GH #274): {source}",
             ),
             // D274 is shared by runner and repair for advisory-lock
             // correctness failures (GH #274); shared code is intentional.
             RunnerError::AdvisoryUnlockReturnedFalse { key, bucket } => write!(
                 f,
                 "D274 pg_advisory_unlock returned false for bucket database={db} app={app} \
-                 (key=0x{key:016x}); the advisory lock was not held on the session that \
-                 called pg_advisory_unlock — this is a session-pinning correctness failure \
-                 (GH #274/#280). The migration SQL and ledger writes may have succeeded; \
-                 inspect the ledger row to determine the actual applied state.",
+     (key=0x{key:016x}); the advisory lock was not held on the session that \
+     called pg_advisory_unlock — this is a session-pinning correctness failure \
+     (GH #274/#280). The migration SQL and ledger writes may have succeeded; \
+     inspect the ledger row to determine the actual applied state.",
                 db = bucket.database,
                 app = bucket.app,
             ),
@@ -938,12 +938,12 @@ impl std::fmt::Display for RunnerError {
             } => write!(
                 f,
                 "partition expansion for `{statement_label}` refused: \
-                 partitioned parent `{parent}` has 0 leaves in replay-strict mode",
+     partitioned parent `{parent}` has 0 leaves in replay-strict mode",
             ),
             RunnerError::MissingApplyIdentity { version } => write!(
                 f,
                 "apply refused: version '{version}' requires a binding-capable runner identity \
-                 (not Phase 0, no runner_identity set)",
+     (not Phase 0, no runner_identity set)",
             ),
         }
     }
@@ -991,21 +991,21 @@ impl std::error::Error for RunnerError {
 ///
 /// **Three modes:**
 /// 1. **`Selected { id }`** — Production/cluster mode with explicit
-///    node ID selected by the operator (via CLI `--node-id` or env
-///    `HEER_NODE_ID`). The runner binds this identity on the pinned
-///    connection after Phase 0 installs HeeRanjID, and validates
-///    active registration against `heer_nodes`.
+/// node ID selected by the operator (via CLI `--node-id` or env
+/// `HEER_NODE_ID`). The runner binds this identity on the pinned
+/// connection after Phase 0 installs HeeRanjID, and validates
+/// active registration against `heer_nodes`.
 /// 2. **`SingleNodeDev`** — Explicit dev/single-node mode (CLI
-///    `--single-node-dev`). The runner provisions node 1 immediately
-///    after Phase 0 SQL succeeds, then binds node 1 on the pinned
-///    connection. Non-Phase-0 migrations only bind the already-
-///    provisioned node.
+/// `--single-node-dev`). The runner provisions node 1 immediately
+/// after Phase 0 SQL succeeds, then binds node 1 on the pinned
+/// connection. Non-Phase-0 migrations only bind the already-
+/// provisioned node.
 /// 3. **`IdentityFree`** — Source-proven inverse path: no user
-///    migration SQL and no non-Phase-0 `generate_run_id` /
-///    `HeerId::generate`. The runner does not attempt any node
-///    binding. Status, verify, attune record sentinel, squash
-///    checksum refresh, repair checksum, repair partial status
-///    updates, and snapshot rebuild fall here.
+/// migration SQL and no non-Phase-0 `generate_run_id` /
+/// `HeerId::generate`. The runner does not attempt any node
+/// binding. Status, verify, attune record sentinel, squash
+/// checksum refresh, repair checksum, repair partial status
+/// updates, and snapshot rebuild fall here.
 ///
 /// **Library contract.** The Djogi runtime library and pool must NOT
 /// read `HEER_NODE_ID` or `HEER_RANJ_NODE_ID`. Identity resolution
@@ -1113,25 +1113,25 @@ pub struct RunnerCtx {
     /// who have not yet provisioned the second DB.
     /// **Wiring:**
     /// - Added the field and wired
-    ///   [`super::record_ddl_audit`] into `apply_plan_inner`'s
-    ///   success-only path. The runner writes audit rows whenever
-    ///   the caller supplies `Some(pool)`.
+    /// [`super::record_ddl_audit`] into `apply_plan_inner`'s
+    /// success-only path. The runner writes audit rows whenever
+    /// the caller supplies `Some(pool)`.
     /// - **issue #118** wired the production CLI
-    ///   dispatch (`db reset` replay path) to populate this field
-    ///   from `crud_log_url` (env-var override or
-    ///   derive-from-`database.url` fallback) via
-    ///   [`super::resolve_audit_url`] + [`super::build_audit_pool`].
-    ///   Tests that build `RunnerCtx` literals typically leave this
-    ///   `None` — the dedicated audit-row coverage runs in
-    ///   `tests/internal/sources/phase8_5_c2_118_*`.
-    ///   **Why `deadpool_postgres::Pool` and not `DjogiPool`:** the
-    ///   audit pool is not user-facing — adopters never see it, and
-    ///   the runner constructs the audit-side `DjogiContext` itself
-    ///   via `DjogiPool { inner: pool.clone() }` at the call site.
-    ///   Holding the raw pool here keeps the dependency on
-    ///   `DjogiPool`'s wider invariants (post-connect callbacks,
-    ///   status reporting) out of `RunnerCtx`'s shape — those are
-    ///   app-side concerns that do not apply to the audit DB.
+    /// dispatch (`db reset` replay path) to populate this field
+    /// from `crud_log_url` (env-var override or
+    /// derive-from-`database.url` fallback) via
+    /// [`super::resolve_audit_url`] + [`super::build_audit_pool`].
+    /// Tests that build `RunnerCtx` literals typically leave this
+    /// `None` — the dedicated audit-row coverage runs in
+    /// `tests/internal/sources/phase8_5_c2_118_*`.
+    /// **Why `deadpool_postgres::Pool` and not `DjogiPool`:** the
+    /// audit pool is not user-facing — adopters never see it, and
+    /// the runner constructs the audit-side `DjogiContext` itself
+    /// via `DjogiPool { inner: pool.clone() }` at the call site.
+    /// Holding the raw pool here keeps the dependency on
+    /// `DjogiPool`'s wider invariants (post-connect callbacks,
+    /// status reporting) out of `RunnerCtx`'s shape — those are
+    /// app-side concerns that do not apply to the audit DB.
     pub audit_pool: Option<deadpool_postgres::Pool>,
     /// Runner identity mode for this invocation. Controls whether
     /// and how node identity is bound on the pinned migration
@@ -1416,13 +1416,13 @@ async fn apply_plan_inner(
             .map(|(v, ts)| (v.as_str(), ts.as_deref()))
             .unwrap_or(("", None));
         tracing::warn!(
-            bucket_database = %plan.bucket.database,
-            bucket_app = %plan.bucket.app,
-            version = %runner_ctx.version,
-            conflicting_version,
-            conflicting_applied_at = applied_at.unwrap_or("<unknown>"),
-            policy = ?runner_ctx.out_of_order_policy,
-            "out-of-order migration apply allowed by policy",
+         bucket_database = %plan.bucket.database,
+         bucket_app = %plan.bucket.app,
+         version = %runner_ctx.version,
+         conflicting_version,
+         conflicting_applied_at = applied_at.unwrap_or("<unknown>"),
+         policy = ?runner_ctx.out_of_order_policy,
+         "out-of-order migration apply allowed by policy",
         );
     }
     match &runner_ctx.drift_baseline {
@@ -1540,7 +1540,7 @@ async fn apply_plan_inner(
             ctx,
             identity.node_id().expect(
                 "INVARIANT: node_id is Some when requires_binding is true; \
-                 IdentityFree ruled out by refusal gate above",
+     IdentityFree ruled out by refusal gate above",
             ),
         )
         .await?;
@@ -1751,32 +1751,32 @@ async fn apply_plan_inner(
 /// 1. Every segment has committed (transactional or non-transactional).
 /// 2. `mark_applied` flipped the ledger row to `applied`.
 /// 3. `save_snapshot` persisted the new schema-of-record to disk
-///    (when a snapshot was supplied by the caller; the `db reset`
-///    replay path deliberately does not).
-///    Calling it earlier would risk an audit row whose
-///    `snapshot_signature_hex` does not correspond to any persisted
-///    snapshot — the signature would be of an in-memory `AppliedSchema`
-///    that never reached disk. Per v3 plan §453 the audit row's purpose
-///    is to ground the migration trail to the schema-of-record file
-///    `djogi verify` inspects.
+/// (when a snapshot was supplied by the caller; the `db reset`
+/// replay path deliberately does not).
+/// Calling it earlier would risk an audit row whose
+/// `snapshot_signature_hex` does not correspond to any persisted
+/// snapshot — the signature would be of an in-memory `AppliedSchema`
+/// that never reached disk. Per v3 plan §453 the audit row's purpose
+/// is to ground the migration trail to the schema-of-record file
+/// `djogi verify` inspects.
 /// # Snapshot is optional (#118)
 /// The `snapshot` parameter is `Option<&AppliedSchema>`. The audit
 /// row's primary purpose — recording that a migration's DDL ran — is
 /// independent of whether new schema bytes hit disk on this apply:
 /// - **`Some(snapshot)`** — the runner just persisted these bytes to
-///   `snapshot_path`. The audit row's `snapshot_signature_hex` is
-///   the HMAC over those bytes (or the no-op zero hex when the
-///   signing key is unset).
+/// `snapshot_path`. The audit row's `snapshot_signature_hex` is
+/// the HMAC over those bytes (or the no-op zero hex when the
+/// signing key is unset).
 /// - **`None`** — no snapshot was persisted (e.g. `db reset` replay,
-///   which re-runs the existing migrations against a fresh DB
-///   without producing new schema bytes). The audit row carries
-///   `NULL` in the signature column. NULL distinguishes "no snapshot
-///   was written this apply" from "snapshot written, signed under
-///   the no-op key" (the latter produces 64 zero hex chars).
-///   Pre-issue-#118 this function took `&AppliedSchema` and the call
-///   site gated audit writes on snapshot presence — which meant `db
+/// which re-runs the existing migrations against a fresh DB
+/// without producing new schema bytes). The audit row carries
+/// `NULL` in the signature column. NULL distinguishes "no snapshot
+/// was written this apply" from "snapshot written, signed under
+/// the no-op key" (the latter produces 64 zero hex chars).
+/// Pre-issue-#118 this function took `&AppliedSchema` and the call
+/// site gated audit writes on snapshot presence — which meant `db
 /// reset` (the only production constructor of `RunnerCtx`) could
-///   never write audit rows.
+/// never write audit rows.
 /// # Three-database awareness
 /// The audit DB is operationally separate from the app DB
 /// (`crud_log_url` vs. `url`). We construct a fresh
@@ -1792,12 +1792,12 @@ async fn apply_plan_inner(
 /// - The app DB DDL has already committed.
 /// - The on-disk snapshot has already been persisted (when supplied).
 /// - The ledger row has already reached `applied`.
-///   Rolling any of those back because the audit DB is unreachable
-///   would be a worse outcome than a missing audit row. Operators
-///   rebuilding the audit trail can replay from the ledger + snapshot;
-///   they cannot recover from a runner that refused to record an
-///   otherwise-clean migration apply because a sibling DB happened to
-///   be down.
+/// Rolling any of those back because the audit DB is unreachable
+/// would be a worse outcome than a missing audit row. Operators
+/// rebuilding the audit trail can replay from the ledger + snapshot;
+/// they cannot recover from a runner that refused to record an
+/// otherwise-clean migration apply because a sibling DB happened to
+/// be down.
 /// # Per-segment rows
 /// One row per executed segment so the audit trail captures the same
 /// granularity the runner reports (the `Transactional /
@@ -1869,10 +1869,10 @@ async fn record_ddl_audit_for_plan(
             Ok(sig_hex) => Some(sig_hex),
             Err(e) => {
                 tracing::warn!(
-                    target: "djogi::migrate::audit",
-                    error = ?e,
-                    "snapshot re-serialisation for audit signature failed; \
-                     proceeding with NULL signature so the DDL audit row still records the apply",
+                 target: "djogi::migrate::audit",
+                 error = ?e,
+                 "snapshot re-serialisation for audit signature failed; \
+                  proceeding with NULL signature so the DDL audit row still records the apply",
                 );
                 None
             }
@@ -1905,11 +1905,11 @@ async fn record_ddl_audit_for_plan(
     // required.
     if let Err(e) = super::audit::bootstrap_ddl_audit(&mut audit_ctx).await {
         tracing::warn!(
-            target: "djogi::migrate::audit",
-            bucket_database = %plan.bucket.database,
-            bucket_app = %plan.bucket.app,
-            error = ?e,
-            "djogi_ddl_audit bootstrap failed; skipping audit rows for this apply",
+         target: "djogi::migrate::audit",
+         bucket_database = %plan.bucket.database,
+         bucket_app = %plan.bucket.app,
+         error = ?e,
+         "djogi_ddl_audit bootstrap failed; skipping audit rows for this apply",
         );
         return;
     }
@@ -1948,12 +1948,12 @@ async fn record_ddl_audit_for_plan(
         .await
         {
             tracing::warn!(
-                target: "djogi::migrate::audit",
-                bucket_database = %plan.bucket.database,
-                bucket_app = %plan.bucket.app,
-                segment_index = seg_idx,
-                error = ?e,
-                "djogi_ddl_audit insert failed; continuing with remaining segments",
+             target: "djogi::migrate::audit",
+             bucket_database = %plan.bucket.database,
+             bucket_app = %plan.bucket.app,
+             segment_index = seg_idx,
+             error = ?e,
+             "djogi_ddl_audit insert failed; continuing with remaining segments",
             );
             // Continue — best-effort. A transient error on one
             // segment row should not suppress the next.
@@ -2177,7 +2177,7 @@ impl std::fmt::Display for RollbackError {
             } => write!(
                 f,
                 "rollback refused: {n} operation(s) carry a lossy down side; \
-                 supply LossyRollbackPolicy::Allow {{ reason }} to proceed: {labels:?}",
+     supply LossyRollbackPolicy::Allow {{ reason }} to proceed: {labels:?}",
                 n = offending_labels.len(),
                 labels = offending_labels,
             ),
@@ -2199,9 +2199,9 @@ impl std::fmt::Display for RollbackError {
             } => write!(
                 f,
                 "rollback rejected: version `{version}` belongs to app \
-                 `{row_app_label}` but the supplied plan has bucket app \
-                 `{supplied_app}`; the advisory lock would be held for \
-                 the wrong logical bucket",
+     `{row_app_label}` but the supplied plan has bucket app \
+     `{supplied_app}`; the advisory lock would be held for \
+     the wrong logical bucket",
             ),
             RollbackError::DownStatementFailed {
                 segment_index,
@@ -2221,8 +2221,8 @@ impl std::fmt::Display for RollbackError {
                 write!(
                     f,
                     "rollback refused: {side} checksum drift for `{version}` \
-                     (ledger={} on_disk={}); restore the exact committed migration \
-                     files or run `djogi migrations repair checksum-drift` before rollback",
+      (ledger={} on_disk={}); restore the exact committed migration \
+      files or run `djogi migrations repair checksum-drift` before rollback",
                     render_rollback_checksum_value(ledger.as_deref()),
                     render_rollback_checksum_value(on_disk.as_deref()),
                     side = side.as_str(),
@@ -2252,13 +2252,13 @@ impl std::fmt::Display for RollbackError {
             } => write!(
                 f,
                 "rollback refused: Phase 0 down SQL for `{version}` is {refusal_reason}; \
-                 refusing before execution to prevent stale artifact mutation",
+     refusing before execution to prevent stale artifact mutation",
             ),
             RollbackError::MissingRollbackIdentity { version } => write!(
                 f,
                 "rollback refused: non-Phase-0 rollback of `{version}` requires a \
-                 binding-capable runner identity (Selected or SingleNodeDev); \
-                 IdentityFree and missing identity are not allowed for down SQL execution",
+     binding-capable runner identity (Selected or SingleNodeDev); \
+     IdentityFree and missing identity are not allowed for down SQL execution",
             ),
         }
     }
@@ -2283,30 +2283,30 @@ impl std::error::Error for RollbackError {
 /// **Order of execution.** Apply runs transactional segments first
 /// then non-transactional. Rollback inverts that:
 /// 1. Non-transactional segments run first, in reverse statement
-///    order, autocommitting each step. (Apply's order is
-///    NonTx-segment-after-Tx-segment by segment-list position; the
-///    rollback walks segments in *reverse list position* and reverses
-///    each segment's statements.)
+/// order, autocommitting each step. (Apply's order is
+/// NonTx-segment-after-Tx-segment by segment-list position; the
+/// rollback walks segments in *reverse list position* and reverses
+/// each segment's statements.)
 /// 2. Transactional segments run last, all wrapped in one Postgres
-///    transaction so a partial-rollback failure rolls back cleanly.
-///    **Lossy down handling.** Pre-walks the plan and collects every
-///    operation whose `lossy.is_some()`. With
-///    [`LossyRollbackPolicy::Refuse`] (the default), surfaces the list
-///    as [`RollbackError::LossyRollbackRefused`] before any SQL runs.
-///    With [`LossyRollbackPolicy::Allow { reason }`], the rollback
-///    proceeds and the reason is preserved in the ledger row's
-///    `partial_apply_note`.
-///    **Snapshot semantics.** Rollback does NOT re-derive the prior
-///    snapshot from the down SQL — that requires a full delta-replay
-///    engine which is outside the rollback scope. The caller (typically
-///    `apply` orchestrator with a snapshot history) supplies the prior
-///    snapshot explicitly via `prior_snapshot` and `prior_snapshot_path`.
-///    Pass `None` to skip the snapshot revert (tests, when the snapshot
-///    is not under test).
-///    **Ledger update.** On success, the ledger row's status flips to
-///    [`LedgerStatus::RolledBack`], `applied_steps_count` resets to 0,
-///    and `partial_apply_note` is filled with a record of the rollback
-///    (timestamp + lossy reason if any).
+/// transaction so a partial-rollback failure rolls back cleanly.
+/// **Lossy down handling.** Pre-walks the plan and collects every
+/// operation whose `lossy.is_some()`. With
+/// [`LossyRollbackPolicy::Refuse`] (the default), surfaces the list
+/// as [`RollbackError::LossyRollbackRefused`] before any SQL runs.
+/// With [`LossyRollbackPolicy::Allow { reason }`], the rollback
+/// proceeds and the reason is preserved in the ledger row's
+/// `partial_apply_note`.
+/// **Snapshot semantics.** Rollback does NOT re-derive the prior
+/// snapshot from the down SQL — that requires a full delta-replay
+/// engine which is outside the rollback scope. The caller (typically
+/// `apply` orchestrator with a snapshot history) supplies the prior
+/// snapshot explicitly via `prior_snapshot` and `prior_snapshot_path`.
+/// Pass `None` to skip the snapshot revert (tests, when the snapshot
+/// is not under test).
+/// **Ledger update.** On success, the ledger row's status flips to
+/// [`LedgerStatus::RolledBack`], `applied_steps_count` resets to 0,
+/// and `partial_apply_note` is filled with a record of the rollback
+/// (timestamp + lossy reason if any).
 ///
 /// **Recovering from a failed rollback.** An `Ok(`[`RollbackReport`]`)`
 /// means every segment committed and any caller-supplied snapshot was
@@ -2611,7 +2611,7 @@ async fn rollback_handle_lock(
             ctx,
             identity.node_id().expect(
                 "INVARIANT: node_id is Some when requires_binding is true; \
-                 IdentityFree ruled out by refusal gate above",
+     IdentityFree ruled out by refusal gate above",
             ),
         )
         .await
@@ -2734,11 +2734,11 @@ async fn rollback_inner(
     };
     ctx.execute(
         "UPDATE djogi_schema_migrations \
-         SET status = 'rolled_back', \
-             applied_steps_count = 0, \
-             total_steps = NULL, \
-             partial_apply_note = $2 \
-         WHERE version = $1 AND app_label = $3",
+   SET status = 'rolled_back', \
+    applied_steps_count = 0, \
+    total_steps = NULL, \
+    partial_apply_note = $2 \
+   WHERE version = $1 AND app_label = $3",
         &[&runner_ctx.version, &note, &runner_ctx.bucket.app],
     )
     .await
@@ -2918,13 +2918,13 @@ async fn fake_apply_inner(
             .map(|(v, ts)| (v.as_str(), ts.as_deref()))
             .unwrap_or(("", None));
         tracing::warn!(
-            bucket_database = %plan.bucket.database,
-            bucket_app = %plan.bucket.app,
-            version = %runner_ctx.version,
-            conflicting_version,
-            conflicting_applied_at = applied_at.unwrap_or("<unknown>"),
-            policy = ?runner_ctx.out_of_order_policy,
-            "out-of-order fake-apply allowed by policy",
+         bucket_database = %plan.bucket.database,
+         bucket_app = %plan.bucket.app,
+         version = %runner_ctx.version,
+         conflicting_version,
+         conflicting_applied_at = applied_at.unwrap_or("<unknown>"),
+         policy = ?runner_ctx.out_of_order_policy,
+         "out-of-order fake-apply allowed by policy",
         );
     }
 
@@ -2968,7 +2968,7 @@ async fn fake_apply_inner(
             ctx,
             identity.node_id().expect(
                 "INVARIANT: node_id is Some when requires_binding is true; \
-                 IdentityFree ruled out by refusal gate above",
+     IdentityFree ruled out by refusal gate above",
             ),
         )
         .await?;
@@ -3176,7 +3176,7 @@ async fn baseline_inner(
             ctx,
             identity.node_id().expect(
                 "INVARIANT: node_id is Some when requires_binding is true; \
-                 IdentityFree ruled out by refusal gate above",
+     IdentityFree ruled out by refusal gate above",
             ),
         )
         .await?;
@@ -3548,10 +3548,10 @@ pub(crate) async fn acquire_advisory_lock(
     assert!(
         !ctx.is_pool_backed(),
         "acquire_advisory_lock called on a pool-backed context — \
-         the advisory lock would be acquired on an arbitrary pool \
-         connection and subsequent operations would run on different \
-         connections. Callers must use ctx.pin_for_migration() first \
-         (GH #274 / #331).",
+   the advisory lock would be acquired on an arbitrary pool \
+   connection and subsequent operations would run on different \
+   connections. Callers must use ctx.pin_for_migration() first \
+   (GH #274 / #331).",
     );
     const MAX_ATTEMPTS: u32 = 600; // 600 * 50 ms = 30 s
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
@@ -3612,9 +3612,9 @@ pub(crate) async fn release_advisory_lock(ctx: &mut PinnedCtx<'_>, key: i64) -> 
     assert!(
         !ctx.is_pool_backed(),
         "release_advisory_lock called on a pool-backed context — \
-         the unlock would run on a different connection than the one \
-         that holds the lock. Callers must use ctx.pin_for_migration() \
-         first (GH #274 / #331).",
+   the unlock would run on a different connection than the one \
+   that holds the lock. Callers must use ctx.pin_for_migration() \
+   first (GH #274 / #331).",
     );
     let row = match ctx
         .query_one("SELECT pg_advisory_unlock($1)", &[&key])
@@ -3651,9 +3651,9 @@ pub(crate) async fn release_advisory_lock(ctx: &mut PinnedCtx<'_>, key: i64) -> 
         tracing::error!(
             key,
             "pg_advisory_unlock returned false — lock was not held on this Postgres \
-             session. This indicates a session-pinning bug: the advisory lock was \
-             acquired on a different physical backend than the one executing the \
-             migration operations (GH #274/#280).",
+    session. This indicates a session-pinning bug: the advisory lock was \
+    acquired on a different physical backend than the one executing the \
+    migration operations (GH #274/#280).",
         );
     }
     released
@@ -3699,16 +3699,16 @@ pub(crate) fn handle_release_result<T>(
 /// the probe means Postgres does not currently know about the table.
 /// Two legitimate cases produce that:
 /// 1. The current plan creates the table in an earlier segment of
-///    THIS run (`AddTable` statement). The runner treats this as
-///    `relpages = 0` (a freshly-created empty table cannot exceed
-///    the threshold).
+/// THIS run (`AddTable` statement). The runner treats this as
+/// `relpages = 0` (a freshly-created empty table cannot exceed
+/// the threshold).
 /// 2. The table genuinely does not exist and is not being created.
-///    That is a typo / mis-quoted identifier — the index would fail
-///    inside `BEGIN` anyway, but the strict-mode probe catches it
-///    earlier with a clearer `TargetTableNotFound` diagnostic.
-///    Silently dropping case 2 to `relpages = 0` would disable the
-///    strict warning path for any mis-targeted `CREATE INDEX`, which
-///    is exactly the failure mode strict-mode exists to catch.
+/// That is a typo / mis-quoted identifier — the index would fail
+/// inside `BEGIN` anyway, but the strict-mode probe catches it
+/// earlier with a clearer `TargetTableNotFound` diagnostic.
+/// Silently dropping case 2 to `relpages = 0` would disable the
+/// strict warning path for any mis-targeted `CREATE INDEX`, which
+/// is exactly the failure mode strict-mode exists to catch.
 async fn relpages_probe(
     ctx: &mut DjogiContext,
     runner_ctx: &RunnerCtx,
@@ -3765,14 +3765,14 @@ async fn relpages_probe(
             });
         } else {
             tracing::warn!(
-                bucket_database = %runner_ctx.bucket.database,
-                bucket_app = %runner_ctx.bucket.app,
-                index_name,
-                target_table,
-                relpages,
-                threshold,
-                "transactional CREATE INDEX on a large table will hold ACCESS EXCLUSIVE \
-                 for the duration; consider opting into CREATE INDEX CONCURRENTLY",
+             bucket_database = %runner_ctx.bucket.database,
+             bucket_app = %runner_ctx.bucket.app,
+             index_name,
+             target_table,
+             relpages,
+             threshold,
+             "transactional CREATE INDEX on a large table will hold ACCESS EXCLUSIVE \
+              for the duration; consider opting into CREATE INDEX CONCURRENTLY",
             );
         }
     }
@@ -3783,29 +3783,29 @@ async fn relpages_probe(
 /// plan is a PK-type-flip migration.
 /// Implements D060–D063 from the v3 plan contract:
 /// - **D060** Logical-replication machinery active — `pg_stat_replication`
-///   walsenders OR enabled rows in `pg_subscription` for the current
-///   database → refusal. Postgres does not expose another backend's
-///   `session_replication_role` GUC via `pg_stat_activity`, so we
-///   detect the apply machinery itself rather than the GUC value.
+/// walsenders OR enabled rows in `pg_subscription` for the current
+/// database → refusal. Postgres does not expose another backend's
+/// `session_replication_role` GUC via `pg_stat_activity`, so we
+/// detect the apply machinery itself rather than the GUC value.
 /// - **D061** Pre-existing `zzz_*` triggers on the migrating tables
-///   → refusal (collision with the autofill install).
+/// → refusal (collision with the autofill install).
 /// - **D062** Already-disabled triggers on the migrating tables
-///   → refusal.
+/// → refusal.
 /// - **D063** Open transactions older than the configured threshold
-///   → refusal.
-///   The set of "migrating tables" is recovered from the cutover
-///   segment's labels — every `PkFlipPrep` / `PkFlipCutover` /
-///   `PkFlipBackfill` / `PkFlipConcurrentIndex` / `PkFlipNotNullProof`
-///   label carries the parent table name as its trailing token; we
-///   also collect every child table name from the multi-segment SQL
-///   via byte-level identifier scanning of the `up` text. This avoids
-///   re-walking the descriptor here — the segment plan already carries
-///   the full set the cutover will touch.
-///   **No regex** — the table-name extraction uses byte-level forward
-///   scans for `ALTER TABLE <ident> ` literal substrings; the
-///   identifier rules (ASCII letter or underscore, then alphanumerics
-///   or underscore, ≤ 63 bytes) are spelled out in plain English in
-///   the helper.
+/// → refusal.
+/// The set of "migrating tables" is recovered from the cutover
+/// segment's labels — every `PkFlipPrep` / `PkFlipCutover` /
+/// `PkFlipBackfill` / `PkFlipConcurrentIndex` / `PkFlipNotNullProof`
+/// label carries the parent table name as its trailing token; we
+/// also collect every child table name from the multi-segment SQL
+/// via byte-level identifier scanning of the `up` text. This avoids
+/// re-walking the descriptor here — the segment plan already carries
+/// the full set the cutover will touch.
+/// **No regex** — the table-name extraction uses byte-level forward
+/// scans for `ALTER TABLE <ident> ` literal substrings; the
+/// identifier rules (ASCII letter or underscore, then alphanumerics
+/// or underscore, ≤ 63 bytes) are spelled out in plain English in
+/// the helper.
 async fn pk_flip_preflight(
     ctx: &mut DjogiContext,
     runner_ctx: &RunnerCtx,
@@ -3846,7 +3846,7 @@ async fn pk_flip_preflight(
     let walsender_rows = ctx
         .query_all(
             "SELECT COALESCE(application_name, ''), COALESCE(client_addr::text, '') \
-             FROM pg_stat_replication",
+    FROM pg_stat_replication",
             &[],
         )
         .await
@@ -3864,8 +3864,8 @@ async fn pk_flip_preflight(
     let sub_rows = ctx
         .query_all(
             "SELECT subname FROM pg_subscription \
-             WHERE subdbid = (SELECT oid FROM pg_database WHERE datname = current_database()) \
-               AND subenabled = true",
+    WHERE subdbid = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+    AND subenabled = true",
             &[],
         )
         .await
@@ -3894,9 +3894,9 @@ async fn pk_flip_preflight(
         let zzz_rows = ctx
             .query_all(
                 "SELECT tgname FROM pg_trigger \
-                 WHERE tgrelid = (SELECT oid FROM pg_class WHERE relname = $1 AND relkind = 'r' LIMIT 1) \
-                   AND NOT tgisinternal \
-                   AND tgname LIKE 'zzz\\_%' ESCAPE '\\'",
+     WHERE tgrelid = (SELECT oid FROM pg_class WHERE relname = $1 AND relkind = 'r' LIMIT 1) \
+     AND NOT tgisinternal \
+     AND tgname LIKE 'zzz\\_%' ESCAPE '\\'",
                 &[table],
             )
             .await
@@ -3917,9 +3917,9 @@ async fn pk_flip_preflight(
         let disabled_rows = ctx
             .query_all(
                 "SELECT tgname, tgenabled FROM pg_trigger \
-                 WHERE tgrelid = (SELECT oid FROM pg_class WHERE relname = $1 AND relkind = 'r' LIMIT 1) \
-                   AND NOT tgisinternal \
-                   AND tgenabled <> 'O'",
+     WHERE tgrelid = (SELECT oid FROM pg_class WHERE relname = $1 AND relkind = 'r' LIMIT 1) \
+     AND NOT tgisinternal \
+     AND tgenabled <> 'O'",
                 &[table],
             )
             .await
@@ -3953,10 +3953,10 @@ async fn pk_flip_preflight(
         let long_rows = ctx
             .query_all(
                 "SELECT pid, EXTRACT(EPOCH FROM (now() - xact_start))::bigint AS age \
-                 FROM pg_stat_activity \
-                 WHERE pid <> pg_backend_pid() \
-                   AND xact_start IS NOT NULL \
-                   AND now() - xact_start > make_interval(secs => $1::int)",
+     FROM pg_stat_activity \
+     WHERE pid <> pg_backend_pid() \
+     AND xact_start IS NOT NULL \
+     AND now() - xact_start > make_interval(secs => $1::int)",
                 &[&(threshold as i32)],
             )
             .await
@@ -4317,7 +4317,7 @@ fn note_for_failed_transactional_segment(seg_idx: usize, e: &RunnerError) -> Str
             ..
         } => format!(
             "relpages-probe failed at AddIndex {index_name} on table \
-             {target_table} (relpages={relpages} > threshold={threshold})",
+    {target_table} (relpages={relpages} > threshold={threshold})",
         ),
         RunnerError::TargetTableNotFound {
             index_name,
@@ -4325,7 +4325,7 @@ fn note_for_failed_transactional_segment(seg_idx: usize, e: &RunnerError) -> Str
             ..
         } => format!(
             "relpages-probe failed at AddIndex {index_name}: target table \
-             `{target_table}` not found and not in plan's AddTable set",
+    `{target_table}` not found and not in plan's AddTable set",
         ),
         RunnerError::TransactionalSegmentFailed {
             statement_label,
@@ -4333,14 +4333,14 @@ fn note_for_failed_transactional_segment(seg_idx: usize, e: &RunnerError) -> Str
             ..
         } => format!(
             "transactional segment {seg_idx} failed at `{statement_label}`: \
-             {source}",
+    {source}",
         ),
         RunnerError::PkFlipVerificationFailed {
             table,
             count_violating,
         } => format!(
             "PK-flip verification halt at segment {seg_idx}: table `{table}` \
-             has {count_violating} row(s) with NULL or stale shadow values",
+    has {count_violating} row(s) with NULL or stale shadow values",
         ),
         other => format!("transactional segment {seg_idx} failed: {other}"),
     }
@@ -4439,7 +4439,7 @@ async fn provision_phase_zero_single_node_dev(
 /// HeerId is a 64-bit time-ordered ID — perfect for the per-runner
 /// invocation key, which we want to be unique, sortable, and stable
 /// across machines.
-/// **carve-out .** When `version` is the canonical
+/// **carve-out.** When `version` is the canonical
 /// Bootstrap label (`super::bootstrap::PHASE_ZERO_VERSION`),
 /// HeeRanjID is by definition not yet installed — is what
 /// installs it. Calling `heerid_next()` would fail with "function
@@ -4529,7 +4529,7 @@ async fn classify_duplicate_version_collision(
                 query_label: "load_row_for_version",
                 source: DjogiError::Db(DbError::other(format!(
                     "duplicate-version collision for `{version}` but \
-                     no ledger row was returned by load_full_row_by_version",
+      no ledger row was returned by load_full_row_by_version",
                 ))),
             };
         }
@@ -4588,14 +4588,14 @@ async fn find_higher_applied_version(
     let row_opt = ctx
         .query_opt(
             "SELECT version, \
-                    to_char(applied_at AT TIME ZONE 'UTC', \
-                            'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS applied_at_rfc3339 \
-             FROM djogi_schema_migrations \
-             WHERE app_label = $1 \
-               AND status IN ('applied', 'faked', 'baseline') \
-               AND version > $2 \
-             ORDER BY version DESC \
-             LIMIT 1",
+     to_char(applied_at AT TIME ZONE 'UTC', \
+       'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS applied_at_rfc3339 \
+    FROM djogi_schema_migrations \
+    WHERE app_label = $1 \
+    AND status IN ('applied', 'faked', 'baseline') \
+    AND version > $2 \
+    ORDER BY version DESC \
+    LIMIT 1",
             &[&bucket.app, &candidate_version],
         )
         .await?;
@@ -4614,9 +4614,9 @@ async fn bucket_has_applied_history(
     let row = ctx
         .query_one(
             "SELECT EXISTS(SELECT 1 \
-             FROM djogi_schema_migrations \
-             WHERE app_label = $1 \
-               AND status IN ('applied', 'faked', 'baseline'))",
+    FROM djogi_schema_migrations \
+    WHERE app_label = $1 \
+    AND status IN ('applied', 'faked', 'baseline'))",
             &[&bucket.app],
         )
         .await?;
@@ -4635,7 +4635,7 @@ async fn load_applied_at(
     let row = ctx
         .query_opt(
             "SELECT applied_at FROM djogi_schema_migrations \
-             WHERE version = $1 AND app_label = $2",
+    WHERE version = $1 AND app_label = $2",
             &[&version, &app_label],
         )
         .await
@@ -4738,27 +4738,27 @@ pub(crate) async fn compute_leaf_identity_cache(
 /// statement per leaf, sorted by `regclass::text` for determinism.
 /// Statements affected (by label prefix):
 /// - `PkFlipPartitionedBackfill <parent>` — body carries
-///   `CALL heeranjid_bulk_backfill('<EACH_LEAF_TABLE>', ...)`. Each
-///   leaf gets its own CALL line.
+/// `CALL heeranjid_bulk_backfill('<EACH_LEAF_TABLE>',...)`. Each
+/// leaf gets its own CALL line.
 /// - `PkFlipPartitionedIndex <parent>` — body carries the parent
-///   UNIQUE-on-ONLY placeholder plus a comment block describing the
-///   per-leaf `CREATE UNIQUE INDEX CONCURRENTLY` + `ALTER INDEX
+/// UNIQUE-on-ONLY placeholder plus a comment block describing the
+/// per-leaf `CREATE UNIQUE INDEX CONCURRENTLY` + `ALTER INDEX
 /// ATTACH PARTITION` pattern. The comment is replaced with two
-///   concrete statements per leaf.
-///   Statements with no placeholder (`PkFlipPartitionedPrep`,
-///   `PkFlipPartitionedCutover`) are passed through untouched.
-///   **No regex.** Placeholder substitution uses byte-level
-///   `String::replace` semantics with a fixed literal token. Per-leaf
-///   statement composition uses straight string concatenation and the
-///   `writeln!` macro.
-///   **Failure modes.** If `pg_inherits` returns no leaves for a
-///   declared partitioned parent, behavior depends on [`PartitionExpansionMode`]:
+/// concrete statements per leaf.
+/// Statements with no placeholder (`PkFlipPartitionedPrep`,
+/// `PkFlipPartitionedCutover`) are passed through untouched.
+/// **No regex.** Placeholder substitution uses byte-level
+/// `String::replace` semantics with a fixed literal token. Per-leaf
+/// statement composition uses straight string concatenation and the
+/// `writeln!` macro.
+/// **Failure modes.** If `pg_inherits` returns no leaves for a
+/// declared partitioned parent, behavior depends on [`PartitionExpansionMode`]:
 /// - ApplyLenient: produces a single comment line so the segment SQL
-///   surfaces the empty-leaves state cleanly rather than running an
-///   `<EACH_LEAF_TABLE>` literal that would fail with `undefined_table`.
-///   Operator's job is to attach partitions before retrying.
+/// surfaces the empty-leaves state cleanly rather than running an
+/// `<EACH_LEAF_TABLE>` literal that would fail with `undefined_table`.
+/// Operator's job is to attach partitions before retrying.
 /// - ReplayStrict: refuses zero leaves because rollback/repair must not
-///   silently replay a shorter stream. Returns [`RunnerError::PartitionExpansionNoLeaves`].
+/// silently replay a shorter stream. Returns [`RunnerError::PartitionExpansionNoLeaves`].
 async fn expand_partition_leaf_placeholders(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
@@ -4857,9 +4857,9 @@ async fn lookup_partition_leaves(
     let rows = ctx
         .query_all(
             "SELECT inhrelid::regclass::text \
-             FROM pg_inherits \
-             WHERE inhparent = $1 \
-             ORDER BY inhrelid::regclass::text",
+    FROM pg_inherits \
+    WHERE inhparent = $1 \
+    ORDER BY inhrelid::regclass::text",
             &[&oid],
         )
         .await
@@ -5003,13 +5003,13 @@ fn expand_partition_statement(
             // steps after the parent was already dropped. Both index names
             // are schema-qualified for DROP.
             out.push(OperationSql {
-                label: format!("PkFlipPartitionedIndex {parent} leaf={leaf} (concurrent)"),
-                up: create_concurrent,
-                down: format!(
-                    "DROP INDEX IF EXISTS {parent_idx_qualified}; DROP INDEX IF EXISTS {leaf_idx_qualified}",
-                ),
-                lossy: None,
-            });
+    label: format!("PkFlipPartitionedIndex {parent} leaf={leaf} (concurrent)"),
+    up: create_concurrent,
+    down: format!(
+     "DROP INDEX IF EXISTS {parent_idx_qualified}; DROP INDEX IF EXISTS {leaf_idx_qualified}",
+    ),
+    lossy: None,
+   });
             let attach = format!(
                 "ALTER INDEX {parent_idx_qualified} ATTACH PARTITION {leaf_idx_qualified}",
             );
@@ -5174,7 +5174,7 @@ fn extract_first_statement_starting_with(body: &str, start_marker: &str) -> Stri
 }
 
 /// Recover the parent index name from a `CREATE [UNIQUE] INDEX
-/// <name> ON ONLY ...` body. Tries the UNIQUE form first
+/// <name> ON ONLY...` body. Tries the UNIQUE form first
 /// (PkFlipPartitionedIndex composite PK indexes use it), then the
 /// non-unique form (PkFlipPartitionedSelfFkIndex single-column
 /// indexes use it). Falls back to an empty string if neither
@@ -5560,7 +5560,7 @@ mod tests {
         sql.replace_range(
             start..end,
             "ALTER DATABASE \"main\" SET heer.node_id = '1';\n\
-             ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
+    ALTER DATABASE \"main\" SET heer.ranj_node_id = '1';\n",
         );
         single_segment_plan(SegmentKind::Transactional, "Phase 0 bootstrap", &sql)
     }
@@ -6253,7 +6253,7 @@ mod tests {
 
     #[test]
     fn heer_id_zero_converts_to_zero_i64_directly() {
-        // After A-3, run_id derivation goes through HeerId::as_i64
+        // After, run_id derivation goes through HeerId::as_i64
         // / From<HeerId> for i64 — no Display + parse + unwrap_or
         // detour. ZERO's i64 representation must be 0 by both paths.
         let z = HeerId::ZERO;
@@ -6369,7 +6369,7 @@ mod tests {
             SegmentKind::Transactional,
             "AddIndex users_email_idx",
             "CREATE /* split */ UNIQUE INDEX /* still split */ CONCURRENTLY \
-             users_email_idx ON users (email);",
+    users_email_idx ON users (email);",
         );
 
         let err = preflight_segment_sql_execution_compatibility(&plan).expect_err("must reject");
@@ -6465,13 +6465,13 @@ mod tests {
             SegmentKind::Transactional,
             "install function",
             "-- leading comment mentioning BEGIN\n\
-             CREATE OR REPLACE FUNCTION public.bump_counter()\n\
-             RETURNS trigger AS $body$\n\
-             BEGIN\n\
-                 NEW.counter := COALESCE(NEW.counter, 0) + 1;\n\
-                 RETURN NEW;\n\
-             END;\n\
-             $body$ LANGUAGE plpgsql;",
+    CREATE OR REPLACE FUNCTION public.bump_counter()\n\
+    RETURNS trigger AS $body$\n\
+    BEGIN\n\
+     NEW.counter := COALESCE(NEW.counter, 0) + 1;\n\
+     RETURN NEW;\n\
+    END;\n\
+    $body$ LANGUAGE plpgsql;",
         );
 
         preflight_segment_sql_execution_compatibility(&plan)
@@ -6613,8 +6613,8 @@ mod tests {
         let rows = ctx
             .query_all(
                 "SELECT target_database, app_label, ddl_sql, snapshot_signature_hex, \
-                        applied_at <= lead(applied_at) OVER (ORDER BY id) AS applied_before_next \
-                 FROM djogi_ddl_audit ORDER BY id",
+      applied_at <= lead(applied_at) OVER (ORDER BY id) AS applied_before_next \
+     FROM djogi_ddl_audit ORDER BY id",
                 &[],
             )
             .await
@@ -6769,7 +6769,7 @@ mod tests {
         let row_count: i64 = ctx
             .query_one(
                 "SELECT COUNT(*)::bigint FROM djogi_ddl_audit \
-                 WHERE target_database = 'main' AND app_label = ''",
+     WHERE target_database = 'main' AND app_label = ''",
                 &[],
             )
             .await
@@ -6789,8 +6789,8 @@ mod tests {
         let sig: Option<String> = ctx
             .query_one(
                 "SELECT snapshot_signature_hex FROM djogi_ddl_audit \
-                 WHERE target_database = 'main' AND app_label = '' \
-                 ORDER BY id DESC LIMIT 1",
+     WHERE target_database = 'main' AND app_label = '' \
+     ORDER BY id DESC LIMIT 1",
                 &[],
             )
             .await
@@ -6861,10 +6861,10 @@ mod tests {
         ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
         ctx.raw_execute(
             "INSERT INTO djogi_schema_migrations \
-             (version, description, checksum_up, status, run_id, \
-              snapshot_version, app_label) \
-             VALUES ($1, 'b1 test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
-                     'rolled_back', 99, '1.0', '')",
+    (version, description, checksum_up, status, run_id, \
+    snapshot_version, app_label) \
+    VALUES ($1, 'b1 test', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+      'rolled_back', 99, '1.0', '')",
             &[&version],
         )
         .await
@@ -6902,15 +6902,15 @@ mod tests {
 
         ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
         ctx.raw_execute(
-            "INSERT INTO djogi_schema_migrations \
-             (version, description, checksum_up, status, run_id, \
-              snapshot_version, app_label) \
-             VALUES ($1, 'b1 pending guard', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
-                     'pending', 98, '1.0', '')",
-            &[&version],
-        )
-        .await
-        .expect("insert Pending row");
+   "INSERT INTO djogi_schema_migrations \
+    (version, description, checksum_up, status, run_id, \
+    snapshot_version, app_label) \
+    VALUES ($1, 'b1 pending guard', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+      'pending', 98, '1.0', '')",
+   &[&version],
+  )
+ .await
+ .expect("insert Pending row");
 
         let result = classify_duplicate_version_collision(&mut ctx, version, "").await;
         match result {
@@ -6941,15 +6941,15 @@ mod tests {
 
         ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
         ctx.raw_execute(
-            "INSERT INTO djogi_schema_migrations \
-             (version, description, checksum_up, status, run_id, \
-              snapshot_version, app_label) \
-             VALUES ($1, 'c1 higher peer', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
-                     'applied', 97, '1.0', '')",
-            &[&higher_version],
-        )
-        .await
-        .expect("insert higher applied row");
+   "INSERT INTO djogi_schema_migrations \
+    (version, description, checksum_up, status, run_id, \
+    snapshot_version, app_label) \
+    VALUES ($1, 'c1 higher peer', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+      'applied', 97, '1.0', '')",
+   &[&higher_version],
+  )
+ .await
+ .expect("insert higher applied row");
 
         let plan = MigrationPlan {
             bucket: bucket("main", ""),
@@ -6998,15 +6998,15 @@ mod tests {
 
         ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
         ctx.raw_execute(
-            "INSERT INTO djogi_schema_migrations \
-             (version, description, checksum_up, status, run_id, \
-              snapshot_version, app_label) \
-             VALUES ($1, 'c1 higher peer 2', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
-                     'applied', 96, '1.0', '')",
-            &[&higher_version],
-        )
-        .await
-        .expect("insert higher applied row");
+   "INSERT INTO djogi_schema_migrations \
+    (version, description, checksum_up, status, run_id, \
+    snapshot_version, app_label) \
+    VALUES ($1, 'c1 higher peer 2', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+      'applied', 96, '1.0', '')",
+   &[&higher_version],
+  )
+ .await
+ .expect("insert higher applied row");
 
         let plan = MigrationPlan {
             bucket: bucket("main", ""),
@@ -7049,7 +7049,7 @@ mod tests {
         let rows = ctx
             .query_all(
                 "SELECT out_of_order_flag FROM djogi_schema_migrations \
-                 WHERE version = 'V20260526000001__c1_lower_version2'",
+     WHERE version = 'V20260526000001__c1_lower_version2'",
                 &[],
             )
             .await
@@ -7072,15 +7072,15 @@ mod tests {
 
         ledger::bootstrap(&mut ctx).await.expect("bootstrap ledger");
         ctx.raw_execute(
-            "INSERT INTO djogi_schema_migrations \
-             (version, description, checksum_up, status, run_id, \
-              snapshot_version, app_label) \
-             VALUES ($1, 'c1 higher peer 3', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
-                     'applied', 95, '1.0', '')",
-            &[&higher_version],
-        )
-        .await
-        .expect("insert higher applied row");
+   "INSERT INTO djogi_schema_migrations \
+    (version, description, checksum_up, status, run_id, \
+    snapshot_version, app_label) \
+    VALUES ($1, 'c1 higher peer 3', 'V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', \
+      'applied', 95, '1.0', '')",
+   &[&higher_version],
+  )
+ .await
+ .expect("insert higher applied row");
 
         let plan = MigrationPlan {
             bucket: bucket("main", ""),
@@ -7126,7 +7126,7 @@ mod tests {
         let rows = ctx
             .query_all(
                 "SELECT partial_apply_note FROM djogi_schema_migrations \
-                 WHERE version = 'V20260526000002__c1_lower_version3'",
+     WHERE version = 'V20260526000002__c1_lower_version3'",
                 &[],
             )
             .await
@@ -7157,7 +7157,7 @@ mod tests {
         let stmt = OperationSql {
             label: "PkFlipPartitionedIndex events_p".to_string(),
             up: "CREATE UNIQUE INDEX events_p_ts_id_desc_idx ON ONLY events_p (ts, id_desc);\n\
-                 -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_desc_idx\n"
+     -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_ts_id_desc_idx\n"
                 .to_string(),
             down: "DROP INDEX IF EXISTS events_p_ts_id_desc_idx;".to_string(),
             lossy: None,
@@ -7186,7 +7186,7 @@ mod tests {
                 s.label == "PkFlipPartitionedIndex events_p leaf=events_p_a (concurrent)"
                     && s.down
                         == "DROP INDEX IF EXISTS events_p_ts_id_desc_idx; \
-                            DROP INDEX IF EXISTS events_p_a_ts_id_desc_idx"
+       DROP INDEX IF EXISTS events_p_a_ts_id_desc_idx"
             }),
             "leaf A concurrent must drop parent then leaf: {expanded:?}",
         );
@@ -7195,7 +7195,7 @@ mod tests {
                 s.label == "PkFlipPartitionedIndex events_p leaf=events_p_b (concurrent)"
                     && s.down
                         == "DROP INDEX IF EXISTS events_p_ts_id_desc_idx; \
-                            DROP INDEX IF EXISTS events_p_b_ts_id_desc_idx"
+       DROP INDEX IF EXISTS events_p_b_ts_id_desc_idx"
             }),
             "leaf B concurrent must drop parent then leaf: {expanded:?}",
         );
@@ -7226,12 +7226,12 @@ mod tests {
         ];
 
         let plan = OperationSql {
-            label: format!("PkFlipPartitionedIndex {parent}"),
-            up: "CREATE UNIQUE INDEX events_p_ts_id_desc_idx ON ONLY myschema.events_p (ts, id_desc)"
-                .to_string(),
-            down: "DROP INDEX IF EXISTS myschema.events_p_ts_id_desc_idx".to_string(),
-            lossy: None,
-        };
+   label: format!("PkFlipPartitionedIndex {parent}"),
+   up: "CREATE UNIQUE INDEX events_p_ts_id_desc_idx ON ONLY myschema.events_p (ts, id_desc)"
+   .to_string(),
+   down: "DROP INDEX IF EXISTS myschema.events_p_ts_id_desc_idx".to_string(),
+   lossy: None,
+  };
 
         let expanded = expand_partition_statement(
             &plan,
@@ -7247,9 +7247,9 @@ mod tests {
         // Leaf A concurrent: bare index name, schema-qualified ON target,
         // `_desc` suffix (no space), both DROP targets schema-qualified.
         let leaf_a_concurrent = expanded
-            .iter()
-            .find(|s| s.label == "PkFlipPartitionedIndex myschema.events_p leaf=myschema.events_p_a (concurrent)")
-            .expect("leaf A concurrent entry");
+  .iter()
+  .find(|s| s.label == "PkFlipPartitionedIndex myschema.events_p leaf=myschema.events_p_a (concurrent)")
+  .expect("leaf A concurrent entry");
         assert_eq!(
             leaf_a_concurrent.up,
             "CREATE UNIQUE INDEX CONCURRENTLY events_p_a_ts_id_desc_idx ON myschema.events_p_a (ts, id_desc)",
@@ -7498,7 +7498,7 @@ mod tests {
         // This is the generated-stale pattern: literal ALTER DATABASE with
         // hardcoded database name for HeeRanjID GUC defaults.
         let down_sql = "ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
-                        ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';";
+      ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';";
         let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
         // The artifact classifier looks at banner/section markers, so a bare
         // ALTER DATABASE without markers is classified as Ambiguous (not a
@@ -7522,7 +7522,7 @@ mod tests {
         down_sql.replace_range(
             start..end,
             "ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
-             ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';\n",
+    ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';\n",
         );
         let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
         assert_eq!(
@@ -7535,7 +7535,7 @@ mod tests {
     fn phase_zero_down_classification_identity_free_production_is_ok() {
         // Production Phase 0 down: no node seed fragments.
         let down_sql = "DROP TABLE IF EXISTS heer.heer_nodes;\n\
-                        DROP FUNCTION IF EXISTS heer.heerid_next();";
+      DROP FUNCTION IF EXISTS heer.heerid_next();";
         let state = crate::migrate::phase_zero::classify_phase_zero_artifact(down_sql.as_bytes());
         // No generated markers → classified as Ambiguous (not a generated artifact).
         // This still triggers refusal in the rollback guard, which is correct:
@@ -8296,14 +8296,14 @@ mod tests {
 
         // Verify no ledger row was inserted (refusal is before insert).
         let count: i64 = ctx
-            .query_one(
-                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000000__g_gate_apply'",
-                &[],
-            )
-            .await
-            .expect("count ledger rows")
-            .try_get(0)
-            .expect("count column");
+  .query_one(
+    "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000000__g_gate_apply'",
+    &[],
+   )
+  .await
+  .expect("count ledger rows")
+  .try_get(0)
+  .expect("count column");
         assert_eq!(
             count, 0,
             "no ledger row should be inserted before the G-gate refusal"
@@ -8342,14 +8342,14 @@ mod tests {
 
         // Verify no ledger row was inserted.
         let count: i64 = ctx
-            .query_one(
-                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000001__g_gate_fake'",
-                &[],
-            )
-            .await
-            .expect("count ledger rows")
-            .try_get(0)
-            .expect("count column");
+  .query_one(
+    "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000001__g_gate_fake'",
+    &[],
+   )
+  .await
+  .expect("count ledger rows")
+  .try_get(0)
+  .expect("count column");
         assert_eq!(
             count, 0,
             "no ledger row should be inserted before the G-gate refusal"
@@ -8400,14 +8400,14 @@ mod tests {
 
         // Verify no ledger row was inserted.
         let count: i64 = ctx
-            .query_one(
-                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000002__g_gate_baseline'",
-                &[],
-            )
-            .await
-            .expect("count ledger rows")
-            .try_get(0)
-            .expect("count column");
+  .query_one(
+    "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000002__g_gate_baseline'",
+    &[],
+   )
+  .await
+  .expect("count ledger rows")
+  .try_get(0)
+  .expect("count column");
         assert_eq!(
             count, 0,
             "no ledger row should be inserted before the G-gate refusal"
@@ -8445,14 +8445,14 @@ mod tests {
 
         // Verify no ledger row was inserted.
         let count: i64 = ctx
-            .query_one(
-                "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000003__g_gate_idfree'",
-                &[],
-            )
-            .await
-            .expect("count ledger rows")
-            .try_get(0)
-            .expect("count column");
+  .query_one(
+    "SELECT COUNT(*) FROM djogi_schema_migrations WHERE version = 'V20260601000003__g_gate_idfree'",
+    &[],
+   )
+  .await
+  .expect("count ledger rows")
+  .try_get(0)
+  .expect("count column");
         assert_eq!(
             count, 0,
             "no ledger row should be inserted before the G-gate refusal"
@@ -8531,7 +8531,7 @@ mod tests {
         .expect("drop original second GUC function");
         ctx.execute(
             "CREATE FUNCTION set_heer_ranj_node_id(INTEGER) RETURNS void AS $$ \
-             BEGIN RAISE EXCEPTION 'simulated second GUC failure'; END; $$ LANGUAGE plpgsql",
+    BEGIN RAISE EXCEPTION 'simulated second GUC failure'; END; $$ LANGUAGE plpgsql",
             &[],
         )
         .await
@@ -8543,7 +8543,7 @@ mod tests {
         // the second (our wrapper that raises) should fail. The error must
         // identify the SECOND call site, not the first.
         assert!(
-            matches!(&result, Err(RunnerError::NodeIdentityBindingFailed { node_id, .. }) if *node_id == TEST_NODE_ID),
+            matches!(&result, Err(RunnerError::NodeIdentityBindingFailed { node_id,.. }) if *node_id == TEST_NODE_ID),
             "expected NodeIdentityBindingFailed for node_id={TEST_NODE_ID}, got: {result:?}",
         );
 
@@ -8989,7 +8989,7 @@ mod tests {
         // bucket keeps its applied-history row from the setup migration.
         ctx.batch_execute(&format!(
             "DELETE FROM djogi_schema_migrations \
-             WHERE version = '{partial_version}' AND app_label = ''"
+    WHERE version = '{partial_version}' AND app_label = ''"
         ))
         .await
         .expect("clear failed partial ledger row");

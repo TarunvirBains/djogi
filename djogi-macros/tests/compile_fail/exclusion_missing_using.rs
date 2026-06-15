@@ -6,17 +6,17 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "bookings",
-    no_default,
-    exclusion(
-        name = "no_overlap",
-        elements = ["room_id WITH =", "period WITH &&"],
-    ),
+ table = "bookings",
+ no_default,
+ exclusion(
+  name = "no_overlap",
+  elements = ["room_id WITH =", "period WITH &&"],
+ ),
 )]
 #[derive(Debug, Clone)]
 pub struct Booking {
-    pub room_id: i64,
-    pub period: String,
+ pub room_id: i64,
+ pub period: String,
 }
 
 fn main() {}

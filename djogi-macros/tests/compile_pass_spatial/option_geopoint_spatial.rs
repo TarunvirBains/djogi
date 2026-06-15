@@ -27,35 +27,35 @@ use djogi::prelude::*;
 #[model(table = "phase7_zero2_option_geopoint_places", no_default)]
 #[derive(Debug, Clone)]
 pub struct Place {
-    pub name: String,
-    pub location: Option<djogi::GeoPoint>,
+ pub name: String,
+ pub location: Option<djogi::GeoPoint>,
 }
 
 #[cfg(feature = "spatial")]
 #[allow(dead_code)]
 fn _within_km_compiles_on_option_geopoint() {
-    let origin = djogi::GeoPoint::new(47.6062, -122.3321).expect("valid");
-    let _f = |p: PlaceFields| p
-        .location()
-        .explicit_pg_predicate()
-        .within_km(origin, 25.0);
+ let origin = djogi::GeoPoint::new(47.6062, -122.3321).expect("valid");
+ let _f = |p: PlaceFields| p
+ .location()
+ .explicit_pg_predicate()
+ .within_km(origin, 25.0);
 }
 
 #[cfg(feature = "spatial")]
 #[allow(dead_code)]
 fn _order_by_distance_compiles_on_option_geopoint() {
-    let origin = djogi::GeoPoint::new(47.6062, -122.3321).expect("valid");
-    let _ord = |p: PlaceFields| p.location().order_by_distance(origin);
+ let origin = djogi::GeoPoint::new(47.6062, -122.3321).expect("valid");
+ let _ord = |p: PlaceFields| p.location().order_by_distance(origin);
 }
 
 #[cfg(feature = "spatial")]
 #[allow(dead_code)]
 fn _is_null_still_works() {
-    // Sanity check: existing IS NULL / IS NOT NULL surface remains
-    // available on Option<GeoPoint> fields. The new spatial impls do
-    // not shadow the generic `FieldRef<M, V>` is_null path.
-    let _f1 = |p: PlaceFields| p.location().is_null();
-    let _f2 = |p: PlaceFields| p.location().is_not_null();
+ // Sanity check: existing IS NULL / IS NOT NULL surface remains
+ // available on Option<GeoPoint> fields. The new spatial impls do
+ // not shadow the generic `FieldRef<M, V>` is_null path.
+ let _f1 = |p: PlaceFields| p.location().is_null();
+ let _f2 = |p: PlaceFields| p.location().is_not_null();
 }
 
 fn main() {}

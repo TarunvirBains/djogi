@@ -7,8 +7,8 @@ use djogi::prelude::*;
 #[model(table = "events")]
 #[derive(Debug, Clone)]
 pub struct Event {
-    #[field(index = "brin", unique)]
-    pub happened_at: DateTime,
+ #[field(index = "brin", unique)]
+ pub happened_at: DateTime,
 }
 
 fn main() {}

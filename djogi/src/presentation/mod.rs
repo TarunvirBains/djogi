@@ -1,6 +1,6 @@
 //! Per-scope presentation codecs for protected fields.
 //! This module provides the runtime trait surface for the
-//! `#[field(protected(per_scope = { ... }))]` presentation-codec feature
+//! `#[field(protected(per_scope = {... }))]` presentation-codec feature
 //! (GH #227). A presentation codec transforms a model's stored field value
 //! at visage-projection time — after at-rest decode and before the visage
 //! is serialized or returned to the caller.
@@ -14,8 +14,8 @@
 //! | Trait | When to implement |
 //! |-------|------------------|
 //! | [`PresentationCodecInfo<Input>`] | Always — declares `Output`, `REVERSIBILITY`, `QUERYABILITY`, and startup validation |
-//! | [`PresentationCodec<Input>`] | Infallible presentation (use `presentation_codec = ...`) |
-//! | [`TryPresentationCodec<Input>`] | Fallible presentation (use `try_presentation_codec = ...`) |
+//! | [`PresentationCodec<Input>`] | Infallible presentation (use `presentation_codec =...`) |
+//! | [`TryPresentationCodec<Input>`] | Fallible presentation (use `try_presentation_codec =...`) |
 //! | [`ReversiblePresentationCodec<Input>`] | Infallible + reversible |
 //! | [`ReversibleTryPresentationCodec<Input>`] | Fallible + reversible |
 //! | [`PresentationQueryCodec<Input>`] | Predicates against presented values |
@@ -24,10 +24,10 @@
 //! - [`Reversibility`] defaults to [`Reversibility::OneWay`].
 //! - [`Queryability`] defaults to [`Queryability::Disabled`].
 //! - Query and order accessors on generated visage fields are only available
-//!   when the codec implements [`PresentationQueryCodec`] /
-//!   [`PresentationOrderCodec`].
+//! when the codec implements [`PresentationQueryCodec`] /
+//! [`PresentationOrderCodec`].
 //! - Source-model `Model::objects()` accessors remain privileged; the
-//!   presentation codec does not restrict storage-truth queries.
+//! presentation codec does not restrict storage-truth queries.
 //! # Startup validation
 //! Call [`validate_startup_inventory`] before serving traffic.
 //! This function iterates the linked-at-call-time
@@ -36,7 +36,7 @@
 //! Keyed codecs (e.g. [`builtins::HmacSha256HexString`]) validate their
 //! environment-variable key during this pass.
 //! Only model crates compiled and linked into the running binary can contribute
-//! startup work. If a crate that defines `protected(per_scope = ...)` models is
+//! startup work. If a crate that defines `protected(per_scope =...)` models is
 //! not linked, its presentation usages are absent from inventory and are not
 //! checked. `DjogiPool::connect` / `DjogiPoolBuilder::build` call this
 //! automatically. Apps that construct visages without a pool must call
@@ -54,16 +54,16 @@
 //! pub struct MaskedPhone(pub String);
 //!
 //! impl PresentationCodecInfo<String> for PhoneLastFourMask {
-//!     type Output = MaskedPhone;
-//!     const REVERSIBILITY: Reversibility = Reversibility::OneWay;
-//!     const QUERYABILITY: Queryability = Queryability::Disabled;
+//!  type Output = MaskedPhone;
+//!  const REVERSIBILITY: Reversibility = Reversibility::OneWay;
+//!  const QUERYABILITY: Queryability = Queryability::Disabled;
 //! }
 //!
 //! impl PresentationCodec<String> for PhoneLastFourMask {
-//!     fn present(value: &String) -> MaskedPhone {
-//!         // ... masking logic ...
-//!         MaskedPhone(value.clone())
-//!     }
+//!  fn present(value: &String) -> MaskedPhone {
+//!   //... masking logic...
+//!   MaskedPhone(value.clone())
+//!  }
 //! }
 //! ```
 
@@ -228,22 +228,22 @@ impl std::fmt::Display for PresentationStartupError {
                 write!(
                     f,
                     "presentation codec startup: env var `{name}` must be exactly 64 lowercase \
-                     hex characters (32 bytes); got {actual} characters"
+      hex characters (32 bytes); got {actual} characters"
                 )
             }
             Self::InvalidHexByte { name, idx } => {
                 write!(
                     f,
                     "presentation codec startup: env var `{name}` contains an invalid hex \
-                     character at index {idx} (expected `0`–`9` or `a`–`f`)"
+      character at index {idx} (expected `0`–`9` or `a`–`f`)"
                 )
             }
             Self::NonLowercaseHexByte { name, idx } => {
                 write!(
                     f,
                     "presentation codec startup: env var `{name}` contains an uppercase hex \
-                     character at index {idx}; presentation HMAC requires lowercase-only \
-                     hex characters (`a`–`f`, not `A`–`F`)"
+      character at index {idx}; presentation HMAC requires lowercase-only \
+      hex characters (`a`–`f`, not `A`–`F`)"
                 )
             }
             Self::Codec { codec_path, source } => {
@@ -266,7 +266,7 @@ impl std::fmt::Display for PresentationStartupError {
                 write!(
                     f,
                     "presentation codec startup: {model}.{field} scope `{scope}` \
-                     codec `{codec_path}` failed: {source}"
+      codec `{codec_path}` failed: {source}"
                 )
             }
         }
@@ -314,8 +314,8 @@ impl std::fmt::Display for BuiltInPresentationError {
                 write!(
                     f,
                     "built-in presentation codec key not validated: \
-                     call `djogi::presentation::validate_startup_inventory()` \
-                     before projecting visages, or set `{env}` and retry startup"
+      call `djogi::presentation::validate_startup_inventory()` \
+      before projecting visages, or set `{env}` and retry startup"
                 )
             }
         }

@@ -16,8 +16,8 @@ use djogi::prelude::*;
 #[model(table = "profiles")]
 #[derive(Debug, Clone)]
 pub struct Profile {
-    #[field(index = "gin", unique)]
-    pub payload: String,
+ #[field(index = "gin", unique)]
+ pub payload: String,
 }
 
 fn main() {}

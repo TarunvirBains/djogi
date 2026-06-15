@@ -9,13 +9,13 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "phase8_proxy_orphan_order_widgets",
-    default_order = [(name, Asc)],
+ table = "phase8_proxy_orphan_order_widgets",
+ default_order = [(name, Asc)],
 )]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub name: String,
-    pub active: bool,
+ pub name: String,
+ pub active: bool,
 }
 
 fn main() {}

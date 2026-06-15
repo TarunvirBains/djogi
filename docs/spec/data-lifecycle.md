@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Data Lifecycle & Governance
 
@@ -21,7 +21,7 @@ Djogi owns the planning layer. Applications or companion crates may still own sc
 
 ## Minimal Public Surface
 
-Phase 8.5 should stabilize a planning surface, not a scheduler.
+ should stabilize a planning surface, not a scheduler.
 
 Model/field annotations:
 
@@ -124,13 +124,13 @@ This keeps lifecycle behavior aligned with the same logging profile maintainers 
 
 Protected-data metadata is a prerequisite.
 
-Phase 8.5 assumes earlier phases already define:
+ assumes earlier phases already define:
 
 - exposure metadata
 - redaction metadata
 - retention/lifecycle classes
 
-Phase 8.5 is where that metadata becomes executable planning and operator tooling.
+ is where that metadata becomes executable planning and operator tooling.
 
 ---
 

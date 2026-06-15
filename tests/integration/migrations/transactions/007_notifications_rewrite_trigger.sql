@@ -6,6 +6,6 @@
 -- when this file runs.
 
 CREATE TRIGGER notifications_rewrite_trigger
-    BEFORE UPDATE ON notifications
-    FOR EACH ROW
-    EXECUTE FUNCTION notifications_rewrite_on_update();
+  BEFORE UPDATE ON notifications
+  FOR EACH ROW
+  EXECUTE FUNCTION notifications_rewrite_on_update();

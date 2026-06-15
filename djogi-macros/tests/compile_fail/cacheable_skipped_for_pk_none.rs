@@ -25,18 +25,18 @@ use djogi::prelude::*;
 #[model(table = "phase8_t7_cacheable_skip_none", pk = None)]
 #[derive(Debug, Clone)]
 pub struct Custom {
-    pub custom_id: String,
-    pub value: String,
+ pub custom_id: String,
+ pub value: String,
 }
 
 fn _must_not_compile() {
-    // `Custom::cache_type_name` must NOT resolve — the auto-emit
-    // skipped this model. Path-only probing (no method invocation)
-    // produces a stable "no function or associated item" error from
-    // rustc, matching the convention used by
-    // `pk_none_has_no_model_impl.rs` for the parallel `Model`-trait
-    // absence check.
-    let _ = Custom::cache_type_name;
+ // `Custom::cache_type_name` must NOT resolve — the auto-emit
+ // skipped this model. Path-only probing (no method invocation)
+ // produces a stable "no function or associated item" error from
+ // rustc, matching the convention used by
+ // `pk_none_has_no_model_impl.rs` for the parallel `Model`-trait
+ // absence check.
+ let _ = Custom::cache_type_name;
 }
 
 fn main() {}

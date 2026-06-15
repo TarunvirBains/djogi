@@ -1,4 +1,4 @@
-//! NATS publisher stub — .
+//! NATS publisher stub —.
 //! Gated on the `outbox-nats` feature flag. The actual integration
 //! including adding `async-nats` as a workspace dependency — ships in a
 //! future task once the provider dependency matrix is decided. Today this
@@ -22,7 +22,7 @@ impl Publisher for NatsPublisher {
         // production use is caught immediately.
         unimplemented!(
             "NatsPublisher is not yet implemented; \
-             the full integration ships in a future task"
+    the full integration ships in a future task"
         )
     }
 }

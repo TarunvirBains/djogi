@@ -3,34 +3,34 @@
 // # What this file pins
 //
 // 1. **Descriptor projection.** A model field typed `djogi::Interval`
-//    lowers to `FieldSqlType::Interval` and the migration composer
-//    emits `INTERVAL` in the column-type slot of `CREATE TABLE`.
+//  lowers to `FieldSqlType::Interval` and the migration composer
+//  emits `INTERVAL` in the column-type slot of `CREATE TABLE`.
 // 2. **Wire-format round-trip.** A row whose `Interval` columns carry
-//    mixed (`months`, `days`, `microseconds`) components round-trips
-//    end-to-end through `Model::create` → `RETURNING *` → `FromPgRow`
-//    decode, preserving every component byte-for-byte.
+//  mixed (`months`, `days`, `microseconds`) components round-trips
+//  end-to-end through `Model::create` → `RETURNING *` → `FromPgRow`
+//  decode, preserving every component byte-for-byte.
 // 3. **Independent components.** Each constructor variant
-//    (`months_only`, `days_only`, `microseconds_only`) round-trips
-//    cleanly — a non-zero component in one field does not bleed into
-//    the others through the wire codec.
+//  (`months_only`, `days_only`, `microseconds_only`) round-trips
+//  cleanly — a non-zero component in one field does not bleed into
+//  the others through the wire codec.
 // 4. **Boundary values.** `i32::MIN` / `i32::MAX` on the months and
-//    days fields, and `i64::MIN` / `i64::MAX` on the microseconds
-//    field, round-trip without overflow on either the bind or the
-//    decode side.
+//  days fields, and `i64::MIN` / `i64::MAX` on the microseconds
+//  field, round-trip without overflow on either the bind or the
+//  decode side.
 // 5. **Filter execution.** `QuerySet::filter(|f| f.duration().eq(...))`
-//    emits a correctly-typed `$1` bind for `INTERVAL` and returns only
-//    the matching row — pins the `FilterValue::Interval` → `push_bind`
-//    path at SQL-execution level.
+//  emits a correctly-typed `$1` bind for `INTERVAL` and returns only
+//  the matching row — pins the `FilterValue::Interval` → `push_bind`
+//  path at SQL-execution level.
 // 6. **Bulk-update execution.** `QuerySet::update(|f| f.duration().set(...))`
-//    emits the correct `SET duration = $1` clause, executing through the
-//    same `push_bind` path — pins the `UpdateAssignment` → `Interval`
-//    bind at SQL-execution level.
+//  emits the correct `SET duration = $1` clause, executing through the
+//  same `push_bind` path — pins the `UpdateAssignment` → `Interval`
+//  bind at SQL-execution level.
 // 7. **SQL `=` linearization.** `QuerySet::filter(|f| f.duration().eq(...))`
-//    forwards to Postgres `=`, which linearizes months as 30 days and
-//    days as 24 hours before comparing. `INTERVAL '1 month'` and
-//    `INTERVAL '30 days'` are equal in Postgres SQL even though Rust
-//    `PartialEq` says they are not. This test pins the deliberate
-//    divergence between Rust structural equality and Postgres SQL `=`.
+//  forwards to Postgres `=`, which linearizes months as 30 days and
+//  days as 24 hours before comparing. `INTERVAL '1 month'` and
+//  `INTERVAL '30 days'` are equal in Postgres SQL even though Rust
+//  `PartialEq` says they are not. This test pins the deliberate
+//  divergence between Rust structural equality and Postgres SQL `=`.
 //
 // # No raw_execute required
 //
@@ -542,7 +542,7 @@ async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext
             .map(|s| s.to_string())
             .collect::<std::collections::BTreeSet<_>>(),
         "filter by months_only(1) must match both the months row and the days row \
-         via Postgres SQL = linearization"
+     via Postgres SQL = linearization"
     );
 
     // Query 2: filter by Interval::days_only(30).
@@ -562,7 +562,7 @@ async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext
             .map(|s| s.to_string())
             .collect::<std::collections::BTreeSet<_>>(),
         "filter by days_only(30) must match the same two rows as months_only(1) \
-         via symmetric Postgres SQL = linearization"
+     via symmetric Postgres SQL = linearization"
     );
 
     // Query 3: filter by Interval::days_only(31).
@@ -577,7 +577,7 @@ async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext
         results_thirty_one.len(),
         0,
         "filter by days_only(31) must return zero rows — 31 days does not \
-         linearize to 30 days"
+     linearize to 30 days"
     );
 
     // Rust-side sanity: structural PartialEq deliberately diverges from
@@ -587,6 +587,6 @@ async fn interval_sql_eq_linearizes_months_and_days(mut ctx: djogi::DjogiContext
         Interval::months_only(1),
         Interval::days_only(30),
         "Rust structural PartialEq must remain false for months_only(1) vs \
-         days_only(30) — the divergence from Postgres SQL = is intentional"
+     days_only(30) — the divergence from Postgres SQL = is intentional"
     );
 }

@@ -1,4 +1,4 @@
-//! Library-level entrypoint unit tests for T-PARSE (issue #370 Task 10).
+//! Library-level entrypoint unit tests for T-PARSE (issue #370 0).
 //!
 //! These tests exercise `djogi_cli::run_with_args` and
 //! `djogi_cli::run_with_provider` WITHOUT spawning a subprocess or
@@ -109,7 +109,7 @@ fn schema_with_empty_provider_returns_failure_and_consults_provider() {
     assert!(
         provider.models_call_count() > 0,
         "provider.models() should be called during schema dispatch; \
-         got {} calls",
+   got {} calls",
         provider.models_call_count()
     );
 }

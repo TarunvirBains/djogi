@@ -5,15 +5,15 @@
 //
 // 1. Creates two tables with an FK relationship (`emps → depts`).
 // 2. Inserts fixtures so one department has a known name and the
-//    employees that point at it form a witness set.
+//  employees that point at it form a witness set.
 // 3. Runs a typed model queryset over the same fixtures to confirm the
-//    FK relationship returns the expected rows.
+//  FK relationship returns the expected rows.
 // 4. Exercises the visage-scoped reverse-FK accessor — a
-//    `DeptPublic::employees(ctx)` call that returns `Vec<EmpPublic>`
-//    end-to-end against the live Postgres database.
+//  `DeptPublic::employees(ctx)` call that returns `Vec<EmpPublic>`
+//  end-to-end against the live Postgres database.
 // 5. Exercises the visage-scoped M2M accessor — a
-//    `PersonPublic::groups(ctx)` call that returns `Vec<GroupPublic>`
-//    walking through a junction table.
+//  `PersonPublic::groups(ctx)` call that returns `Vec<GroupPublic>`
+//  walking through a junction table.
 //
 // # Internal shape assertions
 //
@@ -23,7 +23,7 @@
 //
 // # Why the reverse/M2M live tests.
 //
-//  is exactly the surface where `{Visage}::fetch` DOES work today
+// is exactly the surface where `{Visage}::fetch` DOES work today
 // — the visage-scoped method goes model-scoped query → TryFrom
 // projection → `Vec<PeerVisage>`. Testing against a live DB pins
 // that the conversion cycle survives real row decoding, real PK
@@ -103,7 +103,7 @@ async fn typed_fk_filter_returns_related_rows(mut ctx: DjogiContext) {
     assert_eq!(employees[1].display_name, "Grace");
 }
 
-// ---  — reverse-FK visage boundary live coverage ---
+// --- — reverse-FK visage boundary live coverage ---
 
 #[model(table = "live_v9_depts")]
 #[derive(Debug, Clone)]
@@ -121,8 +121,8 @@ pub struct RevEmp {
 }
 
 djogi::reverse_one_to_many!(
-    RevDept, employees -> RevEmp by department,
-    expose(public -> RevEmpPublic)
+  RevDept, employees -> RevEmp by department,
+  expose(public -> RevEmpPublic)
 );
 
 #[djogi::djogi_test(sync_models = [RevDept, RevEmp])]
@@ -184,7 +184,7 @@ async fn reverse_fk_visage_accessor_projects_to_peer_visage(mut ctx: DjogiContex
     assert_eq!(names, vec!["Ada", "Grace"]);
 }
 
-// ---  — M2M visage boundary live coverage ---
+// --- — M2M visage boundary live coverage ---
 
 #[model(table = "live_v9_m2m_persons")]
 #[derive(Debug, Clone)]
@@ -210,12 +210,12 @@ pub struct M2mPersonGroup {
 }
 
 djogi::many_to_many!(
-    M2mPerson, M2mGroup,
-    through = M2mPersonGroup,
-    this_fk = person_id,
-    that_fk = group_id,
-    relation = "groups",
-    expose(public -> M2mGroupPublic)
+  M2mPerson, M2mGroup,
+  through = M2mPersonGroup,
+  this_fk = person_id,
+  that_fk = group_id,
+  relation = "groups",
+  expose(public -> M2mGroupPublic)
 );
 
 #[djogi::djogi_test(sync_models = [M2mPerson, M2mGroup, M2mPersonGroup])]

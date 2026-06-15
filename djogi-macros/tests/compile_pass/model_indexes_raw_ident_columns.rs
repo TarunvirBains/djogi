@@ -8,14 +8,14 @@
 use djogi::prelude::*;
 
 #[model(table = "audit_where", indexes(
-    index(fields = [r#yield]),
-    index(fields = [(col = r#async, order = desc)]),
-    index(fields = [r#yield], include = [r#async]),
+ index(fields = [r#yield]),
+ index(fields = [(col = r#async, order = desc)]),
+ index(fields = [r#yield], include = [r#async]),
 ))]
 #[derive(Debug, Clone)]
 pub struct AuditWhere {
-    pub r#yield: String,
-    pub r#async: String,
+ pub r#yield: String,
+ pub r#async: String,
 }
 
 fn main() {}

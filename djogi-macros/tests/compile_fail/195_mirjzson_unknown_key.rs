@@ -9,9 +9,9 @@ use djogi::prelude::*;
 #[model(table = "phase85_mirjzson_unknown_key")]
 #[derive(Debug, Clone)]
 pub struct AuditLog {
-    pub source: String,
-    #[mirjzson(reason = "payload is externally owned by partner API")]
-    pub payload: MirJzSON,
+ pub source: String,
+ #[mirjzson(reason = "payload is externally owned by partner API")]
+ pub payload: MirJzSON,
 }
 
 fn main() {}

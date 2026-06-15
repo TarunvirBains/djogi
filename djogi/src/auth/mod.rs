@@ -2,7 +2,7 @@
 //! # Module layout
 //! - [`AuthContext`] — value-typed auth state attached to a `DjogiContext`.
 //! - [`DjogiAuth`] — core authentication trait; implement to plug in a
-//!   custom provider.
+//! custom provider.
 //! - [`AuthError`] — authentication and authorization failure modes.
 
 use heeranjid::HeerId;
@@ -86,31 +86,31 @@ mod context_ext;
 /// struct MyProvider;
 ///
 /// impl djogi::auth::DjogiAuth for MyProvider {
-///     fn authenticate<'a>(
-///         &'a self,
-///         token: &'a str,
-///     ) -> std::pin::Pin<Box<dyn std::future::Future<
-///         Output = Result<djogi::auth::AuthContext, djogi::auth::AuthError>,
-///     > + Send + 'a>> {
-///         let _ = token;
-///         Box::pin(async { Err(djogi::auth::AuthError::InvalidToken) })
-///     }
+///  fn authenticate<'a>(
+///   &'a self,
+///   token: &'a str,
+///  ) -> std::pin::Pin<Box<dyn std::future::Future<
+///   Output = Result<djogi::auth::AuthContext, djogi::auth::AuthError>,
+///  > + Send + 'a>> {
+///   let _ = token;
+///   Box::pin(async { Err(djogi::auth::AuthError::InvalidToken) })
+///  }
 ///
-///     fn verify<'a>(
-///         &'a self,
-///         ctx: &'a djogi::auth::AuthContext,
-///         action: &'a dyn std::any::Any,
-///     ) -> std::pin::Pin<Box<dyn std::future::Future<
-///         Output = Result<(), djogi::auth::AuthError>,
-///     > + Send + 'a>> {
-///         let _ = (ctx, action);
-///         Box::pin(async { Ok(()) })
-///     }
+///  fn verify<'a>(
+///   &'a self,
+///   ctx: &'a djogi::auth::AuthContext,
+///   action: &'a dyn std::any::Any,
+///  ) -> std::pin::Pin<Box<dyn std::future::Future<
+///   Output = Result<(), djogi::auth::AuthError>,
+///  > + Send + 'a>> {
+///   let _ = (ctx, action);
+///   Box::pin(async { Ok(()) })
+///  }
 /// }
 ///
 /// // Object-safe: usable as a trait object.
 /// let _provider: std::sync::Arc<dyn djogi::auth::DjogiAuth> =
-///     std::sync::Arc::new(MyProvider);
+///  std::sync::Arc::new(MyProvider);
 /// ```
 /// [`verify`]: DjogiAuth::verify
 pub trait DjogiAuth: Send + Sync + 'static {

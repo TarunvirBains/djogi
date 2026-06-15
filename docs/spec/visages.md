@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Visages & Shared Contracts
 
@@ -28,14 +28,14 @@ Model-side annotations:
 ```rust
 #[model(table = "users")]
 pub struct User {
-    #[field(expose(public, self_view, admin, export))]
-    pub display_name: String,
+ #[field(expose(public, self_view, admin, export))]
+ pub display_name: String,
 
-    #[field(expose(self_view, admin, export))]
-    pub email: String,
+ #[field(expose(self_view, admin, export))]
+ pub email: String,
 
-    #[field(expose(none))]
-    pub password_hash: String,
+ #[field(expose(none))]
+ pub password_hash: String,
 }
 ```
 
@@ -60,8 +60,8 @@ impl From<&User> for UserPublic
 // `VisageError::UnresolvedRelation { model, field, scope }` when
 // the relation wasn't prefetched / selected before the conversion.
 impl TryFrom<&Vehicle> for VehiclePublic {
-    type Error = djogi::VisageError;
-    // ...
+ type Error = djogi::VisageError;
+ // ...
 }
 ```
 
@@ -117,17 +117,17 @@ Example:
 ```rust
 #[model(table = "users")]
 pub struct User {
-    #[field(expose(public, self_view, admin, export))]
-    pub display_name: String,
+ #[field(expose(public, self_view, admin, export))]
+ pub display_name: String,
 
-    #[field(expose(self_view, admin, export))]
-    pub email: String,
+ #[field(expose(self_view, admin, export))]
+ pub email: String,
 
-    #[field(expose(none))]
-    pub password_hash: String,
+ #[field(expose(none))]
+ pub password_hash: String,
 
-    #[field(expose(admin))]
-    pub internal_notes: Option<String>,
+ #[field(expose(admin))]
+ pub internal_notes: Option<String>,
 }
 ```
 
@@ -143,18 +143,18 @@ Example:
 
 ```rust
 pub struct UserPublic {
-    pub display_name: String,
+ pub display_name: String,
 }
 
 pub struct UserSelfView {
-    pub display_name: String,
-    pub email: String,
+ pub display_name: String,
+ pub email: String,
 }
 
 pub struct UserAdmin {
-    pub display_name: String,
-    pub email: String,
-    pub internal_notes: Option<String>,
+ pub display_name: String,
+ pub email: String,
+ pub internal_notes: Option<String>,
 }
 ```
 
@@ -175,14 +175,14 @@ dispatches on whether the visage nests a peer visage through
 a relation field:
 
 - Scalar-only visage (no `expose(scope = "Peer")` entries) —
-  `impl From<&Model> for Visage`. Infallible; straight-line
-  construction.
+ `impl From<&Model> for Visage`. Infallible; straight-line
+ construction.
 - Relation-nesting visage (at least one `expose(scope = "Peer")`
-  on a `ForeignKey<T>` / `OneToOneField<T>` field) —
-  `impl TryFrom<&Model> for Visage` with
-  `type Error = djogi::VisageError`. Returns
-  `VisageError::UnresolvedRelation { model, field, scope }` when
-  the relation wasn't prefetched / selected before the conversion.
+ on a `ForeignKey<T>` / `OneToOneField<T>` field) —
+ `impl TryFrom<&Model> for Visage` with
+ `type Error = djogi::VisageError`. Returns
+ `VisageError::UnresolvedRelation { model, field, scope }` when
+ the relation wasn't prefetched / selected before the conversion.
 
 Scalar-only visages also satisfy `TryFrom<&Model>` via the stdlib
 blanket `impl<T, U> TryFrom<U> for T where U: Into<T>` with
@@ -210,12 +210,12 @@ on `#[model(...)]`:
 
 ```rust
 #[model(
-    table = "users",
-    visage_scopes(support = Support)
+ table = "users",
+ visage_scopes(support = Support)
 )]
 pub struct User {
-    #[field(expose(public, support))]
-    pub email: String,
+ #[field(expose(public, support))]
+ pub email: String,
 }
 ```
 
@@ -224,7 +224,7 @@ pub struct User {
 The macro generates a visage struct for each custom scope using the pattern `{Model}{Suffix}`:
 
 ```
-visage_scopes(support = Support)  // on User → generates UserSupport
+visage_scopes(support = Support) // on User → generates UserSupport
 ```
 
 ### Infallibility
@@ -260,7 +260,7 @@ Rules:
 - relation loading semantics remain explicit; visage generation does not imply lazy loading
 
 Relation fields reuse the same `expose(...)` attribute as scalars under
-the Phase 7-Zero-2 `->` grammar:
+the `->` grammar:
 
 ```rust
 // Narrow peer visage per scope.
@@ -280,13 +280,13 @@ Form semantics:
 
 - `expose(scope)` on a scalar field — include as the native type in `scope`.
 - `expose(scope)` on a relation field — include the FK column in `scope`
-  as an ID-only projection.
+ as an ID-only projection.
 - `expose(scope -> Peer)` on a relation field — include in `scope`
-  rendered as the named peer visage (or as the model struct itself
-  when `Peer` names the model). The macro rejects the `->` form on
-  scalar fields.
+ rendered as the named peer visage (or as the model struct itself
+ when `Peer` names the model). The macro rejects the `->` form on
+ scalar fields.
 - `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` follow the same
-  grammar and project as `Option<PeerVisage>`.
+ grammar and project as `Option<PeerVisage>`.
 
 The contract is stable: nested transport shapes must remain visage- or
 model-based, and the attribute name stays `expose` so scope membership
@@ -303,7 +303,7 @@ Baseline behavior:
 - include the whole typed JSON field
 - exclude the whole typed JSON field
 
-Later additive behavior may allow subfield visage, but Phase 4.5 only requires field-level control.
+Later additive behavior may allow subfield visage, but only requires field-level control.
 
 ---
 

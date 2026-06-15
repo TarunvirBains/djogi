@@ -205,7 +205,7 @@ fn load_replay_plan_from_disk(
         });
     }
 
-    // Down checksum mismatch means the .down.sql file changed after compose.
+    // Down checksum mismatch means the.down.sql file changed after compose.
     // The sidecar path (lines 131-134) already checks both sides; the fallback
     // path must apply the same guard so a post-compose edit to the down file
     // is caught consistently.
@@ -273,8 +273,8 @@ impl std::fmt::Display for ApplyReplayPlanError {
             Self::NonTransactionalWithoutReplayPlan { shape, path } => write!(
                 f,
                 "migration contains `{shape}`, which cannot replay as a single \
-                 transaction and requires its committed replay plan; restore {} \
-                 (or re-run `djogi migrations compose`) and retry",
+     transaction and requires its committed replay plan; restore {} \
+     (or re-run `djogi migrations compose`) and retry",
                 path.display()
             ),
             Self::SqlRead { path, source } => {
@@ -287,8 +287,8 @@ impl std::fmt::Display for ApplyReplayPlanError {
             } => write!(
                 f,
                 "committed {side} SQL checksum {computed} does not match the pending \
-                 plan's {pending}; the file changed after compose — re-run \
-                 `djogi migrations compose` (or restore the committed file)"
+     plan's {pending}; the file changed after compose — re-run \
+     `djogi migrations compose` (or restore the committed file)"
             ),
         }
     }
@@ -685,14 +685,14 @@ fn compose_with_inputs(
 /// Exit-code contract (mirrors `docs/spec/migrations.md` §10.2):
 /// - `0` — `NothingToCompose`: no delta for any bucket; not an error.
 /// - `2` — operator-actionable refusal: the operator must fix a model
-///   descriptor, resolve a conflict, or hand-write a migration, then
-///   re-run. Covers both the flat top-level refusals AND the
-///   operator-actionable sub-variants nested inside the `SqlEmit`,
-///   `Diff`, and `PhaseZeroAutoEmit` wrappers — those wrappers do not
-///   map to a single exit code, so each is destructured.
+/// descriptor, resolve a conflict, or hand-write a migration, then
+/// re-run. Covers both the flat top-level refusals AND the
+/// operator-actionable sub-variants nested inside the `SqlEmit`,
+/// `Diff`, and `PhaseZeroAutoEmit` wrappers — those wrappers do not
+/// map to a single exit code, so each is destructured.
 /// - `1` — runtime / framework-internal failure that is not the
-///   operator's to fix by editing schema (transient I/O, serialization,
-///   DB errors, framework routing-invariant violations). Retryable in CI.
+/// operator's to fix by editing schema (transient I/O, serialization,
+/// DB errors, framework routing-invariant violations). Retryable in CI.
 ///
 /// `NothingToCompose` is mapped explicitly even though the compose
 /// command intercepts it upstream and returns exit 0 before reaching
@@ -856,12 +856,12 @@ async fn run_status(workspace: &Path) -> i32 {
 /// The three arms drive different exit codes at the call site:
 /// - [`ContextOutcome::Ready`] — pool connected and PG ≥ 18; proceed.
 /// - [`ContextOutcome::UnsupportedVersion`] — PG < 18. The caller renders
-///   the support-boundary message via
-///   [`crate::print_support_boundary_error`] and exits `2` (refusal: the
-///   operator must upgrade Postgres; retrying changes nothing).
+/// the support-boundary message via
+/// [`crate::print_support_boundary_error`] and exits `2` (refusal: the
+/// operator must upgrade Postgres; retrying changes nothing).
 /// - [`ContextOutcome::RuntimeError`] — pool connect failed, the preflight
-///   query errored, or any other non-version `DjogiError`. The caller
-///   prints the message and exits `1` (transient: CI may retry).
+/// query errored, or any other non-version `DjogiError`. The caller
+/// prints the message and exits `1` (transient: CI may retry).
 // The `Ready` variant holds a `DjogiContext` (large — it wraps a
 // `DjogiPool`), while the other two variants are small (`DjogiError` /
 // `String`). Boxing `Ready` would add a heap allocation on the success
@@ -909,21 +909,21 @@ async fn connect_and_check(url: &str) -> ContextOutcome {
 /// Verify routes each bucket to the pool for its `database` component.
 /// The mapping mirrors Djogi's three-database architecture:
 /// - `"main"` ([`djogi::apps::AppDescriptor::GLOBAL_DATABASE`]) always uses
-///   the app URL verbatim. We do NOT derive it by splicing `"main"` into
-///   the path, because the operator's app URL may carry a path component
-///   that is not literally named `main` (e.g. `…/myapp_prod`); deriving
-///   would target a database that does not exist.
+/// the app URL verbatim. We do NOT derive it by splicing `"main"` into
+/// the path, because the operator's app URL may carry a path component
+/// that is not literally named `main` (e.g. `…/myapp_prod`); deriving
+/// would target a database that does not exist.
 /// - `"crud_log"` / `"event_log"` prefer the explicit
-///   [`djogi::config::DatabaseConfig::crud_log_url`] /
-///   [`event_log_url`](djogi::config::DatabaseConfig::event_log_url) when
-///   set to a non-empty value, matching how the audit / event pools are
-///   resolved elsewhere.
+/// [`djogi::config::DatabaseConfig::crud_log_url`] /
+/// [`event_log_url`](djogi::config::DatabaseConfig::event_log_url) when
+/// set to a non-empty value, matching how the audit / event pools are
+/// resolved elsewhere.
 /// - Any other database name (and the log databases when their explicit
-///   URL is absent) is derived by splicing the name into the app URL's
-///   path component via [`djogi::migrate::derive_per_database_url`].
-///   Returns `None` when derivation fails (the app URL has no recognisable
-///   path component); the caller surfaces that as a runtime error for the
-///   affected bucket.
+/// URL is absent) is derived by splicing the name into the app URL's
+/// path component via [`djogi::migrate::derive_per_database_url`].
+/// Returns `None` when derivation fails (the app URL has no recognisable
+/// path component); the caller surfaces that as a runtime error for the
+/// affected bucket.
 fn resolve_bucket_url(db_config: &djogi::config::DatabaseConfig, database: &str) -> Option<String> {
     // "main" always uses the app URL verbatim — do NOT derive, as the app
     // URL may not have a path component named "main".
@@ -970,17 +970,17 @@ pub fn apply_cmd(
             Some(_) => {
                 eprintln!(
                     "djogi migrations apply --fake: --reason must not be empty; \
-                     supply a non-empty reason why these migrations are being \
-                     faked (e.g. 'schema pre-exists from prior tooling')"
+      supply a non-empty reason why these migrations are being \
+      faked (e.g. 'schema pre-exists from prior tooling')"
                 );
                 return ExitCode::from(2);
             }
             None => {
                 eprintln!(
                     "djogi migrations apply --fake: --reason is required; \
-                     supply a reason why these migrations are being faked \
-                     (e.g. 'schema pre-exists from prior tooling'). \
-                     This is recorded in the ledger audit trail."
+      supply a reason why these migrations are being faked \
+      (e.g. 'schema pre-exists from prior tooling'). \
+      This is recorded in the ledger audit trail."
                 );
                 return ExitCode::from(2);
             }
@@ -1137,7 +1137,7 @@ async fn run_apply(
             );
             return 1;
         };
-        println!("  {progress_verb} {bucket_database}/{app_label}...");
+        println!(" {progress_verb} {bucket_database}/{app_label}...");
         let result = apply_one_pending(
             ctx,
             workspace,
@@ -1157,8 +1157,8 @@ async fn run_apply(
                 }
                 FakeMode::Fake { .. } => {
                     println!(
-                        "  faked {bucket_database}/{app_label}: \
-                             recorded in ledger with status = 'faked' (no SQL executed)"
+                        " faked {bucket_database}/{app_label}: \
+        recorded in ledger with status = 'faked' (no SQL executed)"
                     );
                 }
             },
@@ -1298,7 +1298,7 @@ fn validate_normal_pending(
 ) -> Result<DiscoveredPendingPlan, String> {
     let Some(stem) = filename.strip_suffix(".json") else {
         return Err(format!(
-            "pending path {} must end with .json",
+            "pending path {} must end with.json",
             path.display()
         ));
     };
@@ -1352,7 +1352,7 @@ fn validate_normal_pending(
     }
     if plan.version == djogi::migrate::PHASE_ZERO_VERSION {
         return Err(format!(
-            "pending JSON {} must use the hidden .phase_zero namespace for Phase 0",
+            "pending JSON {} must use the hidden.phase_zero namespace for Phase 0",
             path.display()
         ));
     }
@@ -1593,8 +1593,8 @@ fn order_pending_groups_by_dependencies(
             chain.sort();
             return Err(format!(
                 "pending migrations for database `{database}` version `{version}` \
-                 declare a dependency cycle between apps: {chain:?}; \
-                 recompose or inspect hand-edited pending files"
+     declare a dependency cycle between apps: {chain:?}; \
+     recompose or inspect hand-edited pending files"
             ));
         }
 
@@ -1727,7 +1727,7 @@ async fn apply_one_pending(
                     if let Some(reason) = cleanup_refusal {
                         return ApplyResult::Refused(format!(
                             "Phase 0 cleanup refused: {reason}; \
-                             refusing before deleting {} row to prevent stale replay",
+        refusing before deleting {} row to prevent stale replay",
                             existing_status.as_db_str()
                         ));
                     }
@@ -1868,7 +1868,7 @@ async fn delete_reapply_blocking_ledger_row(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ctx.raw_execute(
         "DELETE FROM djogi_schema_migrations \
-         WHERE version = $1 AND app_label = $2",
+   WHERE version = $1 AND app_label = $2",
         &[&version, &app_label],
     )
     .await?;
@@ -1890,7 +1890,7 @@ fn reconstruct_snapshot_path(workspace: &Path, bucket: &djogi::migrate::BucketKe
 /// - A readable snapshot becomes [`DriftBaseline::Snapshot`].
 /// - A missing file becomes [`DriftBaseline::Missing`].
 /// - A present-but-unreadable file becomes [`DriftBaseline::Corrupted`],
-///   carrying the parse/IO error text.
+/// carrying the parse/IO error text.
 ///
 /// The runner decides whether each non-`Disabled` state refuses (the bucket
 /// has applied history) or self-skips (the bucket was never applied), so this
@@ -1919,15 +1919,15 @@ fn load_drift_baseline(mode: &FakeMode, snap_path: &Path) -> DriftBaseline {
 /// | true | true | rejected by clap (`conflicts_with`) |
 /// Argument semantics:
 /// - `target` is an optional positional Git target (commit / tag /
-///   branch). When supplied, attune resolves it (local first, fetch
-///   on miss) before any DB / disk mutation.
+/// branch). When supplied, attune resolves it (local first, fetch
+/// on miss) before any DB / disk mutation.
 /// - `apply` gates DB / disk mutation. Without it, every mode is a
-///   dry-run.
+/// dry-run.
 /// - `record` controls the parent repo's recorded submodule pointer
-///   (separate from `record_ledger`, which controls the
-///   `djogi_schema_migrations` ledger inserts).
-///   `--squash` requires `--from <ver>`; an absent `from` while
-///   `--squash` is set surfaces as a CLI error before any work happens.
+/// (separate from `record_ledger`, which controls the
+/// `djogi_schema_migrations` ledger inserts).
+/// `--squash` requires `--from <ver>`; an absent `from` while
+/// `--squash` is set surfaces as a CLI error before any work happens.
 // The CLI dispatch carries 11 inputs because the attune surface is
 // the broadest in the migrations CLI — target
 // resolution + dry-run + record-ledger + record-pointer + squash +
@@ -1963,7 +1963,7 @@ pub fn attune_cmd(
             _ => {
                 eprintln!(
                     "djogi migrations attune --squash requires --from <version> (e.g. \
-                     `--from V20260101000000__init`)"
+      `--from V20260101000000__init`)"
                 );
                 return ExitCode::from(2);
             }
@@ -2068,7 +2068,7 @@ async fn run_attune(
                         entry.bucket.app.as_str()
                     };
                     println!(
-                        "  {kind:<10}  {database}/{app}  {version}",
+                        " {kind:<10} {database}/{app} {version}",
                         kind = entry.kind.as_str(),
                         database = entry.bucket.database,
                         app = app_display,
@@ -2080,7 +2080,7 @@ async fn run_attune(
             // LedgerTableMissing notice when DiffOnly runs on a
             // fresh database.
             for diag in &report.diagnostics {
-                println!("  diagnostic: {diag}");
+                println!(" diagnostic: {diag}");
             }
             if let Some(sha) = &report.resolved_target {
                 println!("resolved target: {sha}");
@@ -2106,17 +2106,17 @@ async fn run_attune(
 /// Map an [`AttuneError`] variant onto the documented exit-code
 /// matrix (`docs/spec/configuration.md` §14):
 /// - Refusal variants → exit code `2` ("operator must intervene;
-///   nothing happened"). Today every refusal flows through
-///   [`AttuneError::Refused`]; the localhost gate, the dev-profile
-///   gate, the missing-version refusal, and the ambiguous-version
-///   refusal are all reachable through that variant.
+/// nothing happened"). Today every refusal flows through
+/// [`AttuneError::Refused`]; the localhost gate, the dev-profile
+/// gate, the missing-version refusal, and the ambiguous-version
+/// refusal are all reachable through that variant.
 /// - Runtime variants → exit code `1` ("we tried; something broke"
-///   filesystem scan, ledger query, SQL read/write/delete, git
-///   publish). CI may safely retry these.
-///   Pulled out as a free function so unit tests can pin every variant
-///   without spinning a Tokio runtime. Operators rely on the 1-vs-2
-///   distinction to tell "refused before any side effect" from "ran and
-///   failed mid-flight".
+/// filesystem scan, ledger query, SQL read/write/delete, git
+/// publish). CI may safely retry these.
+/// Pulled out as a free function so unit tests can pin every variant
+/// without spinning a Tokio runtime. Operators rely on the 1-vs-2
+/// distinction to tell "refused before any side effect" from "ran and
+/// failed mid-flight".
 fn attune_error_exit_code(err: &AttuneError) -> i32 {
     match err {
         AttuneError::Refused(_) => 2,
@@ -2168,13 +2168,13 @@ pub fn verify_cmd(
 /// with several app buckets connects once. The bucket set is the UNION of
 /// the inventory projection and the on-disk snapshot tree, so an orphaned
 /// snapshot (a removed app's snapshot still on disk) is verified and
-/// surfaces drift rather than being silently skipped .
+/// surfaces drift rather than being silently skipped.
 /// Exit codes:
 /// - `0` — every bucket verified with no error-severity diagnostic.
 /// - `1` — at least one runtime failure (pool / snapshot / verify error)
-///   or at least one bucket reported an error-severity diagnostic.
+/// or at least one bucket reported an error-severity diagnostic.
 /// - `2` — the server is below the minimum supported Postgres version
-///   (a server-global refusal: verify returns immediately).
+/// (a server-global refusal: verify returns immediately).
 async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict: bool) -> i32 {
     use djogi::config::DjogiConfig;
 
@@ -2213,7 +2213,7 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
     };
 
     // 3. Build the bucket set as the UNION of the inventory projection and
-    // the on-disk snapshot tree . An orphaned snapshot
+    // the on-disk snapshot tree. An orphaned snapshot
     // a removed app whose snapshot still sits on disk — is absent from
     // `models` but present on disk; without the union it would never be
     // verified and out-of-band drift would go unreported.
@@ -2276,7 +2276,7 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
             };
             eprintln!(
                 "djogi migrations verify: cannot derive URL for database '{}' (bucket {}/{}); \
-                 check that config.database.url has a valid path component",
+     check that config.database.url has a valid path component",
                 bucket.database, bucket.database, bd
             );
             exit_code = 1;
@@ -2328,8 +2328,8 @@ async fn run_verify(provider: &dyn DescriptorProvider, workspace: &Path, strict:
                 if has_models {
                     eprintln!(
                         "djogi migrations verify: {}/{} has registered models but no \
-                         snapshot; run `djogi migrations compose` then \
-                         `djogi migrations apply` to record a baseline",
+       snapshot; run `djogi migrations compose` then \
+       `djogi migrations apply` to record a baseline",
                         bucket.database, bd
                     );
                     exit_code = 1;
@@ -2506,8 +2506,8 @@ fn render_drift_refusal(report_bucket: &BucketKey, report: &VerifyReport) -> Vec
     );
     lines.push(
         "Next steps: inspect with `djogi migrations verify`, reconcile intentional drift \
-         with `djogi migrations attune`, or if drift is from partial non-transactional \
-         progress, resume with `djogi migrations repair resume-partial`."
+   with `djogi migrations attune`, or if drift is from partial non-transactional \
+   progress, resume with `djogi migrations repair resume-partial`."
             .to_string(),
     );
     lines
@@ -2595,13 +2595,13 @@ pub fn repair_cmd(command: RepairSubcommand) -> ExitCode {
 /// snapshot summary regardless of which repair ran.
 fn render_repair_report(report: &RepairReport) {
     for action in &report.actions_taken {
-        println!("  {action}");
+        println!(" {action}");
     }
     if !report.ledger_changes.is_empty() {
         println!("Ledger changes:");
         for lc in &report.ledger_changes {
             println!(
-                "  {} | {} | {} -> {}",
+                " {} | {} | {} -> {}",
                 lc.version, lc.column, lc.before, lc.after,
             );
         }
@@ -2609,7 +2609,7 @@ fn render_repair_report(report: &RepairReport) {
     if !report.snapshot_changes.is_empty() {
         println!("Snapshot changes:");
         for sc in &report.snapshot_changes {
-            println!("  {} | {}", sc.path.display(), sc.description);
+            println!(" {} | {}", sc.path.display(), sc.description);
         }
     }
 }
@@ -2622,47 +2622,47 @@ fn render_repair_report(report: &RepairReport) {
 /// Classification rule — when a new variant is added, classify it the
 /// same way:
 /// - **Exit 1 (retryable):** variants wrapping a transient I/O /
-///   connection / pool / SQL failure (a `source: DjogiError`, snapshot
-///   filesystem I/O, or advisory-lock contention). A retry may succeed.
+/// connection / pool / SQL failure (a `source: DjogiError`, snapshot
+/// filesystem I/O, or advisory-lock contention). A retry may succeed.
 /// - **Exit 2 (refusal):** structural refusals and ledger-logic guards
-///   that require operator intervention. A blind retry hits the same
-///   refusal.
+/// that require operator intervention. A blind retry hits the same
+/// refusal.
 fn repair_error_exit_code(err: &RepairError) -> i32 {
     match err {
-        // ── Exit 1: transient I/O / connection / pool / SQL failures.
-        // These wrap a DjogiError (network, connection, query) or a
-        // filesystem error and may succeed on retry.
-        RepairError::LedgerIo { .. }                  // ledger DB I/O
-        | RepairError::SnapshotIo { .. }              // snapshot filesystem I/O
-        | RepairError::AdvisoryLockFailed { .. }      // lock held by a concurrent runner; retry after it releases
-        | RepairError::AdvisoryLockQueryFailed { .. } // pg_try_advisory_lock query itself errored
-        | RepairError::PinnedSessionCheckoutFailed { .. } // could not check out a pinned session from the pool
-        | RepairError::ResumeStepFailed { .. }        // a replayed statement failed; partial state recorded, retryable
-        | RepairError::ResumeProgressAckFailed { .. } // step committed but the progress ack write failed; retryable
-        | RepairError::Runner(..)                     // runner-level failure during repair (identity binding, leaf-identity probe, plan materialization); wraps a transient SQL/connection/catalog source
-        => 1,
+  // ── Exit 1: transient I/O / connection / pool / SQL failures.
+  // These wrap a DjogiError (network, connection, query) or a
+  // filesystem error and may succeed on retry.
+  RepairError::LedgerIo {.. }     // ledger DB I/O
+  | RepairError::SnapshotIo {.. }    // snapshot filesystem I/O
+  | RepairError::AdvisoryLockFailed {.. }  // lock held by a concurrent runner; retry after it releases
+  | RepairError::AdvisoryLockQueryFailed {.. } // pg_try_advisory_lock query itself errored
+  | RepairError::PinnedSessionCheckoutFailed {.. } // could not check out a pinned session from the pool
+  | RepairError::ResumeStepFailed {.. }  // a replayed statement failed; partial state recorded, retryable
+  | RepairError::ResumeProgressAckFailed {.. } // step committed but the progress ack write failed; retryable
+  | RepairError::Runner(..)      // runner-level failure during repair (identity binding, leaf-identity probe, plan materialization); wraps a transient SQL/connection/catalog source
+  => 1,
 
-        // ── Exit 2: refusals and structural / ledger-logic guards.
-        // The operator must investigate and intervene; a blind retry
-        // would hit the same refusal.
-        RepairError::VersionNotFound { .. }
-        | RepairError::InsufficientConfirmation
-        | RepairError::InvalidChecksum { .. }
-        | RepairError::InvalidResolution { .. }
-        | RepairError::BucketAppMismatch { .. }
-        | RepairError::PlanVersionMismatch { .. }
-        | RepairError::PlanChecksumMismatch { .. }
-        | RepairError::LeafIdentityMismatch { .. }
-        | RepairError::NothingToResume { .. }
-        | RepairError::ResumeBlockedByNonTxProgressClaim { .. }
-        | RepairError::SuppliedSnapshotDiverges { .. }
-        | RepairError::AdvisoryUnlockReturnedFalse { .. } // session-pinning correctness failure — not a blind retry
-        | RepairError::ResumePlanShapeMismatch { .. }
-        | RepairError::ReplayPlanShapeMismatch { .. }
-        | RepairError::PhaseZeroArtifactRefused { .. }  // #386: refusal — operator must replace the stale file
-        | RepairError::MissingResumeIdentity { .. }     // #386: refusal — operator must supply identity for resume
-        => 2,
-    }
+  // ── Exit 2: refusals and structural / ledger-logic guards.
+  // The operator must investigate and intervene; a blind retry
+  // would hit the same refusal.
+  RepairError::VersionNotFound {.. }
+  | RepairError::InsufficientConfirmation
+  | RepairError::InvalidChecksum {.. }
+  | RepairError::InvalidResolution {.. }
+  | RepairError::BucketAppMismatch {.. }
+  | RepairError::PlanVersionMismatch {.. }
+  | RepairError::PlanChecksumMismatch {.. }
+  | RepairError::LeafIdentityMismatch {.. }
+  | RepairError::NothingToResume {.. }
+  | RepairError::ResumeBlockedByNonTxProgressClaim {.. }
+  | RepairError::SuppliedSnapshotDiverges {.. }
+  | RepairError::AdvisoryUnlockReturnedFalse {.. } // session-pinning correctness failure — not a blind retry
+  | RepairError::ResumePlanShapeMismatch {.. }
+  | RepairError::ReplayPlanShapeMismatch {.. }
+  | RepairError::PhaseZeroArtifactRefused {.. } // #386: refusal — operator must replace the stale file
+  | RepairError::MissingResumeIdentity {.. }  // #386: refusal — operator must supply identity for resume
+  => 2,
+ }
 }
 
 /// Map a [`RollbackError`] onto the CLI exit-code contract: exit `2` for
@@ -2670,24 +2670,24 @@ fn repair_error_exit_code(err: &RepairError) -> i32 {
 /// runtime failures.
 fn rollback_error_exit_code(error: &RollbackError) -> i32 {
     match error {
-        RollbackError::Runner { source, .. } => runner_error_exit_code(source),
-        RollbackError::LossyRollbackRefused { .. }
-        | RollbackError::VersionNotRollbackable { .. }
-        | RollbackError::VersionNotFound { .. }
-        | RollbackError::BucketAppMismatch { .. }
-        | RollbackError::ChecksumDrift { .. }
-        | RollbackError::PriorSnapshotMissing
-        | RollbackError::LeafIdentityMismatch { .. }
-        | RollbackError::StalePhaseZeroDown { .. }
-        // If SnapshotPersistFailed ever fires the rollback's SQL already
-        // committed; the live DB advanced but the snapshot is stale. A blind
-        // retry would refuse (the ledger row is no longer rollbackable), so
-        // this is an operator-actionable repair signal, not a transient
-        // failure — exit 2, pointing at snapshot-rebuild.
-        | RollbackError::SnapshotPersistFailed { .. }
-        | RollbackError::MissingRollbackIdentity { .. } => 2,
-        RollbackError::DownStatementFailed { .. } => 1,
-    }
+  RollbackError::Runner { source,.. } => runner_error_exit_code(source),
+  RollbackError::LossyRollbackRefused {.. }
+  | RollbackError::VersionNotRollbackable {.. }
+  | RollbackError::VersionNotFound {.. }
+  | RollbackError::BucketAppMismatch {.. }
+  | RollbackError::ChecksumDrift {.. }
+  | RollbackError::PriorSnapshotMissing
+  | RollbackError::LeafIdentityMismatch {.. }
+  | RollbackError::StalePhaseZeroDown {.. }
+  // If SnapshotPersistFailed ever fires the rollback's SQL already
+  // committed; the live DB advanced but the snapshot is stale. A blind
+  // retry would refuse (the ledger row is no longer rollbackable), so
+  // this is an operator-actionable repair signal, not a transient
+  // failure — exit 2, pointing at snapshot-rebuild.
+  | RollbackError::SnapshotPersistFailed {.. }
+  | RollbackError::MissingRollbackIdentity {.. } => 2,
+  RollbackError::DownStatementFailed {.. } => 1,
+ }
 }
 
 /// `djogi migrations rollback` entry point.
@@ -2709,15 +2709,15 @@ pub fn rollback_cmd(
             Some(_) => {
                 eprintln!(
                     "djogi migrations rollback --allow-data-loss: --reason must not be empty; \
-                     supply a non-empty reason why lossy rollback is acceptable"
+      supply a non-empty reason why lossy rollback is acceptable"
                 );
                 return ExitCode::from(2);
             }
             None => {
                 eprintln!(
                     "djogi migrations rollback --allow-data-loss: --reason is required; \
-                     supply a reason why lossy rollback is acceptable. \
-                     This is recorded in the ledger audit trail."
+      supply a reason why lossy rollback is acceptable. \
+      This is recorded in the ledger audit trail."
                 );
                 return ExitCode::from(2);
             }
@@ -2853,7 +2853,7 @@ async fn run_rollback(
         if !allow_data_loss && let Some((version, markers)) = first_lossy_target(&gated_targets) {
             eprintln!("djogi migrations rollback: rollback refused for `{version}`:");
             for marker in markers {
-                eprintln!("  {marker}");
+                eprintln!(" {marker}");
             }
             eprintln!("pass --allow-data-loss with --reason to proceed");
             return 2;
@@ -2921,7 +2921,7 @@ async fn run_rollback(
     if !allow_data_loss && let Some((version, markers)) = first_lossy_target(&gated_targets) {
         eprintln!("djogi migrations rollback: rollback refused for `{version}`:");
         for marker in markers {
-            eprintln!("  {marker}");
+            eprintln!(" {marker}");
         }
         eprintln!("pass --allow-data-loss with --reason to proceed");
         return 2;
@@ -2981,18 +2981,18 @@ async fn run_rollback(
             None => djogi::migrate::LossyRollbackPolicy::Refuse,
         };
 
-        println!("  rolling back {}...", target.row.version);
+        println!(" rolling back {}...", target.row.version);
         match djogi::migrate::rollback_plan(&mut ctx, &plan, &runner_ctx, &guard, policy, None)
             .await
         {
             Ok(report) => {
                 if let Some(lossy_reason) = report.lossy_reason.as_deref() {
                     println!(
-                        "  rolled back {} (lossy reason: {lossy_reason})",
+                        " rolled back {} (lossy reason: {lossy_reason})",
                         target.row.version
                     );
                 } else {
-                    println!("  rolled back {}", target.row.version);
+                    println!(" rolled back {}", target.row.version);
                 }
                 rolled_back_count += 1;
             }
@@ -3092,7 +3092,7 @@ fn select_rollback_targets<'a>(
             ) {
                 return Err(format!(
                     "--to version `{version}` has status `{status}`; the rollback \
-                     target must remain applied (applied / faked / baseline)",
+      target must remain applied (applied / faked / baseline)",
                     status = target.status.as_db_str(),
                 ));
             }
@@ -3118,7 +3118,7 @@ fn select_rollback_targets<'a>(
             LedgerStatus::Pending | LedgerStatus::Failed => {
                 return Err(format!(
                     "ledger row `{version}` has status `{status}`; resolve it with \
-                     `djogi migrations repair` before rolling back past it",
+      `djogi migrations repair` before rolling back past it",
                     version = row.version,
                     status = row.status.as_db_str(),
                 ));
@@ -3978,9 +3978,9 @@ pub fn baseline_cmd(
     if reason.trim().is_empty() {
         eprintln!(
             "djogi migrations baseline: --reason must not be empty; \
-             supply a non-empty reason why this baseline is being established \
-             (e.g. 'schema pre-exists from prior tooling'). \
-             This is recorded in the ledger audit trail."
+    supply a non-empty reason why this baseline is being established \
+    (e.g. 'schema pre-exists from prior tooling'). \
+    This is recorded in the ledger audit trail."
         );
         return ExitCode::from(2);
     }
@@ -4134,7 +4134,7 @@ async fn run_baseline(
         Ok(report) => {
             println!(
                 "djogi migrations baseline: established baseline `{}` \
-                 (ledger_id={}) in {:.1}s",
+     (ledger_id={}) in {:.1}s",
                 version,
                 report.ledger_id,
                 report.execution_time_ms as f64 / 1000.0
@@ -4221,8 +4221,8 @@ mod tests {
 
     fn write_unreachable_config(work: &std::path::Path) {
         let toml = "[database]\nurl = \"postgres://localhost:1/djogi_unreachable\"\n\
-                    max_connections = 1\ndev_mode = false\n\
-                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
     }
 
@@ -4313,9 +4313,9 @@ mod tests {
         let mut sql = current_production_phase_zero_sql(tag);
         sql.push_str(
             "\nALTER DATABASE \"mydb\" SET heer.node_id = '1';\n\
-             ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';\n\
-             SET heer.node_id = '1';\n\
-             SET heer.ranj_node_id = '1';\n",
+    ALTER DATABASE \"mydb\" SET heer.ranj_node_id = '1';\n\
+    SET heer.node_id = '1';\n\
+    SET heer.ranj_node_id = '1';\n",
         );
         sql
     }
@@ -4379,31 +4379,31 @@ mod tests {
     }
 
     const COMPOSED_UP_FIXTURE: &str = "-- Djogi composed migration — up\n\
-                                              -- Version: V20260612000000__add_widgets\n\
-                                              -- Bucket:  main/_global_\n\
-                                              -- Classification: Additive\n\
-                                              --\n\
-                                              -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
-                                              \n\
-                                              -- CreateModel widgets\n\
-                                              CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);\n\
-                                              \n\
-                                              -- AddIndex widgets_id_idx\n\
-                                              CREATE INDEX \"widgets_id_idx\" ON \"widgets\" (\"id\");\n\
-                                              \n";
+            -- Version: V20260612000000__add_widgets\n\
+            -- Bucket: main/_global_\n\
+            -- Classification: Additive\n\
+            --\n\
+            -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
+            \n\
+            -- CreateModel widgets\n\
+            CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);\n\
+            \n\
+            -- AddIndex widgets_id_idx\n\
+            CREATE INDEX \"widgets_id_idx\" ON \"widgets\" (\"id\");\n\
+            \n";
 
     const COMPOSED_DOWN_FIXTURE: &str = "-- Djogi composed migration — down\n\
-                                                -- Version: V20260612000000__add_widgets\n\
-                                                -- Bucket:  main/_global_\n\
-                                                --\n\
-                                                -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
-                                                \n\
-                                                -- AddIndex widgets_id_idx\n\
-                                                DROP INDEX \"widgets_id_idx\";\n\
-                                                \n\
-                                                -- CreateModel widgets\n\
-                                                DROP TABLE \"widgets\";\n\
-                                                \n";
+            -- Version: V20260612000000__add_widgets\n\
+            -- Bucket: main/_global_\n\
+            --\n\
+            -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\
+            \n\
+            -- AddIndex widgets_id_idx\n\
+            DROP INDEX \"widgets_id_idx\";\n\
+            \n\
+            -- CreateModel widgets\n\
+            DROP TABLE \"widgets\";\n\
+            \n";
 
     #[test]
     fn fallback_checksums_match_canonical_domain_for_composed_file() {
@@ -4501,7 +4501,7 @@ mod tests {
 
     /// When the on-disk `.down.sql` file has changed since compose but the up
     /// checksum still matches, the fallback path must detect the drift and
-    /// return an error — not silently record the new down checksum.  This is
+    /// return an error — not silently record the new down checksum. This is
     /// the parallel of `fallback_refuses_when_up_file_diverges_from_pending_checksum`
     /// for the down side.
     #[test]
@@ -4600,8 +4600,8 @@ mod tests {
     fn a1_load_from_workspace_reads_path_specific_djogi_toml() {
         let work = temp_workspace("a1_workspace_config");
         let toml = "[database]\nurl = \"postgres://discovered-by-workspace-flag/test\"\n\
-                    max_connections = 1\ndev_mode = false\n\
-                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let env_guard = DatabaseUrlEnvGuard::new();
         env_guard.remove();
@@ -4622,8 +4622,8 @@ mod tests {
     fn a1_round2_env_override_beats_workspace_toml() {
         let work = temp_workspace("a1r2_env_override");
         let toml = "[database]\nurl = \"postgres://from-toml/test\"\n\
-                    max_connections = 1\ndev_mode = false\n\
-                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let env_guard = DatabaseUrlEnvGuard::new();
         env_guard.set("postgres://from-env/test");
@@ -5075,7 +5075,7 @@ mod tests {
             .expect("current_database");
         let admin_url = std::env::var("DATABASE_URL").expect(
             "DATABASE_URL must be set for djogi_test \
-             (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
+    (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
         );
         let test_db_url = replace_db_in_url(&admin_url, &test_db)
             .expect("construct per-test database URL from DATABASE_URL");
@@ -5085,8 +5085,8 @@ mod tests {
             work.join("Djogi.toml"),
             format!(
                 "[database]\nurl = \"{test_db_url}\"\n\
-                 max_connections = 1\ndev_mode = false\n\
-                 [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
             ),
         )
         .unwrap();
@@ -5136,10 +5136,10 @@ mod tests {
         let fk_rows = ctx
             .raw_rows(
                 "SELECT c.conname \
-                 FROM pg_constraint c \
-                 JOIN pg_class r ON r.oid = c.conrelid \
-                 JOIN pg_class f ON f.oid = c.confrelid \
-                 WHERE r.relname = $1 AND c.contype = 'f' AND f.relname = $2",
+     FROM pg_constraint c \
+     JOIN pg_class r ON r.oid = c.conrelid \
+     JOIN pg_class f ON f.oid = c.confrelid \
+     WHERE r.relname = $1 AND c.contype = 'f' AND f.relname = $2",
                 &[&event_log_table.as_str(), &users_table.as_str()],
             )
             .await
@@ -5155,7 +5155,7 @@ mod tests {
         let ledger_rows = ctx
             .raw_rows(
                 "SELECT app_label FROM djogi_schema_migrations \
-                 WHERE version = $1 AND status = 'applied'",
+     WHERE version = $1 AND status = 'applied'",
                 &[&composed_version.as_str()],
             )
             .await
@@ -5164,7 +5164,7 @@ mod tests {
             ledger_rows.len(),
             2,
             "ledger should have exactly 2 rows for composed version {composed_version} \
-             (users + system), got {} rows",
+    (users + system), got {} rows",
             ledger_rows.len()
         );
         let app_labels: Vec<String> = ledger_rows
@@ -5184,7 +5184,7 @@ mod tests {
         let ordered_rows = ctx
             .raw_rows(
                 "SELECT app_label, id FROM djogi_schema_migrations \
-                 WHERE version = $1 AND status = 'applied' ORDER BY id",
+     WHERE version = $1 AND status = 'applied' ORDER BY id",
                 &[&composed_version.as_str()],
             )
             .await
@@ -5408,7 +5408,7 @@ mod tests {
             .expect("current_database");
         let admin_url = std::env::var("DATABASE_URL").expect(
             "DATABASE_URL must be set for djogi_test \
-             (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
+    (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
         );
         let test_db_url = replace_db_in_url(&admin_url, &test_db)
             .expect("construct per-test database URL from DATABASE_URL");
@@ -5418,8 +5418,8 @@ mod tests {
             work.join("Djogi.toml"),
             format!(
                 "[database]\nurl = \"{test_db_url}\"\n\
-                 max_connections = 1\ndev_mode = false\n\
-                 [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
             ),
         )
         .unwrap();
@@ -5483,7 +5483,7 @@ mod tests {
         let ledger_rows = ctx
             .raw_rows(
                 "SELECT app_label FROM djogi_schema_migrations \
-                 WHERE version = $1 AND status = 'applied'",
+     WHERE version = $1 AND status = 'applied'",
                 &[&composed_version.as_str()],
             )
             .await
@@ -5492,7 +5492,7 @@ mod tests {
             ledger_rows.len(),
             2,
             "ledger should have exactly 2 rows for composed version {composed_version} \
-             (alpha + beta), got {} rows",
+    (alpha + beta), got {} rows",
             ledger_rows.len()
         );
 
@@ -5609,7 +5609,7 @@ mod tests {
             .expect("current_database");
         let admin_url = std::env::var("DATABASE_URL").expect(
             "DATABASE_URL must be set for djogi_test \
-             (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
+    (e.g. postgres://djogi:djogi@localhost:5432/djogi_test)",
         );
         let test_db_url = replace_db_in_url(&admin_url, &test_db)
             .expect("construct per-test database URL from DATABASE_URL");
@@ -5618,8 +5618,8 @@ mod tests {
             work.join("Djogi.toml"),
             format!(
                 "[database]\nurl = \"{test_db_url}\"\n\
-                 max_connections = 1\ndev_mode = false\n\
-                 [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
             ),
         )
         .unwrap();
@@ -5758,7 +5758,7 @@ mod tests {
         let applied_count = ctx
             .raw_scalar::<i64>(
                 "SELECT count(*) FROM djogi_schema_migrations \
-                 WHERE version = $1 AND app_label = $2",
+     WHERE version = $1 AND app_label = $2",
                 &[&second_version, &bucket.app],
             )
             .await
@@ -5771,10 +5771,10 @@ mod tests {
         let email_exists = ctx
             .raw_scalar::<bool>(
                 "SELECT EXISTS(
-                    SELECT 1
-                    FROM information_schema.columns
-                    WHERE table_name = $1 AND column_name = 'email'
-                 )",
+     SELECT 1
+     FROM information_schema.columns
+     WHERE table_name = $1 AND column_name = 'email'
+     )",
                 &[&table],
             )
             .await
@@ -5784,7 +5784,7 @@ mod tests {
         let first_rows = ctx
             .raw_scalar::<i64>(
                 "SELECT count(*) FROM djogi_schema_migrations \
-                 WHERE version = $1 AND app_label = $2 AND status = 'applied'",
+     WHERE version = $1 AND app_label = $2 AND status = 'applied'",
                 &[&first_version, &bucket.app],
             )
             .await
@@ -5959,18 +5959,18 @@ mod tests {
         let fk_name = ctx
             .raw_scalar::<String>(
                 "SELECT c.conname
-                 FROM pg_constraint c
-                 JOIN pg_class t ON t.oid = c.conrelid
-                 WHERE t.relname = $1 AND c.contype = 'f'
-                 LIMIT 1",
+     FROM pg_constraint c
+     JOIN pg_class t ON t.oid = c.conrelid
+     WHERE t.relname = $1 AND c.contype = 'f'
+     LIMIT 1",
                 &[&posts.as_str()],
             )
             .await
             .expect("lookup live FK name");
         ctx.raw_ddl(&format!(
             "ALTER TABLE {posts} DROP CONSTRAINT {fk_name}; \
-             ALTER TABLE {posts} ADD CONSTRAINT {fk_name} \
-             FOREIGN KEY (user_id) REFERENCES {users}(id) ON DELETE CASCADE"
+    ALTER TABLE {posts} ADD CONSTRAINT {fk_name} \
+    FOREIGN KEY (user_id) REFERENCES {users}(id) ON DELETE CASCADE"
         ))
         .await
         .expect("rewrite FK out of band");
@@ -6074,7 +6074,7 @@ mod tests {
         let status = ctx
             .raw_scalar::<String>(
                 "SELECT status FROM djogi_schema_migrations \
-                 WHERE version = $1 AND app_label = $2",
+     WHERE version = $1 AND app_label = $2",
                 &[&second_version, &bucket.app],
             )
             .await
@@ -6539,8 +6539,8 @@ mod tests {
         assert!(
             up_sql.contains("DROP TABLE \"widgets\""),
             "compose must have seen the disk snapshot and emitted DROP TABLE — \
-             this proves discover_snapshot_buckets_on_disk reached the differ. \
-             SQL: {up_sql}"
+    this proves discover_snapshot_buckets_on_disk reached the differ. \
+    SQL: {up_sql}"
         );
         let _ = fs::remove_dir_all(&work);
     }
@@ -6998,7 +6998,7 @@ mod tests {
             None,
             false,
             true,
-            Some("   ".to_string()),
+            Some(" ".to_string()),
             None,
             None,
             workspace,
@@ -7021,7 +7021,7 @@ mod tests {
                 None,
                 false,
                 true,
-                Some("   ".to_string()),
+                Some(" ".to_string()),
                 None,
                 None,
                 Some(work.clone()),
@@ -7331,9 +7331,9 @@ mod tests {
     #[test]
     fn lossy_scan_detects_both_marker_spellings() {
         let down = "-- Djogi composed migration — down\n\
-                    -- LOSSY: DroppedColumn — data in `horsepower` is lost\n\
-                    ALTER TABLE vehicles DROP COLUMN horsepower;\n\
-                    -- LOSSY ROLLBACK: cannot recreate table `probe` from the diff.\n";
+     -- LOSSY: DroppedColumn — data in `horsepower` is lost\n\
+     ALTER TABLE vehicles DROP COLUMN horsepower;\n\
+     -- LOSSY ROLLBACK: cannot recreate table `probe` from the diff.\n";
         let hits = scan_lossy_down_markers(down);
         assert_eq!(hits.len(), 2);
         assert!(hits[0].starts_with("-- LOSSY:"));
@@ -7391,7 +7391,7 @@ mod tests {
         let result = baseline_cmd(
             "V00000000000000__baseline",
             "description",
-            "   ",
+            " ",
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
@@ -7680,7 +7680,7 @@ mod tests {
         let result = apply_cmd(
             Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
             true,
-            Some("   ".to_string()),
+            Some(" ".to_string()),
             None,  // node_id
             false, // single_node_dev
         );
@@ -8083,7 +8083,7 @@ mod tests {
     fn resolve_bucket_url_empty_explicit_log_url_falls_back_to_derived() {
         // An empty explicit URL is treated as absent — derive from the app
         // URL's path component instead.
-        let cfg = db_config("postgres://localhost/main", Some(""), Some("   "));
+        let cfg = db_config("postgres://localhost/main", Some(""), Some(" "));
         // crud_log: empty string → derive.
         assert_eq!(
             resolve_bucket_url(&cfg, "crud_log").as_deref(),
@@ -8094,7 +8094,7 @@ mod tests {
         // emptiness check is a strict `is_empty`, matching the spec.
         assert_eq!(
             resolve_bucket_url(&cfg, "event_log").as_deref(),
-            Some("   "),
+            Some(" "),
             "non-empty (whitespace) event_log_url is used verbatim"
         );
     }
@@ -8272,7 +8272,7 @@ mod tests {
     fn classify_phase_zero_bytes_ambiguous_is_refused() {
         // Hand-edited or ambiguous Phase 0.
         let sql = "CREATE SCHEMA IF NOT EXISTS heer;\n\
-                   ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n";
+     ALTER DATABASE \"mydb\" SET heer.node_id = '1';\n";
         let refusal = classify_phase_zero_bytes(sql.as_bytes());
         assert!(refusal.is_some(), "ambiguous Phase 0 should be refused");
         assert!(refusal.unwrap().contains("ambiguous"));
@@ -8280,7 +8280,7 @@ mod tests {
 
     #[test]
     fn classify_phase_zero_bytes_missing_is_refused() {
-        let refusal = classify_phase_zero_bytes(b"  \n\t  ");
+        let refusal = classify_phase_zero_bytes(b" \n\t ");
         assert!(refusal.is_some(), "missing Phase 0 should be refused");
         assert!(refusal.unwrap().contains("missing"));
     }

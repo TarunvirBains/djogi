@@ -4,14 +4,14 @@
 //! migration found under `migrations/<database>/<app>/`. The triple
 //! gate per the brief:
 //! 1. `DATABASE_URL` MUST resolve to localhost (reused
-//!    [`super::policy::is_localhost_connection`]).
+//! [`super::policy::is_localhost_connection`]).
 //! 2. `Djogi.toml::profile` MUST NOT equal `"production"`.
 //! 3. The caller MUST supply explicit confirmation (a `--yes` flag in
-//!    the CLI; programmatic callers pass [`ResetRequest::confirmed`]
-//!    `= true`).
-//!    All three gates are enforced before any I/O. A refusal returns a
-//!    typed [`ResetError::Refused`] so the operator-facing message is
-//!    actionable.
+//! the CLI; programmatic callers pass [`ResetRequest::confirmed`]
+//! `= true`).
+//! All three gates are enforced before any I/O. A refusal returns a
+//! typed [`ResetError::Refused`] so the operator-facing message is
+//! actionable.
 //! # Logging-DB isolation
 //! Per CLAUDE.md, the CRUD-log and event-log databases survive every
 //! `db reset` invocation. Today the runner is single-context
@@ -41,18 +41,18 @@
 //! The pre-flight capture step has TWO qualitatively different
 //! failure modes that previously collapsed to the same outcome:
 //! - **Ledger genuinely missing** (the `pg_class` probe returns
-//!   `false`): legitimate fresh-DB fallback. Reset proceeds with an
-//!   empty historical map, and `build_replay_plan` falls back to
-//!   lexical version sort.
+//! `false`): legitimate fresh-DB fallback. Reset proceeds with an
+//! empty historical map, and `build_replay_plan` falls back to
+//! lexical version sort.
 //! - **Anything else** — connection failure, query failure, decode
-//!   failure, permission denied: opaque. Reset propagates as
-//!   [`ResetError::HistoricalOrderCaptureFailed`] and refuses to
-//!   drop / recreate.
-//!   Every failure mode swallowed itself via `unwrap_or_default`
-//!   at the call site, so a flaky ledger read on a populated DB still
-//!   triggered the destructive operation. The fix is the
-//!   [`HistoricalCaptureError`] split: `LedgerMissing` is the only
-//!   legitimate fall-back signal; `Transient(DjogiError)` propagates.
+//! failure, permission denied: opaque. Reset propagates as
+//! [`ResetError::HistoricalOrderCaptureFailed`] and refuses to
+//! drop / recreate.
+//! Every failure mode swallowed itself via `unwrap_or_default`
+//! at the call site, so a flaky ledger read on a populated DB still
+//! triggered the destructive operation. The fix is the
+//! [`HistoricalCaptureError`] split: `LedgerMissing` is the only
+//! legitimate fall-back signal; `Transient(DjogiError)` propagates.
 //! # No regex
 //! URL parsing reuses the byte-level extractor in
 //! [`super::policy::extract_host`] for the localhost gate, plus a
@@ -389,22 +389,22 @@ impl std::fmt::Display for ResetError {
             ResetError::ReplayFailed { version, source } => write!(
                 f,
                 "db reset: replay of `{version}` failed: {source}; the database \
-                 has been recreated but is now in a partial state — fix the \
-                 underlying issue and re-run db reset",
+     has been recreated but is now in a partial state — fix the \
+     underlying issue and re-run db reset",
             ),
             ResetError::DatabaseUrlMalformed { database_url } => write!(
                 f,
                 "db reset: DATABASE_URL `{database_url}` does not contain a \
-                 database-name component (no `/` after the host); db reset \
-                 cannot derive the database name to drop"
+     database-name component (no `/` after the host); db reset \
+     cannot derive the database name to drop"
             ),
             ResetError::InvalidDatabaseName { name } => write!(
                 f,
                 "db reset: decoded database name `{name}` is not a valid \
-                 Postgres identifier (expected: ASCII letter or underscore, \
-                 followed by ASCII alphanumerics or underscores, up to 63 \
-                 bytes); db reset refuses to splice arbitrary bytes into \
-                 DROP DATABASE / CREATE DATABASE DDL"
+     Postgres identifier (expected: ASCII letter or underscore, \
+     followed by ASCII alphanumerics or underscores, up to 63 \
+     bytes); db reset refuses to splice arbitrary bytes into \
+     DROP DATABASE / CREATE DATABASE DDL"
             ),
             ResetError::WorkspaceLockFailed { source } => {
                 write!(f, "db reset: workspace lock acquisition failed: {source}")
@@ -412,11 +412,11 @@ impl std::fmt::Display for ResetError {
             ResetError::HistoricalOrderCaptureFailed { source } => write!(
                 f,
                 "db reset: capturing the live ledger's historical apply order \
-                 failed: {source}; refusing to proceed with the destructive \
-                 drop / recreate because we cannot confirm the live state — \
-                 fix the underlying connection / query failure and re-run, or \
-                 (if the database genuinely does not exist yet) create it \
-                 first then re-run db reset"
+     failed: {source}; refusing to proceed with the destructive \
+     drop / recreate because we cannot confirm the live state — \
+     fix the underlying connection / query failure and re-run, or \
+     (if the database genuinely does not exist yet) create it \
+     first then re-run db reset"
             ),
         }
     }
@@ -428,18 +428,18 @@ impl std::fmt::Display for ResetRefusal {
             ResetRefusal::NotLocalhost { database_url } => write!(
                 f,
                 "DATABASE_URL is not localhost (got `{database_url}`); db reset is \
-                 a destructive operation and must not be invoked against a remote \
-                 database"
+     a destructive operation and must not be invoked against a remote \
+     database"
             ),
             ResetRefusal::ProductionProfile { profile } => write!(
                 f,
                 "Djogi.toml::profile = `{profile}`; db reset refuses to run on a \
-                 production profile"
+     production profile"
             ),
             ResetRefusal::NotConfirmed => f.write_str(
                 "db reset requires explicit confirmation — pass `--yes` (or set \
-                 ResetRequest::confirmed = true) to acknowledge that the entire \
-                 application database will be dropped",
+     ResetRequest::confirmed = true) to acknowledge that the entire \
+     application database will be dropped",
             ),
             ResetRefusal::ChecksumParity { issues } => {
                 let rendered = issues
@@ -450,9 +450,9 @@ impl std::fmt::Display for ResetRefusal {
                 write!(
                     f,
                     "db reset checksum parity preflight found drift against the live ledger: \
-                     {rendered}; refusing destructive drop / recreate unless you pass \
-                     `--allow-checksum-drift-reset` (or set \
-                     `ResetRequest::allow_checksum_drift_reset = true`)"
+      {rendered}; refusing destructive drop / recreate unless you pass \
+      `--allow-checksum-drift-reset` (or set \
+      `ResetRequest::allow_checksum_drift_reset = true`)"
                 )
             }
             ResetRefusal::ReplaySemantics { issues } => {
@@ -464,25 +464,25 @@ impl std::fmt::Display for ResetRefusal {
                 write!(
                     f,
                     "db reset cannot prove faithful replay semantics for at least one committed \
-                     migration: {rendered}; refusing destructive drop / recreate until the migration \
-                     has a committed replay manifest or is replay-safe as a single transactional plan"
+      migration: {rendered}; refusing destructive drop / recreate until the migration \
+      has a committed replay manifest or is replay-safe as a single transactional plan"
                 )
             }
             ResetRefusal::MissingNodeIdentity => f.write_str(
                 "db reset requires explicit node identity for identity-bearing \
-                 replay operations — pass `--single-node-dev` (the only permitted \
-                 fallback for destructive local reset) or supply `--node-id`",
+     replay operations — pass `--single-node-dev` (the only permitted \
+     fallback for destructive local reset) or supply `--node-id`",
             ),
             ResetRefusal::SelectedNodeRefused { node_id } => write!(
                 f,
                 "db reset with selected node {node_id} is refused — destructive \
-                 drop/recreate on an identity-bearing node could permanently lose \
-                 registered state; use `--single-node-dev` instead of `--node-id`"
+     drop/recreate on an identity-bearing node could permanently lose \
+     registered state; use `--single-node-dev` instead of `--node-id`"
             ),
             ResetRefusal::IdentityFreeRefused => f.write_str(
                 "db reset with identity-free mode is refused — IdentityFree carries \
-                 no session binding or node identity, so destructive drop/recreate \
-                 replay cannot be attributed to a specific node; use `--single-node-dev`",
+     no session binding or node identity, so destructive drop/recreate \
+     replay cannot be attributed to a specific node; use `--single-node-dev`",
             ),
         }
     }
@@ -680,24 +680,24 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
 /// Internal error classifier for [`capture_historical_apply_order`]
 /// The capture step has two qualitatively different failure modes:
 /// - **`LedgerMissing`** — the `pg_class` probe came back `false`.
-///   The connection succeeded, the catalog query succeeded, and the
-///   answer was "no `djogi_schema_migrations` table here". This is
-///   the legitimate fresh-DB / freshly-recreated-DB signal. The
-///   caller falls back to lexical sort and the destructive drop /
-///   recreate proceeds.
+/// The connection succeeded, the catalog query succeeded, and the
+/// answer was "no `djogi_schema_migrations` table here". This is
+/// the legitimate fresh-DB / freshly-recreated-DB signal. The
+/// caller falls back to lexical sort and the destructive drop /
+/// recreate proceeds.
 /// - **`Transient(DjogiError)`** — anything else: tokio_postgres
-///   connect failure (DB unreachable, auth fail, network drop, DB
-///   does not exist), `current_database()` query failure, probe
-///   query failure, decode error, generic SELECT failure. None of
-///   these prove the DB is fresh; they prove we cannot CONFIRM the
-///   live state. The caller propagates as
-///   `ResetError::HistoricalOrderCaptureFailed` and refuses to
-///   drop / recreate.
-///   The helper returned `Result<_, >` and `unwrap_or_default`
-///   at the call site collapsed every failure mode to "empty map →
-///   proceed with lexical fallback". That re-opened the
-///   under a transient connection / query failure: the destructive
-///   path runs against a database whose history we never read.
+/// connect failure (DB unreachable, auth fail, network drop, DB
+/// does not exist), `current_database()` query failure, probe
+/// query failure, decode error, generic SELECT failure. None of
+/// these prove the DB is fresh; they prove we cannot CONFIRM the
+/// live state. The caller propagates as
+/// `ResetError::HistoricalOrderCaptureFailed` and refuses to
+/// drop / recreate.
+/// The helper returned `Result<_, >` and `unwrap_or_default`
+/// at the call site collapsed every failure mode to "empty map →
+/// proceed with lexical fallback". That re-opened the
+/// under a transient connection / query failure: the destructive
+/// path runs against a database whose history we never read.
 #[derive(Debug)]
 enum HistoricalCaptureError {
     /// `pg_class` probe returned `false` — ledger genuinely absent.
@@ -725,12 +725,12 @@ struct HistoricalReplayEntry {
 /// historically.
 /// The error classification is intentional and load-bearing:
 /// - Probe says ledger absent → `Err(HistoricalCaptureError::LedgerMissing)`
-///   (caller falls back to lexical).
+/// (caller falls back to lexical).
 /// - Anything else → `Err(HistoricalCaptureError::Transient(..))`
-///   (caller propagates and refuses the destructive drop).
-///   Only `Applied` / `Faked` / `Baseline` rows participate — `Pending`,
-///   `Failed`, `RolledBack` do not represent migrations whose effect
-///   the live DB carries forward.
+/// (caller propagates and refuses the destructive drop).
+/// Only `Applied` / `Faked` / `Baseline` rows participate — `Pending`,
+/// `Failed`, `RolledBack` do not represent migrations whose effect
+/// the live DB carries forward.
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 async fn capture_historical_apply_order(
@@ -789,7 +789,7 @@ async fn capture_historical_replay_entries(
     let probe = client
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM pg_class \
-             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+    WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
             &[],
         )
         .await
@@ -812,9 +812,9 @@ async fn capture_historical_replay_entries(
     let rows = client
         .query(
             "SELECT version, app_label, status, checksum_up, checksum_down \
-             FROM djogi_schema_migrations \
-             WHERE status IN ('applied', 'faked', 'baseline') \
-             ORDER BY applied_at ASC, id ASC",
+    FROM djogi_schema_migrations \
+    WHERE status IN ('applied', 'faked', 'baseline') \
+    ORDER BY applied_at ASC, id ASC",
             &[],
         )
         .await
@@ -998,7 +998,7 @@ fn render_checksum_parity_issue(issue: &ResetChecksumParityIssue) -> String {
         ),
         ResetChecksumParityProblem::UnsupportedBaseline => format!(
             "{version_path} baseline checksum `{}` cannot be compared to migration file bytes; \
-             db reset cannot establish safe parity for a baseline row",
+    db reset cannot establish safe parity for a baseline row",
             issue.ledger_checksum
         ),
     }
@@ -1463,10 +1463,10 @@ pub enum FallbackReplayPlanError {
 /// same statement set it recomputes from `plan.statements`.
 ///
 /// * For composed up SQL, one `OperationSql` is emitted per recovered
-///   canonical fragment (including helper-prelude fragments that are
-///   rendered without `-- <label>` lines).
+/// canonical fragment (including helper-prelude fragments that are
+/// rendered without `-- <label>` lines).
 /// * For hand-authored/non-composed SQL, the legacy shape remains a
-///   single whole-file statement and whole-file checksums.
+/// single whole-file statement and whole-file checksums.
 ///
 /// `down` checksums intentionally follow compose's canonical semantics:
 /// missing or comment-only down content yields `None` while executable
@@ -2555,23 +2555,23 @@ mod tests {
     fn composed_up_sql(version: &str, body: &str) -> String {
         format!(
             "-- Djogi composed migration — up\n\
-             -- Version: {version}\n\
-             -- Bucket:  main/_global_\n\
-             -- Classification: Additive\n\
-             -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n\
-             -- AddTable widgets\n\
-             {body}\n\n"
+    -- Version: {version}\n\
+    -- Bucket: main/_global_\n\
+    -- Classification: Additive\n\
+    -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n\
+    -- AddTable widgets\n\
+    {body}\n\n"
         )
     }
 
     fn composed_down_sql(version: &str, body: &str) -> String {
         format!(
             "-- Djogi composed migration — down\n\
-             -- Version: {version}\n\
-             -- Bucket:  main/_global_\n\
-             -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n\
-             -- DropTable widgets\n\
-             {body}\n\n"
+    -- Version: {version}\n\
+    -- Bucket: main/_global_\n\
+    -- DO NOT EDIT — regenerate via `djogi migrations compose`.\n\n\
+    -- DropTable widgets\n\
+    {body}\n\n"
         )
     }
 
@@ -2769,9 +2769,9 @@ mod tests {
         fs::write(
             bucket_dir.join(up_filename(version)),
             "-- AddTable widgets\n\
-             CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
-             -- AddIndex widgets_id_idx\n\
-             CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\n",
+    CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
+    -- AddIndex widgets_id_idx\n\
+    CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\n",
         )
         .unwrap();
         fs::write(
@@ -2856,10 +2856,10 @@ mod tests {
         fs::write(
             bucket_dir.join(up_filename(version)),
             "DO $$\n\
-             BEGIN\n\
-                 COMMIT;\n\
-             END\n\
-             $$;\n",
+    BEGIN\n\
+     COMMIT;\n\
+    END\n\
+    $$;\n",
         )
         .unwrap();
         fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
@@ -2886,12 +2886,12 @@ mod tests {
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
-            "CREATE UNIQUE INDEX events_partition_key_id_desc_idx\n  \
-             ON ONLY events (partition_key, id_desc);\n\
-             -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_partition_key_id_desc_idx\n\
-             --             ON <leaf> (partition_key, id_desc);\n\
-             -- Then ALTER INDEX events_partition_key_id_desc_idx ATTACH PARTITION\n\
-             --             <leaf>_partition_key_id_desc_idx;\n",
+            "CREATE UNIQUE INDEX events_partition_key_id_desc_idx\n \
+    ON ONLY events (partition_key, id_desc);\n\
+    -- Per leaf: CREATE UNIQUE INDEX CONCURRENTLY <leaf>_partition_key_id_desc_idx\n\
+    --    ON <leaf> (partition_key, id_desc);\n\
+    -- Then ALTER INDEX events_partition_key_id_desc_idx ATTACH PARTITION\n\
+    --    <leaf>_partition_key_id_desc_idx;\n",
         )
         .unwrap();
         fs::write(
@@ -2924,10 +2924,10 @@ mod tests {
         fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
         fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
         fs::write(
-            bucket_dir.join(format!("{version}.plan.json")),
-            "{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"V1:stale\",\n  \"checksum_down\": null,\n  \"classification\": { \"kind\": \"additive\" },\n  \"segments\": []\n}\n",
-        )
-        .unwrap();
+   bucket_dir.join(format!("{version}.plan.json")),
+   "{\n \"format_version\": \"1\",\n \"checksum_up\": \"V1:stale\",\n \"checksum_down\": null,\n \"classification\": { \"kind\": \"additive\" },\n \"segments\": []\n}\n",
+  )
+ .unwrap();
 
         let replay_sql =
             read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
@@ -2953,21 +2953,21 @@ mod tests {
         fs::create_dir_all(&bucket_dir).unwrap();
 
         let up_sql = "-- AddTable widgets\n\
-             CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
-             -- AddIndex widgets_id_idx\n\
-             CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\n";
+    CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
+    -- AddIndex widgets_id_idx\n\
+    CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\n";
         let down_sql = "DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;\n";
         fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
         fs::write(bucket_dir.join(down_filename(version)), down_sql).unwrap();
         fs::write(
-            bucket_dir.join(format!("{version}.plan.json")),
-            format!(
-                "{{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"{}\",\n  \"checksum_down\": \"{}\",\n  \"classification\": {{ \"kind\": \"additive\" }},\n  \"segments\": [\n    {{\n      \"kind\": \"transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n      ]\n    }},\n    {{\n      \"kind\": \"non_transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddIndex widgets_id_idx\", \"up\": \"CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\" }}\n      ]\n    }}\n  ]\n}}\n",
-                compute_checksum([up_sql]),
-                compute_checksum([down_sql]),
-            ),
-        )
-        .unwrap();
+   bucket_dir.join(format!("{version}.plan.json")),
+   format!(
+    "{{\n \"format_version\": \"1\",\n \"checksum_up\": \"{}\",\n \"checksum_down\": \"{}\",\n \"classification\": {{ \"kind\": \"additive\" }},\n \"segments\": [\n {{\n  \"kind\": \"transactional\",\n  \"statements\": [\n  {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n  ]\n }},\n {{\n  \"kind\": \"non_transactional\",\n  \"statements\": [\n  {{ \"label\": \"AddIndex widgets_id_idx\", \"up\": \"CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\" }}\n  ]\n }}\n ]\n}}\n",
+    compute_checksum([up_sql]),
+    compute_checksum([down_sql]),
+   ),
+  )
+ .unwrap();
 
         let replay_sql =
             read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
@@ -3005,8 +3005,8 @@ mod tests {
             composed_up_sql(
                 version,
                 "CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
-                 -- AddIndex widgets_id_idx\n\
-                 CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);",
+     -- AddIndex widgets_id_idx\n\
+     CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);",
             ),
         )
         .unwrap();
@@ -3019,17 +3019,17 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            bucket_dir.join(format!("{version}.plan.json")),
-            format!(
-                "{{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"{}\",\n  \"checksum_down\": \"{}\",\n  \"classification\": {{ \"kind\": \"additive\" }},\n  \"segments\": [\n    {{\n      \"kind\": \"transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n      ]\n    }},\n    {{\n      \"kind\": \"non_transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddIndex widgets_id_idx\", \"up\": \"CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\" }}\n      ]\n    }}\n  ]\n}}\n",
-                compute_checksum([
-                    "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
-                    "CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);"
-                ]),
-                compute_checksum(["DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;"]),
-            ),
-        )
-        .unwrap();
+   bucket_dir.join(format!("{version}.plan.json")),
+   format!(
+    "{{\n \"format_version\": \"1\",\n \"checksum_up\": \"{}\",\n \"checksum_down\": \"{}\",\n \"classification\": {{ \"kind\": \"additive\" }},\n \"segments\": [\n {{\n  \"kind\": \"transactional\",\n  \"statements\": [\n  {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n  ]\n }},\n {{\n  \"kind\": \"non_transactional\",\n  \"statements\": [\n  {{ \"label\": \"AddIndex widgets_id_idx\", \"up\": \"CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\" }}\n  ]\n }}\n ]\n}}\n",
+    compute_checksum([
+     "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
+     "CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);"
+    ]),
+    compute_checksum(["DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;"]),
+   ),
+  )
+ .unwrap();
 
         let replay_sql =
             read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
@@ -3070,13 +3070,13 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            bucket_dir.join(format!("{version}.plan.json")),
-            format!(
-                "{{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"{}\",\n  \"checksum_down\": null,\n  \"classification\": {{ \"kind\": \"lossy\" }},\n  \"segments\": [\n    {{\n      \"kind\": \"transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n      ]\n    }}\n  ]\n}}\n",
-                compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"]),
-            ),
-        )
-        .unwrap();
+   bucket_dir.join(format!("{version}.plan.json")),
+   format!(
+    "{{\n \"format_version\": \"1\",\n \"checksum_up\": \"{}\",\n \"checksum_down\": null,\n \"classification\": {{ \"kind\": \"lossy\" }},\n \"segments\": [\n {{\n  \"kind\": \"transactional\",\n  \"statements\": [\n  {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n  ]\n }}\n ]\n}}\n",
+    compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"]),
+   ),
+  )
+ .unwrap();
 
         let replay_sql =
             read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
@@ -3272,7 +3272,7 @@ mod tests {
             Err(HistoricalCaptureError::LedgerMissing) => {
                 panic!(
                     "U-6: connect failure must classify as Transient, NOT LedgerMissing — \
-                     pre-fix the unwrap_or_default() collapsed both into the same fallback"
+      pre-fix the unwrap_or_default() collapsed both into the same fallback"
                 );
             }
             Ok(_) => panic!("U-6: connect to :1 must fail"),
@@ -3310,7 +3310,7 @@ mod tests {
             }
             other => panic!(
                 "U-6: expected HistoricalOrderCaptureFailed; got {other:?} \
-                 (pre-fix this would have proceeded into the destructive drop)"
+     (pre-fix this would have proceeded into the destructive drop)"
             ),
         }
         let _ = fs::remove_dir_all(&work);
@@ -3401,15 +3401,15 @@ mod tests {
         fs::create_dir_all(&bucket).unwrap();
 
         fs::write(
-            bucket.join("V20260501000000__new.sdjql"),
-            "-- Djogi composed migration — up\n-- Version: V20260501000000__new\n\
-             -- Bucket:  main/myapp\n-- Classification: Additive\n--\n\
-             -- Apply via `djogi migrations apply`, not psql...\n-- DO NOT EDIT...\n\nCREATE TABLE items (id bigint PRIMARY KEY);\n"
-        ).unwrap();
+   bucket.join("V20260501000000__new.sdjql"),
+   "-- Djogi composed migration — up\n-- Version: V20260501000000__new\n\
+    -- Bucket: main/myapp\n-- Classification: Additive\n--\n\
+    -- Apply via `djogi migrations apply`, not psql...\n-- DO NOT EDIT...\n\nCREATE TABLE items (id bigint PRIMARY KEY);\n"
+  ).unwrap();
         fs::write(
             bucket.join("V20260501000000__new.down.sdjql"),
             "-- Djogi composed migration — down\n-- Version: V20260501000000__new\n\
-             -- Bucket:  main/myapp\n-- DO NOT EDIT...\n\nDROP TABLE items;\n",
+    -- Bucket: main/myapp\n-- DO NOT EDIT...\n\nDROP TABLE items;\n",
         )
         .unwrap();
 
@@ -3418,7 +3418,7 @@ mod tests {
         let bk_main = bk("main", "myapp");
         assert!(
             scanned.contains_key(&bk_main),
-            "scanner must discover .sdjql files"
+            "scanner must discover.sdjql files"
         );
         assert_eq!(
             scanned[&bk_main].len(),
@@ -3439,14 +3439,14 @@ mod tests {
         fs::write(
             bucket.join("V20260301000000__legacy.sql"),
             "-- Djogi composed migration — up\n-- Version: V20260301000000__legacy\n\
-             CREATE TABLE users (id bigint PRIMARY KEY);\n",
+    CREATE TABLE users (id bigint PRIMARY KEY);\n",
         )
         .unwrap();
 
         let result = super::super::target::scan_filesystem_with_files(&root, Some("main"));
         assert!(
             result.is_err(),
-            "reset must reject legacy .sql schema migration files"
+            "reset must reject legacy.sql schema migration files"
         );
         let err = result.unwrap_err().to_string();
         assert!(

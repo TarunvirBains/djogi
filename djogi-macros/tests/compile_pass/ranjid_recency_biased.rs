@@ -6,12 +6,12 @@ use djogi::prelude::*;
 #[model(table = "recency_events", pk = RanjIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct RecencyEvent {
-    pub kind: String,
+ pub kind: String,
 }
 
 fn _injected_id_is_ranjid_desc(e: &RecencyEvent) {
-    let _: &::djogi::types::RanjIdDesc = &e.id;
-    let _: &::djogi::types::RanjIdRecencyBiased = &e.id;
+ let _: &::djogi::types::RanjIdDesc = &e.id;
+ let _: &::djogi::types::RanjIdRecencyBiased = &e.id;
 }
 
 fn main() {}

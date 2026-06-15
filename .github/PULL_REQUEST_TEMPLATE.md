@@ -11,12 +11,12 @@
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] `cargo test --workspace -- --test-threads=1`
 - [ ] `cargo xtask check-secrets --staged` (or full
-      `cargo xtask check-secrets`) shows no findings
+  `cargo xtask check-secrets`) shows no findings
 - [ ] (if data-layer changes) integration tests against live
-      Postgres 18+
+  Postgres 18+
 - [ ] (if macro changes) `cargo lihaaf --manifest-path djogi-macros/Cargo.toml -j 4` full sweep;
-      if diagnostics changed, re-bless and commit:
-      `cargo lihaaf --manifest-path djogi-macros/Cargo.toml --filter compile_fail --bless -j 4`
+  if diagnostics changed, re-bless and commit:
+  `cargo lihaaf --manifest-path djogi-macros/Cargo.toml --filter compile_fail --bless -j 4`
 
 ## Linked issue
 

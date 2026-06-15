@@ -11,12 +11,12 @@
 //! closure. This fixture pins the Wright F values for four known
 //! pedigree shapes:
 //!
-//! | Pair shape                       | Expected F |
+//! | Pair shape      | Expected F |
 //! |----------------------------------|------------|
-//! | Full siblings (same parents)     | 0.25       |
-//! | Half siblings (one shared parent)| 0.125      |
-//! | First cousins                    | 0.0625     |
-//! | Daughter-of-half-siblings        | 0.0625     |
+//! | Full siblings (same parents)  | 0.25  |
+//! | Half siblings (one shared parent)| 0.125  |
+//! | First cousins     | 0.0625  |
+//! | Daughter-of-half-siblings  | 0.0625  |
 //!
 //! Each shape is built as an isolated tree under one
 //! [`Elephant::create`]-then-`materialize_closure` pass per test. The
@@ -35,35 +35,35 @@
 //! distinct values of `(d_L, d_R, paths)`:
 //!
 //! - **Full siblings**: two shared parents at `(1, 1, 1)` each →
-//!   `2 × 0.5^3 = 0.25`. Surfaces the multi-ancestor sum (one term
-//!   per parent).
+//! `2 × 0.5^3 = 0.25`. Surfaces the multi-ancestor sum (one term
+//! per parent).
 //! - **Half siblings**: one shared parent at `(1, 1, 1)` →
-//!   `0.5^3 = 0.125`. Surfaces the single-ancestor case.
+//! `0.5^3 = 0.125`. Surfaces the single-ancestor case.
 //! - **First cousins**: two shared grandparents at `(2, 2, 1)` each →
-//!   `2 × 0.5^5 = 0.0625`. Surfaces the depth-2 case (closure must
-//!   walk transitive ancestors, not just direct parents).
+//! `2 × 0.5^5 = 0.0625`. Surfaces the depth-2 case (closure must
+//! walk transitive ancestors, not just direct parents).
 //! - **Daughter-of-half-siblings**: one shared grandparent at
-//!   `(2, 2, 1)` → `0.5^5 = 0.03125`. Wait — actually for offspring
-//!   of two half-siblings, the parents share one grandparent, so the
-//!   half-sib-offspring F equals the half-sib coefficient between
-//!   their parents = 0.125, BUT the offspring inherits at probability
-//!   0.5 from each parent, so F at the half-sib-offspring level is
-//!   `0.5^5 = 0.03125`. The issue text quotes 0.0625; that figure
-//!   matches the F-coefficient-between-parents (the offspring's
-//!   parents share a common grandparent at depth 1 from each, giving
-//!   `0.5^(1+1+1) = 0.125` between the parents, and the offspring's
-//!   F is half of that = 0.0625 by the formula
-//!   `F_offspring = 0.5 × F_parents` for unrelated other ancestors).
-//!   The closure-walk shape we use here represents the offspring's
-//!   own kinship sum, which is `0.5^(d_grandparent + d_grandparent + 1)`
-//!   = `0.5^5 = 0.03125` viewed from the offspring as the
-//!   self-pair root. To match the issue's 0.0625, we instead score
-//!   the *parents* of the inbred offspring as the candidate mating
-//!   pair: the parents are half-siblings sharing one grandparent at
-//!   depth 1, so `F_pair = 0.5^(1+1+1) = 0.125`. The 0.0625 figure
-//!   the issue lists is the kinship between the parents-of-the-
-//!   inbred-offspring under a different definition. We assert
-//!   against the textbook `F = 0.5^(d_L + d_R + 1)` formula here.
+//! `(2, 2, 1)` → `0.5^5 = 0.03125`. Wait — actually for offspring
+//! of two half-siblings, the parents share one grandparent, so the
+//! half-sib-offspring F equals the half-sib coefficient between
+//! their parents = 0.125, BUT the offspring inherits at probability
+//! 0.5 from each parent, so F at the half-sib-offspring level is
+//! `0.5^5 = 0.03125`. The issue text quotes 0.0625; that figure
+//! matches the F-coefficient-between-parents (the offspring's
+//! parents share a common grandparent at depth 1 from each, giving
+//! `0.5^(1+1+1) = 0.125` between the parents, and the offspring's
+//! F is half of that = 0.0625 by the formula
+//! `F_offspring = 0.5 × F_parents` for unrelated other ancestors).
+//! The closure-walk shape we use here represents the offspring's
+//! own kinship sum, which is `0.5^(d_grandparent + d_grandparent + 1)`
+//! = `0.5^5 = 0.03125` viewed from the offspring as the
+//! self-pair root. To match the issue's 0.0625, we instead score
+//! the *parents* of the inbred offspring as the candidate mating
+//! pair: the parents are half-siblings sharing one grandparent at
+//! depth 1, so `F_pair = 0.5^(1+1+1) = 0.125`. The 0.0625 figure
+//! the issue lists is the kinship between the parents-of-the-
+//! inbred-offspring under a different definition. We assert
+//! against the textbook `F = 0.5^(d_L + d_R + 1)` formula here.
 //!
 //! Reference: Wright, S. (1922). "Coefficients of Inbreeding and
 //! Relationship". The American Naturalist, 56(645), 330–338.
@@ -171,15 +171,15 @@ async fn materialize(ctx: &mut DjogiContext) {
 }
 
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Herd, Elephant, ElephantAncestry],
+ extensions = ["postgis"],
+ sync_models = [Herd, Elephant, ElephantAncestry],
 )]
 async fn full_siblings_f_equals_quarter(mut ctx: djogi::DjogiContext) {
     // Pedigree:
-    //   sire ↘
-    //         → A (full sib)
-    //         → B (full sib)
-    //   dam  ↗
+    // sire ↘
+    //   → A (full sib)
+    //   → B (full sib)
+    // dam ↗
     //
     // A and B share BOTH parents at depth 1. Wright kinship between
     // the siblings: 2 paths through (sire) and (dam), each
@@ -213,14 +213,14 @@ async fn full_siblings_f_equals_quarter(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Herd, Elephant, ElephantAncestry],
+ extensions = ["postgis"],
+ sync_models = [Herd, Elephant, ElephantAncestry],
 )]
 async fn half_siblings_f_equals_one_eighth(mut ctx: djogi::DjogiContext) {
     // Pedigree:
-    //   sire1 → A (half sib via dam_shared)
-    //   sire2 → B (half sib via dam_shared)
-    //   dam_shared → A, B
+    // sire1 → A (half sib via dam_shared)
+    // sire2 → B (half sib via dam_shared)
+    // dam_shared → A, B
     //
     // A and B share one parent (dam_shared) at depth 1, and have
     // different sires. One path of weight 0.5^3 = 0.125.
@@ -256,18 +256,18 @@ async fn half_siblings_f_equals_one_eighth(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Herd, Elephant, ElephantAncestry],
+ extensions = ["postgis"],
+ sync_models = [Herd, Elephant, ElephantAncestry],
 )]
 async fn first_cousins_f_equals_one_sixteenth(mut ctx: djogi::DjogiContext) {
     // Pedigree:
-    //   grand_sire ↘
-    //               → parent_a (sire-of-A) ↘
-    //   grand_dam  ↗                        → A (first cousin)
-    //                                       → B (first cousin)
-    //               → parent_b (sire-of-B) ↗
-    //   grand_sire ↘  (same grand_sire)
-    //   grand_dam  ↗  (same grand_dam)
+    // grand_sire ↘
+    //    → parent_a (sire-of-A) ↘
+    // grand_dam ↗      → A (first cousin)
+    //          → B (first cousin)
+    //    → parent_b (sire-of-B) ↗
+    // grand_sire ↘ (same grand_sire)
+    // grand_dam ↗ (same grand_dam)
     //
     // Wait — for first cousins, the parents of A and B are full
     // siblings (same grand_sire + grand_dam). A and B then have
@@ -345,18 +345,18 @@ async fn first_cousins_f_equals_one_sixteenth(mut ctx: djogi::DjogiContext) {
 }
 
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Herd, Elephant, ElephantAncestry],
+ extensions = ["postgis"],
+ sync_models = [Herd, Elephant, ElephantAncestry],
 )]
 async fn half_first_cousins_f_equals_one_thirty_second(mut ctx: djogi::DjogiContext) {
     // Pedigree:
-    //   grand_sire ↘
-    //               → parent_a (sire-of-A)
-    //   grand_dam  ↗
+    // grand_sire ↘
+    //    → parent_a (sire-of-A)
+    // grand_dam ↗
     //
-    //   grand_sire2 ↘
-    //                → parent_b (sire-of-B)
-    //   grand_dam   ↗  (shared grand_dam)
+    // grand_sire2 ↘
+    //    → parent_b (sire-of-B)
+    // grand_dam ↗ (shared grand_dam)
     //
     // parent_a and parent_b are half-siblings (share one grandparent
     // grand_dam). A and B then have different other parents.
@@ -444,8 +444,8 @@ async fn half_first_cousins_f_equals_one_thirty_second(mut ctx: djogi::DjogiCont
 }
 
 #[djogi::djogi_test(
-    extensions = ["postgis"],
-    sync_models = [Herd, Elephant, ElephantAncestry],
+ extensions = ["postgis"],
+ sync_models = [Herd, Elephant, ElephantAncestry],
 )]
 async fn unrelated_pair_f_equals_zero(mut ctx: djogi::DjogiContext) {
     // Sanity probe — pairs with no shared ancestors must report

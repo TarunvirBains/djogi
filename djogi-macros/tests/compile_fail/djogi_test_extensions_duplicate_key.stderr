@@ -1,7 +1,7 @@
 error: #[djogi_test] `extensions` specified more than once
-  --> $DIR/djogi_test_extensions_duplicate_key.rs:10:47
-   |
+ --> $DIR/djogi_test_extensions_duplicate_key.rs:10:47
+ |
 10 | #[djogi::djogi_test(extensions = ["postgis"], extensions = ["pg_trgm"])]
-   |                                               ^^^^^^^^^^
+ |            ^^^^^^^^^^
 
 error: aborting due to 1 previous error

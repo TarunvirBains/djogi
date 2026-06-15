@@ -6,14 +6,14 @@ use djogi::prelude::*;
 #[model(table = "owners_expose_sform")]
 #[derive(Debug, Clone)]
 pub struct Owner {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "vehicles_expose_sform", no_default)]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    #[field(expose(public))]
-    pub owner_id: ForeignKey<Owner>,
+ #[field(expose(public))]
+ pub owner_id: ForeignKey<Owner>,
 }
 
 fn main() {}

@@ -13,10 +13,10 @@ use djogi::prelude::*;
 #[model(table = "phase8eta_opt_widgets")]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub estimated_year: Option<i16>,
+ pub estimated_year: Option<i16>,
 }
 
 fn main() {
-    let _direct = Widget::objects().filter(|f| f.estimated_year().gt(2020));
-    let _explicit = Widget::objects().filter(|f| f.estimated_year().some().gt(2020));
+ let _direct = Widget::objects().filter(|f| f.estimated_year().gt(2020));
+ let _explicit = Widget::objects().filter(|f| f.estimated_year().some().gt(2020));
 }

@@ -10,24 +10,24 @@
 //! payload to carry across a builder/terminal split, so it is wired the
 //! same way [`QuerySet::fetch_all`] and friends are.
 //! # Why the terminal split for UPDATE
-//! `.update(|f| ...)` returns a pending [`UpdateStmt`] rather than a future
+//! `.update(|f|...)` returns a pending [`UpdateStmt`] rather than a future
 //! because the builder shape is symmetric with the read terminals
 //! ([`QuerySet::fetch_all`] also takes the executor *at terminal time*,
 //! not during builder accumulation). The intermediate type also lets
 //! callers:
 //! - **Log or inspect** the queued assignments before execution.
 //! - **Retry** an UPDATE without re-running the filter closure. `UpdateStmt`
-//!   is `Clone` because [`QuerySet`] is `Clone`; cloning the statement is
-//!   exactly as cheap as cloning the underlying queryset.
+//! is `Clone` because [`QuerySet`] is `Clone`; cloning the statement is
+//! exactly as cheap as cloning the underlying queryset.
 //! - **Branch on short-circuit**: callers that already know a mutation is
-//!   inert can avoid constructing it; otherwise mutation terminals run
-//!   `validate_mutation_read_tail(...)` first (mirroring `insert_select.rs`),
-//!   then short-circuit on pure `none()` / empty assignments.
+//! inert can avoid constructing it; otherwise mutation terminals run
+//! `validate_mutation_read_tail(...)` first (mirroring `insert_select.rs`),
+//! then short-circuit on pure `none()` / empty assignments.
 //! # Constructor-only invariant on `UpdateAssignment`
 //! `UpdateAssignment`'s fields are `pub(crate)`; the only way to build one
 //! from outside this crate is [`FieldRef::set`], which funnels through
 //! [`IntoFilterValue`]. This mirrors [`crate::query::filter::FilterClause`]'s
-//! lock-down added in Task 8: there is no "build a raw assignment" escape
+//! lock-down added in : there is no "build a raw assignment" escape
 //! hatch, so the column literal is always macro-baked and the value is
 //! always a structurally-valid scalar `FilterValue` (never a `List`, `Pair`,
 //! or `Null`, which the UPDATE emitter has no sensible rendering for).
@@ -36,7 +36,7 @@
 //! builder [`FieldRef::set_expr`]: it wraps an [`crate::expr::Expr<V>`]
 //! IR tree into the same [`UpdateAssignment`] shape the literal `.set(v)`
 //! produces. For richer SQL the emitter cannot express (`NOW() - interval
-//! '1 day'`, `CASE WHEN ...` before Task 5 lands), the raw
+//! '1 day'`, `CASE WHEN...` before lands), the raw
 //! `SqlAccumulator` escape hatch in [`crate::raw`] is still there.
 //! # `updated_at = now()` stamping
 //! The SQL emitter ([`build_update`]) always appends `updated_at = now()`
@@ -158,9 +158,9 @@ impl UpdateAssignment {
 /// way they do in `.eq` / `.gte` / `.in_list`.
 /// ```ignore
 /// Post::objects()
-///     .filter(|f| f.published().eq(true))
-///     .update(|f| f.view_count().set(999i32))
-///     .execute(&mut ctx).await?;
+/// .filter(|f| f.published().eq(true))
+/// .update(|f| f.view_count().set(999i32))
+/// .execute(&mut ctx).await?;
 /// ```
 impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
     /// Build a typed `SET column = value` assignment for
@@ -178,13 +178,13 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
 /// ```ignore
 /// // col = col + 1
 /// Account::objects()
-///     .update(|f| f.balance().set_expr(f.balance().as_expr() + Expr::literal(1i64)))
-///     .execute(&mut ctx).await?;
+/// .update(|f| f.balance().set_expr(f.balance().as_expr() + Expr::literal(1i64)))
+/// .execute(&mut ctx).await?;
 ///
-/// // col = other_col  (field-vs-field copy)
+/// // col = other_col (field-vs-field copy)
 /// Account::objects()
-///     .update(|f| f.balance().set_expr(f.overdraft_limit().as_expr()))
-///     .execute(&mut ctx).await?;
+/// .update(|f| f.balance().set_expr(f.overdraft_limit().as_expr()))
+/// .execute(&mut ctx).await?;
 /// ```
 /// The `V: IntoFilterValue` bound is kept for symmetry with
 /// [`FieldRef::set`] — both entry points flow through the same typed
@@ -208,9 +208,9 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
     /// ```ignore
     /// // Reset each account's working_balance to its confirmed_balance.
     /// Account::objects()
-    ///     .filter(|f| f.needs_reset().eq(true))
-    ///     .update(|f| f.working_balance().set_field(f.confirmed_balance()))
-    ///     .execute(&mut ctx).await?;
+    /// .filter(|f| f.needs_reset().eq(true))
+    /// .update(|f| f.working_balance().set_field(f.confirmed_balance()))
+    /// .execute(&mut ctx).await?;
     /// ```
     #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
     pub fn set_field(self, other: FieldRef<M, V>) -> UpdateAssignment {
@@ -237,15 +237,15 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
 ///
 /// // Increment a post's view count by 1.
 /// Post::objects()
-///     .filter(|f| f.id().eq(post_id))
-///     .update(|f| f.view_count().increment(1i32))
-///     .execute(&mut ctx).await?;
+/// .filter(|f| f.id().eq(post_id))
+/// .update(|f| f.view_count().increment(1i32))
+/// .execute(&mut ctx).await?;
 ///
 /// // Deduct a withdrawal amount from an account balance.
 /// Account::objects()
-///     .filter(|f| f.id().eq(account_id))
-///     .update(|f| f.balance().decrement(withdrawal_amount))
-///     .execute(&mut ctx).await?;
+/// .filter(|f| f.id().eq(account_id))
+/// .update(|f| f.balance().decrement(withdrawal_amount))
+/// .execute(&mut ctx).await?;
 /// ```
 impl<M: Model, V> FieldRef<M, V>
 where
@@ -295,7 +295,7 @@ impl<M: Model> FieldRef<M, crate::Interval> {
 /// this trait by hand.
 pub trait IntoAssignments {
     /// Flatten `self` into the ordered list of assignments the UPDATE
-    /// emitter renders as `SET col = $n, col = $n, ...`.
+    /// emitter renders as `SET col = $n, col = $n,...`.
     fn into_assignments(self) -> Vec<UpdateAssignment>;
 }
 
@@ -321,12 +321,12 @@ impl IntoAssignments for Vec<UpdateAssignment> {
 /// require `T: Clone` / `T: Debug` — `UpdateStmt` never owns or borrows
 /// a `T`, it only carries a `PhantomData<fn() -> T>` tag, mirroring the
 /// pattern on [`QuerySet<T>`].
-#[must_use = "UpdateStmt is inert — call .execute(ctx) to run the UPDATE"]
+#[must_use = "UpdateStmt is inert — call.execute(ctx) to run the UPDATE"]
 pub struct UpdateStmt<T: Model> {
     /// The accumulated queryset — contributes the `WHERE` clause and the
     /// `is_empty` short-circuit flag.
     pub(crate) qs: QuerySet<T>,
-    /// The `SET col = $n, ...` payload built by the closure the user
+    /// The `SET col = $n,...` payload built by the closure the user
     /// passed to [`QuerySet::update`].
     pub(crate) assignments: Vec<UpdateAssignment>,
     /// Covariant `T` tag — matches [`QuerySet<T>`]'s variance so an
@@ -360,21 +360,21 @@ impl<T: Model> UpdateStmt<T> {
     /// inert paths short-circuit.
     /// Short-circuits to `Ok(0)` when either:
     /// - The underlying queryset is `QuerySet::none()`-derived
-    ///   (`is_empty()` is `true`), or
-    /// - The closure produced zero assignments — `UPDATE ... SET ...`
-    ///   with an empty SET list is a Postgres syntax error, so the
-    ///   short-circuit here is both a contract shortcut and a safety
-    ///   rail.
-    ///   Takes `&mut DjogiContext`, matching [`QuerySet::fetch_all`] /
-    ///   [`QuerySet::count`] — the same call site works against a pool-
-    ///   backed context or a transaction-backed one post-Phase-4 retrofit.
-    ///   Returns `u64` — the row-count from `tokio_postgres`'s
-    ///   `CommandTag::rows_affected()`. Postgres' UPDATE rowcount is
-    ///   non-negative by definition, so there is no sign conversion at
-    ///   the call site.
+    /// (`is_empty()` is `true`), or
+    /// - The closure produced zero assignments — `UPDATE... SET...`
+    /// with an empty SET list is a Postgres syntax error, so the
+    /// short-circuit here is both a contract shortcut and a safety
+    /// rail.
+    /// Takes `&mut DjogiContext`, matching [`QuerySet::fetch_all`] /
+    /// [`QuerySet::count`] — the same call site works against a pool-
+    /// backed context or a transaction-backed one post-Phase-4 retrofit.
+    /// Returns `u64` — the row-count from `tokio_postgres`'s
+    /// `CommandTag::rows_affected()`. Postgres' UPDATE rowcount is
+    /// non-negative by definition, so there is no sign conversion at
+    /// the call site.
     /// # Cache invalidation
     /// For macro-backed models with a registered Punnu, transaction-backed bulk
-    /// updates collect affected primary keys internally with `UPDATE ... RETURNING
+    /// updates collect affected primary keys internally with `UPDATE... RETURNING
     /// <pk>` and enqueue one `on_commit` invalidation callback. Warmed entries are
     /// evicted after commit and preserved after rollback.
     /// The public return type remains `u64`. Pool-backed contexts keep the
@@ -395,7 +395,7 @@ impl<T: Model> UpdateStmt<T> {
             // `Ok(0)` without touching the DB.
             // The assignment-list branch is load-bearing: a closure that
             // produces `vec![]` would otherwise lead to
-            // `UPDATE <table> SET, updated_at = now WHERE ...`, which
+            // `UPDATE <table> SET, updated_at = now WHERE...`, which
             // Postgres rejects with a syntax error. Short-circuiting here
             // keeps the user's call site free of "why did this panic?"
             // and matches the structural-empty contract on `QuerySet::none()`.
@@ -449,7 +449,7 @@ impl<T: Model> UpdateStmt<T> {
     /// Returns `Ok(Vec::new())` without issuing any SQL when:
     /// - The underlying queryset is `QuerySet::none()`-derived.
     /// - The assignment list is empty (an UPDATE with an empty SET list is a
-    ///   Postgres syntax error).
+    /// Postgres syntax error).
     /// # Warning — unbounded materialization
     /// This method loads **one `ReturningPair<T>` per affected row** into memory.
     /// On large tables or unfiltered updates this can exhaust available memory.
@@ -514,31 +514,31 @@ impl<T: Model> UpdateStmt<T> {
 }
 
 impl<T: Model> QuerySet<T> {
-    /// Build a bulk `UPDATE <table> SET col = val, ... [WHERE ...]`
+    /// Build a bulk `UPDATE <table> SET col = val,... [WHERE...]`
     /// statement. The closure receives the model's default-constructed
     /// `Fields` handle and returns one or more typed
     /// [`UpdateAssignment`]s (either a single assignment or a `Vec`).
     /// Two assignment forms are accepted in the closure:
     /// - Literal: `f.col().set(value)` where `value: V: IntoFilterValue`.
     /// - Expression IR: `f.col().set_expr(expr)` for `col = col + 1`,
-    ///   `col = NOW()`, `col = other_col`, and similar shapes the
-    ///   [`crate::expr`] builder supports.
-    ///   For SQL the expression builder cannot express, reach for
-    ///   [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute).
-    ///   The returned [`UpdateStmt`] is inert — the actual SQL runs when
-    ///   the caller invokes [`UpdateStmt::execute`] with a
-    ///   `&mut DjogiContext`. Splitting the builder from the terminal keeps
-    ///   the call-site shape symmetric with the read terminals
-    ///   (`fetch_all`, `count`, etc.) and lets callers log, inspect, or
-    ///   retry the pending statement without re-running the closure.
+    /// `col = NOW()`, `col = other_col`, and similar shapes the
+    /// [`crate::expr`] builder supports.
+    /// For SQL the expression builder cannot express, reach for
+    /// [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute).
+    /// The returned [`UpdateStmt`] is inert — the actual SQL runs when
+    /// the caller invokes [`UpdateStmt::execute`] with a
+    /// `&mut DjogiContext`. Splitting the builder from the terminal keeps
+    /// the call-site shape symmetric with the read terminals
+    /// (`fetch_all`, `count`, etc.) and lets callers log, inspect, or
+    /// retry the pending statement without re-running the closure.
     /// ```ignore
     /// Post::objects()
-    ///     .filter(|f| f.published().eq(true))
-    ///     .update(|f| f.view_count().set(999i32))
-    ///     .execute(&mut ctx)
-    ///     .await?;
+    /// .filter(|f| f.published().eq(true))
+    /// .update(|f| f.view_count().set(999i32))
+    /// .execute(&mut ctx)
+    /// .await?;
     /// ```
-    #[must_use = "UpdateStmt is inert — call .execute(ctx) to run the UPDATE"]
+    #[must_use = "UpdateStmt is inert — call.execute(ctx) to run the UPDATE"]
     pub fn update<F, A>(self, f: F) -> UpdateStmt<T>
     where
         F: FnOnce(T::Fields) -> A,
@@ -552,7 +552,7 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
-    /// Run `DELETE FROM <table> [WHERE ...]` and return the affected row
+    /// Run `DELETE FROM <table> [WHERE...]` and return the affected row
     /// count.
     /// Unlike [`QuerySet::update`], DELETE carries no payload across a
     /// builder/terminal split, so this method is a terminal directly
@@ -568,9 +568,9 @@ impl<T: Model> QuerySet<T> {
     /// this method only runs `DELETE FROM`.
     /// ```ignore
     /// Post::objects()
-    ///     .filter(|f| f.published().eq(false))
-    ///     .delete(&mut ctx)
-    ///     .await?;
+    /// .filter(|f| f.published().eq(false))
+    /// .delete(&mut ctx)
+    /// .await?;
     /// ```
     pub fn delete<'ctx>(
         self,
@@ -596,7 +596,7 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
-    /// Run `DELETE FROM <table> [WHERE ...]` and return the deleted rows as
+    /// Run `DELETE FROM <table> [WHERE...]` and return the deleted rows as
     /// typed model instances.
     /// Uses PostgreSQL 18 `RETURNING WITH (OLD AS __djogi_old)` to retrieve the
     /// pre-delete row snapshot for every deleted row. The rows are decoded using
@@ -656,7 +656,7 @@ mod tests {
     //! DB coverage is in `tests/integration/queryset.rs`.
     //! We reach through the `FieldRef` API to build assignments so the
     //! `pub(crate)` fields on `UpdateAssignment` never leak into the
-    //! test module's observed surface (same pattern as the Task 8
+    //! test module's observed surface (same pattern as the
     //! `FilterClause` tests).
 
     use super::*;

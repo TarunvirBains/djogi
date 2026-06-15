@@ -5,15 +5,15 @@
 // materialise once a real socket is open:
 //
 // - `post_connect` fires exactly once per physical connection and not
-//   on the per-checkout reuse path.
+//  on the per-checkout reuse path.
 // - `max_size(N)` actually saturates at N: an `(N+1)`-th concurrent
-//   checkout times out via the configured wait deadline and surfaces
-//   `DjogiError::PoolTimeout { phase: "wait" }`.
+//  checkout times out via the configured wait deadline and surfaces
+//  `DjogiError::PoolTimeout { phase: "wait" }`.
 // - `with_client` returns the connection to the pool on `Ok`, detaches
-//   on `Err`, and detaches on panic — proven by checking the deadpool
-//   `Status::size` counter before and after each scenario.
+//  on `Err`, and detaches on panic — proven by checking the deadpool
+//  `Status::size` counter before and after each scenario.
 // - `from_database_config` walks env > `[database].max_connections` >
-//   builder default and the chosen size lands as the pool's `max_size`.
+//  builder default and the chosen size lands as the pool's `max_size`.
 //
 // The unit-test layer in `djogi/src/pg/pool.rs` covers builder
 // type-system shape, `PoolTimeout` classification, `max_size(0)`
@@ -48,45 +48,45 @@ use tokio::sync::{Mutex, MutexGuard, oneshot};
 /// restores the prior env value on drop, so a panic mid-test cannot
 /// poison the rest of the process.
 async fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().await
+  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+  LOCK.get_or_init(|| Mutex::new(())).lock().await
 }
 
 /// RAII guard around an env-var mutation. Records the prior value at
 /// construction; restores it (or removes the variable) on drop, even
 /// if the test panics.
 struct EnvGuard {
-    name: &'static str,
-    prior: Option<String>,
+  name: &'static str,
+  prior: Option<String>,
 }
 
 impl EnvGuard {
-    fn set(name: &'static str, value: &str) -> Self {
-        // Safety: process-global mutation; the surrounding test holds
-        // `env_lock()` so no other env-mutating test runs concurrently.
-        let prior = std::env::var(name).ok();
-        unsafe { std::env::set_var(name, value) };
-        Self { name, prior }
-    }
+  fn set(name: &'static str, value: &str) -> Self {
+    // Safety: process-global mutation; the surrounding test holds
+    // `env_lock()` so no other env-mutating test runs concurrently.
+    let prior = std::env::var(name).ok();
+    unsafe { std::env::set_var(name, value) };
+    Self { name, prior }
+  }
 
-    fn unset(name: &'static str) -> Self {
-        let prior = std::env::var(name).ok();
-        unsafe { std::env::remove_var(name) };
-        Self { name, prior }
-    }
+  fn unset(name: &'static str) -> Self {
+    let prior = std::env::var(name).ok();
+    unsafe { std::env::remove_var(name) };
+    Self { name, prior }
+  }
 }
 
 impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        // Safety: same as `set`/`unset` above — caller holds
-        // `env_lock()`.
-        unsafe {
-            match self.prior.take() {
-                Some(v) => std::env::set_var(self.name, v),
-                None => std::env::remove_var(self.name),
-            }
-        }
+  fn drop(&mut self) {
+    // Safety: same as `set`/`unset` above — caller holds
+    // `env_lock()`.
+    unsafe {
+      match self.prior.take() {
+        Some(v) => std::env::set_var(self.name, v),
+        None => std::env::remove_var(self.name),
+      }
     }
+  }
 }
 
 /// Helper: provision a per-test Postgres database via the standard
@@ -96,14 +96,14 @@ impl Drop for EnvGuard {
 /// per-test DB so they can exercise builder knobs without contention
 /// with the harness's default pool.
 async fn provision_test_db() -> (TestDbCleanup, String) {
-    let (cleanup, ctx) = setup_test_db()
-        .await
-        .expect("setup_test_db must succeed against DATABASE_URL");
-    let url = cleanup
-        .test_url()
-        .expect("cleanup token should yield a per-test URL");
-    drop(ctx);
-    (cleanup, url)
+  let (cleanup, ctx) = setup_test_db()
+    .await
+    .expect("setup_test_db must succeed against DATABASE_URL");
+  let url = cleanup
+    .test_url()
+    .expect("cleanup token should yield a per-test URL");
+  drop(ctx);
+  (cleanup, url)
 }
 
 /// Standard "healthy checkout" probe: borrow a raw client via
@@ -112,16 +112,16 @@ async fn provision_test_db() -> (TestDbCleanup, String) {
 /// pool reference. Tests that need to exercise the closure body
 /// directly (panic, error, custom SQL) keep the inline form.
 async fn select_one_via_with_client(pool: &DjogiPool) -> Result<(), DjogiError> {
-    pool.raw_with_client(|client| {
-        Box::pin(async move {
-            let _ = client
-                .query_one("SELECT 1", &[])
-                .await
-                .map_err(djogi::DjogiError::from)?;
-            Ok::<_, DjogiError>(())
-        })
+  pool.raw_with_client(|client| {
+    Box::pin(async move {
+      let _ = client
+        .query_one("SELECT 1", &[])
+        .await
+        .map_err(djogi::DjogiError::from)?;
+      Ok::<_, DjogiError>(())
     })
-    .await
+  })
+  .await
 }
 
 // ---------------------------------------------------------------------------
@@ -136,48 +136,48 @@ async fn select_one_via_with_client(pool: &DjogiPool) -> Result<(), DjogiError> 
 /// is not a per-checkout hook.
 #[tokio::test]
 async fn pool_post_connect_fires_once_per_physical_connection() {
-    let (cleanup, url) = provision_test_db().await;
-    let counter = Arc::new(AtomicUsize::new(0));
+  let (cleanup, url) = provision_test_db().await;
+  let counter = Arc::new(AtomicUsize::new(0));
 
-    let pool = {
+  let pool = {
+    let counter = counter.clone();
+    DjogiPool::builder(&url)
+      .max_size(1)
+      .post_connect(move |client| {
         let counter = counter.clone();
-        DjogiPool::builder(&url)
-            .max_size(1)
-            .post_connect(move |client| {
-                let counter = counter.clone();
-                Box::pin(async move {
-                    // Real setup work — exercise the closure body so the
-                    // test pins the round-trip from build → first
-                    // checkout → hook → SQL.
-                    client
-                        .batch_execute("SET application_name = 'djogi-pool-test'")
-                        .await
-                        .map_err(djogi::DjogiError::from)?;
-                    counter.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                })
-            })
-            .build()
+        Box::pin(async move {
+          // Real setup work — exercise the closure body so the
+          // test pins the round-trip from build → first
+          // checkout → hook → SQL.
+          client
+            .batch_execute("SET application_name = 'djogi-pool-test'")
             .await
-            .expect("pool builds")
-    };
+            .map_err(djogi::DjogiError::from)?;
+          counter.fetch_add(1, Ordering::SeqCst);
+          Ok(())
+        })
+      })
+      .build()
+      .await
+      .expect("pool builds")
+  };
 
-    // Issue three sequential checkouts. With `max_size = 1` deadpool is
-    // forced to reuse the same physical connection for all three.
-    for _ in 0..3 {
-        select_one_via_with_client(&pool)
-            .await
-            .expect("checkout succeeds");
-    }
+  // Issue three sequential checkouts. With `max_size = 1` deadpool is
+  // forced to reuse the same physical connection for all three.
+  for _ in 0..3 {
+    select_one_via_with_client(&pool)
+      .await
+      .expect("checkout succeeds");
+  }
 
-    assert_eq!(
-        counter.load(Ordering::SeqCst),
-        1,
-        "post_connect must fire exactly once per physical connection, \
-         not on every checkout"
-    );
+  assert_eq!(
+    counter.load(Ordering::SeqCst),
+    1,
+    "post_connect must fire exactly once per physical connection, \
+     not on every checkout"
+  );
 
-    teardown_test_db(cleanup).await;
+  teardown_test_db(cleanup).await;
 }
 
 /// A `post_connect` hook that returns `Err` aborts the originating
@@ -194,45 +194,45 @@ async fn pool_post_connect_fires_once_per_physical_connection() {
 /// will break.
 #[tokio::test]
 async fn pool_post_connect_error_aborts_checkout() {
-    let (cleanup, url) = provision_test_db().await;
+  let (cleanup, url) = provision_test_db().await;
 
-    // Sentinel chosen so it cannot accidentally satisfy the
-    // `post_connect` prefix assertion below — any contains("post_connect")
-    // hit must come from the lowering, not from the hook body.
-    const HOOK_SENTINEL: &str = "djogi-pool-hook-failure-sentinel";
+  // Sentinel chosen so it cannot accidentally satisfy the
+  // `post_connect` prefix assertion below — any contains("post_connect")
+  // hit must come from the lowering, not from the hook body.
+  const HOOK_SENTINEL: &str = "djogi-pool-hook-failure-sentinel";
 
-    let pool = DjogiPool::builder(&url)
-        .max_size(1)
-        .post_connect(|_client| {
-            Box::pin(async { Err(DjogiError::Validation(HOOK_SENTINEL.into())) })
-        })
-        .build()
-        .await
-        .expect("pool builds; physical connection happens lazily");
+  let pool = DjogiPool::builder(&url)
+    .max_size(1)
+    .post_connect(|_client| {
+      Box::pin(async { Err(DjogiError::Validation(HOOK_SENTINEL.into())) })
+    })
+    .build()
+    .await
+    .expect("pool builds; physical connection happens lazily");
 
-    let result = pool
-        .raw_with_client(|client| {
-            Box::pin(async move {
-                let _ = client;
-                Ok::<_, DjogiError>(())
-            })
-        })
-        .await;
+  let result = pool
+    .raw_with_client(|client| {
+      Box::pin(async move {
+        let _ = client;
+        Ok::<_, DjogiError>(())
+      })
+    })
+    .await;
 
-    let err = result.expect_err("post_connect Err must abort the checkout");
-    let msg = format!("{err}");
-    // The lowering adds `post_connect:`; the hook body's sentinel must
-    // also be present so the prefix-assertion is non-tautological.
-    assert!(
-        msg.contains("post_connect"),
-        "error message must carry the post_connect lowering prefix; got: {msg}"
-    );
-    assert!(
-        msg.contains(HOOK_SENTINEL),
-        "error message must preserve the hook's own message body; got: {msg}"
-    );
+  let err = result.expect_err("post_connect Err must abort the checkout");
+  let msg = format!("{err}");
+  // The lowering adds `post_connect:`; the hook body's sentinel must
+  // also be present so the prefix-assertion is non-tautological.
+  assert!(
+    msg.contains("post_connect"),
+    "error message must carry the post_connect lowering prefix; got: {msg}"
+  );
+  assert!(
+    msg.contains(HOOK_SENTINEL),
+    "error message must preserve the hook's own message body; got: {msg}"
+  );
 
-    teardown_test_db(cleanup).await;
+  teardown_test_db(cleanup).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,84 +255,84 @@ async fn pool_post_connect_error_aborts_checkout() {
 /// through before saturation).
 #[tokio::test]
 async fn pool_max_size_saturation_surfaces_pool_timeout() {
-    let (cleanup, url) = provision_test_db().await;
+  let (cleanup, url) = provision_test_db().await;
 
-    let pool = DjogiPool::builder(&url)
-        .max_size(2)
-        .timeout(Duration::from_millis(150))
-        .build()
-        .await
-        .expect("pool builds");
+  let pool = DjogiPool::builder(&url)
+    .max_size(2)
+    .timeout(Duration::from_millis(150))
+    .build()
+    .await
+    .expect("pool builds");
 
-    // Each holder has two channels: `ready_tx` reports back to the
-    // test that its connection is in-hand, and `release_rx` blocks the
-    // holder until the test allows it to exit. Without `release_rx`
-    // the holder might exit before the third checkout starts and
-    // contradict the saturation invariant.
-    let (ready_a_tx, ready_a_rx) = oneshot::channel::<()>();
-    let (ready_b_tx, ready_b_rx) = oneshot::channel::<()>();
-    let (release_a_tx, release_a_rx) = oneshot::channel::<()>();
-    let (release_b_tx, release_b_rx) = oneshot::channel::<()>();
+  // Each holder has two channels: `ready_tx` reports back to the
+  // test that its connection is in-hand, and `release_rx` blocks the
+  // holder until the test allows it to exit. Without `release_rx`
+  // the holder might exit before the third checkout starts and
+  // contradict the saturation invariant.
+  let (ready_a_tx, ready_a_rx) = oneshot::channel::<()>();
+  let (ready_b_tx, ready_b_rx) = oneshot::channel::<()>();
+  let (release_a_tx, release_a_rx) = oneshot::channel::<()>();
+  let (release_b_tx, release_b_rx) = oneshot::channel::<()>();
 
-    let p1 = pool.clone();
-    let hold_a = tokio::spawn(async move {
-        p1.raw_with_client(|client| {
-            Box::pin(async move {
-                let _ = client
-                    .query_one("SELECT 1", &[])
-                    .await
-                    .map_err(djogi::DjogiError::from)?;
-                let _ = ready_a_tx.send(());
-                let _ = release_a_rx.await;
-                Ok::<_, DjogiError>(())
-            })
-        })
-        .await
-    });
-    let p2 = pool.clone();
-    let hold_b = tokio::spawn(async move {
-        p2.raw_with_client(|client| {
-            Box::pin(async move {
-                let _ = client
-                    .query_one("SELECT 1", &[])
-                    .await
-                    .map_err(djogi::DjogiError::from)?;
-                let _ = ready_b_tx.send(());
-                let _ = release_b_rx.await;
-                Ok::<_, DjogiError>(())
-            })
-        })
-        .await
-    });
+  let p1 = pool.clone();
+  let hold_a = tokio::spawn(async move {
+    p1.raw_with_client(|client| {
+      Box::pin(async move {
+        let _ = client
+          .query_one("SELECT 1", &[])
+          .await
+          .map_err(djogi::DjogiError::from)?;
+        let _ = ready_a_tx.send(());
+        let _ = release_a_rx.await;
+        Ok::<_, DjogiError>(())
+      })
+    })
+    .await
+  });
+  let p2 = pool.clone();
+  let hold_b = tokio::spawn(async move {
+    p2.raw_with_client(|client| {
+      Box::pin(async move {
+        let _ = client
+          .query_one("SELECT 1", &[])
+          .await
+          .map_err(djogi::DjogiError::from)?;
+        let _ = ready_b_tx.send(());
+        let _ = release_b_rx.await;
+        Ok::<_, DjogiError>(())
+      })
+    })
+    .await
+  });
 
-    // Wait for both holders to confirm they own a checked-out client.
-    // After both channels close the pool is provably saturated.
-    ready_a_rx.await.expect("holder A reports ready");
-    ready_b_rx.await.expect("holder B reports ready");
+  // Wait for both holders to confirm they own a checked-out client.
+  // After both channels close the pool is provably saturated.
+  ready_a_rx.await.expect("holder A reports ready");
+  ready_b_rx.await.expect("holder B reports ready");
 
-    let third = pool
-        .raw_with_client(|client| {
-            Box::pin(async move {
-                let _ = client;
-                Ok::<_, DjogiError>(())
-            })
-        })
-        .await;
+  let third = pool
+    .raw_with_client(|client| {
+      Box::pin(async move {
+        let _ = client;
+        Ok::<_, DjogiError>(())
+      })
+    })
+    .await;
 
-    let err = third.expect_err("third concurrent checkout must time out");
-    match err {
-        DjogiError::PoolTimeout { phase, .. } => assert_eq!(phase, "wait"),
-        other => panic!("expected PoolTimeout(wait), got: {other:?}"),
-    }
+  let err = third.expect_err("third concurrent checkout must time out");
+  match err {
+    DjogiError::PoolTimeout { phase, .. } => assert_eq!(phase, "wait"),
+    other => panic!("expected PoolTimeout(wait), got: {other:?}"),
+  }
 
-    // Release the holders so they can return their connections; we
-    // need live connections to teardown.
-    let _ = release_a_tx.send(());
-    let _ = release_b_tx.send(());
-    let _ = hold_a.await.expect("join holder a");
-    let _ = hold_b.await.expect("join holder b");
+  // Release the holders so they can return their connections; we
+  // need live connections to teardown.
+  let _ = release_a_tx.send(());
+  let _ = release_b_tx.send(());
+  let _ = hold_a.await.expect("join holder a");
+  let _ = hold_b.await.expect("join holder b");
 
-    teardown_test_db(cleanup).await;
+  teardown_test_db(cleanup).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,20 +343,20 @@ async fn pool_max_size_saturation_surfaces_pool_timeout() {
 /// the call equals 1 (one physical connection, currently idle).
 #[tokio::test]
 async fn pool_with_client_returns_connection_on_ok() {
-    let (cleanup, url) = provision_test_db().await;
-    let pool = DjogiPool::builder(&url)
-        .max_size(2)
-        .build()
-        .await
-        .expect("pool builds");
+  let (cleanup, url) = provision_test_db().await;
+  let pool = DjogiPool::builder(&url)
+    .max_size(2)
+    .build()
+    .await
+    .expect("pool builds");
 
-    select_one_via_with_client(&pool).await.expect("clean exit");
+  select_one_via_with_client(&pool).await.expect("clean exit");
 
-    let status = pool.status();
-    assert_eq!(status.available, 1, "one connection should be idle");
-    assert_eq!(status.size, 1, "exactly one physical connection in pool");
+  let status = pool.status();
+  assert_eq!(status.available, 1, "one connection should be idle");
+  assert_eq!(status.size, 1, "exactly one physical connection in pool");
 
-    teardown_test_db(cleanup).await;
+  teardown_test_db(cleanup).await;
 }
 
 /// On `Err` the guard detaches: the deadpool `Object::take` path fires,
@@ -364,43 +364,43 @@ async fn pool_with_client_returns_connection_on_ok() {
 /// returns to zero. The next checkout creates a fresh connection.
 #[tokio::test]
 async fn pool_with_client_detaches_on_err() {
-    let (cleanup, url) = provision_test_db().await;
-    let pool = DjogiPool::builder(&url)
-        .max_size(2)
-        .build()
-        .await
-        .expect("pool builds");
+  let (cleanup, url) = provision_test_db().await;
+  let pool = DjogiPool::builder(&url)
+    .max_size(2)
+    .build()
+    .await
+    .expect("pool builds");
 
-    let result: Result<(), DjogiError> = pool
-        .raw_with_client(|client| {
-            Box::pin(async move {
-                let _ = client
-                    .query_one("SELECT 1", &[])
-                    .await
-                    .map_err(djogi::DjogiError::from)?;
-                // Return Err — the guard must detach.
-                Err(DjogiError::Validation("intentional dirty exit".into()))
-            })
-        })
-        .await;
+  let result: Result<(), DjogiError> = pool
+    .raw_with_client(|client| {
+      Box::pin(async move {
+        let _ = client
+          .query_one("SELECT 1", &[])
+          .await
+          .map_err(djogi::DjogiError::from)?;
+        // Return Err — the guard must detach.
+        Err(DjogiError::Validation("intentional dirty exit".into()))
+      })
+    })
+    .await;
 
-    assert!(result.is_err(), "closure returned Err");
+  assert!(result.is_err(), "closure returned Err");
 
-    let status = pool.status();
-    assert_eq!(
-        status.size, 0,
-        "Err path must detach the Object so the physical connection is closed; \
-         pool.size should drop back to 0, got: {status:?}"
-    );
+  let status = pool.status();
+  assert_eq!(
+    status.size, 0,
+    "Err path must detach the Object so the physical connection is closed; \
+     pool.size should drop back to 0, got: {status:?}"
+  );
 
-    // Next checkout creates a fresh connection — this is the
-    // recovery-path assertion. If detach were broken we'd hand back a
-    // poisoned client.
-    select_one_via_with_client(&pool)
-        .await
-        .expect("recovery checkout opens a fresh physical connection");
+  // Next checkout creates a fresh connection — this is the
+  // recovery-path assertion. If detach were broken we'd hand back a
+  // poisoned client.
+  select_one_via_with_client(&pool)
+    .await
+    .expect("recovery checkout opens a fresh physical connection");
 
-    teardown_test_db(cleanup).await;
+  teardown_test_db(cleanup).await;
 }
 
 /// On panic the unwind drops the guard while `committed = false`, which
@@ -408,40 +408,40 @@ async fn pool_with_client_detaches_on_err() {
 /// catch the panic without aborting the test process.
 #[tokio::test]
 async fn pool_with_client_detaches_on_panic() {
-    let (cleanup, url) = provision_test_db().await;
-    let pool = DjogiPool::builder(&url)
-        .max_size(2)
-        .build()
-        .await
-        .expect("pool builds");
+  let (cleanup, url) = provision_test_db().await;
+  let pool = DjogiPool::builder(&url)
+    .max_size(2)
+    .build()
+    .await
+    .expect("pool builds");
 
-    let p = pool.clone();
-    let join = tokio::spawn(async move {
-        p.raw_with_client(|client| {
-            Box::pin(async move {
-                let _ = client;
-                panic!("intentional panic inside with_client closure");
-                #[allow(unreachable_code)]
-                Ok::<(), DjogiError>(())
-            })
-        })
-        .await
-    });
+  let p = pool.clone();
+  let join = tokio::spawn(async move {
+    p.raw_with_client(|client| {
+      Box::pin(async move {
+        let _ = client;
+        panic!("intentional panic inside with_client closure");
+        #[allow(unreachable_code)]
+        Ok::<(), DjogiError>(())
+      })
+    })
+    .await
+  });
 
-    let join_err = join.await.expect_err("task must panic");
-    assert!(
-        join_err.is_panic(),
-        "the spawned task must report a panic, got: {join_err:?}"
-    );
+  let join_err = join.await.expect_err("task must panic");
+  assert!(
+    join_err.is_panic(),
+    "the spawned task must report a panic, got: {join_err:?}"
+  );
 
-    let status = pool.status();
-    assert_eq!(
-        status.size, 0,
-        "panic path must detach the Object so the physical connection is closed; \
-         pool.size should drop back to 0, got: {status:?}"
-    );
+  let status = pool.status();
+  assert_eq!(
+    status.size, 0,
+    "panic path must detach the Object so the physical connection is closed; \
+     pool.size should drop back to 0, got: {status:?}"
+  );
 
-    teardown_test_db(cleanup).await;
+  teardown_test_db(cleanup).await;
 }
 
 /// `raw_with_client` is the public pool route for direct-driver COPY.
@@ -449,71 +449,71 @@ async fn pool_with_client_detaches_on_panic() {
 /// protocol and reads it back through the same borrowed client.
 #[tokio::test]
 async fn pool_raw_with_client_copy_from_stdin_round_trips_binary_payload() {
-    let (cleanup, url) = provision_test_db().await;
-    let pool = DjogiPool::builder(&url)
-        .max_size(1)
-        .build()
-        .await
-        .expect("pool builds");
+  let (cleanup, url) = provision_test_db().await;
+  let pool = DjogiPool::builder(&url)
+    .max_size(1)
+    .build()
+    .await
+    .expect("pool builds");
 
-    let returned = pool
-        .raw_with_client(|client| {
-            Box::pin(async move {
-                client
-                    .batch_execute(
-                        "CREATE TEMP TABLE djogi_pool_copy_payloads (
-                            id INTEGER PRIMARY KEY,
-                            payload BYTEA NOT NULL
-                        )",
-                    )
-                    .await
-                    .map_err(djogi::DjogiError::from)?;
+  let returned = pool
+    .raw_with_client(|client| {
+      Box::pin(async move {
+        client
+          .batch_execute(
+            "CREATE TEMP TABLE djogi_pool_copy_payloads (
+              id INTEGER PRIMARY KEY,
+              payload BYTEA NOT NULL
+            )",
+          )
+          .await
+          .map_err(djogi::DjogiError::from)?;
 
-                let sink = client
-                    .copy_in(
-                        "COPY djogi_pool_copy_payloads (id, payload) \
-                         FROM STDIN BINARY",
-                    )
-                    .await
-                    .map_err(djogi::DjogiError::from)?;
-                let writer = tokio_postgres::binary_copy::BinaryCopyInWriter::new(
-                    sink,
-                    &[
-                        tokio_postgres::types::Type::INT4,
-                        tokio_postgres::types::Type::BYTEA,
-                    ],
-                );
-                tokio::pin!(writer);
+        let sink = client
+          .copy_in(
+            "COPY djogi_pool_copy_payloads (id, payload) \
+             FROM STDIN BINARY",
+          )
+          .await
+          .map_err(djogi::DjogiError::from)?;
+        let writer = tokio_postgres::binary_copy::BinaryCopyInWriter::new(
+          sink,
+          &[
+            tokio_postgres::types::Type::INT4,
+            tokio_postgres::types::Type::BYTEA,
+          ],
+        );
+        tokio::pin!(writer);
 
-                let payload: &[u8] = b"\x00djogi-pool-copy\xffpayload";
-                writer
-                    .as_mut()
-                    .write(&[&7_i32, &payload])
-                    .await
-                    .map_err(djogi::DjogiError::from)?;
-                writer
-                    .as_mut()
-                    .finish()
-                    .await
-                    .map_err(djogi::DjogiError::from)?;
+        let payload: &[u8] = b"\x00djogi-pool-copy\xffpayload";
+        writer
+          .as_mut()
+          .write(&[&7_i32, &payload])
+          .await
+          .map_err(djogi::DjogiError::from)?;
+        writer
+          .as_mut()
+          .finish()
+          .await
+          .map_err(djogi::DjogiError::from)?;
 
-                let row = client
-                    .query_one(
-                        "SELECT payload FROM djogi_pool_copy_payloads WHERE id = $1",
-                        &[&7_i32],
-                    )
-                    .await
-                    .map_err(djogi::DjogiError::from)?;
-                row.try_get::<_, Vec<u8>>("payload")
-                    .map_err(djogi::DjogiError::from)
-            })
-        })
-        .await
-        .expect("COPY round-trip succeeds");
+        let row = client
+          .query_one(
+            "SELECT payload FROM djogi_pool_copy_payloads WHERE id = $1",
+            &[&7_i32],
+          )
+          .await
+          .map_err(djogi::DjogiError::from)?;
+        row.try_get::<_, Vec<u8>>("payload")
+          .map_err(djogi::DjogiError::from)
+      })
+    })
+    .await
+    .expect("COPY round-trip succeeds");
 
-    assert_eq!(returned, b"\x00djogi-pool-copy\xffpayload");
+  assert_eq!(returned, b"\x00djogi-pool-copy\xffpayload");
 
-    teardown_test_db(cleanup).await;
+  teardown_test_db(cleanup).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -529,29 +529,29 @@ async fn pool_raw_with_client_copy_from_stdin_round_trips_binary_payload() {
 /// panics.
 #[tokio::test]
 async fn from_database_config_honours_toml_max_connections() {
-    let _lock = env_lock().await;
-    let _guard = EnvGuard::unset(ENV_DATABASE_MAX_CONNECTIONS);
+  let _lock = env_lock().await;
+  let _guard = EnvGuard::unset(ENV_DATABASE_MAX_CONNECTIONS);
 
-    let (cleanup, url) = provision_test_db().await;
+  let (cleanup, url) = provision_test_db().await;
 
-    let cfg = djogi::config::DatabaseConfig {
-        url: url.clone(),
-        crud_log_url: None,
-        event_log_url: None,
-        max_connections: Some(13),
-        dev_mode: false,
-    };
-    let pool = DjogiPool::from_database_config(&cfg)
-        .await
-        .expect("from_database_config builds");
+  let cfg = djogi::config::DatabaseConfig {
+    url: url.clone(),
+    crud_log_url: None,
+    event_log_url: None,
+    max_connections: Some(13),
+    dev_mode: false,
+  };
+  let pool = DjogiPool::from_database_config(&cfg)
+    .await
+    .expect("from_database_config builds");
 
-    assert_eq!(
-        pool.status().max_size,
-        13,
-        "[database].max_connections from config must reach the pool"
-    );
+  assert_eq!(
+    pool.status().max_size,
+    13,
+    "[database].max_connections from config must reach the pool"
+  );
 
-    teardown_test_db(cleanup).await;
+  teardown_test_db(cleanup).await;
 }
 
 /// `DJOGI_DATABASE_MAX_CONNECTIONS` overrides the TOML field — env wins
@@ -563,29 +563,29 @@ async fn from_database_config_honours_toml_max_connections() {
 /// cannot leak the override into the rest of the process.
 #[tokio::test]
 async fn from_database_config_env_overrides_toml() {
-    let _lock = env_lock().await;
-    let _guard = EnvGuard::set(ENV_DATABASE_MAX_CONNECTIONS, "21");
+  let _lock = env_lock().await;
+  let _guard = EnvGuard::set(ENV_DATABASE_MAX_CONNECTIONS, "21");
 
-    let (cleanup, url) = provision_test_db().await;
+  let (cleanup, url) = provision_test_db().await;
 
-    let cfg = djogi::config::DatabaseConfig {
-        url: url.clone(),
-        crud_log_url: None,
-        event_log_url: None,
-        max_connections: Some(13),
-        dev_mode: false,
-    };
-    let pool = DjogiPool::from_database_config(&cfg)
-        .await
-        .expect("from_database_config builds");
+  let cfg = djogi::config::DatabaseConfig {
+    url: url.clone(),
+    crud_log_url: None,
+    event_log_url: None,
+    max_connections: Some(13),
+    dev_mode: false,
+  };
+  let pool = DjogiPool::from_database_config(&cfg)
+    .await
+    .expect("from_database_config builds");
 
-    assert_eq!(
-        pool.status().max_size,
-        21,
-        "env var must beat [database].max_connections in resolution"
-    );
+  assert_eq!(
+    pool.status().max_size,
+    21,
+    "env var must beat [database].max_connections in resolution"
+  );
 
-    teardown_test_db(cleanup).await;
+  teardown_test_db(cleanup).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -597,17 +597,17 @@ async fn from_database_config_env_overrides_toml() {
 /// tests above could not distinguish detach from return-to-pool.
 #[tokio::test]
 async fn pool_status_exposes_deadpool_counters() {
-    let (cleanup, url) = provision_test_db().await;
-    let pool = DjogiPool::builder(&url)
-        .max_size(4)
-        .build()
-        .await
-        .expect("pool builds");
+  let (cleanup, url) = provision_test_db().await;
+  let pool = DjogiPool::builder(&url)
+    .max_size(4)
+    .build()
+    .await
+    .expect("pool builds");
 
-    let status = pool.status();
-    assert_eq!(status.max_size, 4);
-    // No checkouts yet — the pool is empty, not pre-filled.
-    assert_eq!(status.size, 0);
+  let status = pool.status();
+  assert_eq!(status.max_size, 4);
+  // No checkouts yet — the pool is empty, not pre-filled.
+  assert_eq!(status.size, 0);
 
-    teardown_test_db(cleanup).await;
+  teardown_test_db(cleanup).await;
 }

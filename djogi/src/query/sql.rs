@@ -796,7 +796,7 @@ pub(crate) fn emit_condition(
         // The fragment is a `&'static str` baked at expand time from a
         // closed-grammar walker that rejects every runtime-bound value;
         // the only adopter-facing construction route is the
-        // `#[model(default_filter = |f| ...)]` attribute, which goes
+        // `#[model(default_filter = |f|...)]` attribute, which goes
         // through `lower_default_filter_to_sql` → descriptor → trait
         // override → here.
         // The fragment is wrapped in outer parens so further AND-
@@ -1160,7 +1160,7 @@ pub(crate) fn q_is_vacuously_true<T: Model>(q: &Q<T>) -> bool {
     }
 }
 
-/// Emit the `WHERE ...` clause for a QuerySet, if any. Any top-level
+/// Emit the `WHERE...` clause for a QuerySet, if any. Any top-level
 /// condition that collapses to vacuous TRUE (see [`q_is_vacuously_true`])
 /// is omitted entirely rather than emitted as `WHERE TRUE` — same
 /// semantics, cleaner logs, and avoids touching the planner with a
@@ -1213,7 +1213,7 @@ fn push_where_qualified<T: Model>(
     push_where_with_ctx(acc, qs, ctx)
 }
 
-/// Shared tail emitted by SELECT variants: `ORDER BY ...`, `LIMIT $n`,
+/// Shared tail emitted by SELECT variants: `ORDER BY...`, `LIMIT $n`,
 /// `OFFSET $n`. `WHERE` is emitted separately so count/exists builders can
 /// reuse `push_where` without taking the ordering/limit tail.
 /// Fallible because the inner `WHERE` helper
@@ -1288,7 +1288,7 @@ pub(crate) fn push_tail_with_ctx<T: Model>(
     push_order_limit_offset(acc, qs, ctx);
     // Row-lock tail — `FOR UPDATE [NOWAIT|SKIP LOCKED]` — is the last
     // thing Postgres accepts on a SELECT, after `LIMIT`/`OFFSET`.
-    // `LockMode::None` is a no-op so the pre-Task-7 SELECT shape is
+    // `LockMode::None` is a no-op so the SELECT shape without row-lock is
     // byte-for-byte preserved for querysets that never touched the
     // lock builders.
     qs.lock.push_tail(acc);
@@ -1352,8 +1352,8 @@ fn push_grouped_tail(
     Ok(())
 }
 
-/// Build `SELECT [DISTINCT [ON (...)]] <COLUMN_LIST> FROM <table> [WHERE ...]
-/// [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
+/// Build `SELECT [DISTINCT [ON (...)]] <COLUMN_LIST> FROM <table> [WHERE...]
+/// [ORDER BY...] [LIMIT $n] [OFFSET $n]`.
 /// The queryset is borrowed, not consumed — terminal methods (`fetch_all`,
 /// `fetch_one`, `first`) may need to mutate the queryset (e.g. `fetch_one`
 /// overrides the user-set `limit` to 2 so it can distinguish single-row
@@ -1392,15 +1392,15 @@ pub(crate) fn build_select<T: Model + FromPgRow>(
     Ok(acc)
 }
 
-/// Build `SELECT {parent_cols} FROM <table> {left joins} [WHERE ...]
-/// [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the select_related variant.
+/// Build `SELECT {parent_cols} FROM <table> {left joins} [WHERE...]
+/// [ORDER BY...] [LIMIT $n] [OFFSET $n]` — the select_related variant.
 /// Mirror of [`build_select`], but:
 /// 1. Replaces `*` in the projection with the aliased column list built
-///    by [`crate::relation::select_related::select_columns`] — parent
-///    columns stay unqualified, each joined child's columns land under
-///    a `"rel_{source_column}.{col}"` alias.
+/// by [`crate::relation::select_related::select_columns`] — parent
+/// columns stay unqualified, each joined child's columns land under
+/// a `"rel_{source_column}.{col}"` alias.
 /// 2. Appends one `LEFT JOIN` clause per registered path, via
-///    [`crate::relation::select_related::push_joins`].
+/// [`crate::relation::select_related::push_joins`].
 /// # Why a separate emitter
 /// Keeping `build_select` unchanged means a queryset with no
 /// registered select_related paths still emits the exact SQL
@@ -1421,8 +1421,8 @@ pub(crate) fn build_select_joined<T: Model>(
 ) -> Result<SqlAccumulator, PortablePredicateError> {
     let mut acc = SqlAccumulator::new("");
     let col_list = crate::relation::select_related::select_columns::<T>(&qs.select_related_paths);
-    // Every bare column reference that follows — `WHERE ...`,
-    // `ORDER BY ...`, `DISTINCT ON (...)` — is qualified with the
+    // Every bare column reference that follows — `WHERE...`,
+    // `ORDER BY...`, `DISTINCT ON (...)` — is qualified with the
     // parent table name. Without this, Postgres raises `42702 column
     // reference "X" is ambiguous` on the first framework column that
     // also appears on a joined child (most commonly `id`,
@@ -1448,10 +1448,10 @@ pub(crate) fn build_select_joined<T: Model>(
                     acc.push_sql(", ");
                 }
                 // Qualify DISTINCT ON columns under the parent table
-                // so `SELECT DISTINCT ON (id) ...` on a joined query
-                // becomes `SELECT DISTINCT ON (vehicles.id) ...` and
+                // so `SELECT DISTINCT ON (id)...` on a joined query
+                // becomes `SELECT DISTINCT ON (vehicles.id)...` and
                 // sidesteps the same ambiguity Postgres raises on bare
-                // `WHERE id = ...`.
+                // `WHERE id =...`.
                 acc.push_sql(T::table_name());
                 acc.push_sql(".");
                 acc.push_sql(c);
@@ -1476,20 +1476,20 @@ pub(crate) fn build_select_joined<T: Model>(
 /// `MIN` / `MAX` where the Postgres return type already decodes into
 /// `Out` directly).
 /// When the aggregate carries a user-set `window: Some(spec)` (from
-/// `.over(|w| ...)`), the `OVER (...)` clause is appended immediately
+/// `.over(|w|...)`), the `OVER (...)` clause is appended immediately
 /// after `emit_expr` returns — in the right position for Postgres
 /// window-function syntax (`AGG(...) OVER (...)`). No default `OVER ()`
 /// is added when `window` is `None`: this path is used for both the
 /// scalar terminal and the grouped annotate SELECT list, neither of which
 /// should silently grow a window clause.
 /// `default_window` controls fallback behaviour when the aggregate carries
-/// no `.over(|w| ...)` window spec:
+/// no `.over(|w|...)` window spec:
 /// - `None` — emit no window clause at all (scalar terminal + grouped
-///   annotate SELECT, neither of which should silently grow `OVER ()`).
+/// annotate SELECT, neither of which should silently grow `OVER ()`).
 /// - `Some(s)` — emit `s` as the default (the ungrouped annotate path
-///   uses `Some(" OVER ()")` only after the plain-annotation type-state has
-///   proven the aggregate kind is windowable; non-windowable aggregate kinds
-///   are rejected before reaching this helper).
+/// uses `Some(" OVER ()")` only after the plain-annotation type-state has
+/// proven the aggregate kind is windowable; non-windowable aggregate kinds
+/// are rejected before reaching this helper).
 fn emit_aggregate_inner(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
@@ -1600,7 +1600,7 @@ fn emit_aggregate_inner(
                 debug_assert!(
                     popped_close,
                     "unwrapped spatial-with-filter bare emission must end with `)` \
-                     after popping cast (FILTER parens from emit_spatial_unary_agg)"
+      after popping cast (FILTER parens from emit_spatial_unary_agg)"
                 );
                 emit_window_clause(acc);
                 acc.push_sql(")");
@@ -1646,13 +1646,13 @@ fn emit_aggregate_inner(
 /// Emission profile for spatial aggregates. The two `wrapped` cases
 /// drive the OVER-splice strategy in [`emit_aggregate_inner`].
 /// - `wrapped: true` — bare emission has the form `WRAP(AGG(...))::cast`.
-///   `WRAP` is a scalar function (`ST_Centroid`, `ST_ConvexHull`); the
-///   actual aggregate is `AGG` (`ST_Collect`). OVER must fall inside
-///   the wrapper, between AGG's close paren and the wrapper's close.
+/// `WRAP` is a scalar function (`ST_Centroid`, `ST_ConvexHull`); the
+/// actual aggregate is `AGG` (`ST_Collect`). OVER must fall inside
+/// the wrapper, between AGG's close paren and the wrapper's close.
 /// - `wrapped: false` — bare emission has the form `AGG(...)::cast`.
-///   No scalar wrapper; OVER attaches directly to the aggregate, then
-///   the cast wraps the aggregate-with-OVER unit:
-///   `(AGG(...) OVER (...))::cast`.
+/// No scalar wrapper; OVER attaches directly to the aggregate, then
+/// the cast wraps the aggregate-with-OVER unit:
+/// `(AGG(...) OVER (...))::cast`.
 struct SpatialShape {
     suffix: &'static str,
     wrapped: bool,
@@ -1718,7 +1718,7 @@ pub(crate) fn emit_aggregate_with_cast(
 /// grouped annotate use the non-default-window emitter instead.
 /// Reverse-relation aggregates (`f.orders.count()`) may need `OVER
 /// (PARTITION BY parent.id)` after a LATERAL join; that is a deliberate
-/// scope boundary handled by the user-supplied `.over(|w| ...)` spec.
+/// scope boundary handled by the user-supplied `.over(|w|...)` spec.
 pub(crate) fn emit_aggregate_with_window_and_cast(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
@@ -1726,7 +1726,7 @@ pub(crate) fn emit_aggregate_with_window_and_cast(
     emit_aggregate_inner(acc, agg, Some(" OVER ()"))
 }
 
-/// Build `SELECT <agg> FROM <table> [WHERE ...]` — the scalar-aggregate
+/// Build `SELECT <agg> FROM <table> [WHERE...]` — the scalar-aggregate
 /// terminal for [`crate::query::aggregate::AggregateQuery::fetch_one`].
 /// No `ORDER BY`, no `LIMIT`, no `OFFSET`, no `GROUP BY` — ungrouped
 /// aggregates collapse to exactly one result row regardless of the
@@ -1749,7 +1749,7 @@ pub(crate) fn build_aggregate_select<T: Model>(
 }
 
 /// Build `SELECT t.*, <agg_0> AS __djogi_agg_0, <agg_1> AS __djogi_agg_1
-/// FROM <table> [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]`
+/// FROM <table> [WHERE...] [ORDER BY...] [LIMIT $n] [OFFSET $n]`
 /// the annotation terminal for
 /// [`crate::query::annotate::AnnotatedQuerySet::fetch_all`].
 /// # Why `t.*` plus aliased aggregates
@@ -1775,7 +1775,7 @@ where
     F: FnOnce(&mut SqlAccumulator),
 {
     let mut acc = SqlAccumulator::new("");
-    // `SELECT t.<c1>, t.<c2>, ...` prefix — the `t` alias is what the
+    // `SELECT t.<c1>, t.<c2>,...` prefix — the `t` alias is what the
     // FROM clause below names the table as. Explicit `t.<col>` for
     // every canonical column (matching `FromPgRow::COLUMNS`) pins the
     // wire order so the ordinal decode path can read them positionally
@@ -1901,8 +1901,8 @@ where
     Ok(acc)
 }
 
-/// Build `SELECT keys, aggregates FROM <table> [WHERE ...] GROUP BY keys
-/// [HAVING ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the terminal for
+/// Build `SELECT keys, aggregates FROM <table> [WHERE...] GROUP BY keys
+/// [HAVING...] [ORDER BY...] [LIMIT $n] [OFFSET $n]` — the terminal for
 /// [`crate::query::grouped::GroupedAnnotatedQuerySet::fetch_all`].
 /// # SELECT list layout
 /// Keys MUST be emitted first and in `push_group_by_columns` order
@@ -1956,7 +1956,7 @@ where
     acc.push_sql(T::table_name());
     acc.push_sql(" AS t");
 
-    // WHERE from the upstream queryset (filters set before .group_by)
+    // WHERE from the upstream queryset (filters set before.group_by)
     push_where(&mut acc, &gaq.qs)?;
 
     // GROUP BY
@@ -1976,7 +1976,7 @@ where
             acc.push_sql(")");
         }
         crate::query::grouped::GroupingMode::Sets(ref sets) => {
-            // Emit: GROUPING SETS ((col_a), (col_b), ...)
+            // Emit: GROUPING SETS ((col_a), (col_b),...)
             // Each inner Vec is one grouping set's column list.
             // Column names are &'static str validated upstream by
             // assert_plain_ident — no bind slots, safe to push as SQL.
@@ -2009,10 +2009,10 @@ where
 /// SELECT r.<pk-col> AS rk0, <aggregates>
 /// FROM <t-table> AS t
 /// LEFT JOIN <r-table> AS r ON ST_Covers(r.<r-geo-col>, t.<t-geo-col>)
-/// [WHERE ...]
+/// [WHERE...]
 /// GROUP BY r.<pk-col>
-/// [HAVING ...]
-/// [ORDER BY ...]
+/// [HAVING...]
+/// [ORDER BY...]
 /// [LIMIT $n] [OFFSET $n]
 /// ```
 /// Called by [`build_grouped_annotated_select`] when `gaq.spatial_source` is
@@ -2112,18 +2112,18 @@ where
 /// ```sql
 /// SELECT cluster_id, <aggregates>
 /// FROM (
-///     SELECT t.*, ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER ()
-///                                                                 AS cluster_id
-///     FROM <table> AS t
-///     [WHERE ...]
+///  SELECT t.*, ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER ()
+///                 AS cluster_id
+///  FROM <table> AS t
+///  [WHERE...]
 /// ) AS t
 /// GROUP BY cluster_id
-/// [HAVING ...]
-/// [ORDER BY ...]
+/// [HAVING...]
+/// [ORDER BY...]
 /// [LIMIT $n] [OFFSET $n]
 /// ```
 /// # Why the subquery
-/// A flat `SELECT ST_ClusterDBSCAN(...) OVER () AS cluster_id ... GROUP BY
+/// A flat `SELECT ST_ClusterDBSCAN(...) OVER () AS cluster_id... GROUP BY
 /// cluster_id` query is rejected by Postgres with
 /// ```text
 /// ERROR: window functions are not allowed in GROUP BY
@@ -2138,12 +2138,12 @@ where
 /// other query shape in this file.
 /// # Clause placement under the subquery
 /// - `WHERE` stays on the **inner** subquery — it prunes rows *before*
-///   clustering, which is the only semantically meaningful position for a
-///   filter that does not reference `cluster_id`.
+/// clustering, which is the only semantically meaningful position for a
+/// filter that does not reference `cluster_id`.
 /// - `HAVING` stays on the **outer** query — it filters the aggregated
-///   groups.
+/// groups.
 /// - `ORDER BY` / `LIMIT` / `OFFSET` stay on the **outer** query — they
-///   paginate the aggregated result.
+/// paginate the aggregated result.
 /// # Casts and binds
 /// The `::geometry` cast is required because `ST_ClusterDBSCAN` does not
 /// accept the `geography` type directly in PostGIS 3.x.
@@ -2202,10 +2202,10 @@ where
 /// ```sql
 /// SELECT ST_GeoHash(t.<col>::geometry, $precision) AS geohash, <aggregates>
 /// FROM <table> AS t
-/// [WHERE ...]
+/// [WHERE...]
 /// GROUP BY geohash
-/// [HAVING ...]
-/// [ORDER BY ...]
+/// [HAVING...]
+/// [ORDER BY...]
 /// [LIMIT $n] [OFFSET $n]
 /// ```
 /// The `::geometry` cast is required for the same reason as DBSCAN
@@ -2258,21 +2258,21 @@ where
     Ok(acc)
 }
 
-/// Build `SELECT COUNT(*) FROM <table> [WHERE ...]`, honoring
+/// Build `SELECT COUNT(*) FROM <table> [WHERE...]`, honoring
 /// [`DistinctMode`].
 /// Shapes emitted per mode:
-/// - `DistinctMode::None` → `SELECT COUNT(*) FROM "table" [WHERE ...]`
+/// - `DistinctMode::None` → `SELECT COUNT(*) FROM "table" [WHERE...]`
 /// - `DistinctMode::Plain` → `SELECT COUNT(*) FROM (SELECT DISTINCT * FROM
-/// "table" [WHERE ...]) AS sub`
+/// "table" [WHERE...]) AS sub`
 /// - `DistinctMode::On(cols)` → `SELECT COUNT(*) FROM (SELECT DISTINCT ON
-/// (cols) * FROM "table" [WHERE ...] ORDER BY cols [, user-ordering]) AS sub`
-///   `ORDER BY` / `LIMIT` / `OFFSET` from the queryset are intentionally not
-///   emitted on the **outer** count — they don't affect total cardinality and
-///   including them only slows the query. For `DISTINCT ON` the inner ORDER
-///   BY is required by Postgres (the `ON` column list must be a prefix of
-///   `ORDER BY`); we prepend the distinct columns and then append any
-///   user-supplied ordering so the emitted SQL is syntactically valid and
-///   semantically stable.
+/// (cols) * FROM "table" [WHERE...] ORDER BY cols [, user-ordering]) AS sub`
+/// `ORDER BY` / `LIMIT` / `OFFSET` from the queryset are intentionally not
+/// emitted on the **outer** count — they don't affect total cardinality and
+/// including them only slows the query. For `DISTINCT ON` the inner ORDER
+/// BY is required by Postgres (the `ON` column list must be a prefix of
+/// `ORDER BY`); we prepend the distinct columns and then append any
+/// user-supplied ordering so the emitted SQL is syntactically valid and
+/// semantically stable.
 pub(crate) fn build_count<T: Model>(
     qs: &QuerySet<T>,
 ) -> Result<SqlAccumulator, PortablePredicateError> {
@@ -2295,7 +2295,7 @@ pub(crate) fn build_count<T: Model>(
             Ok(acc)
         }
         DistinctMode::On(cols) => {
-            // `DISTINCT ON (a, b)` requires `ORDER BY a, b [, ...]`. We
+            // `DISTINCT ON (a, b)` requires `ORDER BY a, b [,...]`. We
             // prepend the distinct columns to the user's ordering so the
             // subquery is always well-formed. Duplicates (user already
             // ordered by a distinct column) are harmless — Postgres ignores
@@ -2322,7 +2322,7 @@ pub(crate) fn build_count<T: Model>(
     }
 }
 
-/// Build `SELECT EXISTS(SELECT 1 FROM <table> [WHERE ...] LIMIT 1)`.
+/// Build `SELECT EXISTS(SELECT 1 FROM <table> [WHERE...] LIMIT 1)`.
 /// `LIMIT 1` is inside the EXISTS subquery rather than being passed through
 /// the queryset's `limit` slot: EXISTS returns a single boolean regardless
 /// of how many rows match, so `LIMIT 1` here is a micro-optimization that
@@ -2338,7 +2338,7 @@ pub(crate) fn build_exists<T: Model>(
 }
 
 /// Build `UPDATE <table> SET col = $1, col = $2, updated_at = now()
-/// [WHERE ...]`.
+/// [WHERE...]`.
 /// Every assignment's value flows through [`push_filter_value`] — i.e.
 /// `push_bind` — so the emitted SQL has one positional parameter per
 /// user-supplied value. The `updated_at = now()` tail is always appended,
@@ -2352,7 +2352,7 @@ pub(crate) fn build_exists<T: Model>(
 /// [`crate::query::update::UpdateStmt::execute`]) and vacuously-true
 /// condition trees are handled identically to the read terminals.
 /// # Assignment list invariants
-/// Callers must ensure `assignments` is non-empty — `UPDATE ... SET ` with
+/// Callers must ensure `assignments` is non-empty — `UPDATE... SET ` with
 /// an empty list is a Postgres syntax error. The public entry point
 /// ([`crate::query::update::UpdateStmt::execute`]) short-circuits on
 /// `assignments.is_empty()` before reaching this emitter, so the emitter
@@ -2401,7 +2401,7 @@ pub(crate) fn build_update<T: Model>(
     Ok(acc)
 }
 
-/// Build `DELETE FROM <table> [WHERE ...]`.
+/// Build `DELETE FROM <table> [WHERE...]`.
 /// Plain DELETE — no RETURNING, no USING join. The `WHERE` clause uses
 /// the shared [`push_where`] helper so vacuously-true condition trees
 /// (e.g. `Condition::And(vec![])`) are omitted entirely rather than
@@ -2422,10 +2422,10 @@ pub(crate) fn build_delete<T: Model>(
     Ok(acc)
 }
 
-/// Build `MERGE INTO <target> AS tgt USING (...) AS __djogi_src ON ...
-/// [WHEN MATCHED [AND ...] THEN UPDATE SET ... | DELETE]
-/// [WHEN NOT MATCHED [BY TARGET] [AND ...] THEN INSERT (...) VALUES (...)]
-/// [WHEN NOT MATCHED BY SOURCE [AND ...] THEN UPDATE SET ... | DELETE]`.
+/// Build `MERGE INTO <target> AS tgt USING (...) AS __djogi_src ON...
+/// [WHEN MATCHED [AND...] THEN UPDATE SET... | DELETE]
+/// [WHEN NOT MATCHED [BY TARGET] [AND...] THEN INSERT (...) VALUES (...)]
+/// [WHEN NOT MATCHED BY SOURCE [AND...] THEN UPDATE SET... | DELETE]`.
 /// Issue #178 — typed MERGE query surface.
 pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
     source: &QuerySet<S>,
@@ -2458,7 +2458,7 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
     acc.push_sql(SRC_ALIAS);
     acc.push_sql(" ");
 
-    // ON (tgt.col = __djogi_src.col AND ...)
+    // ON (tgt.col = __djogi_src.col AND...)
     acc.push_sql("ON ");
     for (i, cond) in on.iter().enumerate() {
         if i > 0 {
@@ -2562,8 +2562,8 @@ pub(crate) fn build_merge<S: Model + FromPgRow, T: Model>(
 /// Append the `RETURNING WITH (OLD AS __djogi_old, NEW AS __djogi_new)`
 /// clause and the fully-aliased column projection for both sides to `acc`.
 /// The table aliases (`__djogi_old` / `__djogi_new`) use Djogi's reserved
-/// namespace. Column aliases are short ordinals (`o0`, `o1`, ... and
-/// `n0`, `n1`, ...) so projection aliases stay safely below the 63-byte
+/// namespace. Column aliases are short ordinals (`o0`, `o1`,... and
+/// `n0`, `n1`,...) so projection aliases stay safely below the 63-byte
 /// identifier limit while preserving a stable positional mapping.
 /// Column names come from `T::COLUMNS`, which are macro-validated `&'static str`
 /// identifiers; `push_sql` is safe here because no user data flows in.
@@ -2603,9 +2603,9 @@ fn push_old_new_returning_projection<T: FromPgRow>(acc: &mut SqlAccumulator, inc
     }
 }
 
-/// Build `UPDATE <table> SET ... RETURNING WITH (OLD AS __djogi_old, NEW AS
-/// __djogi_new) __djogi_old.<col> AS "o{idx}", ...,
-/// __djogi_new.<col> AS "n{idx}", ...`.
+/// Build `UPDATE <table> SET... RETURNING WITH (OLD AS __djogi_old, NEW AS
+/// __djogi_new) __djogi_old.<col> AS "o{idx}",...,
+/// __djogi_new.<col> AS "n{idx}",...`.
 /// This is the bulk-returning variant of [`build_update`]; the WHERE clause and
 /// SET assignments are identical. The RETURNING projection appends the full
 /// column list for both the pre-update (`OLD`) and post-update (`NEW`) row
@@ -2631,7 +2631,7 @@ where
     Ok(acc)
 }
 
-/// Build `UPDATE <table> SET ... [WHERE ...] RETURNING <pk_column>`.
+/// Build `UPDATE <table> SET... [WHERE...] RETURNING <pk_column>`.
 /// Issue #304 — bulk update cache invalidation SQL builder.
 /// Emits the same UPDATE statement as [`build_update`] but appends a
 /// `RETURNING <pk_column>` clause so the caller can collect the primary-
@@ -2654,8 +2654,8 @@ pub(crate) fn build_update_returning_ids<T: Model>(
     Ok(acc)
 }
 
-/// Build `DELETE FROM <table> [WHERE ...] RETURNING WITH (OLD AS __djogi_old)
-/// __djogi_old.<col> AS "o{idx}", ...`.
+/// Build `DELETE FROM <table> [WHERE...] RETURNING WITH (OLD AS __djogi_old)
+/// __djogi_old.<col> AS "o{idx}",...`.
 /// The DELETE variant only has an `OLD` side — `NEW` is semantically absent for
 /// deleted rows. The projection aliases use the same short `o{idx}` pattern as
 /// the UPDATE variant so the `FromJoinedPgRow` path is identical
@@ -2674,29 +2674,29 @@ where
 }
 
 /// Build `INSERT INTO <target> (cols...) SELECT exprs... FROM <source>
-/// [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
+/// [WHERE...] [ORDER BY...] [LIMIT $n] [OFFSET $n]`.
 /// Closes [](https://github.com/TarunvirBains/djogi/issues/106)
 /// the typed bulk-copy surface from one model's queryset into another
 /// model's table.
 /// # Inputs
 /// - `qs` — source queryset, contributes the source FROM table, the
-///   WHERE clause, ordering, limit, and offset. All other source state
-///   (`prefetch_paths`, `select_related_paths`, `cache_target`,
-///   `lock`, `distinct`) is rejected by
-///   [`crate::query::insert_select::InsertSelectStmt::execute`] before
-///   reaching this emitter, so the emitter itself does not need a
-///   runtime guard.
+/// WHERE clause, ordering, limit, and offset. All other source state
+/// (`prefetch_paths`, `select_related_paths`, `cache_target`,
+/// `lock`, `distinct`) is rejected by
+/// [`crate::query::insert_select::InsertSelectStmt::execute`] before
+/// reaching this emitter, so the emitter itself does not need a
+/// runtime guard.
 /// - `columns` — `(target_column, source_expression)` mappings in
-///   lockstep position. The column list and the SELECT projection are
-///   emitted in the same order; per-column type alignment is enforced
-///   at compile time by [`crate::query::FieldRef::copy_from`].
+/// lockstep position. The column list and the SELECT projection are
+/// emitted in the same order; per-column type alignment is enforced
+/// at compile time by [`crate::query::FieldRef::copy_from`].
 /// # Output shape
 /// ```sql
-/// INSERT INTO target_table (target_col1, target_col2, ...)
-/// SELECT source_expr1, source_expr2, ...
+/// INSERT INTO target_table (target_col1, target_col2,...)
+/// SELECT source_expr1, source_expr2,...
 /// FROM source_table
-/// [WHERE ...]
-/// [ORDER BY ...]
+/// [WHERE...]
+/// [ORDER BY...]
 /// [LIMIT $n]
 /// [OFFSET $n]
 /// ```
@@ -2717,15 +2717,15 @@ where
 /// minimum coherent surface of the public API.
 /// # Invariants
 /// - `columns` is non-empty (the terminal's
-///   [`crate::query::insert_select::InsertSelectStmt::execute`] returns
-///   `DjogiError::Validation` before reaching here on empty input).
+/// [`crate::query::insert_select::InsertSelectStmt::execute`] returns
+/// `DjogiError::Validation` before reaching here on empty input).
 /// - `columns` has no duplicate `target_column` entries (same source
-///   of validation).
+/// of validation).
 /// - Every `column.source` is an [`crate::expr::node::ExprNode`] tree
-///   built through the typed `FieldRef::copy_from` constructor — the
-///   `&'static str` column names baked into `ExprNode::Field` flow
-///   straight to `SqlAccumulator::push_sql`, matching the existing
-///   bind-vs-text discipline.
+/// built through the typed `FieldRef::copy_from` constructor — the
+/// `&'static str` column names baked into `ExprNode::Field` flow
+/// straight to `SqlAccumulator::push_sql`, matching the existing
+/// bind-vs-text discipline.
 /// # Source's `lock` is intentionally NOT emitted
 /// Although [`push_tail`] would normally append `qs.lock`'s `FOR UPDATE`
 /// tail, the terminal rejects non-default `LockMode` upstream so the
@@ -2781,7 +2781,7 @@ pub(crate) fn build_insert_select_with_conflict<S: Model, T: Model>(
     Ok(acc)
 }
 
-/// Build `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE ...] RETURNING <column_list>`.
+/// Build `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE...] RETURNING <column_list>`.
 /// Identical to [`build_insert_select`] but appends ` RETURNING <column_list>` so the
 /// caller can decode the inserted rows via [`crate::pg::decode::FromPgRow`].
 /// This uses the model's canonical projection (`T::COLUMN_LIST`) rather than
@@ -2879,21 +2879,21 @@ fn push_conflict_do_update<S: Model, T: Model>(
 /// the terminal decoder to read the wrong value for one of the columns.
 /// # Algorithm
 /// 1. Find the substring between `SELECT ` and the next ` FROM ` (case
-///    matters — emitters use uppercase keywords).
+/// matters — emitters use uppercase keywords).
 /// 2. Split on commas at the top parenthesis level into logical columns.
-///    Parens and nested function calls are handled by tracking depth, so
-///    aggregate expressions like `SUM(a, b)` are not split mid-argument.
+/// Parens and nested function calls are handled by tracking depth, so
+/// aggregate expressions like `SUM(a, b)` are not split mid-argument.
 /// 3. For each column, extract the alias — the substring after the last
-///    ` AS ` if present, otherwise the whole column text (trimmed).
+/// ` AS ` if present, otherwise the whole column text (trimmed).
 /// 4. Check uniqueness; return `Err(DjogiError::AliasCollision)` on
-///    duplicate.
+/// duplicate.
 /// # Limitations
 /// This is a best-effort string parse. It does not handle:
 /// - Nested subqueries in the SELECT list (not emitted by).
 /// - Unparenthesised comma-separated arguments at the top level (our
-///   emitter always parenthesises function args).
-///   The check is defensive; failure means something has gone subtly wrong
-///   in the query builder, not that the user did something wrong.
+/// emitter always parenthesises function args).
+/// The check is defensive; failure means something has gone subtly wrong
+/// in the query builder, not that the user did something wrong.
 pub(crate) fn assert_no_alias_collision(sql: &str) -> Result<(), crate::DjogiError> {
     // Locate the SELECT keyword — accept leading text for safety.
     let after_select = if let Some(s) = sql.strip_prefix("SELECT ") {
@@ -3493,7 +3493,7 @@ mod tests {
         assert_eq!(sql, "SELECT id FROM fakes");
     }
 
-    // ── Task 9: UPDATE / DELETE emitter ───────────────────────────────
+    // ── UPDATE / DELETE emitter ───────────────────────────────
 
     #[test]
     fn update_single_assignment_emits_set_and_updated_at() {
@@ -3853,7 +3853,7 @@ mod tests {
     #[test]
     fn insert_select_no_filter_emits_bare_shape() {
         // The simplest shape — no WHERE, no ORDER BY, no LIMIT. The
-        // emitted SQL is the literal `INSERT ... SELECT ... FROM ...`
+        // emitted SQL is the literal `INSERT... SELECT... FROM...`
         // with no trailing clause.
         let qs: QuerySet<Fake> = QuerySet::new();
         let cols = vec![col_copy::<Fake, FakeTarget>("view_count", "score")];
@@ -4136,7 +4136,7 @@ mod tests {
         let lock_idx = sql.find("FOR UPDATE").expect("FOR UPDATE must appear");
         assert!(
             limit_idx < offset_idx && offset_idx < lock_idx,
-            "expected LIMIT ... OFFSET ... FOR UPDATE order, got: {sql}"
+            "expected LIMIT... OFFSET... FOR UPDATE order, got: {sql}"
         );
     }
 
@@ -4219,7 +4219,7 @@ mod tests {
         let lock_idx = sql.find("FOR SHARE").expect("FOR SHARE must appear");
         assert!(
             limit_idx < offset_idx && offset_idx < lock_idx,
-            "expected LIMIT ... OFFSET ... FOR SHARE order, got: {sql}"
+            "expected LIMIT... OFFSET... FOR SHARE order, got: {sql}"
         );
     }
 
@@ -4270,7 +4270,7 @@ mod tests {
         let sql = acc.sql();
         assert!(
             sql.trim_end().ends_with("FOR UPDATE NOWAIT"),
-            "expected .nowait() after .select_for_share() to promote to FOR UPDATE NOWAIT, got: {sql}"
+            "expected.nowait() after.select_for_share() to promote to FOR UPDATE NOWAIT, got: {sql}"
         );
         assert!(
             !sql.contains("FOR SHARE"),
@@ -4290,7 +4290,7 @@ mod tests {
         let sql = acc.sql();
         assert!(
             sql.trim_end().ends_with("FOR UPDATE SKIP LOCKED"),
-            "expected .skip_locked() after .select_for_share() to promote to FOR UPDATE SKIP LOCKED, got: {sql}"
+            "expected.skip_locked() after.select_for_share() to promote to FOR UPDATE SKIP LOCKED, got: {sql}"
         );
         assert!(
             !sql.contains("FOR SHARE"),
@@ -4322,7 +4322,7 @@ mod tests {
         let acc = build_grouped_annotated_select(&gaq);
         let sql = acc.sql();
         assert!(
-            !sql.contains("SELECT ,"),
+            !sql.contains("SELECT,"),
             "unit-key grouping sets must not emit a leading SELECT comma: {sql}"
         );
         assert!(
@@ -4337,7 +4337,7 @@ mod tests {
 
     // ── ROLLUP / CUBE emitter behavior ────────────────────────────────
     // These tests document that the emitter already handles ROLLUP and
-    // CUBE correctly. The entry-point methods (.rollup, .cube) and
+    // CUBE correctly. The entry-point methods (.rollup,.cube) and
     // the GROUPING SETS emitter arm build on this; the tests below pin
     // the existing emitter behavior so regressions surface before the
     // new arms land.
@@ -4684,7 +4684,7 @@ mod tests {
         }
     }
 
-    /// The emitted SQL must contain `ST_ClusterDBSCAN(t.<col>::geometry, ...)
+    /// The emitted SQL must contain `ST_ClusterDBSCAN(t.<col>::geometry,...)
     /// OVER () AS cluster_id` and `GROUP BY cluster_id`.
     #[cfg(feature = "spatial")]
     #[test]
@@ -4741,7 +4741,7 @@ mod tests {
     }
 
     /// Regression test for the prior shape `SELECT ST_ClusterDBSCAN(...)
-    /// OVER () AS cluster_id ... GROUP BY cluster_id`, which Postgres rejects
+    /// OVER () AS cluster_id... GROUP BY cluster_id`, which Postgres rejects
     /// with `ERROR: window functions are not allowed in GROUP BY`. The
     /// emitter must wrap the window call in an inner subquery so the outer
     /// `GROUP BY cluster_id` references a materialised column.
@@ -5054,7 +5054,7 @@ mod tests {
         let returning_pos = sql.find("RETURNING").expect("should contain RETURNING");
         assert!(
             set_pos < where_pos && where_pos < returning_pos,
-            "expected SET ... WHERE ... RETURNING order, got: {sql}"
+            "expected SET... WHERE... RETURNING order, got: {sql}"
         );
     }
 }

@@ -36,7 +36,7 @@ For v0.1, the correct posture is: emit conservative (blocking) SQL by default, p
 
 ### Why it matters
 
-Most DDL on large Postgres tables acquires an `AccessExclusiveLock`. While that lock is held, every `SELECT`, `INSERT`, `UPDATE`, and `DELETE` against the table blocks. On a table with millions of rows and a migration that rewrites every tuple (e.g., `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT <volatile-expression>` on Postgres < 11, or `ALTER COLUMN TYPE` that requires a cast), the lock may be held for minutes or hours. This is the definition of downtime.
+Most DDL on large Postgres tables acquires an `AccessExclusiveLock`. While that lock is held, every `SELECT`, `INSERT`, `UPDATE`, and `DELETE` against the table blocks. On a table with millions of rows and a migration that rewrites every tuple (e.g., `ALTER TABLE ADD COLUMN... NOT NULL DEFAULT <volatile-expression>` on Postgres < 11, or `ALTER COLUMN TYPE` that requires a cast), the lock may be held for minutes or hours. This is the definition of downtime.
 
 The problem is not hypothetical. The Django, Alembic, Prisma, and Flyway communities all have prominent blog posts and Stack Overflow threads documenting production outages caused by `ALTER TABLE` on large tables. None of the surveyed systems prevent this in their core tooling.
 
@@ -44,22 +44,22 @@ The problem is not hypothetical. The Django, Alembic, Prisma, and Flyway communi
 
 The following operations hold `AccessExclusiveLock` for the full duration of the operation — blocking all reads and writes:
 
-- `ALTER TABLE ADD COLUMN ... NOT NULL` without a default (Postgres always blocks, even if fast)
-- `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT <volatile or non-constant expression>` — Postgres < 11 rewrites every tuple; Postgres 11+ rewrites only for non-constant defaults
+- `ALTER TABLE ADD COLUMN... NOT NULL` without a default (Postgres always blocks, even if fast)
+- `ALTER TABLE ADD COLUMN... NOT NULL DEFAULT <volatile or non-constant expression>` — Postgres < 11 rewrites every tuple; Postgres 11+ rewrites only for non-constant defaults
 - `ALTER TABLE DROP COLUMN` — fast (mark deleted in catalog), but still takes `AccessExclusiveLock`
 - `ALTER TABLE ALTER COLUMN TYPE` with an incompatible type — full table rewrite
-- `ALTER TABLE ADD CONSTRAINT ... CHECK ...` — full table scan to validate existing rows
-- `ALTER TABLE ADD CONSTRAINT ... FOREIGN KEY ...` — full scan of referencing column
+- `ALTER TABLE ADD CONSTRAINT... CHECK...` — full table scan to validate existing rows
+- `ALTER TABLE ADD CONSTRAINT... FOREIGN KEY...` — full scan of referencing column
 - `CREATE INDEX` (without `CONCURRENTLY`) — blocks writes for the duration of the index build
 - `VACUUM FULL` — full rewrite with `AccessExclusiveLock`
 
 The following operations are safe for live tables:
 
 - `ALTER TABLE DROP COLUMN` — fast even on large tables (just marks the catalog; VACUUM FULL eventually reclaims)
-- `ALTER TABLE ADD COLUMN ... NULL` (no default, nullable) — catalog-only on Postgres 11+
-- `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT <constant>` — catalog-only on Postgres 11+ (constant stored in catalog, not per-tuple)
+- `ALTER TABLE ADD COLUMN... NULL` (no default, nullable) — catalog-only on Postgres 11+
+- `ALTER TABLE ADD COLUMN... NOT NULL DEFAULT <constant>` — catalog-only on Postgres 11+ (constant stored in catalog, not per-tuple)
 - `CREATE INDEX CONCURRENTLY` — non-blocking; requires two passes but holds only `ShareUpdateExclusiveLock` which does not block reads or writes
-- `ALTER TABLE ADD CONSTRAINT ... NOT VALID` — fast; skips scan of existing rows; future inserts/updates are validated but existing rows are not
+- `ALTER TABLE ADD CONSTRAINT... NOT VALID` — fast; skips scan of existing rows; future inserts/updates are validated but existing rows are not
 - `ALTER TABLE VALIDATE CONSTRAINT` — takes `ShareUpdateExclusiveLock` only; does not block writes
 
 ### The lock_timeout safety net
@@ -100,7 +100,7 @@ Populate `customer_id_new` from `customer_id` for all existing rows. This must b
 UPDATE orders
 SET customer_id_new = customer_id
 WHERE id BETWEEN :batch_start AND :batch_end
-  AND customer_id_new IS NULL;
+ AND customer_id_new IS NULL;
 ```
 
 Batch size is tuned by the operator (typically 1000–10000 rows). No surveyed system generates batched backfill SQL. It is always hand-written.
@@ -111,7 +111,7 @@ Once the backfill is complete and verified, add the constraint using the two-mig
 ```sql
 -- Migration A: fast, catalog-only
 ALTER TABLE orders ADD CONSTRAINT orders_customer_id_new_not_null
-    CHECK (customer_id_new IS NOT NULL) NOT VALID;
+  CHECK (customer_id_new IS NOT NULL) NOT VALID;
 
 -- Migration B: takes ShareUpdateExclusiveLock (non-blocking for reads/writes)
 ALTER TABLE orders VALIDATE CONSTRAINT orders_customer_id_new_not_null;
@@ -138,7 +138,7 @@ Each step corresponds to one or two migration files. The total is four to six mi
 | `ALTER TABLE ADD COLUMN` nullable | `AccessExclusiveLock` brief (catalog-only, no default stored) | Already safe on all Postgres versions | No pitfall |
 | `ALTER TABLE DROP COLUMN` | `AccessExclusiveLock` brief (catalog-only) | Already fast | Data remains in existing tuples until `VACUUM FULL` |
 | `ALTER TABLE SET NOT NULL` | `AccessExclusiveLock` + full scan | Add `CHECK (col IS NOT NULL) NOT VALID` first, `VALIDATE CONSTRAINT`, then `SET NOT NULL` — Postgres 12+ skips the scan | Two-migration sequence required; not generated by any surveyed tool |
-| `ALTER TABLE ADD CONSTRAINT FOREIGN KEY` | `AccessExclusiveLock` + full scan of referencing column | `ADD CONSTRAINT ... FOREIGN KEY ... NOT VALID`, then `VALIDATE CONSTRAINT` | Two-migration sequence; `NOT VALID` + `VALIDATE` pattern not surfaced by any surveyed tool's DDL generator |
+| `ALTER TABLE ADD CONSTRAINT FOREIGN KEY` | `AccessExclusiveLock` + full scan of referencing column | `ADD CONSTRAINT... FOREIGN KEY... NOT VALID`, then `VALIDATE CONSTRAINT` | Two-migration sequence; `NOT VALID` + `VALIDATE` pattern not surfaced by any surveyed tool's DDL generator |
 | `ALTER COLUMN TYPE` | `AccessExclusiveLock` + full rewrite | None general; compatible type casts sometimes free (e.g., `int` → `bigint` on some Postgres versions) | Almost always unsafe for large tables; expand-contract required |
 | `DROP INDEX` | `AccessExclusiveLock` brief | `DROP INDEX CONCURRENTLY` | Must run outside transaction; sea-query supports `.concurrently()` on drop (`src/backend/postgres/index.rs:91-93`) |
 | `ALTER TABLE RENAME COLUMN` | `AccessExclusiveLock` brief (catalog-only) | Already fast | Application-level compatibility must be managed separately; no surveyed tool generates rename migrations |
@@ -174,8 +174,8 @@ The user must manually create a migration file with `atomic = False` containing 
 
 ```python
 def upgrade():
-    with op.get_context().autocommit_block():
-        op.execute("CREATE INDEX CONCURRENTLY ...")
+  with op.get_context().autocommit_block():
+    op.execute("CREATE INDEX CONCURRENTLY...")
 ```
 
 **`op.create_index` does not have a `postgresql_concurrently` parameter** in the autogenerate output — users must call `op.execute()` with raw SQL for `CONCURRENTLY`. There is no typed `create_index(..., concurrently=True)` in Alembic's operation API that also enforces the transaction context requirement. (Confidence: **medium** — the Alembic operation classes in `operations/ops.py` were not read exhaustively for this flag.)
@@ -192,9 +192,9 @@ Flyway has the most precise handling of non-transactional DDL detection of any s
 
 ```java
 private static final Pattern CREATE_INDEX_CONCURRENTLY_REGEX =
-    Pattern.compile("^(CREATE|DROP)( UNIQUE)? INDEX CONCURRENTLY");
+  Pattern.compile("^(CREATE|DROP)( UNIQUE)? INDEX CONCURRENTLY");
 private static final Pattern ALTER_TYPE_ADD_VALUE_REGEX =
-    Pattern.compile("^ALTER TYPE( .*)? ADD VALUE");
+  Pattern.compile("^ALTER TYPE(.*)? ADD VALUE");
 ```
 
 If any statement in a script matches, the whole script is flagged `canExecuteInTransaction=false`. Flyway then correctly runs that script outside a transaction, without any user annotation. This is the only system in the survey that auto-detects non-transactional DDL needs. (Source: `PostgreSQLParser.java:114-137`. Confidence: **high**.)
@@ -217,7 +217,7 @@ The Prisma Rust engine (examined via the `prisma-engines-reference` clone) takes
 // in a transaction, which is sometimes undesirable (e.g. when the script contains
 // statements that cannot be run inside a transaction like CREATE INDEX CONCURRENTLY).
 for stmt in split_script_into_statements(script) {
-    match client.simple_query(stmt).await { ... }
+  match client.simple_query(stmt).await {... }
 }
 ```
 
@@ -239,7 +239,7 @@ No online-safe support. The escape hatch is `run_in_transaction = false` in `met
 
 ### SeaORM
 
-No online-safe support. The escape hatch is `use_transaction() -> Some(false)` on a migration struct. A user can then call `manager.execute(Statement::from_string("CREATE INDEX CONCURRENTLY ..."))`. No framework guidance or examples exist for this pattern. (Source: `sea-orm-migration/src/lib.rs:40-43`, `exec.rs:184-189`. Confidence: **high** — verified absence.)
+No online-safe support. The escape hatch is `use_transaction() -> Some(false)` on a migration struct. A user can then call `manager.execute(Statement::from_string("CREATE INDEX CONCURRENTLY..."))`. No framework guidance or examples exist for this pattern. (Source: `sea-orm-migration/src/lib.rs:40-43`, `exec.rs:184-189`. Confidence: **high** — verified absence.)
 
 ### sea-query
 
@@ -247,10 +247,10 @@ sea-query is a DDL query builder, not a migration runner. It does not control tr
 
 ```rust
 Index::create()
-    .concurrently()
-    .name("idx_name")
-    .table(Table::table())
-    .col(Column::column())
+ .concurrently()
+ .name("idx_name")
+ .table(Table::table())
+ .col(Column::column())
 ```
 
 Emits: `CREATE INDEX CONCURRENTLY "idx_name" ON "table" ("col")` (`src/backend/postgres/index.rs:42-44`, `src/index/create.rs:297-300`). `DROP INDEX CONCURRENTLY` is similarly supported (`src/backend/postgres/index.rs:91-93`). (Confidence: **high**.)
@@ -267,7 +267,7 @@ SQLAlchemy (the DDL layer, used by Alembic) supports `CREATE INDEX CONCURRENTLY`
 Index("idx_name", col, postgresql_concurrently=True)
 ```
 
-Emits `CREATE INDEX CONCURRENTLY ...` via `visit_create_index` (`lib/sqlalchemy/dialects/postgresql/base.py:2675-2764`). Same flag for `DROP INDEX CONCURRENTLY` (`lib/sqlalchemy/dialects/postgresql/base.py:2783-2786`). (Confidence: **high**.)
+Emits `CREATE INDEX CONCURRENTLY...` via `visit_create_index` (`lib/sqlalchemy/dialects/postgresql/base.py:2675-2764`). Same flag for `DROP INDEX CONCURRENTLY` (`lib/sqlalchemy/dialects/postgresql/base.py:2783-2786`). (Confidence: **high**.)
 
 SQLAlchemy also supports `postgresql_not_valid=True` on constraints (`lib/sqlalchemy/dialects/postgresql/base.py:2559-2561`) via `_define_constraint_validity`. This emits `NOT VALID` on `ADD CONSTRAINT`. Djogi's DDL generator should support both of these flags. (Confidence: **high**.)
 
@@ -329,7 +329,7 @@ Rationale: Generating `CREATE INDEX CONCURRENTLY` by default would require auto-
 
 **2. Support the `-- djogi:no-transaction` directive.** When a migration file contains `-- djogi:no-transaction` as the first line, the runner must execute the entire migration outside a transaction (not wrapping in `BEGIN`/`COMMIT`). This is the equivalent of Django's `Migration.atomic = False`, Diesel's `run_in_transaction = false`, SeaORM's `use_transaction() -> Some(false)`, and Liquibase's `runInTransaction="false"`. Every surveyed system with a migration runner supports this mechanism.
 
-This directive is required for any migration containing `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `ALTER TYPE ... ADD VALUE`, `VACUUM`, `REINDEX`, or `DISCARD ALL`. Djogi's runner should validate this at apply time (raise an error if `CONCURRENTLY` appears in a transactional migration, similar to Django's `NotInTransactionMixin`).
+This directive is required for any migration containing `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `ALTER TYPE... ADD VALUE`, `VACUUM`, `REINDEX`, or `DISCARD ALL`. Djogi's runner should validate this at apply time (raise an error if `CONCURRENTLY` appears in a transactional migration, similar to Django's `NotInTransactionMixin`).
 
 **3. Do not attempt to auto-detect non-transactional DDL in v0.1.** Flyway's per-statement regex detection (`PostgreSQLParser.java:114-137`) is useful but adds complexity. Defer to v0.2. For v0.1, trust the operator's `-- djogi:no-transaction` annotation.
 
@@ -355,7 +355,7 @@ When enabled in `Djogi.toml` or per-migration via directive, the generator would
 
 2. **`NOT NULL` constraint addition:** instead of `ALTER TABLE t ALTER COLUMN col SET NOT NULL`, emit the two-migration sequence with `CHECK (col IS NOT NULL) NOT VALID` followed by `VALIDATE CONSTRAINT`.
 
-3. **Foreign key addition:** instead of `ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY ...`, emit the two-migration `NOT VALID` + `VALIDATE` sequence.
+3. **Foreign key addition:** instead of `ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY...`, emit the two-migration `NOT VALID` + `VALIDATE` sequence.
 
 4. **Column type change:** refuse to generate and instead emit a warning with instructions for the expand-contract sequence. The generator cannot safely automate column type changes; it can only block naive single-migration approaches.
 

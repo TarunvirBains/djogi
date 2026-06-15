@@ -1,7 +1,7 @@
 error: exclusion(...) requires `name = ".."` — every EXCLUDE constraint must carry an explicit name
-  --> $DIR/exclusion_missing_name.rs:12:5
-   |
-12 |     exclusion(
-   |     ^^^^^^^^^
+ --> $DIR/exclusion_missing_name.rs:12:5
+ |
+12 |  exclusion(
+ |  ^^^^^^^^^
 
 error: aborting due to 1 previous error

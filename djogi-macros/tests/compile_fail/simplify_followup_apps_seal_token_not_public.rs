@@ -13,15 +13,15 @@ use djogi::App;
 pub struct FakeApp;
 
 impl App for FakeApp {
-    const __DJOGI_APP_SEAL: SealToken = djogi::apps::__DJOGI_APPS_SEAL_TOKEN;
-    const LABEL: &'static str = "fake";
-    const DATABASE: &'static str = "main";
-    const DESCRIPTOR: djogi::AppDescriptor = djogi::AppDescriptor {
-        label: "fake",
-        database: "main",
-        renamed_from: None,
-        tombstone: false,
-    };
+ const __DJOGI_APP_SEAL: SealToken = djogi::apps::__DJOGI_APPS_SEAL_TOKEN;
+ const LABEL: &'static str = "fake";
+ const DATABASE: &'static str = "main";
+ const DESCRIPTOR: djogi::AppDescriptor = djogi::AppDescriptor {
+  label: "fake",
+  database: "main",
+  renamed_from: None,
+  tombstone: false,
+ };
 }
 
 fn main() {}

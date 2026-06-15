@@ -16,19 +16,19 @@
 use djogi::prelude::*;
 
 djogi::apps! {
-    #[app(database = "main", label = "audit")]
-    pub struct MainAudit;
+ #[app(database = "main", label = "audit")]
+ pub struct MainAudit;
 
-    #[app(database = "crud_log", label = "audit")]
-    pub struct CrudAudit;
+ #[app(database = "crud_log", label = "audit")]
+ pub struct CrudAudit;
 }
 
 fn main() {
-    // Inspect the const associated descriptors only — calling
-    // `AppRegistry::all()` here would panic per F2 (workspace-wide
-    // label-uniqueness invariant).
-    assert_eq!(<MainAudit as App>::LABEL, "audit");
-    assert_eq!(<MainAudit as App>::DATABASE, "main");
-    assert_eq!(<CrudAudit as App>::LABEL, "audit");
-    assert_eq!(<CrudAudit as App>::DATABASE, "crud_log");
+ // Inspect the const associated descriptors only — calling
+ // `AppRegistry::all()` here would panic per F2 (workspace-wide
+ // label-uniqueness invariant).
+ assert_eq!(<MainAudit as App>::LABEL, "audit");
+ assert_eq!(<MainAudit as App>::DATABASE, "main");
+ assert_eq!(<CrudAudit as App>::LABEL, "audit");
+ assert_eq!(<CrudAudit as App>::DATABASE, "crud_log");
 }

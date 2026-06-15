@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Key Research Areas
 
@@ -26,7 +26,7 @@
 ### HeeRanjId Integration
 - Installing HeeRanjId SQL functions and tables via `djogi init` and `db reset`
 - Startup behavior: `HEER_NODE_ID` and `HEER_RANJ_NODE_ID` env vars identify a pre-provisioned HeeRanjID node; Djogi does not read them directly — wire the values into the pool's `post_connect` hook; `heer_nodes` must be provisioned before startup to avoid DB-side connection errors on first use
-- Rust wrappers: `<HeerId as PrimaryKeyDbGen>::generate(&mut ctx)` / `generate_many(&mut ctx, n)` calling `heerid_next()` / `generate_ids(n)`. The runtime dispatch goes through `DjogiContext` (Phase 4 retrofit) — pool-or-transaction is selected internally.
+- Rust wrappers: `<HeerId as PrimaryKeyDbGen>::generate(&mut ctx)` / `generate_many(&mut ctx, n)` calling `heerid_next()` / `generate_ids(n)`. The runtime dispatch goes through `DjogiContext` ( retrofit) — pool-or-transaction is selected internally.
 - RanjId wrappers: `<RanjId as PrimaryKeyDbGen>::generate(&mut ctx)` calling `ranjid_next()`. Same `DjogiContext` shape as HeerId.
 - `create_with_id()`: explicit ID INSERT with `ON CONFLICT (id) DO NOTHING`
 - Shell bindings: synchronous `HeerId::generate()`, `HeerId::generate_many(n)`, and `RanjId::generate()` in Rhai
@@ -40,9 +40,9 @@
 - Side-channel file (`target/djogi_models.json`) for `build.rs` consumption
 - Error message quality: `proc-macro-error`, `syn::Error::new_spanned`
 - Testing: `lihaaf` is the sole compile-fail / compile-pass macro
-  fixture harness (CI gate). The historical `trybuild`-based corpus
-  was migrated to lihaaf in Phase 8.5; trybuild is no longer a dependency
-  or fallback. `macrotest` for expansion snapshots.
+ fixture harness (CI gate). The historical `trybuild`-based corpus
+ was migrated to lihaaf in ; trybuild is no longer a dependency
+ or fallback. `macrotest` for expansion snapshots.
 
 ### Build.rs Drift Detection
 - Reading `target/djogi_models.json` after proc macro expansion

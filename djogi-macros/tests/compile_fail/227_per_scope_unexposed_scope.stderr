@@ -1,7 +1,7 @@
-error: scope `admin` referenced inside `protected(per_scope = { ... })` is not exposed on field `email`. `per_scope` entries must match the field's scalar `#[field(expose(...))]` scopes; scalar expose scopes on this field: public. Add `expose(admin)` to this field or remove the codec entry for that scope.
-  --> $DIR/227_per_scope_unexposed_scope.rs:17:17
-   |
-17 |                 admin = {
-   |                 ^^^^^
+error: scope `admin` referenced inside `protected(per_scope = {... })` is not exposed on field `email`. `per_scope` entries must match the field's scalar `#[field(expose(...))]` scopes; scalar expose scopes on this field: public. Add `expose(admin)` to this field or remove the codec entry for that scope.
+ --> $DIR/227_per_scope_unexposed_scope.rs:17:17
+ |
+17 |     admin = {
+ |     ^^^^^
 
 error: aborting due to 1 previous error

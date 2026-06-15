@@ -10,23 +10,23 @@
 //! Coverage matrix:
 //!
 //! - **VisageQuerySet round-trip — inbound direction:** create a row
-//!   with `direction = "inbound"`, fetch via `ConsignmentPublic::filter`,
-//!   assert the derived `facility_site` equals `inbound_site`.
+//!  with `direction = "inbound"`, fetch via `ConsignmentPublic::filter`,
+//!  assert the derived `facility_site` equals `inbound_site`.
 //! - **VisageQuerySet round-trip — outbound direction:** same shape
-//!   with `direction = "outbound"`, assert `facility_site` equals
-//!   `outbound_site`.
+//!  with `direction = "outbound"`, assert `facility_site` equals
+//!  `outbound_site`.
 //! - **Sync parity helper (in-memory ↔ fetched):** construct an
-//!   in-memory visage via `From<&Model>` and a fetched visage via
-//!   `VisageQuerySet`; pass both to the per-visage inherent
-//!   `assert_derived_parity` method. Must succeed when SQL and
-//!   Rust agree.
+//!  in-memory visage via `From<&Model>` and a fetched visage via
+//!  `VisageQuerySet`; pass both to the per-visage inherent
+//!  `assert_derived_parity` method. Must succeed when SQL and
+//!  Rust agree.
 //! - **Sync parity helper — deliberate drift detection:** mutate one
-//!   visage's derived field and assert the helper surfaces
-//!   `DerivedParityError::Drift { field: "facility_site", .. }`.
+//!  visage's derived field and assert the helper surfaces
+//!  `DerivedParityError::Drift { field: "facility_site", .. }`.
 //! - **Async parity helper convenience:** exercise
-//!   `djogi::testing::assert_derived_parity_fetched` to cover the
-//!   CTO-required additive async surface (#231
-//!   reconciliation FIX_BEFORE_BETA-1).
+//!  `djogi::testing::assert_derived_parity_fetched` to cover the
+//!  CTO-required additive async surface (#231
+//!  reconciliation FIX_BEFORE_BETA-1).
 //!
 //! Per `feedback_no_raw_execute_in_tests.md`: every test uses
 //! `#[djogi_test(sync_models = [...])]` and goes through the typed
@@ -41,18 +41,18 @@ use djogi::testing::{DerivedParityError, assert_derived_parity_fetched};
 #[model(table = "visage_derived_projection_consignments")]
 #[derive(Model, Debug, Clone, PartialEq)]
 #[derived(
-    name   = facility_site,
-    ty     = String,
-    scopes = [public, admin, export],
-    sql    = "CASE WHEN direction = 'inbound' \
-                  THEN inbound_site \
-                  ELSE outbound_site END",
-    rust   = "if model.direction == \"inbound\" { \
-                  model.inbound_site.clone() \
-              } else { \
-                  model.outbound_site.clone() \
-              }",
-    doc    = " The side of the shipment that is the facility itself.",
+  name  = facility_site,
+  ty   = String,
+  scopes = [public, admin, export],
+  sql  = "CASE WHEN direction = 'inbound' \
+         THEN inbound_site \
+         ELSE outbound_site END",
+  rust  = "if model.direction == \"inbound\" { \
+         model.inbound_site.clone() \
+       } else { \
+         model.outbound_site.clone() \
+       }",
+  doc  = " The side of the shipment that is the facility itself.",
 )]
 pub struct Consignment {
     #[field(expose(public, admin, export))]
@@ -125,10 +125,10 @@ async fn visage_queryset_fetches_outbound_derived_projection(mut ctx: DjogiConte
 #[djogi::djogi_test(sync_models = [Consignment])]
 async fn assert_derived_parity_succeeds_when_sql_and_rust_agree(mut ctx: DjogiContext) {
     // Standard recommended workflow:
-    //   1. Create the model row.
-    //   2. Construct in-memory visage via `From<&Model>`.
-    //   3. Fetch the visage via `VisageQuerySet`.
-    //   4. Compare derived fields with `assert_derived_parity`.
+    //  1. Create the model row.
+    //  2. Construct in-memory visage via `From<&Model>`.
+    //  3. Fetch the visage via `VisageQuerySet`.
+    //  4. Compare derived fields with `assert_derived_parity`.
     //
     // The SQL CASE arms and the Rust if/else match each other, so
     // the helper must succeed on every direction.
@@ -235,11 +235,11 @@ async fn assert_derived_parity_fetched_async_helper(mut ctx: DjogiContext) {
     // (#231 reconciliation FIX_BEFORE_BETA-1).
     //
     // Workflow:
-    //   1. Create the model row.
-    //   2. Construct in-memory visage via `From<&Model>`.
-    //   3. Call `assert_derived_parity_fetched(in_memory, || fetch_future)`
-    //      and let the helper drive the fetch + delegate to the sync
-    //      per-visage method.
+    //  1. Create the model row.
+    //  2. Construct in-memory visage via `From<&Model>`.
+    //  3. Call `assert_derived_parity_fetched(in_memory, || fetch_future)`
+    //   and let the helper drive the fetch + delegate to the sync
+    //   per-visage method.
     let consignment = Consignment::create(
         &mut ctx,
         Consignment {
@@ -288,7 +288,7 @@ async fn assert_derived_parity_fetched_async_helper(mut ctx: DjogiContext) {
 
 #[test]
 fn visage_descriptor_inventory_registers_per_scope() {
-    // #231 BLOCK-1 — the descriptor inventory.
+    // #231 — the descriptor inventory.
     //
     // `#[model] + #[derived]` emits one `inventory::submit!(VisageDescriptor)`
     // per `(Model, scope)` pair that has at least one derived entry in
@@ -356,14 +356,14 @@ fn visage_descriptor_inventory_registers_per_scope() {
 /// Coverage:
 ///
 /// 1. **Per-scope consistency** — every emitted visage scope
-///    (`Public`, `Admin`, `Export`) maps to the same source
-///    `type Model = Consignment` and therefore the same source
-///    table name.
+///  (`Public`, `Admin`, `Export`) maps to the same source
+///  `type Model = Consignment` and therefore the same source
+///  table name.
 /// 2. **Generic free helper** — a `fn source_table<V: DjogiVisage>()`
-///    free helper resolves `<V::Model as Model>::table_name()` at the
-///    type level, no `M:` parameter, no inference burden at the call
-///    site. This is the framework-internal consumer shape the
-///    original #231 acceptance criteria targeted.
+///  free helper resolves `<V::Model as Model>::table_name()` at the
+///  type level, no `M:` parameter, no inference burden at the call
+///  site. This is the framework-internal consumer shape the
+///  original #231 acceptance criteria targeted.
 #[test]
 fn djogi_visage_model_assoc_recovers_source_table() {
     use djogi::DjogiVisage;

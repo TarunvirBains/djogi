@@ -21,26 +21,26 @@ use serde::{Deserialize, Serialize};
 
 #[derive(JsonbSchema, Serialize, Deserialize, Default, Debug, Clone)]
 pub struct Meta {
-    pub label: String,
+ pub label: String,
 }
 
 #[model(table = "docs")]
 #[derive(Debug, Clone)]
 pub struct Doc {
-    pub meta: djogi::Jsonb<Meta>,
+ pub meta: djogi::Jsonb<Meta>,
 }
 
 fn _no_primitive_date_time_jsonb_compare() {
-    let probe = time::PrimitiveDateTime::new(
-        time::Date::from_calendar_date(2021, time::Month::January, 2).unwrap(),
-        time::Time::from_hms(3, 4, 5).unwrap(),
-    );
-    let _ = Doc::objects().filter(|f| {
-        f.meta()
-            .explicit_pg_predicate()
-            .path::<time::PrimitiveDateTime>("seen_at")
-            .eq(probe)
-    });
+ let probe = time::PrimitiveDateTime::new(
+  time::Date::from_calendar_date(2021, time::Month::January, 2).unwrap(),
+  time::Time::from_hms(3, 4, 5).unwrap(),
+ );
+ let _ = Doc::objects().filter(|f| {
+  f.meta()
+  .explicit_pg_predicate()
+  .path::<time::PrimitiveDateTime>("seen_at")
+  .eq(probe)
+ });
 }
 
 fn main() {}

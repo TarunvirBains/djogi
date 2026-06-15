@@ -1,34 +1,34 @@
 //! `djogi::primary_key!` declarative-style macro.
 //! Adopters declare a custom PK type in ~4 lines. The macro emits:
 //! - the `pub struct <Name>(<Inner>);` newtype with a standard derive set
-//!   (`Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
-//!   `Hash`, `serde::Serialize`, `serde::Deserialize`). `PartialOrd` /
-//!   `Ord` are required by 2's auto-emitted
-//!   `Cacheable::Id` bound (`Hash + Eq + Clone + Ord + Send + Sync +
+//! (`Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
+//! `Hash`, `serde::Serialize`, `serde::Deserialize`). `PartialOrd` /
+//! `Ord` are required by 2's auto-emitted
+//! `Cacheable::Id` bound (`Hash + Eq + Clone + Ord + Send + Sync +
 //! 'static` — `sassi-reference/sassi/src/cacheable.rs:60`); serde
-//!   derives keep the newtype usable as a transparent envelope wrapper
-//!   in adopter-side JSON I/O without reaching for an explicit
-//!   `serde` dep;
+//! derives keep the newtype usable as a transparent envelope wrapper
+//! in adopter-side JSON I/O without reaching for an explicit
+//! `serde` dep;
 //! - `impl ::djogi::primary_key::PrimaryKey for <Name>` with
-//!   `KIND = PkType::Custom(CustomPrimaryKeyKind { .. })`, `SQL_TYPE`, and
-//!   `DEFAULT_SQL` populated from the declaration attributes;
+//! `KIND = PkType::Custom(CustomPrimaryKeyKind {.. })`, `SQL_TYPE`, and
+//! `DEFAULT_SQL` populated from the declaration attributes;
 //! - `ToSql` / `FromSql` delegation to the inner type — the newtype
-//!   encodes on the wire exactly as `<Inner>` does;
+//! encodes on the wire exactly as `<Inner>` does;
 //! - `impl PrimaryKeyDbGen for <Name>` when `bulk_sql = "..."` is present
-//!   `generate_many` executes `bulk_sql` with the batch count as `$1`
-//!   and decodes each row's first column as the inner type;
+//! `generate_many` executes `bulk_sql` with the batch count as `$1`
+//! and decodes each row's first column as the inner type;
 //! - `impl PrimaryKeyClientGen for <Name>` when `generate = |...| expr`
-//!   is present — the emitted body calls the closure expression once per
-//!   invocation and wraps the result in the newtype.
+//! is present — the emitted body calls the closure expression once per
+//! invocation and wraps the result in the newtype.
 //! # Grammar
 //! ```ignore
 //! djogi::primary_key! {
-//!     pub struct MyAppId(i64);
-//!     sql_type = "BIGINT";
-//!     default_sql = "my_app_id_next()";
-//!     bulk_sql = "SELECT id FROM my_app_id_next_many($1)";
-//!     // Optional — when present, emits `PrimaryKeyClientGen`:
-//!     // generate = || some_client_side_id_generator();
+//!  pub struct MyAppId(i64);
+//!  sql_type = "BIGINT";
+//!  default_sql = "my_app_id_next()";
+//!  bulk_sql = "SELECT id FROM my_app_id_next_many($1)";
+//!  // Optional — when present, emits `PrimaryKeyClientGen`:
+//!  // generate = || some_client_side_id_generator();
 //! }
 //! ```
 //! `sql_type` and `default_sql` are required. `bulk_sql` is required for
@@ -42,7 +42,7 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{Expr, Ident, LitStr, Token, Type, Visibility};
 
-/// Parsed `djogi::primary_key! { ... }` invocation.
+/// Parsed `djogi::primary_key! {... }` invocation.
 /// The declaration is semicolon-separated — `struct Name(Inner);` first,
 /// then `key = value;` attribute pairs in any order. Each attribute key
 /// may appear at most once.
@@ -111,7 +111,7 @@ impl Parse for PrimaryKeyDecl {
                     &key,
                     format!(
                         "unknown djogi::primary_key! key `{key}`; \
-                             expected one of sql_type / default_sql / bulk_sql / generate"
+        expected one of sql_type / default_sql / bulk_sql / generate"
                     ),
                 ));
             }
@@ -145,7 +145,7 @@ impl Parse for PrimaryKeyDecl {
     }
 }
 
-/// Expand a `djogi::primary_key! { ... }` invocation to the newtype plus
+/// Expand a `djogi::primary_key! {... }` invocation to the newtype plus
 /// trait impls. The caller (in `lib.rs`) is responsible for converting
 /// to/from `proc_macro::TokenStream`.
 pub fn expand(input: TokenStream) -> TokenStream {
@@ -184,37 +184,37 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // shapes so there is one code path to audit per flavor, not two.
     let bulk_sql_body = if let Some(sql) = bulk_sql.as_ref() {
         quote! {
-            if n == 0 {
-                return ::std::result::Result::Ok(::std::vec::Vec::new());
-            }
-            let count = ::djogi::primary_key::checked_count(n)?;
-            let rows = ctx
-                .__query_all_for_macros(#sql, &[&count])
-                .await?;
-            let out: ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> = rows
-                .into_iter()
-                .map(|row| {
-                    ::djogi::try_get_scalar::<#inner>(&row, 0).map(Self)
-                })
-                .collect();
-            let out = out?;
-            if out.len() != n {
-                return ::std::result::Result::Err(
-                    ::djogi::primary_key::bulk_row_count_mismatch_err(out.len(), n, "bulk_sql"),
-                );
-            }
-            ::std::result::Result::Ok(out)
+         if n == 0 {
+          return ::std::result::Result::Ok(::std::vec::Vec::new());
+         }
+         let count = ::djogi::primary_key::checked_count(n)?;
+         let rows = ctx
+         .__query_all_for_macros(#sql, &[&count])
+         .await?;
+         let out: ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> = rows
+         .into_iter()
+         .map(|row| {
+           ::djogi::try_get_scalar::<#inner>(&row, 0).map(Self)
+          })
+         .collect();
+         let out = out?;
+         if out.len() != n {
+          return ::std::result::Result::Err(
+           ::djogi::primary_key::bulk_row_count_mismatch_err(out.len(), n, "bulk_sql"),
+          );
+         }
+         ::std::result::Result::Ok(out)
         }
     } else if generate.is_some() {
         quote! {
-            // Client-gen loop: `generate_client()` wraps the `generate = |...|`
-            // expression and produces a single value per call. No DB traffic
-            // from the helper macro's side.
-            let mut out: ::std::vec::Vec<Self> = ::std::vec::Vec::with_capacity(n);
-            for _ in 0..n {
-                out.push(<Self as ::djogi::primary_key::PrimaryKeyClientGen>::generate_client());
-            }
-            ::std::result::Result::Ok(out)
+         // Client-gen loop: `generate_client()` wraps the `generate = |...|`
+         // expression and produces a single value per call. No DB traffic
+         // from the helper macro's side.
+         let mut out: ::std::vec::Vec<Self> = ::std::vec::Vec::with_capacity(n);
+         for _ in 0..n {
+          out.push(<Self as ::djogi::primary_key::PrimaryKeyClientGen>::generate_client());
+         }
+         ::std::result::Result::Ok(out)
         }
     } else {
         // Default-SQL-only path. `generate_series(1, $1)` yields N rows and
@@ -226,30 +226,30 @@ pub fn expand(input: TokenStream) -> TokenStream {
             default_sql = default_sql.value(),
         );
         quote! {
-            if n == 0 {
-                return ::std::result::Result::Ok(::std::vec::Vec::new());
-            }
-            let count = ::djogi::primary_key::checked_count(n)?;
-            let rows = ctx
-                .__query_all_for_macros(#synthesised_sql, &[&count])
-                .await?;
-            let out: ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> = rows
-                .into_iter()
-                .map(|row| {
-                    ::djogi::try_get_scalar::<#inner>(&row, 0).map(Self)
-                })
-                .collect();
-            let out = out?;
-            if out.len() != n {
-                return ::std::result::Result::Err(
-                    ::djogi::primary_key::bulk_row_count_mismatch_err(
-                        out.len(),
-                        n,
-                        "synthesised default_sql batch",
-                    ),
-                );
-            }
-            ::std::result::Result::Ok(out)
+         if n == 0 {
+          return ::std::result::Result::Ok(::std::vec::Vec::new());
+         }
+         let count = ::djogi::primary_key::checked_count(n)?;
+         let rows = ctx
+         .__query_all_for_macros(#synthesised_sql, &[&count])
+         .await?;
+         let out: ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> = rows
+         .into_iter()
+         .map(|row| {
+           ::djogi::try_get_scalar::<#inner>(&row, 0).map(Self)
+          })
+         .collect();
+         let out = out?;
+         if out.len() != n {
+          return ::std::result::Result::Err(
+           ::djogi::primary_key::bulk_row_count_mismatch_err(
+            out.len(),
+            n,
+            "synthesised default_sql batch",
+           ),
+          );
+         }
+         ::std::result::Result::Ok(out)
         }
     };
     let generate_many_ctx = if bulk_sql.is_none() && generate.is_some() {
@@ -258,27 +258,27 @@ pub fn expand(input: TokenStream) -> TokenStream {
         quote! { ctx }
     };
     let db_gen_impl = quote! {
-        impl ::djogi::primary_key::PrimaryKeyDbGen for #name {
-            async fn generate(
-                ctx: &mut ::djogi::DjogiContext,
-            ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
-                let mut batch = <Self as ::djogi::primary_key::PrimaryKeyDbGen>::generate_many(ctx, 1).await?;
-                batch
-                    .pop()
-                    .ok_or_else(|| ::djogi::DjogiError::Db(
-                        ::djogi::DbError::other(
-                            "djogi::primary_key!: generate_many returned zero rows for n=1",
-                        ),
-                    ))
-            }
+     impl ::djogi::primary_key::PrimaryKeyDbGen for #name {
+      async fn generate(
+       ctx: &mut ::djogi::DjogiContext,
+      ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+       let mut batch = <Self as ::djogi::primary_key::PrimaryKeyDbGen>::generate_many(ctx, 1).await?;
+       batch
+       .pop()
+       .ok_or_else(|| ::djogi::DjogiError::Db(
+         ::djogi::DbError::other(
+          "djogi::primary_key!: generate_many returned zero rows for n=1",
+         ),
+        ))
+      }
 
-            async fn generate_many(
-                #generate_many_ctx: &mut ::djogi::DjogiContext,
-                n: usize,
-            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
-                #bulk_sql_body
-            }
-        }
+      async fn generate_many(
+       #generate_many_ctx: &mut ::djogi::DjogiContext,
+       n: usize,
+      ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+       #bulk_sql_body
+      }
+     }
     };
 
     // Client-backed generator. The `generate = |…| expr` attribute carries
@@ -286,163 +286,163 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // once per `generate_client()` invocation and wrap the result.
     let client_gen_impl = generate.as_ref().map(|expr| {
         quote! {
-            impl ::djogi::primary_key::PrimaryKeyClientGen for #name {
-                fn generate_client() -> Self {
-                    Self((#expr)())
-                }
-            }
+         impl ::djogi::primary_key::PrimaryKeyClientGen for #name {
+          fn generate_client() -> Self {
+           Self((#expr)())
+          }
+         }
         }
     });
 
     quote! {
-        #[derive(
-            ::std::fmt::Debug,
-            ::std::clone::Clone,
-            ::std::marker::Copy,
-            ::std::cmp::PartialEq,
-            ::std::cmp::Eq,
-            // 2 — `Cacheable::Id: Hash + Eq + Clone + Ord + Send +
-            // Sync + 'static` (`sassi-reference/sassi/src/cacheable.rs:60`). The
-            // auto-emitted `impl Cacheable for {Model}` from `#[derive(Model)]`
-            // sets `type Id = <user PK type>`, so the PK must satisfy `Ord` for
-            // the impl to type-check. The macro accepts whatever inner type the
-            // adopter declared (no parse-time validation of `sql_type` against
-            // the inner Rust type — see the `Parse` impl above), so the auto-
-            // derive only succeeds when the inner type already implements
-            // `Ord` + `PartialOrd`. The expected inner types — `i64` / `i32` /
-            // `uuid::Uuid` for the BIGINT / INTEGER / UUID `sql_type`s the
-            // ecosystem uses — all implement `Ord` upstream (std + uuid), so
-            // the derive cost is zero in practice. Adopter responsibility:
-            // don't declare a `primary_key!` whose inner Rust type lacks `Ord`,
-            // or the resulting Cacheable auto-emit will fail with a bound
-            // error at the `#[derive(Model)]` site that uses the PK. The
-            // built-in PK types (HeerId, HeerIdDesc, RanjId, RanjIdDesc,
-            // Serial) already implement `Ord` upstream (heeranjid + std), so
-            // the existing per-PK Cacheable variants in
-            // `djogi-macros/tests/cacheable_emit.rs` cover the happy path.
-            ::std::cmp::PartialOrd,
-            ::std::cmp::Ord,
-            ::std::hash::Hash,
-            ::djogi::__private::serde::Serialize,
-            ::djogi::__private::serde::Deserialize,
-        )]
-        // Route serde through `::djogi::__private::serde` so adopters never
-        // need a direct `serde` dependency — matches the other macro-
-        // emitted derive paths across the crate (`feedback_macro_path_routing`).
-        #[serde(crate = "::djogi::__private::serde")]
-        #[serde(transparent)]
-        #vis struct #name(pub #inner);
+     #[derive(
+      ::std::fmt::Debug,
+      ::std::clone::Clone,
+      ::std::marker::Copy,
+      ::std::cmp::PartialEq,
+      ::std::cmp::Eq,
+      // 2 — `Cacheable::Id: Hash + Eq + Clone + Ord + Send +
+      // Sync + 'static` (`sassi-reference/sassi/src/cacheable.rs:60`). The
+      // auto-emitted `impl Cacheable for {Model}` from `#[derive(Model)]`
+      // sets `type Id = <user PK type>`, so the PK must satisfy `Ord` for
+      // the impl to type-check. The macro accepts whatever inner type the
+      // adopter declared (no parse-time validation of `sql_type` against
+      // the inner Rust type — see the `Parse` impl above), so the auto-
+      // derive only succeeds when the inner type already implements
+      // `Ord` + `PartialOrd`. The expected inner types — `i64` / `i32` /
+      // `uuid::Uuid` for the BIGINT / INTEGER / UUID `sql_type`s the
+      // ecosystem uses — all implement `Ord` upstream (std + uuid), so
+      // the derive cost is zero in practice. Adopter responsibility:
+      // don't declare a `primary_key!` whose inner Rust type lacks `Ord`,
+      // or the resulting Cacheable auto-emit will fail with a bound
+      // error at the `#[derive(Model)]` site that uses the PK. The
+      // built-in PK types (HeerId, HeerIdDesc, RanjId, RanjIdDesc,
+      // Serial) already implement `Ord` upstream (heeranjid + std), so
+      // the existing per-PK Cacheable variants in
+      // `djogi-macros/tests/cacheable_emit.rs` cover the happy path.
+      ::std::cmp::PartialOrd,
+      ::std::cmp::Ord,
+      ::std::hash::Hash,
+      ::djogi::__private::serde::Serialize,
+      ::djogi::__private::serde::Deserialize,
+     )]
+     // Route serde through `::djogi::__private::serde` so adopters never
+     // need a direct `serde` dependency — matches the other macro-
+     // emitted derive paths across the crate (`feedback_macro_path_routing`).
+     #[serde(crate = "::djogi::__private::serde")]
+     #[serde(transparent)]
+     #vis struct #name(pub #inner);
 
-        impl ::djogi::primary_key::PrimaryKey for #name {
-            const __DJOGI_PK_SEAL: ::djogi::primary_key::PkSealToken =
-                ::djogi::__private::pk_seal::TOKEN;
-            const KIND: ::djogi::PkType = ::djogi::PkType::Custom(
-                ::djogi::descriptor::CustomPrimaryKeyKind {
-                    type_name: #name_str,
-                    sql_type: #sql_type,
-                    default_sql: #default_sql,
-                }
-            );
-            const SQL_TYPE: &'static str = #sql_type;
-            const DEFAULT_SQL: ::std::option::Option<&'static str> =
-                ::std::option::Option::Some(#default_sql);
+     impl ::djogi::primary_key::PrimaryKey for #name {
+      const __DJOGI_PK_SEAL: ::djogi::primary_key::PkSealToken =
+       ::djogi::__private::pk_seal::TOKEN;
+      const KIND: ::djogi::PkType = ::djogi::PkType::Custom(
+       ::djogi::descriptor::CustomPrimaryKeyKind {
+        type_name: #name_str,
+        sql_type: #sql_type,
+        default_sql: #default_sql,
+       }
+      );
+      const SQL_TYPE: &'static str = #sql_type;
+      const DEFAULT_SQL: ::std::option::Option<&'static str> =
+       ::std::option::Option::Some(#default_sql);
 
-            fn sentinel() -> Self {
-                // Defer to the inner type's `Default` — `i64::default() == 0`,
-                // `uuid::Uuid::default() == nil`. Matches the "zero value"
-                // contract the built-in `PrimaryKey::sentinel` impls uphold.
-                Self(<#inner as ::std::default::Default>::default())
-            }
-        }
+      fn sentinel() -> Self {
+       // Defer to the inner type's `Default` — `i64::default() == 0`,
+       // `uuid::Uuid::default() == nil`. Matches the "zero value"
+       // contract the built-in `PrimaryKey::sentinel` impls uphold.
+       Self(<#inner as ::std::default::Default>::default())
+      }
+     }
 
-        impl ::djogi::descriptor::DjogiSqlType for #name {
-            const SQL_TYPE: &'static str = #sql_type;
-        }
+     impl ::djogi::descriptor::DjogiSqlType for #name {
+      const SQL_TYPE: &'static str = #sql_type;
+     }
 
-        // `impl Default` lets adopter code use the custom PK type as an
-        // ambient field on a `#[model]` struct. The macro-emitted model
-        // `Default` impl assigns `Default::default()` to every user field;
-        // custom PKs must honour that contract.
-        impl ::std::default::Default for #name {
-            fn default() -> Self {
-                <Self as ::djogi::primary_key::PrimaryKey>::sentinel()
-            }
-        }
+     // `impl Default` lets adopter code use the custom PK type as an
+     // ambient field on a `#[model]` struct. The macro-emitted model
+     // `Default` impl assigns `Default::default()` to every user field;
+     // custom PKs must honour that contract.
+     impl ::std::default::Default for #name {
+      fn default() -> Self {
+       <Self as ::djogi::primary_key::PrimaryKey>::sentinel()
+      }
+     }
 
-        impl ::djogi::__private::postgres_types::ToSql for #name {
-            fn to_sql(
-                &self,
-                ty: &::djogi::__private::postgres_types::Type,
-                out: &mut ::djogi::__private::bytes::BytesMut,
-            ) -> ::std::result::Result<
-                ::djogi::__private::postgres_types::IsNull,
-                ::std::boxed::Box<
-                    dyn ::std::error::Error + ::std::marker::Sync + ::std::marker::Send,
-                >,
-            > {
-                <#inner as ::djogi::__private::postgres_types::ToSql>::to_sql(&self.0, ty, out)
-            }
+     impl ::djogi::__private::postgres_types::ToSql for #name {
+      fn to_sql(
+       &self,
+       ty: &::djogi::__private::postgres_types::Type,
+       out: &mut ::djogi::__private::bytes::BytesMut,
+      ) -> ::std::result::Result<
+       ::djogi::__private::postgres_types::IsNull,
+       ::std::boxed::Box<
+        dyn ::std::error::Error + ::std::marker::Sync + ::std::marker::Send,
+       >,
+      > {
+       <#inner as ::djogi::__private::postgres_types::ToSql>::to_sql(&self.0, ty, out)
+      }
 
-            fn accepts(ty: &::djogi::__private::postgres_types::Type) -> bool {
-                <#inner as ::djogi::__private::postgres_types::ToSql>::accepts(ty)
-            }
+      fn accepts(ty: &::djogi::__private::postgres_types::Type) -> bool {
+       <#inner as ::djogi::__private::postgres_types::ToSql>::accepts(ty)
+      }
 
-            ::djogi::__private::postgres_types::to_sql_checked!();
-        }
+      ::djogi::__private::postgres_types::to_sql_checked!();
+     }
 
-        // Delegate `IntoFilterValue` to the inner type so `FieldRef<_, Self>::in_list`,
-        // `::eq`, etc. reuse the inner's discriminant. Built-in inners like
-        // `i64`, `uuid::Uuid`, `HeerId`, and `RanjId` already implement it;
-        // adopter inners without an impl surface a clean bound error at the
-        // filter call site.
-        // `jsonb_sql_cast` ALSO delegates to the inner type so
-        // `JsonbPathRef<_, Self>` emits the same typed Postgres cast the
-        // inner SQL value type would emit. Pre-fix the custom PK wrapper
-        // inherited the default body, which walks `type_name::<Self>()`
-        // through the cast table. The adopter's PK type name is never in
-        // the table, so JSONB path comparisons silently fell back to text
-        // (`'10' < '9'` because text ordering is lexicographic). Adopter-
-        // supplied `sql_type` is intentionally NOT used as the cast text
-        // it is SQL text that may be a domain, alias, or wrong value; the
-        // typed cast must come from the inner Rust type's
-        // `IntoFilterValue` impl through the `JsonbSqlCast` enum.
-        impl ::djogi::IntoFilterValue for #name {
-            fn into_filter_value(self) -> ::djogi::query::internal::FilterValue {
-                <#inner as ::djogi::IntoFilterValue>::into_filter_value(self.0)
-            }
+     // Delegate `IntoFilterValue` to the inner type so `FieldRef<_, Self>::in_list`,
+     // `::eq`, etc. reuse the inner's discriminant. Built-in inners like
+     // `i64`, `uuid::Uuid`, `HeerId`, and `RanjId` already implement it;
+     // adopter inners without an impl surface a clean bound error at the
+     // filter call site.
+     // `jsonb_sql_cast` ALSO delegates to the inner type so
+     // `JsonbPathRef<_, Self>` emits the same typed Postgres cast the
+     // inner SQL value type would emit. Pre-fix the custom PK wrapper
+     // inherited the default body, which walks `type_name::<Self>()`
+     // through the cast table. The adopter's PK type name is never in
+     // the table, so JSONB path comparisons silently fell back to text
+     // (`'10' < '9'` because text ordering is lexicographic). Adopter-
+     // supplied `sql_type` is intentionally NOT used as the cast text
+     // it is SQL text that may be a domain, alias, or wrong value; the
+     // typed cast must come from the inner Rust type's
+     // `IntoFilterValue` impl through the `JsonbSqlCast` enum.
+     impl ::djogi::IntoFilterValue for #name {
+      fn into_filter_value(self) -> ::djogi::query::internal::FilterValue {
+       <#inner as ::djogi::IntoFilterValue>::into_filter_value(self.0)
+      }
 
-            fn jsonb_sql_cast() -> ::std::option::Option<::djogi::jsonb::JsonbSqlCast> {
-                <#inner as ::djogi::IntoFilterValue>::jsonb_sql_cast()
-            }
-        }
+      fn jsonb_sql_cast() -> ::std::option::Option<::djogi::jsonb::JsonbSqlCast> {
+       <#inner as ::djogi::IntoFilterValue>::jsonb_sql_cast()
+      }
+     }
 
-        // Custom-PK newtypes participate in the JSONB-path comparison
-        // surface. `JsonbPathComparable` is an open marker; the orphan
-        // rule lets the macro emit it for the adopter's own PK type.
-        // Without this, `JsonbPathRef::<M, #name>::gt(...)` would fail
-        // the `V: JsonbPathComparable` bound even though the cast
-        // delegation (above) is correct.
-        impl ::djogi::jsonb::JsonbPathComparable for #name {}
+     // Custom-PK newtypes participate in the JSONB-path comparison
+     // surface. `JsonbPathComparable` is an open marker; the orphan
+     // rule lets the macro emit it for the adopter's own PK type.
+     // Without this, `JsonbPathRef::<M, #name>::gt(...)` would fail
+     // the `V: JsonbPathComparable` bound even though the cast
+     // delegation (above) is correct.
+     impl ::djogi::jsonb::JsonbPathComparable for #name {}
 
-        impl<'a> ::djogi::__private::postgres_types::FromSql<'a> for #name {
-            fn from_sql(
-                ty: &::djogi::__private::postgres_types::Type,
-                raw: &'a [u8],
-            ) -> ::std::result::Result<
-                Self,
-                ::std::boxed::Box<
-                    dyn ::std::error::Error + ::std::marker::Sync + ::std::marker::Send,
-                >,
-            > {
-                <#inner as ::djogi::__private::postgres_types::FromSql<'a>>::from_sql(ty, raw).map(Self)
-            }
+     impl<'a> ::djogi::__private::postgres_types::FromSql<'a> for #name {
+      fn from_sql(
+       ty: &::djogi::__private::postgres_types::Type,
+       raw: &'a [u8],
+      ) -> ::std::result::Result<
+       Self,
+       ::std::boxed::Box<
+        dyn ::std::error::Error + ::std::marker::Sync + ::std::marker::Send,
+       >,
+      > {
+       <#inner as ::djogi::__private::postgres_types::FromSql<'a>>::from_sql(ty, raw).map(Self)
+      }
 
-            fn accepts(ty: &::djogi::__private::postgres_types::Type) -> bool {
-                <#inner as ::djogi::__private::postgres_types::FromSql<'a>>::accepts(ty)
-            }
-        }
+      fn accepts(ty: &::djogi::__private::postgres_types::Type) -> bool {
+       <#inner as ::djogi::__private::postgres_types::FromSql<'a>>::accepts(ty)
+      }
+     }
 
-        #db_gen_impl
-        #client_gen_impl
+     #db_gen_impl
+     #client_gen_impl
     }
 }

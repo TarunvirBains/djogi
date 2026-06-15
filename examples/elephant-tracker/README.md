@@ -10,21 +10,21 @@ reading isolated snippets.
 
 ## What it demonstrates
 
-| Feature                          | Where you see it                                       |
+| Feature       | Where you see it          |
 |----------------------------------|--------------------------------------------------------|
-| `#[model]` macro                 | every file in `src/models/`                            |
-| Foreign keys with `ForeignKey<T>`| `Elephant::herd_id`, `Sighting::elephant_id`           |
-| M2M with explicit through model  | `Herd ↔ Country` via `HerdRange` (cross-border ranges) |
-| `Jsonb<T>` typed JSONB           | `Elephant::tags`                                       |
-| `GeoPoint` + EWKB                | `Sighting::location`                                   |
-| Spatial cluster grouping (DBSCAN)| `cluster_sightings` demo                               |
-| Full-text search (FTS)           | `Researcher::notes` and `Sighting::notes`              |
-| Multi-edge self-FKs (pedigree)   | `Elephant::mother_id` + `father_id` — single-edge typed `tree_descendants` for matrilineal lineage; materialized `ElephantAncestry` closure (via `Model::materialize_closure`) for indexed Wright kinship lookup in the `mating-pairs` demo |
-| Visages with side-query trait    | `HerdSummary` reports `herd_size` via aggregate, not row|
-| Transactional outbox             | `Sighting::create` enqueues an event in `sightings_outbox` |
-| RLS via `tenant_key`             | Researchers scoped per organisation (declared at macro layer; `ALTER TABLE … ENABLE ROW LEVEL SECURITY` + `CREATE POLICY` DDL emission pending Phase 7) |
-| Optimistic locking (`version`)   | `Elephant::tags` updates                               |
-| Tracked field changes            | `Elephant::name`, `Researcher::name` (declared at macro layer; audit `_logs` mirror-table wiring and `audit_pool` are out of scope for this example) |
+| `#[model]` macro     | every file in `src/models/`       |
+| Foreign keys with `ForeignKey<T>`| `Elephant::herd_id`, `Sighting::elephant_id`   |
+| M2M with explicit through model | `Herd ↔ Country` via `HerdRange` (cross-border ranges) |
+| `Jsonb<T>` typed JSONB   | `Elephant::tags`          |
+| `GeoPoint` + EWKB    | `Sighting::location`         |
+| Spatial cluster grouping (DBSCAN)| `cluster_sightings` demo        |
+| Full-text search (FTS)   | `Researcher::notes` and `Sighting::notes`    |
+| Multi-edge self-FKs (pedigree) | `Elephant::mother_id` + `father_id` — single-edge typed `tree_descendants` for matrilineal lineage; materialized `ElephantAncestry` closure (via `Model::materialize_closure`) for indexed Wright kinship lookup in the `mating-pairs` demo |
+| Visages with side-query trait | `HerdSummary` reports `herd_size` via aggregate, not row|
+| Transactional outbox    | `Sighting::create` enqueues an event in `sightings_outbox` |
+| RLS via `tenant_key`    | Researchers scoped per organisation (declared at macro layer; `ALTER TABLE … ENABLE ROW LEVEL SECURITY` + `CREATE POLICY` DDL emission pending a future release) |
+| Optimistic locking (`version`) | `Elephant::tags` updates        |
+| Tracked field changes   | `Elephant::name`, `Researcher::name` (declared at macro layer; audit `_logs` mirror-table wiring and `audit_pool` are out of scope for this example) |
 
 ## The domain
 
@@ -33,39 +33,39 @@ density, and pedigree-driven mating-pair selection the load-bearing
 story:
 
 - **Country** — reference table (Kenya, Tanzania, Uganda, Botswana,
-  Zimbabwe). Serial PK, no audit trail.
+ Zimbabwe). Serial PK, no audit trail.
 - **Researcher** — per-organization. Scoped by `tenant_key = "org_id"`
-  so each org sees only its own field staff and their notes.
+ so each org sees only its own field staff and their notes.
 - **Herd** — a named family group. M2M to `Country` through `HerdRange`
-  with a `season: TEXT` payload, because herds genuinely cross borders
-  seasonally.
+ with a `season: TEXT` payload, because herds genuinely cross borders
+ seasonally.
 - **HerdRange** — the through model. Holds the season payload and the
-  composite uniqueness constraint.
+ composite uniqueness constraint.
 - **Elephant** — individual elephants. `mother_id` + `father_id`,
-  both `Option<ForeignKey<Self>>`, model biological pedigree (each
-  individual has at most one of each, either potentially unknown).
-  Matrilineal lineage walks `mother_id` only (single-edge
-  `tree_descendants` / raw recursive CTE in the `lineage` demo);
-  Wright kinship reads from a materialized `ElephantAncestry`
-  closure (populated at seed time via
-  `Model::materialize_closure::<ElephantAncestry>`) which the
-  `mating-pairs` demo joins to itself on `ancestor_id` to find
-  shared ancestors per candidate pair.
-  `tags: Jsonb<ElephantTags>` for typed extra fields including sex.
-  `version: i32` for optimistic locking on tag updates.
+ both `Option<ForeignKey<Self>>`, model biological pedigree (each
+ individual has at most one of each, either potentially unknown).
+ Matrilineal lineage walks `mother_id` only (single-edge
+ `tree_descendants` / raw recursive CTE in the `lineage` demo);
+ Wright kinship reads from a materialized `ElephantAncestry`
+ closure (populated at seed time via
+ `Model::materialize_closure::<ElephantAncestry>`) which the
+ `mating-pairs` demo joins to itself on `ancestor_id` to find
+ shared ancestors per candidate pair.
+ `tags: Jsonb<ElephantTags>` for typed extra fields including sex.
+ `version: i32` for optimistic locking on tag updates.
 - **ElephantAncestry** — materialized transitive closure of the
-  pedigree graph. `(elephant_id, ancestor_id, depth, path_count)`
-  with the framework-injected `id` / `created_at` / `updated_at`.
-  Populated post-seed (and re-runnable to refresh) by a single
-  `Elephant::materialize_closure::<ElephantAncestry>(ctx, opts)`
-  call; the helper walks both self-FK edges in one recursive CTE
-  and upserts via `ON CONFLICT (...) DO UPDATE`. Indexed lookup at
-  query time means every Wright F computation against this closure
-  is a cheap join, not a re-walk of the recursive CTE per pair.
+ pedigree graph. `(elephant_id, ancestor_id, depth, path_count)`
+ with the framework-injected `id` / `created_at` / `updated_at`.
+ Populated post-seed (and re-runnable to refresh) by a single
+ `Elephant::materialize_closure::<ElephantAncestry>(ctx, opts)`
+ call; the helper walks both self-FK edges in one recursive CTE
+ and upserts via `ON CONFLICT (...) DO UPDATE`. Indexed lookup at
+ query time means every Wright F computation against this closure
+ is a cheap join, not a re-walk of the recursive CTE per pair.
 - **Sighting** — observation events. `location: GeoPoint`, FK to
-  `Researcher` (`observed_by_id`), `notes: TEXT` (FTS-indexed). Records
-  on `Sighting::create` enqueue a row into `sightings_outbox` inside the
-  same transaction as the data write.
+ `Researcher` (`observed_by_id`), `notes: TEXT` (FTS-indexed). Records
+ on `Sighting::create` enqueue a row into `sightings_outbox` inside the
+ same transaction as the data write.
 
 ## Why this design
 
@@ -79,27 +79,27 @@ attention.
 Specifically:
 
 - We kept `HerdRange` even though it's a bare-payload through model,
-  because explicit-through M2M is a deliberate Djogi choice (no
-  implicit M2M fields) and the cross-border story makes the season
-  payload feel earned rather than synthetic.
+ because explicit-through M2M is a deliberate Djogi choice (no
+ implicit M2M fields) and the cross-border story makes the season
+ payload feel earned rather than synthetic.
 - We split `Elephant.parent_id` into `mother_id` + `father_id`
-  because biological pedigree has two edges, both potentially
-  unknown, and elephant-research data captures matrilineal and
-  patrilineal kinship distinctly. The split unlocks Wright
-  kinship-coefficient calculation across the population: the
-  framework's `Model::materialize_closure` helper walks both edges
-  with path-multiplicity preservation in a single recursive CTE
-  and writes the result into the `ElephantAncestry` table; the
-  `mating-pairs` demo joins that closure to itself on `ancestor_id`
-  for indexed shared-ancestor lookup per candidate pair. We kept
-  the raw recursive-CTE form in the `lineage` demo for matrilineal
-  descent because that path is naturally single-edge and the
-  inline SQL is currently a documented raw-SQL escape hatch; it is not yet
-  the baseline, and it should stay gated by the Phase 8.5 raw-SQL debt policy.
+ because biological pedigree has two edges, both potentially
+ unknown, and elephant-research data captures matrilineal and
+ patrilineal kinship distinctly. The split unlocks Wright
+ kinship-coefficient calculation across the population: the
+ framework's `Model::materialize_closure` helper walks both edges
+ with path-multiplicity preservation in a single recursive CTE
+ and writes the result into the `ElephantAncestry` table; the
+ `mating-pairs` demo joins that closure to itself on `ancestor_id`
+ for indexed shared-ancestor lookup per candidate pair. We kept
+ the raw recursive-CTE form in the `lineage` demo for matrilineal
+ descent because that path is naturally single-edge and the
+ inline SQL is currently a documented raw-SQL escape hatch; it is not yet
+ the baseline, and it should stay gated by the shipped raw-SQL debt policy.
 - We chose visages with a side-query trait (rather than embedding
-  `herd_size` in `HerdRange`) because that's the realistic shape:
-  aggregates that are too expensive to denormalize into rows but cheap
-  to compute on demand belong in projections.
+ `herd_size` in `HerdRange`) because that's the realistic shape:
+ aggregates that are too expensive to denormalize into rows but cheap
+ to compute on demand belong in projections.
 
 ## Running it
 
@@ -135,13 +135,13 @@ https://github.com/TarunvirBains/HeeRanjID/issues/49.
 # off-host (the bare `-p 5432:5432` shorthand would bind to `0.0.0.0`).
 # djogi-allow-secret: local-dev example, intentionally weak.
 docker run --rm -d --name elephant-pg \
-  -e POSTGRES_PASSWORD=djogi -e POSTGRES_USER=djogi \
-  -e POSTGRES_DB=djogi_test -p 127.0.0.1:5432:5432 \
-  postgis/postgis:18-3.6
+ -e POSTGRES_PASSWORD=djogi -e POSTGRES_USER=djogi \
+ -e POSTGRES_DB=djogi_test -p 127.0.0.1:5432:5432 \
+ postgis/postgis:18-3.6
 
 # 2. Apply schema (destructive drop + recreate; writes a new ledger row each
-#    run — prior row data is lost). Creates .djogi-migrations-lock in cwd
-#    while running; the file is gitignored.
+# run — prior row data is lost). Creates.djogi-migrations-lock in cwd
+# while running; the file is gitignored.
 export DATABASE_URL=postgres://djogi:djogi@localhost:5432/djogi_test
 cargo djogi migrations compose --name init
 cargo djogi migrations apply
@@ -162,7 +162,7 @@ cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format mermaid
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format markdown
 
 # Preferred typed-builder lineage mode. The CLI still exposes the
-# legacy raw recursive-CTE path above as Phase 8.5 debt; use --typed
+# legacy raw recursive-CTE path above as shipped debt; use --typed
 # to exercise `Elephant::objects().tree_descendants(...)` and compose
 # --order=bfs|dfs for SEARCH BREADTH/DEPTH FIRST.
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed
@@ -179,14 +179,14 @@ cargo run -p elephant-tracker -- demo mating-pairs --format mermaid
 
 Available format matrix:
 
-| Demo                | json | mermaid | markdown |
+| Demo    | json | mermaid | markdown |
 |---------------------|:---:|:-------:|:--------:|
-| `herd-summaries`    |  ✓  |   —     |    ✓     |
-| `cross-border-herds`|  ✓  |   ✓     |    ✓     |
-| `lineage`           |  ✓  |   ✓     |    ✓     |
-| `cluster-sightings` |  ✓  |   —     |    ✓     |
-| `mating-pairs`      |  ✓  |   ✓     |    ✓     |
-| `values-scores`     |  ✓  |   —     |    ✓     |
+| `herd-summaries` | ✓ | —  | ✓  |
+| `cross-border-herds`| ✓ | ✓  | ✓  |
+| `lineage`   | ✓ | ✓  | ✓  |
+| `cluster-sightings` | ✓ | —  | ✓  |
+| `mating-pairs`  | ✓ | ✓  | ✓  |
+| `values-scores`  | ✓ | —  | ✓  |
 
 ## Status
 
@@ -205,75 +205,75 @@ emits these from the `#[model(...)]` annotations and field attributes.
 the original handwritten DDL in a few places; this is intentional:
 
 - **FK indexes** — `#[field(index)]` on `Elephant::herd_id`,
-  `mother_id`, `father_id`, `Sighting::elephant_id`, and
-  `Sighting::herd_id` emits btree indexes (`elephants_herd_id_idx`,
-  `elephants_mother_id_idx`, `elephants_father_id_idx`,
-  `sightings_elephant_id_idx`, `sightings_herd_id_idx`). FK columns
-  are unindexed in Postgres by default; these were present in the
-  prior handwritten DDL and are preserved here via the standard
-  descriptor mechanism.
+ `mother_id`, `father_id`, `Sighting::elephant_id`, and
+ `Sighting::herd_id` emits btree indexes (`elephants_herd_id_idx`,
+ `elephants_mother_id_idx`, `elephants_father_id_idx`,
+ `sightings_elephant_id_idx`, `sightings_herd_id_idx`). FK columns
+ are unindexed in Postgres by default; these were present in the
+ prior handwritten DDL and are preserved here via the standard
+ descriptor mechanism.
 - **Composite uniqueness as constraints** — `unique(fields = [...])` on
-  `HerdRange` and `ElephantAncestry` emits
-  `ALTER TABLE … ADD CONSTRAINT … UNIQUE (…)` (constraint form, not
-  `CREATE UNIQUE INDEX`). This matches the `pg_constraint`-visible
-  semantics of the original handwritten DDL.
+ `HerdRange` and `ElephantAncestry` emits
+ `ALTER TABLE … ADD CONSTRAINT … UNIQUE (…)` (constraint form, not
+ `CREATE UNIQUE INDEX`). This matches the `pg_constraint`-visible
+ semantics of the original handwritten DDL.
 - **Outbox schema expansion** — `sightings_outbox` carries additional
-  worker columns (`state`, `leased_until`, `retry_count`,
-  `failed_reason`) and a partial index on `state = 'pending'`
-  (`sightings_outbox_pending_idx`). These columns and the index are
-  framework-generated affordances not present in the original
-  handwritten DDL; they are intentional additions that the outbox
-  worker relies on.
+ worker columns (`state`, `leased_until`, `retry_count`,
+ `failed_reason`) and a partial index on `state = 'pending'`
+ (`sightings_outbox_pending_idx`). These columns and the index are
+ framework-generated affordances not present in the original
+ handwritten DDL; they are intentional additions that the outbox
+ worker relies on.
 - **TIMESTAMPTZ range CHECKs** — the framework emits year-range CHECK
-  constraints on every `TIMESTAMPTZ` column (keeping timestamps inside
-  the `time::OffsetDateTime` representable range). These CHECKs were
-  absent from the original handwritten DDL; they are intentional
-  correctness guards generated by the descriptor projection.
+ constraints on every `TIMESTAMPTZ` column (keeping timestamps inside
+ the `time::OffsetDateTime` representable range). These CHECKs were
+ absent from the original handwritten DDL; they are intentional
+ correctness guards generated by the descriptor projection.
 
 Two raw-DDL paths remain in this example:
 
 - **Phase 0 bootstrap** (`install_phase_zero`) — installs HeeRanjID SQL
-  functions, example-runtime default-node seed SQL, and the PostGIS
-  extension. Legitimately raw: no typed migration surface exists for
-  database-level extension installation, and this bootstrap is not a
-  persisted Phase 0 migration replay artifact.
+ functions, example-runtime default-node seed SQL, and the PostGIS
+ extension. Legitimately raw: no typed migration surface exists for
+ database-level extension installation, and this bootstrap is not a
+ persisted Phase 0 migration replay artifact.
 - **`drop_all`** — issues a single `batch_execute` of `DROP TABLE IF
-  EXISTS … CASCADE` statements (names derived from the descriptor
-  projection) plus the migration ledger. This is a dev-mode wipe; no
-  typed drop surface exists yet.
+ EXISTS … CASCADE` statements (names derived from the descriptor
+ projection) plus the migration ledger. This is a dev-mode wipe; no
+ typed drop surface exists yet.
 
 ## Layout
 
 ```
 elephant-tracker/
 ├── Cargo.toml
-├── Djogi.toml                  # adopter config
-├── README.md                   # this file
+├── Djogi.toml     # adopter config
+├── README.md     # this file
 ├── seeds/
-│   └── countries.sql           # five countries, hand-written
+│ └── countries.sql   # five countries, hand-written
 └── src/
-    ├── main.rs                 # CLI dispatch — demo-only app commands
-    ├── bin/
-    │   └── elephant-tracker-djogi.rs # adopter-linked `djogi` CLI
-    ├── migrate.rs              # descriptor-driven schema apply + Phase 0 bootstrap; drop_all is raw DDL
-    ├── seed.rs                 # countries.sql raw-DDL load + programmatic batch wrapped in atomic()
-    ├── output.rs               # Format enum + JSON / Mermaid / Markdown writers
-    ├── models/
-    │   ├── mod.rs              # re-exports + the `many_to_many!` invocation
-    │   ├── country.rs          # Serial PK, lookup table
-    │   ├── researcher.rs       # tenant_key = "org_id"; FTS on notes
-    │   ├── herd.rs             # source side of the M2M
-    │   ├── herd_range.rs       # explicit through model with season payload
-    │   ├── elephant.rs         # self-FK lineage; Jsonb<ElephantTags>; version
-    │   └── sighting.rs         # GeoPoint; events; FTS on notes
-    ├── visages/
-    │   ├── mod.rs
-    │   └── herd_summary.rs     # hand-rolled visage + side-query trait
-    └── demos/
-        ├── mod.rs
-        ├── cluster_sightings.rs   # cluster_by_proximity + centroid (typed)
-        ├── cross_border_herds.rs  # M2M traversal + season filter
-        ├── lineage.rs             # recursive-CTE escape hatch
-        ├── herd_summaries.rs      # visage + side-query trait
-        └── mating_pairs.rs        # Wright kinship + window-fn ranking (raw SQL override path; typed path is the preferred end state)
+ ├── main.rs     # CLI dispatch — demo-only app commands
+ ├── bin/
+ │ └── elephant-tracker-djogi.rs # adopter-linked `djogi` CLI
+ ├── migrate.rs    # descriptor-driven schema apply + Phase 0 bootstrap; drop_all is raw DDL
+ ├── seed.rs     # countries.sql raw-DDL load + programmatic batch wrapped in atomic()
+ ├── output.rs    # Format enum + JSON / Mermaid / Markdown writers
+ ├── models/
+ │ ├── mod.rs    # re-exports + the `many_to_many!` invocation
+ │ ├── country.rs   # Serial PK, lookup table
+ │ ├── researcher.rs  # tenant_key = "org_id"; FTS on notes
+ │ ├── herd.rs    # source side of the M2M
+ │ ├── herd_range.rs  # explicit through model with season payload
+ │ ├── elephant.rs   # self-FK lineage; Jsonb<ElephantTags>; version
+ │ └── sighting.rs   # GeoPoint; events; FTS on notes
+ ├── visages/
+ │ ├── mod.rs
+ │ └── herd_summary.rs  # hand-rolled visage + side-query trait
+ └── demos/
+  ├── mod.rs
+  ├── cluster_sightings.rs # cluster_by_proximity + centroid (typed)
+  ├── cross_border_herds.rs # M2M traversal + season filter
+  ├── lineage.rs    # recursive-CTE escape hatch
+  ├── herd_summaries.rs  # visage + side-query trait
+  └── mating_pairs.rs  # Wright kinship + window-fn ranking (raw SQL override path; typed path is the preferred end state)
 ```

@@ -12,9 +12,9 @@
 // macros all emit the `…ReverseRelation` suffix, so:
 //
 // - two `reverse_one_to_many!` with the same `(Receiver, method)` (this
-//   fixture), or
+// fixture), or
 // - one `reverse_one_to_many!` + one `reverse_one_to_one!` sharing the
-//   same `(Receiver, method)`,
+// same `(Receiver, method)`,
 //
 // both trip the same E0428 / E0119 errors at the trait layer.
 //
@@ -33,14 +33,14 @@ use djogi::prelude::*;
 #[model(table = "owners_dup")]
 #[derive(Debug, Clone)]
 pub struct Owner {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "vehicles_dup", no_default)]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub make: String,
-    pub owner_id: ForeignKey<Owner>,
+ pub make: String,
+ pub owner_id: ForeignKey<Owner>,
 }
 
 // First declaration — legitimate.
@@ -48,7 +48,7 @@ djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
 
 // Second declaration with the same method name on the same receiver.
 // The emitted per-relation trait `OwnerCarsReverseRelation` (and its
-// `impl ... for Owner`) is defined twice, tripping rustc's
+// `impl... for Owner`) is defined twice, tripping rustc's
 // duplicate-definition check (E0428 on the trait, E0119 on the impl)
 // and failing the build here.
 djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);

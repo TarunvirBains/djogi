@@ -6,9 +6,9 @@ use djogi::prelude::*;
 #[model(table = "posts")]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub title: String,
-    #[field(version)]
-    pub revision: Option<i32>,
+ pub title: String,
+ #[field(version)]
+ pub revision: Option<i32>,
 }
 
 fn main() {}

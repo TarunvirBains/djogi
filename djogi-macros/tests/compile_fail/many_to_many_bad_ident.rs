@@ -22,31 +22,31 @@ use djogi::relation::ForeignKey;
 #[model(table = "persons_mmb")]
 #[derive(Debug, Clone)]
 pub struct Person {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "groups_mmb")]
 #[derive(Debug, Clone)]
 pub struct Group {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "person_groups_mmb", through, no_default)]
 #[derive(Debug, Clone)]
 pub struct PersonGroup {
-    pub person_id: ForeignKey<Person>,
-    pub group_id: ForeignKey<Group>,
+ pub person_id: ForeignKey<Person>,
+ pub group_id: ForeignKey<Group>,
 }
 
 // `"my-groups"` is not a valid Rust identifier — hyphens are not
 // permitted. The macro's parser rejects it with a diagnostic pointing
-// at the `relation = ...` site.
+// at the `relation =...` site.
 djogi::many_to_many!(
-    Person, Group,
-    through = PersonGroup,
-    this_fk = person_id,
-    that_fk = group_id,
-    relation = "my-groups"
+ Person, Group,
+ through = PersonGroup,
+ this_fk = person_id,
+ that_fk = group_id,
+ relation = "my-groups"
 );
 
 fn main() {}

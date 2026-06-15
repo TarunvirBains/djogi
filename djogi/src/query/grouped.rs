@@ -4,10 +4,10 @@
 //! - `QuerySet<T>` → `GroupedQuerySet<T, K>` via `.group_by`
 //! - `GroupedQuerySet<T, K>` → `GroupedAnnotatedQuerySet<T, K, A>` via `.annotate`
 //! - `GroupedAnnotatedQuerySet<T, K, A>` is the only state with terminals
-//!   (`.fetch_all`, `.stream`)
-//!   Premature `.fetch_all` on `GroupedQuerySet<T, K>` is a compile error
-//!   (no such method exists). This is enforced structurally rather than via
-//!   runtime checks.
+//! (`.fetch_all`, `.stream`)
+//! Premature `.fetch_all` on `GroupedQuerySet<T, K>` is a compile error
+//! (no such method exists). This is enforced structurally rather than via
+//! runtime checks.
 
 #![allow(clippy::manual_async_fn)]
 
@@ -69,45 +69,45 @@ where
 // ── Arity 2..=4: tuples of FieldRef<M, V_i> ──────────────────────────────
 
 macro_rules! impl_into_group_key_tuple {
-    (
-        arity = $arity:tt,
-        types = [ $( ($ty:ident, $slot:tt, $pos:literal) ),+ $(,)? ]
-    ) => {
-        impl<M: Model, $($ty),+> sealed::Sealed for ( $(FieldRef<M, $ty>,)+ ) {}
+ (
+  arity = $arity:tt,
+  types = [ $( ($ty:ident, $slot:tt, $pos:literal) ),+ $(,)? ]
+ ) => {
+  impl<M: Model, $($ty),+> sealed::Sealed for ( $(FieldRef<M, $ty>,)+ ) {}
 
-        impl<M: Model, $($ty),+> IntoGroupKeyTuple for ( $(FieldRef<M, $ty>,)+ )
-        where
-            $( $ty: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static, )+
-        {
-            type Decoded = ( $($ty,)+ );
+  impl<M: Model, $($ty),+> IntoGroupKeyTuple for ( $(FieldRef<M, $ty>,)+ )
+  where
+   $( $ty: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static, )+
+  {
+   type Decoded = ( $($ty,)+ );
 
-            fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
-                let mut first = true;
-                $(
-                    if !first { acc.push_sql(", "); }
-                    first = false;
-                    acc.push_sql(self.$slot.column());
-                )+
-                let _ = first;
-            }
+   fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+    let mut first = true;
+    $(
+     if !first { acc.push_sql(", "); }
+     first = false;
+     acc.push_sql(self.$slot.column());
+    )+
+    let _ = first;
+   }
 
-            fn push_select_columns(&self, acc: &mut SqlAccumulator) {
-                let mut first = true;
-                $(
-                    if !first { acc.push_sql(", "); }
-                    first = false;
-                    acc.push_sql(self.$slot.column());
-                )+
-                let _ = first;
-            }
+   fn push_select_columns(&self, acc: &mut SqlAccumulator) {
+    let mut first = true;
+    $(
+     if !first { acc.push_sql(", "); }
+     first = false;
+     acc.push_sql(self.$slot.column());
+    )+
+    let _ = first;
+   }
 
-            fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
-                Ok((
-                    $( row.try_get::<_, $ty>($pos)?, )+
-                ))
-            }
-        }
-    };
+   fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+    Ok((
+     $( row.try_get::<_, $ty>($pos)?, )+
+    ))
+   }
+  }
+ };
 }
 
 impl_into_group_key_tuple!(arity = 2, types = [(A, 0, 0), (B, 1, 1)]);
@@ -148,49 +148,49 @@ where
 
 // ── Arity 2..=4: tuples of DjogiField<M, V_i> ───────────────────────────────
 // Mirrors the `FieldRef` tuple impl set so post-PR3 root closures returning
-// `(f.col_a(), f.col_b(), ...)` compose directly without unwrapping each
+// `(f.col_a(), f.col_b(),...)` compose directly without unwrapping each
 // accessor.
 
 macro_rules! impl_into_group_key_tuple_djogi {
-    (
-        arity = $arity:tt,
-        types = [ $( ($ty:ident, $slot:tt, $pos:literal) ),+ $(,)? ]
-    ) => {
-        impl<M: Model, $($ty),+> sealed::Sealed for ( $(DjogiField<M, $ty>,)+ ) {}
+ (
+  arity = $arity:tt,
+  types = [ $( ($ty:ident, $slot:tt, $pos:literal) ),+ $(,)? ]
+ ) => {
+  impl<M: Model, $($ty),+> sealed::Sealed for ( $(DjogiField<M, $ty>,)+ ) {}
 
-        impl<M: Model, $($ty),+> IntoGroupKeyTuple for ( $(DjogiField<M, $ty>,)+ )
-        where
-            $( $ty: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static, )+
-        {
-            type Decoded = ( $($ty,)+ );
+  impl<M: Model, $($ty),+> IntoGroupKeyTuple for ( $(DjogiField<M, $ty>,)+ )
+  where
+   $( $ty: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static, )+
+  {
+   type Decoded = ( $($ty,)+ );
 
-            fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
-                let mut first = true;
-                $(
-                    if !first { acc.push_sql(", "); }
-                    first = false;
-                    acc.push_sql(self.$slot.column());
-                )+
-                let _ = first;
-            }
+   fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+    let mut first = true;
+    $(
+     if !first { acc.push_sql(", "); }
+     first = false;
+     acc.push_sql(self.$slot.column());
+    )+
+    let _ = first;
+   }
 
-            fn push_select_columns(&self, acc: &mut SqlAccumulator) {
-                let mut first = true;
-                $(
-                    if !first { acc.push_sql(", "); }
-                    first = false;
-                    acc.push_sql(self.$slot.column());
-                )+
-                let _ = first;
-            }
+   fn push_select_columns(&self, acc: &mut SqlAccumulator) {
+    let mut first = true;
+    $(
+     if !first { acc.push_sql(", "); }
+     first = false;
+     acc.push_sql(self.$slot.column());
+    )+
+    let _ = first;
+   }
 
-            fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
-                Ok((
-                    $( row.try_get::<_, $ty>($pos)?, )+
-                ))
-            }
-        }
-    };
+   fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+    Ok((
+     $( row.try_get::<_, $ty>($pos)?, )+
+    ))
+   }
+  }
+ };
 }
 
 impl_into_group_key_tuple_djogi!(arity = 2, types = [(A, 0, 0), (B, 1, 1)]);
@@ -211,8 +211,8 @@ impl_into_group_key_tuple_djogi!(
 /// - `Join` — region path: LEFT JOIN + `ST_Contains` + GROUP BY region PK.
 /// - `Cluster` — DBSCAN path: `ST_ClusterDBSCAN(...) OVER ()` window aggregate.
 /// - `Geohash` — geohash path: `ST_GeoHash(..., precision)` scalar function.
-///   Stored as `Option<SpatialGroupSource>` on `GroupedQuerySet` and
-///   `GroupedAnnotatedQuerySet`; `None` means a plain non-spatial GROUP BY.
+/// Stored as `Option<SpatialGroupSource>` on `GroupedQuerySet` and
+/// `GroupedAnnotatedQuerySet`; `None` means a plain non-spatial GROUP BY.
 #[cfg(feature = "spatial")]
 #[derive(Debug, Clone)]
 pub(crate) enum SpatialGroupSource {
@@ -261,20 +261,20 @@ impl IntoGroupKeyTuple for () {
 // ── GroupedQuerySet ───────────────────────────────────────────────────────
 
 /// Grouping mode for `GROUP BY` variant.
-/// `Plain` emits a plain `GROUP BY col [, col ...]`. `Rollup` and `Cube`
+/// `Plain` emits a plain `GROUP BY col [, col...]`. `Rollup` and `Cube`
 /// wrap the column list in `ROLLUP (...)` and `CUBE (...)` respectively.
 /// `Sets` emits `GROUPING SETS (...)` with an explicit per-set column list,
 /// enabling arbitrary subtotal combinations in a single query pass.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum GroupingMode {
-    /// `GROUP BY col [, col ...]`
+    /// `GROUP BY col [, col...]`
     Plain,
-    /// `GROUP BY ROLLUP (col [, col ...])`
+    /// `GROUP BY ROLLUP (col [, col...])`
     Rollup,
-    /// `GROUP BY CUBE (col [, col ...])`
+    /// `GROUP BY CUBE (col [, col...])`
     Cube,
-    /// `GROUP BY GROUPING SETS ((col_a), (col_b), ...)`. Each inner
+    /// `GROUP BY GROUPING SETS ((col_a), (col_b),...)`. Each inner
     /// `Vec<&'static str>` is one grouping set's column list. Column names
     /// are `&'static str` because they come from `FieldRef::column`
     /// validated upstream by `assert_plain_ident`.
@@ -305,8 +305,8 @@ pub struct GroupedQuerySet<T: Model, K: IntoGroupKeyTuple> {
 
 /// Grouped and annotated queryset — the only grouped state that has terminals.
 /// Produced by `GroupedQuerySet::annotate`. Terminals (`fetch_all`) execute the
-/// `SELECT keys, aggregates FROM table [WHERE ...] GROUP BY keys
-/// [HAVING ...] [ORDER BY ...] [LIMIT ...] [OFFSET ...]` query and decode the
+/// `SELECT keys, aggregates FROM table [WHERE...] GROUP BY keys
+/// [HAVING...] [ORDER BY...] [LIMIT...] [OFFSET...]` query and decode the
 /// result into `Vec<(K::Decoded, A::Decoded)>`.
 /// The optional `spatial_source` field carries the spatial group-source spec
 /// propagated from `GroupedQuerySet`. `None` for all plain GROUP BY paths.
@@ -474,12 +474,12 @@ where
             {
                 return Err(crate::DjogiError::Validation(
                     "grouped single-Model annotate cannot host a pair-tuple aggregate \
-                     (e.g. PairClosureKinshipSum, PairAreaOverlapRatio). These aggregates \
-                     reference pair-tuple emitter aliases (`l.` / `r.` / `la.` / `ra.`) that \
-                     are only in scope inside a JoinedQuerySet. Use \
-                     `model_objects.self_pairs().annotate(...)` (or \
-                     `.left_join_closure_pair::<C>().annotate(...)` for closure-pair aggregates) \
-                     for the joined-annotated terminal."
+      (e.g. PairClosureKinshipSum, PairAreaOverlapRatio). These aggregates \
+      reference pair-tuple emitter aliases (`l.` / `r.` / `la.` / `ra.`) that \
+      are only in scope inside a JoinedQuerySet. Use \
+      `model_objects.self_pairs().annotate(...)` (or \
+      `.left_join_closure_pair::<C>().annotate(...)` for closure-pair aggregates) \
+      for the joined-annotated terminal."
                         .to_string(),
                 ));
             }
@@ -613,7 +613,7 @@ mod tests {
         let _grouped: GroupedQuerySet<Fake, FieldRef<Fake, i64>> = qs.group_by(|_| f);
     }
 
-    // Step 1.6 — .annotate transition
+    // Step 1.6 —.annotate transition
     #[test]
     fn group_by_then_annotate_returns_grouped_annotated_queryset() {
         use crate::expr::AggregateExpr;
@@ -780,9 +780,9 @@ mod tests {
         );
     }
 
-    // .rollup and .cube entry points produce GroupedQuerySet with the
+    //.rollup and.cube entry points produce GroupedQuerySet with the
     // correct GroupingMode. The mode is verified via the SQL emitter — calling
-    // .annotate then build_grouped_annotated_select and asserting the clause.
+    //.annotate then build_grouped_annotated_select and asserting the clause.
 
     #[test]
     fn queryset_rollup_returns_grouped_queryset_with_rollup_mode() {
@@ -795,7 +795,7 @@ mod tests {
         let sql = acc.sql();
         assert!(
             sql.contains("GROUP BY ROLLUP (org_id)"),
-            "expected ROLLUP clause via .rollup entry point, got: {sql}"
+            "expected ROLLUP clause via.rollup entry point, got: {sql}"
         );
     }
 
@@ -810,11 +810,11 @@ mod tests {
         let sql = acc.sql();
         assert!(
             sql.contains("GROUP BY CUBE (org_id)"),
-            "expected CUBE clause via .cube entry point, got: {sql}"
+            "expected CUBE clause via.cube entry point, got: {sql}"
         );
     }
 
-    // .group_by_sets entry point produces GroupedQuerySet<T, >
+    //.group_by_sets entry point produces GroupedQuerySet<T, >
     // and the emitter outputs GROUPING SETS (...).
 
     #[test]
@@ -836,7 +836,7 @@ mod tests {
         );
     }
 
-    // .grouping_sets entry point supports multi-column sets per
+    //.grouping_sets entry point supports multi-column sets per
     // group AND the empty grand-total set.
 
     #[test]

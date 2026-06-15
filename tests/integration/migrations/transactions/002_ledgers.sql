@@ -1,4 +1,4 @@
---  integration fixture: FK target `ledgers`.
+-- integration fixture: FK target `ledgers`.
 --
 -- Parent table for the transaction-backed prefetch integration test in
 -- `tests/integration/transactions_expressions.rs`. Pairs with
@@ -11,8 +11,8 @@
 -- manually during test setup.
 
 CREATE TABLE IF NOT EXISTS ledgers (
-    id         BIGINT PRIMARY KEY DEFAULT generate_id(),
-    name       TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  id     BIGINT PRIMARY KEY DEFAULT generate_id(),
+  name    TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

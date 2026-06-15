@@ -1,7 +1,7 @@
 error: #[model] field name "select" is a reserved Postgres keyword and cannot appear unquoted in generated SQL. Rename the Rust field to a non-reserved column name; use `#[field(renamed_from = "…")]` only when migrating from an existing old column. (Note: Rust raw-identifier escapes like `r#select` still produce the reserved SQL column name `select`.)
-  --> $DIR/field_name_raw_keyword_escape.rs:13:5
-   |
-13 |     pub r#select: String,
-   |     ^^^
+ --> $DIR/field_name_raw_keyword_escape.rs:13:5
+ |
+13 |  pub r#select: String,
+ |  ^^^
 
 error: aborting due to 1 previous error

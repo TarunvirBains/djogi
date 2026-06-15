@@ -71,12 +71,12 @@ The lock key is constructed as:
 
 ```java
 private static final long LOCK_MAGIC_NUM =
-        (0x46L << 40) // F
-                + (0x6CL << 32) // l
-                + (0x79L << 24) // y
-                + (0x77 << 16) // w
-                + (0x61 << 8)  // a
-                + 0x79;        // y
+    (0x46L << 40) // F
+        + (0x6CL << 32) // l
+        + (0x79L << 24) // y
+        + (0x77 << 16) // w
+        + (0x61 << 8) // a
+        + 0x79;    // y
 ```
 
 The effective key per connection is `LOCK_MAGIC_NUM + discriminator`, where
@@ -86,9 +86,9 @@ discriminator = `table.toString().hashCode()` (Java's signed 32-bit
 `PostgreSQLConnection.java:104-106`:
 ```java
 public <T> T lock(Table table, Callable<T> callable) {
-    return new PostgreSQLAdvisoryLockTemplate(
-        database.getConfiguration(), jdbcTemplate, table.toString().hashCode()
-    ).execute(callable);
+  return new PostgreSQLAdvisoryLockTemplate(
+    database.getConfiguration(), jdbcTemplate, table.toString().hashCode()
+  ).execute(callable);
 }
 ```
 
@@ -145,20 +145,20 @@ is no collision between these three in the bigint space.
 
 ```java
 CreateTableStatement createTableStatement = new CreateTableStatement(...)
-        .addPrimaryKeyColumn("ID", ..., int, ..., new NotNullConstraint())
-        .addColumn("LOCKED", boolean, ..., new NotNullConstraint())
-        .addColumn("LOCKGRANTED", datetime, ...)
-        .addColumn("LOCKEDBY", varchar(255), ...);
+   .addPrimaryKeyColumn("ID",..., int,..., new NotNullConstraint())
+   .addColumn("LOCKED", boolean,..., new NotNullConstraint())
+   .addColumn("LOCKGRANTED", datetime,...)
+   .addColumn("LOCKEDBY", varchar(255),...);
 ```
 
 Which resolves for Postgres to:
 
 ```sql
 CREATE TABLE public.databasechangeloglock (
-    ID          INT          NOT NULL PRIMARY KEY,
-    LOCKED      BOOLEAN      NOT NULL,
-    LOCKGRANTED TIMESTAMP,
-    LOCKEDBY    VARCHAR(255)
+  ID     INT     NOT NULL PRIMARY KEY,
+  LOCKED   BOOLEAN   NOT NULL,
+  LOCKGRANTED TIMESTAMP,
+  LOCKEDBY  VARCHAR(255)
 );
 ```
 
@@ -181,8 +181,8 @@ process holding `LOCKED=true` crashes, the row stays `true` indefinitely. The
 `LOCKGRANTED` timestamp is informational only — Liquibase never compares it to
 `now()` to detect stale locks. The only recovery paths are:
 1. Run `liquibase releaseLocks` — calls `UnlockDatabaseChangeLogGenerator.java:25-29`
-   which issues `UPDATE ... SET LOCKED=false, LOCKGRANTED=null, LOCKEDBY=null WHERE ID=1`
-   with no ownership check.
+  which issues `UPDATE... SET LOCKED=false, LOCKGRANTED=null, LOCKEDBY=null WHERE ID=1`
+  with no ownership check.
 2. Manual `UPDATE databasechangeloglock SET locked=false WHERE id=1`.
 
 The Postgres-aware comment at `StandardLockService.java:153-156` notes the
@@ -199,7 +199,7 @@ Confidence: **high** (source read in full).
 
 ### Approach C: Ledger-Table LOCK
 
-**Systems:** None in this set use `LOCK TABLE ... IN EXCLUSIVE MODE` on the
+**Systems:** None in this set use `LOCK TABLE... IN EXCLUSIVE MODE` on the
 migration ledger itself as the primary concurrency mechanism. The closest
 pattern is Flyway's `InsertRowLock` fallback (used on databases without
 advisory locks), which inserts a sentinel row with `installed_rank = -100` and
@@ -248,7 +248,7 @@ Confidence: **high** (exhaustive grep confirmed zero results).
 From `refinery.md`, section "Lock strategy: NONE":
 ```
 grep -rn "advisory\|pg_advisory\|LOCK TABLE\|FOR UPDATE" \
-  /home/tarunvir/projects/refinery-reference/ --include="*.rs" --include="*.sql"
+ /home/tarunvir/projects/refinery-reference/ --include="*.rs" --include="*.sql"
 ```
 This grep returns **zero results**. refinery has no advisory lock, no table
 lock, and no filesystem lock. There is no documented concurrency guarantee
@@ -276,7 +276,7 @@ files."* Confidence: **high** (proved by grep).
 `cot.md`, section "Lock strategy":
 ```
 grep -rn "pg_advisory\|LOCK TABLE\|pg_try_advisory\|advisory_lock" \
-  /home/tarunvir/projects/cot-reference/
+ /home/tarunvir/projects/cot-reference/
 # returned zero results
 ```
 Confidence: **high** (proved by grep).
@@ -289,9 +289,9 @@ on the ledger table. The sequence of events for two concurrent runners A and B:
 1. Both read the ledger — same "pending" set.
 2. Both begin executing migration M.
 3. Both execute the DDL for M (which may or may not succeed the second time
-   depending on whether the DDL is idempotent).
+  depending on whether the DDL is idempotent).
 4. Runner A inserts the ledger row first; Runner B gets a duplicate-key error
-   on the `INSERT`.
+  on the `INSERT`.
 
 The DDL double-execution is the actual harm. The duplicate-key error on the
 ledger INSERT is a noisy but survivable symptom. On non-transactional DDL
@@ -374,15 +374,15 @@ Source: `PostgreSQLConfigurationExtension.java:27-34`,
 When `transactionalLock=true`:
 - The lock is acquired at the start of the migration transaction.
 - The lock is automatically released when that transaction commits or rolls
-  back.
+ back.
 - There is no explicit `SELECT pg_advisory_unlock(...)` call needed (and
-  indeed calling it would raise an error).
+ indeed calling it would raise an error).
 
 ### When to set `transactionalLock=true`
 
 Only when:
 1. All migrations in the run are transactional (no `CREATE INDEX CONCURRENTLY`,
-   no `ALTER TYPE ... ADD VALUE` on Postgres < 12, no `VACUUM`, etc.), AND
+  no `ALTER TYPE... ADD VALUE` on Postgres < 12, no `VACUUM`, etc.), AND
 2. Each migration is wrapped in exactly one transaction.
 
 Under these constraints, the advisory lock is released at transaction commit,
@@ -449,13 +449,13 @@ remain held until the pool manager either closes the connection or times out.
 
 Mitigations:
 1. Use `deadpool-postgres` with `PoolConfig::max_lifetime` set so connections
-   are recycled after a bounded time.
+  are recycled after a bounded time.
 2. On startup, check `pg_stat_activity` for any backend holding the Djogi
-   advisory lock. If the holding process's `application_name` matches the
-   Djogi runner and its state is `idle` (not `active`), it is safe to call
-   `SELECT pg_advisory_unlock_all()` on that backend via `pg_terminate_backend()`.
+  advisory lock. If the holding process's `application_name` matches the
+  Djogi runner and its state is `idle` (not `active`), it is safe to call
+  `SELECT pg_advisory_unlock_all()` on that backend via `pg_terminate_backend()`.
 3. Document the `SELECT pg_advisory_unlock(key)` escape hatch (see Djogi
-   Implications below).
+  Implications below).
 
 #### Transaction-scoped lock on crash
 
@@ -470,16 +470,16 @@ Liquibase's `DATABASECHANGELOGLOCK` table does not auto-release on crash.
 The `LOCKED=true` row persists until:
 
 1. **`liquibase releaseLocks`**: calls `ReleaseLocksCommandStep` →
-   `LockService.forceReleaseLock()` → `releaseLock()` which issues
-   `UPDATE DATABASECHANGELOGLOCK SET LOCKED=false, LOCKGRANTED=null, LOCKEDBY=null WHERE ID=1`.
-   Note: there is **no ownership check** (`UnlockDatabaseChangeLogGenerator.java:25-29`).
-   Any process can force-release any other process's lock. This is an
-   intentional escape hatch but also a security concern in shared environments.
+  `LockService.forceReleaseLock()` → `releaseLock()` which issues
+  `UPDATE DATABASECHANGELOGLOCK SET LOCKED=false, LOCKGRANTED=null, LOCKEDBY=null WHERE ID=1`.
+  Note: there is **no ownership check** (`UnlockDatabaseChangeLogGenerator.java:25-29`).
+  Any process can force-release any other process's lock. This is an
+  intentional escape hatch but also a security concern in shared environments.
 
 2. **Manual DELETE / UPDATE**: operators can directly:
-   ```sql
-   UPDATE databasechangeloglock SET locked = false WHERE id = 1;
-   ```
+  ```sql
+  UPDATE databasechangeloglock SET locked = false WHERE id = 1;
+  ```
 
 The `LOCKEDBY` column (`hostname + ip`) is the only information available to
 diagnose which process is the holder. If the hostname is stale (e.g., a
@@ -538,7 +538,7 @@ behavior.
 **Djogi recommendation:** expose a configurable mode:
 - `lock_timeout = 0` → fail-fast (single `pg_try_advisory_lock` call)
 - `lock_timeout = N` → block up to N milliseconds using `SET lock_timeout = N`
-  before `pg_advisory_lock`
+ before `pg_advisory_lock`
 - `lock_timeout = None` → block indefinitely (default for backward compat)
 
 
@@ -575,26 +575,26 @@ read and the write, or the check-then-act race is not eliminated.
 **Split on mechanism tier:**
 
 - Enterprise Java tools (Flyway, Liquibase) both lock, but via different
-  mechanisms. Flyway's advisory lock is strictly superior to Liquibase's
-  lock-table row because:
-  (a) advisory locks are auto-released on crash; lock-table rows are not.
-  (b) advisory locks do not require a separate DDL object in user-accessible
-      schema.
-  (c) advisory locks are lighter-weight (no row contention on a shared table).
+ mechanisms. Flyway's advisory lock is strictly superior to Liquibase's
+ lock-table row because:
+ (a) advisory locks are auto-released on crash; lock-table rows are not.
+ (b) advisory locks do not require a separate DDL object in user-accessible
+   schema.
+ (c) advisory locks are lighter-weight (no row contention on a shared table).
 
 - Rust-native tools (refinery, Diesel, SeaORM, cot) universally skip locking.
-  This is not a principled design choice — none of the project notes finds
-  a rationale stated in source. It is a gap, consistent with these tools being
-  lower-ceremony and often run in contexts where a single deployment pipeline
-  prevents concurrent runs organizationally.
+ This is not a principled design choice — none of the project notes finds
+ a rationale stated in source. It is a gap, consistent with these tools being
+ lower-ceremony and often run in contexts where a single deployment pipeline
+ prevents concurrent runs organizationally.
 
 - Python tools (Django, Alembic) also skip locking. Alembic's `env.py`
-  extensibility allows users to add advisory locks manually, which partially
-  mitigates the gap, but this is opt-in behavior not a default.
+ extensibility allows users to add advisory locks manually, which partially
+ mitigates the gap, but this is opt-in behavior not a default.
 
 - Prisma explicitly locks. This is notable: Prisma is a Rust-backed tool
-  targeting the same developer audience as Djogi, and it made the same choice
-  Djogi is making. This is the strongest affirmation of Djogi's decision.
+ targeting the same developer audience as Djogi, and it made the same choice
+ Djogi is making. This is the strongest affirmation of Djogi's decision.
 
 **The one surprising outlier:** Flyway offers `transactionalLock=true` as an
 option. Of all the tools surveyed, Flyway is the only one that exposes the
@@ -623,11 +623,11 @@ An alternative with better multi-tenant isolation is to hash the schema name:
 ```sql
 -- 8-byte prefix from ASCII "DJOGI" (5 bytes) + schema hash
 SELECT ('x' || lpad(
-    to_hex(
-        ('0x444A4F4749'::bigint << 24) |
-        (abs(hashtext(current_schema()))::bigint & 0xFFFFFF)
-    ),
-    16, '0'
+  to_hex(
+    ('0x444A4F4749'::bigint << 24) |
+    (abs(hashtext(current_schema()))::bigint & 0xFFFFFF)
+  ),
+  16, '0'
 ))::bit(64)::bigint;
 ```
 
@@ -642,7 +642,7 @@ a real use case.
 Ensure the chosen constant does not collide with:
 - Prisma: `72707369`
 - Flyway: approximately `19988 × 10^9 + small` (well outside the u32 range
-  that many constants fall in)
+ that many constants fall in)
 
 ### Scope: session (not transaction)
 
@@ -656,7 +656,7 @@ the migration completes. This is a silent correctness failure.
 Implement as:
 ```sql
 SELECT pg_advisory_lock($1);
--- ... all migration work, across any number of transactions ...
+--... all migration work, across any number of transactions...
 SELECT pg_advisory_unlock($1);
 ```
 
@@ -684,12 +684,12 @@ recover by:
 SELECT pid, application_name, state, query_start, state_change
 FROM pg_stat_activity
 WHERE state != 'active'
-  AND pid IN (
-      SELECT pid FROM pg_locks
-      WHERE locktype = 'advisory'
-        AND classid = (x'444A4F47'::bigint >> 32)::integer
-        AND objid    = (x'444A4F47'::bigint & 0xFFFFFFFF)::integer
-  );
+ AND pid IN (
+   SELECT pid FROM pg_locks
+   WHERE locktype = 'advisory'
+    AND classid = (x'444A4F47'::bigint >> 32)::integer
+    AND objid  = (x'444A4F47'::bigint & 0xFFFFFFFF)::integer
+ );
 
 -- Terminate the zombie backend (releases the advisory lock)
 SELECT pg_terminate_backend(<pid>);
@@ -716,10 +716,10 @@ Example error message template:
 ```
 Failed to acquire Djogi migration lock (key=<N>).
 Lock is currently held by:
-  pid=<pid>, application_name=<name>, state=<state>,
-  lock acquired at=<query_start>
+ pid=<pid>, application_name=<name>, state=<state>,
+ lock acquired at=<query_start>
 If this process is no longer running, terminate it with:
-  SELECT pg_terminate_backend(<pid>);
+ SELECT pg_terminate_backend(<pid>);
 ```
 
 
@@ -737,9 +737,9 @@ pool connection is still open" purely from the advisory lock state. To detect
 the latter, Djogi would need to:
 1. Query `pg_stat_activity` for the backend holding the lock.
 2. Check whether `state = 'idle'` (not actively executing a query) and
-   `state_change` is older than the expected maximum migration duration.
+  `state_change` is older than the expected maximum migration duration.
 3. If both conditions are true, the lock is likely stale and the operator
-   should be prompted to terminate the backend.
+  should be prompted to terminate the backend.
 
 This logic is non-trivial because the "expected maximum migration duration"
 is application-specific. A conservative heuristic: if `state = 'idle'` and
@@ -781,10 +781,10 @@ choice.
 `pg_try_advisory_lock` returns `false` without blocking if the lock is not
 available. The correct behavior depends on context:
 - During `cargo djogi migrate` (human-initiated): wait and retry, with a
-  human-readable progress message every few seconds.
+ human-readable progress message every few seconds.
 - During application startup migration (programmatic): either fail fast
-  (forcing the operator to retry the deployment) or retry with exponential
-  backoff up to a configurable limit.
+ (forcing the operator to retry the deployment) or retry with exponential
+ backoff up to a configurable limit.
 - During CI: fail fast with a clear error so the pipeline does not hang.
 
 Djogi should surface `LockBehavior` as a first-class type with at least three

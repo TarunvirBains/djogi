@@ -7,18 +7,18 @@ use djogi::prelude::*;
 #[model(table = "versioned_i32")]
 #[derive(Debug, Clone)]
 pub struct VersionedI32 {
-    pub title: String,
-    #[field(version)]
-    pub v: i32,
+ pub title: String,
+ #[field(version)]
+ pub v: i32,
 }
 
 /// Model with a version field typed as i64.
 #[model(table = "versioned_i64")]
 #[derive(Debug, Clone)]
 pub struct VersionedI64 {
-    pub title: String,
-    #[field(version)]
-    pub v: i64,
+ pub title: String,
+ #[field(version)]
+ pub v: i64,
 }
 
 fn main() {}

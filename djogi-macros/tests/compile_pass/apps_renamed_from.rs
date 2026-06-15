@@ -6,13 +6,13 @@
 use djogi::prelude::*;
 
 djogi::apps! {
-    #[app(database = "main", renamed_from = "billing_old")]
-    pub struct Billing;
+ #[app(database = "main", renamed_from = "billing_old")]
+ pub struct Billing;
 }
 
 fn main() {
-    assert_eq!(<Billing as App>::LABEL, "billing");
-    assert_eq!(<Billing as App>::DATABASE, "main");
-    assert_eq!(<Billing as App>::DESCRIPTOR.renamed_from, Some("billing_old"));
-    assert!(!<Billing as App>::DESCRIPTOR.tombstone);
+ assert_eq!(<Billing as App>::LABEL, "billing");
+ assert_eq!(<Billing as App>::DATABASE, "main");
+ assert_eq!(<Billing as App>::DESCRIPTOR.renamed_from, Some("billing_old"));
+ assert!(!<Billing as App>::DESCRIPTOR.tombstone);
 }

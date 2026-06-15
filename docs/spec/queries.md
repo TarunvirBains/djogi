@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # The Query API
 
@@ -28,11 +28,11 @@ car.delete(&mut ctx).await?;
 
 // Create — struct is the input, framework populates id/created_at/updated_at
 let car = Vehicle::create(&mut ctx, Vehicle {
-    make: "Toyota".into(),
-    model_name: "Camry".into(),
-    gas_fill: 50,
-    active: true,
-    ..Default::default()    // framework fields — ignored on input
+ make: "Toyota".into(),
+ model_name: "Camry".into(),
+ gas_fill: 50,
+ active: true,
+..Default::default() // framework fields — ignored on input
 }).await?;
 ```
 ### 5.3 QuerySet — Lazy Builder
@@ -40,17 +40,17 @@ let car = Vehicle::create(&mut ctx, Vehicle {
 `QuerySet<T>` accumulates filters and options. Nothing hits the database until a terminal method is called.
 ```rust
 let results = Vehicle::objects()
-    .filter(|f| f.gas_fill.gte(69))
-    .order_by(|f| f.gas_fill.desc())
-    .limit(10)
-    .fetch_all(&mut ctx).await?;
+.filter(|f| f.gas_fill.gte(69))
+.order_by(|f| f.gas_fill.desc())
+.limit(10)
+.fetch_all(&mut ctx).await?;
 ```
 QuerySets are cheap to clone and compose:
 ```rust
 let active = Vehicle::objects().filter(|f| f.active.eq(true));
 
 let cheap = active.clone().filter(|f| f.price.lte(20_000)).fetch_all(&mut ctx).await?;
-let fast  = active.clone().filter(|f| f.horsepower.gte(300)).fetch_all(&mut ctx).await?;
+let fast = active.clone().filter(|f| f.horsepower.gte(300)).fetch_all(&mut ctx).await?;
 ```
 
 The query builder must make query count and SQL shape predictable. Djogi does not hide lazy loading behind field access; relation loading is always explicit (`fetch`, `prefetch`, `select_related`). If a query performs extra round trips, those round trips must be visible in the API surface.
@@ -64,7 +64,7 @@ The query builder must make query count and SQL shape predictable. Djogi does no
 | `.gt(val)` | `> $n` |
 | `.lte(val)` | `<= $n` |
 | `.lt(val)` | `< $n` |
-| `.in_list(vals)` | `IN ($n, ...)` |
+| `.in_list(vals)` | `IN ($n,...)` |
 | `.is_null()` | `IS NULL` |
 | `.contains(s)` | `ILIKE '%s%'` |
 | `.starts_with(s)` | `ILIKE 's%'` |
@@ -80,12 +80,12 @@ Conditions are combinable inline:
 For dynamic construction and shell use where closures are unavailable:
 ```rust
 let filter = VehicleFilter::new()
-    .gas_fill(Gte(69))
-    .active(Eq(true));
+.gas_fill(Gte(69))
+.active(Eq(true));
 
 Vehicle::objects()
-    .filter_struct(filter)
-    .fetch_all(&mut ctx).await?;
+.filter_struct(filter)
+.fetch_all(&mut ctx).await?;
 ```
 ### 5.6 Underlying Engine — Native `ConditionBuilder` over `SqlAccumulator`
 
@@ -106,8 +106,8 @@ Developers can drop down to Djogi's raw SQL helpers for queries that exceed the 
 // JUSTIFICATION (djogi#234): typed QuerySet does not expose this bespoke predicate shape.
 async fn toyota_with_fill(ctx: &mut DjogiContext) -> djogi::Result<Vec<Vehicle>> {
 let rows = ctx.raw_query::<Vehicle>(
-    "SELECT * FROM vehicles WHERE make = $1 AND gas_fill > $2",
-    &[&"Toyota", &50_i32],
+ "SELECT * FROM vehicles WHERE make = $1 AND gas_fill > $2",
+ &[&"Toyota", &50_i32],
 ).await?;
 Ok(rows)
 }
@@ -115,7 +115,7 @@ Ok(rows)
 
 For shapes outside the typed `FromPgRow` decoder (recursive CTEs, custom row tuples, scalar aggregates), `ctx.raw_scalar`, `ctx.raw_fetch_one`, and the other `RawAccessExt` helpers cover the remaining cases. Direct `tokio_postgres::Client` access is not a public `DjogiContext` API.
 
-### 5.7 Typed INSERT ... SELECT
+### 5.7 Typed INSERT... SELECT
 
 Adopter shape — copy rows from one model's queryset into another model's
 table, with closure-built column mappings:
@@ -125,48 +125,48 @@ use djogi::prelude::*;
 
 // Archive completed orders into an archive table.
 CompletedOrder::objects()
-    .filter(|f| f.completed_at().lt(cutoff))
-    .insert_into::<OrderArchive, _, _>(|target, source| vec![
-        target.original_id().copy_from(source.id().as_insert_source()),
-        target.title().copy_from(source.title().as_insert_source()),
-        target.completed_at().copy_from(source.completed_at().as_insert_source()),
-        // A constant column on every archived row. `InsertSelectSource::literal`
-        // is polymorphic in the source model; `S` is inferred from the closure
-        // return type as the enclosing source model.
-        target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
-    ])
-    .execute(&mut ctx).await?;
+.filter(|f| f.completed_at().lt(cutoff))
+.insert_into::<OrderArchive, _, _>(|target, source| vec![
+ target.original_id().copy_from(source.id().as_insert_source()),
+ target.title().copy_from(source.title().as_insert_source()),
+ target.completed_at().copy_from(source.completed_at().as_insert_source()),
+ // A constant column on every archived row. `InsertSelectSource::literal`
+ // is polymorphic in the source model; `S` is inferred from the closure
+ // return type as the enclosing source model.
+ target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
+ ])
+.execute(&mut ctx).await?;
 ```
 
 Contract:
 
 - The closure receives `(T::Fields, S::Fields)` and returns one or more
-  [`InsertSelectColumn<S, T>`]s via
-  `target_field.copy_from(source_operand)`, where `source_operand` is an
-  [`InsertSelectSource<S, V>`] built from `source.col().as_insert_source()`
-  or [`InsertSelectSource::literal(...)`]. Each mapping pins the target
-  column's `V` to the source operand's `V` at compile time — a type
-  mismatch fails to compile rather than producing a runtime Postgres type
-  error.
+ [`InsertSelectColumn<S, T>`]s via
+ `target_field.copy_from(source_operand)`, where `source_operand` is an
+ [`InsertSelectSource<S, V>`] built from `source.col().as_insert_source()`
+ or [`InsertSelectSource::literal(...)`]. Each mapping pins the target
+ column's `V` to the source operand's `V` at compile time — a type
+ mismatch fails to compile rather than producing a runtime Postgres type
+ error.
 - Source/target identity is type-checked: passing a target-side field
-  where a source-side operand is required (or vice-versa) is rejected
-  by the type system at the closure-return inference step, not the
-  runtime emitter. See the pinned compile-fail fixtures under
-  `djogi/tests/compile_fail/insert_select_*` for the negative cases.
+ where a source-side operand is required (or vice-versa) is rejected
+ by the type system at the closure-return inference step, not the
+ runtime emitter. See the pinned compile-fail fixtures under
+ `djogi/tests/compile_fail/insert_select_*` for the negative cases.
 - The target's framework columns (`id`, `created_at`, `updated_at`) are
-  populated by their column-level `DEFAULT` clauses — the emitter never
-  names them unless the closure explicitly maps them. Matches
-  `Model::create`'s contract.
+ populated by their column-level `DEFAULT` clauses — the emitter never
+ names them unless the closure explicitly maps them. Matches
+ `Model::create`'s contract.
 - The terminal returns the affected row count.
 - WHERE / ORDER BY / LIMIT / OFFSET on the source are emitted into the
-  SELECT side; `QuerySet::none()` short-circuits to `Ok(0)`.
+ SELECT side; `QuerySet::none()` short-circuits to `Ok(0)`.
 - The terminal returns `DjogiError::Validation` when the source carries
-  state that cannot be safely represented in INSERT...SELECT
-  (`prefetch`, `select_related`, `cache`, a non-default `LockMode`, or
-  a non-default `DistinctMode`).
+ state that cannot be safely represented in INSERT...SELECT
+ (`prefetch`, `select_related`, `cache`, a non-default `LockMode`, or
+ a non-default `DistinctMode`).
 
 `VALUES` inline relations as join sources are presently not supported by this
-surface. For `MERGE INTO ... USING ...`, use the typed MERGE surface described
+surface. For `MERGE INTO... USING...`, use the typed MERGE surface described
 in [5.8 Typed MERGE INTO](#58-typed-merge-into).
 
 ### 5.7a PG18 OLD/NEW RETURNING
@@ -200,53 +200,53 @@ SQL shape:
 
 ```sql
 SELECT
-    __djogi_m.<col>  AS <col>, ...,       -- T's COLUMN_LIST
-    <alias>.<vcol_0> AS __djogi_values_0, -- projected values cols
-    ...
+ __djogi_m.<col> AS <col>,..., -- T's COLUMN_LIST
+ <alias>.<vcol_0> AS __djogi_values_0, -- projected values cols
+...
 FROM <table> AS __djogi_m
 INNER JOIN (VALUES
-    ($1::BIGINT, $2::DOUBLE PRECISION),   -- first row: per-column casts
-    ($3, $4)                              -- subsequent rows: bare
-) AS <alias>(<vcol_0>, ...)
-  ON __djogi_m.<model_col> = <alias>.<vcol_0>
+ ($1::BIGINT, $2::DOUBLE PRECISION), -- first row: per-column casts
+ ($3, $4)    -- subsequent rows: bare
+) AS <alias>(<vcol_0>,...)
+ ON __djogi_m.<model_col> = <alias>.<vcol_0>
 [WHERE __djogi_m.<filter_col> op $n]
-[ORDER BY ...] [LIMIT $n] [OFFSET $n]
+[ORDER BY...] [LIMIT $n] [OFFSET $n]
 ```
 
 Key design properties:
 
-- No implicit `ON TRUE` / cartesian join.  The predicate is always explicit
-  on `join_values` / `left_join_values`; explicit cartesian products use
-  `cross_join_values`.
+- No implicit `ON TRUE` / cartesian join. The predicate is always explicit
+ on `join_values` / `left_join_values`; explicit cartesian products use
+ `cross_join_values`.
 - All row data binds through `SqlAccumulator::push_bind`; alias and column
-  identifiers are validated with `check_user_supplied_ident` at construction.
+ identifiers are validated with `check_user_supplied_ident` at construction.
 - First-row placeholders are cast (`$1::BIGINT`) so Postgres can infer column
-  types even for otherwise ambiguous NULL rows.
+ types even for otherwise ambiguous NULL rows.
 - Empty `InlineValues` short-circuits on inner join (no DB round-trip) and
-  returns typed NULLs for the values side on left join.
+ returns typed NULLs for the values side on left join.
 - Unsupported left-queryset state (`prefetch`, `select_related`, `cache`,
-  row locks, non-default `distinct`) returns `DjogiError::Validation`.
+ row locks, non-default `distinct`) returns `DjogiError::Validation`.
 - `left_join_values` uses a framework-owned presence sentinel column to
-  distinguish "no match" from "matched row with nullable columns". Result
-  shape is pair-based: multiple matching VALUES rows produce multiple
-  `(T, Option<Row>)` pairs for the same left row.
-- Tuple rows arity 1–6.  Supported scalars: standard integers (incl. widened
-  `i8/u8/u16/u32/u64`), floats, `bool`, `Decimal`, `Uuid`, `HeerId`,
-  `HeerIdDesc`, `RanjId`, `RanjIdDesc`, `DateTime`, `Date`, `Time`,
-  `PrimitiveDateTime`, `Interval`, `Vec<u8>`, and `Option<T>` for each.
+ distinguish "no match" from "matched row with nullable columns". Result
+ shape is pair-based: multiple matching VALUES rows produce multiple
+ `(T, Option<Row>)` pairs for the same left row.
+- Tuple rows arity 1–6. Supported scalars: standard integers (incl. widened
+ `i8/u8/u16/u32/u64`), floats, `bool`, `Decimal`, `Uuid`, `HeerId`,
+ `HeerIdDesc`, `RanjId`, `RanjIdDesc`, `DateTime`, `Date`, `Time`,
+ `PrimitiveDateTime`, `Interval`, `Vec<u8>`, and `Option<T>` for each.
 
 Entry points:
 
 - `join_values(...) -> Vec<(T, Row)>` — INNER JOIN against the inline relation.
 - `left_join_values(...) -> Vec<(T, Option<Row>)>` — LEFT JOIN; unmatched rows
-  decode as `None`.
+ decode as `None`.
 - `cross_join_values(...) -> Vec<(T, Row)>` — explicit cartesian join with no
-  `ON` predicate.
+ `ON` predicate.
 
 Adoption note: very large client-side value lists should be loaded into a
 temporary/staging table instead of sent as `VALUES`; Postgres planning cost
-grows with `VALUES` size.  Keep per-query VALUES under ~1 000 rows as a rule
-of thumb.  The framework rejects lists where `rows × arity > 65 535`
+grows with `VALUES` size. Keep per-query VALUES under ~1 000 rows as a rule
+of thumb. The framework rejects lists where `rows × arity > 65 535`
 (Postgres parameter ceiling) and also rejects terminals whose extra filter /
 pagination binds would push the final query above that ceiling.
 
@@ -259,16 +259,16 @@ using a single statement that synchronizes a source relation into a target table
 use djogi::prelude::*;
 
 source_qs.merge_into::<Target, _, _>(|target, source| {
-    target.external_id().merge_on_eq(source.external_id())
+ target.external_id().merge_on_eq(source.external_id())
 })
 .when_matched_and_update(Some(
-    Target::fields().payload().is_distinct_from_source(Source::fields().payload())
+ Target::fields().payload().is_distinct_from_source(Source::fields().payload())
 ), vec![
-    Target::fields().payload().merge_copy_from(Source::fields().payload()),
+ Target::fields().payload().merge_copy_from(Source::fields().payload()),
 ])
 .when_not_matched_then_insert(None, vec![
-    Target::fields().external_id().merge_insert_from(Source::fields().external_id()),
-    Target::fields().payload().merge_insert_from(Source::fields().payload()),
+ Target::fields().external_id().merge_insert_from(Source::fields().external_id()),
+ Target::fields().payload().merge_insert_from(Source::fields().payload()),
 ])
 .execute(&mut ctx).await?;
 ```
@@ -276,35 +276,35 @@ source_qs.merge_into::<Target, _, _>(|target, source| {
 Contract:
 
 - The entry point `merge_into` receives a closure `(T::Fields, S::Fields)` and
-  returns one or more join conditions via `target.col().merge_on_eq(source.col())`.
-- `WHEN MATCHED [AND condition] THEN UPDATE SET ...` allows updating the matched
-  target row using source values, literal values, or target-field expressions.
+ returns one or more join conditions via `target.col().merge_on_eq(source.col())`.
+- `WHEN MATCHED [AND condition] THEN UPDATE SET...` allows updating the matched
+ target row using source values, literal values, or target-field expressions.
 - `WHEN NOT MATCHED [BY TARGET] [AND condition] THEN INSERT (...) VALUES (...)`
-  allows inserting a new row when the source row has no target counterpart.
-  Conditions on this branch are source-only; use source-side condition builders
-  such as `Source::fields().payload().merge_source_eq_value("new")`.
+ allows inserting a new row when the source row has no target counterpart.
+ Conditions on this branch are source-only; use source-side condition builders
+ such as `Source::fields().payload().merge_source_eq_value("new")`.
 - `WHEN MATCHED [AND condition] THEN DELETE` removes the target row.
 - `WHEN NOT MATCHED BY SOURCE [AND condition] THEN [UPDATE | DELETE]` allows
-  acting on target rows that have no source counterpart. PostgreSQL introduced
-  this `BY SOURCE` form in 17; Djogi's supported PostgreSQL floor remains 18.
+ acting on target rows that have no source counterpart. PostgreSQL introduced
+ this `BY SOURCE` form in 17; Djogi's supported PostgreSQL floor remains 18.
 - **Auto-stamping**: `UPDATE` actions automatically append `updated_at = now()`.
 - **Validations**:
-  - Rejects `source.none()` (structural empty) by default if `BY SOURCE` branches
-    exist to prevent unintentional broad updates.
-  - `BY SOURCE` predicates are constrained to target-only fields (use
-    `merge_target_*` builders such as `merge_target_eq_value(true)`).
-  - Rejects source state that cannot be safely represented (`prefetch`,
-    `select_related`, `cache`, `lock`, `distinct`).
-  - Rejects manual assignment to `updated_at` and duplicate target columns.
+ - Rejects `source.none()` (structural empty) by default if `BY SOURCE` branches
+ exist to prevent unintentional broad updates.
+ - `BY SOURCE` predicates are constrained to target-only fields (use
+ `merge_target_*` builders such as `merge_target_eq_value(true)`).
+ - Rejects source state that cannot be safely represented (`prefetch`,
+ `select_related`, `cache`, `lock`, `distinct`).
+ - Rejects manual assignment to `updated_at` and duplicate target columns.
 - **Convenience**: `when_matched_update_changed(updates)` automatically builds
-  an `IS DISTINCT FROM` condition for the mapped columns.
+ an `IS DISTINCT FROM` condition for the mapped columns.
 
 ### 5.9 Performance Contract
 
 The query API is expected to support efficient Postgres forms for the workload shapes Djogi targets. That means:
 
 - expression-backed filtering and updates via typed `Expr<V>` handles are
-  part of the framework
+ part of the framework
 - aggregation, subqueries, locking, and typed result shaping are part of normal ORM work, not exceptional edge cases
 - explicit eager loading must keep query counts understandable and avoid hidden N+1 behavior
 - large-result evaluation must eventually support streaming/chunking rather than requiring full materialization

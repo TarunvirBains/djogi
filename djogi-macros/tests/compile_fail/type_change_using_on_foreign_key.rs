@@ -12,14 +12,14 @@ use djogi::prelude::*;
 #[model(table = "items_220_fk_parent", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Item220FkParent {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "items_220_fk_child", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Item220FkChild {
-    #[field(type_change_using = "owner_id::BIGINT")]
-    pub owner: ForeignKey<Item220FkParent>,
+ #[field(type_change_using = "owner_id::BIGINT")]
+ pub owner: ForeignKey<Item220FkParent>,
 }
 
 fn main() {}

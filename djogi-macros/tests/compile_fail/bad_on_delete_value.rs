@@ -14,9 +14,9 @@ use djogi::prelude::*;
 #[model(table = "comments")]
 #[derive(Debug, Clone)]
 pub struct Comment {
-    #[field(on_delete = "bogus")]
-    pub post_id: i64,
-    pub body: String,
+ #[field(on_delete = "bogus")]
+ pub post_id: i64,
+ pub body: String,
 }
 
 fn main() {}

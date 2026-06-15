@@ -11,11 +11,11 @@
 use djogi::prelude::*;
 
 #[model(table = "places", no_default, indexes(
-    unique(fields = [location], using = "gist"),
+ unique(fields = [location], using = "gist"),
 ))]
 #[derive(Debug, Clone)]
 pub struct Place {
-    pub location: String,
+ pub location: String,
 }
 
 fn main() {}

@@ -3,9 +3,9 @@
 // Pins the full six-hook ordering through a single create → save →
 // delete pipeline:
 //
-//     before_create → INSERT  → after_create
-//     before_save   → UPDATE  → after_save
-//     before_delete → DELETE  → after_delete
+//   before_create → INSERT → after_create
+//   before_save  → UPDATE → after_save
+//   before_delete → DELETE → after_delete
 //
 // .4 / .5 / .6 each pin one CRUD terminal in isolation. This
 // file proves the three terminals cooperate — that no rebinding,
@@ -143,6 +143,6 @@ async fn canonical_sequence_create_save_delete(mut ctx: djogi::DjogiContext) {
             "after_delete",
         ],
         "canonical hook order must hold \
-         across the full create → save → delete lifecycle",
+     across the full create → save → delete lifecycle",
     );
 }

@@ -1,12 +1,12 @@
 //! EWKB encode and decode helpers for all Djogi geography types.
 //! # Point wire format (25 bytes)
 //! ```text
-//! Offset  Size  Content
-//!      0     1  Endianness marker: 0x01 (little-endian)
-//!      1     4  Geometry type word: 0x20000001 (Point | SRID flag), LE
-//!      5     4  SRID 4326, LE  → [0xE6, 0x10, 0x00, 0x00]
-//!      9     8  X (longitude), f64 LE
-//!     17     8  Y (latitude),  f64 LE
+//! Offset Size Content
+//!  0  1 Endianness marker: 0x01 (little-endian)
+//!  1  4 Geometry type word: 0x20000001 (Point | SRID flag), LE
+//!  5  4 SRID 4326, LE → [0xE6, 0x10, 0x00, 0x00]
+//!  9  8 X (longitude), f64 LE
+//!  17  8 Y (latitude), f64 LE
 //! ```
 //! # LineString wire format
 //! `[endian(1), type_word 0x20000002 LE(4), srid(4), num_points u32 LE(4), points(16*n)]`
@@ -166,8 +166,8 @@ pub(crate) fn encode_point_into<B: BufMut + ?Sized>(p: &super::GeoPoint, buf: &m
 /// - Byte 0 must be `0x01` (little-endian marker).
 /// - Bytes 1..5 must equal the Point-with-SRID type word `[0x01, 0x00, 0x00, 0x20]`.
 /// - Bytes 5..9 must encode SRID 4326; if the SRID parses but is not 4326,
-///   `GeoError::UnexpectedSrid` carries the actual integer value so callers
-///   can produce a meaningful message.
+/// `GeoError::UnexpectedSrid` carries the actual integer value so callers
+/// can produce a meaningful message.
 /// - Bytes 9..17 are the X (longitude) `f64`.
 /// - Bytes 17..25 are the Y (latitude) `f64`.
 pub(crate) fn decode_point(bytes: &[u8]) -> Result<(f64, f64), GeoError> {

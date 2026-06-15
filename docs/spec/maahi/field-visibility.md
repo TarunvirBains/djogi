@@ -1,4 +1,4 @@
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md) | [Maahi](./index.md)
 
 # Maahi — Field Visibility
 
@@ -17,17 +17,17 @@ Visages themselves are pure compile-time projections (see [Visages](../visages.m
 pub password_hash: String,
 
 // Case 2: expose(...) — field participates in compiled visages whose names appear
-//                       in the list. Per-role visibility is decided by which visages
-//                       the role has been granted in _admin_role_visage_perms.
+//   in the list. Per-role visibility is decided by which visages
+//   the role has been granted in _admin_role_visage_perms.
 #[field(expose(public, admin))]
 pub vin: String,
 
 // Case 3: no expose() — field belongs to no canonical compiled visage. It is
-//                        visible to superuser (modulo expose(none)) and to any
-//                        non-superuser role holding view_full_struct. To make
-//                        such a field visible to a specific role tier, add an
-//                        expose(...) annotation pointing at the relevant
-//                        canonical scope.
+//   visible to superuser (modulo expose(none)) and to any
+//   non-superuser role holding view_full_struct. To make
+//   such a field visible to a specific role tier, add an
+//   expose(...) annotation pointing at the relevant
+//   canonical scope.
 pub make: String,
 ```
 
@@ -44,7 +44,7 @@ Both permissions stop at the `expose(none)` floor — neither reveals nor allows
 ## Companion Annotations
 
 - **`#[field(admin_readonly)]`** — field renders in forms but is not editable. Independent of visibility; a visage grant can be `can_edit = TRUE` and the field still render read-only because of this annotation. This is the widget-render axis, not the permission axis.
-- **`#[field(sensitive)] #[field(redact_in(admin))]`** — field is rendered as a redacted placeholder rather than its raw value; useful for showing "a value exists" without disclosing it. Defined alongside Phase 7.5's protected-data work; see [Protected Data](../protected-data.md).
+- **`#[field(sensitive)] #[field(redact_in(admin))]`** — field is rendered as a redacted placeholder rather than its raw value; useful for showing "a value exists" without disclosing it. Defined alongside 's protected-data work; see [Protected Data](../protected-data.md).
 - **`#[field(label)]`** — designates this field as the row label source consumed by the model-level `Label` trait. See the section below.
 - **`#[model(label_fn = "Vehicle::compute_label")]`** — opt-in computed label for cases where no single field is right.
 
@@ -56,7 +56,7 @@ Every `#[model]`-annotated struct implements `Label`, a model-level trait — *n
 
 ```rust
 pub trait Label {
-    fn label(&self, visible: &VisibleFields) -> String;
+ fn label(&self, visible: &VisibleFields) -> String;
 }
 
 pub struct VisibleFields { /* sorted set of field names */ }
@@ -79,7 +79,7 @@ Maahi consumes `Label` in three places in v1, each constructing `VisibleFields` 
 - **List view default column** — when `admin_list_display` is not set on a model, the list view renders the row's `label(&visible)` (with `visible` derived from the requesting role) plus its ID. Custom `admin_list_display` lists honor field-level visibility separately, so the default column path is the only one that touches `Label`.
 - **Audit log entries** — `{snake_case(model)}_logs` rows (per [Logging](../logging.md) §9.1) store JSONB snapshots of the changed source row. When rendering an audit entry to a viewer, Maahi reconstructs the model from the snapshot, computes the *viewer's* effective visibility on the source model (not the actor's at change time — visibility is a property of the reader), and renders the label via `Label`.
 
-Outside Maahi, the Phase 9 shell uses `Label` for `pp()` default rendering — the shell typically constructs `VisibleFields::unrestricted()` since shell users are operator-tier by default, but this is an explicit choice at the call site, not an implicit bypass.
+Outside Maahi, the shell uses `Label` for `pp()` default rendering — the shell typically constructs `VisibleFields::unrestricted()` since shell users are operator-tier by default, but this is an explicit choice at the call site, not an implicit bypass.
 
 ## FK Dropdown Feasibility
 
@@ -89,12 +89,12 @@ A FK field is exposable to a role only if the target model yields a non-empty `L
 
 Superuser bypasses *role* filtering, not *data-level* hiding. The distinction matters:
 
-| Field annotation                      | Visible to role with matching grants | Visible to superuser |
+| Field annotation   | Visible to role with matching grants | Visible to superuser |
 |---------------------------------------|--------------------------------------|----------------------|
-| `expose(public)` (role granted view of a visage including this field) | Yes        | Yes                  |
-| `expose(...)` but role granted no relevant visage and lacks `view_full_struct` | No | Yes  |
-| no `expose(...)`, role lacks `view_full_struct` | No                          | Yes                  |
-| `expose(none)`                        | No                                   | **No**               |
+| `expose(public)` (role granted view of a visage including this field) | Yes | Yes   |
+| `expose(...)` but role granted no relevant visage and lacks `view_full_struct` | No | Yes |
+| no `expose(...)`, role lacks `view_full_struct` | No    | Yes   |
+| `expose(none)`   | No     | **No**  |
 
 `expose(none)` is the absolute floor: the field is never UI-rendered, regardless of who is asking. Superuser is operational god mode for the model graph; it is not a security override for data classified as never-render.
 
@@ -112,4 +112,4 @@ pub struct InternalToken { /* … */ }
 
 ---
 
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md) | [Maahi](./index.md)

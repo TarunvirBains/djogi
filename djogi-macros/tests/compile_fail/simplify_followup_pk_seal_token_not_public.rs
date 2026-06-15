@@ -13,14 +13,14 @@ use djogi::PkType;
 pub struct FakePk;
 
 impl PrimaryKey for FakePk {
-    const __DJOGI_PK_SEAL: PkSealToken = djogi::primary_key::__DJOGI_PK_SEAL_TOKEN;
-    const KIND: PkType = PkType::Serial;
-    const SQL_TYPE: &'static str = "BIGINT";
-    const DEFAULT_SQL: Option<&'static str> = None;
+ const __DJOGI_PK_SEAL: PkSealToken = djogi::primary_key::__DJOGI_PK_SEAL_TOKEN;
+ const KIND: PkType = PkType::Serial;
+ const SQL_TYPE: &'static str = "BIGINT";
+ const DEFAULT_SQL: Option<&'static str> = None;
 
-    fn sentinel() -> Self {
-        Self
-    }
+ fn sentinel() -> Self {
+  Self
+ }
 }
 
 fn main() {}

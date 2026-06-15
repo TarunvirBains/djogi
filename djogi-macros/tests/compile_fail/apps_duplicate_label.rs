@@ -4,11 +4,11 @@
 // `label = "vehicles"` on the second struct.
 
 djogi::apps! {
-    #[app(database = "main")]
-    pub struct Vehicles;
+ #[app(database = "main")]
+ pub struct Vehicles;
 
-    #[app(label = "vehicles", database = "main")]
-    pub struct Cars;
+ #[app(label = "vehicles", database = "main")]
+ pub struct Cars;
 }
 
 fn main() {}

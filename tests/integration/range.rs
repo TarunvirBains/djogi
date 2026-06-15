@@ -16,30 +16,30 @@
 // for the high-value element types covered here:
 //
 // 1. **`Range<i32>` discrete canonicalisation.** Postgres canonicalises
-//    every `int4range` write to lower-inclusive / upper-exclusive
-//    storage form: `[1, 9]` and `[1, 10)` round-trip as the same SQL
-//    range. The Rust round-trip preserves whatever shape Postgres
-//    returned (`inclusive_exclusive` after canonicalisation).
+//  every `int4range` write to lower-inclusive / upper-exclusive
+//  storage form: `[1, 9]` and `[1, 10)` round-trip as the same SQL
+//  range. The Rust round-trip preserves whatever shape Postgres
+//  returned (`inclusive_exclusive` after canonicalisation).
 // 2. **`Range<DateTime>` continuous TIMESTAMPTZ binary path.** The
-//    `tstzrange` codec routes finite endpoints through
-//    `time::OffsetDateTime`'s 8-byte big-endian wire format; no
-//    canonicalisation, the bound shape round-trips as written.
+//  `tstzrange` codec routes finite endpoints through
+//  `time::OffsetDateTime`'s 8-byte big-endian wire format; no
+//  canonicalisation, the bound shape round-trips as written.
 // 3. **`Range<Decimal>` NUMERIC binary path.** The `numrange` codec
-//    routes finite endpoints through `rust_decimal::Decimal`'s
-//    Postgres `ToSql` / `FromSql` impl — the same wire path that
-//    feeds the `decode_bound` chain for arbitrary-precision values.
+//  routes finite endpoints through `rust_decimal::Decimal`'s
+//  Postgres `ToSql` / `FromSql` impl — the same wire path that
+//  feeds the `decode_bound` chain for arbitrary-precision values.
 //
 // Every column is also exercised in three bound shapes:
 //
 // * **Empty range** — `Range::empty()`. Postgres marks the wire byte
-//   with the `RANGE_EMPTY` flag and carries no bound bytes; the
-//   decoder reconstructs the empty range without consulting `T`.
+//  with the `RANGE_EMPTY` flag and carries no bound bytes; the
+//  decoder reconstructs the empty range without consulting `T`.
 // * **Unbounded on one side** — `(Inclusive(x), Unbounded)` /
-//   `(Unbounded, Exclusive(y))`. The decoder must set the matching
-//   `RANGE_LB_INF` / `RANGE_UB_INF` flag and skip the bound bytes.
+//  `(Unbounded, Exclusive(y))`. The decoder must set the matching
+//  `RANGE_LB_INF` / `RANGE_UB_INF` flag and skip the bound bytes.
 // * **Lower-inclusive / upper-exclusive** — the canonical discrete
-//   shape AND the typical adopter "booking window" shape. The
-//   decoder reconstructs both flags from the wire bits.
+//  shape AND the typical adopter "booking window" shape. The
+//  decoder reconstructs both flags from the wire bits.
 //
 // # Predicate round-trip
 //

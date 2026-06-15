@@ -7,29 +7,29 @@
 use djogi::prelude::*;
 
 djogi::apps! {
-    #[app(database = "main")]
-    pub struct Vehicles;
+ #[app(database = "main")]
+ pub struct Vehicles;
 
-    #[app(database = "main", tombstone)]
-    pub struct OldBilling;
+ #[app(database = "main", tombstone)]
+ pub struct OldBilling;
 }
 
 #[model(table = "cars", app = Vehicles)]
 pub struct Car {
-    pub make: String,
+ pub make: String,
 }
 
 #[model(table = "invoices", app = Vehicles, moved_from_app = OldBilling)]
 pub struct Invoice {
-    pub amount_cents: i64,
+ pub amount_cents: i64,
 }
 
 fn main() {
-    let car_desc = Car::descriptor();
-    assert_eq!(car_desc.app, Some("vehicles"));
-    assert_eq!(car_desc.moved_from_app, None);
+ let car_desc = Car::descriptor();
+ assert_eq!(car_desc.app, Some("vehicles"));
+ assert_eq!(car_desc.moved_from_app, None);
 
-    let invoice_desc = Invoice::descriptor();
-    assert_eq!(invoice_desc.app, Some("vehicles"));
-    assert_eq!(invoice_desc.moved_from_app, Some("oldbilling"));
+ let invoice_desc = Invoice::descriptor();
+ assert_eq!(invoice_desc.app, Some("vehicles"));
+ assert_eq!(invoice_desc.moved_from_app, Some("oldbilling"));
 }

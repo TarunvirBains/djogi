@@ -11,23 +11,23 @@ use serde_json::Value;
 #[model(table = "profiles_gin_jsonb")]
 #[derive(Debug, Clone)]
 pub struct ProfileJsonb {
-    #[field(index = "gin")]
-    pub traits: Jsonb<Value>,
+ #[field(index = "gin")]
+ pub traits: Jsonb<Value>,
 }
 
 #[model(table = "profiles_gin_vec")]
 #[derive(Debug, Clone)]
 pub struct ProfileVec {
-    #[field(index = "gin")]
-    pub tags: Vec<String>,
+ #[field(index = "gin")]
+ pub tags: Vec<String>,
 }
 
 #[model(table = "profiles_gin_tsvector")]
 #[derive(Debug, Clone)]
 pub struct ProfileTsVector {
-    pub source: String,
-    #[field(index = "gin")]
-    pub search: TsVector,
+ pub source: String,
+ #[field(index = "gin")]
+ pub search: TsVector,
 }
 
 fn main() {}

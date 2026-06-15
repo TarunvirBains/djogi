@@ -6,37 +6,37 @@
 //! transaction the runner does three things and commits all three
 //! together:
 //! 1. `SET LOCAL "djogi.live_migrate.suppress_events" = '1'` — the
-//!    session-scoped flag that the future
-//!    `#[model(events)]` outbox writer (wired in a later task)
-//!    consults before queuing an outbox row. The default is "events
-//!    suppressed during a backfill chunk". The module's public entry
-//!    points [`execute_backfill`] and [`resume_backfill`] expose an
-//!    `emit_events: bool` parameter; when the caller passes `true`
-//!    the runner skips the `SET LOCAL` so downstream hooks behave
-//!    normally. This is an advanced, low-level Rust API — exercised
-//!    today primarily by the test suite — and not part of the stable
-//!    high-level adopter contract. There is no high-level opt-in
-//!    surface yet: no `--emit-events` CLI flag on `djogi live run` /
-//!    `resume`, no `#[migration(emit_events_during_backfill)]`
-//!    proc-macro attribute (no `#[migration]` macro exists at all
-//!    today), and the parameter is not surfaced through any derive
-//!    or other attribute path. A high-level adopter-facing opt-in is
-//!    deferred to a future task; for adopter-driven backfills routed
-//!    through the CLI / derive contract, suppression is always-on
-//!    until that surface lands.
+//! session-scoped flag that the future
+//! `#[model(events)]` outbox writer (wired in a later task)
+//! consults before queuing an outbox row. The default is "events
+//! suppressed during a backfill chunk". The module's public entry
+//! points [`execute_backfill`] and [`resume_backfill`] expose an
+//! `emit_events: bool` parameter; when the caller passes `true`
+//! the runner skips the `SET LOCAL` so downstream hooks behave
+//! normally. This is an advanced, low-level Rust API — exercised
+//! today primarily by the test suite — and not part of the stable
+//! high-level adopter contract. There is no high-level opt-in
+//! surface yet: no `--emit-events` CLI flag on `djogi live run` /
+//! `resume`, no `#[migration(emit_events_during_backfill)]`
+//! proc-macro attribute (no `#[migration]` macro exists at all
+//! today), and the parameter is not surfaced through any derive
+//! or other attribute path. A high-level adopter-facing opt-in is
+//! deferred to a future task; for adopter-driven backfills routed
+//! through the CLI / derive contract, suppression is always-on
+//! until that surface lands.
 //! 2. The pattern's `UPDATE … WHERE <idempotent-predicate> LIMIT $1
 //! RETURNING <pk>` query — the actual transformation. Bound count
-//!    is the chunk size; the predicate is supplied by the pattern
-//!    emitter and is required to be idempotent (re-running the same
-//!    predicate against an already-backfilled subrange must produce
-//!    no observable change).
+//! is the chunk size; the predicate is supplied by the pattern
+//! emitter and is required to be idempotent (re-running the same
+//! predicate against an already-backfilled subrange must produce
+//! no observable change).
 //! 3. `UPDATE djogi_live_plans SET backfill_rows_done = …,
 //! last_progress_at = now() WHERE plan_id = $1` — the progress
-//!    write.
-//!    Steps 2 and 3 are committed together. A crash between them would
-//!    otherwise replay the chunk on resume and double-apply non-idempotent
-//!    transforms; pinning both writes to the same transaction makes the
-//!    resume contract safe by construction. See v3 plan §3 lines 411-419.
+//! write.
+//! Steps 2 and 3 are committed together. A crash between them would
+//! otherwise replay the chunk on resume and double-apply non-idempotent
+//! transforms; pinning both writes to the same transaction makes the
+//! resume contract safe by construction. See v3 plan §3 lines 411-419.
 //! # Idempotent predicate contract
 //! The pattern's `WHERE` clause must be idempotent: re-running the same
 //! chunk predicate against an already-backfilled subrange must produce
@@ -226,12 +226,12 @@ fn validate_table_ident(table: &str) -> Result<(), BackfillError> {
 /// The check is a byte-level scan over the template (no regex per
 /// CLAUDE.md). The walker treats `$<digit>` as a placeholder token:
 /// - `$1` is the only accepted placeholder. Anything else (`$2`, `$3`,
-///   `$10`, …) is an unbound parameter and rejected.
+/// `$10`, …) is an unbound parameter and rejected.
 /// - `$<non-digit>` is left alone. Postgres dollar-quoted string
-///   literals (`$tag$ … $tag$`) and other non-placeholder uses of `$`
-///   live in this branch; the runner does not try to parse Postgres
-///   string-literal syntax beyond this point.
-///   The `LIMIT $1` substring must appear at least once.
+/// literals (`$tag$ … $tag$`) and other non-placeholder uses of `$`
+/// live in this branch; the runner does not try to parse Postgres
+/// string-literal syntax beyond this point.
+/// The `LIMIT $1` substring must appear at least once.
 fn validate_predicate_template(template: &str) -> Result<(), BackfillError> {
     if !template.contains("LIMIT $1") {
         return Err(BackfillError::MalformedPredicateTemplate);
@@ -301,25 +301,25 @@ pub(crate) fn compute_rows_done_total(rows_already: u64, rows_just_added: u64) -
 /// the resume entry point.
 /// Each chunk:
 /// 1. Opens a fresh transaction on the application connection (via
-///    [`atomic`]).
+/// [`atomic`]).
 /// 2. `SET LOCAL "djogi.live_migrate.suppress_events" = '1'` unless
-///    `emit_events` is `true`.
+/// `emit_events` is `true`.
 /// 3. Runs `UPDATE <table> <predicate_template>` with `chunk_size`
-///    bound to `$1`.
+/// bound to `$1`.
 /// 4. Counts the affected rows.
 /// 5. Updates `djogi_live_plans.backfill_rows_done` and
-///    `last_progress_at` in the SAME transaction.
+/// `last_progress_at` in the SAME transaction.
 /// 6. Commits.
-///    Loops while `rows_affected == chunk_size`. When `rows_affected <
+/// Loops while `rows_affected == chunk_size`. When `rows_affected <
 /// chunk_size` the predicate has exhausted and the runner transitions
-///    the plan to [`PlanStatus::Validating`] before returning.
+/// the plan to [`PlanStatus::Validating`] before returning.
 /// # Preconditions
 /// - `ctx` must be pool-backed (i.e. not already inside a transaction).
-///   Each chunk opens its own transaction; nesting inside an outer
-///   transaction would defeat the per-chunk commit boundary.
+/// Each chunk opens its own transaction; nesting inside an outer
+/// transaction would defeat the per-chunk commit boundary.
 /// - The plan referenced by `plan_id` must exist in
-///   `djogi_live_plans` and be in [`PlanStatus::Running`]. The
-///   operator's CLI promotes the plan into `Running` via `djogi live
+/// `djogi_live_plans` and be in [`PlanStatus::Running`]. The
+/// operator's CLI promotes the plan into `Running` via `djogi live
 /// run`; the runner does not auto-promote.
 pub async fn execute_backfill(
     ctx: &mut DjogiContext,
@@ -406,7 +406,7 @@ async fn drive_chunks(
         .ok_or_else(|| {
             DjogiError::Db(DbError::other(
                 "execute_backfill / resume_backfill require a pool-backed DjogiContext; \
-                 each chunk opens its own transaction and cannot nest inside an outer one",
+     each chunk opens its own transaction and cannot nest inside an outer one",
             ))
         })?
         .clone();
@@ -602,10 +602,10 @@ async fn lookup_plan_row(
     // the plan_id (the bucket is what we need to read out of the row,
     // not assert against).
     let sql = "SELECT plan_id, slug, plan_file_checksum, classification, status, \
-               current_step, current_step_index, backfill_rows_done, \
-               backfill_rows_total, started_at, last_progress_at, completed_at, \
-               last_error, originating_migration, target_database, app_label, daemon_session_token \
-               FROM djogi_live_plans WHERE plan_id = $1";
+    current_step, current_step_index, backfill_rows_done, \
+    backfill_rows_total, started_at, last_progress_at, completed_at, \
+    last_error, originating_migration, target_database, app_label, daemon_session_token \
+    FROM djogi_live_plans WHERE plan_id = $1";
     let plan_id_i64 = plan_id.as_i64();
     let row_opt = ctx
         .query_opt(sql, &[&plan_id_i64])
@@ -993,7 +993,7 @@ mod tests {
         assert!(
             sql.contains(SIDE_EFFECT_SUPPRESSION_TXN_LOCAL),
             "set_config SQL must embed the canonical GUC name verbatim: \
-             SQL = {sql:?}, GUC = {SIDE_EFFECT_SUPPRESSION_TXN_LOCAL:?}",
+    SQL = {sql:?}, GUC = {SIDE_EFFECT_SUPPRESSION_TXN_LOCAL:?}",
         );
         // `set_config(name, value, is_local)` is the canonical Postgres
         // function-form of `SET LOCAL`; the third argument `true`

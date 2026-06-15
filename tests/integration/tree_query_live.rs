@@ -4,9 +4,9 @@
 // Drives every public terminal end-to-end:
 //
 // - `tree_descendants` / `tree_ancestors` (single-edge sugar via
-//   `#[model(tree_edge = "...")]`)
+//  `#[model(tree_edge = "...")]`)
 // - `QuerySet::tree_descendants` / `tree_ancestors` (explicit-path API
-//   for models with multiple self-FKs or no `tree_edge`)
+//  for models with multiple self-FKs or no `tree_edge`)
 // - `RecursiveQuerySet::with_max_depth`
 // - `RecursiveQuerySet::filter` / `order_by`
 // - `RecursiveQuerySet::search_breadth_first_by` / `search_depth_first_by`
@@ -217,9 +217,9 @@ async fn cycle_detection_terminates(mut ctx: DjogiContext) {
 #[djogi::djogi_test(sync_models = [PedigreeNode])]
 async fn two_self_fks_explicit_edge(mut ctx: DjogiContext) {
     // Pedigree:
-    //   - mom (no parents)
-    //   - dad (no parents)
-    //   - child whose mother = mom and father = dad
+    //  - mom (no parents)
+    //  - dad (no parents)
+    //  - child whose mother = mom and father = dad
     let mom = seed_pedigree(&mut ctx, "mom", None, None).await;
     let dad = seed_pedigree(&mut ctx, "dad", None, None).await;
     let child = seed_pedigree(&mut ctx, "child", Some(&mom), Some(&dad)).await;
@@ -353,12 +353,12 @@ async fn tree_ancestors_walks_upward(mut ctx: DjogiContext) {
 #[djogi::djogi_test(sync_models = [TreeNode])]
 async fn search_breadth_first_orders_by_depth(mut ctx: DjogiContext) {
     // Two-level fan-out:
-    //   root
-    //     ├─ l1a
-    //     │    ├─ l2a
-    //     │    └─ l2b
-    //     └─ l1b
-    //          └─ l2c
+    //  root
+    //   ├─ l1a
+    //   │  ├─ l2a
+    //   │  └─ l2b
+    //   └─ l1b
+    //     └─ l2c
     let root = seed_tree_node(&mut ctx, "root", None).await;
     let l1a = seed_tree_node(&mut ctx, "l1a", Some(&root)).await;
     let l1b = seed_tree_node(&mut ctx, "l1b", Some(&root)).await;
@@ -394,8 +394,8 @@ async fn search_breadth_first_orders_by_depth(mut ctx: DjogiContext) {
     assert!(
         l1_max_index < l2_min_index,
         "BFS must place every l1 row before any l2 row; \
-         l1_max_index={l1_max_index}, l2_min_index={l2_min_index}, \
-         walk={:?}",
+     l1_max_index={l1_max_index}, l2_min_index={l2_min_index}, \
+     walk={:?}",
         bfs.iter().map(|n| &n.name).collect::<Vec<_>>()
     );
 }
@@ -443,7 +443,7 @@ async fn search_depth_first_traverses_chains(mut ctx: DjogiContext) {
     assert!(
         both_before_c || both_after_c,
         "DFS must visit l1a's subtree contiguously: l2a={}, l2b={}, l2c={}; \
-         walk={:?}",
+     walk={:?}",
         p_l2a,
         p_l2b,
         p_l2c,
@@ -456,10 +456,10 @@ async fn search_depth_first_traverses_chains(mut ctx: DjogiContext) {
 #[djogi::djogi_test(sync_models = [PedigreeNode])]
 async fn fetch_all_with_paths_returns_edge_names(mut ctx: DjogiContext) {
     // Three-generation pedigree:
-    //   gma (no parents) — grandmother
-    //   gpa (no parents) — grandfather
-    //   mom (mother = gma, father = gpa)
-    //   child (mother = mom)
+    //  gma (no parents) — grandmother
+    //  gpa (no parents) — grandfather
+    //  mom (mother = gma, father = gpa)
+    //  child (mother = mom)
     let gma = seed_pedigree(&mut ctx, "gma", None, None).await;
     let gpa = seed_pedigree(&mut ctx, "gpa", None, None).await;
     let mom = seed_pedigree(&mut ctx, "mom", Some(&gma), Some(&gpa)).await;
@@ -529,10 +529,10 @@ async fn fetch_all_with_paths_returns_edge_names(mut ctx: DjogiContext) {
 async fn full_ancestors_two_edges_preserves_multiplicity(mut ctx: DjogiContext) {
     // A linebreeding pedigree where the SAME ancestor reaches the
     // child via TWO distinct paths:
-    //   common (no parents) — the shared ancestor
-    //   mom (mother = common)
-    //   dad (father = common)  — note: same `common` is mother of mom AND father of dad
-    //   child (mother = mom, father = dad)
+    //  common (no parents) — the shared ancestor
+    //  mom (mother = common)
+    //  dad (father = common) — note: same `common` is mother of mom AND father of dad
+    //  child (mother = mom, father = dad)
     //
     // child → mom (via mother) → common (via mother) — path1
     // child → dad (via father) → common (via father) — path2

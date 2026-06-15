@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Separate table name (`queryset_posts`) so this integration test can share a DB
 // with `model.rs` without DDL collisions.
-//  default flip — pin ascending HeerId so existing
+// default flip — pin ascending HeerId so existing
 // HeerId-typed construction and assertions keep working.
 #[model(table = "queryset_posts", pk = HeerId)]
 #[derive(Debug, Clone)]
@@ -734,7 +734,7 @@ async fn distinct_on_and_plain(mut ctx: djogi::DjogiContext) {
     assert!(
         distinct_on_count < base_count,
         "distinct_on(title) count ({distinct_on_count}) should be \
-         less than base count ({base_count}) since 'dup' collapses"
+     less than base count ({base_count}) since 'dup' collapses"
     );
 }
 
@@ -843,7 +843,7 @@ async fn order_by_stacks_across_multiple_calls(mut ctx: djogi::DjogiContext) {
         titles,
         vec!["delta", "beta", "alpha", "gamma"],
         "multi-call order_by must stack (published DESC, view_count ASC), \
-         not replace"
+     not replace"
     );
 }
 

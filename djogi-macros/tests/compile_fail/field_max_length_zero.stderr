@@ -1,7 +1,7 @@
 error: `#[field(max_length = 0)]` is invalid — Postgres requires `VARCHAR(N)` where N >= 1 (received N = 0)
-  --> $DIR/field_max_length_zero.rs:10:26
-   |
-10 |     #[field(max_length = 0)]
-   |                          ^
+ --> $DIR/field_max_length_zero.rs:10:26
+ |
+10 |  #[field(max_length = 0)]
+ |       ^
 
 error: aborting due to 1 previous error

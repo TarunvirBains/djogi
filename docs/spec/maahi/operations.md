@@ -1,4 +1,4 @@
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md) | [Maahi](./index.md)
 
 # Maahi — Operations
 
@@ -12,14 +12,14 @@ Audit-entry rendering reconstructs the source-row model from its `{model}_logs` 
 
 ## System Permissions
 
-Phase 10 system permissions surfaced in `_admin_roles.system_perms`:
+0 system permissions surfaced in `_admin_roles.system_perms`:
 
-| Permission           | What it grants                                                                                     | Phase |
+| Permission | What it grants      | Phase |
 |----------------------|----------------------------------------------------------------------------------------------------|-------|
-| `view_audit_log`     | Visibility-filtered read of `{model}_logs` tables                                                | 10    |
-| `manage_users`       | Create/edit/delete `_admin_users`; cannot grant `is_superuser` (full upper-bound rule below)       | 10    |
-| `view_full_struct`   | View every field on every model except `expose(none)` / `expose(internal)` — independent of any visage view grant; does not bypass `#[model(admin = false)]` | 10    |
-| `write_full_struct`  | Edit every field on every model except `expose(none)` / `expose(internal)` and `admin_readonly` — independent of any visage edit grant; does not bypass `#[model(admin = false)]` | 10    |
+| `view_audit_log` | Visibility-filtered read of `{model}_logs` tables   | 10 |
+| `manage_users` | Create/edit/delete `_admin_users`; cannot grant `is_superuser` (full upper-bound rule below) | 10 |
+| `view_full_struct` | View every field on every model except `expose(none)` / `expose(internal)` — independent of any visage view grant; does not bypass `#[model(admin = false)]` | 10 |
+| `write_full_struct` | Edit every field on every model except `expose(none)` / `expose(internal)` and `admin_readonly` — independent of any visage edit grant; does not bypass `#[model(admin = false)]` | 10 |
 
 `view_full_struct` is the discrete grant for "see everything not data-class-hidden." Holding any number of visage view grants gives a role a *union* of those visages' fields; seeing the *raw struct* requires this discrete grant. Use case: an auditor role that holds `view_audit_log + view_full_struct` on relevant models without holding write permissions.
 
@@ -35,9 +35,9 @@ Phase 10 system permissions surfaced in `_admin_roles.system_perms`:
 
 Clause 3 closes the per-action escalation surface; clause 4 closes the visibility-grant escalation surface introduced by `_admin_role_visage_perms`; clause 5 closes the tenant-reach escalation surface that would otherwise let a single-tenant admin manufacture cross-tenant users. Without clause 4, a `manage_users` holder whose own grants cover only `VehiclePublic` view could assign a target role granting `VehicleAdmin` view, creating a user who sees registration_state and any other `expose(admin)` fields the granter cannot — exactly the privilege escalation the upper-bound discipline must prevent. Without clause 5, a `manage_users` holder with the same `(model, action)` matrix as a target role but bounded to one tenant could assign that role with `cross_tenant = TRUE`, creating a user who can act in *every* tenant while the granter can act in only one. Together the five clauses bound every axis of authority the new model exposes — system perms, per-model action bits, visage grants, and tenant reach — so a holder can only create users whose realized authority is a subset of their own across every dimension.
 
-This is the same transitive upper-bound discipline that Phase 10.5's `manage_roles` extends to role *editing*; v1 applies it to user *assignment* because the escalation surface is the same. Phase 10.5's `manage_roles` will extend the same five-clause rule to role create / edit so that a delegated role-editor cannot mint visage grants beyond their own.
+This is the same transitive upper-bound discipline that 0.5's `manage_roles` extends to role *editing*; v1 applies it to user *assignment* because the escalation surface is the same. 0.5's `manage_roles` will extend the same five-clause rule to role create / edit so that a delegated role-editor cannot mint visage grants beyond their own.
 
-The `manage_roles` system permission (which extends the transitive upper-bound to role create / edit, not just user assignment) is deferred to Phase 10.5. Until then, role creation and editing are superuser-only operations. Other system actions — running migrations, resetting databases, force-evicting sessions — are also superuser-only in v1.
+The `manage_roles` system permission (which extends the transitive upper-bound to role create / edit, not just user assignment) is deferred to 0.5. Until then, role creation and editing are superuser-only operations. Other system actions — running migrations, resetting databases, force-evicting sessions — are also superuser-only in v1.
 
 ## Bulk Operations
 
@@ -49,55 +49,55 @@ A bulk action is dangerous in proportion to its blast radius. Maahi gates the mo
 
 ```sql
 CREATE TABLE _admin_pending_actions (
-    id              BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
-    requested_by    BIGINT NOT NULL REFERENCES _admin_users(id),
-    action_kind     TEXT NOT NULL,            -- v1: "BulkDelete" or "InlineSave"; Phase 10.5 extends
-    app_name        TEXT NOT NULL,            -- app qualifier per Phase 7-Zero apps subsystem;
-                                              -- matches the (app_name, model_name) qualification axis
-                                              -- on _admin_role_visage_perms and _admin_role_model_perms.
-    model_name      TEXT NOT NULL,            -- target model: for BulkDelete, the model rows are deleted from;
-                                              -- for InlineSave, the parent model whose save is being approved.
-                                              -- Validated against the live ModelDescriptor registry under app_name.
-    payload         JSONB NOT NULL,           -- shape varies by action_kind (see below)
-    requested_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at      TIMESTAMPTZ NOT NULL,     -- pending requests auto-expire
-    approved_by     BIGINT REFERENCES _admin_users(id),
-    approved_at     TIMESTAMPTZ,
-    executed_at     TIMESTAMPTZ,
-    rejected_by     BIGINT REFERENCES _admin_users(id),
-    rejected_at     TIMESTAMPTZ,
-    rejection_note  TEXT
+ id BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
+ requested_by BIGINT NOT NULL REFERENCES _admin_users(id),
+ action_kind TEXT NOT NULL, -- v1: "BulkDelete" or "InlineSave"; 0.5 extends
+ app_name TEXT NOT NULL, -- app qualifier per apps subsystem;
+   -- matches the (app_name, model_name) qualification axis
+   -- on _admin_role_visage_perms and _admin_role_model_perms.
+ model_name TEXT NOT NULL, -- target model: for BulkDelete, the model rows are deleted from;
+   -- for InlineSave, the parent model whose save is being approved.
+   -- Validated against the live ModelDescriptor registry under app_name.
+ payload JSONB NOT NULL, -- shape varies by action_kind (see below)
+ requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ expires_at TIMESTAMPTZ NOT NULL, -- pending requests auto-expire
+ approved_by BIGINT REFERENCES _admin_users(id),
+ approved_at TIMESTAMPTZ,
+ executed_at TIMESTAMPTZ,
+ rejected_by BIGINT REFERENCES _admin_users(id),
+ rejected_at TIMESTAMPTZ,
+ rejection_note TEXT
 );
 
 CREATE INDEX _admin_pending_actions_unresolved_idx
-    ON _admin_pending_actions (requested_at)
-    WHERE approved_at IS NULL AND rejected_at IS NULL;
-    -- Partial index: supports the pending-queue view (filter on unresolved, order by requested_at).
-    -- Only indexes rows actually surfaced; resolved rows accumulate harmlessly outside the index.
+ ON _admin_pending_actions (requested_at)
+ WHERE approved_at IS NULL AND rejected_at IS NULL;
+ -- Partial index: supports the pending-queue view (filter on unresolved, order by requested_at).
+ -- Only indexes rows actually surfaced; resolved rows accumulate harmlessly outside the index.
 
 CREATE INDEX _admin_pending_actions_expires_at_idx
-    ON _admin_pending_actions (expires_at);
-    -- Supports the periodic auto-expiry sweep (`expires_at < NOW()`).
+ ON _admin_pending_actions (expires_at);
+ -- Supports the periodic auto-expiry sweep (`expires_at < NOW()`).
 ```
 
-**v1 ships two action kinds**: `BulkDelete` (changelist-initiated mass deletion) and `InlineSave` (the M2M inline-edit variant created by the threshold rule in `ui.md`). Both share the table, lifecycle, and approver-coverage discipline; they differ in payload shape and which actions the package executes. Phase 10.5 extends with additional kinds (`BulkUpdate` approval, configurable per-action gates).
+**v1 ships two action kinds**: `BulkDelete` (changelist-initiated mass deletion) and `InlineSave` (the M2M inline-edit variant created by the threshold rule in `ui.md`). Both share the table, lifecycle, and approver-coverage discipline; they differ in payload shape and which actions the package executes. 0.5 extends with additional kinds (`BulkUpdate` approval, configurable per-action gates).
 
 **Payload shape per action_kind:**
 
 ```jsonc
 // action_kind = 'BulkDelete'
 {
-  "filter":  { /* WHERE-clause encoding */ },   // optional
-  "row_ids": [ /* explicit row id list */ ]      // optional; one of filter or row_ids must be present
+ "filter": { /* WHERE-clause encoding */ }, // optional
+ "row_ids": [ /* explicit row id list */ ] // optional; one of filter or row_ids must be present
 }
 
 // action_kind = 'InlineSave'
 {
-  "parent_id":      /* parent row id */,
-  "parent_updates": { /* changed parent field name -> new value */ },
-  "inline_creates": { "<ThroughModel>": [ { /* new row */ }, ... ] },
-  "inline_updates": { "<ThroughModel>": [ { "id": <id>, /* changed fields */ }, ... ] },
-  "inline_deletes": { "<ThroughModel>": [ <id>, <id>, ... ] }
+ "parent_id": /* parent row id */,
+ "parent_updates": { /* changed parent field name -> new value */ },
+ "inline_creates": { "<ThroughModel>": [ { /* new row */ },... ] },
+ "inline_updates": { "<ThroughModel>": [ { "id": <id>, /* changed fields */ },... ] },
+ "inline_deletes": { "<ThroughModel>": [ <id>, <id>,... ] }
 }
 ```
 
@@ -116,9 +116,9 @@ Approver cannot equal requester. Pending requests expire after `[admin].pending_
 
 **Single-admin deployments cannot satisfy approver ≠ requester.** The bootstrap CLI provisions exactly one superuser. A deployment relying on `BulkDelete` or above-threshold `InlineSave` therefore needs at least two admins — the dual-control safeguard does not relax for single-admin or bootstrap-only state. Operators who need v1 approval-gated action kinds must provision a second admin (superuser or a role with the relevant action authority) before relying on them. See [Configuration](./configuration.md) — the bootstrap flow names this prerequisite explicitly.
 
-The broader application of this mechanism — gating arbitrary destructive actions, configurable approver counts, per-role gating — is Phase 10.5. The schema is designed to absorb that expansion without migration.
+The broader application of this mechanism — gating arbitrary destructive actions, configurable approver counts, per-role gating — is 0.5. The schema is designed to absorb that expansion without migration.
 
-`BulkUpdate` in v1 uses the magnitude-confirmation prompt but does not require dual approval. This is a deliberate calibration — the type-the-count step catches the common fat-finger; full approval workflows for `BulkUpdate` are Phase 10.5 territory.
+`BulkUpdate` in v1 uses the magnitude-confirmation prompt but does not require dual approval. This is a deliberate calibration — the type-the-count step catches the common fat-finger; full approval workflows for `BulkUpdate` are 0.5 territory.
 
 ## Wire Payload Decoder (Superuser-only)
 
@@ -159,7 +159,7 @@ v1 gates decode on the conjunction of two factors:
 1. The operator's `_admin_users` row has `is_superuser = TRUE`.
 2. The operator presents a fresh SSH signature over a server-issued challenge, verifiable against the deployment's decode-authorized-keys allow-list.
 
-There is no `decode_wire_payload` system permission in v1 — decode authority is not delegable through the role/visage system. The operation is too privileged to grant without the WebAuthn-shaped story; delegable decode arrives in Phase 10.5 (or whenever Approach C — fresh WebAuthn user-verification — is specced and implemented).
+There is no `decode_wire_payload` system permission in v1 — decode authority is not delegable through the role/visage system. The operation is too privileged to grant without the WebAuthn-shaped story; delegable decode arrives in 0.5 (or whenever Approach C — fresh WebAuthn user-verification — is specced and implemented).
 
 The two-factor structure means:
 
@@ -240,21 +240,21 @@ Wire major mismatch surfaces explicitly: "wire major 0 not supported; deployment
 
 ### Open questions for review
 
-The following are unresolved as of this rough draft and need revisiting before the Phase 10 v3 plan absorbs this section:
+The following are unresolved as of this rough draft and need revisiting before the 0 v3 plan absorbs this section:
 
 - **Q1.** Key allow-list location (Option a/b/c above).
 - **Q2.** Whether the SSH-helper CLI subcommand should also exist as an in-Maahi-page "copy this challenge, run this command" affordance, vs. requiring out-of-band CLI use.
 - **Q3.** Whether `cross_tenant` operators decoding against a specific tenant should require an extra confirmation step beyond the standard tenant-picker.
 - **Q4.** Whether the decoded-result render window has a TTL (e.g., 10 minutes) after which the operator must re-sign to view again, or persists for the session.
-- **Q5.** Whether Phase 10 v1 decodes both value-wire records and `PunnuEntries` snapshots, or starts with value-wire records and adds snapshot rendering in 10.5. The sassi substrate supports both; the remaining cost is Maahi UX, pagination, size limits, and field-visibility rendering over multi-entry payloads.
+- **Q5.** Whether 0 v1 decodes both value-wire records and `PunnuEntries` snapshots, or starts with value-wire records and adds snapshot rendering in 10.5. The sassi substrate supports both; the remaining cost is Maahi UX, pagination, size limits, and field-visibility rendering over multi-entry payloads.
 - **Q6.** Whether the failure-mode diagnostic policy ("type-level only, never byte-level") is over-restrictive for legitimate incident-response cases where seeing the byte stream is exactly the diagnostic value. If so, what additional gate (e.g., a separate "raw-bytes" permission requiring its own SSH signature against a stricter challenge) authorizes byte-level inspection.
 
 ### v1 → Approach C upgrade path
 
 The SSH-key-match doctrine is intentionally forward-compatible with Approach C (WebAuthn fresh user-verification). The upgrade path:
 
-1. Phase 10 v1 ships SSH-key + superuser as specified above.
-2. Phase 10.5 (or a Phase 11+ Maahi compliance milestone) introduces a delegable `decode_wire_payload` system permission with WebAuthn fresh-UV as the second factor (replacing or stacked-with the SSH-key gate, depending on deployment policy).
+1. 0 v1 ships SSH-key + superuser as specified above.
+2. 0.5 (or a 1+ Maahi compliance milestone) introduces a delegable `decode_wire_payload` system permission with WebAuthn fresh-UV as the second factor (replacing or stacked-with the SSH-key gate, depending on deployment policy).
 3. Deployments that want hardware-attested decode without enrolling WebAuthn can substitute hardware-backed SSH agents (`yubikey-agent`, `ssh-tpm-agent`) at the v1 layer — the SSH-key gate verifies signatures regardless of where the private key lives.
 4. The audit-trail schema is designed to absorb a `verification_mode` column (`ssh_signature` / `webauthn_uv` / both) without migration, so the upgrade does not invalidate historical audit rows.
 
@@ -262,4 +262,4 @@ The forward-compat discipline means the SSH-key v1 is not throwaway — it remai
 
 ---
 
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md) | [Maahi](./index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md) | [Maahi](./index.md)

@@ -7,25 +7,25 @@
 // populates the `ModelDescriptor` when a model declares a `GeoPoint` field:
 //
 // 1. `geography_sql_type_on_location_field` — the `location` field descriptor
-//    has `sql_type == FieldSqlType::Geography { subtype: GeographySubtype::Point, srid: 4326 }`.
+//  has `sql_type == FieldSqlType::Geography { subtype: GeographySubtype::Point, srid: 4326 }`.
 // 2. `gist_index_in_descriptor_for_geopoint_field` — `ModelDescriptor::indexes`
-//    contains exactly one `IndexSpec` for the `location` column, with
-//    `index_type == IndexType::Gist`.
+//  contains exactly one `IndexSpec` for the `location` column, with
+//  `index_type == IndexType::Gist`.
 // 3. `gist_index_name_follows_convention` — the index name matches the
-//    `<table>_<column>_gix` naming convention.
+//  `<table>_<column>_gix` naming convention.
 // 4. `non_spatial_model_has_empty_indexes` — a plain non-spatial model has no
-//    entries in `ModelDescriptor::indexes` (regression guard).
+//  entries in `ModelDescriptor::indexes` (regression guard).
 //
 // ## : Spatial query-surface IR shape
 //
 // Verifies the Condition / OrderExpr routing without a live database:
 //
 // 5. `within_km_returns_condition_expr` — `within_km` returns `Condition::Expr`
-//    for IR uniformity with the expression substrate.
+//  for IR uniformity with the expression substrate.
 // 6. `order_by_distance_returns_order_expr` — `order_by_distance` returns an
-//    `OrderExpr` that the `order_by` closure accepts.
+//  `OrderExpr` that the `order_by` closure accepts.
 //
-// All  and  tests are DB-free. Live-PostGIS CRUD tests are 's scope.
+// All and tests are DB-free. Live-PostGIS CRUD tests are 's scope.
 
 use djogi::prelude::*;
 
@@ -42,7 +42,7 @@ use djogi::prelude::*;
 /// test that never constructs instances.
 #[cfg(feature = "spatial")]
 #[allow(dead_code)]
-//  default flip — pin HeerId so the `order_by_distance`
+// default flip — pin HeerId so the `order_by_distance`
 // + `within_km` tests keep their ascending-HeerId tiebreak semantics.
 #[model(table = "places", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
@@ -134,7 +134,7 @@ fn gist_index_in_descriptor_for_geopoint_field() {
     assert!(
         matches!(gix.kind, djogi::IndexKind::NonUnique),
         "spatial GiST index must not be unique — spatial indexes are never unique constraints; \
-         got {:?}",
+     got {:?}",
         gix.kind
     );
 }
@@ -251,12 +251,12 @@ fn queryset_with_spatial_filter_and_ordering_composes_without_panic() {
 // ## Tests
 //
 // - `geopoint_crud_round_trip`: Place::create → Place::get proves the EWKB
-//   codec round-trips GEOGRAPHY(Point, 4326) through Postgres without coord drift.
+//  codec round-trips GEOGRAPHY(Point, 4326) through Postgres without coord drift.
 // - `within_km_filters_correctly`: seeds SFO, OAK, JFK; filters to within 50km
-//   of SFO; asserts exactly SFO + OAK land in the result, JFK does not.
+//  of SFO; asserts exactly SFO + OAK land in the result, JFK does not.
 // - `order_by_distance_is_deterministic`: seeds two equidistant points from
-//   center=(0,0); runs order_by_distance twice; asserts identical ID order both
-//   runs and that the smaller PK comes first (PK tiebreak).
+//  center=(0,0); runs order_by_distance twice; asserts identical ID order both
+//  runs and that the smaller PK comes first (PK tiebreak).
 
 /// Construct a `Place` with explicit sentinel values for framework fields.
 ///
@@ -281,8 +281,8 @@ fn place(name: &str, lat: f64, lon: f64) -> Place {
 /// `Place::get`, and asserts that both coordinates match the original within
 /// 1e-9 degrees. This exercises the full path:
 ///
-///   GeoPoint → to_ewkb_bytes → ToSql → INSERT RETURNING * → FromSql →
-///   from_ewkb_bytes → GeoPoint
+///  GeoPoint → to_ewkb_bytes → ToSql → INSERT RETURNING * → FromSql →
+///  from_ewkb_bytes → GeoPoint
 ///
 /// A 1e-9 tolerance covers any f64 representation noise; PostGIS stores
 /// GEOGRAPHY as IEEE 754 double-precision, so the round-trip should be exact.
@@ -420,7 +420,7 @@ async fn order_by_distance_is_deterministic(mut ctx: djogi::DjogiContext) {
     assert_eq!(
         first_ids, second_ids,
         "order_by_distance must return identical ordering across repeated queries; \
-         first={first_ids:?}, second={second_ids:?}"
+     first={first_ids:?}, second={second_ids:?}"
     );
 
     // The row with the smaller PK must come first (PK tiebreak).
@@ -428,7 +428,7 @@ async fn order_by_distance_is_deterministic(mut ctx: djogi::DjogiContext) {
     assert_eq!(
         first_ids[0], expected_first,
         "the smaller PK must appear first when distances are equal; \
-         expected {expected_first:?}, got {:?}",
+     expected {expected_first:?}, got {:?}",
         first_ids[0]
     );
 }
@@ -455,13 +455,13 @@ fn places_gix_requires_out_of_transaction() {
     assert!(
         gix.requires_out_of_transaction,
         "spatial GiST index must have requires_out_of_transaction = true; \
-         the migration emitter uses this flag to emit CREATE INDEX CONCURRENTLY outside a transaction"
+     the migration emitter uses this flag to emit CREATE INDEX CONCURRENTLY outside a transaction"
     );
     assert_eq!(
         gix.extension_dependency,
         Some("postgis"),
         "spatial GiST index must declare extension_dependency = Some(\"postgis\"); \
-         got {:?}",
+     got {:?}",
         gix.extension_dependency
     );
 }
@@ -501,18 +501,18 @@ fn non_spatial_indexes_default_benignly() {
 //
 // These four tests prove that `ModelDescriptor` encodes enough information
 // for a migration emitter to produce correct DDL without type-name
-// inference.  They drive `ModelDescriptor::migration_shape()` — a helper
+// inference. They drive `ModelDescriptor::migration_shape()` — a helper
 // that walks the descriptor and produces a `MigrationShape` capturing:
 //
-//  - column SQL types (as strings matching `FieldSqlType`'s Display impl)
-//  - index DDL (including `CONCURRENTLY` for out-of-transaction indexes)
-//  - the set of Postgres extensions the table's DDL requires
+// - column SQL types (as strings matching `FieldSqlType`'s Display impl)
+// - index DDL (including `CONCURRENTLY` for out-of-transaction indexes)
+// - the set of Postgres extensions the table's DDL requires
 //
 // No `.sql` files are emitted yet; the migration emitter will subsume this helper
 // by emitting `MigrationShape`'s content as actual migration SQL files.
 
 /// The `Place` descriptor must declare `"postgis"` as a required extension
-/// because the `location` field is a `GEOGRAPHY` column.  Even without a
+/// because the `location` field is a `GEOGRAPHY` column. Even without a
 /// spatial index, the column itself requires the PostGIS extension.
 #[cfg(feature = "spatial")]
 #[test]
@@ -521,7 +521,7 @@ fn places_migration_shape_requires_postgis_extension() {
     assert!(
         shape.required_extensions.contains("postgis"),
         "Place descriptor must list \"postgis\" in required_extensions; \
-         got {:?}",
+     got {:?}",
         shape.required_extensions
     );
 }
@@ -530,7 +530,7 @@ fn places_migration_shape_requires_postgis_extension() {
 /// type text and be marked `not_null`.
 ///
 /// `sql_type_text` matches the `FieldSqlType::Display` impl exactly:
-/// `"geography(Point, 4326)"` with a lowercase `geography` prefix.  The
+/// `"geography(Point, 4326)"` with a lowercase `geography` prefix. The
 /// plan's prose example used uppercase `"GEOGRAPHY"` as an illustration but
 /// the Display impl is the canonical source; tests follow the impl.
 #[cfg(feature = "spatial")]
@@ -595,7 +595,7 @@ fn non_spatial_model_migration_shape_has_no_extensions() {
     assert!(
         shape.required_extensions.is_empty(),
         "non-spatial model must have an empty required_extensions set; \
-         got {:?}",
+     got {:?}",
         shape.required_extensions
     );
     for idx in &shape.indexes {

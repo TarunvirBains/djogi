@@ -21,24 +21,24 @@
 //! plain queryset's API stable and cleanly excludes the methods that
 //! cannot soundly compose with a recursive walk:
 //! - `offset` — `OFFSET n` over a recursive walk silently drops ancestors
-//!   from the head of the result, which almost never matches caller
-//!   intent.
+//! from the head of the result, which almost never matches caller
+//! intent.
 //! - `distinct` / `distinct_on` — already handled by the `CYCLE id` clause
-//!   the SQL builder always emits; a second DISTINCT on top would be both
-//!   redundant and prone to suppressing legitimately-distinct rows.
+//! the SQL builder always emits; a second DISTINCT on top would be both
+//! redundant and prone to suppressing legitimately-distinct rows.
 //! - `select_for_update` / `nowait` / `skip_locked` /
-//!   `select_for_share` / `for_share_nowait` / `for_share_skip_locked`
-//!   row locks on a recursive walk acquire one lock per visited row
-//!   in walk order. Pre-1.0 we ban this until we have a clear "lock
-//!   the whole subtree atomically" story (out of scope for the current
-//!   release). The FOR SHARE family inherits the same
-//!   exclusion.
+//! `select_for_share` / `for_share_nowait` / `for_share_skip_locked`
+//! row locks on a recursive walk acquire one lock per visited row
+//! in walk order. Pre-1.0 we ban this until we have a clear "lock
+//! the whole subtree atomically" story (out of scope for the current
+//! release). The FOR SHARE family inherits the same
+//! exclusion.
 //! - `prefetch` / `select_related` — fan-out over a tree multiplies the
-//!   round trips by the size of the subtree; the right shape is a single
-//!   joined recursive CTE the user expresses directly. Banning the wrong
-//!   shape avoids accidental N+1 over a tree.
+//! round trips by the size of the subtree; the right shape is a single
+//! joined recursive CTE the user expresses directly. Banning the wrong
+//! shape avoids accidental N+1 over a tree.
 //! - bulk `update` / `delete` — non-trivial cascade semantics; deferred
-//!   to a later phase when we can declare the lock and visibility model.
+//! to a later phase when we can declare the lock and visibility model.
 //! # SQL shape
 //! The emitter produces one of:
 //! ```sql
@@ -66,7 +66,7 @@
 //! For `full_ancestors` the recursive term consolidates
 //! every self-FK edge into a single recursive SELECT and fans the
 //! per-edge alternatives out through a non-recursive
-//! `JOIN LATERAL (... UNION ALL ...) child ON TRUE` subquery. Each
+//! `JOIN LATERAL (... UNION ALL...) child ON TRUE` subquery. Each
 //! lateral alternative tags its T-row with a synthetic
 //! `__djogi_edge_label` text column, which the outer SELECT splices
 //! into `path` so callers can distinguish `["mother_id",
@@ -76,36 +76,36 @@
 //! rule for multi-edge models.
 //! # SQL invariants
 //! - **`UNION ALL`**, never `UNION` — multiplicity preservation is
-//!   load-bearing for `full_ancestors`. Wright-style kinship
-//!   coefficients sum independent connecting paths through common
-//!   ancestors, so the same ancestor reached by two distinct edge
-//!   sequences must appear twice. `UNION` would dedup and silently
-//!   drop those rows.
+//! load-bearing for `full_ancestors`. Wright-style kinship
+//! coefficients sum independent connecting paths through common
+//! ancestors, so the same ancestor reached by two distinct edge
+//! sequences must appear twice. `UNION` would dedup and silently
+//! drop those rows.
 //! - **`CYCLE id SET is_cycle USING cycle_path`** is mandatory. Postgres
-//!   manages both `is_cycle` and the cycle-detection `cycle_path`
-//!   array automatically — they do not appear in our manual column
-//!   list. The outer `WHERE NOT is_cycle` strips the cycle-detection
-//!   sentinel rows from output. The cycle-detection column is named
-//!   `cycle_path` (not `path`) so it does not collide with our user-
-//!   visible `path: text[]` column that records the edge-name
-//!   sequence from root to the current node.
-//! - **`SEARCH ... BY <col> SET __djogi_search_seq`** emits only when
-//!   the caller invoked
-//!   [`search_breadth_first_by`](RecursiveQuerySet::search_breadth_first_by) /
-//!   [`search_depth_first_by`](RecursiveQuerySet::search_depth_first_by).
-//!   The internal sequence column `__djogi_search_seq` is macro-internal
-//!   the `__djogi_` prefix is framework-reserved (see
-//!   `docs/spec/reserved-identifiers.md`), so it cannot collide with
-//!   adopter model fields. It is never projected into the outer SELECT,
-//!   but the outer `ORDER BY` references it so callers see BFS / DFS
-//!   order without an explicit `order_by` call.
+//! manages both `is_cycle` and the cycle-detection `cycle_path`
+//! array automatically — they do not appear in our manual column
+//! list. The outer `WHERE NOT is_cycle` strips the cycle-detection
+//! sentinel rows from output. The cycle-detection column is named
+//! `cycle_path` (not `path`) so it does not collide with our user-
+//! visible `path: text[]` column that records the edge-name
+//! sequence from root to the current node.
+//! - **`SEARCH... BY <col> SET __djogi_search_seq`** emits only when
+//! the caller invoked
+//! [`search_breadth_first_by`](RecursiveQuerySet::search_breadth_first_by) /
+//! [`search_depth_first_by`](RecursiveQuerySet::search_depth_first_by).
+//! The internal sequence column `__djogi_search_seq` is macro-internal
+//! the `__djogi_` prefix is framework-reserved (see
+//! `docs/spec/reserved-identifiers.md`), so it cannot collide with
+//! adopter model fields. It is never projected into the outer SELECT,
+//! but the outer `ORDER BY` references it so callers see BFS / DFS
+//! order without an explicit `order_by` call.
 //! - **RLS:** every terminal calls
-//!   [`auto_set_tenant`](crate::query::terminal::auto_set_tenant) before
-//!   building SQL, exactly like the plain `QuerySet` terminals. Without
-//!   this, recursive walks leak across tenants whenever the model carries
-//!   a `tenant_key`.
+//! [`auto_set_tenant`](crate::query::terminal::auto_set_tenant) before
+//! building SQL, exactly like the plain `QuerySet` terminals. Without
+//! this, recursive walks leak across tenants whenever the model carries
+//! a `tenant_key`.
 //! # `clippy::manual_async_fn`
-//! Every terminal returns `impl Future<Output = ...> + Send + 'ctx`
+//! Every terminal returns `impl Future<Output =...> + Send + 'ctx`
 //! rather than `async fn`. The explicit-bound form matches the
 //! [`Model`](crate::model::Model) trait's RPITIT shape and is required
 //! so the returned futures are `Send` for use under multi-threaded
@@ -231,7 +231,7 @@ pub struct RecursiveQuerySet<T: Model> {
     /// populate one entry per self-FK declared on `T`. The recursive
     /// term emits a single recursive SELECT and fans the per-edge
     /// alternatives out through a non-recursive `JOIN LATERAL (...
-    /// UNION ALL ...) child ON TRUE` subquery — single-edge walks
+    /// UNION ALL...) child ON TRUE` subquery — single-edge walks
     /// degenerate to one alternative (no inner `UNION ALL` inside the
     /// lateral) and behave exactly as the B2 single-edge form.
     /// An empty `edges` Vec is invalid — every constructor enforces
@@ -336,7 +336,7 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// One [`RelationPath<T, T>`] per self-FK edge declared on `T`;
     /// the SQL emitter then produces a single recursive SELECT that
     /// fans the per-edge alternatives out through a non-recursive
-    /// `JOIN LATERAL (... UNION ALL ...) child ON TRUE` subquery
+    /// `JOIN LATERAL (... UNION ALL...) child ON TRUE` subquery
     /// satisfying Postgres's "exactly one self-reference in the
     /// recursive term" rule while still walking every declared parent
     /// edge in a single CTE pass. `edges.len() == 1` degenerates to
@@ -516,7 +516,7 @@ fn and_q_into_q<T: Model, A: crate::query::IntoQ<T>>(current: Q<T>, addition: A)
 // ── SQL builder ────────────────────────────────────────────────────────────
 
 /// Emit the canonical column list with a per-column `<alias>.` prefix
-/// `<alias>.col1, <alias>.col2, ...`.
+/// `<alias>.col1, <alias>.col2,...`.
 /// Used inside the CTE's anchor and recursive terms to project every
 /// column of `T` from a specific table reference (`<table>` for the
 /// anchor, `child` for the recursive term). The bare-name form
@@ -657,7 +657,7 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     // than once ("recursive reference must not appear more than
     // once") AND those whose first-from-the-left UNION-ALL operand
     // already contains a recursive reference ("recursive reference
-    // ... must not appear within its non-recursive term"). Multi-edge
+    //... must not appear within its non-recursive term"). Multi-edge
     // walks therefore consolidate every edge into a single recursive
     // SELECT that joins `__djogi_tree parent` once and threads edge
     // selection through a non-recursive `LATERAL` subquery whose
@@ -768,7 +768,7 @@ fn build_recursive_inner<T: Model + FromPgRow>(
         }
     }
 
-    // ──) [SEARCH ...] CYCLE id SET is_cycle USING cycle_path ────────────
+    // ──) [SEARCH...] CYCLE id SET is_cycle USING cycle_path ────────────
     acc.push_sql(")");
     if let Some(mode) = search_mode {
         acc.push_sql(mode.keyword());
@@ -982,7 +982,7 @@ impl<T: Model> RecursiveQuerySet<T>
 where
     T: FromPgRow,
 {
-    /// `SELECT COUNT(*) FROM (... recursive CTE ...)` — the
+    /// `SELECT COUNT(*) FROM (... recursive CTE...)` — the
     /// reachable-row count.
     /// `i64` to match Postgres's `BIGINT` `COUNT(*)` result and leave
     /// headroom for tables that grow past `i32::MAX`.
@@ -1004,7 +1004,7 @@ where
         }
     }
 
-    /// `SELECT EXISTS(SELECT 1 FROM (... recursive CTE ...) LIMIT 1)`
+    /// `SELECT EXISTS(SELECT 1 FROM (... recursive CTE...) LIMIT 1)`
     /// "does the walk reach at least one row" without materialising the
     /// whole subtree.
     pub fn exists<'ctx>(
@@ -1455,7 +1455,7 @@ mod tests {
         assert!(
             sql.trim_end().ends_with(" LIMIT 1"),
             "first terminal must append outer LIMIT 1 so query_opt does not \
-             error on multi-row recursive walks: {sql}"
+    error on multi-row recursive walks: {sql}"
         );
         assert!(
             !sql.contains("EXISTS"),
@@ -1583,7 +1583,7 @@ mod tests {
         // the recursive term. Multi-edge walks therefore consolidate
         // every edge into a single recursive SELECT and enumerate
         // edge alternatives via a non-recursive `LATERAL (... UNION
-        // ALL ...)` subquery. (B5 fixup — the original
+        // ALL...)` subquery. (B5 fixup — the original
         // per-edge UNION ALL form failed live with "recursive
         // reference must not appear more than once".)
         // Total `UNION ALL` count is `1 + (N - 1)` for N edges:
@@ -1596,7 +1596,7 @@ mod tests {
         assert_eq!(
             union_count, 2,
             "two-edge ancestors: 1 UNION ALL between anchor + recursive term, \
-             plus 1 inside the LATERAL between the two per-edge SELECTs: {sql}"
+    plus 1 inside the LATERAL between the two per-edge SELECTs: {sql}"
         );
         // Both edges live inside the LATERAL as separate SELECTs.
         assert!(

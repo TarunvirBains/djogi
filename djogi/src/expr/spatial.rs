@@ -3,7 +3,7 @@
 //! [`SpatialExpr`] is an internal sub-IR that plugs into [`super::node::ExprNode`]
 //! via the `ExprNode::Spatial(SpatialExpr)` variant. It carries variants for:
 //! - [`SpatialExpr::Within`] — emits `ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)`
-//!   (radius-based predicate)
+//! (radius-based predicate)
 //! - [`SpatialExpr::Distance`] — emits `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`
 //! - [`SpatialExpr::Contains`] — emits `ST_Contains(<col>::geometry, $1::bytea::geometry)`
 //! - [`SpatialExpr::Intersects`] — emits `ST_Intersects(<col>, $1::bytea::geography)`
@@ -28,15 +28,15 @@
 //! vs `f64`) without any runtime type tag.
 //! # Where
 //! - [`crate::query::field`] is the only non-spatial module that produces these
-//!   nodes — `FieldRef<M, GeoPoint>::within_km` builds `Within`;
-//!   `FieldRef<M, GeoPoint>::distance_to` builds `Distance`;
-//!   the shape-predicate methods on `FieldRef<M, G: GeographyValue>` build
-//!   `Contains` / `Intersects` / `Touches` / `WithinShape`;
-//!   `FieldRef<M, G: GeographyValue>::bounded_by` builds `BoundedBy`;
-//!   and `FieldRef<M, GeoPoint>::order_by_distance` captures `Distance`
-//!   indirectly via [`crate::query::order::OrderExpr::SpatialDistance`].
+//! nodes — `FieldRef<M, GeoPoint>::within_km` builds `Within`;
+//! `FieldRef<M, GeoPoint>::distance_to` builds `Distance`;
+//! the shape-predicate methods on `FieldRef<M, G: GeographyValue>` build
+//! `Contains` / `Intersects` / `Touches` / `WithinShape`;
+//! `FieldRef<M, G: GeographyValue>::bounded_by` builds `BoundedBy`;
+//! and `FieldRef<M, GeoPoint>::order_by_distance` captures `Distance`
+//! indirectly via [`crate::query::order::OrderExpr::SpatialDistance`].
 //! - [`super::sql::emit_expr`] has one arm for `ExprNode::Spatial(s)` that
-//!   delegates to [`SpatialExpr::emit`].
+//! delegates to [`SpatialExpr::emit`].
 
 #[cfg(feature = "spatial")]
 use crate::geo::GeoPoint;
@@ -196,15 +196,15 @@ pub enum SpatialExpr {
     /// decode-error as `Polygon`:
     /// - **Disjoint inputs** — `ST_Intersection` returns an empty geometry.
     /// - **Boundary-only or point contact** — the result is a `LINESTRING` or
-    ///   `POINT`.
+    /// `POINT`.
     /// - **Multi-part or collection result** — even for genuinely overlapping
-    ///   polygons, the result may be a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`.
-    ///   [`crate::query::field::FieldRef::intersects`] is **not** sufficient to
-    ///   guarantee a single polygon; it only rules out the disjoint case.
-    ///   For queries that must survive any of these cases, prefer
-    ///   [`super::Expr::area_of_intersection`] (wraps the result in `ST_Area`
-    ///   and always returns `f64`, yielding `0.0` for non-overlapping pairs).
-    ///   Constructed by [`super::Expr::intersection_of`].
+    /// polygons, the result may be a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`.
+    /// [`crate::query::field::FieldRef::intersects`] is **not** sufficient to
+    /// guarantee a single polygon; it only rules out the disjoint case.
+    /// For queries that must survive any of these cases, prefer
+    /// [`super::Expr::area_of_intersection`] (wraps the result in `ST_Area`
+    /// and always returns `f64`, yielding `0.0` for non-overlapping pairs).
+    /// Constructed by [`super::Expr::intersection_of`].
     Intersection {
         /// EWKB encoding of the first geometry argument.
         a_ewkb: Vec<u8>,
@@ -249,7 +249,7 @@ impl SpatialExpr {
     /// Emit the SQL fragment for this spatial expression onto `acc`.
     /// - The column name is pushed via `push_sql` (trusted static identifier).
     /// - Longitude, latitude, radius, and EWKB bytes are pushed via
-    ///   `push_bind` — no string interpolation of user-supplied values.
+    /// `push_bind` — no string interpolation of user-supplied values.
     /// ## SQL shapes
     /// `Within` emits:
     /// ```sql
@@ -266,7 +266,7 @@ impl SpatialExpr {
     /// ST_<Function>(<col>::geometry, $1::bytea::geometry)
     /// ```
     /// because in PostGIS 3.x these three functions only have a `geometry`
-    /// overload — `ST_Contains(geography, ...)` etc. do not exist.
+    /// overload — `ST_Contains(geography,...)` etc. do not exist.
     /// `Intersects` emits:
     /// ```sql
     /// ST_Intersects(<col>, $1::bytea::geography)
@@ -478,13 +478,13 @@ impl ShapePredicate {
 /// # Cast selection
 /// PostGIS 3.x splits these four functions across two type families:
 /// - `ST_Intersects` has native `geography` overloads, so both the column
-///   and the bind stay in the `geography` space. The column reference is
-///   emitted unadorned (it already has the `geography` column type) and the
-///   bind is cast `::bytea::geography`.
+/// and the bind stay in the `geography` space. The column reference is
+/// emitted unadorned (it already has the `geography` column type) and the
+/// bind is cast `::bytea::geography`.
 /// - `ST_Contains`, `ST_Touches`, and `ST_Within` are **geometry-only**:
-///   `ST_Contains(geography, geography)` etc. do not exist. Both sides are
-///   cast to `geometry` — the column via `::geometry`, the bind via
-///   `::bytea::geometry`.
+/// `ST_Contains(geography, geography)` etc. do not exist. Both sides are
+/// cast to `geometry` — the column via `::geometry`, the bind via
+/// `::bytea::geometry`.
 /// # Bind encoding
 /// `Vec<u8>: ToSql` binds as Postgres `bytea`. The target parameter type
 /// registered at prepare time must therefore be `bytea`; the explicit
@@ -1076,9 +1076,9 @@ mod tests {
     /// `Intersection { a_ewkb, b_ewkb }` emits
     /// `ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography`:
     /// - Input args: `::bytea::geometry` on each arg because PostGIS 3.x
-    ///   has no `geography` input overload for `ST_Intersection`.
+    /// has no `geography` input overload for `ST_Intersection`.
     /// - Output cast: `::geography` so `Polygon::FromSql` can decode the
-    ///   intersection result (the codec requires a `geography`-typed column).
+    /// intersection result (the codec requires a `geography`-typed column).
     #[test]
     fn intersection_emits_st_intersection_with_geometry_cast() {
         let expr = SpatialExpr::Intersection {
@@ -1114,7 +1114,7 @@ mod tests {
         assert!(
             !sql.contains("::bytea::geography"),
             "ST_Intersection has no geography input overload; input args must use \
-             ::bytea::geometry, not ::bytea::geography; got: {sql}"
+    ::bytea::geometry, not ::bytea::geography; got: {sql}"
         );
         assert_eq!(acc.bind_count(), 2);
     }

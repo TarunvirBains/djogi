@@ -8,8 +8,8 @@ use djogi::prelude::*;
 #[model(table = "over_cap_text", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct OverCapText {
-    #[field(max_length = 10485761)]
-    pub title: String,
+ #[field(max_length = 10485761)]
+ pub title: String,
 }
 
 fn main() {}

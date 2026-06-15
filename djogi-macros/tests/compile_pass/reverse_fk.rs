@@ -4,9 +4,9 @@
 //! an `expose(scope -> PeerVisage)` clause must emit TWO inherent methods:
 //!
 //! - The unchanged model-scoped accessor on the receiver model:
-//!   `impl Dept { pub fn employees(...) -> ... Vec<Emp> }`
+//! `impl Dept { pub fn employees(...) ->... Vec<Emp> }`
 //! - A NEW visage-scoped accessor on the receiver's visage:
-//!   `impl DeptPublic { pub fn employees(...) -> ... Vec<EmpPublic> }`
+//! `impl DeptPublic { pub fn employees(...) ->... Vec<EmpPublic> }`
 //!
 //! The visage-scoped variant converts every fetched row through the peer's
 //! `TryFrom<&Emp>` impl before returning, so `fetch_all` yields
@@ -24,16 +24,16 @@ use djogi::prelude::*;
 #[model(table = "phase7_zero2_t9_depts")]
 #[derive(Debug, Clone)]
 pub struct Dept {
-    #[field(expose(public))]
-    pub name: String,
+ #[field(expose(public))]
+ pub name: String,
 }
 
 #[model(table = "phase7_zero2_t9_emps", no_default)]
 #[derive(Debug, Clone)]
 pub struct Emp {
-    #[field(expose(public))]
-    pub display_name: String,
-    pub department: ForeignKey<Dept>,
+ #[field(expose(public))]
+ pub display_name: String,
+ pub department: ForeignKey<Dept>,
 }
 
 // Declare the reverse accessor WITH a visage-exposure clause.
@@ -44,18 +44,18 @@ pub struct Emp {
 // `{scope}` visage AND the peer's named visage must exist; if either
 // is missing, the emitted code fails to compile.
 djogi::reverse_one_to_many!(
-    Dept, employees -> Emp by department,
-    expose(public -> EmpPublic)
+ Dept, employees -> Emp by department,
+ expose(public -> EmpPublic)
 );
 
 // Model-scoped accessor still compiles — the visage-exposure clause is
 // additive, it never removes the baseline reverse accessor.
 #[allow(dead_code)]
 fn _model_scoped_accessor<'a>(
-    dept: &'a Dept,
-    ctx: &'a mut DjogiContext,
+ dept: &'a Dept,
+ ctx: &'a mut DjogiContext,
 ) -> impl std::future::Future<Output = Result<Vec<Emp>, DjogiError>> + Send + 'a {
-    dept.employees(ctx)
+ dept.employees(ctx)
 }
 
 // Visage-scoped accessor emits on `DeptPublic` and returns a
@@ -65,12 +65,12 @@ fn _model_scoped_accessor<'a>(
 // without requiring a pool.
 #[allow(dead_code)]
 fn _visage_scoped_accessor(
-    dept_public: &DeptPublic,
+ dept_public: &DeptPublic,
 ) -> djogi::query::VisageQuerySet<EmpPublic> {
-    dept_public.employees()
+ dept_public.employees()
 }
 
 fn main() {
-    // Compile-only — the function probes above do the real work. A
-    // runtime call would need a pool; lihaaf doesn't provide one.
+ // Compile-only — the function probes above do the real work. A
+ // runtime call would need a pool; lihaaf doesn't provide one.
 }

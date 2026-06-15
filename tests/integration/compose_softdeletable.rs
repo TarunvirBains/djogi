@@ -5,21 +5,21 @@
 // What this file pins:
 //
 // 1. `#[model(soft_deletable)]` emits an `impl ::djogi::SoftDeletable
-//    for #ident` block whose `deleted_at()` getter returns
-//    `Option<DateTime>` copied from the adopter-declared
-//    `deleted_at: Option<DateTime>` field (Path B per v3
-//    line 866).
+//  for #ident` block whose `deleted_at()` getter returns
+//  `Option<DateTime>` copied from the adopter-declared
+//  `deleted_at: Option<DateTime>` field (Path B per v3
+//  line 866).
 // 2. `QuerySet::<M>::not_deleted()` (where `M: SoftDeletable`)
-//    composes a `deleted_at IS NULL` leaf onto the condition tree.
-//    Calling it on a queryset that returns mixed live/trashed rows
-//    narrows the result to the live rows only.
+//  composes a `deleted_at IS NULL` leaf onto the condition tree.
+//  Calling it on a queryset that returns mixed live/trashed rows
+//  narrows the result to the live rows only.
 // 3. **Counter-test:** the default `objects()` chain (without
-//    `.not_deleted()`) returns trashed rows alongside live ones.
-//    This pins the spec-locked deferral at line 971 — automatic
-//    default-filter composition is deferred to  once the
-//    `Q<T>` substrate lands. When 8γ  ships, this test breaks
-//    loudly so the implementer can flip the assertion (to one row)
-//    instead of silently changing the framework's default behaviour.
+//  `.not_deleted()`) returns trashed rows alongside live ones.
+//  This pins the spec-locked deferral at line 971 — automatic
+//  default-filter composition is deferred to once the
+//  `Q<T>` substrate lands. When 8γ ships, this test breaks
+//  loudly so the implementer can flip the assertion (to one row)
+//  instead of silently changing the framework's default behaviour.
 //
 // # One model per test — coherence
 //
@@ -129,7 +129,7 @@ async fn softdeletable_not_deleted_filter_excludes_deleted(mut ctx: djogi::Djogi
     .await
     .expect("create trashed row should succeed");
 
-    // Manual exclusion via the .3 helper. In  this
+    // Manual exclusion via the .3 helper. In this
     // call site will become redundant once auto-composition lands;
     // until then the helper is the only path that excludes
     // soft-deleted rows.
@@ -159,11 +159,11 @@ async fn softdeletable_not_deleted_filter_excludes_deleted(mut ctx: djogi::Djogi
 // `.not_deleted()`) STILL returns trashed rows.
 //
 // **This test pins the spec-locked deferral at line 971
-// (RESOLVED 2026-05-03, lens, locked).** When  lands
+// (RESOLVED 2026-05-03, lens, locked).** When lands
 // automatic default-filter composition under the new `Q<T>`
 // substrate, this assertion will start failing — at which point the
 // implementer must flip the count from 2 to 1 and add a comment that
-// 8γ  made auto-composition active. Failing loudly is the whole
+// 8γ made auto-composition active. Failing loudly is the whole
 // point: the tripwire ensures default-query semantics never change
 // silently.
 // ---------------------------------------------------------------------------
@@ -214,9 +214,9 @@ async fn softdeletable_default_query_includes_deleted_pre_8gamma(mut ctx: djogi:
         rows.len(),
         2,
         "Only the manual `.not_deleted()` helper is shipped — \
-         automatic default-filter composition is deferred to  \
-         (spec line 971, RESOLVED 2026-05-03, lens, locked). \
-         When 8γ  lands, this assertion must flip to 1 row, and a \
-         comment recording the change should be added below.",
+     automatic default-filter composition is deferred to \
+     (spec line 971, RESOLVED 2026-05-03, lens, locked). \
+     When 8γ lands, this assertion must flip to 1 row, and a \
+     comment recording the change should be added below.",
     );
 }

@@ -4,18 +4,18 @@
 // # What this file pins
 //
 // 1. An **unfiltered** `QuerySet::new()` starts as `Q::Portable(True)` and
-//    reduces to `Some(BasicPredicate::True)`.
+//  reduces to `Some(BasicPredicate::True)`.
 //
 // 2. Querysets built with ordinary portable field closures (`.filter(...)` /
-//    `.exclude(...)`) reduce to `BasicPredicate<T>` after the PR3 field
-//    accessor flip. SQL-only / legacy `Q::Condition` paths still reduce to
-//    `None`.
+//  `.exclude(...)`) reduce to `BasicPredicate<T>` after the PR3 field
+//  accessor flip. SQL-only / legacy `Q::Condition` paths still reduce to
+//  `None`.
 //
 // 3. The `tracing::warn!` emitted for an unreducible legacy path includes the
-//    model type name and a description of the unreducible variant.
+//  model type name and a description of the unreducible variant.
 //
 // 4. The `refresh_into` call compiles and returns a `DeltaRefreshHandle<T>`
-//    behind the PR4 portable gate for an unfiltered queryset.
+//  behind the PR4 portable gate for an unfiltered queryset.
 //
 // # Architectural note on the public filter API
 //
@@ -85,8 +85,8 @@ async fn extracts_unfiltered_queryset_as_true(mut ctx: djogi::DjogiContext) {
     assert!(
         matches!(result, Some(djogi::BasicPredicate::True)),
         "unfiltered QuerySet must reduce to Some(BasicPredicate::True) — \
-         the starting condition Q::Portable(True) is the identity and should \
-         always be extractable without a warning"
+     the starting condition Q::Portable(True) is the identity and should \
+     always be extractable without a warning"
     );
 
     let _ = &mut ctx;
@@ -250,7 +250,7 @@ fn filter_struct_bridge_compiles_with_tracked_and_option_bool_string_fields() {
     assert!(
         matches!(result, Some(djogi::BasicPredicate::True)),
         "empty generated filters must compile and fold to portable true even when \
-         the model has tracked and optional bool/string fields"
+     the model has tracked and optional bool/string fields"
     );
 }
 

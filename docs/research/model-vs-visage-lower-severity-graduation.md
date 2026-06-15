@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](../spec/index.md)
+> [Back to README](../../README.md) | [All Specs](../spec/index.md)
 
 # Model-vs-visage adjacent surfaces — lower-severity graduation analysis
 
@@ -17,17 +17,17 @@ For each surface this note records:
 
 - **What the umbrella claimed** — the gap as originally surfaced.
 - **What the code actually does** — verified against the current
-  `djogi-macros/` / `djogi/` tree at `phase85/visage-design-228-229`.
+ `djogi-macros/` / `djogi/` tree at `phase85/visage-design-228-229`.
 - **Decision** — one of: `phantom`, `accepted-design`,
-  `file-standalone-issue`, `re-categorise-and-route`.
+ `file-standalone-issue`, `re-categorise-and-route`.
 - **Rationale** — why this decision, applying the user-lens decision
-  priorities (scalability > production stability > idiomatic Rust >
-  simple to use) and the security-by-default invariant.
+ priorities (scalability > production stability > idiomatic Rust >
+ simple to use) and the security-by-default invariant.
 - **Anchor** — when the decision depends on a future phase or another
-  issue, the named dependency.
+ issue, the named dependency.
 - **Proposed issue title** — for surfaces that earn standalone
-  tracking, the recommended title (the issue is *not* filed by this
-  note; the umbrella owner files it).
+ tracking, the recommended title (the issue is *not* filed by this
+ note; the umbrella owner files it).
 
 The umbrella's surface numbering is preserved so cross-references
 between the umbrella body and this note remain stable.
@@ -55,7 +55,7 @@ survive that reproduction step.
 ## Surface 1 — `#[field(generated = "...")]` per-scope projection
 
 **Umbrella claim** (MEDIUM, Shape B). "Stored generated columns
-(Postgres `GENERATED ... STORED`) are included uniformly in every
+(Postgres `GENERATED... STORED`) are included uniformly in every
 visage. No mechanism for 'admin sees `search_vector tsvector
 GENERATED`, public visage omits it.'"
 
@@ -215,7 +215,7 @@ under custom visage names" in its scope.
 ## Surface 4 — `proxy_for + default_filter` / `default_order`
 
 **Umbrella claim** (MEDIUM, Shape A). "The
-`#[model(proxy_for = Parent, default_filter = ...)]` attribute
+`#[model(proxy_for = Parent, default_filter =...)]` attribute
 bundles 'I am a proxy of Parent' (model-native) with 'every query
 applies this filter' (queryset-level concern). Similarly for
 `default_order`."
@@ -243,17 +243,17 @@ reshape requires a deliberate migration story and a `docs/guide/proxy.md`
 update. The candidate split paths remain:
 
 1. **Identity** — `#[model(proxy_for = Parent)]` stays in the
-   `#[model(...)]` namespace (model-level metadata, already the
-   correct surface).
+  `#[model(...)]` namespace (model-level metadata, already the
+  correct surface).
 2. **Query semantics** — extracting `default_filter` and
-   `default_order` into a companion surface:
-   - **2a — Separate attribute:** `#[proxy(filter = "...", order = ["..."])]`,
-     keeping the identity declaration uncluttered. Carries the same
-     Shape A vs Shape B trade-off as the broader umbrella analysis.
-   - **2b — Trait impl:** `impl ProxyDefaults for VehicleArchived`
-     with typed `default_filter()` / `default_order()` methods.
-     Matches the `ModelHooks` shape; typed closures compose with the
-     queryset API without stringly-typed attribute parameters.
+  `default_order` into a companion surface:
+  - **2a — Separate attribute:** `#[proxy(filter = "...", order = ["..."])]`,
+   keeping the identity declaration uncluttered. Carries the same
+   Shape A vs Shape B trade-off as the broader umbrella analysis.
+  - **2b — Trait impl:** `impl ProxyDefaults for VehicleArchived`
+   with typed `default_filter()` / `default_order()` methods.
+   Matches the `ModelHooks` shape; typed closures compose with the
+   queryset API without stringly-typed attribute parameters.
 
 A standalone redesign issue may be filed when this reshape is taken up.
 This note authorises the recommendation but does not schedule or promise
@@ -301,12 +301,12 @@ because the symptom looked similar (per-audience visibility on
 descriptor-defined entities), but the proper categorisation is:
 
 - **Model-vs-visage conflation** addresses *transport-shape*
-  exposure: which fields appear in which audience's serialised
-  output. The visage layer is a Rust struct generation concern.
+ exposure: which fields appear in which audience's serialised
+ output. The visage layer is a Rust struct generation concern.
 - **Log-table access control** addresses *who is allowed to read
-  the log table itself* — a runtime authorisation concern that
-  belongs alongside the Phase 5.5 `AuthContext` + tenant-keyed RLS
-  substrate, not alongside visage projection.
+ the log table itself* — a runtime authorisation concern that
+ belongs alongside the Phase 5.5 `AuthContext` + tenant-keyed RLS
+ substrate, not alongside visage projection.
 
 Conflating the two would re-introduce exactly the Shape A pattern
 that djogi#225 was filed to dismantle — bundling transport-shape
@@ -316,17 +316,17 @@ namespace.
 **Rationale.** The correct surface is one of:
 
 1. A new `LogsQuerySet<M>` entry point that requires an
-   `AuthContext` carrying an admin-class scope, refuses by default,
-   and propagates `AuthError::ScopeMissing { required }` otherwise.
-   The descriptor declares which scope(s) gate access via
-   `#[model(audit_log_read_scopes = [admin, internal])]` —
-   distinct from the visage `expose(...)` namespace and addressed
-   at the model-level, where the corresponding parent table's
-   identity already lives.
+  `AuthContext` carrying an admin-class scope, refuses by default,
+  and propagates `AuthError::ScopeMissing { required }` otherwise.
+  The descriptor declares which scope(s) gate access via
+  `#[model(audit_log_read_scopes = [admin, internal])]` —
+  distinct from the visage `expose(...)` namespace and addressed
+  at the model-level, where the corresponding parent table's
+  identity already lives.
 2. A Phase 10 / Maahi-side access rule (the admin console is the
-   primary consumer of audit-log reads), with the framework
-   surfacing only the descriptor metadata for the admin console
-   to read.
+  primary consumer of audit-log reads), with the framework
+  surfacing only the descriptor metadata for the admin console
+  to read.
 
 The umbrella's proposed `#[model(audit_log_scopes = [admin,
 internal])]` syntax is roughly in the right shape; the
@@ -379,10 +379,10 @@ declaration-shape risk.
 **Rationale.** The benefits are real but bounded:
 
 - Through-model namespaces (`TaggedPost`, `UserTag`,
-  `ProjectMember`) no longer carry four phantom types each.
+ `ProjectMember`) no longer carry four phantom types each.
 - `rustdoc` for the user's crate is cleaner.
 - `serde` derives compile slightly faster (one fewer struct ×
-  three derives × N through-models).
+ three derives × N through-models).
 
 The costs are also bounded: the attribute adds another
 `#[model(...)]` parameter slot, increasing the per-model
@@ -443,18 +443,18 @@ that uniform terminal, not the load-bearing motivation.
 (`tree_descendants_as_visage::<V>`) would be the wrong shape:
 
 - It adds one new terminal per `QuerySet` producer (tree, raw
-  queryset, filtered queryset, JSON-path queryset, …). The
-  combinatorial explosion is the same one the umbrella correctly
-  identified as "asymmetric across queryset operations."
+ queryset, filtered queryset, JSON-path queryset, …). The
+ combinatorial explosion is the same one the umbrella correctly
+ identified as "asymmetric across queryset operations."
 - It does not compose: an adopter chaining
-  `.filter(...).tree_descendants(...)` would lose the ability to
-  reach `VisageQuerySet<V>` from anywhere in the chain.
+ `.filter(...).tree_descendants(...)` would lose the ability to
+ reach `VisageQuerySet<V>` from anywhere in the chain.
 
 The correct shape is a single terminal on `QuerySet<T>`:
 
 ```rust
 impl<T: Model> QuerySet<T> {
-    pub fn as_visage<V: Visage<Source = T>>(self) -> VisageQuerySet<V>
+  pub fn as_visage<V: Visage<Source = T>>(self) -> VisageQuerySet<V>
 }
 ```
 
@@ -472,7 +472,7 @@ Surface 5 (which is access-control).
 **Proposed issue title.**
 
 ```
-[queryset] .as_visage::<V>() terminal — uniform conversion from
+[queryset].as_visage::<V>() terminal — uniform conversion from
 QuerySet<Model> to VisageQuerySet<V> with SELECT narrowing
 ```
 
@@ -504,20 +504,20 @@ appropriate time, with the body content derived from each surface's
 section above.
 
 1. `[design] proxy-model query defaults — post-shipment: split
-   #[model(proxy_for)] identity from default_filter / default_order`
-   (shipped Phase 8β; file when reshape is taken up; requires
-   migration story before landing).
+  #[model(proxy_for)] identity from default_filter / default_order`
+  (shipped Phase 8β; file when reshape is taken up; requires
+  migration story before landing).
 2. `[access-control] CRUD log mirror table per-audience access —
-   #[model(audit_log_read_scopes = [...])] descriptor +
-   LogsQuerySet runtime gate` (Phase 5.5 access-control domain,
-   not visage; file before Maahi audit-log surfaces design).
+  #[model(audit_log_read_scopes = [...])] descriptor +
+  LogsQuerySet runtime gate` (Phase 5.5 access-control domain,
+  not visage; file before Maahi audit-log surfaces design).
 3. `[ergonomic] #[model(no_visages)] opt-out for through-models and
-   other non-transport-projected models` (low priority,
-   adopter-feedback-driven; defer until reported).
-4. `[queryset] .as_visage::<V>() terminal — uniform conversion from
-   QuerySet<Model> to VisageQuerySet<V> with SELECT narrowing`
-   (low priority, queryset cluster; sequence with other queryset
-   extensions).
+  other non-transport-projected models` (low priority,
+  adopter-feedback-driven; defer until reported).
+4. `[queryset].as_visage::<V>() terminal — uniform conversion from
+  QuerySet<Model> to VisageQuerySet<V> with SELECT narrowing`
+  (low priority, queryset cluster; sequence with other queryset
+  extensions).
 
 ---
 
@@ -527,11 +527,11 @@ The two rows added to [`docs/spec/decisions.md`][decisions-doc] in
 the same Phase 8.5 design-lockdown cluster as djogi#228:
 
 1. **Aggregate annotation declaration site lockdown** (djogi#228)
-   — covers the visage-derived-fields Shape A risk for the future
-   aggregate / window-function surface.
+  — covers the visage-derived-fields Shape A risk for the future
+  aggregate / window-function surface.
 2. **Visage exposure default — per-field opt-in, no struct-level
-   default** (djogi#229 surface 2) — locks the
-   security-by-default invariant against future drift.
+  default** (djogi#229 surface 2) — locks the
+  security-by-default invariant against future drift.
 
 Surfaces 1, 3, 6, and 7 do not earn decisions.md rows: surface 1 is
 phantom (no decision to record), surface 3 is conditional on
@@ -564,13 +564,13 @@ close.
 [issue-227]: https://github.com/TarunvirBains/djogi/issues/227
 [issue-228]: https://github.com/TarunvirBains/djogi/issues/228
 [issue-229]: https://github.com/TarunvirBains/djogi/issues/229
-[visage-ctx-classify]: ../../djogi-macros/src/model/visage_ctx.rs
-[visages-scopes-const]: ../../djogi-macros/src/model/visages.rs
-[attrs-expose-fields]: ../../djogi-macros/src/model/attrs.rs
-[guide-visages-default]: ../guide/visages.md
-[visages-deferred-surface]: ../spec/visages.md
-[impl-plan-8c]: ../spec/implementation-plan.md
-[logging-spec]: ../spec/logging.md
-[decisions-doc]: ../spec/decisions.md
-[positioning-tree]: ../spec/positioning.md
-[reserved-tree-ident]: ../spec/reserved-identifiers.md
+[visage-ctx-classify]:../../djogi-macros/src/model/visage_ctx.rs
+[visages-scopes-const]:../../djogi-macros/src/model/visages.rs
+[attrs-expose-fields]:../../djogi-macros/src/model/attrs.rs
+[guide-visages-default]:../guide/visages.md
+[visages-deferred-surface]:../spec/visages.md
+[impl-plan-8c]:../spec/implementation-plan.md
+[logging-spec]:../spec/logging.md
+[decisions-doc]:../spec/decisions.md
+[positioning-tree]:../spec/positioning.md
+[reserved-tree-ident]:../spec/reserved-identifiers.md

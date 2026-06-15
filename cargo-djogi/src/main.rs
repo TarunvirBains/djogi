@@ -1,6 +1,6 @@
 //! Cargo subcommand wrapper for adopters.
 //!
-//! `cargo djogi ...` resolves the adopter-linked workspace binary from
+//! `cargo djogi...` resolves the adopter-linked workspace binary from
 //! `Djogi.toml`'s `[cli]` table, builds it when needed, and forwards
 //! all subsequent CLI arguments.
 

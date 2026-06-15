@@ -8,7 +8,7 @@ use djogi::prelude::*;
 
 #[model(table = "forbid_unsafe_rows")]
 pub struct ForbidUnsafeRow {
-    name: String,
+ name: String,
 }
 
 fn main() {}

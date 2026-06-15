@@ -9,13 +9,13 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "phase85_g0_range_unsupported_pk_family",
-    pk = HeerId,
-    no_default
+ table = "phase85_g0_range_unsupported_pk_family",
+ pk = HeerId,
+ no_default
 )]
 #[derive(Debug, Clone)]
 pub struct UnsupportedPkRange {
-    pub bad: Range<HeerId>,
+ pub bad: Range<HeerId>,
 }
 
 fn main() {}

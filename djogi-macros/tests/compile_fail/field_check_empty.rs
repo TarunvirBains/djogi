@@ -11,8 +11,8 @@ use djogi::prelude::*;
 #[model(table = "animals_105_empty", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Animal105Empty {
-    #[field(check = "")]
-    pub weight_kg: f64,
+ #[field(check = "")]
+ pub weight_kg: f64,
 }
 
 fn main() {}

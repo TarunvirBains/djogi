@@ -3,11 +3,11 @@ use djogi::prelude::*;
 #[model(table = "visage_derived_null_rows")]
 #[derive(Model, Debug, Clone)]
 #[derived(
-    name = computed_label,
-    ty = String,
-    scopes = [public],
-    sql = "maybe_label",
-    rust = "model.maybe_label.clone().unwrap_or_default()",
+  name = computed_label,
+  ty = String,
+  scopes = [public],
+  sql = "maybe_label",
+  rust = "model.maybe_label.clone().unwrap_or_default()",
 )]
 pub struct DerivedNullRow {
     #[field(expose(public))]
@@ -17,11 +17,11 @@ pub struct DerivedNullRow {
 #[model(table = "visage_derived_type_rows")]
 #[derive(Model, Debug, Clone)]
 #[derived(
-    name = computed_label,
-    ty = String,
-    scopes = [public],
-    sql = "count",
-    rust = "model.count.to_string()",
+  name = computed_label,
+  ty = String,
+  scopes = [public],
+  sql = "count",
+  rust = "model.count.to_string()",
 )]
 pub struct DerivedTypeRow {
     #[field(expose(public))]

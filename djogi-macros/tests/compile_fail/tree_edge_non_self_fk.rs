@@ -13,7 +13,7 @@ use djogi::prelude::*;
 #[model(table = "phase8_owners")]
 #[derive(Debug, Clone)]
 pub struct Owner {
-    pub name: String,
+ pub name: String,
 }
 
 // `no_default` suppresses the `#[derive(Default)]` the macro would
@@ -24,14 +24,14 @@ pub struct Owner {
 // pollutes the test signal. Skipping `Default` keeps this fixture
 // asserting *only* the `tree_edge` self-FK validation error.
 #[model(
-    table = "phase8_non_self_fk_nodes",
-    tree_edge = "owner_id",
-    no_default
+ table = "phase8_non_self_fk_nodes",
+ tree_edge = "owner_id",
+ no_default
 )]
 #[derive(Debug, Clone)]
 pub struct NonSelfFkNode {
-    pub owner_id: ForeignKey<Owner>,
-    pub label: String,
+ pub owner_id: ForeignKey<Owner>,
+ pub label: String,
 }
 
 fn main() {}

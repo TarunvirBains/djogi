@@ -1,23 +1,23 @@
 error[E0599]: the method `gt` exists for struct `DjogiField<Widget, std::string::String>`, but its trait bounds were not satisfied
-   --> $DIR/string_ordering_not_direct.rs:35:54
-    |
- 35 |     let _bad = Widget::objects().filter(|f| f.name().gt("m"));
-    |                                                      ^^ method cannot be called on `DjogiField<Widget, std::string::String>` due to unsatisfied trait bounds
-    |
-   ::: djogi/src/query/field.rs:666:1
-    |
+ --> $DIR/string_ordering_not_direct.rs:35:54
+ |
+ 35 |  let _bad = Widget::objects().filter(|f| f.name().gt("m"));
+ |              ^^ method cannot be called on `DjogiField<Widget, std::string::String>` due to unsatisfied trait bounds
+ |
+ ::: djogi/src/query/field.rs:666:1
+ |
 666 | pub struct DjogiField<M: Model, V> {
-    | ---------------------------------- doesn't satisfy `DjogiField<Widget, std::string::String>: Iterator`
-    |
-   ::: $RUST/lib/rustlib/src/rust/library/alloc/src/string.rs:353:1
-    |
+ | ---------------------------------- doesn't satisfy `DjogiField<Widget, std::string::String>: Iterator`
+ |
+ ::: $RUST/lib/rustlib/src/rust/library/alloc/src/string.rs:353:1
+ |
 353 | pub struct String {
-    | ----------------- doesn't satisfy `std::string::String: DjogiPortableOrd`
-    |
-    = note: the following trait bounds were not satisfied:
-            `std::string::String: DjogiPortableOrd`
-            `DjogiField<Widget, std::string::String>: Iterator`
-            which is required by `&mut DjogiField<Widget, std::string::String>: Iterator`
+ | ----------------- doesn't satisfy `std::string::String: DjogiPortableOrd`
+ |
+ = note: the following trait bounds were not satisfied:
+   `std::string::String: DjogiPortableOrd`
+   `DjogiField<Widget, std::string::String>: Iterator`
+   which is required by `&mut DjogiField<Widget, std::string::String>: Iterator`
 
 error: aborting due to 1 previous error
 

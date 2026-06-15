@@ -12,8 +12,8 @@
 //! ```sql
 //! SELECT ST_AsMVT(__djogi_row, $1, $2, $3, $4)
 //! FROM (
-//!     SELECT t.col1, t.col2, …, <annotations as __djogi_agg_N>
-//!     FROM <table> AS t [WHERE …] [ORDER BY …] [LIMIT …]
+//!  SELECT t.col1, t.col2, …, <annotations as __djogi_agg_N>
+//!  FROM <table> AS t [WHERE …] [ORDER BY …] [LIMIT …]
 //! ) AS __djogi_row
 //! ```
 //! The derived-table alias is the framework-fixed `__djogi_row`; the row
@@ -32,11 +32,11 @@
 //! - [`crate::expr::node::ExprNode::RowAggregate`] — untyped IR variant.
 //! - [`crate::expr::sql::emit_row_aggregate`] — SQL emission.
 //! - [`crate::query::annotate::AnnotatedQuerySet::as_mvt`] /
-//!   [`crate::query::annotate::AnnotatedQuerySet::as_geobuf`] — terminal
-//!   entry points on the annotated path.
+//! [`crate::query::annotate::AnnotatedQuerySet::as_geobuf`] — terminal
+//! entry points on the annotated path.
 //! - [`crate::query::queryset::QuerySet::as_mvt`] /
-//!   [`crate::query::queryset::QuerySet::as_geobuf`] — terminal entry
-//!   points on the plain (un-annotated) path.
+//! [`crate::query::queryset::QuerySet::as_geobuf`] — terminal entry
+//! points on the plain (un-annotated) path.
 
 #![cfg(feature = "spatial")]
 #![allow(clippy::manual_async_fn)]
@@ -166,22 +166,22 @@ where
     /// a `WasNull` decode error.
     /// # Errors
     /// - The annotation tuple fails its `check_legality()` (e.g. an
-    ///   illegal aggregate modifier survived earlier validation).
+    /// illegal aggregate modifier survived earlier validation).
     /// - A window annotation alias collides with a `T` model column name
-    ///   (collision checked case-insensitively, matching PostgreSQL's
-    ///   unquoted-identifier fold) — returns
-    ///   [`crate::DjogiError::Validation`] with a remediation hint.
-    ///   This terminal routes qualify through
-    ///   `build_spatial_row_select_with_annotations_for_fetch`
-    ///   (`djogi/src/query/sql.rs:1804-1813`) which emits the same
-    ///   `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
-    ///   as [`AnnotatedQuerySet::fetch_all`]; the collision check fires here
-    ///   for the same reason.
+    /// (collision checked case-insensitively, matching PostgreSQL's
+    /// unquoted-identifier fold) — returns
+    /// [`crate::DjogiError::Validation`] with a remediation hint.
+    /// This terminal routes qualify through
+    /// `build_spatial_row_select_with_annotations_for_fetch`
+    /// (`djogi/src/query/sql.rs:1804-1813`) which emits the same
+    /// `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
+    /// as [`AnnotatedQuerySet::fetch_all`]; the collision check fires here
+    /// for the same reason.
     /// - The geometry column named in [`MvtOptions::with_geom_name`] does
-    ///   not exist in the model's projection — PostGIS raises this at
-    ///   execute time as a `42703 column does not exist` error.
+    /// not exist in the model's projection — PostGIS raises this at
+    /// execute time as a `42703 column does not exist` error.
     /// - The inner queryset emits any portable-predicate validation
-    ///   error (matching ordinary `fetch_all` semantics).
+    /// error (matching ordinary `fetch_all` semantics).
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -222,11 +222,11 @@ where
             {
                 return Err(DjogiError::Validation(
                     "row-shape aggregate terminals cannot host pair-tuple aggregates in the \
-                     annotation tuple (for example `PairAreaOverlapRatio` / `PairClosureKinshipSum`). \
-                     These aggregates reference pair-tuple aliases (`l.`, `r.`, `la.`, `ra.`) that are \
-                     only in scope on joined-pair query surfaces. Use a paired-query annotation \
-                     surface (e.g. `QuerySet::self_pairs()` / `cross_join_with(...)` plus \
-                     `.annotate(...)`) and a joined terminal that supports that joined aliasing model."
+      annotation tuple (for example `PairAreaOverlapRatio` / `PairClosureKinshipSum`). \
+      These aggregates reference pair-tuple aliases (`l.`, `r.`, `la.`, `ra.`) that are \
+      only in scope on joined-pair query surfaces. Use a paired-query annotation \
+      surface (e.g. `QuerySet::self_pairs()` / `cross_join_with(...)` plus \
+      `.annotate(...)`) and a joined terminal that supports that joined aliasing model."
                         .to_string(),
                 ));
             }
@@ -266,23 +266,23 @@ where
     /// a `WasNull` decode error.
     /// # Errors
     /// - The annotation tuple fails its `check_legality()` (e.g. an
-    ///   illegal aggregate modifier survived earlier validation).
+    /// illegal aggregate modifier survived earlier validation).
     /// - A window annotation alias collides with a `T` model column name
-    ///   (collision checked case-insensitively, matching PostgreSQL's
-    ///   unquoted-identifier fold) — returns
-    ///   [`crate::DjogiError::Validation`] with a remediation hint.
-    ///   This terminal routes qualify through
-    ///   `build_spatial_row_select_with_annotations_for_fetch`
-    ///   (`djogi/src/query/sql.rs:1804-1813`) which emits the same
-    ///   `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
-    ///   as [`AnnotatedQuerySet::fetch_all`]; the collision check fires here
-    ///   for the same reason.
+    /// (collision checked case-insensitively, matching PostgreSQL's
+    /// unquoted-identifier fold) — returns
+    /// [`crate::DjogiError::Validation`] with a remediation hint.
+    /// This terminal routes qualify through
+    /// `build_spatial_row_select_with_annotations_for_fetch`
+    /// (`djogi/src/query/sql.rs:1804-1813`) which emits the same
+    /// `SELECT * FROM (…) AS __djogi_q WHERE <alias> …` outer qualify wrap
+    /// as [`AnnotatedQuerySet::fetch_all`]; the collision check fires here
+    /// for the same reason.
     /// - The geometry column named in the `geom_name` argument passed to
-    ///   [`AnnotatedQuerySet::as_geobuf`] does not exist in the model's
-    ///   projection — PostGIS raises this at execute time as a
-    ///   `42703 column does not exist` error.
+    /// [`AnnotatedQuerySet::as_geobuf`] does not exist in the model's
+    /// projection — PostGIS raises this at execute time as a
+    /// `42703 column does not exist` error.
     /// - The inner queryset emits any portable-predicate validation
-    ///   error (matching ordinary `fetch_all` semantics).
+    /// error (matching ordinary `fetch_all` semantics).
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -310,11 +310,11 @@ where
             {
                 return Err(DjogiError::Validation(
                     "row-shape aggregate terminals cannot host pair-tuple aggregates in the \
-                     annotation tuple (for example `PairAreaOverlapRatio` / `PairClosureKinshipSum`). \
-                     These aggregates reference pair-tuple aliases (`l.`, `r.`, `la.`, `ra.`) that are \
-                     only in scope on joined-pair query surfaces. Use a paired-query annotation \
-                     surface (e.g. `QuerySet::self_pairs()` / `cross_join_with(...)` plus \
-                     `.annotate(...)`) and a joined terminal that supports that joined aliasing model."
+      annotation tuple (for example `PairAreaOverlapRatio` / `PairClosureKinshipSum`). \
+      These aggregates reference pair-tuple aliases (`l.`, `r.`, `la.`, `ra.`) that are \
+      only in scope on joined-pair query surfaces. Use a paired-query annotation \
+      surface (e.g. `QuerySet::self_pairs()` / `cross_join_with(...)` plus \
+      `.annotate(...)`) and a joined terminal that supports that joined aliasing model."
                         .to_string(),
                 ));
             }
@@ -356,23 +356,23 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     /// use djogi::expr::row_aggregate::MvtOptions;
     ///
     /// let tile_bytes: Vec<u8> = Feature::objects()
-    ///     .filter(|f| f.tile_z().eq(z).and(f.tile_x().eq(x)).and(f.tile_y().eq(y)))
-    ///     .annotate(|f| f.id().count_star()) // adds per-row count to features
-    ///     .as_mvt("features")
-    ///     .fetch_one(&mut ctx)
-    ///     .await?;
+    /// .filter(|f| f.tile_z().eq(z).and(f.tile_x().eq(x)).and(f.tile_y().eq(y)))
+    /// .annotate(|f| f.id().count_star()) // adds per-row count to features
+    /// .as_mvt("features")
+    /// .fetch_one(&mut ctx)
+    /// .await?;
     /// ```
     /// # SQL emission
     /// ```sql
     /// SELECT ST_AsMVT(__djogi_row, $1, $2, $3 [, $4])
     /// FROM (
-    ///     SELECT t.id, t.geom, …, <annotations…>
-    ///     FROM features AS t [WHERE …]
+    ///  SELECT t.id, t.geom, …, <annotations…>
+    ///  FROM features AS t [WHERE …]
     /// ) AS __djogi_row
     /// ```
     /// # Where
     /// - [`AsMvtTerminal::fetch_one`] — runs the query and decodes the
-    ///   `Vec<u8>` payload.
+    /// `Vec<u8>` payload.
     /// - [`MvtOptions`] — non-default encoder configuration.
     /// - [`Self::as_mvt_with_options`] — explicit-options entry point.
     #[must_use = "row-shape aggregate terminals are lazy — dropping discards the query"]
@@ -409,11 +409,11 @@ impl<T: Model + FromPgRow, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
     /// use djogi::prelude::*;
     ///
     /// let geobuf_bytes: Vec<u8> = Feature::objects()
-    ///     .filter(|f| f.region_id().eq(region_id))
-    ///     .annotate(|_| ()) // no extra columns — model row only
-    ///     .as_geobuf("location")
-    ///     .fetch_one(&mut ctx)
-    ///     .await?;
+    /// .filter(|f| f.region_id().eq(region_id))
+    /// .annotate(|_| ()) // no extra columns — model row only
+    /// .as_geobuf("location")
+    /// .fetch_one(&mut ctx)
+    /// .await?;
     /// ```
     /// # SQL emission
     /// ```sql
@@ -834,7 +834,7 @@ mod tests {
         assert!(
             matches!(result, Err(crate::DjogiError::Validation(_))),
             "MVT terminal: alias colliding with TileFeature::COLUMNS must yield \
-             DjogiError::Validation, got: {result:?}"
+    DjogiError::Validation, got: {result:?}"
         );
         if let Err(crate::DjogiError::Validation(msg)) = result {
             assert!(
@@ -855,7 +855,7 @@ mod tests {
         assert!(
             matches!(result, Err(crate::DjogiError::Validation(_))),
             "Geobuf terminal: alias colliding with TileFeature::COLUMNS must yield \
-             DjogiError::Validation, got: {result:?}"
+    DjogiError::Validation, got: {result:?}"
         );
         if let Err(crate::DjogiError::Validation(msg)) = result {
             assert!(
@@ -893,7 +893,7 @@ mod tests {
         assert!(
             matches!(result, Err(crate::DjogiError::Validation(_))),
             "MVT terminal: uppercase alias 'ID' must collide with column 'id' via case-fold \
-             comparator, got: {result:?}"
+    comparator, got: {result:?}"
         );
     }
 
@@ -907,7 +907,7 @@ mod tests {
         assert!(
             matches!(result, Err(crate::DjogiError::Validation(_))),
             "Geobuf terminal: uppercase alias 'GEOM' must collide with column 'geom' via \
-             case-fold comparator, got: {result:?}"
+    case-fold comparator, got: {result:?}"
         );
     }
 
@@ -940,7 +940,7 @@ mod tests {
         assert!(
             matches!(result, Err(crate::DjogiError::Validation(_))),
             "AsMvtTerminal::fetch_one must reject alias colliding with TileFeature column, \
-             got: {result:?}"
+    got: {result:?}"
         );
         if let Err(crate::DjogiError::Validation(msg)) = result {
             assert!(
@@ -976,7 +976,7 @@ mod tests {
         assert!(
             matches!(result, Err(crate::DjogiError::Validation(_))),
             "AsGeobufTerminal::fetch_one must reject alias colliding with TileFeature column, \
-             got: {result:?}"
+    got: {result:?}"
         );
         if let Err(crate::DjogiError::Validation(msg)) = result {
             assert!(
@@ -1016,7 +1016,7 @@ mod tests {
         assert!(
             matches!(result, Err(crate::DjogiError::Validation(_))),
             "AsMvtTerminal::fetch_one must reject uppercase alias 'ID' that case-folds to \
-             column 'id', got: {result:?}"
+    column 'id', got: {result:?}"
         );
     }
 
@@ -1041,7 +1041,7 @@ mod tests {
         assert!(
             matches!(result, Err(crate::DjogiError::Validation(_))),
             "AsGeobufTerminal::fetch_one must reject uppercase alias 'GEOM' that case-folds to \
-             column 'geom', got: {result:?}"
+    column 'geom', got: {result:?}"
         );
     }
 }

@@ -4,15 +4,15 @@
 //! database lifecycle:
 //! 1. `CREATE DATABASE djogi_test_<uuid>`.
 //! 2. HeeRanjID schema + default node installed in the fresh DB via
-//!    the test harness's explicit seed-capable bootstrap path.
+//! the test harness's explicit seed-capable bootstrap path.
 //! 3. Optional Postgres extensions (e.g. `postgis`) auto-provisioned via
-//!    `CREATE EXTENSION IF NOT EXISTS` — the list comes from the
-//!    `extensions = [...]` attribute argument.
+//! `CREATE EXTENSION IF NOT EXISTS` — the list comes from the
+//! `extensions = [...]` attribute argument.
 //! 4. `DjogiContext` constructed from a pool pointed at the new DB.
 //! 5. `DROP DATABASE` on guard drop — runs even if the test panics.
 //! # Internals
 //! This macro generates code that calls
-//! `::djogi::testing::setup_test_db_with_extensions(&["postgis", ...])`,
+//! `::djogi::testing::setup_test_db_with_extensions(&["postgis",...])`,
 //! which uses `tokio_postgres` directly for bootstrap (no sqlx) and routes
 //! the HeeRanjID schema install + extension provisioning + node-id GUC seed
 //! through `djogi::migrate::bootstrap::run_phase_zero` with
@@ -28,11 +28,11 @@
 //!
 //! // No extensions — same as pre-Task-13 behavior.
 //! #[djogi_test]
-//! async fn my_test(mut ctx: DjogiContext) { /* ... */ }
+//! async fn my_test(mut ctx: DjogiContext) { /*... */ }
 //!
 //! // Auto-provision PostGIS on the per-test DB.
 //! #[djogi_test(extensions = ["postgis"])]
-//! async fn geo_test(mut ctx: DjogiContext) { /* ... */ }
+//! async fn geo_test(mut ctx: DjogiContext) { /*... */ }
 //!
 //! // Auto-create tables for the listed models on the per-test DB
 //! // (closes #18). Removes hand-written CREATE TABLE
@@ -40,33 +40,33 @@
 //! // same migration engine that production uses, so model-shape
 //! // changes propagate automatically.
 //! #[djogi_test(sync_models = [Widget, Category])]
-//! async fn widget_test(mut ctx: DjogiContext) { /* ... */ }
+//! async fn widget_test(mut ctx: DjogiContext) { /*... */ }
 //!
 //! // Both keys may appear together — extensions provision first so
 //! // PostGIS-dependent columns resolve before tables are created.
 //! #[djogi_test(extensions = ["postgis"], sync_models = [Place])]
-//! async fn place_test(mut ctx: DjogiContext) { /* ... */ }
+//! async fn place_test(mut ctx: DjogiContext) { /*... */ }
 //! ```
 //! # Attribute grammar
 //! The attribute accepts zero or more comma-separated `key = value` entries.
 //! Recognized keys:
-//! - `extensions = [ "name1", "name2", ... ]` — array of string literals;
-//!   each element names a Postgres extension to provision. Extension names
-//!   are validated at runtime against a strict allowlist (ASCII letters /
-//!   digits / underscores, 1..=63 bytes).
-//! - `sync_models = [ Type1, Type2, ... ]` — array of bare type paths,
-//!   each implementing the `djogi::Model` trait. Resolved at runtime
-//!   via `<Type as ::djogi::model::Model>::descriptor()` (the canonical
-//!   absolute path used by the rest of the macro substrate). Empty
-//!   array `[]` is accepted as a zero-DDL no-op. Module-qualified
-//!   paths (`crate::models::Widget`, `super::Other`) are accepted.
-//!   The macro-generated wrapper calls
-//!   `::djogi::testing::sync_models` AFTER
-//!   `::djogi::testing::setup_test_db_with_extensions`, so any
-//!   PostGIS-dependent columns resolve cleanly.
-//!   Any other key produces a span-precise `syn::Error`. Wrong value shape
-//!   (scalar instead of array, non-path / non-string array element, etc.)
-//!   also errors with a helpful message pointing at the offending token.
+//! - `extensions = [ "name1", "name2",... ]` — array of string literals;
+//! each element names a Postgres extension to provision. Extension names
+//! are validated at runtime against a strict allowlist (ASCII letters /
+//! digits / underscores, 1..=63 bytes).
+//! - `sync_models = [ Type1, Type2,... ]` — array of bare type paths,
+//! each implementing the `djogi::Model` trait. Resolved at runtime
+//! via `<Type as ::djogi::model::Model>::descriptor()` (the canonical
+//! absolute path used by the rest of the macro substrate). Empty
+//! array `[]` is accepted as a zero-DDL no-op. Module-qualified
+//! paths (`crate::models::Widget`, `super::Other`) are accepted.
+//! The macro-generated wrapper calls
+//! `::djogi::testing::sync_models` AFTER
+//! `::djogi::testing::setup_test_db_with_extensions`, so any
+//! PostGIS-dependent columns resolve cleanly.
+//! Any other key produces a span-precise `syn::Error`. Wrong value shape
+//! (scalar instead of array, non-path / non-string array element, etc.)
+//! also errors with a helpful message pointing at the offending token.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -80,19 +80,19 @@ use syn::{
 /// Expand `#[djogi_test]` on an `async fn` with one `DjogiContext` parameter.
 /// The generated code wraps the test body in a plain `#[test]` harness that:
 /// 1. Calls `::djogi::testing::setup_test_db_with_extensions(&[...]).await`
-///    to create the per-test DB, install HeeRanjID, auto-provision any
-///    requested Postgres extensions, and return a
-///    `(TestDbCleanup, DjogiContext)`.
+/// to create the per-test DB, install HeeRanjID, auto-provision any
+/// requested Postgres extensions, and return a
+/// `(TestDbCleanup, DjogiContext)`.
 /// 2. Runs the original test body with the `DjogiContext`.
 /// 3. Calls `::djogi::testing::teardown_test_db(cleanup).await` explicitly after
-///    the body returns — whether it returns normally or panics.
-///    Panics from the test body are caught via `::futures::FutureExt::catch_unwind`
-///    so teardown can run before the panic is resumed via `::std::panic::resume_unwind`.
+/// the body returns — whether it returns normally or panics.
+/// Panics from the test body are caught via `::futures::FutureExt::catch_unwind`
+/// so teardown can run before the panic is resumed via `::std::panic::resume_unwind`.
 /// # Parsed attribute arguments
-/// - `extensions = [ "postgis", "pg_trgm", ... ]` — optional array of
-///   Postgres extension names to provision on the per-test DB via
-///   `CREATE EXTENSION IF NOT EXISTS`. See the module docs for the exact
-///   grammar and validation rules.
+/// - `extensions = [ "postgis", "pg_trgm",... ]` — optional array of
+/// Postgres extension names to provision on the per-test DB via
+/// `CREATE EXTENSION IF NOT EXISTS`. See the module docs for the exact
+/// grammar and validation rules.
 pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse the attribute arguments into a typed `Args` struct.
     let args = match parse_args(attr) {
@@ -162,83 +162,83 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
                 quote! { <#p as ::djogi::model::Model>::descriptor() }
             });
             quote! {
-                ::djogi::testing::sync_models(
-                    &mut ctx,
-                    &[ #( #descriptor_exprs ),* ],
-                )
-                    .await
-                    .expect("djogi_test: failed to sync_models on per-test database");
+             ::djogi::testing::sync_models(
+              &mut ctx,
+              &[ #( #descriptor_exprs ),* ],
+             )
+             .await
+             .expect("djogi_test: failed to sync_models on per-test database");
             }
         }
         _ => quote! {},
     };
 
     quote! {
-        #( #fn_attrs )*
-        #[test]
-        #fn_vis fn #fn_name() {
-            let __djogi_test_runtime =
-                ::djogi::__private::tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("djogi_test: failed to build Tokio runtime");
+     #( #fn_attrs )*
+     #[test]
+     #fn_vis fn #fn_name() {
+      let __djogi_test_runtime =
+       ::djogi::__private::tokio::runtime::Builder::new_current_thread()
+       .enable_all()
+       .build()
+       .expect("djogi_test: failed to build Tokio runtime");
 
-            __djogi_test_runtime.block_on(async {
-                use ::djogi::__private::futures::FutureExt as _;
-                use ::std::panic::AssertUnwindSafe;
+      __djogi_test_runtime.block_on(async {
+       use ::djogi::__private::futures::FutureExt as _;
+       use ::std::panic::AssertUnwindSafe;
 
-                // Inner async fn holds the original test body, called with the
-                // DjogiContext from setup_test_db_with_extensions. The parameter
-                // is always `mut` so the test body can call `&mut self` methods
-                // on the context.
-                async fn #inner_name(mut #ctx_arg_name: ::djogi::DjogiContext) {
-                    #fn_body
-                }
+       // Inner async fn holds the original test body, called with the
+       // DjogiContext from setup_test_db_with_extensions. The parameter
+       // is always `mut` so the test body can call `&mut self` methods
+       // on the context.
+       async fn #inner_name(mut #ctx_arg_name: ::djogi::DjogiContext) {
+        #fn_body
+       }
 
-                // Set up the per-test database. Panics here (e.g., DATABASE_URL not
-                // set, unknown extension name) propagate directly — there is
-                // nothing to clean up yet if setup itself failed.
-                // Wrapper ordering is deliberate and observable:
-                // 1. extensions provisioned first (CREATE EXTENSION),
-                // 2. sync_models runs (CREATE TABLE / indexes / FKs),
-                // 3. user's test body runs.
-                // Step 2 is omitted when `sync_models` is absent or `[]`.
-                // `ctx` is always `mut` here; `#[allow(unused_mut)]` suppresses
-                // the lint when sync_models is absent and no `&mut ctx` is taken
-                // between setup and the inner fn call.
-                #[allow(unused_mut)]
-                let (cleanup, mut ctx) = ::djogi::testing::setup_test_db_with_extensions(
-                    #extensions_slice,
-                )
-                    .await
-                    .expect("djogi_test: failed to set up per-test database");
+       // Set up the per-test database. Panics here (e.g., DATABASE_URL not
+       // set, unknown extension name) propagate directly — there is
+       // nothing to clean up yet if setup itself failed.
+       // Wrapper ordering is deliberate and observable:
+       // 1. extensions provisioned first (CREATE EXTENSION),
+       // 2. sync_models runs (CREATE TABLE / indexes / FKs),
+       // 3. user's test body runs.
+       // Step 2 is omitted when `sync_models` is absent or `[]`.
+       // `ctx` is always `mut` here; `#[allow(unused_mut)]` suppresses
+       // the lint when sync_models is absent and no `&mut ctx` is taken
+       // between setup and the inner fn call.
+       #[allow(unused_mut)]
+       let (cleanup, mut ctx) = ::djogi::testing::setup_test_db_with_extensions(
+        #extensions_slice,
+       )
+       .await
+       .expect("djogi_test: failed to set up per-test database");
 
-                // Auto-create tables for the listed models on
-                // the per-test database. Skipped entirely when the
-                // attribute did not carry `sync_models = [...]` or carried
-                // an empty list.
-                #sync_models_call
+       // Auto-create tables for the listed models on
+       // the per-test database. Skipped entirely when the
+       // attribute did not carry `sync_models = [...]` or carried
+       // an empty list.
+       #sync_models_call
 
-                // Run the test body, catching any panics so teardown always runs.
-                let result = AssertUnwindSafe(#inner_name(ctx)).catch_unwind().await;
+       // Run the test body, catching any panics so teardown always runs.
+       let result = AssertUnwindSafe(#inner_name(ctx)).catch_unwind().await;
 
-                // Teardown: drop the per-test database regardless of test outcome.
-                // This is async, so it runs cleanly inside the Tokio runtime without
-                // the block_on-in-async-context problem that a Drop impl would face.
-                ::djogi::testing::teardown_test_db(cleanup).await;
+       // Teardown: drop the per-test database regardless of test outcome.
+       // This is async, so it runs cleanly inside the Tokio runtime without
+       // the block_on-in-async-context problem that a Drop impl would face.
+       ::djogi::testing::teardown_test_db(cleanup).await;
 
-                // Propagate any panic from the test body now that cleanup is done.
-                if let Err(panic_payload) = result {
-                    ::std::panic::resume_unwind(panic_payload);
-                }
-            });
-        }
+       // Propagate any panic from the test body now that cleanup is done.
+       if let Err(panic_payload) = result {
+        ::std::panic::resume_unwind(panic_payload);
+       }
+      });
+     }
     }
 }
 
 /// Parsed `#[djogi_test(...)]` attribute arguments.
-/// Recognized keys: `extensions = [ ... ]` and
-/// `sync_models = [ ... ]` . Any other key produces a
+/// Recognized keys: `extensions = [... ]` and
+/// `sync_models = [... ]`. Any other key produces a
 /// compile error at [`parse_args`].
 /// `#[derive(Debug)]` is for the unit tests' `Result::unwrap_err`
 /// path — `syn::Error` already implements `Display`, but `unwrap_err`
@@ -250,7 +250,7 @@ struct Args {
     /// their original spans inside the generated slice expression.
     extensions: Vec<syn::LitStr>,
     /// Models to materialise on the per-test database via
-    /// [`djogi::testing::sync_models`] . Each entry is
+    /// [`djogi::testing::sync_models`]. Each entry is
     /// the bare type path the user wrote — re-emitted with original
     /// span inside the generated slice. `None` means the
     /// `sync_models` keyword was absent (preserves the
@@ -310,7 +310,7 @@ fn parse_args(attr: TokenStream) -> Result<Args, syn::Error> {
                 meta.path(),
                 format!(
                     "#[djogi_test] unknown argument `{path_display}`; \
-                     supported arguments: `extensions = [...]`, `sync_models = [...]`",
+      supported arguments: `extensions = [...]`, `sync_models = [...]`",
                 ),
             ));
         }
@@ -322,16 +322,16 @@ fn parse_args(attr: TokenStream) -> Result<Args, syn::Error> {
 /// Parse an `extensions = [ "a", "b" ]` entry into a vec of `LitStr`.
 /// Validates that:
 /// - The entry is a `Meta::NameValue` (not a bare `extensions` or
-///   `extensions(...)` list form).
+/// `extensions(...)` list form).
 /// - The value is an array expression.
 /// - Every element is a string literal.
-///   Empty arrays are accepted — they round-trip through the generated slice
-///   as `&[]` and the runtime loop runs zero iterations.
+/// Empty arrays are accepted — they round-trip through the generated slice
+/// as `&[]` and the runtime loop runs zero iterations.
 fn parse_extensions_value(meta: &Meta) -> Result<Vec<syn::LitStr>, syn::Error> {
     let Meta::NameValue(nv) = meta else {
         return Err(syn::Error::new_spanned(
             meta,
-            "#[djogi_test] `extensions` must use the form `extensions = [\"name\", ...]`",
+            "#[djogi_test] `extensions` must use the form `extensions = [\"name\",...]`",
         ));
     };
 
@@ -339,7 +339,7 @@ fn parse_extensions_value(meta: &Meta) -> Result<Vec<syn::LitStr>, syn::Error> {
         return Err(syn::Error::new_spanned(
             &nv.value,
             "#[djogi_test] `extensions` expects an array literal, \
-             e.g. `extensions = [\"postgis\"]`",
+    e.g. `extensions = [\"postgis\"]`",
         ));
     };
 
@@ -352,7 +352,7 @@ fn parse_extensions_value(meta: &Meta) -> Result<Vec<syn::LitStr>, syn::Error> {
             return Err(syn::Error::new_spanned(
                 elem,
                 "#[djogi_test] `extensions` array elements must be string literals, \
-                 e.g. `\"postgis\"`",
+     e.g. `\"postgis\"`",
             ));
         };
         out.push(s.clone());
@@ -360,25 +360,25 @@ fn parse_extensions_value(meta: &Meta) -> Result<Vec<syn::LitStr>, syn::Error> {
     Ok(out)
 }
 
-/// Parse a `sync_models = [ Type1, Type2, ... ]` entry into a vec of
+/// Parse a `sync_models = [ Type1, Type2,... ]` entry into a vec of
 /// [`syn::Path`].
 /// Validates that:
 /// - The entry is a `Meta::NameValue` (not a bare `sync_models` or
-///   `sync_models(...)` list form).
+/// `sync_models(...)` list form).
 /// - The value is an array expression.
 /// - Every element is a bare type path. String literals, integer
-///   literals, function-call expressions, etc. are rejected with
-///   span-precise errors.
-///   Empty arrays are accepted — they round-trip as a no-op (no
-///   `sync_models` runtime call is emitted at all). Module-qualified
-///   paths (`crate::models::Widget`, `super::Other`) are accepted: the
-///   parser keeps the entire [`Path`] verbatim, so the generated code
-///   resolves them from the user's call site.
+/// literals, function-call expressions, etc. are rejected with
+/// span-precise errors.
+/// Empty arrays are accepted — they round-trip as a no-op (no
+/// `sync_models` runtime call is emitted at all). Module-qualified
+/// paths (`crate::models::Widget`, `super::Other`) are accepted: the
+/// parser keeps the entire [`Path`] verbatim, so the generated code
+/// resolves them from the user's call site.
 fn parse_sync_models_value(meta: &Meta) -> Result<Vec<Path>, syn::Error> {
     let Meta::NameValue(nv) = meta else {
         return Err(syn::Error::new_spanned(
             meta,
-            "#[djogi_test] `sync_models` must use the form `sync_models = [Type1, Type2, ...]`",
+            "#[djogi_test] `sync_models` must use the form `sync_models = [Type1, Type2,...]`",
         ));
     };
 
@@ -386,7 +386,7 @@ fn parse_sync_models_value(meta: &Meta) -> Result<Vec<Path>, syn::Error> {
         return Err(syn::Error::new_spanned(
             &nv.value,
             "#[djogi_test] `sync_models` expects an array literal of type paths, \
-             e.g. `sync_models = [Widget, Category]`",
+    e.g. `sync_models = [Widget, Category]`",
         ));
     };
 
@@ -401,14 +401,14 @@ fn parse_sync_models_value(meta: &Meta) -> Result<Vec<Path>, syn::Error> {
             return Err(syn::Error::new_spanned(
                 elem,
                 "#[djogi_test] `sync_models` array elements must be bare type paths, \
-                 e.g. `Widget` or `crate::models::Widget`",
+     e.g. `Widget` or `crate::models::Widget`",
             ));
         };
         if !attrs.is_empty() {
             return Err(syn::Error::new_spanned(
                 elem,
                 "#[djogi_test] `sync_models` array elements must be bare type paths \
-                 without attributes",
+     without attributes",
             ));
         }
         out.push(path.clone());
@@ -420,8 +420,8 @@ fn parse_sync_models_value(meta: &Meta) -> Result<Vec<Path>, syn::Error> {
 /// Validates that:
 /// - There is exactly one parameter.
 /// - It is a named pattern (`ctx: DjogiContext`), not `self`, `_`, or a
-///   destructure pattern.
-///   Returns the `syn::Ident` to use as the binding name in the generated code.
+/// destructure pattern.
+/// Returns the `syn::Ident` to use as the binding name in the generated code.
 fn extract_ctx_arg_name(sig: &Signature) -> Result<syn::Ident, syn::Error> {
     if sig.inputs.len() != 1 {
         return Err(syn::Error::new_spanned(
@@ -437,7 +437,7 @@ fn extract_ctx_arg_name(sig: &Signature) -> Result<syn::Ident, syn::Error> {
             _ => Err(syn::Error::new_spanned(
                 arg,
                 "#[djogi_test] argument must be a simple identifier pattern, \
-                 e.g. `ctx: DjogiContext`",
+     e.g. `ctx: DjogiContext`",
             )),
         },
         FnArg::Receiver(_) => Err(syn::Error::new_spanned(
@@ -566,7 +566,7 @@ mod tests {
             "error must mention `sync_models`: {msg}"
         );
         assert!(
-            msg.contains("sync_models = [Type1, Type2, ...]"),
+            msg.contains("sync_models = [Type1, Type2,...]"),
             "error must point at the correct grammar: {msg}"
         );
     }
@@ -682,8 +682,8 @@ mod tests {
         assert!(
             setup_pos < sync_pos,
             "setup_test_db_with_extensions must precede sync_models in the emitted wrapper:\n\
-             setup_pos = {setup_pos}, sync_pos = {sync_pos}\n\
-             expanded =\n{expanded}",
+    setup_pos = {setup_pos}, sync_pos = {sync_pos}\n\
+    expanded =\n{expanded}",
         );
     }
 
@@ -734,11 +734,11 @@ mod tests {
         let with_sync = render_expansion("sync_models = [Widget]");
         let without_sync = render_expansion("");
         assert!(
-            with_sync.contains("(cleanup , mut ctx)"),
+            with_sync.contains("(cleanup, mut ctx)"),
             "sync_models path must bind ctx as mut in the setup destructure: {with_sync}"
         );
         assert!(
-            without_sync.contains("(cleanup , mut ctx)"),
+            without_sync.contains("(cleanup, mut ctx)"),
             "no-sync_models path must also bind ctx as mut (with #[allow(unused_mut)]): {without_sync}"
         );
         // Confirm the allow attribute is emitted on the no-sync path.

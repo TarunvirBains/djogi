@@ -14,9 +14,9 @@ use djogi::prelude::*;
 #[model(table = "phase8eta_float_scalar_widgets")]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub score: f64,
+ pub score: f64,
 }
 
 fn main() {
-    let _bad = Widget::objects().filter(|f| f.score().eq(f64::NAN));
+ let _bad = Widget::objects().filter(|f| f.score().eq(f64::NAN));
 }

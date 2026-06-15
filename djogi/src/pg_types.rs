@@ -41,11 +41,11 @@ use std::error::Error;
 
 // ── Interval ────────────────────────────────────────────────────────────────
 
-/// A Postgres `INTERVAL` value — .
+/// A Postgres `INTERVAL` value —.
 /// Represents a calendar duration as three independent fields:
 /// - `months` — calendar months (a year is 12 months).
 /// - `days` — calendar days (a day is NOT 24 hours; DST shifts move it
-///   by an hour, leap seconds shift it by a fractional second).
+/// by an hour, leap seconds shift it by a fractional second).
 /// - `microseconds` — sub-day time component.
 /// # Why three fields?
 /// Postgres `INTERVAL` is intrinsically a tagged three-tuple, not a
@@ -236,7 +236,7 @@ impl crate::descriptor::DjogiSqlType for Interval {
 // #215 ships the user-facing typed field and predicate surface. Two sibling
 // lanes remain explicitly out of scope here:
 // * — `btree_gist` EXCLUDE constraint grammar (`#[model(exclude(
-// ...))]`) and the `CREATE EXTENSION btree_gist` migration step.
+//...))]`) and the `CREATE EXTENSION btree_gist` migration step.
 // * — PostgreSQL 18 temporal-constraint DDL (`WITHOUT OVERLAPS`,
 // `PERIOD` foreign keys, `NOT ENFORCED`, named `NOT NULL`).
 // Both lanes consume range columns as their input. Centralizing the
@@ -254,16 +254,16 @@ impl crate::descriptor::DjogiSqlType for Interval {
 /// the named value, or unbounded on this side.
 /// The variant set matches Postgres's range-bound semantics directly:
 /// * `Inclusive(t)` — the bound value `t` is part of the range.
-///   Renders as `[t,…]` (lower) or `[…,t]` (upper).
+/// Renders as `[t,…]` (lower) or `[…,t]` (upper).
 /// * `Exclusive(t)` — the bound value `t` is *not* part of the range.
-///   Renders as `(t,…]` (lower) or `[…,t)` (upper).
+/// Renders as `(t,…]` (lower) or `[…,t)` (upper).
 /// * `Unbounded` — no bound on this side. Postgres terminology calls
-///   this "infinite"; the wire format sets the `RANGE_LB_INF` /
-///   `RANGE_UB_INF` flag and omits the bound bytes entirely.
-///   The empty range is *not* a special `RangeBound` value — it is a
-///   separate state on the enclosing [`Range`]. Use [`Range::empty`] when
-///   you need the empty-range sentinel; an empty range carries no bound
-///   values regardless of which `RangeBound` variants you started with.
+/// this "infinite"; the wire format sets the `RANGE_LB_INF` /
+/// `RANGE_UB_INF` flag and omits the bound bytes entirely.
+/// The empty range is *not* a special `RangeBound` value — it is a
+/// separate state on the enclosing [`Range`]. Use [`Range::empty`] when
+/// you need the empty-range sentinel; an empty range carries no bound
+/// values regardless of which `RangeBound` variants you started with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RangeBound<T> {
     /// `[t,…]` / `[…,t]` — the bound value is part of the range.
@@ -329,15 +329,15 @@ pub enum RangeBound<T> {
 /// `Range<T>` is also the substrate for two future DB-level no-overlap
 /// surfaces tracked separately:
 /// * **** — `btree_gist` EXCLUDE constraint grammar
-///   (`#[model(exclude(...))]`) and `CREATE EXTENSION btree_gist`.
-///   The general-purpose no-overlap mechanism that works on every
-///   supported Postgres version.
+/// (`#[model(exclude(...))]`) and `CREATE EXTENSION btree_gist`.
+/// The general-purpose no-overlap mechanism that works on every
+/// supported Postgres version.
 /// * **** — PostgreSQL 18 temporal-constraint DDL
-///   (`WITHOUT OVERLAPS`, `PERIOD` foreign keys, `NOT ENFORCED`,
-///   named `NOT NULL`). The modern SQL-standard no-overlap mechanism
-///   on PG18+.
-///   Both lanes consume `Range<T>` columns as their inputs. Neither lane is
-///   part of #215.
+/// (`WITHOUT OVERLAPS`, `PERIOD` foreign keys, `NOT ENFORCED`,
+/// named `NOT NULL`). The modern SQL-standard no-overlap mechanism
+/// on PG18+.
+/// Both lanes consume `Range<T>` columns as their inputs. Neither lane is
+/// part of #215.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Range<T> {
     lower: RangeBound<T>,
@@ -845,7 +845,7 @@ const PGSQL_AF_INET6: u8 = 3;
 
 // ── MacAddr ─────────────────────────────────────────────────────────────────
 
-/// A Postgres `MACADDR` value — .
+/// A Postgres `MACADDR` value —.
 /// A 6-byte EUI-48 MAC address. The wire encoding is the bare 6 bytes
 /// in network (big-endian) order with no header.
 /// # Construction
@@ -894,16 +894,16 @@ impl MacAddr {
 /// canonical-form MAC address.
 /// Three failure modes:
 /// * `WrongLength { found }` — the input did not parse into exactly six
-///   octets (typically because the wrong number of `:` / `-` separators
-///   was present, or no separators at all).
+/// octets (typically because the wrong number of `:` / `-` separators
+/// was present, or no separators at all).
 /// * `InvalidOctet { index, octet }` — one of the six octet positions
-///   carried a token that was not a 2-byte uppercase / lowercase hex
-///   pair. The `index` is 0-based.
+/// carried a token that was not a 2-byte uppercase / lowercase hex
+/// pair. The `index` is 0-based.
 /// * `MixedSeparators` — the input mixed `:` and `-` separators, which
-///   is ambiguous. Pick one separator style.
-///   The variant payloads are deliberately concrete (lengths, indexes,
-///   the offending octet) so adopters can compose richer error messages
-///   without re-parsing.
+/// is ambiguous. Pick one separator style.
+/// The variant payloads are deliberately concrete (lengths, indexes,
+/// the offending octet) so adopters can compose richer error messages
+/// without re-parsing.
 #[cfg(feature = "network")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MacAddrParseError {
@@ -1032,7 +1032,7 @@ impl crate::descriptor::DjogiSqlType for MacAddr {
 
 // ── CidrAddr ────────────────────────────────────────────────────────────────
 
-/// A Postgres `CIDR` value — .
+/// A Postgres `CIDR` value —.
 /// Carries both an IP address and an explicit network prefix length.
 /// Postgres CIDR rejects values whose host bits past the prefix are
 /// non-zero (e.g., `192.168.1.5/24` is rejected because the trailing
@@ -1106,7 +1106,7 @@ impl std::fmt::Display for CidrAddrError {
             }
             Self::HostBitsSet => f.write_str(
                 "CIDR host bits past the prefix must be zero; \
-                 mask the host bits before constructing CidrAddr",
+     mask the host bits before constructing CidrAddr",
             ),
         }
     }
@@ -1345,7 +1345,7 @@ fn read_inet_payload(
         other => {
             return Err(format!(
                 "Postgres INET/CIDR wire format: unknown address family {other} \
-                 (expected {PGSQL_AF_INET} for IPv4 or {PGSQL_AF_INET6} for IPv6)"
+     (expected {PGSQL_AF_INET} for IPv4 or {PGSQL_AF_INET6} for IPv6)"
             )
             .into());
         }
@@ -1915,7 +1915,7 @@ mod tests {
     #[cfg(feature = "network")]
     #[test]
     fn cidraddr_rejects_ipv4_with_host_bits_set() {
-        // 192.168.1.5/24 — the .5 falls inside the host portion.
+        // 192.168.1.5/24 — the.5 falls inside the host portion.
         let addr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 5));
         let err = CidrAddr::new(addr, 24).unwrap_err();
         assert_eq!(err, CidrAddrError::HostBitsSet);

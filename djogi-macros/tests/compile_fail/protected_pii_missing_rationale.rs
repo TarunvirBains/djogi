@@ -7,8 +7,8 @@ use djogi::prelude::*;
 #[model(table = "users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(protected(sensitivity = "pii"))]
-    pub email: String,
+ #[field(protected(sensitivity = "pii"))]
+ pub email: String,
 }
 
 fn main() {}

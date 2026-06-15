@@ -21,12 +21,12 @@
 //! version skew.
 //! # Robustness
 //! - The loader strips a UTF-8 BOM if the file starts with one.
-//!   Some editors silently insert a BOM into JSON files; we tolerate
-//!   that on read but never emit one ourselves.
+//! Some editors silently insert a BOM into JSON files; we tolerate
+//! that on read but never emit one ourselves.
 //! - The loader version-checks before structural deserialize so a
-//!   newer snapshot rejected by an older Djogi names the version
-//!   mismatch first, rather than failing on a `deny_unknown_fields`
-//!   trip on whatever new field landed in `"2"`.
+//! newer snapshot rejected by an older Djogi names the version
+//! mismatch first, rather than failing on a `deny_unknown_fields`
+//! trip on whatever new field landed in `"2"`.
 
 use std::fs;
 use std::io::{self, Write};
@@ -85,13 +85,13 @@ impl std::fmt::Display for SnapshotError {
                 Some(p) => write!(
                     f,
                     "snapshot format version '{found}' at {} is not supported by this \
-                     Djogi (expected '{expected}'); upgrade or check out a newer djogi",
+      Djogi (expected '{expected}'); upgrade or check out a newer djogi",
                     p.display()
                 ),
                 None => write!(
                     f,
                     "snapshot format version '{found}' is not supported by this Djogi \
-                     (expected '{expected}'); upgrade or check out a newer djogi"
+      (expected '{expected}'); upgrade or check out a newer djogi"
                 ),
             },
         }
@@ -183,7 +183,7 @@ pub fn parse_snapshot_bytes(
 ) -> Result<AppliedSchema, SnapshotError> {
     let bytes = strip_utf8_bom(bytes);
 
-    // Phase 1 — peek at `format_version` only. Use a permissive
+    // — peek at `format_version` only. Use a permissive
     // `serde_json::Value` so the peek succeeds even when the rest of
     // the document carries fields the strict struct deserializer
     // doesn't recognise (the case that matters: an older Djogi
@@ -201,7 +201,7 @@ pub fn parse_snapshot_bytes(
         });
     }
 
-    // Phase 2 — full strict deserialize. Reaching here means
+    // — full strict deserialize. Reaching here means
     // `format_version` is either absent (will fail strict deserialize
     // because the field is required) or matches the expected
     // version.
@@ -277,7 +277,7 @@ mod tests {
         // First indented line should start with exactly two spaces.
         let mut saw_indented_line = false;
         for line in text.lines() {
-            if line.starts_with("  ") && !line.starts_with("   ") {
+            if line.starts_with(" ") && !line.starts_with(" ") {
                 saw_indented_line = true;
                 break;
             }
@@ -355,15 +355,15 @@ mod tests {
         // UnsupportedFormatVersion (actionable) instead of a generic
         // deny_unknown_fields parse error.
         let blob = r#"{
-            "djogi_version": "0.2.0",
-            "enums": {},
-            "format_version": "2",
-            "future_field_added_in_v2": "some value",
-            "generated_at": "2027-01-01T00:00:00Z",
-            "indexes": [],
-            "models": {},
-            "registered_apps": []
-        }"#;
+   "djogi_version": "0.2.0",
+   "enums": {},
+   "format_version": "2",
+   "future_field_added_in_v2": "some value",
+   "generated_at": "2027-01-01T00:00:00Z",
+   "indexes": [],
+   "models": {},
+   "registered_apps": []
+  }"#;
         let err = parse_snapshot_bytes(blob.as_bytes(), None).expect_err("must fail");
         match err {
             SnapshotError::UnsupportedFormatVersion {
@@ -701,48 +701,48 @@ mod tests {
         // defaults — `None` for ColumnSchema.generated and an empty
         // Vec for TableSchema.exclusion_constraints.
         let blob = r#"{
-            "djogi_version": "0.1.0",
-            "enums": {},
-            "format_version": "1",
-            "generated_at": "2026-04-25T00:00:00Z",
-            "indexes": [],
-            "models": {
-                "old_table": {
-                    "app": null,
-                    "columns": [
-                        {
-                            "check": null,
-                            "default_sql": null,
-                            "foreign_key": null,
-                            "index_type": null,
-                            "indexed": false,
-                            "max_length": null,
-                            "name": "name",
-                            "nullable": true,
-                            "on_delete": null,
-                            "outbox_exclude": false,
-                            "rationale": null,
-                            "relation_kind": null,
-                            "renamed_from": null,
-                            "sequence_within": null,
-                            "sql_type": "TEXT",
-                            "unique": false
-                        }
-                    ],
-                    "fts": null,
-                    "is_through": false,
-                    "moved_from_app": null,
-                    "partition": null,
-                    "primary_key": { "columns": ["id"], "kind": "HeerId" },
-                    "rationale": null,
-                    "renamed_from": null,
-                    "rls_enabled": false,
-                    "table": "old_table",
-                    "tenant_key": null
-                }
-            },
-            "registered_apps": [""]
-        }"#;
+   "djogi_version": "0.1.0",
+   "enums": {},
+   "format_version": "1",
+   "generated_at": "2026-04-25T00:00:00Z",
+   "indexes": [],
+   "models": {
+    "old_table": {
+     "app": null,
+     "columns": [
+      {
+       "check": null,
+       "default_sql": null,
+       "foreign_key": null,
+       "index_type": null,
+       "indexed": false,
+       "max_length": null,
+       "name": "name",
+       "nullable": true,
+       "on_delete": null,
+       "outbox_exclude": false,
+       "rationale": null,
+       "relation_kind": null,
+       "renamed_from": null,
+       "sequence_within": null,
+       "sql_type": "TEXT",
+       "unique": false
+      }
+     ],
+     "fts": null,
+     "is_through": false,
+     "moved_from_app": null,
+     "partition": null,
+     "primary_key": { "columns": ["id"], "kind": "HeerId" },
+     "rationale": null,
+     "renamed_from": null,
+     "rls_enabled": false,
+     "table": "old_table",
+     "tenant_key": null
+    }
+   },
+   "registered_apps": [""]
+  }"#;
         let parsed = parse_snapshot_bytes(blob.as_bytes(), None).expect("parse legacy snapshot");
         let table = parsed.models.get("old_table").expect("old_table present");
         assert!(table.exclusion_constraints.is_empty());

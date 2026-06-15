@@ -4,20 +4,20 @@
 //! classification table in `docs/spec/live-migrations.md`.
 //! # Boundary contract (§6.5)
 //! - **PK-flip routing is exclusive.** When a delta carries
-//!   [`SchemaOperation::PkTypeFlipGroup`] or
-//!   [`SchemaOperation::PkTypeFlipMultiGroup`], that operation is
-//!   already routed through the
-//!   [`crate::migrate::diff::Classification::PkTypeFlip`] cascade
-//!   emitter family (`migrate::pk_flip`). The classifier short-circuits
-//!   those entries — they appear in [`classify_delta`]'s output as
-//!   skipped (filtered out) so live-plan callers never see them.
+//! [`SchemaOperation::PkTypeFlipGroup`] or
+//! [`SchemaOperation::PkTypeFlipMultiGroup`], that operation is
+//! already routed through the
+//! [`crate::migrate::diff::Classification::PkTypeFlip`] cascade
+//! emitter family (`migrate::pk_flip`). The classifier short-circuits
+//! those entries — they appear in [`classify_delta`]'s output as
+//! skipped (filtered out) so live-plan callers never see them.
 //! - **Logging-profile short-circuit.** Per §6.5 of the v3 plan, the
-//!   classifier inspects [`ClassifyContext::logging_profile`] and the
-//!   [`ClassifyContext::target_database`] field to decide whether to
-//!   route through at all. Event-log databases never live-
-//!   plan; crud-log databases under `light` / `balanced` never live-
-//!   plan; only `strict_audit` crud-log + the application database
-//!   reach the per-operation classifier.
+//! classifier inspects [`ClassifyContext::logging_profile`] and the
+//! [`ClassifyContext::target_database`] field to decide whether to
+//! route through at all. Event-log databases never live-
+//! plan; crud-log databases under `light` / `balanced` never live-
+//! plan; only `strict_audit` crud-log + the application database
+//! reach the per-operation classifier.
 //! # Determinism
 //! Classification is pure: same inputs → same output, no `pg_catalog`
 //! reads, no host-variable behaviour. Every dispatch arm cites the
@@ -27,14 +27,14 @@
 //! [`classify_delta`] performs the cross-operation aggregation §7
 //! requires:
 //! - Per-table `AddForeignKey` counts — 4+ FK additions to a single
-//!   table (configurable via [`ClassifyContext::multi_fk_threshold`])
-//!   escalate every entry on that table to `ExpandContract`.
+//! table (configurable via [`ClassifyContext::multi_fk_threshold`])
+//! escalate every entry on that table to `ExpandContract`.
 //! - Inbound FK counts on a `DropTable` — when 4+ existing FKs
-//!   reference the table being dropped, the drop escalates to
-//!   `ExpandContract` (multi-step DROP CONSTRAINT staging). Inbound
-//!   FK counts must be supplied via [`ClassifyContext::inbound_fk_counts`]
-//!   because the drop op alone does not carry the foreign-key graph;
-//!   compose passes the count from the live snapshot.
+//! reference the table being dropped, the drop escalates to
+//! `ExpandContract` (multi-step DROP CONSTRAINT staging). Inbound
+//! FK counts must be supplied via [`ClassifyContext::inbound_fk_counts`]
+//! because the drop op alone does not carry the foreign-key graph;
+//! compose passes the count from the live snapshot.
 
 use crate::descriptor::DefaultVolatility;
 use crate::live_migrate::LoggingProfile;
@@ -73,18 +73,18 @@ pub struct ClassifyContext<'a> {
     /// Logging profile in scope for the bucket being classified.
     /// Drives the §6.5 three-DB short-circuit:
     /// - Event-log database — never live-plans regardless of profile;
-    ///   the classifier reports every operation as `OnlineSafe` so
-    ///   compose routes the delta directly through .
+    /// the classifier reports every operation as `OnlineSafe` so
+    /// compose routes the delta directly through.
     /// - Crud-log database under [`LoggingProfile::Light`] /
-    ///   [`LoggingProfile::Balanced`] — same direct route; brief
-    ///   `AccessExclusiveLock` windows on crud-log mirror tables are
-    ///   acceptable because the audit contract degrades gracefully.
+    /// [`LoggingProfile::Balanced`] — same direct route; brief
+    /// `AccessExclusiveLock` windows on crud-log mirror tables are
+    /// acceptable because the audit contract degrades gracefully.
     /// - Crud-log database under [`LoggingProfile::StrictAudit`]
-    ///   fail-closed semantics make audit-table locks block
-    ///   application writes, so populated crud-log mirrors classify
-    ///   the same way as the application database.
+    /// fail-closed semantics make audit-table locks block
+    /// application writes, so populated crud-log mirrors classify
+    /// the same way as the application database.
     /// - Application database — full classifier walk regardless of
-    ///   profile.
+    /// profile.
     pub logging_profile: LoggingProfile,
 
     /// Which of the three databases the delta targets. Drives the
@@ -185,7 +185,7 @@ pub fn classify_operation(
             OnlineSafetyClassification::FastLockDestructiveGuarded
         }
 
-        // §7: "Rename column (with #[field(renamed_from = ...)])" →
+        // §7: "Rename column (with #[field(renamed_from =...)])" →
         // OnlineSafe (catalog-only).
         SchemaOperation::RenameColumn { .. } => OnlineSafetyClassification::OnlineSafe,
 
@@ -276,7 +276,7 @@ pub fn classify_operation(
         // existing rows.
         SchemaOperation::SetStorageParams { .. } => OnlineSafetyClassification::OnlineSafe,
 
-        // Djogi#219 — `ALTER TABLE ... SET TABLESPACE`
+        // Djogi#219 — `ALTER TABLE... SET TABLESPACE`
         // rewrites the table's physical file and takes an ACCESS
         // EXCLUSIVE lock, so live planning must treat it as offline.
         SchemaOperation::SetTablespace { .. } => OnlineSafetyClassification::OfflineOnly,
@@ -302,13 +302,13 @@ pub fn classify_operation(
 /// plus cross-operation aggregation rules from §7:
 /// - PK-flip groups are filtered out (routed through directly).
 /// - 4+ FK additions to a single table escalate every addition on
-///   that table to `ExpandContract`.
+/// that table to `ExpandContract`.
 /// - 4+ inbound FK references on a `DropTable` escalate that drop to
-///   `ExpandContract`.
-///   Returns `(operation, classification)` pairs in input order. The
-///   caller decides what to do with each verdict — the live-plan layer
-///   keys off `ExpandContract`; the regular runner consumes the
-///   other variants.
+/// `ExpandContract`.
+/// Returns `(operation, classification)` pairs in input order. The
+/// caller decides what to do with each verdict — the live-plan layer
+/// keys off `ExpandContract`; the regular runner consumes the
+/// other variants.
 pub fn classify_delta(
     ops: &[SchemaOperation],
     ctx: &ClassifyContext<'_>,
@@ -546,7 +546,7 @@ fn classify_column_change(
         // not reachable for a generated column on a populated table.
         ColumnChange::SetGenerated { .. } => OnlineSafetyClassification::OfflineOnly,
 
-        // Identity-column transitions: `ALTER COLUMN ADD GENERATED ... AS IDENTITY`
+        // Identity-column transitions: `ALTER COLUMN ADD GENERATED... AS IDENTITY`
         // is catalog-only
         // Postgres allocates the sequence, no row rewrite. The
         // sequence's start value is set after MAX(c) for existing rows
@@ -585,12 +585,12 @@ fn classify_column_change(
 ///
 /// - plaintext → codec (`None → Some`): full offline re-encode → `OfflineOnly`.
 /// - codec → plaintext (`Some → None`): full decode-in-place rewrite →
-///   `OfflineOnly`.
+/// `OfflineOnly`.
 /// - codec → different codec (`Some(a) → Some(b)`, `a != b`): dual-write /
-///   backfill (`ExpandContract`), though v1's online emitter is fenced (the
-///   offline compose path is the v1 story).
+/// backfill (`ExpandContract`), though v1's online emitter is fenced (the
+/// offline compose path is the v1 story).
 /// - same codec (`Some(a) → Some(a)`): degenerate no-op (`OnlineSafe`,
-///   defensive — the differ never emits this in practice).
+/// defensive — the differ never emits this in practice).
 fn classify_codec_transition(from: Option<&str>, to: Option<&str>) -> OnlineSafetyClassification {
     match (from, to) {
         // No-op (identical codec) — defensive; differ filters identical pairs.
@@ -612,22 +612,22 @@ fn classify_codec_transition(from: Option<&str>, to: Option<&str>) -> OnlineSafe
 /// §7: "Change column type" routing.
 /// - Identical types → OnlineSafe (no-op alter).
 /// - Pg18 binary-coercible same storage (`varchar(n)` → `varchar(m)`
-///   with m >= n; `text` ↔ `varchar(n)` for n large enough) →
-///   OnlineSafe.
+/// with m >= n; `text` ↔ `varchar(n)` for n large enough) →
+/// OnlineSafe.
 /// - Widening without rewrite (`int4` → `int8`, `int2` → `int4`) →
-///   OnlineSafe.
+/// OnlineSafe.
 /// - Known narrowing pairs (BIGINT → INT4, varchar(N) → varchar(M)
-///   with M < N, TEXT → varchar(N), NUMERIC precision/scale loss) →
-///   OfflineOnly. Narrowing risks truncation / overflow at the row
-///   level; without an explicit `#[field(version, transform = ...)]`
-///   signal the classifier cannot prove the conversion is lossless,
-///   so it refuses the live path. When the transform field lands in a
-///   later phase, this routing refines to ExpandContract when the
-///   transform is present.
+/// with M < N, TEXT → varchar(N), NUMERIC precision/scale loss) →
+/// OfflineOnly. Narrowing risks truncation / overflow at the row
+/// level; without an explicit `#[field(version, transform =...)]`
+/// signal the classifier cannot prove the conversion is lossless,
+/// so it refuses the live path. When the transform field lands in a
+/// later phase, this routing refines to ExpandContract when the
+/// transform is present.
 /// - Other / unknown type changes (ENUM rename, JSONB shape change,
-///   foreign-type swaps) → ExpandContract via shadow-column pattern.
-///   These cases require backfill and operator gates regardless of
-///   direction.
+/// foreign-type swaps) → ExpandContract via shadow-column pattern.
+/// These cases require backfill and operator gates regardless of
+/// direction.
 fn classify_type_change(from: &str, to: &str) -> OnlineSafetyClassification {
     if from == to {
         return OnlineSafetyClassification::OnlineSafe;
@@ -644,14 +644,14 @@ fn classify_type_change(from: &str, to: &str) -> OnlineSafetyClassification {
 /// `true` when `from → to` is a known narrowing / truncating pair.
 /// Recognised cases per §7:
 /// - Integer narrowing: BIGINT → INT4, BIGINT → SMALLINT, INT4 →
-///   SMALLINT (overflow risk).
+/// SMALLINT (overflow risk).
 /// - varchar-length narrowing: `varchar(N)` → `varchar(M)` with
-///   `M < N` (truncation risk).
+/// `M < N` (truncation risk).
 /// - text → `varchar(N)` (truncation risk, regardless of N).
 /// - NUMERIC narrowing: `numeric(p1, s1)` → `numeric(p2, s2)` with
-///   `p2 < p1` or `s2 < s1` (precision / scale loss).
-///   Pairs the classifier cannot recognise as narrowing fall through
-///   the caller then routes them via the regular ExpandContract path.
+/// `p2 < p1` or `s2 < s1` (precision / scale loss).
+/// Pairs the classifier cannot recognise as narrowing fall through
+/// the caller then routes them via the regular ExpandContract path.
 fn is_narrowing_or_truncating(from: &str, to: &str) -> bool {
     let f = from.trim().to_ascii_lowercase();
     let t = to.trim().to_ascii_lowercase();
@@ -884,22 +884,22 @@ fn classify_validation_against_threshold(ctx: &ClassifyContext<'_>) -> OnlineSaf
 /// through `ExpandContract` regardless of the `concurrently` flag.
 /// The §7 rollout for "add unique constraint to populated table" is a
 /// 2-step pattern — `CREATE UNIQUE INDEX CONCURRENTLY` builds the
-/// index online, then `ALTER TABLE ... ADD CONSTRAINT ... USING INDEX`
+/// index online, then `ALTER TABLE... ADD CONSTRAINT... USING INDEX`
 /// promotes it. Concurrency is required for the build but not
 /// sufficient on its own — the operator-driven 2-step gate is what
 /// `ExpandContract` represents.
 /// Non-unique indexes:
 /// - `concurrently = true` → `OnlineSafe` (`CREATE INDEX CONCURRENTLY`
-///   runs outside a transaction and does not block writes).
+/// runs outside a transaction and does not block writes).
 /// - `concurrently = false`, `estimated_rows == Some(0)` → `OnlineSafe`
-///   (PR 7 empty-table fast-path: zero-row tables hold the
-///   AccessExclusiveLock for an instant; the build is structurally
-///   trivial).
+/// (PR 7 empty-table fast-path: zero-row tables hold the
+/// AccessExclusiveLock for an instant; the build is structurally
+/// trivial).
 /// - `concurrently = false`, populated or unknown → `ExpandContract`.
-///   On a populated table the lock holds for the duration of the
-///   build; unknown-row-count takes the conservative path.
-///   Hash indexes without concurrent are refused at compose time (a
-///   separate validation entry point handles the refusal).
+/// On a populated table the lock holds for the duration of the
+/// build; unknown-row-count takes the conservative path.
+/// Hash indexes without concurrent are refused at compose time (a
+/// separate validation entry point handles the refusal).
 fn classify_index_addition(
     index: &IndexSchema,
     ctx: &ClassifyContext<'_>,
@@ -1770,7 +1770,7 @@ mod tests {
     fn add_concurrent_unique_constraint_is_expand_contract() {
         // Per §7: adding a unique constraint to a populated table is a
         // 2-step rollout — CREATE UNIQUE INDEX CONCURRENTLY then
-        // ALTER TABLE ... ADD CONSTRAINT ... USING INDEX. Concurrency
+        // ALTER TABLE... ADD CONSTRAINT... USING INDEX. Concurrency
         // alone does NOT make the constraint addition OnlineSafe; the
         // operator-driven gate is what ExpandContract represents.
         let (_unused, ctx) = ctx_app(Some(0));
@@ -1923,7 +1923,7 @@ mod tests {
             default_volatility_overrides: overrides,
         };
         // Without short-circuit this would be ExpandContract; the
-        // §6.5 rule routes event-log targets directly to .
+        // §6.5 rule routes event-log targets directly to.
         let op = SchemaOperation::AddColumn {
             table: "events".to_string(),
             column: non_null_column("required", None),

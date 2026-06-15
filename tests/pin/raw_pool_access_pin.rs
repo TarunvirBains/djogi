@@ -65,10 +65,10 @@ async fn raw_conn_is_withheld_after_nested_cancellation_poison(ctx: djogi::Djogi
                 tokio::pin!(inner);
 
                 tokio::select! {
-                    result = &mut inner => {
-                        panic!("nested raw_conn pin future completed before cancellation: {result:?}")
-                    }
-                    ready = ready_rx => ready.expect("inner savepoint should signal readiness"),
+                  result = &mut inner => {
+                    panic!("nested raw_conn pin future completed before cancellation: {result:?}")
+                  }
+                  ready = ready_rx => ready.expect("inner savepoint should signal readiness"),
                 }
 
                 let timeout = tokio::time::timeout(Duration::from_millis(25), &mut inner).await;

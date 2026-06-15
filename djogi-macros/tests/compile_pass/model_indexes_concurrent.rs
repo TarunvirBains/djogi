@@ -6,11 +6,11 @@
 use djogi::prelude::*;
 
 #[model(table = "users_email", indexes(
-    index(fields = [email], concurrently = true),
+ index(fields = [email], concurrently = true),
 ))]
 #[derive(Debug, Clone)]
 pub struct UserEmail {
-    pub email: String,
+ pub email: String,
 }
 
 fn main() {}

@@ -410,10 +410,10 @@ async fn jsonb_flat_path_filter_works(mut ctx: djogi::DjogiContext) {
 // must include only `10` (numeric path) and never `10` ordered before
 // `9` (text path).
 djogi::primary_key! {
-    pub struct JsonbRankId(i64);
-    sql_type = "BIGINT";
-    default_sql = "0";
-    bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
+  pub struct JsonbRankId(i64);
+  sql_type = "BIGINT";
+  default_sql = "0";
+  bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
 }
 
 #[djogi::djogi_test(sync_models = [Post])]

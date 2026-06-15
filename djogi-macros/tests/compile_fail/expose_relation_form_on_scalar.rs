@@ -6,8 +6,8 @@ use djogi::prelude::*;
 #[model(table = "widgets_expose_reform")]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    #[field(expose(public = "WidgetSummary"))]
-    pub name: String,
+ #[field(expose(public = "WidgetSummary"))]
+ pub name: String,
 }
 
 fn main() {}

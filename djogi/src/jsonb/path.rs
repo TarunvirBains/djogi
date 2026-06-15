@@ -22,7 +22,7 @@
 //! `path()` is intentionally shallow: it accepts a dotted string (evaluated at
 //! runtime) and emits a direct `->` chain. Typed deep paths (a full
 //! `#[derive(JsonbSchema)]` with compile-time field access) are deferred to
-//! Task 6. The flat API already covers the overwhelmingly common case — most
+//!. The flat API already covers the overwhelmingly common case — most
 //! real JSONB filter predicates reference one or two nesting levels.
 
 use crate::model::Model;
@@ -34,10 +34,10 @@ use std::marker::PhantomData;
 /// - Be non-empty.
 /// - Begin with an ASCII letter (`a`–`z`, `A`–`Z`) or underscore (`_`).
 /// - Contain only ASCII alphanumerics (`a`–`z`, `A`–`Z`, `0`–`9`) or
-///   underscores (`_`).
+/// underscores (`_`).
 /// - Be at most 63 bytes long (the Postgres `NAMEDATALEN - 1` limit).
-///   Returns `true` if the segment satisfies every rule, `false` otherwise.
-///   No regex engine is used — all checks are byte-level stdlib primitives.
+/// Returns `true` if the segment satisfies every rule, `false` otherwise.
+/// No regex engine is used — all checks are byte-level stdlib primitives.
 pub(crate) fn is_plain_ident(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.is_empty() || bytes.len() > 63 {
@@ -62,8 +62,8 @@ fn validate_dotted_path(dotted: &'static str) {
         if !is_plain_ident(segment) {
             panic!(
                 "Djogi: JsonbPathRef path segment {segment:?} is not a valid plain identifier. \
-                 Each segment must be non-empty, begin with an ASCII letter or underscore, \
-                 contain only ASCII alphanumerics or underscores, and be at most 63 bytes long."
+     Each segment must be non-empty, begin with an ASCII letter or underscore, \
+     contain only ASCII alphanumerics or underscores, and be at most 63 bytes long."
             );
         }
     }
@@ -165,9 +165,9 @@ impl<M, V> JsonbPathRef<M, V> {
 /// - `Inet`: `::inet` — `std::net::IpAddr` (`network` feature only).
 /// - `Cidr`: `::cidr` — `djogi::CidrAddr` (`network` feature only).
 /// - `Macaddr`: `::macaddr` — `djogi::MacAddr` (`network` feature only).
-///   The enum is `#[non_exhaustive]` so future Postgres-cast surface (e.g.
-///   `::bytea`, `::tstzrange`, …) can be added without a SemVer break on
-///   downstream matches.
+/// The enum is `#[non_exhaustive]` so future Postgres-cast surface (e.g.
+/// `::bytea`, `::tstzrange`, …) can be added without a SemVer break on
+/// downstream matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum JsonbSqlCast {
@@ -442,7 +442,7 @@ pub(crate) fn build_path_sql(
 /// Newtype condition variant for JSONB path comparisons. Stores the
 /// structural components of the path expression so the SQL emitter can
 /// qualify the column reference with a parent table name when rendering
-/// inside a `SELECT ... LEFT JOIN` context.
+/// inside a `SELECT... LEFT JOIN` context.
 /// Stored in [`Condition::JsonbPath`].
 /// # Why structured, not pre-rendered
 /// If the expression SQL (`(col->'a'->>'b')::int`) were pre-rendered at
@@ -491,23 +491,23 @@ use crate::query::field::IntoFilterValue;
 ///
 /// # Intentionally NOT comparable
 /// - `Vec<u8>` (BYTEA): raw binary; `->>'k'` yields the JSON string form,
-///   not bytes — comparing it against a BYTEA bind is meaningless.
+/// not bytes — comparing it against a BYTEA bind is meaningless.
 /// - [`Range<T>`](crate::Range): a JSONB range is stored as an object, not
-///   a scalar the cast table can target.
+/// a scalar the cast table can target.
 /// - array `Vec<V>`: a JSONB array, not a scalar.
 /// - `time::PrimitiveDateTime`: without `time/serde-human-readable`,
-///   `time` serializes it into JSONB as a numeric tuple
-///   (e.g. `[2021,2,3,4,5,0]`), not a timestamp string, so
-///   `(col->>'key')::timestamp` would fail at the database. (The same
-///   tuple-serialization caveat applies to `OffsetDateTime`/`Date` and is
-///   tracked separately in djogi#400; this release keeps them comparable to
-///   avoid scope creep.)
+/// `time` serializes it into JSONB as a numeric tuple
+/// (e.g. `[2021,2,3,4,5,0]`), not a timestamp string, so
+/// `(col->>'key')::timestamp` would fail at the database. (The same
+/// tuple-serialization caveat applies to `OffsetDateTime`/`Date` and is
+/// tracked separately in djogi#400; this release keeps them comparable to
+/// avoid scope creep.)
 /// - `crate::Interval`: `djogi::Interval` has no `Serialize` impl, so it
-///   cannot be stored in a `Jsonb<T>` field via the typed surface. A
-///   `JsonbPathRef<M, Interval>` comparison would be dead code — there is
-///   nothing to compare against. If `Interval` gains `Serialize` in the
-///   future, verify the on-disk encoding is ISO 8601 text before adding an
-///   impl here.
+/// cannot be stored in a `Jsonb<T>` field via the typed surface. A
+/// `JsonbPathRef<M, Interval>` comparison would be dead code — there is
+/// nothing to compare against. If `Interval` gains `Serialize` in the
+/// future, verify the on-disk encoding is ISO 8601 text before adding an
+/// impl here.
 ///
 /// # Extending for adopter types
 /// This is an **open marker trait** — no private seal. Adopters who define
@@ -527,9 +527,9 @@ pub trait JsonbPathComparable {}
 // `String` (None cast — text extraction is already TEXT) is included so
 // string-typed JSONB-path comparisons keep compiling.
 macro_rules! impl_jsonb_path_comparable {
-    ($($t:ty),* $(,)?) => {$(
-        impl JsonbPathComparable for $t {}
-    )*};
+ ($($t:ty),* $(,)?) => {$(
+  impl JsonbPathComparable for $t {}
+ )*};
 }
 impl_jsonb_path_comparable!(
     i8,
@@ -1340,7 +1340,7 @@ mod tests {
         );
         // Render the LHS SQL shape with the same cast suffix the emitter
         // splices in for production queries — pins the end-to-end shape
-        // pre/post .
+        // pre/post.
         let lhs = build_path_sql(leaf.column, leaf.path, leaf.cast);
         assert_eq!(lhs, "(specs->>'rank')::int8");
     }

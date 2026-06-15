@@ -4,35 +4,35 @@
 //! without a database. Verifies:
 //!
 //! 1. Two apps + models declared in one crate → both appear in
-//!    `AppRegistry::all()` with correct labels and database targets.
+//!  `AppRegistry::all()` with correct labels and database targets.
 //! 2. `#[model(app = X)]` lowers to `ModelDescriptor.app =
-//!    Some(<X as App>::LABEL)` at const-eval time.
+//!  Some(<X as App>::LABEL)` at const-eval time.
 //! 3. Cross-app FK: `Invoice (app = Billing)` → `User (app = Users)`
-//!    surfaces in `AppRegistry::cross_app_edges()`.
+//!  surfaces in `AppRegistry::cross_app_edges()`.
 //! 4. Intra-app FK does NOT appear in cross_app_edges.
 //! 5. `renamed_from` round-trips through `AppDescriptor`.
 //! 6. `tombstone` round-trips through `AppDescriptor` and
-//!    `App::TOMBSTONE`.
+//!  `App::TOMBSTONE`.
 //! 7. `moved_from_app` round-trips through `ModelDescriptor`.
 
 use djogi::prelude::*;
 
 djogi::apps! {
-    #[app(database = "main")]
-    pub struct Users;
+  #[app(database = "main")]
+  pub struct Users;
 
-    #[app(database = "main")]
-    pub struct Billing;
+  #[app(database = "main")]
+  pub struct Billing;
 
-    #[app(database = "main", renamed_from = "subscription_old")]
-    pub struct Subscription;
+  #[app(database = "main", renamed_from = "subscription_old")]
+  pub struct Subscription;
 
-    // OldBilling tombstoned on a *different* database to prove that
-    // database-field propagation through AppDescriptor + the
-    // cross-app graph actually uses the declared target (not a
-    // fallback default).
-    #[app(database = "crud_log", tombstone)]
-    pub struct OldBilling;
+  // OldBilling tombstoned on a *different* database to prove that
+  // database-field propagation through AppDescriptor + the
+  // cross-app graph actually uses the declared target (not a
+  // fallback default).
+  #[app(database = "crud_log", tombstone)]
+  pub struct OldBilling;
 }
 
 #[model(table = "users", app = Users)]

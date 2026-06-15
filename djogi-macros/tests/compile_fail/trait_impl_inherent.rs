@@ -10,12 +10,12 @@ use djogi::prelude::*;
 #[model(table = "phase8_trait_impl_inherent_vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub title: String,
+ pub title: String,
 }
 
 #[djogi::trait_impl]
 impl Vehicle {
-    fn helper(&self) {}
+ fn helper(&self) {}
 }
 
 fn main() {}

@@ -15,28 +15,28 @@ use djogi::prelude::*;
 #[model(table = "is_wrong_side_sources", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct WrongSideSource {
-    pub label: String,
+ pub label: String,
 }
 
 #[model(table = "is_wrong_side_targets", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct WrongSideTarget {
-    pub label: String,
+ pub label: String,
 }
 
 fn main() {
-    // `source.label().copy_from(target.label().as_insert_source())` is
-    // the reversed mapping. `source.label()` is `DjogiField<WrongSideSource, String>`,
-    // its `copy_from` returns `InsertSelectColumn<X, WrongSideSource>`
-    // for whatever `X` the operand carries — here `X = WrongSideTarget`.
-    // The closure's required return is `Vec<InsertSelectColumn<WrongSideSource, WrongSideTarget>>`
-    // (the parameter order is `<S, T>`), so the actual type
-    // `Vec<InsertSelectColumn<WrongSideTarget, WrongSideSource>>` does
-    // not match.
-    let _stmt = WrongSideSource::objects()
-        .insert_into::<WrongSideTarget, _, _>(|target, source| {
-            vec![source
-                .label()
-                .copy_from(target.label().as_insert_source())]
-        });
+ // `source.label().copy_from(target.label().as_insert_source())` is
+ // the reversed mapping. `source.label()` is `DjogiField<WrongSideSource, String>`,
+ // its `copy_from` returns `InsertSelectColumn<X, WrongSideSource>`
+ // for whatever `X` the operand carries — here `X = WrongSideTarget`.
+ // The closure's required return is `Vec<InsertSelectColumn<WrongSideSource, WrongSideTarget>>`
+ // (the parameter order is `<S, T>`), so the actual type
+ // `Vec<InsertSelectColumn<WrongSideTarget, WrongSideSource>>` does
+ // not match.
+ let _stmt = WrongSideSource::objects()
+ .insert_into::<WrongSideTarget, _, _>(|target, source| {
+   vec![source
+   .label()
+   .copy_from(target.label().as_insert_source())]
+  });
 }

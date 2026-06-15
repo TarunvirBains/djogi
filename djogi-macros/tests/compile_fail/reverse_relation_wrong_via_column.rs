@@ -16,14 +16,14 @@ use djogi::prelude::*;
 #[model(table = "owners_cf")]
 #[derive(Debug, Clone)]
 pub struct Owner {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "vehicles_cf", no_default)]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub make: String,
-    pub owner_id: ForeignKey<Owner>,
+ pub make: String,
+ pub owner_id: ForeignKey<Owner>,
 }
 
 // `nonexistent_col` is not a column on `Vehicle`. The macro's closure

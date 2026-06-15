@@ -4,7 +4,7 @@
 // `LeftValuesJoinedQuerySet` surface against a real Postgres.
 //
 // Test model: `C4bValuesAnimal` — deliberately minimal so the JOIN
-// logic is easy to follow.  Each test seeds rows via `Model::create`, then
+// logic is easy to follow. Each test seeds rows via `Model::create`, then
 // asserts on the result of a VALUES join.
 
 use djogi::prelude::*;
@@ -303,7 +303,7 @@ async fn join_values_left_filter_and_values_binds_correct(mut ctx: DjogiContext)
     )
     .expect("valid");
 
-    // Filter: active = true.  Should match elephant and tiger (lion is inactive).
+    // Filter: active = true. Should match elephant and tiger (lion is inactive).
     let pairs = C4bValuesAnimal::objects()
         .filter(|f| f.active().eq(true))
         .join_values(weights, |a, v| a.id().eq_values(v.col0()))

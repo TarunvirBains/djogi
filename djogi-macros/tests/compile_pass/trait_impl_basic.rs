@@ -10,20 +10,20 @@
 use djogi::prelude::*;
 
 trait Searchable {
-    fn searchable_columns(&self) -> &'static [&'static str];
+ fn searchable_columns(&self) -> &'static [&'static str];
 }
 
 #[model(table = "phase8_trait_impl_basic_vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub title: String,
+ pub title: String,
 }
 
 #[djogi::trait_impl]
 impl Searchable for Vehicle {
-    fn searchable_columns(&self) -> &'static [&'static str] {
-        &["title"]
-    }
+ fn searchable_columns(&self) -> &'static [&'static str] {
+  &["title"]
+ }
 }
 
 fn main() {}

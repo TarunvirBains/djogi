@@ -101,32 +101,32 @@ mod error_types {
     impl std::fmt::Display for CodecError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                CodecError::MissingKey { index, kind } => match kind {
-                    MissingKeyKind::Gap => write!(
-                        f,
-                        "ring gap: DJOGI_FIELD_CODEC_KEY_{index} is not set but a higher index is present"
-                    ),
-                    MissingKeyKind::Malformed => write!(
-                        f,
-                        "malformed key: DJOGI_FIELD_CODEC_KEY_{index} must be 64 lowercase hex characters"
-                    ),
-                },
-                CodecError::RingEmpty => f.write_str(
-                    "no field codec key configured: set DJOGI_FIELD_CODEC_KEY_0 (64 lowercase hex characters)",
-                ),
-                CodecError::CiphertextTooShort => {
-                    f.write_str("ciphertext too short: minimum valid ciphertext is 30 bytes")
-                }
-                CodecError::UnknownVersion(v) => write!(f, "unknown ciphertext version byte: {v}"),
-                CodecError::UnknownKeyIndex { index, ring_len } => {
-                    write!(f, "key index {index} not in ring of length {ring_len}")
-                }
-                CodecError::AeadError(_) => f.write_str("generic AEAD error"),
-                CodecError::RngFailure(_) => {
-                    f.write_str("OS CSPRNG failed while generating nonce")
-                }
-                CodecError::Utf8Error(e) => write!(f, "decoded bytes are not valid UTF-8: {e}"),
-            }
+    CodecError::MissingKey { index, kind } => match kind {
+     MissingKeyKind::Gap => write!(
+      f,
+      "ring gap: DJOGI_FIELD_CODEC_KEY_{index} is not set but a higher index is present"
+     ),
+     MissingKeyKind::Malformed => write!(
+      f,
+      "malformed key: DJOGI_FIELD_CODEC_KEY_{index} must be 64 lowercase hex characters"
+     ),
+    },
+    CodecError::RingEmpty => f.write_str(
+     "no field codec key configured: set DJOGI_FIELD_CODEC_KEY_0 (64 lowercase hex characters)",
+    ),
+    CodecError::CiphertextTooShort => {
+     f.write_str("ciphertext too short: minimum valid ciphertext is 30 bytes")
+    }
+    CodecError::UnknownVersion(v) => write!(f, "unknown ciphertext version byte: {v}"),
+    CodecError::UnknownKeyIndex { index, ring_len } => {
+     write!(f, "key index {index} not in ring of length {ring_len}")
+    }
+    CodecError::AeadError(_) => f.write_str("generic AEAD error"),
+    CodecError::RngFailure(_) => {
+     f.write_str("OS CSPRNG failed while generating nonce")
+    }
+    CodecError::Utf8Error(e) => write!(f, "decoded bytes are not valid UTF-8: {e}"),
+   }
         }
     }
 
@@ -207,21 +207,21 @@ pub(crate) mod aes;
 /// Implementors are zero-sized marker types (a codec is *code*, not a
 /// runtime instance) and supply:
 /// - [`Self::ID`] — the compile-time string constant the descriptor
-///   stores in [`crate::descriptor::ProtectedFieldMetadata::codec`].
-///   Identifiers are short ASCII labels following the SQL-identifier
-///   convention used elsewhere in the framework: an ASCII letter or
-///   underscore followed by ASCII alphanumerics or underscores, up to
-///   63 bytes. Validation lives in the macro layer. The only requirement
-///   here is that the ID be a `&'static str`.
+/// stores in [`crate::descriptor::ProtectedFieldMetadata::codec`].
+/// Identifiers are short ASCII labels following the SQL-identifier
+/// convention used elsewhere in the framework: an ASCII letter or
+/// underscore followed by ASCII alphanumerics or underscores, up to
+/// 63 bytes. Validation lives in the macro layer. The only requirement
+/// here is that the ID be a `&'static str`.
 /// - [`Self::Decoded`] — the in-memory Rust type the application code
-///   sees (e.g. `String` for a plaintext column representation).
+/// sees (e.g. `String` for a plaintext column representation).
 /// - [`Self::Encoded`] — the at-rest shape stored in Postgres (e.g.
-///   `Vec<u8>` for an AEAD-protected column).
+/// `Vec<u8>` for an AEAD-protected column).
 /// - [`Self::Error`] — the codec's error type, returned from both
-///   [`encode`](Self::encode) and [`decode`](Self::decode).
-///   `encode` and `decode` round-trip a single value across the
-///   in-memory ↔ at-rest boundary. `classify_transition` answers
-///   migration questions: see the module-level docs for the rationale.
+/// [`encode`](Self::encode) and [`decode`](Self::decode).
+/// `encode` and `decode` round-trip a single value across the
+/// in-memory ↔ at-rest boundary. `classify_transition` answers
+/// migration questions: see the module-level docs for the rationale.
 pub trait FieldCodec: Send + Sync + 'static {
     /// Compile-time identifier referenced by
     /// `#[field(protected(codec = "<id>"))]`. Must be unique across
@@ -263,16 +263,16 @@ pub trait FieldCodec: Send + Sync + 'static {
 
     /// Classify the migration from `Self` to `Other`.
     /// - [`OnlineSafetyClassification::OnlineSafe`] is the convention
-    ///   for the identity transition (`Self == Other`).
+    /// for the identity transition (`Self == Other`).
     /// - [`OnlineSafetyClassification::ExpandContract`] hands the
-    ///   migration over to 's live-plan layer.
+    /// migration over to 's live-plan layer.
     /// - [`OnlineSafetyClassification::OfflineOnly`] refuses the
-    ///   migration outright; the operator must acknowledge downtime
-    ///   or rewrite the change by hand.
+    /// migration outright; the operator must acknowledge downtime
+    /// or rewrite the change by hand.
     /// - [`OnlineSafetyClassification::FastLockDestructiveGuarded`] is
-    ///   gated by `--allow-destructive` in the runner.
-    ///   Reads as an associated function because the answer is a
-    ///   property of the two codec types, not of any value.
+    /// gated by `--allow-destructive` in the runner.
+    /// Reads as an associated function because the answer is a
+    /// property of the two codec types, not of any value.
     fn classify_transition<Other: FieldCodec>() -> OnlineSafetyClassification;
 }
 
@@ -379,7 +379,7 @@ pub fn validate_codec_startup_inventory() -> Result<(), Vec<CodecStartupError>> 
 /// explicit cost of compile-time validation with span-precise errors.
 #[cfg(feature = "aes-codec")]
 pub(crate) static REGISTRY: phf::Set<&'static str> = phf::phf_set! {
-    "aes256_gcm_v1",
+ "aes256_gcm_v1",
 };
 
 #[cfg(not(feature = "aes-codec"))]

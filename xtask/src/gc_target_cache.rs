@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn worktree_id_matches_shell_derivation_for_known_input() {
         // This locks parity with `.envrc.example`'s shell derivation:
-        //   printf '%s' "<path>" | sha256sum | cut -c1-12
+        //  printf '%s' "<path>" | sha256sum | cut -c1-12
         // Verified by running that shell pipeline against the same input on a
         // POSIX system with coreutils sha256sum. If this test fails, the Rust
         // derivation has drifted from the shell derivation and a worktree's

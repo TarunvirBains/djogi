@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Apps & Database Domains
 
@@ -76,18 +76,18 @@ Apps are declared explicitly with a required database target:
 
 ```rust
 djogi::apps! {
-    #[app(database = "main")]
-    pub struct Vehicles;
+ #[app(database = "main")]
+ pub struct Vehicles;
 
-    #[app(database = "main")]
-    pub struct Users;
+ #[app(database = "main")]
+ pub struct Users;
 
-    #[app(database = "main")]
-    pub struct Orders;
+ #[app(database = "main")]
+ pub struct Orders;
 }
 ```
 
-The macro emits each entry as a zero-sized unit struct bound to a sealed `djogi::App` trait; apps are addressed by **type path**, not by string label. Rust's own name resolution enforces declaration — `#[model(app = Vehicles)]` referring to an undeclared or non-app type fails with a standard rustc error. (Phase 7-Zero v3 §4B, Codex P0-03 fix 2026-04-23.)
+The macro emits each entry as a zero-sized unit struct bound to a sealed `djogi::App` trait; apps are addressed by **type path**, not by string label. Rust's own name resolution enforces declaration — `#[model(app = Vehicles)]` referring to an undeclared or non-app type fails with a standard rustc error. ( the specification, a past fix fix 2026-04-23.)
 
 `database = "..."` is required per app declaration in T7. There is no implicit default — an app without an explicit target is a compile error so tables never silently land in the wrong database. Models that don't opt into an app fall into the synthetic global bucket which targets `main` by default.
 
@@ -95,7 +95,7 @@ The macro emits each entry as a zero-sized unit struct bound to a sealed `djogi:
 
 The `djogi::App` trait is **convention-sealed**, not hard-sealed. A determined downstream crate that reaches into `#[doc(hidden)] pub` items (`djogi::apps::SealToken`, `djogi::apps::__DJOGI_APPS_SEAL_TOKEN`) can hand-write an `impl djogi::App for MyFake` that compiles. True hard-sealing of a trait whose implementations are emitted by a proc macro is **not achievable in stable Rust** when that proc macro lives in a separate crate (as proc macros must) — every pub path the macro reaches from downstream context is also reachable by handwritten downstream code.
 
-The correctness invariant that actually matters is **not** "downstream cannot construct an `App` impl" but **"a forged `App` impl cannot silently break migrations."** That invariant is enforced at the use site, by Phase 7's migration differ: every `#[model(app = X)]` is cross-checked against `AppRegistry::all()` at migration startup, and any model pointing at an App-implementing type whose `AppDescriptor` is missing from inventory hard-errors before any SQL executes. Forged App impls are legal Rust but inert — they never reach the migration path.
+The correctness invariant that actually matters is **not** "downstream cannot construct an `App` impl" but **"a forged `App` impl cannot silently break migrations."** That invariant is enforced at the use site, by 's migration differ: every `#[model(app = X)]` is cross-checked against `AppRegistry::all()` at migration startup, and any model pointing at an App-implementing type whose `AppDescriptor` is missing from inventory hard-errors before any SQL executes. Forged App impls are legal Rust but inert — they never reach the migration path.
 
 Ecosystem precedent (serde, tokio, axum) confirms this convention: user-facing traits implemented via proc macros in separate crates are convention-sealed + use-site-verified, never hard-sealed.
 
@@ -104,7 +104,7 @@ Models opt in explicitly:
 ```rust
 #[model(app = Vehicles)]
 pub struct Vehicle {
-    pub make: String,
+ pub make: String,
 }
 ```
 
@@ -129,14 +129,14 @@ Representative shape:
 
 ```rust
 djogi::apps! {
-    #[app(database = "main")]
-    pub struct Vehicles;
+ #[app(database = "main")]
+ pub struct Vehicles;
 
-    #[app(database = "main")]
-    pub struct Users;
+ #[app(database = "main")]
+ pub struct Users;
 
-    #[app(database = "crud_log")]
-    pub struct Audit;
+ #[app(database = "crud_log")]
+ pub struct Audit;
 }
 ```
 
@@ -155,8 +155,8 @@ Validation contract:
 
 Apps carry optional markers for the retirement flow:
 
-- `#[app(renamed_from = "old_label")]` — declares the app is the continuation of a prior label. Phase 7's differ generates an `ALTER SCHEMA ... RENAME`.
-- `#[app(tombstone)]` — flags the app for retirement in this compose cycle. Phase 7 gates destructive migration generation behind `--allow-destructive`.
+- `#[app(renamed_from = "old_label")]` — declares the app is the continuation of a prior label. 's differ generates an `ALTER SCHEMA ... RENAME`.
+- `#[app(tombstone)]` — flags the app for retirement in this compose cycle. gates destructive migration generation behind `--allow-destructive`.
 - `#[model(moved_from_app = OldBilling)]` — historical-metadata pointer on a model whose prior app is being retired.
 
 `tombstone` and `renamed_from` are mutually exclusive within one `#[app(...)]`. `#[model(app = X)]` on a tombstoned app is a compile error — active models must either stay on a live app or use `moved_from_app = X` instead. For the full two-cycle retirement flow with concrete snippets, see [`docs/guide/apps.md`](../guide/apps.md).
@@ -165,7 +165,7 @@ Apps carry optional markers for the retirement flow:
 
 ## Cross-App FK Graph (T9)
 
-`AppRegistry::cross_app_edges()` returns every FK edge where source and target apps differ (as `(database, label)` identities). `AppRegistry::cross_app_cycles()` returns cross-app cycles as `Vec<AppIdentity>` paths. Phase 7's differ uses both:
+`AppRegistry::cross_app_edges()` returns every FK edge where source and target apps differ (as `(database, label)` identities). `AppRegistry::cross_app_cycles()` returns cross-app cycles as `Vec<AppIdentity>` paths. 's differ uses both:
 
 - Ordering: per-app compose steps apply in target-before-source order so FKs resolve at DDL time.
 - Cycle rejection: cross-app cycles become a migration-time error with the cycle path.
@@ -173,7 +173,7 @@ Apps carry optional markers for the retirement flow:
 
 Both `OneToOne` and `ForeignKey` relation kinds count as edges. Intra-app FKs are omitted — source and target share a compose boundary and are always safe.
 
-`AppDiagnostic` carries Phase 7 D004 (folder drift — directory on disk without descriptor) and D010 (ledger has an `app_label` with no descriptor match). Detection logic lives in Phase 7 proper.
+`AppDiagnostic` carries D004 (folder drift — directory on disk without descriptor) and D010 (ledger has an `app_label` with no descriptor match). Detection logic lives in proper.
 
 **Current limitation — short-name type lookup.** The graph resolves `ForeignKey<T>` / `OneToOneField<T>` targets by looking up `T`'s short Rust identifier (e.g. `"User"`) in `inventory::iter::<ModelDescriptor>`. Two distinct models with the same short name across different modules or crates in the same workspace would collide in the lookup — whichever inserts last wins, and edges can route to the wrong app. The working convention is that model type names are unique across the linked crate graph. A future descriptor-shape change will key lookups on `(module_path, type_name)` to remove the limitation; until then, workspace model names must be globally unique.
 
@@ -199,26 +199,26 @@ On-disk layout — snapshots and migration files nest per-(target, app):
 ```text
 migrations/
 ├── main/
-│   ├── vehicles/
-│   │   ├── schema_snapshot.json
-│   │   ├── V20260425010203__initial.sdjql
-│   │   ├── V20260425010203__initial.down.sdjql
-│   │   └── ...
-│   ├── users/
-│   │   ├── schema_snapshot.json
-│   │   └── ...
-│   └── ...
+│ ├── vehicles/
+│ │ ├── schema_snapshot.json
+│ │ ├── V20260425010203__initial.sdjql
+│ │ ├── V20260425010203__initial.down.sdjql
+│ │ └── ...
+│ ├── users/
+│ │ ├── schema_snapshot.json
+│ │ └── ...
+│ └── ...
 ├── crud_log/
-│   └── audit/
-│       ├── schema_snapshot.json
-│       └── ...
+│ └── audit/
+│ ├── schema_snapshot.json
+│ └── ...
 └── event_log/
-    └── ...
+ └── ...
 ```
 
 Granularity differs by artifact:
 
-- **Per `(target, app)` pair:** directory, snapshot (`migrations/<target>/<app>/schema_snapshot.json`), pending build-artifact (`target/djogi_pending/<target>/<app>.json`) for normal buckets, the migration SQL files within each app directory (Phase 7 v3 OQ-10 ruling 2026-04-23), and the advisory-lock namespace — keys are derived from `SHA-256("djogi:advisory_lock:" || database || "\0" || app)` (first 8 digest bytes as a big-endian signed 64-bit integer). Independent `(database, app)` buckets hash to distinct keys, so apps within the same target do not contend on a shared lock. Auto-emitted Phase 0 uses a separate hidden pending namespace at `target/djogi_pending/<target>/.phase_zero/<version>.json` so it can coexist with normal global pending; build diagnostics preserve that hidden path instead of reporting it as `_global_.json`. (See `docs/spec/decisions.md` row "Migration advisory lock key".)
+- **Per `(target, app)` pair:** directory, snapshot (`migrations/<target>/<app>/schema_snapshot.json`), pending build-artifact (`target/djogi_pending/<target>/<app>.json`) for normal buckets, the migration SQL files within each app directory ( v3 OQ-10 ruling 2026-04-23), and the advisory-lock namespace — keys are derived from `SHA-256("djogi:advisory_lock:" || database || "\0" || app)` (first 8 digest bytes as a big-endian signed 64-bit integer). Independent `(database, app)` buckets hash to distinct keys, so apps within the same target do not contend on a shared lock. Auto-emitted Phase 0 uses a separate hidden pending namespace at `target/djogi_pending/<target>/.phase_zero/<version>.json` so it can coexist with normal global pending; build diagnostics preserve that hidden path instead of reporting it as `_global_.json`. (See `docs/spec/decisions.md` row "Migration advisory lock key".)
 - **Per `target`:** the `djogi_schema_migrations` ledger table — one per database target, shared across all apps in that target. (See `docs/spec/decisions.md` row "Multi-database migration contract.")
 
 Each `(database, app)` bucket is serialized by its own advisory-lock key, and cross-target migrations run independently with their own locks; independent buckets within one target do not block one another.

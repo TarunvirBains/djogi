@@ -9,8 +9,8 @@ use djogi::prelude::*;
 #[model(table = "posts")]
 #[derive(Debug, Clone)]
 pub struct Post {
-    #[field(index = "gin")]
-    pub view_count: i32,
+ #[field(index = "gin")]
+ pub view_count: i32,
 }
 
 fn main() {}

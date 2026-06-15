@@ -18,18 +18,18 @@ use djogi::query::OrderExpr;
 #[model(table = "posts_order_seal_test")]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub title: String,
+ pub title: String,
 }
 
 fn main() {
-    // This must not compile — `OrderExpr::Column` is `#[non_exhaustive]`,
-    // so constructing it with a struct expression from outside the crate
-    // fails with E0639 ("cannot create non-exhaustive variant using struct
-    // expression"). The variant fields themselves are public, but the
-    // non-exhaustive gate blocks external struct-literal construction.
-    let _ = OrderExpr::Column {
-        column: "title) OR 1=1 --",
-        direction: djogi::query::Direction::Asc,
-        nulls: djogi::query::NullsOrder::Default,
-    };
+ // This must not compile — `OrderExpr::Column` is `#[non_exhaustive]`,
+ // so constructing it with a struct expression from outside the crate
+ // fails with E0639 ("cannot create non-exhaustive variant using struct
+ // expression"). The variant fields themselves are public, but the
+ // non-exhaustive gate blocks external struct-literal construction.
+ let _ = OrderExpr::Column {
+  column: "title) OR 1=1 --",
+  direction: djogi::query::Direction::Asc,
+  nulls: djogi::query::NullsOrder::Default,
+ };
 }

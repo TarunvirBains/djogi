@@ -1,8 +1,8 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Postgres Range Types
 
-This note locks the #215 public range surface. It builds on the Phase 8.5 G0
+This note locks the #215 public range surface. It builds on the G0
 codec substrate and intentionally does not cover exclusion constraints,
 Postgres 18 temporal constraints, or multiranges.
 

@@ -23,13 +23,13 @@ explicitly overturns).
 **Three most important gaps:**
 
 1. Advisory lock key not locked — Djogi must not collide with Prisma's hardcoded `72707369`;
-   the exact derivation strategy is absent from every spec document.
+  the exact derivation strategy is absent from every spec document.
 2. Ledger DDL is close but incomplete — `source_checksum` disposition, `run_id` presence, `status`
-   enum, and surrogate primary key are undecided; the Phase 7 v2 plan has a draft DDL that silently
-   drops several research-recommended columns.
+  enum, and surrogate primary key are undecided; the Phase 7 v2 plan has a draft DDL that silently
+  drops several research-recommended columns.
 3. Checksum algorithm, normalization rules, and version-prefix format are not locked anywhere —
-   refinery's SHA-2 mistake (hashing name+version into the content checksum) is a cautionary tale
-   that Djogi has not explicitly avoided.
+  refinery's SHA-2 mistake (hashing name+version into the content checksum) is a cautionary tale
+  that Djogi has not explicitly avoided.
 
 **Biggest contradiction:**
 
@@ -233,7 +233,7 @@ rollback documented in file"
 P7D addresses the matrix's forward-only recommendation explicitly and rejects it:
 
 > "The migration matrix recommends forward-only as the default. After scrutiny, Djogi should
-> **not** adopt that recommendation. ... Djogi keeps paired `up` / `down` files as a hard
+> **not** adopt that recommendation.... Djogi keeps paired `up` / `down` files as a hard
 > contract." (P7D §Reversibility Decision)
 
 T09 validates that down files must carry explicit warning headers for destructive operations:
@@ -252,7 +252,7 @@ enables JSONB, HeeRanjId, advisory locks, transactional DDL, `RETURNING`"
 
 T04 relies on Postgres advisory locking semantics throughout. T05 references Postgres-specific DDL
 transaction semantics (`CREATE INDEX CONCURRENTLY`, Postgres 18 transactional DDL improvements).
-T08 uses Postgres constraint grammar (`ADD CONSTRAINT ... UNIQUE`). T10 references `LOCK NOWAIT`
+T08 uses Postgres constraint grammar (`ADD CONSTRAINT... UNIQUE`). T10 references `LOCK NOWAIT`
 and Postgres-native online DDL features. T12 confirms the Postgres-only stance is an advantage
 in the Rust ecosystem — no other system commits to Postgres 18+ exclusively.
 
@@ -715,11 +715,11 @@ derivation function) in the Phase 7 spec before the runner is implemented.
 **Research finding (T03):** Three decisions must be made together:
 
 1. Hash function: SHA-256 (not refinery's SipHash-1-3, which is non-cryptographic and
-   migration-rename-hostile because it hashes name+version into content checksum).
+  migration-rename-hostile because it hashes name+version into content checksum).
 2. Normalization: strip BOM, normalize all line endings to `\n`, no trailing whitespace or comment
-   stripping.
+  stripping.
 3. Version prefix: adopt Liquibase's `V:hex` format (`V1:abcdef...64hexchars`), where the leading
-   `V1:` prefix allows future algorithm rotation without breaking stored checksums.
+  `V1:` prefix allows future algorithm rotation without breaking stored checksums.
 
 **Current spec state:** SPEC-M §10.1 mentions "checksummed" without specifying the algorithm.
 P7V2 ledger DDL has `checksum_up TEXT NOT NULL` and `checksum_down TEXT NOT NULL` without format
@@ -742,30 +742,30 @@ format before ledger implementation.
 
 ```sql
 CREATE TABLE IF NOT EXISTS djogi_schema_migrations (
-    version                  TEXT PRIMARY KEY,
-    description              TEXT NOT NULL,
-    checksum_up              TEXT NOT NULL,
-    checksum_down            TEXT NOT NULL,
-    applied_at               TIMESTAMPTZ NOT NULL,
-    execution_mode           TEXT NOT NULL,
-    out_of_order             BOOLEAN NOT NULL DEFAULT FALSE,
-    partial_apply_state      TEXT,
-    partial_apply_detail     TEXT,
-    snapshot_version         TEXT NOT NULL
+  version         TEXT PRIMARY KEY,
+  description       TEXT NOT NULL,
+  checksum_up       TEXT NOT NULL,
+  checksum_down      TEXT NOT NULL,
+  applied_at        TIMESTAMPTZ NOT NULL,
+  execution_mode      TEXT NOT NULL,
+  out_of_order       BOOLEAN NOT NULL DEFAULT FALSE,
+  partial_apply_state   TEXT,
+  partial_apply_detail   TEXT,
+  snapshot_version     TEXT NOT NULL
 );
 ```
 
 T02 recommends the following additions and changes, not yet incorporated:
 
 - `status TEXT NOT NULL DEFAULT 'applied' CHECK (status IN ('pending', 'applied', 'failed',
-  'rolled_back'))` — Prisma's pre-write row pattern eliminates the crash window where a migration
-  runs but the ledger row is never written.
+ 'rolled_back'))` — Prisma's pre-write row pattern eliminates the crash window where a migration
+ runs but the ledger row is never written.
 - `run_id TEXT` — Liquibase's DEPLOYMENT_ID concept; groups all migrations applied in one
-  `cargo djogi migrate` invocation for rollback, audit, and diagnostics.
+ `cargo djogi migrate` invocation for rollback, audit, and diagnostics.
 - `applied_by TEXT NOT NULL DEFAULT current_user` — Flyway's `installed_by` equivalent; tracks
-  who ran the migration.
+ who ran the migration.
 - Surrogate `BIGINT` primary key alongside natural `TEXT UNIQUE` version — enables stable
-  `installed_rank` ordering independent of version string sort.
+ `installed_rank` ordering independent of version string sort.
 
 T02 recommends dropping `source_checksum` (build-time artifact, not runtime concern). The current
 draft does not have it, but T02 explicitly documents why it should not be added if proposed.
@@ -789,9 +789,9 @@ the cleanest solution to the crash-window problem. `run_id` enables deployment-l
 `deadpool-postgres` pools connections, which means:
 
 1. After a process crash, the advisory lock may persist until the pool connection is closed by
-   the Postgres server's TCP timeout.
+  the Postgres server's TCP timeout.
 2. Keep-alive settings on the pool can extend the window during which a crashed migrator holds
-   the lock.
+  the lock.
 
 This affects the time window between a failed deploy and the ability to run the next migration.
 
@@ -817,7 +817,7 @@ research but has no formal specification in any Djogi document. Key questions:
 - Must it appear on the first non-blank line, or can it appear anywhere in the header block?
 - Does it override or supplement structured operation detection?
 - What is the runner's behavior when the directive is present — does it wrap the entire file as
-  one non-transactional segment, or does segment planning still apply within the file?
+ one non-transactional segment, or does segment planning still apply within the file?
 - Can the directive appear in a down file independently of the up file?
 
 **Current spec state:** SPEC-M §10.4 shows file headers but does not include the directive.
@@ -868,9 +868,9 @@ environment, rollback must operate on `installed_rank` (temporal application ord
 version number order. If the ledger shows:
 
 ```
-applied_at  version
-10:00       0009     ← applied first on this branch
-10:05       0008     ← applied second (out of order)
+applied_at version
+10:00    0009   ← applied first on this branch
+10:05    0008   ← applied second (out of order)
 ```
 
 Then rollback must undo 0008 first (most recently applied), then 0009 — not undo 0009 first
@@ -895,7 +895,7 @@ The `status` column's `rolled_back` value must be set in reverse-temporal order.
 `#[field(renamed_from = "old_name")]` annotation be removed from the source code?
 
 - If it stays: the differ must detect that the rename is already reflected in the snapshot and
-  emit no further migration. This requires the differ to track rename history.
+ emit no further migration. This requires the differ to track rename history.
 - If it is removed: the annotation is self-documenting only during the migration window.
 
 T07 raises this as an open question. Django's `RenameField` operation is removed from the model
@@ -963,7 +963,7 @@ T08 recommends:
 - Unique constraint: `<table>_<col1>_<col2>_key`
 - Non-unique index: `<table>_<col1>_<col2>_idx`
 - On truncation: SHA-256 of the full name, take first 8 hex characters as suffix, truncate
-  table+col portion to fit within 63 bytes.
+ table+col portion to fit within 63 bytes.
 
 **Current spec state:** SPEC-M shows an example index name (`idx_vehicles_horsepower`) but does
 not specify the algorithm for composite names or truncation.
@@ -1115,14 +1115,14 @@ migration and surfaces clearly in `plan show`.
 detection:
 
 1. **Warning-only:** Emit the compiler diagnostic; do not write files. Developer must run
-   `cargo djogi makemigrations` to generate files.
+  `cargo djogi makemigrations` to generate files.
 2. **File-write:** Write the migration SQL files to `migrations/` directly; emit the diagnostic
-   pointing to the generated files.
+  pointing to the generated files.
 
 T12 identifies the file-write approach as causing IDE churn (editors re-read generated files on
 every build, triggering unnecessary file watches).
 
-**Current spec state:** SPEC-M §10.2 says "Generates a migration pair ... into `migrations/`"
+**Current spec state:** SPEC-M §10.2 says "Generates a migration pair... into `migrations/`"
 — implying file-write from `build.rs`. SPEC-D says "Migration generation — Automatic via
 `build.rs`". P7D §Core Model says "`build.rs` may read the snapshot. It must never mutate it."
 (referring to the snapshot; it does not say build.rs cannot write migration files.)
@@ -1191,7 +1191,7 @@ plan output:
 
 - `DatabaseIsBehind` — pending unapplied migrations
 - `MigrationsDirectoryHasUnexpectedHistory` — files present not in ledger, or ledger entries
-  with no matching file
+ with no matching file
 - `HistoryDiverged` — ledger and files conflict (checksum mismatch, out-of-order records)
 
 **Current spec state:** P7D §Operator Model describes a workflow but does not define a structured
@@ -1207,7 +1207,7 @@ with confirmation).
 
 ### G-21 · `NULLS NOT DISTINCT` support not addressed [PRIORITY-3]
 
-**Research finding (T08):** Postgres 15+ supports `CREATE UNIQUE INDEX ... NULLS NOT DISTINCT`,
+**Research finding (T08):** Postgres 15+ supports `CREATE UNIQUE INDEX... NULLS NOT DISTINCT`,
 which treats multiple NULL values as equal for uniqueness purposes. No surveyed Rust system
 supports this. It is directly relevant to partial unique constraint patterns.
 
@@ -1262,7 +1262,7 @@ referencing sqlx's built-in runner which exclusively uses that name).
 **Phase 7 v2 plan statement (P7V2 §Ledger shape):**
 
 ```sql
-CREATE TABLE IF NOT EXISTS djogi_schema_migrations ( ... );
+CREATE TABLE IF NOT EXISTS djogi_schema_migrations (... );
 ```
 
 **Resolution:** `djogi_schema_migrations` is correct. The `_sqlx_migrations` table name should
@@ -1285,15 +1285,15 @@ separately because it directly affects any existing test or documentation that r
 
 ```rust
 enum SchemaDelta {
-    CreateTable { table: TableDef },
-    DropTable { name: String },
-    AddColumn { table: String, column: ColumnDef },
-    DropColumn { table: String, name: String },
-    AlterColumn { table: String, name: String, change: ColumnChange },
-    AddIndex { table: String, index: IndexDef },
-    DropIndex { name: String },
-    AddForeignKey { table: String, fk: ForeignKeyDef },
-    DropForeignKey { table: String, name: String },
+  CreateTable { table: TableDef },
+  DropTable { name: String },
+  AddColumn { table: String, column: ColumnDef },
+  DropColumn { table: String, name: String },
+  AlterColumn { table: String, name: String, change: ColumnChange },
+  AddIndex { table: String, index: IndexDef },
+  DropIndex { name: String },
+  AddForeignKey { table: String, fk: ForeignKeyDef },
+  DropForeignKey { table: String, name: String },
 }
 ```
 
@@ -1418,7 +1418,7 @@ in `IndexSpec`, with SQL emission for the common cases. Document that complex ex
 
 **B-5 (from G-15):** Specify the `IndexSpec` extension for JSONB path indexes. Recommended:
 `json_path: Option<String>` on `IndexSpec` that, when present, generates
-`CREATE INDEX ... ON t ((col->>'path'))` rather than a plain column index.
+`CREATE INDEX... ON t ((col->>'path'))` rather than a plain column index.
 
 ### Batch C: Must Lock Before Phase 7 T3/T4 Implementation
 

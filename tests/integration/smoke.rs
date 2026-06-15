@@ -47,9 +47,9 @@ fn database_url_env_overrides_toml() {
         jail.create_file(
             "Djogi.toml",
             r#"
-            [database]
-            url = "postgres://localhost/from_toml"
-            "#,
+      [database]
+      url = "postgres://localhost/from_toml"
+      "#,
         )?;
         jail.set_env("DATABASE_URL", "postgres://localhost/from_env");
         let config = DjogiConfig::load()?;

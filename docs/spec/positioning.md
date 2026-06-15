@@ -1,11 +1,11 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Positioning — Djogi in the Rust Data Tier
 
 **Last verified:** 2026-05-10
 **Refresh cadence:** spot-check upstream feature lists at each minor version (currently pre-v0.1.0; first scheduled re-verification immediately precedes the v0.1.0 publish gate).
 **Source draft baseline:** the migration-only matrix at [`../research/migrations/2026-04-22/topics/12-rust-ecosystem-contrast.md`](../research/migrations/2026-04-22/topics/12-rust-ecosystem-contrast.md) and the broader 2026-05-09 working draft.
-**Companion:** the [`ReadMe.MD`](../../ReadMe.MD) opening sets Djogi's design-north-star and what Djogi owns versus delegates; this doc widens the lens to where Djogi sits relative to other Rust data-tier projects so adopters can decide quickly.
+**Companion:** the [`README.md`](../../README.md) opening sets Djogi's design-north-star and what Djogi owns versus delegates; this doc widens the lens to where Djogi sits relative to other Rust data-tier projects so adopters can decide quickly.
 
 ---
 
@@ -29,7 +29,7 @@ If you came here from the README's design-north-star section, the short version 
 | Migration generation | Descriptor-driven differ; `build.rs` drift warning; CLI `djogi migrations compose` | CLI `cot migration make` (AST diff) | `sea-orm-cli generate entity`; migrations hand-written | Manual SQL; `diesel print-schema` |
 | Migration file format | SQL up/down (descriptor-generated); author-edited `.sql` for data-only / out-of-band ops (re-compose preserves edits by default — refuses to overwrite hand-edited files; `--force-overwrite` discards edits and restores canonical SQL) | Rust code (generated) | Rust trait impl OR raw SQL | Paired SQL files |
 | Online-safety classification | 4-tier: OnlineSafe / FastLockDestructiveGuarded / ExpandContract / OfflineOnly | Not surfaced | Not surfaced | Not surfaced |
-| Live/staged migration | Phase 7.5 library substrate: expand-contract, protected-field metadata + codec-transition classification (codec registry empty in v0.1.0; built-in codecs land in a later phase), and low-level chunked backfill pieces. Adopter-facing CLI executor wiring for `live run` / `live resume` / `live finalize` / `live daemon` is documented/stubbed in v0.1.0-alpha; no adopter-facing live executor or daemon runner ships until a follow-up task lands the compose/chunk-loop/cleanup execution path | Not surfaced | Not surfaced | Not surfaced |
+| Live/staged migration | library substrate: expand-contract, protected-field metadata + codec-transition classification (codec registry empty in v0.1.0; built-in codecs land in a later phase), and low-level chunked backfill pieces. Adopter-facing CLI executor wiring for `live run` / `live resume` / `live finalize` / `live daemon` is documented/stubbed in v0.1.0-alpha; no adopter-facing live executor or daemon runner ships until a follow-up task lands the compose/chunk-loop/cleanup execution path | Not surfaced | Not surfaced | Not surfaced |
 | Multi-DB | Postgres-only (permanent design choice) | PG / MySQL / SQLite | PG / MySQL / SQLite | PG / MySQL / SQLite |
 | Multi-tenancy / RLS | First-class via `#[model(tenant_key = "<col>")]` + auto `set_config()` | Not surfaced | Not surfaced | Not surfaced |
 | JSONB typed schemas | `Jsonb<T>` + `#[derive(JsonbSchema)]` deep-path accessors | Untyped | `serde_json::Value` only | Untyped |
@@ -44,7 +44,7 @@ If you came here from the README's design-north-star section, the short version 
 | Relations | `ForeignKey<T>` / `OneToOneField<T>` / `ManyToMany<Target>` with cascade policies; reverse-accessor macros; `select_related` / `prefetch` | FK only; limited reverse | FK only; limited reverse | FK only; no reverse macros |
 | ENUM | `#[derive(DjogiEnum)]` Postgres-native codec | SeaQuery builder | SeaORM derive | Hand-mapped |
 | Raw SQL escape hatches | `raw_query` / `raw_fetch_one` / `raw_scalar` / `raw_execute` / `raw_stream` on `DjogiContext`, gated by an explicit bypass attribute | Not typed | Standard practice | Standard practice |
-| Admin / shell / CLI | `djogi docs`, `djogi db seed` (shipped CLI binary); Rhai shell deferred Phase 9 | Built-in `cot::admin` module + `cot-cli` | SeaORM Pro (official add-on) | Not surfaced |
+| Admin / shell / CLI | `djogi docs`, `djogi db seed` (shipped CLI binary); Rhai shell deferred | Built-in `cot::admin` module + `cot-cli` | SeaORM Pro (official add-on) | Not surfaced |
 | Model hooks | `#[model(..., hooks)]` opt-in flag + adopter-written `impl djogi::hooks::ModelHooks for T`; zero-overhead via marker trait | Not surfaced | Event listeners | Not surfaced |
 | Computed fields | `#[computed(sql = "...")]` + `#[djogi::trait_impl]` cross-type registry | Not surfaced | Not surfaced | Not surfaced |
 | Proxy models | `#[model(proxy_for = Parent)]` (bare-ident parent) w/ optional `default_filter = \|f\| ...` | Not surfaced | Not surfaced | Not surfaced |
@@ -75,9 +75,9 @@ This section reads each project on its own design intent first, then names the a
 
 **Cot's design intent:** Cot positions itself as a full Rust web stack — model, migrations, admin, and view layer in one. Its app concept maps domain partitions across the whole framework.
 
-**Where Djogi extends the surface:** staged-rollout machinery (Phase 7.5 live-migration substrate); tenancy / RLS first-class; JSONB typed schemas; spatial; FTS; advisory locking with checksums and replica-safety; typed projection surface with compile-time boundary; recursive CTEs with path output; public `Q<T>` algebra with XOR; Punnu cache integration; protected-field metadata substrate (v0.1.0 codec registry empty; built-in codecs land in a later phase); computed fields plus a cross-type trait registry; proxy models.
+**Where Djogi extends the surface:** staged-rollout machinery ( live-migration substrate); tenancy / RLS first-class; JSONB typed schemas; spatial; FTS; advisory locking with checksums and replica-safety; typed projection surface with compile-time boundary; recursive CTEs with path output; public `Q<T>` algebra with XOR; Punnu cache integration; protected-field metadata substrate (v0.1.0 codec registry empty; built-in codecs land in a later phase); computed fields plus a cross-type trait registry; proxy models.
 
-**Where Cot extends the surface:** AST-driven autogeneration handles more heuristic edge cases at the migration boundary; an admin pattern ships with the framework (Djogi's admin is the planned [Maahi console](./maahi/index.md), sequenced for Phase 10 — the `admin` feature flag and `djogi-maahi` crate ship with that phase).
+**Where Cot extends the surface:** AST-driven autogeneration handles more heuristic edge cases at the migration boundary; an admin pattern ships with the framework (Djogi's admin is the planned [Maahi console](./maahi/index.md), sequenced for 0 — the `admin` feature flag and `djogi-maahi` crate ship with that phase).
 
 ### Relative to SeaORM
 
@@ -101,7 +101,7 @@ This section reads each project on its own design intent first, then names the a
 
 **Djogi is Tokio-only and intends to stay that way.** async-std has been effectively dormant in the Rust async ecosystem since approximately 2023; runtime convergence on Tokio is essentially complete. Djogi's foundation is Tokio-bound all the way down — `tokio-postgres` (literally), `deadpool-postgres`, the notify / listener path. Adding async-std would mean either:
 
-- swap driver to sqlx (substantial regression on the runner-control story Phase 7 was built around — advisory locking, checksum enforcement, COPY / streaming control), or
+- swap driver to sqlx (substantial regression on the runner-control story was built around — advisory locking, checksum enforcement, COPY / streaming control), or
 - build a runtime-abstraction layer (every async trait feature-gated, doubled CI matrix, doubled bug surface, doubled test rigor).
 
 Neither buys a meaningful audience in 2026. The honest "runtime portability" answer would be SeaQuery's path — be runtime-agnostic at the IR layer and let consumers pick — which is a far more invasive rearchitecture than "add async-std" and outside v0.1.0 scope regardless.
@@ -174,15 +174,15 @@ Routed to post-v0.1.0 with issue numbers where available:
 
 - **#138** — field accessor property-style API (`.field_name` syntax deferred).
 - Stored computed columns — `#[computed(sql = "...", stored)]` deferred (Postgres irreversibility).
-- Adopter-defined field-group composition — built-in `#[model(auditable)]` / `#[model(soft_deletable)]` ship today (Phase 8 §T2.4 / §T2.6 attribute surface; the prior `#[derive(Auditable)]` / `#[derive(SoftDeletable)]` derives were retired in the same task). A public extension trait letting adopters compose new field-groups (e.g., `Versioned`, `Approved`) is deferred 8.5+.
+- Adopter-defined field-group composition — built-in `#[model(auditable)]` / `#[model(soft_deletable)]` ship today ( §T2.4 / §T2.6 attribute surface; the prior `#[derive(Auditable)]` / `#[derive(SoftDeletable)]` derives were retired in the same task). A public extension trait letting adopters compose new field-groups (e.g., `Versioned`, `Approved`) is deferred 8.5+.
 - Constraint / index name interpolation — pattern-substitution ownership ambiguous; deferred 8.5.
-- Distributed placement / residency — no node affinity, shard routing, or topology semantics in v0.1.0 (Phase 11+).
+- Distributed placement / residency — no node affinity, shard routing, or topology semantics in v0.1.0 (1+).
 - Cross-target FK moves — no first-class pattern; classified `OfflineOnly`.
 - Typed `EdgeName` enum — tree-query paths use `String` edge names; typed enum deferred v0.2.
-- Lifecycle plan / apply governance — no approval workflow for migrations; deferred Phase 9.5.
-- OpenAPI schema export — `djogi schema --format openapi` deferred Phase 9.
+- Lifecycle plan / apply governance — no approval workflow for migrations; deferred .
+- OpenAPI schema export — `djogi schema --format openapi` deferred .
 
-**Performance smoke-benchmarked, not yet perf-guaranteed (publish-gate analysis pending in Phase 8.5 pre-publish housekeeping):**
+**Performance smoke-benchmarked, not yet perf-guaranteed (publish-gate analysis pending in pre-publish housekeeping):**
 
 - materialized-closure scalability at 5000+ nodes (smoke bench: `tests/integration/phase8_zero_tree_query_bench.rs`);
 - `array_append` cost for path accumulation (smoke bench: `tests/integration/phase8_zero_tree_query_bench.rs`);
@@ -195,7 +195,7 @@ Routed to post-v0.1.0 with issue numbers where available:
 
 This section exists so any reviewer can re-run the verification before publish.
 
-**What was verified directly (very high confidence):** all Phase 7–8 shipped features, against the in-repo CHANGELOG, plan files, and source. Migration system architecture, online-safety classification, live-migration machinery, tree queries, spatial, window functions, hooks, composition, `Q`-algebra.
+**What was verified directly (very high confidence):** all –8 shipped features, against the in-repo CHANGELOG, plan files, and source. Migration system architecture, online-safety classification, live-migration machinery, tree queries, spatial, window functions, hooks, composition, `Q`-algebra.
 
 **What was synthesised (high confidence):** feature deltas across phases, phase sequencing, phase plan synthesis. Sources: `docs/spec/implementation-plan.md` and `docs/spec/decisions.md`.
 
@@ -208,7 +208,7 @@ This section exists so any reviewer can re-run the verification before publish.
 
 **What is not verified (low confidence — flagged):**
 
-- Distributed placement / residency semantics (Phase 11+).
+- Distributed placement / residency semantics (1+).
 - Long-term migration scaling beyond 5000-node fixture.
 - Absolute-latest Cot / SeaORM / Diesel main-branch state (matrix reflects 2026-04-22 baseline plus targeted spot-checks).
 

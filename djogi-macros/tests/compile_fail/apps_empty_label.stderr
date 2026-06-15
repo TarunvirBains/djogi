@@ -1,7 +1,7 @@
 error: app label must be non-empty
  --> $DIR/apps_empty_label.rs:5:19
-  |
-5 |     #[app(label = "", database = "main")]
-  |                   ^^
+ |
+5 |  #[app(label = "", database = "main")]
+ |     ^^
 
 error: aborting due to 1 previous error

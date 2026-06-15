@@ -13,24 +13,24 @@ use djogi::prelude::*;
 #[model(table = "departments_t6_dep_str")]
 #[derive(Debug, Clone)]
 pub struct Department {
-    #[field(expose(public))]
-    pub name: String,
+ #[field(expose(public))]
+ pub name: String,
 }
 
 #[model(table = "employees_t6_dep_str", no_default)]
 #[derive(Debug, Clone)]
 pub struct Employee {
-    #[field(expose(public))]
-    pub display_name: String,
+ #[field(expose(public))]
+ pub display_name: String,
 
-    // Deprecated string-literal form — equivalent to
-    // `expose(public -> DepartmentPublic)`. Still accepted.
-    #[field(expose(public = "DepartmentPublic"))]
-    pub department: ForeignKey<Department>,
+ // Deprecated string-literal form — equivalent to
+ // `expose(public -> DepartmentPublic)`. Still accepted.
+ #[field(expose(public = "DepartmentPublic"))]
+ pub department: ForeignKey<Department>,
 }
 
 fn main() {
-    let _build = |emp: &Employee| -> Result<EmployeePublic, djogi::VisageError> {
-        EmployeePublic::try_from(emp)
-    };
+ let _build = |emp: &Employee| -> Result<EmployeePublic, djogi::VisageError> {
+  EmployeePublic::try_from(emp)
+ };
 }

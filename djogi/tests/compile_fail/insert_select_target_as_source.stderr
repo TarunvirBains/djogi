@@ -1,28 +1,28 @@
-error[E0277]: the trait bound `Vec<InsertSelectColumn<..., ...>>: IntoInsertColumns<..., ...>` is not satisfied
-    --> $DIR/insert_select_target_as_source.rs:32:49
-     |
-  32 |         .insert_into::<TargetAsSourceTarget, _, _>(|target, _source| {
-     |          -----------                            ^ unsatisfied trait bound
-     |          |
-     |          required by a bound introduced by this call
-     |
+error[E0277]: the trait bound `Vec<InsertSelectColumn<...,...>>: IntoInsertColumns<...,...>` is not satisfied
+ --> $DIR/insert_select_target_as_source.rs:32:49
+ |
+ 32 |  .insert_into::<TargetAsSourceTarget, _, _>(|target, _source| {
+ |   -----------       ^ unsatisfied trait bound
+ |   |
+ |   required by a bound introduced by this call
+ |
 help: the trait `IntoInsertColumns<TargetAsSourceSource, TargetAsSourceTarget>` is not implemented for `Vec<InsertSelectColumn<TargetAsSourceTarget, TargetAsSourceTarget>>`
-      but trait `IntoInsertColumns<TargetAsSourceTarget, TargetAsSourceTarget>` is implemented for it
-    --> djogi/src/query/insert_select.rs:980:1
-     |
- 980 | impl<S: Model, T: Model> IntoInsertColumns<S, T> for Vec<InsertSelectColumn<S, T>> {
-     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-     = help: for that trait implementation, expected `TargetAsSourceTarget`, found `TargetAsSourceSource`
+  but trait `IntoInsertColumns<TargetAsSourceTarget, TargetAsSourceTarget>` is implemented for it
+ --> djogi/src/query/insert_select.rs:533:1
+ |
+533 | impl<S: Model, T: Model> IntoInsertColumns<S, T> for Vec<InsertSelectColumn<S, T>> {
+ | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ = help: for that trait implementation, expected `TargetAsSourceTarget`, found `TargetAsSourceSource`
 note: required by a bound in `insert_select::<impl QuerySet<S>>::insert_into`
-    --> djogi/src/query/insert_select.rs:2324:12
-     |
-2320 |     pub fn insert_into<T, F, I>(self, f: F) -> InsertSelectStmt<S, T>
-     |            ----------- required by a bound in this associated function
+ --> djogi/src/query/insert_select.rs:905:12
+ |
+901 |  pub fn insert_into<T, F, I>(self, f: F) -> InsertSelectStmt<S, T>
+ |   ----------- required by a bound in this associated function
 ...
-2324 |         I: IntoInsertColumns<S, T>,
-     |            ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `insert_select::<impl QuerySet<S>>::insert_into`
-     = note: the full name for the type has been written to '$LONGTYPE_FILE'
-     = note: consider using `--verbose` to print the full type name to the console
+905 |   I: IntoInsertColumns<S, T>,
+ |   ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `insert_select::<impl QuerySet<S>>::insert_into`
+ = note: the full name for the type has been written to '$LONGTYPE_FILE'
+ = note: consider using `--verbose` to print the full type name to the console
 
 error: aborting due to 1 previous error
 

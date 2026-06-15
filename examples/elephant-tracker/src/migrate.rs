@@ -6,40 +6,40 @@
 //! tables. Two raw-DDL paths remain:
 //!
 //! 1. **Phase 0 bootstrap** (`install_phase_zero`) — installs HeeRanjID
-//!    functions and the PostGIS extension. Legitimately raw: no typed
-//!    migration surface exists for database-level extension installation.
+//! functions and the PostGIS extension. Legitimately raw: no typed
+//! migration surface exists for database-level extension installation.
 //! 2. **`drop_all`** — issues one `batch_execute` of `DROP TABLE IF EXISTS
-//!    … CASCADE` statements (names derived from the descriptor projection)
-//!    plus the migration ledger. This is a deliberate dev-mode wipe; no
-//!    typed drop surface exists yet.
+//! … CASCADE` statements (names derived from the descriptor projection)
+//! plus the migration ledger. This is a deliberate dev-mode wipe; no
+//! typed drop surface exists yet.
 //!
 //! # How it works
 //!
 //! `migrate` runs four steps:
 //!
 //! 1. **Phase 0 bootstrap** — installs HeeRanjID SQL functions + PostGIS
-//!    through `batch_execute`. Idempotent (`CREATE OR REPLACE`,
-//!    `CREATE EXTENSION IF NOT EXISTS`). Per-connection session GUCs are
-//!    set in `main.rs` `post_connect`.
+//! through `batch_execute`. Idempotent (`CREATE OR REPLACE`,
+//! `CREATE EXTENSION IF NOT EXISTS`). Per-connection session GUCs are
+//! set in `main.rs` `post_connect`.
 //!
 //! 2. **Project inventory** — calls `djogi::migrate::project_from_inventory()`
-//!    which iterates the link-time `inventory::iter::<ModelDescriptor>()`
-//!    collector and projects each descriptor into an `AppliedSchema` map.
-//!    Same call path that `djogi migrations compose` uses.
+//! which iterates the link-time `inventory::iter::<ModelDescriptor>()`
+//! collector and projects each descriptor into an `AppliedSchema` map.
+//! Same call path that `djogi migrations compose` uses.
 //!
 //! 3. **Lock + Drop** — acquires the workspace file lock on
-//!    `.djogi-migrations-lock` in the process working directory, then drops
-//!    every projected table (names from descriptors, not hardcoded) plus the
-//!    migration ledger in a single `batch_execute`. `CASCADE` handles FK
-//!    ordering. `apply_plan` bootstraps a fresh ledger in step 4.
+//! `.djogi-migrations-lock` in the process working directory, then drops
+//! every projected table (names from descriptors, not hardcoded) plus the
+//! migration ledger in a single `batch_execute`. `CASCADE` handles FK
+//! ordering. `apply_plan` bootstraps a fresh ledger in step 4.
 //!
 //! 4. **Apply** — diffs the inventory projection against an empty baseline
-//!    (all tables were just dropped), plans the delta into a
-//!    `MigrationPlan`, and calls `djogi::migrate::apply_plan`. The runner
-//!    bootstraps `djogi_schema_migrations`, acquires the per-bucket Postgres
-//!    advisory lock, and executes every `CREATE TABLE` + `CREATE INDEX`
-//!    statement in the plan — the same SQL that `djogi migrations compose`
-//!    would write to a pending migration file.
+//! (all tables were just dropped), plans the delta into a
+//! `MigrationPlan`, and calls `djogi::migrate::apply_plan`. The runner
+//! bootstraps `djogi_schema_migrations`, acquires the per-bucket Postgres
+//! advisory lock, and executes every `CREATE TABLE` + `CREATE INDEX`
+//! statement in the plan — the same SQL that `djogi migrations compose`
+//! would write to a pending migration file.
 //!
 //! The workspace lock is acquired before the destructive drop in step 3 and
 //! held through step 4, so a concurrent `migrate` invocation blocks on
@@ -108,7 +108,7 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 /// composition. This example deliberately uses
 /// `phase_zero_sql_without_database_guc()` instead of
 /// `bootstrap::run_phase_zero` so it avoids the database-level
-/// `ALTER DATABASE ... SET ...` part; runnable examples should work for
+/// `ALTER DATABASE... SET...` part; runnable examples should work for
 /// roles that can create schema objects and extensions in a sandbox but
 /// do not own the database. Its raw seed SQL is example-runtime setup,
 /// not a persisted Phase 0 migration replay artifact. The pool's
@@ -196,7 +196,7 @@ async fn drop_all(
 /// does in a production adopter project:
 ///
 /// 1. Diff the inventory projection against an empty baseline (all tables
-///    were just dropped) to produce a pure-additive `SchemaDelta`.
+/// were just dropped) to produce a pure-additive `SchemaDelta`.
 /// 2. Group into a `MigrationPlan` with checksummed, ordered segments.
 /// 3. Apply through the runner — same code path as `djogi migrations apply`.
 ///

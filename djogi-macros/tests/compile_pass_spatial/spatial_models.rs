@@ -16,11 +16,11 @@ use djogi::prelude::*;
 #[model(table = "test_all_geometries", no_default)]
 #[derive(Debug, Clone)]
 pub struct AllGeometries {
-    pub path: LineString,
-    pub area: Polygon,
-    pub stops: MultiPoint,
-    pub regions: MultiPolygon,
-    pub optional_path: Option<LineString>,
+ pub path: LineString,
+ pub area: Polygon,
+ pub stops: MultiPoint,
+ pub regions: MultiPolygon,
+ pub optional_path: Option<LineString>,
 }
 
 fn main() {}

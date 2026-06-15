@@ -60,10 +60,10 @@ async fn raw_stream_refuses_poisoned_transaction(ctx: djogi::DjogiContext) {
                 tokio::pin!(inner);
 
                 tokio::select! {
-                    result = &mut inner => {
-                        panic!("nested raw_stream pin future completed before cancellation: {result:?}")
-                    }
-                    ready = ready_rx => ready.expect("inner savepoint should signal readiness"),
+                  result = &mut inner => {
+                    panic!("nested raw_stream pin future completed before cancellation: {result:?}")
+                  }
+                  ready = ready_rx => ready.expect("inner savepoint should signal readiness"),
                 }
 
                 let timeout = tokio::time::timeout(Duration::from_millis(25), &mut inner).await;

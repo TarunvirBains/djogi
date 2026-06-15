@@ -6,9 +6,9 @@
 //! variant the differ emits, plus the deterministic-naming and
 //! quoting policy for identifiers. This module does **not** own:
 //! - `PkTypeFlip` orchestration. The PK-flip subsystem handles the full
-//!   expand / contract / FK-cascade playbook. This module surfaces every
-//!   flip as [`SqlEmitError::PkTypeFlipMustRouteToT9`] so the differ can
-//!   never accidentally feed a flip through the standard path.
+//! expand / contract / FK-cascade playbook. This module surfaces every
+//! flip as [`SqlEmitError::PkTypeFlipMustRouteToT9`] so the differ can
+//! never accidentally feed a flip through the standard path.
 //! - Migration file naming, checksums, ledger writes — owned by `compose`.
 //! # Determinism
 //! Two runs of [`lower_delta`] on the same input produce
@@ -142,7 +142,7 @@ pub enum LossyRollbackKind {
     /// Surfaces in `migrations status` as the "POINT OF NO RETURN"
     /// marker.
     PkTypeFlipPostCutover,
-    /// Forward `ALTER COLUMN ... TYPE ...` carried an
+    /// Forward `ALTER COLUMN... TYPE...` carried an
     /// adopter-supplied `USING (<expr>)` clause via
     /// `#[field(type_change_using = "...")]`. The
     /// emitter's down side falls back to the default
@@ -150,8 +150,8 @@ pub enum LossyRollbackKind {
     /// reconstruct an arbitrary inverse from the forward expression,
     /// and djogi deliberately does not model a symmetric down-side
     /// USING. If the forward expression is structurally lossy
-    /// (`TRIM`, `CASE WHEN ... THEN NULL`, regex extraction, codec
-    /// decode, ...), the original row values cannot be recovered on
+    /// (`TRIM`, `CASE WHEN... THEN NULL`, regex extraction, codec
+    /// decode,...), the original row values cannot be recovered on
     /// rollback. `LossyRollbackPolicy::Refuse` engages on this kind
     /// so the operator decides whether to proceed; the down SQL
     /// always remains hand-editable for adopters who need a non-
@@ -186,7 +186,7 @@ pub enum SqlEmitError {
     },
     /// A descriptor-defined partition shape changed in a way the
     /// standard emitter cannot lower. Postgres has no `ALTER TABLE
-    /// ... SET PARTITION BY ...`; partition method changes require
+    ///... SET PARTITION BY...`; partition method changes require
     /// a full table rebuild with operator confirmation.
     UnsupportedPartitionChange {
         /// Postgres table whose partition shape changed.
@@ -196,7 +196,7 @@ pub enum SqlEmitError {
     },
     /// A `#[model(storage_params = "...")]` fragment failed the
     /// structural reloption grammar. These fragments are emitted
-    /// unquoted inside `ALTER TABLE ... SET (...)`, so the emitter
+    /// unquoted inside `ALTER TABLE... SET (...)`, so the emitter
     /// rejects malformed values instead of splicing them into SQL.
     InvalidStorageParams {
         /// Original storage-parameter fragment.
@@ -218,13 +218,13 @@ impl std::fmt::Display for SqlEmitError {
             SqlEmitError::PkTypeFlipMustRouteToT9 { table, from, to } => write!(
                 f,
                 "table `{table}`: PK-type flip ({from:?} -> {to:?}) reached the standard \
-                 SQL emitter — these are orchestrated by the PK-flip expand/contract \
-                 playbook and must never go through the standard path"
+     SQL emitter — these are orchestrated by the PK-flip expand/contract \
+     playbook and must never go through the standard path"
             ),
             SqlEmitError::UnsupportedPartitionChange { table, detail } => write!(
                 f,
                 "table `{table}`: partition shape change cannot be lowered automatically: \
-                 {detail}"
+     {detail}"
             ),
             SqlEmitError::InvalidStorageParams { params, reason } => {
                 write!(f, "invalid storage_params `{params}`: {reason}")
@@ -348,10 +348,10 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
                 &mut summary,
                 format_args!(
                     "-- PkTypeFlipGroup parent={parent} {from:?} -> {to:?}\n\
-                     -- children={children}, self_fk={self_fk}, join_tables={join},\n\
-                     -- cycles={cycles}, partitioned={partitioned}.\n\
-                     -- See the segment plan for the executable SQL (preparation,\n\
-                     -- backfill, concurrent index, NOT NULL proof, cutover).",
+      -- children={children}, self_fk={self_fk}, join_tables={join},\n\
+      -- cycles={cycles}, partitioned={partitioned}.\n\
+      -- See the segment plan for the executable SQL (preparation,\n\
+      -- backfill, concurrent index, NOT NULL proof, cutover).",
                     parent = group.parent_table,
                     from = group.parent_from,
                     to = group.parent_to,
@@ -367,15 +367,15 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
                 up: summary,
                 down: format!(
                     "-- PkTypeFlipGroup parent={} — see cutover segment for the\n\
-                     -- POINT OF NO RETURN marker; rollback requires an inverse\n\
-                     -- migration.",
+      -- POINT OF NO RETURN marker; rollback requires an inverse\n\
+      -- migration.",
                     group.parent_table,
                 ),
                 lossy: Some(LossyRollbackWarning {
                     kind: LossyRollbackKind::PkTypeFlipPostCutover,
                     detail: format!(
                         "PkTypeFlipGroup `{}` cutover removes the prior PK column \
-                         and trigger; rollback requires an inverse migration",
+       and trigger; rollback requires an inverse migration",
                         group.parent_table,
                     ),
                 }),
@@ -397,10 +397,10 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
                 &mut summary,
                 format_args!(
                     "-- PkTypeFlipMultiGroup parents={count}\n\
-                     -- See the stage-interleaved segment plan for the executable SQL\n\
-                     -- (one prep / backfill / index / FK / NOT NULL / cutover\n\
-                     -- segment touching every cluster member at each stage, per\n\
-                     -- HeeRanjID asc-to-desc playbook §7).\n",
+      -- See the stage-interleaved segment plan for the executable SQL\n\
+      -- (one prep / backfill / index / FK / NOT NULL / cutover\n\
+      -- segment touching every cluster member at each stage, per\n\
+      -- HeeRanjID asc-to-desc playbook §7).\n",
                     count = groups.len(),
                 ),
             );
@@ -409,8 +409,8 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
                     &mut summary,
                     format_args!(
                         "-- member parent={parent} {from:?} -> {to:?} children={children},\n\
-                         --        self_fk={self_fk}, join_tables={join}, cycles={cycles},\n\
-                         --        partitioned={partitioned}.\n",
+       --  self_fk={self_fk}, join_tables={join}, cycles={cycles},\n\
+       --  partitioned={partitioned}.\n",
                         parent = g.parent_table,
                         from = g.parent_from,
                         to = g.parent_to,
@@ -428,8 +428,8 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
             label.push_str(&names.join(","));
             let detail = format!(
                 "PkTypeFlipMultiGroup [{names}] cutover removes prior PK columns and \
-                 triggers across every cluster member; rollback requires an inverse \
-                 migration",
+     triggers across every cluster member; rollback requires an inverse \
+     migration",
                 names = names.join(","),
             );
             Ok(OperationSql {
@@ -437,8 +437,8 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
                 up: summary,
                 down: format!(
                     "-- PkTypeFlipMultiGroup [{names}] — see cutover segment for the\n\
-                     -- POINT OF NO RETURN marker; rollback requires an inverse\n\
-                     -- migration.",
+      -- POINT OF NO RETURN marker; rollback requires an inverse\n\
+      -- migration.",
                     names = names.join(","),
                 ),
                 lossy: Some(LossyRollbackWarning {
@@ -482,7 +482,7 @@ fn try_emit_add_table(t: &TableSchema) -> Result<OperationSql, SqlEmitError> {
             up.push_str(",\n");
         }
         first = false;
-        up.push_str("    ");
+        up.push_str(" ");
         write_column_definition(&mut up, col, &t.table);
     }
     // Composite / declarative PK constraint — emit at the table level
@@ -492,7 +492,7 @@ fn try_emit_add_table(t: &TableSchema) -> Result<OperationSql, SqlEmitError> {
     // here so the column-level definitions stay free of `PRIMARY KEY`
     // markers that would conflict with the constraint.
     if let Some(pk_clause) = pk_table_clause(t) {
-        up.push_str(",\n    ");
+        up.push_str(",\n ");
         up.push_str(&pk_clause);
     }
     // Inline `EXCLUDE` constraints. EXCLUDE-on-
@@ -506,7 +506,7 @@ fn try_emit_add_table(t: &TableSchema) -> Result<OperationSql, SqlEmitError> {
     // to an already-existing table" which never reaches the live
     // runner (OfflineOnly verdict from the classifier).
     for exclusion in &t.exclusion_constraints {
-        up.push_str(",\n    CONSTRAINT ");
+        up.push_str(",\n CONSTRAINT ");
         up.push_str(&quote_ident(&exclusion.name));
         up.push(' ');
         up.push_str(&render_exclusion_body(exclusion));
@@ -521,7 +521,7 @@ fn try_emit_add_table(t: &TableSchema) -> Result<OperationSql, SqlEmitError> {
 
     // Append `COMMENT ON TABLE …` immediately after the `CREATE TABLE`
     // statement when the adopter declared `#[model(table_comment = "…")]`
-    // . The composer renders the text through a setting-independent
+    //. The composer renders the text through a setting-independent
     // SQL string literal helper so apostrophes and backslashes round-trip safely.
     if let Some(comment) = t.table_comment.as_deref() {
         up.push('\n');
@@ -578,8 +578,8 @@ fn emit_drop_table(name: &str) -> OperationSql {
     let up = format!("DROP TABLE {qn};");
     let down = format!(
         "-- LOSSY ROLLBACK: cannot recreate table `{name}` from the diff.\n\
-         -- The migration emitter has no historical schema for the dropped\n\
-         -- table; rollback must be hand-written if needed."
+   -- The migration emitter has no historical schema for the dropped\n\
+   -- table; rollback must be hand-written if needed."
     );
     OperationSql {
         label: format!("DropTable {name}"),
@@ -589,7 +589,7 @@ fn emit_drop_table(name: &str) -> OperationSql {
             kind: LossyRollbackKind::DropTable,
             detail: format!(
                 "table `{name}` dropped — schema and rows are lost; rollback \
-                 has no recreate path"
+     has no recreate path"
             ),
         }),
     }
@@ -634,7 +634,7 @@ fn emit_add_column(table: &str, col: &ColumnSchema) -> OperationSql {
             kind: LossyRollbackKind::DropColumn,
             detail: format!(
                 "column `{}.{}` dropped on rollback — any values written between \
-                 apply and rollback are lost",
+     apply and rollback are lost",
                 table, col.name
             ),
         }),
@@ -647,8 +647,8 @@ fn emit_drop_column(table: &str, column: &str) -> OperationSql {
     let up = format!("ALTER TABLE {qt} DROP COLUMN {qc};");
     let down = format!(
         "-- LOSSY ROLLBACK: cannot rebuild column `{table}.{column}` from the diff.\n\
-         -- The migration emitter has no original `ColumnSchema` for the dropped\n\
-         -- column; rollback must be hand-written if needed."
+   -- The migration emitter has no original `ColumnSchema` for the dropped\n\
+   -- column; rollback must be hand-written if needed."
     );
     OperationSql {
         label: format!("DropColumn {table}.{column}"),
@@ -658,7 +658,7 @@ fn emit_drop_column(table: &str, column: &str) -> OperationSql {
             kind: LossyRollbackKind::DropColumn,
             detail: format!(
                 "column `{table}.{column}` dropped — original type and row data \
-                 not recoverable from the diff"
+     not recoverable from the diff"
             ),
         }),
     }
@@ -701,7 +701,7 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             // hint that the prior default is lost.
             format!(
                 "-- NOTE: prior DEFAULT for `{table}.{column}` not recoverable from the diff.\n\
-                 ALTER TABLE {qt} ALTER COLUMN {qc} DROP DEFAULT;"
+     ALTER TABLE {qt} ALTER COLUMN {qc} DROP DEFAULT;"
             ),
             "set DEFAULT",
             None,
@@ -710,7 +710,7 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             format!("ALTER TABLE {qt} ALTER COLUMN {qc} DROP DEFAULT;"),
             format!(
                 "-- NOTE: prior DEFAULT for `{table}.{column}` not recoverable from the diff.\n\
-                 -- Rollback would need the original DEFAULT expression."
+     -- Rollback would need the original DEFAULT expression."
             ),
             "drop DEFAULT",
             None,
@@ -777,14 +777,14 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                 let _ = writeln!(
                     up,
                     "-- WARNING: `{table}.{column}` `{from}` -> `{to}` is a known incompatible cast pair.\n\
-                     -- The framework emits `USING <col>::<new_type>` (the explicit cast) — every row's\n\
-                     -- value must parse as a syntactically valid `{to}` literal under `{from}::{to}` or\n\
-                     -- the apply will fail with `invalid input syntax for type {to}` (or similar). Add\n\
-                     -- `#[field(type_change_using = \"<sql expr>\")]` to the field on the model struct\n\
-                     -- and re-compose to inline a custom `USING` clause that handles edge cases (TRIM,\n\
-                     -- CASE WHEN, validation). The adopter owns the expression's correctness against\n\
-                     -- the column's old and new types. See `docs/guide/models.md` `#[field(...)]`\n\
-                     -- reference and djogi#220 for details."
+      -- The framework emits `USING <col>::<new_type>` (the explicit cast) — every row's\n\
+      -- value must parse as a syntactically valid `{to}` literal under `{from}::{to}` or\n\
+      -- the apply will fail with `invalid input syntax for type {to}` (or similar). Add\n\
+      -- `#[field(type_change_using = \"<sql expr>\")]` to the field on the model struct\n\
+      -- and re-compose to inline a custom `USING` clause that handles edge cases (TRIM,\n\
+      -- CASE WHEN, validation). The adopter owns the expression's correctness against\n\
+      -- the column's old and new types. See `docs/guide/models.md` `#[field(...)]`\n\
+      -- reference and djogi#220 for details."
                 );
             }
             match using {
@@ -808,7 +808,7 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             // the default `<col>::<old_type>` cast — Postgres cannot derive an
             // inverse of an arbitrary expression. If the forward expression
             // discards information (TRIM, CASE → NULL, regex extraction, codec
-            // decode, ...) the down SQL silently emits as a structurally lossy
+            // decode,...) the down SQL silently emits as a structurally lossy
             // rollback that returns equal-but-not-identical row values. Mark the
             // warning so `LossyRollbackPolicy::Refuse` (the default) engages and
             // requires explicit operator opt-in to apply.
@@ -816,15 +816,15 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                 kind: LossyRollbackKind::CustomCast,
                 detail: format!(
                     "column `{table}.{column}`: forward `USING ({expr})` is \
-                     adopter-supplied; rollback emits the default `<col>::{from}` \
-                     cast and may not reconstruct original row data. Hand-edit the \
-                     emitted down SQL if a non-default inverse is required."
+      adopter-supplied; rollback emits the default `<col>::{from}` \
+      cast and may not reconstruct original row data. Hand-edit the \
+      emitted down SQL if a non-default inverse is required."
                 ),
             });
             (up, down, "change TYPE", lossy)
         }
         ColumnChange::SetCheck { from, to } => {
-            // Postgres has no `ALTER COLUMN ... SET CHECK`; check
+            // Postgres has no `ALTER COLUMN... SET CHECK`; check
             // constraints live at the table level. Emit a named
             // table-level constraint so DROP / ADD reach the same
             // constraint-name slot deterministically.
@@ -863,11 +863,11 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                     (
                         format!(
                             "ALTER TABLE {qt} DROP CONSTRAINT {qcons};\n\
-                             ALTER TABLE {qt} ADD CONSTRAINT {qcons} CHECK ({expr});"
+        ALTER TABLE {qt} ADD CONSTRAINT {qcons} CHECK ({expr});"
                         ),
                         format!(
                             "ALTER TABLE {qt} DROP CONSTRAINT {qcons};\n\
-                             ALTER TABLE {qt} ADD CONSTRAINT {qcons} CHECK ({prior});"
+        ALTER TABLE {qt} ADD CONSTRAINT {qcons} CHECK ({prior});"
                         ),
                         "amend CHECK",
                     )
@@ -881,7 +881,7 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                     (
                         format!(
                             "-- noop SetCheck on `{table}.{column}` (from == to == None); \
-                             likely a differ bug.\n"
+        likely a differ bug.\n"
                         ),
                         format!("-- noop SetCheck rollback on `{table}.{column}`.\n"),
                         "noop CHECK",
@@ -931,7 +931,7 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             let down = format!("CREATE INDEX {qname} ON {qt} ({qc});");
             (up, down, "drop indexed", None)
         }
-        // Stored generated column transitions — .
+        // Stored generated column transitions —.
         // Three transition shapes the differ can emit:
         // 1. `(None, Some(spec))` — ADD generation expression to an
         // existing regular column. Postgres has no `ALTER COLUMN
@@ -981,7 +981,7 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
         // [`crate::migrate::diff::diff_columns_in_table`]).
         // The classifier
         // ([`crate::live_migrate::classify::classify_operation`])
-        // keeps `SetGenerated { .. }` at `OfflineOnly` regardless of
+        // keeps `SetGenerated {.. }` at `OfflineOnly` regardless of
         // shape — the row-rewrite lock window is structurally the
         // same for all three transitions.
         ColumnChange::SetGenerated { from, to } => match (from, to) {
@@ -989,17 +989,17 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             (None, Some(spec)) => {
                 let up = format!(
                     "-- OfflineOnly: adding a stored generated expression to existing column\n\
-                     -- `{table}.{column}` has no online ALTER form in Postgres 18. Hand-edit\n\
-                     -- the migration to `DROP COLUMN {column}` + `ADD COLUMN {column} \
-                     <type> GENERATED ALWAYS AS ({expr}) STORED`.\n\
-                     -- See `docs/spec/decisions.md` and the `generated_column_refusal`\n\
-                     -- pattern in `djogi/src/live_migrate/patterns/`.",
+      -- `{table}.{column}` has no online ALTER form in Postgres 18. Hand-edit\n\
+      -- the migration to `DROP COLUMN {column}` + `ADD COLUMN {column} \
+      <type> GENERATED ALWAYS AS ({expr}) STORED`.\n\
+      -- See `docs/spec/decisions.md` and the `generated_column_refusal`\n\
+      -- pattern in `djogi/src/live_migrate/patterns/`.",
                     expr = spec.expression
                 );
                 let down = format!(
                     "-- OfflineOnly: revert of adding generation requires dropping the\n\
-                     -- generated column entirely (`DROP COLUMN {column}`); hand-edit\n\
-                     -- the migration before applying."
+      -- generated column entirely (`DROP COLUMN {column}`); hand-edit\n\
+      -- the migration before applying."
                 );
                 (up, down, "add GENERATED expression", None)
             }
@@ -1015,11 +1015,11 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                 let up = format!("ALTER TABLE {qt} ALTER COLUMN {qc} DROP EXPRESSION;");
                 let down = format!(
                     "-- LOSSY ROLLBACK: cannot re-add the generation expression in place\n\
-                     -- on `{table}.{column}` — `ALTER COLUMN ... SET EXPRESSION AS` requires\n\
-                     -- the column to already be a generated column. Restoring requires a\n\
-                     -- `DROP COLUMN {column}` + `ADD COLUMN {column} <type> GENERATED ALWAYS\n\
-                     -- AS ({expr}) STORED` pair, which destroys the post-DROP-EXPRESSION\n\
-                     -- row data. Hand-edit before applying.",
+      -- on `{table}.{column}` — `ALTER COLUMN... SET EXPRESSION AS` requires\n\
+      -- the column to already be a generated column. Restoring requires a\n\
+      -- `DROP COLUMN {column}` + `ADD COLUMN {column} <type> GENERATED ALWAYS\n\
+      -- AS ({expr}) STORED` pair, which destroys the post-DROP-EXPRESSION\n\
+      -- row data. Hand-edit before applying.",
                     expr = prev.expression
                 );
                 (
@@ -1030,8 +1030,8 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                         kind: LossyRollbackKind::DropColumn,
                         detail: format!(
                             "column `{table}.{column}`: rollback of `DROP EXPRESSION` \
-                             cannot re-install the generated expression in place; \
-                             restoring requires DROP COLUMN + ADD COLUMN"
+        cannot re-install the generated expression in place; \
+        restoring requires DROP COLUMN + ADD COLUMN"
                         ),
                     }),
                 )
@@ -1047,7 +1047,7 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                 debug_assert_ne!(
                     prev.expression, next.expression,
                     "ColumnChange::SetGenerated should not be emitted for identical \
-                     expressions (differ contract drift)"
+      expressions (differ contract drift)"
                 );
                 // PG 17+: `ALTER COLUMN c SET EXPRESSION AS (<expr>)`
                 // replaces the expression and rewrites the table.
@@ -1058,10 +1058,10 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                 // STORED in djogi; the macro rejects `stored = false`).
                 let up = format!(
                     "-- djogi#221: in-place stored generated expression change on PG 17+\n\
-                     -- (djogi targets PG 18+). The runner rewrites every row under\n\
-                     -- AccessExclusiveLock — classified OfflineOnly even though the\n\
-                     -- statement is structurally a single ALTER COLUMN.\n\
-                     ALTER TABLE {qt} ALTER COLUMN {qc} SET EXPRESSION AS ({next_expr});",
+      -- (djogi targets PG 18+). The runner rewrites every row under\n\
+      -- AccessExclusiveLock — classified OfflineOnly even though the\n\
+      -- statement is structurally a single ALTER COLUMN.\n\
+      ALTER TABLE {qt} ALTER COLUMN {qc} SET EXPRESSION AS ({next_expr});",
                     next_expr = next.expression
                 );
                 let down = format!(
@@ -1073,14 +1073,14 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             // ── (None, None) — unreachable per differ contract ────────
             (None, None) => unreachable!(
                 "ColumnChange::SetGenerated should never carry (None, None) — \
-                 the differ filters no-op transitions"
+     the differ filters no-op transitions"
             ),
         },
         // Identity-column transitions emit the proper `ALTER COLUMN
         // ADD/DROP/SET GENERATED` syntax. The None → Some(kind)
         // transition additionally emits a setval follow-up to sync the
         // new sequence to the existing row data. Without this, `ADD
-        // GENERATED ... AS IDENTITY` allocates a fresh sequence that
+        // GENERATED... AS IDENTITY` allocates a fresh sequence that
         // starts at MIN_VALUE (default 1) regardless of existing rows
         // the next default-id INSERT collides with row 1 on a populated
         // table.
@@ -1106,8 +1106,8 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                     let clause = kind.sql_clause();
                     let up = format!(
                         "ALTER TABLE {qt} ALTER COLUMN {qc} ADD {clause};\n\
-                         SELECT setval(pg_get_serial_sequence('{table}', '{column}'), \
-                         GREATEST(COALESCE((SELECT MAX({qc}) FROM {qt}), 0), 0) + 1, false);"
+       SELECT setval(pg_get_serial_sequence('{table}', '{column}'), \
+       GREATEST(COALESCE((SELECT MAX({qc}) FROM {qt}), 0), 0) + 1, false);"
                     );
                     let down = format!("ALTER TABLE {qt} ALTER COLUMN {qc} DROP IDENTITY;");
                     (up, down, "add IDENTITY", None)
@@ -1120,8 +1120,8 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                     // collision risk regardless of which direction.
                     let down = format!(
                         "ALTER TABLE {qt} ALTER COLUMN {qc} ADD {clause};\n\
-                         SELECT setval(pg_get_serial_sequence('{table}', '{column}'), \
-                         GREATEST(COALESCE((SELECT MAX({qc}) FROM {qt}), 0), 0) + 1, false);"
+       SELECT setval(pg_get_serial_sequence('{table}', '{column}'), \
+       GREATEST(COALESCE((SELECT MAX({qc}) FROM {qt}), 0), 0) + 1, false);"
                     );
                     (up, down, "drop IDENTITY", None)
                 }
@@ -1131,7 +1131,7 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
                     // the kind, preserving the existing sequence.
                     let next_clause = next.sql_clause();
                     let prev_clause = prev.sql_clause();
-                    // Extract the GENERATED ... portion (drop the
+                    // Extract the GENERATED... portion (drop the
                     // initial "GENERATED " from sql_clause to get
                     // "BY DEFAULT AS IDENTITY" / "ALWAYS AS IDENTITY").
                     // Actually Postgres syntax for kind change is
@@ -1190,15 +1190,15 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             let to_desc = to_codec.as_deref().unwrap_or("plaintext");
             let up = format!(
                 "-- MANUAL STEP: column `{table}.{column}` codec changed \
-                 `{from_desc}` -> `{to_desc}`. Re-encode every row out of band \
-                 (read, re-encrypt under the new codec, write back). The framework \
-                 emits no automatic backfill — online codec rotation is not yet \
-                 supported (issue #371). Apply via an operator-run offline migration."
+     `{from_desc}` -> `{to_desc}`. Re-encode every row out of band \
+     (read, re-encrypt under the new codec, write back). The framework \
+     emits no automatic backfill — online codec rotation is not yet \
+     supported (issue #371). Apply via an operator-run offline migration."
             );
             let down = format!(
                 "-- MANUAL STEP: reverting column `{table}.{column}` codec \
-                 `{to_desc}` -> `{from_desc}` requires the same out-of-band re-encode \
-                 in reverse. No automatic rollback is emitted."
+     `{to_desc}` -> `{from_desc}` requires the same out-of-band re-encode \
+     in reverse. No automatic rollback is emitted."
             );
             (up, down, "codec change (manual re-encode)", None)
         }
@@ -1246,8 +1246,8 @@ fn emit_drop_foreign_key(table: &str, column: &str, fk: &ForeignKeySchema) -> Op
     }
 }
 
-/// Render a single `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY
-/// ... REFERENCES ... ON DELETE ...;` statement. Shared between
+/// Render a single `ALTER TABLE... ADD CONSTRAINT... FOREIGN KEY
+///... REFERENCES... ON DELETE...;` statement. Shared between
 /// [`emit_add_foreign_key`] and [`emit_drop_foreign_key`]'s rollback
 /// path so the two cannot drift.
 fn render_add_fk(table: &str, column: &str, fk: &ForeignKeySchema) -> String {
@@ -1261,8 +1261,8 @@ fn render_add_fk(table: &str, column: &str, fk: &ForeignKeySchema) -> String {
     let deferrable = render_deferrable_clause(fk.deferrable, fk.initially_deferred);
     format!(
         "ALTER TABLE {qt} ADD CONSTRAINT {qcons} \
-         FOREIGN KEY ({qc}) REFERENCES {qref_t} ({qref_c}) \
-         ON DELETE {cascade}{deferrable};"
+   FOREIGN KEY ({qc}) REFERENCES {qref_t} ({qref_c}) \
+   ON DELETE {cascade}{deferrable};"
     )
 }
 
@@ -1321,11 +1321,11 @@ fn emit_add_index(idx: &IndexSchema) -> OperationSql {
     if idx.kind == IndexKindSchema::UniqueIndex && idx.index_type != IndexTypeSchema::BTree {
         panic!(
             "emit_add_index: PostgreSQL unique indexes are btree-only, but \
-             UniqueIndex {name:?} on {table:?} carries index_type {ty:?}. \
-             The macro layer rejects this combination at compile time; an \
-             IndexSchema reaching this emitter with a non-btree UniqueIndex \
-             indicates either a stale snapshot or a direct IndexSchema \
-             construction bypassing the rule.",
+    UniqueIndex {name:?} on {table:?} carries index_type {ty:?}. \
+    The macro layer rejects this combination at compile time; an \
+    IndexSchema reaching this emitter with a non-btree UniqueIndex \
+    indicates either a stale snapshot or a direct IndexSchema \
+    construction bypassing the rule.",
             name = idx.name,
             table = idx.table,
             ty = idx.index_type,
@@ -1408,7 +1408,7 @@ fn emit_drop_index(idx: &IndexSchema) -> OperationSql {
                 kind: LossyRollbackKind::DropIndex,
                 detail: format!(
                     "UNIQUE constraint `{}` dropped — rollback recreates the constraint, \
-                     which requires a full table scan to validate uniqueness",
+      which requires a full table scan to validate uniqueness",
                     idx.name
                 ),
             }),
@@ -1441,7 +1441,7 @@ fn emit_drop_index(idx: &IndexSchema) -> OperationSql {
             kind: LossyRollbackKind::DropIndex,
             detail: format!(
                 "index `{}` dropped — rollback rebuilds the index, which may \
-                 take significant time on large tables",
+     take significant time on large tables",
                 idx.name
             ),
         }),
@@ -1451,7 +1451,7 @@ fn emit_drop_index(idx: &IndexSchema) -> OperationSql {
 /// Render the body of an `EXCLUDE` constraint clause — the part after
 /// `EXCLUDE` up to (but not including) the trailing semicolon.
 /// Used by both [`emit_add_exclusion_constraint`] and the inline form
-/// inside `emit_add_table` (PR 7 task 4). Produces `USING <method>
+/// inside `emit_add_table` (PR 7 ). Produces `USING <method>
 /// (<expr1> WITH <op1>, <expr2> WITH <op2>) [WHERE (<predicate>)]
 /// [DEFERRABLE [INITIALLY DEFERRED]]`. No leading whitespace and no
 /// trailing semicolon.
@@ -1653,8 +1653,8 @@ fn emit_drop_enum(name: &str) -> OperationSql {
     let up = format!("DROP TYPE {qname};");
     let down = format!(
         "-- LOSSY ROLLBACK: cannot reconstruct enum `{name}` from the diff.\n\
-         -- The original variant list is not present in DropEnum's payload.\n\
-         -- Rollback must be hand-written if needed."
+   -- The original variant list is not present in DropEnum's payload.\n\
+   -- Rollback must be hand-written if needed."
     );
     OperationSql {
         label: format!("DropEnum {name}"),
@@ -1695,9 +1695,9 @@ fn emit_add_enum_variant(
     // Postgres has no `DROP VALUE`. Rollback is lossy in the same
     // structural sense as DropEnum — mark accordingly.
     let down = format!(
-        "-- LOSSY ROLLBACK: Postgres has no `ALTER TYPE ... DROP VALUE`.\n\
-         -- Rolling back the addition of `{variant}` to enum `{enum_name}`\n\
-         -- requires rebuilding the type. Hand-write the rollback if needed."
+        "-- LOSSY ROLLBACK: Postgres has no `ALTER TYPE... DROP VALUE`.\n\
+   -- Rolling back the addition of `{variant}` to enum `{enum_name}`\n\
+   -- requires rebuilding the type. Hand-write the rollback if needed."
     );
     OperationSql {
         label: format!("AddEnumVariant {enum_name}:{variant}"),
@@ -1707,7 +1707,7 @@ fn emit_add_enum_variant(
             kind: LossyRollbackKind::DropEnum,
             detail: format!(
                 "enum variant `{enum_name}:{variant}` added — Postgres has no \
-                 native `DROP VALUE`; rollback requires a type rebuild"
+     native `DROP VALUE`; rollback requires a type rebuild"
             ),
         }),
     }
@@ -1721,13 +1721,13 @@ fn emit_rename_app(from: &str, to: &str) -> OperationSql {
     // metadata-only segment so the runner dispatches it correctly.
     let up = format!(
         "-- METADATA-ONLY: rename app `{from}` to `{to}`.\n\
-         -- Folder rename + djogi_schema_migrations.app_label UPDATE happen\n\
-         -- outside the standard SQL emitter (handled by compose / runner)."
+   -- Folder rename + djogi_schema_migrations.app_label UPDATE happen\n\
+   -- outside the standard SQL emitter (handled by compose / runner)."
     );
     let down = format!(
         "-- METADATA-ONLY: reverse rename `{to}` -> `{from}`.\n\
-         -- Folder rename + djogi_schema_migrations.app_label UPDATE happen\n\
-         -- outside the standard SQL emitter."
+   -- Folder rename + djogi_schema_migrations.app_label UPDATE happen\n\
+   -- outside the standard SQL emitter."
     );
     OperationSql {
         label: format!("RenameApp {from} -> {to}"),
@@ -1740,13 +1740,13 @@ fn emit_rename_app(from: &str, to: &str) -> OperationSql {
 fn emit_move_model_between_apps(model: &str, from_app: &str, to_app: &str) -> OperationSql {
     let up = format!(
         "-- METADATA-ONLY: move model `{model}` from app `{from_app}` to app `{to_app}`.\n\
-         -- Folder move + djogi_schema_migrations.app_label UPDATE happen outside\n\
-         -- the standard SQL emitter (handled by compose / runner)."
+   -- Folder move + djogi_schema_migrations.app_label UPDATE happen outside\n\
+   -- the standard SQL emitter (handled by compose / runner)."
     );
     let down = format!(
         "-- METADATA-ONLY: reverse move `{model}` from `{to_app}` back to `{from_app}`.\n\
-         -- Folder move + djogi_schema_migrations.app_label UPDATE happen outside\n\
-         -- the standard SQL emitter."
+   -- Folder move + djogi_schema_migrations.app_label UPDATE happen outside\n\
+   -- the standard SQL emitter."
     );
     OperationSql {
         label: format!("MoveModelBetweenApps {model} ({from_app} -> {to_app})"),
@@ -1784,7 +1784,7 @@ fn emit_set_table_comment(table: &str, from: Option<&str>, to: Option<&str>) -> 
     }
 }
 
-/// Emit reversible `ALTER TABLE ... SET/RESET (...)` storage-parameter
+/// Emit reversible `ALTER TABLE... SET/RESET (...)` storage-parameter
 /// metadata changes.
 #[allow(clippy::result_large_err)]
 fn emit_set_storage_params(
@@ -1917,9 +1917,9 @@ fn validate_storage_param_key(key: &str) -> Result<(), String> {
         .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
     {
         return Err(
-            "storage_params keys must be plain ASCII reloption names; dotted keys are not supported"
-                .to_string(),
-        );
+   "storage_params keys must be plain ASCII reloption names; dotted keys are not supported"
+   .to_string(),
+  );
     }
     Ok(())
 }
@@ -1942,7 +1942,7 @@ fn validate_storage_param_value(value: &str) -> Result<(), String> {
     }
     Err(
         "storage_params values must be bare words or decimal numbers; quotes, comments, commas, \
-         parentheses, semicolons, and SQL expressions are not supported"
+   parentheses, semicolons, and SQL expressions are not supported"
             .to_string(),
     )
 }
@@ -2024,7 +2024,7 @@ fn render_storage_param_entries(entries: &[StorageParamEntry]) -> String {
     out
 }
 
-/// Emit reversible `ALTER TABLE ... SET TABLESPACE ...` metadata
+/// Emit reversible `ALTER TABLE... SET TABLESPACE...` metadata
 /// changes. `None` lowers to `pg_default`, Djogi's representation for
 /// "no explicit tablespace".
 fn emit_set_tablespace(table: &str, from: Option<&str>, to: Option<&str>) -> OperationSql {
@@ -2133,7 +2133,7 @@ pub(crate) fn quote_string_literal(value: &str) -> String {
 /// valid `<to>` literal — surfacing per-row as
 /// `invalid input syntax for type <to>` (or a similar per-pair shape
 /// such as `invalid input syntax for integer`). The framework always
-/// emits `ALTER COLUMN ... TYPE <to> USING <col>::<to>` (the explicit
+/// emits `ALTER COLUMN... TYPE <to> USING <col>::<to>` (the explicit
 /// cast form), so the bare-USING / assignment-cast Postgres error
 /// `column "..." cannot be cast automatically` does not fire here
 /// the failure surfaces against the column data instead.
@@ -2145,18 +2145,18 @@ pub(crate) fn quote_string_literal(value: &str) -> String {
 /// `numeric → integer` truncates but is implicitly accepted).
 /// **Recognised pairs.**
 /// - text family (`TEXT`, `VARCHAR(...)`, `CHARACTER VARYING(...)`,
-///   `CHAR(...)`, `CITEXT`) ↔ UUID
+/// `CHAR(...)`, `CITEXT`) ↔ UUID
 /// - text family ↔ integer family (`SMALLINT`, `INT2`, `INTEGER`,
-///   `INT4`, `BIGINT`, `INT8`)
+/// `INT4`, `BIGINT`, `INT8`)
 /// - UUID ↔ integer family
-///   The comparison is byte-case-insensitive (Postgres treats type
-///   names case-insensitively) but does not normalise type modifiers
-///   like `(N)` length suffixes — `VARCHAR(64) → UUID` and
-///   `VARCHAR → UUID` both match because the text-family check tests
-///   for the `varchar` / `character` / `text` / `citext` / `char` prefix.
-///   No regex per djogi project rule
-///   (`feedback_no_regex_in_djogi.md`) — all checks use ASCII byte
-///   matching against lowercased type strings.
+/// The comparison is byte-case-insensitive (Postgres treats type
+/// names case-insensitively) but does not normalise type modifiers
+/// like `(N)` length suffixes — `VARCHAR(64) → UUID` and
+/// `VARCHAR → UUID` both match because the text-family check tests
+/// for the `varchar` / `character` / `text` / `citext` / `char` prefix.
+/// No regex per djogi project rule
+/// (`feedback_no_regex_in_djogi.md`) — all checks use ASCII byte
+/// matching against lowercased type strings.
 fn type_change_likely_requires_using(from: &str, to: &str) -> bool {
     fn lower_ascii(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
@@ -2319,8 +2319,8 @@ fn truncate_constraint(name: String) -> String {
     format!("{stem}_{digest}")
 }
 
-/// Render a column's full `<name> <type> [NOT NULL] [DEFAULT ...]
-/// [UNIQUE] [REFERENCES ...] [PRIMARY KEY]` definition into `out`.
+/// Render a column's full `<name> <type> [NOT NULL] [DEFAULT...]
+/// [UNIQUE] [REFERENCES...] [PRIMARY KEY]` definition into `out`.
 /// `PRIMARY KEY` is inlined here only for the single-column,
 /// non-Composite, non-Custom PK shapes — those go through
 /// [`pk_table_clause`] at the table level.
@@ -2331,11 +2331,11 @@ fn truncate_constraint(name: String) -> String {
 /// inconsistent shapes (`{table}_check`, `{table}_check1`, etc.); the
 /// explicit `CONSTRAINT` keyword makes the name deterministic so:
 /// 1. The ALTER TABLE DROP CONSTRAINT path from the differ
-///    ([`ColumnChange::SetCheck`] with `to: None`) reaches the same
-///    constraint slot inline CREATE TABLE produced.
+/// ([`ColumnChange::SetCheck`] with `to: None`) reaches the same
+/// constraint slot inline CREATE TABLE produced.
 /// 2. Adopter-facing error messages reference a predictable
-///    constraint name that mirrors the migration emitter's
-///    ALTER-TABLE path.
+/// constraint name that mirrors the migration emitter's
+/// ALTER-TABLE path.
 fn write_column_definition(out: &mut String, col: &ColumnSchema, table: &str) {
     let qn = quote_ident(&col.name);
     out.push_str(&qn);
@@ -2492,7 +2492,7 @@ fn write_index_target(out: &mut String, target: &IndexTargetSchema) {
         }
         IndexTargetSchema::Expression(expr) => {
             // Expression-form indexes always need the doubled parens
-            // `CREATE INDEX ... ON t ((expr))` per Postgres docs.
+            // `CREATE INDEX... ON t ((expr))` per Postgres docs.
             let _ = write!(out, "(({expr}))");
         }
     }
@@ -2507,7 +2507,7 @@ fn write_index_target(out: &mut String, target: &IndexTargetSchema) {
 /// is used for `NonUnique` and `UniqueIndex` kinds where the full element syntax
 /// is valid.
 /// Reference: <https://www.postgresql.org/docs/18/sql-createtable.html>
-/// (`UNIQUE [ NULLS [NOT] DISTINCT ] (column_name [, ...]) …`)
+/// (`UNIQUE [ NULLS [NOT] DISTINCT ] (column_name [,...]) …`)
 fn write_constraint_column_list(out: &mut String, target: &IndexTargetSchema) {
     match target {
         IndexTargetSchema::Columns(cols) => {
@@ -2536,7 +2536,7 @@ fn write_constraint_column_list(out: &mut String, target: &IndexTargetSchema) {
             let _ = write!(
                 out,
                 "(/* expression cannot appear in UNIQUE table constraint; \
-                 use `CREATE UNIQUE INDEX` form instead (got: {expr}) */)"
+     use `CREATE UNIQUE INDEX` form instead (got: {expr}) */)"
             );
         }
     }
@@ -2896,7 +2896,7 @@ mod tests {
             assert!(
                 sql.up.contains(expected),
                 "inline FK cascade {cascade:?} must emit `{expected}`; \
-                 got: {}",
+     got: {}",
                 sql.up
             );
         }
@@ -2922,7 +2922,7 @@ mod tests {
         assert!(
             sql.up.contains(
                 "REFERENCES \"users\" (\"id\") ON DELETE RESTRICT \
-                 DEFERRABLE INITIALLY DEFERRED"
+     DEFERRABLE INITIALLY DEFERRED"
             ),
             "got: {}",
             sql.up
@@ -2949,7 +2949,7 @@ mod tests {
         assert!(
             sql.up.contains(
                 "REFERENCES \"users\" (\"id\") ON DELETE RESTRICT \
-                 DEFERRABLE INITIALLY IMMEDIATE"
+     DEFERRABLE INITIALLY IMMEDIATE"
             ),
             "got: {}",
             sql.up
@@ -2983,13 +2983,13 @@ mod tests {
     #[test]
     fn add_table_inline_fk_names_constraint_explicitly_short_name() {
         // The inline-FK path inside `CREATE TABLE` must emit `CONSTRAINT <name>
-        // REFERENCES ...` so the runtime `DjogiContext::defer_constraints`
+        // REFERENCES...` so the runtime `DjogiContext::defer_constraints`
         // validator (which derives the expected name via [`fk_constraint_name`])
         // and the emitted DDL agree byte-for-byte. The short-name
         // case is the simpler half of the pair below — the conventional
         // `posts_user_id_fkey` fits inside Postgres' 63-byte identifier limit,
         // so Djogi's name and Postgres' auto-name happen to agree. We still pin
-        // the explicit `CONSTRAINT ...` shape so a future emitter regression
+        // the explicit `CONSTRAINT...` shape so a future emitter regression
         // that drops the keyword cannot silently re-introduce the auto-naming
         // reliance.
         let fk_col = ColumnSchema {
@@ -3011,13 +3011,13 @@ mod tests {
         assert_eq!(
             expected_name, "posts_user_id_fkey",
             "short-name sanity: the convention must produce the verbatim \
-             `{{table}}_{{column}}_fkey` for inputs that fit inside 63 bytes",
+    `{{table}}_{{column}}_fkey` for inputs that fit inside 63 bytes",
         );
         assert!(
             sql.up
                 .contains(" CONSTRAINT \"posts_user_id_fkey\" REFERENCES \"users\" (\"id\")"),
-            "inline FK must emit explicit `CONSTRAINT <name> REFERENCES ...`; \
-             got: {}",
+            "inline FK must emit explicit `CONSTRAINT <name> REFERENCES...`; \
+    got: {}",
             sql.up
         );
         // The existing surrounding clauses (cascade + deferrability)
@@ -3026,7 +3026,7 @@ mod tests {
             sql.up
                 .contains("ON DELETE RESTRICT DEFERRABLE INITIALLY IMMEDIATE"),
             "explicit constraint name must preserve cascade + deferrability \
-             order; got: {}",
+    order; got: {}",
             sql.up
         );
     }
@@ -3053,8 +3053,8 @@ mod tests {
         assert!(
             conventional.len() > 63,
             "test precondition: conventional name {conventional:?} \
-             ({} bytes) must exceed Postgres' 63-byte limit so the \
-             hashed branch is exercised",
+    ({} bytes) must exceed Postgres' 63-byte limit so the \
+    hashed branch is exercised",
             conventional.len(),
         );
 
@@ -3079,17 +3079,17 @@ mod tests {
             expected_name.len(),
             63,
             "convention must produce exactly 63 bytes for over-long inputs; \
-             got {} bytes: {expected_name}",
+    got {} bytes: {expected_name}",
             expected_name.len(),
         );
         assert_ne!(
             expected_name, conventional,
             "the convention must NOT equal the conventional name when the \
-             input would overflow; otherwise the regression is not exercised",
+    input would overflow; otherwise the regression is not exercised",
         );
 
         // The hashed name must appear verbatim inside the emitted DDL,
-        // wrapped in the explicit `CONSTRAINT ... REFERENCES ...`
+        // wrapped in the explicit `CONSTRAINT... REFERENCES...`
         // shape — proving the emitter and the runtime validator name
         // the same constraint slot.
         let expected_fragment =
@@ -3097,7 +3097,7 @@ mod tests {
         assert!(
             sql.up.contains(&expected_fragment),
             "emitted DDL must contain `{expected_fragment}` so the runtime \
-             `defer_constraints` validator's expected name matches; got: {}",
+    `defer_constraints` validator's expected name matches; got: {}",
             sql.up
         );
 
@@ -3107,7 +3107,7 @@ mod tests {
             sql.up
                 .contains("ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED"),
             "explicit constraint name must preserve cascade + deferrability \
-             order; got: {}",
+    order; got: {}",
             sql.up
         );
 
@@ -3120,7 +3120,7 @@ mod tests {
         assert!(
             sql.up.contains(&format!("\"{runtime_expected}\"")),
             "runtime validator's derived name `{runtime_expected}` must \
-             appear verbatim in emitted DDL; got: {}",
+    appear verbatim in emitted DDL; got: {}",
             sql.up
         );
     }
@@ -3154,7 +3154,7 @@ mod tests {
                 " CONSTRAINT \"{expected_name}\" REFERENCES \"users\" (\"id\")"
             )),
             "ALTER TABLE ADD COLUMN inline FK must carry the explicit \
-             `CONSTRAINT <hashed_name> REFERENCES ...` shape; got: {}",
+    `CONSTRAINT <hashed_name> REFERENCES...` shape; got: {}",
             sql.up
         );
     }
@@ -3852,7 +3852,7 @@ mod tests {
                 .down
                 .contains(&format!("CHECK ({before_expr})")),
             "first statement rollback must restore the original CHECK expression \
-             `{before_expr}`, got: {}",
+    `{before_expr}`, got: {}",
             statements[0].down
         );
         assert!(
@@ -3860,7 +3860,7 @@ mod tests {
                 && statements[1].lossy.is_none()
                 && statements[2].lossy.is_none(),
             "type-change-with-CHECK rollback is now fully recoverable; lossy: \
-             {:?} / {:?} / {:?}",
+    {:?} / {:?} / {:?}",
             statements[0].lossy,
             statements[1].lossy,
             statements[2].lossy,
@@ -3924,14 +3924,14 @@ mod tests {
                 .down
                 .contains(&format!("CHECK ({before_expr})")),
             "rollback of the DROP step must restore the OLD CHECK \
-             ({before_expr}), got: {}",
+    ({before_expr}), got: {}",
             statements[0].down
         );
         assert!(
             !statements[0].down.contains(after_expr),
             "rollback of the DROP step must NOT contain the NEW CHECK \
-             expression ({after_expr}); that would imply the rollback \
-             left the new expression behind: {}",
+    expression ({after_expr}); that would imply the rollback \
+    left the new expression behind: {}",
             statements[0].down
         );
     }
@@ -4193,8 +4193,8 @@ mod tests {
         assert_eq!(
             sql.up,
             "ALTER TABLE \"countries\" ALTER COLUMN \"id\" ADD GENERATED BY DEFAULT AS IDENTITY;\n\
-             SELECT setval(pg_get_serial_sequence('countries', 'id'), \
-             GREATEST(COALESCE((SELECT MAX(\"id\") FROM \"countries\"), 0), 0) + 1, false);"
+    SELECT setval(pg_get_serial_sequence('countries', 'id'), \
+    GREATEST(COALESCE((SELECT MAX(\"id\") FROM \"countries\"), 0), 0) + 1, false);"
         );
         assert_eq!(
             sql.down,
@@ -4226,8 +4226,8 @@ mod tests {
         assert_eq!(
             sql.down,
             "ALTER TABLE \"countries\" ALTER COLUMN \"id\" ADD GENERATED BY DEFAULT AS IDENTITY;\n\
-             SELECT setval(pg_get_serial_sequence('countries', 'id'), \
-             GREATEST(COALESCE((SELECT MAX(\"id\") FROM \"countries\"), 0), 0) + 1, false);"
+    SELECT setval(pg_get_serial_sequence('countries', 'id'), \
+    GREATEST(COALESCE((SELECT MAX(\"id\") FROM \"countries\"), 0), 0) + 1, false);"
         );
     }
 
@@ -4325,15 +4325,15 @@ mod tests {
         assert_eq!(
             sql.up,
             "ALTER TABLE \"posts\" ADD CONSTRAINT \"posts_author_id_fkey\" \
-             FOREIGN KEY (\"author_id\") REFERENCES \"users\" (\"id\") \
-             ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;"
+    FOREIGN KEY (\"author_id\") REFERENCES \"users\" (\"id\") \
+    ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;"
         );
     }
 
     #[test]
     fn drop_foreign_key_rollback_recreates_constraint_with_cascade() {
         // DropForeignKey now carries the full ForeignKeySchema so the
-        // rollback recreates the FK with the original `ON DELETE ...`
+        // rollback recreates the FK with the original `ON DELETE...`
         // clause — no comment-only down side.
         let sql = emit_drop_foreign_key(
             "posts",
@@ -4500,14 +4500,14 @@ mod tests {
         assert_eq!(
             sql.up,
             "ALTER TABLE \"herd_ranges\" ADD CONSTRAINT \
-             \"herd_ranges_herd_id_country_id_season_key\" UNIQUE \
-             (\"herd_id\", \"country_id\", \"season\");",
+    \"herd_ranges_herd_id_country_id_season_key\" UNIQUE \
+    (\"herd_id\", \"country_id\", \"season\");",
             "UniqueConstraint must use ALTER TABLE ADD CONSTRAINT form"
         );
         assert_eq!(
             sql.down,
             "ALTER TABLE \"herd_ranges\" DROP CONSTRAINT \
-             \"herd_ranges_herd_id_country_id_season_key\";",
+    \"herd_ranges_herd_id_country_id_season_key\";",
             "UniqueConstraint down must use ALTER TABLE DROP CONSTRAINT form"
         );
         assert!(
@@ -4554,7 +4554,7 @@ mod tests {
         assert_eq!(
             sql.up,
             "ALTER TABLE \"elephant_ancestries\" DROP CONSTRAINT \
-             \"elephant_ancestries_elephant_id_ancestor_id_depth_key\";",
+    \"elephant_ancestries_elephant_id_ancestor_id_depth_key\";",
             "DropConstraintUnique up must use ALTER TABLE DROP CONSTRAINT"
         );
         // Down side must recreate via ADD CONSTRAINT (not CREATE UNIQUE INDEX).
@@ -4859,13 +4859,13 @@ mod tests {
         let sql = emit_add_enum_variant("status", "archived", None);
         assert_eq!(sql.up, "ALTER TYPE \"status\" ADD VALUE 'archived';");
         // Postgres has no DROP VALUE — rollback is lossy.
-        assert!(sql.down.contains("no `ALTER TYPE ... DROP VALUE`"));
+        assert!(sql.down.contains("no `ALTER TYPE... DROP VALUE`"));
     }
 
     #[test]
     fn add_enum_variant_with_before_anchor_emits_before_clause() {
         // An anchor in `Before` direction must produce
-        // `ALTER TYPE ... ADD VALUE 'new' BEFORE 'anchor';`.
+        // `ALTER TYPE... ADD VALUE 'new' BEFORE 'anchor';`.
         let anchor = EnumVariantAnchor {
             variant: "deleted".to_string(),
             kind: EnumVariantAnchorKind::Before,
@@ -5099,7 +5099,7 @@ mod tests {
         assert_eq!(
             op.up,
             "ALTER TABLE \"bookings\" ADD CONSTRAINT \"no_overlap\" \
-             EXCLUDE USING gist (room_id WITH =, period WITH &&);",
+    EXCLUDE USING gist (room_id WITH =, period WITH &&);",
         );
         assert_eq!(
             op.down,
@@ -5192,11 +5192,11 @@ mod tests {
             },
         );
         assert!(
-            sql.up
-                .contains("ALTER TABLE \"users\" ALTER COLUMN \"email_lower\" SET EXPRESSION AS (LOWER(TRIM(email)));"),
-            "expression change must emit SET EXPRESSION AS for PG 17+: {}",
-            sql.up
-        );
+   sql.up
+   .contains("ALTER TABLE \"users\" ALTER COLUMN \"email_lower\" SET EXPRESSION AS (LOWER(TRIM(email)));"),
+   "expression change must emit SET EXPRESSION AS for PG 17+: {}",
+   sql.up
+  );
         assert!(
             !sql.up.contains("DROP COLUMN"),
             "must not emit destructive DROP COLUMN for in-place expression change: {}",
@@ -5208,11 +5208,11 @@ mod tests {
             sql.up
         );
         assert!(
-            sql.down
-                .contains("ALTER TABLE \"users\" ALTER COLUMN \"email_lower\" SET EXPRESSION AS (LOWER(email));"),
-            "down side must restore the prior expression in place: {}",
-            sql.down
-        );
+   sql.down
+   .contains("ALTER TABLE \"users\" ALTER COLUMN \"email_lower\" SET EXPRESSION AS (LOWER(email));"),
+   "down side must restore the prior expression in place: {}",
+   sql.down
+  );
         // The change rewrites every row under AccessExclusiveLock
         // structurally offline — but the down side cleanly restores
         // the prior expression. No lossy marker.
@@ -5365,12 +5365,12 @@ mod tests {
         assert_eq!(ops.len(), 1, "expected a single AlterColumn statement");
         let op = &ops[0];
         assert!(
-            op.up.contains(
-                "ALTER TABLE \"users\" ALTER COLUMN \"email_lower\" SET EXPRESSION AS (LOWER(TRIM(email)));"
-            ),
-            "end-to-end emit must use the in-place PG 17+ form: {}",
-            op.up
-        );
+   op.up.contains(
+    "ALTER TABLE \"users\" ALTER COLUMN \"email_lower\" SET EXPRESSION AS (LOWER(TRIM(email)));"
+   ),
+   "end-to-end emit must use the in-place PG 17+ form: {}",
+   op.up
+  );
         assert!(
             !op.up.contains("DROP COLUMN"),
             "no destructive DROP COLUMN: {}",
@@ -5462,12 +5462,12 @@ mod tests {
         assert_eq!(
             storage.up,
             "ALTER TABLE \"widgets\" RESET (fillfactor);\n\
-             ALTER TABLE \"widgets\" SET (fillfactor=70, autovacuum_enabled=false);"
+    ALTER TABLE \"widgets\" SET (fillfactor=70, autovacuum_enabled=false);"
         );
         assert_eq!(
             storage.down,
             "ALTER TABLE \"widgets\" RESET (fillfactor, autovacuum_enabled);\n\
-             ALTER TABLE \"widgets\" SET (fillfactor=80);"
+    ALTER TABLE \"widgets\" SET (fillfactor=80);"
         );
 
         let tablespace = lower_operation(&SchemaOperation::SetTablespace {
@@ -5536,12 +5536,12 @@ mod tests {
         assert_eq!(
             storage.up,
             "ALTER TABLE \"widgets\" RESET (fillfactor, autovacuum_enabled);\n\
-             ALTER TABLE \"widgets\" SET (fillfactor=70);"
+    ALTER TABLE \"widgets\" SET (fillfactor=70);"
         );
         assert_eq!(
             storage.down,
             "ALTER TABLE \"widgets\" RESET (fillfactor);\n\
-             ALTER TABLE \"widgets\" SET (fillfactor=80, autovacuum_enabled=true);"
+    ALTER TABLE \"widgets\" SET (fillfactor=80, autovacuum_enabled=true);"
         );
     }
 

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 // Test models — HeerId (default PK)
 // ---------------------------------------------------------------------------
 
-//  flipped the default `pk` to `HeerIdRecencyBiased`
+// flipped the default `pk` to `HeerIdRecencyBiased`
 // (internal `HeerIdDesc`). This test exercises the ascending-HeerId path
 // explicitly — it asserts `PkType::HeerId`, `id sql_type == BigInt`, and
 // `row.id.as_i64() > 0`. Pin the declaration so the flip doesn't silently
@@ -25,7 +25,7 @@ pub struct Post {
 // FromPgRow test ()
 // ---------------------------------------------------------------------------
 //
-//  replaced the macro-emitted `sqlx::FromRow` impl with
+// replaced the macro-emitted `sqlx::FromRow` impl with
 // `FromPgRow` (ordinal decode + debug-build column-name guard). This
 // test round-trips a row through `Post::create` so it exercises the
 // full path (INSERT + `RETURNING <COLUMN_LIST>` + positional decode)
@@ -328,8 +328,8 @@ async fn create_with_id_is_idempotent(mut ctx: djogi::DjogiContext) {
 #[djogi::djogi_test(sync_models = [Post, Tag, Event, Product])]
 async fn crud_respects_transaction_boundary(mut ctx: djogi::DjogiContext) {
     // Proves BOTH sides of the transaction boundary:
-    //   (a) commit path  — Post::create'd row IS visible after commit
-    //   (b) rollback path — Post::create'd row is NOT visible after rollback
+    //  (a) commit path — Post::create'd row IS visible after commit
+    //  (b) rollback path — Post::create'd row is NOT visible after rollback
     //
     // Earlier revision only tested (b) which is a false positive: an
     // uncommitted transaction's row wouldn't be visible to the pool's other
@@ -527,7 +527,7 @@ fn varchar_max_length_descriptor_and_ddl_shape() {
 }
 
 // ==========================================================================
-// TASK 10 — rich field types (Decimal, Vec<T>, time::Date, Option<String>)
+// 0 — rich field types (Decimal, Vec<T>, time::Date, Option<String>)
 // ==========================================================================
 
 use rust_decimal::Decimal;

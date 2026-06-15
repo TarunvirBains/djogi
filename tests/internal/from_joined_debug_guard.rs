@@ -15,13 +15,13 @@ async fn from_joined_pg_row_debug_guard_rejects_missing_old_alias(mut ctx: djogi
     let row = ctx
         .__query_one_for_macros(
             "SELECT \
-                1::bigint AS id, \
-                now() AS created_at, \
-                now() AS updated_at, \
-                'Guarded Title'::text AS title, \
-                'Guarded Body'::text AS body, \
-                false AS published, \
-                5::integer AS view_count",
+        1::bigint AS id, \
+        now() AS created_at, \
+        now() AS updated_at, \
+        'Guarded Title'::text AS title, \
+        'Guarded Body'::text AS body, \
+        false AS published, \
+        5::integer AS view_count",
             &[],
         )
         .await

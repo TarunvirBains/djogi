@@ -8,40 +8,40 @@
 // surface:
 //
 // 1. **`DeferScope::All` defers every deferrable constraint in the
-//    open transaction.** Emits `SET CONSTRAINTS ALL DEFERRED` and
-//    runs to completion against a model with one deferrable FK.
+//  open transaction.** Emits `SET CONSTRAINTS ALL DEFERRED` and
+//  runs to completion against a model with one deferrable FK.
 //
 // 2. **`DeferScope::Named(&["..."])` defers a single named
-//    constraint** after validating the name against the model
-//    descriptor inventory.
+//  constraint** after validating the name against the model
+//  descriptor inventory.
 //
 // 3. **Unknown name validation** — `Named` with a name that does
-//    not match any registered FK raises
-//    `DjogiError::UnknownConstraintName` BEFORE the SQL flies.
+//  not match any registered FK raises
+//  `DjogiError::UnknownConstraintName` BEFORE the SQL flies.
 //
 // 4. **`set_constraints_immediate` reverses the flip mid-transaction.**
-//    Mirror of `defer_constraints`; same pool-rejection invariant.
+//  Mirror of `defer_constraints`; same pool-rejection invariant.
 //
 // 5. **Pool-backed rejection** — calling either helper on a pool-
-//    backed context raises
-//    `DjogiError::ConstraintModeOutsideTransaction`.
+//  backed context raises
+//  `DjogiError::ConstraintModeOutsideTransaction`.
 //
 // 6. **Empty `Named(&[])` rejection** — both `defer_constraints` and
-//    `set_constraints_immediate` reject the empty-list shape with a
-//    typed `EmptyDeferConstraintsScope` error before SQL composition.
-//    (GPT-5.5 xhigh follow-up for djogi#169.)
+//  `set_constraints_immediate` reject the empty-list shape with a
+//  typed `EmptyDeferConstraintsScope` error before SQL composition.
+//  (a high-severity review xhigh follow-up for djogi#169.)
 //
 // 7. **Runtime deferral proof on `DEFERRABLE INITIALLY IMMEDIATE`
-//    FK** — the canonical positive control. A model declares an FK
-//    as `#[field(deferrable)]` only (no `initially_deferred`), so
-//    Postgres emits the constraint with `DEFERRABLE INITIALLY
-//    IMMEDIATE`. Without a runtime `SET CONSTRAINTS ALL DEFERRED`
-//    the FK violates on the first row of a cycle; WITH the runtime
-//    flip the cycle commits cleanly. This is what proves the
-//    typed surface actually issues working `SET CONSTRAINTS` SQL
-//    — the prior coverage used `#[field(deferrable, initially_deferred)]`
-//    where the runtime call is a no-op against an already-deferred FK.
-//    (GPT-5.5 xhigh follow-up for djogi#169.)
+//  FK** — the canonical positive control. A model declares an FK
+//  as `#[field(deferrable)]` only (no `initially_deferred`), so
+//  Postgres emits the constraint with `DEFERRABLE INITIALLY
+//  IMMEDIATE`. Without a runtime `SET CONSTRAINTS ALL DEFERRED`
+//  the FK violates on the first row of a cycle; WITH the runtime
+//  flip the cycle commits cleanly. This is what proves the
+//  typed surface actually issues working `SET CONSTRAINTS` SQL
+//  — the prior coverage used `#[field(deferrable, initially_deferred)]`
+//  where the runtime call is a no-op against an already-deferred FK.
+//  (a high-severity review xhigh follow-up for djogi#169.)
 //
 // The compile-time pin for `DeferScope::All` against a model with
 // no FKs lives in
@@ -53,9 +53,9 @@
 //
 // - djogi#169 issue body (closing-condition checklist).
 // - `docs/guide/transactions.md` §"Deferred constraints —
-//   `defer_constraints`".
+//  `defer_constraints`".
 // - `feedback_djogi_local_postgres.md` — `#[djogi_test]` provisions a
-//   fresh DB per test.
+//  fresh DB per test.
 
 use djogi::prelude::*;
 use djogi::transaction::{DeferScope, atomic};
@@ -151,7 +151,7 @@ async fn defer_constraints_named_validates_and_emits(mut ctx: djogi::DjogiContex
     atomic(&mut ctx, |ctx| {
         Box::pin(async move {
             // The constraint name follows the standard FK convention:
-            //   `<table>_<column>_fkey` = `djogi_defer_nodes_peer_id_fkey`
+            //  `<table>_<column>_fkey` = `djogi_defer_nodes_peer_id_fkey`
             // The validator routes through
             // `crate::migrate::sql::fk_constraint_name`, so this
             // exact name must round-trip the inventory lookup
@@ -247,12 +247,12 @@ async fn defer_constraints_rejects_pool_backed_context(mut ctx: djogi::DjogiCont
 }
 
 // ---------------------------------------------------------------------------
-// GPT-5.5 xhigh follow-up: Named(&[]) rejection.
+// a high-severity review xhigh follow-up: Named(&[]) rejection.
 // ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [DeferNode])]
 async fn defer_constraints_rejects_empty_named_scope(mut ctx: djogi::DjogiContext) {
-    // `DeferScope::Named(&[])` would compose `SET CONSTRAINTS  DEFERRED`
+    // `DeferScope::Named(&[])` would compose `SET CONSTRAINTS DEFERRED`
     // (note: empty name list between the keyword and the mode). Postgres
     // would raise `42601` (syntax error) after a network round trip.
     // The framework must reject synchronously with a typed error before
@@ -287,7 +287,7 @@ async fn defer_constraints_rejects_empty_named_scope(mut ctx: djogi::DjogiContex
 }
 
 // ---------------------------------------------------------------------------
-// GPT-5.5 xhigh follow-up: runtime-deferral proof on an
+// a high-severity review xhigh follow-up: runtime-deferral proof on an
 // `DEFERRABLE INITIALLY IMMEDIATE` FK.
 //
 // The model `ImmediateDeferNode` declares a self-FK with just
@@ -297,14 +297,14 @@ async fn defer_constraints_rejects_empty_named_scope(mut ctx: djogi::DjogiContex
 // form a positive/negative pair:
 //
 // - The negative control inserts a self-cycle inside an `atomic()`
-//   WITHOUT calling `defer_constraints(All)`. The first row references
-//   a not-yet-existing peer, so Postgres raises FK violation `23503`
-//   on the first INSERT. This proves the FK is genuinely IMMEDIATE.
+//  WITHOUT calling `defer_constraints(All)`. The first row references
+//  a not-yet-existing peer, so Postgres raises FK violation `23503`
+//  on the first INSERT. This proves the FK is genuinely IMMEDIATE.
 //
 // - The positive case inserts the same cycle inside the same `atomic()`
-//   shape but calls `defer_constraints(All)` first. The runtime flip
-//   moves the FK to DEFERRED for the remainder of the transaction; the
-//   cycle commits cleanly when both peers exist at COMMIT.
+//  shape but calls `defer_constraints(All)` first. The runtime flip
+//  moves the FK to DEFERRED for the remainder of the transaction; the
+//  cycle commits cleanly when both peers exist at COMMIT.
 //
 // Without a working `SET CONSTRAINTS ALL DEFERRED` emission, the
 // positive test would FK-violate the same way the negative one does.
@@ -372,7 +372,7 @@ async fn immediate_fk_cycle_fails_without_runtime_defer(mut ctx: djogi::DjogiCon
             assert_eq!(
                 code, "23503",
                 "expected SQLSTATE 23503 (foreign_key_violation), got {code:?} \
-                 (full message: {db_err})",
+         (full message: {db_err})",
             );
         }
         other => panic!("expected DjogiError::Db with SQLSTATE 23503, got {other:?}"),
@@ -444,7 +444,7 @@ async fn immediate_fk_cycle_succeeds_with_runtime_defer(mut ctx: djogi::DjogiCon
     .await
     .expect(
         "defer_constraints(All) MUST flip the INITIALLY IMMEDIATE FK to DEFERRED at runtime; \
-         a no-op runtime call would FK-violate on the first INSERT same as the negative test",
+     a no-op runtime call would FK-violate on the first INSERT same as the negative test",
     );
 
     let count = ImmediateDeferNode::objects()

@@ -38,41 +38,41 @@
 //! in `Q::Compound`. Mixed-operand compositions (at least one side is
 //! not `Q::Portable`) lift to:
 //! - `Q::Compound { op: And | Or, parts: Vec<Q<T>> }` for the
-//!   associative operators (And/Or). Flattens on construction:
-//!   `(a & b) & c` produces a 3-element `parts` Vec rather than a
-//!   nested binary tree.
+//! associative operators (And/Or). Flattens on construction:
+//! `(a & b) & c` produces a 3-element `parts` Vec rather than a
+//! nested binary tree.
 //! - `Q::Xor(Box<Q<T>>, Box<Q<T>>)` for XOR — non-associative, so
-//!   flattening would silently re-associate. Mirrors Sassi's
-//!   `BasicPredicate::Xor(Box, Box)` shape.
+//! flattening would silently re-associate. Mirrors Sassi's
+//! `BasicPredicate::Xor(Box, Box)` shape.
 //! - `Q::Negated(Box<Q<T>>)` for NOT over non-Portable operands.
-//!   Pure-Portable negation rides Sassi's `Not` (which collapses
-//!   double-negation in place); mixed wraps. `!Q::Negated(inner)`
-//!   collapses to `*inner` to avoid stacked `NOT NOT` SQL.
+//! Pure-Portable negation rides Sassi's `Not` (which collapses
+//! double-negation in place); mixed wraps. `!Q::Negated(inner)`
+//! collapses to `*inner` to avoid stacked `NOT NOT` SQL.
 //! ## FTS and spatial route through `Q::Expression`
 //! Spec §8e bullet 1 lists `Q::FullText` and `Q::Spatial` as named
 //! variants. The shipped design subsumes both into `Q::Expression`
 //! because:
 //! - `FtsFieldRef::matches(q) -> Condition` already produces
-//!   `Condition::Expr(Expr::from_node(ExprNode::TsMatch { … }))`. There
-//!   is no FTS-specific predicate type to wrap; the expression
-//!   IR carries the full FTS payload (column, dictionary, query text).
+//! `Condition::Expr(Expr::from_node(ExprNode::TsMatch { … }))`. There
+//! is no FTS-specific predicate type to wrap; the expression
+//! IR carries the full FTS payload (column, dictionary, query text).
 //! - Every spatial predicate method (`within_km`, `intersects`,
-//!   `covers`, `bounded_by`, `dwithin_km`) returns
-//!   `Condition::Expr(Expr::from_node(ExprNode::Spatial(SpatialExpr::…)))`.
-//!   Same observation: the typed wrapper would carry the same payload
-//!   as `Expr<bool>` without adding any compile-time guarantees.
-//!   Adding stub `Q::FullText` / `Q::Spatial` variants whose only job is
-//!   to carry an `Expr<bool>` would split one escape hatch across three
-//!   variants without buying type safety. The lens (six axes per
-//!   `feedback_decision_priorities.md`) lands cleanly here: idiomatic
-//!   Rust + simple-to-use both prefer the smaller variant set, and no
-//!   axis pulls the other direction (scalability / completeness /
-//!   security / production-stability are all neutral on the choice).
-//!   If a future refactor surfaces a typed FTS / spatial wrapper that
-//!   captures information the expression IR does not (e.g. typed
-//!   coordinate-system metadata for spatial), the variants can be added
-//!   at that point — `Q<T>` is `#[non_exhaustive]`, so adding variants
-//!   is non-breaking.
+//! `covers`, `bounded_by`, `dwithin_km`) returns
+//! `Condition::Expr(Expr::from_node(ExprNode::Spatial(SpatialExpr::…)))`.
+//! Same observation: the typed wrapper would carry the same payload
+//! as `Expr<bool>` without adding any compile-time guarantees.
+//! Adding stub `Q::FullText` / `Q::Spatial` variants whose only job is
+//! to carry an `Expr<bool>` would split one escape hatch across three
+//! variants without buying type safety. The lens (six axes per
+//! `feedback_decision_priorities.md`) lands cleanly here: idiomatic
+//! Rust + simple-to-use both prefer the smaller variant set, and no
+//! axis pulls the other direction (scalability / completeness /
+//! security / production-stability are all neutral on the choice).
+//! If a future refactor surfaces a typed FTS / spatial wrapper that
+//! captures information the expression IR does not (e.g. typed
+//! coordinate-system metadata for spatial), the variants can be added
+//! at that point — `Q<T>` is `#[non_exhaustive]`, so adding variants
+//! is non-breaking.
 //! # The §660 split — Rust-evaluable vs SQL-only
 //! Per spec §8e bullet 6 (`docs/spec/implementation-plan.md:660`): the
 //! 15 Rust-evaluable lookup operators (`Eq`, `Neq`, `Gt`, `Gte`, `Lt`,
@@ -149,7 +149,7 @@ pub enum Q<T: Model> {
     Ilike(FieldRef<T, String>, String),
 
     /// JSONB-path leaf — wraps the existing
-    /// [`crate::jsonb::path::JsonbPathLeaf`] from .
+    /// [`crate::jsonb::path::JsonbPathLeaf`] from.
     JsonbPath(crate::jsonb::path::JsonbPathLeaf),
 
     /// Postgres POSIX regex — `col ~ $1` (case-sensitive when the
@@ -182,22 +182,22 @@ pub enum Q<T: Model> {
     /// Adopters do not normally construct this variant by hand. It
     /// exists so:
     /// - The legacy [`QuerySet::filter`] / [`QuerySet::exclude`]
-    ///   closure API (which returns `Condition` from `FieldRef::eq` /
-    ///   `gt` / `ilike` / etc.) keeps compiling unchanged.
+    /// closure API (which returns `Condition` from `FieldRef::eq` /
+    /// `gt` / `ilike` / etc.) keeps compiling unchanged.
     /// - The [`crate::query::filter::ModelFilter`] programmatic
-    ///   builder uses this variant for clauses that cannot be safely
-    ///   reconstructed as portable Q leaves.
+    /// builder uses this variant for clauses that cannot be safely
+    /// reconstructed as portable Q leaves.
     /// - Other subsystems (`default_filter_condition`, etc.) that
-    ///   still produce `Condition` can compose with `Q<T>` without a
-    ///   parallel rewrite.
-    ///   The variant is `pub` for cross-crate macro emission but is
-    ///   effectively an implementation detail. Code that constructs it
-    ///   directly is signalling "I have a typed-leaf path that the
-    ///   public `Q<T>` algebra doesn't yet cover" — the long-term
-    ///   answer is to extend the public algebra rather than reach
-    ///   through here.
-    ///   [`QuerySet::filter`]: crate::query::QuerySet::filter
-    ///   [`QuerySet::exclude`]: crate::query::QuerySet::exclude
+    /// still produce `Condition` can compose with `Q<T>` without a
+    /// parallel rewrite.
+    /// The variant is `pub` for cross-crate macro emission but is
+    /// effectively an implementation detail. Code that constructs it
+    /// directly is signalling "I have a typed-leaf path that the
+    /// public `Q<T>` algebra doesn't yet cover" — the long-term
+    /// answer is to extend the public algebra rather than reach
+    /// through here.
+    /// [`QuerySet::filter`]: crate::query::QuerySet::filter
+    /// [`QuerySet::exclude`]: crate::query::QuerySet::exclude
     Condition(Condition),
 
     /// Mixed-operand And/Or — at least one side is not pure
@@ -787,7 +787,7 @@ pub(crate) fn q_to_condition<T: Model>(q: Q<T>) -> Condition {
         #[allow(unreachable_patterns)]
         _ => panic!(
             "djogi internal: unhandled Q<T> variant in q_to_condition — \
-             update the bridge when a new variant is added."
+    update the bridge when a new variant is added."
         ),
     }
 }
@@ -800,22 +800,22 @@ pub(crate) fn q_to_condition<T: Model>(q: Q<T>) -> Condition {
 /// `List` for `In` / `NotIn`, `Pair` for `Between`, etc.) from the
 /// erased payload requires either:
 /// 1. A model-side type registry mapping `(field_name, LookupOp)` to
-///    the concrete value type, OR
+/// the concrete value type, OR
 /// 2. Each construction site lifting the value into [`FilterValue`]
-///    before reaching the bridge.
-///    Option 2 is the path djogi uses today — every typed `FieldRef`
-///    lookup method (`eq`, `gt`, `ilike`, `between`, `in_list`, …)
-///    returns [`Condition`] directly, so the
-///    `BasicPredicate::Field(_)` arm of this match is **not reachable**
-///    from any djogi FieldRef API. A future
-///    integration that lifts FieldRef methods to `BasicPredicate` (per
-///    the §660 split's forward-looking direction) would extend this arm with the
-///    `(field_name, op, value_as<V>())` reconstruction.
-///    Today the arm logs a debug-only warning and lowers to
-///    `Condition::True` (vacuous-truth identity). The SQL-parity
-///    SQL-parity guarantee is unaffected because no shipped code path
-///    produces a `BasicPredicate::Field(_)` that flows through this
-///    bridge.
+/// before reaching the bridge.
+/// Option 2 is the path djogi uses today — every typed `FieldRef`
+/// lookup method (`eq`, `gt`, `ilike`, `between`, `in_list`, …)
+/// returns [`Condition`] directly, so the
+/// `BasicPredicate::Field(_)` arm of this match is **not reachable**
+/// from any djogi FieldRef API. A future
+/// integration that lifts FieldRef methods to `BasicPredicate` (per
+/// the §660 split's forward-looking direction) would extend this arm with the
+/// `(field_name, op, value_as<V>())` reconstruction.
+/// Today the arm logs a debug-only warning and lowers to
+/// `Condition::True` (vacuous-truth identity). The SQL-parity
+/// SQL-parity guarantee is unaffected because no shipped code path
+/// produces a `BasicPredicate::Field(_)` that flows through this
+/// bridge.
 fn basic_predicate_to_condition<T: Model>(bp: BasicPredicate<T>) -> Condition {
     match bp {
         BasicPredicate::True => Condition::True,
@@ -852,11 +852,11 @@ fn basic_predicate_to_condition<T: Model>(bp: BasicPredicate<T>) -> Condition {
             // `Condition::Leaf` reconstruction.
             panic!(
                 "djogi internal: cannot lower BasicPredicate::Field to \
-                 Condition — FieldPredicate is pub(crate) in sassi. No djogi \
-                 FieldRef API constructs this variant; reaching this panic \
-                 means a future cluster must expose the sassi constructor. \
-                 Use the closure-based filter API (QuerySet::filter) or \
-                 Q<T> directly."
+     Condition — FieldPredicate is pub(crate) in sassi. No djogi \
+     FieldRef API constructs this variant; reaching this panic \
+     means a future cluster must expose the sassi constructor. \
+     Use the closure-based filter API (QuerySet::filter) or \
+     Q<T> directly."
             )
         }
         // `#[non_exhaustive]` catch-all for future sassi BasicPredicate variants.
@@ -865,8 +865,8 @@ fn basic_predicate_to_condition<T: Model>(bp: BasicPredicate<T>) -> Condition {
         #[allow(unreachable_patterns)]
         _ => panic!(
             "djogi internal: unhandled BasicPredicate variant in \
-             basic_predicate_to_condition — update the bridge when sassi \
-             adds a new variant."
+    basic_predicate_to_condition — update the bridge when sassi \
+    adds a new variant."
         ),
     }
 }
@@ -953,7 +953,7 @@ pub(crate) fn q_to_condition_ref<T: Model>(q: &Q<T>) -> Condition {
         #[allow(unreachable_patterns)]
         _ => panic!(
             "djogi internal: unhandled Q<T> variant in q_to_condition_ref — \
-             update the bridge when a new variant is added."
+    update the bridge when a new variant is added."
         ),
     }
 }
@@ -981,15 +981,15 @@ fn basic_predicate_ref_to_condition<T: Model>(bp: &BasicPredicate<T>) -> Conditi
             // `Condition::True`. See the owned bridge for the full explanation.
             panic!(
                 "djogi internal: cannot lower BasicPredicate::Field to \
-                 Condition (by-ref path) — FieldPredicate is pub(crate) in \
-                 sassi. Use the closure-based filter API or Q<T> directly."
+     Condition (by-ref path) — FieldPredicate is pub(crate) in \
+     sassi. Use the closure-based filter API or Q<T> directly."
             )
         }
         #[allow(unreachable_patterns)]
         _ => panic!(
             "djogi internal: unhandled BasicPredicate variant in \
-             basic_predicate_ref_to_condition — update the bridge when \
-             sassi adds a new variant."
+    basic_predicate_ref_to_condition — update the bridge when \
+    sassi adds a new variant."
         ),
     }
 }
@@ -1216,7 +1216,7 @@ mod tests {
                 assert!(matches!(parts[0], Q::Portable(_)));
                 assert!(matches!(parts[1], Q::Negated(_)));
             }
-            other => panic!("expected Q::Compound{{op: And, ..}}, got {other:?}"),
+            other => panic!("expected Q::Compound{{op: And,..}}, got {other:?}"),
         }
     }
 
@@ -1234,7 +1234,7 @@ mod tests {
                 op: CompoundOp::And,
                 parts,
             } => assert_eq!(parts.len(), 3, "expected flat 3-element parts"),
-            other => panic!("expected Q::Compound{{op: And, ..}}, got {other:?}"),
+            other => panic!("expected Q::Compound{{op: And,..}}, got {other:?}"),
         }
     }
 
@@ -1249,7 +1249,7 @@ mod tests {
                 op: CompoundOp::Or,
                 parts,
             } => assert_eq!(parts.len(), 4),
-            other => panic!("expected Q::Compound{{op: Or, ..}}, got {other:?}"),
+            other => panic!("expected Q::Compound{{op: Or,..}}, got {other:?}"),
         }
     }
 
@@ -1417,7 +1417,7 @@ mod tests {
         match composed {
             Q::Xor(lhs, rhs) => {
                 // Left half: the AND result. With one Portable and one
-                // Negated, mixed-AND lifts to Q::Compound{op: And, ..}.
+                // Negated, mixed-AND lifts to Q::Compound{op: And,..}.
                 assert!(matches!(
                     *lhs,
                     Q::Compound {
@@ -1440,7 +1440,7 @@ mod tests {
     /// When all operands are `Q::Portable(...)`, the `BitAnd`/`BitOr`/`BitXor`
     /// impls delegate to Sassi's `BasicPredicate` operators (via the trusted
     /// wrapper), producing a
-    /// `Q::Portable(PortablePredicate::Or([Xor(And([...]), ...), ...]))`
+    /// `Q::Portable(PortablePredicate::Or([Xor(And([...]),...),...]))`
     /// tree. Checking the inner `BasicPredicate` structure verifies precedence.
     /// Locking this prevents a future operator-impl rewrite from silently
     /// changing associativity without this test catching it.

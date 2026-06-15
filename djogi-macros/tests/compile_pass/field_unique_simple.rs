@@ -9,8 +9,8 @@ use djogi::prelude::*;
 #[model(table = "users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(unique)]
-    pub email: String,
+ #[field(unique)]
+ pub email: String,
 }
 
 fn main() {}

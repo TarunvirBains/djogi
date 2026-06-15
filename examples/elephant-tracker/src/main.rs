@@ -69,7 +69,7 @@ enum DemoCmd {
         max_depth: i32,
         /// Switch from raw recursive-CTE SQL to the typed
         /// `tree_descendants(ElephantRelated::mother(), id)` builder
-        /// from Phase 8-Zero Cluster B. Compose with `--order` to
+        /// from. Compose with `--order` to
         /// pick BFS / DFS traversal.
         #[arg(long, default_value_t = false)]
         typed: bool,
@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
 
     let database_url = std::env::var("DATABASE_URL").context(
         "DATABASE_URL must be set, e.g. \
-         postgres://djogi:djogi@localhost:5432/djogi_test",
+  postgres://djogi:djogi@localhost:5432/djogi_test",
     )?;
 
     let heer_node_id = std::env::var("HEER_NODE_ID")
@@ -160,7 +160,7 @@ async fn main() -> Result<()> {
                     client
                         .execute(
                             "SELECT set_config('heer.node_id', $1, false), \
-                                    set_config('heer.ranj_node_id', $1, false)",
+     set_config('heer.ranj_node_id', $1, false)",
                             &[&heer_node_id],
                         )
                         .await

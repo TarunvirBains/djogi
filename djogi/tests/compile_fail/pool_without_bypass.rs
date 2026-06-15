@@ -1,5 +1,5 @@
 fn main() {
-    let _ = |ctx: djogi::DjogiContext| {
-        let _ = ctx.pool();
-    };
+ let _ = |ctx: djogi::DjogiContext| {
+  let _ = ctx.pool();
+ };
 }

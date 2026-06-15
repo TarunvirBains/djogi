@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Full-Text Search
 
@@ -17,12 +17,12 @@ Add `fts(source = "...", dictionary = "...")` to the `#[model]` attribute:
 use djogi::prelude::*;
 
 #[model(
-    table = "book",
-    fts(source = "title, body", dictionary = "english"),
+ table = "book",
+ fts(source = "title, body", dictionary = "english"),
 )]
 pub struct Book {
-    pub title: String,
-    pub body: String,
+ pub title: String,
+ pub body: String,
 }
 ```
 
@@ -43,10 +43,10 @@ Djogi's migration projection emits the following DDL for the model above:
 
 ```sql
 ALTER TABLE book
-  ADD COLUMN search TSVECTOR
-    GENERATED ALWAYS AS (
-      to_tsvector('english', title || ' ' || body)
-    ) STORED;
+ ADD COLUMN search TSVECTOR
+ GENERATED ALWAYS AS (
+ to_tsvector('english', title || ' ' || body)
+ ) STORED;
 
 CREATE INDEX book_search_gin ON book USING GIN (search);
 ```
@@ -66,9 +66,9 @@ Use it inside a `.filter()` closure:
 use djogi::prelude::*;
 
 let hits = Book::objects()
-    .filter(|b| b.search().matches(TsQuery::new("planet & earth")))
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|b| b.search().matches(TsQuery::new("planet & earth")))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 Generated SQL:
@@ -101,18 +101,18 @@ Use it in `.order_by()` to surface the most relevant results first:
 
 ```rust
 let hits = Book::objects()
-    .filter(|b| b.search().matches(TsQuery::new("planet & earth")))
-    .order_by(|b| {
-        b.search().rank(TsQuery::new("planet & earth")).desc()
-    })
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|b| b.search().matches(TsQuery::new("planet & earth")))
+.order_by(|b| {
+ b.search().rank(TsQuery::new("planet & earth")).desc()
+ })
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 Generated SQL:
 
 ```sql
-SELECT ...
+SELECT...
 FROM book
 WHERE search @@ to_tsquery('english', $1)
 ORDER BY ts_rank(search, to_tsquery('english', $1)) DESC
@@ -130,14 +130,14 @@ List all columns that contribute to search relevance in `source`:
 
 ```rust
 #[model(
-    table = "article",
-    fts(source = "title, subtitle, body, tags", dictionary = "english"),
+ table = "article",
+ fts(source = "title, subtitle, body, tags", dictionary = "english"),
 )]
 pub struct Article {
-    pub title: String,
-    pub subtitle: String,
-    pub body: String,
-    pub tags: String,
+ pub title: String,
+ pub subtitle: String,
+ pub body: String,
+ pub tags: String,
 }
 ```
 
@@ -178,12 +178,12 @@ expression embeds the dictionary name literally:
 
 ```sql
 search TSVECTOR GENERATED ALWAYS AS (
-    to_tsvector('english', title || ' ' || body)
+ to_tsvector('english', title || ' ' || body)
 ) STORED
 ```
 
 Altering it requires dropping and re-creating the generated column — a
-full re-index operation. Phase 6's migration differ detects this case via
+full re-index operation. 's migration differ detects this case via
 `FtsDescriptor` inequality and emits the appropriate `DROP COLUMN` /
 `ADD COLUMN` DDL.
 
@@ -212,14 +212,14 @@ a `JUSTIFICATION` comment; see
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): multi-table FTS ranking is not exposed by QuerySet.
 async fn ranked_book_search(mut ctx: DjogiContext) -> Result<Vec<BookSearchRow>, DjogiError> {
-    ctx.raw_query(
-        "SELECT b.id, b.title, ts_rank(b.search, q) AS score \
-         FROM book b, to_tsquery('english', $1) q \
-         WHERE b.search @@ q \
-         ORDER BY score DESC",
-        &[&"planet & earth" as &(dyn ToSql + Sync)],
-    )
-    .await
+ ctx.raw_query(
+ "SELECT b.id, b.title, ts_rank(b.search, q) AS score \
+  FROM book b, to_tsquery('english', $1) q \
+  WHERE b.search @@ q \
+  ORDER BY score DESC",
+ &[&"planet & earth" as &(dyn ToSql + Sync)],
+ )
+.await
 }
 ```
 
@@ -233,12 +233,12 @@ The following capabilities are **not yet implemented** and are deferred to
 later phases:
 
 - **Per-column weights** — `setweight(to_tsvector(...), 'A')` for title vs.
-  body. Planned for Phase 8.
+ body. Planned for.
 - **Custom generated column name** — always `"search"` today. A
-  `column = "..."` override in `fts(...)` lands in Phase 8.
+ `column = "..."` override in `fts(...)` lands in.
 - **`plainto_tsquery` / `phraseto_tsquery` builders** — only `to_tsquery`
-  is surfaced today. Use the deliberate raw SQL bypass for the other
-  query-construction functions.
+ is surfaced today. Use the deliberate raw SQL bypass for the other
+ query-construction functions.
 
 ---
 
@@ -247,9 +247,9 @@ later phases:
 `TsVector` and `TsQuery` are exported from `djogi::prelude::*`:
 
 - **`TsVector`** — a `TSVECTOR` column value decoded from Postgres. Appears
-  in `FromPgRow` when you explicitly SELECT the `search` column.
+ in `FromPgRow` when you explicitly SELECT the `search` column.
 - **`TsQuery`** — a query string you supply at call time:
-  `TsQuery::new("planet & earth")`.
+ `TsQuery::new("planet & earth")`.
 
 Both implement `postgres_types::{ToSql, FromSql}` against the `tsvector` /
 `tsquery` wire types (with a TEXT fallback for older `postgres-types` builds).

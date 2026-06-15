@@ -4,15 +4,15 @@
 //! `#[model]` (see `djogi-macros/src/model/from_row.rs`). Every model
 //! gets:
 //! - [`FromPgRow::COLUMNS`] — a `&'static [&'static str]` listing the
-//!   column names the macro baked in, in canonical SELECT order
-//!   (framework fields first: `id`, `created_at`, `updated_at`, then
-//!   user fields in declaration order).
+//! column names the macro baked in, in canonical SELECT order
+//! (framework fields first: `id`, `created_at`, `updated_at`, then
+//! user fields in declaration order).
 //! - [`FromPgRow::COLUMN_LIST`] — the same list joined with `", "`,
-//!   ready to interpolate into `SELECT {COLUMN_LIST} FROM t` and
-//!   `RETURNING {COLUMN_LIST}` SQL text.
+//! ready to interpolate into `SELECT {COLUMN_LIST} FROM t` and
+//! `RETURNING {COLUMN_LIST}` SQL text.
 //! - [`FromPgRow::from_pg_row`] — positional decode via
-//!   `row.try_get(0)`, `row.try_get(1)`, … matching the `COLUMNS`
-//!   order.
+//! `row.try_get(0)`, `row.try_get(1)`, … matching the `COLUMNS`
+//! order.
 //! # Why ordinal, not name-based
 //! Ordinal decode skips the per-call name-to-index hash table
 //! `tokio_postgres::Row::try_get::<_, &str>(col)` walks on every
@@ -46,16 +46,16 @@ use tokio_postgres::types::{FromSql, Type};
 /// # Contract
 /// Implementors must guarantee that:
 /// 1. [`COLUMNS`](Self::COLUMNS) lists fields in the exact order
-///    [`from_pg_row`](Self::from_pg_row) reads them from the row
-///    (ordinal position matches slice index).
+/// [`from_pg_row`](Self::from_pg_row) reads them from the row
+/// (ordinal position matches slice index).
 /// 2. [`COLUMN_LIST`](Self::COLUMN_LIST) equals
-///    [`COLUMNS`](Self::COLUMNS)`.join(", ")` — callers interpolate
-///    it into SQL text expecting exactly that shape.
+/// [`COLUMNS`](Self::COLUMNS)`.join(", ")` — callers interpolate
+/// it into SQL text expecting exactly that shape.
 /// 3. [`from_pg_row`](Self::from_pg_row) returns
-///    [`Err(DjogiError::Decode)`](crate::DjogiError::Decode) on any
-///    column-level type-conversion failure, not panic. (The
-///    debug_assert on column-name drift is a separate invariant
-///    violation and is allowed to panic.)
+/// [`Err(DjogiError::Decode)`](crate::DjogiError::Decode) on any
+/// column-level type-conversion failure, not panic. (The
+/// debug_assert on column-name drift is a separate invariant
+/// violation and is allowed to panic.)
 pub trait FromPgRow: Sized {
     /// Column names in the canonical SELECT order (framework fields
     /// first, then user fields).
@@ -72,8 +72,8 @@ pub trait FromPgRow: Sized {
     /// Interpolate directly into SQL text:
     /// ```ignore
     /// let sql = format!("SELECT {} FROM {} WHERE id = $1",
-    ///                   <User as FromPgRow>::COLUMN_LIST,
-    ///                   User::table_name());
+    ///     <User as FromPgRow>::COLUMN_LIST,
+    ///     User::table_name());
     /// ```
     const COLUMN_LIST: &'static str;
 
@@ -119,7 +119,7 @@ pub trait FromJoinedPgRow: Sized {
 /// Map a logical joined-field index to the SQL projection column name.
 /// Most joined projections use `"{prefix}{field_name}"` naming.
 /// For OLD/NEW pair returning, Djogi emits compact aliases (`o0`, `o1`, `n0`,
-/// `n1`, ...) and keeps runtime decoding stable across PostgreSQL identifier
+/// `n1`,...) and keeps runtime decoding stable across PostgreSQL identifier
 /// truncation boundaries.
 #[doc(hidden)]
 pub fn joined_alias_for_prefix(prefix: &str, idx: usize, col_name: &str) -> String {
@@ -344,8 +344,8 @@ where
 /// - values with a non-zero fractional part (`1.5`, `-0.1`, …)
 /// - negative values (`-1`)
 /// - values exceeding `u64::MAX` (`18_446_744_073_709_551_616`)
-///   Private helper — all four `decode_*_u64_from_decimal` variants delegate
-///   here so the rejection logic is in one place.
+/// Private helper — all four `decode_*_u64_from_decimal` variants delegate
+/// here so the rejection logic is in one place.
 fn decimal_to_u64(
     dec: rust_decimal::Decimal,
     col: impl std::fmt::Display,

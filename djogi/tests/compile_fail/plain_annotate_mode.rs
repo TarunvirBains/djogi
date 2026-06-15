@@ -6,9 +6,9 @@ use djogi::prelude::*;
 #[model(table = "phase85_aggregate89_plain_mode", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct PlainModeModel {
-    pub payment_method: i64,
+ pub payment_method: i64,
 }
 
 fn main() {
-    let _ = PlainModeModel::objects().annotate(|f| f.payment_method().mode());
+ let _ = PlainModeModel::objects().annotate(|f| f.payment_method().mode());
 }

@@ -46,35 +46,35 @@ All clones are at `/home/tarunvir/projects/<name>-reference/` and symlinked from
 
 ```
 docs/research/migrations/2026-04-22/
-├── README.md                                       # This file
-├── projects/                                       # Per-project source-read notes
-│   ├── django.md
-│   ├── alembic.md
-│   ├── sqlalchemy.md
-│   ├── flyway.md
-│   ├── liquibase.md
-│   ├── prisma.md
-│   ├── diesel.md
-│   ├── sea-orm.md
-│   ├── sea-query.md
-│   ├── refinery.md
-│   └── cot.md
-├── topics/                                         # Cross-cutting syntheses (written after projects/)
-│   ├── 01-source-of-truth-and-state.md
-│   ├── 02-ledger-schema.md
-│   ├── 03-checksums-and-repair.md
-│   ├── 04-advisory-locks-and-concurrency.md
-│   ├── 05-transactional-vs-non-transactional.md
-│   ├── 06-out-of-order-and-baseline.md
-│   ├── 07-rename-handling.md
-│   ├── 08-composite-uniques-and-indexes.md
-│   ├── 09-destructive-and-lossy-classification.md
-│   ├── 10-online-safe-staged-migrations.md
-│   ├── 11-diff-algorithms.md
-│   └── 12-rust-ecosystem-contrast.md
-├── 13-gap-analysis-vs-current-spec.md              # Maps findings against existing Djogi docs
-├── 14-locked-recommendations.md                    # Actionable proposal: adopt/reject/defer
-└── 15-synthesis-and-dissent.md                     # Convergence, divergence, open questions
+├── README.md                    # This file
+├── projects/                    # Per-project source-read notes
+│  ├── django.md
+│  ├── alembic.md
+│  ├── sqlalchemy.md
+│  ├── flyway.md
+│  ├── liquibase.md
+│  ├── prisma.md
+│  ├── diesel.md
+│  ├── sea-orm.md
+│  ├── sea-query.md
+│  ├── refinery.md
+│  └── cot.md
+├── topics/                     # Cross-cutting syntheses (written after projects/)
+│  ├── 01-source-of-truth-and-state.md
+│  ├── 02-ledger-schema.md
+│  ├── 03-checksums-and-repair.md
+│  ├── 04-advisory-locks-and-concurrency.md
+│  ├── 05-transactional-vs-non-transactional.md
+│  ├── 06-out-of-order-and-baseline.md
+│  ├── 07-rename-handling.md
+│  ├── 08-composite-uniques-and-indexes.md
+│  ├── 09-destructive-and-lossy-classification.md
+│  ├── 10-online-safe-staged-migrations.md
+│  ├── 11-diff-algorithms.md
+│  └── 12-rust-ecosystem-contrast.md
+├── 13-gap-analysis-vs-current-spec.md       # Maps findings against existing Djogi docs
+├── 14-locked-recommendations.md          # Actionable proposal: adopt/reject/defer
+└── 15-synthesis-and-dissent.md           # Convergence, divergence, open questions
 ```
 
 Reading order for a reviewer with limited time:
@@ -95,9 +95,9 @@ Reading order for a reviewer with limited time:
 1. **Every claim cites source.** Format: `path/inside/clone.py:LINE` or `path:LINE-LINE` for ranges. No uncited assertions.
 2. **Quote DDL verbatim.** For ledger tables, lock tables, and checksum formats, paraphrasing loses precision.
 3. **Label confidence.** Three levels:
-   - `high` — read the source code
-   - `medium` — read the test suite and inferred behaviour
-   - `low` — docs only, no source verification
+  - `high` — read the source code
+  - `medium` — read the test suite and inferred behaviour
+  - `low` — docs only, no source verification
 4. **No re-arguing locks silently.** If a finding contradicts a locked decision, surface it in `13-gap-analysis-vs-current-spec.md` with the evidence, then defer to the user.
 5. **Supersede-don't-delete the existing matrix.** The 2026-04-20 matrix is useful as a quick-lookup; this document links to it rather than replacing it.
 
@@ -154,9 +154,9 @@ Each `projects/*.md` file has the following sections:
 - Async model, type-safety surface, macro use, proc-macro use
 
 ## Lessons for Djogi
-- **Adopt:** ... (with source citation and rationale)
-- **Reject:** ... (with source citation and rationale)
-- **Defer:** ... (with criteria for revisit)
+- **Adopt:**... (with source citation and rationale)
+- **Reject:**... (with source citation and rationale)
+- **Defer:**... (with criteria for revisit)
 - **Surprises:** things that contradict or extend the current Djogi spec
 ```
 

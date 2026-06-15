@@ -1,7 +1,7 @@
 error: exclusion(...) requires `using = ".."` — index method (e.g. `"gist"`) is required
-  --> $DIR/exclusion_missing_using.rs:11:5
-   |
-11 |     exclusion(
-   |     ^^^^^^^^^
+ --> $DIR/exclusion_missing_using.rs:11:5
+ |
+11 |  exclusion(
+ |  ^^^^^^^^^
 
 error: aborting due to 1 previous error

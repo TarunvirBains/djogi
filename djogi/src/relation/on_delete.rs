@@ -1,8 +1,8 @@
 //! `OnDelete` — cascade semantics parsed from `#[field(on_delete = "...")]`
-//! and emitted into DDL by the migration layer .
+//! and emitted into DDL by the migration layer.
 //! Parses and stores the value on `FieldDescriptor`; DDL
-//! emission of the FK constraint happens when migrations land in .
-//! Does *not* emit `ON DELETE ...` in any runtime-issued SQL
+//! emission of the FK constraint happens when migrations land in.
+//! Does *not* emit `ON DELETE...` in any runtime-issued SQL
 //! FK enforcement is entirely a schema concern once the constraint is
 //! in place, and driving it from runtime would duplicate the contract
 //! badly.
@@ -34,7 +34,7 @@ pub enum OnDelete {
 
     /// `ON DELETE SET NULL` — sets the child's relation column to
     /// `NULL`. Only legal when the relation column is nullable; the
-    /// migration differ cross-checks this in .
+    /// migration differ cross-checks this in.
     SetNull,
 
     /// `ON DELETE SET DEFAULT` — sets the child's relation column to
@@ -70,7 +70,7 @@ impl Default for OnDelete {
 }
 
 impl OnDelete {
-    /// DDL fragment — used by the migration layer in . Not
+    /// DDL fragment — used by the migration layer in. Not
     /// used in any runtime query path.
     /// `Protect` aliases to `RESTRICT` at the SQL level — the alias
     /// only carries intent through the descriptor for future tooling

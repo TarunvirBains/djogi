@@ -6,38 +6,38 @@
 //! [`crate::query::field::FieldRef::as_expr`]) promote primitives and
 //! columns into `Expr<T>`, and typed methods on `Expr<T>` compose them:
 //! - [`Expr::eq`] / [`Expr::neq`] / [`Expr::gt`] / [`Expr::gte`] /
-//!   [`Expr::lt`] / [`Expr::lte`] — comparison, returning `Expr<bool>`.
+//! [`Expr::lt`] / [`Expr::lte`] — comparison, returning `Expr<bool>`.
 //! - `impl Add/Sub/Mul/Div for Expr<T> where T: Numeric` — arithmetic
-//!   in [`arithmetic`], gated on a sealed [`arithmetic::Numeric`] trait
-//!   so only framework-blessed numeric types compose. The blessed set
-//!   is `i16 / i32 / i64 / f32 / f64` for ; `Decimal` / `Interval`
-//!   extend the trait later.
-//!   The `Expr<bool>` produced by a comparison slots into the filter tree
-//!   via the [`crate::query::condition::Condition::Expr`] variant; the
-//!   [`crate::query::QuerySet::filter_expr`] entry point wires the closure
-//!   form to that bridge.
+//! in [`arithmetic`], gated on a sealed [`arithmetic::Numeric`] trait
+//! so only framework-blessed numeric types compose. The blessed set
+//! is `i16 / i32 / i64 / f32 / f64` for ; `Decimal` / `Interval`
+//! extend the trait later.
+//! The `Expr<bool>` produced by a comparison slots into the filter tree
+//! via the [`crate::query::condition::Condition::Expr`] variant; the
+//! [`crate::query::QuerySet::filter_expr`] entry point wires the closure
+//! form to that bridge.
 //! # Why this shape
 //! Two constraints drove the design:
 //! 1. **Typed composition, untyped walk.** Users should not be able to
-//!    build `Expr<String> + Expr<i32>` (nonsense addition) or compare
-//!    `Expr<i64>.eq(Expr<String>)` (type-mismatched equality). The
-//!    phantom `T` parameter on [`Expr<T>`] enforces those rules at
-//!    compile time. But the SQL emitter doesn't care about `T` — it
-//!    only needs to walk the enum and push bind parameters. The
-//!    internal [`node::ExprNode`] is therefore untyped (no `T`
-//!    parameter), and the emitter stays a single monomorphic function.
+//! build `Expr<String> + Expr<i32>` (nonsense addition) or compare
+//! `Expr<i64>.eq(Expr<String>)` (type-mismatched equality). The
+//! phantom `T` parameter on [`Expr<T>`] enforces those rules at
+//! compile time. But the SQL emitter doesn't care about `T` — it
+//! only needs to walk the enum and push bind parameters. The
+//! internal [`node::ExprNode`] is therefore untyped (no `T`
+//! parameter), and the emitter stays a single monomorphic function.
 //! 2. **Phase additivity.** Tasks 4 / 5 add `Case`, `Exists`, `Subquery`,
-//!    `Aggregate`, and `OuterRef` variants. By storing the dynamic
-//!    payload in `ExprNode`, those additions are one new variant + one
-//!    new emitter arm + one new typed constructor per variant — no
-//!    ripple through type-parameterised code.
+//! `Aggregate`, and `OuterRef` variants. By storing the dynamic
+//! payload in `ExprNode`, those additions are one new variant + one
+//! new emitter arm + one new typed constructor per variant — no
+//! ripple through type-parameterised code.
 //! # Where
 //! - [`node::ExprNode`] / [`node::CmpOp`] — the untyped payload enum.
 //! - [`literal`] — `impl From<T> for Expr<T>` for every bindable scalar.
 //! - [`compare`] — comparison methods on `Expr<T>`.
 //! - [`arithmetic`] — sealed `Numeric` + operator overloads.
 //! - [`sql::emit_expr`] — the SQL emitter, matched exhaustively on
-//!   `ExprNode` variants.
+//! `ExprNode` variants.
 //! - [`crate::query::condition::Condition::Expr`] — filter-tree bridge.
 //! - [`crate::query::QuerySet::filter_expr`] — closure entry point.
 //! # Example
@@ -48,8 +48,8 @@
 //! // `filter(|f| f.col.eq(value))` API because the RHS is a literal
 //! // there. `filter_expr` closes the gap.
 //! let overdrawn = Account::objects()
-//! .filter_expr(|f| f.balance().as_expr().lt(f.overdraft_limit().as_expr()))
-//! .fetch_all(&mut ctx).await?;
+//!.filter_expr(|f| f.balance().as_expr().lt(f.overdraft_limit().as_expr()))
+//!.fetch_all(&mut ctx).await?;
 //! ```
 
 use crate::query::condition::FilterValue;
@@ -135,8 +135,8 @@ impl Expr<i32> {
     /// // SQL: (EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER - estimated_birth_year)
     /// let age_years = Expr::current_year() - f.estimated_birth_year().as_expr();
     /// Elephant::objects()
-    /// .filter_expr(|f| age_years.gte(Expr::literal(15i32)))
-    /// .fetch_all(&mut ctx).await?;
+    ///.filter_expr(|f| age_years.gte(Expr::literal(15i32)))
+    ///.fetch_all(&mut ctx).await?;
     /// ```
     /// # Why an associated `Expr<i32>` constructor?
     /// `current_year()` takes no arguments and is conceptually a constant for
@@ -166,7 +166,7 @@ impl Expr<f64> {
     /// Returns `Expr<f64>` so it composes with the existing arithmetic IR
     /// for ratios such as `Expr::area_of_intersection(a, b) / Expr::area_of(a)`
     /// the canonical territory-overlap-percentage shape from the
-    /// elephant-tracker mating-pairs demo .
+    /// elephant-tracker mating-pairs demo.
     /// # SQL emission
     /// Emits `ST_Area($n::bytea::geography)` — the `::bytea::geography`
     /// double cast matches the bind discipline of the geometry-only shape
@@ -278,18 +278,18 @@ impl Expr<crate::geo::Polygon> {
     /// intersection splits into two disconnected sub-regions). The decode will
     /// fail whenever the result is not a simple `POLYGON`:
     /// - **Disjoint inputs** — `ST_Intersection` returns an empty geometry;
-    ///   `Polygon::FromSql` will return a decode error.
+    /// `Polygon::FromSql` will return a decode error.
     /// - **Boundary-only or point contact** — the result is a `LINESTRING`
-    ///   or `POINT`; decode will fail.
+    /// or `POINT`; decode will fail.
     /// - **Multi-part or collection result** — even for genuinely overlapping
-    ///   polygons, the result may be a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`;
-    ///   decode will fail.
-    ///   [`crate::query::field::FieldRef::intersects`] is **not** a sufficient
-    ///   guard: it only rules out the disjoint case and still permits
-    ///   boundary-only contact and multi-part results.
-    ///   For queries that must survive any of these cases, prefer
-    ///   [`Expr::area_of_intersection`] (wraps the result in `ST_Area` and
-    ///   always returns `f64`, yielding `0.0` for non-overlapping pairs).
+    /// polygons, the result may be a `MULTIPOLYGON` or `GEOMETRYCOLLECTION`;
+    /// decode will fail.
+    /// [`crate::query::field::FieldRef::intersects`] is **not** a sufficient
+    /// guard: it only rules out the disjoint case and still permits
+    /// boundary-only contact and multi-part results.
+    /// For queries that must survive any of these cases, prefer
+    /// [`Expr::area_of_intersection`] (wraps the result in `ST_Area` and
+    /// always returns `f64`, yielding `0.0` for non-overlapping pairs).
     /// # Where
     /// - [`crate::expr::spatial::SpatialExpr::Intersection`] — IR variant.
     /// - [`Expr::area_of_intersection`] — safe area-ratio form for the disjoint case.

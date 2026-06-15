@@ -3,19 +3,19 @@
 // # What this file pins
 //
 // 1. **Column type override (Class A).** A model field annotated
-//    `#[field(protected(codec = "aes256_gcm_v1"))]` projects to a `BYTEA`
-//    column — NOT `TEXT`/`VARCHAR` — because the codec's `Encoded` type is
-//    `Vec<u8>` regardless of the decoded Rust type (`String`). Verified at the
-//    projection layer via `project_from_inventory()` (no DB), and demonstrated
-//    end-to-end by the round-trip succeeding (a TEXT column would corrupt the
-//    `Vec<u8>` ciphertext bind/decode).
+//  `#[field(protected(codec = "aes256_gcm_v1"))]` projects to a `BYTEA`
+//  column — NOT `TEXT`/`VARCHAR` — because the codec's `Encoded` type is
+//  `Vec<u8>` regardless of the decoded Rust type (`String`). Verified at the
+//  projection layer via `project_from_inventory()` (no DB), and demonstrated
+//  end-to-end by the round-trip succeeding (a TEXT column would corrupt the
+//  `Vec<u8>` ciphertext bind/decode).
 // 2. **CRUD round-trip (Class E).** Create a model with an encrypted `String`
-//    field, fetch it back by id, and confirm the plaintext matches — proving
-//    encode-on-write and decode-on-read thread the codec through the typed
-//    persistence layer.
+//  field, fetch it back by id, and confirm the plaintext matches — proving
+//  encode-on-write and decode-on-read thread the codec through the typed
+//  persistence layer.
 // 3. **Nullable encrypted field.** `Option<String>` encrypted columns store
-//    NULL for `None` (skip encode) and round-trip `Some(value)` through the
-//    full encrypt/decrypt path.
+//  NULL for `None` (skip encode) and round-trip `Some(value)` through the
+//  full encrypt/decrypt path.
 //
 // # No raw_execute required
 //
@@ -107,7 +107,7 @@ async fn aes_codec_field_projects_to_bytea_column(_ctx: djogi::DjogiContext) {
         assert_eq!(
             col.sql_type, "BYTEA",
             "encrypted field `{col_name}` must project to BYTEA (codec Encoded = Vec<u8>), \
-             not the decoded String type; got `{}`",
+       not the decoded String type; got `{}`",
             col.sql_type,
         );
         // The codec snapshot field must record the codec on both encrypted

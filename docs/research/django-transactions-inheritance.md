@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [Gap Analysis](../spec/orm-gap-analysis.md)
+> [Back to README](../../README.md) | [Gap Analysis](../spec/orm-gap-analysis.md)
 
 # Django 6.0 Transactions & Model Inheritance — Deep Dive for Djogi
 
@@ -47,14 +47,14 @@ Abstract models map naturally to Rust **trait-based composition** via attribute-
 
 ```rust
 // Phase 8α-final shape (post-T2.4 + T2.6 surface migrations):
-#[model(auditable, soft_deletable)]  // adopter declares created_by + deleted_at
-                                     // fields; macro emits trait impls and
-                                     // (for auditable) the before_create
-                                     // populator hook
+#[model(auditable, soft_deletable)] // adopter declares created_by + deleted_at
+                   // fields; macro emits trait impls and
+                   // (for auditable) the before_create
+                   // populator hook
 pub struct Vehicle {
-    pub created_by: Option<String>,
-    pub deleted_at: Option<OffsetDateTime>,
-    // ... other fields
+  pub created_by: Option<String>,
+  pub deleted_at: Option<OffsetDateTime>,
+  //... other fields
 }
 ```
 
@@ -76,11 +76,11 @@ Proxy models are valuable for enterprise use. Implement as:
 ```rust
 #[derive(Model)]
 #[model(table = "vehicles")]
-pub struct Vehicle { ... }
+pub struct Vehicle {... }
 
 #[derive(Model)]
 #[model(proxy_for = "Vehicle", default_order = ["-created_at"])]
-pub struct RecentVehicle;  // no new fields, different ordering + manager
+pub struct RecentVehicle; // no new fields, different ordering + manager
 ```
 
 ## Multi-Table Inheritance

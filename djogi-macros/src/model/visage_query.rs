@@ -2,11 +2,11 @@
 //! For each visage `V` produced by [`super::visages::expand`], this
 //! emitter generates:
 //! 1. An `impl V { pub fn filter(...) -> VisageQuerySet<V>; ... }`
-//!    block whose entry methods build a [`VisageQuerySet<V>`] over the
-//!    source model's table with the visage's *narrowed* column list.
+//!  block whose entry methods build a [`VisageQuerySet<V>`] over the
+//!  source model's table with the visage's *narrowed* column list.
 //! 2. An `impl FromPgRow for V` block that decodes a row positionally
-//!    from the same narrowed column list, in the same order — so the
-//!    SELECT projection and the row decoder agree by construction.
+//!  from the same narrowed column list, in the same order — so the
+//!  SELECT projection and the row decoder agree by construction.
 //! # Why the entry methods live on the visage type, not on `QuerySet`
 //! `QuerySet<T: Model>` carries a `T: Model` bound that visages cannot
 //! satisfy (visages are projections, not tables). Re-using the model
@@ -141,13 +141,13 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         let column = crate::syn_util::column_name_from_ident(fname);
         let ty = &field.ty;
         column_accessors.push(quote! {
-            #[must_use]
-            pub fn #fname() -> ::djogi::query::VisageColumn<#visage_ident, #ty> {
-                ::djogi::query::VisageColumn::<#visage_ident, #ty>::__new_for_visage_column(
-                    #column,
-                    ::djogi::__private::visage_column_seal::TOKEN,
-                )
-            }
+          #[must_use]
+          pub fn #fname() -> ::djogi::query::VisageColumn<#visage_ident, #ty> {
+            ::djogi::query::VisageColumn::<#visage_ident, #ty>::__new_for_visage_column(
+              #column,
+              ::djogi::__private::visage_column_seal::TOKEN,
+            )
+          }
         });
     }
 
@@ -177,13 +177,13 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         let column = crate::syn_util::column_name_from_ident(fname);
         let ty = &field.ty;
         column_accessors.push(quote! {
-            #[must_use]
-            pub fn #fname() -> ::djogi::query::VisageColumn<#visage_ident, #ty> {
-                ::djogi::query::VisageColumn::<#visage_ident, #ty>::__new_for_visage_column(
-                    #column,
-                    ::djogi::__private::visage_column_seal::TOKEN,
-                )
-            }
+          #[must_use]
+          pub fn #fname() -> ::djogi::query::VisageColumn<#visage_ident, #ty> {
+            ::djogi::query::VisageColumn::<#visage_ident, #ty>::__new_for_visage_column(
+              #column,
+              ::djogi::__private::visage_column_seal::TOKEN,
+            )
+          }
         });
     }
 
@@ -259,144 +259,144 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         let fname = &d.name;
         let visage_name = visage_ident.to_string();
         decode_assignments.push(quote! {
-            #fname: ::djogi::__private::pg::decode_derived_at::<_>(
-                row,
-                #idx,
-                #visage_name,
-                #alias_lit,
-            )?
+          #fname: ::djogi::__private::pg::decode_derived_at::<_>(
+            row,
+            #idx,
+            #visage_name,
+            #alias_lit,
+          )?
         });
         idx += 1;
     }
 
     quote! {
-        impl #visage_ident {
-            #(#column_accessors)*
+      impl #visage_ident {
+        #(#column_accessors)*
 
-            // Internal ctor — builds a fresh `VisageQuerySet` with the
-            // visage's baked projection list and a vacuous root condition.
-            // All public entry methods delegate here so the construction
-            // path is written exactly once.
-            // #231 — the queryset carries a rendered
-            // `projection_list: &'static str` so derived entries'
-            // `(<sql>) AS <alias>` fragments splice into the SELECT
-            // slot without any runtime walk over `PROJECTIONS`. The
-            // text-rendering happens once at macro time.
-            #[inline]
-            fn __new() -> ::djogi::query::VisageQuerySet<#visage_ident> {
-                // Seed the source model's default filter so proxy visage querysets
-                // respect the proxy's default_filter_condition, exactly as QuerySet::new()
-                // does on the model side. Non-proxy models return None → always_true.
-                let __djogi_default_condition =
-                    <#source as ::djogi::prelude::Model>::default_filter_condition()
-                        .map_or_else(
-                            ::djogi::query::Q::<#source>::always_true,
-                            ::djogi::query::Q::<#source>::Condition,
-                        );
-                ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
-                    <#source as ::djogi::prelude::Model>::table_name(),
-                    #projection_list_lit,
-                )
-                .filter(__djogi_default_condition)
-            }
-
-            /// Build a [`VisageQuerySet`] over the source model's table
-            /// with this visage's narrowed column projection, AND-ing
-            /// the closure's returned predicate onto the queryset's root.
-            /// The closure may return any
-            /// [`IntoQ<Source>`](::djogi::query::IntoQ) payload: a legacy
-            /// `Condition`, a portable or mixed predicate wrapper, or a
-            /// pre-built `Q<Source>`.
-            /// See also: [`QuerySet::filter`](::djogi::query::QuerySet::filter)
-            /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
-            #[must_use = "querysets are lazy — dropping one silently omits the query"]
-            pub fn filter<__DjogiF, __DjogiP>(
-                predicate: __DjogiF,
-            ) -> ::djogi::query::VisageQuerySet<#visage_ident>
-            where
-                __DjogiF: ::core::ops::FnOnce(#fields_ident) -> __DjogiP,
-                __DjogiP: ::djogi::query::IntoQ<#source>,
-            {
-                let __cond = predicate(<#fields_ident as ::core::default::Default>::default());
-                Self::__new().filter(__cond)
-            }
-
-            /// Append an ordering expression to a fresh visage queryset.
-            /// Equivalent to `V::filter(|_| Condition::True).order_by(...)`.
-            #[must_use = "querysets are lazy — dropping one silently omits the query"]
-            pub fn order_by<__DjogiF, __DjogiO>(
-                f: __DjogiF,
-            ) -> ::djogi::query::VisageQuerySet<#visage_ident>
-            where
-                __DjogiF: ::core::ops::FnOnce(#fields_ident) -> __DjogiO,
-                __DjogiO: ::core::convert::Into<::std::vec::Vec<::djogi::OrderExpr>>,
-            {
-                let __exprs = f(<#fields_ident as ::core::default::Default>::default()).into();
-                Self::__new().order_by(__exprs)
-            }
-
-            /// Apply `LIMIT n` to a fresh visage queryset.
-            #[must_use = "querysets are lazy — dropping one silently omits the query"]
-            pub fn limit(n: u64) -> ::djogi::query::VisageQuerySet<#visage_ident> {
-                Self::__new().limit(n)
-            }
-
-            /// Apply `OFFSET n` to a fresh visage queryset.
-            #[must_use = "querysets are lazy — dropping one silently omits the query"]
-            pub fn offset(n: u64) -> ::djogi::query::VisageQuerySet<#visage_ident> {
-                Self::__new().offset(n)
-            }
-
-            /// Internal seam — build a [`VisageQuerySet`] over the source
-            /// model's table with this visage's narrowed column projection
-            /// and the supplied predicate as the queryset's root.
-            /// Used by macro-emitted reverse-FK and M2M visage accessors.
-            /// The visage's baked-in `columns` slice ensures the emitted
-            /// SELECT stays narrowed to the visage's exposed columns.
-            /// `#[doc(hidden)]` — adopter code should reach the visage
-            /// query surface through [`Self::filter`], [`Self::order_by`],
-            /// [`Self::limit`], and [`Self::offset`].
-            /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
-            #[doc(hidden)]
-            #[must_use = "querysets are lazy — dropping one silently omits the query"]
-            pub fn __filter_with_initial_condition<__DjogiP>(
-                cond: __DjogiP,
-            ) -> ::djogi::query::VisageQuerySet<#visage_ident>
-            where
-                __DjogiP: ::djogi::query::IntoQ<#source>,
-            {
-                Self::__new().filter(cond)
-            }
+        // Internal ctor — builds a fresh `VisageQuerySet` with the
+        // visage's baked projection list and a vacuous root condition.
+        // All public entry methods delegate here so the construction
+        // path is written exactly once.
+        // #231 — the queryset carries a rendered
+        // `projection_list: &'static str` so derived entries'
+        // `(<sql>) AS <alias>` fragments splice into the SELECT
+        // slot without any runtime walk over `PROJECTIONS`. The
+        // text-rendering happens once at macro time.
+        #[inline]
+        fn __new() -> ::djogi::query::VisageQuerySet<#visage_ident> {
+          // Seed the source model's default filter so proxy visage querysets
+          // respect the proxy's default_filter_condition, exactly as QuerySet::new()
+          // does on the model side. Non-proxy models return None → always_true.
+          let __djogi_default_condition =
+            <#source as ::djogi::prelude::Model>::default_filter_condition()
+              .map_or_else(
+                ::djogi::query::Q::<#source>::always_true,
+                ::djogi::query::Q::<#source>::Condition,
+              );
+          ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
+            <#source as ::djogi::prelude::Model>::table_name(),
+            #projection_list_lit,
+          )
+          .filter(__djogi_default_condition)
         }
 
-        impl ::djogi::__private::pg::FromPgRow for #visage_ident {
-            // #231 — `COLUMNS` carries the alias at every
-            // ordinal position (column name for column entries, derived
-            // `name` for derived entries). The visage's
-            // `FromPgRow::COLUMN_LIST` is the rendered `PROJECTION_LIST`,
-            // which differs from `COLUMNS.join(", ")` once any derived
-            // entry is present (the alias position renders as
-            // `(<sql>) AS <alias>` in COLUMN_LIST, just `<alias>` in
-            // COLUMNS). See `docs/spec/visage-derived-fields.md`
-            // §"Column-list constants" for the rationale.
-            const COLUMNS: &'static [&'static str] = &[ #(#columns_lit),* ];
-
-            const COLUMN_LIST: &'static str = #projection_list_lit;
-
-            fn from_pg_row(
-                row: &::djogi::__private::tokio_postgres::Row,
-            ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
-                ::std::debug_assert!(
-                    ::djogi::__private::tokio_postgres::Row::columns(row).len() >= #n_cols,
-                    "FromPgRow column-count mismatch on visage: expected at least {}, got {}",
-                    #n_cols,
-                    ::djogi::__private::tokio_postgres::Row::columns(row).len(),
-                );
-                ::std::result::Result::Ok(Self {
-                    #(#decode_assignments,)*
-                })
-            }
+        /// Build a [`VisageQuerySet`] over the source model's table
+        /// with this visage's narrowed column projection, AND-ing
+        /// the closure's returned predicate onto the queryset's root.
+        /// The closure may return any
+        /// [`IntoQ<Source>`](::djogi::query::IntoQ) payload: a legacy
+        /// `Condition`, a portable or mixed predicate wrapper, or a
+        /// pre-built `Q<Source>`.
+        /// See also: [`QuerySet::filter`](::djogi::query::QuerySet::filter)
+        /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
+        #[must_use = "querysets are lazy — dropping one silently omits the query"]
+        pub fn filter<__DjogiF, __DjogiP>(
+          predicate: __DjogiF,
+        ) -> ::djogi::query::VisageQuerySet<#visage_ident>
+        where
+          __DjogiF: ::core::ops::FnOnce(#fields_ident) -> __DjogiP,
+          __DjogiP: ::djogi::query::IntoQ<#source>,
+        {
+          let __cond = predicate(<#fields_ident as ::core::default::Default>::default());
+          Self::__new().filter(__cond)
         }
+
+        /// Append an ordering expression to a fresh visage queryset.
+        /// Equivalent to `V::filter(|_| Condition::True).order_by(...)`.
+        #[must_use = "querysets are lazy — dropping one silently omits the query"]
+        pub fn order_by<__DjogiF, __DjogiO>(
+          f: __DjogiF,
+        ) -> ::djogi::query::VisageQuerySet<#visage_ident>
+        where
+          __DjogiF: ::core::ops::FnOnce(#fields_ident) -> __DjogiO,
+          __DjogiO: ::core::convert::Into<::std::vec::Vec<::djogi::OrderExpr>>,
+        {
+          let __exprs = f(<#fields_ident as ::core::default::Default>::default()).into();
+          Self::__new().order_by(__exprs)
+        }
+
+        /// Apply `LIMIT n` to a fresh visage queryset.
+        #[must_use = "querysets are lazy — dropping one silently omits the query"]
+        pub fn limit(n: u64) -> ::djogi::query::VisageQuerySet<#visage_ident> {
+          Self::__new().limit(n)
+        }
+
+        /// Apply `OFFSET n` to a fresh visage queryset.
+        #[must_use = "querysets are lazy — dropping one silently omits the query"]
+        pub fn offset(n: u64) -> ::djogi::query::VisageQuerySet<#visage_ident> {
+          Self::__new().offset(n)
+        }
+
+        /// Internal seam — build a [`VisageQuerySet`] over the source
+        /// model's table with this visage's narrowed column projection
+        /// and the supplied predicate as the queryset's root.
+        /// Used by macro-emitted reverse-FK and M2M visage accessors.
+        /// The visage's baked-in `columns` slice ensures the emitted
+        /// SELECT stays narrowed to the visage's exposed columns.
+        /// `#[doc(hidden)]` — adopter code should reach the visage
+        /// query surface through [`Self::filter`], [`Self::order_by`],
+        /// [`Self::limit`], and [`Self::offset`].
+        /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
+        #[doc(hidden)]
+        #[must_use = "querysets are lazy — dropping one silently omits the query"]
+        pub fn __filter_with_initial_condition<__DjogiP>(
+          cond: __DjogiP,
+        ) -> ::djogi::query::VisageQuerySet<#visage_ident>
+        where
+          __DjogiP: ::djogi::query::IntoQ<#source>,
+        {
+          Self::__new().filter(cond)
+        }
+      }
+
+      impl ::djogi::__private::pg::FromPgRow for #visage_ident {
+        // #231 — `COLUMNS` carries the alias at every
+        // ordinal position (column name for column entries, derived
+        // `name` for derived entries). The visage's
+        // `FromPgRow::COLUMN_LIST` is the rendered `PROJECTION_LIST`,
+        // which differs from `COLUMNS.join(", ")` once any derived
+        // entry is present (the alias position renders as
+        // `(<sql>) AS <alias>` in COLUMN_LIST, just `<alias>` in
+        // COLUMNS). See `docs/spec/visage-derived-fields.md`
+        // §"Column-list constants" for the rationale.
+        const COLUMNS: &'static [&'static str] = &[ #(#columns_lit),* ];
+
+        const COLUMN_LIST: &'static str = #projection_list_lit;
+
+        fn from_pg_row(
+          row: &::djogi::__private::tokio_postgres::Row,
+        ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+          ::std::debug_assert!(
+            ::djogi::__private::tokio_postgres::Row::columns(row).len() >= #n_cols,
+            "FromPgRow column-count mismatch on visage: expected at least {}, got {}",
+            #n_cols,
+            ::djogi::__private::tokio_postgres::Row::columns(row).len(),
+          );
+          ::std::result::Result::Ok(Self {
+            #(#decode_assignments,)*
+          })
+        }
+      }
     }
 }
 
@@ -407,7 +407,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
 /// debug-build name guard and the error mapping.
 fn emit_decode_assignment(fname: &Ident, column_name: &str, idx: usize) -> TokenStream {
     quote! {
-        #fname: ::djogi::__private::pg::decode_at::<_>(row, #idx, #column_name)?
+      #fname: ::djogi::__private::pg::decode_at::<_>(row, #idx, #column_name)?
     }
 }
 
@@ -434,30 +434,30 @@ fn emit_scalar_decode_assignment(
 
     if entry.fallible {
         quote! {
-            #fname: {
-                let __djogi_storage_value: #fty =
-                    ::djogi::__private::pg::decode_at::<#fty>(row, #idx, #column_name)?;
-                <#codec_ty as ::djogi::presentation::TryPresentationCodec<#fty>>::try_present(
-                    &__djogi_storage_value,
-                )
-                .map_err(|__djogi_codec_err| ::djogi::VisageError::PresentationCodec {
-                    model: #source_name,
-                    field: #fname_str,
-                    scope: #scope_str,
-                    codec: #codec_type_name_for_err,
-                    source: ::std::boxed::Box::new(__djogi_codec_err),
-                })?
-            }
+          #fname: {
+            let __djogi_storage_value: #fty =
+              ::djogi::__private::pg::decode_at::<#fty>(row, #idx, #column_name)?;
+            <#codec_ty as ::djogi::presentation::TryPresentationCodec<#fty>>::try_present(
+              &__djogi_storage_value,
+            )
+            .map_err(|__djogi_codec_err| ::djogi::VisageError::PresentationCodec {
+              model: #source_name,
+              field: #fname_str,
+              scope: #scope_str,
+              codec: #codec_type_name_for_err,
+              source: ::std::boxed::Box::new(__djogi_codec_err),
+            })?
+          }
         }
     } else {
         quote! {
-            #fname: {
-                let __djogi_storage_value: #fty =
-                    ::djogi::__private::pg::decode_at::<#fty>(row, #idx, #column_name)?;
-                <#codec_ty as ::djogi::presentation::PresentationCodec<#fty>>::present(
-                    &__djogi_storage_value,
-                )
-            }
+          #fname: {
+            let __djogi_storage_value: #fty =
+              ::djogi::__private::pg::decode_at::<#fty>(row, #idx, #column_name)?;
+            <#codec_ty as ::djogi::presentation::PresentationCodec<#fty>>::present(
+              &__djogi_storage_value,
+            )
+          }
         }
     }
 }

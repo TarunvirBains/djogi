@@ -169,7 +169,7 @@ where
     }
 
     /// Delegate JSONB path LHS cast metadata to the target PK type
-    /// . Same rationale as the `ForeignKey<T>` override
+    ///. Same rationale as the `ForeignKey<T>` override
     /// without this, `JsonbPathRef::<M, OneToOneField<T>>` falls back
     /// to text comparison because `type_name::<OneToOneField<T>>()`
     /// is not in the built-in cast table.

@@ -5,22 +5,22 @@
 //! # What this proves
 //!
 //! - `compose` writes the up SQL, down SQL, and pending JSON
-//!   files at the canonical
-//!   `migrations/<db>/_global_/V00000000000000__phase_zero_bootstrap.sdjql`
-//!   and
-//!   `target/djogi_pending/<db>/.phase_zero/V00000000000000__phase_zero_bootstrap.json`
-//!   paths on first invocation.
+//!  files at the canonical
+//!  `migrations/<db>/_global_/V00000000000000__phase_zero_bootstrap.sdjql`
+//!  and
+//!  `target/djogi_pending/<db>/.phase_zero/V00000000000000__phase_zero_bootstrap.json`
+//!  paths on first invocation.
 //! - The composed up SQL contains the HeeRanjID install, every
-//!   declared extension's `CREATE EXTENSION IF NOT EXISTS`, and no
-//!   production node-id seed.
+//!  declared extension's `CREATE EXTENSION IF NOT EXISTS`, and no
+//!  production node-id seed.
 //! - A second compose call (already on disk) does not re-emit
-//!   the file and leaves the on-disk bytes byte-for-byte unchanged.
+//!  the file and leaves the on-disk bytes byte-for-byte unchanged.
 //! - Extension declarations from the descriptor inventory propagate
-//!   into the bootstrap migration's `CREATE EXTENSION` block — verified by injecting
-//!   a synthetic `IndexSchema` with `extension_dependency = Some("postgis")`
-//!   into the compose's `models` map.
+//!  into the bootstrap migration's `CREATE EXTENSION` block — verified by injecting
+//!  a synthetic `IndexSchema` with `extension_dependency = Some("postgis")`
+//!  into the compose's `models` map.
 //! - Compose returns a `Vec<EmittedPhaseZero>` in `report.emitted_phase_zero`
-//!   that names every emission, with `extensions` populated.
+//!  that names every emission, with `extensions` populated.
 //!
 //! # Why a separate integration test
 //!

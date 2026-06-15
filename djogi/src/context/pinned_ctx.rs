@@ -140,7 +140,7 @@ mod tests {
         if database_url.is_empty() {
             tracing::info!(
                 "cancellation_drop_detaches_connection_from_pool: \
-                 DATABASE_URL not set, skipping"
+     DATABASE_URL not set, skipping"
             );
             return;
         }
@@ -209,10 +209,10 @@ mod tests {
         assert_ne!(
             old_pid, new_pid,
             "BUG (GH #331): dropping PinnedCtx::Owned without mark_clean() \
-             returned the connection to the pool instead of detaching it. \
-             Old PID {old_pid} == New PID {new_pid} means the same physical \
-             connection was recycled with the advisory lock still held, \
-             poisoning subsequent checkouts."
+    returned the connection to the pool instead of detaching it. \
+    Old PID {old_pid} == New PID {new_pid} means the same physical \
+    connection was recycled with the advisory lock still held, \
+    poisoning subsequent checkouts."
         );
     }
 }

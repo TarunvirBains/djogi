@@ -7,15 +7,15 @@
 //!
 //! fn table_name() -> &'static str { "posts" }
 //! fn pk_value(&self) -> &Self::Pk { &self.id }
-//! fn descriptor() -> &'static ::djogi::ModelDescriptor { ... }
+//! fn descriptor() -> &'static ::djogi::ModelDescriptor {... }
 //!
-//! fn get(ctx, id) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
-//! fn create(ctx, value) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
+//! fn get(ctx, id) -> impl Future<Output = Result<Self, DjogiError>> + Send {... }
+//! fn create(ctx, value) -> impl Future<Output = Result<Self, DjogiError>> + Send {... }
 //! fn save<'ctx>(&'ctx mut self, ctx: &'ctx mut DjogiContext)
-//! -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx { ... }
-//! fn delete(self, ctx) -> impl Future<Output = Result<(), DjogiError>> + Send { ... }
+//! -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx {... }
+//! fn delete(self, ctx) -> impl Future<Output = Result<(), DjogiError>> + Send {... }
 //! fn refresh_from_db<'ctx>(&'ctx self, ctx: &'ctx mut DjogiContext)
-//! -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx { ... }
+//! -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx {... }
 //! }
 //! ```
 //! # Why `&mut DjogiContext`
@@ -42,26 +42,26 @@
 //! `::inventory::iter` would fail with E0433 unless the user explicitly added
 //! those crates. To avoid that, all external crate references are routed through
 //! `::djogi::__private::pg`, `::djogi::__private::inventory`, and
-//! `::djogi::types`. This is the same convention established in Task 5
-//! (`from_row.rs`) and Task 6 (`descriptor.rs`).
+//! `::djogi::types`. This is the same convention established in
+//! (`from_row.rs`) and (`descriptor.rs`).
 //! # `inventory::iter` — no parentheses
 //! `::djogi::__private::inventory::iter::<T>` is a zero-sized type that
 //! implements `IntoIterator`. It is NOT a function — calling it with `()` is a
-//! type error. Use `.into_iter()` on the ZST directly, which Task 6 and the
-//! Task 6 integration test already validate.
+//! type error. Use `.into_iter()` on the ZST directly, which and the
+//! integration test already validate.
 //! # SQL conventions
 //! - Column name == Rust field name (snake_case). This matches the injection
-//!   convention in `inject.rs` and the `FromRow` impl in `from_row.rs`.
+//! convention in `inject.rs` and the `FromRow` impl in `from_row.rs`.
 //! - `create` omits `id`, `created_at`, and `updated_at` from the `INSERT`
-//!   columns — the Postgres defaults (`heerid_next()`, `now()`) populate them.
-//!   `RETURNING *` sends the full row back so the returned `Self` has all
-//!   fields populated from the database.
+//! columns — the Postgres defaults (`heerid_next()`, `now()`) populate them.
+//! `RETURNING *` sends the full row back so the returned `Self` has all
+//! fields populated from the database.
 //! - `save` sets all user fields plus `updated_at = now()`. Only user fields
-//!   are written — `id` and `created_at` are immutable after creation.
+//! are written — `id` and `created_at` are immutable after creation.
 //! - `delete` consumes `self` to prevent accidental use of a stale handle.
 //! - `save` and `refresh_from_db` take `&self` and borrow `self` directly
-//!   across the async block — Rust 2024 RPITIT captures `&self`'s lifetime
-//!   into the returned future, so no clone-capture is needed. `Model: Send
+//! across the async block — Rust 2024 RPITIT captures `&self`'s lifetime
+//! into the returned future, so no clone-capture is needed. `Model: Send
 //! + Sync` → `&Self: Send`, which keeps the returned future Send-bound.
 //! # `pk = None` special case
 //! Models with `#[model(pk = None)]` have no framework-injected `id` field
@@ -146,7 +146,7 @@ pub fn expand(
     field_attrs: &[FieldAttrs],
     portable_field_info: &[PortableFieldEmitInfo],
 ) -> TokenStream {
-    // pk = None skips Model impl in Task 8 adds a composite-PK-
+    // pk = None skips Model impl in adds a composite-PK-
     // aware version. The other macro outputs (struct, Default, FromRow,
     // descriptor, Fields/Filter stubs) are still emitted by other modules.
     if matches!(model_attrs.pk, PkStrategy::None) {
@@ -161,146 +161,146 @@ pub fn expand(
     // `if` gate on `events` compiles away entirely for those models.
     let emit_outbox_create = if model_attrs.events {
         quote! {
-            ::djogi::outbox::emit_event(
-                ctx,
-                &row,
-                ::djogi::outbox::OutboxAction::Create,
-            ).await?;
+         ::djogi::outbox::emit_event(
+          ctx,
+          &row,
+          ::djogi::outbox::OutboxAction::Create,
+         ).await?;
         }
     } else {
         quote! {}
     };
     let emit_outbox_save = if model_attrs.events {
         quote! {
-            ::djogi::outbox::emit_event(
-                ctx,
-                &*self,
-                ::djogi::outbox::OutboxAction::Save,
-            ).await?;
+         ::djogi::outbox::emit_event(
+          ctx,
+          &*self,
+          ::djogi::outbox::OutboxAction::Save,
+         ).await?;
         }
     } else {
         quote! {}
     };
     let emit_outbox_delete = if model_attrs.events {
         quote! {
-            ::djogi::outbox::emit_event(
-                ctx,
-                &self,
-                ::djogi::outbox::OutboxAction::Delete,
-            ).await?;
+         ::djogi::outbox::emit_event(
+          ctx,
+          &self,
+          ::djogi::outbox::OutboxAction::Delete,
+         ).await?;
         }
     } else {
         quote! {}
     };
 
     let emit_outbox_returning_save = quote! {
-        <Self as ::djogi::model::Model>::__djogi_emit_save_outbox(
-            ctx,
-            &__pair.new,
-        )
-        .await
+     <Self as ::djogi::model::Model>::__djogi_emit_save_outbox(
+      ctx,
+      &__pair.new,
+     )
+    .await
     };
 
     let emit_outbox_returning_save_override = if model_attrs.events {
         quote! {
-            fn __djogi_emit_save_outbox<'ctx>(
-                ctx: &'ctx mut ::djogi::context::DjogiContext,
-                row: &'ctx Self,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<(), ::djogi::DjogiError>,
-            > + ::std::marker::Send {
-                async move {
-                    ::djogi::outbox::emit_event(
-                        ctx,
-                        row,
-                        ::djogi::outbox::OutboxAction::Save,
-                    )
-                    .await
-                }
-            }
+         fn __djogi_emit_save_outbox<'ctx>(
+          ctx: &'ctx mut ::djogi::context::DjogiContext,
+          row: &'ctx Self,
+         ) -> impl ::std::future::Future<
+          Output = ::std::result::Result<(), ::djogi::DjogiError>,
+         > + ::std::marker::Send {
+          async move {
+           ::djogi::outbox::emit_event(
+            ctx,
+            row,
+            ::djogi::outbox::OutboxAction::Save,
+           )
+          .await
+          }
+         }
 
-            fn __djogi_emit_save_outbox_batch<'ctx>(
-                ctx: &'ctx mut ::djogi::context::DjogiContext,
-                rows: &'ctx [&'ctx Self],
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<(), ::djogi::DjogiError>,
-            > + ::std::marker::Send {
-                async move { ::djogi::outbox::emit_save_events_batch(ctx, rows).await }
-            }
+         fn __djogi_emit_save_outbox_batch<'ctx>(
+          ctx: &'ctx mut ::djogi::context::DjogiContext,
+          rows: &'ctx [&'ctx Self],
+         ) -> impl ::std::future::Future<
+          Output = ::std::result::Result<(), ::djogi::DjogiError>,
+         > + ::std::marker::Send {
+          async move { ::djogi::outbox::emit_save_events_batch(ctx, rows).await }
+         }
         }
     } else {
         quote! {}
     };
 
     let emit_on_save_cache_invalidation_override = quote! {
-        fn __djogi_enqueue_on_save_cache_invalidation<'ctx>(
-            ctx: &'ctx mut ::djogi::context::DjogiContext,
-            row: &'ctx Self,
-        ) -> ::std::result::Result<(), ::djogi::DjogiError> {
-            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
-                let __id_for_cache = ::core::clone::Clone::clone(&row.id);
-                ctx.on_commit(move || async move {
-                    if let ::std::result::Result::Err(__e) = __punnu
-                        .invalidate(
-                            &__id_for_cache,
-                            ::djogi::cache::InvalidationReason::OnSave,
-                        )
-                        .await
-                    {
-                        ::djogi::__private::tracing::warn!(
-                            target: "djogi::cache",
-                            error = ?__e,
-                            model = ::std::any::type_name::<Self>(),
-                            "Punnu::invalidate L2 backend failed during on_commit drain",
-                        );
-                    }
-                    ::std::result::Result::Ok(())
-                });
-            }
-            ::std::result::Result::Ok(())
+     fn __djogi_enqueue_on_save_cache_invalidation<'ctx>(
+      ctx: &'ctx mut ::djogi::context::DjogiContext,
+      row: &'ctx Self,
+     ) -> ::std::result::Result<(), ::djogi::DjogiError> {
+      if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+       let __id_for_cache = ::core::clone::Clone::clone(&row.id);
+       ctx.on_commit(move || async move {
+        if let ::std::result::Result::Err(__e) = __punnu
+        .invalidate(
+          &__id_for_cache,
+          ::djogi::cache::InvalidationReason::OnSave,
+         )
+        .await
+        {
+         ::djogi::__private::tracing::warn!(
+          target: "djogi::cache",
+          error = ?__e,
+          model = ::std::any::type_name::<Self>(),
+          "Punnu::invalidate L2 backend failed during on_commit drain",
+         );
         }
+        ::std::result::Result::Ok(())
+       });
+      }
+      ::std::result::Result::Ok(())
+     }
     };
 
     let emit_bulk_on_save_cache_invalidation_override = quote! {
-        fn __djogi_should_collect_bulk_update_ids(
-            ctx: &::djogi::context::DjogiContext,
-        ) -> bool {
-            ctx.__djogi_is_transaction_backed_for_macros()
-                && ctx.punnu::<Self>().is_some()
+     fn __djogi_should_collect_bulk_update_ids(
+      ctx: &::djogi::context::DjogiContext,
+     ) -> bool {
+      ctx.__djogi_is_transaction_backed_for_macros()
+       && ctx.punnu::<Self>().is_some()
+     }
+
+     fn __djogi_enqueue_bulk_on_save_cache_invalidation(
+      ctx: &mut ::djogi::context::DjogiContext,
+      ids: ::std::vec::Vec<Self::Pk>,
+     ) -> ::std::result::Result<(), ::djogi::DjogiError> {
+      if ids.is_empty() {
+       return ::std::result::Result::Ok(());
+      }
+
+      if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+       ctx.on_commit(move || async move {
+        for __id_for_cache in ids {
+         if let ::std::result::Result::Err(__e) = __punnu
+         .invalidate(
+           &__id_for_cache,
+           ::djogi::cache::InvalidationReason::OnSave,
+          )
+         .await
+         {
+          ::djogi::__private::tracing::warn!(
+           target: "djogi::cache",
+           error = ?__e,
+           model = ::std::any::type_name::<Self>(),
+           "Punnu::invalidate L2 backend failed during on_commit drain",
+          );
+         }
         }
+        ::std::result::Result::Ok(())
+       });
+      }
 
-        fn __djogi_enqueue_bulk_on_save_cache_invalidation(
-            ctx: &mut ::djogi::context::DjogiContext,
-            ids: ::std::vec::Vec<Self::Pk>,
-        ) -> ::std::result::Result<(), ::djogi::DjogiError> {
-            if ids.is_empty() {
-                return ::std::result::Result::Ok(());
-            }
-
-            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
-                ctx.on_commit(move || async move {
-                    for __id_for_cache in ids {
-                        if let ::std::result::Result::Err(__e) = __punnu
-                            .invalidate(
-                                &__id_for_cache,
-                                ::djogi::cache::InvalidationReason::OnSave,
-                            )
-                            .await
-                        {
-                            ::djogi::__private::tracing::warn!(
-                                target: "djogi::cache",
-                                error = ?__e,
-                                model = ::std::any::type_name::<Self>(),
-                                "Punnu::invalidate L2 backend failed during on_commit drain",
-                            );
-                        }
-                    }
-                    ::std::result::Result::Ok(())
-                });
-            }
-
-            ::std::result::Result::Ok(())
-        }
+      ::std::result::Result::Ok(())
+     }
     };
 
     let name = &struct_item.ident;
@@ -398,7 +398,7 @@ pub fn expand(
     // columns via column defaults. `RETURNING {column_list}` brings back the
     // full row in canonical order for ordinal decode.
     // For zero-user-field models we must use `DEFAULT VALUES` — empty parens
-    // `()` are invalid SQL and `INSERT ... () VALUES ()` is rejected by
+    // `()` are invalid SQL and `INSERT... () VALUES ()` is rejected by
     // Postgres. `DEFAULT VALUES` is standard SQL and Postgres-supported.
     // -------------------------------------------------------------------------
     let insert_sql = if n_user == 0 {
@@ -435,7 +435,7 @@ pub fn expand(
             .unzip();
 
     // -------------------------------------------------------------------------
-    // `save` — dirty-aware SqlAccumulator-based SET emission (Task 2).
+    // `save` — dirty-aware SqlAccumulator-based SET emission ().
     // The save() body now builds the SET list at runtime using SqlAccumulator
     // so it can conditionally include or skip Tracked<T> fields depending on
     // their `is_dirty()` flag. Non-Tracked fields are unconditional (always
@@ -453,7 +453,7 @@ pub fn expand(
     // __acc.push_bind(self.<field>.clone());
     // After the user-field loop:
     // if !__first { __acc.push_sql(", "); } // comma if any user col emitted
-    // __acc.push_sql("updated_at = now()");   // always present
+    // __acc.push_sql("updated_at = now()"); // always present
     // If ALL Tracked fields are clean AND there are no non-Tracked fields,
     // the SQL is `UPDATE t SET updated_at = now() WHERE id = $1 RETURNING …`
     // no leading comma, valid Postgres.
@@ -464,7 +464,7 @@ pub fn expand(
     // -------------------------------------------------------------------------
 
     // -------------------------------------------------------------------------
-    // Task 3 — version field detection for optimistic locking.
+    // — version field detection for optimistic locking.
     // Find the single `#[field(version)]`-annotated user field (validated
     // to exist at most once, with type i32 or i64, by `mod.rs`'s
     // `validate_version_fields`). When present:
@@ -518,11 +518,11 @@ pub fn expand(
                 let inner_expr = quote! { (*self.#f).clone() };
                 let push_stmt = push_bind_tokens(&kind, nullable, false, inner_expr, codec);
                 Some(quote! {
-                    if self.#f.is_dirty() {
-                        if __first { __first = false; } else { __acc.push_sql(", "); }
-                        __acc.push_sql(#col_eq);
-                        #push_stmt;
-                    }
+                 if self.#f.is_dirty() {
+                  if __first { __first = false; } else { __acc.push_sql(", "); }
+                  __acc.push_sql(#col_eq);
+                  #push_stmt;
+                 }
                 })
             } else if is_tracked_inner(ty) {
                 // Option<Tracked<T>>: emitted unconditionally on every save.
@@ -550,11 +550,11 @@ pub fn expand(
                 let inner_expr = quote! { self.#f.as_ref().map(|__t| (**__t).clone()) };
                 let push_stmt = push_bind_tokens(&kind, nullable, false, inner_expr, codec);
                 Some(quote! {
-                    {
-                        if __first { __first = false; } else { __acc.push_sql(", "); }
-                        __acc.push_sql(#col_eq);
-                        #push_stmt;
-                    }
+                 {
+                  if __first { __first = false; } else { __acc.push_sql(", "); }
+                  __acc.push_sql(#col_eq);
+                  #push_stmt;
+                 }
                 })
             } else {
                 // Non-Tracked: unconditional — behavioral regression guard for
@@ -563,11 +563,11 @@ pub fn expand(
                 let field_expr = quote! { self.#f.clone() };
                 let push_stmt = push_bind_tokens(&kind, nullable, false, field_expr, codec);
                 Some(quote! {
-                    {
-                        if __first { __first = false; } else { __acc.push_sql(", "); }
-                        __acc.push_sql(#col_eq);
-                        #push_stmt;
-                    }
+                 {
+                  if __first { __first = false; } else { __acc.push_sql(", "); }
+                  __acc.push_sql(#col_eq);
+                  #push_stmt;
+                 }
                 })
             }
         })
@@ -575,7 +575,7 @@ pub fn expand(
 
     // After save() rehydrates self via RETURNING, walk every Tracked field
     // and call mark_clean(). `Tracked::new(T)` already constructs with dirty=false
-    // so this is defensive — but required by the Task 2 contract so that future
+    // so this is defensive — but required by the contract so that future
     // in-place rehydration changes cannot silently break the invariant.
     // Two shapes:
     // - `Tracked<T>`: `self.#f.mark_clean()`
@@ -591,9 +591,9 @@ pub fn expand(
                 // `ref mut __t` borrows the inner Tracked<T> in place;
                 // `mark_clean()` takes `&mut self`.
                 Some(quote! {
-                    if let ::std::option::Option::Some(ref mut __t) = self.#f {
-                        __t.mark_clean();
-                    }
+                 if let ::std::option::Option::Some(ref mut __t) = self.#f {
+                  __t.mark_clean();
+                 }
                 })
             } else {
                 None
@@ -662,18 +662,18 @@ pub fn expand(
     // `inventory::iter::<T>` is a ZST implementing IntoIterator — no parens.
     // -------------------------------------------------------------------------
     let descriptor_impl = quote! {
-        fn descriptor() -> &'static ::djogi::ModelDescriptor {
-            ::djogi::__private::inventory::iter::<::djogi::ModelDescriptor>
-                .into_iter()
-                .find(|d| d.table_name == #table)
-                .expect("ModelDescriptor not registered — did #[model] run?")
-        }
+     fn descriptor() -> &'static ::djogi::ModelDescriptor {
+      ::djogi::__private::inventory::iter::<::djogi::ModelDescriptor>
+      .into_iter()
+      .find(|d| d.table_name == #table)
+      .expect("ModelDescriptor not registered — did #[model] run?")
+     }
     };
 
     // -------------------------------------------------------------------------
     // Proxy default-filter / default-order overrides.
-    // For proxy models (`#[model(proxy_for = Parent, default_filter = |f| ...,
-    // default_order = [(field, Asc|Desc), ...])]`), emit overrides for
+    // For proxy models (`#[model(proxy_for = Parent, default_filter = |f|...,
+    // default_order = [(field, Asc|Desc),...])]`), emit overrides for
     // `Model::default_filter_condition` and `Model::default_order_by` so
     // every freshly constructed `QuerySet<Self>` starts with the proxy's
     // state already AND-composed / appended.
@@ -688,7 +688,7 @@ pub fn expand(
     // baked at expand time, so no allocation runs at queryset
     // construction.
     // The default-order override emits a `Vec::with_capacity(N)` followed
-    // by `.push(OrderExpr::Column { ... })` per parsed `(field, Asc|Desc)`
+    // by `.push(OrderExpr::Column {... })` per parsed `(field, Asc|Desc)`
     // tuple. NULL position defaults to `NullsOrder::Default` (matching
     // the queryset convention from `query/order.rs`).
     let proxy_default_filter_override = match &model_attrs.proxy_default_filter {
@@ -698,13 +698,13 @@ pub fn expand(
                 Err(err) => return err.to_compile_error(),
             };
             quote! {
-                fn default_filter_condition() -> ::std::option::Option<
-                    ::djogi::query::internal::Condition,
-                > {
-                    ::std::option::Option::Some(
-                        ::djogi::query::internal::Condition::__from_raw_sql_fragment(#sql),
-                    )
-                }
+             fn default_filter_condition() -> ::std::option::Option<
+              ::djogi::query::internal::Condition,
+             > {
+              ::std::option::Option::Some(
+               ::djogi::query::internal::Condition::__from_raw_sql_fragment(#sql),
+              )
+             }
             }
         }
         None => quote! {},
@@ -727,24 +727,24 @@ pub fn expand(
                     }
                 };
                 quote! {
-                    // Use the `#[doc(hidden)]` constructor — the variant
-                    // is `#[non_exhaustive]`, so downstream-crate literal
-                    // construction is rejected. The constructor lives in
-                    // the djogi crate where the variant is defined.
-                    __out.push(::djogi::query::OrderExpr::__from_macro_column(
-                        #column_lit,
-                        #dir_tokens,
-                        ::djogi::query::NullsOrder::Default,
-                    ));
+                 // Use the `#[doc(hidden)]` constructor — the variant
+                 // is `#[non_exhaustive]`, so downstream-crate literal
+                 // construction is rejected. The constructor lives in
+                 // the djogi crate where the variant is defined.
+                 __out.push(::djogi::query::OrderExpr::__from_macro_column(
+                  #column_lit,
+                  #dir_tokens,
+                  ::djogi::query::NullsOrder::Default,
+                 ));
                 }
             })
             .collect();
         quote! {
-            fn default_order_by() -> ::std::vec::Vec<::djogi::query::OrderExpr> {
-                let mut __out = ::std::vec::Vec::with_capacity(#n);
-                #(#pushes)*
-                __out
-            }
+         fn default_order_by() -> ::std::vec::Vec<::djogi::query::OrderExpr> {
+          let mut __out = ::std::vec::Vec::with_capacity(#n);
+          #(#pushes)*
+          __out
+         }
         }
     };
 
@@ -773,10 +773,10 @@ pub fn expand(
     // -------------------------------------------------------------------------
     let delta_should_tombstone_override = if model_attrs.soft_deletable {
         quote! {
-            #[doc(hidden)]
-            fn __delta_should_tombstone(&self) -> bool {
-                <Self as ::djogi::SoftDeletable>::deleted_at(self).is_some()
-            }
+         #[doc(hidden)]
+         fn __delta_should_tombstone(&self) -> bool {
+          <Self as ::djogi::SoftDeletable>::deleted_at(self).is_some()
+         }
         }
     } else {
         quote! {}
@@ -826,11 +826,11 @@ pub fn expand(
     let emit_field_predicate_override = emit_djogi_emit_field_predicate(name, portable_field_info);
 
     // -------------------------------------------------------------------------
-    // Auto-tenant wiring (Task 10 + Task 11).
+    // Auto-tenant wiring ( + ).
     // Emitted only for tenant-keyed models. When `ctx.auth()` carries a
     // `tenant_id`, this snippet calls `ctx.__ensure_tenant_set_for_macros`
     // (the public shim over `ensure_tenant_set`) before any SQL runs.
-    // Task 11 extends this: when `auth` is present but `tenant_id` is `None`,
+    // extends this: when `auth` is present but `tenant_id` is `None`,
     // a `tracing::warn!` fires (the "silent cross-tenant leak" footgun) unless
     // `ctx.__tenant_scope_suppressed_for_macros()` is `true`. Callers that
     // deliberately want cross-tenant queries call `ctx.with_no_tenant_scope()`
@@ -855,37 +855,37 @@ pub fn expand(
     let auto_set_tenant = if model_attrs.tenant_key.is_some() {
         let model_name_str = table.as_str();
         quote! {
-            // No auth attached → hands-off. The explicit-`set_tenant`
-            // flow (tenancy pattern, admin tooling, test
-            // harnesses) must not have its GUC clobbered by the auto-
-            // wiring. Only auth-bound contexts participate.
-            if ctx.auth().is_some() {
-                let __djogi_tid: ::std::option::Option<::std::string::String> =
-                    ctx.auth().and_then(|__djogi_auth| __djogi_auth.tenant_id.clone());
-                match __djogi_tid {
-                    ::std::option::Option::Some(__djogi_tid_str) => {
-                        ctx.__ensure_tenant_set_for_macros(&__djogi_tid_str).await?;
-                    }
-                    ::std::option::Option::None => {
-                        // Auth present but carries no tenant_id. Clear any
-                        // previously auth-applied tenant scope so
-                        // subsequent queries don't leak under the stale
-                        // GUC (phase-boundary fixup — see
-                        // djogi/src/query/terminal.rs auto_set_tenant for
-                        // the full rationale).
-                        if ctx.applied_tenant_id().is_some() {
-                            ctx.clear_tenant().await?;
-                        }
-                        if !ctx.__tenant_scope_suppressed_for_macros() {
-                            ::djogi::__private::tracing::warn!(
-                                model = #model_name_str,
-                                "auth attached but tenant_id is None on a tenant-keyed model; \
-                                 queries will span tenants — call ctx.with_no_tenant_scope() to suppress",
-                            );
-                        }
-                    }
-                }
+         // No auth attached → hands-off. The explicit-`set_tenant`
+         // flow (tenancy pattern, admin tooling, test
+         // harnesses) must not have its GUC clobbered by the auto-
+         // wiring. Only auth-bound contexts participate.
+         if ctx.auth().is_some() {
+          let __djogi_tid: ::std::option::Option<::std::string::String> =
+           ctx.auth().and_then(|__djogi_auth| __djogi_auth.tenant_id.clone());
+          match __djogi_tid {
+           ::std::option::Option::Some(__djogi_tid_str) => {
+            ctx.__ensure_tenant_set_for_macros(&__djogi_tid_str).await?;
+           }
+           ::std::option::Option::None => {
+            // Auth present but carries no tenant_id. Clear any
+            // previously auth-applied tenant scope so
+            // subsequent queries don't leak under the stale
+            // GUC (phase-boundary fixup — see
+            // djogi/src/query/terminal.rs auto_set_tenant for
+            // the full rationale).
+            if ctx.applied_tenant_id().is_some() {
+             ctx.clear_tenant().await?;
             }
+            if !ctx.__tenant_scope_suppressed_for_macros() {
+             ::djogi::__private::tracing::warn!(
+              model = #model_name_str,
+              "auth attached but tenant_id is None on a tenant-keyed model; \
+               queries will span tenants — call ctx.with_no_tenant_scope() to suppress",
+             );
+            }
+           }
+          }
+         }
         }
     } else {
         quote! {}
@@ -897,7 +897,7 @@ pub fn expand(
     let snapshot_auth_state_before_auto_set =
         if model_attrs.hooks && model_attrs.tenant_key.is_some() {
             quote! {
-                let __djogi_auth_snapshot = ctx.__snapshot_auth_state_for_macros();
+             let __djogi_auth_snapshot = ctx.__snapshot_auth_state_for_macros();
             }
         } else {
             TokenStream::new()
@@ -913,20 +913,20 @@ pub fn expand(
     // even though the underlying `pub(crate)` methods are not. See
     // djogi/src/context.rs for the execution helper rationale.
     let get_body = quote! {
-        async move {
-            #auto_set_tenant
-            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                #id_param_for_get,
-            ];
-            match ctx.__query_opt_for_macros(#get_sql, __params).await? {
-                ::std::option::Option::Some(__row) => {
-                    <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__row)
-                }
-                ::std::option::Option::None => {
-                    ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
-                }
-            }
-        }
+     async move {
+      #auto_set_tenant
+      let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+       #id_param_for_get,
+      ];
+      match ctx.__query_opt_for_macros(#get_sql, __params).await? {
+       ::std::option::Option::Some(__row) => {
+        <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__row)
+       }
+       ::std::option::Option::None => {
+        ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
+       }
+      }
+     }
     };
 
     // detect `#[field(sequence_within = "parent_col")]`.
@@ -969,8 +969,8 @@ pub fn expand(
     };
     let (sequence_compile_err, sequence_upsert_preamble, create_value_binding) =
         if seq_within_fields.len() > 1 {
-            let msg = "models may declare #[field(sequence_within = ...)] on at most one field; \
-                       multi-scope sequencing is a future extension";
+            let msg = "models may declare #[field(sequence_within =...)] on at most one field; \
+      multi-scope sequencing is a future extension";
             (
                 quote! { ::std::compile_error!(#msg); },
                 quote! {},
@@ -982,30 +982,30 @@ pub fn expand(
             let seq_table = format!("{table}_seq_{parent_col}");
             let upsert_sql = format!(
                 "INSERT INTO {seq_table} (parent_id, last_seq) VALUES ($1, 1) \
-                 ON CONFLICT (parent_id) DO UPDATE SET last_seq = {seq_table}.last_seq + 1 \
-                 RETURNING last_seq"
+     ON CONFLICT (parent_id) DO UPDATE SET last_seq = {seq_table}.last_seq + 1 \
+     RETURNING last_seq"
             );
             let preamble = quote! {
-                // Counter upsert — same ctx as the main INSERT so a
-                // rollback cleans the increment alongside the row.
-                // `ForeignKey::key()` returns the parent's Pk
-                // (HeerId for the supported case); `.as_i64()` binds
-                // to the companion table's `parent_id BIGINT`
-                // column. Uses the public-but-hidden ctx helper so
-                // macro-emitted code can dispatch through either Pool
-                // or Transaction variants without reaching into the
-                // crate-private ContextInner.
-                let __seq_parent_id: i64 = value.#parent_col_ident.key().as_i64();
-                let __seq_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] =
-                    &[&__seq_parent_id];
-                let __seq_row = ctx.__query_one_for_macros(#upsert_sql, __seq_params).await?;
-                let __seq_val: i64 = ::djogi::__private::tokio_postgres::Row::try_get(
-                    &__seq_row,
-                    "last_seq",
-                ).map_err(|e| ::djogi::DjogiError::Decode(
-                    ::std::format!("sequence_within: failed to decode last_seq: {}", e)
-                ))?;
-                value.#seq_field_ident = __seq_val;
+             // Counter upsert — same ctx as the main INSERT so a
+             // rollback cleans the increment alongside the row.
+             // `ForeignKey::key()` returns the parent's Pk
+             // (HeerId for the supported case); `.as_i64()` binds
+             // to the companion table's `parent_id BIGINT`
+             // column. Uses the public-but-hidden ctx helper so
+             // macro-emitted code can dispatch through either Pool
+             // or Transaction variants without reaching into the
+             // crate-private ContextInner.
+             let __seq_parent_id: i64 = value.#parent_col_ident.key().as_i64();
+             let __seq_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] =
+              &[&__seq_parent_id];
+             let __seq_row = ctx.__query_one_for_macros(#upsert_sql, __seq_params).await?;
+             let __seq_val: i64 = ::djogi::__private::tokio_postgres::Row::try_get(
+              &__seq_row,
+              "last_seq",
+             ).map_err(|e| ::djogi::DjogiError::Decode(
+              ::std::format!("sequence_within: failed to decode last_seq: {}", e)
+             ))?;
+             value.#seq_field_ident = __seq_val;
             };
             // `value` is already mutable via `create_value_binding_default`
             // (sequence_within forces it on through `value_must_be_mut`).
@@ -1029,36 +1029,36 @@ pub fn expand(
     let (before_create_call, after_create_call) = if model_attrs.hooks {
         let before_create_call = if model_attrs.tenant_key.is_some() {
             quote! {
-                if let ::std::result::Result::Err(__djogi_hook_err) =
-                    <Self as ::djogi::__private::hooks::ModelHooks>::before_create(
-                        &mut value,
-                        ctx,
-                    )
-                    .await
-                {
-                    if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
-                    {
-                        return ::std::result::Result::Err(__djogi_restore_err);
-                    }
-                    return ::std::result::Result::Err(__djogi_hook_err);
-                }
+             if let ::std::result::Result::Err(__djogi_hook_err) =
+              <Self as ::djogi::__private::hooks::ModelHooks>::before_create(
+               &mut value,
+               ctx,
+              )
+             .await
+             {
+              if let ::std::result::Result::Err(__djogi_restore_err) =
+               ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+              {
+               return ::std::result::Result::Err(__djogi_restore_err);
+              }
+              return ::std::result::Result::Err(__djogi_hook_err);
+             }
             }
         } else {
             quote! {
-                <Self as ::djogi::__private::hooks::ModelHooks>::before_create(
-                    &mut value,
-                    ctx,
-                ).await?;
+             <Self as ::djogi::__private::hooks::ModelHooks>::before_create(
+              &mut value,
+              ctx,
+             ).await?;
             }
         };
         (
             before_create_call,
             quote! {
-                <Self as ::djogi::__private::hooks::ModelHooks>::after_create(
-                    &row,
-                    ctx,
-                ).await?;
+             <Self as ::djogi::__private::hooks::ModelHooks>::after_create(
+              &row,
+              ctx,
+             ).await?;
             },
         )
     } else {
@@ -1078,70 +1078,70 @@ pub fn expand(
     // never emitted.
     let auditable_populate = if model_attrs.auditable {
         quote! {
-            value.__djogi_auditable_populate(ctx);
+         value.__djogi_auditable_populate(ctx);
         }
     } else {
         TokenStream::new()
     };
 
     let create_body = quote! {
-        async move {
-            #snapshot_auth_state_before_auto_set
-            #auto_set_tenant
-            #create_value_binding
-            // Composition populator runs BEFORE the user
-            // `before_create` hook so user hooks can inspect/override
-            // the populated `created_by` value. Per spec line 1032 the
-            // canonical sequence is:
-            // #auto_set_tenant
-            // #create_value_binding
-            // #auditable_populate ← here
-            // #before_create_call
-            // #sequence_upsert_preamble
-            // ... INSERT, outbox, after_create ...
-            // Empty TokenStream when `#[model(auditable)]` is absent
-            // zero codegen for opt-out models.
-            #auditable_populate
-            // before_create fires before ANY DB write on
-            // the create path (including the sequence_within counter upsert
-            // below). Per the hook ordering contract "before -> DB -> outbox -> after":
-            // a hook returning Err must leave the database untouched, so
-            // the counter upsert MUST run after this point — otherwise
-            // an aborted create would still increment the per-parent
-            // counter, leaking sequence numbers on validation failure.
-            // Returning Err short-circuits via `?` — no upsert, no
-            // INSERT, no outbox row, surrounding atomic() rolls back
-            // through standard error propagation.
-            #before_create_call
-            // Counter upsert (if `#[field(sequence_within = ...)]` is
-            // declared) runs AFTER before_create so the hook may mutate
-            // `value.<parent>` and have the upsert key off the updated
-            // parent_id. Aborted hooks never reach this point.
-            #sequence_upsert_preamble
-            // Widened-type temporaries (empty for direct-mapped types).
-            // Must be declared before the slice literal so the borrows live
-            // long enough.
-            #(#create_param_pre_decls)*
-            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                #(#create_param_entries,)*
-            ];
-            let __raw_row = ctx.__query_one_for_macros(#insert_sql, __params).await?;
-            let row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
-            // outbox emission (no-op for non-events models).
-            // Runs in the same ctx so a transactional caller gets the
-            // outbox row committed/rolled back atomically with `row`.
-            #emit_outbox_create
-            // after_create runs AFTER the outbox emission
-            // per the hook sequence: "after_create … can read the just-inserted
-            // row, can read the just-written outbox row." Order is load-
-            // bearing.
-            #after_create_call
-            ::std::result::Result::Ok(row)
-        }
+     async move {
+      #snapshot_auth_state_before_auto_set
+      #auto_set_tenant
+      #create_value_binding
+      // Composition populator runs BEFORE the user
+      // `before_create` hook so user hooks can inspect/override
+      // the populated `created_by` value. Per spec line 1032 the
+      // canonical sequence is:
+      // #auto_set_tenant
+      // #create_value_binding
+      // #auditable_populate ← here
+      // #before_create_call
+      // #sequence_upsert_preamble
+      //... INSERT, outbox, after_create...
+      // Empty TokenStream when `#[model(auditable)]` is absent
+      // zero codegen for opt-out models.
+      #auditable_populate
+      // before_create fires before ANY DB write on
+      // the create path (including the sequence_within counter upsert
+      // below). Per the hook ordering contract "before -> DB -> outbox -> after":
+      // a hook returning Err must leave the database untouched, so
+      // the counter upsert MUST run after this point — otherwise
+      // an aborted create would still increment the per-parent
+      // counter, leaking sequence numbers on validation failure.
+      // Returning Err short-circuits via `?` — no upsert, no
+      // INSERT, no outbox row, surrounding atomic() rolls back
+      // through standard error propagation.
+      #before_create_call
+      // Counter upsert (if `#[field(sequence_within =...)]` is
+      // declared) runs AFTER before_create so the hook may mutate
+      // `value.<parent>` and have the upsert key off the updated
+      // parent_id. Aborted hooks never reach this point.
+      #sequence_upsert_preamble
+      // Widened-type temporaries (empty for direct-mapped types).
+      // Must be declared before the slice literal so the borrows live
+      // long enough.
+      #(#create_param_pre_decls)*
+      let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+       #(#create_param_entries,)*
+      ];
+      let __raw_row = ctx.__query_one_for_macros(#insert_sql, __params).await?;
+      let row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
+      // outbox emission (no-op for non-events models).
+      // Runs in the same ctx so a transactional caller gets the
+      // outbox row committed/rolled back atomically with `row`.
+      #emit_outbox_create
+      // after_create runs AFTER the outbox emission
+      // per the hook sequence: "after_create … can read the just-inserted
+      // row, can read the just-written outbox row." Order is load-
+      // bearing.
+      #after_create_call
+      ::std::result::Result::Ok(row)
+     }
     };
 
     // -------------------------------------------------------------------------
-    // Task 3 — version-aware save body fragments.
+    // — version-aware save body fragments.
     // Two shapes depending on whether a version field exists:
     // A. No version field (current behavior, preserved): after user-field
     // fragments, append `updated_at = now()` and WHERE `id = $n`.
@@ -1178,36 +1178,36 @@ pub fn expand(
     let (before_save_call, after_save_call) = if model_attrs.hooks {
         let before_save_call = if model_attrs.tenant_key.is_some() {
             quote! {
-                if let ::std::result::Result::Err(__djogi_hook_err) =
-                    <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
-                        self,
-                        ctx,
-                    )
-                    .await
-                {
-                    if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
-                    {
-                        return ::std::result::Result::Err(__djogi_restore_err);
-                    }
-                    return ::std::result::Result::Err(__djogi_hook_err);
-                }
+             if let ::std::result::Result::Err(__djogi_hook_err) =
+              <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
+               self,
+               ctx,
+              )
+             .await
+             {
+              if let ::std::result::Result::Err(__djogi_restore_err) =
+               ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+              {
+               return ::std::result::Result::Err(__djogi_restore_err);
+              }
+              return ::std::result::Result::Err(__djogi_hook_err);
+             }
             }
         } else {
             quote! {
-                <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
-                    self,
-                    ctx,
-                ).await?;
+             <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
+              self,
+              ctx,
+             ).await?;
             }
         };
         (
             before_save_call,
             quote! {
-                <Self as ::djogi::__private::hooks::ModelHooks>::after_save(
-                    &*self,
-                    ctx,
-                ).await?;
+             <Self as ::djogi::__private::hooks::ModelHooks>::after_save(
+              &*self,
+              ctx,
+             ).await?;
             },
         )
     } else {
@@ -1221,203 +1221,203 @@ pub fn expand(
         let ver_conflict_msg =
             format!("optimistic lock conflict: {ver_col} mismatch in table {table}");
         quote! {
-            async move {
-                #snapshot_auth_state_before_auto_set
-                #auto_set_tenant
-                // before_save fires after auto_set_tenant
-                // is in scope (so the hook can read tenant context) but
-                // before the UPDATE composes its SET clause. Returning Err
-                // short-circuits via `?` — no UPDATE, no outbox row,
-                // surrounding atomic() rolls back via standard error
-                // propagation.
-                #before_save_call
-                // Build the SET clause dynamically. Tracked<T> fields are only
-                // included when dirty; non-Tracked fields are always included.
-                // The version field is excluded from the dirty loop — it always
-                // gets `{ver_col} = {ver_col} + 1` appended after updated_at.
-                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
-                {
-                    let mut __first = true;
-                    #(#save_set_fragments)*
-                    // `updated_at = now()` always present. Comma if any user col fired.
-                    if !__first { __acc.push_sql(", "); }
-                    __acc.push_sql("updated_at = now()");
-                    // Version counter — always incremented, not dirty-gated.
-                    __acc.push_sql(#ver_set);
-                }
-                // WHERE id = $n AND {ver_col} = $m
-                __acc.push_sql(" WHERE id = ");
-                let __id_val = self.id.clone();
-                __acc.push_bind(__id_val);
-                // Bind current in-memory version for the optimistic-lock predicate.
-                // If DB version != in-memory version, Postgres returns 0 rows.
-                __acc.push_sql(#ver_where);
-                let __ver_val = self.#ver_ident.clone();
-                __acc.push_bind(__ver_val);
-                __acc.push_sql(::std::concat!(" RETURNING ", #column_list));
-                let (__sql, __binds) = __acc.into_parts();
-                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
-                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                // Use query_opt: a zero-row UPDATE is not a driver error — Postgres
-                // returns no rows silently when the WHERE predicate matches nothing.
-                // We map None → LockConflict so the caller can branch on it.
-                match ctx.__query_opt_for_macros(&__sql, &__params).await? {
-                    ::std::option::Option::Some(__raw_row) => {
-                        let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
-                        *self = row;
-                        // After `*self = row`, mark every Tracked field clean.
-                        // from_pg_row already constructs Tracked::new (dirty=false),
-                        // but the explicit walk is required by the Task 2 contract.
-                        #(#mark_clean_fragments)*
-                        // outbox after DB-refreshed rehydration.
-                        #emit_outbox_save
-                        // after_save runs AFTER the outbox
-                        // emission AND after `*self = row` rehydration so
-                        // the hook observes server-side defaults, triggers,
-                        // and the bumped version counter (hook sequence:
-                        // "after_save … reads DB truth, not pre-call
-                        // value"). MUST stay inside the success arm — the
-                        // None branch (LockConflict) skips after_save.
-                        #after_save_call
-                        // 5 — enqueue on_commit cache
-                        // invalidation. The callback is captured by value
-                        // so it does not need to borrow ctx after the SQL
-                        // completes. The `if let Some(...)` gate skips
-                        // models without a registered Punnu (pk=None or
-                        // no-cache context). Pool-backed contexts log a
-                        // warn and drop the callback — no special-case
-                        // needed here.
-                        // L2 backend errors are logged explicitly at
-                        // `warn!` level (not `error!`): L1 is still
-                        // correctly invalidated; only L2 distribution
-                        // failed. Returning Ok(()) keeps the substrate
-                        // from treating this as a transaction-level
-                        // failure.
-                        if let ::std::option::Option::Some(__punnu) =
-                            ctx.punnu::<Self>()
-                        {
-                            let __id_for_cache =
-                                ::core::clone::Clone::clone(&self.id);
-                            ctx.on_commit(move || async move {
-                                if let ::std::result::Result::Err(__e) = __punnu
-                                    .invalidate(
-                                        &__id_for_cache,
-                                        ::djogi::cache::InvalidationReason::OnSave,
-                                    )
-                                    .await
-                                {
-                                    ::djogi::__private::tracing::warn!(
-                                        target: "djogi::cache",
-                                        error = ?__e,
-                                        model = ::std::any::type_name::<Self>(),
-                                        "Punnu::invalidate L2 backend failed during on_commit drain",
-                                    );
-                                }
-                                ::std::result::Result::Ok(())
-                            });
-                        }
-                        ::std::result::Result::Ok(())
-                    }
-                    ::std::option::Option::None => {
-                        // Zero rows updated — DB version has moved ahead of our
-                        // in-memory version. Signal optimistic lock conflict.
-                        // after_save deliberately NOT
-                        // dispatched here: the UPDATE didn't actually
-                        // mutate the row, so observing stale in-memory
-                        // state would violate the hook sequence guarantee
-                        // that after_save sees DB truth.
-                        ::std::result::Result::Err(
-                            ::djogi::DjogiError::LockConflict(
-                                ::djogi::DbError::other(#ver_conflict_msg)
-                            )
-                        )
-                    }
-                }
+         async move {
+          #snapshot_auth_state_before_auto_set
+          #auto_set_tenant
+          // before_save fires after auto_set_tenant
+          // is in scope (so the hook can read tenant context) but
+          // before the UPDATE composes its SET clause. Returning Err
+          // short-circuits via `?` — no UPDATE, no outbox row,
+          // surrounding atomic() rolls back via standard error
+          // propagation.
+          #before_save_call
+          // Build the SET clause dynamically. Tracked<T> fields are only
+          // included when dirty; non-Tracked fields are always included.
+          // The version field is excluded from the dirty loop — it always
+          // gets `{ver_col} = {ver_col} + 1` appended after updated_at.
+          let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+          {
+           let mut __first = true;
+           #(#save_set_fragments)*
+           // `updated_at = now()` always present. Comma if any user col fired.
+           if !__first { __acc.push_sql(", "); }
+           __acc.push_sql("updated_at = now()");
+           // Version counter — always incremented, not dirty-gated.
+           __acc.push_sql(#ver_set);
+          }
+          // WHERE id = $n AND {ver_col} = $m
+          __acc.push_sql(" WHERE id = ");
+          let __id_val = self.id.clone();
+          __acc.push_bind(__id_val);
+          // Bind current in-memory version for the optimistic-lock predicate.
+          // If DB version != in-memory version, Postgres returns 0 rows.
+          __acc.push_sql(#ver_where);
+          let __ver_val = self.#ver_ident.clone();
+          __acc.push_bind(__ver_val);
+          __acc.push_sql(::std::concat!(" RETURNING ", #column_list));
+          let (__sql, __binds) = __acc.into_parts();
+          let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+           __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+          // Use query_opt: a zero-row UPDATE is not a driver error — Postgres
+          // returns no rows silently when the WHERE predicate matches nothing.
+          // We map None → LockConflict so the caller can branch on it.
+          match ctx.__query_opt_for_macros(&__sql, &__params).await? {
+           ::std::option::Option::Some(__raw_row) => {
+            let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
+            *self = row;
+            // After `*self = row`, mark every Tracked field clean.
+            // from_pg_row already constructs Tracked::new (dirty=false),
+            // but the explicit walk is required by the contract.
+            #(#mark_clean_fragments)*
+            // outbox after DB-refreshed rehydration.
+            #emit_outbox_save
+            // after_save runs AFTER the outbox
+            // emission AND after `*self = row` rehydration so
+            // the hook observes server-side defaults, triggers,
+            // and the bumped version counter (hook sequence:
+            // "after_save … reads DB truth, not pre-call
+            // value"). MUST stay inside the success arm — the
+            // None branch (LockConflict) skips after_save.
+            #after_save_call
+            // 5 — enqueue on_commit cache
+            // invalidation. The callback is captured by value
+            // so it does not need to borrow ctx after the SQL
+            // completes. The `if let Some(...)` gate skips
+            // models without a registered Punnu (pk=None or
+            // no-cache context). Pool-backed contexts log a
+            // warn and drop the callback — no special-case
+            // needed here.
+            // L2 backend errors are logged explicitly at
+            // `warn!` level (not `error!`): L1 is still
+            // correctly invalidated; only L2 distribution
+            // failed. Returning Ok(()) keeps the substrate
+            // from treating this as a transaction-level
+            // failure.
+            if let ::std::option::Option::Some(__punnu) =
+             ctx.punnu::<Self>()
+            {
+             let __id_for_cache =
+              ::core::clone::Clone::clone(&self.id);
+             ctx.on_commit(move || async move {
+              if let ::std::result::Result::Err(__e) = __punnu
+              .invalidate(
+                &__id_for_cache,
+                ::djogi::cache::InvalidationReason::OnSave,
+               )
+              .await
+              {
+               ::djogi::__private::tracing::warn!(
+                target: "djogi::cache",
+                error = ?__e,
+                model = ::std::any::type_name::<Self>(),
+                "Punnu::invalidate L2 backend failed during on_commit drain",
+               );
+              }
+              ::std::result::Result::Ok(())
+             });
             }
+            ::std::result::Result::Ok(())
+           }
+           ::std::option::Option::None => {
+            // Zero rows updated — DB version has moved ahead of our
+            // in-memory version. Signal optimistic lock conflict.
+            // after_save deliberately NOT
+            // dispatched here: the UPDATE didn't actually
+            // mutate the row, so observing stale in-memory
+            // state would violate the hook sequence guarantee
+            // that after_save sees DB truth.
+            ::std::result::Result::Err(
+             ::djogi::DjogiError::LockConflict(
+              ::djogi::DbError::other(#ver_conflict_msg)
+             )
+            )
+           }
+          }
+         }
         }
     } else {
         // Shape A — no version field: existing behavior.
         quote! {
-            async move {
-                #snapshot_auth_state_before_auto_set
-                #auto_set_tenant
-                // before_save fires after auto_set_tenant
-                // is in scope (so the hook can read tenant context) but
-                // before the UPDATE composes its SET clause. Returning Err
-                // short-circuits via `?` — no UPDATE, no outbox row,
-                // surrounding atomic() rolls back via standard error
-                // propagation.
-                #before_save_call
-                // Build the SET clause dynamically. Tracked<T> fields are only
-                // included when dirty; non-Tracked fields are always included.
-                // `__first` tracks whether we have emitted any SET assignment yet
-                // so comma insertion is correct regardless of which fields fire.
-                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
-                {
-                    let mut __first = true;
-                    #(#save_set_fragments)*
-                    // `updated_at = now()` is always appended. If any user column
-                    // was emitted above, we need a leading comma; otherwise it is
-                    // the first (and only) assignment.
-                    if !__first { __acc.push_sql(", "); }
-                    __acc.push_sql("updated_at = now()");
-                }
-                // Append WHERE id = $<next> RETURNING <column_list>.
-                // Emit the WHERE prefix as raw SQL, then let push_bind append the
-                // `$n` placeholder and store the id value. RETURNING is appended
-                // as raw SQL AFTER the bind so it follows the positional slot.
-                __acc.push_sql(" WHERE id = ");
-                // Clone id so push_bind (requires 'static) can take ownership.
-                // HeerId, RanjId, and i32 (Serial) are all Clone + ToSql + Send + Sync + 'static.
-                let __id_val = self.id.clone();
-                __acc.push_bind(__id_val);
-                __acc.push_sql(::std::concat!(" RETURNING ", #column_list));
-                let (__sql, __binds) = __acc.into_parts();
-                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
-                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                let __raw_row = ctx.__query_one_for_macros(&__sql, &__params).await?;
-                let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
-                *self = row;
-                // After `*self = row`, walk every Tracked field and call mark_clean().
-                // `from_pg_row` uses `Tracked::new(T)` which already starts clean,
-                // so this is defensive — but required by the Task 2 contract.
-                #(#mark_clean_fragments)*
-                // outbox payload must reflect the DB-refreshed
-                // values (triggers, column defaults), so emission runs AFTER the
-                // `*self = row` rehydration. No-op for non-events models.
-                #emit_outbox_save
-                // after_save runs AFTER the outbox emission
-                // AND after `*self = row` rehydration so the hook observes
-                // server-side defaults, triggers, and any DB-bumped column
-                // values (hook sequence).
-                #after_save_call
-                // 5 — enqueue on_commit cache invalidation.
-                // Captured by value; pool-backed contexts warn + drop.
-                // L2 backend errors are logged at `warn!` level — L1 is
-                // still correctly invalidated; only L2 distribution
-                // failed.
-                if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
-                    let __id_for_cache = ::core::clone::Clone::clone(&self.id);
-                    ctx.on_commit(move || async move {
-                        if let ::std::result::Result::Err(__e) = __punnu
-                            .invalidate(
-                                &__id_for_cache,
-                                ::djogi::cache::InvalidationReason::OnSave,
-                            )
-                            .await
-                        {
-                            ::djogi::__private::tracing::warn!(
-                                target: "djogi::cache",
-                                error = ?__e,
-                                model = ::std::any::type_name::<Self>(),
-                                "Punnu::invalidate L2 backend failed during on_commit drain",
-                            );
-                        }
-                        ::std::result::Result::Ok(())
-                    });
-                }
-                ::std::result::Result::Ok(())
+         async move {
+          #snapshot_auth_state_before_auto_set
+          #auto_set_tenant
+          // before_save fires after auto_set_tenant
+          // is in scope (so the hook can read tenant context) but
+          // before the UPDATE composes its SET clause. Returning Err
+          // short-circuits via `?` — no UPDATE, no outbox row,
+          // surrounding atomic() rolls back via standard error
+          // propagation.
+          #before_save_call
+          // Build the SET clause dynamically. Tracked<T> fields are only
+          // included when dirty; non-Tracked fields are always included.
+          // `__first` tracks whether we have emitted any SET assignment yet
+          // so comma insertion is correct regardless of which fields fire.
+          let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+          {
+           let mut __first = true;
+           #(#save_set_fragments)*
+           // `updated_at = now()` is always appended. If any user column
+           // was emitted above, we need a leading comma; otherwise it is
+           // the first (and only) assignment.
+           if !__first { __acc.push_sql(", "); }
+           __acc.push_sql("updated_at = now()");
+          }
+          // Append WHERE id = $<next> RETURNING <column_list>.
+          // Emit the WHERE prefix as raw SQL, then let push_bind append the
+          // `$n` placeholder and store the id value. RETURNING is appended
+          // as raw SQL AFTER the bind so it follows the positional slot.
+          __acc.push_sql(" WHERE id = ");
+          // Clone id so push_bind (requires 'static) can take ownership.
+          // HeerId, RanjId, and i32 (Serial) are all Clone + ToSql + Send + Sync + 'static.
+          let __id_val = self.id.clone();
+          __acc.push_bind(__id_val);
+          __acc.push_sql(::std::concat!(" RETURNING ", #column_list));
+          let (__sql, __binds) = __acc.into_parts();
+          let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+           __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+          let __raw_row = ctx.__query_one_for_macros(&__sql, &__params).await?;
+          let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
+          *self = row;
+          // After `*self = row`, walk every Tracked field and call mark_clean().
+          // `from_pg_row` uses `Tracked::new(T)` which already starts clean,
+          // so this is defensive — but required by the contract.
+          #(#mark_clean_fragments)*
+          // outbox payload must reflect the DB-refreshed
+          // values (triggers, column defaults), so emission runs AFTER the
+          // `*self = row` rehydration. No-op for non-events models.
+          #emit_outbox_save
+          // after_save runs AFTER the outbox emission
+          // AND after `*self = row` rehydration so the hook observes
+          // server-side defaults, triggers, and any DB-bumped column
+          // values (hook sequence).
+          #after_save_call
+          // 5 — enqueue on_commit cache invalidation.
+          // Captured by value; pool-backed contexts warn + drop.
+          // L2 backend errors are logged at `warn!` level — L1 is
+          // still correctly invalidated; only L2 distribution
+          // failed.
+          if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+           let __id_for_cache = ::core::clone::Clone::clone(&self.id);
+           ctx.on_commit(move || async move {
+            if let ::std::result::Result::Err(__e) = __punnu
+            .invalidate(
+              &__id_for_cache,
+              ::djogi::cache::InvalidationReason::OnSave,
+             )
+            .await
+            {
+             ::djogi::__private::tracing::warn!(
+              target: "djogi::cache",
+              error = ?__e,
+              model = ::std::any::type_name::<Self>(),
+              "Punnu::invalidate L2 backend failed during on_commit drain",
+             );
             }
+            ::std::result::Result::Ok(())
+           });
+          }
+          ::std::result::Result::Ok(())
+         }
         }
     };
 
@@ -1440,7 +1440,7 @@ pub fn expand(
     // `unused_mut` lint.
     // - `after_delete` takes `&self` (immutable re-borrow of the same
     // consumed-but-still-in-scope value). The DB row is gone; the
-    // outbox row carries the canonical snapshot. v3 §D1 fixes the
+    // outbox row carries the canonical snapshot. the specificationD1 fixes the
     // after-hook receiver as `&self`, not `&mut self`.
     // For non-hooks models both branches collapse to empty `TokenStream`
     // (no `quote!` invocation) so opt-out paths emit zero codegen.
@@ -1448,36 +1448,36 @@ pub fn expand(
     let (before_delete_call, after_delete_call) = if model_attrs.hooks {
         let before_delete_call = if model_attrs.tenant_key.is_some() {
             quote! {
-                if let ::std::result::Result::Err(__djogi_hook_err) =
-                    <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
-                        &mut self,
-                        ctx,
-                    )
-                    .await
-                {
-                    if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
-                    {
-                        return ::std::result::Result::Err(__djogi_restore_err);
-                    }
-                    return ::std::result::Result::Err(__djogi_hook_err);
-                }
+             if let ::std::result::Result::Err(__djogi_hook_err) =
+              <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
+               &mut self,
+               ctx,
+              )
+             .await
+             {
+              if let ::std::result::Result::Err(__djogi_restore_err) =
+               ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+              {
+               return ::std::result::Result::Err(__djogi_restore_err);
+              }
+              return ::std::result::Result::Err(__djogi_hook_err);
+             }
             }
         } else {
             quote! {
-                <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
-                    &mut self,
-                    ctx,
-                ).await?;
+             <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
+              &mut self,
+              ctx,
+             ).await?;
             }
         };
         (
             before_delete_call,
             quote! {
-                <Self as ::djogi::__private::hooks::ModelHooks>::after_delete(
-                    &self,
-                    ctx,
-                ).await?;
+             <Self as ::djogi::__private::hooks::ModelHooks>::after_delete(
+              &self,
+              ctx,
+             ).await?;
             },
         )
     } else {
@@ -1494,57 +1494,57 @@ pub fn expand(
     };
 
     let delete_body = quote! {
-        async move {
-            #snapshot_auth_state_before_auto_set
-            #auto_set_tenant
-            // D3 step 1: before_delete fires before the
-            // DELETE composes its parameter slice. Returning Err short-
-            // circuits via `?` — no DELETE, no outbox row, surrounding
-            // atomic() rolls back through standard error propagation.
-            #before_delete_call
-            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                #owned_pk_param,
-            ];
-            // D3 step 2 — DELETE.
-            ctx.__execute_for_macros(#delete_sql, __params).await?;
-            // D3 step 3 — outbox carries the pre-delete snapshot
-            // (reads `self` before it drops at function scope end).
-            // No-op for non-events models.
-            #emit_outbox_delete
-            // D3 step 4: after_delete observes the
-            // consumed-but-still-in-scope `self` (last valid read of the
-            // pre-delete snapshot — the DB row is gone, but the outbox
-            // row carries the canonical payload by the time after_delete
-            // fires). Order is load-bearing: an audit sink consuming
-            // outbox sees the row before after_delete's body runs.
-            #after_delete_call
-            // 5 — enqueue on_commit cache invalidation.
-            // Captured by value; pool-backed contexts warn + drop.
-            // L2 backend errors are logged at `warn!` level — L1 is
-            // still correctly invalidated; only L2 distribution
-            // failed.
-            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
-                let __id_for_cache = ::core::clone::Clone::clone(&self.id);
-                ctx.on_commit(move || async move {
-                    if let ::std::result::Result::Err(__e) = __punnu
-                        .invalidate(
-                            &__id_for_cache,
-                            ::djogi::cache::InvalidationReason::OnDelete,
-                        )
-                        .await
-                    {
-                        ::djogi::__private::tracing::warn!(
-                            target: "djogi::cache",
-                            error = ?__e,
-                            model = ::std::any::type_name::<Self>(),
-                            "Punnu::invalidate L2 backend failed during on_commit drain",
-                        );
-                    }
-                    ::std::result::Result::Ok(())
-                });
-            }
-            ::std::result::Result::Ok(())
+     async move {
+      #snapshot_auth_state_before_auto_set
+      #auto_set_tenant
+      // D3 step 1: before_delete fires before the
+      // DELETE composes its parameter slice. Returning Err short-
+      // circuits via `?` — no DELETE, no outbox row, surrounding
+      // atomic() rolls back through standard error propagation.
+      #before_delete_call
+      let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+       #owned_pk_param,
+      ];
+      // D3 step 2 — DELETE.
+      ctx.__execute_for_macros(#delete_sql, __params).await?;
+      // D3 step 3 — outbox carries the pre-delete snapshot
+      // (reads `self` before it drops at function scope end).
+      // No-op for non-events models.
+      #emit_outbox_delete
+      // D3 step 4: after_delete observes the
+      // consumed-but-still-in-scope `self` (last valid read of the
+      // pre-delete snapshot — the DB row is gone, but the outbox
+      // row carries the canonical payload by the time after_delete
+      // fires). Order is load-bearing: an audit sink consuming
+      // outbox sees the row before after_delete's body runs.
+      #after_delete_call
+      // 5 — enqueue on_commit cache invalidation.
+      // Captured by value; pool-backed contexts warn + drop.
+      // L2 backend errors are logged at `warn!` level — L1 is
+      // still correctly invalidated; only L2 distribution
+      // failed.
+      if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+       let __id_for_cache = ::core::clone::Clone::clone(&self.id);
+       ctx.on_commit(move || async move {
+        if let ::std::result::Result::Err(__e) = __punnu
+        .invalidate(
+          &__id_for_cache,
+          ::djogi::cache::InvalidationReason::OnDelete,
+         )
+        .await
+        {
+         ::djogi::__private::tracing::warn!(
+          target: "djogi::cache",
+          error = ?__e,
+          model = ::std::any::type_name::<Self>(),
+          "Punnu::invalidate L2 backend failed during on_commit drain",
+         );
         }
+        ::std::result::Result::Ok(())
+       });
+      }
+      ::std::result::Result::Ok(())
+     }
     };
 
     // ── update_returning_pair / delete_returning bodies ──
@@ -1586,37 +1586,37 @@ pub fn expand(
     let (before_urp_call, after_urp_call) = if model_attrs.hooks {
         let before_urp_call = if model_attrs.tenant_key.is_some() {
             quote! {
-                if let ::std::result::Result::Err(__djogi_hook_err) =
-                    <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
-                        &mut self,
-                        ctx,
-                    )
-                    .await
-                {
-                    if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
-                    {
-                        return ::std::result::Result::Err(__djogi_restore_err);
-                    }
-                    return ::std::result::Result::Err(__djogi_hook_err);
-                }
+             if let ::std::result::Result::Err(__djogi_hook_err) =
+              <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
+               &mut self,
+               ctx,
+              )
+             .await
+             {
+              if let ::std::result::Result::Err(__djogi_restore_err) =
+               ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+              {
+               return ::std::result::Result::Err(__djogi_restore_err);
+              }
+              return ::std::result::Result::Err(__djogi_hook_err);
+             }
             }
         } else {
             quote! {
-                <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
-                    &mut self,
-                    ctx,
-                ).await?;
+             <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
+              &mut self,
+              ctx,
+             ).await?;
             }
         };
         (
             before_urp_call,
             // `after_save` takes `&pair.new`, not `&*self`.
             quote! {
-                <Self as ::djogi::__private::hooks::ModelHooks>::after_save(
-                    &__pair.new,
-                    ctx,
-                ).await?;
+             <Self as ::djogi::__private::hooks::ModelHooks>::after_save(
+              &__pair.new,
+              ctx,
+             ).await?;
             },
         )
     } else {
@@ -1627,27 +1627,27 @@ pub fn expand(
     let (before_drp_call, after_drp_call) = if model_attrs.hooks {
         let before_drp_call = if model_attrs.tenant_key.is_some() {
             quote! {
-                if let ::std::result::Result::Err(__djogi_hook_err) =
-                    <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
-                        &mut self,
-                        ctx,
-                    )
-                    .await
-                {
-                    if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
-                    {
-                        return ::std::result::Result::Err(__djogi_restore_err);
-                    }
-                    return ::std::result::Result::Err(__djogi_hook_err);
-                }
+             if let ::std::result::Result::Err(__djogi_hook_err) =
+              <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
+               &mut self,
+               ctx,
+              )
+             .await
+             {
+              if let ::std::result::Result::Err(__djogi_restore_err) =
+               ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+              {
+               return ::std::result::Result::Err(__djogi_restore_err);
+              }
+              return ::std::result::Result::Err(__djogi_hook_err);
+             }
             }
         } else {
             quote! {
-                <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
-                    &mut self,
-                    ctx,
-                ).await?;
+             <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
+              &mut self,
+              ctx,
+             ).await?;
             }
         };
         (
@@ -1655,10 +1655,10 @@ pub fn expand(
             // `after_delete` takes `&self` — consumed instance after
             // `before_delete` hooks.
             quote! {
-                <Self as ::djogi::__private::hooks::ModelHooks>::after_delete(
-                    &self,
-                    ctx,
-                ).await?;
+             <Self as ::djogi::__private::hooks::ModelHooks>::after_delete(
+              &self,
+              ctx,
+             ).await?;
             },
         )
     } else {
@@ -1669,11 +1669,11 @@ pub fn expand(
     // mutations are preserved.
     let emit_outbox_drp_delete = if model_attrs.events {
         quote! {
-            ::djogi::outbox::emit_event(
-                ctx,
-                &self,
-                ::djogi::outbox::OutboxAction::Delete,
-            ).await?;
+         ::djogi::outbox::emit_event(
+          ctx,
+          &self,
+          ::djogi::outbox::OutboxAction::Delete,
+         ).await?;
         }
     } else {
         quote! {}
@@ -1689,67 +1689,67 @@ pub fn expand(
     // update_returning_pair body — non-versioned shape (Shape A).
     // Mirrors save() Shape A but decodes pair instead of rehydrating self.
     let update_returning_pair_body_shape_a = quote! {
-        async move {
-            // `mut self` so before_save can take `&mut self`.
-            #snapshot_auth_state_before_auto_set
-            #auto_set_tenant
-            #before_urp_call
-            // Build the SET clause — same logic as save() Shape A.
-            let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
-            {
-                let mut __first = true;
-                #(#save_set_fragments)*
-                if !__first { __acc.push_sql(", "); }
-                __acc.push_sql("updated_at = now()");
-            }
-            __acc.push_sql(" WHERE id = ");
-            let __id_val = self.id.clone();
-            __acc.push_bind(__id_val);
-            __acc.push_sql(#update_returning_suffix);
-            let (__sql, __binds) = __acc.into_parts();
-            let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
-                __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-            match ctx.__query_opt_for_macros(&__sql, &__params).await? {
-                ::std::option::Option::Some(__raw_row) => {
-                    let __old = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
-                        &__raw_row, "__djogi_old__",
-                    )?;
-                    let __new = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
-                        &__raw_row, "__djogi_new__",
-                    )?;
-                    let __pair = ::djogi::query::ReturningPair { old: __old, new: __new };
-                    // Outbox: post-image only (pair.new), same outbox schema as save().
-                    #emit_outbox_returning_save?;
-                    // Hooks: after_save receives pair.new (DB truth, not stale self).
-                    #after_urp_call
-                    // Cache invalidation: invalidate pair.new.id (same as save()).
-                    if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
-                        let __id_for_cache = ::core::clone::Clone::clone(&__pair.new.id);
-                        ctx.on_commit(move || async move {
-                            if let ::std::result::Result::Err(__e) = __punnu
-                                .invalidate(
-                                    &__id_for_cache,
-                                    ::djogi::cache::InvalidationReason::OnSave,
-                                )
-                                .await
-                            {
-                                ::djogi::__private::tracing::warn!(
-                                    target: "djogi::cache",
-                                    error = ?__e,
-                                    model = ::std::any::type_name::<Self>(),
-                                    "Punnu::invalidate L2 backend failed during on_commit drain (update_returning_pair)",
-                                );
-                            }
-                            ::std::result::Result::Ok(())
-                        });
-                    }
-                    ::std::result::Result::Ok(__pair)
-                }
-                ::std::option::Option::None => {
-                    ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
-                }
-            }
+     async move {
+      // `mut self` so before_save can take `&mut self`.
+      #snapshot_auth_state_before_auto_set
+      #auto_set_tenant
+      #before_urp_call
+      // Build the SET clause — same logic as save() Shape A.
+      let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+      {
+       let mut __first = true;
+       #(#save_set_fragments)*
+       if !__first { __acc.push_sql(", "); }
+       __acc.push_sql("updated_at = now()");
+      }
+      __acc.push_sql(" WHERE id = ");
+      let __id_val = self.id.clone();
+      __acc.push_bind(__id_val);
+      __acc.push_sql(#update_returning_suffix);
+      let (__sql, __binds) = __acc.into_parts();
+      let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+       __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+      match ctx.__query_opt_for_macros(&__sql, &__params).await? {
+       ::std::option::Option::Some(__raw_row) => {
+        let __old = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+         &__raw_row, "__djogi_old__",
+        )?;
+        let __new = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+         &__raw_row, "__djogi_new__",
+        )?;
+        let __pair = ::djogi::query::ReturningPair { old: __old, new: __new };
+        // Outbox: post-image only (pair.new), same outbox schema as save().
+        #emit_outbox_returning_save?;
+        // Hooks: after_save receives pair.new (DB truth, not stale self).
+        #after_urp_call
+        // Cache invalidation: invalidate pair.new.id (same as save()).
+        if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+         let __id_for_cache = ::core::clone::Clone::clone(&__pair.new.id);
+         ctx.on_commit(move || async move {
+          if let ::std::result::Result::Err(__e) = __punnu
+          .invalidate(
+            &__id_for_cache,
+            ::djogi::cache::InvalidationReason::OnSave,
+           )
+          .await
+          {
+           ::djogi::__private::tracing::warn!(
+            target: "djogi::cache",
+            error = ?__e,
+            model = ::std::any::type_name::<Self>(),
+            "Punnu::invalidate L2 backend failed during on_commit drain (update_returning_pair)",
+           );
+          }
+          ::std::result::Result::Ok(())
+         });
         }
+        ::std::result::Result::Ok(__pair)
+       }
+       ::std::option::Option::None => {
+        ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
+       }
+      }
+     }
     };
 
     // update_returning_pair body — versioned shape (Shape B).
@@ -1760,84 +1760,84 @@ pub fn expand(
         let ver_conflict_msg =
             format!("optimistic lock conflict: {ver_col} mismatch in table {table}");
         quote! {
-            async move {
-                #snapshot_auth_state_before_auto_set
-                #auto_set_tenant
-                #before_urp_call
-                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
-                {
-                    let mut __first = true;
-                    #(#save_set_fragments)*
-                    if !__first { __acc.push_sql(", "); }
-                    __acc.push_sql("updated_at = now()");
-                    __acc.push_sql(#ver_set);
-                }
-                __acc.push_sql(" WHERE id = ");
-                let __id_val = self.id.clone();
-                __acc.push_bind(__id_val);
-                __acc.push_sql(#ver_where);
-                let __ver_val = self.#ver_ident.clone();
-                __acc.push_bind(__ver_val);
-                __acc.push_sql(#update_returning_suffix);
-                let (__sql, __binds) = __acc.into_parts();
-                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
-                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                match ctx.__query_opt_for_macros(&__sql, &__params).await? {
-                    ::std::option::Option::Some(__raw_row) => {
-                        let __old = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
-                            &__raw_row, "__djogi_old__",
-                        )?;
-                        let __new = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
-                            &__raw_row, "__djogi_new__",
-                        )?;
-                        let __pair = ::djogi::query::ReturningPair { old: __old, new: __new };
-                        #emit_outbox_returning_save?;
-                        #after_urp_call
-                        if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
-                            let __id_for_cache = ::core::clone::Clone::clone(&__pair.new.id);
-                            ctx.on_commit(move || async move {
-                                if let ::std::result::Result::Err(__e) = __punnu
-                                    .invalidate(
-                                        &__id_for_cache,
-                                        ::djogi::cache::InvalidationReason::OnSave,
-                                    )
-                                    .await
-                                {
-                                    ::djogi::__private::tracing::warn!(
-                                        target: "djogi::cache",
-                                        error = ?__e,
-                                        model = ::std::any::type_name::<Self>(),
-                                        "Punnu::invalidate L2 backend failed during on_commit drain (update_returning_pair versioned)",
-                                    );
-                                }
-                                ::std::result::Result::Ok(())
-                            });
-                        }
-                        ::std::result::Result::Ok(__pair)
-                    }
-                    ::std::option::Option::None => {
-                        match ctx.__query_opt_for_macros(
-                            #get_sql,
-                            &[#owned_pk_param],
-                        )
-                        .await?
-                        {
-                            ::std::option::Option::Some(_) => {
-                                ::std::result::Result::Err(
-                                    ::djogi::DjogiError::LockConflict(
-                                        ::djogi::DbError::other(#ver_conflict_msg)
-                                    )
-                                )
-                            }
-                            ::std::option::Option::None => {
-                                ::std::result::Result::Err(
-                                    ::djogi::DjogiError::not_found(#table)
-                                )
-                            }
-                        }
-                    }
-                }
+         async move {
+          #snapshot_auth_state_before_auto_set
+          #auto_set_tenant
+          #before_urp_call
+          let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+          {
+           let mut __first = true;
+           #(#save_set_fragments)*
+           if !__first { __acc.push_sql(", "); }
+           __acc.push_sql("updated_at = now()");
+           __acc.push_sql(#ver_set);
+          }
+          __acc.push_sql(" WHERE id = ");
+          let __id_val = self.id.clone();
+          __acc.push_bind(__id_val);
+          __acc.push_sql(#ver_where);
+          let __ver_val = self.#ver_ident.clone();
+          __acc.push_bind(__ver_val);
+          __acc.push_sql(#update_returning_suffix);
+          let (__sql, __binds) = __acc.into_parts();
+          let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+           __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+          match ctx.__query_opt_for_macros(&__sql, &__params).await? {
+           ::std::option::Option::Some(__raw_row) => {
+            let __old = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+             &__raw_row, "__djogi_old__",
+            )?;
+            let __new = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+             &__raw_row, "__djogi_new__",
+            )?;
+            let __pair = ::djogi::query::ReturningPair { old: __old, new: __new };
+            #emit_outbox_returning_save?;
+            #after_urp_call
+            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+             let __id_for_cache = ::core::clone::Clone::clone(&__pair.new.id);
+             ctx.on_commit(move || async move {
+              if let ::std::result::Result::Err(__e) = __punnu
+              .invalidate(
+                &__id_for_cache,
+                ::djogi::cache::InvalidationReason::OnSave,
+               )
+              .await
+              {
+               ::djogi::__private::tracing::warn!(
+                target: "djogi::cache",
+                error = ?__e,
+                model = ::std::any::type_name::<Self>(),
+                "Punnu::invalidate L2 backend failed during on_commit drain (update_returning_pair versioned)",
+               );
+              }
+              ::std::result::Result::Ok(())
+             });
             }
+            ::std::result::Result::Ok(__pair)
+           }
+           ::std::option::Option::None => {
+            match ctx.__query_opt_for_macros(
+             #get_sql,
+             &[#owned_pk_param],
+            )
+           .await?
+            {
+             ::std::option::Option::Some(_) => {
+              ::std::result::Result::Err(
+               ::djogi::DjogiError::LockConflict(
+                ::djogi::DbError::other(#ver_conflict_msg)
+               )
+              )
+             }
+             ::std::option::Option::None => {
+              ::std::result::Result::Err(
+               ::djogi::DjogiError::not_found(#table)
+              )
+             }
+            }
+           }
+          }
+         }
         }
     } else {
         update_returning_pair_body_shape_a
@@ -1847,67 +1847,67 @@ pub fn expand(
     // Mirrors delete() but adds RETURNING WITH (OLD AS __djogi_old) and
     // returns the DB-returned snapshot instead of ().
     let delete_returning_body = quote! {
-        async move {
-            #snapshot_auth_state_before_auto_set
-            #auto_set_tenant
-            #before_drp_call
-            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                #owned_pk_param,
-            ];
-            match ctx.__query_opt_for_macros(#delete_returning_sql, __params).await? {
-                ::std::option::Option::Some(__raw_row) => {
-                    let __deleted = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
-                        &__raw_row, "__djogi_old__",
-                    )?;
-                    // Outbox: emit from `self` so `before_delete` mutations are included.
-                    #emit_outbox_drp_delete
-                    // Hooks: after_delete receives `self` (after outbox emission).
-                    #after_drp_call
-                    // Cache invalidation: invalidate the deleted row's id.
-                    if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
-                        let __id_for_cache = ::core::clone::Clone::clone(&__deleted.id);
-                        ctx.on_commit(move || async move {
-                            if let ::std::result::Result::Err(__e) = __punnu
-                                .invalidate(
-                                    &__id_for_cache,
-                                    ::djogi::cache::InvalidationReason::OnDelete,
-                                )
-                                .await
-                            {
-                                ::djogi::__private::tracing::warn!(
-                                    target: "djogi::cache",
-                                    error = ?__e,
-                                    model = ::std::any::type_name::<Self>(),
-                                    "Punnu::invalidate L2 backend failed during on_commit drain (delete_returning)",
-                                );
-                            }
-                            ::std::result::Result::Ok(())
-                        });
-                    }
-                    ::std::result::Result::Ok(__deleted)
-                }
-                ::std::option::Option::None => {
-                    ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
-                }
-            }
+     async move {
+      #snapshot_auth_state_before_auto_set
+      #auto_set_tenant
+      #before_drp_call
+      let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+       #owned_pk_param,
+      ];
+      match ctx.__query_opt_for_macros(#delete_returning_sql, __params).await? {
+       ::std::option::Option::Some(__raw_row) => {
+        let __deleted = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
+         &__raw_row, "__djogi_old__",
+        )?;
+        // Outbox: emit from `self` so `before_delete` mutations are included.
+        #emit_outbox_drp_delete
+        // Hooks: after_delete receives `self` (after outbox emission).
+        #after_drp_call
+        // Cache invalidation: invalidate the deleted row's id.
+        if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+         let __id_for_cache = ::core::clone::Clone::clone(&__deleted.id);
+         ctx.on_commit(move || async move {
+          if let ::std::result::Result::Err(__e) = __punnu
+          .invalidate(
+            &__id_for_cache,
+            ::djogi::cache::InvalidationReason::OnDelete,
+           )
+          .await
+          {
+           ::djogi::__private::tracing::warn!(
+            target: "djogi::cache",
+            error = ?__e,
+            model = ::std::any::type_name::<Self>(),
+            "Punnu::invalidate L2 backend failed during on_commit drain (delete_returning)",
+           );
+          }
+          ::std::result::Result::Ok(())
+         });
         }
+        ::std::result::Result::Ok(__deleted)
+       }
+       ::std::option::Option::None => {
+        ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
+       }
+      }
+     }
     };
 
     let refresh_body = quote! {
-        async move {
-            #auto_set_tenant
-            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                #refresh_id_param,
-            ];
-            match ctx.__query_opt_for_macros(#get_sql, __params).await? {
-                ::std::option::Option::Some(__row) => {
-                    <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__row)
-                }
-                ::std::option::Option::None => {
-                    ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
-                }
-            }
-        }
+     async move {
+      #auto_set_tenant
+      let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+       #refresh_id_param,
+      ];
+      match ctx.__query_opt_for_macros(#get_sql, __params).await? {
+       ::std::option::Option::Some(__row) => {
+        <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__row)
+       }
+       ::std::option::Option::None => {
+        ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
+       }
+      }
+     }
     };
 
     // -------------------------------------------------------------------------
@@ -1945,53 +1945,53 @@ pub fn expand(
         };
 
         quote! {
-            impl #impl_generics #name #ty_generics #where_clause {
-                /// Insert a row using a pre-generated `HeerId`.
-                /// Intended for the **form pre-generation pattern**: the application
-                /// allocates an ID before the user submits a form (e.g. to embed it in
-                /// a URL), then passes that same ID on submit. The underlying SQL uses
-                /// `ON CONFLICT (id) DO NOTHING` so that duplicate submits do not
-                /// produce a constraint-violation error.
-                /// **limitation** — on conflict (the row already exists) the
-                /// `RETURNING *` clause returns no rows and this method falls back to
-                /// returning the caller-supplied `value` with its `id` field set to the
-                /// pre-generated id. The id is correct; other fields reflect the
-                /// second caller's input rather than the originally-inserted data. A
-                /// later phase will add a proper `get_or_create` helper that fetches the
-                /// existing row when a conflict fires.
-                pub async fn create_with_id(
-                    ctx: &mut ::djogi::context::DjogiContext,
-                    id: ::djogi::types::HeerId,
-                    value: Self,
-                ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
-                    #auto_set_tenant
-                    let __id_i64: i64 = id.as_i64();
-                    // Widened-type temporaries (empty for direct-mapped types).
-                    #(#create_param_pre_decls)*
-                    let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                        &__id_i64,
-                        #(#create_param_entries,)*
-                    ];
-                    let __maybe_row = ctx.__query_opt_for_macros(#insert_with_id_sql, __params).await?;
-                    match __maybe_row {
-                        ::std::option::Option::Some(__raw) => {
-                            <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)
-                        }
-                        ::std::option::Option::None => {
-                            let mut v = value;
-                            v.id = id;
-                            ::std::result::Result::Ok(v)
-                        }
-                    }
-                }
+         impl #impl_generics #name #ty_generics #where_clause {
+          /// Insert a row using a pre-generated `HeerId`.
+          /// Intended for the **form pre-generation pattern**: the application
+          /// allocates an ID before the user submits a form (e.g. to embed it in
+          /// a URL), then passes that same ID on submit. The underlying SQL uses
+          /// `ON CONFLICT (id) DO NOTHING` so that duplicate submits do not
+          /// produce a constraint-violation error.
+          /// **limitation** — on conflict (the row already exists) the
+          /// `RETURNING *` clause returns no rows and this method falls back to
+          /// returning the caller-supplied `value` with its `id` field set to the
+          /// pre-generated id. The id is correct; other fields reflect the
+          /// second caller's input rather than the originally-inserted data. A
+          /// later phase will add a proper `get_or_create` helper that fetches the
+          /// existing row when a conflict fires.
+          pub async fn create_with_id(
+           ctx: &mut ::djogi::context::DjogiContext,
+           id: ::djogi::types::HeerId,
+           value: Self,
+          ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+           #auto_set_tenant
+           let __id_i64: i64 = id.as_i64();
+           // Widened-type temporaries (empty for direct-mapped types).
+           #(#create_param_pre_decls)*
+           let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+            &__id_i64,
+            #(#create_param_entries,)*
+           ];
+           let __maybe_row = ctx.__query_opt_for_macros(#insert_with_id_sql, __params).await?;
+           match __maybe_row {
+            ::std::option::Option::Some(__raw) => {
+             <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)
             }
+            ::std::option::Option::None => {
+             let mut v = value;
+             v.id = id;
+             ::std::result::Result::Ok(v)
+            }
+           }
+          }
+         }
         }
     } else {
         quote! {}
     };
 
     // -------------------------------------------------------------------------
-    // Task 7d — bulk methods (bulk_create / bulk_update / bulk_upsert).
+    // d — bulk methods (bulk_create / bulk_update / bulk_upsert).
     // Emitted as a separate inherent `impl` block. Scope: the three
     // Contract Decision #7 methods that operate on `Vec<Self>` or a
     // list of primary keys. `in_bulk` (PK-keyed fetch) stays on
@@ -2079,20 +2079,20 @@ pub fn expand(
                 let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
                 if i == 0 {
                     quote! {
-                        __acc.push_sql("(");
-                        #push_stmt;
+                     __acc.push_sql("(");
+                     #push_stmt;
                     }
                 } else {
                     quote! {
-                        __acc.push_sql(", ");
-                        #push_stmt;
+                     __acc.push_sql(", ");
+                     #push_stmt;
                     }
                 }
             })
             .collect();
         quote! {
-            #(#field_bind_stmts)*
-            __acc.push_sql(")");
+         #(#field_bind_stmts)*
+         __acc.push_sql(")");
         }
     };
 
@@ -2101,26 +2101,26 @@ pub fn expand(
     // DB-truth snapshot (post-RETURNING). No-op for non-events models.
     let emit_outbox_bulk_create = if model_attrs.events {
         quote! {
-            for __row in &created {
-                ::djogi::outbox::emit_event(
-                    ctx,
-                    __row,
-                    ::djogi::outbox::OutboxAction::Create,
-                ).await?;
-            }
+         for __row in &created {
+          ::djogi::outbox::emit_event(
+           ctx,
+           __row,
+           ::djogi::outbox::OutboxAction::Create,
+          ).await?;
+         }
         }
     } else {
         quote! {}
     };
     let emit_outbox_bulk_save = if model_attrs.events {
         quote! {
-            for __row in &created {
-                ::djogi::outbox::emit_event(
-                    ctx,
-                    __row,
-                    ::djogi::outbox::OutboxAction::Save,
-                ).await?;
-            }
+         for __row in &created {
+          ::djogi::outbox::emit_event(
+           ctx,
+           __row,
+           ::djogi::outbox::OutboxAction::Save,
+          ).await?;
+         }
         }
     } else {
         quote! {}
@@ -2143,58 +2143,58 @@ pub fn expand(
         // Pathological case: no user fields to update + `updated_at`
         // bumped via the existing `.update` emitter's implicit
         // handling. We still emit a usable `bulk_update` — it just
-        // compiles down to an `UPDATE ... SET updated_at = now()`
+        // compiles down to an `UPDATE... SET updated_at = now()`
         // across the id list.
         quote! {
-            /// Bulk-update every row whose primary key is in `ids`.
-            /// Equivalent to
-            /// `Self::objects().filter(|f| f.id().in_(ids)).update(closure).execute(ctx)`.
-            /// This method is sugar for the common "update these
-            /// specific rows" pattern without the caller spelling out
-            /// the filter chain.
-            pub async fn bulk_update<F, A>(
-                ctx: &mut ::djogi::context::DjogiContext,
-                ids: ::std::vec::Vec<<Self as ::djogi::model::Model>::Pk>,
-                closure: F,
-            ) -> ::std::result::Result<u64, ::djogi::DjogiError>
-            where
-                F: ::std::ops::FnOnce(<Self as ::djogi::model::Model>::Fields) -> A,
-                A: ::djogi::query::IntoAssignments,
-            {
-                if ids.is_empty() { return ::std::result::Result::Ok(0); }
-                <Self as ::djogi::model::Model>::objects()
-                    .filter(|f| f.id().in_(ids))
-                    .update(closure)
-                    .execute(ctx)
-                    .await
-            }
+         /// Bulk-update every row whose primary key is in `ids`.
+         /// Equivalent to
+         /// `Self::objects().filter(|f| f.id().in_(ids)).update(closure).execute(ctx)`.
+         /// This method is sugar for the common "update these
+         /// specific rows" pattern without the caller spelling out
+         /// the filter chain.
+         pub async fn bulk_update<F, A>(
+          ctx: &mut ::djogi::context::DjogiContext,
+          ids: ::std::vec::Vec<<Self as ::djogi::model::Model>::Pk>,
+          closure: F,
+         ) -> ::std::result::Result<u64, ::djogi::DjogiError>
+         where
+          F: ::std::ops::FnOnce(<Self as ::djogi::model::Model>::Fields) -> A,
+          A: ::djogi::query::IntoAssignments,
+         {
+          if ids.is_empty() { return ::std::result::Result::Ok(0); }
+          <Self as ::djogi::model::Model>::objects()
+          .filter(|f| f.id().in_(ids))
+          .update(closure)
+          .execute(ctx)
+          .await
+         }
         }
     } else {
         quote! {
-            /// Bulk-update every row whose primary key is in `ids`.
-            /// One `UPDATE` round trip emitting
-            /// `UPDATE <table> SET <assignments>, updated_at = now() WHERE id IN (...)`.
-            /// Empty `ids` short-circuits to `Ok(0)` without SQL.
-            /// Equivalent to the explicit chain
-            /// `Self::objects().filter(|f| f.id().in_(ids)).update(closure).execute(ctx)`;
-            /// this method is sugar for the common "update these
-            /// specific rows" pattern.
-            pub async fn bulk_update<F, A>(
-                ctx: &mut ::djogi::context::DjogiContext,
-                ids: ::std::vec::Vec<<Self as ::djogi::model::Model>::Pk>,
-                closure: F,
-            ) -> ::std::result::Result<u64, ::djogi::DjogiError>
-            where
-                F: ::std::ops::FnOnce(<Self as ::djogi::model::Model>::Fields) -> A,
-                A: ::djogi::query::IntoAssignments,
-            {
-                if ids.is_empty() { return ::std::result::Result::Ok(0); }
-                <Self as ::djogi::model::Model>::objects()
-                    .filter(|f| f.id().in_(ids))
-                    .update(closure)
-                    .execute(ctx)
-                    .await
-            }
+         /// Bulk-update every row whose primary key is in `ids`.
+         /// One `UPDATE` round trip emitting
+         /// `UPDATE <table> SET <assignments>, updated_at = now() WHERE id IN (...)`.
+         /// Empty `ids` short-circuits to `Ok(0)` without SQL.
+         /// Equivalent to the explicit chain
+         /// `Self::objects().filter(|f| f.id().in_(ids)).update(closure).execute(ctx)`;
+         /// this method is sugar for the common "update these
+         /// specific rows" pattern.
+         pub async fn bulk_update<F, A>(
+          ctx: &mut ::djogi::context::DjogiContext,
+          ids: ::std::vec::Vec<<Self as ::djogi::model::Model>::Pk>,
+          closure: F,
+         ) -> ::std::result::Result<u64, ::djogi::DjogiError>
+         where
+          F: ::std::ops::FnOnce(<Self as ::djogi::model::Model>::Fields) -> A,
+          A: ::djogi::query::IntoAssignments,
+         {
+          if ids.is_empty() { return ::std::result::Result::Ok(0); }
+          <Self as ::djogi::model::Model>::objects()
+          .filter(|f| f.id().in_(ids))
+          .update(closure)
+          .execute(ctx)
+          .await
+         }
         }
     };
 
@@ -2245,16 +2245,16 @@ pub fn expand(
                     .map(|codec_id| (codec_id, name.to_string(), col_str));
                 let push_stmt = push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
                 quote! {
-                    __acc.push_sql(", ");
-                    #push_stmt;
+                 __acc.push_sql(", ");
+                 #push_stmt;
                 }
             })
             .collect();
         quote! {
-            __acc.push_sql("(");
-            #pk_bind_for_id_first
-            #(#user_field_bind_stmts)*
-            __acc.push_sql(")");
+         __acc.push_sql("(");
+         #pk_bind_for_id_first
+         #(#user_field_bind_stmts)*
+         __acc.push_sql(")");
         }
     };
 
@@ -2281,21 +2281,21 @@ pub fn expand(
     let pk_is_serial = matches!(model_attrs.pk, PkStrategy::Serial);
     let bulk_create_impl = if n_user == 0 {
         quote! {
-            /// Not supported for zero-user-field models.
-            /// A table with no non-framework columns cannot be bulk-
-            /// inserted — the emitted SQL would be `INSERT INTO t ()
-            /// VALUES ()` which Postgres rejects. Row-by-row
-            /// [`create`](::djogi::model::Model::create) still works
-            /// via the column's `DEFAULT`s.
-            #[doc(hidden)]
-            pub async fn bulk_create(
-                _ctx: &mut ::djogi::context::DjogiContext,
-                _rows: ::std::vec::Vec<Self>,
-            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
-                ::std::result::Result::Err(::djogi::DjogiError::Validation(
-                    "bulk_create requires at least one non-framework column".to_string()
-                ))
-            }
+         /// Not supported for zero-user-field models.
+         /// A table with no non-framework columns cannot be bulk-
+         /// inserted — the emitted SQL would be `INSERT INTO t ()
+         /// VALUES ()` which Postgres rejects. Row-by-row
+         /// [`create`](::djogi::model::Model::create) still works
+         /// via the column's `DEFAULT`s.
+         #[doc(hidden)]
+         pub async fn bulk_create(
+          _ctx: &mut ::djogi::context::DjogiContext,
+          _rows: ::std::vec::Vec<Self>,
+         ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+          ::std::result::Result::Err(::djogi::DjogiError::Validation(
+           "bulk_create requires at least one non-framework column".to_string()
+          ))
+         }
         }
     } else if pk_is_serial {
         // `pk = Serial` keeps the per-row `DEFAULT` path — the
@@ -2304,44 +2304,44 @@ pub fn expand(
         let insert_prefix = format!("INSERT INTO {table} ({bulk_insert_col_list}) VALUES ");
         let bulk_returning_suffix = format!(" RETURNING {column_list}");
         quote! {
-            /// Bulk-insert every row in `rows` and return the rehydrated
-            /// results.
-            /// `pk = Serial` models insert with per-row `DEFAULT` on
-            /// `id` — Postgres advances the backing sequence once per
-            /// row, exactly as row-by-row [`create`] does. There is no
-            /// bulk-allocation path for `Serial` because the sequence
-            /// is owned by the database and has no `generate_many`
-            /// primitive.
-            /// Empty `rows` short-circuits to `Ok(Vec::new())` without
-            /// SQL — an empty `VALUES ()` clause is invalid Postgres.
-            pub async fn bulk_create(
-                ctx: &mut ::djogi::context::DjogiContext,
-                rows: ::std::vec::Vec<Self>,
-            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
-                if rows.is_empty() {
-                    return ::std::result::Result::Ok(::std::vec::Vec::new());
-                }
-                #auto_set_tenant
-                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix);
-                {
-                    let mut __first = true;
-                    for row in rows.into_iter() {
-                        if __first { __first = false; } else { __acc.push_sql(", "); }
-                        #per_row_binds
-                    }
-                }
-                __acc.push_sql(#bulk_returning_suffix);
-                let (__sql, __binds) = __acc.into_parts();
-                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
-                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
-                let created: ::std::vec::Vec<Self> = __raw_rows
-                    .iter()
-                    .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
-                    .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
-                #emit_outbox_bulk_create
-                ::std::result::Result::Ok(created)
-            }
+         /// Bulk-insert every row in `rows` and return the rehydrated
+         /// results.
+         /// `pk = Serial` models insert with per-row `DEFAULT` on
+         /// `id` — Postgres advances the backing sequence once per
+         /// row, exactly as row-by-row [`create`] does. There is no
+         /// bulk-allocation path for `Serial` because the sequence
+         /// is owned by the database and has no `generate_many`
+         /// primitive.
+         /// Empty `rows` short-circuits to `Ok(Vec::new())` without
+         /// SQL — an empty `VALUES ()` clause is invalid Postgres.
+         pub async fn bulk_create(
+          ctx: &mut ::djogi::context::DjogiContext,
+          rows: ::std::vec::Vec<Self>,
+         ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+          if rows.is_empty() {
+           return ::std::result::Result::Ok(::std::vec::Vec::new());
+          }
+          #auto_set_tenant
+          let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix);
+          {
+           let mut __first = true;
+           for row in rows.into_iter() {
+            if __first { __first = false; } else { __acc.push_sql(", "); }
+            #per_row_binds
+           }
+          }
+          __acc.push_sql(#bulk_returning_suffix);
+          let (__sql, __binds) = __acc.into_parts();
+          let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+           __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+          let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+          let created: ::std::vec::Vec<Self> = __raw_rows
+          .iter()
+          .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
+          .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
+          #emit_outbox_bulk_create
+          ::std::result::Result::Ok(created)
+         }
         }
     } else {
         // Every other PK kind — HeerId / HeerIdDesc / RanjId /
@@ -2352,111 +2352,111 @@ pub fn expand(
             format!("INSERT INTO {table} (id, {bulk_insert_col_list}) VALUES ");
         let bulk_returning_suffix = format!(" RETURNING {column_list}");
         quote! {
-            /// Bulk-insert every row in `rows` and return the rehydrated
-            /// results.
-            /// Two round trips per call: one
-            /// `<Self::Pk as PrimaryKeyDbGen>::generate_many(ctx, n)`
-            /// to pre-allocate every row's primary key, followed by the
-            /// main
-            /// `INSERT INTO <table> (id, <user-cols>) VALUES (...) RETURNING <column_list>`.
-            /// The pre-allocation round trip replaces N separate
-            /// per-row `DEFAULT` calls with a single batched
-            /// `generate_ids` / `generate_ranjids` / custom `bulk_sql`
-            /// invocation — a hard scalability win on tables larger
-            /// than a few hundred rows.
-            /// Caller-supplied `row.id` values are overwritten by the
-            /// pre-allocated ids. Row-by-row [`create`] is the
-            /// escape hatch when a specific id must be preserved;
-            /// [`bulk_upsert`] also preserves caller-supplied ids by
-            /// construction.
-            /// Empty `rows` short-circuits to `Ok(Vec::new())` without
-            /// SQL — an empty `VALUES ()` clause is invalid Postgres.
-            /// Postgres caps bound parameters at 65_535. With `N` user
-            /// columns per model plus the `id` column, the effective
-            /// cap is `65_535 / (N + 1)` rows per call. Chunk larger
-            /// batches at the call site.
-            /// When the model has `#[model(events)]`, outbox rows are
-            /// written per inserted row **after** rehydration (so the
-            /// outbox payload reflects DB-truth column defaults and
-            /// trigger mutations). Runs inside the caller's
-            /// transaction / atomic scope when `ctx` holds one.
-            pub async fn bulk_create(
-                ctx: &mut ::djogi::context::DjogiContext,
-                mut rows: ::std::vec::Vec<Self>,
-            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
-                if rows.is_empty() {
-                    return ::std::result::Result::Ok(::std::vec::Vec::new());
-                }
-                #auto_set_tenant
-                // Pre-allocate N ids in one round trip. The allocated
-                // ids are written onto each row's `id` field in order,
-                // overwriting whatever sentinel / caller-supplied value
-                // was there.
-                let __n = rows.len();
-                let __ids = <#pk_type_tokens as ::djogi::primary_key::PrimaryKeyDbGen>::generate_many(
-                    ctx,
-                    __n,
-                ).await?;
-                // Length-check before the zip. Built-ins uphold the
-                // `len() == n` contract by construction, but custom PKs
-                // drive the batch via user-supplied SQL (or a synthesised
-                // `SELECT … FROM generate_series(1, $1)` when only
-                // `default_sql` is set), and either can legally return
-                // fewer rows. Zipping silently would leave trailing rows
-                // pointing at stale sentinel ids and the INSERT would
-                // commit duplicates or nulls. Fail loudly instead.
-                if __ids.len() != __n {
-                    return ::std::result::Result::Err(::djogi::DjogiError::Db(
-                        ::djogi::DbError::other(::std::format!(
-                            "bulk_create: PrimaryKeyDbGen::generate_many returned {} ids for n={}",
-                            __ids.len(),
-                            __n
-                        )),
-                    ));
-                }
-                for (row, id) in rows.iter_mut().zip(__ids.into_iter()) {
-                    row.id = id;
-                }
-                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix_with_id);
-                {
-                    let mut __first = true;
-                    for row in rows.into_iter() {
-                        if __first { __first = false; } else { __acc.push_sql(", "); }
-                        #id_first_per_row_binds
-                    }
-                }
-                __acc.push_sql(#bulk_returning_suffix);
-                let (__sql, __binds) = __acc.into_parts();
-                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
-                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
-                let created: ::std::vec::Vec<Self> = __raw_rows
-                    .iter()
-                    .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
-                    .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
-                #emit_outbox_bulk_create
-                ::std::result::Result::Ok(created)
-            }
+         /// Bulk-insert every row in `rows` and return the rehydrated
+         /// results.
+         /// Two round trips per call: one
+         /// `<Self::Pk as PrimaryKeyDbGen>::generate_many(ctx, n)`
+         /// to pre-allocate every row's primary key, followed by the
+         /// main
+         /// `INSERT INTO <table> (id, <user-cols>) VALUES (...) RETURNING <column_list>`.
+         /// The pre-allocation round trip replaces N separate
+         /// per-row `DEFAULT` calls with a single batched
+         /// `generate_ids` / `generate_ranjids` / custom `bulk_sql`
+         /// invocation — a hard scalability win on tables larger
+         /// than a few hundred rows.
+         /// Caller-supplied `row.id` values are overwritten by the
+         /// pre-allocated ids. Row-by-row [`create`] is the
+         /// escape hatch when a specific id must be preserved;
+         /// [`bulk_upsert`] also preserves caller-supplied ids by
+         /// construction.
+         /// Empty `rows` short-circuits to `Ok(Vec::new())` without
+         /// SQL — an empty `VALUES ()` clause is invalid Postgres.
+         /// Postgres caps bound parameters at 65_535. With `N` user
+         /// columns per model plus the `id` column, the effective
+         /// cap is `65_535 / (N + 1)` rows per call. Chunk larger
+         /// batches at the call site.
+         /// When the model has `#[model(events)]`, outbox rows are
+         /// written per inserted row **after** rehydration (so the
+         /// outbox payload reflects DB-truth column defaults and
+         /// trigger mutations). Runs inside the caller's
+         /// transaction / atomic scope when `ctx` holds one.
+         pub async fn bulk_create(
+          ctx: &mut ::djogi::context::DjogiContext,
+          mut rows: ::std::vec::Vec<Self>,
+         ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+          if rows.is_empty() {
+           return ::std::result::Result::Ok(::std::vec::Vec::new());
+          }
+          #auto_set_tenant
+          // Pre-allocate N ids in one round trip. The allocated
+          // ids are written onto each row's `id` field in order,
+          // overwriting whatever sentinel / caller-supplied value
+          // was there.
+          let __n = rows.len();
+          let __ids = <#pk_type_tokens as ::djogi::primary_key::PrimaryKeyDbGen>::generate_many(
+           ctx,
+           __n,
+          ).await?;
+          // Length-check before the zip. Built-ins uphold the
+          // `len() == n` contract by construction, but custom PKs
+          // drive the batch via user-supplied SQL (or a synthesised
+          // `SELECT … FROM generate_series(1, $1)` when only
+          // `default_sql` is set), and either can legally return
+          // fewer rows. Zipping silently would leave trailing rows
+          // pointing at stale sentinel ids and the INSERT would
+          // commit duplicates or nulls. Fail loudly instead.
+          if __ids.len() != __n {
+           return ::std::result::Result::Err(::djogi::DjogiError::Db(
+            ::djogi::DbError::other(::std::format!(
+             "bulk_create: PrimaryKeyDbGen::generate_many returned {} ids for n={}",
+             __ids.len(),
+             __n
+            )),
+           ));
+          }
+          for (row, id) in rows.iter_mut().zip(__ids.into_iter()) {
+           row.id = id;
+          }
+          let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix_with_id);
+          {
+           let mut __first = true;
+           for row in rows.into_iter() {
+            if __first { __first = false; } else { __acc.push_sql(", "); }
+            #id_first_per_row_binds
+           }
+          }
+          __acc.push_sql(#bulk_returning_suffix);
+          let (__sql, __binds) = __acc.into_parts();
+          let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+           __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+          let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+          let created: ::std::vec::Vec<Self> = __raw_rows
+          .iter()
+          .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
+          .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
+          #emit_outbox_bulk_create
+          ::std::result::Result::Ok(created)
+         }
         }
     };
 
     let bulk_upsert_impl = if n_user == 0 {
         quote! {
-            /// Not supported for zero-user-field models.
-            /// See [`bulk_create`] for the rationale — upsert emits
-            /// the same `INSERT INTO t (...) VALUES (...)` prefix
-            /// which is empty-clause-invalid for zero-user-field
-            /// tables.
-            #[doc(hidden)]
-            pub async fn bulk_upsert(
-                _ctx: &mut ::djogi::context::DjogiContext,
-                _rows: ::std::vec::Vec<Self>,
-                _conflict_cols: &[&'static str],
-            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
-                ::std::result::Result::Err(::djogi::DjogiError::Validation(
-                    "bulk_upsert requires at least one non-framework column".to_string()
-                ))
-            }
+         /// Not supported for zero-user-field models.
+         /// See [`bulk_create`] for the rationale — upsert emits
+         /// the same `INSERT INTO t (...) VALUES (...)` prefix
+         /// which is empty-clause-invalid for zero-user-field
+         /// tables.
+         #[doc(hidden)]
+         pub async fn bulk_upsert(
+          _ctx: &mut ::djogi::context::DjogiContext,
+          _rows: ::std::vec::Vec<Self>,
+          _conflict_cols: &[&'static str],
+         ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+          ::std::result::Result::Err(::djogi::DjogiError::Validation(
+           "bulk_upsert requires at least one non-framework column".to_string()
+          ))
+         }
         }
     } else {
         let insert_prefix = format!("INSERT INTO {table} (id, {bulk_insert_col_list}) VALUES ");
@@ -2468,90 +2468,90 @@ pub fn expand(
         // `bulk_create` uses after `PrimaryKeyDbGen::generate_many`.
 
         quote! {
-            /// Bulk-upsert — `INSERT ... ON CONFLICT (<cols>) DO UPDATE SET ...`.
-            /// Inserts every row in `rows`; on conflict against the
-            /// `conflict_cols` key, updates every user field plus
-            /// `updated_at = now()` with the incoming values
-            /// (`EXCLUDED.*`). Returns the rehydrated rows
-            /// `RETURNING <column_list>` emits one row per input
-            /// regardless of whether it was inserted or updated.
-            /// `conflict_cols` must reference real columns of this
-            /// model (framework or user). Unknown names return
-            /// [`DjogiError::Validation`] without a round trip — this
-            /// closes the SQL-injection vector from arbitrary
-            /// `&'static str` input.
-            /// Empty `rows` short-circuits to `Ok(Vec::new())` without
-            /// SQL. Empty `conflict_cols` returns
-            /// [`DjogiError::Validation`] — `ON CONFLICT ()` is
-            /// invalid SQL.
-            /// Callers upserting with pre-allocated primary keys must
-            /// call `<HeerId as djogi::primary_key::PrimaryKeyDbGen>::generate_many(&mut ctx, n)`
-            /// up front — row.id is inserted verbatim, no column default fires.
-            pub async fn bulk_upsert(
-                ctx: &mut ::djogi::context::DjogiContext,
-                rows: ::std::vec::Vec<Self>,
-                conflict_cols: &[&'static str],
-            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
-                if rows.is_empty() {
-                    return ::std::result::Result::Ok(::std::vec::Vec::new());
-                }
-                if conflict_cols.is_empty() {
-                    return ::std::result::Result::Err(::djogi::DjogiError::Validation(
-                        "bulk_upsert requires at least one conflict column".to_string()
-                    ));
-                }
-                #auto_set_tenant
-                // Validate every conflict column against the macro-
-                // emitted allow-list of real columns. Rejects typos
-                // and closes the arbitrary-string SQL-injection path.
-                const __VALID_COLS: &[&str] = &[ #(#bulk_valid_columns_lit),* ];
-                for col in conflict_cols {
-                    if !__VALID_COLS.contains(col) {
-                        return ::std::result::Result::Err(::djogi::DjogiError::Validation(
-                            ::std::format!(
-                                "unknown conflict column '{}' for table {}",
-                                col,
-                                #table,
-                            )
-                        ));
-                    }
-                }
+         /// Bulk-upsert — `INSERT... ON CONFLICT (<cols>) DO UPDATE SET...`.
+         /// Inserts every row in `rows`; on conflict against the
+         /// `conflict_cols` key, updates every user field plus
+         /// `updated_at = now()` with the incoming values
+         /// (`EXCLUDED.*`). Returns the rehydrated rows
+         /// `RETURNING <column_list>` emits one row per input
+         /// regardless of whether it was inserted or updated.
+         /// `conflict_cols` must reference real columns of this
+         /// model (framework or user). Unknown names return
+         /// [`DjogiError::Validation`] without a round trip — this
+         /// closes the SQL-injection vector from arbitrary
+         /// `&'static str` input.
+         /// Empty `rows` short-circuits to `Ok(Vec::new())` without
+         /// SQL. Empty `conflict_cols` returns
+         /// [`DjogiError::Validation`] — `ON CONFLICT ()` is
+         /// invalid SQL.
+         /// Callers upserting with pre-allocated primary keys must
+         /// call `<HeerId as djogi::primary_key::PrimaryKeyDbGen>::generate_many(&mut ctx, n)`
+         /// up front — row.id is inserted verbatim, no column default fires.
+         pub async fn bulk_upsert(
+          ctx: &mut ::djogi::context::DjogiContext,
+          rows: ::std::vec::Vec<Self>,
+          conflict_cols: &[&'static str],
+         ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+          if rows.is_empty() {
+           return ::std::result::Result::Ok(::std::vec::Vec::new());
+          }
+          if conflict_cols.is_empty() {
+           return ::std::result::Result::Err(::djogi::DjogiError::Validation(
+            "bulk_upsert requires at least one conflict column".to_string()
+           ));
+          }
+          #auto_set_tenant
+          // Validate every conflict column against the macro-
+          // emitted allow-list of real columns. Rejects typos
+          // and closes the arbitrary-string SQL-injection path.
+          const __VALID_COLS: &[&str] = &[ #(#bulk_valid_columns_lit),* ];
+          for col in conflict_cols {
+           if !__VALID_COLS.contains(col) {
+            return ::std::result::Result::Err(::djogi::DjogiError::Validation(
+             ::std::format!(
+              "unknown conflict column '{}' for table {}",
+              col,
+              #table,
+             )
+            ));
+           }
+          }
 
-                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix);
-                {
-                    let mut __first = true;
-                    for row in rows.into_iter() {
-                        if __first { __first = false; } else { __acc.push_sql(", "); }
-                        #id_first_per_row_binds
-                    }
-                }
-                __acc.push_sql(" ON CONFLICT (");
-                {
-                    let mut __first = true;
-                    for col in conflict_cols {
-                        if __first { __first = false; } else { __acc.push_sql(", "); }
-                        __acc.push_sql(*col);
-                    }
-                }
-                __acc.push_sql(")");
-                __acc.push_sql(#do_update_set_clause);
-                let (__sql, __binds) = __acc.into_parts();
-                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
-                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
-                let created: ::std::vec::Vec<Self> = __raw_rows
-                    .iter()
-                    .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
-                    .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
-                // Upsert outbox policy: emit a Save event per returned
-                // row — the caller does not tell us whether each row
-                // was inserted or updated, and "Save" is the
-                // action-agnostic variant. Consumers that need
-                // fine-grained distinction can read the row's
-                // `created_at == updated_at` tautology from the payload.
-                #emit_outbox_bulk_save
-                ::std::result::Result::Ok(created)
-            }
+          let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix);
+          {
+           let mut __first = true;
+           for row in rows.into_iter() {
+            if __first { __first = false; } else { __acc.push_sql(", "); }
+            #id_first_per_row_binds
+           }
+          }
+          __acc.push_sql(" ON CONFLICT (");
+          {
+           let mut __first = true;
+           for col in conflict_cols {
+            if __first { __first = false; } else { __acc.push_sql(", "); }
+            __acc.push_sql(*col);
+           }
+          }
+          __acc.push_sql(")");
+          __acc.push_sql(#do_update_set_clause);
+          let (__sql, __binds) = __acc.into_parts();
+          let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+           __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+          let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+          let created: ::std::vec::Vec<Self> = __raw_rows
+          .iter()
+          .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
+          .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
+          // Upsert outbox policy: emit a Save event per returned
+          // row — the caller does not tell us whether each row
+          // was inserted or updated, and "Save" is the
+          // action-agnostic variant. Consumers that need
+          // fine-grained distinction can read the row's
+          // `created_at == updated_at` tautology from the payload.
+          #emit_outbox_bulk_save
+          ::std::result::Result::Ok(created)
+         }
         }
     };
 
@@ -2583,7 +2583,7 @@ pub fn expand(
                 let ph_list = placeholders.join(", ");
                 format!(
                     "INSERT INTO {table} ({col_list}) VALUES ({ph_list}) \
-                     ON CONFLICT ({key_str}) DO NOTHING RETURNING {column_list}"
+      ON CONFLICT ({key_str}) DO NOTHING RETURNING {column_list}"
                 )
             };
             let select_by_key_sql =
@@ -2596,11 +2596,11 @@ pub fn expand(
             // models emit nothing.
             let create_or_find_outbox = if model_attrs.events {
                 quote! {
-                    ::djogi::outbox::emit_event(
-                        ctx,
-                        &__row,
-                        ::djogi::outbox::OutboxAction::Create,
-                    ).await?;
+                 ::djogi::outbox::emit_event(
+                  ctx,
+                  &__row,
+                  ::djogi::outbox::OutboxAction::Create,
+                 ).await?;
                 }
             } else {
                 quote! {}
@@ -2657,92 +2657,92 @@ pub fn expand(
                     (
                         TokenStream::new(),
                         quote! {
-                            &row.#key_ident
-                                as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)
+                         &row.#key_ident
+                          as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)
                         },
                     )
                 };
 
             quote! {
-                /// Idempotent create — insert a row keyed off the
-                /// descriptor's `idempotency_key` attribute, or
-                /// return the existing row when the key conflicts.
-                /// Shape:
-                /// `INSERT INTO <table> (<user-cols>) VALUES ($1,...)
-                /// ON CONFLICT (<key>) DO NOTHING RETURNING <column_list>`.
-                /// On empty RETURNING (the "key already existed"
-                /// branch) the method re-SELECTs the existing row by
-                /// `<key> = row.<key>` and returns `(existing, false)`.
-                /// New rows return `(inserted, true)`.
-                /// When the model does **not** declare
-                /// `#[model(idempotency_key = "...")]`, this method
-                /// emits [`DjogiError::MissingIdempotencyKey`] at
-                /// runtime pointing at the attribute that must be
-                /// added. Shipping the stub (rather than hiding the
-                /// method behind a cfg flag) keeps the API shape
-                /// uniform across models and surfaces the missing
-                /// attribute eagerly when a consumer expects it.
-                /// When `#[model(events)]` is also set, only the
-                /// **newly-inserted** branch emits an outbox row
-                /// the "found existing" branch reflects no state
-                /// change.
-                pub async fn create_or_find(
-                    ctx: &mut ::djogi::context::DjogiContext,
-                    row: Self,
-                ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
-                    #auto_set_tenant
-                    // Widened-type temporaries (empty for direct-mapped types).
-                    // Must be declared before the slice literal so the borrows
-                    // live long enough.
-                    #(#cof_insert_pre_decls)*
-                    let __insert_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                        #(#cof_insert_entries,)*
-                    ];
-                    let __maybe_inserted = ctx.__query_opt_for_macros(
-                        #insert_or_nothing_sql,
-                        __insert_params,
-                    ).await?;
-                    match __maybe_inserted {
-                        ::std::option::Option::Some(__raw) => {
-                            let __row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)?;
-                            #create_or_find_outbox
-                            ::std::result::Result::Ok((__row, true))
-                        }
-                        ::std::option::Option::None => {
-                            // Conflict fired — re-SELECT the
-                            // existing row by the idempotency key.
-                            // The key-field value comes from the
-                            // caller's `row` input (unchanged across
-                            // the insert attempt). Widened-type
-                            // temporary for the key field (empty for
-                            // direct-mapped key types).
-                            #cof_key_pre_decl
-                            let __select_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                                #cof_key_entry,
-                            ];
-                            let __raw = ctx.__query_one_for_macros(
-                                #select_by_key_sql,
-                                __select_params,
-                            ).await?;
-                            let existing = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)?;
-                            ::std::result::Result::Ok((existing, false))
-                        }
-                    }
-                }
+             /// Idempotent create — insert a row keyed off the
+             /// descriptor's `idempotency_key` attribute, or
+             /// return the existing row when the key conflicts.
+             /// Shape:
+             /// `INSERT INTO <table> (<user-cols>) VALUES ($1,...)
+             /// ON CONFLICT (<key>) DO NOTHING RETURNING <column_list>`.
+             /// On empty RETURNING (the "key already existed"
+             /// branch) the method re-SELECTs the existing row by
+             /// `<key> = row.<key>` and returns `(existing, false)`.
+             /// New rows return `(inserted, true)`.
+             /// When the model does **not** declare
+             /// `#[model(idempotency_key = "...")]`, this method
+             /// emits [`DjogiError::MissingIdempotencyKey`] at
+             /// runtime pointing at the attribute that must be
+             /// added. Shipping the stub (rather than hiding the
+             /// method behind a cfg flag) keeps the API shape
+             /// uniform across models and surfaces the missing
+             /// attribute eagerly when a consumer expects it.
+             /// When `#[model(events)]` is also set, only the
+             /// **newly-inserted** branch emits an outbox row
+             /// the "found existing" branch reflects no state
+             /// change.
+             pub async fn create_or_find(
+              ctx: &mut ::djogi::context::DjogiContext,
+              row: Self,
+             ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
+              #auto_set_tenant
+              // Widened-type temporaries (empty for direct-mapped types).
+              // Must be declared before the slice literal so the borrows
+              // live long enough.
+              #(#cof_insert_pre_decls)*
+              let __insert_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+               #(#cof_insert_entries,)*
+              ];
+              let __maybe_inserted = ctx.__query_opt_for_macros(
+               #insert_or_nothing_sql,
+               __insert_params,
+              ).await?;
+              match __maybe_inserted {
+               ::std::option::Option::Some(__raw) => {
+                let __row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)?;
+                #create_or_find_outbox
+                ::std::result::Result::Ok((__row, true))
+               }
+               ::std::option::Option::None => {
+                // Conflict fired — re-SELECT the
+                // existing row by the idempotency key.
+                // The key-field value comes from the
+                // caller's `row` input (unchanged across
+                // the insert attempt). Widened-type
+                // temporary for the key field (empty for
+                // direct-mapped key types).
+                #cof_key_pre_decl
+                let __select_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+                 #cof_key_entry,
+                ];
+                let __raw = ctx.__query_one_for_macros(
+                 #select_by_key_sql,
+                 __select_params,
+                ).await?;
+                let existing = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)?;
+                ::std::result::Result::Ok((existing, false))
+               }
+              }
+             }
 
-                /// Bulk-upsert keyed off the descriptor's
-                /// `idempotency_key` attribute.
-                /// Thin wrapper over [`bulk_upsert`] that passes the
-                /// declared idempotency-key column as the sole ON
-                /// CONFLICT target. Returns
-                /// [`DjogiError::MissingIdempotencyKey`] at runtime
-                /// if the attribute is not set.
-                pub async fn bulk_upsert_by_descriptor(
-                    ctx: &mut ::djogi::context::DjogiContext,
-                    rows: ::std::vec::Vec<Self>,
-                ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
-                    Self::bulk_upsert(ctx, rows, &[#key_str]).await
-                }
+             /// Bulk-upsert keyed off the descriptor's
+             /// `idempotency_key` attribute.
+             /// Thin wrapper over [`bulk_upsert`] that passes the
+             /// declared idempotency-key column as the sole ON
+             /// CONFLICT target. Returns
+             /// [`DjogiError::MissingIdempotencyKey`] at runtime
+             /// if the attribute is not set.
+             pub async fn bulk_upsert_by_descriptor(
+              ctx: &mut ::djogi::context::DjogiContext,
+              rows: ::std::vec::Vec<Self>,
+             ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+              Self::bulk_upsert(ctx, rows, &[#key_str]).await
+             }
             }
         }
         // Attribute NOT set, or zero-user-field model: stub bodies
@@ -2750,45 +2750,45 @@ pub fn expand(
         _ => {
             let type_name_str = name.to_string();
             quote! {
-                /// Idempotent create — requires
-                /// `#[model(idempotency_key = "...")]` on the model.
-                /// Emits [`DjogiError::MissingIdempotencyKey`] at
-                /// runtime for models that haven't declared the
-                /// attribute. See the variant's rustdoc for the
-                /// remediation pointer.
-                pub async fn create_or_find(
-                    _ctx: &mut ::djogi::context::DjogiContext,
-                    _row: Self,
-                ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
-                    ::std::result::Result::Err(
-                        ::djogi::DjogiError::missing_idempotency_key(#type_name_str),
-                    )
-                }
+             /// Idempotent create — requires
+             /// `#[model(idempotency_key = "...")]` on the model.
+             /// Emits [`DjogiError::MissingIdempotencyKey`] at
+             /// runtime for models that haven't declared the
+             /// attribute. See the variant's rustdoc for the
+             /// remediation pointer.
+             pub async fn create_or_find(
+              _ctx: &mut ::djogi::context::DjogiContext,
+              _row: Self,
+             ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
+              ::std::result::Result::Err(
+               ::djogi::DjogiError::missing_idempotency_key(#type_name_str),
+              )
+             }
 
-                /// Bulk-upsert by descriptor — requires
-                /// `#[model(idempotency_key = "...")]`.
-                /// Same stub semantics as
-                /// [`create_or_find`]: runtime error pointing at
-                /// the missing attribute.
-                pub async fn bulk_upsert_by_descriptor(
-                    _ctx: &mut ::djogi::context::DjogiContext,
-                    _rows: ::std::vec::Vec<Self>,
-                ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
-                    ::std::result::Result::Err(
-                        ::djogi::DjogiError::missing_idempotency_key(#type_name_str),
-                    )
-                }
+             /// Bulk-upsert by descriptor — requires
+             /// `#[model(idempotency_key = "...")]`.
+             /// Same stub semantics as
+             /// [`create_or_find`]: runtime error pointing at
+             /// the missing attribute.
+             pub async fn bulk_upsert_by_descriptor(
+              _ctx: &mut ::djogi::context::DjogiContext,
+              _rows: ::std::vec::Vec<Self>,
+             ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+              ::std::result::Result::Err(
+               ::djogi::DjogiError::missing_idempotency_key(#type_name_str),
+              )
+             }
             }
         }
     };
 
     let bulk_methods_impl = quote! {
-        impl #impl_generics #name #ty_generics #where_clause {
-            #bulk_create_impl
-            #bulk_update_impl
-            #bulk_upsert_impl
-            #idempotency_methods_impl
-        }
+     impl #impl_generics #name #ty_generics #where_clause {
+      #bulk_create_impl
+      #bulk_update_impl
+      #bulk_upsert_impl
+      #idempotency_methods_impl
+     }
     };
 
     // -------------------------------------------------------------------------
@@ -2797,7 +2797,7 @@ pub fn expand(
     // other model this block is empty — no inherent methods, no associated
     // items, no compile-time surface at all.
     // ## Bypass mechanism
-    // RLS is enforced at the Postgres level via a `CREATE POLICY ... USING`
+    // RLS is enforced at the Postgres level via a `CREATE POLICY... USING`
     // expression that checks `col = current_setting('app.tenant_id', true)::T`.
     // Issuing `SET LOCAL row_security = off` inside a transaction disables that
     // check for the duration of the transaction. Outside `atomic()` `SET LOCAL`
@@ -2809,8 +2809,8 @@ pub fn expand(
     // pub fn method_insecurely(...) -> impl Future<...> {
     // let __caller = ::std::panic::Location::caller();
     // async move {
-    // ::djogi::__private::tracing::warn!(..., caller = %__caller, ...);
-    // ...
+    // ::djogi::__private::tracing::warn!(..., caller = %__caller,...);
+    //...
     // }
     // }
     // `Location::caller()` is resolved in the sync preamble so it reflects the
@@ -2850,121 +2850,121 @@ pub fn expand(
         // --- bulk_create_insecurely (n_user == 0: error; n_user > 0: real body) ---
         let bulk_create_insecurely_body = if n_user == 0 {
             quote! {
-                /// Not supported for zero-user-field models.
-                /// A zero-user-field table has no non-framework columns — emitting
-                /// `INSERT INTO t () VALUES ()` is invalid SQL. Use
-                /// [`create_insecurely`] row-by-row instead.
-                /// The `_insecurely` suffix means RLS tenant isolation is bypassed.
-                /// Bypass only takes effect inside [`atomic()`](::djogi::transaction::atomic);
-                /// on a pool-backed context the call still executes but RLS remains active.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[track_caller]
-                pub fn bulk_create_insecurely(
-                    _ctx: &mut ::djogi::context::DjogiContext,
-                    _rows: ::std::vec::Vec<Self>,
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
-                > + ::std::marker::Send {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "bulk_create_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::std::result::Result::Err(::djogi::DjogiError::Validation(
-                            "bulk_create_insecurely requires at least one non-framework column".to_string()
-                        ))
-                    }
-                }
+             /// Not supported for zero-user-field models.
+             /// A zero-user-field table has no non-framework columns — emitting
+             /// `INSERT INTO t () VALUES ()` is invalid SQL. Use
+             /// [`create_insecurely`] row-by-row instead.
+             /// The `_insecurely` suffix means RLS tenant isolation is bypassed.
+             /// Bypass only takes effect inside [`atomic()`](::djogi::transaction::atomic);
+             /// on a pool-backed context the call still executes but RLS remains active.
+             /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+             #[track_caller]
+             pub fn bulk_create_insecurely(
+              _ctx: &mut ::djogi::context::DjogiContext,
+              _rows: ::std::vec::Vec<Self>,
+             ) -> impl ::std::future::Future<
+              Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
+             > + ::std::marker::Send {
+              let __caller = ::std::panic::Location::caller();
+              async move {
+               ::djogi::__private::tracing::warn!(
+                model = #model_name_str,
+                method = "bulk_create_insecurely",
+                caller = %__caller,
+                "insecure method bypasses tenant scope",
+               );
+               ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                "bulk_create_insecurely requires at least one non-framework column".to_string()
+               ))
+              }
+             }
             }
         } else {
             quote! {
-                /// Bulk-insert rows, bypassing the RLS tenant predicate.
-                /// One `INSERT` round trip; framework columns are populated
-                /// by column defaults. The RLS bypass is issued via
-                /// `SET LOCAL row_security = off` before the insert.
-                /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
-                /// context the statement still executes but RLS remains active
-                /// because `SET LOCAL` is a no-op outside a transaction.
-                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
-                /// is emitted on every call.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[track_caller]
-                pub fn bulk_create_insecurely<'ctx>(
-                    ctx: &'ctx mut ::djogi::context::DjogiContext,
-                    rows: ::std::vec::Vec<Self>,
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
-                > + ::std::marker::Send + 'ctx {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "bulk_create_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
-                        if rows.is_empty() {
-                            return ::std::result::Result::Ok(::std::vec::Vec::new());
-                        }
-                        let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insecure_bulk_insert_prefix);
-                        {
-                            let mut __first = true;
-                            for row in rows.into_iter() {
-                                if __first { __first = false; } else { __acc.push_sql(", "); }
-                                #per_row_binds
-                            }
-                        }
-                        __acc.push_sql(#insecure_bulk_returning_suffix);
-                        let (__sql, __binds) = __acc.into_parts();
-                        let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
-                            __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                        let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
-                        let created: ::std::vec::Vec<Self> = __raw_rows
-                            .iter()
-                            .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
-                            .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
-                        ::std::result::Result::Ok(created)
-                    }
+             /// Bulk-insert rows, bypassing the RLS tenant predicate.
+             /// One `INSERT` round trip; framework columns are populated
+             /// by column defaults. The RLS bypass is issued via
+             /// `SET LOCAL row_security = off` before the insert.
+             /// **Bypass only takes effect inside
+             /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+             /// context the statement still executes but RLS remains active
+             /// because `SET LOCAL` is a no-op outside a transaction.
+             /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+             /// is emitted on every call.
+             /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+             #[track_caller]
+             pub fn bulk_create_insecurely<'ctx>(
+              ctx: &'ctx mut ::djogi::context::DjogiContext,
+              rows: ::std::vec::Vec<Self>,
+             ) -> impl ::std::future::Future<
+              Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
+             > + ::std::marker::Send + 'ctx {
+              let __caller = ::std::panic::Location::caller();
+              async move {
+               ::djogi::__private::tracing::warn!(
+                model = #model_name_str,
+                method = "bulk_create_insecurely",
+                caller = %__caller,
+                "insecure method bypasses tenant scope",
+               );
+               ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
+               if rows.is_empty() {
+                return ::std::result::Result::Ok(::std::vec::Vec::new());
+               }
+               let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insecure_bulk_insert_prefix);
+               {
+                let mut __first = true;
+                for row in rows.into_iter() {
+                 if __first { __first = false; } else { __acc.push_sql(", "); }
+                 #per_row_binds
                 }
+               }
+               __acc.push_sql(#insecure_bulk_returning_suffix);
+               let (__sql, __binds) = __acc.into_parts();
+               let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+               let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+               let created: ::std::vec::Vec<Self> = __raw_rows
+               .iter()
+               .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
+               .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
+               ::std::result::Result::Ok(created)
+              }
+             }
             }
         };
 
         // --- bulk_upsert_insecurely (n_user == 0: error; n_user > 0: real body) ---
         let bulk_upsert_insecurely_body = if n_user == 0 {
             quote! {
-                /// Not supported for zero-user-field models.
-                /// See [`bulk_create_insecurely`] for the rationale.
-                /// The `_insecurely` suffix means RLS tenant isolation is bypassed.
-                /// Bypass only takes effect inside [`atomic()`](::djogi::transaction::atomic);
-                /// on a pool-backed context the call still executes but RLS remains active.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[doc(hidden)]
-                #[track_caller]
-                pub fn bulk_upsert_insecurely(
-                    _ctx: &mut ::djogi::context::DjogiContext,
-                    _rows: ::std::vec::Vec<Self>,
-                    _conflict_cols: &[&'static str],
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
-                > + ::std::marker::Send {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "bulk_upsert_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::std::result::Result::Err(::djogi::DjogiError::Validation(
-                            "bulk_upsert_insecurely requires at least one non-framework column".to_string()
-                        ))
-                    }
-                }
+             /// Not supported for zero-user-field models.
+             /// See [`bulk_create_insecurely`] for the rationale.
+             /// The `_insecurely` suffix means RLS tenant isolation is bypassed.
+             /// Bypass only takes effect inside [`atomic()`](::djogi::transaction::atomic);
+             /// on a pool-backed context the call still executes but RLS remains active.
+             /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+             #[doc(hidden)]
+             #[track_caller]
+             pub fn bulk_upsert_insecurely(
+              _ctx: &mut ::djogi::context::DjogiContext,
+              _rows: ::std::vec::Vec<Self>,
+              _conflict_cols: &[&'static str],
+             ) -> impl ::std::future::Future<
+              Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
+             > + ::std::marker::Send {
+              let __caller = ::std::panic::Location::caller();
+              async move {
+               ::djogi::__private::tracing::warn!(
+                model = #model_name_str,
+                method = "bulk_upsert_insecurely",
+                caller = %__caller,
+                "insecure method bypasses tenant scope",
+               );
+               ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                "bulk_upsert_insecurely requires at least one non-framework column".to_string()
+               ))
+              }
+             }
             }
         } else {
             let insecure_upsert_prefix =
@@ -3004,366 +3004,366 @@ pub fn expand(
                         let push_stmt =
                             push_bind_tokens(&kind, nullable, tracked, field_expr, codec);
                         quote! {
-                            __acc.push_sql(", ");
-                            #push_stmt;
+                         __acc.push_sql(", ");
+                         #push_stmt;
                         }
                     })
                     .collect();
                 quote! {
-                    __acc.push_sql("(");
-                    #pk_bind
-                    #(#uf_bind_stmts)*
-                    __acc.push_sql(")");
+                 __acc.push_sql("(");
+                 #pk_bind
+                 #(#uf_bind_stmts)*
+                 __acc.push_sql(")");
                 }
             };
 
             quote! {
-                /// Bulk-upsert rows, bypassing the RLS tenant predicate.
-                /// Identical to [`bulk_upsert`] but issues
-                /// `SET LOCAL row_security = off` before the statement.
-                /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
-                /// context the statement still executes but RLS remains active.
-                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
-                /// is emitted on every call.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[track_caller]
-                pub fn bulk_upsert_insecurely<'ctx>(
-                    ctx: &'ctx mut ::djogi::context::DjogiContext,
-                    rows: ::std::vec::Vec<Self>,
-                    conflict_cols: &'ctx [&'static str],
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
-                > + ::std::marker::Send + 'ctx {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "bulk_upsert_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
-                        if rows.is_empty() {
-                            return ::std::result::Result::Ok(::std::vec::Vec::new());
-                        }
-                        if conflict_cols.is_empty() {
-                            return ::std::result::Result::Err(::djogi::DjogiError::Validation(
-                                "bulk_upsert_insecurely requires at least one conflict column".to_string()
-                            ));
-                        }
-                        const __VALID_COLS: &[&str] = &[ #(#insecure_valid_cols_lit),* ];
-                        for col in conflict_cols {
-                            if !__VALID_COLS.contains(col) {
-                                return ::std::result::Result::Err(::djogi::DjogiError::Validation(
-                                    ::std::format!(
-                                        "unknown conflict column '{}' for table {}",
-                                        col,
-                                        #table,
-                                    )
-                                ));
-                            }
-                        }
-                        let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insecure_upsert_prefix);
-                        {
-                            let mut __first = true;
-                            for row in rows.into_iter() {
-                                if __first { __first = false; } else { __acc.push_sql(", "); }
-                                #insecure_upsert_per_row_binds
-                            }
-                        }
-                        __acc.push_sql(" ON CONFLICT (");
-                        {
-                            let mut __first = true;
-                            for col in conflict_cols {
-                                if __first { __first = false; } else { __acc.push_sql(", "); }
-                                __acc.push_sql(*col);
-                            }
-                        }
-                        __acc.push_sql(")");
-                        __acc.push_sql(#insecure_do_update);
-                        let (__sql, __binds) = __acc.into_parts();
-                        let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
-                            __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                        let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
-                        let created: ::std::vec::Vec<Self> = __raw_rows
-                            .iter()
-                            .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
-                            .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
-                        ::std::result::Result::Ok(created)
-                    }
+             /// Bulk-upsert rows, bypassing the RLS tenant predicate.
+             /// Identical to [`bulk_upsert`] but issues
+             /// `SET LOCAL row_security = off` before the statement.
+             /// **Bypass only takes effect inside
+             /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+             /// context the statement still executes but RLS remains active.
+             /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+             /// is emitted on every call.
+             /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+             #[track_caller]
+             pub fn bulk_upsert_insecurely<'ctx>(
+              ctx: &'ctx mut ::djogi::context::DjogiContext,
+              rows: ::std::vec::Vec<Self>,
+              conflict_cols: &'ctx [&'static str],
+             ) -> impl ::std::future::Future<
+              Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
+             > + ::std::marker::Send + 'ctx {
+              let __caller = ::std::panic::Location::caller();
+              async move {
+               ::djogi::__private::tracing::warn!(
+                model = #model_name_str,
+                method = "bulk_upsert_insecurely",
+                caller = %__caller,
+                "insecure method bypasses tenant scope",
+               );
+               ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
+               if rows.is_empty() {
+                return ::std::result::Result::Ok(::std::vec::Vec::new());
+               }
+               if conflict_cols.is_empty() {
+                return ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                 "bulk_upsert_insecurely requires at least one conflict column".to_string()
+                ));
+               }
+               const __VALID_COLS: &[&str] = &[ #(#insecure_valid_cols_lit),* ];
+               for col in conflict_cols {
+                if !__VALID_COLS.contains(col) {
+                 return ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                  ::std::format!(
+                   "unknown conflict column '{}' for table {}",
+                   col,
+                   #table,
+                  )
+                 ));
                 }
+               }
+               let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insecure_upsert_prefix);
+               {
+                let mut __first = true;
+                for row in rows.into_iter() {
+                 if __first { __first = false; } else { __acc.push_sql(", "); }
+                 #insecure_upsert_per_row_binds
+                }
+               }
+               __acc.push_sql(" ON CONFLICT (");
+               {
+                let mut __first = true;
+                for col in conflict_cols {
+                 if __first { __first = false; } else { __acc.push_sql(", "); }
+                 __acc.push_sql(*col);
+                }
+               }
+               __acc.push_sql(")");
+               __acc.push_sql(#insecure_do_update);
+               let (__sql, __binds) = __acc.into_parts();
+               let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+               let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+               let created: ::std::vec::Vec<Self> = __raw_rows
+               .iter()
+               .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
+               .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
+               ::std::result::Result::Ok(created)
+              }
+             }
             }
         };
 
         quote! {
-            impl #impl_generics #name #ty_generics #where_clause {
-                /// Fetch a single row by primary key, bypassing the RLS tenant predicate.
-                /// Issues `SET LOCAL row_security = off` before the SELECT to
-                /// lift the per-row policy for this statement.
-                /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
-                /// context the call still executes but RLS remains active because
-                /// `SET LOCAL` is a no-op outside a transaction.
-                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
-                /// is emitted on every call to aid audit trails.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[track_caller]
-                pub fn get_insecurely<'ctx>(
-                    ctx: &'ctx mut ::djogi::context::DjogiContext,
-                    id: <Self as ::djogi::model::Model>::Pk,
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<Self, ::djogi::DjogiError>,
-                > + ::std::marker::Send + 'ctx {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "get_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
-                        <Self as ::djogi::model::Model>::get(ctx, id).await
-                    }
-                }
+         impl #impl_generics #name #ty_generics #where_clause {
+          /// Fetch a single row by primary key, bypassing the RLS tenant predicate.
+          /// Issues `SET LOCAL row_security = off` before the SELECT to
+          /// lift the per-row policy for this statement.
+          /// **Bypass only takes effect inside
+          /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+          /// context the call still executes but RLS remains active because
+          /// `SET LOCAL` is a no-op outside a transaction.
+          /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+          /// is emitted on every call to aid audit trails.
+          /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+          #[track_caller]
+          pub fn get_insecurely<'ctx>(
+           ctx: &'ctx mut ::djogi::context::DjogiContext,
+           id: <Self as ::djogi::model::Model>::Pk,
+          ) -> impl ::std::future::Future<
+           Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+          > + ::std::marker::Send + 'ctx {
+           let __caller = ::std::panic::Location::caller();
+           async move {
+            ::djogi::__private::tracing::warn!(
+             model = #model_name_str,
+             method = "get_insecurely",
+             caller = %__caller,
+             "insecure method bypasses tenant scope",
+            );
+            ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
+            <Self as ::djogi::model::Model>::get(ctx, id).await
+           }
+          }
 
-                /// Insert a new row, bypassing the RLS `WITH CHECK` tenant predicate.
-                /// Issues `SET LOCAL row_security = off` before the INSERT so the
-                /// `WITH CHECK` clause on the policy is not evaluated — the row is
-                /// written regardless of whether its tenant-key field matches
-                /// `app.tenant_id`.
-                /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
-                /// context the call still executes but RLS remains active.
-                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
-                /// is emitted on every call.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[track_caller]
-                pub fn create_insecurely<'ctx>(
-                    ctx: &'ctx mut ::djogi::context::DjogiContext,
-                    value: Self,
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<Self, ::djogi::DjogiError>,
-                > + ::std::marker::Send + 'ctx {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "create_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
-                        <Self as ::djogi::model::Model>::create(ctx, value).await
-                    }
-                }
+          /// Insert a new row, bypassing the RLS `WITH CHECK` tenant predicate.
+          /// Issues `SET LOCAL row_security = off` before the INSERT so the
+          /// `WITH CHECK` clause on the policy is not evaluated — the row is
+          /// written regardless of whether its tenant-key field matches
+          /// `app.tenant_id`.
+          /// **Bypass only takes effect inside
+          /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+          /// context the call still executes but RLS remains active.
+          /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+          /// is emitted on every call.
+          /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+          #[track_caller]
+          pub fn create_insecurely<'ctx>(
+           ctx: &'ctx mut ::djogi::context::DjogiContext,
+           value: Self,
+          ) -> impl ::std::future::Future<
+           Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+          > + ::std::marker::Send + 'ctx {
+           let __caller = ::std::panic::Location::caller();
+           async move {
+            ::djogi::__private::tracing::warn!(
+             model = #model_name_str,
+             method = "create_insecurely",
+             caller = %__caller,
+             "insecure method bypasses tenant scope",
+            );
+            ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
+            <Self as ::djogi::model::Model>::create(ctx, value).await
+           }
+          }
 
-                /// Save (UPDATE) this row, bypassing the RLS tenant predicate.
-                /// Issues `SET LOCAL row_security = off` before the UPDATE so both
-                /// the `USING` (row visibility) and `WITH CHECK` (write restriction)
-                /// clauses are lifted for this statement.
-                /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
-                /// context the call still executes but RLS remains active.
-                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
-                /// is emitted on every call.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[track_caller]
-                pub fn save_insecurely<'ctx>(
-                    &'ctx mut self,
-                    ctx: &'ctx mut ::djogi::context::DjogiContext,
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<(), ::djogi::DjogiError>,
-                > + ::std::marker::Send + 'ctx {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "save_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
-                        <Self as ::djogi::model::Model>::save(self, ctx).await
-                    }
-                }
+          /// Save (UPDATE) this row, bypassing the RLS tenant predicate.
+          /// Issues `SET LOCAL row_security = off` before the UPDATE so both
+          /// the `USING` (row visibility) and `WITH CHECK` (write restriction)
+          /// clauses are lifted for this statement.
+          /// **Bypass only takes effect inside
+          /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+          /// context the call still executes but RLS remains active.
+          /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+          /// is emitted on every call.
+          /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+          #[track_caller]
+          pub fn save_insecurely<'ctx>(
+           &'ctx mut self,
+           ctx: &'ctx mut ::djogi::context::DjogiContext,
+          ) -> impl ::std::future::Future<
+           Output = ::std::result::Result<(), ::djogi::DjogiError>,
+          > + ::std::marker::Send + 'ctx {
+           let __caller = ::std::panic::Location::caller();
+           async move {
+            ::djogi::__private::tracing::warn!(
+             model = #model_name_str,
+             method = "save_insecurely",
+             caller = %__caller,
+             "insecure method bypasses tenant scope",
+            );
+            ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
+            <Self as ::djogi::model::Model>::save(self, ctx).await
+           }
+          }
 
-                /// Delete this row, bypassing the RLS tenant predicate.
-                /// Issues `SET LOCAL row_security = off` before the DELETE so the
-                /// `USING` clause on the policy is lifted for this statement.
-                /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
-                /// context the call still executes but RLS remains active.
-                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
-                /// is emitted on every call.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[track_caller]
-                pub fn delete_insecurely<'ctx>(
-                    self,
-                    ctx: &'ctx mut ::djogi::context::DjogiContext,
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<(), ::djogi::DjogiError>,
-                > + ::std::marker::Send + 'ctx {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "delete_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
-                        <Self as ::djogi::model::Model>::delete(self, ctx).await
-                    }
-                }
+          /// Delete this row, bypassing the RLS tenant predicate.
+          /// Issues `SET LOCAL row_security = off` before the DELETE so the
+          /// `USING` clause on the policy is lifted for this statement.
+          /// **Bypass only takes effect inside
+          /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+          /// context the call still executes but RLS remains active.
+          /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+          /// is emitted on every call.
+          /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+          #[track_caller]
+          pub fn delete_insecurely<'ctx>(
+           self,
+           ctx: &'ctx mut ::djogi::context::DjogiContext,
+          ) -> impl ::std::future::Future<
+           Output = ::std::result::Result<(), ::djogi::DjogiError>,
+          > + ::std::marker::Send + 'ctx {
+           let __caller = ::std::panic::Location::caller();
+           async move {
+            ::djogi::__private::tracing::warn!(
+             model = #model_name_str,
+             method = "delete_insecurely",
+             caller = %__caller,
+             "insecure method bypasses tenant scope",
+            );
+            ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
+            <Self as ::djogi::model::Model>::delete(self, ctx).await
+           }
+          }
 
-                /// Delete this row and return the pre-delete snapshot,
-                /// bypassing the RLS tenant predicate.
-                /// Issues `SET LOCAL row_security = off` before the DELETE so the
-                /// policy's `USING` clause is lifted for this statement.
-                /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
-                /// context the call still executes but RLS remains active.
-                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
-                /// is emitted on every call.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[track_caller]
-                pub fn delete_returning_insecurely<'ctx>(
-                    self,
-                    ctx: &'ctx mut ::djogi::context::DjogiContext,
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<Self, ::djogi::DjogiError>,
-                > + ::std::marker::Send + 'ctx {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "delete_returning_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::djogi::__bypass::RawAccessExt::raw_execute(
-                            ctx,
-                            "SET LOCAL row_security = off",
-                            &[],
-                        )
-                        .await?;
-                        <Self as ::djogi::model::Model>::delete_returning(self, ctx).await
-                    }
-                }
+          /// Delete this row and return the pre-delete snapshot,
+          /// bypassing the RLS tenant predicate.
+          /// Issues `SET LOCAL row_security = off` before the DELETE so the
+          /// policy's `USING` clause is lifted for this statement.
+          /// **Bypass only takes effect inside
+          /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+          /// context the call still executes but RLS remains active.
+          /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+          /// is emitted on every call.
+          /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+          #[track_caller]
+          pub fn delete_returning_insecurely<'ctx>(
+           self,
+           ctx: &'ctx mut ::djogi::context::DjogiContext,
+          ) -> impl ::std::future::Future<
+           Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+          > + ::std::marker::Send + 'ctx {
+           let __caller = ::std::panic::Location::caller();
+           async move {
+            ::djogi::__private::tracing::warn!(
+             model = #model_name_str,
+             method = "delete_returning_insecurely",
+             caller = %__caller,
+             "insecure method bypasses tenant scope",
+            );
+            ::djogi::__bypass::RawAccessExt::raw_execute(
+             ctx,
+             "SET LOCAL row_security = off",
+             &[],
+            )
+           .await?;
+            <Self as ::djogi::model::Model>::delete_returning(self, ctx).await
+           }
+          }
 
-                /// Update this row and return old/new snapshots, bypassing the
-                /// RLS tenant predicate.
-                /// Issues `SET LOCAL row_security = off` before the UPDATE so both
-                /// the `USING` (row visibility) and `WITH CHECK` (write restriction)
-                /// clauses are lifted for this statement.
-                /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
-                /// context the call still executes but RLS remains active.
-                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
-                /// is emitted on every call.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[track_caller]
-                pub fn update_returning_pair_insecurely<'ctx>(
-                    self,
-                    ctx: &'ctx mut ::djogi::context::DjogiContext,
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<
-                        ::djogi::query::ReturningPair<Self>,
-                        ::djogi::DjogiError,
-                    >,
-                > + ::std::marker::Send + 'ctx {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "update_returning_pair_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::djogi::__bypass::RawAccessExt::raw_execute(
-                            ctx,
-                            "SET LOCAL row_security = off",
-                            &[],
-                        )
-                        .await?;
-                        <Self as ::djogi::model::Model>::update_returning_pair(self, ctx).await
-                    }
-                }
+          /// Update this row and return old/new snapshots, bypassing the
+          /// RLS tenant predicate.
+          /// Issues `SET LOCAL row_security = off` before the UPDATE so both
+          /// the `USING` (row visibility) and `WITH CHECK` (write restriction)
+          /// clauses are lifted for this statement.
+          /// **Bypass only takes effect inside
+          /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+          /// context the call still executes but RLS remains active.
+          /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+          /// is emitted on every call.
+          /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+          #[track_caller]
+          pub fn update_returning_pair_insecurely<'ctx>(
+           self,
+           ctx: &'ctx mut ::djogi::context::DjogiContext,
+          ) -> impl ::std::future::Future<
+           Output = ::std::result::Result<
+            ::djogi::query::ReturningPair<Self>,
+            ::djogi::DjogiError,
+           >,
+          > + ::std::marker::Send + 'ctx {
+           let __caller = ::std::panic::Location::caller();
+           async move {
+            ::djogi::__private::tracing::warn!(
+             model = #model_name_str,
+             method = "update_returning_pair_insecurely",
+             caller = %__caller,
+             "insecure method bypasses tenant scope",
+            );
+            ::djogi::__bypass::RawAccessExt::raw_execute(
+             ctx,
+             "SET LOCAL row_security = off",
+             &[],
+            )
+           .await?;
+            <Self as ::djogi::model::Model>::update_returning_pair(self, ctx).await
+           }
+          }
 
-                /// Return a lazy `QuerySet<Self>` without any tenant predicate.
-                /// This method itself is synchronous — it just constructs the
-                /// queryset; no SQL is issued until a terminal method (`.fetch_all`,
-                /// `.fetch_one`, etc.) is called.
-                /// **The `SET LOCAL row_security = off` bypass cannot be issued
-                /// here** because there is no `DjogiContext` at queryset-construction
-                /// time. To bypass RLS on the fetch, the caller must issue
-                /// `ctx.raw_execute("SET LOCAL row_security = off", &[]).await?`
-                /// inside an `atomic()` scope _before_ calling the terminal method.
-                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
-                /// is emitted synchronously when the queryset is constructed.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                #[track_caller]
-                pub fn objects_insecurely() -> ::djogi::query::QuerySet<Self> {
-                    ::djogi::__private::tracing::warn!(
-                        model = #model_name_str,
-                        method = "objects_insecurely",
-                        caller = %::std::panic::Location::caller(),
-                        "insecure method bypasses tenant scope",
-                    );
-                    <Self as ::djogi::model::Model>::objects()
-                }
+          /// Return a lazy `QuerySet<Self>` without any tenant predicate.
+          /// This method itself is synchronous — it just constructs the
+          /// queryset; no SQL is issued until a terminal method (`.fetch_all`,
+          /// `.fetch_one`, etc.) is called.
+          /// **The `SET LOCAL row_security = off` bypass cannot be issued
+          /// here** because there is no `DjogiContext` at queryset-construction
+          /// time. To bypass RLS on the fetch, the caller must issue
+          /// `ctx.raw_execute("SET LOCAL row_security = off", &[]).await?`
+          /// inside an `atomic()` scope _before_ calling the terminal method.
+          /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+          /// is emitted synchronously when the queryset is constructed.
+          /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+          #[track_caller]
+          pub fn objects_insecurely() -> ::djogi::query::QuerySet<Self> {
+           ::djogi::__private::tracing::warn!(
+            model = #model_name_str,
+            method = "objects_insecurely",
+            caller = %::std::panic::Location::caller(),
+            "insecure method bypasses tenant scope",
+           );
+           <Self as ::djogi::model::Model>::objects()
+          }
 
-                /// Bulk-update rows by primary key, bypassing the RLS tenant predicate.
-                /// Issues `SET LOCAL row_security = off` before the UPDATE so the
-                /// policy's `USING` clause does not filter the target rows.
-                /// **Bypass only takes effect inside
-                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
-                /// context the call still executes but RLS remains active.
-                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
-                /// is emitted on every call.
-                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
-                /// # Type-parameter bounds
-                /// The `F: Send + 'ctx` bound is tighter than [`bulk_update`]'s
-                /// because the sync-wrapper + `#[track_caller]` pattern requires
-                /// `impl Future + Send + 'ctx` as the return type, which in turn
-                /// requires every value captured into the future to satisfy it.
-                /// `A` is only the return type of `F` — it never lives inside the
-                /// future — so it keeps its unbounded shape.
-                /// `bulk_update`'s `async fn` surface infers bounds implicitly — we
-                /// cannot use `async fn` here because `#[track_caller]` would not
-                /// reflect the user's call site.
-                #[track_caller]
-                pub fn bulk_update_insecurely<'ctx, F, A>(
-                    ctx: &'ctx mut ::djogi::context::DjogiContext,
-                    ids: ::std::vec::Vec<<Self as ::djogi::model::Model>::Pk>,
-                    closure: F,
-                ) -> impl ::std::future::Future<
-                    Output = ::std::result::Result<u64, ::djogi::DjogiError>,
-                > + ::std::marker::Send + 'ctx
-                where
-                    F: ::std::ops::FnOnce(<Self as ::djogi::model::Model>::Fields) -> A
-                        + ::std::marker::Send + 'ctx,
-                    A: ::djogi::query::IntoAssignments,
-                {
-                    let __caller = ::std::panic::Location::caller();
-                    async move {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            method = "bulk_update_insecurely",
-                            caller = %__caller,
-                            "insecure method bypasses tenant scope",
-                        );
-                        ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
-                        Self::bulk_update(ctx, ids, closure).await
-                    }
-                }
+          /// Bulk-update rows by primary key, bypassing the RLS tenant predicate.
+          /// Issues `SET LOCAL row_security = off` before the UPDATE so the
+          /// policy's `USING` clause does not filter the target rows.
+          /// **Bypass only takes effect inside
+          /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+          /// context the call still executes but RLS remains active.
+          /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+          /// is emitted on every call.
+          /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+          /// # Type-parameter bounds
+          /// The `F: Send + 'ctx` bound is tighter than [`bulk_update`]'s
+          /// because the sync-wrapper + `#[track_caller]` pattern requires
+          /// `impl Future + Send + 'ctx` as the return type, which in turn
+          /// requires every value captured into the future to satisfy it.
+          /// `A` is only the return type of `F` — it never lives inside the
+          /// future — so it keeps its unbounded shape.
+          /// `bulk_update`'s `async fn` surface infers bounds implicitly — we
+          /// cannot use `async fn` here because `#[track_caller]` would not
+          /// reflect the user's call site.
+          #[track_caller]
+          pub fn bulk_update_insecurely<'ctx, F, A>(
+           ctx: &'ctx mut ::djogi::context::DjogiContext,
+           ids: ::std::vec::Vec<<Self as ::djogi::model::Model>::Pk>,
+           closure: F,
+          ) -> impl ::std::future::Future<
+           Output = ::std::result::Result<u64, ::djogi::DjogiError>,
+          > + ::std::marker::Send + 'ctx
+          where
+           F: ::std::ops::FnOnce(<Self as ::djogi::model::Model>::Fields) -> A
+            + ::std::marker::Send + 'ctx,
+           A: ::djogi::query::IntoAssignments,
+          {
+           let __caller = ::std::panic::Location::caller();
+           async move {
+            ::djogi::__private::tracing::warn!(
+             model = #model_name_str,
+             method = "bulk_update_insecurely",
+             caller = %__caller,
+             "insecure method bypasses tenant scope",
+            );
+            ::djogi::__bypass::RawAccessExt::raw_execute(ctx, "SET LOCAL row_security = off", &[]).await?;
+            Self::bulk_update(ctx, ids, closure).await
+           }
+          }
 
-                #bulk_create_insecurely_body
+          #bulk_create_insecurely_body
 
-                #bulk_upsert_insecurely_body
-            }
+          #bulk_upsert_insecurely_body
+         }
         }
     } else {
         quote! {}
@@ -3373,140 +3373,140 @@ pub fn expand(
     // Assemble the full impl block.
     // -------------------------------------------------------------------------
     quote! {
-        #sequence_compile_err
-        #create_with_id_impl
-        #bulk_methods_impl
-        #insecurely_impl
+     #sequence_compile_err
+     #create_with_id_impl
+     #bulk_methods_impl
+     #insecurely_impl
 
-        // Satisfy the `Model: __sealed::Sealed` supertrait. The sealed
-        // module is `#[doc(hidden)] pub`, so downstream hand-rolled
-        // `impl Model for T` without an accompanying `impl Sealed`
-        // fails to compile — closing the hostile-Model vector
-        // flagged on de42874 (malicious `table_name()` /
-        // `descriptor().fields[].name` strings flowing into the SQL
-        // emitter). The macro is the only supported emitter of both
-        // impls.
-        impl #impl_generics ::djogi::model::__sealed::Sealed for #name #ty_generics #where_clause {}
+     // Satisfy the `Model: __sealed::Sealed` supertrait. The sealed
+     // module is `#[doc(hidden)] pub`, so downstream hand-rolled
+     // `impl Model for T` without an accompanying `impl Sealed`
+     // fails to compile — closing the hostile-Model vector
+     // flagged on de42874 (malicious `table_name()` /
+     // `descriptor().fields[].name` strings flowing into the SQL
+     // emitter). The macro is the only supported emitter of both
+     // impls.
+     impl #impl_generics ::djogi::model::__sealed::Sealed for #name #ty_generics #where_clause {}
 
-        impl #impl_generics ::djogi::model::Model for #name #ty_generics #where_clause {
-            type Pk = #pk_type_tokens;
+     impl #impl_generics ::djogi::model::Model for #name #ty_generics #where_clause {
+      type Pk = #pk_type_tokens;
 
-            // Typed field handles — the ZST generated alongside this impl by
-            // `stubs::expand` / `fields::expand` .
-            // Its `Default` impl lets `QuerySet::filter` construct the handle
-            // inside the closure without the caller naming the type.
-            type Fields = #fields_name;
+      // Typed field handles — the ZST generated alongside this impl by
+      // `stubs::expand` / `fields::expand`.
+      // Its `Default` impl lets `QuerySet::filter` construct the handle
+      // inside the closure without the caller naming the type.
+      type Fields = #fields_name;
 
-            fn table_name() -> &'static str {
-                #table
-            }
+      fn table_name() -> &'static str {
+       #table
+      }
 
-            fn pk_value(&self) -> &Self::Pk {
-                #pk_value_body
-            }
+      fn pk_value(&self) -> &Self::Pk {
+       #pk_value_body
+      }
 
-            #descriptor_impl
+      #descriptor_impl
 
-            #proxy_default_filter_override
-            #proxy_default_order_override
+      #proxy_default_filter_override
+      #proxy_default_order_override
 
-            fn get(
-                ctx: &mut ::djogi::context::DjogiContext,
-                id: Self::Pk,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<Self, ::djogi::DjogiError>,
-            > + ::std::marker::Send {
-                #get_body
-            }
+      fn get(
+       ctx: &mut ::djogi::context::DjogiContext,
+       id: Self::Pk,
+      ) -> impl ::std::future::Future<
+       Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+      > + ::std::marker::Send {
+       #get_body
+      }
 
-            fn create(
-                ctx: &mut ::djogi::context::DjogiContext,
-                value: Self,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<Self, ::djogi::DjogiError>,
-            > + ::std::marker::Send {
-                #create_body
-            }
+      fn create(
+       ctx: &mut ::djogi::context::DjogiContext,
+       value: Self,
+      ) -> impl ::std::future::Future<
+       Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+      > + ::std::marker::Send {
+       #create_body
+      }
 
-            fn save<'ctx>(
-                &'ctx mut self,
-                ctx: &'ctx mut ::djogi::context::DjogiContext,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<(), ::djogi::DjogiError>,
-            > + ::std::marker::Send + 'ctx {
-                // RPITIT captures `&self`'s lifetime into the returned future's
-                // hidden lifetime, so the async block can borrow `&self.#f`
-                // across `.await` without cloning. `Model: Send + Sync` makes
-                // `&Self: Send` so the returned future satisfies `+ Send`.
-                #save_body
-            }
+      fn save<'ctx>(
+       &'ctx mut self,
+       ctx: &'ctx mut ::djogi::context::DjogiContext,
+      ) -> impl ::std::future::Future<
+       Output = ::std::result::Result<(), ::djogi::DjogiError>,
+      > + ::std::marker::Send + 'ctx {
+       // RPITIT captures `&self`'s lifetime into the returned future's
+       // hidden lifetime, so the async block can borrow `&self.#f`
+       // across `.await` without cloning. `Model: Send + Sync` makes
+       // `&Self: Send` so the returned future satisfies `+ Send`.
+       #save_body
+      }
 
-            fn delete(
-                #delete_self_pat,
-                ctx: &mut ::djogi::context::DjogiContext,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<(), ::djogi::DjogiError>,
-            > + ::std::marker::Send {
-                #delete_body
-            }
+      fn delete(
+       #delete_self_pat,
+       ctx: &mut ::djogi::context::DjogiContext,
+      ) -> impl ::std::future::Future<
+       Output = ::std::result::Result<(), ::djogi::DjogiError>,
+      > + ::std::marker::Send {
+       #delete_body
+      }
 
-            fn refresh_from_db<'ctx>(
-                &'ctx self,
-                ctx: &'ctx mut ::djogi::context::DjogiContext,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<Self, ::djogi::DjogiError>,
-            > + ::std::marker::Send + 'ctx {
-                #refresh_body
-            }
+      fn refresh_from_db<'ctx>(
+       &'ctx self,
+       ctx: &'ctx mut ::djogi::context::DjogiContext,
+      ) -> impl ::std::future::Future<
+       Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+      > + ::std::marker::Send + 'ctx {
+       #refresh_body
+      }
 
-            // PG18 OLD/NEW RETURNING.
-            fn update_returning_pair(
-                mut self,
-                ctx: &mut ::djogi::context::DjogiContext,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<
-                    ::djogi::query::ReturningPair<Self>,
-                    ::djogi::DjogiError,
-                >,
-            > + ::std::marker::Send {
-                // `mut self` lets before_save take `&mut self` even though
-                // the consuming path has already moved `self` in. Rust
-                // permits `mut self` as a binding pattern in `fn` signatures.
-                #update_returning_pair_body
-            }
+      // PG18 OLD/NEW RETURNING.
+      fn update_returning_pair(
+       mut self,
+       ctx: &mut ::djogi::context::DjogiContext,
+      ) -> impl ::std::future::Future<
+       Output = ::std::result::Result<
+        ::djogi::query::ReturningPair<Self>,
+        ::djogi::DjogiError,
+       >,
+      > + ::std::marker::Send {
+       // `mut self` lets before_save take `&mut self` even though
+       // the consuming path has already moved `self` in. Rust
+       // permits `mut self` as a binding pattern in `fn` signatures.
+       #update_returning_pair_body
+      }
 
-            fn delete_returning(
-                #drp_self_pat,
-                ctx: &mut ::djogi::context::DjogiContext,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<Self, ::djogi::DjogiError>,
-            > + ::std::marker::Send {
-                #delete_returning_body
-            }
+      fn delete_returning(
+       #drp_self_pat,
+       ctx: &mut ::djogi::context::DjogiContext,
+      ) -> impl ::std::future::Future<
+       Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+      > + ::std::marker::Send {
+       #delete_returning_body
+      }
 
-            // Bulk RETURNING save outbox hook.
-            // Non-events models inherit `Model` default no-op.
-            #emit_outbox_returning_save_override
-            // Shared save-style on_commit cache invalidation hook.
-            #emit_on_save_cache_invalidation_override
-            // Bulk save-style on_commit cache invalidation hook.
-            #emit_bulk_on_save_cache_invalidation_override
+      // Bulk RETURNING save outbox hook.
+      // Non-events models inherit `Model` default no-op.
+      #emit_outbox_returning_save_override
+      // Shared save-style on_commit cache invalidation hook.
+      #emit_on_save_cache_invalidation_override
+      // Bulk save-style on_commit cache invalidation hook.
+      #emit_bulk_on_save_cache_invalidation_override
 
-            // 6 — soft-deletable tombstone signal.
-            // Emitted only for `#[model(soft_deletable)]` models; non-soft-deletable
-            // models inherit the `Model` trait's default `false` impl.
-            #delta_should_tombstone_override
+      // 6 — soft-deletable tombstone signal.
+      // Emitted only for `#[model(soft_deletable)]` models; non-soft-deletable
+      // models inherit the `Model` trait's default `false` impl.
+      #delta_should_tombstone_override
 
-            // Portable-field SQL emission override.
-            // Replaces the default `Model::__djogi_emit_field_predicate`
-            // hook (which returns `UnsupportedModel`) with a generated
-            // `(field_name, LookupOp)` dispatch keyed off the shared
-            // portable field metadata. Hand-written `Model` impls (test
-            // fixtures, internal stubs) keep the trait default and
-            // surface a typed error if a portable predicate against
-            // them ever reaches SQL emission.
-            #emit_field_predicate_override
-        }
+      // Portable-field SQL emission override.
+      // Replaces the default `Model::__djogi_emit_field_predicate`
+      // hook (which returns `UnsupportedModel`) with a generated
+      // `(field_name, LookupOp)` dispatch keyed off the shared
+      // portable field metadata. Hand-written `Model` impls (test
+      // fixtures, internal stubs) keep the trait default and
+      // surface a typed error if a portable predicate against
+      // them ever reaches SQL emission.
+      #emit_field_predicate_override
+     }
     }
 }
 
@@ -3552,12 +3552,12 @@ fn emit_djogi_emit_field_predicate(
                 arms.extend(scalar_arms(model_name, ty, column, /*ordering=*/ true));
                 // Final per-field wildcard for unknown operators.
                 arms.push(quote! {
-                    (#column, op) => ::std::result::Result::Err(
-                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
-                            field: #column,
-                            op,
-                        },
-                    ),
+                 (#column, op) => ::std::result::Result::Err(
+                  ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                   field: #column,
+                   op,
+                  },
+                 ),
                 });
             }
             PortableFieldKind::Bool => {
@@ -3568,12 +3568,12 @@ fn emit_djogi_emit_field_predicate(
                     model_name, ty, column, /*ordering=*/ false,
                 ));
                 arms.push(quote! {
-                    (#column, op) => ::std::result::Result::Err(
-                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
-                            field: #column,
-                            op,
-                        },
-                    ),
+                 (#column, op) => ::std::result::Result::Err(
+                  ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                   field: #column,
+                   op,
+                  },
+                 ),
                 });
             }
             PortableFieldKind::String => {
@@ -3583,12 +3583,12 @@ fn emit_djogi_emit_field_predicate(
                 ));
                 arms.extend(string_pattern_arms(model_name, column));
                 arms.push(quote! {
-                    (#column, op) => ::std::result::Result::Err(
-                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
-                            field: #column,
-                            op,
-                        },
-                    ),
+                 (#column, op) => ::std::result::Result::Err(
+                  ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                   field: #column,
+                   op,
+                  },
+                 ),
                 });
             }
             PortableFieldKind::OptionScalar
@@ -3615,12 +3615,12 @@ fn emit_djogi_emit_field_predicate(
                     info.tracked_wrapped,
                 ));
                 arms.push(quote! {
-                    (#column, op) => ::std::result::Result::Err(
-                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
-                            field: #column,
-                            op,
-                        },
-                    ),
+                 (#column, op) => ::std::result::Result::Err(
+                  ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                   field: #column,
+                   op,
+                  },
+                 ),
                 });
             }
             PortableFieldKind::RelationOrVisage => {
@@ -3634,12 +3634,12 @@ fn emit_djogi_emit_field_predicate(
                     model_name, ty, column, /*ordering=*/ false,
                 ));
                 arms.push(quote! {
-                    (#column, op) => ::std::result::Result::Err(
-                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
-                            field: #column,
-                            op,
-                        },
-                    ),
+                 (#column, op) => ::std::result::Result::Err(
+                  ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                   field: #column,
+                   op,
+                  },
+                 ),
                 });
             }
             PortableFieldKind::Array => {
@@ -3652,12 +3652,12 @@ fn emit_djogi_emit_field_predicate(
                     model_name, ty, column, /*ordering=*/ false,
                 ));
                 arms.push(quote! {
-                    (#column, op) => ::std::result::Result::Err(
-                        ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
-                            field: #column,
-                            op,
-                        },
-                    ),
+                 (#column, op) => ::std::result::Result::Err(
+                  ::djogi::__private::query::PortablePredicateError::UnsupportedLookup {
+                   field: #column,
+                   op,
+                  },
+                 ),
                 });
             }
             PortableFieldKind::Jsonb
@@ -3676,10 +3676,10 @@ fn emit_djogi_emit_field_predicate(
                 // covers every current and future variant for the
                 // field.
                 arms.push(quote! {
-                    (#column, _) => ::djogi::__private::query::portable_emit::emit_registered_custom::<#model_name, #ty>(
-                        acc, ctx, #column, field,
-                    ),
-                });
+     (#column, _) => ::djogi::__private::query::portable_emit::emit_registered_custom::<#model_name, #ty>(
+      acc, ctx, #column, field,
+     ),
+    });
             }
         }
     }
@@ -3692,27 +3692,27 @@ fn emit_djogi_emit_field_predicate(
     // forward through the override (visage paths, dynamic fixtures)
     // without an exact match.
     arms.push(quote! {
-        (field_name, _) => ::std::result::Result::Err(
-            ::djogi::__private::query::PortablePredicateError::UnsupportedField {
-                field: field_name,
-            },
-        ),
+     (field_name, _) => ::std::result::Result::Err(
+      ::djogi::__private::query::PortablePredicateError::UnsupportedField {
+       field: field_name,
+      },
+     ),
     });
 
     quote! {
-        #[doc(hidden)]
-        fn __djogi_emit_field_predicate(
-            acc: &mut ::djogi::__private::pg::SqlAccumulator,
-            field: &::djogi::types::FieldPredicate<Self>,
-            ctx: ::djogi::__private::query::SqlEmitContext,
-        ) -> ::std::result::Result<
-            (),
-            ::djogi::__private::query::PortablePredicateError,
-        > {
-            match (field.field_name(), field.op()) {
-                #(#arms)*
-            }
-        }
+     #[doc(hidden)]
+     fn __djogi_emit_field_predicate(
+      acc: &mut ::djogi::__private::pg::SqlAccumulator,
+      field: &::djogi::types::FieldPredicate<Self>,
+      ctx: ::djogi::__private::query::SqlEmitContext,
+     ) -> ::std::result::Result<
+      (),
+      ::djogi::__private::query::PortablePredicateError,
+     > {
+      match (field.field_name(), field.op()) {
+       #(#arms)*
+      }
+     }
     }
 }
 
@@ -3733,62 +3733,62 @@ fn scalar_arms(
 ) -> Vec<TokenStream> {
     let mut out = vec![
         quote! {
-            (#column, ::djogi::types::LookupOp::Eq) =>
-                ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
-                    acc, ctx, #column, " = ", field,
-                ),
+         (#column, ::djogi::types::LookupOp::Eq) =>
+          ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+           acc, ctx, #column, " = ", field,
+          ),
         },
         quote! {
-            (#column, ::djogi::types::LookupOp::Neq) =>
-                ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
-                    acc, ctx, #column, " <> ", field,
-                ),
+         (#column, ::djogi::types::LookupOp::Neq) =>
+          ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+           acc, ctx, #column, " <> ", field,
+          ),
         },
         quote! {
-            (#column, ::djogi::types::LookupOp::In) =>
-                ::djogi::__private::query::portable_emit::emit_list::<#model_name, #ty>(
-                    acc, ctx, #column, field, false,
-                ),
+         (#column, ::djogi::types::LookupOp::In) =>
+          ::djogi::__private::query::portable_emit::emit_list::<#model_name, #ty>(
+           acc, ctx, #column, field, false,
+          ),
         },
         quote! {
-            (#column, ::djogi::types::LookupOp::NotIn) =>
-                ::djogi::__private::query::portable_emit::emit_list::<#model_name, #ty>(
-                    acc, ctx, #column, field, true,
-                ),
+         (#column, ::djogi::types::LookupOp::NotIn) =>
+          ::djogi::__private::query::portable_emit::emit_list::<#model_name, #ty>(
+           acc, ctx, #column, field, true,
+          ),
         },
     ];
 
     if ordering {
         out.extend([
             quote! {
-                (#column, ::djogi::types::LookupOp::Gt) =>
-                    ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
-                        acc, ctx, #column, " > ", field,
-                    ),
+             (#column, ::djogi::types::LookupOp::Gt) =>
+              ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+               acc, ctx, #column, " > ", field,
+              ),
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Gte) =>
-                    ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
-                        acc, ctx, #column, " >= ", field,
-                    ),
+             (#column, ::djogi::types::LookupOp::Gte) =>
+              ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+               acc, ctx, #column, " >= ", field,
+              ),
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Lt) =>
-                    ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
-                        acc, ctx, #column, " < ", field,
-                    ),
+             (#column, ::djogi::types::LookupOp::Lt) =>
+              ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+               acc, ctx, #column, " < ", field,
+              ),
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Lte) =>
-                    ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
-                        acc, ctx, #column, " <= ", field,
-                    ),
+             (#column, ::djogi::types::LookupOp::Lte) =>
+              ::djogi::__private::query::portable_emit::emit_value::<#model_name, #ty>(
+               acc, ctx, #column, " <= ", field,
+              ),
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Between) =>
-                    ::djogi::__private::query::portable_emit::emit_pair::<#model_name, #ty>(
-                        acc, ctx, #column, field,
-                    ),
+             (#column, ::djogi::types::LookupOp::Between) =>
+              ::djogi::__private::query::portable_emit::emit_pair::<#model_name, #ty>(
+               acc, ctx, #column, field,
+              ),
             },
         ]);
     }
@@ -3808,60 +3808,60 @@ fn scalar_arms(
 fn string_pattern_arms(_model_name: &syn::Ident, column: &str) -> Vec<TokenStream> {
     vec![
         quote! {
-            (#column, ::djogi::types::LookupOp::Contains) =>
-                ::djogi::__private::query::portable_emit::emit_string_pattern(
-                    acc, ctx, #column,
-                    ::djogi::__private::query::portable_emit::PatternOp::Contains,
-                    field,
-                ),
+         (#column, ::djogi::types::LookupOp::Contains) =>
+          ::djogi::__private::query::portable_emit::emit_string_pattern(
+           acc, ctx, #column,
+           ::djogi::__private::query::portable_emit::PatternOp::Contains,
+           field,
+          ),
         },
         quote! {
-            (#column, ::djogi::types::LookupOp::IContains) =>
-                ::djogi::__private::query::portable_emit::emit_string_pattern(
-                    acc, ctx, #column,
-                    ::djogi::__private::query::portable_emit::PatternOp::IContains,
-                    field,
-                ),
+         (#column, ::djogi::types::LookupOp::IContains) =>
+          ::djogi::__private::query::portable_emit::emit_string_pattern(
+           acc, ctx, #column,
+           ::djogi::__private::query::portable_emit::PatternOp::IContains,
+           field,
+          ),
         },
         quote! {
-            (#column, ::djogi::types::LookupOp::StartsWith) =>
-                ::djogi::__private::query::portable_emit::emit_string_pattern(
-                    acc, ctx, #column,
-                    ::djogi::__private::query::portable_emit::PatternOp::StartsWith,
-                    field,
-                ),
+         (#column, ::djogi::types::LookupOp::StartsWith) =>
+          ::djogi::__private::query::portable_emit::emit_string_pattern(
+           acc, ctx, #column,
+           ::djogi::__private::query::portable_emit::PatternOp::StartsWith,
+           field,
+          ),
         },
         quote! {
-            (#column, ::djogi::types::LookupOp::IStartsWith) =>
-                ::djogi::__private::query::portable_emit::emit_string_pattern(
-                    acc, ctx, #column,
-                    ::djogi::__private::query::portable_emit::PatternOp::IStartsWith,
-                    field,
-                ),
+         (#column, ::djogi::types::LookupOp::IStartsWith) =>
+          ::djogi::__private::query::portable_emit::emit_string_pattern(
+           acc, ctx, #column,
+           ::djogi::__private::query::portable_emit::PatternOp::IStartsWith,
+           field,
+          ),
         },
         quote! {
-            (#column, ::djogi::types::LookupOp::EndsWith) =>
-                ::djogi::__private::query::portable_emit::emit_string_pattern(
-                    acc, ctx, #column,
-                    ::djogi::__private::query::portable_emit::PatternOp::EndsWith,
-                    field,
-                ),
+         (#column, ::djogi::types::LookupOp::EndsWith) =>
+          ::djogi::__private::query::portable_emit::emit_string_pattern(
+           acc, ctx, #column,
+           ::djogi::__private::query::portable_emit::PatternOp::EndsWith,
+           field,
+          ),
         },
         quote! {
-            (#column, ::djogi::types::LookupOp::IEndsWith) =>
-                ::djogi::__private::query::portable_emit::emit_string_pattern(
-                    acc, ctx, #column,
-                    ::djogi::__private::query::portable_emit::PatternOp::IEndsWith,
-                    field,
-                ),
+         (#column, ::djogi::types::LookupOp::IEndsWith) =>
+          ::djogi::__private::query::portable_emit::emit_string_pattern(
+           acc, ctx, #column,
+           ::djogi::__private::query::portable_emit::PatternOp::IEndsWith,
+           field,
+          ),
         },
         quote! {
-            (#column, ::djogi::types::LookupOp::IExact) =>
-                ::djogi::__private::query::portable_emit::emit_string_pattern(
-                    acc, ctx, #column,
-                    ::djogi::__private::query::portable_emit::PatternOp::IExact,
-                    field,
-                ),
+         (#column, ::djogi::types::LookupOp::IExact) =>
+          ::djogi::__private::query::portable_emit::emit_string_pattern(
+           acc, ctx, #column,
+           ::djogi::__private::query::portable_emit::PatternOp::IExact,
+           field,
+          ),
         },
     ]
 }
@@ -3914,48 +3914,48 @@ fn option_arms(
     // extra type-tag downcast for plain `Option<U>` columns.
     let tracked_eq_prelude = if tracked_wrapped {
         quote! {
-            if let ::std::option::Option::Some(value) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::djogi::Tracked<::std::option::Option<#inner>>,
-                >(field)
-            {
-                return ::djogi::__private::query::portable_emit::emit_option_eq::<#inner>(
-                    acc, ctx, #column, ::std::ops::Deref::deref(value),
-                );
-            }
-            if let ::std::option::Option::Some(value) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::djogi::Tracked<#inner>,
-                >(field)
-            {
-                return ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
-                    acc, ctx, #column, " = ", ::std::ops::Deref::deref(value),
-                );
-            }
+         if let ::std::option::Option::Some(value) =
+          <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+           ::djogi::Tracked<::std::option::Option<#inner>>,
+          >(field)
+         {
+          return ::djogi::__private::query::portable_emit::emit_option_eq::<#inner>(
+           acc, ctx, #column, ::std::ops::Deref::deref(value),
+          );
+         }
+         if let ::std::option::Option::Some(value) =
+          <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+           ::djogi::Tracked<#inner>,
+          >(field)
+         {
+          return ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
+           acc, ctx, #column, " = ", ::std::ops::Deref::deref(value),
+          );
+         }
         }
     } else {
         TokenStream::new()
     };
     let tracked_neq_prelude = if tracked_wrapped {
         quote! {
-            if let ::std::option::Option::Some(value) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::djogi::Tracked<::std::option::Option<#inner>>,
-                >(field)
-            {
-                return ::djogi::__private::query::portable_emit::emit_option_neq::<#inner>(
-                    acc, ctx, #column, ::std::ops::Deref::deref(value),
-                );
-            }
-            if let ::std::option::Option::Some(value) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::djogi::Tracked<#inner>,
-                >(field)
-            {
-                return ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
-                    acc, ctx, #column, " <> ", ::std::ops::Deref::deref(value),
-                );
-            }
+         if let ::std::option::Option::Some(value) =
+          <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+           ::djogi::Tracked<::std::option::Option<#inner>>,
+          >(field)
+         {
+          return ::djogi::__private::query::portable_emit::emit_option_neq::<#inner>(
+           acc, ctx, #column, ::std::ops::Deref::deref(value),
+          );
+         }
+         if let ::std::option::Option::Some(value) =
+          <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+           ::djogi::Tracked<#inner>,
+          >(field)
+         {
+          return ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
+           acc, ctx, #column, " <> ", ::std::ops::Deref::deref(value),
+          );
+         }
         }
     } else {
         TokenStream::new()
@@ -3972,72 +3972,72 @@ fn option_arms(
     // the SQL emission stays identical to the non-Tracked path.
     let tracked_in_prelude = if tracked_wrapped {
         quote! {
-            if let ::std::option::Option::Some(values) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::std::vec::Vec<::djogi::Tracked<::std::option::Option<#inner>>>,
-                >(field)
-            {
-                let projected: ::std::vec::Vec<::std::option::Option<#inner>> = values
-                    .iter()
-                    .map(|tracked| <
-                        ::std::option::Option<#inner> as ::std::clone::Clone
-                    >::clone(::std::ops::Deref::deref(tracked)))
-                    .collect();
-                return ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
-                    acc, ctx, #column, &projected, false,
-                );
-            }
-            if let ::std::option::Option::Some(values) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::std::vec::Vec<::djogi::Tracked<#inner>>,
-                >(field)
-            {
-                let projected: ::std::vec::Vec<#inner> = values
-                    .iter()
-                    .map(|tracked| <#inner as ::std::clone::Clone>::clone(
-                        ::std::ops::Deref::deref(tracked),
-                    ))
-                    .collect();
-                return ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
-                    acc, ctx, #column, &projected, false,
-                );
-            }
+         if let ::std::option::Option::Some(values) =
+          <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+           ::std::vec::Vec<::djogi::Tracked<::std::option::Option<#inner>>>,
+          >(field)
+         {
+          let projected: ::std::vec::Vec<::std::option::Option<#inner>> = values
+          .iter()
+          .map(|tracked| <
+            ::std::option::Option<#inner> as ::std::clone::Clone
+           >::clone(::std::ops::Deref::deref(tracked)))
+          .collect();
+          return ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
+           acc, ctx, #column, &projected, false,
+          );
+         }
+         if let ::std::option::Option::Some(values) =
+          <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+           ::std::vec::Vec<::djogi::Tracked<#inner>>,
+          >(field)
+         {
+          let projected: ::std::vec::Vec<#inner> = values
+          .iter()
+          .map(|tracked| <#inner as ::std::clone::Clone>::clone(
+            ::std::ops::Deref::deref(tracked),
+           ))
+          .collect();
+          return ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
+           acc, ctx, #column, &projected, false,
+          );
+         }
         }
     } else {
         TokenStream::new()
     };
     let tracked_not_in_prelude = if tracked_wrapped {
         quote! {
-            if let ::std::option::Option::Some(values) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::std::vec::Vec<::djogi::Tracked<::std::option::Option<#inner>>>,
-                >(field)
-            {
-                let projected: ::std::vec::Vec<::std::option::Option<#inner>> = values
-                    .iter()
-                    .map(|tracked| <
-                        ::std::option::Option<#inner> as ::std::clone::Clone
-                    >::clone(::std::ops::Deref::deref(tracked)))
-                    .collect();
-                return ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
-                    acc, ctx, #column, &projected, true,
-                );
-            }
-            if let ::std::option::Option::Some(values) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::std::vec::Vec<::djogi::Tracked<#inner>>,
-                >(field)
-            {
-                let projected: ::std::vec::Vec<#inner> = values
-                    .iter()
-                    .map(|tracked| <#inner as ::std::clone::Clone>::clone(
-                        ::std::ops::Deref::deref(tracked),
-                    ))
-                    .collect();
-                return ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
-                    acc, ctx, #column, &projected, true,
-                );
-            }
+         if let ::std::option::Option::Some(values) =
+          <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+           ::std::vec::Vec<::djogi::Tracked<::std::option::Option<#inner>>>,
+          >(field)
+         {
+          let projected: ::std::vec::Vec<::std::option::Option<#inner>> = values
+          .iter()
+          .map(|tracked| <
+            ::std::option::Option<#inner> as ::std::clone::Clone
+           >::clone(::std::ops::Deref::deref(tracked)))
+          .collect();
+          return ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
+           acc, ctx, #column, &projected, true,
+          );
+         }
+         if let ::std::option::Option::Some(values) =
+          <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+           ::std::vec::Vec<::djogi::Tracked<#inner>>,
+          >(field)
+         {
+          let projected: ::std::vec::Vec<#inner> = values
+          .iter()
+          .map(|tracked| <#inner as ::std::clone::Clone>::clone(
+            ::std::ops::Deref::deref(tracked),
+           ))
+          .collect();
+          return ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
+           acc, ctx, #column, &projected, true,
+          );
+         }
         }
     } else {
         TokenStream::new()
@@ -4046,132 +4046,132 @@ fn option_arms(
     // Eq — Tracked<Option<U>> / Tracked<U> first (when Tracked-wrapped),
     // then direct Option<U>, then inner U via `.some()`.
     out.push(quote! {
-        (#column, ::djogi::types::LookupOp::Eq) => {
-            #tracked_eq_prelude
-            if let ::std::option::Option::Some(value) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::std::option::Option<#inner>,
-                >(field)
-            {
-                ::djogi::__private::query::portable_emit::emit_option_eq::<#inner>(
-                    acc, ctx, #column, value,
-                )
-            } else if let ::std::option::Option::Some(value) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<#inner>(field)
-            {
-                ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
-                    acc, ctx, #column, " = ", value,
-                )
-            } else {
-                ::std::result::Result::Err(
-                    ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
-                        field: #column,
-                        op: field.op(),
-                    },
-                )
-            }
+     (#column, ::djogi::types::LookupOp::Eq) => {
+      #tracked_eq_prelude
+      if let ::std::option::Option::Some(value) =
+       <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+        ::std::option::Option<#inner>,
+       >(field)
+      {
+       ::djogi::__private::query::portable_emit::emit_option_eq::<#inner>(
+        acc, ctx, #column, value,
+       )
+      } else if let ::std::option::Option::Some(value) =
+       <::djogi::types::FieldPredicate<#model_name>>::value_as::<#inner>(field)
+      {
+       ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
+        acc, ctx, #column, " = ", value,
+       )
+      } else {
+       ::std::result::Result::Err(
+        ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
+         field: #column,
+         op: field.op(),
         },
+       )
+      }
+     },
     });
 
     // Neq — Tracked-aware fallback, then direct Option<U>, then inner U.
     out.push(quote! {
-        (#column, ::djogi::types::LookupOp::Neq) => {
-            #tracked_neq_prelude
-            if let ::std::option::Option::Some(value) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::std::option::Option<#inner>,
-                >(field)
-            {
-                ::djogi::__private::query::portable_emit::emit_option_neq::<#inner>(
-                    acc, ctx, #column, value,
-                )
-            } else if let ::std::option::Option::Some(value) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<#inner>(field)
-            {
-                ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
-                    acc, ctx, #column, " <> ", value,
-                )
-            } else {
-                ::std::result::Result::Err(
-                    ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
-                        field: #column,
-                        op: field.op(),
-                    },
-                )
-            }
+     (#column, ::djogi::types::LookupOp::Neq) => {
+      #tracked_neq_prelude
+      if let ::std::option::Option::Some(value) =
+       <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+        ::std::option::Option<#inner>,
+       >(field)
+      {
+       ::djogi::__private::query::portable_emit::emit_option_neq::<#inner>(
+        acc, ctx, #column, value,
+       )
+      } else if let ::std::option::Option::Some(value) =
+       <::djogi::types::FieldPredicate<#model_name>>::value_as::<#inner>(field)
+      {
+       ::djogi::__private::query::portable_emit::emit_value_ref::<#inner>(
+        acc, ctx, #column, " <> ", value,
+       )
+      } else {
+       ::std::result::Result::Err(
+        ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
+         field: #column,
+         op: field.op(),
         },
+       )
+      }
+     },
     });
 
     // In — Tracked-aware fallback, then direct Vec<Option<U>>, then inner Vec<U>.
     out.push(quote! {
-        (#column, ::djogi::types::LookupOp::In) => {
-            #tracked_in_prelude
-            if let ::std::option::Option::Some(values) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::std::vec::Vec<::std::option::Option<#inner>>,
-                >(field)
-            {
-                ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
-                    acc, ctx, #column, values, false,
-                )
-            } else if let ::std::option::Option::Some(values) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::std::vec::Vec<#inner>,
-                >(field)
-            {
-                ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
-                    acc, ctx, #column, values, false,
-                )
-            } else {
-                ::std::result::Result::Err(
-                    ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
-                        field: #column,
-                        op: field.op(),
-                    },
-                )
-            }
+     (#column, ::djogi::types::LookupOp::In) => {
+      #tracked_in_prelude
+      if let ::std::option::Option::Some(values) =
+       <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+        ::std::vec::Vec<::std::option::Option<#inner>>,
+       >(field)
+      {
+       ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
+        acc, ctx, #column, values, false,
+       )
+      } else if let ::std::option::Option::Some(values) =
+       <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+        ::std::vec::Vec<#inner>,
+       >(field)
+      {
+       ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
+        acc, ctx, #column, values, false,
+       )
+      } else {
+       ::std::result::Result::Err(
+        ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
+         field: #column,
+         op: field.op(),
         },
+       )
+      }
+     },
     });
 
     // NotIn — Tracked-aware fallback, then direct Vec<Option<U>>, then inner Vec<U>.
     out.push(quote! {
-        (#column, ::djogi::types::LookupOp::NotIn) => {
-            #tracked_not_in_prelude
-            if let ::std::option::Option::Some(values) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::std::vec::Vec<::std::option::Option<#inner>>,
-                >(field)
-            {
-                ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
-                    acc, ctx, #column, values, true,
-                )
-            } else if let ::std::option::Option::Some(values) =
-                <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                    ::std::vec::Vec<#inner>,
-                >(field)
-            {
-                ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
-                    acc, ctx, #column, values, true,
-                )
-            } else {
-                ::std::result::Result::Err(
-                    ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
-                        field: #column,
-                        op: field.op(),
-                    },
-                )
-            }
+     (#column, ::djogi::types::LookupOp::NotIn) => {
+      #tracked_not_in_prelude
+      if let ::std::option::Option::Some(values) =
+       <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+        ::std::vec::Vec<::std::option::Option<#inner>>,
+       >(field)
+      {
+       ::djogi::__private::query::portable_emit::emit_option_in::<#inner>(
+        acc, ctx, #column, values, true,
+       )
+      } else if let ::std::option::Option::Some(values) =
+       <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+        ::std::vec::Vec<#inner>,
+       >(field)
+      {
+       ::djogi::__private::query::portable_emit::emit_present_list::<#inner>(
+        acc, ctx, #column, values, true,
+       )
+      } else {
+       ::std::result::Result::Err(
+        ::djogi::__private::query::PortablePredicateError::ValueTypeMismatch {
+         field: #column,
+         op: field.op(),
         },
+       )
+      }
+     },
     });
 
     // IsNull / IsNotNull — inert `()` payload.
     out.push(quote! {
-        (#column, ::djogi::types::LookupOp::IsNull) =>
-            ::djogi::__private::query::portable_emit::emit_null(acc, ctx, #column, true),
+     (#column, ::djogi::types::LookupOp::IsNull) =>
+      ::djogi::__private::query::portable_emit::emit_null(acc, ctx, #column, true),
     });
     out.push(quote! {
-        (#column, ::djogi::types::LookupOp::IsNotNull) =>
-            ::djogi::__private::query::portable_emit::emit_null(acc, ctx, #column, false),
+     (#column, ::djogi::types::LookupOp::IsNotNull) =>
+      ::djogi::__private::query::portable_emit::emit_null(acc, ctx, #column, false),
     });
 
     if supports_ordering {
@@ -4197,15 +4197,15 @@ fn option_arms(
         let tracked_ord_prelude = |op_token: &str| {
             if tracked_wrapped {
                 quote! {
-                    if let ::std::option::Option::Some(value) =
-                        <::djogi::types::FieldPredicate<#model_name>>::value_as::<
-                            ::djogi::Tracked<#inner>,
-                        >(field)
-                    {
-                        return ::djogi::__private::query::portable_emit::emit_value_ref::<
-                            ::djogi::Tracked<#inner>,
-                        >(acc, ctx, #column, #op_token, value);
-                    }
+                 if let ::std::option::Option::Some(value) =
+                  <::djogi::types::FieldPredicate<#model_name>>::value_as::<
+                   ::djogi::Tracked<#inner>,
+                  >(field)
+                 {
+                  return ::djogi::__private::query::portable_emit::emit_value_ref::<
+                   ::djogi::Tracked<#inner>,
+                  >(acc, ctx, #column, #op_token, value);
+                 }
                 }
             } else {
                 TokenStream::new()
@@ -4213,15 +4213,15 @@ fn option_arms(
         };
         let tracked_between_prelude = if tracked_wrapped {
             quote! {
-                if <::djogi::types::FieldPredicate<#model_name>>::value_as::<(
-                    ::djogi::Tracked<#inner>,
-                    ::djogi::Tracked<#inner>,
-                )>(field).is_some()
-                {
-                    return ::djogi::__private::query::portable_emit::emit_pair::<
-                        #model_name, ::djogi::Tracked<#inner>,
-                    >(acc, ctx, #column, field);
-                }
+             if <::djogi::types::FieldPredicate<#model_name>>::value_as::<(
+              ::djogi::Tracked<#inner>,
+              ::djogi::Tracked<#inner>,
+             )>(field).is_some()
+             {
+              return ::djogi::__private::query::portable_emit::emit_pair::<
+               #model_name, ::djogi::Tracked<#inner>,
+              >(acc, ctx, #column, field);
+             }
             }
         } else {
             TokenStream::new()
@@ -4232,44 +4232,44 @@ fn option_arms(
         let lte_prelude = tracked_ord_prelude(" <= ");
         out.extend([
             quote! {
-                (#column, ::djogi::types::LookupOp::Gt) => {
-                    #gt_prelude
-                    ::djogi::__private::query::portable_emit::emit_value::<
-                        #model_name, #inner,
-                    >(acc, ctx, #column, " > ", field)
-                },
+             (#column, ::djogi::types::LookupOp::Gt) => {
+              #gt_prelude
+              ::djogi::__private::query::portable_emit::emit_value::<
+               #model_name, #inner,
+              >(acc, ctx, #column, " > ", field)
+             },
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Gte) => {
-                    #gte_prelude
-                    ::djogi::__private::query::portable_emit::emit_value::<
-                        #model_name, #inner,
-                    >(acc, ctx, #column, " >= ", field)
-                },
+             (#column, ::djogi::types::LookupOp::Gte) => {
+              #gte_prelude
+              ::djogi::__private::query::portable_emit::emit_value::<
+               #model_name, #inner,
+              >(acc, ctx, #column, " >= ", field)
+             },
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Lt) => {
-                    #lt_prelude
-                    ::djogi::__private::query::portable_emit::emit_value::<
-                        #model_name, #inner,
-                    >(acc, ctx, #column, " < ", field)
-                },
+             (#column, ::djogi::types::LookupOp::Lt) => {
+              #lt_prelude
+              ::djogi::__private::query::portable_emit::emit_value::<
+               #model_name, #inner,
+              >(acc, ctx, #column, " < ", field)
+             },
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Lte) => {
-                    #lte_prelude
-                    ::djogi::__private::query::portable_emit::emit_value::<
-                        #model_name, #inner,
-                    >(acc, ctx, #column, " <= ", field)
-                },
+             (#column, ::djogi::types::LookupOp::Lte) => {
+              #lte_prelude
+              ::djogi::__private::query::portable_emit::emit_value::<
+               #model_name, #inner,
+              >(acc, ctx, #column, " <= ", field)
+             },
             },
             quote! {
-                (#column, ::djogi::types::LookupOp::Between) => {
-                    #tracked_between_prelude
-                    ::djogi::__private::query::portable_emit::emit_pair::<
-                        #model_name, #inner,
-                    >(acc, ctx, #column, field)
-                },
+             (#column, ::djogi::types::LookupOp::Between) => {
+              #tracked_between_prelude
+              ::djogi::__private::query::portable_emit::emit_pair::<
+               #model_name, #inner,
+              >(acc, ctx, #column, field)
+             },
             },
         ]);
     }

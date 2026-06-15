@@ -5,50 +5,50 @@
 - Commit SHA inspected: `69d86004f7b3c9ed223c18998c2b799d1670474f`
 - Primary language: Python
 - Migration-relevant modules:
-  - `django/db/migrations/autodetector.py`
-  - `django/db/migrations/executor.py`
-  - `django/db/migrations/graph.py`
-  - `django/db/migrations/loader.py`
-  - `django/db/migrations/migration.py`
-  - `django/db/migrations/optimizer.py`
-  - `django/db/migrations/questioner.py`
-  - `django/db/migrations/recorder.py`
-  - `django/db/migrations/serializer.py`
-  - `django/db/migrations/state.py`
-  - `django/db/migrations/writer.py`
-  - `django/db/migrations/operations/base.py`
-  - `django/db/migrations/operations/fields.py`
-  - `django/db/migrations/operations/models.py`
-  - `django/db/migrations/operations/special.py`
-  - `django/contrib/postgres/operations.py` (Postgres-specific: `AddIndexConcurrently`, `RemoveIndexConcurrently`, etc.)
-  - `django/db/backends/base/schema.py` (schema editor — atomic transaction boundary logic)
-  - `django/core/management/commands/migrate.py` (`--fake`, `--fake-initial` CLI)
-  - `django/core/management/commands/squashmigrations.py`
+ - `django/db/migrations/autodetector.py`
+ - `django/db/migrations/executor.py`
+ - `django/db/migrations/graph.py`
+ - `django/db/migrations/loader.py`
+ - `django/db/migrations/migration.py`
+ - `django/db/migrations/optimizer.py`
+ - `django/db/migrations/questioner.py`
+ - `django/db/migrations/recorder.py`
+ - `django/db/migrations/serializer.py`
+ - `django/db/migrations/state.py`
+ - `django/db/migrations/writer.py`
+ - `django/db/migrations/operations/base.py`
+ - `django/db/migrations/operations/fields.py`
+ - `django/db/migrations/operations/models.py`
+ - `django/db/migrations/operations/special.py`
+ - `django/contrib/postgres/operations.py` (Postgres-specific: `AddIndexConcurrently`, `RemoveIndexConcurrently`, etc.)
+ - `django/db/backends/base/schema.py` (schema editor — atomic transaction boundary logic)
+ - `django/core/management/commands/migrate.py` (`--fake`, `--fake-initial` CLI)
+ - `django/core/management/commands/squashmigrations.py`
 - Approximate LOC of migration-relevant code:
-  - `django/db/migrations/` (all files): **8,030 lines**
-  - `django/contrib/postgres/operations.py`: 352 lines
-  - `django/db/backends/base/schema.py` (migration-relevant portion): ~100 lines
-  - Total migration-relevant: approximately **8,500 lines**
+ - `django/db/migrations/` (all files): **8,030 lines**
+ - `django/contrib/postgres/operations.py`: 352 lines
+ - `django/db/backends/base/schema.py` (migration-relevant portion): ~100 lines
+ - Total migration-relevant: approximately **8,500 lines**
 
 ---
 
 ## Architecture
 - Module layout of `django/db/migrations/`:
-  - `recorder.py` — `MigrationRecorder`; owns `django_migrations` table DDL and all read/write against it
-  - `executor.py` — `MigrationExecutor`; orchestrates plan computation and actual apply/unapply
-  - `loader.py` — `MigrationLoader`; scans disk, cross-references with DB, builds the graph, handles squash replacements
-  - `graph.py` — `MigrationGraph` + `Node` + `DummyNode`; directed acyclic graph with iterative DFS traversal
-  - `state.py` — `ProjectState`, `ModelState`, `StateApps`; in-memory schema state machine
-  - `autodetector.py` — `MigrationAutodetector`; computes diff of two `ProjectState` objects into ordered migration operations
-  - `migration.py` — `Migration` base class; owns `apply()`, `unapply()`, `mutate_state()`
-  - `optimizer.py` — `MigrationOptimizer`; merges redundant operations (e.g., `CreateModel` + `AddField` → single `CreateModel`)
-  - `questioner.py` — `MigrationQuestioner`, `InteractiveMigrationQuestioner`, `NonInteractiveMigrationQuestioner`; interactive yes/no prompts for renames, nullable defaults, etc.
-  - `serializer.py` — serializes `Operation` instances to Python source code for migration files
-  - `writer.py` — writes the final `.py` migration file to disk
-  - `operations/base.py` — `Operation` base class and `OperationCategory` enum
-  - `operations/fields.py` — `AddField`, `RemoveField`, `AlterField`, `RenameField`
-  - `operations/models.py` — `CreateModel`, `DeleteModel`, `RenameModel`, `AlterUniqueTogether`, `AddIndex`, `AddConstraint`, `RemoveConstraint`, `AlterConstraint`, `RenameIndex`, etc.
-  - `operations/special.py` — `RunSQL`, `RunPython`, `SeparateDatabaseAndState`
+ - `recorder.py` — `MigrationRecorder`; owns `django_migrations` table DDL and all read/write against it
+ - `executor.py` — `MigrationExecutor`; orchestrates plan computation and actual apply/unapply
+ - `loader.py` — `MigrationLoader`; scans disk, cross-references with DB, builds the graph, handles squash replacements
+ - `graph.py` — `MigrationGraph` + `Node` + `DummyNode`; directed acyclic graph with iterative DFS traversal
+ - `state.py` — `ProjectState`, `ModelState`, `StateApps`; in-memory schema state machine
+ - `autodetector.py` — `MigrationAutodetector`; computes diff of two `ProjectState` objects into ordered migration operations
+ - `migration.py` — `Migration` base class; owns `apply()`, `unapply()`, `mutate_state()`
+ - `optimizer.py` — `MigrationOptimizer`; merges redundant operations (e.g., `CreateModel` + `AddField` → single `CreateModel`)
+ - `questioner.py` — `MigrationQuestioner`, `InteractiveMigrationQuestioner`, `NonInteractiveMigrationQuestioner`; interactive yes/no prompts for renames, nullable defaults, etc.
+ - `serializer.py` — serializes `Operation` instances to Python source code for migration files
+ - `writer.py` — writes the final `.py` migration file to disk
+ - `operations/base.py` — `Operation` base class and `OperationCategory` enum
+ - `operations/fields.py` — `AddField`, `RemoveField`, `AlterField`, `RenameField`
+ - `operations/models.py` — `CreateModel`, `DeleteModel`, `RenameModel`, `AlterUniqueTogether`, `AddIndex`, `AddConstraint`, `RemoveConstraint`, `AlterConstraint`, `RenameIndex`, etc.
+ - `operations/special.py` — `RunSQL`, `RunPython`, `SeparateDatabaseAndState`
 
 ---
 
@@ -89,24 +89,24 @@ Django does not store raw DDL; the table is created via the ORM's `schema_editor
 ```python
 # django/db/migrations/recorder.py:32-46
 class Migration(models.Model):
-    app = models.CharField(max_length=255)
-    name = models.CharField(max_length=255)
-    applied = models.DateTimeField(default=now)
+  app = models.CharField(max_length=255)
+  name = models.CharField(max_length=255)
+  applied = models.DateTimeField(default=now)
 
-    class Meta:
-        apps = Apps()
-        app_label = "migrations"
-        db_table = "django_migrations"
+  class Meta:
+    apps = Apps()
+    app_label = "migrations"
+    db_table = "django_migrations"
 ```
 
 Reconstructed SQL for PostgreSQL:
 
 ```sql
 CREATE TABLE "django_migrations" (
-    "id"      serial PRIMARY KEY,
-    "app"     varchar(255) NOT NULL,
-    "name"    varchar(255) NOT NULL,
-    "applied" timestamp with time zone NOT NULL
+  "id"   serial PRIMARY KEY,
+  "app"   varchar(255) NOT NULL,
+  "name"  varchar(255) NOT NULL,
+  "applied" timestamp with time zone NOT NULL
 );
 ```
 
@@ -138,43 +138,43 @@ Django has **no advisory lock or distributed lock** on migration execution. The 
 
 - Default: the `SchemaEditor` opens a `BEGIN`/`COMMIT` block wrapping the entire migration. This is conditional on `connection.features.can_rollback_ddl` (true for PostgreSQL). (`django/db/backends/base/schema.py:151-172`)
 
-  ```python
-  # django/db/backends/base/schema.py:156
-  self.atomic_migration = self.connection.features.can_rollback_ddl and atomic
-  ```
+ ```python
+ # django/db/backends/base/schema.py:156
+ self.atomic_migration = self.connection.features.can_rollback_ddl and atomic
+ ```
 
-  ```python
-  # django/db/backends/base/schema.py:160-164
-  def __enter__(self):
-      self.deferred_sql = []
-      if self.atomic_migration:
-          self.atomic = atomic(self.connection.alias)
-          self.atomic.__enter__()
-  ```
+ ```python
+ # django/db/backends/base/schema.py:160-164
+ def __enter__(self):
+   self.deferred_sql = []
+   if self.atomic_migration:
+     self.atomic = atomic(self.connection.alias)
+     self.atomic.__enter__()
+ ```
 
 - `atomic = False` opt-out: if `Migration.atomic = False`, the `SchemaEditor` is constructed with `atomic=False`, bypassing the transaction wrapper entirely. (`django/db/migrations/executor.py:254-257`)
 
-  ```python
-  # django/db/migrations/executor.py:254-257
-  with self.connection.schema_editor(
-      atomic=migration.atomic
-  ) as schema_editor:
-      state = migration.apply(state, schema_editor)
-  ```
+ ```python
+ # django/db/migrations/executor.py:254-257
+ with self.connection.schema_editor(
+   atomic=migration.atomic
+ ) as schema_editor:
+   state = migration.apply(state, schema_editor)
+ ```
 
 - Per-operation atomic: inside a non-atomic migration, individual operations can still be wrapped in a transaction if `operation.atomic` is set. The logic in `migration.apply()` handles this:
 
-  ```python
-  # django/db/migrations/migration.py:120-133
-  atomic_operation = operation.atomic or (
-      self.atomic and operation.atomic is not False
-  )
-  if not schema_editor.atomic_migration and atomic_operation:
-      with atomic(schema_editor.connection.alias):
-          operation.database_forwards(...)
-  else:
-      operation.database_forwards(...)
-  ```
+ ```python
+ # django/db/migrations/migration.py:120-133
+ atomic_operation = operation.atomic or (
+   self.atomic and operation.atomic is not False
+ )
+ if not schema_editor.atomic_migration and atomic_operation:
+   with atomic(schema_editor.connection.alias):
+     operation.database_forwards(...)
+ else:
+   operation.database_forwards(...)
+ ```
 
 - Note: `deferred_sql` (indexes, unique constraints) is executed *after* the main migration body, inside `SchemaEditor.__exit__` before the outer transaction commits. (`django/db/backends/base/schema.py:167-172`)
 
@@ -185,20 +185,20 @@ Django ships `AddIndexConcurrently` and `RemoveIndexConcurrently` in `django.con
 ```python
 # django/contrib/postgres/operations.py:123-126
 class AddIndexConcurrently(NotInTransactionMixin, AddIndex):
-    """Create an index using PostgreSQL's CREATE INDEX CONCURRENTLY syntax."""
-    atomic = False
-    category = OperationCategory.ADDITION
+  """Create an index using PostgreSQL's CREATE INDEX CONCURRENTLY syntax."""
+  atomic = False
+  category = OperationCategory.ADDITION
 ```
 
 ```python
 # django/contrib/postgres/operations.py:114-120
 class NotInTransactionMixin:
-    def _ensure_not_in_transaction(self, schema_editor):
-        if schema_editor.connection.in_atomic_block:
-            raise NotSupportedError(
-                "The %s operation cannot be executed inside a transaction "
-                "(set atomic = False on the migration)." % self.__class__.__name__
-            )
+  def _ensure_not_in_transaction(self, schema_editor):
+    if schema_editor.connection.in_atomic_block:
+      raise NotSupportedError(
+        "The %s operation cannot be executed inside a transaction "
+        "(set atomic = False on the migration)." % self.__class__.__name__
+      )
 ```
 
 There is no auto-split into segments. The user must manually create a migration with `atomic = False` containing only the `AddIndexConcurrently` operation.
@@ -253,7 +253,7 @@ Entry point: `MigrationAutodetector.changes(graph, trim_to_apps, convert_apps, m
 
 ```python
 # autodetector.py:182-231 (paraphrased order — each line is a method call)
-self.generate_renamed_models()       # must run first
+self.generate_renamed_models()    # must run first
 self._prepare_field_lists()
 self._generate_through_model_map()
 self.generate_deleted_models()
@@ -263,12 +263,12 @@ self.generate_created_proxies()
 self.generate_altered_options()
 self.generate_altered_managers()
 self.generate_altered_db_table_comment()
-self.create_renamed_fields()         # computes self.renamed_fields dict
-self.create_altered_indexes()        # computes self.altered_indexes dict
+self.create_renamed_fields()     # computes self.renamed_fields dict
+self.create_altered_indexes()    # computes self.altered_indexes dict
 self.create_altered_constraints()
 self.generate_removed_constraints()
 self.generate_removed_indexes()
-self.generate_renamed_fields()       # emits RenameField ops
+self.generate_renamed_fields()    # emits RenameField ops
 self.generate_renamed_indexes()
 self.generate_removed_altered_unique_together()
 self.generate_removed_fields()
@@ -280,9 +280,9 @@ self.generate_added_indexes()
 self.generate_added_constraints()
 self.generate_altered_constraints()
 self.generate_altered_db_table()
-self._sort_migrations()              # topological sort within each app (Python graphlib)
-self._build_migration_list(graph)    # split into migration objects, resolve cross-app deps
-self._optimize_migrations()          # run MigrationOptimizer on each migration's ops
+self._sort_migrations()       # topological sort within each app (Python graphlib)
+self._build_migration_list(graph)  # split into migration objects, resolve cross-app deps
+self._optimize_migrations()     # run MigrationOptimizer on each migration's ops
 ```
 
 **FK dependency tracking:**
@@ -314,13 +314,13 @@ Both use `InteractiveMigrationQuestioner.ask_rename`:
 ```python
 # django/db/migrations/questioner.py:223-236
 def ask_rename(self, model_name, old_name, new_name, field_instance):
-    """Was this field really renamed?"""
-    msg = "Was %s.%s renamed to %s.%s (a %s)? [y/N]"
-    return self._boolean_input(
-        msg % (model_name, old_name, model_name, new_name,
-               field_instance.__class__.__name__),
-        False,
-    )
+  """Was this field really renamed?"""
+  msg = "Was %s.%s renamed to %s.%s (a %s)? [y/N]"
+  return self._boolean_input(
+    msg % (model_name, old_name, model_name, new_name,
+        field_instance.__class__.__name__),
+    False,
+  )
 ```
 
 And `ask_rename_model`:
@@ -328,12 +328,12 @@ And `ask_rename_model`:
 ```python
 # django/db/migrations/questioner.py:238-245
 def ask_rename_model(self, old_model_state, new_model_state):
-    """Was this model really renamed?"""
-    msg = "Was the model %s.%s renamed to %s? [y/N]"
-    return self._boolean_input(
-        msg % (old_model_state.app_label, old_model_state.name, new_model_state.name),
-        False,
-    )
+  """Was this model really renamed?"""
+  msg = "Was the model %s.%s renamed to %s? [y/N]"
+  return self._boolean_input(
+    msg % (old_model_state.app_label, old_model_state.name, new_model_state.name),
+    False,
+  )
 ```
 
 Non-interactive mode (`NonInteractiveMigrationQuestioner`) defaults `ask_rename` to `False` (treat as add+delete, not rename). (`questioner.py:67-73`)
@@ -351,11 +351,11 @@ Django does not have a built-in "destructive operation warning" beyond the inter
 ```python
 # django/db/migrations/graph.py:315-332
 def make_state(self, nodes=None, at_end=True, real_apps=None):
-    plan = self._generate_plan(nodes, at_end)
-    project_state = ProjectState(real_apps=real_apps)
-    for node in plan:
-        project_state = self.nodes[node].mutate_state(project_state, preserve=False)
-    return project_state
+  plan = self._generate_plan(nodes, at_end)
+  project_state = ProjectState(real_apps=real_apps)
+  for node in plan:
+    project_state = self.nodes[node].mutate_state(project_state, preserve=False)
+  return project_state
 ```
 
 `Migration.mutate_state()` calls `operation.state_forwards(app_label, state)` for each operation. (`migration.py:80-92`)
@@ -381,11 +381,11 @@ Declared in `Meta.indexes` as a list of `Index` instances. In migrations: `AddIn
 ```python
 # django/db/migrations/state.py:777-783
 for index in self.options["indexes"]:
-    if not index.name:
-        raise ValueError(
-            "Indexes passed to ModelState require a name attribute. "
-            "%r doesn't have one." % index
-        )
+  if not index.name:
+    raise ValueError(
+      "Indexes passed to ModelState require a name attribute. "
+      "%r doesn't have one." % index
+    )
 ```
 
 Rename detection for indexes: `create_altered_indexes()` compares `old_indexes` vs `new_indexes` using full `deconstruct()` comparison excluding name; if everything matches except the name, a `RenameIndex` operation is emitted instead of a remove + add pair. (`autodetector.py:1376-1463`)
@@ -409,11 +409,11 @@ Implemented as described above. Required for `CREATE INDEX CONCURRENTLY`. The us
 ```python
 # django/contrib/postgres/operations.py:114-119 (NotInTransactionMixin)
 def _ensure_not_in_transaction(self, schema_editor):
-    if schema_editor.connection.in_atomic_block:
-        raise NotSupportedError(
-            "The %s operation cannot be executed inside a transaction "
-            "(set atomic = False on the migration)." % self.__class__.__name__
-        )
+  if schema_editor.connection.in_atomic_block:
+    raise NotSupportedError(
+      "The %s operation cannot be executed inside a transaction "
+      "(set atomic = False on the migration)." % self.__class__.__name__
+    )
 ```
 
 **`RunPython`:**
@@ -423,9 +423,9 @@ def _ensure_not_in_transaction(self, schema_editor):
 ```python
 # django/db/migrations/operations/special.py:187-199
 def database_forwards(self, app_label, schema_editor, from_state, to_state):
-    from_state.clear_delayed_apps_cache()
-    if router.allow_migrate(...):
-        self.code(from_state.apps, schema_editor)
+  from_state.clear_delayed_apps_cache()
+  if router.allow_migrate(...):
+    self.code(from_state.apps, schema_editor)
 ```
 
 **`SeparateDatabaseAndState`:**

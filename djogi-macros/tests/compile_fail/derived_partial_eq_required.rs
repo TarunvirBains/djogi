@@ -40,7 +40,7 @@ use std::error::Error;
 // equality bound the macro emits on the parity helper's impl block.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Site {
-    pub name: String,
+ pub name: String,
 }
 
 // Pass-through `FromSql` impl so the visage's `FromPgRow` decoder
@@ -48,28 +48,28 @@ pub struct Site {
 // resolves the trait bound without surfacing as a collateral error
 // in the `.stderr` snapshot.
 impl<'a> FromSql<'a> for Site {
-    fn from_sql(ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
-        let name = <String as FromSql>::from_sql(ty, raw)?;
-        Ok(Site { name })
-    }
+ fn from_sql(ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
+  let name = <String as FromSql>::from_sql(ty, raw)?;
+  Ok(Site { name })
+ }
 
-    fn accepts(ty: &Type) -> bool {
-        <String as FromSql>::accepts(ty)
-    }
+ fn accepts(ty: &Type) -> bool {
+  <String as FromSql>::accepts(ty)
+ }
 }
 
 #[model(table = "phase85_derived_partial_eq_consignments")]
 #[derive(Model, Debug, Clone)]
 #[derived(
-    name   = facility_site,
-    ty     = Site,
-    scopes = [public],
-    sql    = "''",
-    rust   = "Site { name: model.inbound_site.clone() }",
+ name = facility_site,
+ ty  = Site,
+ scopes = [public],
+ sql = "''",
+ rust = "Site { name: model.inbound_site.clone() }",
 )]
 pub struct Consignment {
-    #[field(expose(public))]
-    pub inbound_site: String,
+ #[field(expose(public))]
+ pub inbound_site: String,
 }
 
 fn main() {}

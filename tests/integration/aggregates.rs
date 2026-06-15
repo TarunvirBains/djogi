@@ -17,24 +17,24 @@
 // 8. `.count().distinct()` — DISTINCT modifier on a grouped aggregate.
 // 9. `.having(...)` — group-filter predicate via the key's `as_expr().gt(...)` shape.
 // 10. `.order_by(...).limit(...)` — top-N by key (aggregate-based top-N deferred;
-//     see the per-test doc comment).
+//   see the per-test doc comment).
 //
 // # Design notes
 //
 // - Models are declared inline in this file and scoped to `orders_aggregate` /
-//   `runs_aggregate` to avoid colliding with earlier table fixtures if
-//   another test file is ever merged into the same binary.
+//  `runs_aggregate` to avoid colliding with earlier table fixtures if
+//  another test file is ever merged into the same binary.
 // - Each live test uses `#[djogi_test(sync_models = [...])]` so schema setup
-//   flows through Djogi's typed descriptor projection instead of handwritten
-//   SQL fixtures.
+//  flows through Djogi's typed descriptor projection instead of handwritten
+//  SQL fixtures.
 // - The `.having(|k, a| a.gt(...))` shape named in the plan is not yet
-//   expressible through the public surface — `AggregateExpr<V>` has no
-//   `Into<Expr<V>>` bridge yet, so the HAVING predicate must close
-//   over the key. The test therefore exercises the HAVING code path (SQL
-//   `HAVING` clause emission + group filtering) via a key-based comparison.
-//   The same constraint applies to scenario #10 — `ORDER BY <aggregate>` is
-//   not available through the surface, so we exercise the ORDER BY + LIMIT
-//   code path via a key-based ordering.
+//  expressible through the public surface — `AggregateExpr<V>` has no
+//  `Into<Expr<V>>` bridge yet, so the HAVING predicate must close
+//  over the key. The test therefore exercises the HAVING code path (SQL
+//  `HAVING` clause emission + group filtering) via a key-based comparison.
+//  The same constraint applies to scenario #10 — `ORDER BY <aggregate>` is
+//  not available through the surface, so we exercise the ORDER BY + LIMIT
+//  code path via a key-based ordering.
 //
 // The aggregate-HAVING / aggregate-ORDER-BY bridge is a small future surface
 // addition; once it lands, these two tests should be updated to match the
@@ -413,8 +413,8 @@ async fn rows_frame_produces_4_row_moving_sum(mut ctx: djogi::DjogiContext) {
 #[djogi::djogi_test(sync_models = [Order])]
 async fn count_distinct_users_per_org(mut ctx: djogi::DjogiContext) {
     // Org 1: user_ids 10, 10, 11 → distinct count = 2.
-    // Org 2: user_ids 20, 21    → distinct count = 2.
-    // Org 3: user_id  30        → distinct count = 1.
+    // Org 2: user_ids 20, 21  → distinct count = 2.
+    // Org 3: user_id 30    → distinct count = 1.
     for o in [
         order(1, 10, "ok", 1),
         order(1, 10, "ok", 1),

@@ -3,14 +3,14 @@
 // Two models in the same file exercise the two cases:
 //
 // 1. `OutboxIgnoreWithRationale` — carries `rationale = "..."` alongside
-//    `outbox = "ignore"`. No advisory warning is emitted; compilation succeeds
-//    silently.
+// `outbox = "ignore"`. No advisory warning is emitted; compilation succeeds
+// silently.
 //
 // 2. `OutboxIgnoreNoRationale` — carries `outbox = "ignore"` with NO rationale.
-//    The macro emits a `#[deprecated]` advisory that fires as a compiler warning.
-//    Compilation still succeeds (warn, not error), which is the point of this
-//    compile_pass fixture — lihaaf `pass()` asserts the file compiles, not that
-//    it is warning-free.
+// The macro emits a `#[deprecated]` advisory that fires as a compiler warning.
+// Compilation still succeeds (warn, not error), which is the point of this
+// compile_pass fixture — lihaaf `pass()` asserts the file compiles, not that
+// it is warning-free.
 use djogi::prelude::*;
 
 /// Model whose PII field carries a rationale alongside `outbox = "ignore"`.
@@ -23,10 +23,10 @@ use djogi::prelude::*;
 #[model(table = "audit_events_with_rationale")]
 #[derive(Debug, Clone)]
 pub struct OutboxIgnoreWithRationale {
-    pub action: String,
-    /// PII — never published to consumers outside this service.
-    #[field(outbox = "ignore", rationale = "PII — never published")]
-    pub user_email: String,
+ pub action: String,
+ /// PII — never published to consumers outside this service.
+ #[field(outbox = "ignore", rationale = "PII — never published")]
+ pub user_email: String,
 }
 
 /// Model whose sensitive field omits the rationale.
@@ -37,10 +37,10 @@ pub struct OutboxIgnoreWithRationale {
 #[model(table = "audit_events_no_rationale")]
 #[derive(Debug, Clone)]
 pub struct OutboxIgnoreNoRationale {
-    pub action: String,
-    /// This field lacks a rationale annotation — the macro warns.
-    #[field(outbox = "ignore")]
-    pub internal_token: String,
+ pub action: String,
+ /// This field lacks a rationale annotation — the macro warns.
+ #[field(outbox = "ignore")]
+ pub internal_token: String,
 }
 
 fn main() {}

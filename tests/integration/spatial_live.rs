@@ -8,10 +8,10 @@
 // cover:
 //
 // 1. **`convex_hull_aggregate_over_herd_points_yields_polygon`** — group a
-//    set of geographic points by herd id and fold each group into a convex
-//    hull via the new `FieldRef::convex_hull()` aggregate. Verifies the SQL
-//    composes through `GroupedQuerySet::annotate(...)` end-to-end and the
-//    decoded result is a `Polygon` with a closed ring.
+//  set of geographic points by herd id and fold each group into a convex
+//  hull via the new `FieldRef::convex_hull()` aggregate. Verifies the SQL
+//  composes through `GroupedQuerySet::annotate(...)` end-to-end and the
+//  decoded result is a `Polygon` with a closed ring.
 //
 // # Why a live test
 //

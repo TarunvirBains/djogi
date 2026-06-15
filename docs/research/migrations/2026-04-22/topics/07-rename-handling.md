@@ -6,15 +6,15 @@ Across all eleven surveyed systems, no tool has reliable, automatic rename detec
 simultaneously safe for production use in CI. The landscape splits into four camps:
 
 - **No detection at all (most systems):** Prisma, Alembic, Diesel, refinery, SeaORM, cot, Flyway,
-  Liquibase's diff, and SQLAlchemy/MetaData all treat a rename as DROP + CREATE. Data loss is the
-  default outcome unless the user intervenes.
+ Liquibase's diff, and SQLAlchemy/MetaData all treat a rename as DROP + CREATE. Data loss is the
+ default outcome unless the user intervenes.
 - **Interactive prompt (Django only):** `makemigrations` asks the user at generation time. Correct
-  in development; silently destructive in CI (`--no-input` defaults `ask_rename` to `False`).
+ in development; silently destructive in CI (`--no-input` defaults `ask_rename` to `False`).
 - **Explicit annotation required (Liquibase column/table only):** `<renameColumn>` and
-  `<renameTable>` change types must be hand-authored. The diff tool does not emit them.
+ `<renameTable>` change types must be hand-authored. The diff tool does not emit them.
 - **No heuristic anywhere:** Not one of the eleven surveyed tools applies a name-similarity or
-  column-position heuristic for rename detection in its autogenerate path. The "heuristic rename"
-  approach exists in the literature but is absent from every codebase studied here.
+ column-position heuristic for rename detection in its autogenerate path. The "heuristic rename"
+ approach exists in the literature but is absent from every codebase studied here.
 
 Djogi's planned default — emit DROP + CREATE, require explicit `#[field(renamed_from = "...")]`
 annotation for a true rename — is consistent with the majority of the field, avoids all false-positive
@@ -56,20 +56,20 @@ When a column named `name` is dropped and a column named `full_name` is added, t
 semantically distinct scenarios:
 
 1. **True rename:** The user wants the same data, just under a new column name. The correct DDL is:
-   ```sql
-   ALTER TABLE users RENAME COLUMN name TO full_name;
-   ```
-   This is safe: no data is lost, the operation is transactional on Postgres, and it runs in
-   milliseconds (only a catalog update, no table rewrite).
+  ```sql
+  ALTER TABLE users RENAME COLUMN name TO full_name;
+  ```
+  This is safe: no data is lost, the operation is transactional on Postgres, and it runs in
+  milliseconds (only a catalog update, no table rewrite).
 
 2. **Drop and add:** The user actually wants to remove `name` entirely and introduce a brand-new
-   `full_name` column (which will start NULL or with a specified default). The correct DDL is:
-   ```sql
-   ALTER TABLE users DROP COLUMN name;
-   ALTER TABLE users ADD COLUMN full_name TEXT;
-   ```
-   Every row loses the value previously stored in `name`. In a non-empty table, this is
-   irreversible data loss.
+  `full_name` column (which will start NULL or with a specified default). The correct DDL is:
+  ```sql
+  ALTER TABLE users DROP COLUMN name;
+  ALTER TABLE users ADD COLUMN full_name TEXT;
+  ```
+  Every row loses the value previously stored in `name`. In a non-empty table, this is
+  irreversible data loss.
 
 A migration system that cannot distinguish these two scenarios defaults to the destructive path.
 On a development database with seed data this is tolerable. On a production database with millions
@@ -85,7 +85,7 @@ The diff engine must choose: is this a rename (DROP + CREATE data loss) or a ren
 no data loss)? Without additional information, it cannot know. Heuristics can guess — same type,
 same nullability, same position — but they can be wrong. The false-positive scenario is:
 a developer deletes column `first_name` and adds an unrelated column `full_name` for a different
-purpose. A heuristic might see "one dropped, one added, types match" and emit `ALTER ... RENAME`,
+purpose. A heuristic might see "one dropped, one added, types match" and emit `ALTER... RENAME`,
 silently retaining data in `full_name` that should have been empty.
 
 ### Real-world consequence
@@ -93,7 +93,7 @@ silently retaining data in `full_name` that should have been empty.
 If the heuristic fires incorrectly in production:
 - Old data from `first_name` silently populates the new `full_name` column.
 - Application code writing fresh records sees the old data persisted as if it were the new column's
-  initial data.
+ initial data.
 - There is no SQL error — the schema is consistent; the data is simply wrong.
 - Rollback requires a restore from backup, not just DDL reversal.
 
@@ -117,12 +117,12 @@ migration file.
 
 ```sql
 /*
-  Warnings:
+ Warnings:
 
-  - You are about to drop the column `viewCount20` on the `Blog` table. All the data in the column
-    will be lost.
-  - Added the required column `viewCount` to the `Blog` table without a default value. This is not
-    possible if the table is not empty.
+ - You are about to drop the column `viewCount20` on the `Blog` table. All the data in the column
+  will be lost.
+ - Added the required column `viewCount` to the `Blog` table without a default value. This is not
+  possible if the table is not empty.
 */
 -- RedefineTables
 PRAGMA foreign_keys=OFF;
@@ -173,7 +173,7 @@ output path I read; did not exhaustively scan every snapshot/diff comparator.)
 Djogi plans to default to DROP + CREATE at the diff engine level. This is consistent with the
 majority of surveyed systems, avoids all heuristic false-positive risk, and is the safer production
 default. The burden of recognizing a rename shifts entirely to the developer, who uses
-`#[field(renamed_from = "old_name")]` to opt into `ALTER TABLE ... RENAME COLUMN` semantics.
+`#[field(renamed_from = "old_name")]` to opt into `ALTER TABLE... RENAME COLUMN` semantics.
 Djogi's explicit annotation is strictly superior to unguarded DROP + CREATE because it makes the
 rename intent visible in the struct definition, not just in a hand-edited SQL file.
 
@@ -227,13 +227,13 @@ For field renames (`questioner.py:223-236`, Django commit `69d86004f7b3c9ed223c1
 
 ```python
 def ask_rename(self, model_name, old_name, new_name, field_instance):
-    """Was this field really renamed?"""
-    msg = "Was %s.%s renamed to %s.%s (a %s)? [y/N]"
-    return self._boolean_input(
-        msg % (model_name, old_name, model_name, new_name,
-               field_instance.__class__.__name__),
-        False,
-    )
+  """Was this field really renamed?"""
+  msg = "Was %s.%s renamed to %s.%s (a %s)? [y/N]"
+  return self._boolean_input(
+    msg % (model_name, old_name, model_name, new_name,
+        field_instance.__class__.__name__),
+    False,
+  )
 ```
 
 Runtime output example: `Was User.name renamed to User.full_name (a CharField)? [y/N]`
@@ -242,12 +242,12 @@ For model (table) renames (`questioner.py:238-245`):
 
 ```python
 def ask_rename_model(self, old_model_state, new_model_state):
-    """Was this model really renamed?"""
-    msg = "Was the model %s.%s renamed to %s? [y/N]"
-    return self._boolean_input(
-        msg % (old_model_state.app_label, old_model_state.name, new_model_state.name),
-        False,
-    )
+  """Was this model really renamed?"""
+  msg = "Was the model %s.%s renamed to %s? [y/N]"
+  return self._boolean_input(
+    msg % (old_model_state.app_label, old_model_state.name, new_model_state.name),
+    False,
+  )
 ```
 
 Runtime output example: `Was the model myapp.User renamed to MyUser? [y/N]`
@@ -307,12 +307,12 @@ surveyed tools where a rename is auto-detected and emitted without a human confi
 **Systems: Liquibase (change types), Djogi (planned, via `#[field(renamed_from)]`)**
 
 Liquibase ships first-class `<renameColumn>` and `<renameTable>` change types. The change types
-emit `ALTER TABLE ... RENAME COLUMN` and `ALTER TABLE ... RENAME TO` via `RenameColumnGenerator`
+emit `ALTER TABLE... RENAME COLUMN` and `ALTER TABLE... RENAME TO` via `RenameColumnGenerator`
 and `RenameTableGenerator`. The user must write these by hand; the diff tool never emits them.
 
 ```xml
 <changeSet id="2" author="developer">
-    <renameColumn tableName="users" oldColumnName="name" newColumnName="full_name" />
+  <renameColumn tableName="users" oldColumnName="name" newColumnName="full_name" />
 </changeSet>
 ```
 
@@ -320,7 +320,7 @@ and `RenameTableGenerator`. The user must write these by hand; the diff tool nev
 
 Djogi's planned `#[field(renamed_from = "old_name")]` annotation is structurally equivalent: the
 developer explicitly declares the rename in the model definition, and the diff engine emits
-`ALTER TABLE ... RENAME COLUMN` instead of DROP + ADD when it sees the annotation. Unlike
+`ALTER TABLE... RENAME COLUMN` instead of DROP + ADD when it sees the annotation. Unlike
 Liquibase, the annotation lives directly on the struct field — the intent is permanently visible
 in the codebase rather than requiring a separate migration file lookup.
 
@@ -331,13 +331,13 @@ in the codebase rather than requiring a separate migration file lookup.
 No surveyed system detects table renames automatically without a human confirmation step.
 
 - **Django:** `generate_renamed_models()` fires the `ask_rename_model` prompt. The same
-  false-positive risk applies: field definitions are compared after stripping FK targets. In
-  `--no-input` mode, the rename is treated as `DeleteModel` + `CreateModel` — all data in the table
-  is lost. (Source: `django.md`, `autodetector.py:581-647`.)
+ false-positive risk applies: field definitions are compared after stripping FK targets. In
+ `--no-input` mode, the rename is treated as `DeleteModel` + `CreateModel` — all data in the table
+ is lost. (Source: `django.md`, `autodetector.py:581-647`.)
 - **Alembic:** `RenameTableOp` exists as an explicit hand-written operation only. No autogenerate
-  output. (Source: `alembic.md`, `ops.py:1451-1485`.)
+ output. (Source: `alembic.md`, `ops.py:1451-1485`.)
 - **Liquibase:** `<renameTable>` change type is hand-written. The diff path emits DROP + CREATE.
-  (Source: `liquibase.md`.)
+ (Source: `liquibase.md`.)
 - **All others:** DROP + CREATE.
 
 Table renames are operationally more dangerous than column renames for two reasons:
@@ -359,17 +359,17 @@ attribute (if added) would cover table renames. This is a natural extension of t
 No surveyed system has first-class support for Postgres ENUM renames in its autogenerate path.
 
 - **Alembic:** `autocommit_block()` is documented for `ALTER TYPE mood ADD VALUE 'soso'`
-  (which cannot run inside a transaction on Postgres < 12). The example:
-  ```python
-  def upgrade():
-      with op.get_context().autocommit_block():
-          op.execute("ALTER TYPE mood ADD VALUE 'soso'")
-  ```
-  (Source: `alembic.md`, `runtime/migration.py:279-370`.) This handles value addition to an existing
-  ENUM, not ENUM renaming.
+ (which cannot run inside a transaction on Postgres < 12). The example:
+ ```python
+ def upgrade():
+   with op.get_context().autocommit_block():
+     op.execute("ALTER TYPE mood ADD VALUE 'soso'")
+ ```
+ (Source: `alembic.md`, `runtime/migration.py:279-370`.) This handles value addition to an existing
+ ENUM, not ENUM renaming.
 - **sea-query:** `TypeAlterStatement` supports `ALTER TYPE ADD VALUE / RENAME`.
-  (Source: `sea-query.md`, `src/backend/postgres/types.rs:66`.) This is a DDL builder, not an
-  autogenerate tool.
+ (Source: `sea-query.md`, `src/backend/postgres/types.rs:66`.) This is a DDL builder, not an
+ autogenerate tool.
 - **All others:** No ENUM rename support in autogenerate.
 
 Postgres supports `ALTER TYPE old_name RENAME TO new_name` (available since Postgres 9.0). The
@@ -379,7 +379,7 @@ the type, create the new type, re-add the columns. This is significantly more de
 
 For Djogi: ENUM renames at the Postgres type level are out of scope for the initial implementation.
 The recommended practice is to document that ENUM renames require hand-written migrations using
-`ALTER TYPE ... RENAME TO`. If Djogi gains a type-alias abstraction for ENUMs in the future, a
+`ALTER TYPE... RENAME TO`. If Djogi gains a type-alias abstraction for ENUMs in the future, a
 `renamed_from` attribute at the type level would be the natural extension.
 
 ---
@@ -400,7 +400,7 @@ Django silent auto-detection for indexes is correct in the common case (rename w
 change). The false-positive risk is lower for indexes than for columns because:
 - Index definitions are fully structural (column list, uniqueness, expression, partial predicate).
 - An index with the same column list, same uniqueness, and same expression but a different name is
-  almost certainly a rename, not a coincidence.
+ almost certainly a rename, not a coincidence.
 
 **All other systems:** DROP + CREATE for index renames, or user-written SQL.
 
@@ -450,10 +450,10 @@ as a SQL comment:
 
 ```sql
 /*
-  Warnings:
+ Warnings:
 
-  - You are about to drop the column `viewCount20` on the `Blog` table. All the data in the
-    column will be lost.
+ - You are about to drop the column `viewCount20` on the `Blog` table. All the data in the
+  column will be lost.
 */
 ```
 
@@ -474,30 +474,30 @@ SQL when a column deletion is detected.
 
 1. No surveyed tool has 100% reliable automatic rename detection in its autogenerate path.
 2. Every tool that auto-generates migrations defaults to the destructive path (DROP + CREATE) for
-   ambiguous renames.
+  ambiguous renames.
 3. Every explicit rename mechanism (Django's prompt, Liquibase's change type, Djogi's annotation)
-   requires human intent to be expressed.
+  requires human intent to be expressed.
 
 **Points of divergence:**
 
 1. **Development UX vs CI safety:** Django optimizes for development UX (interactive prompt shows
-   the candidate and asks). This is excellent ergonomics at the terminal and dangerous in CI.
-   Djogi's annotation model optimizes for CI safety (no prompt needed, intent is in the source).
+  the candidate and asks). This is excellent ergonomics at the terminal and dangerous in CI.
+  Djogi's annotation model optimizes for CI safety (no prompt needed, intent is in the source).
 
 2. **Explicitness location:** Liquibase's intent is in the migration file (a separate artifact).
-   Django's intent is expressed at generation time (interactive) and encoded in the generated
-   migration file. Djogi's intent is in the model definition (the `#[field(renamed_from)]`
-   attribute). Encoding rename intent in the model definition has the advantage that it is
-   visible during code review without opening the migration file.
+  Django's intent is expressed at generation time (interactive) and encoded in the generated
+  migration file. Djogi's intent is in the model definition (the `#[field(renamed_from)]`
+  attribute). Encoding rename intent in the model definition has the advantage that it is
+  visible during code review without opening the migration file.
 
 3. **Index rename vs column rename treatment:** Django treats index renames differently (silent
-   auto-detect) from column renames (prompt). All others treat both the same. This divergence
-   reflects the lower false-positive risk for index renames (index identity is fully structural).
+  auto-detect) from column renames (prompt). All others treat both the same. This divergence
+  reflects the lower false-positive risk for index renames (index identity is fully structural).
 
 4. **False-positive documentation:** No tool documents its false-positive rate for rename
-   detection. Django SURPRISE 6 (`autodetector.py:113-125`) reveals one specific false-positive
-   class (FK-target-stripped comparison matching models with different FK targets) that is
-   undocumented in Django's own changelog.
+  detection. Django SURPRISE 6 (`autodetector.py:113-125`) reveals one specific false-positive
+  class (FK-target-stripped comparison matching models with different FK targets) that is
+  undocumented in Django's own changelog.
 
 ---
 
@@ -507,51 +507,51 @@ SQL when a column deletion is detected.
 
 **Pros of Djogi's planned approach (no heuristic, explicit `#[field(renamed_from)]`):**
 
-1. **Zero false positives.** No heuristic means no incorrect `ALTER ... RENAME` operations
-   silently applied to production data. The absence of detection is the absence of risk.
+1. **Zero false positives.** No heuristic means no incorrect `ALTER... RENAME` operations
+  silently applied to production data. The absence of detection is the absence of risk.
 
 2. **CI-safe by default.** No interactive prompt means `djogi makemigrations` can run in any
-   environment without human intervention and produce reproducible output.
+  environment without human intervention and produce reproducible output.
 
 3. **Consistent with the majority.** Prisma, Alembic, Diesel, refinery, SeaORM, cot, and
-   Liquibase's diff path all default to DROP + CREATE. Djogi is aligned with the conservative
-   mainstream, not an outlier.
+  Liquibase's diff path all default to DROP + CREATE. Djogi is aligned with the conservative
+  mainstream, not an outlier.
 
 4. **Annotation is persistent intent.** `#[field(renamed_from = "old_name")]` lives in the struct
-   definition. Future developers reading the code see that `full_name` was previously `name`.
-   This is documentation as well as migration instruction.
+  definition. Future developers reading the code see that `full_name` was previously `name`.
+  This is documentation as well as migration instruction.
 
 5. **No false-positive class to explain or document.** Django's `only_relation_agnostic_fields()`
-   false-positive class (SURPRISE 6) is a real bug that has silently affected users. Djogi has
-   no equivalent to discover.
+  false-positive class (SURPRISE 6) is a real bug that has silently affected users. Djogi has
+  no equivalent to discover.
 
 **Cons:**
 
 1. **More manual work on rename.** The developer must both rename the field in the struct AND
-   add `#[field(renamed_from = "old_name")]`. If they forget the annotation, the diff engine
-   generates a destructive migration silently — the same outcome as all other non-detecting systems.
+  add `#[field(renamed_from = "old_name")]`. If they forget the annotation, the diff engine
+  generates a destructive migration silently — the same outcome as all other non-detecting systems.
 
 2. **No "did you mean rename?" hint.** Unlike Django's prompt, Djogi gives no hint that a
-   column deletion might be an intended rename. A warning comment in the generated SQL (Prisma's
-   paper trail pattern) partially mitigates this.
+  column deletion might be an intended rename. A warning comment in the generated SQL (Prisma's
+  paper trail pattern) partially mitigates this.
 
 **Mitigation for the cons:**
 
 - Embed a `-- djogi: WARNING: DROP COLUMN table.column — if this was a rename, annotate with
-  #[field(renamed_from = "column")]` comment in the generated `_up.sql` file whenever a
-  `DROP COLUMN` is emitted.
+ #[field(renamed_from = "column")]` comment in the generated `_up.sql` file whenever a
+ `DROP COLUMN` is emitted.
 - Document clearly in the Djogi migration guide: "If you rename a field in your struct, add
-  `#[field(renamed_from = "old_name")]` to generate `ALTER TABLE ... RENAME COLUMN` instead of
-  `DROP COLUMN` + `ADD COLUMN`."
+ `#[field(renamed_from = "old_name")]` to generate `ALTER TABLE... RENAME COLUMN` instead of
+ `DROP COLUMN` + `ADD COLUMN`."
 
 **Future opt-in:**
 
 Consider a `djogi makemigrations --detect-renames` flag (medium priority, post-0.1.0) that:
 1. Applies the "exactly one drop, exactly one add, same type, same nullability" heuristic.
 2. Prints a list of candidates: "Possible rename: users.name → users.full_name (TEXT NOT NULL
-   → TEXT NOT NULL). Use --accept-renames or add #[field(renamed_from)] to confirm."
-3. Never silently emits `ALTER ... RENAME`. Always requires either the annotation or an explicit
-   flag acknowledgment.
+  → TEXT NOT NULL). Use --accept-renames or add #[field(renamed_from)] to confirm."
+3. Never silently emits `ALTER... RENAME`. Always requires either the annotation or an explicit
+  flag acknowledgment.
 
 This is strictly opt-in and never runs in CI unless the CI pipeline explicitly enables it.
 
@@ -599,9 +599,9 @@ rename chains across migration history do not require chained annotations.
 This is an open design question. Options:
 - **Keep the annotation permanently:** self-documenting history, but the field definition is noisy.
 - **Remove after the migration is committed:** clean struct, but the rename history is only in
-  git log.
+ git log.
 - **Move to a `#[field(history)]` sub-attribute:** explicit separation of migration hints from
-  current semantics.
+ current semantics.
 
 This is unspecified in the current Djogi spec and should be resolved during the migration
 generator design phase.
@@ -624,7 +624,7 @@ All claims in this document are drawn from primary source inspection of the foll
 - `projects/django.md` — Django commit `69d86004f7b3c9ed223c18998c2b799d1670474f`
 - `projects/alembic.md` — Alembic commit `0ab90276fc583d52e31e95d3f59b4b6c00ec39ee`
 - `projects/prisma.md` — Prisma (TypeScript) commit `62b44ac01aafbe101dad63abaab7da9747f62839`
-  + Prisma Engines (Rust) commit `3c6e192`
+ + Prisma Engines (Rust) commit `3c6e192`
 - `projects/liquibase.md` — Liquibase commit `1d7330406e1bfc3648ba651a4b3b4fe495cbd1a8`
 - `projects/diesel.md` — Diesel commit `df1f3ee56d8c8ae17dfab081de36a17668bfb31c`
 - `projects/refinery.md` — refinery commit `c4f819bbbab3f67c98b4ff44a40cd83430f1172d`

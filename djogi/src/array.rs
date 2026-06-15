@@ -15,7 +15,7 @@
 //! to dimension 1. Multi-dimensional arrays are not a supported field type.
 //! # No GIN index emission
 //! These operators benefit from GIN indexes, but GIN index emission is
-//! deferred to . The operators work correctly without an index — Postgres
+//! deferred to. The operators work correctly without an index — Postgres
 //! falls back to a sequential scan.
 
 use crate::query::condition::FilterValue;

@@ -67,7 +67,7 @@ pub enum PlanFileError {
     /// retry".
     #[error(
         "plan file at {path} checksum mismatch: expected {expected}, computed {actual}; \
-         plan file edited after start — re-generate or abandon and retry"
+   plan file edited after start — re-generate or abandon and retry"
     )]
     ChecksumMismatch {
         path: PathBuf,
@@ -84,7 +84,7 @@ pub enum PlanFileError {
     /// a new `plan_id`.
     #[error(
         "plan file at {0} already exists; live plans are immutable. \
-         Generate a new plan with a fresh plan_id"
+   Generate a new plan with a fresh plan_id"
     )]
     AlreadyExists(PathBuf),
     /// In-memory plan failed [`LivePlan::validate`] before the file

@@ -8,9 +8,9 @@
 //! # Why `Into<Expr<T>>` on the RHS?
 //! The ergonomic target is:
 //! ```ignore
-//! f.balance().as_expr().lt(100i64)                // literal RHS
-//! f.balance().as_expr().lt(f.overdraft_limit().as_expr())  // field RHS
-//! f.balance().as_expr().lt(f.balance().as_expr() + Expr::literal(10))  // arithmetic RHS
+//! f.balance().as_expr().lt(100i64)    // literal RHS
+//! f.balance().as_expr().lt(f.overdraft_limit().as_expr()) // field RHS
+//! f.balance().as_expr().lt(f.balance().as_expr() + Expr::literal(10)) // arithmetic RHS
 //! ```
 //! All three RHS forms are `Into<Expr<i64>>`: literals via the
 //! [`super::literal`] impls, `Expr<T>` via the reflexive `From<T> for T`,

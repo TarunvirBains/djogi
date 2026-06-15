@@ -18,17 +18,17 @@ use djogi::prelude::*;
 #[model(table = "phase8_q_xor_mismatched_a")]
 #[derive(Debug, Clone)]
 pub struct A {
-    pub x: i64,
+ pub x: i64,
 }
 
 #[model(table = "phase8_q_xor_mismatched_b")]
 #[derive(Debug, Clone)]
 pub struct B {
-    pub y: i64,
+ pub y: i64,
 }
 
 fn main() {
-    let qa: Q<A> = Q::always_true();
-    let qb: Q<B> = Q::always_true();
-    let _q = qa ^ qb;
+ let qa: Q<A> = Q::always_true();
+ let qb: Q<B> = Q::always_true();
+ let _q = qa ^ qb;
 }

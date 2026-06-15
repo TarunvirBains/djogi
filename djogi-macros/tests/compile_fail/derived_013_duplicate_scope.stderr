@@ -1,7 +1,7 @@
 error: duplicate scope `public` in `scopes = [...]` (E_DJG_VDF_013)
-  --> $DIR/derived_013_duplicate_scope.rs:18:23
-   |
-18 |     scopes = [public, public],
-   |                       ^^^^^^
+ --> $DIR/derived_013_duplicate_scope.rs:18:23
+ |
+18 |  scopes = [public, public],
+ |      ^^^^^^
 
 error: aborting due to 1 previous error

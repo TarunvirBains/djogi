@@ -12,27 +12,27 @@ use djogi::prelude::*;
 #[model(table = "users_pass_phase4_5")]
 #[derive(Debug, Clone)]
 pub struct User {
-    // Scalar, single scope.
-    #[field(expose(public))]
-    pub display_name: String,
+ // Scalar, single scope.
+ #[field(expose(public))]
+ pub display_name: String,
 
-    // Scalar, multiple scopes.
-    #[field(expose(self_view, admin, export))]
-    pub email: String,
+ // Scalar, multiple scopes.
+ #[field(expose(self_view, admin, export))]
+ pub email: String,
 
-    // Absent — default internal.
-    pub password_hash: String,
+ // Absent — default internal.
+ pub password_hash: String,
 
-    // Explicit no-op sentinels (both accepted).
-    #[field(expose(none))]
-    pub internal_notes: String,
+ // Explicit no-op sentinels (both accepted).
+ #[field(expose(none))]
+ pub internal_notes: String,
 
-    #[field(expose(internal))]
-    pub salt: String,
+ #[field(expose(internal))]
+ pub salt: String,
 
-    // Scalar, all four scopes.
-    #[field(expose(public, self_view, admin, export))]
-    pub handle: String,
+ // Scalar, all four scopes.
+ #[field(expose(public, self_view, admin, export))]
+ pub handle: String,
 }
 
 fn main() {}

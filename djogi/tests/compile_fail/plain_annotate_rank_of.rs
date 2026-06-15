@@ -6,9 +6,9 @@ use djogi::prelude::*;
 #[model(table = "phase85_aggregate89_plain_rank_of", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct PlainRankOfModel {
-    pub salary: i64,
+ pub salary: i64,
 }
 
 fn main() {
-    let _ = PlainRankOfModel::objects().annotate(|f| f.salary().rank_of(7_500));
+ let _ = PlainRankOfModel::objects().annotate(|f| f.salary().rank_of(7_500));
 }

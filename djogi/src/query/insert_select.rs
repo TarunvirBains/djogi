@@ -37,26 +37,26 @@
 //! // because nothing else carries it (the closure is `FnOnce` over both
 //! // field bags, so neither argument's type can supply `T`).
 //! CompletedOrder::objects()
-//!     .filter(|f| f.completed_at().lt(cutoff))
-//!     .insert_into::<OrderArchive, _, _>(|target, source| vec![
-//!         target.order_id().copy_from(source.id().as_insert_source()),
-//!         target.title().copy_from(source.title().as_insert_source()),
-//!         target.completed_at().copy_from(source.completed_at().as_insert_source()),
-//!     ])
-//!     .execute(&mut ctx)
-//!     .await?;
+//!   .filter(|f| f.completed_at().lt(cutoff))
+//!   .insert_into::<OrderArchive, _, _>(|target, source| vec![
+//!     target.order_id().copy_from(source.id().as_insert_source()),
+//!     target.title().copy_from(source.title().as_insert_source()),
+//!     target.completed_at().copy_from(source.completed_at().as_insert_source()),
+//!   ])
+//!   .execute(&mut ctx)
+//!   .await?;
 //! ```
 //! # What this surface does NOT cover
 //! - **Set operations** (`UNION` / `INTERSECT` / `EXCEPT`) — tracked in
-//!   .
+//!  .
 //! - **`LATERAL` joins** — tracked in .
 //! - **`VALUES` inline relations as join sources** — tracked in .
 //! - **PG18 `OLD` / `NEW` in `RETURNING`** — tracked in .
 //! - **`RETURNING` for INSERT...SELECT** — use
-//!   [`InsertSelectStmt::execute_returning`] to receive every inserted
-//!   row back as a decoded `Vec<T>` (closes ).
-//!   [`InsertSelectStmt::execute`] remains the default for bulk operations
-//!   where materialising the full result set is unnecessary.
+//!  [`InsertSelectStmt::execute_returning`] to receive every inserted
+//!  row back as a decoded `Vec<T>` (closes ).
+//!  [`InsertSelectStmt::execute`] remains the default for bulk operations
+//!  where materialising the full result set is unnecessary.
 //! # Framework-column semantics
 //! The target's framework columns (`id`, `created_at`, `updated_at`)
 //! are populated by their column-level `DEFAULT` clauses on the target
@@ -76,59 +76,59 @@
 //! are swapped at the mapping site. Concretely:
 //! - `target_field.copy_from(source_field.as_insert_source())` — OK.
 //! - `source_field.copy_from(target_field.as_insert_source())` — fails
-//!   to compile (`InsertSelectColumn<T, S>` does not implement
-//!   `IntoInsertColumns<S, T>`).
+//!  to compile (`InsertSelectColumn<T, S>` does not implement
+//!  `IntoInsertColumns<S, T>`).
 //! - `target_field.copy_from(target_field.as_insert_source())` — fails
-//!   to compile (`InsertSelectColumn<T, T>` does not implement
-//!   `IntoInsertColumns<S, T>` when `S != T`).
-//!   See `djogi/tests/compile_fail/insert_select_*` for the pinned
-//!   compile-fail fixtures.
+//!  to compile (`InsertSelectColumn<T, T>` does not implement
+//!  `IntoInsertColumns<S, T>` when `S != T`).
+//!  See `djogi/tests/compile_fail/insert_select_*` for the pinned
+//!  compile-fail fixtures.
 //! # Rejected source state
 //! [`InsertSelectStmt::execute`] returns [`DjogiError::Validation`] when
 //! the source queryset carries state that cannot be safely represented
 //! in an INSERT...SELECT shape:
 //! - **`prefetch_paths`** — prefetch is a post-fetch row-stitching
-//!   pattern; INSERT...SELECT returns no rows, so prefetch has no
-//!   meaning.
+//!  pattern; INSERT...SELECT returns no rows, so prefetch has no
+//!  meaning.
 //! - **`select_related_paths`** — select_related expands the SELECT list
-//!   with aliased joined columns; the column mapping closure references
-//!   single-model columns, so silently dropping the join would surprise
-//!   the caller. Rejecting forces the caller to compose the joined
-//!   source via an explicit subquery in a future iteration.
+//!  with aliased joined columns; the column mapping closure references
+//!  single-model columns, so silently dropping the join would surprise
+//!  the caller. Rejecting forces the caller to compose the joined
+//!  source via an explicit subquery in a future iteration.
 //! - **`cache_target`** — `.cache(&p)` writes returned rows into a
-//!   Punnu; INSERT...SELECT returns row counts, not rows. Rejecting
-//!   surfaces the bug rather than silently dropping the cache binding.
+//!  Punnu; INSERT...SELECT returns row counts, not rows. Rejecting
+//!  surfaces the bug rather than silently dropping the cache binding.
 //! - **`lock != LockMode::None`** — `SELECT ... FOR UPDATE` or
-//!   `... FOR SHARE` inside an INSERT...SELECT is a legitimate
-//!   Postgres pattern (acquire the source rows' locks for the
-//!   duration of the archival), but the minimum coherent surface for
-//!   ships without lock composition. The FOR SHARE family
-//!   added under is rejected by the same validator. A future
-//!   issue can lift this restriction with a deliberate
-//!   `.with_source_lock()` opt-in.
+//!  `... FOR SHARE` inside an INSERT...SELECT is a legitimate
+//!  Postgres pattern (acquire the source rows' locks for the
+//!  duration of the archival), but the minimum coherent surface for
+//!  ships without lock composition. The FOR SHARE family
+//!  added under is rejected by the same validator. A future
+//!  issue can lift this restriction with a deliberate
+//!  `.with_source_lock()` opt-in.
 //! - **`distinct != DistinctMode::None`** — `SELECT DISTINCT` inside
-//!   INSERT...SELECT is also valid Postgres semantics ("insert distinct
-//!   source rows only"), but the safer initial surface rejects it.
-//!   `DistinctMode::On(cols)` in particular requires the DISTINCT ON
-//!   columns to appear at the start of `ORDER BY` AND in the SELECT
-//!   projection — neither of which the closure-built source-expression
-//!   list guarantees. Rejecting all non-default distinct modes keeps
-//!   the surface obviously correct.
+//!  INSERT...SELECT is also valid Postgres semantics ("insert distinct
+//!  source rows only"), but the safer initial surface rejects it.
+//!  `DistinctMode::On(cols)` in particular requires the DISTINCT ON
+//!  columns to appear at the start of `ORDER BY` AND in the SELECT
+//!  projection — neither of which the closure-built source-expression
+//!  list guarantees. Rejecting all non-default distinct modes keeps
+//!  the surface obviously correct.
 //! # Allowed source state
 //! - **`condition`** (WHERE clause) — the canonical filter surface.
 //! - **`ordering`** (ORDER BY) — composes with LIMIT to deterministically
-//!   pick "oldest N" / "newest N" subsets. Postgres preserves the order
-//!   into the INSERT.
+//!  pick "oldest N" / "newest N" subsets. Postgres preserves the order
+//!  into the INSERT.
 //! - **`limit`** (LIMIT) — useful for chunked archival.
 //! - **`offset`** (OFFSET) — composes with limit for pagination-style
-//!   chunking.
+//!  chunking.
 //! - **`is_empty`** (the `QuerySet::none()` short-circuit) — terminals
-//!   return `Ok(0)` without touching the database, **but only after**
-//!   the column-mapping and source-state validation above has passed.
-//!   A `.none()` chain with an empty mapping, duplicate columns, or
-//!   stale post-`.none()` state-adding methods still surfaces a
-//!   [`DjogiError::Validation`] so the programming error does not hide
-//!   behind a silent zero-row return.
+//!  return `Ok(0)` without touching the database, **but only after**
+//!  the column-mapping and source-state validation above has passed.
+//!  A `.none()` chain with an empty mapping, duplicate columns, or
+//!  stale post-`.none()` state-adding methods still surfaces a
+//!  [`DjogiError::Validation`] so the programming error does not hide
+//!  behind a silent zero-row return.
 //! # Tenant / RLS auto-set
 //! [`InsertSelectStmt::execute`] calls `auto_set_tenant::<T>(ctx)` for
 //! the target model before issuing the INSERT, then `auto_set_tenant::<S>(ctx)`
@@ -188,16 +188,16 @@ use std::marker::PhantomData;
 /// the matching `V`.
 /// # How to construct
 /// - **From a source field** — call
-///   [`FieldRef::as_insert_source`] / [`crate::query::DjogiField::as_insert_source`].
-///   The receiver's `M` pins the wrapper's `S`, so building an operand
-///   from a target field gives an operand tagged with the target model
-///   which the closure return type then rejects.
+///  [`FieldRef::as_insert_source`] / [`crate::query::DjogiField::as_insert_source`].
+///  The receiver's `M` pins the wrapper's `S`, so building an operand
+///  from a target field gives an operand tagged with the target model
+///  which the closure return type then rejects.
 /// - **From a Rust scalar** — call [`InsertSelectSource::literal`]. `S`
-///   is free at construction and inferred from the closure context (a
-///   constant has no source identity of its own).
+///  is free at construction and inferred from the closure context (a
+///  constant has no source identity of its own).
 /// - **From an arithmetic composition** — use `+` / `-` / `*` / `/` on
-///   `InsertSelectSource<S, V>` where `V: Numeric`. Same-`S` operands
-///   compose; mixing two different source tags fails to compile.
+///  `InsertSelectSource<S, V>` where `V: Numeric`. Same-`S` operands
+///  compose; mixing two different source tags fails to compile.
 /// # Why phantom-only
 /// The IR payload (the crate-private `ExprNode` enum) is type-erased at
 /// the leaf — the SQL emitter walks one monomorphic function regardless
@@ -227,7 +227,7 @@ impl<S: Model, V> InsertSelectSource<S, V> {
     /// ```ignore
     /// // Every archived row gets the same constant `status = "ARCHIVED"`.
     /// .insert_into::<OrderArchive, _, _>(|target, _source| vec![
-    ///     target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
+    ///   target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
     /// ])
     /// ```
     /// `V: Into<Expr<V>>` is satisfied by every scalar Djogi binds today
@@ -337,9 +337,9 @@ impl<S: Model> std::ops::Sub<InsertSelectSource<S, time::Duration>>
 /// # Example
 /// ```ignore
 /// .insert_into::<OrderArchive, _, _>(|target, source| vec![
-///     // `source.id()` is `FieldRef<CompletedOrder, HeerIdDesc>`;
-///     // `as_insert_source()` lifts it to `InsertSelectSource<CompletedOrder, HeerIdDesc>`.
-///     target.original_id().copy_from(source.id().as_insert_source()),
+///   // `source.id()` is `FieldRef<CompletedOrder, HeerIdDesc>`;
+///   // `as_insert_source()` lifts it to `InsertSelectSource<CompletedOrder, HeerIdDesc>`.
+///   target.original_id().copy_from(source.id().as_insert_source()),
 /// ])
 /// ```
 /// Calling this on a target-side field (e.g. `target.col().as_insert_source()`)
@@ -390,30 +390,30 @@ impl<T: Model, V> FieldRef<T, V> {
 /// `source.col`'s tagged IR tree.
 /// # Type parameters
 /// - `S` — the source model. Pinned by the source operand
-///   ([`InsertSelectSource<S, V>`]). When the closure returns
-///   `Vec<InsertSelectColumn<S, T>>`, `S` must match the
-///   `QuerySet<S>::insert_into` receiver's source model.
+///  ([`InsertSelectSource<S, V>`]). When the closure returns
+///  `Vec<InsertSelectColumn<S, T>>`, `S` must match the
+///  `QuerySet<S>::insert_into` receiver's source model.
 /// - `T` — the target model. Pinned by the target [`FieldRef<T, V>`] the
-///   `copy_from` method is called on. When the closure returns
-///   `Vec<InsertSelectColumn<S, T>>`, `T` must match the
-///   `insert_into::<T, _, _>` generic on the call site.
-///   Mismatch on either side fails to compile at the closure-return
-///   inference step — see the module docs and the compile-fail fixtures
-///   under `djogi/tests/compile_fail/insert_select_*`.
+///  `copy_from` method is called on. When the closure returns
+///  `Vec<InsertSelectColumn<S, T>>`, `T` must match the
+///  `insert_into::<T, _, _>` generic on the call site.
+///  Mismatch on either side fails to compile at the closure-return
+///  inference step — see the module docs and the compile-fail fixtures
+///  under `djogi/tests/compile_fail/insert_select_*`.
 /// # Invariants
 /// - `target_column` is a `&'static str` baked by the `#[model]` macro,
-///   never user input — it flows straight into `SqlAccumulator::push_sql`.
+///  never user input — it flows straight into `SqlAccumulator::push_sql`.
 /// - `source` is the crate-private `ExprNode` tree built through the
-///   typed constructors on [`InsertSelectSource<S, V>`]. The leaf
-///   `Field` variant carries a macro-validated `&'static str` column
-///   name; the `Literal` variant binds through `push_filter_value` →
-///   `push_bind`.
+///  typed constructors on [`InsertSelectSource<S, V>`]. The leaf
+///  `Field` variant carries a macro-validated `&'static str` column
+///  name; the `Literal` variant binds through `push_filter_value` →
+///  `push_bind`.
 /// - The compile-time `V` matching on [`FieldRef::copy_from`] guarantees
-///   the target column's value type matches the source operand's value
-///   type at compile time — there is no runtime type-coercion surface
-///   here.
-///   `Debug` + `Clone` are derived — see the `InsertSelectStmt: Clone`
-///   rationale on [`InsertSelectStmt`].
+///  the target column's value type matches the source operand's value
+///  type at compile time — there is no runtime type-coercion surface
+///  here.
+///  `Debug` + `Clone` are derived — see the `InsertSelectStmt: Clone`
+///  rationale on [`InsertSelectStmt`].
 #[must_use = "column mappings are lazy — drop one and the INSERT silently omits the column"]
 pub struct InsertSelectColumn<S: Model, T: Model> {
     /// Target column name — macro-baked literal, never user input.
@@ -489,29 +489,29 @@ impl<S: Model, T: Model> InsertSelectColumn<S, T> {
 /// [`InsertSelectSource<S, V>`] covers every shape the source operand
 /// can take:
 /// - **Plain column copy** — `source.col().as_insert_source()` (the
-///   common case). Emits a bare `col` reference inside the source
-///   `FROM` scope.
+///  common case). Emits a bare `col` reference inside the source
+///  `FROM` scope.
 /// - **Constant** — `InsertSelectSource::literal(42i32)`. Emits a single
-///   bind.
+///  bind.
 /// - **Computed expression** — arithmetic (`+` / `-` / `*` / `/`) on
-///   `InsertSelectSource<S, V: Numeric>` composes same-source operands
-///   into a single source projection.
+///  `InsertSelectSource<S, V: Numeric>` composes same-source operands
+///  into a single source projection.
 /// # Example
 /// ```ignore
 /// CompletedOrder::objects()
-///     .filter(|f| f.completed_at().lt(cutoff))
-///     .insert_into::<OrderArchive, _, _>(|target, source| vec![
-///         // Column-to-column copy.
-///         target.order_id().copy_from(source.id().as_insert_source()),
-///         // Compose with arithmetic — bump every score by 1 at archive time.
-///         target.score().copy_from(
-///             source.score().as_insert_source() + InsertSelectSource::literal(1i32),
-///         ),
-///         // Constant — every archived row carries the same status.
-///         target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
-///     ])
-///     .execute(&mut ctx)
-///     .await?;
+///   .filter(|f| f.completed_at().lt(cutoff))
+///   .insert_into::<OrderArchive, _, _>(|target, source| vec![
+///     // Column-to-column copy.
+///     target.order_id().copy_from(source.id().as_insert_source()),
+///     // Compose with arithmetic — bump every score by 1 at archive time.
+///     target.score().copy_from(
+///       source.score().as_insert_source() + InsertSelectSource::literal(1i32),
+///     ),
+///     // Constant — every archived row carries the same status.
+///     target.status().copy_from(InsertSelectSource::literal("ARCHIVED".to_string())),
+///   ])
+///   .execute(&mut ctx)
+///   .await?;
 /// ```
 impl<T: Model, V> FieldRef<T, V> {
     /// Bind this target column to a source-tagged operand for an
@@ -1024,10 +1024,10 @@ impl<S: Model, T: Model> std::fmt::Debug for OnConflictClause<S, T> {
 /// or named constraint Postgres checks the incoming row against.
 /// # Variants
 /// - `Columns` — infer the arbiter from a column list (`ON CONFLICT
-///   (col, ...)`), optionally narrowed by a partial-index inference
-///   predicate via [`ConflictTarget::where_predicate`].
+///  (col, ...)`), optionally narrowed by a partial-index inference
+///  predicate via [`ConflictTarget::where_predicate`].
 /// - `Constraint` — name a constraint explicitly (`ON CONFLICT ON
-///   CONSTRAINT <name>`).
+///  CONSTRAINT <name>`).
 ///
 /// Construct via [`ConflictTarget::columns`] /
 /// [`ConflictTarget::columns_of`] / [`ConflictTarget::constraint`]; pass
@@ -1503,9 +1503,9 @@ impl<T: Model> ConflictTarget<T> {
     /// # Example
     /// ```ignore
     /// ConflictTarget::columns_of(
-    ///     ConflictColumns::new()
-    ///         .column(Account::fields().tenant_id())
-    ///         .column(Account::fields().email()),
+    ///   ConflictColumns::new()
+    ///     .column(Account::fields().tenant_id())
+    ///     .column(Account::fields().email()),
     /// )
     /// ```
     #[must_use]
@@ -1557,7 +1557,7 @@ impl<T: Model> ConflictTarget<T> {
     /// # Example
     /// ```ignore
     /// ConflictTarget::columns([Doc::fields().slug()])
-    ///     .where_predicate(|t| t.published().conflict_is_true())
+    ///   .where_predicate(|t| t.published().conflict_is_true())
     /// ```
     #[must_use]
     pub fn where_predicate<F, C>(self, f: F) -> Self
@@ -1771,7 +1771,7 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// when the source queryset is [`QuerySet::none`]-derived — a
     /// silent `Ok` under `.none()` would otherwise mask mapping bugs
     /// until the `.none()` guard was removed.
-    /// Returns `Ok(())` when validation passes.  Returns
+    /// Returns `Ok(())` when validation passes. Returns
     /// `Err(DjogiError::Validation(...))` for any of the rejection cases
     /// listed on [`execute`](InsertSelectStmt::execute).
     fn validate_execute(&self) -> Result<(), DjogiError> {
@@ -1779,9 +1779,9 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
         if self.columns.is_empty() {
             return Err(DjogiError::Validation(format!(
                 "insert_into::<{}>: column mapping is empty; an INSERT...SELECT \
-                 with no columns is invalid SQL. The closure passed to \
-                 QuerySet::insert_into must return at least one column mapping \
-                 via FieldRef::copy_from",
+         with no columns is invalid SQL. The closure passed to \
+         QuerySet::insert_into must return at least one column mapping \
+         via FieldRef::copy_from",
                 T::table_name(),
             )));
         }
@@ -1792,8 +1792,8 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
             if !seen.insert(col.target_column) {
                 return Err(DjogiError::Validation(format!(
                     "insert_into::<{}>: target column '{}' appears more than \
-                     once in the column mapping; Postgres rejects duplicate \
-                     columns in an INSERT column list (SQLSTATE 42701)",
+           once in the column mapping; Postgres rejects duplicate \
+           columns in an INSERT column list (SQLSTATE 42701)",
                     T::table_name(),
                     col.target_column,
                 )));
@@ -1804,41 +1804,41 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
         if !self.source.prefetch_paths.is_empty() {
             return Err(DjogiError::Validation(format!(
                 "insert_into::<{}>: source queryset has registered prefetch \
-                 paths, which have no meaning for INSERT...SELECT (no rows \
-                 are returned to the caller). Drop the .prefetch(...) calls \
-                 before .insert_into(...)",
+         paths, which have no meaning for INSERT...SELECT (no rows \
+         are returned to the caller). Drop the .prefetch(...) calls \
+         before .insert_into(...)",
                 T::table_name(),
             )));
         }
         if !self.source.select_related_paths.is_empty() {
             return Err(DjogiError::Validation(format!(
                 "insert_into::<{}>: source queryset has registered \
-                 select_related paths, which expand the SELECT list with \
-                 aliased joined columns the INSERT...SELECT column-mapping \
-                 closure cannot reference. Drop the .select_related(...) \
-                 calls before .insert_into(...)",
+         select_related paths, which expand the SELECT list with \
+         aliased joined columns the INSERT...SELECT column-mapping \
+         closure cannot reference. Drop the .select_related(...) \
+         calls before .insert_into(...)",
                 T::table_name(),
             )));
         }
         if self.source.cache_target.is_some() {
             return Err(DjogiError::Validation(format!(
                 "insert_into::<{}>: source queryset is bound to a Punnu via \
-                 .cache(...). INSERT...SELECT returns the affected row count, \
-                 not rows, so the cache binding has nothing to insert. Drop \
-                 the .cache(...) call before .insert_into(...)",
+         .cache(...). INSERT...SELECT returns the affected row count, \
+         not rows, so the cache binding has nothing to insert. Drop \
+         the .cache(...) call before .insert_into(...)",
                 T::table_name(),
             )));
         }
         if !matches!(self.source.lock, crate::query::lock::LockMode::None) {
             return Err(DjogiError::Validation(format!(
                 "insert_into::<{}>: source queryset carries a row-level lock \
-                 (FOR UPDATE / FOR SHARE / NOWAIT / SKIP LOCKED) which is \
-                 not yet supported on INSERT...SELECT in djogi v0.1. Drop \
-                 the .select_for_update() / .nowait() / .skip_locked() / \
-                 .select_for_share() / .for_share_nowait() / \
-                 .for_share_skip_locked() call before .insert_into(...); a \
-                 follow-up issue can lift this restriction with an \
-                 explicit opt-in",
+         (FOR UPDATE / FOR SHARE / NOWAIT / SKIP LOCKED) which is \
+         not yet supported on INSERT...SELECT in djogi v0.1. Drop \
+         the .select_for_update() / .nowait() / .skip_locked() / \
+         .select_for_share() / .for_share_nowait() / \
+         .for_share_skip_locked() call before .insert_into(...); a \
+         follow-up issue can lift this restriction with an \
+         explicit opt-in",
                 T::table_name(),
             )));
         }
@@ -1848,10 +1848,10 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
         ) {
             return Err(DjogiError::Validation(format!(
                 "insert_into::<{}>: source queryset carries .distinct() / \
-                 .distinct_on(...) which is not yet supported on \
-                 INSERT...SELECT in djogi v0.1. Drop the .distinct...() call \
-                 before .insert_into(...); a follow-up issue can lift this \
-                 restriction with an explicit opt-in",
+         .distinct_on(...) which is not yet supported on \
+         INSERT...SELECT in djogi v0.1. Drop the .distinct...() call \
+         before .insert_into(...); a follow-up issue can lift this \
+         restriction with an explicit opt-in",
                 T::table_name(),
             )));
         }
@@ -1971,15 +1971,15 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// # Example
     /// ```ignore
     /// CompletedOrder::objects()
-    ///     .insert_into::<OrderArchive, _, _>(|t, s| vec![
-    ///         t.original_id().copy_from(s.id().as_insert_source()),
-    ///         t.total().copy_from(s.total().as_insert_source()),
-    ///     ])
-    ///     .on_conflict_do_nothing(
-    ///         ConflictTarget::columns([OrderArchive::fields().original_id()]),
-    ///     )
-    ///     .execute(&mut ctx)
-    ///     .await?;
+    ///   .insert_into::<OrderArchive, _, _>(|t, s| vec![
+    ///     t.original_id().copy_from(s.id().as_insert_source()),
+    ///     t.total().copy_from(s.total().as_insert_source()),
+    ///   ])
+    ///   .on_conflict_do_nothing(
+    ///     ConflictTarget::columns([OrderArchive::fields().original_id()]),
+    ///   )
+    ///   .execute(&mut ctx)
+    ///   .await?;
     /// ```
     #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
     pub fn on_conflict_do_nothing(mut self, target: impl Into<Option<ConflictTarget<T>>>) -> Self {
@@ -2014,20 +2014,20 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// # Example
     /// ```ignore
     /// PageViewBatch::objects()
-    ///     .insert_into::<DailyTotal, _, _>(|t, s| vec![
-    ///         t.day().copy_from(s.day().as_insert_source()),
-    ///         t.hits().copy_from(s.hits().as_insert_source()),
-    ///     ])
-    ///     .on_conflict_do_update(
-    ///         ConflictTarget::columns([DailyTotal::fields().day()]),
-    ///         // Accumulate hits across batches; updated_at left untouched
-    ///         // unless you add t.updated_at().conflict_set_value(...).
-    ///         |t| vec![t.hits().conflict_set_expr(
-    ///             t.hits().as_conflict_expr() + t.hits().excluded().into_conflict_expr(),
-    ///         )],
-    ///     )
-    ///     .execute(&mut ctx)
-    ///     .await?;
+    ///   .insert_into::<DailyTotal, _, _>(|t, s| vec![
+    ///     t.day().copy_from(s.day().as_insert_source()),
+    ///     t.hits().copy_from(s.hits().as_insert_source()),
+    ///   ])
+    ///   .on_conflict_do_update(
+    ///     ConflictTarget::columns([DailyTotal::fields().day()]),
+    ///     // Accumulate hits across batches; updated_at left untouched
+    ///     // unless you add t.updated_at().conflict_set_value(...).
+    ///     |t| vec![t.hits().conflict_set_expr(
+    ///       t.hits().as_conflict_expr() + t.hits().excluded().into_conflict_expr(),
+    ///     )],
+    ///   )
+    ///   .execute(&mut ctx)
+    ///   .await?;
     /// ```
     #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
     pub fn on_conflict_do_update<F, U>(mut self, target: ConflictTarget<T>, updates: F) -> Self
@@ -2060,13 +2060,13 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// # Example
     /// ```ignore
     /// .on_conflict_do_update_where(
-    ///     ConflictTarget::columns([Doc::fields().slug()]),
-    ///     |t| vec![
-    ///         t.body().conflict_set(t.body().excluded()),
-    ///         t.version().conflict_set(t.version().excluded()),
-    ///     ],
-    ///     // Only overwrite when the incoming version is greater.
-    ///     |t| t.version().excluded().conflict_gt(t.version()),
+    ///   ConflictTarget::columns([Doc::fields().slug()]),
+    ///   |t| vec![
+    ///     t.body().conflict_set(t.body().excluded()),
+    ///     t.version().conflict_set(t.version().excluded()),
+    ///   ],
+    ///   // Only overwrite when the incoming version is greater.
+    ///   |t| t.version().excluded().conflict_gt(t.version()),
     /// )
     /// ```
     #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
@@ -2108,15 +2108,15 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// would suddenly leak out as a live Postgres syntax error or
     /// SQLSTATE.
     /// - Empty column mapping (`columns.is_empty()`). Postgres would
-    ///   reject `INSERT INTO t () SELECT ...` as syntactically invalid;
-    ///   the framework pre-validates so the diagnostic carries the
-    ///   target table name rather than the bare SQLSTATE.
+    ///  reject `INSERT INTO t () SELECT ...` as syntactically invalid;
+    ///  the framework pre-validates so the diagnostic carries the
+    ///  target table name rather than the bare SQLSTATE.
     /// - Duplicate target column in the mapping (Postgres `42701`
-    ///   surfaced before the SQL leaves the framework).
+    ///  surfaced before the SQL leaves the framework).
     /// - Source queryset carries `prefetch_paths`,
-    ///   `select_related_paths`, a `cache_target`, a non-default
-    ///   `LockMode`, or a non-default `DistinctMode`. See the module
-    ///   docs for the rationale on each.
+    ///  `select_related_paths`, a `cache_target`, a non-default
+    ///  `LockMode`, or a non-default `DistinctMode`. See the module
+    ///  docs for the rationale on each.
     /// # Short-circuit case (no SQL issued)
     /// After validation passes, returns `Ok(0)` without touching the
     /// database when the source queryset is [`QuerySet::none`]-derived
@@ -2301,21 +2301,21 @@ impl<S: Model> QuerySet<S> {
     /// // infers both. The target model `T` is the one type parameter
     /// // the call site must name because neither argument carries it.
     /// CompletedOrder::objects()
-    ///     .filter(|f| f.completed_at().lt(cutoff))
-    ///     .insert_into::<OrderArchive, _, _>(|target, source| vec![
-    ///         target.original_id().copy_from(source.id().as_insert_source()),
-    ///         target.title().copy_from(source.title().as_insert_source()),
-    ///         target.completed_at().copy_from(source.completed_at().as_insert_source()),
-    ///     ])
-    ///     .execute(&mut ctx)
-    ///     .await?;
+    ///   .filter(|f| f.completed_at().lt(cutoff))
+    ///   .insert_into::<OrderArchive, _, _>(|target, source| vec![
+    ///     target.original_id().copy_from(source.id().as_insert_source()),
+    ///     target.title().copy_from(source.title().as_insert_source()),
+    ///     target.completed_at().copy_from(source.completed_at().as_insert_source()),
+    ///   ])
+    ///   .execute(&mut ctx)
+    ///   .await?;
     /// ```
     /// # See also
     /// - — the originating gap analysis.
     /// - [`QuerySet::update`] — the sibling bulk-write terminal for
-    ///   in-place row mutation.
+    ///  in-place row mutation.
     /// - [`Model::create`] / `Model::bulk_create` — the row-by-row
-    ///   and small-batch INSERT paths.
+    ///  and small-batch INSERT paths.
     #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
     pub fn insert_into<T, F, I>(self, f: F) -> InsertSelectStmt<S, T>
     where
@@ -2340,7 +2340,7 @@ mod tests {
     //! We reach through the `FieldRef` API to build column mappings so
     //! the `pub(crate)` fields on [`InsertSelectColumn`] never leak
     //! into the test module's observed surface (same pattern as the
-    //! Task 8 `FilterClause` tests and the bulk-update builder tests).
+    //! `FilterClause` tests and the bulk-update builder tests).
 
     use super::*;
     use crate::descriptor::{FieldSqlType, ModelDescriptor, PkType, field_descriptor};
@@ -2502,8 +2502,8 @@ mod tests {
         assert_eq!(mapping.target_column(), "view_count");
         // Source is a bare field reference — ExprNode::Field.
         assert!(matches!(
-            mapping.source(),
-            ExprNode::Field { column } if *column == "score"
+          mapping.source(),
+          ExprNode::Field { column } if *column == "score"
         ));
     }
 
@@ -2637,8 +2637,8 @@ mod tests {
         let col: FieldRef<Target, i32> = FieldRef::new("view_count");
         let excl: ExcludedRef<Target, i32> = col.excluded();
         assert!(matches!(
-            excl.node,
-            ExprNode::Excluded { column } if column == "view_count"
+          excl.node,
+          ExprNode::Excluded { column } if column == "view_count"
         ));
     }
 
@@ -2657,8 +2657,8 @@ mod tests {
             col.conflict_set::<Source>(FieldRef::<Target, i32>::new("view_count").excluded());
         assert_eq!(asgn.target_column(), "view_count");
         assert!(matches!(
-            asgn.value_node(),
-            ExprNode::Excluded { column } if *column == "view_count"
+          asgn.value_node(),
+          ExprNode::Excluded { column } if *column == "view_count"
         ));
     }
 
@@ -2680,8 +2680,8 @@ mod tests {
         let asgn: ConflictUpdate<Source, Target> = col.conflict_excluded::<Source>();
         assert_eq!(asgn.target_column(), "view_count");
         assert!(matches!(
-            asgn.value_node(),
-            ExprNode::Excluded { column } if *column == "view_count"
+          asgn.value_node(),
+          ExprNode::Excluded { column } if *column == "view_count"
         ));
     }
 
@@ -2726,8 +2726,8 @@ mod tests {
         let clause = stmt.on_conflict.as_ref().expect("clause attached");
         assert!(matches!(clause.action, ConflictAction::DoNothing));
         assert!(matches!(
-            clause.target,
-            Some(ConflictTarget::Columns { ref columns, .. }) if columns == &["view_count"]
+          clause.target,
+          Some(ConflictTarget::Columns { ref columns, .. }) if columns == &["view_count"]
         ));
     }
 
@@ -2811,8 +2811,8 @@ mod tests {
             });
         let err = stmt.validate_execute().unwrap_err();
         assert!(matches!(
-            err,
-            DjogiError::Validation(ref m) if m.contains("ghost_column") && m.contains("not a column")
+          err,
+          DjogiError::Validation(ref m) if m.contains("ghost_column") && m.contains("not a column")
         ));
     }
 
@@ -2859,9 +2859,9 @@ mod tests {
             );
         let err = stmt.validate_execute().unwrap_err();
         assert!(matches!(
-            err,
-            DjogiError::Validation(ref m)
-                if m.contains("ON CONSTRAINT") && m.contains("WHERE inference predicate")
+          err,
+          DjogiError::Validation(ref m)
+            if m.contains("ON CONSTRAINT") && m.contains("WHERE inference predicate")
         ));
     }
 
@@ -2880,8 +2880,8 @@ mod tests {
             );
         let err = stmt.validate_execute().unwrap_err();
         assert!(matches!(
-            err,
-            DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")
+          err,
+          DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")
         ));
     }
 
@@ -2947,7 +2947,7 @@ mod tests {
         let err = stmt.validate_execute().unwrap_err();
         assert!(
             matches!(err, DjogiError::Validation(ref m)
-                if m.contains("not a column") || m.contains("not a valid Postgres identifier")),
+        if m.contains("not a column") || m.contains("not a valid Postgres identifier")),
             "a non-identifier conflict column must be rejected, got: {err:?}"
         );
     }

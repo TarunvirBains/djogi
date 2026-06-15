@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # ORM Gap Analysis: Django 6.0 vs Djogi
 
@@ -29,13 +29,13 @@ This document maps every functional capability in Django's ORM, identifies what 
 
 | Django Method | What It Does | Djogi Recommendation |
 |---|---|---|
-| **`exclude()`** | Negative filter (`NOT WHERE`) | Add as `.exclude(\|f\| ...)` — same closure API as filter |
+| **`exclude()`** | Negative filter (`NOT WHERE`) | Add as `.exclude(\|f\|...)` — same closure API as filter |
 | **`annotate()`** | Add computed columns to results | Add — critical for real-world queries. See §2 Expressions. |
 | **`aggregate()`** | Terminal: return `{name: value}` dict for Sum/Avg/etc | Add — returns a struct, not a QuerySet |
 | **`values()` / `values_list()`** | Select specific columns, return tuples/maps instead of full models | Add as `.select(\|f\| (f.make, f.gas_fill))` returning typed tuples |
 | **`distinct()`** | `SELECT DISTINCT` (Postgres supports field-level DISTINCT ON) | Add — Postgres DISTINCT ON is a strength |
-| **`exists()`** | Optimized `SELECT 1 ... LIMIT 1` boolean check | Add |
-| **`update()`** (on QuerySet) | Bulk `UPDATE ... SET` without loading instances | Add — `.filter(...).update(\|f\| f.gas_fill.set(100))` |
+| **`exists()`** | Optimized `SELECT 1... LIMIT 1` boolean check | Add |
+| **`update()`** (on QuerySet) | Bulk `UPDATE... SET` without loading instances | Add — `.filter(...).update(\|f\| f.gas_fill.set(100))` |
 | **`delete()`** (on QuerySet) | Bulk `DELETE` without loading instances | Add — `.filter(...).delete()` |
 | **`select_related()`** | JOIN-based eager loading (single query, FK/O2O only) | Add — Djogi only has `prefetch()` (separate queries). JOIN-based is faster for FK chains. |
 | **`select_for_update()`** | `FOR UPDATE` row locking | Add — essential for concurrent writes. Support `nowait`, `skip_locked`, `of()`, `no_key` |
@@ -47,12 +47,12 @@ This document maps every functional capability in Django's ORM, identifies what 
 | **`only()` / `defer()`** | Partial field loading | Add — select only needed columns. Rust can enforce at type level (phantom types or builder return types) |
 | **`none()`** | Empty QuerySet that never queries | Add — useful for conditional composition |
 | **`reverse()`** | Reverse current ordering | Add |
-| **`union()` / `intersection()` / `difference()`** | Set operations (UNION / INTERSECT / EXCEPT) | Shipped — Phase 8.5 Cluster 4B (#101). `QuerySet::union` / `union_all` / `intersect` / `except` return a typed `SetOpQuerySet<T>` with `fetch_all` / `first` / `count` terminals and outer `ORDER BY` / `LIMIT` / `OFFSET`. |
+| **`union()` / `intersection()` / `difference()`** | Set operations (UNION / INTERSECT / EXCEPT) | Shipped — (#101). `QuerySet::union` / `union_all` / `intersect` / `except` return a typed `SetOpQuerySet<T>` with `fetch_all` / `first` / `count` terminals and outer `ORDER BY` / `LIMIT` / `OFFSET`. |
 | **`explain()`** | Return EXPLAIN output | Add — invaluable for debugging |
 | **`iterator()` / chunked evaluation** | Memory-efficient streaming without caching | Add — use Postgres cursors via `tokio-postgres` `query_raw()` stream |
 | **`earliest()` / `latest()`** | Get by ordering field | Add — convenience over `.order_by(...).first()` |
 | **`contains(obj)`** | Check if instance is in QuerySet | Add |
-| **`using()`** | Select database | Answered by `QuerySet::with_read_mode(ReadMode::...)` in Phase 12 — see [Distributed Topology & Residency](./topology.md). Djogi declares the hint; the pool-selection strategy configured by the application honors it. |
+| **`using()`** | Select database | Answered by `QuerySet::with_read_mode(ReadMode::...)` in 2 — see [Distributed Topology & Residency](./topology.md). Djogi declares the hint; the pool-selection strategy configured by the application honors it. |
 
 ### Where Djogi Can Do Better
 
@@ -121,9 +121,9 @@ Django's expression system is massive (~134 classes). The core abstraction: expr
 ```rust
 // Annotate each owner with their vehicle count
 Owner::objects()
-    .annotate("vehicle_count", Count(|f| f.vehicles))  // reverse relation
-    .filter(|f| f.vehicle_count.gte(5))
-    .fetch_all(&mut ctx).await?;
+.annotate("vehicle_count", Count(|f| f.vehicles)) // reverse relation
+.filter(|f| f.vehicle_count.gte(5))
+.fetch_all(&mut ctx).await?;
 ```
 
 This is the single biggest functional gap in the current Djogi spec. Real applications need aggregation constantly.
@@ -265,9 +265,9 @@ This is the single biggest functional gap in the current Djogi spec. Real applic
 
 ---
 
-## 9. Admin Renderer — Planned Maahi Phase 10 Resolution
+## 9. Admin Renderer — Planned Maahi 0 Resolution
 
-This section previously argued for replacing Dioxus with HTMX + Askama for the admin renderer. The planned Phase 10 decision is Maahi (Djogi's admin console) as a Dioxus full-stack application. Pure-Rust component tree, type-safe server functions, desktop-renderer reach (`dioxus-desktop`), and richer interactivity ergonomics outweighed the bundle-size advantages of HTMX + Askama for djogi's adopter profile. The intended carve-out is a future `djogi-maahi` workspace crate behind an `admin` feature flag; that crate and feature are not shipped in v0.1.0-alpha.
+This section previously argued for replacing Dioxus with HTMX + Askama for the admin renderer. The planned 0 decision is Maahi (Djogi's admin console) as a Dioxus full-stack application. Pure-Rust component tree, type-safe server functions, desktop-renderer reach (`dioxus-desktop`), and richer interactivity ergonomics outweighed the bundle-size advantages of HTMX + Askama for djogi's adopter profile. The intended carve-out is a future `djogi-maahi` workspace crate behind an `admin` feature flag; that crate and feature are not shipped in v0.1.0-alpha.
 
 See [`docs/spec/maahi/`](./maahi/index.md) for the authoritative Maahi spec. A `djogi-light-admin` (HTMX + Askama only, no WASM toolchain) is parked in [`docs/roadmap/future-work.md`](../roadmap/future-work.md) if real demand surfaces.
 
@@ -291,24 +291,24 @@ See [`docs/spec/maahi/`](./maahi/index.md) for the authoritative Maahi spec. A `
 
 ```rust
 impl ModelHooks for Vehicle {
-    fn before_create(&mut self, pool: &PgPool) -> Result<()> {
-        self.make = self.make.trim().to_uppercase();
-        Ok(())
-    }
+ fn before_create(&mut self, pool: &PgPool) -> Result<()> {
+ self.make = self.make.trim().to_uppercase();
+ Ok(())
+ }
 
-    fn after_save(&self, pool: &PgPool, created: bool) -> Result<()> {
-        if created {
-            log::info!("New vehicle: {}", self.id);
-        }
-        Ok(())
-    }
+ fn after_save(&self, pool: &PgPool, created: bool) -> Result<()> {
+ if created {
+  log::info!("New vehicle: {}", self.id);
+ }
+ Ok(())
+ }
 
-    fn before_delete(&self, pool: &PgPool) -> Result<()> {
-        if self.active {
-            return Err(DjogiError::validation("Cannot delete active vehicle"));
-        }
-        Ok(())
-    }
+ fn before_delete(&self, pool: &PgPool) -> Result<()> {
+ if self.active {
+  return Err(DjogiError::validation("Cannot delete active vehicle"));
+ }
+ Ok(())
+ }
 }
 ```
 
@@ -350,7 +350,7 @@ Benefits:
 
 - [ ] Window functions (Rank, RowNumber, Lag, Lead, etc.)
 - [ ] Database functions (Coalesce, Greatest, Least, NullIf, Lower, Upper, Concat, Now)
-- [x] `union()` / `intersection()` / `difference()` — set operations (Phase 8.5 Cluster 4B / #101 — shipped as `QuerySet::union` / `union_all` / `intersect` / `except` returning `SetOpQuerySet<T>`)
+- [x] `union()` / `intersection()` / `difference()` — set operations ( / #101 — shipped as `QuerySet::union` / `union_all` / `intersect` / `except` returning `SetOpQuerySet<T>`)
 - [ ] `explain()` — query plan output
 - [ ] `in_bulk()` — batch PK lookup
 - [ ] `only()` / `defer()` — partial field loading (compile-time safe)
@@ -362,7 +362,7 @@ Benefits:
 - [ ] `GeneratedField` — computed columns
 - [ ] `iterator()` / streaming — memory-efficient large result sets
 - [ ] Trait-based model hooks (replace Django signals)
-- [ ] Admin console: Maahi (Dioxus full-stack via `djogi-maahi`) — see Phase 10
+- [ ] Admin console: Maahi (Dioxus full-stack via `djogi-maahi`) — see 0
 
 ### Tier 3 — Nice to Have
 
@@ -426,7 +426,7 @@ These are things Djogi can do because it's Postgres-only:
 |---|---|
 | **Transactional DDL** | Every migration runs in a transaction. Failure = clean rollback. Django can't guarantee this on MySQL. |
 | **`CREATE INDEX CONCURRENTLY`** | Non-blocking index creation. Django supports it via `AddIndex(concurrently=True)` but it's a special case. Djogi should make it the default or at least trivially opt-in. |
-| **`ALTER TABLE ... ADD COLUMN ... DEFAULT` (fast)** | Postgres 11+ adds NOT NULL columns with defaults without rewriting the table. Djogi should leverage this. |
+| **`ALTER TABLE... ADD COLUMN... DEFAULT` (fast)** | Postgres 11+ adds NOT NULL columns with defaults without rewriting the table. Djogi should leverage this. |
 | **Advisory locks** | Already in Djogi spec for preventing concurrent migration runners. |
 | **`IF NOT EXISTS` / `IF EXISTS`** | Idempotent DDL. Useful for `fake_initial` equivalent. |
 | **`pg_dump` / `pg_restore`** | Schema snapshots can use actual Postgres introspection instead of a JSON file. |
@@ -448,12 +448,12 @@ WHERE slug IS NULL;
 // migrations/0005_backfill_slugs.rhai
 // Runs in the shell environment with full model API
 let vehicles = Vehicle::objects()
-    .filter_struct(VehicleFilter::new().slug(IsNull()))
-    .fetch_all();
+.filter_struct(VehicleFilter::new().slug(IsNull()))
+.fetch_all();
 
 for car in vehicles {
-    car.slug = car.make.to_lower() + "-" + car.model_name.to_lower().replace(" ", "-");
-    car.save();
+ car.slug = car.make.to_lower() + "-" + car.model_name.to_lower().replace(" ", "-");
+ car.save();
 }
 ```
 
@@ -463,7 +463,7 @@ for car in vehicles {
 
 ## 13. Admin Renderer — Same Planned Resolution as §9
 
-Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin renderer. The planned Phase 10 direction is Dioxus full-stack — see §9 above and the Maahi spec at [`docs/spec/maahi/`](./maahi/index.md). The intended carve-out is a future `djogi-maahi` crate; the optional `admin` dependency surface is not shipped in v0.1.0-alpha.
+Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin renderer. The planned 0 direction is Dioxus full-stack — see §9 above and the Maahi spec at [`docs/spec/maahi/`](./maahi/index.md). The intended carve-out is a future `djogi-maahi` crate; the optional `admin` dependency surface is not shipped in v0.1.0-alpha.
 
 ---
 
@@ -500,7 +500,7 @@ Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin rende
 
 - [ ] Window functions (Rank, RowNumber, Lag, Lead, etc.)
 - [ ] Database functions (Coalesce, Greatest, Least, NullIf, Lower, Upper, Concat, Now)
-- [x] `union()` / `intersection()` / `difference()` — set operations (Phase 8.5 Cluster 4B / #101 — shipped as `QuerySet::union` / `union_all` / `intersect` / `except` returning `SetOpQuerySet<T>`)
+- [x] `union()` / `intersection()` / `difference()` — set operations ( / #101 — shipped as `QuerySet::union` / `union_all` / `intersect` / `except` returning `SetOpQuerySet<T>`)
 - [ ] `explain()` — query plan output
 - [ ] `in_bulk()` — batch PK lookup
 - [ ] `only()` / `defer()` — partial field loading (compile-time safe)
@@ -511,7 +511,7 @@ Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin rende
 - [ ] `DecimalField` / `UUIDField` (non-PK)
 - [ ] `GeneratedField` — computed columns
 - [ ] `iterator()` / streaming — memory-efficient large result sets
-- [ ] Admin console: Maahi (Dioxus full-stack via `djogi-maahi`) — see Phase 10
+- [ ] Admin console: Maahi (Dioxus full-stack via `djogi-maahi`) — see 0
 - [ ] Migration: `CREATE INDEX CONCURRENTLY` support
 - [ ] Migration: merge migration support
 - [ ] Migration: `djogi migrations show` (display SQL)
@@ -543,11 +543,11 @@ In Djogi, because `#[derive(Model)]` has full access to the AST at compile time,
 ```rust
 #[derive(Model)]
 pub struct Vehicle {
-    pub base_price: i32,
-    pub tax_rate: f64,
+ pub base_price: i32,
+ pub tax_rate: f64,
 
-    #[computed(sql = "base_price * (1.0 + tax_rate)")]
-    pub total_price: f64,  // getter in Rust, queryable in SQL
+ #[computed(sql = "base_price * (1.0 + tax_rate)")]
+ pub total_price: f64, // getter in Rust, queryable in SQL
 }
 
 // Works as a Rust getter
@@ -555,9 +555,9 @@ let price = car.total_price;
 
 // ALSO works in queries — the macro injects the SQL expression
 Vehicle::objects()
-    .filter(|f| f.total_price.gte(50_000))
-    .order_by(|f| f.total_price.desc())
-    .fetch_all(&mut ctx).await?;
+.filter(|f| f.total_price.gte(50_000))
+.order_by(|f| f.total_price.desc())
+.fetch_all(&mut ctx).await?;
 ```
 
 The proc macro generates:
@@ -600,14 +600,14 @@ Everything Django hides in `contrib.postgres` is first-class in Djogi:
 
 ### Bulk Upsert (`bulk_create` with `update_conflicts`)
 
-Django 4.1+ supports upsert via `bulk_create(update_conflicts=True, update_fields=[...], unique_fields=[...])`. This maps to Postgres `INSERT ... ON CONFLICT (unique_fields) DO UPDATE SET ...`.
+Django 4.1+ supports upsert via `bulk_create(update_conflicts=True, update_fields=[...], unique_fields=[...])`. This maps to Postgres `INSERT... ON CONFLICT (unique_fields) DO UPDATE SET...`.
 
 Djogi must support this as a first-class pattern:
 
 ```rust
 Vehicle::bulk_upsert(&mut ctx, vehicles, BulkUpsert {
-    conflict_fields: |f| (f.vin,),
-    update_fields: |f| (f.gas_fill, f.active),
+ conflict_fields: |f| (f.vin,),
+ update_fields: |f| (f.gas_fill, f.active),
 }).await?;
 ```
 
@@ -632,7 +632,7 @@ Promote from Tier 3 to **Tier 2**. Enterprise use cases:
 Implement via derive macros that inject fields:
 ```rust
 #[derive(Auditable, SoftDeletable, Model)]
-pub struct Vehicle { ... }
+pub struct Vehicle {... }
 ```
 
 ### Proxy Models

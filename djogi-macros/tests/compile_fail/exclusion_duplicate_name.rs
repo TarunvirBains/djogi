@@ -8,24 +8,24 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "bookings",
-    no_default,
-    exclusion(
-        name = "no_overlap",
-        using = "gist",
-        elements = ["room_id WITH =", "period WITH &&"],
-    ),
-    exclusion(
-        name = "no_overlap",
-        using = "btree",
-        elements = ["tenant_id WITH ="],
-    ),
+ table = "bookings",
+ no_default,
+ exclusion(
+  name = "no_overlap",
+  using = "gist",
+  elements = ["room_id WITH =", "period WITH &&"],
+ ),
+ exclusion(
+  name = "no_overlap",
+  using = "btree",
+  elements = ["tenant_id WITH ="],
+ ),
 )]
 #[derive(Debug, Clone)]
 pub struct Booking {
-    pub room_id: i64,
-    pub period: String,
-    pub tenant_id: i64,
+ pub room_id: i64,
+ pub period: String,
+ pub tenant_id: i64,
 }
 
 fn main() {}

@@ -3,15 +3,15 @@
 // What this file pins:
 //
 // 1. After `.cache(&punnu).fetch_all(&mut ctx).await`, the bound
-//    `sassi::Punnu` contains every fetched row — `punnu.len() ==
-//    fetched.len()`. The post-fetch hook fires once per row in the
-//    materialised `Vec<T>`.
+//  `sassi::Punnu` contains every fetched row — `punnu.len() ==
+//  fetched.len()`. The post-fetch hook fires once per row in the
+//  materialised `Vec<T>`.
 // 2. `.cache(&punnu).first(&mut ctx).await` inserts only the row
-//    actually returned to the caller — exactly one entry lands in
-//    the pool when `Some(_)` came back, zero on `None`.
+//  actually returned to the caller — exactly one entry lands in
+//  the pool when `Some(_)` came back, zero on `None`.
 // 3. The cache modifier is **purely additive** at the SQL level:
-//    a queryset with `.cache(&p)` renders the same SELECT SQL as the
-//    same chain without `.cache(&p)`.
+//  a queryset with `.cache(&p)` renders the same SELECT SQL as the
+//  same chain without `.cache(&p)`.
 //
 // # Fixture strategy
 //
@@ -97,7 +97,7 @@ async fn cache_modifier_populates_punnu_on_fetch_all(mut ctx: djogi::DjogiContex
         pool.len(),
         rows.len(),
         ".cache(&p).fetch_all(...) must insert each fetched row into the bound Punnu — \
-         one Punnu entry per row in the returned Vec<T>",
+     one Punnu entry per row in the returned Vec<T>",
     );
 }
 
@@ -136,7 +136,7 @@ async fn cache_modifier_first_inserts_only_returned_row(mut ctx: djogi::DjogiCon
         pool.len(),
         1,
         ".cache(&p).first(...) must insert exactly one row into the bound Punnu — \
-         the single row returned to the caller, not every row that matched the filter",
+     the single row returned to the caller, not every row that matched the filter",
     );
 }
 
@@ -178,8 +178,8 @@ async fn cache_modifier_does_not_change_sql_emit(mut ctx: djogi::DjogiContext) {
     assert_eq!(
         plain_sql, cached_sql,
         ".cache(&p) must be purely additive — the SELECT SQL must be byte-identical \
-         with vs without .cache(...). \
-         A diff here means the cache modifier accidentally mutated SQL-shaping state.",
+     with vs without .cache(...). \
+     A diff here means the cache modifier accidentally mutated SQL-shaping state.",
     );
 
     // Sanity: the rendered SQL is non-trivial and includes the structural
@@ -197,7 +197,7 @@ async fn cache_modifier_does_not_change_sql_emit(mut ctx: djogi::DjogiContext) {
         pool.len(),
         0,
         "constructing a `.cache(&p)` queryset must not insert anything; the hook only \
-         fires from a terminal method",
+     fires from a terminal method",
     );
 
     // Suppress unused-variable warnings — `ctx` is part of the

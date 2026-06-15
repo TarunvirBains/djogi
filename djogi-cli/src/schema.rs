@@ -6,28 +6,28 @@
 //! # JSON shape (schema_version = 1)
 //! ```json
 //! {
-//!   "schema_version": 1,
-//!   "models": [
-//!     {
-//!       "type_name": "Vehicle",
-//!       "table_name": "vehicles",
-//!       "app": "main",
-//!       "pk_type": "HeerId",
-//!       "fields": [
-//!         { "name": "id", "sql_type": "BIGINT", "nullable": false, "unique": false, "indexed": false },
-//!         ...
-//!       ],
-//!       "relations": [...]
-//!     }
-//!   ]
+//! "schema_version": 1,
+//! "models": [
+//!  {
+//!  "type_name": "Vehicle",
+//!  "table_name": "vehicles",
+//!  "app": "main",
+//!  "pk_type": "HeerId",
+//!  "fields": [
+//!   { "name": "id", "sql_type": "BIGINT", "nullable": false, "unique": false, "indexed": false },
+//!  ...
+//!  ],
+//!  "relations": [...]
+//!  }
+//! ]
 //! }
 //! ```
 //! # Determinism
 //! - `models` is sorted by `(app, type_name)`, both ascending.
 //! - Within each model, `fields` follows declaration order.
 //! - `relations` is sorted alphabetically by source-column name.
-//!   Two consecutive runs against the same compiled binary produce
-//!   byte-equal output, suitable for `diff` in CI.
+//! Two consecutive runs against the same compiled binary produce
+//! byte-equal output, suitable for `diff` in CI.
 
 use djogi::descriptor::{FieldDescriptor, ModelDescriptor, PkType};
 use djogi::relation::OnDelete;
@@ -206,7 +206,7 @@ fn project_relation(f: &FieldDescriptor) -> Option<RelationEntry> {
 }
 
 /// Stable per-variant label for `PkType`. Avoids `Debug` formatting so
-/// `Composite([...])` and `Custom(CustomPrimaryKeyKind { ... })` don't
+/// `Composite([...])` and `Custom(CustomPrimaryKeyKind {... })` don't
 /// leak Rust-internal shapes to JSON consumers.
 fn pk_type_label(pk: PkType) -> String {
     match pk {

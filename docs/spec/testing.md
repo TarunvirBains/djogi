@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Testing Conventions
 
@@ -17,10 +17,10 @@ prefer the typed surface described below.
 Every integration test under `tests/integration/` must build and
 inspect database state through djogi's typed surface:
 
-- `#[djogi::djogi_test(sync_models = [Model, ...])]` — provisions the
-  per-test schema by routing through `djogi::testing::sync_models`,
-  which projects each descriptor through `pk_default_sql` before
-  dispatching DDL. The projection layer is always in the call chain.
+- `#[djogi::djogi_test(sync_models = [Model,...])]` — provisions the
+ per-test schema by routing through `djogi::testing::sync_models`,
+ which projects each descriptor through `pk_default_sql` before
+ dispatching DDL. The projection layer is always in the call chain.
 - `Model::create` / `Model::save` / `Model::delete` — all row writes.
 - `Model::objects()` and the `QuerySet` — all row reads.
 - `djogi::transaction::atomic` — transaction management.
@@ -41,13 +41,13 @@ itself inserting. This means the following seed shape is broken:
 
 ```sql
 -- ❌ BROKEN — the subquery snapshot does not include the rows being
---    inserted by this same statement.  With NOT NULL FK: fails with a
---    foreign-key-violation error.  With nullable FK: silently inserts
---    NULL for every parent_id, degrading tree queries and benchmarks
---    without raising an error.
+-- inserted by this same statement. With NOT NULL FK: fails with a
+-- foreign-key-violation error. With nullable FK: silently inserts
+-- NULL for every parent_id, degrading tree queries and benchmarks
+-- without raising an error.
 INSERT INTO category (name, parent_id)
 SELECT 'child_' || g,
-       (SELECT id FROM category WHERE name = 'root')
+ (SELECT id FROM category WHERE name = 'root')
 FROM generate_series(1, 50) AS g;
 ```
 
@@ -88,7 +88,7 @@ UPDATE category AS child
 SET parent_id = root.id
 FROM category AS root
 WHERE root.name = 'root'
-  AND child.name LIKE 'child_%';
+ AND child.name LIKE 'child_%';
 ```
 
 Because the UPDATE runs as a separate statement, Postgres takes a fresh
@@ -101,11 +101,11 @@ Apply this convention whenever a seed or fixture inserts rows into a
 table that also references itself (directly or through a cycle):
 
 - Self-referencing FK columns (`parent_id`, `manager_id`, `reply_to_id`,
-  `predecessor_id`, …).
+ `predecessor_id`, …).
 - Closure / adjacency-list tables where the same row acts as both child
-  and parent depending on depth.
+ and parent depending on depth.
 - SQL bench fixtures that need a connected graph to measure traversal
-  or aggregate behaviour.
+ or aggregate behaviour.
 
 The same principle applies to **cross-table cycles** (`table_a`
 references `table_b` which references `table_a`): insert both sides
@@ -121,19 +121,19 @@ the FK argument:
 ```rust
 // ✓ Correct: the root row is written before the child is created.
 let root = Category::create(&mut ctx, Category {
-    id: <HeerId as PrimaryKey>::sentinel(),
-    created_at: DateTime::UNIX_EPOCH,
-    updated_at: DateTime::UNIX_EPOCH,
-    name: "root".into(),
-    parent_id: None,
+ id: <HeerId as PrimaryKey>::sentinel(),
+ created_at: DateTime::UNIX_EPOCH,
+ updated_at: DateTime::UNIX_EPOCH,
+ name: "root".into(),
+ parent_id: None,
 }).await?;
 
 let child = Category::create(&mut ctx, Category {
-    id: <HeerId as PrimaryKey>::sentinel(),
-    created_at: DateTime::UNIX_EPOCH,
-    updated_at: DateTime::UNIX_EPOCH,
-    name: "child_1".into(),
-    parent_id: Some(ForeignKey::new(root.id)), // root.id is already visible
+ id: <HeerId as PrimaryKey>::sentinel(),
+ created_at: DateTime::UNIX_EPOCH,
+ updated_at: DateTime::UNIX_EPOCH,
+ name: "child_1".into(),
+ parent_id: Some(ForeignKey::new(root.id)), // root.id is already visible
 }).await?;
 ```
 

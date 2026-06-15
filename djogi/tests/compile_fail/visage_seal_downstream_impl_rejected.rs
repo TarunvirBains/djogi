@@ -1,8 +1,8 @@
-//! Phase 8.5 #231 — `DjogiVisage` is sealed against arbitrary downstream
+//! #231 — `DjogiVisage` is sealed against arbitrary downstream
 //! impls via the metadata-only `djogi::__private::DjogiVisageSealed`
 //! seal. A plain model cannot satisfy the supertrait without reaching
 //! into `__private` (which is the convention-only boundary), so a
-//! hand-rolled `impl DjogiVisage for MyModel { type Model = Self; ... }`
+//! hand-rolled `impl DjogiVisage for MyModel { type Model = Self;... }`
 //! fails to compile.
 //!
 //! # What this fixture proves and does not prove
@@ -30,7 +30,7 @@ use djogi::prelude::*;
 #[model(table = "visage_seal_downstream_impl_rejected_plain", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlainModel {
-    pub name: String,
+ pub name: String,
 }
 
 // SHOULD FAIL — `PlainModel` does not impl `DjogiVisageSealed` (no
@@ -39,11 +39,11 @@ pub struct PlainModel {
 // `PlainModelSelfView`, `PlainModelAdmin`, `PlainModelExport` — not for
 // the source model itself).
 impl DjogiVisage for PlainModel {
-    type Model = Self;
-    const SCOPE: &'static str = "fake";
-    const COLUMNS: &'static [&'static str] = &[];
-    const PROJECTIONS: &'static [djogi::__private::ProjectionEntry] = &[];
-    const PROJECTION_LIST: &'static str = "";
+ type Model = Self;
+ const SCOPE: &'static str = "fake";
+ const COLUMNS: &'static [&'static str] = &[];
+ const PROJECTIONS: &'static [djogi::__private::ProjectionEntry] = &[];
+ const PROJECTION_LIST: &'static str = "";
 }
 
 fn main() {}

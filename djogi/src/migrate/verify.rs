@@ -4,38 +4,38 @@
 //! # Scope
 //! Verify answers three questions:
 //! 1. **Ledger ↔ catalog.** Every migration the ledger says is
-//!    `applied` should show up in the live catalog (its tables,
-//!    columns, indexes, foreign keys exist).
+//! `applied` should show up in the live catalog (its tables,
+//! columns, indexes, foreign keys exist).
 //! 2. **Snapshot ↔ catalog.** The current `schema_snapshot.json` for
-//!    the bucket should match the live catalog. Any drift surfaces as
-//!    a `D6xx` diagnostic.
+//! the bucket should match the live catalog. Any drift surfaces as
+//! a `D6xx` diagnostic.
 //! 3. **Snapshot ↔ ledger.** The most recent applied ledger row
-//!    should carry a checksum that re-validates against the snapshot's
-//!    declared format version. Format errors surface as `D6xx`.
-//!    Verify never mutates anything — it is strictly read-only against
-//!    the live database and the snapshot file. A missing ledger
-//!    surfaces as a typed `D621` Error diagnostic instead of
-//!    bootstrapping the table. Mutations belong to [`super::repair`].
+//! should carry a checksum that re-validates against the snapshot's
+//! declared format version. Format errors surface as `D6xx`.
+//! Verify never mutates anything — it is strictly read-only against
+//! the live database and the snapshot file. A missing ledger
+//! surfaces as a typed `D621` Error diagnostic instead of
+//! bootstrapping the table. Mutations belong to [`super::repair`].
 //! # Scope of the current verify implementation
 //! Verify reads the live catalog into a *partial* [`AppliedSchema`]
 //! containing only what the verify path needs to compare:
 //! - **Tables.** Name + column list (name, rendered SQL type,
-//!   nullability, default expression).
+//! nullability, default expression).
 //! - **Primary keys.** Column list — diffed. Kind detection stays
-//!   deferred.
+//! deferred.
 //! - **Indexes.** Name + table + columns (in order) + uniqueness +
-//!   method — diffed. `INCLUDE` and partial-predicate surface as
-//!   `Info` diagnostics.
+//! method — diffed. `INCLUDE` and partial-predicate surface as
+//! `Info` diagnostics.
 //! - **Foreign keys.** Source `(table, column)` + target
-//!   `(table, column)` + cascade + deferrability — diffed as D609.
-//!   Other fields ([`crate::migrate::schema::TableSchema::fts`],
-//!   [`crate::migrate::schema::TableSchema::partition`],
-//!   [`crate::migrate::schema::TableSchema::tenant_key`], enum types)
-//!   surface as advisory `Info` diagnostics that can be tightened to
-//!   `Error` once the live-DB projection grows. The deferral is
-//!   intentional: the v3 plan's stop condition explicitly says
-//!   ">500 LOC of catalog SQL is a sign you should narrow scope
-//!   and surface it for review".
+//! `(table, column)` + cascade + deferrability — diffed as D609.
+//! Other fields ([`crate::migrate::schema::TableSchema::fts`],
+//! [`crate::migrate::schema::TableSchema::partition`],
+//! [`crate::migrate::schema::TableSchema::tenant_key`], enum types)
+//! surface as advisory `Info` diagnostics that can be tightened to
+//! `Error` once the live-DB projection grows. The deferral is
+//! intentional: the v3 plan's stop condition explicitly says
+//! ">500 LOC of catalog SQL is a sign you should narrow scope
+//! and surface it for review".
 //! # Diagnostic codes (D6xx range)
 //! Verify's diagnostic codes live in the `D6xx` namespace (D025 is
 //! the guard module, D004 is build-rs folder drift). Each code has a stable
@@ -43,8 +43,10 @@
 //! reviewer ding. Current assignments:
 //! | Code | Severity | Meaning |
 //! |------|----------|---------|
-//! | D601 | Error | Snapshot table missing from live DB. |
-//! | D602 | Error | Live table not present in snapshot. |
+//! | D601 | Error | Snapshot table missing from live DB, including
+//! `{table}_outbox` for `has_outbox` models. |
+//! | D602 | Error | Live table not present in snapshot; this also applies
+//! to expected ancillary `{table}_outbox` tables. |
 //! | D603 | Error | Snapshot column missing from live DB. |
 //! | D604 | Error | Live column not present in snapshot. |
 //! | D605 | Error | Nullability drift between snapshot and live. |
@@ -56,7 +58,7 @@
 //! | D611 | Warning | Live index not present in snapshot. |
 //! | D612 | Error | Index columns differ (shape mismatch). |
 //! | D613 | Error | Index uniqueness differs. |
-//! | D614 | Warning | Index method (btree / gin / ...) differs. |
+//! | D614 | Warning | Index method (btree / gin /...) differs. |
 //! | D615 | Error | Index is on the wrong table. |
 //! | D621 | Error | Ledger table is missing — run apply / baseline first. |
 //! | D622 | Warning | Out-of-order migration applied — `out_of_order_flag = TRUE`. Strict mode upgrades to Error. |
@@ -100,7 +102,7 @@
 //! not surface through `information_schema` (e.g. `pg_attribute.atttypmod`
 //! for `VARCHAR(N)` length).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use crate::context::DjogiContext;
@@ -342,7 +344,7 @@ pub async fn verify_with_policy(
         // D699: ledger reports applied migrations but the live DB has
         // zero user tables — the schema was likely dropped out-of-band.
         // (This used to share `D610` with the index-missing diagnostic;
-        // A-2 split them so each code carries one stable meaning.)
+        // split them so each code carries one stable meaning.)
         let live_for_ledger_check = project_live_schema(ctx).await?;
         if !ledger_rows.is_empty()
             && live_for_ledger_check.models.is_empty()
@@ -353,8 +355,8 @@ pub async fn verify_with_policy(
                 severity: VerifySeverity::Error,
                 message: format!(
                     "ledger reports {applied_count} applied migration(s) but the \
-                     live database contains zero tables; the schema may have been \
-                     dropped out-of-band",
+      live database contains zero tables; the schema may have been \
+      dropped out-of-band",
                 ),
                 location: None,
             });
@@ -373,8 +375,8 @@ pub async fn verify_with_policy(
             code: "D621".to_string(),
             severity: VerifySeverity::Error,
             message: "ledger table `djogi_schema_migrations` not found — run \
-                      `djogi migrations apply` or `djogi migrations baseline` \
-                      first; verify is read-only and will not bootstrap the ledger"
+      `djogi migrations apply` or `djogi migrations baseline` \
+      first; verify is read-only and will not bootstrap the ledger"
                 .to_string(),
             location: None,
         });
@@ -417,23 +419,23 @@ pub async fn verify_with_policy(
 /// already routed to the correct database for `bucket.database`.
 /// # Parameters
 /// - `emit_ledger_diagnostics` — the caller passes `true` for the first
-///   bucket of each database target, so the ledger-lifecycle diagnostics
-///   (`D621` ledger-missing, `D622` out-of-order, `D699` schema-dropped)
-///   are emitted once per database rather than once per app bucket. The
-///   `djogi_schema_migrations` ledger is shared per database (every app's
-///   migrations land in the same ledger), so emitting these per app would
-///   duplicate the same finding N times. When `false`, the ledger is still
-///   read to populate the report's summary counts
-///   (`applied_count` / `unfinished_count` / `latest_applied_version`),
-///   but no ledger-lifecycle diagnostic is pushed.
+/// bucket of each database target, so the ledger-lifecycle diagnostics
+/// (`D621` ledger-missing, `D622` out-of-order, `D699` schema-dropped)
+/// are emitted once per database rather than once per app bucket. The
+/// `djogi_schema_migrations` ledger is shared per database (every app's
+/// migrations land in the same ledger), so emitting these per app would
+/// duplicate the same finding N times. When `false`, the ledger is still
+/// read to populate the report's summary counts
+/// (`applied_count` / `unfinished_count` / `latest_applied_version`),
+/// but no ledger-lifecycle diagnostic is pushed.
 /// - `database_has_models` — `true` if any inventory bucket for this
-///   database has non-empty models. Gates `D699`: an orphan-only database
-///   (snapshot on disk but no registered models) has no live tables to
-///   miss, so `D601` ("snapshot table missing") is the actionable signal
-///   instead and `D699` would be redundant noise. This replaces
-///   [`verify_with_policy`]'s `!snapshot.models.is_empty()` gate, which is
-///   per-bucket; the database-wide flag is the correct scope because the
-///   ledger and the "zero live tables" condition are both database-wide.
+/// database has non-empty models. Gates `D699`: an orphan-only database
+/// (snapshot on disk but no registered models) has no live tables to
+/// miss, so `D601` ("snapshot table missing") is the actionable signal
+/// instead and `D699` would be redundant noise. This replaces
+/// [`verify_with_policy`]'s `!snapshot.models.is_empty()` gate, which is
+/// per-bucket; the database-wide flag is the correct scope because the
+/// ledger and the "zero live tables" condition are both database-wide.
 /// # Errors
 /// Returns [`VerifyRunError`] if any catalog or ledger read fails. A
 /// schema mismatch is *not* an error — it surfaces as an `Error`-severity
@@ -493,8 +495,8 @@ pub async fn verify_bucket(
                     severity: VerifySeverity::Error,
                     message: format!(
                         "ledger reports {applied_count} applied migration(s) but the \
-                         live database contains zero tables; the schema may have been \
-                         dropped out-of-band",
+       live database contains zero tables; the schema may have been \
+       dropped out-of-band",
                     ),
                     location: None,
                 });
@@ -512,8 +514,8 @@ pub async fn verify_bucket(
                 code: "D621".to_string(),
                 severity: VerifySeverity::Error,
                 message: "ledger table `djogi_schema_migrations` not found — run \
-                          `djogi migrations apply` or `djogi migrations baseline` \
-                          first; verify is read-only and will not bootstrap the ledger"
+       `djogi migrations apply` or `djogi migrations baseline` \
+       first; verify is read-only and will not bootstrap the ledger"
                     .to_string(),
                 location: None,
             });
@@ -591,8 +593,8 @@ fn emit_out_of_order_diagnostics(
         let message = match conflicting_peer {
             Some(peer) => format!(
                 "out-of-order migration `{version}` (app={app}) was applied \
-                 below peer `{peer}` (which carries the same or higher \
-                 version)",
+     below peer `{peer}` (which carries the same or higher \
+     version)",
                 version = row.version,
                 app = if row.app_label.is_empty() {
                     "_global_"
@@ -603,9 +605,9 @@ fn emit_out_of_order_diagnostics(
             ),
             None => format!(
                 "out-of-order migration `{version}` (app={app}) was \
-                 recorded with out_of_order_flag = TRUE but no \
-                 higher-version peer is currently in the ledger; the \
-                 peer may have been rolled back",
+     recorded with out_of_order_flag = TRUE but no \
+     higher-version peer is currently in the ledger; the \
+     peer may have been rolled back",
                 version = row.version,
                 app = if row.app_label.is_empty() {
                     "_global_"
@@ -630,12 +632,12 @@ async fn ledger_table_exists(ctx: &mut DjogiContext) -> Result<bool, VerifyRunEr
     let row = ctx
         .query_one(
             "SELECT EXISTS ( \
-                 SELECT 1 FROM pg_class c \
-                 JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = 'public' \
-                   AND c.relname = 'djogi_schema_migrations' \
-                   AND c.relkind = 'r' \
-             )",
+     SELECT 1 FROM pg_class c \
+     JOIN pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = 'public' \
+     AND c.relname = 'djogi_schema_migrations' \
+     AND c.relkind = 'r' \
+    )",
             &[],
         )
         .await
@@ -686,8 +688,8 @@ async fn project_live_schema(ctx: &mut DjogiContext) -> Result<AppliedSchema, Ve
 /// columns. Excludes framework-internal bookkeeping tables:
 /// - `djogi_schema_migrations` — the ledger.
 /// - HeeRanjID artifact tables — see [`HEERANJID_ARTIFACT_TABLES`].
-///   Adopter-owned tables that legitimately start with `heer_` are
-///   preserved.
+/// Adopter-owned tables that legitimately start with `heer_` are
+/// preserved.
 async fn read_tables(
     ctx: &mut DjogiContext,
     foreign_keys: &[LiveForeignKey],
@@ -702,12 +704,12 @@ async fn read_tables(
     let table_rows = ctx
         .query_all(
             "SELECT c.relname::text \
-             FROM pg_class c \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE c.relkind = 'r' \
-               AND n.nspname = 'public' \
-               AND c.relname <> 'djogi_schema_migrations' \
-             ORDER BY c.relname",
+    FROM pg_class c \
+    JOIN pg_namespace n ON n.oid = c.relnamespace \
+    WHERE c.relkind = 'r' \
+    AND n.nspname = 'public' \
+    AND c.relname <> 'djogi_schema_migrations' \
+    ORDER BY c.relname",
             &[],
         )
         .await
@@ -795,19 +797,19 @@ async fn read_all_columns(
     let rows = ctx
         .query_all(
             "SELECT c.relname::text, \
-                    a.attname::text, \
-                    format_type(a.atttypid, a.atttypmod)::text, \
-                    a.attnotnull, \
-                    pg_get_expr(d.adbin, d.adrelid) \
-             FROM pg_attribute a \
-             JOIN pg_class c ON c.oid = a.attrelid \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-             WHERE n.nspname = 'public' \
-               AND c.relkind = 'r' \
-               AND a.attnum > 0 \
-               AND NOT a.attisdropped \
-             ORDER BY c.relname, a.attnum",
+     a.attname::text, \
+     format_type(a.atttypid, a.atttypmod)::text, \
+     a.attnotnull, \
+     pg_get_expr(d.adbin, d.adrelid) \
+    FROM pg_attribute a \
+    JOIN pg_class c ON c.oid = a.attrelid \
+    JOIN pg_namespace n ON n.oid = c.relnamespace \
+    LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+    WHERE n.nspname = 'public' \
+    AND c.relkind = 'r' \
+    AND a.attnum > 0 \
+    AND NOT a.attisdropped \
+    ORDER BY c.relname, a.attnum",
             &[],
         )
         .await
@@ -925,15 +927,15 @@ async fn read_all_primary_key_columns(
     let rows = ctx
         .query_all(
             "SELECT c.relname::text, \
-                    a.attname::text \
-             FROM pg_constraint con \
-             JOIN pg_class c ON c.oid = con.conrelid \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             JOIN pg_attribute a ON a.attrelid = con.conrelid \
-                                 AND a.attnum = ANY(con.conkey) \
-             WHERE n.nspname = 'public' \
-               AND con.contype = 'p' \
-             ORDER BY c.relname, array_position(con.conkey, a.attnum)",
+     a.attname::text \
+    FROM pg_constraint con \
+    JOIN pg_class c ON c.oid = con.conrelid \
+    JOIN pg_namespace n ON n.oid = c.relnamespace \
+    JOIN pg_attribute a ON a.attrelid = con.conrelid \
+         AND a.attnum = ANY(con.conkey) \
+    WHERE n.nspname = 'public' \
+    AND con.contype = 'p' \
+    ORDER BY c.relname, array_position(con.conkey, a.attnum)",
             &[],
         )
         .await
@@ -962,15 +964,15 @@ async fn read_all_primary_key_columns(
 }
 
 /// Read every non-PK index in `public` along with its shape
-/// columns in order, uniqueness, method (btree / gin / ...).
+/// columns in order, uniqueness, method (btree / gin /...).
 /// Skips:
 /// - PK indexes (the column list lives on the table's
-///   [`super::schema::PrimaryKeySchema`]).
+/// [`super::schema::PrimaryKeySchema`]).
 /// - HeeRanjID artifact tables — see [`HEERANJID_ARTIFACT_TABLES`].
 /// - The ledger table.
-///   `INCLUDE(...)` columns and partial-predicate `WHERE` clauses are
-///   deliberately NOT projected here — they are kept at advisory `Info`
-///   level for now (D693).
+/// `INCLUDE(...)` columns and partial-predicate `WHERE` clauses are
+/// deliberately NOT projected here — they are kept at advisory `Info`
+/// level for now (D693).
 async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, VerifyRunError> {
     // Step 1 — one row per index with name + table + uniqueness +
     // access method. Step 2 (read_all_index_columns, batched per
@@ -980,18 +982,18 @@ async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, Verify
     let rows = ctx
         .query_all(
             "SELECT i.relname::text, \
-                    t.relname::text, \
-                    ix.indisunique, \
-                    am.amname::text \
-             FROM pg_index ix \
-             JOIN pg_class i ON i.oid = ix.indexrelid \
-             JOIN pg_class t ON t.oid = ix.indrelid \
-             JOIN pg_namespace n ON n.oid = t.relnamespace \
-             JOIN pg_am am ON am.oid = i.relam \
-             WHERE n.nspname = 'public' \
-               AND ix.indisprimary = false \
-               AND t.relname <> 'djogi_schema_migrations' \
-             ORDER BY i.relname",
+     t.relname::text, \
+     ix.indisunique, \
+     am.amname::text \
+    FROM pg_index ix \
+    JOIN pg_class i ON i.oid = ix.indexrelid \
+    JOIN pg_class t ON t.oid = ix.indrelid \
+    JOIN pg_namespace n ON n.oid = t.relnamespace \
+    JOIN pg_am am ON am.oid = i.relam \
+    WHERE n.nspname = 'public' \
+    AND ix.indisprimary = false \
+    AND t.relname <> 'djogi_schema_migrations' \
+    ORDER BY i.relname",
             &[],
         )
         .await
@@ -1070,15 +1072,15 @@ async fn read_all_index_columns(
     let rows = ctx
         .query_all(
             "SELECT i.relname::text, \
-                    a.attname::text \
-             FROM pg_index ix \
-             JOIN pg_class i ON i.oid = ix.indexrelid \
-             JOIN pg_namespace n ON n.oid = i.relnamespace \
-             JOIN unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE \
-             JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum \
-             WHERE n.nspname = 'public' \
-               AND a.attnum > 0 \
-             ORDER BY i.relname, k.ord",
+     a.attname::text \
+    FROM pg_index ix \
+    JOIN pg_class i ON i.oid = ix.indexrelid \
+    JOIN pg_namespace n ON n.oid = i.relnamespace \
+    JOIN unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE \
+    JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum \
+    WHERE n.nspname = 'public' \
+    AND a.attnum > 0 \
+    ORDER BY i.relname, k.ord",
             &[],
         )
         .await
@@ -1170,25 +1172,25 @@ async fn read_foreign_keys(ctx: &mut DjogiContext) -> Result<Vec<LiveForeignKey>
     let rows = ctx
         .query_all(
             "SELECT c.relname::text, \
-                    a.attname::text, \
-                    rc.relname::text, \
-                    ra.attname::text, \
-                    con.confdeltype::text, \
-                    con.condeferrable, \
-                    con.condeferred \
-             FROM pg_constraint con \
-             JOIN pg_class c ON c.oid = con.conrelid \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             JOIN pg_attribute a ON a.attrelid = con.conrelid \
-                                 AND a.attnum = ANY(con.conkey) \
-             JOIN pg_class rc ON rc.oid = con.confrelid \
-             JOIN pg_attribute ra ON ra.attrelid = con.confrelid \
-                                  AND ra.attnum = ANY(con.confkey) \
-             WHERE n.nspname = 'public' \
-               AND con.contype = 'f' \
-               AND array_position(con.conkey, a.attnum) \
-                   = array_position(con.confkey, ra.attnum) \
-             ORDER BY c.relname, a.attname",
+     a.attname::text, \
+     rc.relname::text, \
+     ra.attname::text, \
+     con.confdeltype::text, \
+     con.condeferrable, \
+     con.condeferred \
+    FROM pg_constraint con \
+    JOIN pg_class c ON c.oid = con.conrelid \
+    JOIN pg_namespace n ON n.oid = c.relnamespace \
+    JOIN pg_attribute a ON a.attrelid = con.conrelid \
+         AND a.attnum = ANY(con.conkey) \
+    JOIN pg_class rc ON rc.oid = con.confrelid \
+    JOIN pg_attribute ra ON ra.attrelid = con.confrelid \
+         AND ra.attnum = ANY(con.confkey) \
+    WHERE n.nspname = 'public' \
+    AND con.contype = 'f' \
+    AND array_position(con.conkey, a.attnum) \
+     = array_position(con.confkey, ra.attnum) \
+    ORDER BY c.relname, a.attname",
             &[],
         )
         .await
@@ -1279,7 +1281,9 @@ async fn read_foreign_keys(ctx: &mut DjogiContext) -> Result<Vec<LiveForeignKey>
 /// Compare every snapshot table to its live counterpart and emit
 /// drift diagnostics.
 /// Diagnostics emitted:
-/// - D601 / D602 — table presence mismatch (Error).
+/// - D601 / D602 — table presence mismatch (Error). Ancillary
+/// `{table}_outbox` tables are expected in the same bucket as
+/// their parent model when `has_outbox` is true.
 /// - D603 / D604 — column presence mismatch (Error).
 /// - D605 — column nullability differs (Error).
 /// - D606 — column type-string drift (Warning).
@@ -1299,9 +1303,9 @@ fn diff_tables(
                 severity: VerifySeverity::Error,
                 message: format!(
                     "table `{name}` exists in snapshot but is missing from \
-                     the live database; the schema may have been dropped \
-                     out-of-band or the migration that creates it was \
-                     never applied",
+      the live database; the schema may have been dropped \
+      out-of-band or the migration that creates it was \
+      never applied",
                 ),
                 location: Some(name.clone()),
             });
@@ -1316,8 +1320,8 @@ fn diff_tables(
                 severity: VerifySeverity::Error,
                 message: format!(
                     "table `{name}` exists in the live database but is not \
-                     in the snapshot; either an out-of-band migration ran \
-                     or the snapshot is stale",
+      in the snapshot; either an out-of-band migration ran \
+      or the snapshot is stale",
                 ),
                 location: Some(name.clone()),
             });
@@ -1349,7 +1353,7 @@ fn diff_tables(
                     severity: VerifySeverity::Error,
                     message: format!(
                         "column `{name}.{col_name}` exists in snapshot but \
-                         is missing from the live database",
+       is missing from the live database",
                     ),
                     location: Some(format!("{name}.{col_name}")),
                 });
@@ -1364,7 +1368,7 @@ fn diff_tables(
                     severity: VerifySeverity::Error,
                     message: format!(
                         "column `{name}.{col_name}` exists in the live \
-                         database but not in the snapshot",
+       database but not in the snapshot",
                     ),
                     location: Some(format!("{name}.{col_name}")),
                 });
@@ -1384,7 +1388,7 @@ fn diff_tables(
                     severity: VerifySeverity::Error,
                     message: format!(
                         "column `{name}.{col_name}` nullability differs: \
-                         snapshot {snap_n}, live {live_n}",
+       snapshot {snap_n}, live {live_n}",
                         snap_n = snap_col.nullable,
                         live_n = live_col.nullable,
                     ),
@@ -1407,7 +1411,7 @@ fn diff_tables(
                     severity: VerifySeverity::Warning,
                     message: format!(
                         "column `{name}.{col_name}` type differs (advisory): \
-                         snapshot `{s}`, live `{l}`",
+       snapshot `{s}`, live `{l}`",
                         s = snap_col.sql_type,
                         l = live_col.sql_type,
                     ),
@@ -1430,7 +1434,7 @@ fn diff_tables(
                     severity: VerifySeverity::Error,
                     message: format!(
                         "column `{name}.{col_name}` DEFAULT differs: \
-                         snapshot {s}, live {l}",
+       snapshot {s}, live {l}",
                         s = render_default_for_message(&snap_default),
                         l = render_default_for_message(&live_default),
                     ),
@@ -1444,7 +1448,7 @@ fn diff_tables(
                     severity: VerifySeverity::Error,
                     message: format!(
                         "column `{name}.{col_name}` foreign key differs: \
-                         snapshot {s:?}, live {l:?}",
+       snapshot {s:?}, live {l:?}",
                         s = snap_col.foreign_key,
                         l = live_col.foreign_key,
                     ),
@@ -1492,7 +1496,7 @@ fn diff_primary_key(
             severity: VerifySeverity::Error,
             message: format!(
                 "table `{table_name}` primary key differs: \
-                 snapshot {snap:?}, live {live:?}",
+     snapshot {snap:?}, live {live:?}",
                 snap = snap_pk.columns,
                 live = live_pk.columns,
             ),
@@ -1505,7 +1509,7 @@ fn diff_primary_key(
 /// Diagnostics emitted:
 /// - D610 — snapshot index missing in live DB (Error).
 /// - D611 — live index not in snapshot (Warning — may be a
-///   constraint-backed auto-index).
+/// constraint-backed auto-index).
 /// - D612 — index columns differ (Error).
 /// - D613 — index uniqueness differs (Error).
 /// - D614 — index method differs (Warning).
@@ -1532,7 +1536,7 @@ fn diff_indexes(
                 severity: VerifySeverity::Error,
                 message: format!(
                     "index `{name}` exists in snapshot but is missing from \
-                     the live database",
+      the live database",
                 ),
                 location: Some(format!("index:{name}")),
             });
@@ -1551,8 +1555,8 @@ fn diff_indexes(
                 severity: VerifySeverity::Warning,
                 message: format!(
                     "index `{name}` exists in the live database but is not \
-                     in the snapshot's index list (may be a constraint-backed \
-                     auto-index)",
+      in the snapshot's index list (may be a constraint-backed \
+      auto-index)",
                 ),
                 location: Some(format!("index:{name}")),
             });
@@ -1560,7 +1564,7 @@ fn diff_indexes(
     }
 
     // D612 / D613 / D614 / D615 — shape comparison on shared names
-    // . For every name present on both sides we compare table,
+    //. For every name present on both sides we compare table,
     // columns (in order), uniqueness, and access method.
     for (name, snap_idx) in &snap_by_name {
         let Some(live_idx) = live_by_name.get(name) else {
@@ -1576,7 +1580,7 @@ fn diff_indexes(
                 severity: VerifySeverity::Error,
                 message: format!(
                     "index `{name}` is on table `{l}` in the live database \
-                     but the snapshot declares it on `{s}`",
+      but the snapshot declares it on `{s}`",
                     s = snap_idx.table,
                     l = live_idx.table,
                 ),
@@ -1655,7 +1659,7 @@ fn diff_indexes(
                 severity: VerifySeverity::Info,
                 message: format!(
                     "index `{name}` declares INCLUDE / partial-predicate; \
-                     verify does not yet project these from the live catalog",
+      verify does not yet project these from the live catalog",
                 ),
                 location: Some(format!("index:{name}")),
             });
@@ -1683,17 +1687,17 @@ fn index_target_column_names(target: &IndexTargetSchema) -> Vec<&str> {
 /// - `'foo'` vs `'foo'::text` → match
 /// - `now()` vs `now()::timestamptz` → match
 /// - `'foo'::text::varchar` → `'foo'` (nested casts collapsed in a
-///   loop; Postgres renders nested casts unchanged on `pg_get_expr`,
-///   so the comparator must peel them)
+/// loop; Postgres renders nested casts unchanged on `pg_get_expr`,
+/// so the comparator must peel them)
 /// - `42` vs `43` → mismatch (different value)
 /// - `now` vs `current_timestamp` → mismatch (different func; a
-///   future pass may add an alias map)
-///   Trim is whitespace-only on both ends; other whitespace inside
-///   the expression is preserved (Postgres preserves it on the way
-///   back to the catalog).
-///   `None` and the empty string are normalised to `None` so a column
-///   declared with `DEFAULT NULL` (which Postgres collapses to "no
-///   default") matches a snapshot that omits the field entirely.
+/// future pass may add an alias map)
+/// Trim is whitespace-only on both ends; other whitespace inside
+/// the expression is preserved (Postgres preserves it on the way
+/// back to the catalog).
+/// `None` and the empty string are normalised to `None` so a column
+/// declared with `DEFAULT NULL` (which Postgres collapses to "no
+/// default") matches a snapshot that omits the field entirely.
 fn normalize_default_expr(expr: Option<&str>) -> Option<String> {
     let raw = expr?.trim();
     if raw.is_empty() {
@@ -1783,8 +1787,8 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             severity: VerifySeverity::Info,
             message: format!(
                 "{n} table(s) declare FTS configuration; verify does not \
-                 yet check FTS triggers / generated columns against the live \
-                 catalog",
+     yet check FTS triggers / generated columns against the live \
+     catalog",
                 n = fts_tables.len(),
             ),
             location,
@@ -1804,8 +1808,8 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             severity: VerifySeverity::Info,
             message: format!(
                 "{n} table(s) declare a partition strategy; verify does \
-                 not yet check partition method / column against the live \
-                 catalog",
+     not yet check partition method / column against the live \
+     catalog",
                 n = partitioned.len(),
             ),
             location,
@@ -1819,7 +1823,7 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
             severity: VerifySeverity::Info,
             message: format!(
                 "{n} enum type(s) declared; verify does not yet check \
-                 enum variants against the live `pg_enum` catalog",
+     enum variants against the live `pg_enum` catalog",
                 n = snapshot.enums.len(),
             ),
             location: None,
@@ -1876,49 +1880,98 @@ fn render_type_for_compare(s: &str) -> String {
 /// (every app's tables live in `public`), so the scoping is driven
 /// from the inventory's `ModelDescriptor::app` field:
 /// - **Synthetic global bucket** (`bucket.app == ""`,
-///   [`crate::AppDescriptor::GLOBAL_LABEL`]): every live table is
-///   included EXCEPT those whose `ModelDescriptor` declares a
-///   non-global app. The empty-label bucket is the catch-all for
-///   tables that pre-date Djogi's apps subsystem (legacy / baseline
-///   adoption) plus any model that omitted `#[model(app = ...)]`.
+/// [`crate::AppDescriptor::GLOBAL_LABEL`]): every live table is
+/// included EXCEPT those whose `ModelDescriptor` declares a
+/// non-global app. The empty-label bucket is the catch-all for
+/// tables that pre-date Djogi's apps subsystem (legacy / baseline
+/// adoption) plus any model that omitted `#[model(app =...)]`.
 /// - **Named bucket** (`bucket.app == "billing"`, etc.): only tables
-///   whose `ModelDescriptor` declares this exact app label are
-///   projected. Live tables that have no inventory descriptor are
-///   excluded — they belong to either the global bucket or another
-///   app's baseline, never to a named app's projection.
-///   **Where the bucket database flows.** The `database` component is
-///   already routed by the caller via `DjogiContext::switch_to(...)`
-///   before calling this function — `ctx` is always pointing at the
-///   right pool. The projection itself only ever queries the
-///   connection it is given; the bucket database is advisory at this
-///   layer (it is checked in the caller against the routed pool).
-///   **Why inventory and not the ledger.** The ledger only records
-///   migration versions, not the tables those migrations touched. A
-///   bucket-scoped projection driven from `app_label` history would
-///   require a per-migration table-touch index that does not exist
-///   today. Inventory-driven scoping is the project-wide convention
-///   the migration substrate already uses (see
-///   [`super::projection::project_from_inventory`]); reusing it keeps
-///   the two projection paths in lockstep.
-///   **Standalone / unlinked named-bucket scoping (#370).** The
-///   published standalone `djogi` binary links no adopter model crates,
-///   so the `ModelDescriptor` inventory is empty. For a NAMED bucket
-///   that leaves `this_bucket_tables` empty, which would filter the live
-///   schema to nothing and make a valid on-disk snapshot report every
-///   table as missing (false drift). When (a) the bucket is named, (b)
-///   no descriptor in this process claims it, and (c) the entire
-///   `ModelDescriptor` inventory is empty (the standalone signal — NOT
-///   merely a linked binary whose app was removed, which must still
-///   surface real drift), the live schema is instead scoped to the
-///   `fallback_table_names` the caller threads in (verify passes the
-///   on-disk snapshot's own table names). A correct snapshot then
-///   validates cleanly against a live DB that has its tables. The GLOBAL
-///   bucket is unaffected: with an empty inventory `all_app_tables` is
-///   empty, so it already retains every live table.
-///   **`fallback_table_names` is verify-only.** The repair and baseline
-///   callers pass `None` — they project the live DB to BUILD a snapshot
-///   and have no on-disk snapshot to scope from — so their behavior is
-///   byte-for-byte unchanged by this parameter.
+/// whose `ModelDescriptor` declares this exact app label are
+/// projected. Live tables that have no inventory descriptor are
+/// excluded — they belong to either the global bucket or another
+/// app's baseline, never to a named app's projection.
+/// **Where the bucket database flows.** The `database` component is
+/// already routed by the caller via `DjogiContext::switch_to(...)`
+/// before calling this function — `ctx` is always pointing at the
+/// right pool. The projection itself only ever queries the
+/// connection it is given; the bucket database is advisory at this
+/// layer (it is checked in the caller against the routed pool).
+/// **Why inventory and not the ledger.** The ledger only records
+/// migration versions, not the tables those migrations touched. A
+/// bucket-scoped projection driven from `app_label` history would
+/// require a per-migration table-touch index that does not exist
+/// today. Inventory-driven scoping is the project-wide convention
+/// the migration substrate already uses (see
+/// [`super::projection::project_from_inventory`]); reusing it keeps
+/// the two projection paths in lockstep.
+/// **Standalone / unlinked named-bucket scoping (#370).** The
+/// published standalone `djogi` binary links no adopter model crates,
+/// so the `ModelDescriptor` inventory is empty. For a NAMED bucket
+/// that leaves `this_bucket_tables` empty, which would filter the live
+/// schema to nothing and make a valid on-disk snapshot report every
+/// table as missing (false drift). When (a) the bucket is named, (b)
+/// no descriptor in this process claims it, and (c) the entire
+/// `ModelDescriptor` inventory is empty (the standalone signal — NOT
+/// merely a linked binary whose app was removed, which must still
+/// surface real drift), the live schema is instead scoped to the
+/// `fallback_table_names` the caller threads in (verify passes the
+/// on-disk snapshot's own table names). A correct snapshot then
+/// validates cleanly against a live DB that has its tables. The GLOBAL
+/// bucket is unaffected: with an empty inventory `all_app_tables` is
+/// empty, so it already retains every live table.
+/// **`fallback_table_names` is verify-only.** The repair and baseline
+/// callers pass `None` — they project the live DB to BUILD a snapshot
+/// and have no on-disk snapshot to scope from — so their behavior is
+/// byte-for-byte unchanged by this parameter.
+#[derive(Debug)]
+struct ScopeTableSets {
+    this_bucket_tables: BTreeSet<String>,
+    all_app_tables: BTreeSet<String>,
+    inventory_is_empty: bool,
+}
+
+fn scope_table_sets<'a, I>(descriptors: I, bucket_app: &str) -> ScopeTableSets
+where
+    I: IntoIterator<Item = &'a crate::descriptor::ModelDescriptor>,
+{
+    use crate::AppDescriptor;
+
+    let mut this_bucket_tables: BTreeSet<String> = BTreeSet::new();
+    let mut all_app_tables: BTreeSet<String> = BTreeSet::new();
+    let mut inventory_is_empty = true;
+
+    for m in descriptors {
+        inventory_is_empty = false;
+        let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
+        let parent_name = m.table_name;
+
+        if m.has_outbox {
+            let outbox_table = super::naming::outbox_table_name(parent_name);
+            if label == bucket_app {
+                this_bucket_tables.insert(parent_name.to_string());
+                this_bucket_tables.insert(outbox_table.clone());
+            }
+            if label != AppDescriptor::GLOBAL_LABEL {
+                all_app_tables.insert(parent_name.to_string());
+                all_app_tables.insert(outbox_table);
+            }
+        } else {
+            if label == bucket_app {
+                this_bucket_tables.insert(parent_name.to_string());
+            }
+            if label != AppDescriptor::GLOBAL_LABEL {
+                all_app_tables.insert(parent_name.to_string());
+            }
+        }
+    }
+
+    ScopeTableSets {
+        this_bucket_tables,
+        all_app_tables,
+        inventory_is_empty,
+    }
+}
+
 pub(super) async fn live_schema_for_repair(
     ctx: &mut DjogiContext,
     bucket: &BucketKey,
@@ -1926,33 +1979,16 @@ pub(super) async fn live_schema_for_repair(
 ) -> Result<AppliedSchema, VerifyRunError> {
     let mut full = project_live_schema(ctx).await?;
 
-    // Build the set of table names declared in inventory, grouped by
-    // app label. We only walk inventory once and produce two sets:
-    // - this_bucket_tables: tables whose descriptor declares the
-    // supplied bucket's app label.
-    // - all_app_tables: tables whose descriptor declares ANY
-    // non-global app label.
-    // Both sets compare on Postgres table name (`ModelDescriptor::
-    // table_name`) so the live projection's BTreeMap key lines up.
-    // `inventory_is_empty` is the standalone/unlinked signal (#370):
-    // an empty descriptor inventory means no model crate is linked, so
-    // a named bucket cannot be scoped from inventory at all.
+    let ScopeTableSets {
+        this_bucket_tables,
+        all_app_tables,
+        inventory_is_empty,
+    } = scope_table_sets(
+        inventory::iter::<crate::descriptor::ModelDescriptor>,
+        &bucket.app,
+    );
+
     use crate::AppDescriptor;
-    use crate::descriptor::ModelDescriptor;
-    let mut this_bucket_tables: std::collections::BTreeSet<&str> =
-        std::collections::BTreeSet::new();
-    let mut all_app_tables: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    let mut inventory_is_empty = true;
-    for m in inventory::iter::<ModelDescriptor> {
-        inventory_is_empty = false;
-        let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
-        if label == bucket.app.as_str() {
-            this_bucket_tables.insert(m.table_name);
-        }
-        if label != AppDescriptor::GLOBAL_LABEL {
-            all_app_tables.insert(m.table_name);
-        }
-    }
 
     let is_global_bucket = bucket.app.as_str() == AppDescriptor::GLOBAL_LABEL;
 
@@ -2006,6 +2042,8 @@ pub(super) async fn live_schema_for_repair(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AppDescriptor;
+    use crate::descriptor::{ModelDescriptor, PkType, model_descriptor};
     use crate::migrate::schema::{
         ColumnSchema, ForeignKeySchema, IndexKindSchema, IndexSchema, IndexTargetSchema,
         IndexTypeSchema, OnDeleteSchema, PkKindSchema, PrimaryKeySchema, RelationKindSchema,
@@ -2099,6 +2137,17 @@ mod tests {
         }
     }
 
+    fn model_for_scope(
+        table: &'static str,
+        app: Option<&'static str>,
+        has_outbox: bool,
+    ) -> ModelDescriptor {
+        let mut m = model_descriptor("ScopeModel", table, PkType::HeerId, &[]);
+        m.app = app;
+        m.has_outbox = has_outbox;
+        m
+    }
+
     fn idx(name: &str, table: &str, unique: bool) -> IndexSchema {
         IndexSchema {
             extension_dependency: None,
@@ -2157,6 +2206,59 @@ mod tests {
         );
     }
 
+    // ── scope_table_sets ─────────────────────────────────────────────
+
+    #[test]
+    fn scope_named_bucket_includes_outbox_table() {
+        let parent = model_for_scope("widgets", Some("billing"), true);
+        let scope = scope_table_sets(vec![&parent], "billing");
+
+        assert!(scope.this_bucket_tables.contains("widgets"));
+        assert!(scope.this_bucket_tables.contains("widgets_outbox"));
+        assert!(!scope.inventory_is_empty);
+    }
+
+    #[test]
+    fn scope_global_bucket_excludes_named_app_outbox_table() {
+        let billing = model_for_scope("widgets", Some("billing"), true);
+        let scope = scope_table_sets(vec![&billing], AppDescriptor::GLOBAL_LABEL);
+
+        assert!(!scope.this_bucket_tables.contains("widgets"));
+        assert!(!scope.this_bucket_tables.contains("widgets_outbox"));
+        assert!(scope.all_app_tables.contains("widgets"));
+        assert!(scope.all_app_tables.contains("widgets_outbox"));
+        assert!(!scope.inventory_is_empty);
+    }
+
+    #[test]
+    fn scope_global_outbox_stays_global() {
+        let global = model_for_scope("ledger", None, true);
+        let scope = scope_table_sets(vec![&global], AppDescriptor::GLOBAL_LABEL);
+
+        assert!(scope.this_bucket_tables.contains("ledger"));
+        assert!(scope.this_bucket_tables.contains("ledger_outbox"));
+        assert!(scope.all_app_tables.is_empty());
+        assert!(!scope.inventory_is_empty);
+    }
+
+    #[test]
+    fn scope_orphan_outbox_lookalike_still_unclaimed() {
+        let billing = model_for_scope("widgets", Some("billing"), true);
+        let scope = scope_table_sets(vec![&billing], "orphan_app");
+
+        assert!(scope.this_bucket_tables.is_empty());
+        assert!(!scope.this_bucket_tables.contains("widgets_outbox"));
+    }
+
+    #[test]
+    fn scope_empty_inventory_sets_standalone_signal() {
+        let scope = scope_table_sets(Vec::<&ModelDescriptor>::new(), "billing");
+
+        assert!(scope.inventory_is_empty);
+        assert!(scope.this_bucket_tables.is_empty());
+        assert!(scope.all_app_tables.is_empty());
+    }
+
     // ── diff_tables ──────────────────────────────────────────────────────
 
     #[test]
@@ -2208,6 +2310,37 @@ mod tests {
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code, "D602");
         assert_eq!(diagnostics[0].severity, VerifySeverity::Error);
+    }
+
+    #[test]
+    fn diff_tables_outbox_in_scope_emits_no_d601_d602() {
+        let mut snap = empty_snapshot();
+        snap.models.insert(
+            "users".to_string(),
+            table("users", vec![col("id", "BIGINT", false)]),
+        );
+        snap.models.insert(
+            "users_outbox".to_string(),
+            table("users_outbox", vec![col("id", "BIGINT", false)]),
+        );
+        let mut live = empty_snapshot();
+        live.models.insert(
+            "users".to_string(),
+            table("users", vec![col("id", "bigint", false)]),
+        );
+        live.models.insert(
+            "users_outbox".to_string(),
+            table("users_outbox", vec![col("id", "BIGINT", false)]),
+        );
+
+        let mut diagnostics = Vec::new();
+        diff_tables(&snap, &live, &mut diagnostics);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != "D601" && d.code != "D602"),
+            "no D601/D602 expected when scoped outbox tables match: {diagnostics:?}",
+        );
     }
 
     #[test]
@@ -2493,7 +2626,7 @@ mod tests {
     fn normalize_default_treats_none_and_empty_as_no_default() {
         assert_eq!(normalize_default_expr(None), None);
         assert_eq!(normalize_default_expr(Some("")), None);
-        assert_eq!(normalize_default_expr(Some("   ")), None);
+        assert_eq!(normalize_default_expr(Some(" ")), None);
     }
 
     #[test]
@@ -2528,7 +2661,7 @@ mod tests {
         // Whitespace between the casts is also tolerated — Postgres
         // does not emit it but the comparator should not be brittle.
         assert_eq!(
-            normalize_default_expr(Some("'x'::text  ::  varchar")),
+            normalize_default_expr(Some("'x'::text :: varchar")),
             Some("'x'".to_string())
         );
     }
@@ -3111,8 +3244,8 @@ mod tests {
         assert!(
             !emitted.is_empty(),
             "scanner found zero D6xx emit sites in verify.rs — \
-             the byte pattern probably drifted; investigate before \
-             trusting this test",
+    the byte pattern probably drifted; investigate before \
+    trusting this test",
         );
         let registry: std::collections::BTreeSet<&str> =
             D6XX_CODE_REGISTRY.iter().map(|(c, _)| *c).collect();
@@ -3120,8 +3253,8 @@ mod tests {
             assert!(
                 registry.contains(code.as_str()),
                 "emit site for {code} found in verify.rs but {code} is \
-                 missing from D6XX_CODE_REGISTRY — add it (with a \
-                 unique meaning) to keep the central registry honest",
+     missing from D6XX_CODE_REGISTRY — add it (with a \
+     unique meaning) to keep the central registry honest",
             );
         }
         // Reverse direction: every registry entry should have at
@@ -3135,8 +3268,8 @@ mod tests {
             if !emitted.contains(*code) {
                 eprintln!(
                     "note: D6xx code {code} is in the registry but has \
-                     no emit site in verify.rs — either remove it from \
-                     the registry or add the corresponding emit site"
+      no emit site in verify.rs — either remove it from \
+      the registry or add the corresponding emit site"
                 );
             }
         }

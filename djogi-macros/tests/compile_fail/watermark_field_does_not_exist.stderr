@@ -1,54 +1,54 @@
 error: `watermark_field = "no_such_field"` does not name a field on this model — the named field must exist on the post-injection struct (framework-injected fields `id`, `created_at`, `updated_at` are eligible; user fields are eligible)
-  --> $DIR/watermark_field_does_not_exist.rs:33:23
-   |
-33 |     watermark_field = "no_such_field",
-   |                       ^^^^^^^^^^^^^^^
+ --> $DIR/watermark_field_does_not_exist.rs:33:23
+ |
+33 |  watermark_field = "no_such_field",
+ |      ^^^^^^^^^^^^^^^
 
 error[E0277]: the trait bound `WatermarkMissingRow: Cacheable` is not satisfied
-   --> $DIR/watermark_field_does_not_exist.rs:31:1
-    |
+ --> $DIR/watermark_field_does_not_exist.rs:31:1
+ |
  31 | / #[model(
- 32 | |     table = "phase8_t7_watermark_missing_rows",
- 33 | |     watermark_field = "no_such_field",
+ 32 | |  table = "phase8_t7_watermark_missing_rows",
+ 33 | |  watermark_field = "no_such_field",
  34 | | )]
-    | |__^ unsatisfied trait bound
-    |
+ | |__^ unsatisfied trait bound
+ |
 help: the trait `Cacheable` is not implemented for `WatermarkMissingRow`
-   --> $DIR/watermark_field_does_not_exist.rs:36:1
-    |
+ --> $DIR/watermark_field_does_not_exist.rs:36:1
+ |
  36 | pub struct WatermarkMissingRow {
-    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `DjogiContext::punnu`
-   --> djogi/src/context/mod.rs:586:12
-    |
-584 |     pub fn punnu<T>(&self) -> Option<Arc<sassi::Punnu<T>>>
-    |            ----- required by a bound in this associated function
-585 |     where
-586 |         T: crate::types::Cacheable + 'static,
-    |            ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `DjogiContext::punnu`
-    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+ --> djogi/src/context/mod.rs:586:12
+ |
+584 |  pub fn punnu<T>(&self) -> Option<Arc<sassi::Punnu<T>>>
+ |   ----- required by a bound in this associated function
+585 |  where
+586 |   T: crate::types::Cacheable + 'static,
+ |   ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `DjogiContext::punnu`
+ = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0599]: the method `invalidate` exists for struct `Arc<Punnu<WatermarkMissingRow>>`, but its trait bounds were not satisfied
-  --> $DIR/watermark_field_does_not_exist.rs:31:1
-   |
-31 |   #[model(
-   |  _^
-32 | |     table = "phase8_t7_watermark_missing_rows",
-33 | |     watermark_field = "no_such_field",
+ --> $DIR/watermark_field_does_not_exist.rs:31:1
+ |
+31 | #[model(
+ | _^
+32 | |  table = "phase8_t7_watermark_missing_rows",
+33 | |  watermark_field = "no_such_field",
 34 | | )]
-   | |__^ method cannot be called on `Arc<Punnu<WatermarkMissingRow>>` due to unsatisfied trait bounds
-35 |   #[derive(Debug, Clone)]
-36 |   pub struct WatermarkMissingRow {
-   |   ------------------------------ doesn't satisfy `WatermarkMissingRow: Cacheable`
-   |
-   = note: the following trait bounds were not satisfied:
-           `WatermarkMissingRow: Cacheable`
+ | |__^ method cannot be called on `Arc<Punnu<WatermarkMissingRow>>` due to unsatisfied trait bounds
+35 | #[derive(Debug, Clone)]
+36 | pub struct WatermarkMissingRow {
+ | ------------------------------ doesn't satisfy `WatermarkMissingRow: Cacheable`
+ |
+ = note: the following trait bounds were not satisfied:
+   `WatermarkMissingRow: Cacheable`
 note: the trait `Cacheable` must be implemented
-  --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/sassi-0.1.0-beta.4/src/cacheable.rs:43:1
-   |
+ --> $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/sassi-0.1.0-beta.4/src/cacheable.rs:43:1
+ |
 43 | pub trait Cacheable: Send + Sync + 'static {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+ | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: aborting due to 3 previous errors
 

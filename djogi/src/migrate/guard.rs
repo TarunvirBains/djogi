@@ -12,17 +12,17 @@
 //! Unix-only today. The implementation calls `flock(2)` directly via
 //! `libc::flock` because the alternatives are heavier:
 //! - The full `nix` crate would pull in a large dependency just for
-//!   one syscall wrapper.
+//! one syscall wrapper.
 //! - `fs2` and `file-lock` are abandoned or carry their own subtle
-//!   bugs around timeout semantics.
+//! bugs around timeout semantics.
 //! - `flock` releases automatically on `close(fd)` and is reaped on
-//!   abnormal process exit by the kernel; that gives us the
-//!   "no stale lock cleanup needed" property without writing our own
-//!   reaper.
-//!   Windows support is deferred — the [`acquire`] entry point returns
-//!   a typed [`GuardError::WindowsUnsupported`] on non-unix targets.
-//!   When Windows lands it will use `LockFileEx` against the same path;
-//!   callers do not need to change.
+//! abnormal process exit by the kernel; that gives us the
+//! "no stale lock cleanup needed" property without writing our own
+//! reaper.
+//! Windows support is deferred — the [`acquire`] entry point returns
+//! a typed [`GuardError::WindowsUnsupported`] on non-unix targets.
+//! When Windows lands it will use `LockFileEx` against the same path;
+//! callers do not need to change.
 //! # PID file
 //! On a successful acquire the lock holder writes its PID (decimal
 //! ASCII, terminated with `\n`) to the lock file. On a timeout, the
@@ -111,14 +111,14 @@ impl std::fmt::Display for GuardError {
                 Some(pid) => write!(
                     f,
                     "workspace migration lock at {path} held by another invocation \
-                     (PID {pid}); waited {timeout:?} before giving up",
+      (PID {pid}); waited {timeout:?} before giving up",
                     path = path.display(),
                 ),
                 None => write!(
                     f,
                     "workspace migration lock at {path} held by another invocation \
-                     (PID unknown — lock file empty or unreadable); waited {timeout:?} \
-                     before giving up",
+      (PID unknown — lock file empty or unreadable); waited {timeout:?} \
+      before giving up",
                     path = path.display(),
                 ),
             },
@@ -136,7 +136,7 @@ impl std::fmt::Display for GuardError {
             GuardError::WindowsUnsupported => write!(
                 f,
                 "workspace migration lock: Windows support deferred; build on Linux \
-                 or macOS, or run the migration tooling under WSL"
+     or macOS, or run the migration tooling under WSL"
             ),
         }
     }
@@ -203,11 +203,11 @@ impl Drop for WorkspaceGuard {
 /// # Errors
 /// - [`GuardError::Io`] — could not open / create the lock file.
 /// - [`GuardError::Timeout`] — another invocation held the lock for
-///   the full `timeout` duration.
+/// the full `timeout` duration.
 /// - [`GuardError::Flock`] — the kernel returned a non-`EWOULDBLOCK`
-///   `flock(2)` error.
+/// `flock(2)` error.
 /// - [`GuardError::WindowsUnsupported`] — non-unix targets (compile-
-///   time gate); the symbol exists for type compatibility only.
+/// time gate); the symbol exists for type compatibility only.
 pub fn acquire(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardError> {
     #[cfg(unix)]
     {

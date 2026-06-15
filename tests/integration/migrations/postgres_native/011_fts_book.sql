@@ -15,14 +15,14 @@
 -- installs the HeeRanjID schema and seeds node 1 before this file runs.
 
 CREATE TABLE IF NOT EXISTS book (
-    id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    title       TEXT NOT NULL,
-    body        TEXT NOT NULL,
-    search      TSVECTOR GENERATED ALWAYS AS (
-                    to_tsvector('english', title || ' ' || body)
-                ) STORED
+  id     BIGINT PRIMARY KEY DEFAULT generate_id(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  title    TEXT NOT NULL,
+  body    TEXT NOT NULL,
+  search   TSVECTOR GENERATED ALWAYS AS (
+          to_tsvector('english', title || ' ' || body)
+        ) STORED
 );
 
 CREATE INDEX IF NOT EXISTS book_search_gin ON book USING GIN (search);

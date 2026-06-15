@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Hooks and Composition
 
@@ -6,15 +6,15 @@ Djogi ships two complementary systems for attaching cross-cutting
 behaviour to model CRUD operations:
 
 - **`#[model(hooks)]` + `ModelHooks`** — per-model lifecycle callbacks
-  that fire at precise points in the `before → DB → outbox → after`
-  sequence, with `on_commit` callbacks draining at transaction commit
-  (requires an `atomic()` context — see below).
+ that fire at precise points in the `before → DB → outbox → after`
+ sequence, with `on_commit` callbacks draining at transaction commit
+ (requires an `atomic()` context — see below).
 - **`#[model(auditable)]` / `#[model(soft_deletable)]`** — one-line
-  opt-ins for common composition patterns (who-created-this, logical
-  delete) that integrate with the hook sequence without requiring the
-  adopter to implement every method.
+ opt-ins for common composition patterns (who-created-this, logical
+ delete) that integrate with the hook sequence without requiring the
+ adopter to implement every method.
 
-Both are Phase 8 features. They compose orthogonally — a model can carry
+Both are features. They compose orthogonally — a model can carry
 any combination of `hooks`, `auditable`, and `soft_deletable`.
 
 ---
@@ -31,9 +31,9 @@ use djogi::prelude::*;
 #[model(table = "posts", hooks)]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub title: String,
-    pub body: String,
-    pub slug: String,
+ pub title: String,
+ pub body: String,
+ pub slug: String,
 }
 ```
 
@@ -41,23 +41,23 @@ Then implement `ModelHooks` for the struct:
 
 ```rust
 impl djogi::hooks::ModelHooks for Post {
-    async fn before_create(
-        &mut self,
-        _ctx: &mut djogi::DjogiContext,
-    ) -> Result<(), djogi::DjogiError> {
-        // Normalise the slug before INSERT.
-        self.slug = self.title.to_lowercase().replace(' ', "-");
-        Ok(())
-    }
+ async fn before_create(
+ &mut self,
+ _ctx: &mut djogi::DjogiContext,
+ ) -> Result<(), djogi::DjogiError> {
+ // Normalise the slug before INSERT.
+ self.slug = self.title.to_lowercase().replace(' ', "-");
+ Ok(())
+ }
 
-    async fn after_create(
-        &self,
-        ctx: &mut djogi::DjogiContext,
-    ) -> Result<(), djogi::DjogiError> {
-        // Queue a search-index update to fire after commit.
-        ctx.on_commit(|| async { /* … */ Ok(()) });
-        Ok(())
-    }
+ async fn after_create(
+ &self,
+ ctx: &mut djogi::DjogiContext,
+ ) -> Result<(), djogi::DjogiError> {
+ // Queue a search-index update to fire after commit.
+ ctx.on_commit(|| async { /* … */ Ok(()) });
+ Ok(())
+ }
 }
 ```
 
@@ -95,12 +95,12 @@ The canonical execution sequence for `Model::create` **inside an `atomic()` bloc
 
 ```
 auto_set_tenant
-composition populators  ← auditable, soft_deletable (if opt-in)
-before_create           ← ModelHooks (if #[model(hooks)])
+composition populators ← auditable, soft_deletable (if opt-in)
+before_create  ← ModelHooks (if #[model(hooks)])
 INSERT … RETURNING
 outbox submission
-after_create            ← ModelHooks (if #[model(hooks)])
-[on_commit drain]       ← fires when the surrounding atomic() commits
+after_create  ← ModelHooks (if #[model(hooks)])
+[on_commit drain] ← fires when the surrounding atomic() commits
 ```
 
 `Model::save` follows the same pattern with `before_save` / `after_save`;
@@ -116,10 +116,10 @@ after_create            ← ModelHooks (if #[model(hooks)])
 >
 > ```rust
 > djogi::transaction::atomic(&mut ctx, |ctx| Box::pin(async move {
->     let post = Post::create(ctx, Post { title: "Hello".into(), ..Default::default() }).await?;
->     // after_create queued ctx.on_commit(...) above — it will drain when
->     // this atomic block commits.
->     Ok(post)
+> let post = Post::create(ctx, Post { title: "Hello".into(),..Default::default() }).await?;
+> // after_create queued ctx.on_commit(...) above — it will drain when
+> // this atomic block commits.
+> Ok(post)
 > })).await?;
 > ```
 >
@@ -131,13 +131,13 @@ fires. The transaction-safety guarantee depends on how the operation is
 called:
 
 - **Inside `atomic()`** — returning `Err` rolls back every write in the
-  surrounding transaction, including any writes made earlier in the same
-  `atomic` block. The partial state is never visible to other connections.
+ surrounding transaction, including any writes made earlier in the same
+ `atomic` block. The partial state is never visible to other connections.
 - **Outside `atomic()` (autocommit)** — each SQL statement commits
-  individually. Returning `Err` from a `before_*` hook prevents the
-  _current_ SQL write (INSERT / UPDATE / DELETE) from being issued, but
-  any earlier autocommitted writes in the same call chain are not
-  rolled back.
+ individually. Returning `Err` from a `before_*` hook prevents the
+ _current_ SQL write (INSERT / UPDATE / DELETE) from being issued, but
+ any earlier autocommitted writes in the same call chain are not
+ rolled back.
 
 As a result, error-checking in a `before_*` hook is reliable only for the
 write that hook gates, not for writes that already committed. When you need
@@ -154,20 +154,20 @@ Add `auditable` to opt a model into automatic `created_by` population:
 #[model(table = "posts", auditable)]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub title: String,
-    pub created_by: Option<String>,   // adopter declares the field
+ pub title: String,
+ pub created_by: Option<String>, // adopter declares the field
 }
 ```
 
 The macro emits:
 
 1. `impl djogi::Auditable for Post` — provides `created_by(&self) ->
-   Option<&str>`.
+ Option<&str>`.
 2. A `__djogi_auditable_populate(&mut self, ctx)` helper that runs before
-   the user `before_create` hook. It reads `ctx.auth()?.user_id` (via
-   `Display`) and sets `self.created_by` when the field is currently
-   `None`. If `ctx.auth()` is absent (seeds, migrations, framework-
-   internal paths), `created_by` stays `None` — no warning is emitted.
+ the user `before_create` hook. It reads `ctx.auth()?.user_id` (via
+ `Display`) and sets `self.created_by` when the field is currently
+ `None`. If `ctx.auth()` is absent (seeds, migrations, framework-
+ internal paths), `created_by` stays `None` — no warning is emitted.
 
 The `if is_none()` guard means a value set by the adopter before calling
 `create` is **preserved** — `auditable` only fills in the gap, it does not
@@ -183,20 +183,20 @@ can inspect or override it:
 #[model(table = "posts", auditable, hooks)]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub title: String,
-    pub created_by: Option<String>,
+ pub title: String,
+ pub created_by: Option<String>,
 }
 
 impl djogi::hooks::ModelHooks for Post {
-    async fn before_create(&mut self, _ctx: &mut djogi::DjogiContext)
-        -> Result<(), djogi::DjogiError>
-    {
-        // self.created_by is already populated here (or None for auth-less contexts).
-        if self.created_by.is_none() {
-            return Err(djogi::DjogiError::Validation("created_by is required".into()));
-        }
-        Ok(())
-    }
+ async fn before_create(&mut self, _ctx: &mut djogi::DjogiContext)
+ -> Result<(), djogi::DjogiError>
+ {
+ // self.created_by is already populated here (or None for auth-less contexts).
+ if self.created_by.is_none() {
+  return Err(djogi::DjogiError::Validation("created_by is required".into()));
+ }
+ Ok(())
+ }
 }
 ```
 
@@ -210,8 +210,8 @@ Add `soft_deletable` to opt a model into logical-delete tracking:
 #[model(table = "posts", soft_deletable)]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub title: String,
-    pub deleted_at: Option<djogi::DateTime>,  // adopter declares the field
+ pub title: String,
+ pub deleted_at: Option<djogi::DateTime>, // adopter declares the field
 }
 ```
 
@@ -229,9 +229,9 @@ takes effect automatically:
 ```rust
 // Return only live (non-soft-deleted) posts.
 let posts = Post::objects()
-    .not_deleted()
-    .fetch_all(&mut ctx)
-    .await?;
+.not_deleted()
+.fetch_all(&mut ctx)
+.await?;
 // WHERE deleted_at IS NULL
 ```
 
@@ -261,12 +261,12 @@ would otherwise call `delete()`, or centralise it in a domain method:
 
 ```rust
 impl Post {
-    pub async fn soft_delete(&mut self, ctx: &mut djogi::DjogiContext)
-        -> Result<(), djogi::DjogiError>
-    {
-        self.deleted_at = Some(djogi::DateTime::now_utc());
-        self.save(ctx).await
-    }
+ pub async fn soft_delete(&mut self, ctx: &mut djogi::DjogiContext)
+ -> Result<(), djogi::DjogiError>
+ {
+ self.deleted_at = Some(djogi::DateTime::now_utc());
+ self.save(ctx).await
+ }
 }
 ```
 
@@ -298,10 +298,10 @@ composition-contributed field with a `composed_via` tag on its
 `FieldDescriptor`:
 
 - **`FieldDescriptor::composed_via: Option<&'static str>`** — set to
-  `Some("Auditable")` on the `created_by` field when `#[model(auditable)]`
-  is active; set to `Some("SoftDeletable")` on the `deleted_at` field when
-  `#[model(soft_deletable)]` is active. All other fields carry
-  `composed_via: None`.
+ `Some("Auditable")` on the `created_by` field when `#[model(auditable)]`
+ is active; set to `Some("SoftDeletable")` on the `deleted_at` field when
+ `#[model(soft_deletable)]` is active. All other fields carry
+ `composed_via: None`.
 
 This tag lets `djogi docs` (and admin tooling such as `djogi-maahi`) identify
 which fields originate from composition opt-ins versus adopter-declared
@@ -322,18 +322,18 @@ time for models without `#[model(hooks)]`.
 #[model(table = "posts", auditable, soft_deletable, hooks)]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub title: String,
-    pub created_by: Option<String>,
-    pub deleted_at: Option<djogi::DateTime>,
+ pub title: String,
+ pub created_by: Option<String>,
+ pub deleted_at: Option<djogi::DateTime>,
 }
 
 impl djogi::hooks::ModelHooks for Post {
-    async fn before_create(&mut self, _ctx: &mut djogi::DjogiContext)
-        -> Result<(), djogi::DjogiError>
-    {
-        // created_by already populated by auditable populator.
-        Ok(())
-    }
+ async fn before_create(&mut self, _ctx: &mut djogi::DjogiContext)
+ -> Result<(), djogi::DjogiError>
+ {
+ // created_by already populated by auditable populator.
+ Ok(())
+ }
 }
 ```
 
@@ -349,4 +349,4 @@ fire before user hooks).
 - [Proxy Models](./proxy.md) — per-type hooks on proxy slices
 - [Transactions](./transactions.md) — `on_commit` queue, `atomic()`, savepoints
 - [Authentication](./auth.md) — `AuthContext` and `ctx.auth()` used by the
-  auditable populator
+ auditable populator

@@ -1,13 +1,13 @@
 error[E0599]: no method named `over` found for struct `AsMvtTerminal<T, A>` in the current scope
-  --> $DIR/row_aggregate_terminal_no_over.rs:16:10
-   |
-14 |       let _ = TileFeature::objects()
-   |  _____________-
-15 | |         .as_mvt_with_options(MvtOptions::new("tiles").with_geom_name("location"))
-16 | |         .over(|w| w);
-   | |         -^^^^ method not found in `AsMvtTerminal<TileFeature, djogi::query::EmptyAnnotation>`
-   | |_________|
-   |
+ --> $DIR/row_aggregate_terminal_no_over.rs:16:10
+ |
+14 |  let _ = TileFeature::objects()
+ | _____________-
+15 | |  .as_mvt_with_options(MvtOptions::new("tiles").with_geom_name("location"))
+16 | |  .over(|w| w);
+ | |   -^^^^ method not found in `AsMvtTerminal<TileFeature, djogi::query::EmptyAnnotation>`
+ | |_________|
+ |
 
 error: aborting due to 1 previous error
 

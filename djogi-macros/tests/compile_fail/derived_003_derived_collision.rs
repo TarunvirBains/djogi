@@ -7,7 +7,7 @@
 //! parse time.
 //!
 //! This fixture pins the rejection: two `#[derived(name =
-//! facility_site, scopes = [public], ...)]` attributes on one
+//! facility_site, scopes = [public],...)]` attributes on one
 //! model.
 
 use djogi::prelude::*;
@@ -15,24 +15,24 @@ use djogi::prelude::*;
 #[model(table = "phase85_e003_consignments")]
 #[derive(Model, Debug, Clone)]
 #[derived(
-    name   = facility_site,
-    ty     = String,
-    scopes = [public],
-    sql    = "inbound_site",
-    rust   = "model.inbound_site.clone()",
+ name = facility_site,
+ ty  = String,
+ scopes = [public],
+ sql = "inbound_site",
+ rust = "model.inbound_site.clone()",
 )]
 #[derived(
-    name   = facility_site,
-    ty     = String,
-    scopes = [public],
-    sql    = "outbound_site",
-    rust   = "model.outbound_site.clone()",
+ name = facility_site,
+ ty  = String,
+ scopes = [public],
+ sql = "outbound_site",
+ rust = "model.outbound_site.clone()",
 )]
 pub struct Consignment {
-    #[field(expose(public))]
-    pub inbound_site: String,
-    #[field(expose(public))]
-    pub outbound_site: String,
+ #[field(expose(public))]
+ pub inbound_site: String,
+ #[field(expose(public))]
+ pub outbound_site: String,
 }
 
 fn main() {}

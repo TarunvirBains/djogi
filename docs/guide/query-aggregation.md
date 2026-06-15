@@ -1,9 +1,9 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Grouped Aggregation and Window Aggregates
 
-Phase 6.5 adds Djogi's typed grouping layer on top of Phase 4's expression
-substrate and Phase 4's `AggregateExpr<V>` annotations. Every entry point
+ adds Djogi's typed grouping layer on top of 's expression
+substrate and 's `AggregateExpr<V>` annotations. Every entry point
 is a method on `QuerySet<T>` that transitions into a
 `GroupedQuerySet<T, K>`; calling `.annotate(...)` on that transitions once
 more into a terminal `GroupedAnnotatedQuerySet<T, K, A>` that can be
@@ -21,17 +21,17 @@ Each grouped query walks through three type-state stages:
 
 ```text
 QuerySet<T>
-    │  .group_by(...)  / .rollup(...) / .cube(...) / .group_by_sets(...)
-    ▼
+ │.group_by(...) /.rollup(...) /.cube(...) /.group_by_sets(...)
+ ▼
 GroupedQuerySet<T, K>
-    │  .annotate(|f| ...)                 — attach one or more aggregates
-    ▼
+ │.annotate(|f|...)  — attach one or more aggregates
+ ▼
 GroupedAnnotatedQuerySet<T, K, A>
-    │  .having(|k, a| Expr<bool>)         — filter aggregated groups
-    │  .order_by(|k, a| OrderExpr)        — order the grouped result
-    │  .limit(n) / .offset(n)             — paginate the grouped result
-    │  .fetch_all(&mut ctx)
-    ▼
+ │.having(|k, a| Expr<bool>) — filter aggregated groups
+ │.order_by(|k, a| OrderExpr) — order the grouped result
+ │.limit(n) /.offset(n) — paginate the grouped result
+ │.fetch_all(&mut ctx)
+ ▼
 Vec<(K::Decoded, A::Decoded)>
 ```
 
@@ -53,13 +53,13 @@ use djogi::prelude::*;
 
 // ORGANIZATIONS × SUM(AMOUNT)
 let totals: Vec<(i64, i64)> = Order::objects()
-    .group_by(|f| f.org_id())
-    .annotate(|f| f.amount().sum())
-    .fetch_all(&mut ctx)
-    .await?;
+.group_by(|f| f.org_id())
+.annotate(|f| f.amount().sum())
+.fetch_all(&mut ctx)
+.await?;
 
 for (org_id, total) in totals {
-    println!("org {org_id} total = {total}");
+ println!("org {org_id} total = {total}");
 }
 ```
 
@@ -86,23 +86,23 @@ so `k.asc()` / `k.desc()` produce an `OrderExpr` directly. `.limit` /
 
 ```rust
 let top_three_orgs: Vec<(i64, i64)> = Order::objects()
-    .group_by(|f| f.org_id())
-    .annotate(|f| f.amount().sum())
-    .order_by(|k, _a| k.desc())
-    .limit(3)
-    .fetch_all(&mut ctx)
-    .await?;
+.group_by(|f| f.org_id())
+.annotate(|f| f.amount().sum())
+.order_by(|k, _a| k.desc())
+.limit(3)
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 **Deferred:** ordering directly by an aggregate expression
-(`.order_by(|k, a| a.desc())`) is not available in Phase 6.5 —
+(`.order_by(|k, a| a.desc())`) is not available in —
 `AggregateExpr<V>` has no `.asc()` / `.desc()` methods and no
 `Into<Expr<V>>` bridge, so the aggregate cannot compose into the
 ORDER BY slot through the typed surface. For top-N-by-aggregate
 queries today, sort client-side after `fetch_all` or use a justified
 raw-SQL bypass (`ctx.raw_query(...)` under
 `#[djogi::deliberately_bypass_convention_with_raw_sql]` plus an adjacent
-`// JUSTIFICATION ...` comment).
+`// JUSTIFICATION...` comment).
 
 ### `HAVING` — filtering groups
 
@@ -113,11 +113,11 @@ with `k.as_expr()` and then use the comparison methods on `Expr<V>`
 
 ```rust
 let big_orgs: Vec<(i64, i64)> = Order::objects()
-    .group_by(|f| f.org_id())
-    .annotate(|f| f.amount().sum())
-    .having(|k, _a| k.as_expr().gte(Expr::literal(2_i64)))
-    .fetch_all(&mut ctx)
-    .await?;
+.group_by(|f| f.org_id())
+.annotate(|f| f.amount().sum())
+.having(|k, _a| k.as_expr().gte(Expr::literal(2_i64)))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -130,7 +130,7 @@ let big_orgs: Vec<(i64, i64)> = Order::objects()
 
 **Deferred:** filtering on an aggregate expression
 (`.having(|k, a| a.gt(Expr::literal(10_000_i64)))`) is not available
-in Phase 6.5 for the same reason as aggregate-based ordering — it
+in for the same reason as aggregate-based ordering — it
 requires the same `AggregateExpr<V>` → `Expr<V>` bridge. Filter
 client-side, or write the HAVING predicate through the same justified
 raw-SQL bypass until the bridge lands.
@@ -144,10 +144,10 @@ decodes as a tuple:
 
 ```rust
 let by_org_region: Vec<((i64, String), i64)> = Order::objects()
-    .group_by(|f| (f.org_id(), f.region_code()))
-    .annotate(|f| f.amount().sum())
-    .fetch_all(&mut ctx)
-    .await?;
+.group_by(|f| (f.org_id(), f.region_code()))
+.annotate(|f| f.amount().sum())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -172,10 +172,10 @@ key column list in the matching SQL syntax.
 ```rust
 // Hierarchical subtotals: (org), (org, region), grand total row.
 let rollup: Vec<((Option<i64>, Option<String>), i64)> = Order::objects()
-    .rollup(|f| (f.org_id(), f.region_code()))
-    .annotate(|f| f.amount().sum())
-    .fetch_all(&mut ctx)
-    .await?;
+.rollup(|f| (f.org_id(), f.region_code()))
+.annotate(|f| f.amount().sum())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -191,12 +191,12 @@ SETS).
 ```rust
 // Explicit set list: (org), (region), (org, region).
 Order::objects()
-    .group_by_sets(|f| [
-        (Some(f.org_id()), None),
-        (None, Some(f.region_code())),
-        (Some(f.org_id()), Some(f.region_code())),
-    ])
-    .annotate(|f| f.amount().sum());
+.group_by_sets(|f| [
+ (Some(f.org_id()), None),
+ (None, Some(f.region_code())),
+ (Some(f.org_id()), Some(f.region_code())),
+ ])
+.annotate(|f| f.amount().sum());
 ```
 
 > **Emitted `GROUP BY` shape:**
@@ -204,10 +204,10 @@ Order::objects()
 > GROUP BY GROUPING SETS ((org_id), (region_code), (org_id, region_code))
 > ```
 
-**Deferred in Phase 6.5:** typed `.fetch_all` on a unit-key (arity-0)
+**Deferred in :** typed `.fetch_all` on a unit-key (arity-0)
 `group_by_sets` — the SELECT list emits a stray leading comma when the
-key-tuple emission produces zero columns (`SELECT , SUM(amount) AS
-__djogi_agg_0 FROM ...`). Until the empty-key SELECT path is fixed, use
+key-tuple emission produces zero columns (`SELECT, SUM(amount) AS
+__djogi_agg_0 FROM...`). Until the empty-key SELECT path is fixed, use
 either (a) a non-empty typed key tuple that positionally matches every
 declared grouping set, or (b) a justified raw-SQL bypass for the composite
 `GROUPING SETS` output. See the integration test file
@@ -222,22 +222,22 @@ in one pass. The output tuple type matches positionally:
 
 ```rust
 let stats: Vec<(i64, (i64, i64, Option<i64>))> = Order::objects()
-    .group_by(|f| f.org_id())
-    .annotate(|f| (
-        f.id().count_star(),     // i64
-        f.amount().sum(),         // i64
-        f.amount().max(),         // Option<i64> — MAX over empty group is NULL
-    ))
-    .fetch_all(&mut ctx)
-    .await?;
+.group_by(|f| f.org_id())
+.annotate(|f| (
+ f.id().count_star(), // i64
+ f.amount().sum(), // i64
+ f.amount().max(), // Option<i64> — MAX over empty group is NULL
+ ))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
 > ```sql
 > SELECT org_id,
->        COUNT(*)     AS __djogi_agg_0,
->        SUM(amount)  AS __djogi_agg_1,
->        MAX(amount)  AS __djogi_agg_2
+> COUNT(*) AS __djogi_agg_0,
+> SUM(amount) AS __djogi_agg_1,
+> MAX(amount) AS __djogi_agg_2
 > FROM orders AS t
 > GROUP BY org_id
 > ```
@@ -259,9 +259,9 @@ carries the table-wide aggregate value.
 ```rust
 // Each row carries the table-wide total as an extra column.
 let rows: Vec<(Order, i64)> = Order::objects()
-    .annotate(|f| f.amount().sum())
-    .fetch_all(&mut ctx)
-    .await?;
+.annotate(|f| f.amount().sum())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -272,27 +272,27 @@ let rows: Vec<(Order, i64)> = Order::objects()
 
 ### Custom window frames
 
-`AggregateExpr<V>::over(|w| ...)` takes a closure that receives a
+`AggregateExpr<V>::over(|w|...)` takes a closure that receives a
 `WindowBuilder`. Chain `.partition_by(f.col())` / `.order_by(f.col())`
 (columns, not closures) to build the window spec. Both methods can be
 called multiple times to append additional terms.
 
 ```rust
 let running: Vec<(Order, i64)> = Order::objects()
-    .annotate(|f| f.amount().sum().over(
-        |w| w.partition_by(f.org_id()).order_by(f.created_at())
-    ))
-    .fetch_all(&mut ctx)
-    .await?;
+.annotate(|f| f.amount().sum().over(
+ |w| w.partition_by(f.org_id()).order_by(f.created_at())
+ ))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
 > ```sql
 > SELECT t.*,
->        SUM(amount) OVER (
->            PARTITION BY org_id
->            ORDER BY created_at ASC
->        ) AS __djogi_agg_0
+> SUM(amount) OVER (
+> PARTITION BY org_id
+> ORDER BY created_at ASC
+> ) AS __djogi_agg_0
 > FROM orders AS t
 > ```
 
@@ -307,12 +307,12 @@ API including frame bounds and `EXCLUDE` variants.
 
 ```rust
 let distinct_customers: i64 = Order::objects()
-    .annotate(|f| f.customer_id().count().distinct())
-    .fetch_all(&mut ctx)
-    .await?
-    .first()
-    .map(|(_, c)| *c)
-    .unwrap_or(0);
+.annotate(|f| f.customer_id().count().distinct())
+.fetch_all(&mut ctx)
+.await?
+.first()
+.map(|(_, c)| *c)
+.unwrap_or(0);
 ```
 
 Combining `DISTINCT` with a window frame is rejected at build time —
@@ -322,9 +322,9 @@ combination.
 
 ---
 
-## Aggregate coverage (Cluster E — Phase 8-Zero)
+## Aggregate coverage ( — )
 
-Cluster E ([#88](https://github.com/TarunvirBains/djogi/issues/88))
+ ([#88](https://github.com/TarunvirBains/djogi/issues/88))
 extended Djogi's aggregate surface to match the full Postgres + PostGIS
 catalog. These methods are available anywhere a model field closure exposes
 typed fields, including scalar `.aggregate(...)`, grouped `.annotate(...)`,
@@ -384,27 +384,27 @@ receiver column so the aggregate's return-type contract is preserved.
 
 ```rust
 let p95_latency: f64 = Request::objects()
-    .aggregate(|f| f.latency_ms().percentile_cont(0.95))
-    .fetch_one(&mut ctx)
-    .await?;
+.aggregate(|f| f.latency_ms().percentile_cont(0.95))
+.fetch_one(&mut ctx)
+.await?;
 
 let median_amount: i64 = Order::objects()
-    .aggregate(|f| f.amount().percentile_disc(0.5))
-    .fetch_one(&mut ctx)
-    .await?;
+.aggregate(|f| f.amount().percentile_disc(0.5))
+.fetch_one(&mut ctx)
+.await?;
 
 // Override WITHIN GROUP with a same-type column (both are i64) so the
-// aggregate's i64 return contract is preserved.  Crossing types here —
+// aggregate's i64 return contract is preserved. Crossing types here —
 // e.g. ordering by a DateTime column while decoding as i64 — would
 // produce a runtime decode failure.
 let high_first_median: i64 = Order::objects()
-    .aggregate(|f| {
-        f.amount()
-            .percentile_disc(0.5)
-            .within_group_order_by(f.amount().desc())
-    })
-    .fetch_one(&mut ctx)
-    .await?;
+.aggregate(|f| {
+ f.amount()
+.percentile_disc(0.5)
+.within_group_order_by(f.amount().desc())
+ })
+.fetch_one(&mut ctx)
+.await?;
 ```
 
 ### Hypothetical-set aggregates (T8)
@@ -416,14 +416,14 @@ the window-form rank/dense_rank via the `_of` suffix.
 
 ```rust
 let inserted_rank: i64 = Order::objects()
-    .aggregate(|f| f.amount().rank_of(50_000_i64))
-    .fetch_one(&mut ctx)
-    .await?;
+.aggregate(|f| f.amount().rank_of(50_000_i64))
+.fetch_one(&mut ctx)
+.await?;
 
 let inserted_percentile: f64 = Order::objects()
-    .aggregate(|f| f.amount().percent_rank_of(50_000_i64))
-    .fetch_one(&mut ctx)
-    .await?;
+.aggregate(|f| f.amount().percent_rank_of(50_000_i64))
+.fetch_one(&mut ctx)
+.await?;
 ```
 
 ### GROUPING — subtotal detection
@@ -444,15 +444,15 @@ case.
 Aggregate modifiers are type-state gated by aggregate family:
 
 - Value aggregates (`sum`, `array_agg`, `string_agg`, statistics,
-  JSON-object aggregates, and similar scalar-returning aggregates) expose
-  `.distinct()`, `.filter(cond)`, `.order_by(other.asc())`, and
-  `.over(|w| ...)`.
+ JSON-object aggregates, and similar scalar-returning aggregates) expose
+ `.distinct()`, `.filter(cond)`, `.order_by(other.asc())`, and
+ `.over(|w|...)`.
 - Ordered-set and hypothetical-set aggregates expose `.filter(cond)` and
-  `.within_group_order_by(other.asc())` — where `other` must be the
-  same SQL/Rust decode type as the receiver column for ordered-set
-  aggregates, and comparable to the supplied argument value for
-  hypothetical-set aggregates. They deliberately do not expose
-  `.distinct()`, `.order_by(...)`, or `.over(...)`.
+ `.within_group_order_by(other.asc())` — where `other` must be the
+ same SQL/Rust decode type as the receiver column for ordered-set
+ aggregates, and comparable to the supplied argument value for
+ hypothetical-set aggregates. They deliberately do not expose
+ `.distinct()`, `.order_by(...)`, or `.over(...)`.
 - Metadata aggregates such as `grouping(...)` expose no aggregate modifiers.
 
 Shape-specific SQL errors that the family type-state cannot express, such as
@@ -469,14 +469,14 @@ surface (`convex_hull`, `centroid`, `collect`, `union`, `extent`,
 ### Window-only functions (T18-T19)
 
 The window-only family (functions that require `OVER (...)` and don't
-collapse rows) lives in `djogi::expr::*`. Cluster E shipped:
+collapse rows) lives in `djogi::expr::*`. shipped:
 
-- Zero-arg: `RowNumber`, `Rank`, `DenseRank` (Cluster C),
-  `PercentRankWindow`, `CumeDistWindow` (Cluster E T19)
+- Zero-arg: `RowNumber`, `Rank`, `DenseRank` (),
+ `PercentRankWindow`, `CumeDistWindow` ( T19)
 - Single-int-arg: `NtileWindow::new(n)` (T19)
 - Column-arg: `LeadWindow<V>::new(col).offset(n)`,
-  `LagWindow<V>::new(col).offset(n)`, `FirstValueWindow<V>::new(col)`,
-  `LastValueWindow<V>::new(col)`, `NthValueWindow<V>::new(col, n)` (T18)
+ `LagWindow<V>::new(col).offset(n)`, `FirstValueWindow<V>::new(col)`,
+ `LastValueWindow<V>::new(col)`, `NthValueWindow<V>::new(col, n)` (T18)
 
 Each builds via `partition_by` / `order_by` / `alias` and decodes
 into the typed return — `i64` for ranks, `f64` for fractions,
@@ -486,7 +486,7 @@ into the typed return — `i64` for ranks, `f64` for fractions,
 
 ## Spatial grouping (feature = "spatial")
 
-Phase 6.5 adds three spatial grouping entry points that reuse the same
+ adds three spatial grouping entry points that reuse the same
 grouped substrate. Each produces a typed key whose `Option<...>` slot
 captures rows that do not match any group (the spatial analogue of the
 `NULL` bucket under ROLLUP / CUBE).
@@ -502,10 +502,10 @@ use djogi::prelude::*;
 use djogi::query::spatial_grouping::RegionKey;
 
 let counts: Vec<(RegionKey<Neighborhood>, i64)> = Store::objects()
-    .group_by_region(|f| f.location(), Neighborhood::objects())
-    .annotate(|f| f.id().count_star())
-    .fetch_all(&mut ctx)
-    .await?;
+.group_by_region(|f| f.location(), Neighborhood::objects())
+.annotate(|f| f.id().count_star())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -545,22 +545,22 @@ re-warn.
 use djogi::query::spatial_grouping::{ClusterId, ClusterRadius};
 
 let clusters: Vec<(ClusterId, i64)> = Store::objects()
-    .cluster_by_proximity(
-        |f| f.location(),
-        ClusterRadius::meters(5_000.0).min_points(3),
-    )
-    .annotate(|f| f.id().count_star())
-    .fetch_all(&mut ctx)
-    .await?;
+.cluster_by_proximity(
+ |f| f.location(),
+ ClusterRadius::meters(5_000.0).min_points(3),
+ )
+.annotate(|f| f.id().count_star())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
 > ```sql
 > SELECT cluster_id, COUNT(*) AS __djogi_agg_0
 > FROM (
->     SELECT t.*,
->            ST_ClusterDBSCAN(t.location::geometry, $1, $2) OVER () AS cluster_id
->     FROM stores AS t
+> SELECT t.*,
+> ST_ClusterDBSCAN(t.location::geometry, $1, $2) OVER () AS cluster_id
+> FROM stores AS t
 > ) AS t
 > GROUP BY cluster_id
 > ```
@@ -571,15 +571,15 @@ let clusters: Vec<(ClusterId, i64)> = Store::objects()
 `ClusterRadius` is a builder:
 
 - `ClusterRadius::meters(f64)` — converts the radius to a degree-based
-  `eps` using the equator circumference (`(2·π·R_earth)/360` with WGS84
-  `R_earth = 6,378,137 m`). At high latitudes the earth-curvature
-  approximation degrades; the `min_points(i32)` knob tempers the impact.
+ `eps` using the equator circumference (`(2·π·R_earth)/360` with WGS84
+ `R_earth = 6,378,137 m`). At high latitudes the earth-curvature
+ approximation degrades; the `min_points(i32)` knob tempers the impact.
 - `ClusterRadius::degrees(f64)` — raw degree value for callers who want
-  direct control.
+ direct control.
 - `.min_points(n: i32)` — DBSCAN's minimum cluster population.
 
 **Why the subquery wrap?** Postgres rejects `ST_ClusterDBSCAN(...) OVER
-() ... GROUP BY cluster_id` with `ERROR: window functions are not
+()... GROUP BY cluster_id` with `ERROR: window functions are not
 allowed in GROUP BY`. The emitter materialises `cluster_id` in an inner
 subquery so the outer `GROUP BY` references a plain column.
 
@@ -589,10 +589,10 @@ subquery so the outer `GROUP BY` references a plain column.
 use djogi::query::spatial_grouping::{GeohashKey, GeohashPrecision};
 
 let buckets: Vec<(GeohashKey, i64)> = Store::objects()
-    .bucket_by_cell(|f| f.location(), GeohashPrecision::P5)
-    .annotate(|f| f.id().count_star())
-    .fetch_all(&mut ctx)
-    .await?;
+.bucket_by_cell(|f| f.location(), GeohashPrecision::P5)
+.annotate(|f| f.id().count_star())
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 > **Emitted SQL:**
@@ -602,7 +602,7 @@ let buckets: Vec<(GeohashKey, i64)> = Store::objects()
 > GROUP BY geohash
 > ```
 
-`GeohashPrecision::{P1 .. P12}` corresponds to the standard geohash
+`GeohashPrecision::{P1.. P12}` corresponds to the standard geohash
 precision levels. Each `P` step increases resolution by roughly
 4×— `P5` ≈ 4.9 km × 4.9 km cells at the equator, `P7` ≈ 150 m, `P9` ≈ 5 m.
 
@@ -616,17 +616,17 @@ geometry is NULL, mirroring the NULL-symmetry of `ClusterId`.
 Every grouped terminal follows the same contract:
 
 - **`fetch_all(&mut ctx)`** returns `Vec<(K::Decoded, A::Decoded)>` in the
-  order imposed by `.order_by(...)`, or in an unspecified order if none
-  was given.
+ order imposed by `.order_by(...)`, or in an unspecified order if none
+ was given.
 - **Empty groups** simply do not appear in the output — Postgres GROUP BY
-  semantics.
+ semantics.
 - **`Option<V>` return types** — aggregates whose argument can be NULL over
-  an empty group (e.g. `MAX`, `MIN`, `AVG`) are typed as
-  `AggregateExpr<Option<V>>`. `COUNT(*)` / `COUNT(col)` are always typed
-  as `AggregateExpr<i64>`.
+ an empty group (e.g. `MAX`, `MIN`, `AVG`) are typed as
+ `AggregateExpr<Option<V>>`. `COUNT(*)` / `COUNT(col)` are always typed
+ as `AggregateExpr<i64>`.
 - **Legality checks** — DISTINCT-with-window combinations and similar
-  illegal combinations are caught before SQL emission and return
-  `DjogiError::UnsupportedAggregate`.
+ illegal combinations are caught before SQL emission and return
+ `DjogiError::UnsupportedAggregate`.
 
 ---
 
@@ -634,6 +634,6 @@ Every grouped terminal follows the same contract:
 
 - [Queries guide](./queries.md) — `QuerySet`, filter closures, ordering
 - [Expressions guide](./expressions.md) — `Expr<T>`, `AggregateExpr<V>`,
-  `Window`, frame clauses
+ `Window`, frame clauses
 - [Spatial guide](./spatial.md) — feature-gated spatial primitives and
-  the three spatial grouping entry points
+ the three spatial grouping entry points

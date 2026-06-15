@@ -51,11 +51,11 @@ use djogi::prelude::*;
 #[derive(Model, Debug, Clone, Serialize, Deserialize)]
 #[model(table = "invoices", tenant_key = "org_id")]
 pub struct Invoice {
-    pub org_id: HeerId,          // tenant discriminator — explicit field, not injected
-    pub number: String,
-    pub total_cents: i64,
-    pub status: String,
-    pub due_date: time::Date,
+ pub org_id: HeerId,  // tenant discriminator — explicit field, not injected
+ pub number: String,
+ pub total_cents: i64,
+ pub status: String,
+ pub due_date: time::Date,
 }
 ```
 
@@ -68,15 +68,15 @@ ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoices FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY invoices_tenant_isolation ON invoices
-    USING (org_id = current_setting('app.tenant_id', true)::bigint)
-    WITH CHECK (org_id = current_setting('app.tenant_id', true)::bigint);
+ USING (org_id = current_setting('app.tenant_id', true)::bigint)
+ WITH CHECK (org_id = current_setting('app.tenant_id', true)::bigint);
 
 -- App role sees only tenant rows; admin role bypasses policy
 GRANT SELECT, INSERT, UPDATE, DELETE ON invoices TO djogi_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON invoices TO djogi_admin;
 
 ALTER POLICY invoices_tenant_isolation ON invoices
-    TO djogi_app;  -- policy applies to djogi_app role only
+ TO djogi_app; -- policy applies to djogi_app role only
 ```
 
 Descriptor-driven migration plans include this SQL when they detect a model with `tenant_key`; apply the plan with `djogi migrations apply` or the library entry point `djogi::migrate::apply_plan`.
@@ -91,21 +91,21 @@ For RLS to work, every database transaction that accesses tenant-scoped tables m
 use djogi::prelude::*;
 
 async fn list_invoices(
-    State(pool): State<DjogiPool>,
-    Extension(current_org): Extension<HeerId>,  // set by your auth middleware
+ State(pool): State<DjogiPool>,
+ Extension(current_org): Extension<HeerId>, // set by your auth middleware
 ) -> impl IntoResponse {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
-    let invoices = atomic(&mut ctx, |tx| Box::pin(async move {
-        // Set the tenant context — all queries in this transaction see only org's rows.
-        tx.set_tenant(&current_org.to_string()).await?;
+ let mut ctx = DjogiContext::from_pool(pool.clone());
+ let invoices = atomic(&mut ctx, |tx| Box::pin(async move {
+ // Set the tenant context — all queries in this transaction see only org's rows.
+ tx.set_tenant(&current_org.to_string()).await?;
 
-        Invoice::objects()
-            .filter(|f| f.status().eq("open"))
-            .order_by(|f| f.due_date().asc())
-            .fetch_all(tx).await
-    })).await?;
+ Invoice::objects()
+ .filter(|f| f.status().eq("open"))
+ .order_by(|f| f.due_date().asc())
+ .fetch_all(tx).await
+ })).await?;
 
-    Json(invoices).into_response()
+ Json(invoices).into_response()
 }
 ```
 
@@ -129,17 +129,17 @@ use axum::{extract::State, middleware::Next, response::Response};
 use axum::http::Request;
 
 pub async fn tenant_context_middleware<B>(
-    State(pool): State<DjogiPool>,
-    mut request: Request<B>,
-    next: Next<B>,
+ State(pool): State<DjogiPool>,
+ mut request: Request<B>,
+ next: Next<B>,
 ) -> Response {
-    // Your auth logic — extract org_id from JWT, session, API key, etc.
-    let org_id: HeerId = extract_org_id_from_request(&request)?;
+ // Your auth logic — extract org_id from JWT, session, API key, etc.
+ let org_id: HeerId = extract_org_id_from_request(&request)?;
 
-    // Inject into request extensions for handlers to use
-    request.extensions_mut().insert(org_id);
+ // Inject into request extensions for handlers to use
+ request.extensions_mut().insert(org_id);
 
-    next.run(request).await
+ next.run(request).await
 }
 ```
 
@@ -147,25 +147,25 @@ Individual handlers then start a transaction and set the tenant:
 
 ```rust
 async fn create_invoice(
-    State(pool): State<DjogiPool>,
-    Extension(org_id): Extension<HeerId>,
-    Json(input): Json<CreateInvoiceInput>,
+ State(pool): State<DjogiPool>,
+ Extension(org_id): Extension<HeerId>,
+ Json(input): Json<CreateInvoiceInput>,
 ) -> impl IntoResponse {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
-    let invoice = atomic(&mut ctx, |tx| Box::pin(async move {
-        tx.set_tenant(&org_id.to_string()).await?;
+ let mut ctx = DjogiContext::from_pool(pool.clone());
+ let invoice = atomic(&mut ctx, |tx| Box::pin(async move {
+ tx.set_tenant(&org_id.to_string()).await?;
 
-        Invoice::create(tx, Invoice {
-            org_id,
-            number: input.number,
-            total_cents: input.total_cents,
-            status: "open".into(),
-            due_date: input.due_date,
-            ..Default::default()
-        }).await
-    })).await?;
+ Invoice::create(tx, Invoice {
+  org_id,
+  number: input.number,
+  total_cents: input.total_cents,
+  status: "open".into(),
+  due_date: input.due_date,
+ ..Default::default()
+ }).await
+ })).await?;
 
-    Json(invoice).into_response()
+ Json(invoice).into_response()
 }
 ```
 
@@ -179,22 +179,22 @@ async fn create_invoice(
 use djogi::prelude::*;
 
 pub struct InvoiceService {
-    pool: DjogiPool,
+ pool: DjogiPool,
 }
 
 impl InvoiceService {
-    // The TenantScoped wrapper makes the tenant requirement part of the API signature.
-    // You cannot accidentally forget to scope the query.
-    pub async fn list_open(&self, scope: TenantScoped<Invoice>) -> djogi::Result<Vec<Invoice>> {
-        let mut ctx = DjogiContext::from_pool(self.pool.clone());
-        atomic(&mut ctx, |tx| Box::pin(async move {
-            tx.set_tenant(&scope.tenant_id().to_string()).await?;
+ // The TenantScoped wrapper makes the tenant requirement part of the API signature.
+ // You cannot accidentally forget to scope the query.
+ pub async fn list_open(&self, scope: TenantScoped<Invoice>) -> djogi::Result<Vec<Invoice>> {
+ let mut ctx = DjogiContext::from_pool(self.pool.clone());
+ atomic(&mut ctx, |tx| Box::pin(async move {
+  tx.set_tenant(&scope.tenant_id().to_string()).await?;
 
-            Invoice::objects()
-                .filter(|f| f.org_id().eq(scope.tenant_id()).and_with(f.status().eq("open")))
-                .fetch_all(tx).await
-        })).await
-    }
+  Invoice::objects()
+ .filter(|f| f.org_id().eq(scope.tenant_id()).and_with(f.status().eq("open")))
+ .fetch_all(tx).await
+ })).await
+ }
 }
 
 // Caller must provide the tenant — cannot call the method without one
@@ -213,12 +213,12 @@ let mut ctx = DjogiContext::from_pool(pool.clone());
 
 // Standard — enforces tenant isolation
 Invoice::objects()
-    .filter(|f| f.org_id().eq(org_id))
-    .fetch_all(&mut ctx).await?;
+.filter(|f| f.org_id().eq(org_id))
+.fetch_all(&mut ctx).await?;
 
 // Bypasses RLS — sees all tenants' data
 Invoice::objects_insecurely()
-    .fetch_all(&mut ctx).await?;
+.fetch_all(&mut ctx).await?;
 
 // Prefer generated model-level helpers for specific admin operations, or
 // use objects_insecurely().fetch_* only inside a reviewed admin path.
@@ -284,37 +284,37 @@ use djogi::auth::{DjogiAuth, Credentials, AuthError};
 use axum::http::Request;
 
 pub struct JwtCredentials {
-    pub user_id: HeerId,
-    pub org_id: HeerId,
-    pub roles: Vec<String>,
+ pub user_id: HeerId,
+ pub org_id: HeerId,
+ pub roles: Vec<String>,
 }
 
 impl DjogiAuth for JwtCredentials {
-    fn from_request(req: &axum::http::Request<axum::body::Body>) -> Result<Self, AuthError> {
-        let token = req
-            .headers()
-            .get("Authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .ok_or(AuthError::MissingCredentials)?;
+ fn from_request(req: &axum::http::Request<axum::body::Body>) -> Result<Self, AuthError> {
+ let token = req
+ .headers()
+ .get("Authorization")
+ .and_then(|v| v.to_str().ok())
+ .and_then(|v| v.strip_prefix("Bearer "))
+ .ok_or(AuthError::MissingCredentials)?;
 
-        // Validate and decode your JWT here
-        let claims = decode_jwt(token).map_err(|_| AuthError::InvalidCredentials)?;
+ // Validate and decode your JWT here
+ let claims = decode_jwt(token).map_err(|_| AuthError::InvalidCredentials)?;
 
-        Ok(JwtCredentials {
-            user_id: claims.sub,
-            org_id: claims.org_id,
-            roles: claims.roles,
-        })
-    }
+ Ok(JwtCredentials {
+  user_id: claims.sub,
+  org_id: claims.org_id,
+  roles: claims.roles,
+ })
+ }
 
-    fn tenant_id(&self) -> Option<HeerId> {
-        Some(self.org_id)
-    }
+ fn tenant_id(&self) -> Option<HeerId> {
+ Some(self.org_id)
+ }
 
-    fn is_admin(&self) -> bool {
-        self.roles.contains(&"admin".to_string())
-    }
+ fn is_admin(&self) -> bool {
+ self.roles.contains(&"admin".to_string())
+ }
 }
 ```
 
@@ -337,15 +337,15 @@ Djogi supports Postgres role switching for fine-grained permission control. This
 use djogi::context::DjogiContext;
 
 async fn admin_report(State(pool): State<DjogiPool>) -> impl IntoResponse {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
-    let all_invoices = atomic(&mut ctx, |tx| Box::pin(async move {
-        // Switch to the admin role — bypasses RLS policies that apply only to djogi_app role
-        tx.set_role("djogi_admin").await?;
+ let mut ctx = DjogiContext::from_pool(pool.clone());
+ let all_invoices = atomic(&mut ctx, |tx| Box::pin(async move {
+ // Switch to the admin role — bypasses RLS policies that apply only to djogi_app role
+ tx.set_role("djogi_admin").await?;
 
-        Invoice::objects()
-            .fetch_all(tx).await
-    })).await?;
-    Json(all_invoices).into_response()
+ Invoice::objects()
+ .fetch_all(tx).await
+ })).await?;
+ Json(all_invoices).into_response()
 }
 ```
 
@@ -387,8 +387,8 @@ If the snapshot has been tampered with:
 
 ```
 ERROR: schema snapshot signature mismatch
-  Expected: 8f3c2a1b...
-  Found:    7e1d4f9c...
+ Expected: 8f3c2a1b...
+ Found: 7e1d4f9c...
 
 The schema snapshot may have been modified outside of Djogi's migration library.
 Do not run migrations until this is resolved.
@@ -409,8 +409,8 @@ The following patterns are common mistakes that compromise isolation, auditabili
 // WRONG — application-layer filtering is not defense in depth
 let mut ctx = DjogiContext::from_pool(pool.clone());
 Invoice::objects()
-    .filter(|f| f.org_id().eq(org_id))
-    .fetch_all(&mut ctx).await?;  // pool-backed ctx — no transaction, no RLS context
+.filter(|f| f.org_id().eq(org_id))
+.fetch_all(&mut ctx).await?; // pool-backed ctx — no transaction, no RLS context
 ```
 
 If the filter is accidentally removed, or if there is a bug in the org_id extraction, all tenants' data is exposed. The fix is to use `DjogiContext::set_tenant(...)` inside a transaction so the database enforces isolation:
@@ -419,10 +419,10 @@ If the filter is accidentally removed, or if there is a bug in the org_id extrac
 // CORRECT — RLS enforces isolation at the database level
 let mut ctx = DjogiContext::from_pool(pool.clone());
 atomic(&mut ctx, |tx| Box::pin(async move {
-    tx.set_tenant(&org_id.to_string()).await?;
-    Invoice::objects()
-        .filter(|f| f.org_id().eq(org_id))  // belt-and-suspenders; RLS is the real guard
-        .fetch_all(tx).await
+ tx.set_tenant(&org_id.to_string()).await?;
+ Invoice::objects()
+.filter(|f| f.org_id().eq(org_id)) // belt-and-suspenders; RLS is the real guard
+.fetch_all(tx).await
 })).await?;
 ```
 
@@ -431,11 +431,11 @@ atomic(&mut ctx, |tx| Box::pin(async move {
 ```rust
 // WRONG — bypasses tenant isolation in a user-facing endpoint
 async fn get_invoice(Path(id): Path<HeerIdRecencyBiased>, State(pool): State<DjogiPool>) -> impl IntoResponse {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
-    let invoice = Invoice::objects_insecurely()
-        .filter(|f| f.id().eq(id))
-        .fetch_one(&mut ctx).await?;  // any user can access any org's invoice
-    Json(invoice)
+ let mut ctx = DjogiContext::from_pool(pool.clone());
+ let invoice = Invoice::objects_insecurely()
+.filter(|f| f.id().eq(id))
+.fetch_one(&mut ctx).await?; // any user can access any org's invoice
+ Json(invoice)
 }
 ```
 
@@ -444,16 +444,16 @@ Any user who guesses or enumerates an invoice ID can access any organization's i
 ```rust
 // CORRECT
 async fn get_invoice(
-    Path(id): Path<HeerId>,
-    State(pool): State<DjogiPool>,
-    Extension(org_id): Extension<HeerId>,
+ Path(id): Path<HeerId>,
+ State(pool): State<DjogiPool>,
+ Extension(org_id): Extension<HeerId>,
 ) -> impl IntoResponse {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
-    let invoice = atomic(&mut ctx, |tx| Box::pin(async move {
-        tx.set_tenant(&org_id.to_string()).await?;
-        Invoice::get(tx, id).await  // RLS guarantees org isolation
-    })).await?;
-    Json(invoice)
+ let mut ctx = DjogiContext::from_pool(pool.clone());
+ let invoice = atomic(&mut ctx, |tx| Box::pin(async move {
+ tx.set_tenant(&org_id.to_string()).await?;
+ Invoice::get(tx, id).await // RLS guarantees org isolation
+ })).await?;
+ Json(invoice)
 }
 ```
 
@@ -487,18 +487,18 @@ export DJOGI_SIGNING_KEY="$(vault read secret/djogi-signing-key)"
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#rls-leak-demo): intentionally demonstrates the forbidden session-level SET anti-pattern.
 async fn batch_job(pool: &DjogiPool, tenant_ids: Vec<HeerId>) -> djogi::Result<()> {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
-    for tenant_id in tenant_ids {
-        // Issuing a session-level SET against a pool-backed context — no transaction boundary.
-        // The SET persists on whichever connection the pool hands out, then leaks to the next
-        // caller once this ctx releases it.
-        ctx.raw_execute(
-            "SET app.tenant_id = ",
-            &[&tenant_id.to_string()],
-        ).await?;
-        let _invoices = Invoice::objects().fetch_all(&mut ctx).await?;
-    }
-    Ok(())
+ let mut ctx = DjogiContext::from_pool(pool.clone());
+ for tenant_id in tenant_ids {
+ // Issuing a session-level SET against a pool-backed context — no transaction boundary.
+ // The SET persists on whichever connection the pool hands out, then leaks to the next
+ // caller once this ctx releases it.
+ ctx.raw_execute(
+  "SET app.tenant_id = ",
+  &[&tenant_id.to_string()],
+ ).await?;
+ let _invoices = Invoice::objects().fetch_all(&mut ctx).await?;
+ }
+ Ok(())
 }
 ```
 
@@ -507,14 +507,14 @@ Always use `DjogiContext::set_tenant(...)` with a transaction-backed context, ne
 ```rust
 // CORRECT
 async fn batch_job(pool: &DjogiPool, tenant_ids: Vec<HeerId>) {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
-    for tenant_id in tenant_ids {
-        atomic(&mut ctx, |tx| Box::pin(async move {
-            tx.set_tenant(&tenant_id.to_string()).await?;  // SET LOCAL — clears on commit
-            Invoice::objects().fetch_all(tx).await?;
-            Ok(())
-        })).await?;
-    }
+ let mut ctx = DjogiContext::from_pool(pool.clone());
+ for tenant_id in tenant_ids {
+ atomic(&mut ctx, |tx| Box::pin(async move {
+  tx.set_tenant(&tenant_id.to_string()).await?; // SET LOCAL — clears on commit
+  Invoice::objects().fetch_all(tx).await?;
+  Ok(())
+ })).await?;
+ }
 }
 ```
 
@@ -527,10 +527,10 @@ async fn batch_job(pool: &DjogiPool, tenant_ids: Vec<HeerId>) {
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#raw-query-anti-pattern): intentionally demonstrates a forbidden raw-query shortcut.
 async fn list_open_invoices_insecurely(ctx: &mut DjogiContext) -> djogi::Result<Vec<Invoice>> {
-    ctx.raw_query::<Invoice>(
-        "SELECT * FROM invoices WHERE status = 'open'",
-        &[],
-    ).await
+ ctx.raw_query::<Invoice>(
+ "SELECT * FROM invoices WHERE status = 'open'",
+ &[],
+ ).await
 }
 ```
 
@@ -539,18 +539,18 @@ The `raw_*` escape hatches exist for admin tooling and migrations — not as a w
 ```rust
 // CORRECT — raw query inside an atomic() scope so RLS / tenant context apply
 async fn list_open_invoices(
-    ctx: &mut DjogiContext,
-    org_id: HeerId,
+ ctx: &mut DjogiContext,
+ org_id: HeerId,
 ) -> djogi::Result<Vec<Invoice>> {
-    atomic(ctx, |tx| Box::pin(async move {
-        tx.set_tenant(&org_id.to_string()).await?;
+ atomic(ctx, |tx| Box::pin(async move {
+ tx.set_tenant(&org_id.to_string()).await?;
 
-        // Under #[djogi::deliberately_bypass_convention_with_raw_sql]
-        // on the enclosing helper if you really do need raw SQL.
-        // See docs/spec/raw-sql-escape-hatches.md.
-        Invoice::objects()
-            .filter(|f| f.status().eq("open").and_with(f.org_id().eq(org_id)))
-            .fetch_all(tx).await
-    })).await
+ // Under #[djogi::deliberately_bypass_convention_with_raw_sql]
+ // on the enclosing helper if you really do need raw SQL.
+ // See docs/spec/raw-sql-escape-hatches.md.
+ Invoice::objects()
+ .filter(|f| f.status().eq("open").and_with(f.org_id().eq(org_id)))
+ .fetch_all(tx).await
+ })).await
 }
 ```

@@ -1,7 +1,7 @@
 error: `#[field(max_length = 64)]` is only valid on `String` fields. `String` columns emit `VARCHAR(N)`; non-String fields ignore the length contract at runtime and must not use this attribute
  --> $DIR/field_max_length_non_string.rs:8:26
-  |
-8 |     #[field(max_length = 64)]
-  |                          ^^
+ |
+8 |  #[field(max_length = 64)]
+ |       ^^
 
 error: aborting due to 1 previous error

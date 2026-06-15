@@ -12,19 +12,19 @@
 //! # Wire shape
 //! ```json
 //! {
-//!   "schema_url": "https://djogi.dev/schemas/v1/intent.json",
-//!   "models": {
-//!     "Vehicle": {
-//!       "rationale": "Tracks rental fleet inventory across regions.",
-//!       "fields": {
-//!         "vin": {
-//!           "rationale": "Unique manufacturer identifier; never reused.",
-//!           "added_by": "fleet-team",
-//!           "added_at": "2026-04-12T09:30:00Z"
-//!         }
-//!       }
-//!     }
+//! "schema_url": "https://djogi.dev/schemas/v1/intent.json",
+//! "models": {
+//!  "Vehicle": {
+//!  "rationale": "Tracks rental fleet inventory across regions.",
+//!  "fields": {
+//!   "vin": {
+//!   "rationale": "Unique manufacturer identifier; never reused.",
+//!   "added_by": "fleet-team",
+//!   "added_at": "2026-04-12T09:30:00Z"
 //!   }
+//!  }
+//!  }
+//! }
 //! }
 //! ```
 //! `models` and `fields` are `BTreeMap<String, _>` so docs rendering is
@@ -182,7 +182,7 @@ mod tests {
 
     fn write_intent(dir: &Path, contents: &str) {
         let djogi_dir = dir.join(".djogi");
-        std::fs::create_dir_all(&djogi_dir).expect("create .djogi");
+        std::fs::create_dir_all(&djogi_dir).expect("create.djogi");
         let mut f =
             std::fs::File::create(djogi_dir.join("intent.json")).expect("create intent.json");
         f.write_all(contents.as_bytes()).expect("write intent.json");
@@ -201,19 +201,19 @@ mod tests {
         write_intent(
             dir.path(),
             r#"{
-  "schema_url": "https://djogi.dev/schemas/v1/intent.json",
-  "models": {
-    "Vehicle": {
-      "rationale": "Tracks fleet inventory.",
-      "fields": {
-        "vin": {
-          "rationale": "Unique manufacturer id.",
-          "added_by": "fleet-team",
-          "added_at": "2026-04-12T09:30:00Z"
-        }
-      }
-    }
+ "schema_url": "https://djogi.dev/schemas/v1/intent.json",
+ "models": {
+ "Vehicle": {
+  "rationale": "Tracks fleet inventory.",
+  "fields": {
+  "vin": {
+   "rationale": "Unique manufacturer id.",
+   "added_by": "fleet-team",
+   "added_at": "2026-04-12T09:30:00Z"
   }
+  }
+ }
+ }
 }"#,
         );
         let file = load(dir.path()).expect("load").expect("Some(file)");

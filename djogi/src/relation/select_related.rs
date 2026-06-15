@@ -6,14 +6,14 @@
 //! For each registered path on the queryset, the select_related emitter:
 //! 1. Appends a `LEFT JOIN {target_table} rel_{source_column}
 //! ON {parent_table}.{source_column} = rel_{source_column}.id` clause
-//!    to the main query.
+//! to the main query.
 //! 2. Extends the `SELECT` list with one entry per child column,
-//!    aliased as `rel_{source_column}.{col} AS "rel_{source_column}.{col}"`
-//!    so the result set carries both sides with no column-name
-//!    collisions.
-//!    After the query runs, the terminal walks each row and decodes the
-//!    parent plus every registered child from the aliased columns,
-//!    packaging them into `JoinedRow<T>`.
+//! aliased as `rel_{source_column}.{col} AS "rel_{source_column}.{col}"`
+//! so the result set carries both sides with no column-name
+//! collisions.
+//! After the query runs, the terminal walks each row and decodes the
+//! parent plus every registered child from the aliased columns,
+//! packaging them into `JoinedRow<T>`.
 //! # Why aliased child columns (not `SELECT t.*`)
 //! A prefix-aware decoder looks columns up by the exact alias name — `try_get("id")`
 //! finds the first column named `id`, which would be ambiguous the
@@ -43,13 +43,13 @@
 //! semantics.
 //! # Current scope
 //! - Single-hop only — no chained `select_related(path_a.path_b)`. Multi-hop
-//!   decode is deferred.
+//! decode is deferred.
 //! - Multi-relation-per-queryset **is** supported (multiple
-//!   `.select_related(...)` calls accumulate into a `Vec<ErasedSelectRelated>`,
-//!   each producing its own aliased `LEFT JOIN`).
+//! `.select_related(...)` calls accumulate into a `Vec<ErasedSelectRelated>`,
+//! each producing its own aliased `LEFT JOIN`).
 //! - No join-time filtering — filters still target the parent table.
 //! - `.select_related(...)` + `.prefetch(...)` can coexist on the same
-//!   queryset; the terminal honours both.
+//! queryset; the terminal honours both.
 
 use crate::DjogiError;
 use crate::context::ContextInner;
@@ -63,7 +63,7 @@ use tokio_postgres::Row as PgRow;
 
 /// Decoder function type for a single child column in the select_related
 /// path. One monomorphised `fn` per `(Parent, Child)` pair — same erasure
-/// strategy Task 4's prefetch loader uses.
+/// strategy 's prefetch loader uses.
 /// Returns `Some(Box<Child>)` when the child row materialised, or
 /// `None` on a LEFT JOIN miss. The probe for miss-vs-hit uses
 /// `tokio_postgres::Row::try_get::<i64>(id_alias)` on the child's `id`

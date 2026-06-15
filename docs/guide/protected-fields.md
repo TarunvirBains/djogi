@@ -23,27 +23,27 @@ use djogi::prelude::*;
 #[model(table = "users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    // PII field with sensitivity + redaction + retention
-    #[field(protected(
-        sensitivity = "pii",
-        rationale = "Email confirmation flow — GDPR Art. 6(1)(b)",
-        redaction = "mask",
-        retention = "extended"
-    ))]
-    pub email: String,
+ // PII field with sensitivity + redaction + retention
+ #[field(protected(
+ sensitivity = "pii",
+ rationale = "Email confirmation flow — GDPR Art. 6(1)(b)",
+ redaction = "mask",
+ retention = "extended"
+ ))]
+ pub email: String,
 
-    // Explicit neutral sensitivity (no other keys allowed)
-    #[field(protected(sensitivity = "none"))]
-    pub status: Status,
+ // Explicit neutral sensitivity (no other keys allowed)
+ #[field(protected(sensitivity = "none"))]
+ pub status: Status,
 
-    // Encrypted secret with archival retention
-    #[field(protected(
-        sensitivity = "secret",
-        rationale = "Legacy recovery codes",
-        codec = "aes256_gcm_v1",
-        retention = "archival"
-    ))]
-    pub recovery_code: Option<String>,
+ // Encrypted secret with archival retention
+ #[field(protected(
+ sensitivity = "secret",
+ rationale = "Legacy recovery codes",
+ codec = "aes256_gcm_v1",
+ retention = "archival"
+ ))]
+ pub recovery_code: Option<String>,
 }
 ```
 
@@ -56,7 +56,7 @@ pub struct User {
 | `redaction` | `"none"`, `"hash_id"`, `"mask"`, `"drop"` | No | `"none"` | `"hash_id"` is only valid on `HeerId`/`RanjId` fields. |
 | `codec` | `"aes256_gcm_v1"` | No | `None` | Triggers encryption at rest. See [Encrypted at Rest](./encrypted-at-rest.md). |
 | `retention` | `"transient"`, `"standard"`, `"extended"`, `"archival"` | No | `"standard"` | Used for data lifecycle management. |
-| `per_scope` | `{ scope = { ... } }` | No | - | Declares [Presentation Codecs](./models.md#protected-fields-and-presentation-codecs) for visages. |
+| `per_scope` | `{ scope = {... } }` | No | - | Declares [Presentation Codecs](./models.md#protected-fields-and-presentation-codecs) for visages. |
 
 ## Validation Rules
 

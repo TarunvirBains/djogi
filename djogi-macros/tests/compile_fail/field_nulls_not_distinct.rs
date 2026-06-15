@@ -10,8 +10,8 @@ use djogi::prelude::*;
 #[model(table = "posts")]
 #[derive(Debug, Clone)]
 pub struct Post {
-    #[field(unique, nulls_not_distinct = true)]
-    pub slug: Option<String>,
+ #[field(unique, nulls_not_distinct = true)]
+ pub slug: Option<String>,
 }
 
 fn main() {}

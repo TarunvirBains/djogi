@@ -8,9 +8,9 @@
 //! `&mut Sassi`, then freezes into `Arc<Sassi>` and stores it on the
 //! context. After boot the registry is read-only.
 //! Cross-context behaviour: each top-level `DjogiContext` builds its
-//! own `Sassi`. `begin()` / `atomic(&mut pool_ctx, ...)` SHARE the parent's
+//! own `Sassi`. `begin()` / `atomic(&mut pool_ctx,...)` SHARE the parent's
 //! `Arc<Sassi>` (cache state is transaction-scope-agnostic). `atomic(&pool,
-//! ...)` constructs a fresh top-level transaction context because no parent
+//!...)` constructs a fresh top-level transaction context because no parent
 //! context was supplied. This is the "DjogiContext IS the tenant boundary"
 //! contract for the cache-tenant boundary.
 

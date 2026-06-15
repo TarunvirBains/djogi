@@ -14,21 +14,21 @@
 use djogi::prelude::*;
 
 djogi::apps! {
-    // Live `audit` in crud_log.
-    #[app(database = "crud_log", label = "audit")]
-    pub struct CrudAudit;
+ // Live `audit` in crud_log.
+ #[app(database = "crud_log", label = "audit")]
+ pub struct CrudAudit;
 
-    // Rename-from-`"audit"` on main — accepted by macro expansion;
-    // see the prose above for the runtime-registry panic.
-    #[app(database = "main", renamed_from = "audit")]
-    pub struct MainAudit;
+ // Rename-from-`"audit"` on main — accepted by macro expansion;
+ // see the prose above for the runtime-registry panic.
+ #[app(database = "main", renamed_from = "audit")]
+ pub struct MainAudit;
 }
 
 fn main() {
-    // Inspect the const descriptors only — calling
-    // `AppRegistry::all()` here would panic per F2.
-    assert_eq!(<MainAudit as App>::DATABASE, "main");
-    assert_eq!(<MainAudit as App>::DESCRIPTOR.renamed_from, Some("audit"));
-    assert_eq!(<CrudAudit as App>::DATABASE, "crud_log");
-    assert_eq!(<CrudAudit as App>::DESCRIPTOR.renamed_from, None);
+ // Inspect the const descriptors only — calling
+ // `AppRegistry::all()` here would panic per F2.
+ assert_eq!(<MainAudit as App>::DATABASE, "main");
+ assert_eq!(<MainAudit as App>::DESCRIPTOR.renamed_from, Some("audit"));
+ assert_eq!(<CrudAudit as App>::DATABASE, "crud_log");
+ assert_eq!(<CrudAudit as App>::DESCRIPTOR.renamed_from, None);
 }

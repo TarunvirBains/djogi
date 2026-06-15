@@ -3,8 +3,8 @@
 //
 // The macro emits both halves of the seal:
 //
-//     impl ::djogi::__private::hooks::Sealed for Widget {}
-//     impl ::djogi::__private::hooks::HasHooks for Widget {}
+//  impl ::djogi::__private::hooks::Sealed for Widget {}
+//  impl ::djogi::__private::hooks::HasHooks for Widget {}
 //
 // The `HasHooks` trait has `ModelHooks` as a supertrait. Without a
 // hand-written `impl ModelHooks for Widget`, the `HasHooks` impl fails
@@ -21,7 +21,7 @@ use djogi::prelude::*;
 #[model(table = "phase8_hooks_no_impl_widgets", hooks)]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub name: String,
+ pub name: String,
 }
 
 fn main() {}

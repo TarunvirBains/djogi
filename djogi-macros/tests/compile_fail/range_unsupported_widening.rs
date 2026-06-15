@@ -7,13 +7,13 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "phase85_g0_range_unsupported_widening",
-    pk = HeerId,
-    no_default
+ table = "phase85_g0_range_unsupported_widening",
+ pk = HeerId,
+ no_default
 )]
 #[derive(Debug, Clone)]
 pub struct UnsupportedWideningRange {
-    pub bad: Range<u32>,
+ pub bad: Range<u32>,
 }
 
 fn main() {}

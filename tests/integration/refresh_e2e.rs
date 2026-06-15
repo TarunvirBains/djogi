@@ -1,61 +1,61 @@
-// .10 integration tests:  integration — auth locked to
+// .10 integration tests: integration — auth locked to
 // subscription + end-to-end happy-path.
 //
 // # What this file pins
 //
 // 1. **`refresh_into_e2e_happy_path`** — full insert / save / soft-delete
-//    cycle through real refresh ticks. Pins the complete δ contract:
-//    full-scan tick returns all live rows; delta tick applies new inserts and
-//    routes soft-deleted rows to tombstones.
+//  cycle through real refresh ticks. Pins the complete δ contract:
+//  full-scan tick returns all live rows; delta tick applies new inserts and
+//  routes soft-deleted rows to tombstones.
 //
 // 2. **`refresh_into_auth_locked_to_subscription`** — structural proof that
-//    the `AuthContext` captured at `refresh_into` time is the auth used
-//    per-tick (not whatever caller-side auth holds at tick time). Closes the
-//    gap that .5 test 4 admitted.
+//  the `AuthContext` captured at `refresh_into` time is the auth used
+//  per-tick (not whatever caller-side auth holds at tick time). Closes the
+//  gap that .5 test 4 admitted.
 //
-//    **Option C** is used here rather than Option B (RLS-backed filtering).
-//    The `djogi` test role is a Postgres superuser; Postgres superusers
-//    **always** bypass row security even when `FORCE ROW LEVEL SECURITY` is
-//    set on a table (`rolsuper = t` → `BYPASSRLS` is implied). `FORCE ROW
-//    LEVEL SECURITY` only re-applies RLS to the *table owner* when the owner
-//    is a normal role, not a superuser. Since the fetcher connects as the
-//    `djogi` superuser, RLS-based row-count filtering cannot be observed at
-//    integration-test level without switching to a restricted role inside the
-//    fetch transaction — which would require production-code changes outside
-//    .10 scope.
+//  **Option C** is used here rather than Option B (RLS-backed filtering).
+//  The `djogi` test role is a Postgres superuser; Postgres superusers
+//  **always** bypass row security even when `FORCE ROW LEVEL SECURITY` is
+//  set on a table (`rolsuper = t` → `BYPASSRLS` is implied). `FORCE ROW
+//  LEVEL SECURITY` only re-applies RLS to the *table owner* when the owner
+//  is a normal role, not a superuser. Since the fetcher connects as the
+//  `djogi` superuser, RLS-based row-count filtering cannot be observed at
+//  integration-test level without switching to a restricted role inside the
+//  fetch transaction — which would require production-code changes outside
+//  .10 scope.
 //
-//    **What Option C proves instead:** two handles constructed with different
-//    `AuthContext` values each complete ticks successfully, and the auth set
-//    on the fetcher at construction time is the one observable inside the tick
-//    (proven via `ctx.auth().tenant_id` plumbing through `auto_set_tenant` +
-//    `ctx.applied_tenant_id()`). The structural proof that auth IS captured by
-//    value (not by reference) is the `'static` bound on `DeltaPunnuFetcher<T>`
-//    and the `DjogiDeltaFetcher::auth: AuthContext` owned field verified in
-//    .3–.5.
+//  **What Option C proves instead:** two handles constructed with different
+//  `AuthContext` values each complete ticks successfully, and the auth set
+//  on the fetcher at construction time is the one observable inside the tick
+//  (proven via `ctx.auth().tenant_id` plumbing through `auto_set_tenant` +
+//  `ctx.applied_tenant_id()`). The structural proof that auth IS captured by
+//  value (not by reference) is the `'static` bound on `DeltaPunnuFetcher<T>`
+//  and the `DjogiDeltaFetcher::auth: AuthContext` owned field verified in
+//  .3–.5.
 //
-//    **Companion full-RLS test:** the row-count proof under a real
-//    non-superuser pool now lives in
-//    `tests/internal/non_superuser_rls.rs`
-//    (closes [GH #129]). That test reuses the refresh path
-//    against a `connect_test_db_as_non_superuser`-derived pool and
-//    asserts that only the tenant-scoped rows reach the bound Punnu.
-//    The structural proof here (Option C) and the row-count proof
-//    there (Option B + non-superuser pool) are complementary: this
-//    file pins the *value-capture* invariant; #129 pins the
-//    *server-side filtering* invariant.
+//  **Companion full-RLS test:** the row-count proof under a real
+//  non-superuser pool now lives in
+//  `tests/internal/non_superuser_rls.rs`
+//  (closes [GH #129]). That test reuses the refresh path
+//  against a `connect_test_db_as_non_superuser`-derived pool and
+//  asserts that only the tenant-scoped rows reach the bound Punnu.
+//  The structural proof here (Option C) and the row-count proof
+//  there (Option B + non-superuser pool) are complementary: this
+//  file pins the *value-capture* invariant; #129 pins the
+//  *server-side filtering* invariant.
 //
 // 3. **`refresh_into_cancel_stops_ticks`** — `handle.cancel()` stops the
-//    periodic refresh loop. After cancel, manual `handle.update()` still
-//    succeeds (cancel only signals the background periodic task; the explicit
-//    update path does not check the cancel flag). The test pins sassi's
-//    canonical post-cancel behavior: periodic ticks stop, on-demand ticks
-//    continue.
+//  periodic refresh loop. After cancel, manual `handle.update()` still
+//  succeeds (cancel only signals the background periodic task; the explicit
+//  update path does not check the cancel flag). The test pins sassi's
+//  canonical post-cancel behavior: periodic ticks stop, on-demand ticks
+//  continue.
 //
 // # Spec anchors
 //
 // - spec §677 — auth-locked-to-subscription contract (Test 2)
 // - spec §430 — acceptance criterion: delta tick applies incremental changes
-//   after a full-scan baseline (Test 1)
+//  after a full-scan baseline (Test 1)
 // - §3 .10
 //
 // # RLS setup choice
@@ -123,23 +123,23 @@ pub struct CancelRow {
 ///
 /// 1. Insert 3 active, non-deleted rows via `Model::create`.
 /// 2. Tick 1 (full scan / `since = None`): `applied == 3`; all 3 rows resident
-///    in the Punnu.
+///  in the Punnu.
 /// 3. Insert 2 more rows with timestamps 1 second in the future (strictly after
-///    the tick-1 watermark).
+///  the tick-1 watermark).
 /// 4. Soft-delete row 1 (set `deleted_at` and call `save()`), bumping its
-///    `updated_at` past the tick-1 watermark.
+///  `updated_at` past the tick-1 watermark.
 /// 5. Tick 2 (delta / `since = max(tick-1 watermark)`):
-///    - The 2 new rows arrive as live items.
-///    - Row 1's `updated_at` advanced past watermark — arrives in the delta
-///      result, `__delta_should_tombstone()` returns `true` → routed to
-///      tombstones → evicted from the Punnu.
-///    - The inclusive `>=` boundary may re-include the last initial row (whose
-///      `updated_at == watermark`), so `applied` is 2 or 3 depending on
-///      timestamp resolution. The KEY invariant: `applied < 5` (delta is
-///      narrower than the full table) and the soft-deleted row is evicted.
+///  - The 2 new rows arrive as live items.
+///  - Row 1's `updated_at` advanced past watermark — arrives in the delta
+///   result, `__delta_should_tombstone()` returns `true` → routed to
+///   tombstones → evicted from the Punnu.
+///  - The inclusive `>=` boundary may re-include the last initial row (whose
+///   `updated_at == watermark`), so `applied` is 2 or 3 depending on
+///   timestamp resolution. The KEY invariant: `applied < 5` (delta is
+///   narrower than the full table) and the soft-deleted row is evicted.
 ///
 /// Pins spec §430 (incremental delta applies after a full-scan baseline) and
-/// the full  contract.
+/// the full contract.
 ///
 #[djogi::djogi_test(sync_models = [E2ERow])]
 async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
@@ -227,36 +227,36 @@ async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
 
     // ── Tick 2 — delta ───────────────────────────────────────────────────────
     // since = max(tick-1 watermark). Expected items via `>= watermark`:
-    //   - 2 new rows (strictly after watermark): live items.
-    //   - Row 1 (soft-deleted, `updated_at` bumped to now()): arrives in delta,
-    //     `__delta_should_tombstone()` returns true → tombstoned → evicted.
-    //   - Possibly 1 boundary row (last initial row at max tick-1 watermark):
-    //     the `>=` boundary re-includes the most-recent initial row. This is
-    //     the inclusive-boundary contract from DeltaPunnuFetcher (spec: boundary
-    //     rows may have changed without their watermark changing; deduplication
-    //     by id handles re-delivery).
+    //  - 2 new rows (strictly after watermark): live items.
+    //  - Row 1 (soft-deleted, `updated_at` bumped to now()): arrives in delta,
+    //   `__delta_should_tombstone()` returns true → tombstoned → evicted.
+    //  - Possibly 1 boundary row (last initial row at max tick-1 watermark):
+    //   the `>=` boundary re-includes the most-recent initial row. This is
+    //   the inclusive-boundary contract from DeltaPunnuFetcher (spec: boundary
+    //   rows may have changed without their watermark changing; deduplication
+    //   by id handles re-delivery).
     //
     // Therefore `applied` is 2 (new rows only) or 3 (new rows + boundary row)
     // depending on how many initial rows share the max `updated_at` timestamp.
     // Key invariants:
-    //   - `applied >= 2` (the 2 new rows must appear)
-    //   - `applied < 5`  (the delta is narrower than the full table of 5 rows)
-    //   - The soft-deleted row is evicted from the Punnu (tombstoned)
+    //  - `applied >= 2` (the 2 new rows must appear)
+    //  - `applied < 5` (the delta is narrower than the full table of 5 rows)
+    //  - The soft-deleted row is evicted from the Punnu (tombstoned)
     let tick_2 = handle.update().await.expect("tick 2 must succeed");
 
     let total_rows: usize = 5; // 3 initial + 2 new
     assert!(
         tick_2.applied >= 2,
         "tick 2 (delta) must apply at least 2 live items (the 2 new rows); \
-         got {applied}",
+     got {applied}",
         applied = tick_2.applied,
     );
     assert!(
         tick_2.applied < total_rows,
         "tick 2 (delta) must apply fewer rows than the full table ({total_rows}) — \
-         the watermark filter `WHERE updated_at >= $since` must be active; \
-         `applied == {total_rows}` means no filter applied (full-scan bug); \
-         got {applied}",
+     the watermark filter `WHERE updated_at >= $since` must be active; \
+     `applied == {total_rows}` means no filter applied (full-scan bug); \
+     got {applied}",
         applied = tick_2.applied,
     );
 
@@ -264,7 +264,7 @@ async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
     assert!(
         punnu.get(&to_delete_id).is_none(),
         "soft-deleted row must be evicted from the Punnu after tick 2 tombstoned it \
-         (`deleted_at IS NOT NULL` → `__delta_should_tombstone()` returns `true`)",
+     (`deleted_at IS NOT NULL` → `__delta_should_tombstone()` returns `true`)",
     );
 
     // New rows must be resident in the Punnu.
@@ -300,10 +300,10 @@ async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
 /// that auth is "locked" is:
 /// 1. The fetcher accepts the auth without panicking (proves auth is applied).
 /// 2. The two handles run independently (proves each subscription has its own
-///    captured auth snapshot, not a shared reference).
+///  captured auth snapshot, not a shared reference).
 /// 3. Modifying caller-side `_auth_a_modified` after construction has no effect
-///    on `handle_a`'s tick (the fetcher captured `auth_a` by value via Clone;
-///    the in-scope variable is unrelated).
+///  on `handle_a`'s tick (the fetcher captured `auth_a` by value via Clone;
+///  the in-scope variable is unrelated).
 ///
 #[djogi::djogi_test(sync_models = [AuthRow])]
 async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) {
@@ -381,7 +381,7 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
         tick_a.applied,
         8,
         "handle_a tick (full scan, no RLS): all 8 rows must be applied; \
-         got {applied}",
+     got {applied}",
         applied = tick_a.applied,
     );
 
@@ -396,8 +396,8 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
         tick_b.applied,
         8,
         "handle_b's first tick must apply exactly 8 rows — handle_b starts \
-         from `since = None` (independent watermark) and the AuthRow model \
-         has no tenant_key, so a full scan is deterministic; got {applied}",
+     from `since = None` (independent watermark) and the AuthRow model \
+     has no tenant_key, so a full scan is deterministic; got {applied}",
         applied = tick_b.applied,
     );
 
@@ -425,7 +425,7 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
     assert!(
         tick_a2.applied <= 8,
         "handle_a second tick must apply at most 8 rows (delta or boundary re-check); \
-         got {applied}",
+     got {applied}",
         applied = tick_a2.applied,
     );
 }
@@ -443,15 +443,15 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
 /// guard. Therefore, after `cancel()`:
 ///
 /// - Periodic ticks cease (the background `run_periodic_delta_refresh` loop
-///   exits when it observes the cancel watch value become `true`).
+///  exits when it observes the cancel watch value become `true`).
 /// - Manual `handle.update().await` still succeeds (the cancel flag is not
-///   inspected in the on-demand update path — verified by reading
-///   `sassi/src/punnu/delta_refresh.rs:RefreshSubscription::update`).
+///  inspected in the on-demand update path — verified by reading
+///  `sassi/src/punnu/delta_refresh.rs:RefreshSubscription::update`).
 ///
 /// This test pins both halves of the contract:
 /// 1. Before cancel: a manual tick succeeds and returns the expected rows.
 /// 2. After cancel: a manual tick STILL succeeds (proving cancel targets only
-///    the periodic background loop, not on-demand invocations).
+///  the periodic background loop, not on-demand invocations).
 ///
 /// The periodic-loop stop itself cannot be directly observed from outside
 /// sassi internals without a timing harness; we document the mechanism and
@@ -491,7 +491,7 @@ async fn refresh_into_cancel_stops_ticks(mut ctx: djogi::DjogiContext) {
         pre_cancel_tick.applied,
         2,
         "pre-cancel tick must apply both rows (full scan, since=None); \
-         got {applied}",
+     got {applied}",
         applied = pre_cancel_tick.applied,
     );
 
@@ -512,8 +512,8 @@ async fn refresh_into_cancel_stops_ticks(mut ctx: djogi::DjogiContext) {
     // from the pre-cancel tick, so `applied >= 1` (the boundary row).
     let post_cancel_tick = handle.update().await.expect(
         "post-cancel tick must succeed — cancel() only stops periodic ticks, \
-                 not on-demand update() calls (verified in sassi delta_refresh.rs \
-                 RefreshSubscription::update which bypasses the cancel watch)",
+         not on-demand update() calls (verified in sassi delta_refresh.rs \
+         RefreshSubscription::update which bypasses the cancel watch)",
     );
 
     // At least 1 row (the boundary row at max watermark, re-delivered by the
@@ -521,8 +521,8 @@ async fn refresh_into_cancel_stops_ticks(mut ctx: djogi::DjogiContext) {
     assert!(
         post_cancel_tick.applied >= 1,
         "post-cancel tick must apply at least 1 row (the boundary row at max \
-         watermark, included by the inclusive `>=` boundary); \
-         got {applied}",
+     watermark, included by the inclusive `>=` boundary); \
+     got {applied}",
         applied = post_cancel_tick.applied,
     );
 }

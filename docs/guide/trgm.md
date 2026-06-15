@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Trigram Similarity (pg_trgm)
 
@@ -6,15 +6,15 @@ The `trgm` feature exposes Postgres's `pg_trgm` extension as a first-class
 typed surface on text columns. Two operations are provided:
 
 - `.explicit_pg_predicate().trgm_similar_to(pattern)` — a `WHERE`-clause
-  predicate that compiles to the `%` operator. Index-accelerated by
-  `gin_trgm_ops` / `gist_trgm_ops`. Threshold is the session GUC
-  `pg_trgm.similarity_threshold` (Postgres default `0.3`). Postgres-specific,
-  not portable to Punnu.
+ predicate that compiles to the `%` operator. Index-accelerated by
+ `gin_trgm_ops` / `gist_trgm_ops`. Threshold is the session GUC
+ `pg_trgm.similarity_threshold` (Postgres default `0.3`). Postgres-specific,
+ not portable to Punnu.
 - `.trgm_similarity(pattern)` — a scored `Expr<f64>` for per-row similarity.
-  Compose with the `Expr<T>` comparison API in `filter_expr` to apply a
-  per-query numeric threshold. **Not** index-accelerated by the trgm
-  opclasses — use this when the explicit numeric threshold matters more
-  than peak read performance.
+ Compose with the `Expr<T>` comparison API in `filter_expr` to apply a
+ per-query numeric threshold. **Not** index-accelerated by the trgm
+ opclasses — use this when the explicit numeric threshold matters more
+ than peak read performance.
 
 Together these cover the principal pg_trgm use-case: partial-match search
 over user-visible strings (profile bios, tags, autocomplete, name lookups).
@@ -52,7 +52,7 @@ privileges, a database administrator must install `pg_trgm` out of band.
 
 ```rust
 ExplicitPgPredicateField<M, String>::trgm_similar_to(
-    pattern: impl Into<String>,
+ pattern: impl Into<String>,
 ) -> Condition
 ```
 
@@ -90,16 +90,16 @@ use djogi::prelude::*;
 
 #[model(app = "profiles", table = "user_profile")]
 pub struct UserProfile {
-    pub name: String,
-    pub bio: String,
+ pub name: String,
+ pub bio: String,
 }
 
 // Find profiles whose bio is trigram-similar to "machine learning"
 // at the session's current pg_trgm.similarity_threshold.
 let matches = UserProfile::objects()
-    .filter(|f| f.bio().explicit_pg_predicate().trgm_similar_to("machine learning"))
-    .fetch_all(&mut ctx)
-    .await?;
+.filter(|f| f.bio().explicit_pg_predicate().trgm_similar_to("machine learning"))
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 Generated SQL:
@@ -124,7 +124,7 @@ comparison API inside `filter_expr`:
 
 ```rust
 DjogiField<M, String>::trgm_similarity(
-    pattern: impl Into<String>,
+ pattern: impl Into<String>,
 ) -> Expr<f64>
 ```
 
@@ -132,13 +132,13 @@ DjogiField<M, String>::trgm_similarity(
 use djogi::prelude::*;
 
 let matches = UserProfile::objects()
-    .filter_expr(|f| {
-        f.bio()
-            .trgm_similarity("machine learning")
-            .gte(Expr::literal(0.3_f64))
-    })
-    .fetch_all(&mut ctx)
-    .await?;
+.filter_expr(|f| {
+ f.bio()
+ .trgm_similarity("machine learning")
+ .gte(Expr::literal(0.3_f64))
+ })
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 Generated SQL: `WHERE similarity(bio, $1) >= $2`
@@ -154,20 +154,20 @@ first followed by a tighter threshold:
 
 ```rust
 let matches = UserProfile::objects()
-    // First conjunct: indexable, narrows via gin_trgm_ops.
-    .filter(|f| {
-        f.bio()
-            .explicit_pg_predicate()
-            .trgm_similar_to("machine learning")
-    })
-    // Second conjunct: tightens the threshold for the matched candidates.
-    .filter_expr(|f| {
-        f.bio()
-            .trgm_similarity("machine learning")
-            .gte(Expr::literal(0.5_f64))
-    })
-    .fetch_all(&mut ctx)
-    .await?;
+ // First conjunct: indexable, narrows via gin_trgm_ops.
+.filter(|f| {
+ f.bio()
+ .explicit_pg_predicate()
+ .trgm_similar_to("machine learning")
+ })
+ // Second conjunct: tightens the threshold for the matched candidates.
+.filter_expr(|f| {
+ f.bio()
+ .trgm_similarity("machine learning")
+ .gte(Expr::literal(0.5_f64))
+ })
+.fetch_all(&mut ctx)
+.await?;
 ```
 
 This pairing is only meaningful when the tighter threshold is **above**
@@ -203,36 +203,36 @@ Use `IndexSpec` in your model's `#[model(indexes = [...])]` attribute:
 ```rust
 use djogi::prelude::*;
 use djogi::descriptor::{
-    IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder,
-    IndexSpec, IndexTarget, IndexType,
+ IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder,
+ IndexSpec, IndexTarget, IndexType,
 };
 
 #[model(
-    app = "profiles",
-    table = "user_profile",
-    indexes = [
-        // GIN index — accelerates the `%` operator emitted by trgm_similar_to.
-        IndexSpec {
-            name: "user_profile_bio_trgm_gin_idx",
-            target: IndexTarget::Columns(&[IndexColumnSpec {
-                name: "bio",
-                opclass: Some("gin_trgm_ops"),
-                order: IndexOrder::Asc,
-                nulls: IndexNullsOrder::Default,
-            }]),
-            kind: IndexKind::NonUnique,
-            index_type: IndexType::Gin,
-            predicate: None,
-            include: &[],
-            nulls_not_distinct: false,
-            requires_out_of_transaction: false,
-            extension_dependency: Some("pg_trgm"),
-        },
-    ]
+ app = "profiles",
+ table = "user_profile",
+ indexes = [
+ // GIN index — accelerates the `%` operator emitted by trgm_similar_to.
+ IndexSpec {
+  name: "user_profile_bio_trgm_gin_idx",
+  target: IndexTarget::Columns(&[IndexColumnSpec {
+  name: "bio",
+  opclass: Some("gin_trgm_ops"),
+  order: IndexOrder::Asc,
+  nulls: IndexNullsOrder::Default,
+  }]),
+  kind: IndexKind::NonUnique,
+  index_type: IndexType::Gin,
+  predicate: None,
+  include: &[],
+  nulls_not_distinct: false,
+  requires_out_of_transaction: false,
+  extension_dependency: Some("pg_trgm"),
+ },
+ ]
 )]
 pub struct UserProfile {
-    pub name: String,
-    pub bio: String,
+ pub name: String,
+ pub bio: String,
 }
 ```
 
@@ -249,20 +249,20 @@ Replace `IndexType::Gin` / `"gin_trgm_ops"` with `IndexType::Gist` /
 
 ```rust
 IndexSpec {
-    name: "user_profile_name_trgm_gist_idx",
-    target: IndexTarget::Columns(&[IndexColumnSpec {
-        name: "name",
-        opclass: Some("gist_trgm_ops"),
-        order: IndexOrder::Asc,
-        nulls: IndexNullsOrder::Default,
-    }]),
-    kind: IndexKind::NonUnique,
-    index_type: IndexType::Gist,
-    predicate: None,
-    include: &[],
-    nulls_not_distinct: false,
-    requires_out_of_transaction: false,
-    extension_dependency: Some("pg_trgm"),
+ name: "user_profile_name_trgm_gist_idx",
+ target: IndexTarget::Columns(&[IndexColumnSpec {
+ name: "name",
+ opclass: Some("gist_trgm_ops"),
+ order: IndexOrder::Asc,
+ nulls: IndexNullsOrder::Default,
+ }]),
+ kind: IndexKind::NonUnique,
+ index_type: IndexType::Gist,
+ predicate: None,
+ include: &[],
+ nulls_not_distinct: false,
+ requires_out_of_transaction: false,
+ extension_dependency: Some("pg_trgm"),
 }
 ```
 
@@ -272,32 +272,32 @@ A trgm-using app produces **two** distinct migration files on the first
 compose:
 
 1. **`migrations/<database>/V00000000000000__phase_zero_bootstrap.sdjql`** — the Phase 0 bootstrap
-   migration. Djogi auto-emits this file (and re-emits when the descriptor's
-   extension dependencies change) so adopters never hand-author the
-   extension install. It contains the HeeRanjID schema plus every
-   `CREATE EXTENSION` derived from `extension_dependency` across the
-   descriptor inventory:
+ migration. Djogi auto-emits this file (and re-emits when the descriptor's
+ extension dependencies change) so adopters never hand-author the
+ extension install. It contains the HeeRanjID schema plus every
+ `CREATE EXTENSION` derived from `extension_dependency` across the
+ descriptor inventory:
 
-   ```sql
-   -- Postgres extensions required by descriptor inventory (idempotent).
-   CREATE EXTENSION IF NOT EXISTS "pg_trgm";
-   ```
+ ```sql
+ -- Postgres extensions required by descriptor inventory (idempotent).
+ CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+ ```
 
-   See `djogi/src/migrate/bootstrap.rs` for the composition logic and
-   `migrations/<database>/V00000000000000__phase_zero_bootstrap.sdjql` in your repo for the
-   committed file.
+ See `djogi/src/migrate/bootstrap.rs` for the composition logic and
+ `migrations/<database>/V00000000000000__phase_zero_bootstrap.sdjql` in your repo for the
+ committed file.
 
 2. **`migrations/<database>/V<ts>__slug.sdjql`** — the per-app migration
-   that introduces the trgm index. The emitter renders index DDL with
-   lowercase method name and quoted identifiers (compatible with the
-   uppercase / unquoted form Postgres accepts; the quoting is structural
-   belt-and-braces against future spec changes):
+ that introduces the trgm index. The emitter renders index DDL with
+ lowercase method name and quoted identifiers (compatible with the
+ uppercase / unquoted form Postgres accepts; the quoting is structural
+ belt-and-braces against future spec changes):
 
-   ```sql
-   CREATE INDEX "user_profile_bio_trgm_gin_idx"
-       ON "user_profile"
-       USING gin ("bio" gin_trgm_ops);
-   ```
+ ```sql
+ CREATE INDEX "user_profile_bio_trgm_gin_idx"
+ ON "user_profile"
+ USING gin ("bio" gin_trgm_ops);
+ ```
 
 Both files apply transactionally per migration; the Phase 0 bootstrap runs
 first, then the per-app migration that references the extension.
@@ -314,30 +314,30 @@ use djogi::prelude::*;
 
 #[model(app = "profiles_test", table = "trgm_test_profiles")]
 pub struct Profile {
-    pub name: String,
+ pub name: String,
 }
 
 #[djogi::djogi_test(
-    sync_models = [Profile],
-    extensions = ["pg_trgm"],
+ sync_models = [Profile],
+ extensions = ["pg_trgm"],
 )]
 async fn trgm_similar_to_at_session_threshold(mut ctx: djogi::DjogiContext) {
-    Profile::create(&mut ctx, Profile { name: "Alice".to_string(), ..Default::default() })
-        .await
-        .expect("create Alice must succeed");
-    Profile::create(&mut ctx, Profile { name: "Bob".to_string(), ..Default::default() })
-        .await
-        .expect("create Bob must succeed");
+ Profile::create(&mut ctx, Profile { name: "Alice".to_string(),..Default::default() })
+.await
+.expect("create Alice must succeed");
+ Profile::create(&mut ctx, Profile { name: "Bob".to_string(),..Default::default() })
+.await
+.expect("create Bob must succeed");
 
-    // The default pg_trgm.similarity_threshold is 0.3 — "Alce" matches "Alice".
-    let results = Profile::objects()
-        .filter(|f| f.name().explicit_pg_predicate().trgm_similar_to("Alce"))
-        .fetch_all(&mut ctx)
-        .await
-        .expect("trgm_similar_to fetch must succeed");
+ // The default pg_trgm.similarity_threshold is 0.3 — "Alce" matches "Alice".
+ let results = Profile::objects()
+.filter(|f| f.name().explicit_pg_predicate().trgm_similar_to("Alce"))
+.fetch_all(&mut ctx)
+.await
+.expect("trgm_similar_to fetch must succeed");
 
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].name, "Alice");
+ assert_eq!(results.len(), 1);
+ assert_eq!(results[0].name, "Alice");
 }
 ```
 
@@ -393,15 +393,15 @@ expression. Until that follow-up lands, ranked retrieval has to go through
 one of:
 
 - The two-step shape — `filter(...trgm_similar_to(...))` to narrow via
-  index, then `filter_expr(...trgm_similarity(...).gte(...))` to tighten,
-  then app-side sorting on a separate score column fetched independently.
+ index, then `filter_expr(...trgm_similarity(...).gte(...))` to tighten,
+ then app-side sorting on a separate score column fetched independently.
 - An adopter-side raw-SQL helper. djogi treats raw SQL like Rust's
-  `unsafe`: legitimate when typed surface gaps exist, audited via the
-  `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute and a
-  `// JUSTIFICATION (djogi#<issue>):` comment that names the
-  follow-up. See
-  [`docs/spec/raw-sql-escape-hatches.md`](../spec/raw-sql-escape-hatches.md)
-  for the convention.
+ `unsafe`: legitimate when typed surface gaps exist, audited via the
+ `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute and a
+ `// JUSTIFICATION (djogi#<issue>):` comment that names the
+ follow-up. See
+ [`docs/spec/raw-sql-escape-hatches.md`](../spec/raw-sql-escape-hatches.md)
+ for the convention.
 
 A follow-up issue tracks the `OrderExpr` / `AnnotationSlot` integration
 for generic `Expr<T>`; once it lands, this section will be replaced with
@@ -423,8 +423,8 @@ Reached via `f.col().explicit_pg_predicate().trgm_similar_to(pattern)`.
 
 ```text
 pub fn trgm_similar_to(
-    self,
-    pattern: impl Into<String>,
+ self,
+ pattern: impl Into<String>,
 ) -> Condition
 ```
 
@@ -453,8 +453,8 @@ closures.
 
 ```text
 pub fn trgm_similarity(
-    self,
-    pattern: impl Into<String>,
+ self,
+ pattern: impl Into<String>,
 ) -> Expr<f64>
 ```
 

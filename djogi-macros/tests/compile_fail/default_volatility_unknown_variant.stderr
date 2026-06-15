@@ -1,7 +1,7 @@
 error: unknown `default_volatility = "wibble"`; expected one of: "immutable", "stable", "volatile"
-  --> $DIR/default_volatility_unknown_variant.rs:10:53
-   |
-10 |     #[field(default = "now()", default_volatility = "wibble")]
-   |                                                     ^^^^^^^^
+ --> $DIR/default_volatility_unknown_variant.rs:10:53
+ |
+10 |  #[field(default = "now()", default_volatility = "wibble")]
+ |              ^^^^^^^^
 
 error: aborting due to 1 previous error

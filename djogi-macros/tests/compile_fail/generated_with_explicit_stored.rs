@@ -1,4 +1,4 @@
-// `stored = ...` is not accepted alongside
+// `stored =...` is not accepted alongside
 // `generated = "<expr>"` in V1 syntax.
 //
 // Pg18 supports only STORED generated columns, so the macro hard-codes
@@ -12,9 +12,9 @@ use djogi::prelude::*;
 #[model(table = "users", no_default)]
 #[derive(Debug, Clone)]
 pub struct User {
-    pub email: String,
-    #[field(generated = "LOWER(email)", stored = true)]
-    pub email_lower: String,
+ pub email: String,
+ #[field(generated = "LOWER(email)", stored = true)]
+ pub email_lower: String,
 }
 
 fn main() {}

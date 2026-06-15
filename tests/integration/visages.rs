@@ -5,14 +5,14 @@
 //!
 //! 1. Generated visage structs contain only exposed fields.
 //! 2. Framework columns (`id`, `created_at`, `updated_at`) appear in every
-//!    visage regardless of user annotations (Q13).
+//!  visage regardless of user annotations (Q13).
 //! 3. `From<&Model>` preserves values for scalar fields.
 //! 4. Serde round-trip via JSON keeps the visage shape intact and
-//!    excludes non-exposed fields.
+//!  excludes non-exposed fields.
 
 use djogi::prelude::*;
 
-//  default flip — pin HeerId for the visage-roundtrip
+// default flip — pin HeerId for the visage-roundtrip
 // tests that construct `User` instances with explicit HeerId values.
 #[model(table = "users_task3", pk = HeerId)]
 #[derive(Debug, Clone)]

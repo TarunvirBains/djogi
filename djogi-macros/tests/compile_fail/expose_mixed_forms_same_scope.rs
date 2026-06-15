@@ -5,8 +5,8 @@ use djogi::prelude::*;
 #[model(table = "vehicles_expose_mixed")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    #[field(expose(public, public = "VehicleSummary"))]
-    pub make: String,
+ #[field(expose(public, public = "VehicleSummary"))]
+ pub make: String,
 }
 
 fn main() {}

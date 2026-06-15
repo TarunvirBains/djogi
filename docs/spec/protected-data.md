@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Protected Data Metadata & Field Codecs
 
@@ -25,11 +25,11 @@ Field protection is declared via a single grouped attribute. Five named keys liv
 
 ```rust
 #[field(protected(
-    sensitivity = "pii",                   // REQUIRED — see vocabulary below
-    rationale   = "GDPR Art. 6(1)(b)",     // REQUIRED when sensitivity > "none"
-    redaction   = "mask",                  // optional; default "none"
-    codec       = "<see codec section>",   // optional; default unset
-    retention   = "extended",              // optional; default "standard"
+ sensitivity = "pii",   // REQUIRED — see vocabulary below
+ rationale = "GDPR Art. 6(1)(b)", // REQUIRED when sensitivity > "none"
+ redaction = "mask",   // optional; default "none"
+ codec = "<see codec section>", // optional; default unset
+ retention = "extended",  // optional; default "standard"
 ))]
 pub email: String,
 ```
@@ -47,60 +47,60 @@ span-precise compile errors at the offending key, not at the model
 struct.
 
 - **(a) `sensitivity` is mandatory.** Omitting it errors with
-  `protected(...) requires sensitivity = "..."`.
+ `protected(...) requires sensitivity = "..."`.
 - **(b) `sensitivity = "none"` is incompatible with any other key.**
-  If `none` is paired with `rationale` / `redaction` / `codec` /
-  `retention`, the macro errors at the first extra key with a "drop
-  this key or raise sensitivity" pointer. The intent: the neutral-
-  default form has no metadata to carry, so writing `protected(...)`
-  at all is meaningless when sensitivity is `none`.
+ If `none` is paired with `rationale` / `redaction` / `codec` /
+ `retention`, the macro errors at the first extra key with a "drop
+ this key or raise sensitivity" pointer. The intent: the neutral-
+ default form has no metadata to carry, so writing `protected(...)`
+ at all is meaningless when sensitivity is `none`.
 - **(c) Sensitivity above `none` requires non-empty `rationale`.**
-  An empty string also fails. The rationale is the audit trail's
-  primary signal — without it the annotation is hostile to compliance
-  review.
+ An empty string also fails. The rationale is the audit trail's
+ primary signal — without it the annotation is hostile to compliance
+ review.
 - **(d) `redaction = "hash_id"` is only valid on PK-shaped types.**
-  Specifically `HeerId`, `RanjId`, their family aliases
-  (`HeerIdDesc` / `HeerIdRecencyBiased` / `RanjIdDesc` /
-  `RanjIdRecencyBiased`), and `Option<...>` of any of the same.
-  Adopter custom-PK newtypes from `djogi::primary_key!` are NOT
-  recognised by this rule today — the macro cannot prove a user-named
-  ident implements `PrimaryKey` at parse time, and a wrong accept
-  ships an unsafe redaction policy at runtime, so the recogniser is
-  conservative. Custom-PK support for this rule is a deferred
-  capability tied to a later phase that gives the macro full
-  descriptor-pass visibility.
+ Specifically `HeerId`, `RanjId`, their family aliases
+ (`HeerIdDesc` / `HeerIdRecencyBiased` / `RanjIdDesc` /
+ `RanjIdRecencyBiased`), and `Option<...>` of any of the same.
+ Adopter custom-PK newtypes from `djogi::primary_key!` are NOT
+ recognised by this rule today — the macro cannot prove a user-named
+ ident implements `PrimaryKey` at parse time, and a wrong accept
+ ships an unsafe redaction policy at runtime, so the recogniser is
+ conservative. Custom-PK support for this rule is a deferred
+ capability tied to a later phase that gives the macro full
+ descriptor-pass visibility.
 - **(e) `codec = "..."` must name a value in the framework's
-  compile-time codec registry.** The registry is populated with built-in codecs;
-  **codecs ship with the framework, not adopter code.**
+ compile-time codec registry.** The registry is populated with built-in codecs;
+ **codecs ship with the framework, not adopter code.**
 
 ### Field annotation vocabulary
 
 - **`sensitivity = "..."`** — five-level enum:
-  - `"none"` — default, no sensitivity; cannot be combined with other
-    `protected(...)` keys.
-  - `"internal"` — internal-only data (logs, internal admin, etc.).
-  - `"pii"` — personally identifying information.
-  - `"sensitive"` — sensitive but not regulated as PII.
-  - `"secret"` — credentials, encryption keys, etc.
+ - `"none"` — default, no sensitivity; cannot be combined with other
+ `protected(...)` keys.
+ - `"internal"` — internal-only data (logs, internal admin, etc.).
+ - `"pii"` — personally identifying information.
+ - `"sensitive"` — sensitive but not regulated as PII.
+ - `"secret"` — credentials, encryption keys, etc.
 
 - **`rationale = "..."`** — free text. Required when sensitivity is
-  above `"none"` (see rule (c)).
+ above `"none"` (see rule (c)).
 
 - **`redaction = "..."`** — named redaction policy:
-  - `"none"` — default.
-  - `"hash_id"` — hash to opaque identifier; PK-shaped types only
-    (rule (d)).
-  - `"mask"` — replace with a fixed mask string.
-  - `"drop"` — omit the field entirely from redacted renderings.
+ - `"none"` — default.
+ - `"hash_id"` — hash to opaque identifier; PK-shaped types only
+ (rule (d)).
+ - `"mask"` — replace with a fixed mask string.
+ - `"drop"` — omit the field entirely from redacted renderings.
 
 - **`codec = "..."`** — codec identifier; resolved against the
-  compile-time registry.
+ compile-time registry.
 
 - **`retention = "..."`** — closed enum of retention/lifecycle labels:
-  - `"transient"` — short-lived data.
-  - `"standard"` — default retention.
-  - `"extended"` — longer-than-default retention.
-  - `"archival"` — long-term archival storage.
+ - `"transient"` — short-lived data.
+ - `"standard"` — default retention.
+ - `"extended"` — longer-than-default retention.
+ - `"archival"` — long-term archival storage.
 
 ### Visage-scope axis
 
@@ -133,7 +133,7 @@ grammar.
 
 The parser ALSO accepts `#[field(rationale = "...")]` outside the
 `protected(...)` list — it lives in the macro's `VALID_FIELD_KEYS`
-allowlist alongside the other field-level keys. **Phase 7.5 does not
+allowlist alongside the other field-level keys. ** does not
 propagate the flat-key value into the descriptor**: the descriptor
 emitter hard-codes `FieldDescriptor.rationale: None` for every field.
 Treat the flat key as parser-accepted-but-not-lowered today; a future
@@ -149,8 +149,8 @@ For now, every adopter-visible rationale comes from
 - CRUD writes apply the codec on persistence.
 - Row loading applies the codec on decode.
 - Generated visages, admin defaults, audit-log diff renderers, and
-  export bundles all read from the same `ProtectedFieldMetadata`
-  source of truth.
+ export bundles all read from the same `ProtectedFieldMetadata`
+ source of truth.
 
 ---
 
@@ -162,11 +162,11 @@ the parsed annotation. `None` means no `protected(...)` was declared
 
 ```rust
 pub struct ProtectedFieldMetadata {
-    pub sensitivity: Sensitivity,    // 5-level enum
-    pub rationale: &'static str,     // free text; "" when absent (set only via protected(...))
-    pub redaction: RedactionPolicy,  // named policy enum
-    pub codec: Option<&'static str>, // codec id; runtime-resolved
-    pub retention: RetentionLabel,   // closed enum
+ pub sensitivity: Sensitivity, // 5-level enum
+ pub rationale: &'static str, // free text; "" when absent (set only via protected(...))
+ pub redaction: RedactionPolicy, // named policy enum
+ pub codec: Option<&'static str>, // codec id; runtime-resolved
+ pub retention: RetentionLabel, // closed enum
 }
 ```
 
@@ -227,16 +227,16 @@ Presentation codecs allow field values to be transformed differently depending o
 
 ```rust
 #[field(
-    expose(public, support),
-    protected(
-        sensitivity = "pii",
-        rationale = "...",
-        per_scope = {
-            public = {
-                presentation_codec = djogi::presentation::builtins::MaskString
-            }
-        }
-    )
+ expose(public, support),
+ protected(
+ sensitivity = "pii",
+ rationale = "...",
+ per_scope = {
+  public = {
+  presentation_codec = djogi::presentation::builtins::MaskString
+  }
+ }
+ )
 )]
 pub email: String,
 ```
@@ -253,10 +253,10 @@ Example: if `email` is `expose(public, support)` with only `per_scope = { public
 Two keys control whether codec application is infallible or fallible:
 
 - **`presentation_codec = Type`** — the codec application is infallible. The generated visage
-  for that scope implements `From<&Model>`.
+ for that scope implements `From<&Model>`.
 - **`try_presentation_codec = Type`** — the codec application may fail. If any field in a scope
-  uses `try_presentation_codec`, the generated visage for that scope implements
-  `TryFrom<&Model>` instead of `From<&Model>`.
+ uses `try_presentation_codec`, the generated visage for that scope implements
+ `TryFrom<&Model>` instead of `From<&Model>`.
 
 ### Output Type in Generated Visages
 
@@ -325,19 +325,19 @@ entry, for example:
 #[model(table = "startup_inventory_harness")]
 #[derive(Debug, Clone)]
 struct PresentationStartupHarness {
-    #[field(
-        expose(public),
-        protected(
-            sensitivity = "pii",
-            rationale = "Harness uses keyed codec for startup validation coverage",
-            per_scope = {
-                public = {
-                    try_presentation_codec = djogi::presentation::builtins::HmacSha256HexString
-                }
-            }
-        )
-    )]
-    pub email: String,
+ #[field(
+ expose(public),
+ protected(
+  sensitivity = "pii",
+  rationale = "Harness uses keyed codec for startup validation coverage",
+  per_scope = {
+  public = {
+   try_presentation_codec = djogi::presentation::builtins::HmacSha256HexString
+  }
+  }
+ )
+ )]
+ pub email: String,
 }
 ```
 
@@ -363,14 +363,14 @@ variable.
 
 - is this field sensitive? (`protected.sensitivity`)
 - in which visages or surfaces may it appear? (`expose(...)` axis,
-  separate slot)
+ separate slot)
 - does it use a storage codec? (`protected.codec`)
 - what rationale accompanies the protection choice?
-  (`protected.rationale`)
+ (`protected.rationale`)
 - what retention/lifecycle class is associated with it?
-  (`protected.retention`)
+ (`protected.retention`)
 - how should it be redacted when shown in a redaction-aware surface?
-  (`protected.redaction`)
+ (`protected.redaction`)
 
 The runtime does not need to execute every one of those dimensions
 immediately, but the descriptor shape expresses them all.
@@ -393,7 +393,7 @@ in handwritten application DTOs.
 
 ## Non-Goals
 
-Phase 7.5 does not include:
+ does not include:
 
 - legal-hold workflow execution
 - purge / anonymize / archive execution

@@ -7,15 +7,15 @@
 //!
 //! The numbers below match what the demos expect:
 //! - 4 herds, each spanning 2 countries (one in dry season, one in
-//!   wet season — picked so the cross-border-herds demo finds at
-//!   least one wet-season cross-border herd).
+//! wet season — picked so the cross-border-herds demo finds at
+//! least one wet-season cross-border herd).
 //! - ~30 elephants per herd: 1 matriarch, 4-6 daughters, 1-2 grandkids
-//!   per daughter.
+//! per daughter.
 //! - 1 researcher per herd, all under one `org_id` so the
-//!   `researchers` table is multi-tenant-shaped without exercising
-//!   actual tenancy in the example.
+//! `researchers` table is multi-tenant-shaped without exercising
+//! actual tenancy in the example.
 //! - ~50 sightings per herd, distributed in three loose clusters per
-//!   herd so the `cluster-sightings` demo finds real density hotspots.
+//! herd so the `cluster-sightings` demo finds real density hotspots.
 
 use anyhow::{Context, Result};
 use djogi::pg::pool::DjogiPool;
@@ -209,14 +209,14 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 
 /// Programmatic seed wrapped in a single `atomic()` scope.
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION: temporary Phase 8.5 debt; this lookup should use the typed model surface, not remain a raw-SQL example.
+// JUSTIFICATION: temporary debt; this lookup should use the typed model surface, not remain a raw-SQL example.
 async fn seed_programmatic(pool: &DjogiPool) -> Result<()> {
     atomic(pool, |ctx| {
         Box::pin(async move {
             // Pull all five countries up front — we need their PKs to
             // build HerdRange rows. `Country::objects().fetch_all`
             // is the intended typed replacement; this raw_query is
-            // current Phase 8.5 debt, not a preferred example path.
+            // current debt, not a preferred example path.
             let countries: Vec<Country> = ctx
                 .raw_query("SELECT * FROM countries ORDER BY iso_alpha3", &[])
                 .await?;
@@ -414,9 +414,9 @@ async fn seed_one_herd(
     // father pulls population-wide coverage toward the realistic
     // ~70%-mother / ~40%-father target documented in the v3 plan.
     let total_so_far = 1 // matriarch
-        + bull_ids.len()
-        + spec.daughters.len()
-        + spec.grandkids.iter().map(|g| g.len()).sum::<usize>();
+  + bull_ids.len()
+  + spec.daughters.len()
+  + spec.grandkids.iter().map(|g| g.len()).sum::<usize>();
     let known_females = std::iter::once(matriarch.id)
         .chain(daughter_ids.iter().copied())
         .collect::<Vec<_>>();
@@ -473,15 +473,15 @@ async fn seed_one_herd(
     }
 
     // 6) Wandering sightings — when `wander_to` is set, add
-    //    [`WANDERING_SIGHTINGS_PER_HERD`] sightings jittered around the
-    //    neighbour herd's centre. This stretches the herd's convex hull
-    //    toward the neighbour so the pair-tuple `PairAreaOverlapRatio`
-    //    annotation surfaces a non-binary overlap value (the user-
-    //    visible payoff of the #99 retrofit). The "wandering" framing
-    //    matches real-world elephant migration patterns through shared
-    //    ecosystem corridors; the matriarch is the observed individual
-    //    here too, mirroring the home-cluster sighting model so we
-    //    don't have to add a separate "scout" elephant.
+    // [`WANDERING_SIGHTINGS_PER_HERD`] sightings jittered around the
+    // neighbour herd's centre. This stretches the herd's convex hull
+    // toward the neighbour so the pair-tuple `PairAreaOverlapRatio`
+    // annotation surfaces a non-binary overlap value (the user-
+    // visible payoff of the #99 retrofit). The "wandering" framing
+    // matches real-world elephant migration patterns through shared
+    // ecosystem corridors; the matriarch is the observed individual
+    // here too, mirroring the home-cluster sighting model so we
+    // don't have to add a separate "scout" elephant.
     if let Some((wander_lat, wander_lon)) = spec.wander_to {
         for s in 0..WANDERING_SIGHTINGS_PER_HERD {
             let lat = wander_lat + rng.jitter(0.05);
@@ -621,7 +621,7 @@ async fn populate_herd_territories(ctx: &mut DjogiContext) -> Result<(), DjogiEr
 
     // One typed fetch over the grouped-aggregate surface — emits
     // `SELECT herd_id, ST_ConvexHull(ST_Collect(location::geometry))::geography
-    //  FROM sightings GROUP BY herd_id`. The group_by key comes back
+    // FROM sightings GROUP BY herd_id`. The group_by key comes back
     // as `ForeignKey<Herd>` because `s.herd_id()` is an FK column on
     // Sighting; we unwrap to the inner `HeerId` for the lookup map.
     let hulls_by_fk: Vec<(djogi::ForeignKey<Herd>, djogi::geo::Polygon)> = Sighting::objects()

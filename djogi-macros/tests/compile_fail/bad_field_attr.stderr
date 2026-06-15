@@ -1,7 +1,7 @@
 error: unknown field attribute: `nonexistent_attr`
-  --> $DIR/bad_field_attr.rs:10:13
-   |
-10 |     #[field(nonexistent_attr = 42)]
-   |             ^^^^^^^^^^^^^^^^^^^^^
+ --> $DIR/bad_field_attr.rs:10:13
+ |
+10 |  #[field(nonexistent_attr = 42)]
+ |    ^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 1 previous error

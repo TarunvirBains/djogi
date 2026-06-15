@@ -3,22 +3,22 @@
 // Two independent guarantees are exercised here:
 //
 // 1. **Descriptor emission.** Built-in PK-shaped types used outside the
-//    framework-injected `id` slot lower to the same
-//    [`FieldSqlType`](djogi::FieldSqlType) the PK-slot field would —
-//    `HeerId` / `HeerIdRecencyBiased` → `BigInt`,
-//    `RanjId` / `RanjIdRecencyBiased` → `Uuid`. These four assertions
-//    run purely off `Model::descriptor()` and do not touch the database
-//    (the `#[djogi::djogi_test]` harness still spins up a database so
-//    the assertions live next to the live round-trip test below — this
-//    keeps every  check in one file and matches the
-//    `custom_pk_live.rs` layout).
+//  framework-injected `id` slot lower to the same
+//  [`FieldSqlType`](djogi::FieldSqlType) the PK-slot field would —
+//  `HeerId` / `HeerIdRecencyBiased` → `BigInt`,
+//  `RanjId` / `RanjIdRecencyBiased` → `Uuid`. These four assertions
+//  run purely off `Model::descriptor()` and do not touch the database
+//  (the `#[djogi::djogi_test]` harness still spins up a database so
+//  the assertions live next to the live round-trip test below — this
+//  keeps every check in one file and matches the
+//  `custom_pk_live.rs` layout).
 //
 // 2. **Live round-trip.** A model with one ambient `HeerId` column and
-//    one ambient `RanjId` column round-trips through `tokio-postgres` /
-//    `postgres-types` without any PK-slot codec arm: the macro's
-//    generic user-field path is the same path used for any other
-//    scalar, and `heeranjid`'s own `ToSql` / `FromSql` impls do the
-//    wire work.
+//  one ambient `RanjId` column round-trips through `tokio-postgres` /
+//  `postgres-types` without any PK-slot codec arm: the macro's
+//  generic user-field path is the same path used for any other
+//  scalar, and `heeranjid`'s own `ToSql` / `FromSql` impls do the
+//  wire work.
 
 use djogi::prelude::*;
 use djogi::types::{HeerId, HeerIdRecencyBiased, RanjId, RanjIdRecencyBiased};

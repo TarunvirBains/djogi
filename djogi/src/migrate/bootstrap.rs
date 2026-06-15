@@ -5,56 +5,56 @@
 //! Postgres database to be brought to a state where any descriptor-driven
 //! migration can apply. That state is two pieces:
 //! 1. **HeeRanjID schema** — `heerid_next()` / `ranjid_next()` /
-//!    the `heer_*` tables / the `current_heer_node_id` GUC reader.
-//!    Every model that uses `HeerId` or `RanjId` as primary key
-//!    references `DEFAULT heerid_next()` in its `CREATE TABLE` DDL,
-//!    so the function must exist before the first descriptor-driven
-//!    migration runs.
+//! the `heer_*` tables / the `current_heer_node_id` GUC reader.
+//! Every model that uses `HeerId` or `RanjId` as primary key
+//! references `DEFAULT heerid_next()` in its `CREATE TABLE` DDL,
+//! so the function must exist before the first descriptor-driven
+//! migration runs.
 //! 2. **Postgres extensions declared by descriptors** — `postgis`,
-//!    `pgvector`, `pg_trgm`, `btree_gist`, etc. The differ tracks two
-//!    descriptor slots:
+//! `pgvector`, `pg_trgm`, `btree_gist`, etc. The differ tracks two
+//! descriptor slots:
 //! - `IndexSchema::extension_dependency: Option<String>` — set by
-//!   the macro / live-migrate patterns for indexes that require a
-//!   specific extension (typically `postgis` / `pg_trgm`).
+//! the macro / live-migrate patterns for indexes that require a
+//! specific extension (typically `postgis` / `pg_trgm`).
 //! - `ExclusionConstraintSchema::extension_dependency: Option<String>`
-//!   — auto-derived for `using = "gist"` EXCLUDEs that
-//!   mix btree comparison operators (`=`, `<>`, ...) with range or
-//!   geometric operators (`&&`, `<<`, ...). Resolves to
-//!   `Some("btree_gist")` so the canonical scheduling-style EXCLUDE
-//!   `(room_id WITH =, period WITH &&)` auto-installs `btree_gist`
-//!   without adopters having to write the `CREATE EXTENSION` SQL.
-//!   Before any of these surfaces (spatial / vector / trigram index,
-//!   btree_gist-backed EXCLUDE) can be created the matching extension
-//!   must be installed.
-//!   Pre-Track-0, only the test harness `setup_test_db_with_extensions`
-//!   installed these — the CLI / production / example paths hit a virgin
-//!   DB and failed on the very first migration that referenced
-//!   `DEFAULT heerid_next()`. The example papered over the gap with
-//!   hand-rolled `ctx.raw_ddl(...)` for HeeRanjID + PostGIS install.
-//!   Lifts that bootstrap into this module:
+//! — auto-derived for `using = "gist"` EXCLUDEs that
+//! mix btree comparison operators (`=`, `<>`,...) with range or
+//! geometric operators (`&&`, `<<`,...). Resolves to
+//! `Some("btree_gist")` so the canonical scheduling-style EXCLUDE
+//! `(room_id WITH =, period WITH &&)` auto-installs `btree_gist`
+//! without adopters having to write the `CREATE EXTENSION` SQL.
+//! Before any of these surfaces (spatial / vector / trigram index,
+//! btree_gist-backed EXCLUDE) can be created the matching extension
+//! must be installed.
+//! Pre-Track-0, only the test harness `setup_test_db_with_extensions`
+//! installed these — the CLI / production / example paths hit a virgin
+//! DB and failed on the very first migration that referenced
+//! `DEFAULT heerid_next()`. The example papered over the gap with
+//! hand-rolled `ctx.raw_ddl(...)` for HeeRanjID + PostGIS install.
+//! Lifts that bootstrap into this module:
 //! - SQL composition lives in `compose_*` functions that return owned
-//!   `String`s. Pure, idempotent, deterministic — re-runs are no-ops.
+//! `String`s. Pure, idempotent, deterministic — re-runs are no-ops.
 //! - The runtime driver `run_phase_zero` executes the composed SQL
-//!   via a `&tokio_postgres::GenericClient`. Used by both the test
-//!   harness (sub-step 0.4) and the auto-emitted migration
-//!   that `migrations compose` writes to disk (sub-step 0.3).
+//! via a `&tokio_postgres::GenericClient`. Used by both the test
+//! harness (sub-step 0.4) and the auto-emitted migration
+//! that `migrations compose` writes to disk (sub-step 0.3).
 //! # Idempotency
 //! Every install statement is idempotent in the sense that running
 //! Against an already-bootstrapped database is a clean no-op:
 //! - HeeRanjID's `INSTALL_SQL` uses `CREATE OR REPLACE FUNCTION` and
-//!   `CREATE TABLE IF NOT EXISTS` throughout — re-running the install
-//!   replaces function bodies and skips already-present tables.
+//! `CREATE TABLE IF NOT EXISTS` throughout — re-running the install
+//! replaces function bodies and skips already-present tables.
 //! - `CREATE EXTENSION IF NOT EXISTS` is a Postgres no-op when the
-//!   extension is already installed.
+//! extension is already installed.
 //! - Seed inserts use `ON CONFLICT (...) DO NOTHING` — see
-//!   `heeranjid::postgres_schema::SEED_SQL` for the exact column list.
-//! - `ALTER DATABASE ... SET heer.node_id = '<n>'` is a metadata
-//!   write that takes effect on every NEW connection — re-running it
-//!   with the same value is a no-op.
+//! `heeranjid::postgres_schema::SEED_SQL` for the exact column list.
+//! - `ALTER DATABASE... SET heer.node_id = '<n>'` is a metadata
+//! write that takes effect on every NEW connection — re-running it
+//! with the same value is a no-op.
 //! - `SET heer.node_id = '<n>'` (session-level) is similarly a no-op
-//!   when the value is unchanged.
-//!   Re-runs are safe because `db reset` replays every cycle,
-//!   and the migration ledger replays once per fresh database.
+//! when the value is unchanged.
+//! Re-runs are safe because `db reset` replays every cycle,
+//! and the migration ledger replays once per fresh database.
 //! # No regex
 //! Per the project-wide no-regex rule, the extension-name validator
 //! is implemented with byte-level checks (ASCII letter or underscore
@@ -62,25 +62,25 @@
 //! See [`validate_extension_name`].
 //! # Public surface
 //! - [`PHASE_ZERO_VERSION`] — the canonical version label
-//!   (`V00000000000000__phase_zero_bootstrap`) the auto-emit path
-//!   stamps on the migration. Sorts lexically before any operator-
-//!   composed migration (which use `V<YYYYMMDDHHMMSS>__<slug>` with
-//!   year ≥ 1000), guaranteeing replay order.
+//! (`V00000000000000__phase_zero_bootstrap`) the auto-emit path
+//! stamps on the migration. Sorts lexically before any operator-
+//! composed migration (which use `V<YYYYMMDDHHMMSS>__<slug>` with
+//! year ≥ 1000), guaranteeing replay order.
 //! - [`DEFAULT_NODE_ID`] — the default node id for single-node
-//!   deployments, passed to [`run_phase_zero`] by most callers.
+//! deployments, passed to [`run_phase_zero`] by most callers.
 //! - [`run_phase_zero`] — runtime driver that installs HeeRanjID,
-//!   required extensions, and, for seed-capable callers, the node-id
-//!   GUC in one batch. The only entry point adopters and the test
-//!   harness need.
+//! required extensions, and, for seed-capable callers, the node-id
+//! GUC in one batch. The only entry point adopters and the test
+//! harness need.
 //! - [`BootstrapError`] — error variants surfaced by the runtime
-//!   driver.
+//! driver.
 //! - [`ensure_phase_zero_emitted`] — idempotent per-database
-//!   emission called by `migrations compose`. Exposed as `pub` so the
-//!   integration test suite can drive it directly.
-//!   The SQL composition helpers (`compose_heeranjid_install`,
-//!   `compose_extension_installs`, `compose_node_seed`,
-//!   `compose_phase_zero`) are `pub(crate)` — used internally
-//!   by `migrations compose` and `db reset`.
+//! emission called by `migrations compose`. Exposed as `pub` so the
+//! integration test suite can drive it directly.
+//! The SQL composition helpers (`compose_heeranjid_install`,
+//! `compose_extension_installs`, `compose_node_seed`,
+//! `compose_phase_zero`) are `pub(crate)` — used internally
+//! by `migrations compose` and `db reset`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -179,14 +179,14 @@ impl std::fmt::Display for BootstrapError {
             BootstrapError::InvalidExtensionName { name } => write!(
                 f,
                 "bootstrap migration: extension name `{name}` does not match the \
-                 Postgres-identifier grammar (ASCII letter or underscore followed \
-                 by ASCII alphanumerics or underscores, 1-63 bytes)"
+     Postgres-identifier grammar (ASCII letter or underscore followed \
+     by ASCII alphanumerics or underscores, 1-63 bytes)"
             ),
             BootstrapError::UnknownExtension { name } => write!(
                 f,
                 "bootstrap migration: extension `{name}` is not in Djogi's \
-                 known-extension allowlist; add it to ALLOWED_EXTENSIONS in \
-                 migrate/bootstrap.rs to enable installation"
+     known-extension allowlist; add it to ALLOWED_EXTENSIONS in \
+     migrate/bootstrap.rs to enable installation"
             ),
             BootstrapError::Db { step, source } => {
                 write!(f, "bootstrap migration: {step} failed: {source}")
@@ -364,12 +364,12 @@ pub(crate) fn compose_node_seed(_database: &str, node_id: i32) -> Result<String,
     out.push_str("DO $djogi$\n");
     out.push_str("BEGIN\n");
     out.push_str(
-        "    EXECUTE format('ALTER DATABASE %I SET heer.node_id = %L', current_database(), '",
+        " EXECUTE format('ALTER DATABASE %I SET heer.node_id = %L', current_database(), '",
     );
     out.push_str(&node_id_str);
     out.push_str("');\n");
     out.push_str(
-        "    EXECUTE format('ALTER DATABASE %I SET heer.ranj_node_id = %L', current_database(), '",
+        " EXECUTE format('ALTER DATABASE %I SET heer.ranj_node_id = %L', current_database(), '",
     );
     out.push_str(&node_id_str);
     out.push_str("');\n");
@@ -386,17 +386,17 @@ pub(crate) fn compose_node_seed(_database: &str, node_id: i32) -> Result<String,
 
 /// Compose the complete Phase 0 SQL — HeeRanjID install + extensions
 /// + optionally node seed, in dependency order.
-///   Consumers:
+/// Consumers:
 /// - `migrations compose` writes this to
-///   `<workspace>/migrations/<db>/<app>/V00000000000000__phase_zero_bootstrap.sdjql`
-///   and tracks it in the ledger like any other migration.
+/// `<workspace>/migrations/<db>/<app>/V00000000000000__phase_zero_bootstrap.sdjql`
+/// and tracks it in the ledger like any other migration.
 /// - The test harness `setup_test_db_with_extensions` runs this
-///   directly via [`run_phase_zero`] before applying pending
-///   migrations.
-///   Order matters: HeeRanjID schema must exist before any extension
-///   install runs (in case an extension's setup script touches the
-///   `heer` schema), and both must exist before the node seed runs (in
-///   case the seed relies on extension-provided types).
+/// directly via [`run_phase_zero`] before applying pending
+/// migrations.
+/// Order matters: HeeRanjID schema must exist before any extension
+/// install runs (in case an extension's setup script touches the
+/// `heer` schema), and both must exist before the node seed runs (in
+/// case the seed relies on extension-provided types).
 ///
 /// **Node seed inclusion.** Production/cluster Phase 0 should NOT
 /// include a node seed. Pass `include_node_seed: false` for production
@@ -411,8 +411,8 @@ pub(crate) fn compose_node_seed(_database: &str, node_id: i32) -> Result<String,
 /// both production and `--single-node-dev`; the runner performs explicit
 /// dev provisioning after Phase 0 SQL succeeds.
 ///
-///   Returns owned bytes so the caller can hash, write, or execute
-///   directly.
+/// Returns owned bytes so the caller can hash, write, or execute
+/// directly.
 pub(crate) fn compose_phase_zero(
     database: &str,
     extensions: &BTreeSet<String>,
@@ -429,14 +429,14 @@ pub(crate) fn compose_phase_zero(
         out.push_str("-- │ ");
         out.push_str(PHASE_ZERO_SEEDED_BANNER_MARKER);
         out.push_str(" │\n");
-        out.push_str("-- │ Auto-emitted by `djogi migrations compose`. Idempotent.        │\n");
+        out.push_str("-- │ Auto-emitted by `djogi migrations compose`. Idempotent.  │\n");
         out.push_str("-- ╰────────────────────────────────────────────────────────────────╯\n\n");
     } else {
         out.push_str("-- ╭───────────────────────────────────────────────────────────────╮\n");
         out.push_str("-- │ ");
         out.push_str(PHASE_ZERO_PRODUCTION_BANNER_MARKER);
-        out.push_str("            │\n");
-        out.push_str("-- │ Auto-emitted by `djogi migrations compose`. Idempotent.       │\n");
+        out.push_str("   │\n");
+        out.push_str("-- │ Auto-emitted by `djogi migrations compose`. Idempotent.  │\n");
         out.push_str("-- ╰───────────────────────────────────────────────────────────────╯\n\n");
     }
 
@@ -482,11 +482,11 @@ pub(crate) fn compose_phase_zero(
 /// defaults to [`DEFAULT_NODE_ID`] (1) for single-node deployments.
 /// # Errors
 /// - [`BootstrapError::InvalidExtensionName`] when an extension name
-///   does not match the Postgres-identifier grammar — surfaced
-///   BEFORE any SQL runs so partial-state is impossible.
+/// does not match the Postgres-identifier grammar — surfaced
+/// BEFORE any SQL runs so partial-state is impossible.
 /// - [`BootstrapError::Db`] when `batch_execute` fails. The
-///   `step: "phase_zero"` discriminator distinguishes this from
-///   future per-step error classes if the function is split later.
+/// `step: "phase_zero"` discriminator distinguishes this from
+/// future per-step error classes if the function is split later.
 #[allow(clippy::disallowed_methods)]
 pub async fn run_phase_zero<C>(
     client: &C,
@@ -519,13 +519,13 @@ where
 /// that verify deduplication semantics across multiple buckets.
 /// **Source slots walked.** Two slots feed the result:
 /// 1. `AppliedSchema::indexes[i].extension_dependency` — set by the
-///    macro / live-migrate patterns when an index requires a specific
-///    extension (`postgis` for GiST-on-geography, `pg_trgm` for trigram
-///    indexes, etc.).
+/// macro / live-migrate patterns when an index requires a specific
+/// extension (`postgis` for GiST-on-geography, `pg_trgm` for trigram
+/// indexes, etc.).
 /// 2. `AppliedSchema::models[*].exclusion_constraints[i].extension_dependency`
-///    set by the macro auto-derivation under when a
-///    `using = "gist"` EXCLUDE mixes btree comparison operators with
-///    range / geometric operators. Resolves to `Some("btree_gist")`.
+/// set by the macro auto-derivation under when a
+/// `using = "gist"` EXCLUDE mixes btree comparison operators with
+/// range / geometric operators. Resolves to `Some("btree_gist")`.
 #[cfg(test)]
 fn extension_dependencies_from_models(
     models: &BTreeMap<BucketKey, AppliedSchema>,
@@ -634,7 +634,7 @@ impl From<BootstrapError> for AutoEmitError {
 /// compose runs that introduce NEW extensions (e.g. adding a
 /// `pgvector` index after PostGIS was already in use) emit a regular
 /// migration via the standard delta path — they do NOT re-emit
-/// . The trade-off: simpler invariant (is one-shot)
+///. The trade-off: simpler invariant (is one-shot)
 /// at the cost of a separate `CREATE EXTENSION` migration for any
 /// extension added later.
 /// **Bucket placement.** lives in the synthetic global
@@ -654,15 +654,15 @@ impl From<BootstrapError> for AutoEmitError {
 /// installs framework dependencies.
 /// **Idempotency contract.**
 /// - Running compose against a workspace that already has
-///   on disk is a no-op for the path. Returns
-///   `Ok(Vec::new())`.
+/// on disk is a no-op for the path. Returns
+/// `Ok(Vec::new())`.
 /// - Running compose against a workspace with NO yet emits
-///   exactly one per database in the inputs.
-///   **Witness-typed lock.** The `_guard: &WorkspaceGuard` parameter
-///   is a compile-time witness that the workspace lock is held — the
-///   same convention compose / runner use. The function does not
-///   touch the guard; the parameter is named with a leading underscore
-///   to signal "consumed at the type level only".
+/// exactly one per database in the inputs.
+/// **Witness-typed lock.** The `_guard: &WorkspaceGuard` parameter
+/// is a compile-time witness that the workspace lock is held — the
+/// same convention compose / runner use. The function does not
+/// touch the guard; the parameter is named with a leading underscore
+/// to signal "consumed at the type level only".
 pub fn ensure_phase_zero_emitted(
     workspace_root: &Path,
     models: &BTreeMap<BucketKey, AppliedSchema>,
@@ -833,17 +833,17 @@ fn compose_phase_zero_down_text() -> String {
 /// Aggregate extension dependencies from every bucket in a single
 /// database.
 /// PostGIS declared in `main.billing` and `main.shipping` merges to
-/// one install in `main`'s . PostGIS declared in
+/// one install in `main`'s. PostGIS declared in
 /// `crud_log.audit` lives in a separate for the `crud_log`
 /// database.
 /// **Source slots walked.** Two slots feed the result:
 /// 1. `AppliedSchema::indexes[i].extension_dependency` — set when an
-///    index requires a specific extension (`postgis` for GiST-on-
-///    geography, `pg_trgm` for trigram indexes, etc.).
+/// index requires a specific extension (`postgis` for GiST-on-
+/// geography, `pg_trgm` for trigram indexes, etc.).
 /// 2. `AppliedSchema::models[*].exclusion_constraints[i].extension_dependency`
-///    set by the macro auto-derivation under when a
-///    `using = "gist"` EXCLUDE mixes btree comparison operators with
-///    range / geometric operators. Resolves to `Some("btree_gist")`.
+/// set by the macro auto-derivation under when a
+/// `using = "gist"` EXCLUDE mixes btree comparison operators with
+/// range / geometric operators. Resolves to `Some("btree_gist")`.
 fn extensions_for_database(
     models: &BTreeMap<BucketKey, AppliedSchema>,
     database: &str,
@@ -930,13 +930,13 @@ fn format_rfc3339_seconds(instant: OffsetDateTime) -> String {
 ///
 /// Rules (byte-level, no regex per the Djogi-wide no-regex policy):
 /// - Length between 1 and 63 bytes inclusive (Postgres `NAMEDATALEN`
-///   minus the trailing `NUL`).
+/// minus the trailing `NUL`).
 /// - First byte is an ASCII letter (upper- or lower-case) or
-///   underscore.
+/// underscore.
 /// - Every subsequent byte is an ASCII letter, digit, or underscore.
-///   All real-world extension names on PGXN and in `contrib/`
-///   (`postgis`, `pg_trgm`, `pgcrypto`, `pgvector`, `vector`) match
-///   this rule.
+/// All real-world extension names on PGXN and in `contrib/`
+/// (`postgis`, `pg_trgm`, `pgcrypto`, `pgvector`, `vector`) match
+/// this rule.
 fn validate_extension_name(name: &str) -> Result<(), BootstrapError> {
     let bytes = name.as_bytes();
     if bytes.is_empty() || bytes.len() > 63 {
@@ -1487,7 +1487,7 @@ mod tests {
             },
             mk_schema(vec![mk_index("idx_geom2", "postgis")]),
         );
-        // Cross-database — should NOT bleed into main's .
+        // Cross-database — should NOT bleed into main's.
         models.insert(
             BucketKey {
                 database: "crud_log".to_string(),

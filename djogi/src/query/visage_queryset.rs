@@ -1,6 +1,6 @@
 //! `VisageQuerySet<V>` — read-only queryset over a visage projection.
 //! # What
-//! Each emitted visage struct gets a queryset entry point: `UserPublic::filter(|f| ...)`.
+//! Each emitted visage struct gets a queryset entry point: `UserPublic::filter(|f|...)`.
 //! Because visages are projections, not tables, they do not implement [`Model`]
 //! (the existing `QuerySet<T: Model>` carries a `T: Model` bound that visages
 //! cannot satisfy without misrepresenting the column shape). Instead, the
@@ -50,7 +50,7 @@
 //! projection and from any `RETURNING` shape — they cannot leak
 //! through this surface.
 //! # Why RPITIT (not `async fn`)
-//! Every terminal returns `impl Future<Output = ...> + Send` rather
+//! Every terminal returns `impl Future<Output =...> + Send` rather
 //! than using bare `async fn`. The explicit `+ Send` bound matches the
 //! model-side `QuerySet` terminals and guarantees the returned future
 //! can be `.await`ed across task boundaries. `clippy::manual_async_fn`
@@ -374,7 +374,7 @@ fn run_all_sql<V: DjogiVisage>(
         .into_parts())
 }
 
-/// Build `SELECT col1, col2, ... FROM <table> [WHERE ...] [ORDER BY ...]
+/// Build `SELECT col1, col2,... FROM <table> [WHERE...] [ORDER BY...]
 /// [LIMIT $n] [OFFSET $n]` for a visage queryset.
 /// The projection comes from the visage's narrowed `columns` slice, NOT
 /// from a model descriptor walk. This is the load-bearing difference
@@ -397,7 +397,7 @@ pub(crate) fn build_visage_select<V: DjogiVisage>(
     Ok(acc)
 }
 
-/// Build `SELECT COUNT(*) FROM <table> [WHERE ...]` for a visage queryset.
+/// Build `SELECT COUNT(*) FROM <table> [WHERE...]` for a visage queryset.
 /// Ignores `ordering`, `limit`, and `offset` — count is invariant under
 /// those clauses. Mirrors the model-side `build_count` shape so the
 /// emitted statement is the simplest predicate-matching count Postgres
@@ -412,7 +412,7 @@ pub(crate) fn build_visage_count<V: DjogiVisage>(
     Ok(acc)
 }
 
-/// Build `SELECT EXISTS (SELECT 1 FROM <table> [WHERE ...] LIMIT 1)` for
+/// Build `SELECT EXISTS (SELECT 1 FROM <table> [WHERE...] LIMIT 1)` for
 /// a visage queryset. Mirrors the model-side `build_exists` shape.
 pub(crate) fn build_visage_exists<V: DjogiVisage>(
     qs: &VisageQuerySet<V>,
@@ -425,7 +425,7 @@ pub(crate) fn build_visage_exists<V: DjogiVisage>(
     Ok(acc)
 }
 
-/// Emit the `WHERE ...` clause for a visage queryset, if non-vacuous.
+/// Emit the `WHERE...` clause for a visage queryset, if non-vacuous.
 /// `emit_condition` borrow-walks and returns
 /// `Result<(), PortablePredicateError>`; visage querysets carry pure
 /// `Condition` payloads (no portable predicates yet), so the only

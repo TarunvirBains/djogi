@@ -1,20 +1,20 @@
-//! `#[model(exclusion(...))]` grammar — PR 7 task 2.
+//! `#[model(exclusion(...))]` grammar — PR 7.
 //! Parses model-level `EXCLUDE` constraint declarations and lowers them
 //! to `ExclusionConstraintSpec` token-stream literals that land in the
 //! `#[model]`-emitted descriptor.
 //! # Grammar (per PR 7 plan, §macro surface)
 //! ```ignore
 //! #[model(
-//!     table = "bookings",
-//!     exclusion(
-//!         name = "no_overlap",
-//!         using = "gist",
-//!         elements = ["room_id WITH =", "period WITH &&"],
-//!         where = "is_active",        // optional
-//!         deferrable = true,           // optional, default false
-//!         initially_deferred = false   // optional, default false
-//!     ),
-//!     exclusion(name = "...", using = "btree", elements = ["..."])
+//!  table = "bookings",
+//!  exclusion(
+//!   name = "no_overlap",
+//!   using = "gist",
+//!   elements = ["room_id WITH =", "period WITH &&"],
+//!   where = "is_active",  // optional
+//!   deferrable = true,   // optional, default false
+//!   initially_deferred = false // optional, default false
+//!  ),
+//!  exclusion(name = "...", using = "btree", elements = ["..."])
 //! )]
 //! ```
 //! Multiple `exclusion(...)` entries per model are collected into a `Vec`
@@ -86,7 +86,7 @@ pub struct ExclusionElementDecl {
 // Parse entry point
 // ---------------------------------------------------------------------------
 
-/// Parse one `Meta::List` of shape `exclusion(name = "...", ...)`
+/// Parse one `Meta::List` of shape `exclusion(name = "...",...)`
 /// returns the populated [`ExclusionDecl`].
 /// Caller (`ModelAttrs::parse`) accumulates the per-model Vec and runs
 /// duplicate-name detection across the whole list.
@@ -131,7 +131,7 @@ pub fn parse_exclusion_meta_list(list: &MetaList) -> syn::Result<ExclusionDecl> 
                     return Err(syn::Error::new(
                         lit.span(),
                         "`using = \"\"` is not allowed — index method must be a non-empty \
-                         string (e.g. `\"gist\"`, `\"btree\"`)",
+       string (e.g. `\"gist\"`, `\"btree\"`)",
                     ));
                 }
                 using = Some(val);
@@ -153,14 +153,14 @@ pub fn parse_exclusion_meta_list(list: &MetaList) -> syn::Result<ExclusionDecl> 
                     return Err(syn::Error::new(
                         lit.span(),
                         "`where = \"\"` is not allowed — predicate must be a non-empty SQL \
-                         fragment (omit the key entirely if the constraint applies to every row)",
+       fragment (omit the key entirely if the constraint applies to every row)",
                     ));
                 }
                 where_clause = Some(val);
             }
             "deferrable" => {
                 if deferrable.is_some() {
-                    return Err(syn::Error::new_spanned(key, "duplicate `deferrable = ..`"));
+                    return Err(syn::Error::new_spanned(key, "duplicate `deferrable =..`"));
                 }
                 deferrable = Some(require_bool_lit(value, "deferrable")?);
                 deferrable_span = Some(key.span());
@@ -169,7 +169,7 @@ pub fn parse_exclusion_meta_list(list: &MetaList) -> syn::Result<ExclusionDecl> 
                 if initially_deferred.is_some() {
                     return Err(syn::Error::new_spanned(
                         key,
-                        "duplicate `initially_deferred = ..`",
+                        "duplicate `initially_deferred =..`",
                     ));
                 }
                 initially_deferred = Some(require_bool_lit(value, "initially_deferred")?);
@@ -180,8 +180,8 @@ pub fn parse_exclusion_meta_list(list: &MetaList) -> syn::Result<ExclusionDecl> 
                     key,
                     format!(
                         "unknown key `{other}` inside exclusion(...); \
-                         expected one of: name, using, elements, where, \
-                         deferrable, initially_deferred"
+       expected one of: name, using, elements, where, \
+       deferrable, initially_deferred"
                     ),
                 ));
             }
@@ -195,21 +195,21 @@ pub fn parse_exclusion_meta_list(list: &MetaList) -> syn::Result<ExclusionDecl> 
         syn::Error::new(
             head_span,
             "exclusion(...) requires `name = \"..\"` — every EXCLUDE constraint must carry an \
-             explicit name",
+    explicit name",
         )
     })?;
     let using = using.ok_or_else(|| {
         syn::Error::new(
             head_span,
             "exclusion(...) requires `using = \"..\"` — index method (e.g. `\"gist\"`) is \
-             required",
+    required",
         )
     })?;
     let elements = elements.ok_or_else(|| {
         syn::Error::new(
             head_span,
             "exclusion(...) requires `elements = [..]` — list at least one `\"<expr> WITH <op>\"` \
-             entry",
+    entry",
         )
     })?;
     if elements.is_empty() {
@@ -229,7 +229,7 @@ pub fn parse_exclusion_meta_list(list: &MetaList) -> syn::Result<ExclusionDecl> 
         return Err(syn::Error::new(
             span,
             "`initially_deferred = true` requires `deferrable = true` on the same exclusion(...) \
-             entry — INITIALLY DEFERRED is meaningless on a non-deferrable constraint",
+    entry — INITIALLY DEFERRED is meaningless on a non-deferrable constraint",
         ));
     }
 
@@ -265,7 +265,7 @@ fn parse_elements_array(value: &Expr) -> syn::Result<Vec<ExclusionElementDecl>> 
         return Err(syn::Error::new_spanned(
             value,
             "`elements` must be a bracketed list of strings, e.g. \
-             `elements = [\"room_id WITH =\", \"period WITH &&\"]`",
+    `elements = [\"room_id WITH =\", \"period WITH &&\"]`",
         ));
     };
     let mut out = Vec::with_capacity(arr.elems.len());
@@ -305,8 +305,8 @@ fn decompose_element(raw: &str, span: Span) -> syn::Result<ExclusionElementDecl>
             span,
             format!(
                 "exclusion element {raw:?} is missing the ` WITH ` delimiter — \
-                 each element must look like `\"<expr> WITH <op>\"`, e.g. \
-                 `\"room_id WITH =\"` / `\"period WITH &&\"`"
+     each element must look like `\"<expr> WITH <op>\"`, e.g. \
+     `\"room_id WITH =\"` / `\"period WITH &&\"`"
             ),
         )),
         [pos] => {
@@ -317,7 +317,7 @@ fn decompose_element(raw: &str, span: Span) -> syn::Result<ExclusionElementDecl>
                     span,
                     format!(
                         "exclusion element {raw:?} has an empty expression before ` WITH ` — \
-                         left-hand side must be a column reference or expression"
+       left-hand side must be a column reference or expression"
                     ),
                 ));
             }
@@ -326,7 +326,7 @@ fn decompose_element(raw: &str, span: Span) -> syn::Result<ExclusionElementDecl>
                     span,
                     format!(
                         "exclusion element {raw:?} has an empty operator after ` WITH ` — \
-                         right-hand side must be an operator class member (e.g. `=`, `&&`)"
+       right-hand side must be an operator class member (e.g. `=`, `&&`)"
                     ),
                 ));
             }
@@ -339,7 +339,7 @@ fn decompose_element(raw: &str, span: Span) -> syn::Result<ExclusionElementDecl>
             span,
             format!(
                 "exclusion element {raw:?} contains more than one ` WITH ` delimiter — \
-                 each element must split into exactly one expression and one operator"
+     each element must split into exactly one expression and one operator"
             ),
         )),
     }
@@ -396,7 +396,7 @@ pub fn validate_unique_names(decls: &[ExclusionDecl]) -> syn::Result<()> {
                 decl.head_span,
                 format!(
                     "duplicate exclusion `name = \"{}\"` — every EXCLUDE constraint on a model \
-                     must have a unique name",
+      must have a unique name",
                     decl.name
                 ),
             ));
@@ -411,24 +411,24 @@ pub fn validate_unique_names(decls: &[ExclusionDecl]) -> syn::Result<()> {
 
 /// Lower one [`ExclusionDecl`] into an `ExclusionConstraintSpec`
 /// struct-literal token stream. The descriptor emitter wraps the per-decl
-/// streams in a `&[ ... ]` slice literal.
+/// streams in a `&[... ]` slice literal.
 /// # Extension dependency auto-derivation
 /// The emitter sets the spec's `extension_dependency` slot via
 /// [`derive_extension_dependency`]:
 /// * `using = "gist"` exclusions whose element list contains at least
-///   one btree comparison operator (`=`, `<>`, `<`, `<=`, `>`, `>=`)
-///   resolve to `Some("btree_gist")`. The canonical scheduling shape
-///   `EXCLUDE USING gist (room_id WITH =, period WITH &&)` matches
-///   the `=` element needs the btree_gist operator class for `=` on
-///   btree-only types inside a GiST index.
+/// one btree comparison operator (`=`, `<>`, `<`, `<=`, `>`, `>=`)
+/// resolve to `Some("btree_gist")`. The canonical scheduling shape
+/// `EXCLUDE USING gist (room_id WITH =, period WITH &&)` matches
+/// the `=` element needs the btree_gist operator class for `=` on
+/// btree-only types inside a GiST index.
 /// * Every other shape resolves to `None`. Pure-range exclusions
-///   (`elements = ["period WITH &&"]`) keep `None` because stock GiST
-///   handles range overlap natively. `using = "btree"` exclusions also
-///   resolve to `None` — btree EXCLUDEs are uncommon but never need
-///   btree_gist (the extension only matters for GiST indexes).
-///   Adopters never see this slot in the macro grammar; it is purely
-///   machinery for the bootstrap composer to aggregate the
-///   per-database extension install list.
+/// (`elements = ["period WITH &&"]`) keep `None` because stock GiST
+/// handles range overlap natively. `using = "btree"` exclusions also
+/// resolve to `None` — btree EXCLUDEs are uncommon but never need
+/// btree_gist (the extension only matters for GiST indexes).
+/// Adopters never see this slot in the macro grammar; it is purely
+/// machinery for the bootstrap composer to aggregate the
+/// per-database extension install list.
 pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
     let name = decl.name.as_str();
     let using = decl.using.as_str();
@@ -439,10 +439,10 @@ pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
             let expr = e.expr.as_str();
             let op = e.with_operator.as_str();
             quote! {
-                ::djogi::descriptor::ExclusionElement {
-                    expr: #expr,
-                    with_operator: #op,
-                }
+             ::djogi::descriptor::ExclusionElement {
+              expr: #expr,
+              with_operator: #op,
+             }
             }
         })
         .collect();
@@ -462,15 +462,15 @@ pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
     };
 
     quote! {
-        ::djogi::descriptor::ExclusionConstraintSpec {
-            name: #name,
-            using: #using,
-            elements: &[ #(#element_tokens,)* ],
-            where_clause: #where_tokens,
-            deferrable: #deferrable,
-            initially_deferred: #initially_deferred,
-            extension_dependency: #extension_tokens,
-        }
+     ::djogi::descriptor::ExclusionConstraintSpec {
+      name: #name,
+      using: #using,
+      elements: &[ #(#element_tokens,)* ],
+      where_clause: #where_tokens,
+      deferrable: #deferrable,
+      initially_deferred: #initially_deferred,
+      extension_dependency: #extension_tokens,
+     }
     }
 }
 
@@ -481,7 +481,7 @@ pub fn emit_exclusion_spec_tokens(decl: &ExclusionDecl) -> TokenStream {
 /// (`=`, `<>`, `<`, `<=`, `>`, `>=`). Returns `None` otherwise.
 /// # Why the heuristic
 /// `btree_gist` provides GiST operator class support for btree-only
-/// types (`int2`, `int4`, `int8`, `text`, `date`, ...) — without it, a
+/// types (`int2`, `int4`, `int8`, `text`, `date`,...) — without it, a
 /// GiST index cannot accept `=` / `<>` / `<` / `<=` / `>` / `>=` on
 /// those types. Every real-world scheduling / booking / reservation
 /// exclusion combines `WITH =` on a category column (e.g. `room_id`,
@@ -542,12 +542,12 @@ mod tests {
     #[test]
     fn parses_full_declaration() {
         let decl = parse_one(quote! {
-            name = "no_overlap",
-            using = "gist",
-            elements = ["room_id WITH =", "period WITH &&"],
-            where = "is_active",
-            deferrable = true,
-            initially_deferred = true,
+         name = "no_overlap",
+         using = "gist",
+         elements = ["room_id WITH =", "period WITH &&"],
+         where = "is_active",
+         deferrable = true,
+         initially_deferred = true,
         })
         .expect("should parse");
         assert_eq!(decl.name, "no_overlap");
@@ -565,9 +565,9 @@ mod tests {
     #[test]
     fn defaults_omitted_flags_to_false() {
         let decl = parse_one(quote! {
-            name = "x",
-            using = "btree",
-            elements = ["col WITH ="],
+         name = "x",
+         using = "btree",
+         elements = ["col WITH ="],
         })
         .unwrap();
         assert!(!decl.deferrable);
@@ -578,8 +578,8 @@ mod tests {
     #[test]
     fn rejects_missing_name() {
         let err = parse_one(quote! {
-            using = "gist",
-            elements = ["a WITH ="],
+         using = "gist",
+         elements = ["a WITH ="],
         })
         .unwrap_err();
         assert!(err.to_string().contains("name"));
@@ -588,8 +588,8 @@ mod tests {
     #[test]
     fn rejects_missing_using() {
         let err = parse_one(quote! {
-            name = "x",
-            elements = ["a WITH ="],
+         name = "x",
+         elements = ["a WITH ="],
         })
         .unwrap_err();
         assert!(err.to_string().contains("using"));
@@ -598,8 +598,8 @@ mod tests {
     #[test]
     fn rejects_missing_elements() {
         let err = parse_one(quote! {
-            name = "x",
-            using = "gist",
+         name = "x",
+         using = "gist",
         })
         .unwrap_err();
         assert!(err.to_string().contains("elements"));
@@ -608,9 +608,9 @@ mod tests {
     #[test]
     fn rejects_empty_elements_array() {
         let err = parse_one(quote! {
-            name = "x",
-            using = "gist",
-            elements = [],
+         name = "x",
+         using = "gist",
+         elements = [],
         })
         .unwrap_err();
         assert!(err.to_string().contains("at least one"));
@@ -619,9 +619,9 @@ mod tests {
     #[test]
     fn rejects_element_without_with_delimiter() {
         let err = parse_one(quote! {
-            name = "x",
-            using = "gist",
-            elements = ["bad_element"],
+         name = "x",
+         using = "gist",
+         elements = ["bad_element"],
         })
         .unwrap_err();
         assert!(err.to_string().contains("missing the ` WITH ` delimiter"));
@@ -630,9 +630,9 @@ mod tests {
     #[test]
     fn rejects_element_with_extra_with_delimiter() {
         let err = parse_one(quote! {
-            name = "x",
-            using = "gist",
-            elements = ["a WITH b WITH c"],
+         name = "x",
+         using = "gist",
+         elements = ["a WITH b WITH c"],
         })
         .unwrap_err();
         assert!(err.to_string().contains("more than one"));
@@ -641,10 +641,10 @@ mod tests {
     #[test]
     fn rejects_initially_deferred_without_deferrable() {
         let err = parse_one(quote! {
-            name = "x",
-            using = "gist",
-            elements = ["a WITH ="],
-            initially_deferred = true,
+         name = "x",
+         using = "gist",
+         elements = ["a WITH ="],
+         initially_deferred = true,
         })
         .unwrap_err();
         assert!(err.to_string().contains("requires `deferrable = true`"));
@@ -653,10 +653,10 @@ mod tests {
     #[test]
     fn rejects_unknown_key() {
         let err = parse_one(quote! {
-            name = "x",
-            using = "gist",
-            elements = ["a WITH ="],
-            wrongkey = true,
+         name = "x",
+         using = "gist",
+         elements = ["a WITH ="],
+         wrongkey = true,
         })
         .unwrap_err();
         assert!(err.to_string().contains("unknown key `wrongkey`"));
@@ -665,15 +665,15 @@ mod tests {
     #[test]
     fn validate_unique_names_catches_duplicates() {
         let a = parse_one(quote! {
-            name = "dup",
-            using = "gist",
-            elements = ["a WITH ="],
+         name = "dup",
+         using = "gist",
+         elements = ["a WITH ="],
         })
         .unwrap();
         let b = parse_one(quote! {
-            name = "dup",
-            using = "btree",
-            elements = ["b WITH ="],
+         name = "dup",
+         using = "btree",
+         elements = ["b WITH ="],
         })
         .unwrap();
         let err = validate_unique_names(&[a, b]).unwrap_err();
@@ -683,9 +683,9 @@ mod tests {
     #[test]
     fn rejects_empty_using_string() {
         let err = parse_one(quote! {
-            name = "x",
-            using = "",
-            elements = ["a WITH ="],
+         name = "x",
+         using = "",
+         elements = ["a WITH ="],
         })
         .unwrap_err();
         assert!(err.to_string().contains("non-empty"));
@@ -694,9 +694,9 @@ mod tests {
     #[test]
     fn rejects_empty_name_string() {
         let err = parse_one(quote! {
-            name = "",
-            using = "gist",
-            elements = ["a WITH ="],
+         name = "",
+         using = "gist",
+         elements = ["a WITH ="],
         })
         .unwrap_err();
         assert!(err.to_string().contains("non-empty"));
@@ -707,9 +707,9 @@ mod tests {
     #[test]
     fn derive_btree_gist_for_gist_with_equality_operator() {
         let decl = parse_one(quote! {
-            name = "no_overlap",
-            using = "gist",
-            elements = ["room_id WITH =", "period WITH &&"],
+         name = "no_overlap",
+         using = "gist",
+         elements = ["room_id WITH =", "period WITH &&"],
         })
         .unwrap();
         assert_eq!(derive_extension_dependency(&decl), Some("btree_gist"));
@@ -720,9 +720,9 @@ mod tests {
         for op in ["<", "<=", "<>", "=", ">", ">="] {
             let element = format!("score WITH {op}");
             let decl = parse_one(quote! {
-                name = "score_excl",
-                using = "gist",
-                elements = [#element],
+             name = "score_excl",
+             using = "gist",
+             elements = [#element],
             })
             .unwrap();
             assert_eq!(
@@ -736,9 +736,9 @@ mod tests {
     #[test]
     fn derive_no_extension_for_pure_range_overlap() {
         let decl = parse_one(quote! {
-            name = "period_overlap",
-            using = "gist",
-            elements = ["period WITH &&"],
+         name = "period_overlap",
+         using = "gist",
+         elements = ["period WITH &&"],
         })
         .unwrap();
         assert_eq!(
@@ -754,9 +754,9 @@ mod tests {
         // only adds GiST operator classes, and a btree-method EXCLUDE
         // works against stock btree.
         let decl = parse_one(quote! {
-            name = "btree_eq",
-            using = "btree",
-            elements = ["tenant_id WITH =", "external_id WITH ="],
+         name = "btree_eq",
+         using = "btree",
+         elements = ["tenant_id WITH =", "external_id WITH ="],
         })
         .unwrap();
         assert_eq!(derive_extension_dependency(&decl), None);
@@ -768,9 +768,9 @@ mod tests {
         for op in ["&&", "<<", ">>", "&<", "&>", "-|-", "@>", "<@", "~"] {
             let element = format!("col WITH {op}");
             let decl = parse_one(quote! {
-                name = "x",
-                using = "gist",
-                elements = [#element],
+             name = "x",
+             using = "gist",
+             elements = [#element],
             })
             .unwrap();
             assert_eq!(
@@ -785,13 +785,13 @@ mod tests {
     fn derive_btree_gist_when_at_least_one_btree_operator_present() {
         // Mixed list — even one `=` element is enough to require btree_gist.
         let decl = parse_one(quote! {
-            name = "no_overlap_three",
-            using = "gist",
-            elements = [
-                "room_id WITH =",
-                "period WITH &&",
-                "extras WITH @>",
-            ],
+         name = "no_overlap_three",
+         using = "gist",
+         elements = [
+          "room_id WITH =",
+          "period WITH &&",
+          "extras WITH @>",
+         ],
         })
         .unwrap();
         assert_eq!(derive_extension_dependency(&decl), Some("btree_gist"));

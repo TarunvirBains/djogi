@@ -1,7 +1,7 @@
 error: `default_filter = |f| …` requires `proxy_for = ParentType` on the same model — proxy models inherit storage from the parent and can override filtering, but a non-proxy model owns its own storage and uses explicit `.filter(...)` calls instead
-  --> $DIR/proxy_orphan_default_filter.rs:15:5
-   |
-15 |     default_filter = |f| f.active.eq(true),
-   |     ^^^^^^^^^^^^^^
+ --> $DIR/proxy_orphan_default_filter.rs:15:5
+ |
+15 |  default_filter = |f| f.active.eq(true),
+ |  ^^^^^^^^^^^^^^
 
 error: aborting due to 1 previous error

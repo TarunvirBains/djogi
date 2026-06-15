@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [Shipped guides](../guide/index.md)
+> [Back to README](../../README.md) | [Shipped guides](../guide/index.md)
 
 # Djogi Roadmap
 
@@ -14,7 +14,7 @@
 | Roadmap doc | Status | Authoritative guide |
 |---|---|---|
 | [Models](./models.md) | Shipped (Phases 3–7.5) | [Models](../guide/models.md), [Relations](../guide/relations.md), [Spatial](../guide/spatial.md), [JSONB](../guide/jsonb.md) |
-| [Querying](./querying.md) | Shipped (Phase 2 + 4 + 6.5) | [Queries](../guide/queries.md), [Expressions](../guide/expressions.md), [Aggregation](../guide/query-aggregation.md) |
+| [Querying](./querying.md) | Shipped ( + 4 + 6.5) | [Queries](../guide/queries.md), [Expressions](../guide/expressions.md), [Aggregation](../guide/query-aggregation.md) |
 | [Security](./security.md) | Shipped (Phases 5 + 5.5) | [Auth](../guide/auth.md), [Tenancy](../guide/tenancy.md) |
 | [CLI](./cli.md) | Shipped — `apply --fake` ships as a flag on the apply command; `baseline` and `rollback` ship as `djogi migrations baseline` / `djogi migrations rollback` | [Migrations](../guide/migrations.md) |
 | [Future work](./future-work.md) | Mixed — some items shipped, some still future | Cross-reference per item; this doc still useful for not-yet-shipped scope expansions |
@@ -29,6 +29,6 @@ got expanded. They also serve as a historical record for the next
 round of API discussions.
 
 When a follow-up phase ships scope that the roadmap document
-explicitly anticipated (e.g. the Phase 7 follow-up CLI dispatchers),
+explicitly anticipated (e.g. the follow-up CLI dispatchers),
 the corresponding bullet here will move from the "Status" column to
 the authoritative guide.

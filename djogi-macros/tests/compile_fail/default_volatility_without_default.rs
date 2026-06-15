@@ -7,8 +7,8 @@ use djogi::prelude::*;
 #[model(table = "events")]
 #[derive(Debug, Clone)]
 pub struct Event {
-    #[field(default_volatility = "stable")]
-    pub fired_at: DateTime,
+ #[field(default_volatility = "stable")]
+ pub fired_at: DateTime,
 }
 
 fn main() {}

@@ -17,8 +17,8 @@
 -- the pattern `model.rs` and `queryset.rs` already use.
 
 CREATE TABLE IF NOT EXISTS owners (
-    id BIGINT PRIMARY KEY DEFAULT generate_id(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    name TEXT NOT NULL
+  id BIGINT PRIMARY KEY DEFAULT generate_id(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  name TEXT NOT NULL
 );

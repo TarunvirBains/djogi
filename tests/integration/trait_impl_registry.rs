@@ -3,17 +3,17 @@
 //! Exercises the end-to-end pipeline through `#[djogi::trait_impl]`:
 //!
 //! 1. Adopter declares a trait + a model + a `#[djogi::trait_impl]`
-//!    impl block.
+//!  impl block.
 //! 2. The macro emits the impl unchanged + the per-impl carrier
-//!    struct + the type-erased caster + the `inventory::submit!`
-//!    registration.
+//!  struct + the type-erased caster + the `inventory::submit!`
+//!  registration.
 //! 3. `djogi::trait_registry::iter_for_trait::<dyn Trait>()` walks
-//!    the registry, filters by the trait's `TypeId`, yields the
-//!    matching `&'static TraitRegistration` entries.
+//!  the registry, filters by the trait's `TypeId`, yields the
+//!  matching `&'static TraitRegistration` entries.
 //! 4. The caster (.3 safe carrier pattern) round-trips an
-//!    `Arc<Vehicle>` through `Arc<dyn Any + Send + Sync>` ↔
-//!    `Arc<TraitImplCarrier<dyn Searchable>>` and recovers a working
-//!    `Arc<dyn Searchable + Send + Sync>` for adopter use.
+//!  `Arc<Vehicle>` through `Arc<dyn Any + Send + Sync>` ↔
+//!  `Arc<TraitImplCarrier<dyn Searchable>>` and recovers a working
+//!  `Arc<dyn Searchable + Send + Sync>` for adopter use.
 //!
 //! The cross-type Sassi-consumer query test
 //! is deferred to a later integration suite (it depends on
@@ -95,18 +95,18 @@ fn iter_for_trait_filters_by_type_id() {
 fn caster_round_trips_arc_to_trait_object() {
     // Find the Vehicle registration and exercise its caster end-to-end:
     //
-    //   1. Wrap a Vehicle instance in `Arc<dyn Any + Send + Sync>`.
-    //   2. Call `(reg.caster)(&erased_arc)` → `Arc<dyn Any>`.
-    //   3. Downcast to the per-impl carrier struct.
-    //   4. Call the carrier's `into_arc()` to recover
-    //      `Arc<dyn Searchable + Send + Sync>`.
-    //   5. Call a trait method on the recovered Arc.
+    //  1. Wrap a Vehicle instance in `Arc<dyn Any + Send + Sync>`.
+    //  2. Call `(reg.caster)(&erased_arc)` → `Arc<dyn Any>`.
+    //  3. Downcast to the per-impl carrier struct.
+    //  4. Call the carrier's `into_arc()` to recover
+    //   `Arc<dyn Searchable + Send + Sync>`.
+    //  5. Call a trait method on the recovered Arc.
     //
     // The per-impl carrier type name is internal to the macro
     // expansion — we cannot reach it directly. But we CAN verify the
     // caster returns Some(_) for the matching type and None for a
     // mismatched type. The full round-trip-to-trait-object path is
-    // deferred to 8δ  (it goes through `Sassi::all_impl::<dyn T>()`,
+    // deferred to 8δ (it goes through `Sassi::all_impl::<dyn T>()`,
     // which has the type-aware downcast helper threaded through).
     let vehicle: Vehicle = Vehicle {
         title: "Fast One".to_string(),

@@ -16,20 +16,20 @@ use djogi::prelude::*;
 #[model(table = "phase8_5_c4b_mixed_dogs")]
 #[derive(Debug, Clone)]
 pub struct Dog {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "phase8_5_c4b_mixed_cats")]
 #[derive(Debug, Clone)]
 pub struct Cat {
-    pub name: String,
+ pub name: String,
 }
 
 fn main() {
-    // Same-model union compiles; mismatched-model does not.
-    let _ok: SetOpQuerySet<Dog> = Dog::objects().union(Dog::objects());
+ // Same-model union compiles; mismatched-model does not.
+ let _ok: SetOpQuerySet<Dog> = Dog::objects().union(Dog::objects());
 
-    // The next line MUST fail to compile. `Cat::objects()` is a
-    // `QuerySet<Cat>` which does not satisfy `IntoSetOpArm<Dog>`.
-    let _err = Dog::objects().union(Cat::objects());
+ // The next line MUST fail to compile. `Cat::objects()` is a
+ // `QuerySet<Cat>` which does not satisfy `IntoSetOpArm<Dog>`.
+ let _err = Dog::objects().union(Cat::objects());
 }

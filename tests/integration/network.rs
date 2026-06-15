@@ -4,31 +4,31 @@
 // # What this file pins
 //
 // 1. **Descriptor projection.** Model fields typed `std::net::IpAddr` /
-//    `djogi::CidrAddr` / `djogi::MacAddr` lower to
-//    `FieldSqlType::Inet` / `Cidr` / `Macaddr` respectively, and the
-//    migration composer emits `INET` / `CIDR` / `MACADDR` in the
-//    column-type slot of `CREATE TABLE`.
+//  `djogi::CidrAddr` / `djogi::MacAddr` lower to
+//  `FieldSqlType::Inet` / `Cidr` / `Macaddr` respectively, and the
+//  migration composer emits `INET` / `CIDR` / `MACADDR` in the
+//  column-type slot of `CREATE TABLE`.
 // 2. **Wire-format round-trip.** Rows whose network columns carry IPv4
-//    and IPv6 addresses, CIDR networks at various prefix lengths, and
-//    EUI-48 MAC addresses round-trip end-to-end through `Model::create`
-//    → `RETURNING *` → `FromPgRow` decode, preserving every byte.
+//  and IPv6 addresses, CIDR networks at various prefix lengths, and
+//  EUI-48 MAC addresses round-trip end-to-end through `Model::create`
+//  → `RETURNING *` → `FromPgRow` decode, preserving every byte.
 // 3. **Nullability composition.** `Option<IpAddr>` / `Option<CidrAddr>`
-//    / `Option<MacAddr>` columns round-trip both `None` (SQL NULL) and
-//    `Some(...)` (typed value) through the framework's standard
-//    nullable-column path.
+//  / `Option<MacAddr>` columns round-trip both `None` (SQL NULL) and
+//  `Some(...)` (typed value) through the framework's standard
+//  nullable-column path.
 // 4. **Filter execution.** `QuerySet::filter(|f| f.host().eq(...))`
-//    on each typed network column emits a correctly-typed bind for the
-//    matching Postgres type and returns only the matching row — pins
-//    the `FilterValue::Inet` / `Cidr` / `Macaddr` → `push_bind` paths
-//    at SQL-execution level.
+//  on each typed network column emits a correctly-typed bind for the
+//  matching Postgres type and returns only the matching row — pins
+//  the `FilterValue::Inet` / `Cidr` / `Macaddr` → `push_bind` paths
+//  at SQL-execution level.
 // 5. **Bulk-update execution.** `QuerySet::update(|f| f.host().set(...))`
-//    emits the correct `SET host = $1` clause executing through the
-//    same `push_bind` path.
+//  emits the correct `SET host = $1` clause executing through the
+//  same `push_bind` path.
 // 6. **Construction-time validation for CidrAddr.** `CidrAddr::new`
-//    rejects host-bits-non-zero combinations before the wire codec
-//    runs; the integration test pins both the accepted shapes
-//    (`192.168.1.0/24`, `10.0.0.0/8`, `2001:db8::/32`) and that
-//    construction-time validation runs before any DB round-trip.
+//  rejects host-bits-non-zero combinations before the wire codec
+//  runs; the integration test pins both the accepted shapes
+//  (`192.168.1.0/24`, `10.0.0.0/8`, `2001:db8::/32`) and that
+//  construction-time validation runs before any DB round-trip.
 //
 // # No raw_execute required
 //

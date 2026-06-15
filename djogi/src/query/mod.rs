@@ -42,7 +42,7 @@ pub mod field;
 pub mod filter;
 pub mod grouped;
 // Djogi#106) — typed bulk-copy surface
-// `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE ...]`.
+// `INSERT INTO target (cols...) SELECT exprs... FROM source [WHERE...]`.
 // Closes the framework gap that previously forced adopters to fall back
 // to `ctx.raw_execute(...)` for cross-table archival / migration shapes.
 pub mod insert_select;
@@ -56,7 +56,7 @@ pub mod insert_select;
 pub mod joined;
 pub mod lateral;
 pub(crate) mod lock;
-// Issue #178 — typed `MERGE INTO ... USING` query surface.
+// Issue #178 — typed `MERGE INTO... USING` query surface.
 pub mod merge;
 // Djogi#195 — `MirJzSON` JSON predicate builders.
 // Wraps Sassi's `JSahibONFieldRef` / `JSahibONOptionFieldRef` /

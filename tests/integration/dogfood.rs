@@ -1,17 +1,17 @@
-// Round-2 typed-surface gap discovery (issue #110).
+// typed-surface gap discovery (issue #110).
 //
 // Methodology: write small adopter-shape scenarios across six categories and
 // compile them. Compile-fails / awkward shapes / clean compiles each map to a
 // verdict the round summary comment on #110 reports.
 //
 // Lifecycle of a scenario:
-//   - When discovery surfaces a gap, the scenario carries a `// GAP(<id>)`
-//     marker and the workaround that an adopter would reach for today.
-//   - When the underlying issue closes, the scenario is flipped to a
-//     `// REGRESSION (closes #<id> via PR #<n>)` positive assertion that
-//     locks the now-supported call shape against future regression. The
-//     marker stays anchored to the GH closing PR so the audit trail is
-//     traceable.
+//  - When discovery surfaces a gap, the scenario carries a `// GAP(<id>)`
+//   marker and the workaround that an adopter would reach for today.
+//  - When the underlying issue closes, the scenario is flipped to a
+//   `// REGRESSION (closes #<id> via PR #<n>)` positive assertion that
+//   locks the now-supported call shape against future regression. The
+//   marker stays anchored to the GH closing PR so the audit trail is
+//   traceable.
 //
 // As of 2026-05-16 the following sibling issues are closed and the matching
 // scenarios are positive regressions: #107 (Option<scalar>), #109 (Condition
@@ -38,11 +38,11 @@ use serde::{Deserialize, Serialize};
 // Category 1 model: scalar columns + Tracked<T> + Option<scalar>.
 //
 // Probes (per scenario):
-//   - 1.A — `Tracked<String>` portable lookup (closed by #166).
-//   - 1.B — `HeerId` typed `IN (...)` payload via `DjogiField::in_`.
-//   - 1.C — `&str` → `String` coercion at portable lookup callsites
-//     (closed by #167).
-//   - 1.D — `Option<i32>` portable comparison surface (closed by #107).
+//  - 1.A — `Tracked<String>` portable lookup (closed by #166).
+//  - 1.B — `HeerId` typed `IN (...)` payload via `DjogiField::in_`.
+//  - 1.C — `&str` → `String` coercion at portable lookup callsites
+//   (closed by #167).
+//  - 1.D — `Option<i32>` portable comparison surface (closed by #107).
 #[model(table = "djogi_dogfood_widgets", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct DogfoodWidget {
@@ -696,11 +696,11 @@ async fn cat3_c_defer_constraints_typed_surface(mut ctx: djogi::DjogiContext) {
 // keeps to portable lookups — that routing is unchanged.
 //
 // Coverage:
-//   - `Vec<String>`, `Vec<i32>`, `Vec<bool>` — the pre-#171 baseline, kept
-//     as a sanity check that the original sealed entries still wire up.
-//   - `Vec<i16>`, `Vec<f64>`, `Vec<HeerId>` — three representatives from
-//     the post-#171 expansion exercising the small-int / wide-float / ID
-//     family arms of the `FilterValue::Array*` discriminant.
+//  - `Vec<String>`, `Vec<i32>`, `Vec<bool>` — the pre-#171 baseline, kept
+//   as a sanity check that the original sealed entries still wire up.
+//  - `Vec<i16>`, `Vec<f64>`, `Vec<HeerId>` — three representatives from
+//   the post-#171 expansion exercising the small-int / wide-float / ID
+//   family arms of the `FilterValue::Array*` discriminant.
 //
 // Adopter-defined newtype / enum element types are NOT covered by #171 and
 // route through the separate `DjogiSqlType` extension path documented in
@@ -792,17 +792,17 @@ async fn cat4_a_typed_arrays_sealed_set_regression(mut ctx: djogi::DjogiContext)
 // Scenario 4.B — ENUM, CITEXT, INET, MACADDR, MONEY, DOMAIN gaps.
 //
 // VERDICT (per type):
-//   - ENUM (CREATE TYPE ... AS ENUM via `#[derive(DjogiEnum)]`): COMPILES
-//     CLEANLY (verified at `djogi/src/enum_.rs` + tests/integration/
-//     postgres_native.rs).
-//   - CITEXT: present as `FieldSqlType::Citext` for descriptor projection
-//     but no typed Rust newtype on the field side and no ASCII-stable
-//     ILIKE surface beyond what `String` already exposes — open question
-//     whether this needs a separate gap or stays under #105 / #110.
-//   - INET / CIDR / MACADDR, MONEY, and DOMAIN TYPES: NEED GAP ISSUES.
-//     `INTERVAL` and the supported typed range substrate (`int4range`,
-//     `int8range`, `numrange`, `tstzrange`, `tsrange`, `daterange`) now
-//     have descriptor projection and field-side Rust types.
+//  - ENUM (CREATE TYPE ... AS ENUM via `#[derive(DjogiEnum)]`): COMPILES
+//   CLEANLY (verified at `djogi/src/enum_.rs` + tests/integration/
+//   postgres_native.rs).
+//  - CITEXT: present as `FieldSqlType::Citext` for descriptor projection
+//   but no typed Rust newtype on the field side and no ASCII-stable
+//   ILIKE surface beyond what `String` already exposes — open question
+//   whether this needs a separate gap or stays under #105 / #110.
+//  - INET / CIDR / MACADDR, MONEY, and DOMAIN TYPES: NEED GAP ISSUES.
+//   `INTERVAL` and the supported typed range substrate (`int4range`,
+//   `int8range`, `numrange`, `tstzrange`, `tsrange`, `daterange`) now
+//   have descriptor projection and field-side Rust types.
 //
 // Stand-in: this test only compiles the supported subset (ENUM was already
 // covered in the existing tests; we avoid duplication). The gap issue
@@ -811,9 +811,9 @@ async fn cat4_a_typed_arrays_sealed_set_regression(mut ctx: djogi::DjogiContext)
 async fn cat4_b_pg_type_coverage_gap(mut ctx: djogi::DjogiContext) {
     // GAP(djogi#170 — umbrella): the natural model field declarations that
     // do not have a typed surface today —
-    //   pub remote_addr: std::net::IpAddr,              // INET
-    //   pub price_usd: rust_decimal::Decimal,           // (works as NUMERIC,
-    //                                                   //  no MONEY surface)
+    //  pub remote_addr: std::net::IpAddr,       // INET
+    //  pub price_usd: rust_decimal::Decimal,      // (works as NUMERIC,
+    //                          // no MONEY surface)
     // Plus DOMAIN TYPES (`CREATE DOMAIN`), which are not surfaced at all.
     // Stand-in compiles by NOT declaring any of these — the test asserts
     // the absence is real.

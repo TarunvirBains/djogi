@@ -6,15 +6,15 @@
 //! `migrations/<target>/<app>/schema_snapshot.json`:
 //! 1. Read the bytes from disk.
 //! 2. Compute `sign_snapshot(bytes, &key)` where `key` comes from
-//!    `DJOGI_SNAPSHOT_SIGNING_KEY` (or the no-op zero key when the
-//!    env var is unset — same sentinel contract the runner uses, see
-//!    [`djogi::snapshot::sign`]).
+//! `DJOGI_SNAPSHOT_SIGNING_KEY` (or the no-op zero key when the
+//! env var is unset — same sentinel contract the runner uses, see
+//! [`djogi::snapshot::sign`]).
 //! 3. SELECT the latest `snapshot_signature_hex` from
-//!    `djogi_ddl_audit` for `(target_database, app_label)` from the
-//!    audit DB.
+//! `djogi_ddl_audit` for `(target_database, app_label)` from the
+//! audit DB.
 //! 4. Compare the computed hex against the stored hex. Print
-//!    `OK <path>` for matches and `MISMATCH <path>: expected …, got …`
-//!    on stderr otherwise.
+//! `OK <path>` for matches and `MISMATCH <path>: expected …, got …`
+//! on stderr otherwise.
 //! # Read-only by contract
 //! Verify never issues `INSERT`, `UPDATE`, `DELETE`, or DDL — the only
 //! SQL leaving the CLI is the single `SELECT` on `djogi_ddl_audit`. If
@@ -30,29 +30,29 @@
 //! both `djogi verify` (here) and `djogi db reset` (issue
 //! #118). Resolution order:
 //! 1. `CRUD_LOG_URL` env var — primary explicit override for operators
-//!    who keep the audit DB on a separate authority.
+//! who keep the audit DB on a separate authority.
 //! 2. `DJOGI_CRUD_LOG_URL` env var — backwards-compatible spelling
-//!    accepted by the shared resolver.
+//! accepted by the shared resolver.
 //! 3. `[database].crud_log_url` in `Djogi.toml`.
 //! 4. Splice `crud_log` (the
-//!    [`djogi::migrate::AUDIT_DB_DERIVED_NAME`] constant) into the
-//!    application URL's path component. Matches the on-disk migration
-//!    tree convention (`migrations/crud_log/<app>/`) the bootstrap
-//!    layer documents in [`djogi::migrate::target`].
-//!    When neither resolves to a usable URL, verify surfaces
-//!    [`VerifyError::Config`] and exits `1` (config / runtime error).
-//!    Promoting the resolver to `djogi::migrate` keeps the verify and
-//!    reset paths in lockstep so an operator's `Djogi.toml` cannot mean
-//!    one thing to verify and another to reset.
+//! [`djogi::migrate::AUDIT_DB_DERIVED_NAME`] constant) into the
+//! application URL's path component. Matches the on-disk migration
+//! tree convention (`migrations/crud_log/<app>/`) the bootstrap
+//! layer documents in [`djogi::migrate::target`].
+//! When neither resolves to a usable URL, verify surfaces
+//! [`VerifyError::Config`] and exits `1` (config / runtime error).
+//! Promoting the resolver to `djogi::migrate` keeps the verify and
+//! reset paths in lockstep so an operator's `Djogi.toml` cannot mean
+//! one thing to verify and another to reset.
 //! # Exit code semantics (matches ledger-verify)
 //! - `0` — every snapshot scanned reported `Ok` or `Skipped`.
 //! - `1` — at least one snapshot reported `Mismatch`, OR a runtime
-//!   error occurred (config load, key decode, audit pool unreachable,
-//!   walkdir I/O).
-//!   `Skipped` (audit table absent) does NOT count as a mismatch — the
-//!   cross-check is best-effort when the operator has not provisioned
-//!   the second DB. The `tracing`-style warn line on stderr makes the
-//!   skip visible to the operator.
+//! error occurred (config load, key decode, audit pool unreachable,
+//! walkdir I/O).
+//! `Skipped` (audit table absent) does NOT count as a mismatch — the
+//! cross-check is best-effort when the operator has not provisioned
+//! the second DB. The `tracing`-style warn line on stderr makes the
+//! skip visible to the operator.
 //! # Determinism
 //! Snapshot files are walked via [`djogi::migrate::scan_filesystem`]
 //! which returns a `BTreeSet<FilesystemBucket>` — already sorted by
@@ -145,14 +145,14 @@ impl std::fmt::Display for VerifyError {
             VerifyError::AuditPoolUnreachable { url, message } => write!(
                 f,
                 "audit DB at `{url}` unreachable: {message} \
-                 (set DJOGI_CRUD_LOG_URL or check Djogi.toml::database.url)",
+     (set DJOGI_CRUD_LOG_URL or check Djogi.toml::database.url)",
             ),
             VerifyError::Config(message) => write!(f, "config load: {message}"),
             VerifyError::SymlinkSnapshot { path } => write!(
                 f,
                 "snapshot path is a symlink; refusing to follow to prevent path-traversal escapes: {} \
-                 (replace the symlink with the real `schema_snapshot.json` file or remove the \
-                 offending entry from the migrations tree)",
+     (replace the symlink with the real `schema_snapshot.json` file or remove the \
+     offending entry from the migrations tree)",
                 path.display()
             ),
         }
@@ -177,10 +177,10 @@ impl std::error::Error for VerifyError {
 /// Returns:
 /// - `ExitCode::SUCCESS` when every entry is `Ok` or `Skipped`.
 /// - `ExitCode::from(1)` when at least one entry is `Mismatch` OR a
-///   runtime error stops the verification before completion.
-///   All operator-facing diagnostics are printed to stderr — stdout is
-///   reserved for the per-snapshot `OK <path>` lines so a downstream
-///   `grep` / `wc -l` is ergonomic.
+/// runtime error stops the verification before completion.
+/// All operator-facing diagnostics are printed to stderr — stdout is
+/// reserved for the per-snapshot `OK <path>` lines so a downstream
+/// `grep` / `wc -l` is ergonomic.
 pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
     // Step 1 — resolve workspace, load config.
     let workspace =
@@ -271,10 +271,10 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
         {
             Ok(opt) => opt,
             Err(FetchAuditError::TableAbsent) => {
-                // 42P01 — graceful skip per .
+                // 42P01 — graceful skip per.
                 eprintln!(
                     "warn: djogi_ddl_audit absent on `{audit_url_for_log}` — \
-                     skipping cross-check for {}/{} (snapshot at {})",
+      skipping cross-check for {}/{} (snapshot at {})",
                     bucket.database,
                     if bucket.app.is_empty() {
                         "_global_"
@@ -349,20 +349,20 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
 /// attacker-controlled bytes.
 /// This helper:
 /// - Returns `Ok(None)` when the path does not exist (typical of a
-///   freshly composed migrations directory before the first apply).
+/// freshly composed migrations directory before the first apply).
 /// - Returns `Err(VerifyError::SymlinkSnapshot)` when the path is a
-///   symlink — refusing to follow.
+/// symlink — refusing to follow.
 /// - Returns `Ok(None)` when the path is some other non-regular file
-///   (named pipe, device file). The migrations tree is supposed to
-///   contain regular files; non-file entries are silently skipped.
+/// (named pipe, device file). The migrations tree is supposed to
+/// contain regular files; non-file entries are silently skipped.
 /// - Returns `Ok(Some(bytes))` for regular files.
-///   **Residual TOCTOU.** Between `symlink_metadata` and `std::fs::read`
-///   an attacker with write access to the migrations tree could swap the
-///   regular file for a symlink. Closing that window properly requires
-///   `openat`-style fd re-checking (open the file, then `metadata()`
-///   the open handle); for v0.1.0 the symlink-reject is the main exploit
-///   vector and the residual window is documented on
-///   [`VerifyError::SymlinkSnapshot`]. may revisit.
+/// **Residual TOCTOU.** Between `symlink_metadata` and `std::fs::read`
+/// an attacker with write access to the migrations tree could swap the
+/// regular file for a symlink. Closing that window properly requires
+/// `openat`-style fd re-checking (open the file, then `metadata()`
+/// the open handle); for v0.1.0 the symlink-reject is the main exploit
+/// vector and the residual window is documented on
+/// [`VerifyError::SymlinkSnapshot`]. may revisit.
 fn read_snapshot_bytes(snapshot: &std::path::Path) -> Result<Option<Vec<u8>>, VerifyError> {
     let meta = match std::fs::symlink_metadata(snapshot) {
         Ok(m) => m,
@@ -423,9 +423,9 @@ async fn fetch_audit_signature(
     // into a skip. may add a tiebreak on `applied_at` when the
     // audit DB sees concurrent writers.
     let sql = "SELECT snapshot_signature_hex FROM djogi_ddl_audit \
-               WHERE target_database = $1 AND app_label = $2 \
-                 AND snapshot_signature_hex IS NOT NULL \
-               ORDER BY id DESC LIMIT 1";
+    WHERE target_database = $1 AND app_label = $2 \
+     AND snapshot_signature_hex IS NOT NULL \
+    ORDER BY id DESC LIMIT 1";
     match ctx.raw_rows(sql, &[&target_database, &app_label]).await {
         Ok(rows) => {
             if let Some(row) = rows.first() {
@@ -487,16 +487,16 @@ mod tests {
     //! unit-test surface covers the helpers.
     //! The integration tests' assertions match the plan.6 brief:
     //! - `verify_clean_returns_zero` — fixture workspace with
-    //!   matching snapshot + audit row → exit 0, `OK <path>` on
-    //!   stdout.
+    //! matching snapshot + audit row → exit 0, `OK <path>` on
+    //! stdout.
     //! - `verify_mismatch_returns_one` — snapshot bytes tampered
-    //!   after audit row was written → exit 1, `MISMATCH …` line on
-    //!   stderr.
+    //! after audit row was written → exit 1, `MISMATCH …` line on
+    //! stderr.
     //! - `verify_skips_when_audit_table_absent` — audit DB has no
-    //!   `djogi_ddl_audit` table → exit 0, `warn: djogi_ddl_audit
+    //! `djogi_ddl_audit` table → exit 0, `warn: djogi_ddl_audit
     //! absent …` line on stderr.
     //! - `verify_no_op_key_passes_zero_signature` — env var unset,
-    //!   audit row carries 64 zero hex characters → exit 0.
+    //! audit row carries 64 zero hex characters → exit 0.
 
     use super::*;
     // Imported in the test module only — `AuditUrlError` is referenced

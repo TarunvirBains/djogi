@@ -27,32 +27,32 @@
 //! Dropping an intermediate builder is fine; only the final call's
 //! chain matters.
 //! # How (emitted code)
-//! For `struct Post { title: String, published: bool, view_count: i32, ... }`:
+//! For `struct Post { title: String, published: bool, view_count: i32,... }`:
 //! ```ignore
 //! pub struct PostFilter {
-//!     clauses: ::std::vec::Vec<::djogi::FilterClause>,
+//!  clauses: ::std::vec::Vec<::djogi::FilterClause>,
 //! }
 //!
 //! impl PostFilter {
-//!     pub fn new() -> Self { ... }
-//!     pub fn title<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
-//!     where
-//!         __V: ::djogi::IntoFilterValue,
-//!         String: ::djogi::__private::SameAs<__V>,
-//!     { ... }
-//!     pub fn published<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
-//!     where
-//!         __V: ::djogi::IntoFilterValue,
-//!         bool: ::djogi::__private::SameAs<__V>,
-//!     { ... }
-//!     pub fn view_count<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
-//!     where
-//!         __V: ::djogi::IntoFilterValue,
-//!         i32: ::djogi::__private::SameAs<__V>,
-//!     { ... }
+//!  pub fn new() -> Self {... }
+//!  pub fn title<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
+//!  where
+//!   __V: ::djogi::IntoFilterValue,
+//!   String: ::djogi::__private::SameAs<__V>,
+//!  {... }
+//!  pub fn published<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
+//!  where
+//!   __V: ::djogi::IntoFilterValue,
+//!   bool: ::djogi::__private::SameAs<__V>,
+//!  {... }
+//!  pub fn view_count<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
+//!  where
+//!   __V: ::djogi::IntoFilterValue,
+//!   i32: ::djogi::__private::SameAs<__V>,
+//!  {... }
 //! }
 //!
-//! impl ::djogi::ModelFilter for PostFilter { ... }
+//! impl ::djogi::ModelFilter for PostFilter {... }
 //! ```
 //! The `SameAs<__V>` bound is a reflexive type-equality witness — the
 //! blanket `impl<T: ?Sized> SameAs<T> for T` means `A: SameAs<B>` holds
@@ -80,29 +80,29 @@
 //! The `IntoFilterValue` bound is emitted on the **method generic
 //! `__V`**, not on the concrete `#field_ty`. Two consequences:
 //! 1. A column whose declared Rust type does not yet implement
-//!    `IntoFilterValue` (for example `Decimal` when the
-//!    `rust_decimal` feature is off, `Vec<String>`, a user-defined
-//!    JSONB payload wrapper) still gets a setter emitted. Rust
-//!    checks a concrete-type `where` clause at impl-definition time
-//!    (issue #48214), which would whole-model-reject a model
-//!    containing such a column. Keeping the bound on `__V` defers
-//!    the check to monomorphization, so only the unsupported
-//!    setter's call site fails — with a localized
-//!    "trait bound `…: IntoFilterValue` is not satisfied" rather
-//!    than a whole-model reject.
+//! `IntoFilterValue` (for example `Decimal` when the
+//! `rust_decimal` feature is off, `Vec<String>`, a user-defined
+//! JSONB payload wrapper) still gets a setter emitted. Rust
+//! checks a concrete-type `where` clause at impl-definition time
+//! (issue #48214), which would whole-model-reject a model
+//! containing such a column. Keeping the bound on `__V` defers
+//! the check to monomorphization, so only the unsupported
+//! setter's call site fails — with a localized
+//! "trait bound `…: IntoFilterValue` is not satisfied" rather
+//! than a whole-model reject.
 //! 2. Explicit NULL checks via `Lookup::IsNull` / `Lookup::IsNotNull`
-//!    still go through `IntoFilterValue` (because
-//!    `Lookup<V>::into_op_value` is bounded on `V`). For columns
-//!    without such an impl, those setters are unusable — the
-//!    closure API's `.is_null()` remains the escape hatch.
-//!    Nullable columns (`Option<T>`) take `Lookup<Option<T>>` directly
-//!    the field type is read verbatim, so users write
-//!    `Lookup::Eq(Some("hello".to_string()))` /
-//!    `Lookup::<Option<T>>::IsNull`. The closure API has the same shape
-//!    for nullable columns, so the two surfaces stay symmetric. (A later
-//!    phase may add a sugar layer that re-emits `Option<T>` setters as
-//!    `Lookup<T>` for the `Eq` / `Neq` variants specifically; that is
-//!    purely additive and does not need a change to this module.)
+//! still go through `IntoFilterValue` (because
+//! `Lookup<V>::into_op_value` is bounded on `V`). For columns
+//! without such an impl, those setters are unusable — the
+//! closure API's `.is_null()` remains the escape hatch.
+//! Nullable columns (`Option<T>`) take `Lookup<Option<T>>` directly
+//! the field type is read verbatim, so users write
+//! `Lookup::Eq(Some("hello".to_string()))` /
+//! `Lookup::<Option<T>>::IsNull`. The closure API has the same shape
+//! for nullable columns, so the two surfaces stay symmetric. (A later
+//! phase may add a sugar layer that re-emits `Option<T>` setters as
+//! `Lookup<T>` for the `Eq` / `Neq` variants specifically; that is
+//! purely additive and does not need a change to this module.)
 //! # `pk = None` gate
 //! `crud::expand` does not emit `impl Model` for `pk = None` models
 //! (`Model::Pk: Encode` cannot be satisfied without a real PK — see
@@ -208,42 +208,42 @@ pub fn expand(
     // closure API's `.is_null()` (which has its own set of impls to
     // consult).
     let setters: Vec<TokenStream> = struct_item
-        .fields
-        .iter()
-        .skip(n_framework)
-        .filter_map(|field| {
-            let ident = field.ident.as_ref()?;
-            // Strip the `r#` prefix for the SQL column literal but keep
-            // the raw ident for the method name so users can still call
-            // `.r#type(...)` on the filter struct.
-            let column = crate::syn_util::column_name_from_ident(ident);
-            // Read the field type verbatim — `Option<T>` / `Jsonb<T>` /
-            // user newtypes propagate without a translation table,
-            // same as `stubs.rs` emits into `FieldRef<M, V>`.
-            let ty = &field.ty;
-            let doc = format!(
-                "Append a `{column}` lookup to the filter. Typed on the column's declared Rust type — passing the wrong value type fails at the call site with a type-mismatch error. For columns whose type does not implement `IntoFilterValue` (e.g. `Decimal` without the feature flag, `Vec<T>`, user newtypes), this setter is defined but unusable; calling it fails at the call site with a trait-bound error. Reach for the closure API (`QuerySet::filter(|f| …)`) or `ctx.raw_execute` / `ctx.raw_scalar` directly in those cases."
-            );
-            Some(quote! {
-                #[doc = #doc]
-                #[inline]
-                pub fn #ident<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
-                where
-                    __V: ::djogi::IntoFilterValue,
-                    #ty: ::djogi::__private::SameAs<__V>,
-                {
-                    self.clauses.push(::djogi::FilterClause::from_lookup(#column, lookup));
-                    self
-                }
-            })
-        })
-        .collect();
+ .fields
+ .iter()
+ .skip(n_framework)
+ .filter_map(|field| {
+   let ident = field.ident.as_ref()?;
+   // Strip the `r#` prefix for the SQL column literal but keep
+   // the raw ident for the method name so users can still call
+   // `.r#type(...)` on the filter struct.
+   let column = crate::syn_util::column_name_from_ident(ident);
+   // Read the field type verbatim — `Option<T>` / `Jsonb<T>` /
+   // user newtypes propagate without a translation table,
+   // same as `stubs.rs` emits into `FieldRef<M, V>`.
+   let ty = &field.ty;
+   let doc = format!(
+    "Append a `{column}` lookup to the filter. Typed on the column's declared Rust type — passing the wrong value type fails at the call site with a type-mismatch error. For columns whose type does not implement `IntoFilterValue` (e.g. `Decimal` without the feature flag, `Vec<T>`, user newtypes), this setter is defined but unusable; calling it fails at the call site with a trait-bound error. Reach for the closure API (`QuerySet::filter(|f| …)`) or `ctx.raw_execute` / `ctx.raw_scalar` directly in those cases."
+   );
+   Some(quote! {
+    #[doc = #doc]
+    #[inline]
+    pub fn #ident<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
+    where
+     __V: ::djogi::IntoFilterValue,
+     #ty: ::djogi::__private::SameAs<__V>,
+    {
+     self.clauses.push(::djogi::FilterClause::from_lookup(#column, lookup));
+     self
+    }
+   })
+  })
+ .collect();
 
     let struct_doc = format!(
         "Programmatic filter builder for [`{name}`] — one setter per user field. \
-         Use with `QuerySet::filter_struct` for closure-free filtering (shell, admin, dynamic UI). \
-         The closure API (`QuerySet::filter(|f| ...)`) is the preferred surface when a closure is writable; \
-         both paths preserve the same database result semantics."
+   Use with `QuerySet::filter_struct` for closure-free filtering (shell, admin, dynamic UI). \
+   The closure API (`QuerySet::filter(|f|...)`) is the preferred surface when a closure is writable; \
+   both paths preserve the same database result semantics."
     );
 
     // ── `IntoQ<#name>` bridge ───────────────
@@ -266,64 +266,64 @@ pub fn expand(
         quote! {}
     } else {
         quote! {
-            impl ::djogi::__private::__SealedIntoQ for #filter_name {}
-            impl ::djogi::__private::query::IntoQ<#name> for #filter_name {
-                #[inline]
-                fn into_q(self) -> ::djogi::__private::query::Q<#name> {
-                    let clauses = <Self as ::djogi::ModelFilter>::into_clauses(self);
-                    ::djogi::__private::query::clauses_into_q::<#name, _>(
-                        clauses,
-                        |__djogi_clause| {
-                            let __djogi_parts = __djogi_clause.into_parts();
-                            match (__djogi_parts.column, __djogi_parts.op, __djogi_parts.value) {
-                                #(#filter_clause_arms)*
-                                (__djogi_column, __djogi_op, __djogi_value) => {
-                                    ::djogi::__private::query::Q::Condition(
-                                        ::djogi::__private::query::FilterClauseParts {
-                                            column: __djogi_column,
-                                            op: __djogi_op,
-                                            value: __djogi_value,
-                                        }.into_condition(),
-                                    )
-                                }
-                            }
-                        },
-                    )
-                }
-            }
+         impl ::djogi::__private::__SealedIntoQ for #filter_name {}
+         impl ::djogi::__private::query::IntoQ<#name> for #filter_name {
+          #[inline]
+          fn into_q(self) -> ::djogi::__private::query::Q<#name> {
+           let clauses = <Self as ::djogi::ModelFilter>::into_clauses(self);
+           ::djogi::__private::query::clauses_into_q::<#name, _>(
+            clauses,
+            |__djogi_clause| {
+             let __djogi_parts = __djogi_clause.into_parts();
+             match (__djogi_parts.column, __djogi_parts.op, __djogi_parts.value) {
+              #(#filter_clause_arms)*
+              (__djogi_column, __djogi_op, __djogi_value) => {
+               ::djogi::__private::query::Q::Condition(
+                ::djogi::__private::query::FilterClauseParts {
+                 column: __djogi_column,
+                 op: __djogi_op,
+                 value: __djogi_value,
+                }.into_condition(),
+               )
+              }
+             }
+            },
+           )
+          }
+         }
         }
     };
 
     quote! {
-        #[doc = #struct_doc]
-        #[derive(Debug, Clone, Default)]
-        pub struct #filter_name {
-            // Pushed in setter-call order. The clause-fold helper
-            // preserves that order so SQL emission is deterministic
-            // across runs — important for `EXPLAIN` parity and for
-            // query-plan caching.
-            clauses: ::std::vec::Vec<::djogi::FilterClause>,
-        }
+     #[doc = #struct_doc]
+     #[derive(Debug, Clone, Default)]
+     pub struct #filter_name {
+      // Pushed in setter-call order. The clause-fold helper
+      // preserves that order so SQL emission is deterministic
+      // across runs — important for `EXPLAIN` parity and for
+      // query-plan caching.
+      clauses: ::std::vec::Vec<::djogi::FilterClause>,
+     }
 
-        impl #filter_name {
-            /// Construct an empty filter. Equivalent to `Self::default()`.
-            #[must_use]
-            #[inline]
-            pub fn new() -> Self {
-                Self::default()
-            }
+     impl #filter_name {
+      /// Construct an empty filter. Equivalent to `Self::default()`.
+      #[must_use]
+      #[inline]
+      pub fn new() -> Self {
+       Self::default()
+      }
 
-            #(#setters)*
-        }
+      #(#setters)*
+     }
 
-        impl ::djogi::ModelFilter for #filter_name {
-            #[inline]
-            fn into_clauses(self) -> ::std::vec::Vec<::djogi::FilterClause> {
-                self.clauses
-            }
-        }
+     impl ::djogi::ModelFilter for #filter_name {
+      #[inline]
+      fn into_clauses(self) -> ::std::vec::Vec<::djogi::FilterClause> {
+       self.clauses
+      }
+     }
 
-        #into_q_bridge
+     #into_q_bridge
     }
 }
 
@@ -332,166 +332,166 @@ fn filter_clause_to_q_arms(
     portable_field_info: &[PortableFieldEmitInfo],
 ) -> Vec<TokenStream> {
     portable_field_info
-        .iter()
-        .filter_map(|info| {
-            if info.tracked_wrapped || info.field_kind.is_optional() {
-                return None;
-            }
-            let ident = &info.rust_ident;
-            let column = info.column_name.as_str();
-            match info.field_kind {
-                PortableFieldKind::Bool => Some(quote! {
-                    (
-                        #column,
-                        ::djogi::__private::query::LookupOp::Eq,
-                        ::djogi::__private::query::FilterValue::Bool(__djogi_value),
-                    ) => {
-                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
-                            #column,
-                            |__djogi_row: &#model_name| &__djogi_row.#ident,
-                        );
-                        ::djogi::__private::query::Q::Portable(__djogi_field.eq(__djogi_value))
-                    }
-                    (
-                        #column,
-                        ::djogi::__private::query::LookupOp::Neq,
-                        ::djogi::__private::query::FilterValue::Bool(__djogi_value),
-                    ) => {
-                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
-                            #column,
-                            |__djogi_row: &#model_name| &__djogi_row.#ident,
-                        );
-                        ::djogi::__private::query::Q::Portable(__djogi_field.neq(__djogi_value))
-                    }
-                    (
-                        #column,
-                        ::djogi::__private::query::LookupOp::In,
-                        ::djogi::__private::query::FilterValue::List(__djogi_values),
-                    ) if __djogi_values.iter().all(|__djogi_value| matches!(
-                        __djogi_value,
-                        ::djogi::__private::query::FilterValue::Bool(_)
-                    )) => {
-                        let __djogi_values = __djogi_values
-                            .into_iter()
-                            .filter_map(|__djogi_value| {
-                                match __djogi_value {
-                                    ::djogi::__private::query::FilterValue::Bool(__djogi_value) => {
-                                        ::std::option::Option::Some(__djogi_value)
-                                    }
-                                    _ => ::std::option::Option::None,
-                                }
-                            })
-                            .collect::<::std::vec::Vec<bool>>();
-                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
-                            #column,
-                            |__djogi_row: &#model_name| &__djogi_row.#ident,
-                        );
-                        ::djogi::__private::query::Q::Portable(__djogi_field.in_(__djogi_values))
-                    }
-                    (
-                        #column,
-                        ::djogi::__private::query::LookupOp::NotIn,
-                        ::djogi::__private::query::FilterValue::List(__djogi_values),
-                    ) if __djogi_values.iter().all(|__djogi_value| matches!(
-                        __djogi_value,
-                        ::djogi::__private::query::FilterValue::Bool(_)
-                    )) => {
-                        let __djogi_values = __djogi_values
-                            .into_iter()
-                            .filter_map(|__djogi_value| {
-                                match __djogi_value {
-                                    ::djogi::__private::query::FilterValue::Bool(__djogi_value) => {
-                                        ::std::option::Option::Some(__djogi_value)
-                                    }
-                                    _ => ::std::option::Option::None,
-                                }
-                            })
-                            .collect::<::std::vec::Vec<bool>>();
-                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
-                            #column,
-                            |__djogi_row: &#model_name| &__djogi_row.#ident,
-                        );
-                        ::djogi::__private::query::Q::Portable(__djogi_field.not_in(__djogi_values))
-                    }
-                }),
-                PortableFieldKind::String => Some(quote! {
-                    (
-                        #column,
-                        ::djogi::__private::query::LookupOp::Eq,
-                        ::djogi::__private::query::FilterValue::String(__djogi_value),
-                    ) => {
-                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
-                            #column,
-                            |__djogi_row: &#model_name| &__djogi_row.#ident,
-                        );
-                        ::djogi::__private::query::Q::Portable(__djogi_field.eq(__djogi_value))
-                    }
-                    (
-                        #column,
-                        ::djogi::__private::query::LookupOp::Neq,
-                        ::djogi::__private::query::FilterValue::String(__djogi_value),
-                    ) => {
-                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
-                            #column,
-                            |__djogi_row: &#model_name| &__djogi_row.#ident,
-                        );
-                        ::djogi::__private::query::Q::Portable(__djogi_field.neq(__djogi_value))
-                    }
-                    (
-                        #column,
-                        ::djogi::__private::query::LookupOp::In,
-                        ::djogi::__private::query::FilterValue::List(__djogi_values),
-                    ) if __djogi_values.iter().all(|__djogi_value| matches!(
-                        __djogi_value,
-                        ::djogi::__private::query::FilterValue::String(_)
-                    )) => {
-                        let __djogi_values = __djogi_values
-                            .into_iter()
-                            .filter_map(|__djogi_value| {
-                                match __djogi_value {
-                                    ::djogi::__private::query::FilterValue::String(__djogi_value) => {
-                                        ::std::option::Option::Some(__djogi_value)
-                                    }
-                                    _ => ::std::option::Option::None,
-                                }
-                            })
-                            .collect::<::std::vec::Vec<::std::string::String>>();
-                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
-                            #column,
-                            |__djogi_row: &#model_name| &__djogi_row.#ident,
-                        );
-                        ::djogi::__private::query::Q::Portable(__djogi_field.in_(__djogi_values))
-                    }
-                    (
-                        #column,
-                        ::djogi::__private::query::LookupOp::NotIn,
-                        ::djogi::__private::query::FilterValue::List(__djogi_values),
-                    ) if __djogi_values.iter().all(|__djogi_value| matches!(
-                        __djogi_value,
-                        ::djogi::__private::query::FilterValue::String(_)
-                    )) => {
-                        let __djogi_values = __djogi_values
-                            .into_iter()
-                            .filter_map(|__djogi_value| {
-                                match __djogi_value {
-                                    ::djogi::__private::query::FilterValue::String(__djogi_value) => {
-                                        ::std::option::Option::Some(__djogi_value)
-                                    }
-                                    _ => ::std::option::Option::None,
-                                }
-                            })
-                            .collect::<::std::vec::Vec<::std::string::String>>();
-                        let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
-                            #column,
-                            |__djogi_row: &#model_name| &__djogi_row.#ident,
-                        );
-                        ::djogi::__private::query::Q::Portable(__djogi_field.not_in(__djogi_values))
-                    }
-                }),
-                _ => None,
-            }
-        })
-        .collect()
+ .iter()
+ .filter_map(|info| {
+   if info.tracked_wrapped || info.field_kind.is_optional() {
+    return None;
+   }
+   let ident = &info.rust_ident;
+   let column = info.column_name.as_str();
+   match info.field_kind {
+    PortableFieldKind::Bool => Some(quote! {
+     (
+      #column,
+      ::djogi::__private::query::LookupOp::Eq,
+      ::djogi::__private::query::FilterValue::Bool(__djogi_value),
+     ) => {
+      let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
+       #column,
+       |__djogi_row: &#model_name| &__djogi_row.#ident,
+      );
+      ::djogi::__private::query::Q::Portable(__djogi_field.eq(__djogi_value))
+     }
+     (
+      #column,
+      ::djogi::__private::query::LookupOp::Neq,
+      ::djogi::__private::query::FilterValue::Bool(__djogi_value),
+     ) => {
+      let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
+       #column,
+       |__djogi_row: &#model_name| &__djogi_row.#ident,
+      );
+      ::djogi::__private::query::Q::Portable(__djogi_field.neq(__djogi_value))
+     }
+     (
+      #column,
+      ::djogi::__private::query::LookupOp::In,
+      ::djogi::__private::query::FilterValue::List(__djogi_values),
+     ) if __djogi_values.iter().all(|__djogi_value| matches!(
+      __djogi_value,
+      ::djogi::__private::query::FilterValue::Bool(_)
+     )) => {
+      let __djogi_values = __djogi_values
+      .into_iter()
+      .filter_map(|__djogi_value| {
+        match __djogi_value {
+         ::djogi::__private::query::FilterValue::Bool(__djogi_value) => {
+          ::std::option::Option::Some(__djogi_value)
+         }
+         _ => ::std::option::Option::None,
+        }
+       })
+      .collect::<::std::vec::Vec<bool>>();
+      let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
+       #column,
+       |__djogi_row: &#model_name| &__djogi_row.#ident,
+      );
+      ::djogi::__private::query::Q::Portable(__djogi_field.in_(__djogi_values))
+     }
+     (
+      #column,
+      ::djogi::__private::query::LookupOp::NotIn,
+      ::djogi::__private::query::FilterValue::List(__djogi_values),
+     ) if __djogi_values.iter().all(|__djogi_value| matches!(
+      __djogi_value,
+      ::djogi::__private::query::FilterValue::Bool(_)
+     )) => {
+      let __djogi_values = __djogi_values
+      .into_iter()
+      .filter_map(|__djogi_value| {
+        match __djogi_value {
+         ::djogi::__private::query::FilterValue::Bool(__djogi_value) => {
+          ::std::option::Option::Some(__djogi_value)
+         }
+         _ => ::std::option::Option::None,
+        }
+       })
+      .collect::<::std::vec::Vec<bool>>();
+      let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, bool>(
+       #column,
+       |__djogi_row: &#model_name| &__djogi_row.#ident,
+      );
+      ::djogi::__private::query::Q::Portable(__djogi_field.not_in(__djogi_values))
+     }
+    }),
+    PortableFieldKind::String => Some(quote! {
+     (
+      #column,
+      ::djogi::__private::query::LookupOp::Eq,
+      ::djogi::__private::query::FilterValue::String(__djogi_value),
+     ) => {
+      let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
+       #column,
+       |__djogi_row: &#model_name| &__djogi_row.#ident,
+      );
+      ::djogi::__private::query::Q::Portable(__djogi_field.eq(__djogi_value))
+     }
+     (
+      #column,
+      ::djogi::__private::query::LookupOp::Neq,
+      ::djogi::__private::query::FilterValue::String(__djogi_value),
+     ) => {
+      let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
+       #column,
+       |__djogi_row: &#model_name| &__djogi_row.#ident,
+      );
+      ::djogi::__private::query::Q::Portable(__djogi_field.neq(__djogi_value))
+     }
+     (
+      #column,
+      ::djogi::__private::query::LookupOp::In,
+      ::djogi::__private::query::FilterValue::List(__djogi_values),
+     ) if __djogi_values.iter().all(|__djogi_value| matches!(
+      __djogi_value,
+      ::djogi::__private::query::FilterValue::String(_)
+     )) => {
+      let __djogi_values = __djogi_values
+      .into_iter()
+      .filter_map(|__djogi_value| {
+        match __djogi_value {
+         ::djogi::__private::query::FilterValue::String(__djogi_value) => {
+          ::std::option::Option::Some(__djogi_value)
+         }
+         _ => ::std::option::Option::None,
+        }
+       })
+      .collect::<::std::vec::Vec<::std::string::String>>();
+      let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
+       #column,
+       |__djogi_row: &#model_name| &__djogi_row.#ident,
+      );
+      ::djogi::__private::query::Q::Portable(__djogi_field.in_(__djogi_values))
+     }
+     (
+      #column,
+      ::djogi::__private::query::LookupOp::NotIn,
+      ::djogi::__private::query::FilterValue::List(__djogi_values),
+     ) if __djogi_values.iter().all(|__djogi_value| matches!(
+      __djogi_value,
+      ::djogi::__private::query::FilterValue::String(_)
+     )) => {
+      let __djogi_values = __djogi_values
+      .into_iter()
+      .filter_map(|__djogi_value| {
+        match __djogi_value {
+         ::djogi::__private::query::FilterValue::String(__djogi_value) => {
+          ::std::option::Option::Some(__djogi_value)
+         }
+         _ => ::std::option::Option::None,
+        }
+       })
+      .collect::<::std::vec::Vec<::std::string::String>>();
+      let __djogi_field = ::djogi::__private::query::__make_djogi_field::<#model_name, ::std::string::String>(
+       #column,
+       |__djogi_row: &#model_name| &__djogi_row.#ident,
+      );
+      ::djogi::__private::query::Q::Portable(__djogi_field.not_in(__djogi_values))
+     }
+    }),
+    _ => None,
+   }
+  })
+ .collect()
 }
 
 #[cfg(test)]

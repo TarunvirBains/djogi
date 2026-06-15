@@ -1,231 +1,231 @@
 name: Auto-classify bug labels
 
 on:
-  issues:
-    types: [opened, edited, labeled, unlabeled]
+ issues:
+ types: [opened, edited, labeled, unlabeled]
 
 permissions:
-  contents: read
-  issues: write
+ contents: read
+ issues: write
 
 jobs:
-  sync:
-    name: Auto-tag bug subcategories and parents
-    runs-on: ubuntu-latest
+ sync:
+ name: Auto-tag bug subcategories and parents
+ runs-on: ubuntu-latest
 
-    steps:
-      - name: Auto-tag from title/body keywords
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const issue = context.payload.issue;
-            if (!issue) {
-              return;
-            }
+ steps:
+  - name: Auto-tag from title/body keywords
+  uses: actions/github-script@v7
+  with:
+   script: |
+   const issue = context.payload.issue;
+   if (!issue) {
+    return;
+   }
 
-            const labels = issue.labels?.map((l) => l.name) ?? [];
-            const hasLabel = new Set(labels);
-            const text = `${issue.title ?? ""} ${issue.body ?? ""}`.toLowerCase();
+   const labels = issue.labels?.map((l) => l.name) ?? [];
+   const hasLabel = new Set(labels);
+   const text = `${issue.title ?? ""} ${issue.body ?? ""}`.toLowerCase();
 
-            const has = (term) => text.includes(term);
-            const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            const hasWord = (term) => {
-              if (term.includes(" ") || /[^\w]/.test(term)) {
-                return has(term);
-              }
-              return new RegExp(`(?:^|[^a-z0-9_])${escapeRegex(term)}(?:[^a-z0-9_]|$)`, "i").test(text);
-            };
-            const hasTerm = (term) => {
-              if (term.endsWith("*")) {
-                return has(term.slice(0, -1));
-              }
-              return hasWord(term);
-            };
-            const hasRegex = (pattern) => new RegExp(pattern, "i").test(text);
+   const has = (term) => text.includes(term);
+   const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   const hasWord = (term) => {
+    if (term.includes(" ") || /[^\w]/.test(term)) {
+    return has(term);
+    }
+    return new RegExp(`(?:^|[^a-z0-9_])${escapeRegex(term)}(?:[^a-z0-9_]|$)`, "i").test(text);
+   };
+   const hasTerm = (term) => {
+    if (term.endsWith("*")) {
+    return has(term.slice(0, -1));
+    }
+    return hasWord(term);
+   };
+   const hasRegex = (pattern) => new RegExp(pattern, "i").test(text);
 
-            const isBug = hasLabel.has("bug") ||
-              hasRegex("\\bbug\\b") ||
-              has("fix:") ||
-              has("fails") ||
-              has("failed") ||
-              has("failure") ||
-              has("failing") ||
-              has("regression") ||
-              has("panic") ||
-              has("incorrect") ||
-              has("wrong") ||
-              has("crash") ||
-              has("broken");
-            if (!isBug) {
-              return;
-            }
+   const isBug = hasLabel.has("bug") ||
+    hasRegex("\\bbug\\b") ||
+    has("fix:") ||
+    has("fails") ||
+    has("failed") ||
+    has("failure") ||
+    has("failing") ||
+    has("regression") ||
+    has("panic") ||
+    has("incorrect") ||
+    has("wrong") ||
+    has("crash") ||
+    has("broken");
+   if (!isBug) {
+    return;
+   }
 
-            const addLabels = new Set();
-            const domains = [
-              {
-                domain: "bug/concurrency",
-                signals: [
-                  "concurrency",
-                  "concurrent",
-                  "race",
-                  "racy",
-                  "deadlock",
-                  "advisory lock",
-                  "advisory-lock",
-                  "advisory_lock",
-                  "tenant",
-                  "pool context",
-                  "idempot",
-                  "checkpoint",
-                  "retry",
-                  "resume",
-                  "drop",
-                  "cancel"
-                ],
-                rules: [
-                  { label: "bug/concurrency/lock", terms: ["advisory lock", "advisory-lock", "advisory_lock", "deadlock", "mutex"] },
-                  { label: "bug/concurrency/race", terms: ["race condition", "data race", "racy", "parallel"] },
-                  { label: "bug/concurrency/lifecycle", terms: ["panic", "cancel", "drop", "tenant", "pool", "context", "lifecycle", "shutdown"] },
-                  { label: "bug/concurrency/idempotence", terms: ["idempotent", "idempotence", "at-most-once", "exactly-once", "exactly once", "duplicate execution", "resume", "non-transactional"] },
-                ],
-              },
-              {
-                domain: "bug/db-control-plane",
-                signals: [
-                  "migration",
-                  "compose",
-                  "compose up",
-                  "compose down",
-                  "rollback",
-                  "apply",
-                  "reset",
-                  "seed",
-                  "ledger",
-                  "checksum",
-                  "drift",
-                  "snapshot",
-                  "verification",
-                  "verify",
-                  "outbox",
-                  "sidecar",
-                  "control-plane",
-                  "control plane"
-                ],
-                rules: [
-                  { label: "bug/db-control-plane/migrations", terms: ["migration", "rollback", "compose", "apply", "reset", "version collision", "seed", "compose up", "compose down"] },
-                  { label: "bug/db-control-plane/ledger", terms: ["ledger", "checksum", "drift", "sidecar", "replay-plan"] },
-                  { label: "bug/db-control-plane/verification", terms: ["verify", "verification", "snapshot", "outbox", "d601", "d602"] },
-                ],
-              },
-              {
-                domain: "bug/query-schema",
-                signals: [
-                  "query schema",
-                  "query-schema",
-                  "query_schema",
-                  "enum",
-                  "sql",
-                  "jsonb",
-                  "read-tail",
-                  "read tail",
-                  "order_by",
-                  "grouping sets",
-                  "foreignkey",
-                  "fieldref",
-                  "schema constraints",
-                  "schema-constraints",
-                  "out-of-bounds",
-                  "aggregation",
-                ],
-                rules: [
-                  { label: "bug/query-schema/type-system", terms: ["enum", "serialize", "foreignkey", "queryset", "fieldref", "intofiltervalue", "schema"] },
-                  { label: "bug/query-schema/query-runtime", terms: ["read-tail", "read tail", "order_by", "order", "limit", "update/delete", "update", "delete", "lookup", "fetch_all", "fetch"] },
-                  { label: "bug/query-schema/sql-generation", terms: ["sql", "jsonb", "aggregation", "grouping sets", "rollup", "cube", "cast", "ddl", "dsl", "planner"] },
-                  { label: "bug/query-schema/schema-constraints", terms: ["check constraint", "schema constraint", "schema-constraints", "unsigned", "out-of-bounds"] },
-                ],
-              },
-            ];
+   const addLabels = new Set();
+   const domains = [
+    {
+    domain: "bug/concurrency",
+    signals: [
+     "concurrency",
+     "concurrent",
+     "race",
+     "racy",
+     "deadlock",
+     "advisory lock",
+     "advisory-lock",
+     "advisory_lock",
+     "tenant",
+     "pool context",
+     "idempot",
+     "checkpoint",
+     "retry",
+     "resume",
+     "drop",
+     "cancel"
+    ],
+    rules: [
+     { label: "bug/concurrency/lock", terms: ["advisory lock", "advisory-lock", "advisory_lock", "deadlock", "mutex"] },
+     { label: "bug/concurrency/race", terms: ["race condition", "data race", "racy", "parallel"] },
+     { label: "bug/concurrency/lifecycle", terms: ["panic", "cancel", "drop", "tenant", "pool", "context", "lifecycle", "shutdown"] },
+     { label: "bug/concurrency/idempotence", terms: ["idempotent", "idempotence", "at-most-once", "exactly-once", "exactly once", "duplicate execution", "resume", "non-transactional"] },
+    ],
+    },
+    {
+    domain: "bug/db-control-plane",
+    signals: [
+     "migration",
+     "compose",
+     "compose up",
+     "compose down",
+     "rollback",
+     "apply",
+     "reset",
+     "seed",
+     "ledger",
+     "checksum",
+     "drift",
+     "snapshot",
+     "verification",
+     "verify",
+     "outbox",
+     "sidecar",
+     "control-plane",
+     "control plane"
+    ],
+    rules: [
+     { label: "bug/db-control-plane/migrations", terms: ["migration", "rollback", "compose", "apply", "reset", "version collision", "seed", "compose up", "compose down"] },
+     { label: "bug/db-control-plane/ledger", terms: ["ledger", "checksum", "drift", "sidecar", "replay-plan"] },
+     { label: "bug/db-control-plane/verification", terms: ["verify", "verification", "snapshot", "outbox", "d601", "d602"] },
+    ],
+    },
+    {
+    domain: "bug/query-schema",
+    signals: [
+     "query schema",
+     "query-schema",
+     "query_schema",
+     "enum",
+     "sql",
+     "jsonb",
+     "read-tail",
+     "read tail",
+     "order_by",
+     "grouping sets",
+     "foreignkey",
+     "fieldref",
+     "schema constraints",
+     "schema-constraints",
+     "out-of-bounds",
+     "aggregation",
+    ],
+    rules: [
+     { label: "bug/query-schema/type-system", terms: ["enum", "serialize", "foreignkey", "queryset", "fieldref", "intofiltervalue", "schema"] },
+     { label: "bug/query-schema/query-runtime", terms: ["read-tail", "read tail", "order_by", "order", "limit", "update/delete", "update", "delete", "lookup", "fetch_all", "fetch"] },
+     { label: "bug/query-schema/sql-generation", terms: ["sql", "jsonb", "aggregation", "grouping sets", "rollup", "cube", "cast", "ddl", "dsl", "planner"] },
+     { label: "bug/query-schema/schema-constraints", terms: ["check constraint", "schema constraint", "schema-constraints", "unsigned", "out-of-bounds"] },
+    ],
+    },
+   ];
 
-            const addForDomain = new Set();
-            for (const domain of domains) {
-              let matchedSpecific = false;
-              const domainSignals = domain.signals.some((term) => hasTerm(term));
-              const anyRuleMatched = domain.rules.some((rule) => rule.terms.some((term) => hasTerm(term)));
+   const addForDomain = new Set();
+   for (const domain of domains) {
+    let matchedSpecific = false;
+    const domainSignals = domain.signals.some((term) => hasTerm(term));
+    const anyRuleMatched = domain.rules.some((rule) => rule.terms.some((term) => hasTerm(term)));
 
-              for (const rule of domain.rules) {
-                const matched = rule.terms.some((term) => hasTerm(term));
-                if (matched) {
-                  addLabels.add(rule.label);
-                  matchedSpecific = true;
-                }
-              }
+    for (const rule of domain.rules) {
+    const matched = rule.terms.some((term) => hasTerm(term));
+    if (matched) {
+     addLabels.add(rule.label);
+     matchedSpecific = true;
+    }
+    }
 
-              if (domainSignals && !matchedSpecific && anyRuleMatched === false) {
-                addLabels.add(`${domain.domain}/other`);
-              }
-              if (matchedSpecific) {
-                addForDomain.add(domain.domain);
-              }
-            }
-            for (const domain of addForDomain) {
-              addLabels.add(domain);
-            }
+    if (domainSignals && !matchedSpecific && anyRuleMatched === false) {
+    addLabels.add(`${domain.domain}/other`);
+    }
+    if (matchedSpecific) {
+    addForDomain.add(domain.domain);
+    }
+   }
+   for (const domain of addForDomain) {
+    addLabels.add(domain);
+   }
 
-            const classification = [
-              { label: "bug/error-diagnostics", terms: ["diagnostic", "stringified", "error chain", "errorkind", "source()", "mislabel", "mislabelled", "incorrect", "wrong", "panic", "crash", "broken"] },
-              { label: "bug/cli-operator", terms: ["compose", "exit", "cli", "daemon", "operator", "production gate", "dispatcher"] },
-              { label: "bug/tests-harness", terms: ["trybuild", "fixture", "ci", "compile_fail", "compile-pass", "all-features", "integration", "macro-fixture", "spatial"] },
-            ];
+   const classification = [
+    { label: "bug/error-diagnostics", terms: ["diagnostic", "stringified", "error chain", "errorkind", "source()", "mislabel", "mislabelled", "incorrect", "wrong", "panic", "crash", "broken"] },
+    { label: "bug/cli-operator", terms: ["compose", "exit", "cli", "daemon", "operator", "production gate", "dispatcher"] },
+    { label: "bug/tests-harness", terms: ["trybuild", "fixture", "ci", "compile_fail", "compile-pass", "all-features", "integration", "macro-fixture", "spatial"] },
+   ];
 
-            for (const rule of classification) {
-              const matched = rule.terms.some((term) => hasTerm(term));
-              if (matched) {
-                addLabels.add(rule.label);
-              }
-            }
+   for (const rule of classification) {
+    const matched = rule.terms.some((term) => hasTerm(term));
+    if (matched) {
+    addLabels.add(rule.label);
+    }
+   }
 
-            const parentFor = {
-              "bug/concurrency/lock": "bug/concurrency",
-              "bug/concurrency/race": "bug/concurrency",
-              "bug/concurrency/lifecycle": "bug/concurrency",
-              "bug/concurrency/idempotence": "bug/concurrency",
-              "bug/concurrency/other": "bug/concurrency",
-              "bug/db-control-plane/migrations": "bug/db-control-plane",
-              "bug/db-control-plane/ledger": "bug/db-control-plane",
-              "bug/db-control-plane/verification": "bug/db-control-plane",
-              "bug/db-control-plane/other": "bug/db-control-plane",
-              "bug/query-schema/type-system": "bug/query-schema",
-              "bug/query-schema/query-runtime": "bug/query-schema",
-              "bug/query-schema/sql-generation": "bug/query-schema",
-              "bug/query-schema/schema-constraints": "bug/query-schema",
-              "bug/query-schema/other": "bug/query-schema",
-            };
+   const parentFor = {
+    "bug/concurrency/lock": "bug/concurrency",
+    "bug/concurrency/race": "bug/concurrency",
+    "bug/concurrency/lifecycle": "bug/concurrency",
+    "bug/concurrency/idempotence": "bug/concurrency",
+    "bug/concurrency/other": "bug/concurrency",
+    "bug/db-control-plane/migrations": "bug/db-control-plane",
+    "bug/db-control-plane/ledger": "bug/db-control-plane",
+    "bug/db-control-plane/verification": "bug/db-control-plane",
+    "bug/db-control-plane/other": "bug/db-control-plane",
+    "bug/query-schema/type-system": "bug/query-schema",
+    "bug/query-schema/query-runtime": "bug/query-schema",
+    "bug/query-schema/sql-generation": "bug/query-schema",
+    "bug/query-schema/schema-constraints": "bug/query-schema",
+    "bug/query-schema/other": "bug/query-schema",
+   };
 
-            for (const [child, parent] of Object.entries(parentFor)) {
-              if (addLabels.has(child)) {
-                addLabels.add(parent);
-              }
-            }
+   for (const [child, parent] of Object.entries(parentFor)) {
+    if (addLabels.has(child)) {
+    addLabels.add(parent);
+    }
+   }
 
-            // Ensure we only classify with at least one bug-specific tag.
-            if (addLabels.size === 0) {
-              return;
-            }
+   // Ensure we only classify with at least one bug-specific tag.
+   if (addLabels.size === 0) {
+    return;
+   }
 
-            // If root bug label is missing but we inferred a child bug label.
-            if (!hasLabel.has("bug")) {
-              addLabels.add("bug");
-            }
+   // If root bug label is missing but we inferred a child bug label.
+   if (!hasLabel.has("bug")) {
+    addLabels.add("bug");
+   }
 
-            // Avoid API call if every inferred label already exists.
-            const toAdd = [...addLabels].filter((label) => !hasLabel.has(label));
-            if (toAdd.length === 0) {
-              return;
-            }
+   // Avoid API call if every inferred label already exists.
+   const toAdd = [...addLabels].filter((label) => !hasLabel.has(label));
+   if (toAdd.length === 0) {
+    return;
+   }
 
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.number,
-              labels: toAdd,
-            });
+   await github.rest.issues.addLabels({
+    owner: context.repo.owner,
+    repo: context.repo.repo,
+    issue_number: issue.number,
+    labels: toAdd,
+   });

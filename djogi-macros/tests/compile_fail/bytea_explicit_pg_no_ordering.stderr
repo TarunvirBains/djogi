@@ -1,23 +1,23 @@
 error[E0599]: the method `gt` exists for struct `ExplicitPgPredicateField<Blob, Vec<u8>>`, but its trait bounds were not satisfied
-   --> $DIR/bytea_explicit_pg_no_ordering.rs:17:76
-    |
- 17 |     let _ = Blob::objects().filter(|f| f.payload().explicit_pg_predicate().gt(vec![1, 2]));
-    |                                                                            ^^ method cannot be called on `ExplicitPgPredicateField<Blob, Vec<u8>>` due to unsatisfied trait bounds
-    |
-   ::: djogi/src/query/field.rs:712:1
-    |
+ --> $DIR/bytea_explicit_pg_no_ordering.rs:17:76
+ |
+ 17 |  let _ = Blob::objects().filter(|f| f.payload().explicit_pg_predicate().gt(vec![1, 2]));
+ |                   ^^ method cannot be called on `ExplicitPgPredicateField<Blob, Vec<u8>>` due to unsatisfied trait bounds
+ |
+ ::: djogi/src/query/field.rs:712:1
+ |
 712 | pub struct ExplicitPgPredicateField<M: Model, V> {
-    | ------------------------------------------------ doesn't satisfy `ExplicitPgPredicateField<Blob, Vec<u8>>: Iterator`
-    |
-   ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:438:1
-    |
+ | ------------------------------------------------ doesn't satisfy `ExplicitPgPredicateField<Blob, Vec<u8>>: Iterator`
+ |
+ ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:438:1
+ |
 438 | pub struct Vec<T, #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global> {
-    | ------------------------------------------------------------------------------------------------ doesn't satisfy `Vec<u8>: ExplicitPgOrderable`
-    |
-    = note: the following trait bounds were not satisfied:
-            `Vec<u8>: ExplicitPgOrderable`
-            `ExplicitPgPredicateField<Blob, Vec<u8>>: Iterator`
-            which is required by `&mut ExplicitPgPredicateField<Blob, Vec<u8>>: Iterator`
+ | ------------------------------------------------------------------------------------------------ doesn't satisfy `Vec<u8>: ExplicitPgOrderable`
+ |
+ = note: the following trait bounds were not satisfied:
+   `Vec<u8>: ExplicitPgOrderable`
+   `ExplicitPgPredicateField<Blob, Vec<u8>>: Iterator`
+   which is required by `&mut ExplicitPgPredicateField<Blob, Vec<u8>>: Iterator`
 
 error: aborting due to 1 previous error
 

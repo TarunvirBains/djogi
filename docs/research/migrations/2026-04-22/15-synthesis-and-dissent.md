@@ -167,21 +167,21 @@ each. The choice is defensible, but so is the alternative.
 ### D-01: Where does the canonical desired schema live?
 
 - **Cluster A — ORM model code:** Django (`models.py`), cot (`#[model]` structs), SeaORM
-  (ordered migration `Vec`, but no autogen). The schema is what the live application code says.
-  Advantage: no separate descriptor file to keep in sync. Risk: if the developer changes a model
-  without running `makemigrations`, the divergence is invisible until CI catches it.
+ (ordered migration `Vec`, but no autogen). The schema is what the live application code says.
+ Advantage: no separate descriptor file to keep in sync. Risk: if the developer changes a model
+ without running `makemigrations`, the divergence is invisible until CI catches it.
 - **Cluster B — Migration files:** Flyway, Liquibase, refinery, Diesel. The schema is the
-  cumulative result of applying all migration files. Advantage: extremely simple — there is no
-  separate model layer to maintain. Risk: the live database can drift from what the migration
-  history implies with no detection mechanism.
+ cumulative result of applying all migration files. Advantage: extremely simple — there is no
+ separate model layer to maintain. Risk: the live database can drift from what the migration
+ history implies with no detection mechanism.
 - **Cluster C — Declarative descriptor file:** Prisma (`schema.prisma`), Djogi
-  (`target/djogi_models.json` built from `#[djogi::model]` structs). The descriptor is the single
-  source of truth; migration files are derived, immutable history. Advantage: the descriptor is
-  independently reviewable in a PR. Risk: the descriptor and the migration history can silently
-  diverge if a migration is manually edited after generation.
+ (`target/djogi_models.json` built from `#[djogi::model]` structs). The descriptor is the single
+ source of truth; migration files are derived, immutable history. Advantage: the descriptor is
+ independently reviewable in a PR. Risk: the descriptor and the migration history can silently
+ diverge if a migration is manually edited after generation.
 - **Cluster D — Hybrid:** Alembic (SQLAlchemy `MetaData` + migration files maintained in parallel),
-  Diesel (`schema.rs` reflection + hand-written SQL). Advantage: flexible. Risk: the two halves
-  can drift independently with no enforcement.
+ Diesel (`schema.rs` reflection + hand-written SQL). Advantage: flexible. Risk: the two halves
+ can drift independently with no enforcement.
 
 Why irreducible: this is a philosophy call about who the primary user is. ORM-canonical optimizes
 for developers who think in model terms. Migration-file-canonical optimizes for DBAs who think in
@@ -195,16 +195,16 @@ Djogi chose Cluster C. Prisma's five-year production track record at scale valid
 ### D-02: Checksum strength
 
 - **SHA-256 (cryptographic):** Prisma only. 256-bit collision space; effectively impossible
-  to forge accidentally or deliberately.
+ to forge accidentally or deliberately.
 - **MD5 with format versioning:** Liquibase. Cryptographically broken but practically adequate;
-  the format-versioned `V:hex` string is the most important design contribution of the four.
+ the format-versioned `V:hex` string is the most important design contribution of the four.
 - **CRC-32:** Flyway. 32-bit collision space; stored as a signed Java `int` (can be negative);
-  not cryptographic.
+ not cryptographic.
 - **SipHash-1-3:** refinery. Non-cryptographic keyed hash; more collision-resistant than CRC-32
-  in practice; the anti-pattern of hashing `name + version + sql` means a file rename changes the
-  checksum even when SQL is unchanged.
+ in practice; the anti-pattern of hashing `name + version + sql` means a file rename changes the
+ checksum even when SQL is unchanged.
 - **None:** Django, Alembic, Diesel, SeaORM, cot. Post-apply mutation of migration files is
-  undetectable.
+ undetectable.
 
 Why irreducible: different threat models. "None" systems have decided that migration file integrity
 is a process problem (code review, git history). CRC-32/SipHash systems have decided that
@@ -217,12 +217,12 @@ algorithm with the best forward-compatibility design. (T03, R-05)
 ### D-03: Advisory lock vs. lock table vs. no lock
 
 - **Postgres advisory lock:** Flyway (modern default), Prisma. Auto-released on backend
-  termination; Postgres-native; no extra table required.
+ termination; Postgres-native; no extra table required.
 - **Dedicated lock table:** Liquibase. Survives across database connections but does NOT
-  auto-release on crash; requires manual `releaseLocks` to recover from a stuck lock.
+ auto-release on crash; requires manual `releaseLocks` to recover from a stuck lock.
 - **No lock:** Django, Alembic, refinery, Diesel, SeaORM, cot. Concurrency safety depends
-  on the primary-key uniqueness constraint catching a duplicate ledger INSERT after both
-  processes have already executed duplicated DDL.
+ on the primary-key uniqueness constraint catching a duplicate ledger INSERT after both
+ processes have already executed duplicated DDL.
 
 Why irreducible: Liquibase's lock table exists because Liquibase must support non-Postgres
 databases that lack advisory locks. For a Postgres-only system like Djogi, the advisory lock
@@ -236,17 +236,17 @@ distinct from Prisma's hardcoded `72707369` and outside Flyway's range. (R-03)
 ### D-04: Diff source — how is "applied state" derived?
 
 - **In-memory replay (Django, cot):** Walk all migration files and replay operations against an
-  in-memory schema representation. O(n) cost in migration count. Deterministic but can diverge
-  from the actual live database if migrations were applied out of order or if manual DDL ran.
+ in-memory schema representation. O(n) cost in migration count. Deterministic but can diverge
+ from the actual live database if migrations were applied out of order or if manual DDL ran.
 - **Live DB introspection (Alembic, Diesel `--diff-schema`, Liquibase):** Connect to the live
-  database and introspect `pg_catalog`. Accurate by definition for what the DB has, but requires
-  a live connection at diff time and is slow on large schemas.
+ database and introspect `pg_catalog`. Accurate by definition for what the DB has, but requires
+ a live connection at diff time and is slow on large schemas.
 - **Shadow DB (Prisma):** Apply all migrations to a disposable temporary database, then introspect
-  the result. The most accurate approach — detects drift between the migration history and the
-  live database — but requires `CREATE DATABASE` permission and a full schema replay on every diff.
+ the result. The most accurate approach — detects drift between the migration history and the
+ live database — but requires `CREATE DATABASE` permission and a full schema replay on every diff.
 - **Stored snapshot (Djogi, cot for the "from" side):** A side-car file (`schema_snapshot.json`)
-  records the schema state after the last successful migration. Diff against the snapshot, not
-  against the live database. O(1) cost; deterministic; no live connection required at diff time.
+ records the schema state after the last successful migration. Diff against the snapshot, not
+ against the live database. O(1) cost; deterministic; no live connection required at diff time.
 
 Why irreducible: each approach trades off accuracy, cost, and operational complexity differently.
 Shadow DB is most accurate but operationally expensive. Live introspection is accurate but slow
@@ -260,16 +260,16 @@ without a `cargo djogi verify` command) is explicit and documented. (T11, G-19)
 ### D-05: Rename detection — heuristic vs. interactive vs. explicit vs. none
 
 - **Interactive (Django):** `makemigrations` prompts the user at generation time. Correct in
-  development; silently destructive when `--no-input` defaults the prompt to "no rename."
+ development; silently destructive when `--no-input` defaults the prompt to "no rename."
 - **Heuristic (nothing in the survey — the common assumption that Alembic has heuristic rename
-  detection is false):** T07 confirmed that no surveyed system applies a similarity heuristic
-  to rename detection in its autogenerate path. Not one.
+ detection is false):** T07 confirmed that no surveyed system applies a similarity heuristic
+ to rename detection in its autogenerate path. Not one.
 - **Explicit annotation (Djogi, Django for the final form):** The developer annotates the
-  renamed field with `#[field(renamed_from = "old_name")]`. Zero false positives; requires
-  developer awareness.
+ renamed field with `#[field(renamed_from = "old_name")]`. Zero false positives; requires
+ developer awareness.
 - **None (Prisma, Alembic, Diesel, cot, refinery, Flyway, Liquibase, SeaORM):** A rename is
-  treated as `DROP + CREATE`. Data loss is the default unless the operator hand-edits the
-  generated SQL.
+ treated as `DROP + CREATE`. Data loss is the default unless the operator hand-edits the
+ generated SQL.
 
 Why irreducible: interactive detection does not work in CI. Heuristic detection has a nonzero
 false-positive rate and no system has been willing to ship it. Explicit annotation requires
@@ -281,14 +281,14 @@ as the universal "safest default" position across the research. (T07, R-16, R-20
 ### D-06: Repair tooling completeness
 
 - **Full repair (Flyway):** Three distinct operations — delete failed rows, insert tombstones for
-  missing successful migrations, in-place update of checksum drift — wrapped in a single `repair`
-  command. The in-place checksum update is the one weakness (it silently rewrites history without
-  an audit record).
+ missing successful migrations, in-place update of checksum drift — wrapped in a single `repair`
+ command. The in-place checksum update is the one weakness (it silently rewrites history without
+ an audit record).
 - **State-machine repair (Prisma):** `migrate resolve --applied` and `--applied --rolled-back`
-  with refusal semantics: will not stamp an already-successful migration; will not delete existing
-  rows. Every change produces a new row rather than mutating an existing one.
+ with refusal semantics: will not stamp an already-successful migration; will not delete existing
+ rows. Every change produces a new row rather than mutating an existing one.
 - **Blunt instrument (Liquibase):** `clearChecksums` issues `UPDATE DATABASECHANGELOG SET MD5SUM = NULL`
-  with no filtering, no dry-run, and no audit trail.
+ with no filtering, no dry-run, and no audit trail.
 - **None (Alembic, Django, Diesel, SeaORM, refinery, cot):** Recovery is entirely manual.
 
 Why irreducible: repair tooling is expensive to build and most teams never use it in the expected
@@ -411,11 +411,11 @@ system surveyed handles this case well. The research noted it as an open operati
 none of the 15 recommendations in doc 14 address it. It should be on the Phase 7 T2 implementation
 checklist. (T02)
 
-### Q-08: At what Postgres version does `ALTER TYPE ... ADD VALUE` become safe inside a transaction?
+### Q-08: At what Postgres version does `ALTER TYPE... ADD VALUE` become safe inside a transaction?
 
 T05 notes that adding a value to an enum type before Postgres 12 cannot be seen within the same
 transaction. Postgres 12+ lifted the restriction for most cases. Postgres 18 (Djogi's floor)
-is well above 12, so Djogi can treat `ALTER TYPE ... ADD VALUE` as transactional.
+is well above 12, so Djogi can treat `ALTER TYPE... ADD VALUE` as transactional.
 
 But Flyway's implementation (`PostgreSQLParser.java:125-134`) dynamically queries the server version
 to decide this at runtime, which is the correct production posture. Djogi targets Postgres 18 as
@@ -621,9 +621,9 @@ must not inherit:
 (1) No advisory lock — concurrent `cot migration apply` runs can corrupt the ledger.
 (2) No checksum — post-apply mutation of migration files is silent and undetectable.
 (3) The snapshot-struct-embedded-in-migration-file design couples the execution plan to the
-    snapshot; hand-editing either without updating the other corrupts future diffs. The failure
-    mode at `migration_generator.rs:835` — `todo!()` for field type changes — is a direct
-    consequence of the snapshot struct design not being able to represent all `ColumnType` variants.
+  snapshot; hand-editing either without updating the other corrupts future diffs. The failure
+  mode at `migration_generator.rs:835` — `todo!()` for field type changes — is a direct
+  consequence of the snapshot struct design not being able to represent all `ColumnType` variants.
 
 Djogi's design diverges from cot on all three points. The research partially disproved the cot-as-reference
 assumption while validating cot's core philosophy. (T12, X-01)

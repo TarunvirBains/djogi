@@ -1,12 +1,12 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Indexing
 
 ## 20. Indexing
 
-Djogi treats indexes as first-class schema objects. A model declares them once — at the struct — and the same declaration drives the descriptor, the migration differ, the generated DDL, and the canonical index name. There is no separate "index migration" step; adding an `index(...)` entry to a `#[model(indexes(...))]` list is a real schema change that the Phase 7 differ picks up on the next `djogi migrations compose`.
+Djogi treats indexes as first-class schema objects. A model declares them once — at the struct — and the same declaration drives the descriptor, the migration differ, the generated DDL, and the canonical index name. There is no separate "index migration" step; adding an `index(...)` entry to a `#[model(indexes(...))]` list is a real schema change that the differ picks up on the next `djogi migrations compose`.
 
-This chapter is the authoritative surface for the index contract. The runtime types live in [`djogi::descriptor`]; the parser lives in `djogi-macros::model::indexes`; the Phase 7 differ consumes `IndexSpec` directly.
+This chapter is the authoritative surface for the index contract. The runtime types live in [`djogi::descriptor`]; the parser lives in `djogi-macros::model::indexes`; the differ consumes `IndexSpec` directly.
 
 ---
 
@@ -28,11 +28,11 @@ Each entry inside `indexes(...)` is either `index(...)` (non-unique by default) 
 
 | Key | Shape | Meaning |
 |-----|-------|---------|
-| `fields` | `= [ident, ...]` or `= [(col = ident, opclass = "...", order = asc\|desc, nulls = first\|last\|default), ...]` | Column list. Mutually exclusive with `expr`. |
+| `fields` | `= [ident,...]` or `= [(col = ident, opclass = "...", order = asc\|desc, nulls = first\|last\|default),...]` | Column list. Mutually exclusive with `expr`. |
 | `expr` | `= "lower(email)"` | Expression target. Mutually exclusive with `fields`. |
-| `using` | `= "btree" \| "gin" \| "gist" \| "brin" \| "hash" \| "spgist"` | Access method. Default: `btree`. On `unique(...)`, only `btree` (or omitting `using`) is accepted — PostgreSQL unique indexes are btree-only; non-btree methods reject at compile time (Phase 8.5 #83). |
+| `using` | `= "btree" \| "gin" \| "gist" \| "brin" \| "hash" \| "spgist"` | Access method. Default: `btree`. On `unique(...)`, only `btree` (or omitting `using`) is accepted — PostgreSQL unique indexes are btree-only; non-btree methods reject at compile time ( #83). |
 | `opclass` | `= "text_pattern_ops"` | Single-column opclass declaration shortcut. |
-| `include` | `= [ident, ...]` | Covering-index payload columns (`INCLUDE(...)`). |
+| `include` | `= [ident,...]` | Covering-index payload columns (`INCLUDE(...)`). |
 | `where` | `= "deleted_at IS NULL"` | Partial-index predicate. Raw SQL — see §20.4. |
 | `nulls_not_distinct` | `= true` | Unique-only — treat `NULL`s as equal. Forces the `UniqueIndex` kind. |
 | `concurrently` | `= true` | Emit `CREATE INDEX CONCURRENTLY`. See §20.6 for the full contract. |
@@ -41,7 +41,7 @@ Each entry inside `indexes(...)` is either `index(...)` (non-unique by default) 
 **Rules baked into the macro (compile-fail when violated):**
 
 - An entry must supply exactly one of `fields` or `expr`. Missing both is an error; supplying both is an error.
-- `unique(...)` rejects every non-btree `using` method — `gin`, `gist`, `brin`, `spgist`, and `hash` — because PostgreSQL unique indexes are btree-only (`CREATE UNIQUE INDEX … USING <non-btree>` is rejected by the server). The emitter has nowhere to put the requested method, so the macro stops the model from compiling rather than producing migration SQL that fails at apply. Resolution: use `using = "btree"` (or omit `using`), drop `unique` for a non-unique non-btree lookup index, or declare an `EXCLUDE USING <method> (… WITH &&)` row-exclusion constraint when row-overlap exclusion on a non-btree column is the goal (Phase 8.5 #83).
+- `unique(...)` rejects every non-btree `using` method — `gin`, `gist`, `brin`, `spgist`, and `hash` — because PostgreSQL unique indexes are btree-only (`CREATE UNIQUE INDEX … USING <non-btree>` is rejected by the server). The emitter has nowhere to put the requested method, so the macro stops the model from compiling rather than producing migration SQL that fails at apply. Resolution: use `using = "btree"` (or omit `using`), drop `unique` for a non-unique non-btree lookup index, or declare an `EXCLUDE USING <method> (… WITH &&)` row-exclusion constraint when row-overlap exclusion on a non-btree column is the goal ( #83).
 - `hash` indexes are additionally multi-column-incompatible (Postgres hash indexes are single-column). `where`, `include`, and expression targets are also rejected on `hash` — hash indexes support none of them.
 - `nulls_not_distinct = true` on a non-`unique(...)` entry is rejected. (It has no meaning on a plain index.)
 - A raw-identifier column reference (`r#yield`) normalises to its unraw form before the column-existence check — `fields = [r#yield]` matches `pub r#yield: String`.
@@ -83,24 +83,24 @@ Pass whatever the Postgres predicate grammar accepts. If the migration fails, re
 
 | Declaration includes | Lowers to | Name suffix |
 |----------------------|-----------|-------------|
-| none of the below | `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE (...)` | `..._key` |
-| `where = "..."` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
-| `include = [...]` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
-| `nulls_not_distinct = true` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
-| `expr = "..."` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
-| `concurrently = true` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
-| `opclass = "..."` (top-level) | `CREATE UNIQUE INDEX ...` | `..._uidx` |
-| per-column `opclass = "..."` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
-| per-column `order = desc` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
-| per-column `nulls = first\|last` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
+| none of the below | `ALTER TABLE... ADD CONSTRAINT... UNIQUE (...)` | `..._key` |
+| `where = "..."` | `CREATE UNIQUE INDEX...` | `..._uidx` |
+| `include = [...]` | `CREATE UNIQUE INDEX...` | `..._uidx` |
+| `nulls_not_distinct = true` | `CREATE UNIQUE INDEX...` | `..._uidx` |
+| `expr = "..."` | `CREATE UNIQUE INDEX...` | `..._uidx` |
+| `concurrently = true` | `CREATE UNIQUE INDEX...` | `..._uidx` |
+| `opclass = "..."` (top-level) | `CREATE UNIQUE INDEX...` | `..._uidx` |
+| per-column `opclass = "..."` | `CREATE UNIQUE INDEX...` | `..._uidx` |
+| per-column `order = desc` | `CREATE UNIQUE INDEX...` | `..._uidx` |
+| per-column `nulls = first\|last` | `CREATE UNIQUE INDEX...` | `..._uidx` |
 
 Unique constraints are the default for ordinary uniqueness because they integrate with `REFERENCES`, `ON CONFLICT`, and the constraint catalogue. Unique indexes exist for the cases where Postgres requires one — partial uniqueness, `INCLUDE`, `NULLS NOT DISTINCT`, expression targets, and concurrent builds.
 
-`unique(..., using = "<non-btree>")` is **not** in this table: PostgreSQL unique indexes are btree-only (`CREATE UNIQUE INDEX … USING gin|gist|brin|spgist|hash` is rejected by the server). The macro therefore rejects every non-btree `using` on `unique(...)` at compile time rather than emit a `CREATE UNIQUE INDEX … USING <method>` statement that would fail at apply (Phase 8.5 #83). Non-unique non-btree indexes — `index(..., using = "gin")`, `index(..., using = "gist")`, etc. — remain fully supported, as do GiST-based `EXCLUDE … WITH …` row-exclusion constraints declared via `#[model(exclusion(...))]`.
+`unique(..., using = "<non-btree>")` is **not** in this table: PostgreSQL unique indexes are btree-only (`CREATE UNIQUE INDEX … USING gin|gist|brin|spgist|hash` is rejected by the server). The macro therefore rejects every non-btree `using` on `unique(...)` at compile time rather than emit a `CREATE UNIQUE INDEX … USING <method>` statement that would fail at apply ( #83). Non-unique non-btree indexes — `index(..., using = "gin")`, `index(..., using = "gist")`, etc. — remain fully supported, as do GiST-based `EXCLUDE … WITH …` row-exclusion constraints declared via `#[model(exclusion(...))]`.
 
-The opclass and per-column-modifier rows deserve a note. The Postgres table-constraint `UNIQUE` syntax (`UNIQUE ( column_name [, ...] )`) accepts only bare column identifiers in the column list; opclasses, `ASC`/`DESC`, and `NULLS FIRST`/`NULLS LAST` are part of the *index-element* grammar used by `CREATE INDEX` and `EXCLUDE` — not by table-level `UNIQUE` constraints. Djogi escalates any `unique(...)` declaration that carries these features to `CREATE UNIQUE INDEX` form so the resulting DDL is valid Postgres.
+The opclass and per-column-modifier rows deserve a note. The Postgres table-constraint `UNIQUE` syntax (`UNIQUE ( column_name [,...] )`) accepts only bare column identifiers in the column list; opclasses, `ASC`/`DESC`, and `NULLS FIRST`/`NULLS LAST` are part of the *index-element* grammar used by `CREATE INDEX` and `EXCLUDE` — not by table-level `UNIQUE` constraints. Djogi escalates any `unique(...)` declaration that carries these features to `CREATE UNIQUE INDEX` form so the resulting DDL is valid Postgres.
 
-The concurrent-build row deserves a callout. `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` has no `CONCURRENTLY` form, so Djogi's contract is unambiguous: **`concurrently = true` on a `unique(...)` declaration escalates the kind to `UniqueIndex`** (plan §6.2). The emitter produces `CREATE UNIQUE INDEX CONCURRENTLY` with a `..._uidx` name; no `ALTER TABLE ... ADD CONSTRAINT ... USING INDEX` adoption follows. The user gets a unique index, not a unique constraint. If the constraint form is required (for `ON CONFLICT ON CONSTRAINT <name>` or cross-referencing FKs that must name the constraint), drop `concurrently = true` and accept the `ACCESS EXCLUSIVE` window that `ADD CONSTRAINT` takes.
+The concurrent-build row deserves a callout. `ALTER TABLE... ADD CONSTRAINT... UNIQUE` has no `CONCURRENTLY` form, so Djogi's contract is unambiguous: **`concurrently = true` on a `unique(...)` declaration escalates the kind to `UniqueIndex`** (plan §6.2). The emitter produces `CREATE UNIQUE INDEX CONCURRENTLY` with a `..._uidx` name; no `ALTER TABLE... ADD CONSTRAINT... USING INDEX` adoption follows. The user gets a unique index, not a unique constraint. If the constraint form is required (for `ON CONFLICT ON CONSTRAINT <name>` or cross-referencing FKs that must name the constraint), drop `concurrently = true` and accept the `ACCESS EXCLUSIVE` window that `ADD CONSTRAINT` takes.
 
 Outside that one escalation, the macro picks automatically. Users do not have to know the distinction for the common cases.
 
@@ -108,7 +108,7 @@ Outside that one escalation, the macro picks automatically. Users do not have to
 
 ### 20.6 The `concurrently = true` contract
 
-Djogi's concurrency model for index builds is **deterministic** (Phase 7-Zero v3 Q1 ruling). `concurrently = true` at declaration means:
+Djogi's concurrency model for index builds is **deterministic** ( v3 Q1 ruling). `concurrently = true` at declaration means:
 
 - the emitted DDL is `CREATE INDEX CONCURRENTLY` (or `CREATE UNIQUE INDEX CONCURRENTLY`) in **every** profile — prod, CI, dev, and test;
 - the migration file containing that index is marked non-transactional in every profile;
@@ -126,7 +126,7 @@ Lock-mode reference for comparison (see item 4 for how these play out in practic
 |-----------|---------------------|------------------|----------------|
 | `CREATE INDEX CONCURRENTLY` | `SHARE UPDATE EXCLUSIVE` | no | no |
 | `CREATE INDEX` (plain) | `SHARE` | yes | no |
-| `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` | `ACCESS EXCLUSIVE` | yes | yes |
+| `ALTER TABLE... ADD CONSTRAINT... UNIQUE` | `ACCESS EXCLUSIVE` | yes | yes |
 
 #### 2. When to use it
 
@@ -145,7 +145,7 @@ Concurrent builds add overhead — more disk I/O, longer wall-clock, a transacti
 Omitting `concurrently = true` on an index added to a large production table blocks every write to that table for the duration of the build. The lock mode depends on the declaration:
 
 - `index(...)` or `unique(...)` lowered to `UniqueIndex` (partial / include / NND / expression target) → `CREATE INDEX` / `CREATE UNIQUE INDEX` takes `SHARE` — reads continue, writes queue.
-- `unique(...)` lowered to `UniqueConstraint` (the default ordinary-uniqueness path) → `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` takes `ACCESS EXCLUSIVE` — reads *and* writes queue for the full build.
+- `unique(...)` lowered to `UniqueConstraint` (the default ordinary-uniqueness path) → `ALTER TABLE... ADD CONSTRAINT... UNIQUE` takes `ACCESS EXCLUSIVE` — reads *and* writes queue for the full build.
 
 Either way, every INSERT / UPDATE / DELETE against the table — and every transaction holding one — stalls until the index finishes building. On a multi-gigabyte write-hot table, that can be minutes of application impact; on the constraint path, reads stall too.
 
@@ -169,9 +169,9 @@ A `concurrently = true` index's generated down file is non-transactional, so `dj
 
 #### 6. Determinism promise
 
-The same DDL runs in CI and in production. A migration containing any `concurrently = true` index is marked non-transactional in every profile — CI migrations do not quietly become transactional to simplify rollback. Tests see the same failure modes production sees. This is Phase 7-Zero v3 Q1 ruling A; the alternative (downgrade in CI to `CREATE INDEX` wrapped in a transaction) was rejected because it hides production-only failure modes until they happen in production.
+The same DDL runs in CI and in production. A migration containing any `concurrently = true` index is marked non-transactional in every profile — CI migrations do not quietly become transactional to simplify rollback. Tests see the same failure modes production sees. This is v3 Q1 ruling A; the alternative (downgrade in CI to `CREATE INDEX` wrapped in a transaction) was rejected because it hides production-only failure modes until they happen in production.
 
-#### 7. The apply-time advisory warning (Phase 7-Zero §6.5)
+#### 7. The apply-time advisory warning ( §6.5)
 
 When a migration adds an index *without* `concurrently = true` to a table whose current size exceeds the configured page threshold, the runner prints a WARN (ERROR in strict mode). The message names the table, the index, the threshold, and the one-line fix — add `concurrently = true` to the declaration and regenerate the migration.
 
@@ -179,8 +179,8 @@ Configure in `Djogi.toml`:
 
 ```toml
 [migrations.advisory]
-concurrent_index_warning_page_threshold = 10000   # pages (8 KiB each); default tunable
-strict_mode = false                               # true = ERROR instead of WARN
+concurrent_index_warning_page_threshold = 10000 # pages (8 KiB each); default tunable
+strict_mode = false  # true = ERROR instead of WARN
 ```
 
 The warning is a rescue only. It fires on the table's current size, not its projected production size; a table that is small in CI and large in production will pass CI silently. Declare intent correctly at the source.
@@ -216,7 +216,7 @@ amplification.
 | Audit timeline, seeded integration tests, time-range exports | explicit ascending `HeerId` / `RanjId` + reverse secondary index on the occasional descending query |
 | Mixed read patterns (forward and reverse equally hot) | default PK + secondary index — avoid the migration cost below |
 
-**Migration has a point of no return.** Flipping a table from ascending to descending (or back) is supported by Phase 7's `SchemaDelta::Classification::PkTypeFlip` path, but it rewrites every row, cascades to every FK that references the PK, and must run as a coordinated cutover — every child table with a `ForeignKey<Parent>` to the migrating PK migrates in the same Phase 7 migration, not a later follow-up. There is no per-row backfill window. Plan the flip for a maintenance slot and own the choice up front; the default is more often the right answer than first-time adopters expect.
+**Migration has a point of no return.** Flipping a table from ascending to descending (or back) is supported by 's `SchemaDelta::Classification::PkTypeFlip` path, but it rewrites every row, cascades to every FK that references the PK, and must run as a coordinated cutover — every child table with a `ForeignKey<Parent>` to the migrating PK migrates in the same migration, not a later follow-up. There is no per-row backfill window. Plan the flip for a maintenance slot and own the choice up front; the default is more often the right answer than first-time adopters expect.
 
 ---
 
@@ -255,39 +255,39 @@ The runtime types the migration differ consumes:
 
 ```rust
 pub struct IndexSpec {
-    pub name: &'static str,
-    pub target: IndexTarget,
-    pub kind: IndexKind,
-    pub index_type: IndexType,
-    pub predicate: Option<&'static str>,
-    pub include: &'static [&'static str],
-    pub nulls_not_distinct: bool,
-    pub requires_out_of_transaction: bool,
-    pub extension_dependency: Option<&'static str>,
+ pub name: &'static str,
+ pub target: IndexTarget,
+ pub kind: IndexKind,
+ pub index_type: IndexType,
+ pub predicate: Option<&'static str>,
+ pub include: &'static [&'static str],
+ pub nulls_not_distinct: bool,
+ pub requires_out_of_transaction: bool,
+ pub extension_dependency: Option<&'static str>,
 }
 
 pub enum IndexKind { NonUnique, UniqueConstraint, UniqueIndex }
 pub enum IndexTarget {
-    Columns(&'static [IndexColumnSpec]),
-    Expression(&'static str),
+ Columns(&'static [IndexColumnSpec]),
+ Expression(&'static str),
 }
 
 pub struct IndexColumnSpec {
-    pub name: &'static str,
-    pub opclass: Option<&'static str>,
-    pub order: IndexOrder,
-    pub nulls: IndexNullsOrder,
+ pub name: &'static str,
+ pub opclass: Option<&'static str>,
+ pub order: IndexOrder,
+ pub nulls: IndexNullsOrder,
 }
 ```
 
-The full rustdoc lives on each item. Phase 7-Zero v3 §4 is the frozen contract — the Phase 7 differ is entitled to assume these shapes; field additions are additive-only (new `Option` / `&'static [T]` fields with an `IndexSpec::simple` constructor handling defaults).
+The full rustdoc lives on each item. the specification is the frozen contract — the differ is entitled to assume these shapes; field additions are additive-only (new `Option` / `&'static [T]` fields with an `IndexSpec::simple` constructor handling defaults).
 
 `IndexColumnSpec::simple("name")` is the one-column convenience constructor: no opclass, `Asc`, default nulls. Multi-column simple declarations remain one-liners:
 
 ```rust
 IndexTarget::Columns(&[
-    IndexColumnSpec::simple("tenant_id"),
-    IndexColumnSpec::simple("created_at"),
+ IndexColumnSpec::simple("tenant_id"),
+ IndexColumnSpec::simple("created_at"),
 ])
 ```
 
@@ -296,8 +296,8 @@ IndexTarget::Columns(&[
 ### 20.10 Cross-references
 
 - [Models](./models.md) §4.5 — field-level `#[field(index)]` / `#[field(unique)]`.
-- [Migrations](./migrations.md) — the Phase 7 differ's consumption of `IndexSpec`, the apply-time advisory warning, and the non-transactional migration rule for `concurrently = true`.
+- [Migrations](./migrations.md) — the differ's consumption of `IndexSpec`, the apply-time advisory warning, and the non-transactional migration rule for `concurrently = true`.
 - [Primary Keys](./primary-keys.md) — public `HeerIdRecencyBiased` / `RanjIdRecencyBiased` naming, plus the underlying `HeerIdDesc` / `RanjIdDesc` migration semantics.
 - [Raw SQL Escape Hatches](./raw-sql-escape-hatches.md) — the bypass harness for DDL not yet expressible through the typed descriptor surface (e.g. expression indexes with non-default opclasses).
 - [Decisions](./decisions.md) — rows for concurrent index creation, unique-constraint default, column ordering, per-column spec, predicate validation.
-- This section is the tracked frozen contract for the Phase 7-Zero indexing grammar, lowering rules, and apply-time advisory-warning specification.
+- This section is the tracked frozen contract for the indexing grammar, lowering rules, and apply-time advisory-warning specification.

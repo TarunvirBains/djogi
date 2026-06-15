@@ -17,27 +17,27 @@ use djogi::prelude::*;
 #[model(table = "phase8_proxy_basic_vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    pub name: String,
-    pub active: bool,
-    pub price: i64,
+ pub name: String,
+ pub active: bool,
+ pub price: i64,
 }
 
 #[model(
-    table = "phase8_proxy_basic_vehicles",
-    proxy_for = Vehicle,
-    default_filter = |f| f.active.eq(true),
+ table = "phase8_proxy_basic_vehicles",
+ proxy_for = Vehicle,
+ default_filter = |f| f.active.eq(true),
 )]
 #[derive(Debug, Clone)]
 pub struct ActiveVehicle {
-    pub name: String,
-    pub active: bool,
-    pub price: i64,
+ pub name: String,
+ pub active: bool,
+ pub price: i64,
 }
 
 fn main() {
-    // Constructing the queryset is the only thing this fixture
-    // exercises — proving the `Model::default_filter_condition`
-    // override is wired and the seeded condition tree compiles
-    // through `QuerySet::new()`. No DB I/O.
-    let _qs = ActiveVehicle::objects();
+ // Constructing the queryset is the only thing this fixture
+ // exercises — proving the `Model::default_filter_condition`
+ // override is wired and the seeded condition tree compiles
+ // through `QuerySet::new()`. No DB I/O.
+ let _qs = ActiveVehicle::objects();
 }

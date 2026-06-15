@@ -1,4 +1,4 @@
-//! Redis publisher stub — .
+//! Redis publisher stub —.
 //! Gated on the `outbox-redis` feature flag. The actual integration
 //! including adding `redis` as a workspace dependency — ships in a future
 //! task once the provider dependency matrix is decided. Today this file
@@ -23,7 +23,7 @@ impl Publisher for RedisPublisher {
         // production use is caught immediately.
         unimplemented!(
             "RedisPublisher is not yet implemented; \
-             the full integration ships in a future task"
+    the full integration ships in a future task"
         )
     }
 }

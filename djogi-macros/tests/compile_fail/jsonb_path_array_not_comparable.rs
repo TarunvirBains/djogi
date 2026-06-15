@@ -14,22 +14,22 @@ use serde::{Deserialize, Serialize};
 
 #[derive(JsonbSchema, Serialize, Deserialize, Default, Debug, Clone)]
 pub struct Meta {
-    pub label: String,
+ pub label: String,
 }
 
 #[model(table = "docs")]
 #[derive(Debug, Clone)]
 pub struct Doc {
-    pub meta: djogi::Jsonb<Meta>,
+ pub meta: djogi::Jsonb<Meta>,
 }
 
 fn _no_array_jsonb_compare() {
-    let _ = Doc::objects().filter(|f| {
-        f.meta()
-            .explicit_pg_predicate()
-            .path::<Vec<i32>>("tags")
-            .eq(vec![1, 2])
-    });
+ let _ = Doc::objects().filter(|f| {
+  f.meta()
+  .explicit_pg_predicate()
+  .path::<Vec<i32>>("tags")
+  .eq(vec![1, 2])
+ });
 }
 
 fn main() {}

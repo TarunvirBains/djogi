@@ -5,8 +5,8 @@ use djogi::prelude::*;
 #[model(table = "users_expose_empty")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(expose())]
-    pub name: String,
+ #[field(expose())]
+ pub name: String,
 }
 
 fn main() {}

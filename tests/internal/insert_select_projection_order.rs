@@ -20,19 +20,19 @@ async fn recreate_projection_target_noncanonical_order(ctx: &mut djogi::DjogiCon
         .expect("target projection table drop should succeed");
     ctx.raw_ddl(
         "CREATE TABLE c4b_projection_targets (
-            id BIGINT PRIMARY KEY DEFAULT generate_id(),
-            value INTEGER NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )",
+      id BIGINT PRIMARY KEY DEFAULT generate_id(),
+      value INTEGER NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )",
     )
     .await
     .expect("target projection table should be recreated in non-canonical order");
 }
 
 #[djogi::djogi_test(sync_models = [
-    C4bProjectionSource,
-    C4bProjectionTarget
+  C4bProjectionSource,
+  C4bProjectionTarget
 ])]
 async fn insert_select_execute_returning_uses_canonical_projection_for_noncanonical_ddl(
     mut ctx: djogi::DjogiContext,

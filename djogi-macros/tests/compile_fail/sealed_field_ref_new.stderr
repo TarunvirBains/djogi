@@ -1,19 +1,19 @@
 error[E0624]: associated function `new` is private
-  --> $DIR/sealed_field_ref_new.rs:34:47
-   |
-34 |     let _: FieldRef<Post, String> = FieldRef::new("title) OR 1=1 --");
-   |                                               ^^^ private associated function
-   |
-  ::: djogi/src/query/field.rs:91:5
-   |
-91 |     pub(crate) const fn new(column: &'static str) -> Self {
-   |     ----------------------------------------------------- private associated function defined here
-   |
-   = help: items from traits can only be used if the trait is in scope
+ --> $DIR/sealed_field_ref_new.rs:34:47
+ |
+34 |  let _: FieldRef<Post, String> = FieldRef::new("title) OR 1=1 --");
+ |            ^^^ private associated function
+ |
+ ::: djogi/src/query/field.rs:91:5
+ |
+91 |  pub(crate) const fn new(column: &'static str) -> Self {
+ |  ----------------------------------------------------- private associated function defined here
+ |
+ = help: items from traits can only be used if the trait is in scope
 help: trait `Paint` which provides `new` is implemented but not in scope; perhaps you want to import it
-   |
+ |
 18 + use yansi::paint::Paint;
-   |
+ |
 
 error: aborting due to 1 previous error
 

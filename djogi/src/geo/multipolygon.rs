@@ -4,13 +4,13 @@
 //! # Wire format
 //! EWKB layout (little-endian, SRID 4326):
 //! ```text
-//! Offset  Size  Content
-//!      0     1  Endianness marker: 0x01 (little-endian)
-//!      1     4  Geometry type word: 0x20000006 (MultiPolygon | SRID flag), LE
-//!      5     4  SRID 4326, LE  → [0xE6, 0x10, 0x00, 0x00]
-//!      9     4  Number of sub-polygons (u32 LE)
-//!     13   var  Sub-polygons: each is a headerless EWKB polygon —
-//!               [endian_byte(1), poly_type_word_no_srid(4), ring_count(4), rings...]
+//! Offset Size Content
+//!  0  1 Endianness marker: 0x01 (little-endian)
+//!  1  4 Geometry type word: 0x20000006 (MultiPolygon | SRID flag), LE
+//!  5  4 SRID 4326, LE → [0xE6, 0x10, 0x00, 0x00]
+//!  9  4 Number of sub-polygons (u32 LE)
+//!  13 var Sub-polygons: each is a headerless EWKB polygon —
+//!    [endian_byte(1), poly_type_word_no_srid(4), ring_count(4), rings...]
 //! ```
 //! Each sub-polygon carries its own endianness byte and type word
 //! (`0x00000003`, no SRID flag) but no SRID — the outer container holds it.
@@ -24,7 +24,7 @@ use crate::geo::{GeoError, Polygon, ewkb};
 /// A collection of at least 1 `Polygon`.
 /// Stored as `GEOGRAPHY(MultiPolygon, 4326)` in Postgres.
 /// # Display
-/// `Display` emits `MULTIPOLYGON(((...)), ...)` per OGC WKT.
+/// `Display` emits `MULTIPOLYGON(((...)),...)` per OGC WKT.
 /// # Serde
 /// Serializes as an array of polygons (each polygon is itself an array of
 /// rings, each ring an array of `{"lat": f64, "lon": f64}` objects).
@@ -68,7 +68,7 @@ impl MultiPolygon {
 // ── Display (WKT) ─────────────────────────────────────────────────────────────
 
 impl fmt::Display for MultiPolygon {
-    /// Emit `MULTIPOLYGON(((<lon> <lat>, ...)), ...)` per OGC WKT.
+    /// Emit `MULTIPOLYGON(((<lon> <lat>,...)),...)` per OGC WKT.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("MULTIPOLYGON(")?;
         for (i, poly) in self.polygons.iter().enumerate() {

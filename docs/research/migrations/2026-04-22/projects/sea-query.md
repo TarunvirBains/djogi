@@ -89,13 +89,13 @@ sea-query can generate all of the following DDL:
 | `ALTER TABLE ADD CONSTRAINT FOREIGN KEY` | `TableAlterOption::AddForeignKey` | `src/table/alter.rs:61` |
 | `ALTER TABLE DROP CONSTRAINT` | `TableAlterOption::DropConstraint` | `src/table/alter.rs:63` |
 | `DROP TABLE` | `TableDropStatement` | `src/table/drop.rs` |
-| `RENAME TABLE` / `ALTER TABLE ... RENAME TO` | `TableRenameStatement` | `src/table/rename.rs` |
+| `RENAME TABLE` / `ALTER TABLE... RENAME TO` | `TableRenameStatement` | `src/table/rename.rs` |
 | `TRUNCATE TABLE` | `TableTruncateStatement` | `src/table/truncate.rs` |
 | `CREATE INDEX` | `IndexCreateStatement` | `src/index/create.rs:211` |
 | `DROP INDEX` | `IndexDropStatement` | `src/index/drop.rs` |
 | `ALTER TABLE ADD CONSTRAINT FOREIGN KEY` (standalone) | `ForeignKeyCreateStatement` | `src/foreign_key/create.rs` |
 | `ALTER TABLE DROP CONSTRAINT` (FK) | `ForeignKeyDropStatement` | `src/foreign_key/drop.rs` |
-| `CREATE TYPE ... AS ENUM` | `TypeCreateStatement` | `src/backend/postgres/types.rs:5` |
+| `CREATE TYPE... AS ENUM` | `TypeCreateStatement` | `src/backend/postgres/types.rs:5` |
 | `DROP TYPE` | `TypeDropStatement` | `src/backend/postgres/types.rs:40` |
 | `ALTER TYPE ADD VALUE / RENAME` | `TypeAlterStatement` | `src/backend/postgres/types.rs:66` |
 
@@ -133,7 +133,7 @@ Checked against `src/backend/postgres/`:
 | `CREATE TEMPORARY TABLE` | Yes — `.temporary()` on `TableCreateStatement` | `src/table/create.rs:405-407` |
 | Exclusion constraints (`EXCLUDE USING`) | **No** — not represented in any struct or builder |
 | `DEFERRABLE` / `INITIALLY DEFERRED` FK/constraint | **No** — not in `TableForeignKey` or any constraint struct |
-| `ALTER TABLE ... NOT VALID` / `VALIDATE CONSTRAINT` | **No** — not present in `TableAlterOption` enum |
+| `ALTER TABLE... NOT VALID` / `VALIDATE CONSTRAINT` | **No** — not present in `TableAlterOption` enum |
 | `NULLS FIRST / NULLS LAST` on index columns | **No** — `IndexOrder` only has `Asc` and `Desc` (`src/index/common.rs:67-70`) |
 
 **NULLS FIRST/LAST note:** `NullOrdering` with `First`/`Last` variants exists in the query builder (ORDER BY in SELECT), at `src/query/ordered.rs:3`, but is not wired into `IndexOrder` for index column definitions. There is no way to emit `("col" ASC NULLS LAST)` in a `CREATE INDEX` via sea-query.
@@ -144,12 +144,12 @@ Input Rust (from `src/index/create.rs:104-128`, doc-test):
 
 ```rust
 let index = Index::create()
-    .name("idx-glyph-aspect")
-    .table(Glyph::Table)
-    .col((Glyph::Image, IndexOrder::Asc))
-    .col((Glyph::Aspect, IndexOrder::Desc))
-    .unique()
-    .to_owned();
+ .name("idx-glyph-aspect")
+ .table(Glyph::Table)
+ .col((Glyph::Image, IndexOrder::Asc))
+ .col((Glyph::Aspect, IndexOrder::Desc))
+ .unique()
+ .to_owned();
 ```
 
 Output SQL (Postgres):
@@ -166,11 +166,11 @@ Input Rust (from `src/index/create.rs:155-172`, doc-test):
 
 ```rust
 let index = Index::create()
-    .name("idx-glyph-aspect")
-    .table(Glyph::Table)
-    .col((Glyph::Aspect, 64, IndexOrder::Asc))
-    .and_where(Expr::col((Glyph::Table, Glyph::Aspect)).is_in(vec![3, 4]))
-    .to_owned();
+ .name("idx-glyph-aspect")
+ .table(Glyph::Table)
+ .col((Glyph::Aspect, 64, IndexOrder::Asc))
+ .and_where(Expr::col((Glyph::Table, Glyph::Aspect)).is_in(vec![3, 4]))
+ .to_owned();
 ```
 
 Output SQL (Postgres):
@@ -187,12 +187,12 @@ From `tests/postgres/index.rs:43-54`:
 
 ```rust
 Index::create()
-    .full_text()
-    .name("idx-glyph-image")
-    .concurrently()
-    .table(Glyph::Table)
-    .col(Glyph::Image)
-    .to_string(PostgresQueryBuilder)
+ .full_text()
+ .name("idx-glyph-image")
+ .concurrently()
+ .table(Glyph::Table)
+ .col(Glyph::Image)
+ .to_string(PostgresQueryBuilder)
 ```
 
 Output:
@@ -207,19 +207,19 @@ From `tests/postgres/table.rs:310-336`:
 
 ```rust
 Table::create()
-    .table(Glyph::Table)
-    .col(ColumnDef::new(Glyph::Image).json())
-    .col(ColumnDef::new(Glyph::Aspect).json_binary())
-    .index(
-        Index::create()
-            .unique()
-            .nulls_not_distinct()
-            .name("idx-glyph-aspect-image")
-            .table(Glyph::Table)
-            .col(Glyph::Aspect)
-            .col(Glyph::Image)
-    )
-    .to_string(PostgresQueryBuilder)
+ .table(Glyph::Table)
+ .col(ColumnDef::new(Glyph::Image).json())
+ .col(ColumnDef::new(Glyph::Aspect).json_binary())
+ .index(
+    Index::create()
+     .unique()
+     .nulls_not_distinct()
+     .name("idx-glyph-aspect-image")
+     .table(Glyph::Table)
+     .col(Glyph::Aspect)
+     .col(Glyph::Image)
+  )
+ .to_string(PostgresQueryBuilder)
 ```
 
 Output:
@@ -297,7 +297,7 @@ Emits: `CREATE INDEX CONCURRENTLY "name" ON "table" ("col")` (`src/backend/postg
 
 ### `NOT VALID` / `VALIDATE CONSTRAINT` (two-phase constraint addition)
 
-**Not supported.** `TableAlterOption` has no `NotValidConstraint` or `ValidateConstraint` variant (`src/table/alter.rs:56-64`). There is no way to emit `ALTER TABLE ... ADD CONSTRAINT ... NOT VALID` or `ALTER TABLE ... VALIDATE CONSTRAINT ...` through the typed API.
+**Not supported.** `TableAlterOption` has no `NotValidConstraint` or `ValidateConstraint` variant (`src/table/alter.rs:56-64`). There is no way to emit `ALTER TABLE... ADD CONSTRAINT... NOT VALID` or `ALTER TABLE... VALIDATE CONSTRAINT...` through the typed API.
 
 **Workaround:** `ColumnDef::extra(raw_string)` or `TableCreateStatement::extra(raw_string)` can inject arbitrary raw SQL fragments (`src/table/column.rs:866-872`, `src/table/create.rs:336-343`), but this bypasses all type safety.
 
@@ -349,10 +349,10 @@ Example from `src/table/alter.rs:280-340` (doc-test for `add_foreign_key`):
 
 ```rust
 Table::alter()
-    .table(Character::Table)
-    .add_foreign_key(&foreign_key_char)
-    .add_foreign_key(&foreign_key_font)
-    .to_owned()
+ .table(Character::Table)
+ .add_foreign_key(&foreign_key_char)
+ .add_foreign_key(&foreign_key_font)
+ .to_owned()
 ```
 
 Output:
@@ -411,8 +411,8 @@ The multi-op ALTER is readable but limited: you cannot mix `ADD COLUMN` and `ADD
 
 - **`DEFERRABLE` constraints absent.** No path to emit `CONSTRAINT "name" FOREIGN KEY (...) DEFERRABLE INITIALLY DEFERRED` — the `TableForeignKey` struct has no deferrability field. Citation: `src/foreign_key/common.rs:5-13`.
 
-- **`option-postgres-use-serial` is a compile-time feature, not a runtime choice.** You cannot mix `SERIAL` and `GENERATED ... AS IDENTITY` columns in the same binary. Citation: `src/backend/postgres/table.rs:233-246`. Not relevant for Djogi (which uses HeeRanjId), but illustrative of how dialect options are baked in.
+- **`option-postgres-use-serial` is a compile-time feature, not a runtime choice.** You cannot mix `SERIAL` and `GENERATED... AS IDENTITY` columns in the same binary. Citation: `src/backend/postgres/table.rs:233-246`. Not relevant for Djogi (which uses HeeRanjId), but illustrative of how dialect options are baked in.
 
 - **`ColumnDef::extra(raw_string)` as universal escape hatch** (citation: `src/table/column.rs:866-872`, `src/table/create.rs:336-343`). When sea-query lacks a typed path (e.g., `DEFAULT gen_random_uuid()`, or `USING columnar` for Citus), `extra()` injects a raw string. This is pragmatic but unverified — the library does nothing to validate the injected SQL. Djogi's own string formatter has the same footgun.
 
-- **The `TableAlterStatement` single-ALTER design** means that multiple subcommands on the same table go into one `ALTER TABLE ... op1, op2` statement. Postgres executes the whole batch atomically, which is correct — but it means you cannot interleave a `CONCURRENTLY` index creation (which must be outside a transaction) with other operations in the same alter batch. Djogi's build.rs differ must understand this separation already; sea-query would not help enforce it.
+- **The `TableAlterStatement` single-ALTER design** means that multiple subcommands on the same table go into one `ALTER TABLE... op1, op2` statement. Postgres executes the whole batch atomically, which is correct — but it means you cannot interleave a `CONCURRENTLY` index creation (which must be outside a transaction) with other operations in the same alter batch. Djogi's build.rs differ must understand this separation already; sea-query would not help enforce it.

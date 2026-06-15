@@ -7,30 +7,30 @@
 // Three benchmarks:
 //
 // 1. **`bench_1000_node_tree_descendants`** — 1000-node single-root
-//    tree; time `tree_descendants` to completion. Confirms the
-//    recursive-CTE path scales from the unit-test fixtures' 5-row
-//    trees to four-orders-of-magnitude larger fixtures without
-//    blowing up.
+//  tree; time `tree_descendants` to completion. Confirms the
+//  recursive-CTE path scales from the unit-test fixtures' 5-row
+//  trees to four-orders-of-magnitude larger fixtures without
+//  blowing up.
 //
 // 2. **`bench_50_deep_chain_with_paths`** — 50-deep chain; time
-//    `fetch_all_with_paths`. Targets the path-accumulator
-//    `array_append` chain — a deep walk grows the `text[]` path
-//    column linearly, and we want to confirm the per-step append
-//    stays cheap.
+//  `fetch_all_with_paths`. Targets the path-accumulator
+//  `array_append` chain — a deep walk grows the `text[]` path
+//  column linearly, and we want to confirm the per-step append
+//  stays cheap.
 //
 // 3. **`bench_5000_pedigree_materialize_closure`** — 5000-row
-//    pedigree (every node has 2 self-FKs, fanout simulating real
-//    ancestry). Times `materialize_closure` from empty closure
-//    table to fully populated. The headline number that backs the
-//    scalability claim — closure-table materialisation is the
-//    production-scale answer for tree queries (see Risk 10 in the
-//    Scalability lens).
+//  pedigree (every node has 2 self-FKs, fanout simulating real
+//  ancestry). Times `materialize_closure` from empty closure
+//  table to fully populated. The headline number that backs the
+//  scalability claim — closure-table materialisation is the
+//  production-scale answer for tree queries (see Risk 10 in the
+//  Scalability lens).
 //
 // ## Running
 //
 // ```bash
 // cargo test --test zero_tree_query_bench -p djogi --all-features \
-//     --release -- --test-threads=1 --nocapture
+//   --release -- --test-threads=1 --nocapture
 // ```
 //
 // Debug-mode runs also pass — the soft caps below are loose enough —
@@ -51,10 +51,10 @@ use djogi::prelude::*;
 // ── Models ──────────────────────────────────────────────────────────────────
 
 #[model(
-    table = "bench_tree",
-    pk = HeerId,
-    tree_edge = "parent_id",
-    indexes(index(fields = [parent_id]))
+  table = "bench_tree",
+  pk = HeerId,
+  tree_edge = "parent_id",
+  indexes(index(fields = [parent_id]))
 )]
 #[derive(Debug, Clone)]
 pub struct BenchTree {
@@ -63,12 +63,12 @@ pub struct BenchTree {
 }
 
 #[model(
-    table = "bench_pedigree",
-    pk = HeerId,
-    indexes(
-        index(fields = [mother_id]),
-        index(fields = [father_id])
-    )
+  table = "bench_pedigree",
+  pk = HeerId,
+  indexes(
+    index(fields = [mother_id]),
+    index(fields = [father_id])
+  )
 )]
 #[derive(Debug, Clone)]
 pub struct BenchPedigree {
@@ -78,10 +78,10 @@ pub struct BenchPedigree {
 }
 
 #[model(
-    table = "bench_pedigree_closure",
-    pk = HeerId,
-    no_default,
-    indexes(unique(fields = [pedigree_id, ancestor_id, depth]))
+  table = "bench_pedigree_closure",
+  pk = HeerId,
+  no_default,
+  indexes(unique(fields = [pedigree_id, ancestor_id, depth]))
 )]
 #[derive(Debug, Clone)]
 pub struct BenchPedigreeAncestry {
@@ -315,7 +315,7 @@ async fn bench_5000_pedigree_materialize_closure(mut ctx: DjogiContext) {
 
     println!(
         "[bench] materialize_closure {}-source pedigree: {:?} \
-         (rows_written = {}, sources_visited = {})",
+     (rows_written = {}, sources_visited = {})",
         total, elapsed, report.rows_written, report.sources_visited
     );
 

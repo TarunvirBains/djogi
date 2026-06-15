@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Adopter-Linked `djogi` CLI
 
@@ -33,11 +33,11 @@ djogi-cli = "0.1"
 ```rust
 // src/bin/djogi.rs
 fn main() -> std::process::ExitCode {
-    // Force link-time registration of every crate that defines #[model] structs.
-    // You must reference at least one model type from each model crate, or the
-    // linker may drop that crate's inventory registrations entirely.
-    adopter_models::link_models();
-    djogi_cli::run_from_env()
+ // Force link-time registration of every crate that defines #[model] structs.
+ // You must reference at least one model type from each model crate, or the
+ // linker may drop that crate's inventory registrations entirely.
+ adopter_models::link_models();
+ djogi_cli::run_from_env()
 }
 ```
 
@@ -46,13 +46,13 @@ The `link_models()` function is a thin helper you define in your model crate:
 ```rust
 // In each model crate's lib.rs (or a dedicated module):
 pub fn link_models() {
-    // Reference at least one model type per crate to force linkage.
-    // The exact symbol referenced does not matter — it only needs to prevent
-    // the linker from dropping the crate's inventory statics.
-    // Call descriptor() (note the parentheses): a bare `::descriptor` fn-item
-    // reference can be optimized away, whereas the call forces the symbol —
-    // the same primitive djogi_main! and sync_models use.
-    let _ = <YourModel as djogi::model::Model>::descriptor();
+ // Reference at least one model type per crate to force linkage.
+ // The exact symbol referenced does not matter — it only needs to prevent
+ // the linker from dropping the crate's inventory statics.
+ // Call descriptor() (note the parentheses): a bare `::descriptor` fn-item
+ // reference can be optimized away, whereas the call forces the symbol —
+ // the same primitive djogi_main! and sync_models use.
+ let _ = <YourModel as djogi::model::Model>::descriptor();
 }
 ```
 
@@ -87,12 +87,12 @@ Then write a hand-written `fn main()` that references each model crate's anchor 
 ```rust
 // src/bin/djogi.rs
 fn main() -> std::process::ExitCode {
-    // One reference per model crate. Referencing the anchor pulls the
-    // crate's rlib member into the binary, so its #[derive(Model)]
-    // inventory statics survive --gc-sections / LTO.
-    tracker::__djogi_link_anchor();
-    billing::__djogi_link_anchor();
-    djogi_cli::run_from_env()
+ // One reference per model crate. Referencing the anchor pulls the
+ // crate's rlib member into the binary, so its #[derive(Model)]
+ // inventory statics survive --gc-sections / LTO.
+ tracker::__djogi_link_anchor();
+ billing::__djogi_link_anchor();
+ djogi_cli::run_from_env()
 }
 ```
 
@@ -102,23 +102,23 @@ The anchor is `#[doc(hidden)]` and carries the `#[used]` attribute that prevents
 
 ```
 myapp/
-├── Cargo.toml                    # workspace manifest
-├── Djogi.toml                    # app configuration
+├── Cargo.toml   # workspace manifest
+├── Djogi.toml   # app configuration
 ├── models/
-│   ├── Cargo.toml
-│   └── src/
-│       ├── lib.rs                # defines #[model] structs + link_models()
-│       └── elephant.rs           # Elephant model
+│ ├── Cargo.toml
+│ └── src/
+│ ├── lib.rs  # defines #[model] structs + link_models()
+│ └── elephant.rs  # Elephant model
 ├── billing/
-│   ├── Cargo.toml
-│   └── src/
-│       ├── lib.rs                # defines #[model] structs + link_models()
-│       └── invoice.rs            # Invoice model
+│ ├── Cargo.toml
+│ └── src/
+│ ├── lib.rs  # defines #[model] structs + link_models()
+│ └── invoice.rs  # Invoice model
 └── bin/
-    ├── Cargo.toml                # depends on models, billing, djogi-cli
-    └── src/
-        └── bin/
-            └── djogi.rs          # the adopter-linked binary (4 lines)
+ ├── Cargo.toml  # depends on models, billing, djogi-cli
+ └── src/
+ └── bin/
+  └── djogi.rs  # the adopter-linked binary (4 lines)
 ```
 
 ---
@@ -131,8 +131,8 @@ Run descriptor-dependent commands from your workspace root:
 
 ```toml
 [cli]
-package = "my-adopter-app-bin"   # package name that defines your `src/bin/djogi.rs`
-bin = "djogi"                    # executable built by that package
+package = "my-adopter-app-bin" # package name that defines your `src/bin/djogi.rs`
+bin = "djogi"   # executable built by that package
 ```
 
 ```bash
@@ -159,7 +159,7 @@ Build the adopter-linked binary once and copy it to a minimal runtime environmen
 # Build stage — compiles the adopter-linked binary with all model crates
 FROM rust:1.95 AS builder
 WORKDIR /app
-COPY . .
+COPY..
 RUN cargo build --bin djogi --release
 
 # Runtime stage — only the binary, config, and artifacts needed

@@ -1,6 +1,6 @@
 # Encrypted at Rest
 
-> [Back to index](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to index](./index.md) · [Back to README](../../README.md)
 
 Djogi ships a built-in **encrypted-at-rest field codec** — `aes256_gcm_v1` —
 that transparently encrypts a model's `String` field on write and decrypts it on
@@ -17,17 +17,17 @@ djogi = { version = "...", features = ["aes-codec"] }
 What it provides:
 
 - **AEAD encryption** — AES-256-GCM gives confidentiality *and* integrity
-  (tamper detection) in a single pass. Each value is bound to its model and
-  field via AES-GCM additional-authenticated-data (AAD), so ciphertext moved to
-  a different column or row fails authentication rather than decrypting with the
-  wrong context.
+ (tamper detection) in a single pass. Each value is bound to its model and
+ field via AES-GCM additional-authenticated-data (AAD), so ciphertext moved to
+ a different column or row fails authentication rather than decrypting with the
+ wrong context.
 - **A 32-entry key ring** read from `DJOGI_FIELD_CODEC_KEY_0` …
-  `DJOGI_FIELD_CODEC_KEY_31`, with in-band key rotation.
+ `DJOGI_FIELD_CODEC_KEY_31`, with in-band key rotation.
 - **Per-(model, field) subkeys** derived with HKDF-SHA256, so compromise of one
-  field's ciphertext does not expose other fields under the same ring entry.
+ field's ciphertext does not expose other fields under the same ring entry.
 - **Startup validation** — if a model in your binary uses the codec but no valid
-  key is configured, `DjogiPool` construction fails with a clear error naming the
-  missing variable, before any query runs.
+ key is configured, `DjogiPool` construction fails with a clear error naming the
+ missing variable, before any query runs.
 
 Explicitly **not** in scope (see [Non-goals](#non-goals)): searchable /
 deterministic encryption, `Vec<u8>` → `Vec<u8>` encryption, and KMS integration.
@@ -46,21 +46,21 @@ use djogi::prelude::*;
 #[model(table = "accounts")]
 #[derive(Debug, Clone)]
 pub struct Account {
-    pub email: String,
+ pub email: String,
 
-    #[field(protected(
-        sensitivity = "secret",
-        rationale = "API token — encrypted at rest",
-        codec = "aes256_gcm_v1"
-    ))]
-    pub api_token: String,
+ #[field(protected(
+ sensitivity = "secret",
+ rationale = "API token — encrypted at rest",
+ codec = "aes256_gcm_v1"
+ ))]
+ pub api_token: String,
 
-    #[field(protected(
-        sensitivity = "secret",
-        rationale = "recovery code — nullable, encrypted at rest",
-        codec = "aes256_gcm_v1"
-    ))]
-    pub recovery_code: Option<String>,
+ #[field(protected(
+ sensitivity = "secret",
+ rationale = "recovery code — nullable, encrypted at rest",
+ codec = "aes256_gcm_v1"
+ ))]
+ pub recovery_code: Option<String>,
 }
 ```
 
@@ -70,9 +70,9 @@ column type override is automatic. CRUD then round-trips transparently:
 
 ```rust
 let saved = Account::create(&mut ctx, Account {
-    email: "user@example.test".into(),
-    api_token: "tok_live_abc123".into(),
-    recovery_code: Some("R-7788".into()),
+ email: "user@example.test".into(),
+ api_token: "tok_live_abc123".into(),
+ recovery_code: Some("R-7788".into()),
 }).await?;
 
 // Read back — the plaintext is decrypted for you.
@@ -90,21 +90,21 @@ skipped) and decodes back to `None`.
 Keys are supplied as environment variables, never in `Djogi.toml`:
 
 ```
-DJOGI_FIELD_CODEC_KEY_0  = "<64 lowercase hex characters>"   # required (base key)
-DJOGI_FIELD_CODEC_KEY_1  = "<64 lowercase hex characters>"   # optional (index 1)
+DJOGI_FIELD_CODEC_KEY_0 = "<64 lowercase hex characters>" # required (base key)
+DJOGI_FIELD_CODEC_KEY_1 = "<64 lowercase hex characters>" # optional (index 1)
 ...
-DJOGI_FIELD_CODEC_KEY_31 = "<64 lowercase hex characters>"   # optional (max ring size)
+DJOGI_FIELD_CODEC_KEY_31 = "<64 lowercase hex characters>" # optional (max ring size)
 ```
 
 Ring rules:
 
 - **`DJOGI_FIELD_CODEC_KEY_0` is always required.**
 - **No gaps.** If the highest index present is `N`, every index `0..=N` must be
-  set. This guarantees every ciphertext in the database can be decrypted — no
-  blob can reference a ring slot that is missing.
+ set. This guarantees every ciphertext in the database can be decrypted — no
+ blob can reference a ring slot that is missing.
 - **The active index is the highest index present.** New encryptions use the
-  active key; decryption uses whatever index each ciphertext recorded in its
-  `key_index` byte.
+ active key; decryption uses whatever index each ciphertext recorded in its
+ `key_index` byte.
 
 Each entry is exactly **64 lowercase hexadecimal characters** (32 bytes /
 256 bits) — the same format as `DJOGI_PRESENTATION_HMAC_KEY`. Uppercase `A`–`F`
@@ -142,9 +142,9 @@ is deliberate: it closes a side channel (a caller cannot tell "key absent" from
 Rotation is **in-band, append-only**:
 
 1. Add a new key at the next free index (`DJOGI_FIELD_CODEC_KEY_{N+1}`). It
-   becomes the active key.
+ becomes the active key.
 2. New writes encrypt under index `N+1`. Existing rows remain decryptable under
-   whichever index their `key_index` byte recorded.
+ whichever index their `key_index` byte recorded.
 3. Optionally re-encrypt old rows forward to the active index.
 
 **Superseded entries must stay in place** until every row that referenced them
@@ -159,14 +159,14 @@ The active index is computed per process from the ring present at startup, and
 that snapshot is immutable for the process. So during a fleet rollout:
 
 - **Deploy the new key to every process and restart all of them *before* any
-  new-key write is committed.** An instance still running the shorter ring
-  rejects a blob whose `key_index` is the newer active index with
-  `UnknownKeyIndex` — it physically cannot decrypt rows written under a key it
-  has never seen.
+ new-key write is committed.** An instance still running the shorter ring
+ rejects a blob whose `key_index` is the newer active index with
+ `UnknownKeyIndex` — it physically cannot decrypt rows written under a key it
+ has never seen.
 - Treat the window between "first instance restarted with the new key" and "last
-  instance restarted" as unsafe for any new-key write. Old rows stay readable
-  throughout under their recorded index; re-encrypting them forward can proceed
-  after the whole fleet is uniform.
+ instance restarted" as unsafe for any new-key write. Old rows stay readable
+ throughout under their recorded index; re-encrypting them forward can proceed
+ after the whole fleet is uniform.
 
 ### Migrating an existing plaintext column to encrypted
 
@@ -185,18 +185,18 @@ Each stored value is:
 
 ```
 +---------+-----------+--------+------------------+
-| version | key_index | nonce  | ciphertext + tag |
-| 1 B     | 1 B       | 12 B   | variable length  |
+| version | key_index | nonce | ciphertext + tag |
+| 1 B | 1 B | 12 B | variable length |
 +---------+-----------+--------+------------------+
 ```
 
 - **version** (`0x01` for `aes256_gcm_v1`): future layouts increment this byte;
-  an unrecognized value is rejected.
+ an unrecognized value is rejected.
 - **key_index** (`0`–`31`): the ring slot this value was encrypted under.
 - **nonce** (96 bits): drawn fresh from the OS CSPRNG for every encryption,
-  stored in-band so decode needs no separate column.
+ stored in-band so decode needs no separate column.
 - **ciphertext + tag**: AES-GCM output (the 128-bit authentication tag is
-  appended).
+ appended).
 
 **Storage overhead is `plaintext.len() + 30` bytes** (1 + 1 + 12 + 16). The
 minimum valid ciphertext is 30 bytes (empty plaintext).
@@ -226,14 +226,14 @@ The codec provides confidentiality at rest: ciphertext in `BYTEA` columns cannot
 be read without the key ring. Two properties define the boundary:
 
 1. **AAD binding.** Each value's AAD is `model\x00field`, binding ciphertext to
-   its column and model. Ciphertext relocated to a different field or model fails
-   authentication rather than silently decrypting with the wrong context — this
-   defeats row/column-swapping attacks within the same database.
+ its column and model. Ciphertext relocated to a different field or model fails
+ authentication rather than silently decrypting with the wrong context — this
+ defeats row/column-swapping attacks within the same database.
 2. **HKDF-derived field keys.** Every `(model, field)` pair gets a distinct
-   subkey derived from the active ring entry, so compromise of one field's
-   derived key does not expose other fields. Compromise of a *ring entry* exposes
-   all subkeys derived from it; rotate by appending a new ring entry. Per-tenant
-   key scoping (a separate ring entry per tenant) is out of scope.
+ subkey derived from the active ring entry, so compromise of one field's
+ derived key does not expose other fields. Compromise of a *ring entry* exposes
+ all subkeys derived from it; rotate by appending a new ring entry. Per-tenant
+ key scoping (a separate ring entry per tenant) is out of scope.
 
 Error messages from the codec carry only structural information (lengths, ring
 indices, the codec ID) — never plaintext, key material, nonce, or ciphertext
@@ -244,11 +244,11 @@ bytes.
 Codec failures surface through `DjogiError`:
 
 - `FieldCodecStartup` — startup validation failed (missing / malformed key).
-  Terminal; the operator must fix the environment variable.
+ Terminal; the operator must fix the environment variable.
 - `FieldCodecEncode` — encryption failed on a write. Terminal; the transaction
-  rolls back.
+ rolls back.
 - `FieldCodecDecode` — decryption failed on a read (wrong key, tampered data,
-  schema drift). Terminal.
+ schema drift). Terminal.
 
 All three are terminal (not retryable) — none resolves on a retry. The
 underlying `CodecError` (carried as a rendered string) distinguishes the specific
@@ -259,9 +259,9 @@ failure, or a UTF-8 decode failure.
 ## Non-goals
 
 - **Searchable / deterministic encryption** — nonce-based GCM is non-deterministic
-  by design; a blind-index / deterministic variant is a separate codec.
+ by design; a blind-index / deterministic variant is a separate codec.
 - **`Vec<u8>` → `Vec<u8>` encryption** — v1 targets `String` fields (PII,
-  credentials, tokens). A byte-to-byte variant can be added later if requested.
+ credentials, tokens). A byte-to-byte variant can be added later if requested.
 - **KMS integration, passphrase derivation, hardware security modules** — keys
-  are raw material the operator supplies; key-governance integrations are an
-  application-layer concern.
+ are raw material the operator supplies; key-governance integrations are an
+ application-layer concern.

@@ -10,9 +10,9 @@ use djogi::prelude::*;
 #[model(table = "phase85_mirjzson_vague_justification")]
 #[derive(Debug, Clone)]
 pub struct AuditLog {
-    pub source: String,
-    #[mirjzson(justification = "TODO")]
-    pub payload: MirJzSON,
+ pub source: String,
+ #[mirjzson(justification = "TODO")]
+ pub payload: MirJzSON,
 }
 
 fn main() {}

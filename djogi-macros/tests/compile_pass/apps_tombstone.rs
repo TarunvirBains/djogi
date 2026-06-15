@@ -5,12 +5,12 @@
 use djogi::prelude::*;
 
 djogi::apps! {
-    #[app(database = "main", tombstone)]
-    pub struct OldBilling;
+ #[app(database = "main", tombstone)]
+ pub struct OldBilling;
 }
 
 fn main() {
-    assert_eq!(<OldBilling as App>::LABEL, "oldbilling");
-    assert!(<OldBilling as App>::TOMBSTONE);
-    assert!(<OldBilling as App>::DESCRIPTOR.tombstone);
+ assert_eq!(<OldBilling as App>::LABEL, "oldbilling");
+ assert!(<OldBilling as App>::TOMBSTONE);
+ assert!(<OldBilling as App>::DESCRIPTOR.tombstone);
 }

@@ -107,8 +107,8 @@ time.workspace = true
 # -j 2`. The currently 202 compile_fail `.stderr` snapshots under
 # `tests/compile_fail/` ARE committed so CI succeeds without `--bless`.
 # Re-bless locally whenever macro diagnostics change:
-#   `cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
-#       --filter compile_fail --bless -j 4`
+# `cargo lihaaf --manifest-path djogi-macros/Cargo.toml \
+#  --filter compile_fail --bless -j 4`
 # then commit the updated `.stderr` files alongside the diagnostic change.
 #
 # Fixture layout: lihaaf walks `tests/compile_fail/` and `tests/compile_pass/`

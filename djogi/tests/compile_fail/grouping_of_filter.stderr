@@ -1,17 +1,17 @@
 error[E0599]: `AggregateExpr<i32, MetadataAgg>` is not an iterator
-   --> $DIR/grouping_of_filter.rs:4:53
-    |
-  4 |     let _ = djogi::grouping_of(&["region", "dept"]).filter(djogi::expr::Expr::literal(true));
-    |                                                     ^^^^^^ `AggregateExpr<i32, MetadataAgg>` is not an iterator
-    |
-   ::: djogi/src/expr/aggregate.rs:127:1
-    |
+ --> $DIR/grouping_of_filter.rs:4:53
+ |
+ 4 |  let _ = djogi::grouping_of(&["region", "dept"]).filter(djogi::expr::Expr::literal(true));
+ |              ^^^^^^ `AggregateExpr<i32, MetadataAgg>` is not an iterator
+ |
+ ::: djogi/src/expr/aggregate.rs:127:1
+ |
 127 | pub struct AggregateExpr<Out, K = ValueAgg> {
-    | ------------------------------------------- doesn't satisfy `AggregateExpr<i32, MetadataAgg>: Iterator`
-    |
-    = note: the following trait bounds were not satisfied:
-            `AggregateExpr<i32, MetadataAgg>: Iterator`
-            which is required by `&mut AggregateExpr<i32, MetadataAgg>: Iterator`
+ | ------------------------------------------- doesn't satisfy `AggregateExpr<i32, MetadataAgg>: Iterator`
+ |
+ = note: the following trait bounds were not satisfied:
+   `AggregateExpr<i32, MetadataAgg>: Iterator`
+   which is required by `&mut AggregateExpr<i32, MetadataAgg>: Iterator`
 
 error: aborting due to 1 previous error
 

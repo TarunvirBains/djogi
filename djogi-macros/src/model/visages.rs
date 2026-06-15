@@ -3,32 +3,32 @@
 //! `{Model}Public`, `{Model}SelfView`, `{Model}Admin`, `{Model}Export`.
 //! Each struct carries (in source order):
 //! 1. Framework columns (`id`, `created_at`, `updated_at`) — always
-//!    included in every visage, regardless of user annotations.
+//! included in every visage, regardless of user annotations.
 //! 2. User fields annotated with `expose(scope)` (scalar) or
-//!    `expose(scope -> Peer)` (relation — narrow visage or full peer
-//!    embed; see below). The deprecated `expose(scope = "Peer")`
-//!    string-literal form is still parsed for backward compat but
-//!    lowers to the same `RelationExposure` shape.
-//!    Each visage derives `Debug`, `Clone`, `serde::Serialize`,
-//!    `serde::Deserialize` unconditionally. Conversion impls:
+//! `expose(scope -> Peer)` (relation — narrow visage or full peer
+//! embed; see below). The deprecated `expose(scope = "Peer")`
+//! string-literal form is still parsed for backward compat but
+//! lowers to the same `RelationExposure` shape.
+//! Each visage derives `Debug`, `Clone`, `serde::Serialize`,
+//! `serde::Deserialize` unconditionally. Conversion impls:
 //! - **Scalar-only** visage (no relation-form entries): `impl From<&Model>`
-//!   infallible straight-line construction.
+//! infallible straight-line construction.
 //! - **Relation-nesting** visage (at least one `expose(scope -> Peer)`
-//!   entry on a relation field): `impl TryFrom<&Model>` with
-//!   `Error = VisageError`. Optional FK relations emit
-//!   `Option<PeerVisage>` and route the resolved relation through
-//!   `<PeerVisage as TryFrom<&Target>>::try_from` only when `Some`.
+//! entry on a relation field): `impl TryFrom<&Model>` with
+//! `Error = VisageError`. Optional FK relations emit
+//! `Option<PeerVisage>` and route the resolved relation through
+//! `<PeerVisage as TryFrom<&Target>>::try_from` only when `Some`.
 //! ## `expose(scope -> Peer)` grammar
 //! Selects one of two embed shapes based on the peer path's last segment:
 //! - **Narrow visage** — last segment is a `{Model}{Scope}` shape
-//!   (`DepartmentPublic`); peer constructed via fallible `TryFrom`.
+//! (`DepartmentPublic`); peer constructed via fallible `TryFrom`.
 //! - **Full peer model** — last segment matches the relation target's
-//!   ident (`Department`); peer cloned out of the resolved relation,
-//!   serde derives delegate to the target's own (de)serialise impls.
-//!   Optional FKs emit `Option<PeerVisage>` honestly at the type level.
-//!   Path routing: every type reference in emitted code goes through
-//!   `::djogi::*` so users never depend on `serde` / `time` / `heeranjid`
-//!   directly.
+//! ident (`Department`); peer cloned out of the resolved relation,
+//! serde derives delegate to the target's own (de)serialise impls.
+//! Optional FKs emit `Option<PeerVisage>` honestly at the type level.
+//! Path routing: every type reference in emitted code goes through
+//! `::djogi::*` so users never depend on `serde` / `time` / `heeranjid`
+//! directly.
 
 use crate::model::attrs::{ExposeSpec, FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
 use crate::model::derived::{DerivedAttr, FallibilityShape, detect_fallibility_shape};
@@ -101,7 +101,7 @@ pub fn expand(
         .collect();
 
     quote! {
-        #(#visages)*
+     #(#visages)*
     }
 }
 
@@ -166,10 +166,10 @@ fn validate_field_scope_membership(
                     spec.per_scope_span.unwrap_or(spec.list_span),
                     format!(
                         "field `{field_name}` is a relation field, so \
-                         `protected(per_scope = {{ ... }})` is not allowed here. \
-                         Presentation codecs are scalar-only and must be attached \
-                         to fields exposed with `expose(scope)`, not \
-                         `expose(scope -> Peer)` relation embeds.",
+       `protected(per_scope = {{... }})` is not allowed here. \
+       Presentation codecs are scalar-only and must be attached \
+       to fields exposed with `expose(scope)`, not \
+       `expose(scope -> Peer)` relation embeds.",
                     ),
                 ));
             }
@@ -189,10 +189,10 @@ fn validate_field_scope_membership(
                     return Err(syn::Error::new(
                         entry.scope_span,
                         format!(
-                            "scope `{}` referenced inside `protected(per_scope = {{ ... }})` \
-                             is not a known visage scope. Built-in scopes: public, self_view, \
-                             admin, export. {}. Declare additional scopes via \
-                             `#[model(visage_scopes(name = Suffix))]` on the model.",
+                            "scope `{}` referenced inside `protected(per_scope = {{... }})` \
+        is not a known visage scope. Built-in scopes: public, self_view, \
+        admin, export. {}. Declare additional scopes via \
+        `#[model(visage_scopes(name = Suffix))]` on the model.",
                             entry.scope, custom_part,
                         ),
                     ));
@@ -228,11 +228,11 @@ fn validate_field_scope_membership(
                     return Err(syn::Error::new(
                         entry.scope_span,
                         format!(
-                            "scope `{}` referenced inside `protected(per_scope = {{ ... }})` \
-                             is not exposed on field `{field_name}`. `per_scope` entries must \
-                             match the field's scalar `#[field(expose(...))]` scopes; \
-                             {exposed_scopes}. Add `expose({})` to this field or remove the \
-                             codec entry for that scope.",
+                            "scope `{}` referenced inside `protected(per_scope = {{... }})` \
+        is not exposed on field `{field_name}`. `per_scope` entries must \
+        match the field's scalar `#[field(expose(...))]` scopes; \
+        {exposed_scopes}. Add `expose({})` to this field or remove the \
+        codec entry for that scope.",
                             entry.scope, entry.scope,
                         ),
                     ));
@@ -261,9 +261,9 @@ fn unknown_scope_error(
         field,
         format!(
             "unknown scope `{scope_name}` in `#[field(expose(...))]`. \
-             Built-in scopes: public, self_view, admin, export. \
-             {custom_part}. Declare additional scopes via \
-             `#[model(visage_scopes(name = Suffix))]` on the model.",
+    Built-in scopes: public, self_view, admin, export. \
+    {custom_part}. Declare additional scopes via \
+    `#[model(visage_scopes(name = Suffix))]` on the model.",
         ),
     )
 }
@@ -283,8 +283,8 @@ fn codec_runtime_type_name_tokens(path: &syn::Path) -> TokenStream {
 /// const-safe identity:
 /// - multi-segment paths keep their canonical `a::b::c` spelling;
 /// - single-segment paths are prefixed with the model module's
-///   `module_path!()` so the resulting string identifies the resolved
-///   local binding unambiguously within the adopter crate.
+/// `module_path!()` so the resulting string identifies the resolved
+/// local binding unambiguously within the adopter crate.
 fn codec_inventory_identity_tokens(path: &syn::Path) -> TokenStream {
     if path.segments.len() == 1 {
         quote! { ::std::concat!(::std::module_path!(), "::", ::std::stringify!(#path)) }
@@ -300,7 +300,7 @@ fn codec_inventory_identity_tokens(path: &syn::Path) -> TokenStream {
 }
 
 /// Look up the per-scope presentation codec entry (if any) for the
-/// current scope on a field carrying `protected(per_scope = { ... })`.
+/// current scope on a field carrying `protected(per_scope = {... })`.
 /// Returns `Some` only when the field has a parsed `ProtectedSpec` whose
 /// `per_scope` Vec contains an entry whose `scope` matches the emitter's
 /// current scope. Otherwise returns `None`, signalling the scalar
@@ -393,12 +393,12 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                 let msg = if detect_relation(fty).is_some() {
                     format!(
                         "relation fields require an explicit peer visage name; \
-                         write `expose({scope} = \"PeerProjection\")`"
+       write `expose({scope} = \"PeerProjection\")`"
                     )
                 } else {
                     format!(
                         "the `expose({scope} = \"...\")` form is only valid on \
-                         relation fields (`ForeignKey<T>` / `OneToOneField<T>`)"
+       relation fields (`ForeignKey<T>` / `OneToOneField<T>`)"
                     )
                 };
                 return syn::Error::new_spanned(field, msg).to_compile_error();
@@ -427,8 +427,8 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                     // so any change to a codec's output type flows through to the
                     // visage struct without a separate annotation site.
                     user_fields.push(quote! {
-                        pub #fname: <#codec_ty as ::djogi::presentation::PresentationCodecInfo<#fty>>::Output,
-                    });
+      pub #fname: <#codec_ty as ::djogi::presentation::PresentationCodecInfo<#fty>>::Output,
+     });
 
                     // Init: infallible vs fallible dispatch. The fallible
                     // arm maps the codec's error type into
@@ -439,19 +439,19 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                     if entry.fallible {
                         has_try_codec = true;
                         user_inits.push(quote! {
-                            #fname: <#codec_ty as ::djogi::presentation::TryPresentationCodec<#fty>>::try_present(&src.#fname)
-                                .map_err(|__djogi_codec_err| ::djogi::VisageError::PresentationCodec {
-                                    model: #source_name_str,
-                                    field: #fname_str,
-                                    scope: #scope_str,
-                                    codec: #codec_type_name_for_err,
-                                    source: ::std::boxed::Box::new(__djogi_codec_err),
-                                })?,
-                        });
+       #fname: <#codec_ty as ::djogi::presentation::TryPresentationCodec<#fty>>::try_present(&src.#fname)
+       .map_err(|__djogi_codec_err| ::djogi::VisageError::PresentationCodec {
+         model: #source_name_str,
+         field: #fname_str,
+         scope: #scope_str,
+         codec: #codec_type_name_for_err,
+         source: ::std::boxed::Box::new(__djogi_codec_err),
+        })?,
+      });
                     } else {
                         user_inits.push(quote! {
-                            #fname: <#codec_ty as ::djogi::presentation::PresentationCodec<#fty>>::present(&src.#fname),
-                        });
+       #fname: <#codec_ty as ::djogi::presentation::PresentationCodec<#fty>>::present(&src.#fname),
+      });
                     }
 
                     // Inventory submission for this `(model, field, scope,
@@ -461,25 +461,25 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                     // submission shape.
                     let fallible_lit = entry.fallible;
                     codec_inventory_submissions.push(quote! {
-                        ::djogi::__private::inventory::submit! {
-                            ::djogi::presentation::inventory::PresentationCodecUsage::const_new(
-                                #source_name_str,
-                                #fname_str,
-                                #scope_str,
-                                #codec_type_name_for_inventory,
-                                #fallible_lit,
-                                || ::std::any::type_name::<#fty>(),
-                                || ::std::any::type_name::<
-                                    <#codec_ty as ::djogi::presentation::PresentationCodecInfo<#fty>>::Output
-                                >(),
-                                <#codec_ty as ::djogi::presentation::PresentationCodecInfo<#fty>>::validate_startup,
-                            )
-                        }
-                    });
+      ::djogi::__private::inventory::submit! {
+       ::djogi::presentation::inventory::PresentationCodecUsage::const_new(
+        #source_name_str,
+        #fname_str,
+        #scope_str,
+        #codec_type_name_for_inventory,
+        #fallible_lit,
+        || ::std::any::type_name::<#fty>(),
+        || ::std::any::type_name::<
+         <#codec_ty as ::djogi::presentation::PresentationCodecInfo<#fty>>::Output
+        >(),
+        <#codec_ty as ::djogi::presentation::PresentationCodecInfo<#fty>>::validate_startup,
+       )
+      }
+     });
                 } else {
                     user_fields.push(quote! { pub #fname: #fty, });
                     user_inits.push(quote! {
-                        #fname: ::std::clone::Clone::clone(&src.#fname),
+                     #fname: ::std::clone::Clone::clone(&src.#fname),
                     });
                 }
             }
@@ -509,44 +509,44 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
                 } else {
                     // Narrow visage: dispatch via TryFrom<&Target>.
                     quote! {
-                        <#peer_path as ::std::convert::TryFrom<&_>>::try_from(__djogi_peer)?
+                     <#peer_path as ::std::convert::TryFrom<&_>>::try_from(__djogi_peer)?
                     }
                 };
 
                 if nullable {
                     user_fields.push(quote! { pub #fname: ::std::option::Option<#peer_path>, });
                     user_inits.push(quote! {
-                        #fname: match src.#fname.as_ref() {
-                            ::std::option::Option::Some(__djogi_rel) => match __djogi_rel.resolved() {
-                                ::std::option::Option::Some(__djogi_peer) => {
-                                    ::std::option::Option::Some(#peer_init_expr)
-                                }
-                                ::std::option::Option::None => {
-                                    return ::std::result::Result::Err(
-                                        ::djogi::VisageError::UnresolvedRelation {
-                                            model: #source_name_str,
-                                            field: #fname_str,
-                                            scope: #scope,
-                                        }
-                                    );
-                                }
-                            },
-                            ::std::option::Option::None => ::std::option::Option::None,
-                        },
+                     #fname: match src.#fname.as_ref() {
+                      ::std::option::Option::Some(__djogi_rel) => match __djogi_rel.resolved() {
+                       ::std::option::Option::Some(__djogi_peer) => {
+                        ::std::option::Option::Some(#peer_init_expr)
+                       }
+                       ::std::option::Option::None => {
+                        return ::std::result::Result::Err(
+                         ::djogi::VisageError::UnresolvedRelation {
+                          model: #source_name_str,
+                          field: #fname_str,
+                          scope: #scope,
+                         }
+                        );
+                       }
+                      },
+                      ::std::option::Option::None => ::std::option::Option::None,
+                     },
                     });
                 } else {
                     user_fields.push(quote! { pub #fname: #peer_path, });
                     user_inits.push(quote! {
-                        #fname: {
-                            let __djogi_peer = src.#fname.resolved().ok_or(
-                                ::djogi::VisageError::UnresolvedRelation {
-                                    model: #source_name_str,
-                                    field: #fname_str,
-                                    scope: #scope,
-                                }
-                            )?;
-                            #peer_init_expr
-                        },
+                     #fname: {
+                      let __djogi_peer = src.#fname.resolved().ok_or(
+                       ::djogi::VisageError::UnresolvedRelation {
+                        model: #source_name_str,
+                        field: #fname_str,
+                        scope: #scope,
+                       }
+                      )?;
+                      #peer_init_expr
+                     },
                     });
                 }
             }
@@ -568,8 +568,8 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
             None => quote! {},
         };
         derived_field_decls.push(quote! {
-            #doc
-            pub #name: #ty,
+         #doc
+         pub #name: #ty,
         });
 
         // Splice the adopter's `rust` expression. The `let model: &Source
@@ -602,36 +602,36 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         let init = match (any_fallible, shape) {
             // Whole visage is infallible — block returns T directly.
             (false, _) => quote! {
-                #name: {
-                    let model: &#source = src;
-                    #expr_tokens
-                },
+             #name: {
+              let model: &#source = src;
+              #expr_tokens
+             },
             },
             // Visage is fallible, this entry is also fallible Shape 1
             // (trailing `?`). The inner `?` propagates from the splice
             // block to the surrounding try_from body; no outer `?`.
             (true, FallibilityShape::Shape1TrailingQuestion) => quote! {
-                #name: {
-                    let model: &#source = src;
-                    #expr_tokens
-                },
+             #name: {
+              let model: &#source = src;
+              #expr_tokens
+             },
             },
             // Visage is fallible, this entry returns `Result<T, E>`
             // unwrap via outer `?`. The `?` desugars to
             // `Err(From::from(e))`, requiring `VisageError: From<E>`.
             (true, FallibilityShape::Shape2to5Result) => quote! {
-                #name: {
-                    let model: &#source = src;
-                    #expr_tokens
-                }?,
+             #name: {
+              let model: &#source = src;
+              #expr_tokens
+             }?,
             },
             // Visage is fallible but this entry is infallible — block
             // returns T; no outer `?` (no Result to unwrap).
             (true, FallibilityShape::Infallible) => quote! {
-                #name: {
-                    let model: &#source = src;
-                    #expr_tokens
-                },
+             #name: {
+              let model: &#source = src;
+              #expr_tokens
+             },
             },
         };
         derived_field_inits.push(init);
@@ -642,13 +642,13 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     // code routes through `::djogi::__private::serde::*` and no direct
     // `serde` dependency is required in the user's crate.
     let derive_path = quote! {
-        #[derive(
-            ::std::fmt::Debug,
-            ::std::clone::Clone,
-            ::djogi::__private::serde::Serialize,
-            ::djogi::__private::serde::Deserialize,
-        )]
-        #[serde(crate = "::djogi::__private::serde")]
+     #[derive(
+      ::std::fmt::Debug,
+      ::std::clone::Clone,
+      ::djogi::__private::serde::Serialize,
+      ::djogi::__private::serde::Deserialize,
+     )]
+     #[serde(crate = "::djogi::__private::serde")]
     };
 
     // Dispatch on relation-nesting + derived-fallibility presence.
@@ -674,28 +674,28 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     let needs_try_from = has_relation_entry || any_fallible || has_try_codec;
     let conv_impl = if needs_try_from {
         quote! {
-            impl ::std::convert::TryFrom<&#source> for #proj_name {
-                type Error = ::djogi::VisageError;
-                fn try_from(src: &#source) -> ::std::result::Result<Self, Self::Error> {
-                    ::std::result::Result::Ok(Self {
-                        #(#fw_inits)*
-                        #(#user_inits)*
-                        #(#derived_field_inits)*
-                    })
-                }
-            }
+         impl ::std::convert::TryFrom<&#source> for #proj_name {
+          type Error = ::djogi::VisageError;
+          fn try_from(src: &#source) -> ::std::result::Result<Self, Self::Error> {
+           ::std::result::Result::Ok(Self {
+            #(#fw_inits)*
+            #(#user_inits)*
+            #(#derived_field_inits)*
+           })
+          }
+         }
         }
     } else {
         quote! {
-            impl ::std::convert::From<&#source> for #proj_name {
-                fn from(src: &#source) -> Self {
-                    Self {
-                        #(#fw_inits)*
-                        #(#user_inits)*
-                        #(#derived_field_inits)*
-                    }
-                }
-            }
+         impl ::std::convert::From<&#source> for #proj_name {
+          fn from(src: &#source) -> Self {
+           Self {
+            #(#fw_inits)*
+            #(#user_inits)*
+            #(#derived_field_inits)*
+           }
+          }
+         }
         }
     };
 
@@ -725,32 +725,32 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
     };
 
     quote! {
-        #derive_path
-        pub struct #proj_name {
-            #(#fw_fields)*
-            #(#user_fields)*
-            #(#derived_field_decls)*
-        }
+     #derive_path
+     pub struct #proj_name {
+      #(#fw_fields)*
+      #(#user_fields)*
+      #(#derived_field_decls)*
+     }
 
-        #conv_impl
+     #conv_impl
 
-        #fields_filter_seal
+     #fields_filter_seal
 
-        #queryset_entry
+     #queryset_entry
 
-        #djogi_visage_impl
+     #djogi_visage_impl
 
-        #parity_impl
+     #parity_impl
 
-        #visage_descriptor
+     #visage_descriptor
 
-        // GH #227 — `inventory::submit!` per
-        // `(model, field, scope, codec)` usage. Emitted AFTER the
-        // struct + impl block so the `inventory::submit!` macro sits
-        // at item scope (where it must live) rather than inside the
-        // struct's brace group. Empty when this scope has no
-        // per-scope codec entries.
-        #(#codec_inventory_submissions)*
+     // GH #227 — `inventory::submit!` per
+     // `(model, field, scope, codec)` usage. Emitted AFTER the
+     // struct + impl block so the `inventory::submit!` macro sits
+     // at item scope (where it must live) rather than inside the
+     // struct's brace group. Empty when this scope has no
+     // per-scope codec entries.
+     #(#codec_inventory_submissions)*
     }
 }
 
@@ -864,10 +864,10 @@ fn emit_djogi_visage_impl(
             let p = payload.as_str();
             if *is_derived {
                 quote! {
-                    ::djogi::__private::ProjectionEntry::Derived {
-                        alias: #n,
-                        sql: #p,
-                    }
+                 ::djogi::__private::ProjectionEntry::Derived {
+                  alias: #n,
+                  sql: #p,
+                 }
                 }
             } else {
                 quote! { ::djogi::__private::ProjectionEntry::Column(#n) }
@@ -895,35 +895,35 @@ fn emit_djogi_visage_impl(
 
     let source = ctx.source;
     quote! {
-        // #231 reconciliation — emit `type Model = #source`
-        // so generic `V: DjogiVisage` consumers reach the source model
-        // (and the source table via `<V::Model as
-        // ::djogi::prelude::Model>::table_name()`) without threading
-        // the model in as a separate type parameter.
-        // GPT seal blocker fix — emit `DjogiVisageSealed` alongside
-        // the trait impl. The `DjogiVisageOf<Self::Model>` supertrait
-        // is satisfied reflexively for any `M: Model` (via the
-        // `impl<M: Model> DjogiVisageOf<M> for M` blanket on the
-        // pairing seal), so it cannot close the world on
-        // `DjogiVisage` by itself — a hand-rolled
-        // `impl DjogiVisage for MyModel { type Model = Self; ... }`
-        // would otherwise pass. The metadata-only `DjogiVisageSealed`
-        // supertrait has no reflexive blanket and is satisfied only
-        // by the impl below, so the closed-world gate now lives at
-        // the language level (modulo the documented `__private`
-        // convention boundary — same precedent as `VisageSealed`,
-        // `apps_seal`, `pk_seal`, and `hooks::__seal::Sealed`).
-        impl ::djogi::__private::DjogiVisageSealed for #proj_name {}
+     // #231 reconciliation — emit `type Model = #source`
+     // so generic `V: DjogiVisage` consumers reach the source model
+     // (and the source table via `<V::Model as
+     // ::djogi::prelude::Model>::table_name()`) without threading
+     // the model in as a separate type parameter.
+     // GPT seal blocker fix — emit `DjogiVisageSealed` alongside
+     // the trait impl. The `DjogiVisageOf<Self::Model>` supertrait
+     // is satisfied reflexively for any `M: Model` (via the
+     // `impl<M: Model> DjogiVisageOf<M> for M` blanket on the
+     // pairing seal), so it cannot close the world on
+     // `DjogiVisage` by itself — a hand-rolled
+     // `impl DjogiVisage for MyModel { type Model = Self;... }`
+     // would otherwise pass. The metadata-only `DjogiVisageSealed`
+     // supertrait has no reflexive blanket and is satisfied only
+     // by the impl below, so the closed-world gate now lives at
+     // the language level (modulo the documented `__private`
+     // convention boundary — same precedent as `VisageSealed`,
+     // `apps_seal`, `pk_seal`, and `hooks::__seal::Sealed`).
+     impl ::djogi::__private::DjogiVisageSealed for #proj_name {}
 
-        impl ::djogi::DjogiVisage for #proj_name {
-            type Model = #source;
-            const SCOPE: &'static str = #scope;
-            const COLUMNS: &'static [&'static str] = &[ #(#columns_lits),* ];
-            const PROJECTIONS: &'static [::djogi::__private::ProjectionEntry] = &[
-                #(#projection_entry_lits),*
-            ];
-            const PROJECTION_LIST: &'static str = #projection_list;
-        }
+     impl ::djogi::DjogiVisage for #proj_name {
+      type Model = #source;
+      const SCOPE: &'static str = #scope;
+      const COLUMNS: &'static [&'static str] = &[ #(#columns_lits),* ];
+      const PROJECTIONS: &'static [::djogi::__private::ProjectionEntry] = &[
+       #(#projection_entry_lits),*
+      ];
+      const PROJECTION_LIST: &'static str = #projection_list;
+     }
     }
 }
 
@@ -941,19 +941,19 @@ fn emit_djogi_visage_impl(
 /// per the spec) rather than at the inner `!=` token.
 /// # Two surfaces, one body
 /// - **Inherent method** — `visage.assert_derived_parity(&other)`
-///   resolves via Rust's inherent-method-first method resolution. No
-///   trait import required at the call site; this is the ergonomic
-///   shape integration tests use.
+/// resolves via Rust's inherent-method-first method resolution. No
+/// trait import required at the call site; this is the ergonomic
+/// shape integration tests use.
 /// - **Trait impl** — `impl ::djogi::testing::DerivedParity for V`
-///   carries the same body. Reachable from generic code that bounds
-///   `where V: DerivedParity` — required by the async
-///   [`::djogi::testing::assert_derived_parity_fetched`] free helper
-///   (#231 reconciliation: CTO-required async convenience).
-///   Method resolution in Rust prefers inherent methods over trait
-///   methods for unqualified calls (`v.foo()`); the trait method is
-///   reachable through generic bounds. Both surfaces share the same
-///   comparison body, so adopters never see different behaviour
-///   depending on which surface they reach.
+/// carries the same body. Reachable from generic code that bounds
+/// `where V: DerivedParity` — required by the async
+/// [`::djogi::testing::assert_derived_parity_fetched`] free helper
+/// (#231 reconciliation: CTO-required async convenience).
+/// Method resolution in Rust prefers inherent methods over trait
+/// methods for unqualified calls (`v.foo()`); the trait method is
+/// reachable through generic bounds. Both surfaces share the same
+/// comparison body, so adopters never see different behaviour
+/// depending on which surface they reach.
 fn emit_assert_derived_parity(
     proj_name: &syn::Ident,
     scoped_derived: &[&DerivedAttr],
@@ -970,14 +970,14 @@ fn emit_assert_derived_parity(
                 .unwrap_or(name_str.as_str())
                 .to_string();
             quote! {
-                if self.#name != other.#name {
-                    return ::std::result::Result::Err(
-                        ::djogi::testing::DerivedParityError::Drift {
-                            visage: #proj_str,
-                            field: #stripped,
-                        }
-                    );
-                }
+             if self.#name != other.#name {
+              return ::std::result::Result::Err(
+               ::djogi::testing::DerivedParityError::Drift {
+                visage: #proj_str,
+                field: #stripped,
+               }
+              );
+             }
             }
         })
         .collect();
@@ -1005,16 +1005,16 @@ fn emit_assert_derived_parity(
 
     let doc = format!(
         " Compare derived fields between two `{proj_str}` instances and \
-         return `Err(DerivedParityError::Drift {{ ... }})` on the first \
-         mismatch. Framework columns (`id`, `created_at`, `updated_at`) \
-         and storage columns are NEVER compared — only fields populated \
-         from `#[derived(...)]` declarations whose `scopes = [...]` list \
-         includes this visage's scope.\n\n\
-         See `docs/spec/visage-derived-fields.md` (#231) for the \
-         parity-helper design rationale (the per-visage emission is \
-         the macro's answer to round-trip-lossy timestamp false \
-         positives + the absence of an auto-derived `PartialEq` on \
-         visages)."
+   return `Err(DerivedParityError::Drift {{... }})` on the first \
+   mismatch. Framework columns (`id`, `created_at`, `updated_at`) \
+   and storage columns are NEVER compared — only fields populated \
+   from `#[derived(...)]` declarations whose `scopes = [...]` list \
+   includes this visage's scope.\n\n\
+   See `docs/spec/visage-derived-fields.md` (#231) for the \
+   parity-helper design rationale (the per-visage emission is \
+   the macro's answer to round-trip-lossy timestamp false \
+   positives + the absence of an auto-derived `PartialEq` on \
+   visages)."
     );
 
     // The seal-only supertrait impl carries no body; the constraint
@@ -1023,42 +1023,42 @@ fn emit_assert_derived_parity(
     // `where` bounds as the inherent so the `<Ty>: PartialEq`
     // diagnostic anchors at one stable site (E_DJG_VDF_016).
     quote! {
-        // #231 reconciliation — route the seal through
-        // `::djogi::__private::DerivedParitySealed` per
-        // `feedback_macro_path_routing.md` (macro paths route through
-        // `::djogi::*` only; never through `::djogi::testing::*`
-        // submodules). The `__private` re-export aliases the same
-        // `djogi::testing::private::DerivedParitySealed` trait, so
-        // the seal closure does not change — only the path the
-        // macro emits.
-        impl ::djogi::__private::DerivedParitySealed for #proj_name {}
+     // #231 reconciliation — route the seal through
+     // `::djogi::__private::DerivedParitySealed` per
+     // `feedback_macro_path_routing.md` (macro paths route through
+     // `::djogi::*` only; never through `::djogi::testing::*`
+     // submodules). The `__private` re-export aliases the same
+     // `djogi::testing::private::DerivedParitySealed` trait, so
+     // the seal closure does not change — only the path the
+     // macro emits.
+     impl ::djogi::__private::DerivedParitySealed for #proj_name {}
 
-        impl #proj_name #where_clause {
-            #[doc = #doc]
-            pub fn assert_derived_parity(
-                &self,
-                other: &Self,
-            ) -> ::std::result::Result<(), ::djogi::testing::DerivedParityError> {
-                #(#comparisons)*
-                ::std::result::Result::Ok(())
-            }
-        }
+     impl #proj_name #where_clause {
+      #[doc = #doc]
+      pub fn assert_derived_parity(
+       &self,
+       other: &Self,
+      ) -> ::std::result::Result<(), ::djogi::testing::DerivedParityError> {
+       #(#comparisons)*
+       ::std::result::Result::Ok(())
+      }
+     }
 
-        impl ::djogi::testing::DerivedParity for #proj_name #where_clause {
-            fn assert_derived_parity(
-                &self,
-                other: &Self,
-            ) -> ::std::result::Result<(), ::djogi::testing::DerivedParityError> {
-                #(#comparisons)*
-                ::std::result::Result::Ok(())
-            }
-        }
+     impl ::djogi::testing::DerivedParity for #proj_name #where_clause {
+      fn assert_derived_parity(
+       &self,
+       other: &Self,
+      ) -> ::std::result::Result<(), ::djogi::testing::DerivedParityError> {
+       #(#comparisons)*
+       ::std::result::Result::Ok(())
+      }
+     }
     }
 }
 
-/// Emit one `inventory::submit!(VisageDescriptor { ... })` block for the
+/// Emit one `inventory::submit!(VisageDescriptor {... })` block for the
 /// `(Source, Scope)` pair when at least one derived entry is in scope
-/// #231 reconciliation .
+/// #231 reconciliation.
 /// Structurally separate from the [`ModelDescriptor`] inventory the
 /// migration differ walks: registers against
 /// [`::djogi::descriptor::VisageDescriptor`]'s own
@@ -1067,19 +1067,19 @@ fn emit_assert_derived_parity(
 /// vs-projection split the rest of the visage-derived-fields surface
 /// establishes.
 /// # Per-entry contents
-/// - `name` — derived field name (the `name = ...` key).
-/// - `ty_path` — token-string rendering of the entry's `ty = ...`,
-///   captured via `quote! { #ty }.to_string()`. The exact text
-///   includes token-level whitespace (`"Option < String >"`) — that
-///   is the source spelling documentation generators want.
+/// - `name` — derived field name (the `name =...` key).
+/// - `ty_path` — token-string rendering of the entry's `ty =...`,
+/// captured via `quote! { #ty }.to_string()`. The exact text
+/// includes token-level whitespace (`"Option < String >"`) — that
+/// is the source spelling documentation generators want.
 /// - `sql` — adopter's SQL expression, verbatim.
 /// - `rust` — adopter's Rust expression source, verbatim.
 /// - `doc` — `Some("...")` when the entry declared `doc = "..."`,
-///   `None` otherwise. The macro emits `None` / `Some("...")`
-///   literally inside the const literal so the slice is fully
-///   `&'static`.
+/// `None` otherwise. The macro emits `None` / `Some("...")`
+/// literally inside the const literal so the slice is fully
+/// `&'static`.
 /// - `scopes` — every scope the entry was declared against, in
-///   source order.
+/// source order.
 fn emit_visage_descriptor(
     ctx: &VisageEmitContext<'_>,
     scoped_derived: &[&DerivedAttr],
@@ -1135,27 +1135,27 @@ fn emit_visage_descriptor(
                 })
                 .collect();
             quote! {
-                ::djogi::descriptor::DerivedProjection {
-                    name:    #name_stripped,
-                    ty_path: #ty_path_str,
-                    sql:     #sql_str,
-                    rust:    #rust_str,
-                    doc:     #doc_tokens,
-                    scopes:  &[ #(#scope_lits),* ],
-                }
+             ::djogi::descriptor::DerivedProjection {
+              name: #name_stripped,
+              ty_path: #ty_path_str,
+              sql:  #sql_str,
+              rust: #rust_str,
+              doc:  #doc_tokens,
+              scopes: &[ #(#scope_lits),* ],
+             }
             }
         })
         .collect();
 
     quote! {
-        ::djogi::__private::inventory::submit! {
-            ::djogi::descriptor::VisageDescriptor {
-                model_name:  #source_str,
-                scope:       #scope_str,
-                visage_name: #visage_str,
-                derived:     &[ #(#derived_entry_lits),* ],
-            }
-        }
+     ::djogi::__private::inventory::submit! {
+      ::djogi::descriptor::VisageDescriptor {
+       model_name: #source_str,
+       scope:  #scope_str,
+       visage_name: #visage_str,
+       derived:  &[ #(#derived_entry_lits),* ],
+      }
+     }
     }
 }
 

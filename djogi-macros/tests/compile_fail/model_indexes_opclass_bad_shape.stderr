@@ -1,7 +1,7 @@
 error: `opclass = "1bad"` must start with an ASCII letter or underscore
-  --> $DIR/model_indexes_opclass_bad_shape.rs:10:5
-   |
-10 |     index(fields = [email], using = "gin", opclass = "1bad"),
-   |     ^^^^^
+ --> $DIR/model_indexes_opclass_bad_shape.rs:10:5
+ |
+10 |  index(fields = [email], using = "gin", opclass = "1bad"),
+ |  ^^^^^
 
 error: aborting due to 1 previous error

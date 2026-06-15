@@ -13,8 +13,8 @@ use djogi::prelude::*;
 #[model(table = "prices_216_gen", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Price216Gen {
-    #[field(domain = "x", generated = "value * 2")]
-    pub price: rust_decimal::Decimal,
+ #[field(domain = "x", generated = "value * 2")]
+ pub price: rust_decimal::Decimal,
 }
 
 fn main() {}

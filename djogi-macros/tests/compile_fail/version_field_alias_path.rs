@@ -7,18 +7,18 @@
 use djogi::prelude::*;
 
 mod my_mod {
-    // Deliberately NOT i32 — proves the validator is checking the path
-    // shape, not the resolved type.
-    #[allow(non_camel_case_types)]
-    pub type i32 = String;
+ // Deliberately NOT i32 — proves the validator is checking the path
+ // shape, not the resolved type.
+ #[allow(non_camel_case_types)]
+ pub type i32 = String;
 }
 
 #[model(table = "posts")]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub title: String,
-    #[field(version)]
-    pub revision: my_mod::i32,
+ pub title: String,
+ #[field(version)]
+ pub revision: my_mod::i32,
 }
 
 fn main() {}

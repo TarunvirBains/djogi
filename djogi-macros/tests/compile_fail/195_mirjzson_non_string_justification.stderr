@@ -1,7 +1,7 @@
-error: `justification = ...` value must be a string literal — e.g. `#[mirjzson(justification = "payload is externally owned by partner API")]`
-  --> $DIR/195_mirjzson_non_string_justification.rs:13:32
-   |
-13 |     #[mirjzson(justification = 42)]
-   |                                ^^
+error: `justification =...` value must be a string literal — e.g. `#[mirjzson(justification = "payload is externally owned by partner API")]`
+ --> $DIR/195_mirjzson_non_string_justification.rs:13:32
+ |
+13 |  #[mirjzson(justification = 42)]
+ |        ^^
 
 error: aborting due to 1 previous error

@@ -4,15 +4,15 @@
 //! 1. Connect to the admin database (via `DATABASE_URL`).
 //! 2. Create a fresh `djogi_test_<uuid>` database.
 //! 3. Run the bootstrap migration via
-//!    [`crate::migrate::bootstrap::run_phase_zero`] — installs HeeRanjID
-//!    schema, seeds the default node, sets the `heer.node_id` and
-//!    `heer.ranj_node_id` GUCs (HeerId and RanjId generators read
-//!    separate session variables), and creates any extensions
-//!    requested via the `#[djogi_test(extensions = [...])]` attribute
-//!    argument.
+//! [`crate::migrate::bootstrap::run_phase_zero`] — installs HeeRanjID
+//! schema, seeds the default node, sets the `heer.node_id` and
+//! `heer.ranj_node_id` GUCs (HeerId and RanjId generators read
+//! separate session variables), and creates any extensions
+//! requested via the `#[djogi_test(extensions = [...])]` attribute
+//! argument.
 //! 4. Return a `DjogiContext` backed by a pool pointed at the new database.
 //! 5. Drop the database via `teardown_test_db` — called explicitly by the
-//!    macro-generated wrapper, both on normal return and after a caught panic.
+//! macro-generated wrapper, both on normal return and after a caught panic.
 //! # Substrate
 //! Internals use `tokio_postgres` directly (no sqlx) and route the
 //! HeeRanjID + extension install through
@@ -126,19 +126,19 @@ pub enum DerivedParityError {
 /// The `#[model]` macro emits two parallel surfaces for every
 /// generated visage that has at least one derived entry in its scope:
 /// 1. An **inherent** `pub fn assert_derived_parity` method on the
-///    visage struct. This is the ergonomic call-site:
-///    `visage.assert_derived_parity(&other)` resolves to the
-///    inherent method directly, no trait import required.
+/// visage struct. This is the ergonomic call-site:
+/// `visage.assert_derived_parity(&other)` resolves to the
+/// inherent method directly, no trait import required.
 /// 2. A **trait impl** `impl DerivedParity for {Visage}` with an
-///    identical body. The trait method is reachable from generic
-///    code — any helper bounded `where V: DerivedParity` can call
-///    `v.assert_derived_parity(&other)` against an unknown visage
-///    type.
-///    Both surfaces share the same body and the same `where Ty:
+/// identical body. The trait method is reachable from generic
+/// code — any helper bounded `where V: DerivedParity` can call
+/// `v.assert_derived_parity(&other)` against an unknown visage
+/// type.
+/// Both surfaces share the same body and the same `where Ty:
 /// PartialEq` bound per distinct derived type (so the diagnostic
-///    for [`E_DJG_VDF_016`] surfaces at the impl block, not at the
-///    inner `!=` site).
-///    [E_DJG_VDF_016]: https://github.com/tarunvir/djogi/blob/main/docs/spec/visage-derived-fields.md#error-taxonomy
+/// for [`E_DJG_VDF_016`] surfaces at the impl block, not at the
+/// inner `!=` site).
+/// [E_DJG_VDF_016]: https://github.com/tarunvir/djogi/blob/main/docs/spec/visage-derived-fields.md#error-taxonomy
 /// # Seal
 /// `DerivedParity` is **sealed** — only macro-emitted visages may
 /// satisfy it. Adopter crates cannot implement the trait directly
@@ -160,7 +160,7 @@ pub enum DerivedParityError {
 /// macro filters per-scope before emitting either surface.
 pub trait DerivedParity: private::DerivedParitySealed {
     /// Compare the derived fields between `self` and `other`. Returns
-    /// `Err(DerivedParityError::Drift { ... })` on the first
+    /// `Err(DerivedParityError::Drift {... })` on the first
     /// mismatched derived field; framework columns and storage
     /// columns are never compared.
     /// # Errors
@@ -208,29 +208,29 @@ pub mod private {
 /// uniformly.
 /// # Generic bounds
 /// - `V: DerivedParity` — the visage carries the trait impl
-///   (macro-emitted automatically when the visage has at least one
-///   derived field in scope).
+/// (macro-emitted automatically when the visage has at least one
+/// derived field in scope).
 /// - `Fetch: FnOnce() -> Fut` — the fetch closure produces the
-///   `Future` lazily; the helper drives the await internally.
+/// `Future` lazily; the helper drives the await internally.
 /// - `Fut: Future<Output = crate::Result<V>>` — `crate::Result<V>`
-///   is the canonical `Result<V, DjogiError>` alias; the closure
-///   propagates `DjogiError` directly and the helper lifts it into
-///   [`DerivedParityError::Fetch`].
+/// is the canonical `Result<V, DjogiError>` alias; the closure
+/// propagates `DjogiError` directly and the helper lifts it into
+/// [`DerivedParityError::Fetch`].
 /// # Errors
 /// - [`DerivedParityError::Fetch`] when the fetch closure's future
-///   yields `Err`.
+/// yields `Err`.
 /// - [`DerivedParityError::Drift`] when the in-memory and fetched
-///   visages disagree on any derived field.
+/// visages disagree on any derived field.
 /// # Recommended usage
 /// ```no_run
 /// use djogi::prelude::*;
 /// use djogi::testing::{DerivedParity, assert_derived_parity_fetched};
 ///
 /// # async fn example<V, M>(
-/// #     ctx: &mut DjogiContext,
-/// #     in_memory: &V,
-/// #     fetch_one: impl FnOnce(&mut DjogiContext)
-/// #         -> std::pin::Pin<Box<dyn std::future::Future<Output = djogi::Result<V>> + Send + '_>>,
+/// #  ctx: &mut DjogiContext,
+/// #  in_memory: &V,
+/// #  fetch_one: impl FnOnce(&mut DjogiContext)
+/// #   -> std::pin::Pin<Box<dyn std::future::Future<Output = djogi::Result<V>> + Send + '_>>,
 /// # ) -> Result<(), djogi::testing::DerivedParityError>
 /// # where V: DerivedParity {
 /// // `fetch_one` typically wraps a `V::filter(|f| f.id().eq(pk)).fetch_one(ctx)` call.
@@ -323,20 +323,20 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
 /// tests. Also available for direct use from hand-written test harnesses.
 /// # Steps (— bootstrap-routed)
 /// 1. Read `DATABASE_URL` from the environment (same convention as
-///    sqlx::test).
+/// sqlx::test).
 /// 2. Connect to the admin database via `tokio_postgres`.
 /// 3. Generate a unique database name `djogi_test_<uuid-simple>` and
-///    issue `CREATE DATABASE`.
+/// issue `CREATE DATABASE`.
 /// 4. Connect to the new database via `tokio_postgres`.
 /// 5. Run [`crate::migrate::bootstrap::run_phase_zero`] against the
-///    new connection. This is the SAME bootstrap surface
-///    `migrations compose` writes to disk and `db reset` replays.
-///    The test harness uses `include_node_seed = true`, so it installs
-///    HeeRanjID, every requested extension, and seeds both the
-///    `heer.node_id` and `heer.ranj_node_id` GUCs at both the
-///    database (`ALTER DATABASE`) and session (`SET`) levels.
+/// new connection. This is the SAME bootstrap surface
+/// `migrations compose` writes to disk and `db reset` replays.
+/// The test harness uses `include_node_seed = true`, so it installs
+/// HeeRanjID, every requested extension, and seeds both the
+/// `heer.node_id` and `heer.ranj_node_id` GUCs at both the
+/// database (`ALTER DATABASE`) and session (`SET`) levels.
 /// 6. Open a `DjogiPool` (deadpool-postgres) and return it as a
-///    `DjogiContext`.
+/// `DjogiContext`.
 /// # Strategic lockdown invariant
 /// Pre-Track-0, this function had its own SQL-by-hand install path
 /// for HeeRanjID + extensions + node-id GUC. That meant `#[djogi_test]`
@@ -348,13 +348,13 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
 /// Returns `DjogiError::Db` on all setup failures. Failure modes that
 /// mention the offending extension by name:
 /// - The extension name does not match the identifier rule (handled
-///   in Rust before any SQL is sent — the validator is shared between
-///   this module and `bootstrap`).
+/// in Rust before any SQL is sent — the validator is shared between
+/// this module and `bootstrap`).
 /// - The Postgres server rejects `CREATE EXTENSION IF NOT EXISTS`
-///   for example, when the named extension is not installed on the
-///   server (missing `.control` file). The original `tokio_postgres::Error`
-///   is preserved in the `DjogiError::Db` source chain so the adopter
-///   can see the full server message.
+/// for example, when the named extension is not installed on the
+/// server (missing `.control` file). The original `tokio_postgres::Error`
+/// is preserved in the `DjogiError::Db` source chain so the adopter
+/// can see the full server message.
 pub async fn setup_test_db_with_extensions(
     extensions: &[&str],
 ) -> Result<(TestDbCleanup, DjogiContext), DjogiError> {
@@ -432,7 +432,7 @@ pub async fn setup_test_db_with_extensions(
     .map_err(|e| DjogiError::Db(DbError::other(format!("bootstrap migration failed: {e}"))))?;
 
     // The setup client is dropped here — the connection driver task
-    // will finish. the `ALTER DATABASE ... SET heer.node_id`
+    // will finish. the `ALTER DATABASE... SET heer.node_id`
     // and the matching `heer.ranj_node_id` write persist for every
     // NEW connection the DjogiPool opens.
     drop(test_client);
@@ -460,7 +460,7 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
         Err(e) => {
             eprintln!(
                 "[djogi_test] WARNING: failed to connect to admin DB for teardown \
-                 (database \"{db_name}\" may need manual cleanup): {e}"
+     (database \"{db_name}\" may need manual cleanup): {e}"
             );
         }
         Ok((admin_client, admin_conn)) => {
@@ -534,18 +534,18 @@ pub fn phase_zero_sql_for_testing(
 /// # Lifecycle
 /// 1. Connect to the admin database via `cleanup`'s admin URL.
 /// 2. Idempotently `CREATE ROLE …` (or `ALTER ROLE …` if it pre-exists)
-///    so attributes always match the intended shape, even if a previous
-///    process drifted them.
+/// so attributes always match the intended shape, even if a previous
+/// process drifted them.
 /// 3. Reconnect to the per-test database (same admin URL with the path
-///    component swapped to `cleanup.db_name()`) and grant the role
-///    access to every existing object in `public`:
+/// component swapped to `cleanup.db_name()`) and grant the role
+/// access to every existing object in `public`:
 /// - `GRANT CONNECT ON DATABASE …`
 /// - `GRANT USAGE ON SCHEMA public`
 /// - `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public`
 /// - `GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public`
 /// - `GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public`
 /// 4. Build a non-superuser URL pointing at the same per-test database
-///    and open a fresh [`DjogiPool`].
+/// and open a fresh [`DjogiPool`].
 /// 5. Wrap the pool in a new [`DjogiContext::from_pool`] and return it.
 /// # Ordering requirement
 /// The grants in step 3 only cover objects that already exist when they
@@ -617,12 +617,12 @@ pub async fn connect_test_db_as_non_superuser(
         // promote the role.
         format!(
             "ALTER ROLE {role_quoted} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE \
-             NOREPLICATION NOBYPASSRLS PASSWORD {password_literal}"
+    NOREPLICATION NOBYPASSRLS PASSWORD {password_literal}"
         )
     } else {
         format!(
             "CREATE ROLE {role_quoted} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE \
-             NOREPLICATION NOBYPASSRLS PASSWORD {password_literal}"
+    NOREPLICATION NOBYPASSRLS PASSWORD {password_literal}"
         )
     };
     admin_client.batch_execute(&role_sql).await.map_err(|e| {
@@ -650,10 +650,10 @@ pub async fn connect_test_db_as_non_superuser(
     let db_quoted = quoted(&cleanup.db_name);
     let grants_sql = format!(
         "GRANT CONNECT ON DATABASE {db_quoted} TO {role_quoted};\n\
-         GRANT USAGE ON SCHEMA public TO {role_quoted};\n\
-         GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role_quoted};\n\
-         GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO {role_quoted};\n\
-         GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {role_quoted};"
+   GRANT USAGE ON SCHEMA public TO {role_quoted};\n\
+   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role_quoted};\n\
+   GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO {role_quoted};\n\
+   GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {role_quoted};"
     );
     test_admin_client
         .batch_execute(&grants_sql)
@@ -693,7 +693,7 @@ fn build_non_superuser_url(admin_url: &str, db_name: &str) -> Result<String, Djo
         .ok_or_else(|| {
             DjogiError::Db(DbError::other(
                 "DATABASE_URL must start with `postgres://` or `postgresql://` to derive \
-                 the non-superuser test URL",
+     the non-superuser test URL",
             ))
         })?;
     let scheme = if admin_url.starts_with("postgres://") {
@@ -712,7 +712,7 @@ fn build_non_superuser_url(admin_url: &str, db_name: &str) -> Result<String, Djo
     if idx >= body_bytes.len() {
         return Err(DjogiError::Db(DbError::other(
             "DATABASE_URL does not contain a database name component; \
-             cannot derive the non-superuser test URL",
+    cannot derive the non-superuser test URL",
         )));
     }
     let authority = &body[..idx];
@@ -751,8 +751,8 @@ fn reject_identity_overriding_query_params(query_with_marker: &str) -> Result<()
         if matches!(key.as_str(), "user" | "password" | "dbname") {
             return Err(DjogiError::Db(DbError::other(format!(
                 "DATABASE_URL query parameter `{key}` would override the non-superuser \
-                 test role or per-test database; remove it before calling \
-                 connect_test_db_as_non_superuser",
+     test role or per-test database; remove it before calling \
+     connect_test_db_as_non_superuser",
             ))));
         }
     }
@@ -854,8 +854,8 @@ pub async fn list_orphaned_test_databases(admin_url: &str) -> Result<Vec<String>
     let rows = client
         .query(
             "SELECT datname FROM pg_database \
-             WHERE datname LIKE 'djogi\\_test\\_%' ESCAPE '\\' \
-             ORDER BY datname",
+    WHERE datname LIKE 'djogi\\_test\\_%' ESCAPE '\\' \
+    ORDER BY datname",
             &[],
         )
         .await
@@ -924,8 +924,8 @@ pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<Vec<Stri
     let rows = client
         .query(
             "SELECT datname FROM pg_database \
-             WHERE datname LIKE 'djogi\\_test\\_%' ESCAPE '\\' \
-             ORDER BY datname",
+    WHERE datname LIKE 'djogi\\_test\\_%' ESCAPE '\\' \
+    ORDER BY datname",
             &[],
         )
         .await
@@ -952,7 +952,7 @@ pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<Vec<Stri
             Err(e) => {
                 eprintln!(
                     "[djogi_test] WARNING: failed to drop orphaned test database \
-                     \"{datname}\": {e}"
+      \"{datname}\": {e}"
                 );
             }
         }
@@ -990,15 +990,15 @@ fn quoted(ident: &str) -> String {
 /// into a `CREATE EXTENSION IF NOT EXISTS "<name>"` statement.
 /// Rules (byte-level, no regex per the Djogi-wide no-regex policy):
 /// - Length between 1 and 63 bytes inclusive (Postgres `NAMEDATALEN` minus
-///   the trailing `NUL`).
+/// the trailing `NUL`).
 /// - First byte is an ASCII letter (upper- or lower-case) or underscore.
 /// - Every subsequent byte is an ASCII letter, digit, or underscore.
-///   All real-world extension names on PGXN and in `contrib/` (`postgis`,
-///   `pg_trgm`, `pgcrypto`, `uuid-ossp` — wait, that last one contains a
-///   hyphen, but it is itself aliased to `"uuid-ossp"` double-quoted) match
-///   this rule with one caveat: extensions whose names require double
-///   quoting are rejected here. The caveat is documented on the
-///   [`setup_test_db_with_extensions`] entry point.
+/// All real-world extension names on PGXN and in `contrib/` (`postgis`,
+/// `pg_trgm`, `pgcrypto`, `uuid-ossp` — wait, that last one contains a
+/// hyphen, but it is itself aliased to `"uuid-ossp"` double-quoted) match
+/// this rule with one caveat: extensions whose names require double
+/// quoting are rejected here. The caveat is documented on the
+/// [`setup_test_db_with_extensions`] entry point.
 fn validate_extension_name(name: &str) -> Result<(), DjogiError> {
     let bytes = name.as_bytes();
 
@@ -1026,7 +1026,7 @@ fn validate_extension_name(name: &str) -> Result<(), DjogiError> {
         if !ok {
             return Err(DjogiError::Db(DbError::other(format!(
                 "djogi_test: extension name `{name}` contains invalid byte `{c}` \
-                 (only ASCII letters, digits, and underscores are allowed)",
+     (only ASCII letters, digits, and underscores are allowed)",
                 c = b as char,
             ))));
         }
@@ -1043,7 +1043,7 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
     crate::migrate::reset::replace_db_in_url(url, new_db).ok_or_else(|| {
         DjogiError::Db(DbError::other(
             "DATABASE_URL does not contain a database name component; \
-             cannot derive the per-test database URL",
+    cannot derive the per-test database URL",
         ))
     })
 }
@@ -1051,32 +1051,32 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
 /// Auto-materialise the supplied descriptors on the
 /// per-test database (closes issue #18).
 /// Called by macro-generated code from
-/// `#[djogi_test(sync_models = [Type1, Type2, ...])]` after
+/// `#[djogi_test(sync_models = [Type1, Type2,...])]` after
 /// [`setup_test_db_with_extensions`] returns. The macro lowers each
 /// `Type` to `<Type as ::djogi::Model>::descriptor()`, so the
 /// descriptors arrive here with full `&'static` lifetimes from the
 /// `inventory` collectors.
 /// # What this does
 /// 1. Walks `descriptors`, derives the `(database, app)` bucket each
-///    one belongs in (resolved via [`AppRegistry::all`]).
+/// one belongs in (resolved via [`AppRegistry::all`]).
 /// 2. Projects the descriptors into per-bucket [`AppliedSchema`]
-///    values via [`project_from_iters`] — same projection layer that
-///    production migrations and `compose` use, so any new field type
-///    or index annotation propagates automatically.
+/// values via [`project_from_iters`] — same projection layer that
+/// production migrations and `compose` use, so any new field type
+/// or index annotation propagates automatically.
 /// 3. Diffs the projection against an empty per-bucket map via
-///    [`diff_bucket_maps`] — every operation is therefore additive
-///    (`AddTable`, `AddIndex`, `AddEnum`, `AddForeignKey`).
+/// [`diff_bucket_maps`] — every operation is therefore additive
+/// (`AddTable`, `AddIndex`, `AddEnum`, `AddForeignKey`).
 /// 4. Validates that every FK target table is also present in the
-///    same `sync_models` set — a missing target produces a clear
-///    runtime error naming the referencing column AND the missing
-///    target. Macro-time detection is impossible (only type paths are
-///    visible; descriptors are runtime data).
+/// same `sync_models` set — a missing target produces a clear
+/// runtime error naming the referencing column AND the missing
+/// target. Macro-time detection is impossible (only type paths are
+/// visible; descriptors are runtime data).
 /// 5. Asserts the delta is additive only. If the differ ever
-///    produces a destructive op against an empty target the
-///    invariant is broken — error rather than silently executing it.
+/// produces a destructive op against an empty target the
+/// invariant is broken — error rather than silently executing it.
 /// 6. Plans each per-bucket delta via [`plan_delta`] (segment
-///    planner), then executes every statement via
-///    [`DjogiContext::raw_ddl`] in segment + statement order.
+/// planner), then executes every statement via
+/// [`DjogiContext::raw_ddl`] in segment + statement order.
 /// # No advisory lock, no ledger
 /// Per the v3 plan rationale: per-test databases are ephemeral and
 /// have no concurrent writers, so the `apply` orchestration layer
@@ -1100,18 +1100,18 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
 /// # Errors
 /// Returns [`DjogiError::Db`] for:
 /// - Projection failures (unknown app label, duplicate type name,
-///   cross-database FK).
+/// cross-database FK).
 /// - SQL emission errors from the migration engine
-///   (`Unsupported`, `PkTypeFlipMustRouteToT9` — neither should occur
-///   on an empty-target diff in practice).
+/// (`Unsupported`, `PkTypeFlipMustRouteToT9` — neither should occur
+/// on an empty-target diff in practice).
 /// - FK-to-missing-model violations.
 /// - Invariant-violation classification (any non-additive op).
 /// - Statement-execution failures from `ctx.raw_ddl`.
-///   All paths preserve the per-test DB drop in the macro-generated
-///   wrapper: `sync_models` failures bubble out as `Err`, the macro's
-///   `.expect("djogi_test: failed to sync_models on per-test database")`
-///   turns that into a panic, and the wrapper's `catch_unwind` +
-///   teardown sequence still runs to drop the throwaway database.
+/// All paths preserve the per-test DB drop in the macro-generated
+/// wrapper: `sync_models` failures bubble out as `Err`, the macro's
+/// `.expect("djogi_test: failed to sync_models on per-test database")`
+/// turns that into a panic, and the wrapper's `catch_unwind` +
+/// teardown sequence still runs to drop the throwaway database.
 pub async fn sync_models(
     ctx: &mut DjogiContext,
     descriptors: &[&'static ModelDescriptor],
@@ -1127,7 +1127,7 @@ pub async fn sync_models(
 /// test.
 /// This is intentionally not a general-purpose SQL fixture loader. The test
 /// body needs to prove that `Model::save` rehydrates trigger-mutated fields
-/// through `UPDATE ... RETURNING *`, but creating a Postgres trigger is schema
+/// through `UPDATE... RETURNING *`, but creating a Postgres trigger is schema
 /// setup rather than typed Djogi behavior. Keeping the raw DDL inside the
 /// framework test harness avoids reopening raw SQL escape hatches in ordinary
 /// integration tests.
@@ -1137,17 +1137,17 @@ pub async fn install_accounts_balance_increment_trigger_for_test(
 ) -> Result<(), DjogiError> {
     ctx.raw_ddl(
         "CREATE OR REPLACE FUNCTION accounts_balance_increment_trigger() \
-         RETURNS trigger AS $$ \
-         BEGIN NEW.balance := NEW.balance + 1; RETURN NEW; END; \
-         $$ LANGUAGE plpgsql;",
+   RETURNS trigger AS $$ \
+   BEGIN NEW.balance := NEW.balance + 1; RETURN NEW; END; \
+   $$ LANGUAGE plpgsql;",
     )
     .await?;
     ctx.raw_ddl("DROP TRIGGER IF EXISTS t_accounts_balance_increment ON accounts;")
         .await?;
     ctx.raw_ddl(
         "CREATE TRIGGER t_accounts_balance_increment \
-         BEFORE UPDATE ON accounts \
-         FOR EACH ROW EXECUTE FUNCTION accounts_balance_increment_trigger();",
+   BEFORE UPDATE ON accounts \
+   FOR EACH ROW EXECUTE FUNCTION accounts_balance_increment_trigger();",
     )
     .await
 }
@@ -1222,8 +1222,8 @@ pub async fn outbox_rows_for_test(
     validate_outbox_table_for_test(table)?;
     let sql = format!(
         "SELECT id, row_id::text, action, payload, state \
-         FROM {table} \
-         ORDER BY created_at, id"
+   FROM {table} \
+   ORDER BY created_at, id"
     );
     let rows = ctx.raw_rows(&sql, &[]).await?;
 
@@ -1335,8 +1335,8 @@ pub fn build_sync_plans(
             let Some(target) = f.target_type_name else {
                 return Err(DjogiError::Db(DbError::other(format!(
                     "sync_models: model `{src}`.`{col}` has relation_kind \
-                     but no target_type_name — this is a macro emission bug; \
-                     please file an issue",
+      but no target_type_name — this is a macro emission bug; \
+      please file an issue",
                     src = d.type_name,
                     col = f.name,
                 ))));
@@ -1344,8 +1344,8 @@ pub fn build_sync_plans(
             if !supplied_type_names.contains(target) {
                 return Err(DjogiError::Db(DbError::other(format!(
                     "sync_models: model `{src}`.`{col}` references `{tgt}` via foreign key, \
-                     but `{tgt}` is not in sync_models. \
-                     Add `{tgt}` to sync_models = [...] alongside `{src}`.",
+      but `{tgt}` is not in sync_models. \
+      Add `{tgt}` to sync_models = [...] alongside `{src}`.",
                     src = d.type_name,
                     col = f.name,
                     tgt = target,
@@ -1402,7 +1402,7 @@ pub fn build_sync_plans(
             ref other => {
                 return Err(DjogiError::Db(DbError::other(format!(
                     "sync_models: internal invariant violated — empty-target diff classified as \
-                     `{other:?}` for bucket `{db}/{app}`; expected NoOp or Additive only",
+      `{other:?}` for bucket `{db}/{app}`; expected NoOp or Additive only",
                     db = delta.bucket.database,
                     app = delta.bucket.app,
                 ))));
@@ -1412,7 +1412,7 @@ pub fn build_sync_plans(
             if !is_additive_op(op) {
                 return Err(DjogiError::Db(DbError::other(format!(
                     "sync_models: internal invariant violated — empty-target diff produced \
-                     destructive op `{kind}` for bucket `{db}/{app}`",
+      destructive op `{kind}` for bucket `{db}/{app}`",
                     kind = additive_op_label(op),
                     db = delta.bucket.database,
                     app = delta.bucket.app,
@@ -1456,8 +1456,8 @@ fn wrap_relation_registry_for_sync_models(
     result.map_err(|e| {
         DjogiError::Db(DbError::other(format!(
             "sync_models: relation accessor registry contains cross-kind \
-             collisions (GH #158); fix the colliding relation macro declaration(s) \
-             before re-running sync_models:\n{e}"
+    collisions (GH #158); fix the colliding relation macro declaration(s) \
+    before re-running sync_models:\n{e}"
         )))
     })
 }
@@ -1486,10 +1486,10 @@ fn empty_applied_schema() -> AppliedSchema {
 /// empty-target path can legitimately produce.
 /// Additive ops on an empty `before` schema:
 /// - `AddTable`, `AddColumn`, `AddIndex`, `AddEnum`, `AddEnumVariant`,
-///   `AddForeignKey`.
-///   Anything else (drops, renames, alters, app moves, PK flips) is
-///   structurally impossible from an empty `before` and signals a
-///   broken differ invariant.
+/// `AddForeignKey`.
+/// Anything else (drops, renames, alters, app moves, PK flips) is
+/// structurally impossible from an empty `before` and signals a
+/// broken differ invariant.
 fn is_additive_op(op: &SchemaOperation) -> bool {
     matches!(
         op,
@@ -1565,7 +1565,7 @@ async fn execute_plan(
                 // chain.
                 DjogiError::Db(DbError::other(format!(
                     "sync_models: failed to apply `{label}` on bucket `{db}/{app}`: {e}\n\
-                     -- offending SQL --\n{sql}",
+      -- offending SQL --\n{sql}",
                     label = op_sql.label,
                     db = plan.bucket.database,
                     app = plan.bucket.app,
@@ -1844,12 +1844,12 @@ mod tests {
         let helper_exists = ctx
             .query_one(
                 "SELECT EXISTS(\
-                    SELECT 1 \
-                    FROM pg_catalog.pg_proc p \
-                    INNER JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace \
-                    WHERE n.nspname = 'djogi' \
-                    AND p.proname = '__djogi_numeric_array_is_rust_decimal_v1'\
-                )",
+     SELECT 1 \
+     FROM pg_catalog.pg_proc p \
+     INNER JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace \
+     WHERE n.nspname = 'djogi' \
+     AND p.proname = '__djogi_numeric_array_is_rust_decimal_v1'\
+    )",
                 &[],
             )
             .await

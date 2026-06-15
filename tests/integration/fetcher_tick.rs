@@ -4,26 +4,26 @@
 // # What this file pins
 //
 // 1. **`fetcher_returns_rows_matching_watermark`** — inserts 5 rows with
-//    staggered `updated_at` timestamps; calls `handle.update().await` with a
-//    `since` pointing at the 3rd row. Verifies the fetcher returns exactly rows
-//    3, 4, 5 (those with `updated_at >= since`).
+//  staggered `updated_at` timestamps; calls `handle.update().await` with a
+//  `since` pointing at the 3rd row. Verifies the fetcher returns exactly rows
+//  3, 4, 5 (those with `updated_at >= since`).
 //
 // 2. **`fetcher_uses_owned_pool_clone`** — constructs a `DeltaRefreshHandle`
-//    then drops the *original* `DjogiPool`. `handle.update()` still works
-//    because the fetcher captured an independent clone of the pool.
+//  then drops the *original* `DjogiPool`. `handle.update()` still works
+//  because the fetcher captured an independent clone of the pool.
 //
 // 3. **`fetcher_constructs_fresh_context_per_tick`** — calls
-//    `handle.update().await` twice consecutively. Verifies both succeed and
-//    return correct data, exercising the "fresh context per tick" path.
+//  `handle.update().await` twice consecutively. Verifies both succeed and
+//  return correct data, exercising the "fresh context per tick" path.
 //
 // 4. **`fetcher_runs_under_captured_auth`** — creates a `refresh_into` with
-//    one `AuthContext`, then modifies a *copy* of the auth in the caller.
-//    The fetcher returns only rows accessible under the snapshot auth (does
-//    not use the modified copy). This pins the "auth-locked-to-subscription"
-//    contract from spec §677. For models without tenant-key RLS the
-//    observable difference is the `ctx.auth()` value; we verify that the
-//    fetcher can complete ticks without panicking under auth and that the
-//    correct rows are returned.
+//  one `AuthContext`, then modifies a *copy* of the auth in the caller.
+//  The fetcher returns only rows accessible under the snapshot auth (does
+//  not use the modified copy). This pins the "auth-locked-to-subscription"
+//  contract from spec §677. For models without tenant-key RLS the
+//  observable difference is the `ctx.auth()` value; we verify that the
+//  fetcher can complete ticks without panicking under auth and that the
+//  correct rows are returned.
 //
 // # Spec anchor
 //
@@ -58,11 +58,11 @@ pub struct FetcherTickRow {
 ///
 /// 1. Insert 3 "old" rows with timestamps 5 seconds in the past.
 /// 2. First tick (since=None): full scan returns all 3 rows; subscription
-///    records the max watermark (the newest old row).
+///  records the max watermark (the newest old row).
 /// 3. Insert 2 "new" rows with timestamps 1 second in the future relative
-///    to `now()` so they are definitely after the first batch's watermark.
+///  to `now()` so they are definitely after the first batch's watermark.
 /// 4. Second tick (since=max-old-watermark): SQL uses `WHERE updated_at >=
-///    $since` and returns only the 2 new rows, proving the filter works.
+///  $since` and returns only the 2 new rows, proving the filter works.
 ///
 /// This exercises the real `WHERE <watermark_col> >= $N` path in
 /// `DjogiDeltaFetcher::fetch_delta`.
@@ -128,8 +128,8 @@ async fn fetcher_returns_rows_matching_watermark(mut ctx: djogi::DjogiContext) {
     // re-applied if their data changed without a watermark change. The 3 old
     // rows were inserted sequentially with slightly different `now()` values,
     // so `max(old updated_at)` = the LAST old row's timestamp. Tick 2 returns:
-    //   - The last old row (at the boundary, included by `>=`)
-    //   - The 2 new rows (strictly after the boundary)
+    //  - The last old row (at the boundary, included by `>=`)
+    //  - The 2 new rows (strictly after the boundary)
     // = at least 2 rows, at most 3. The KEY invariant: tick 2 returns FEWER
     // rows than the total of 5 (= 3 old + 2 new), proving the watermark filter
     // is active (without it, all 5 rows would be re-fetched every tick).
@@ -138,8 +138,8 @@ async fn fetcher_returns_rows_matching_watermark(mut ctx: djogi::DjogiContext) {
     assert!(
         (tick_2.applied as i64) < total_rows,
         "second tick must apply fewer rows than the full table ({total_rows}) — \
-         watermark filter `WHERE updated_at >= $since` must be active; \
-         got {applied} (== total means no filter applied)",
+     watermark filter `WHERE updated_at >= $since` must be active; \
+     got {applied} (== total means no filter applied)",
         applied = tick_2.applied
     );
     assert!(
@@ -275,8 +275,8 @@ async fn fetcher_constructs_fresh_context_per_tick(mut ctx: djogi::DjogiContext)
     assert!(
         result_2.applied >= 1,
         "second tick must apply at least 1 row (the boundary row at max watermark); \
-         proves connection was released and re-acquired for the second tick; \
-         got {applied}",
+     proves connection was released and re-acquired for the second tick; \
+     got {applied}",
         applied = result_2.applied
     );
 }

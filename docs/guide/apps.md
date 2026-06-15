@@ -1,17 +1,17 @@
 # Apps
 
-Apps are Djogi's compile-time schema-ownership domains. An app is a logical grouping of models that share a migration boundary — Phase 7's migration differ groups work by `(database_target, app_label)`, producing one `<database>/<app>/` directory on disk for each pair.
+Apps are Djogi's compile-time schema-ownership domains. An app is a logical grouping of models that share a migration boundary — 's migration differ groups work by `(database_target, app_label)`, producing one `<database>/<app>/` directory on disk for each pair.
 
 ```rust
 djogi::apps! {
-    #[app(database = "main")]
-    pub struct Vehicles;
+ #[app(database = "main")]
+ pub struct Vehicles;
 
-    #[app(database = "main")]
-    pub struct Users;
+ #[app(database = "main")]
+ pub struct Users;
 
-    #[app(database = "crud_log")]
-    pub struct Audit;
+ #[app(database = "crud_log")]
+ pub struct Audit;
 }
 ```
 
@@ -20,28 +20,28 @@ Each entry expands to a zero-sized unit struct with a sealed `App` trait impl. M
 ```rust
 #[model(table = "cars", app = Vehicles)]
 pub struct Car {
-    pub make: String,
+ pub make: String,
 }
 ```
 
 Rust's own name resolution enforces declaration — `#[model(app = NotAnApp)]` fails with a standard rustc error.
 
-Models without `#[model(app = ...)]` fall into the synthetic global bucket, which targets `main` by default. Apps are opt-in.
+Models without `#[model(app =...)]` fall into the synthetic global bucket, which targets `main` by default. Apps are opt-in.
 
 ## App attributes
 
 ```rust
 #[app(
-    database = "main",        // required — database target
-    label    = "billing",     // optional — override auto-derived label
-    renamed_from = "billing_old",  // optional — former label for rename support
-    tombstone,                // optional — app is being retired (mutually exclusive with renamed_from)
+ database = "main", // required — database target
+ label = "billing", // optional — override auto-derived label
+ renamed_from = "billing_old", // optional — former label for rename support
+ tombstone,  // optional — app is being retired (mutually exclusive with renamed_from)
 )]
 ```
 
 - **`database`** — required. One of `"main"`, `"crud_log"`, `"event_log"`, or a user-defined target. No default. An app without an explicit `database` is a compile error so tables never silently land in the wrong place.
 - **`label`** — optional. Defaults to the struct identifier lowercased byte-by-byte (`Vehicles` → `"vehicles"`). Override when the default would be awkward (`BillingAccounts` → default `"billingaccounts"`, probably want `label = "billing_accounts"`).
-- **`renamed_from`** — optional. Declares that this app is the continuation of a prior label. Phase 7's differ generates a `ALTER SCHEMA ... RENAME` instead of drop-and-create.
+- **`renamed_from`** — optional. Declares that this app is the continuation of a prior label. 's differ generates a `ALTER SCHEMA... RENAME` instead of drop-and-create.
 - **`tombstone`** — optional flag. Marks the app for retirement; see the next section.
 
 `(database, label)` is the identity pair. Two apps with the same label but different databases are legitimate — `main/audit/` and `crud_log/audit/` are distinct migration directories.
@@ -50,15 +50,15 @@ Models without `#[model(app = ...)]` fall into the synthetic global bucket, whic
 
 ```rust
 #[model(
-    table = "invoices",
-    app   = Billing,               // optional — model belongs to this app
-    moved_from_app = OldBilling,   // optional — historical metadata
+ table = "invoices",
+ app = Billing,  // optional — model belongs to this app
+ moved_from_app = OldBilling, // optional — historical metadata
 )]
-pub struct Invoice { /* ... */ }
+pub struct Invoice { /*... */ }
 ```
 
 - **`app`** — optional. Type path to a `djogi::apps!`-declared struct. `None` places the model in the synthetic global bucket.
-- **`moved_from_app`** — optional. Type path to a prior app. Enables Phase 7's differ to track model-across-app moves without forcing the old app to stay declared.
+- **`moved_from_app`** — optional. Type path to a prior app. Enables 's differ to track model-across-app moves without forcing the old app to stay declared.
 
 ---
 
@@ -82,32 +82,32 @@ Suppose you want to retire `OldBilling` and move its one model, `Invoice`, into 
 
 ```rust
 djogi::apps! {
-    #[app(database = "main")]
-    pub struct OldBilling;      // still declared, still live
+ #[app(database = "main")]
+ pub struct OldBilling; // still declared, still live
 
-    #[app(database = "main")]
-    pub struct Billing;
+ #[app(database = "main")]
+ pub struct Billing;
 }
 
 #[model(table = "invoices", app = Billing, moved_from_app = OldBilling)]
-pub struct Invoice { /* ... */ }
+pub struct Invoice { /*... */ }
 ```
 
-Compose + apply this. Phase 7's differ sees `moved_from_app = OldBilling` on `Invoice`, generates `ALTER TABLE oldbilling.invoices SET SCHEMA billing` (or equivalent), and the table physically moves. `OldBilling` still exists in source but now owns no models.
+Compose + apply this. 's differ sees `moved_from_app = OldBilling` on `Invoice`, generates `ALTER TABLE oldbilling.invoices SET SCHEMA billing` (or equivalent), and the table physically moves. `OldBilling` still exists in source but now owns no models.
 
 **Cycle 2 — tombstone `OldBilling`:**
 
 ```rust
 djogi::apps! {
-    #[app(database = "main", tombstone)]
-    pub struct OldBilling;      // tombstoned — retiring
+ #[app(database = "main", tombstone)]
+ pub struct OldBilling; // tombstoned — retiring
 
-    #[app(database = "main")]
-    pub struct Billing;
+ #[app(database = "main")]
+ pub struct Billing;
 }
 
 #[model(table = "invoices", app = Billing, moved_from_app = OldBilling)]
-pub struct Invoice { /* ... */ }
+pub struct Invoice { /*... */ }
 ```
 
 Compose + apply this with `--allow-destructive`. The differ generates the final retirement SQL (drops any leftover tables under `OldBilling` — there shouldn't be any after Cycle 1 — and marks the `main/oldbilling/` directory as tombstoned in the ledger). `moved_from_app = OldBilling` on `Invoice` is still legal — tombstoned apps are valid `moved_from_app` targets by design. That's the whole point of the attribute: historical metadata persists across retirement.
@@ -118,13 +118,13 @@ Once Cycle 2's migration applies in prod, you can delete both:
 
 ```rust
 djogi::apps! {
-    #[app(database = "main")]
-    pub struct Billing;
-    // OldBilling struct gone; moved_from_app references below must go too
+ #[app(database = "main")]
+ pub struct Billing;
+ // OldBilling struct gone; moved_from_app references below must go too
 }
 
 #[model(table = "invoices", app = Billing)]
-pub struct Invoice { /* ... */ }
+pub struct Invoice { /*... */ }
 ```
 
 The `moved_from_app = OldBilling` annotation on `Invoice` also disappears (the path would no longer resolve otherwise). The ledger has already recorded the move; source no longer needs to carry the bridge.
@@ -149,17 +149,17 @@ On disk, migrations nest by `(database_target, app_label)`:
 ```text
 migrations/
 ├── main/
-│   ├── vehicles/
-│   │   ├── schema_snapshot.json
-│   │   ├── V20260301000000__initial.sdjql
-│   │   └── V20260301000000__initial.down.sdjql
-│   └── billing/
-│       └── ...
+│ ├── vehicles/
+│ │ ├── schema_snapshot.json
+│ │ ├── V20260301000000__initial.sdjql
+│ │ └── V20260301000000__initial.down.sdjql
+│ └── billing/
+│ └──...
 ├── crud_log/
-│   └── audit/
-│       └── ...
+│ └── audit/
+│ └──...
 └── event_log/
-    └── ...
+ └──...
 ```
 
 Each database target has its own ledger; Djogi does not pretend a single migration apply session across multiple targets is a distributed transaction. The differ applies one target at a time.
@@ -176,7 +176,7 @@ The synthetic global bucket (`""` label) files under `<default-database>/` witho
 use djogi::apps::AppRegistry;
 
 for desc in AppRegistry::all() {
-    println!("{}/{}: tombstone={}", desc.database, desc.label, desc.tombstone);
+ println!("{}/{}: tombstone={}", desc.database, desc.label, desc.tombstone);
 }
 ```
 
@@ -187,7 +187,7 @@ const _: &str = <Vehicles as djogi::App>::LABEL;
 const _: bool = <OldBilling as djogi::App>::TOMBSTONE;
 ```
 
-Phase 7's migration differ prefers `AppRegistry::all()` since it needs to iterate everything.
+'s migration differ prefers `AppRegistry::all()` since it needs to iterate everything.
 
 ---
 
@@ -195,4 +195,4 @@ Phase 7's migration differ prefers `AppRegistry::all()` since it needs to iterat
 
 The `djogi::App` trait is **convention-sealed**. A determined downstream crate can technically reach into `#[doc(hidden)] pub` items and hand-write an `impl djogi::App for MyFake`, but this is unmistakably an act of "I am reaching into internal API." True hard-sealing of a proc-macro-emitted trait is not achievable in stable Rust when the proc macro lives in a separate crate — every pub path the macro reaches is also reachable by handwritten downstream code.
 
-The correctness invariant that matters — "a forged `App` impl cannot silently break migrations" — is enforced at the use site by Phase 7's migration differ: every `#[model(app = X)]` is cross-checked against `AppRegistry::all()` before the migration library applies SQL, and any model pointing at an `App`-implementing type whose `AppDescriptor` is missing from inventory hard-errors before any SQL executes. Forged `App` impls compile, but they're inert.
+The correctness invariant that matters — "a forged `App` impl cannot silently break migrations" — is enforced at the use site by 's migration differ: every `#[model(app = X)]` is cross-checked against `AppRegistry::all()` before the migration library applies SQL, and any model pointing at an `App`-implementing type whose `AppDescriptor` is missing from inventory hard-errors before any SQL executes. Forged `App` impls compile, but they're inert.

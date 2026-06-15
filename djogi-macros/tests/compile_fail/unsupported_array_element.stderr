@@ -1,24 +1,24 @@
 error[E0277]: the trait bound `Vec<u32>: DjogiSqlType` is not satisfied
-  --> $DIR/unsupported_array_element.rs:13:22
-   |
-13 |     pub unsupported: Vec<u32>,
-   |                      ^^^^^^^^ the trait `DjogiSqlType` is not implemented for `Vec<u32>`
-   |
-   = help: the following other types implement trait `DjogiSqlType`:
-             PasswordHash
-             TsQuery
-             TsVector
-             djogi::Interval
-             djogi::Range<T>
+ --> $DIR/unsupported_array_element.rs:13:22
+ |
+13 |  pub unsupported: Vec<u32>,
+ |      ^^^^^^^^ the trait `DjogiSqlType` is not implemented for `Vec<u32>`
+ |
+ = help: the following other types implement trait `DjogiSqlType`:
+    PasswordHash
+    TsQuery
+    TsVector
+    djogi::Interval
+    djogi::Range<T>
 
 error[E0599]: the method `contains` exists for struct `ExplicitPgPredicateField<T, Vec<u32>>`, but its trait bounds were not satisfied
-  --> $DIR/unsupported_array_element.rs:19:61
-   |
-19 |         .filter(|f| f.unsupported().explicit_pg_predicate().contains(&vals));
-   |                                                             ^^^^^^^^ method cannot be called on `ExplicitPgPredicateField<T, Vec<u32>>` due to unsatisfied trait bounds
-   |
-   = note: the following trait bounds were not satisfied:
-           `u32: IntoArrayFilterValue`
+ --> $DIR/unsupported_array_element.rs:19:61
+ |
+19 |  .filter(|f| f.unsupported().explicit_pg_predicate().contains(&vals));
+ |                ^^^^^^^^ method cannot be called on `ExplicitPgPredicateField<T, Vec<u32>>` due to unsatisfied trait bounds
+ |
+ = note: the following trait bounds were not satisfied:
+   `u32: IntoArrayFilterValue`
 
 error: aborting due to 2 previous errors
 

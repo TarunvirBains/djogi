@@ -1,12 +1,12 @@
-> [Back to Guides](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to Guides](./index.md) · [Back to README](../../README.md)
 
-Spec: [`docs/spec/models.md`](../spec/models.md) — Phase 5 RLS / tenant-key contract.
+Spec: [`docs/spec/models.md`](../spec/models.md) — RLS / tenant-key contract.
 
 # Tenancy
 
 Djogi's tenancy support isolates rows at the database level using Postgres
 Row-Level Security (RLS). You declare which column is the tenant discriminator;
-Djogi emits an RLS policy for the model's table (consumed by Phase 7's migration
+Djogi emits an RLS policy for the model's table (consumed by 's migration
 differ) and generates `DjogiContext::set_tenant(...)` as the runtime entry point
 for activating isolation within a transaction.
 
@@ -21,40 +21,40 @@ adds them.
 ## Contract
 
 - You declare `#[model(tenant_key = "col_name")]` on a model. The named column
-  must exist as a user-declared field on the struct.
+ must exist as a user-declared field on the struct.
 - Djogi's descriptor-driven migration flow includes the tenant RLS policy for
-  the model. Use `djogi migrations compose` for generated migration
-  plans and `djogi migrations apply` with node identity (`--node-id`,
-  `HEER_NODE_ID`, or `--single-node-dev`) to run pending plans (or the public
-  `djogi::migrate` library APIs when applying from code). `apply --fake`
-  ships as a flag on the apply command, `baseline` ships as
-  `djogi migrations baseline`, and `rollback` ships as
-  `djogi migrations rollback`. Hand-written RLS
-  SQL is an escape hatch, not the default path. The emitted policy is equivalent
-  to:
-  ```sql
-  ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
-  CREATE POLICY tenant_isolation ON posts
-      USING (org_id = current_setting('app.tenant_id', true)::bigint);
-  ```
+ the model. Use `djogi migrations compose` for generated migration
+ plans and `djogi migrations apply` with node identity (`--node-id`,
+ `HEER_NODE_ID`, or `--single-node-dev`) to run pending plans (or the public
+ `djogi::migrate` library APIs when applying from code). `apply --fake`
+ ships as a flag on the apply command, `baseline` ships as
+ `djogi migrations baseline`, and `rollback` ships as
+ `djogi migrations rollback`. Hand-written RLS
+ SQL is an escape hatch, not the default path. The emitted policy is equivalent
+ to:
+ ```sql
+ ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
+ CREATE POLICY tenant_isolation ON posts
+ USING (org_id = current_setting('app.tenant_id', true)::bigint);
+ ```
 - `ctx.set_tenant(tenant_id)` issues
-  `SELECT set_config('app.tenant_id', $1, true)` against the current connection,
-  scoped to the current transaction (`is_local = true`). The GUC resets when the
-  transaction ends.
+ `SELECT set_config('app.tenant_id', $1, true)` against the current connection,
+ scoped to the current transaction (`is_local = true`). The GUC resets when the
+ transaction ends.
 - `ctx.set_tenant(...)` must be called inside an `atomic()` scope. Called on a
-  pool-backed context outside a transaction, the GUC lasts only for the duration
-  of the single `set_config` statement, not across subsequent queries on the
-  same context.
+ pool-backed context outside a transaction, the GUC lasts only for the duration
+ of the single `set_config` statement, not across subsequent queries on the
+ same context.
 - `set_tenant` marks an internal flag on the context. Framework code can inspect
-  this flag; future phases may use it for RLS-active checks.
+ this flag; future phases may use it for RLS-active checks.
 - `_insecurely()` suffix methods are generated only on tenant-keyed models and
-  emit a `tracing::warn!` on every call. The async variants (`get_insecurely`,
-  `create_insecurely`, `save_insecurely`, `delete_insecurely`,
-  `bulk_*_insecurely`) bypass RLS by issuing `SET LOCAL row_security = off`
-  themselves before running their query. `objects_insecurely()` is the
-  exception: it is synchronous with no ctx, so it cannot issue `SET LOCAL` —
-  the caller must issue the bypass on the ctx before the terminal method (see
-  the `objects_insecurely` pattern below).
+ emit a `tracing::warn!` on every call. The async variants (`get_insecurely`,
+ `create_insecurely`, `save_insecurely`, `delete_insecurely`,
+ `bulk_*_insecurely`) bypass RLS by issuing `SET LOCAL row_security = off`
+ themselves before running their query. `objects_insecurely()` is the
+ exception: it is synchronous with no ctx, so it cannot issue `SET LOCAL` —
+ the caller must issue the bypass on the ctx before the terminal method (see
+ the `objects_insecurely` pattern below).
 
 ---
 
@@ -66,40 +66,40 @@ use djogi::prelude::*;
 #[model(table = "posts", tenant_key = "org_id")]
 #[derive(Debug, Clone)]
 pub struct Post {
-    pub org_id: i64,
-    pub title: String,
-    pub body: String,
+ pub org_id: i64,
+ pub title: String,
+ pub body: String,
 }
 
 async fn list_posts_for_org(pool: &DjogiPool, org_id: i64) -> Result<Vec<Post>, DjogiError> {
-    djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
-        // Activate tenant isolation for this transaction.
-        ctx.set_tenant(&org_id.to_string()).await?;
+ djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
+ // Activate tenant isolation for this transaction.
+ ctx.set_tenant(&org_id.to_string()).await?;
 
-        // All queries inside atomic() now see only rows where org_id matches.
-        let posts = Post::objects().fetch_all(ctx).await?;
-        Ok(posts)
-    })).await
+ // All queries inside atomic() now see only rows where org_id matches.
+ let posts = Post::objects().fetch_all(ctx).await?;
+ Ok(posts)
+ })).await
 }
 
 async fn create_post_for_org(
-    pool: &DjogiPool,
-    org_id: i64,
-    title: String,
-    body: String,
+ pool: &DjogiPool,
+ org_id: i64,
+ title: String,
+ body: String,
 ) -> Result<Post, DjogiError> {
-    djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
-        ctx.set_tenant(&org_id.to_string()).await?;
+ djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
+ ctx.set_tenant(&org_id.to_string()).await?;
 
-        let post = Post::create(ctx, Post {
-            org_id,
-            title,
-            body,
-            ..Default::default()
-        }).await?;
+ let post = Post::create(ctx, Post {
+  org_id,
+  title,
+  body,
+ ..Default::default()
+ }).await?;
 
-        Ok(post)
-    })).await
+ Ok(post)
+ })).await
 }
 ```
 
@@ -127,25 +127,25 @@ use djogi::prelude::*;
 
 // Async method — bypass is internal; just wrap the call in atomic():
 async fn fetch_one(pool: &DjogiPool, post_id: HeerIdRecencyBiased) -> djogi::Result<Post> {
-    djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
-        let post = Post::get_insecurely(ctx, post_id).await?;
-        Ok(post)
-    })).await
+ djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
+ let post = Post::get_insecurely(ctx, post_id).await?;
+ Ok(post)
+ })).await
 }
 
 // Lazy queryset — caller issues SET LOCAL before the terminal method.
 // `ctx.raw_execute` requires the bypass attribute + JUSTIFICATION because raw
-// SQL is djogi's `unsafe`-equivalent (see ../spec/raw-sql-escape-hatches.md).
+// SQL is djogi's `unsafe`-equivalent (see../spec/raw-sql-escape-hatches.md).
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): `SET LOCAL row_security` is a session GUC; no typed surface covers it.
 async fn fetch_all_insecurely(pool: &DjogiPool) -> djogi::Result<Vec<Post>> {
-    djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
-        // Emits: tracing::warn!(model = "Post", method = "objects_insecurely", ...)
-        let qs = Post::objects_insecurely();
-        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
-        let all_posts = qs.fetch_all(ctx).await?;
-        Ok(all_posts)
-    })).await
+ djogi::transaction::atomic(pool, |ctx| Box::pin(async move {
+ // Emits: tracing::warn!(model = "Post", method = "objects_insecurely",...)
+ let qs = Post::objects_insecurely();
+ ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+ let all_posts = qs.fetch_all(ctx).await?;
+ Ok(all_posts)
+ })).await
 }
 ```
 
@@ -185,13 +185,13 @@ Postgres to reject the query (the `current_setting(..., true)` call returns
 > Two safe paths:
 >
 > - **Production:** connect the application pool as a non-owner, non-superuser
->   role per the "Restricted roles" subsection below. RLS is always active for
->   such roles.
+> role per the "Restricted roles" subsection below. RLS is always active for
+> such roles.
 > - **Test harness:** if connecting as the owner is unavoidable, drop privilege
->   inside the test scope with `SET LOCAL ROLE <restricted_role>` issued via
->   `ctx.raw_execute(...)` before the `set_tenant(...)` call. The `LOCAL`
->   keyword scopes the role change to the current transaction, so it
->   automatically reverts at commit / rollback.
+> inside the test scope with `SET LOCAL ROLE <restricted_role>` issued via
+> `ctx.raw_execute(...)` before the `set_tenant(...)` call. The `LOCAL`
+> keyword scopes the role change to the current transaction, so it
+> automatically reverts at commit / rollback.
 
 ### Restricted roles (recommended production setup)
 
@@ -216,7 +216,7 @@ have tenant isolation), issue `SET LOCAL row_security = off` manually via
 `raw_execute`. `ctx.raw_execute` is part of djogi's raw escape surface, so
 the enclosing item must be decorated with
 `#[djogi::deliberately_bypass_convention_with_raw_sql]` and paired with an
-adjacent `// JUSTIFICATION (djogi#<n>): ...` comment (see
+adjacent `// JUSTIFICATION (djogi#<n>):...` comment (see
 [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)):
 
 ```rust
@@ -225,12 +225,12 @@ use djogi::prelude::*;
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): SET LOCAL row_security toggles a session GUC; no typed surface covers it.
 async fn cross_tenant_window(ctx: &mut DjogiContext) -> djogi::Result<Vec<Post>> {
-    ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
-    // Queries here bypass RLS until the transaction commits or rolls back.
-    let cross_tenant_rows = Post::objects_insecurely().fetch_all(ctx).await?;
-    // Re-enable before continuing with tenant-isolated work:
-    ctx.raw_execute("SET LOCAL row_security = on", &[]).await?;
-    Ok(cross_tenant_rows)
+ ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+ // Queries here bypass RLS until the transaction commits or rolls back.
+ let cross_tenant_rows = Post::objects_insecurely().fetch_all(ctx).await?;
+ // Re-enable before continuing with tenant-isolated work:
+ ctx.raw_execute("SET LOCAL row_security = on", &[]).await?;
+ Ok(cross_tenant_rows)
 }
 ```
 

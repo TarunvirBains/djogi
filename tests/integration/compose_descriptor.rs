@@ -5,11 +5,11 @@
 //! slot under three conditions:
 //!
 //! 1. A `#[model(auditable)]` model carries
-//!    `composed_via: Some("Auditable")` on its `created_by` column.
+//!  `composed_via: Some("Auditable")` on its `created_by` column.
 //! 2. A `#[model(soft_deletable)]` model carries
-//!    `composed_via: Some("SoftDeletable")` on its `deleted_at` column.
+//!  `composed_via: Some("SoftDeletable")` on its `deleted_at` column.
 //! 3. A regular user-declared field (no composition opt-in contributing
-//!    it) keeps `composed_via: None`.
+//!  it) keeps `composed_via: None`.
 //!
 //! These are pure descriptor-inspection tests — no Postgres, no async
 //! runtime. They run as plain `#[test]` because the macro-emitted
@@ -71,8 +71,8 @@ fn auditable_field_descriptor_carries_composed_via() {
         created_by.composed_via,
         Some("Auditable"),
         "#[model(auditable)] must tag the `created_by` column with \
-         composed_via = Some(\"Auditable\") so docs / admin tooling \
-         can render the column's provenance",
+     composed_via = Some(\"Auditable\") so docs / admin tooling \
+     can render the column's provenance",
     );
 }
 
@@ -107,8 +107,8 @@ fn soft_deletable_field_descriptor_carries_composed_via() {
         deleted_at.composed_via,
         Some("SoftDeletable"),
         "a model carrying a `deleted_at` field must tag that column \
-         with composed_via = Some(\"SoftDeletable\") so docs / admin \
-         tooling can render the column's provenance",
+     with composed_via = Some(\"SoftDeletable\") so docs / admin \
+     tooling can render the column's provenance",
     );
 }
 
@@ -140,7 +140,7 @@ fn regular_field_composed_via_none() {
     assert!(
         value.composed_via.is_none(),
         "a user-declared field on a model with no composition opt-in \
-         must keep composed_via = None; got {:?}",
+     must keep composed_via = None; got {:?}",
         value.composed_via,
     );
 }
@@ -174,9 +174,9 @@ fn deleted_at_without_opt_in_keeps_composed_via_none() {
     assert!(
         deleted_at.composed_via.is_none(),
         "a `deleted_at` column on a model that does NOT opt into \
-         #[model(soft_deletable)] must keep composed_via = None; \
-         detection was tightened from field-name-only to \
-         field-name-plus-flag. got {:?}",
+     #[model(soft_deletable)] must keep composed_via = None; \
+     detection was tightened from field-name-only to \
+     field-name-plus-flag. got {:?}",
         deleted_at.composed_via,
     );
 }
@@ -204,7 +204,7 @@ fn framework_fields_composed_via_none() {
         assert!(
             f.composed_via.is_none(),
             "framework column `{col}` must keep composed_via = None; \
-             framework injection is not a composition derive. got {:?}",
+       framework injection is not a composition derive. got {:?}",
             f.composed_via,
         );
     }

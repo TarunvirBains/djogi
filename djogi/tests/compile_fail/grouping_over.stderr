@@ -1,10 +1,10 @@
 error[E0599]: no method named `over` found for struct `AggregateExpr<i32, MetadataAgg>` in the current scope
-  --> $DIR/grouping_over.rs:12:77
-   |
-12 |     let _ = GroupingOverModel::objects().annotate(|f| f.region().grouping().over(|w| w));
-   |                                                                             ^^^^ method not found in `AggregateExpr<i32, MetadataAgg>`
-   |
-   = note: the method was found for `AggregateExpr<Out>`
+ --> $DIR/grouping_over.rs:12:77
+ |
+12 |  let _ = GroupingOverModel::objects().annotate(|f| f.region().grouping().over(|w| w));
+ |                    ^^^^ method not found in `AggregateExpr<i32, MetadataAgg>`
+ |
+ = note: the method was found for `AggregateExpr<Out>`
 
 error: aborting due to 1 previous error
 

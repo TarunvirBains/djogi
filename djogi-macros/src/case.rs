@@ -52,8 +52,8 @@ impl RenameAll {
                 span,
                 format!(
                     "unknown rename_all value `{other}`; expected one of: \
-                     snake_case, SCREAMING_SNAKE_CASE, lowercase, UPPERCASE, \
-                     PascalCase, camelCase, kebab-case"
+      snake_case, SCREAMING_SNAKE_CASE, lowercase, UPPERCASE, \
+      PascalCase, camelCase, kebab-case"
                 ),
             )),
         }
@@ -95,12 +95,12 @@ impl RenameAll {
     /// `PascalCase`:
     /// - `camelCase`: `engine_type` → `engineType` (via `snake_to_camel`)
     /// - `PascalCase`: `engine_type` → `EngineType` (via `snake_to_pascal`)
-    ///   All other rules (`snake_case`, `SCREAMING_SNAKE_CASE`, `lowercase`,
-    ///   `UPPERCASE`, `kebab-case`) produce the same output for snake_case input
-    ///   as they do for PascalCase input — the byte-level operations are neutral
-    ///   to the boundary style.
-    ///   Input must be a valid Rust identifier (ASCII). Non-ASCII input has
-    ///   undefined behaviour — out-of-scope per `feedback_no_regex_in_djogi`.
+    /// All other rules (`snake_case`, `SCREAMING_SNAKE_CASE`, `lowercase`,
+    /// `UPPERCASE`, `kebab-case`) produce the same output for snake_case input
+    /// as they do for PascalCase input — the byte-level operations are neutral
+    /// to the boundary style.
+    /// Input must be a valid Rust identifier (ASCII). Non-ASCII input has
+    /// undefined behaviour — out-of-scope per `feedback_no_regex_in_djogi`.
     pub(crate) fn apply_to_field(self, name: &str) -> String {
         match self {
             RenameAll::SnakeCase => name.to_owned(),
@@ -182,7 +182,7 @@ pub(crate) fn pascal_to_camel(name: &str) -> String {
 /// - `weight_kg` → `weightKg`
 /// - `foo` → `foo` (no underscores, no change)
 /// - `already_lower` → `alreadyLower`
-///   Pure byte-level — no regex.
+/// Pure byte-level — no regex.
 pub(crate) fn snake_to_camel(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut capitalise_next = false;

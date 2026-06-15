@@ -1,7 +1,7 @@
 error: unregistered codec ID `unknown_codec_v1`. Valid codec IDs in this build of Djogi: aes256_gcm_v1
-  --> $DIR/protected_unknown_codec.rs:13:17
-   |
-13 |         codec = "unknown_codec_v1"
-   |                 ^^^^^^^^^^^^^^^^^^
+ --> $DIR/protected_unknown_codec.rs:13:17
+ |
+13 |   codec = "unknown_codec_v1"
+ |     ^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 1 previous error

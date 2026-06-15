@@ -5,9 +5,9 @@
 -- Keeping them separate avoids collisions with the existing array/JSONB tests.
 
 CREATE TABLE IF NOT EXISTS typed_posts (
-    id          BIGINT PRIMARY KEY DEFAULT generate_id(),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    title       TEXT NOT NULL,
-    specs       JSONB NULL
+  id     BIGINT PRIMARY KEY DEFAULT generate_id(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  title    TEXT NOT NULL,
+  specs    JSONB NULL
 );

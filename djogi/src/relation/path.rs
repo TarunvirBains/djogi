@@ -35,7 +35,7 @@
 //! identifier that would reach SQL emission.
 //! # scope
 //! `RelationKind` lists `ForeignKey` and `OneToOne` — the two relation
-//! shapes landed by Tasks 1 + 2. Task 7 adds a `ManyToMany` variant; the
+//! shapes landed by Tasks 1 + 2. adds a `ManyToMany` variant; the
 //! enum is `#[non_exhaustive]` so growing it is non-breaking for downstream
 //! matches.
 
@@ -68,18 +68,18 @@ pub enum RelationKind {
 /// Produced by the macro-emitted `{Source}Related` accessor struct; never
 /// constructed by user code. A `RelationPath<Vehicle, Owner>` carries:
 /// - `source_column` — the column on `Source`'s table that stores the
-///   target's primary key (e.g. `"owner_id"`);
+/// target's primary key (e.g. `"owner_id"`);
 /// - `target_table` — `Target::table_name()` at macro-expansion time;
 /// - `kind` — whether the relation is a `ForeignKey` or `OneToOne`.
-///   The struct is a ZST plus three `&'static` members and one enum
-///   discriminant; it costs a handful of bytes to pass around and a free
-///   type-level proof that `Source` and `Target` line up. Tasks
-///   4 + 5 (`prefetch` / `select_related`) consume these handles.
-///   Does not yet expose Getters for the `Source`/`Target` markers
-///   the type-level proof is all that downstream code needs. If a later
-///   phase grows a reflective API over the marker, it should add explicit
-///   type-level accessors here rather than expose the `PhantomData` field
-///   directly.
+/// The struct is a ZST plus three `&'static` members and one enum
+/// discriminant; it costs a handful of bytes to pass around and a free
+/// type-level proof that `Source` and `Target` line up. Tasks
+/// 4 + 5 (`prefetch` / `select_related`) consume these handles.
+/// Does not yet expose Getters for the `Source`/`Target` markers
+/// the type-level proof is all that downstream code needs. If a later
+/// phase grows a reflective API over the marker, it should add explicit
+/// type-level accessors here rather than expose the `PhantomData` field
+/// directly.
 #[derive(Debug, Clone, Copy)]
 pub struct RelationPath<Source: Model, Target: Model> {
     pub(crate) source_column: &'static str,
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn relation_path_one_to_one_kind_round_trips() {
         // OneToOne paths are the other variant ships
-        // pin the discriminant so Task 7's `ManyToMany` addition
+        // pin the discriminant so 's `ManyToMany` addition
         // doesn't accidentally renumber the existing variants.
         let p: RelationPath<Src, Dst> = RelationPath::new("dst_id", "dsts", RelationKind::OneToOne);
         assert_eq!(p.kind(), RelationKind::OneToOne);

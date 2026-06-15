@@ -1,20 +1,20 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 ## 13. The Shell
 
 ### 13.0 Role of the Shell
 
-> **Current status:** Phase 9 target; `djogi shell` is deferred in v0.1.0 shipped CLI.
+> **Current status:** target; `djogi shell` is deferred in v0.1.0 shipped CLI.
 
 The Rhai shell is the **primary surface through which application developers iterate on queries**. It is not an admin REPL or an occasional inspection tool — it is the iteration loop where query patterns are discovered, refined, timed, and rewritten before they are committed back to `.rs` files as `QuerySet` chains. Adopters writing non-trivial query code will spend more time in the shell than in their editor for the duration of that work.
 
 This positioning has consequences:
 
-- **Startup latency is a product feature**, not just a developer convenience. A shell that takes seconds to launch fragments the iteration loop; a shell that launches in well under a second supports the rapid try-revise-retry rhythm queries require. Phase 9 treats startup speed as a hard constraint with measurable budgets, not a "nice to have."
+- **Startup latency is a product feature**, not just a developer convenience. A shell that takes seconds to launch fragments the iteration loop; a shell that launches in well under a second supports the rapid try-revise-retry rhythm queries require. treats startup speed as a hard constraint with measurable budgets, not a "nice to have."
 - **Shell ergonomics are first-class.** Persistent history, syntax highlighting, autocomplete on registered model methods, transparent SQL inspection (`EXPLAIN`, last-query echo), and per-call timing all belong in the shell target surface, and the current shipped surface is still closed to this capability.
-- **The shell is where other harnesses defer "workshop" affordances.** `lihaaf`'s v0.1 spec (see [`lihaaf-v0.1.md`](./lihaaf-v0.1.md), TBD) explicitly defers interactive workshop mode to Phase 9 on the basis that the Rhai shell is already that workshop for query authors. Building a second interactive surface elsewhere would fragment the iteration story without serving a use case the shell does not already cover.
+- **The shell is where other harnesses defer "workshop" affordances.** `lihaaf`'s v0.1 spec (see [`lihaaf-v0.1.md`](./lihaaf-v0.1.md), TBD) explicitly defers interactive workshop mode to on the basis that the Rhai shell is already that workshop for query authors. Building a second interactive surface elsewhere would fragment the iteration story without serving a use case the shell does not already cover.
 
-The closest external analog is Django's `manage.py shell`, but the comparison undersells what Phase 9 targets: Django's shell loads the ORM and stops. Djogi's shell additionally owns the `djqry` authoring loop (§13.9), splits parse from eval for instant syntax-error feedback (§13.10), and is the binary that the dynamic library architecture (§13.11) is sized for.
+The closest external analog is Django's `manage.py shell`, but the comparison undersells what targets: Django's shell loads the ORM and stops. Djogi's shell additionally owns the `djqry` authoring loop (§13.9), splits parse from eval for instant syntax-error feedback (§13.10), and is the binary that the dynamic library architecture (§13.11) is sized for.
 
 ### 13.1 Invocation
 ```bash
@@ -34,7 +34,7 @@ Errors print a clean one-liner in the shell and never unwind the session. Local 
 ```
 djogi> let car = Vehicle::get(99999)
 Error: record not found (vehicles where id = 99999)
-  → traceback saved to .djogi_shell_errors/2025-03-26T10-42-11_001.log
+ → traceback saved to.djogi_shell_errors/2025-03-26T10-42-11_001.log
 
 djogi> let car = Vehicle::get(42)
 djogi> car.gas_fill = 90
@@ -46,30 +46,30 @@ Errors inside a transaction do not auto-rollback — that is always the develope
 djogi (txn)> car.owner_id = 99999
 djogi (txn)> car.save()
 Error: foreign key violation — owner_id 99999 does not exist in owners
-  → traceback saved to .djogi_shell_errors/2025-03-26T10-42-33_002.log
+ → traceback saved to.djogi_shell_errors/2025-03-26T10-42-33_002.log
 Note: Postgres has aborted this transaction. Call rollback() to clear it.
 djogi (txn)>
 ```
 Error log format:
 ```
-# .djogi_shell_errors/2025-03-26T10-42-33_002.log
+#.djogi_shell_errors/2025-03-26T10-42-33_002.log
 
-Timestamp:   2025-03-26T10:42:33Z
-Session:     started 2025-03-26T10:40:11Z
+Timestamp: 2025-03-26T10:42:33Z
+Session: started 2025-03-26T10:40:11Z
 Transaction: open (began 2025-03-26T10:41:05Z)
 
-Error:       foreign key violation
-Message:     insert or update on table "vehicles" violates foreign key constraint
-             "vehicles_owner_id_fkey"
-Detail:      Key (owner_id)=(99999) is not present in table "owners"
+Error: foreign key violation
+Message: insert or update on table "vehicles" violates foreign key constraint
+  "vehicles_owner_id_fkey"
+Detail: Key (owner_id)=(99999) is not present in table "owners"
 
 Rhai stack:
-  at save() [built-in]
-  at line 3, col 1 in shell session
+ at save() [built-in]
+ at line 3, col 1 in shell session
 
 SQL attempted:
-  UPDATE vehicles SET owner_id = $1, updated_at = $2 WHERE id = $3
-  params: [99999, 2025-03-26T10:42:33Z, 42]
+ UPDATE vehicles SET owner_id = $1, updated_at = $2 WHERE id = $3
+ params: [99999, 2025-03-26T10:42:33Z, 42]
 ```
 Full stack traces are enabled in all log files by default. Pass `--verbose` at shell startup to also print them inline for framework debugging.
 Log files are auto-purged on shell startup based on `error_log_retention` (default: `1y`). Manual clear: `.clear_errors`.
@@ -90,7 +90,7 @@ Transaction timeout [default: 30m]:
 djogi (txn)> let car = Vehicle::get(42)
 djogi (txn)> car.gas_fill = 0
 djogi (txn)> car.save()
-djogi (txn)> pp(Vehicle::get(42))    // inspect safely inside the transaction
+djogi (txn)> pp(Vehicle::get(42)) // inspect safely inside the transaction
 djogi (txn)> commit()
 djogi>
 
@@ -111,12 +111,12 @@ commit();
 ```
 ### 13.5 Shell Capabilities
 ```rhai
-// Query — no .await
+// Query — no.await
 let cars = Vehicle::objects()
-    .filter_struct(VehicleFilter::new().gas_fill(Gte(69)).active(Eq(true)))
-    .fetch_all();
+.filter_struct(VehicleFilter::new().gas_fill(Gte(69)).active(Eq(true)))
+.fetch_all();
 
-pp(cars);                            // ASCII table
+pp(cars);    // ASCII table
 print(cars[0].make);
 
 // FK traversal
@@ -166,19 +166,19 @@ pp(rows);
 Shell sessions can be saved as named Rhai scripts and replayed later or shared with teammates.
 Export writes the current session's meaningful history to `scripts/`:
 ```
-djogi> .export analysis_q3_vehicles
+djogi>.export analysis_q3_vehicles
 Saved to scripts/analysis_q3_vehicles.rhai
 ```
 Raw navigation (up-arrow corrections, typos) is filtered out. The developer can open the file, clean it up, and commit it.
 Bookmark a mid-session position to export from a specific point:
 ```
-djogi> .bookmark before_delete
-djogi> .export backfill_owners --from before_delete
+djogi>.bookmark before_delete
+djogi>.export backfill_owners --from before_delete
 Saved to scripts/backfill_owners.rhai
 ```
 Import / run inside the REPL:
 ```
-djogi> .import analysis_q3_vehicles
+djogi>.import analysis_q3_vehicles
 Running scripts/analysis_q3_vehicles.rhai...
 djogi>
 ```
@@ -189,10 +189,10 @@ djogi shell --run scripts/analysis_q3_vehicles.rhai
 Scripts run in the full shell environment with access to all models. They are useful beyond history replay — lightweight data analysis, one-off backfills, or team-shared query libraries.
 Gitignore convention:
 ```
-.djogi_history            # gitignored — personal, noisy
-.djogi_shell_errors/      # gitignored — full tracebacks, retained for 1y by default
-scripts/                  # committed — curated, shareable
-seeds.rhai                # committed — project seed data
+.djogi_history  # gitignored — personal, noisy
+.djogi_shell_errors/ # gitignored — full tracebacks, retained for 1y by default
+scripts/   # committed — curated, shareable
+seeds.rhai  # committed — project seed data
 ```
 ### 13.8 Seed Scripts
 `seeds.rhai` at project root runs in the full shell environment:
@@ -203,14 +203,14 @@ Uses the same model API the developer already knows.
 
 ### 13.9 `djqry` Authoring Loop
 
-The shell is the canonical authoring surface for `djqry` SQL overrides (Phase 9c — see [`implementation-plan.md`](./implementation-plan.md) §9c). The *test → optimize → compile → deploy* cycle never requires leaving the REPL in Phase 9 target behavior.
+The shell is the canonical authoring surface for `djqry` SQL overrides (c — see [`implementation-plan.md`](./implementation-plan.md) §9c). The *test → optimize → compile → deploy* cycle never requires leaving the REPL in target behavior.
 
 ```rhai
 // Run the macro-query you suspect is suboptimal
 let plan = Vehicle::objects()
-    .filter_struct(VehicleFilter::new().expired_registration(Eq(true)))
-    .prefetch(VehicleRelated::owner_id())
-    .fetch_all();
+.filter_struct(VehicleFilter::new().expired_registration(Eq(true)))
+.prefetch(VehicleRelated::owner_id())
+.fetch_all();
 
 // Capture it as the starting point for an override
 djqry.export(last_query, "expired_registrations");
@@ -244,7 +244,7 @@ The shell separates the two phases of Rhai script execution. When the user submi
 ```
 djogi> let cars = Vehicle::objects().fitler(|v| v.active().eq(true)).fetch_all()
 Parse error: unknown method `fitler` (did you mean `filter`?)
-                                        ^^^^^^
+     ^^^^^^
 djogi>
 ```
 
@@ -261,13 +261,13 @@ The split is cheap to add (Rhai's `Engine::compile` is built for this use case) 
 - `Engine::set_strict_variables(true)` — undeclared variable references become compile-time errors instead of runtime errors. This catches typos in identifier names without needing a database connection.
 - Custom `OnVarFn` resolvers — the shell can hook variable resolution at compile time to verify that referenced model bindings (`Vehicle`, `Owner`, etc.) exist in the registered binding set before `eval_ast` runs.
 
-**Recommendation:** Phase 9 enables `set_strict_variables(true)` by default and registers an `OnVarFn` resolver that validates model-binding identifiers against the `inventory`-collected descriptor set. The cost is a small amount of additional parse-time work on every line; the gain is that mistyped model names (`Vechile::objects()`) surface as parse errors with caret positioning rather than as runtime errors several lines into a script. Function-arity and argument-type checks remain runtime errors — Rhai does not expose a compile-time type checker for dynamic dispatch. Adopters who need stronger pre-execution guarantees should commit the validated query to `.rs` and let the Rust compiler enforce its contracts.
+**Recommendation:** enables `set_strict_variables(true)` by default and registers an `OnVarFn` resolver that validates model-binding identifiers against the `inventory`-collected descriptor set. The cost is a small amount of additional parse-time work on every line; the gain is that mistyped model names (`Vechile::objects()`) surface as parse errors with caret positioning rather than as runtime errors several lines into a script. Function-arity and argument-type checks remain runtime errors — Rhai does not expose a compile-time type checker for dynamic dispatch. Adopters who need stronger pre-execution guarantees should commit the validated query to `.rs` and let the Rust compiler enforce its contracts.
 
 ### 13.11 Dynamic Library Coupling
 
-Phase 9 requires `djogi` to be buildable as a Rust dynamic library. The shell binary dynamically loads `libdjogi.so` at startup and dispatches all model, query, descriptor, and runtime calls through the loaded library; queries call into the dylib via Rhai's function-binding layer.
+ requires `djogi` to be buildable as a Rust dynamic library. The shell binary dynamically loads `libdjogi.so` at startup and dispatches all model, query, descriptor, and runtime calls through the loaded library; queries call into the dylib via Rhai's function-binding layer.
 
-This is a load-bearing architectural choice for Phase 9, and it is shared with `lihaaf` (a separate test harness with its own spec — see [`lihaaf-v0.1.md`](./lihaaf-v0.1.md), TBD). Both surfaces depend on the same property: when djogi is built as a dynamic library, runtime registrations made via `inventory::submit!` inside djogi must be visible to consumers (the shell binary, fixture binaries) that link the dylib. The inventory-on-dylib spike (see [`docs/research/2026-05-10-inventory-on-dylib-spike.md`](../research/2026-05-10-inventory-on-dylib-spike.md), TBD) is currently validating this property; §13.13 describes the contingencies for each spike outcome.
+This is a load-bearing architectural choice for, and it is shared with `lihaaf` (a separate test harness with its own spec — see [`lihaaf-v0.1.md`](./lihaaf-v0.1.md), TBD). Both surfaces depend on the same property: when djogi is built as a dynamic library, runtime registrations made via `inventory::submit!` inside djogi must be visible to consumers (the shell binary, fixture binaries) that link the dylib. The inventory-on-dylib spike (see [`docs/research/2026-05-10-inventory-on-dylib-spike.md`](../research/2026-05-10-inventory-on-dylib-spike.md), TBD) is currently validating this property; §13.13 describes the contingencies for each spike outcome.
 
 **What the dylib coupling buys.** Be precise about this — easy claims about "faster" do not survive scrutiny:
 
@@ -286,12 +286,12 @@ The honest framing: dylib serves the iteration loop (faster shell rebuilds, smal
 
 ### 13.12 Plugin Loading via `rhai-dylib`
 
-Phase 9 evaluates `rhai-dylib` (https://crates.io/crates/rhai-dylib) as the plugin-loading mechanism. `rhai-dylib` lets Rhai scripts be precompiled to dynamic libraries and dlopen-ed at runtime — Phase 9 considers it for:
+ evaluates `rhai-dylib` (https://crates.io/crates/rhai-dylib) as the plugin-loading mechanism. `rhai-dylib` lets Rhai scripts be precompiled to dynamic libraries and dlopen-ed at runtime — considers it for:
 
 - Shipping precompiled Rhai modules (helper libraries, common query patterns, user-defined macros) as `.so` files alongside the shell binary, avoiding per-startup parse costs for large Rhai script libraries
 - Letting the user's project ship "Rhai sidecar" modules that get loaded into the shell session — adopters package query helpers as compiled artifacts that other engineers on the team load with one command
 
-**Audit gate.** Before locking djogi's `[lib]` configuration to satisfy `rhai-dylib`'s requirements, Phase 9 includes a 30-minute audit item with explicit pass/fail thresholds:
+**Audit gate.** Before locking djogi's `[lib]` configuration to satisfy `rhai-dylib`'s requirements, includes a 30-minute audit item with explicit pass/fail thresholds:
 
 | Audit dimension | PASS | DEFER (revisit on revalidation date) | FAIL (close path, fall back to source-form modules) |
 |---|---|---|---|
@@ -302,13 +302,13 @@ Phase 9 evaluates `rhai-dylib` (https://crates.io/crates/rhai-dylib) as the plug
 
 **Owner and revalidation cadence.** The audit owner is named in the spike artifact alongside contingency selection. Revalidation runs at every Phase-9-affecting Rhai version bump, every `rhai-dylib` release, and every 6 months absent other triggers. A `DEFER` outcome carries a date-bound revisit by the owner; a `FAIL` outcome closes the precompiled-`.so` plugin path until the failure dimension is resolved.
 
-`rhai-dylib` is the **planned** plugin mechanism, evaluation pending. It is not committed as a hard Phase 9 dependency until the audit passes (all dimensions PASS, or DEFER outcomes documented with explicit revisit dates). If the audit yields any FAIL, the fallback is to ship Phase 9 without precompiled-Rhai-module support and revisit when an alternative crate or upstream fix lands. Source-form Rhai modules loaded at startup time work without `rhai-dylib`; the audit only gates the precompiled-`.so` path.
+`rhai-dylib` is the **planned** plugin mechanism, evaluation pending. It is not committed as a hard dependency until the audit passes (all dimensions PASS, or DEFER outcomes documented with explicit revisit dates). If the audit yields any FAIL, the fallback is to ship without precompiled-Rhai-module support and revisit when an alternative crate or upstream fix lands. Source-form Rhai modules loaded at startup time work without `rhai-dylib`; the audit only gates the precompiled-`.so` path.
 
 ### 13.13 Spike Contingency
 
-The inventory-on-dylib spike (see [`docs/research/2026-05-10-inventory-on-dylib-spike.md`](../research/2026-05-10-inventory-on-dylib-spike.md), TBD) is validating whether `cargo rustc --crate-type=dylib` works for djogi AND whether `inventory::submit!` registrations made inside djogi remain visible to consumers that link the resulting dylib. Phase 9 is specced assuming the spike's best outcome; this section names the contingencies for the other three.
+The inventory-on-dylib spike (see [`docs/research/2026-05-10-inventory-on-dylib-spike.md`](../research/2026-05-10-inventory-on-dylib-spike.md), TBD) is validating whether `cargo rustc --crate-type=dylib` works for djogi AND whether `inventory::submit!` registrations made inside djogi remain visible to consumers that link the resulting dylib. is specced assuming the spike's best outcome; this section names the contingencies for the other three.
 
-**Best case — `GO_NATIVE`.** `cargo rustc --crate-type=dylib` produces a working `libdjogi.so` and inventory registrations propagate natively across the dylib boundary. Phase 9 targets the architecture above: shell binary dlopens the dylib, all model/descriptor/runtime calls dispatch through it, no special build configuration beyond a per-target `cargo rustc` invocation. **No changes to djogi's `Cargo.toml` required.**
+**Best case — `GO_NATIVE`.** `cargo rustc --crate-type=dylib` produces a working `libdjogi.so` and inventory registrations propagate natively across the dylib boundary. targets the architecture above: shell binary dlopens the dylib, all model/descriptor/runtime calls dispatch through it, no special build configuration beyond a per-target `cargo rustc` invocation. **No changes to djogi's `Cargo.toml` required.**
 
 **Contingency 1 — `GO_WITH_MANIFEST`.** `cargo rustc --crate-type=dylib` works but inventory propagation only succeeds when djogi's `Cargo.toml` declares the dylib at manifest level rather than per-invocation. Resolution: djogi's `Cargo.toml` adds:
 
@@ -321,7 +321,7 @@ Both crate types are emitted on every build. Adopters who consume djogi as a nor
 
 **Contingency 2 — `GO_WITH_WORKAROUND`.** Both `cargo rustc` and the manifest-level declaration produce a working dylib but inventory propagation fails — the dylib boundary breaks the static-section trick `inventory` uses to collect submissions at startup. Resolution: djogi exposes explicit per-collection `pub fn lihaaf_inventory_collect_<T>()` re-exports for every inventory-collected type (`ModelDescriptor`, `AppDescriptor`, etc.). The shell and lihaaf call these explicit collection functions at startup instead of relying on `inventory::iter`. Slightly verbose at the call site; functionally equivalent. The naming convention `lihaaf_inventory_collect_*` is shared with the lihaaf crate so both consumers reuse the same surface.
 
-**Spike must evaluate alternate registration mechanisms before locking in the workaround.** The `lihaaf_inventory_collect_<T>()` re-export is the proposed resolution but it ties djogi's cross-DSO contract to a single registry mechanism (the `inventory` crate). Phase 9 surfaces other registries over time (trait-impl registry, hook registry, codec registry, Sassi boot hooks); each new registry would otherwise need its own bespoke re-export. The spike artifact MUST evaluate at least these alternatives and record which mechanism becomes the canonical cross-DSO registration path:
+**Spike must evaluate alternate registration mechanisms before locking in the workaround.** The `lihaaf_inventory_collect_<T>()` re-export is the proposed resolution but it ties djogi's cross-DSO contract to a single registry mechanism (the `inventory` crate). surfaces other registries over time (trait-impl registry, hook registry, codec registry, Sassi boot hooks); each new registry would otherwise need its own bespoke re-export. The spike artifact MUST evaluate at least these alternatives and record which mechanism becomes the canonical cross-DSO registration path:
 
 - `linkme` — distributed slice with explicit linker-section coordination; documented dylib behavior on at least Linux + macOS
 - `ctor` — explicit constructor functions registered at load time; works across DSOs by design but pays per-call cost at process startup
@@ -329,10 +329,10 @@ Both crate types are emitted on every build. Adopters who consume djogi as a nor
 
 The chosen mechanism applies to all future registries that need to cross the DSO boundary, not just the inventory ones. Migration rule: if a future registry can't use the chosen mechanism, that registry stays inside djogi and is exposed to consumers through a typed accessor — never through a parallel cross-DSO trick.
 
-**Contingency 3 — `RUNTIME_INCOMPATIBLE`.** Build steps succeed (`cargo rustc --crate-type=dylib` produces a `libdjogi.so`, manifest-level declaration optionally added, optionally with the workaround re-exports), inventory propagation passes its compile-time probe, but the dylib fails at runtime when the shell binary attempts to load it. Common causes: TLS constructor/destructor ordering issues (per-thread initializers run in incompatible order across DSO boundaries), loader incompatibilities on a specific platform (`dlopen` vs `LoadLibrary` semantic differences leaking into shared crate state), global-singleton initialization races (sassi/punnu boot order, three-database connection pool initialization, tracing subscriber installation), or incompatible runtime feature sets (`tokio` runtime instance held by the dylib vs the shell). Resolution: the spike artifact MUST include a runtime smoke test that exercises (a) shell binary `dlopen`s the dylib, (b) calls into one descriptor lookup, one query construction, and one transaction-scoped operation, and (c) cleanly tears down. Failure here scopes Phase 9 the same way `NO_GO` does (statically-linked shell, dylib-dependent items deferred), but with a different remediation path: the underlying blocker is in djogi's runtime initialization rather than its build configuration, and the fix is to redesign whatever global-state initialization conflicts with the DSO boundary. Phase 9 may also choose to defer this contingency's resolution to a Phase-9.5 or future task if the redesign cost is high.
+**Contingency 3 — `RUNTIME_INCOMPATIBLE`.** Build steps succeed (`cargo rustc --crate-type=dylib` produces a `libdjogi.so`, manifest-level declaration optionally added, optionally with the workaround re-exports), inventory propagation passes its compile-time probe, but the dylib fails at runtime when the shell binary attempts to load it. Common causes: TLS constructor/destructor ordering issues (per-thread initializers run in incompatible order across DSO boundaries), loader incompatibilities on a specific platform (`dlopen` vs `LoadLibrary` semantic differences leaking into shared crate state), global-singleton initialization races (sassi/punnu boot order, three-database connection pool initialization, tracing subscriber installation), or incompatible runtime feature sets (`tokio` runtime instance held by the dylib vs the shell). Resolution: the spike artifact MUST include a runtime smoke test that exercises (a) shell binary `dlopen`s the dylib, (b) calls into one descriptor lookup, one query construction, and one transaction-scoped operation, and (c) cleanly tears down. Failure here scopes the same way `NO_GO` does (statically-linked shell, dylib-dependent items deferred), but with a different remediation path: the underlying blocker is in djogi's runtime initialization rather than its build configuration, and the fix is to redesign whatever global-state initialization conflicts with the DSO boundary. may also choose to defer this contingency's resolution to a Phase-9.5 or future task if the redesign cost is high.
 
-**Contingency 4 — `NO_GO`.** `cargo rustc --crate-type=dylib` fails outright on djogi (proc-macro dependencies, build-script outputs, or workspace shape rejects dylib emission). Resolution: Phase 9 targets a statically-linked shell fallback. The build-iteration, plugin-ecosystem, and distribution-size benefits are deferred until the underlying blocker resolves (likely a Rust toolchain or workspace-config fix). The shell still works — startup is slower, the binary is larger, `rhai-dylib` plugin loading is unsupported until the dylib path opens. Phase 9's parse-vs-eval split, djqry authoring loop, and ergonomics improvements all target regardless; only the dylib-dependent items defer. **`NO_GO` and `RUNTIME_INCOMPATIBLE` are the only contingencies that materially reshape Phase 9's deliverable set; the spike is sized to surface either one early enough to avoid building toward an architecture that won't compile or won't load.**
+**Contingency 4 — `NO_GO`.** `cargo rustc --crate-type=dylib` fails outright on djogi (proc-macro dependencies, build-script outputs, or workspace shape rejects dylib emission). Resolution: targets a statically-linked shell fallback. The build-iteration, plugin-ecosystem, and distribution-size benefits are deferred until the underlying blocker resolves (likely a Rust toolchain or workspace-config fix). The shell still works — startup is slower, the binary is larger, `rhai-dylib` plugin loading is unsupported until the dylib path opens. 's parse-vs-eval split, djqry authoring loop, and ergonomics improvements all target regardless; only the dylib-dependent items defer. **`NO_GO` and `RUNTIME_INCOMPATIBLE` are the only contingencies that materially reshape 's deliverable set; the spike is sized to surface either one early enough to avoid building toward an architecture that won't compile or won't load.**
 
-The spike's outcome (one of `GO_NATIVE`, `GO_WITH_MANIFEST`, `GO_WITH_WORKAROUND`, `RUNTIME_INCOMPATIBLE`, `NO_GO`) is captured in the shell's Phase 9 task list before any dylib-dependent work begins. See `implementation-plan.md` §9 for the corresponding task graph and sequencing.
+The spike's outcome (one of `GO_NATIVE`, `GO_WITH_MANIFEST`, `GO_WITH_WORKAROUND`, `RUNTIME_INCOMPATIBLE`, `NO_GO`) is captured in the shell's task list before any dylib-dependent work begins. See `implementation-plan.md` §9 for the corresponding task graph and sequencing.
 
 ---

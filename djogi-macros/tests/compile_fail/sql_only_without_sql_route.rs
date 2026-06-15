@@ -24,15 +24,15 @@ use djogi::query::DjogiField;
 #[model(table = "phase8eta_sql_only_widgets")]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub name: String,
+ pub name: String,
 }
 
 fn main() {
-    let name_field: DjogiField<Widget, String> = __make_djogi_field("name", |w| &w.name);
+ let name_field: DjogiField<Widget, String> = __make_djogi_field("name", |w| &w.name);
 
-    // `.regex(...)` lives on `ExplicitPgPredicateField<M, String>`
-    // only. Calling it directly on `DjogiField<M, String>` must fail
-    // to compile because the portable surface deliberately omits
-    // PostgreSQL-locale methods.
-    let _ = name_field.regex("^rust");
+ // `.regex(...)` lives on `ExplicitPgPredicateField<M, String>`
+ // only. Calling it directly on `DjogiField<M, String>` must fail
+ // to compile because the portable surface deliberately omits
+ // PostgreSQL-locale methods.
+ let _ = name_field.regex("^rust");
 }

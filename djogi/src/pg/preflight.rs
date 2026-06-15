@@ -99,9 +99,9 @@ fn evaluate_version(version_num: u32) -> Result<PreflightReport, DjogiError> {
 /// enforcement boundary.
 /// # Errors
 /// - [`DjogiError::UnsupportedPostgresVersion`] — server major version
-///   is below [`MINIMUM_PG_MAJOR`].
+/// is below [`MINIMUM_PG_MAJOR`].
 /// - [`DjogiError::Db`] — connection checkout or `SHOW` query failed
-///   (network, auth, etc.).
+/// (network, auth, etc.).
 pub async fn check_postgres_version(pool: &DjogiPool) -> Result<PreflightReport, DjogiError> {
     let version_num = query_server_version_num(pool).await?;
     evaluate_version(version_num)
@@ -123,7 +123,7 @@ async fn query_server_version_num(pool: &DjogiPool) -> Result<u32, DjogiError> {
             let num: u32 = version_str.parse().map_err(|_| {
                 DjogiError::Db(DbError::other(format!(
                     "preflight: server_version_num returned \
-                     non-integer value: {version_str:?}"
+      non-integer value: {version_str:?}"
                 )))
             })?;
             Ok(num)

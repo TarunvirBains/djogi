@@ -8,6 +8,6 @@ use djogi::prelude::*;
 /// An invoice model — sole model in this crate.
 #[model(table = "billing_invoice")]
 pub struct Invoice {
-    pub amount: i64,
-    pub description: String,
+ pub amount: i64,
+ pub description: String,
 }

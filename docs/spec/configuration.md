@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Configuration, CLI & Integration
 
@@ -10,10 +10,10 @@ djogi::register_app!(VehiclesApp);
 
 struct VehiclesApp;
 impl App for VehiclesApp {
-    fn models() -> &'static [ModelDescriptor] {
-        &[Vehicle::descriptor(), PersonGroup::descriptor()]
-    }
-    fn routes() -> Router { vehicles_router() }
+ fn models() -> &'static [ModelDescriptor] {
+ &[Vehicle::descriptor(), PersonGroup::descriptor()]
+ }
+ fn routes() -> Router { vehicles_router() }
 }
 ```
 Apps are registered at link time via `inventory`. At startup Djogi collects all registered apps, merges their `Router`s when a web-framework feature flag is active (for example `axum`), and makes all `ModelDescriptor`s available to the differ and shell. With no web-framework flag enabled, Djogi still registers app models and descriptors — only the router-merge step is skipped, letting adopters wire HTTP manually.
@@ -39,11 +39,11 @@ dev_mode = false
 # HEER_NODE_ID and HEER_RANJ_NODE_ID are set as environment variables, not in Djogi.toml — they are infrastructure config
 
 [logging]
-profile = "balanced"      # one of: light, balanced, strict_audit
+profile = "balanced" # one of: light, balanced, strict_audit
 
 # Optional escape hatches for teams with unusual requirements.
 # Normal adopters should pick a profile and stop there.
-crud_delivery = "derive"  # derive | best_effort | durable | fail_closed
+crud_delivery = "derive" # derive | best_effort | durable | fail_closed
 event_delivery = "derive" # derive | off | best_effort | durable
 
 [server]
@@ -63,11 +63,11 @@ allow_destructive = false
 lock_timeout_secs = 30
 
 [shell]
-history_file = ".djogi_history"                # gitignored — personal and noisy
-transaction_timeout_default = "30m"            # pre-fills the begin() prompt; developer can clear it
-scripts_dir = "scripts"                        # committed, shareable shell scripts
-error_log_dir = ".djogi_shell_errors"          # gitignored — full tracebacks on disk
-error_log_retention = "1y"                    # auto-purge logs older than this on shell startup
+history_file = ".djogi_history"  # gitignored — personal and noisy
+transaction_timeout_default = "30m"  # pre-fills the begin() prompt; developer can clear it
+scripts_dir = "scripts"   # committed, shareable shell scripts
+error_log_dir = ".djogi_shell_errors"  # gitignored — full tracebacks on disk
+error_log_retention = "1y"   # auto-purge logs older than this on shell startup
 
 [features]
 dirty_tracking = false
@@ -97,51 +97,51 @@ cargo install djogi-cli
 ```
 ```bash
 # Migrations — drift composition and state
-djogi migrations compose               # generate migration files from current drift
+djogi migrations compose  # generate migration files from current drift
 djogi migrations compose --allow-destructive
-djogi migrations status                # show file/ledger/snapshot state
+djogi migrations status  # show file/ledger/snapshot state
 
 # Migration-history state management
-djogi migrations attune                                    # diff-only ledger / disk reconciliation (read-only)
-djogi migrations attune <target>                           # resolve target (Git commit / tag / branch); diff-only without --apply
-djogi migrations attune <target> --apply                   # diff + commit ledger / disk mutations
-djogi migrations attune <target> --apply --record          # also update parent repo's recorded submodule pointer
-djogi migrations attune --record-ledger --apply            # insert ledger rows for unrecorded SQL files
-djogi migrations attune --squash --from V<ts> --apply      # dev-only local squash of migration history
-djogi migrations attune --squash --from V<ts> --apply --publish   # squash and push the rewritten submodule
+djogi migrations attune     # diff-only ledger / disk reconciliation (read-only)
+djogi migrations attune <target>    # resolve target (Git commit / tag / branch); diff-only without --apply
+djogi migrations attune <target> --apply   # diff + commit ledger / disk mutations
+djogi migrations attune <target> --apply --record  # also update parent repo's recorded submodule pointer
+djogi migrations attune --record-ledger --apply  # insert ledger rows for unrecorded SQL files
+djogi migrations attune --squash --from V<ts> --apply # dev-only local squash of migration history
+djogi migrations attune --squash --from V<ts> --apply --publish # squash and push the rewritten submodule
 
 # Migrations — shipped CLI (library APIs available for all)
 # The library entry points (`apply_plan`, `rollback_plan`, `repair_*`,
 # `baseline_plan`) are public and exercised by the integration test suite.
 # `apply`, `verify`, `repair`, `baseline`, and `rollback` ship as CLI commands.
-djogi migrations apply                 # apply pending migrations, update snapshot
-djogi migrations apply --fake --reason "existing schema"  # mark applied without running SQL
-djogi migrations verify                # compare snapshot expectations to the live DB
-djogi migrations verify --strict       # promote out-of-order diagnostics to errors
-djogi migrations repair checksum-drift V<ts>__<slug> --checksum-up V1:<hex>  # re-checksum an edited applied row
-djogi migrations repair partial-apply V<ts>__<slug> rolled-back  # resolve a partial-apply ledger row
-djogi migrations repair resume-partial V<ts>__<slug>  # resume an interrupted non-transactional apply
-djogi migrations repair snapshot-rebuild --app <label>  # rebuild a bucket snapshot from ledger + live DB
-djogi migrations baseline V<ts>__baseline --reason "existing schema"  # adopt an existing DB without replaying SQL
-djogi migrations rollback --single-node-dev  # roll back newest migration, re-project snapshot
+djogi migrations apply   # apply pending migrations, update snapshot
+djogi migrations apply --fake --reason "existing schema" # mark applied without running SQL
+djogi migrations verify  # compare snapshot expectations to the live DB
+djogi migrations verify --strict # promote out-of-order diagnostics to errors
+djogi migrations repair checksum-drift V<ts>__<slug> --checksum-up V1:<hex> # re-checksum an edited applied row
+djogi migrations repair partial-apply V<ts>__<slug> rolled-back # resolve a partial-apply ledger row
+djogi migrations repair resume-partial V<ts>__<slug> # resume an interrupted non-transactional apply
+djogi migrations repair snapshot-rebuild --app <label> # rebuild a bucket snapshot from ledger + live DB
+djogi migrations baseline V<ts>__baseline --reason "existing schema" # adopt an existing DB without replaying SQL
+djogi migrations rollback --single-node-dev # roll back newest migration, re-project snapshot
 
 # Database (dev only — triple-gated)
-djogi db reset                         # drop → recreate → replay; refuses without --yes / interactive y
-djogi db reset --yes                   # non-interactive — typical for CI
+djogi db reset    # drop → recreate → replay; refuses without --yes / interactive y
+djogi db reset --yes   # non-interactive — typical for CI
 djogi db reset --yes --allow-checksum-drift-reset # explicit override when ledger/file parity drift is known and accepted
-djogi db seed                          # run seeds/<database>/*.sql files; idempotent via djogi_seed_runs ledger
-djogi db seed --database crud_log      # operator-supplied database — splices into URL path for routing
-djogi db seed --allow-non-localhost    # opt in to remote DBs (CI integration suites)
+djogi db seed    # run seeds/<database>/*.sql files; idempotent via djogi_seed_runs ledger
+djogi db seed --database crud_log # operator-supplied database — splices into URL path for routing
+djogi db seed --allow-non-localhost # opt in to remote DBs (CI integration suites)
 
 # Documentation
-djogi docs                             # render Markdown reference pages from descriptor inventory
+djogi docs    # render Markdown reference pages from descriptor inventory
 
-# Shell — Phase 9 (deferred)
-# djogi shell  # target command is planned for Phase 9; not registered in v0.1.0 CLI
+# Shell — (deferred)
+# djogi shell # target command is planned for ; not registered in v0.1.0 CLI
 
-# Project scaffolding — Phase 7+ follow-up
-djogi new my-project                   # scaffold project + init migrations submodule
-djogi init                             # add Djogi to existing project
+# Project scaffolding — + follow-up
+djogi new my-project   # scaffold project + init migrations submodule
+djogi init    # add Djogi to existing project
 ```
 
 ### CLI Exit-Code Matrix
@@ -152,9 +152,9 @@ matrix so shell integrations can distinguish "operation refused" from
 
 | Code | Meaning |
 |------|---------|
-| `0`  | Success — the command completed and any post-state was applied. |
-| `1`  | Error — config load failure, network, SQL, replay, or any other underlying runtime failure. |
-| `2`  | Refusal — either a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect, OR clap-style argument validation rejected the invocation (missing flag, mutually exclusive flags). |
+| `0` | Success — the command completed and any post-state was applied. |
+| `1` | Error — config load failure, network, SQL, replay, or any other underlying runtime failure. |
+| `2` | Refusal — either a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect, OR clap-style argument validation rejected the invocation (missing flag, mutually exclusive flags). |
 
 Exit code `2` deliberately bundles policy refusals and
 argument-validation errors. Clap's default behaviour is to return `2`
@@ -202,14 +202,14 @@ djogi = { version = "0.1", features = ["axum"] }
 Djogi does not wrap Axum in a second routing abstraction. Handlers stay ordinary Axum handlers, and the pool is accessed through standard `State` extraction.
 ```rust
 async fn vehicle_detail(
-    State(pool): State<DjogiPool>,
-    Path(id): Path<HeerId>,
+ State(pool): State<DjogiPool>,
+ Path(id): Path<HeerId>,
 ) -> impl IntoResponse {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
-    match Vehicle::get(&mut ctx, id).await {
-        Ok(v)  => Json(v).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+ let mut ctx = DjogiContext::from_pool(pool.clone());
+ match Vehicle::get(&mut ctx, id).await {
+ Ok(v) => Json(v).into_response(),
+ Err(_) => StatusCode::NOT_FOUND.into_response(),
+ }
 }
 ```
 Djogi contributes at startup (under the `axum` feature):

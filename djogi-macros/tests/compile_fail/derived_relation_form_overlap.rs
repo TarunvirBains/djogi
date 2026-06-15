@@ -10,24 +10,24 @@ use djogi::prelude::*;
 #[model(table = "phase85_derived_overlap_departments")]
 #[derive(Model, Debug, Clone)]
 pub struct Department {
-    #[field(expose(public))]
-    pub name: String,
+ #[field(expose(public))]
+ pub name: String,
 }
 
 #[model(table = "phase85_derived_overlap_employees", no_default)]
 #[derive(Model, Debug, Clone)]
 #[derived(
-    name = department,
-    ty = String,
-    scopes = [public],
-    sql = "department_id::text",
-    rust = "model.department_id.to_string()",
+ name = department,
+ ty = String,
+ scopes = [public],
+ sql = "department_id::text",
+ rust = "model.department_id.to_string()",
 )]
 pub struct Employee {
-    #[field(expose(public))]
-    pub display_name: String,
-    #[field(expose(public -> DepartmentPublic))]
-    pub department: ForeignKey<Department>,
+ #[field(expose(public))]
+ pub display_name: String,
+ #[field(expose(public -> DepartmentPublic))]
+ pub department: ForeignKey<Department>,
 }
 
 fn main() {}

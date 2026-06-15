@@ -10,8 +10,8 @@ use djogi::prelude::*;
 #[model(table = "phase85_mirjzson_missing_optional")]
 #[derive(Debug, Clone)]
 pub struct OptionalPayload {
-    pub source: String,
-    pub payload: Option<MirJzSON>,
+ pub source: String,
+ pub payload: Option<MirJzSON>,
 }
 
 fn main() {}

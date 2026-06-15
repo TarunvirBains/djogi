@@ -5,13 +5,13 @@
 //! # Wire format
 //! EWKB layout (little-endian, SRID 4326):
 //! ```text
-//! Offset  Size  Content
-//!      0     1  Endianness marker: 0x01 (little-endian)
-//!      1     4  Geometry type word: 0x20000005 (MultiLineString | SRID flag), LE
-//!      5     4  SRID 4326, LE  → [0xE6, 0x10, 0x00, 0x00]
-//!      9     4  Number of sub-linestrings (u32 LE)
-//!     13   var  Sub-linestrings: each is a headerless EWKB linestring —
-//!               [endian_byte(1), ls_type_word_no_srid(4), point_count(4), points...]
+//! Offset Size Content
+//!  0  1 Endianness marker: 0x01 (little-endian)
+//!  1  4 Geometry type word: 0x20000005 (MultiLineString | SRID flag), LE
+//!  5  4 SRID 4326, LE → [0xE6, 0x10, 0x00, 0x00]
+//!  9  4 Number of sub-linestrings (u32 LE)
+//!  13 var Sub-linestrings: each is a headerless EWKB linestring —
+//!    [endian_byte(1), ls_type_word_no_srid(4), point_count(4), points...]
 //! ```
 //! Each sub-linestring carries its own endianness byte and type word
 //! (`0x00000002`, no SRID flag) but no SRID — the outer container holds it.
@@ -27,7 +27,7 @@ use crate::geo::{GeoError, LineString, ewkb};
 /// A collection of at least 1 `LineString`.
 /// Stored as `GEOGRAPHY(MultiLineString, 4326)` in Postgres.
 /// # Display
-/// `Display` emits `MULTILINESTRING((<lon> <lat>, ...), ...)` per OGC WKT.
+/// `Display` emits `MULTILINESTRING((<lon> <lat>,...),...)` per OGC WKT.
 /// # Serde
 /// Serializes as an array of linestrings (each linestring is itself an array
 /// of `{"lat": f64, "lon": f64}` objects). Deserialization validates via
@@ -71,7 +71,7 @@ impl MultiLineString {
 // ── Display (WKT) ─────────────────────────────────────────────────────────────
 
 impl fmt::Display for MultiLineString {
-    /// Emit `MULTILINESTRING((<lon> <lat>, ...), ...)` per OGC WKT.
+    /// Emit `MULTILINESTRING((<lon> <lat>,...),...)` per OGC WKT.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("MULTILINESTRING(")?;
         for (i, ls) in self.lines.iter().enumerate() {

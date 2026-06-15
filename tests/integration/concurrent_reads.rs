@@ -7,27 +7,27 @@
 // helper:
 //
 // 1. **`tokio::try_join!` over two clones runs concurrently** —
-//    independent pool checkouts, no `E0499` borrow conflict, both
-//    branches see the expected rows.
+//  independent pool checkouts, no `E0499` borrow conflict, both
+//  branches see the expected rows.
 //
 // 2. **The clone preserves the parent's `Sassi` cache registry** —
-//    `Arc::ptr_eq` on `Punnu<T>` returns `true` because both
-//    contexts share the same `Arc<Sassi>` (per the
-//    "DjogiContext IS the cache boundary" contract).
+//  `Arc::ptr_eq` on `Punnu<T>` returns `true` because both
+//  contexts share the same `Arc<Sassi>` (per the
+//  "DjogiContext IS the cache boundary" contract).
 //
 // 3. **The clone preserves auth state**, so RLS continues to apply.
 //
 // 4. **Transaction-backed contexts are rejected** with
-//    `DjogiError::ConcurrentReadsRequirePoolContext` — a typed
-//    terminal error surfacing the structural constraint.
+//  `DjogiError::ConcurrentReadsRequirePoolContext` — a typed
+//  terminal error surfacing the structural constraint.
 //
 // # Spec / memory anchors
 //
 // - djogi#173 issue body (closing-condition checklist).
 // - `docs/guide/transactions.md` §"Concurrent reads —
-//   `clone_for_concurrent_reads`".
+//  `clone_for_concurrent_reads`".
 // - `feedback_djogi_local_postgres.md` — `#[djogi_test]` provisions a
-//   fresh DB per test.
+//  fresh DB per test.
 
 use djogi::prelude::*;
 use djogi::transaction::atomic;
@@ -109,7 +109,7 @@ async fn clone_for_concurrent_reads_shares_sassi_registry(mut ctx: djogi::DjogiC
     assert!(
         std::sync::Arc::ptr_eq(&parent_punnu, &cloned_punnu),
         "clone_for_concurrent_reads must share the parent's Arc<Sassi> \
-         so cache state is consistent across the clones",
+     so cache state is consistent across the clones",
     );
 }
 
@@ -154,7 +154,7 @@ async fn clone_for_concurrent_reads_rejects_transaction_context(mut ctx: djogi::
                 Err(other) => panic!("expected ConcurrentReadsRequirePoolContext, got {other:?}"),
                 Ok(_) => panic!(
                     "expected ConcurrentReadsRequirePoolContext, but clone succeeded on a \
-                     transaction-backed context",
+           transaction-backed context",
                 ),
             }
         })

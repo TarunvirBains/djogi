@@ -1,4 +1,4 @@
-//! Adopter-crate isolation fixture for Cluster 8δ T7.4 macro path-routing.
+//! Adopter-crate isolation fixture for δ T7.4 macro path-routing.
 //!
 //! See `../Cargo.toml` for the why-this-is-its-own-crate explanation.
 //! In short: this crate's `[dependencies]` table contains exactly one
@@ -12,7 +12,7 @@
 //!
 //! The `#[model]` annotations below run the full `model::expand`
 //! pipeline (inject, descriptor, crud, stubs, filter, from_row,
-//! cacheable, ...). Each pass emits its own paths through
+//! cacheable,...). Each pass emits its own paths through
 //! `::djogi::__private::*` / `::djogi::types::*` / `::djogi::cache::*`
 //! / `::djogi::query::*` / `::djogi::SassiBootHook` / etc. A future
 //! regression that introduces a stray `::sassi::*` / `::heeranjid::*` /
@@ -34,26 +34,26 @@
 //! # The two model shapes
 //!
 //! - `DefaultRow` exercises the default-`updated_at` watermark branch
-//!   of `model::cacheable::expand` (no `watermark_field = ...` on
-//!   `#[model]`). The emitted `DeltaSyncCacheable::Watermark` resolves
-//!   to the framework-injected `updated_at: ::djogi::types::DateTime`
-//!   field.
+//! of `model::cacheable::expand` (no `watermark_field =...` on
+//! `#[model]`). The emitted `DeltaSyncCacheable::Watermark` resolves
+//! to the framework-injected `updated_at: ::djogi::types::DateTime`
+//! field.
 //!
 //! - `WatermarkedRow` exercises the explicit-watermark branch with a
-//!   user-declared field (`expires_at: DateTime`). The emitted
-//!   `DeltaSyncCacheable::Watermark` resolves to the user-declared
-//!   field's type. `no_default` is required because
-//!   `time::OffsetDateTime` does not implement `Default`; every field
-//!   on a non-`Default` model must be initialised explicitly by the
-//!   adopter.
+//! user-declared field (`expires_at: DateTime`). The emitted
+//! `DeltaSyncCacheable::Watermark` resolves to the user-declared
+//! field's type. `no_default` is required because
+//! `time::OffsetDateTime` does not implement `Default`; every field
+//! on a non-`Default` model must be initialised explicitly by the
+//! adopter.
 //!
 //! Every fixture binary needs `fn main` so the rustc invocation
 //! produces a linkable artifact (this requirement carried over from
 //! the trybuild era and still holds under lihaaf).
 //!
 //! Spec anchor:
-//!   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
-//!   §3 commit T7.4 — compile-fixture bullet.
+//! docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
+//! §3 commit T7.4 — compile-fixture bullet.
 //!
 //! GitHub: djogi#124.
 
@@ -62,10 +62,10 @@ use djogi::prelude::*;
 // ── CustomPrimaryKey — `djogi::primary_key!` path routing ───────────────
 
 djogi::primary_key! {
-    pub struct AdopterIsolationId(i64);
-    sql_type = "BIGINT";
-    default_sql = "0";
-    bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
+ pub struct AdopterIsolationId(i64);
+ sql_type = "BIGINT";
+ default_sql = "0";
+ bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
 }
 
 // ── IsolationState — `#[derive(DjogiEnum)]` path routing ────────────────
@@ -73,14 +73,14 @@ djogi::primary_key! {
 #[derive(DjogiEnum, Debug, Clone, Copy, PartialEq, Eq)]
 #[djogi_enum(name = "adopter_isolation_state", rename_all = "snake_case")]
 pub enum IsolationState {
-    Active,
-    Archived,
+ Active,
+ Archived,
 }
 
 impl Default for IsolationState {
-    fn default() -> Self {
-        IsolationState::Active
-    }
+ fn default() -> Self {
+  IsolationState::Active
+ }
 }
 
 // ── DefaultRow — default-`updated_at` watermark branch ──────────────────
@@ -93,30 +93,30 @@ impl Default for IsolationState {
 #[model(table = "adopter_isolation_default_rows")]
 #[derive(Debug, Clone)]
 pub struct DefaultRow {
-    pub label: String,
-    // u64 field: emits a `Decimal::from(v)` bind shim that MUST route through
-    // `::djogi::__private::rust_decimal::Decimal`, not `::rust_decimal::Decimal`.
-    // Compiling here (where rust_decimal is NOT a direct dep) proves isolation.
-    pub counter: u64,
-    pub opt_counter: Option<u64>,
+ pub label: String,
+ // u64 field: emits a `Decimal::from(v)` bind shim that MUST route through
+ // `::djogi::__private::rust_decimal::Decimal`, not `::rust_decimal::Decimal`.
+ // Compiling here (where rust_decimal is NOT a direct dep) proves isolation.
+ pub counter: u64,
+ pub opt_counter: Option<u64>,
 }
 
 // ── WatermarkedRow — explicit-watermark branch ──────────────────────────
 
 #[model(
-    table = "adopter_isolation_watermarked_rows",
-    watermark_field = "expires_at",
-    no_default
+ table = "adopter_isolation_watermarked_rows",
+ watermark_field = "expires_at",
+ no_default
 )]
 #[derive(Debug, Clone)]
 pub struct WatermarkedRow {
-    pub label: String,
-    // `DateTime` reaches `time::OffsetDateTime` via `djogi::prelude::*`
-    // → `djogi::types::DateTime`. The macro must emit a path that
-    // resolves through `::djogi::types`, not `::time::*` directly —
-    // the latter would fail to compile here because `time` is not
-    // listed in this fixture's `[dependencies]`.
-    pub expires_at: DateTime,
+ pub label: String,
+ // `DateTime` reaches `time::OffsetDateTime` via `djogi::prelude::*`
+ // → `djogi::types::DateTime`. The macro must emit a path that
+ // resolves through `::djogi::types`, not `::time::*` directly —
+ // the latter would fail to compile here because `time` is not
+ // listed in this fixture's `[dependencies]`.
+ pub expires_at: DateTime,
 }
 
 // ── CustomPkEnumRow — custom-PK + DjogiEnum model field ─────────────────
@@ -124,15 +124,15 @@ pub struct WatermarkedRow {
 #[model(table = "adopter_isolation_custom_pk_enum_rows", pk = AdopterIsolationId)]
 #[derive(Debug, Clone)]
 pub struct CustomPkEnumRow {
-    pub label: String,
-    pub state: IsolationState,
+ pub label: String,
+ pub state: IsolationState,
 }
 
 // ── `#[djogi_test]` path routing ────────────────────────────────────────
 
 #[djogi::djogi_test]
 async fn djogi_test_macro_path_routes_through_djogi(ctx: DjogiContext) {
-    let _ = ctx;
+ let _ = ctx;
 }
 
 // ── Trait-bound surface checks (compile-time resolution only) ───────────
@@ -146,7 +146,7 @@ fn _accept_cacheable<T: ::djogi::types::Cacheable + 'static>() {}
 /// the framework-injected `updated_at: DateTime` field).
 fn _accept_delta_sync_default<T>()
 where
-    T: ::djogi::types::DeltaSyncCacheable<Watermark = ::djogi::types::DateTime>,
+ T: ::djogi::types::DeltaSyncCacheable<Watermark = ::djogi::types::DateTime>,
 {
 }
 
@@ -156,7 +156,7 @@ where
 /// distinction is which `#[model]` branch produced the impl.
 fn _accept_delta_sync_explicit<T>()
 where
-    T: ::djogi::types::DeltaSyncCacheable<Watermark = ::djogi::types::DateTime>,
+ T: ::djogi::types::DeltaSyncCacheable<Watermark = ::djogi::types::DateTime>,
 {
 }
 
@@ -164,18 +164,18 @@ where
 /// root — the path the macro-emitted `inventory::submit!` block names
 /// (`::djogi::SassiBootHook`).
 fn _use_boot_hook_type() -> Option<::djogi::SassiBootHook> {
-    None
+ None
 }
 
 /// Witnesses that `Punnu<T>` is reachable through `djogi::cache::*`
 /// for both `Cacheable` types — adopters never reach into `::sassi::*`
 /// to construct a Punnu.
 fn _build_punnu_default() -> ::djogi::cache::Punnu<DefaultRow> {
-    ::djogi::cache::Punnu::<DefaultRow>::builder().build()
+ ::djogi::cache::Punnu::<DefaultRow>::builder().build()
 }
 
 fn _build_punnu_watermarked() -> ::djogi::cache::Punnu<WatermarkedRow> {
-    ::djogi::cache::Punnu::<WatermarkedRow>::builder().build()
+ ::djogi::cache::Punnu::<WatermarkedRow>::builder().build()
 }
 
 /// Witnesses that `DjogiDeltaSyncMeta::WATERMARK_COLUMN` resolves
@@ -184,27 +184,27 @@ fn _build_punnu_watermarked() -> ::djogi::cache::Punnu<WatermarkedRow> {
 /// generate `WHERE <col> >= $since` SQL without runtime field-name
 /// reflection.
 fn _watermark_column_default() -> &'static str {
-    <DefaultRow as ::djogi::cache::DjogiDeltaSyncMeta>::WATERMARK_COLUMN
+ <DefaultRow as ::djogi::cache::DjogiDeltaSyncMeta>::WATERMARK_COLUMN
 }
 
 fn _watermark_column_watermarked() -> &'static str {
-    <WatermarkedRow as ::djogi::cache::DjogiDeltaSyncMeta>::WATERMARK_COLUMN
+ <WatermarkedRow as ::djogi::cache::DjogiDeltaSyncMeta>::WATERMARK_COLUMN
 }
 
 fn main() {
-    let _ = <AdopterIsolationId as ::djogi::primary_key::PrimaryKey>::sentinel();
-    _accept_cacheable::<DefaultRow>();
-    _accept_cacheable::<WatermarkedRow>();
-    _accept_cacheable::<CustomPkEnumRow>();
-    _accept_delta_sync_default::<DefaultRow>();
-    _accept_delta_sync_explicit::<WatermarkedRow>();
-    let _ = _use_boot_hook_type();
-    let _ = _build_punnu_default();
-    let _ = _build_punnu_watermarked();
-    let _ = CustomPkEnumRow::objects().filter(|f| f.state().eq(IsolationState::Active));
-    // Sanity-check the column-name constants resolve to the expected
-    // strings. The values are compile-time constants; the assertion is
-    // really exercising that the trait impls are emitted.
-    assert_eq!(_watermark_column_default(), "updated_at");
-    assert_eq!(_watermark_column_watermarked(), "expires_at");
+ let _ = <AdopterIsolationId as ::djogi::primary_key::PrimaryKey>::sentinel();
+ _accept_cacheable::<DefaultRow>();
+ _accept_cacheable::<WatermarkedRow>();
+ _accept_cacheable::<CustomPkEnumRow>();
+ _accept_delta_sync_default::<DefaultRow>();
+ _accept_delta_sync_explicit::<WatermarkedRow>();
+ let _ = _use_boot_hook_type();
+ let _ = _build_punnu_default();
+ let _ = _build_punnu_watermarked();
+ let _ = CustomPkEnumRow::objects().filter(|f| f.state().eq(IsolationState::Active));
+ // Sanity-check the column-name constants resolve to the expected
+ // strings. The values are compile-time constants; the assertion is
+ // really exercising that the trait impls are emitted.
+ assert_eq!(_watermark_column_default(), "updated_at");
+ assert_eq!(_watermark_column_watermarked(), "expires_at");
 }

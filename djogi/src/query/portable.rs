@@ -95,7 +95,7 @@ pub enum PortablePredicateError {
     /// inner-scope emission context.
     #[error(
         "lateral outer ref {source_model}.{column} is out of scope; \
-         it can only be used inside a lateral inner query"
+   it can only be used inside a lateral inner query"
     )]
     LateralOuterRefOutOfScope {
         /// The referenced column.
@@ -109,7 +109,7 @@ pub enum PortablePredicateError {
     /// lateral join being lowered.
     #[error(
         "lateral outer ref model mismatch for column {column}: source model \
-         {source_model} does not match lateral outer model {expected_model}"
+   {source_model} does not match lateral outer model {expected_model}"
     )]
     LateralOuterRefModelMismatch {
         /// The referenced column.
@@ -159,8 +159,8 @@ pub enum PortablePredicateError {
     /// [`DjogiFieldProvenance`]: crate::query::field::DjogiFieldProvenance
     #[error(
         "field {field} JSON predicate lacks Djogi trusted provenance — \
-         construct through `DjogiField<M, MirJzSON>::jsahibon()` instead of \
-         raw `sassi::Field::new(...).jsahibon()`"
+   construct through `DjogiField<M, MirJzSON>::jsahibon()` instead of \
+   raw `sassi::Field::new(...).jsahibon()`"
     )]
     UntrustedJsonPredicate {
         /// The Sassi `field_name` reported on the predicate leaf.
@@ -370,8 +370,8 @@ impl SqlEmitContext {
 /// where `__djogi_emit_field_predicate`'s default returns
 /// `UnsupportedModel`.
 /// # Compound nodes
-/// `And(parts)` / `Or(parts)` emit `(p1 AND p2 AND ...)` / `(p1 OR p2
-/// OR ...)`. Empty `And(vec![])` is the vacuous-truth identity (renders
+/// `And(parts)` / `Or(parts)` emit `(p1 AND p2 AND...)` / `(p1 OR p2
+/// OR...)`. Empty `And(vec![])` is the vacuous-truth identity (renders
 /// `TRUE`); empty `Or(vec![])` is vacuous-falsehood (renders `FALSE`).
 /// `Not(inner)` emits `NOT (...)` and `Xor(a, b)` emits the general
 /// truth-table identity `((NOT a) AND b) OR (a AND (NOT b))`.
@@ -514,7 +514,7 @@ pub(crate) fn emit_basic_predicate<T: Model>(
 // `op == LookupOp::Json`. The contract:
 // 1. Every leaf emits a two-valued SQL boolean (`TRUE` or `FALSE`) before
 // composition under `NOT`, `XOR`, `AND`, `OR`. SQL `NULL` never leaks
-// out of a leaf — `COALESCE(_, FALSE)` and `CASE WHEN ... ELSE FALSE
+// out of a leaf — `COALESCE(_, FALSE)` and `CASE WHEN... ELSE FALSE
 // END` wrappers are mandatory.
 // 2. Missing path / type mismatch / SQL NULL → `FALSE` (except `missing()`
 // which is `TRUE`).
@@ -539,18 +539,18 @@ use sassi::predicate::{
 /// helper assumes its `fp` originated from a Djogi-trusted
 /// `PortablePredicate<T>`-rooted path. It:
 /// 1. Downcasts `fp.value_as::<JSahibONPredicateBody>()`. A `None`
-///    return indicates either a future Sassi schema change that
-///    invalidated the `Arc<JSahibONPredicateBody>` payload contract
-///    or an internal Djogi bug — surfaces as
-///    [`PortablePredicateError::UntrustedJsonPredicate`] rather than a
-///    panic for the same defense-in-depth reason the body trust check
-///    lives upstream.
+/// return indicates either a future Sassi schema change that
+/// invalidated the `Arc<JSahibONPredicateBody>` payload contract
+/// or an internal Djogi bug — surfaces as
+/// [`PortablePredicateError::UntrustedJsonPredicate`] rather than a
+/// panic for the same defense-in-depth reason the body trust check
+/// lives upstream.
 /// 2. Dispatches on the body variant, walking the
-///    [`JSahibONPredicateBody`] tree from `sassi::predicate::jsahibon`.
-///    Each arm emits the guarded two-valued SQL shape documented in
-///    [`docs/spec/mirjzson-jsonb-integration.md`][spec] under the
-///    "SQL Mapping" section.
-///    [spec]: ../../docs/spec/mirjzson-jsonb-integration.md
+/// [`JSahibONPredicateBody`] tree from `sassi::predicate::jsahibon`.
+/// Each arm emits the guarded two-valued SQL shape documented in
+/// [`docs/spec/mirjzson-jsonb-integration.md`][spec] under the
+/// "SQL Mapping" section.
+/// [spec]:../../docs/spec/mirjzson-jsonb-integration.md
 fn emit_jsahibon_predicate<T: Model>(
     acc: &mut SqlAccumulator,
     fp: &FieldPredicate<T>,
@@ -843,7 +843,7 @@ fn emit_jsahibon_body(
             Ok(())
         }
         // `ScalarCompare` — guarded two-valued SQL. Numeric arms go
-        // through `CASE WHEN ... THEN ... ELSE FALSE END` so the cast
+        // through `CASE WHEN... THEN... ELSE FALSE END` so the cast
         // is preflighted. String and boolean arms restrict the
         // operator set to equality (Sassi's contract — string/bool
         // ordering is excluded from `JOrderedScalar`); we surface
@@ -952,14 +952,14 @@ fn emit_jsahibon_body(
 /// Emit a `ScalarCompare` JSON predicate. Per the spec:
 /// - Numeric kinds emit `CASE WHEN jsonb_typeof = 'number' THEN
 /// (j #>> '{}')::numeric <op> $operand ELSE FALSE END` so the cast
-///   is preflighted and the operand is bound through `Decimal` (never
-///   `as i64`).
+/// is preflighted and the operand is bound through `Decimal` (never
+/// `as i64`).
 /// - String kind emits `COALESCE(jsonb_typeof = 'string' AND
 /// (j #>> '{}')::text <op> $operand, FALSE)`. The op set Sassi
-///   permits for strings is `Eq` / `Neq` — ordering is excluded by
-///   `JOrderedScalar`.
+/// permits for strings is `Eq` / `Neq` — ordering is excluded by
+/// `JOrderedScalar`.
 /// - Boolean kind emits the analogous shape with
-///   `jsonb_typeof = 'boolean'` and a `boolean` bind.
+/// `jsonb_typeof = 'boolean'` and a `boolean` bind.
 fn emit_scalar_compare(
     acc: &mut SqlAccumulator,
     column: &'static str,
@@ -1059,9 +1059,9 @@ fn emit_scalar_in(
     // on empty `in_` after the kind guard, and `FALSE` after the
     // kind guard for empty `not_in`. The shape:
     // CASE WHEN <kind guard> THEN
-    // <extracted scalar> [NOT] IN ($1, $2, ...)
+    // <extracted scalar> [NOT] IN ($1, $2,...)
     // ELSE FALSE END
-    // ...where the empty `(?, ?, ?)` arm short-circuits to `FALSE`
+    //...where the empty `(?, ?, ?)` arm short-circuits to `FALSE`
     // (or in the `NotIn` case, to `TRUE` inside the kind-guard).
 
     match scalar_kind {
@@ -1306,7 +1306,7 @@ pub mod emit {
         Ok(())
     }
 
-    /// Emit `column IN ($a, $b, ...)` (or `NOT IN ...`) for non-optional
+    /// Emit `column IN ($a, $b,...)` (or `NOT IN...`) for non-optional
     /// `Vec<V>` payloads. Empty list short-circuits to the same
     /// `FALSE` / `TRUE` identities Djogi's legacy emitter uses.
     #[doc(hidden)]
@@ -1984,7 +1984,7 @@ pub mod emit {
 
     // Re-export `LookupOp` for macro-emitted callers. PR2d's generated
     // code constructs `PortablePredicateError::UnsupportedLookup { op,
-    // .. }` from the wildcard arm; routing through `crate::types`
+    //.. }` from the wildcard arm; routing through `crate::types`
     // means the macro never names `::sassi::*` directly.
     pub use crate::types::LookupOp as _LookupOp;
     // Silence unused-import lint when no test imports it.
@@ -2802,8 +2802,8 @@ mod tests {
 
         assert!(
             matches!(
-                result,
-                Err(PortablePredicateError::UntrustedJsonPredicate { field }) if field == "forged_payload"
+             result,
+             Err(PortablePredicateError::UntrustedJsonPredicate { field }) if field == "forged_payload"
             ),
             "expected UntrustedJsonPredicate(forged_payload), got {result:?}",
         );

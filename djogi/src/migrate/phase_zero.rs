@@ -431,8 +431,8 @@ fn ident_at(tokens: &[PhaseZeroSqlToken], idx: usize) -> Option<&str> {
 
 fn is_keyword_at(tokens: &[PhaseZeroSqlToken], idx: usize, keyword: &str) -> bool {
     matches!(
-        tokens.get(idx),
-        Some(PhaseZeroSqlToken::Ident(value)) if value.eq_ignore_ascii_case(keyword)
+     tokens.get(idx),
+     Some(PhaseZeroSqlToken::Ident(value)) if value.eq_ignore_ascii_case(keyword)
     )
 }
 
@@ -693,18 +693,18 @@ pub(crate) fn require_identity_free_phase_zero_down_payload<'a>(
 ///
 /// Two non-stale shapes are recognized:
 /// 1. **Identity-free replay-current** — has all required generated markers,
-///    no node-seed fragment, no session SET, no database-level default. This
-///    is the form emitted by `compose_phase_zero(..., false)` for persisted
-///    migration replay.
+/// no node-seed fragment, no session SET, no database-level default. This
+/// is the form emitted by `compose_phase_zero(..., false)` for persisted
+/// migration replay.
 /// 2. **Seed-capable runtime-current** — has the seeded composer banner, seed
-///    markers, dynamic `current_database()` defaults, plus session SETs. This
-///    is the form emitted by `compose_phase_zero(..., true)` for direct runtime
-///    bootstrap helpers.
+/// markers, dynamic `current_database()` defaults, plus session SETs. This
+/// is the form emitted by `compose_phase_zero(..., true)` for direct runtime
+/// bootstrap helpers.
 /// 3. **Generated-stale** — recognizable generated Phase 0 with literal
-///    `ALTER DATABASE "<label>" SET heer.node_id` / `heer.ranj_node_id`.
-///    This is the known-bad shape from pre-fix generated files.
+/// `ALTER DATABASE "<label>" SET heer.node_id` / `heer.ranj_node_id`.
+/// This is the known-bad shape from pre-fix generated files.
 /// 4. **Seed-DML non-runtime-current** — generated Phase 0 that contains
-///    top-level seed-table mutation but is not the complete runtime helper.
+/// top-level seed-table mutation but is not the complete runtime helper.
 pub(crate) fn classify_phase_zero_sql(sql: &str) -> PhaseZeroArtifactState {
     if sql.trim().is_empty() {
         return PhaseZeroArtifactState::Missing;
@@ -797,7 +797,7 @@ pub(crate) enum PhaseZeroStatementClass {
 /// dynamic defaults like `current_database()`.
 /// **What triggers `SeedDml`.** A top-level seed-table mutation: direct
 /// `INSERT`/`UPDATE`/`DELETE`, CTE-led data mutation, `MERGE INTO`, or
-/// `COPY ... FROM` against one of the HeeRanjID seed tables. DDL, comments,
+/// `COPY... FROM` against one of the HeeRanjID seed tables. DDL, comments,
 /// strings, quoted-identifier contents, and dollar-quoted function bodies are
 /// skipped.
 ///
@@ -805,7 +805,7 @@ pub(crate) enum PhaseZeroStatementClass {
 /// - Any DDL (`CREATE SCHEMA`, `CREATE FUNCTION`, `CREATE TABLE`, etc.)
 /// - Session-level SET (`SET heer.node_id = '1';`) — no ALTER DATABASE
 /// - DO blocks with dynamic EXECUTE format using `current_database()`
-/// - Extension installs (`CREATE EXTENSION IF NOT EXISTS ...`)
+/// - Extension installs (`CREATE EXTENSION IF NOT EXISTS...`)
 ///
 /// The runner's deepest guard in `execute_runner_statement` uses this
 /// to refuse stale statements immediately before raw `batch_execute`.
@@ -814,7 +814,7 @@ pub(crate) fn classify_phase_zero_statement(sql: &str) -> PhaseZeroStatementClas
 
     // Detect: ALTER DATABASE "literal_db_name" SET heer.node_id = '...';
     // This is the generated-stale pattern. Current single-node-dev uses
-    // EXECUTE format('ALTER DATABASE %I ...', current_database(), ...)
+    // EXECUTE format('ALTER DATABASE %I...', current_database(),...)
     // which does NOT match this pattern.
     let has_literal_heer_default = trimmed.lines().any(|line| {
         let l = line.trim();
@@ -918,7 +918,7 @@ mod tests {
         sql.replace_range(
             start..end,
             "ALTER DATABASE \"main\" SET heer.node_id = '7';\n\
-             ALTER DATABASE \"main\" SET heer.ranj_node_id = '7';\n",
+    ALTER DATABASE \"main\" SET heer.ranj_node_id = '7';\n",
         );
         sql
     }
@@ -937,7 +937,7 @@ mod tests {
         sql.insert_str(
             insert_at,
             "ALTER DATABASE \"main\" SET heer.node_id = '7';\n\
-             ALTER DATABASE \"main\" SET heer.ranj_node_id = '7';\n",
+    ALTER DATABASE \"main\" SET heer.ranj_node_id = '7';\n",
         );
         sql
     }
@@ -1220,7 +1220,7 @@ mod tests {
 
     #[test]
     fn classify_create_function_as_safe() {
-        let stmt = "CREATE OR REPLACE FUNCTION heer.heerid_next() RETURNS bigint AS $$ ... $$ LANGUAGE plpgsql;";
+        let stmt = "CREATE OR REPLACE FUNCTION heer.heerid_next() RETURNS bigint AS $$... $$ LANGUAGE plpgsql;";
         assert_eq!(
             classify_phase_zero_statement(stmt),
             PhaseZeroStatementClass::Safe
@@ -1240,8 +1240,8 @@ mod tests {
     fn classify_dynamic_execute_format_do_block_as_safe() {
         // Single-node-dev current uses EXECUTE format with current_database()
         let stmt = "DO $djogi$\nBEGIN\n\
-                    EXECUTE format('ALTER DATABASE %I SET heer.node_id = %L', current_database(), '1');\n\
-                    END\n$djogi$;";
+     EXECUTE format('ALTER DATABASE %I SET heer.node_id = %L', current_database(), '1');\n\
+     END\n$djogi$;";
         assert_eq!(
             classify_phase_zero_statement(stmt),
             PhaseZeroStatementClass::Safe

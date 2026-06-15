@@ -15,14 +15,14 @@ use djogi::prelude::*;
 #[model(table = "phase8_no_hooks_widgets")]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub name: String,
+ pub name: String,
 }
 
 fn main() {
-    // The model compiles. No HasHooks bound is asserted; the absence of
-    // the impl is the correctness condition this fixture exercises.
-    let _w = Widget {
-        name: "ok".into(),
-        ..Default::default()
-    };
+ // The model compiles. No HasHooks bound is asserted; the absence of
+ // the impl is the correctness condition this fixture exercises.
+ let _w = Widget {
+  name: "ok".into(),
+ ..Default::default()
+ };
 }

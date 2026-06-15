@@ -10,18 +10,18 @@
 //!
 //! ```sql
 //! SELECT
-//!     __djogi_m.id         AS id,
-//!     __djogi_m.name       AS name,
-//!     ...,
-//!     scores.elephant_id   AS __djogi_values_0,
-//!     scores.score         AS __djogi_values_1
+//!  __djogi_m.id   AS id,
+//!  __djogi_m.name  AS name,
+//! ...,
+//!  scores.elephant_id AS __djogi_values_0,
+//!  scores.score   AS __djogi_values_1
 //! FROM elephants AS __djogi_m
 //! INNER JOIN (VALUES
-//!     ($1::BIGINT, $2::DOUBLE PRECISION),
-//!     ($3, $4),
-//!     ...
+//!  ($1::BIGINT, $2::DOUBLE PRECISION),
+//!  ($3, $4),
+//! ...
 //! ) AS scores(elephant_id, score)
-//!   ON __djogi_m.id = scores.elephant_id
+//! ON __djogi_m.id = scores.elephant_id
 //! ORDER BY __djogi_m.name ASC
 //! ```
 //!
@@ -33,8 +33,8 @@
 //! ## Chunking note
 //!
 //! Very large score lists (thousands of entries) should be loaded into a
-//! staging table rather than sent as `VALUES`.  Postgres can plan large
-//! `VALUES` clauses poorly.  For lists up to ~500 rows, the inline approach
+//! staging table rather than sent as `VALUES`. Postgres can plan large
+//! `VALUES` clauses poorly. For lists up to ~500 rows, the inline approach
 //! is efficient and avoids extra round trips.
 
 use anyhow::Result;

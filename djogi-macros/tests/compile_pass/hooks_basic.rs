@@ -21,24 +21,24 @@ use djogi::{DjogiContext, DjogiError};
 #[model(table = "phase8_hooks_basic_widgets", hooks)]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub name: String,
-    pub count: i32,
+ pub name: String,
+ pub count: i32,
 }
 
 impl ModelHooks for Widget {
-    async fn before_create(
-        &mut self,
-        _ctx: &mut DjogiContext,
-    ) -> Result<(), DjogiError> {
-        // Trivial mutation — proves the hook receives `&mut self` and
-        // can in fact mutate the in-memory model before the INSERT
-        // composes its `RETURNING` clause. The body intentionally does
-        // no I/O so the fixture stays a pure compile-pass.
-        if self.count < 0 {
-            self.count = 0;
-        }
-        Ok(())
-    }
+ async fn before_create(
+  &mut self,
+  _ctx: &mut DjogiContext,
+ ) -> Result<(), DjogiError> {
+  // Trivial mutation — proves the hook receives `&mut self` and
+  // can in fact mutate the in-memory model before the INSERT
+  // composes its `RETURNING` clause. The body intentionally does
+  // no I/O so the fixture stays a pure compile-pass.
+  if self.count < 0 {
+   self.count = 0;
+  }
+  Ok(())
+ }
 }
 
 fn main() {}

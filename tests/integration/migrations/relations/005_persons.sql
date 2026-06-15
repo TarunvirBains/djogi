@@ -1,4 +1,4 @@
---  integration fixture: `persons` — one side of the
+-- integration fixture: `persons` — one side of the
 -- many-to-many pair.
 --
 -- The M2M suite exercises the explicit-through-model design: `Person`
@@ -13,8 +13,8 @@
 -- `setup_` helper, not via `sqlx::test(migrations = "...")`.
 
 CREATE TABLE IF NOT EXISTS persons (
-    id BIGINT PRIMARY KEY DEFAULT generate_id(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    name TEXT NOT NULL
+  id BIGINT PRIMARY KEY DEFAULT generate_id(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  name TEXT NOT NULL
 );

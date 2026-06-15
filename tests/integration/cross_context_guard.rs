@@ -3,17 +3,17 @@
 // What this file pins:
 //
 // 1. `use_punnu_passes_when_same_context` — `ctx.use_punnu(&p)` where `p`
-//    was acquired from the same `ctx` returns an `Arc` that is
-//    `ptr_eq` to `p` (same allocation, no copy).
+//  was acquired from the same `ctx` returns an `Arc` that is
+//  `ptr_eq` to `p` (same allocation, no copy).
 //
 // 2. `use_punnu_panics_in_debug_on_mismatch` — passing a `Punnu<T>` from
-//    `ctx_a` to `ctx_b.use_punnu(...)` panics in debug builds with the
-//    "cross-context Punnu access" message.
+//  `ctx_a` to `ctx_b.use_punnu(...)` panics in debug builds with the
+//  "cross-context Punnu access" message.
 //
 // 3. `use_punnu_returns_empty_in_release` — same cross-context scenario but
-//    compiled in release mode (`#[cfg(not(debug_assertions))]`); instead of
-//    panicking, `use_punnu` returns a fresh empty `Punnu<T>`. The returned
-//    Arc is not `ptr_eq` to either source Punnu, and `len() == 0`.
+//  compiled in release mode (`#[cfg(not(debug_assertions))]`); instead of
+//  panicking, `use_punnu` returns a fresh empty `Punnu<T>`. The returned
+//  Arc is not `ptr_eq` to either source Punnu, and `len() == 0`.
 //
 // # Design anchor
 //
@@ -22,7 +22,7 @@
 // The cfg-fork maps each build target to the dominant axis:
 // - Debug → panic (idiomatic Rust + scalability: surface misuse loudly).
 // - Release → tracing::error + empty fallback (production stability:
-//   fail closed without crashing a multi-tenant server).
+//  fail closed without crashing a multi-tenant server).
 //
 // # Path X reframing
 //
@@ -70,8 +70,8 @@ async fn use_punnu_passes_when_same_context(mut ctx: djogi::DjogiContext) {
     assert!(
         std::sync::Arc::ptr_eq(&result, &p),
         "use_punnu must return an Arc that is ptr_eq to the input when \
-         the Punnu was acquired from the same context — expected same allocation, \
-         got different pointers",
+     the Punnu was acquired from the same context — expected same allocation, \
+     got different pointers",
     );
 }
 
@@ -133,17 +133,17 @@ async fn use_punnu_returns_empty_in_release(mut ctx: djogi::DjogiContext) {
     assert!(
         !std::sync::Arc::ptr_eq(&result, &p_a),
         "release fallback must be a fresh allocation — not ptr_eq to the \
-         mismatched Punnu from ctx_a",
+     mismatched Punnu from ctx_a",
     );
     assert!(
         !std::sync::Arc::ptr_eq(&result, &p_b),
         "release fallback must be a fresh allocation — not ptr_eq to \
-         ctx_b's own registered Punnu",
+     ctx_b's own registered Punnu",
     );
     assert_eq!(
         result.len(),
         0,
         "release fallback Punnu must be empty (len == 0) — reads must \
-         return None and writes must not propagate",
+     return None and writes must not propagate",
     );
 }

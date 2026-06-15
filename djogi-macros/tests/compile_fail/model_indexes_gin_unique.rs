@@ -8,11 +8,11 @@ use djogi::prelude::*;
 use serde_json::Value;
 
 #[model(table = "profiles", indexes(
-    unique(fields = [payload], using = "gin"),
+ unique(fields = [payload], using = "gin"),
 ))]
 #[derive(Debug, Clone)]
 pub struct Profile {
-    pub payload: Jsonb<Value>,
+ pub payload: Jsonb<Value>,
 }
 
 fn main() {}

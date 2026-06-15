@@ -22,7 +22,7 @@ Djogi's technical choices — tokio, tokio-postgres, deadpool-postgres, attribut
 
 | System | Async? | Primary Postgres driver | Macro style | Connection pool | build.rs in migration path? | MSRV |
 |---|---|---|---|---|---|---|
-| **Diesel** | Sync-only core; `diesel-async` addon is separate community crate | Diesel-internal (`diesel/src/pg/`) | `table!` declarative `macro_rules!`; `embed_migrations!` proc macro; `#[derive(Queryable, Insertable, ...)]` derive macros | r2d2 (sync) | No — documents a `build.rs` workaround for `embed_migrations!` rebuild signals only | not confirmed from notes; ≥1.65 implied |
+| **Diesel** | Sync-only core; `diesel-async` addon is separate community crate | Diesel-internal (`diesel/src/pg/`) | `table!` declarative `macro_rules!`; `embed_migrations!` proc macro; `#[derive(Queryable, Insertable,...)]` derive macros | r2d2 (sync) | No — documents a `build.rs` workaround for `embed_migrations!` rebuild signals only | not confirmed from notes; ≥1.65 implied |
 | **SeaORM** | tokio **or** async-std — user-selected via feature flags | sqlx (runtime-tokio or runtime-async-std feature) | `#[derive(DeriveEntityModel)]`, `#[derive(DeriveMigrationName)]` proc-macro derives; `#[sea_orm(...)]` attribute derives | sqlx::Pool | No — schema codegen is `sea-orm-cli generate entity` CLI invocation | not confirmed from notes; ≥1.65 implied |
 | **SeaQuery** | No I/O — pure SQL builder; no runtime | Consumer's choice (sqlx, tokio-postgres, postgres crate) | `#[derive(Iden)]` derive; `#[enum_def]` attribute; `raw_query!` / `raw_sql!` declarative macros | Consumer's choice | No | not confirmed from notes |
 | **refinery** | Both: sync trait hierarchy (`Migrate`) + async trait hierarchy (`AsyncMigrate`) behind feature flags | `tokio-postgres` (feature = "tokio-postgres"); also `postgres` sync, `rusqlite`, `mysql`, `mysql_async`, `tiberius` | `embed_migrations!` proc macro (compile-time file discovery + `include_str!`) | User-supplied — awkward deref workaround documented for deadpool | No | 1.85 (`Cargo.toml:12`) |
@@ -77,11 +77,11 @@ Four distinct macro styles appear across the Rust migration ecosystem. Djogi's p
 
 ```rust
 diesel::table! {
-    users (id) {
-        id -> Int4,
-        name -> Text,
-        email -> Varchar,
-    }
+  users (id) {
+    id -> Int4,
+    name -> Text,
+    email -> Varchar,
+  }
 }
 ```
 
@@ -104,9 +104,9 @@ The embed-time macro `embed_migrations!` is a proc macro (`#[proc_macro]` in `mi
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "seaql_migrations")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub version: String,
-    pub applied_at: i64,
+  #[sea_orm(primary_key, auto_increment = false)]
+  pub version: String,
+  pub applied_at: i64,
 }
 ```
 
@@ -125,20 +125,20 @@ SeaQuery uses `#[derive(Iden)]` to implement the `Iden` trait (identifier string
 ```rust
 #[model]
 struct Post {
-    title: String,
-    body: String,
-    published: bool,
+  title: String,
+  body: String,
+  published: bool,
 }
 
 #[model(model_type = "migration")]
 struct Post {
-    title: String,
-    body: String,
+  title: String,
+  body: String,
 }
 
 #[migration_op]
 async fn add_slug_column(ctx: MigrationContext<'_>) -> Result<()> {
-    ctx.execute("ALTER TABLE post ADD COLUMN slug TEXT").await
+  ctx.execute("ALTER TABLE post ADD COLUMN slug TEXT").await
 }
 ```
 
@@ -151,10 +151,10 @@ The `const`-based `Migration` trait in cot means the entire migration definition
 
 ```rust
 pub trait Migration {
-    const APP_NAME: &'static str;
-    const MIGRATION_NAME: &'static str;
-    const DEPENDENCIES: &'static [MigrationDependency];
-    const OPERATIONS: &'static [Operation];
+  const APP_NAME: &'static str;
+  const MIGRATION_NAME: &'static str;
+  const DEPENDENCIES: &'static [MigrationDependency];
+  const OPERATIONS: &'static [Operation];
 }
 ```
 (`cot/src/db/migrations.rs:1697-1709`)
@@ -171,11 +171,11 @@ SeaQuery's DDL surface uses no macros. DDL is expressed as a fluent builder API:
 
 ```rust
 Table::create()
-    .table(Post::Table)
-    .if_not_exists()
-    .col(ColumnDef::new(Post::Id).integer().not_null().auto_increment().primary_key())
-    .col(ColumnDef::new(Post::Title).string().not_null())
-    .to_owned()
+ .table(Post::Table)
+ .if_not_exists()
+ .col(ColumnDef::new(Post::Id).integer().not_null().auto_increment().primary_key())
+ .col(ColumnDef::new(Post::Title).string().not_null())
+ .to_owned()
 ```
 
 The `#[derive(Iden)]` macro on the `Post` enum is used to derive the identifier string (e.g., `"post"`, `"id"`, `"title"`), but the DDL construction itself is pure method chaining.
@@ -213,7 +213,7 @@ The documented workaround (citation: `diesel_migrations/migrations_macros/src/li
 ```rust
 // build.rs
 fn main() {
-    println!("cargo:rerun-if-changed=path/to/migrations");
+  println!("cargo:rerun-if-changed=path/to/migrations");
 }
 ```
 
@@ -317,20 +317,20 @@ refinery's feature flag design is the most explicit in the ecosystem:
 
 ```toml
 [features]
-rusqlite          # sqlite via rusqlite (sync)
-rusqlite-bundled  # rusqlite with bundled SQLite
-postgres          # postgres crate (sync)
-postgres-tls      # postgres + native-tls
-tokio-postgres    # tokio-postgres (async)
+rusqlite     # sqlite via rusqlite (sync)
+rusqlite-bundled # rusqlite with bundled SQLite
+postgres     # postgres crate (sync)
+postgres-tls   # postgres + native-tls
+tokio-postgres  # tokio-postgres (async)
 tokio-postgres-tls
-mysql             # mysql crate (sync)
-mysql_async       # mysql_async (async)
-tiberius          # SQL Server via tiberius (async)
-int8-versions     # use i64 for version numbers
-enums             # generate EmbeddedMigration enum
-config            # enable Config struct
-toml              # TOML config parsing
-serde             # serde derives
+mysql       # mysql crate (sync)
+mysql_async    # mysql_async (async)
+tiberius     # SQL Server via tiberius (async)
+int8-versions   # use i64 for version numbers
+enums       # generate EmbeddedMigration enum
+config      # enable Config struct
+toml       # TOML config parsing
+serde       # serde derives
 ```
 
 Each driver is a separate Cargo feature that gates a separate `drivers/*.rs` implementation file. The migration logic lives in trait default methods and is shared across all drivers. This is the cleanest multi-driver design in the ecosystem.
@@ -341,13 +341,13 @@ Each driver is a separate Cargo feature that gates a separate `drivers/*.rs` imp
 
 ```toml
 [features]
-backend-postgres  # Enables PostgresQueryBuilder
-backend-mysql     # MySQL backend
-backend-sqlite    # SQLite backend
-option-postgres-use-serial  # SERIAL vs GENERATED BY DEFAULT AS IDENTITY
+backend-postgres # Enables PostgresQueryBuilder
+backend-mysql   # MySQL backend
+backend-sqlite  # SQLite backend
+option-postgres-use-serial # SERIAL vs GENERATED BY DEFAULT AS IDENTITY
 ```
 
-These flags gate the SQL renderers, not the drivers. A Postgres-only consumer needs only `backend-postgres`. The `option-postgres-use-serial` flag is compile-time, not runtime — you cannot mix `SERIAL` and `GENERATED ... AS IDENTITY` columns in the same binary (`sea-query.md` Surprise 5).
+These flags gate the SQL renderers, not the drivers. A Postgres-only consumer needs only `backend-postgres`. The `option-postgres-use-serial` flag is compile-time, not runtime — you cannot mix `SERIAL` and `GENERATED... AS IDENTITY` columns in the same binary (`sea-query.md` Surprise 5).
 
 ### cot: all three backends enabled by default
 
@@ -356,9 +356,9 @@ These flags gate the SQL renderers, not the drivers. A Postgres-only consumer ne
 [features]
 default = ["sqlite", "postgres", "mysql", "json"]
 db = ["dep:sea-query", "dep:sea-query-binder", "dep:sqlx"]
-sqlite = ["db", "sea-query/backend-sqlite", ...]
-postgres = ["db", "sea-query/backend-postgres", ...]
-mysql  = ["db", "sea-query/backend-mysql", ...]
+sqlite = ["db", "sea-query/backend-sqlite",...]
+postgres = ["db", "sea-query/backend-postgres",...]
+mysql = ["db", "sea-query/backend-mysql",...]
 ```
 
 cot enables all three backends by default and selects the actual backend at runtime from the connection URL. This is convenient for development but includes dead code for production Postgres-only deployments. All three sea-query backends compile into the binary; only one is used.
@@ -499,7 +499,7 @@ Java and Python achieve similar multi-database support through runtime driver re
 
 ### Lifetime parameters on query builders (Diesel's borrowing ceremony)
 
-Diesel's type-safe query builders use lifetime parameters to ensure that queries do not outlive the connection they are built against. This is `rustc`-enforced borrow-checking applied to query building. The cost is ergonomic: Diesel queries involve complex generic type signatures (`SelectStatement<FromClause<table::table>, DefaultSelectClause<...>, NoDistinctClause, ...>`) that are difficult to name and store. This is a Rust-specific trade-off with no Python/Java equivalent.
+Diesel's type-safe query builders use lifetime parameters to ensure that queries do not outlive the connection they are built against. This is `rustc`-enforced borrow-checking applied to query building. The cost is ergonomic: Diesel queries involve complex generic type signatures (`SelectStatement<FromClause<table::table>, DefaultSelectClause<...>, NoDistinctClause,...>`) that are difficult to name and store. This is a Rust-specific trade-off with no Python/Java equivalent.
 
 ---
 
@@ -579,7 +579,7 @@ cot silently generates `RemoveField` and `RemoveModel` operations. Djogi plans a
 cot has none of these. Djogi's spec calls for `migrate stamp`, `migrate baseline`, `migrate repair` as first-class CLI commands. refinery's `Target::Fake` demonstrates the minimum viable stamp implementation. Prisma's `migrate resolve --applied` demonstrates the recovery-after-failure flow.
 
 **Field type change: not a `todo!()`.**
-cot panics at runtime when a field type changes (`cot-cli/src/migration_generator.rs:835`). Djogi must handle field type changes with an explicit migration strategy: either `ALTER COLUMN TYPE ... USING expression`, or a drop-add-copy sequence for type changes that Postgres cannot cast automatically.
+cot panics at runtime when a field type changes (`cot-cli/src/migration_generator.rs:835`). Djogi must handle field type changes with an explicit migration strategy: either `ALTER COLUMN TYPE... USING expression`, or a drop-add-copy sequence for type changes that Postgres cannot cast automatically.
 
 **No sea-schema dependency.**
 cot proves that live schema introspection is not required for a functional migration system — the snapshot-based approach is sufficient. Djogi's descriptor-JSON approach is the same architectural bet, validated by cot's production use.

@@ -1,6 +1,6 @@
 //! Runtime model descriptors — emitted by `#[model]` via `inventory`,
 //! consumed by the migration system, `djogi docs`,
-//! RLS generation, and the partitioning analyzer .
+//! RLS generation, and the partitioning analyzer.
 //! # Why `ModelDescriptor` is the single source of truth
 //! The framework has several consumers that need to reason about a model's
 //! schema at runtime or build time: the migration differ compares the live
@@ -8,7 +8,7 @@
 //! renders columns from them; `djogi docs` turns them into markdown; the
 //! RLS generator produces `CREATE POLICY` statements from `tenant_key`.
 //! Rather than each subsystem re-parsing `#[model]` attributes, the proc
-//! macro emits one `inventory::submit!(ModelDescriptor { ... })` per model
+//! macro emits one `inventory::submit!(ModelDescriptor {... })` per model
 //! and every consumer iterates `inventory::iter::<ModelDescriptor>`.
 //! # Why the descriptor has forward-declared fields
 //! Some fields here (`partition_by`, `has_outbox`, `tenant_key`, `cache_ttl`,
@@ -98,16 +98,16 @@ pub enum FieldSqlType {
     /// adopter source types, disambiguated at projection time by the
     /// `FieldDescriptor::rust_source_type` discriminator (`RustSourceType`):
     /// * `Some(RustSourceType::U64)` — `u64` columns, with a range +
-    ///   integrality CHECK (`col >= 0 AND col <= u64::MAX AND col = trunc(col)`).
+    /// integrality CHECK (`col >= 0 AND col <= u64::MAX AND col = trunc(col)`).
     /// * `Some(RustSourceType::Decimal)` — `rust_decimal::Decimal` columns,
-    ///   with a structural CHECK enforcing the 96-bit mantissa / scale ≤ 28
-    ///   representable range (`djogi#188`).
+    /// with a structural CHECK enforcing the 96-bit mantissa / scale ≤ 28
+    /// representable range (`djogi#188`).
     /// * `None` — adopter custom types whose `DjogiSqlType::SQL_TYPE`
-    ///   resolves to `"NUMERIC"`; no Rust-derived CHECK is projected because
-    ///   the framework cannot know an adopter scalar type's representable
-    ///   range.
-    ///   The bare variant preserves the adopter's full precision and scale
-    ///   verbatim — Postgres does not round inputs before the CHECK fires.
+    /// resolves to `"NUMERIC"`; no Rust-derived CHECK is projected because
+    /// the framework cannot know an adopter scalar type's representable
+    /// range.
+    /// The bare variant preserves the adopter's full precision and scale
+    /// verbatim — Postgres does not round inputs before the CHECK fires.
     Numeric,
     /// `NUMERIC(precision, scale)` — bounded numeric. Not currently emitted
     /// by the framework for any built-in Rust source type: `u64` historically
@@ -223,26 +223,26 @@ pub enum FieldSqlType {
     /// * [`RangeSubtypeKind::Int4`] — `int4range` (Rust: `Range<i32>`)
     /// * [`RangeSubtypeKind::Int8`] — `int8range` (Rust: `Range<i64>`)
     /// * [`RangeSubtypeKind::Num`] — `numrange`
-    ///   (Rust: `Range<rust_decimal::Decimal>`)
+    /// (Rust: `Range<rust_decimal::Decimal>`)
     /// * [`RangeSubtypeKind::Ts`] — `tsrange`
-    ///   (Rust: `Range<time::PrimitiveDateTime>`)
+    /// (Rust: `Range<time::PrimitiveDateTime>`)
     /// * [`RangeSubtypeKind::Tstz`] — `tstzrange`
-    ///   (Rust: `Range<djogi::DateTime>`)
+    /// (Rust: `Range<djogi::DateTime>`)
     /// * [`RangeSubtypeKind::Date`] — `daterange`
-    ///   (Rust: `Range<djogi::Date>`)
-    ///   `tsrange` is the single timestamp-without-timezone range entry
-    ///   point and uses `time::PrimitiveDateTime`. Djogi's `DateTime`
-    ///   alias remains timezone-aware and lowers to `tstzrange`.
+    /// (Rust: `Range<djogi::Date>`)
+    /// `tsrange` is the single timestamp-without-timezone range entry
+    /// point and uses `time::PrimitiveDateTime`. Djogi's `DateTime`
+    /// alias remains timezone-aware and lowers to `tstzrange`.
     /// # Future siblings
     /// This variant is the shared substrate for two future DB-level
     /// no-overlap lanes; neither is shipped by #215:
     /// * **** — `btree_gist` EXCLUDE constraint grammar
-    ///   (`#[model(exclude(...))]`) and `CREATE EXTENSION btree_gist`.
+    /// (`#[model(exclude(...))]`) and `CREATE EXTENSION btree_gist`.
     /// * **** — PostgreSQL 18 temporal-constraint DDL
-    ///   (`WITHOUT OVERLAPS`, `PERIOD` foreign keys, `NOT ENFORCED`,
-    ///   named `NOT NULL`).
-    ///   Both lanes consume range columns as input but neither alters
-    ///   the [`FieldSqlType::Range`] variant itself.
+    /// (`WITHOUT OVERLAPS`, `PERIOD` foreign keys, `NOT ENFORCED`,
+    /// named `NOT NULL`).
+    /// Both lanes consume range columns as input but neither alters
+    /// the [`FieldSqlType::Range`] variant itself.
     Range {
         /// The Postgres range subtype this column resolves to.
         subtype: RangeSubtypeKind,
@@ -255,24 +255,24 @@ pub enum FieldSqlType {
     /// adopter-supplied domain.
     /// # Fields
     /// * `name` — the domain identifier. Validated at macro-parse time
-    ///   against the standard Postgres unquoted-identifier rules
-    ///   (`check_domain_name` in `djogi-macros::ident`): non-empty,
-    ///   ≤63 bytes, ASCII letter or underscore first, ASCII alphanumeric
-    ///   or underscore after. Reserved-keyword and `__djogi_` prefix
-    ///   checks are intentionally NOT applied — domain identifiers are
-    ///   SQL type names, not column / table identifiers, and
-    ///   `domain = "text"` is a legitimate (if confusing) declaration.
-    ///   Schema-qualified domain names (`"public.positive_amount"`) fail
-    ///   the dotless-identifier rule and are out of Piece A scope
-    ///   adopters needing them fall back to `Custom("public.positive_amount")`
-    ///   until Piece B.
+    /// against the standard Postgres unquoted-identifier rules
+    /// (`check_domain_name` in `djogi-macros::ident`): non-empty,
+    /// ≤63 bytes, ASCII letter or underscore first, ASCII alphanumeric
+    /// or underscore after. Reserved-keyword and `__djogi_` prefix
+    /// checks are intentionally NOT applied — domain identifiers are
+    /// SQL type names, not column / table identifiers, and
+    /// `domain = "text"` is a legitimate (if confusing) declaration.
+    /// Schema-qualified domain names (`"public.positive_amount"`) fail
+    /// the dotless-identifier rule and are out of Piece A scope
+    /// adopters needing them fall back to `Custom("public.positive_amount")`
+    /// until Piece B.
     /// * `base` — the inferred underlying [`FieldSqlType`] for the Rust
-    ///   field's source type, captured for documentation and future
-    ///   Piece B consumption. **Piece A treats `base` as purely
-    ///   informational**: the migration differ, projection, composer, and
-    ///   snapshot all key off the rendered `Display` output (the domain
-    ///   name) rather than the inner base. A future Piece B that emits
-    ///   `CREATE DOMAIN <name> AS <base>` will read this slot directly.
+    /// field's source type, captured for documentation and future
+    /// Piece B consumption. **Piece A treats `base` as purely
+    /// informational**: the migration differ, projection, composer, and
+    /// snapshot all key off the rendered `Display` output (the domain
+    /// name) rather than the inner base. A future Piece B that emits
+    /// `CREATE DOMAIN <name> AS <base>` will read this slot directly.
     /// # Display contract
     /// [`Display`](#impl-Display-for-FieldSqlType) renders the bare
     /// domain name (e.g. `"positive_amount"`), not the inner base type.
@@ -292,25 +292,25 @@ pub enum FieldSqlType {
     /// `const fn field_descriptor(...)` call site.
     /// `&'static FieldSqlType` resolves this cleanly:
     /// * **No Drop.** The enum stays trivially droppable; `const fn`
-    ///   construction continues to work.
+    /// construction continues to work.
     /// * **Idiomatic.** Every other nested descriptor structure on the
-    ///   surface already uses `&'static [...]`
-    ///   [`FieldDescriptor::visage_map`], [`ModelDescriptor::fields`],
-    ///   [`IndexTarget::Columns`]. `Box` would be the outlier here.
+    /// surface already uses `&'static [...]`
+    /// [`FieldDescriptor::visage_map`], [`ModelDescriptor::fields`],
+    /// [`IndexTarget::Columns`]. `Box` would be the outlier here.
     /// * **Zero heap allocation.** Descriptors live for the entire
-    ///   process lifetime (registered via `inventory::submit!`); a
-    ///   `Box<FieldSqlType>` would allocate once per domain field and
-    ///   never be reclaimed. A `&'static` reference into static storage
-    ///   has identical lifetime semantics without the allocation.
+    /// process lifetime (registered via `inventory::submit!`); a
+    /// `Box<FieldSqlType>` would allocate once per domain field and
+    /// never be reclaimed. A `&'static` reference into static storage
+    /// has identical lifetime semantics without the allocation.
     /// * **Macro can emit it.** The proc macro places a `static`
-    ///   declaration for the base type inside the `inventory::submit!`
-    ///   block before the `FieldDescriptor` literal, then references
-    ///   it as `&<STATIC>`.
-    ///   Test fixtures construct `Domain` values via a one-line `static`
-    ///   binding: `static BASE: FieldSqlType = FieldSqlType::Numeric;`
-    ///   then `FieldSqlType::Domain { name: "x", base: &BASE }`.
+    /// declaration for the base type inside the `inventory::submit!`
+    /// block before the `FieldDescriptor` literal, then references
+    /// it as `&<STATIC>`.
+    /// Test fixtures construct `Domain` values via a one-line `static`
+    /// binding: `static BASE: FieldSqlType = FieldSqlType::Numeric;`
+    /// then `FieldSqlType::Domain { name: "x", base: &BASE }`.
     Domain {
-        /// Domain identifier as it appears in `CREATE DOMAIN <name> ...`
+        /// Domain identifier as it appears in `CREATE DOMAIN <name>...`
         /// validated by the macro to satisfy the Postgres unquoted-
         /// identifier rules.
         name: &'static str,
@@ -434,7 +434,7 @@ impl std::fmt::Display for FieldSqlType {
             FieldSqlType::Macaddr => write!(f, "MACADDR"),
             // Postgres range type. `Display` renders the
             // lowercase subtype name (`int4range`, `tsrange`,
-            // `tstzrange`, ...); the schema snapshot stores
+            // `tstzrange`,...); the schema snapshot stores
             // the rendered form so the differ compares by string.
             FieldSqlType::Range { subtype } => write!(f, "{subtype}"),
             // Djogi#216 Piece A — Postgres domain reference.
@@ -487,15 +487,15 @@ pub enum IndexType {
 /// and a `UNIQUE INDEX` (a plain index that happens to enforce uniqueness
 /// without participating in the constraint catalogue). The former is what
 /// most users mean when they say "unique"; the latter is what you reach for
-/// when you need `WHERE ... IS NOT NULL` partial uniqueness or
+/// when you need `WHERE... IS NOT NULL` partial uniqueness or
 /// `NULLS NOT DISTINCT` semantics that the constraint form does not expose.
 /// Variant map:
 /// - [`IndexKind::NonUnique`] — a plain index. The typical case.
 /// - [`IndexKind::UniqueConstraint`] — `UNIQUE` constraint on the table.
-///   `IndexSpec::simple(..., unique = true, ...)` maps to this variant.
+/// `IndexSpec::simple(..., unique = true,...)` maps to this variant.
 /// - [`IndexKind::UniqueIndex`] — `CREATE UNIQUE INDEX` without a constraint
-///   row. Required when [`IndexSpec::predicate`] is set or when
-///   [`IndexSpec::nulls_not_distinct`] is `true`.
+/// row. Required when [`IndexSpec::predicate`] is set or when
+/// [`IndexSpec::nulls_not_distinct`] is `true`.
 /// # Invariant — unique indexes are btree-only
 /// Both unique-bearing variants ([`IndexKind::UniqueConstraint`] and
 /// [`IndexKind::UniqueIndex`]) require [`IndexSpec::index_type`] to be
@@ -604,17 +604,17 @@ pub enum IndexTarget {
 /// a richer structure that can express the full Postgres index surface
 /// without further breaking changes:
 /// - `target` replaces `columns` and uses [`IndexTarget`] to pick either a
-///   per-column list ([`IndexTarget::Columns`]) or an expression
-///   ([`IndexTarget::Expression`]).
+/// per-column list ([`IndexTarget::Columns`]) or an expression
+/// ([`IndexTarget::Expression`]).
 /// - `kind` replaces `unique: bool` with [`IndexKind`] so partial / nulls-
-///   not-distinct unique indexes stop being forced through the constraint
-///   form.
+/// not-distinct unique indexes stop being forced through the constraint
+/// form.
 /// - `predicate`, `include`, and `nulls_not_distinct` are new optional
-///   fields matching the Postgres DDL vocabulary.
+/// fields matching the Postgres DDL vocabulary.
 /// - `requires_out_of_transaction` and `extension_dependency` from
-///   are preserved unchanged.
-///   Use [`IndexSpec::simple`] to construct a plain column-list index without
-///   listing every optional field.
+/// are preserved unchanged.
+/// Use [`IndexSpec::simple`] to construct a plain column-list index without
+/// listing every optional field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexSpec {
     pub name: &'static str,
@@ -686,7 +686,7 @@ pub struct ExclusionElement {
 /// with zero rows) emits the constraint inline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExclusionConstraintSpec {
-    /// Constraint name. Emitted as `CONSTRAINT <name> EXCLUDE ...`.
+    /// Constraint name. Emitted as `CONSTRAINT <name> EXCLUDE...`.
     pub name: &'static str,
     /// Index method — typically `"gist"` for range overlap, or
     /// `"btree"` for `=`-based exclusion. The string is emitted
@@ -737,7 +737,7 @@ pub enum IndexNameKind {
     /// `<table>_<cols>_idx` — the default for `index(...)` declarations.
     NonUnique,
     /// `<table>_<cols>_key` — the default for `unique(...)` declarations
-    /// that lower to `ADD CONSTRAINT ... UNIQUE`.
+    /// that lower to `ADD CONSTRAINT... UNIQUE`.
     UniqueConstraint,
     /// `<table>_<cols>_uidx` — used when uniqueness is enforced via
     /// `CREATE UNIQUE INDEX` rather than a constraint (partial,
@@ -765,17 +765,17 @@ pub enum IndexNameTarget<'a> {
 /// Compute the deterministic index name for a migration emitter.
 /// Shape: `<table>_<stem-body>_<suffix>` where:
 /// - `<stem-body>` is either the underscore-joined column names (for
-///   [`IndexNameTarget::Columns`]) or the literal `expr` (for
-///   [`IndexNameTarget::Expression`]).
+/// [`IndexNameTarget::Columns`]) or the literal `expr` (for
+/// [`IndexNameTarget::Expression`]).
 /// - `<suffix>` is `idx` / `key` / `uidx` per [`IndexNameKind`].
-///   Truncation rule (plan §D5): when the naïve name would exceed the
-///   Postgres 63-byte identifier limit, the stem is truncated to 55 bytes
-///   and an 8-character hex digest of the full pre-truncation name is
-///   appended so near-duplicate inputs cannot collide.
-///   The hash uses `std::hash::DefaultHasher` (SipHash-1-3) — determinism
-///   within a single process is sufficient because the name is computed
-///   once, emitted into a `static` literal, and never re-hashed at
-///   runtime.
+/// Truncation rule (plan §D5): when the naïve name would exceed the
+/// Postgres 63-byte identifier limit, the stem is truncated to 55 bytes
+/// and an 8-character hex digest of the full pre-truncation name is
+/// appended so near-duplicate inputs cannot collide.
+/// The hash uses `std::hash::DefaultHasher` (SipHash-1-3) — determinism
+/// within a single process is sufficient because the name is computed
+/// once, emitted into a `static` literal, and never re-hashed at
+/// runtime.
 /// # Examples
 /// ```ignore
 /// use djogi::descriptor::{IndexNameKind, IndexNameTarget, index_name};
@@ -842,7 +842,7 @@ impl IndexSpec {
     /// values are descriptor-lifetime data that lives for the entire process,
     /// so a once-per-index leak behaves like a `static` initialiser. For
     /// truly `static` contexts (macro-emitted descriptors), construct an
-    /// `IndexSpec { ... }` literal directly and put the `IndexColumnSpec`
+    /// `IndexSpec {... }` literal directly and put the `IndexColumnSpec`
     /// slice behind a `static` binding.
     /// # Panics
     /// Panics when `unique == true && index_type != IndexType::BTree`.
@@ -861,9 +861,9 @@ impl IndexSpec {
         assert!(
             !unique || matches!(index_type, IndexType::BTree),
             "IndexSpec::simple: PostgreSQL unique indexes are btree-only; \
-             cannot construct a unique index with index_type {index_type:?}. \
-             Drop `unique` for a non-unique non-btree lookup index, or use \
-             IndexType::BTree."
+    cannot construct a unique index with index_type {index_type:?}. \
+    Drop `unique` for a non-unique non-btree lookup index, or use \
+    IndexType::BTree."
         );
         let lifted: Box<[IndexColumnSpec]> =
             columns.iter().map(|c| IndexColumnSpec::simple(c)).collect();
@@ -1057,7 +1057,7 @@ mod tests {
         // give the enum a non-trivial destructor that const eval
         // cannot run) — would surface here.
         // The boolean / string-literal field reads run inside a
-        // `const { ... }` block so the regression check is enforced at
+        // `const {... }` block so the regression check is enforced at
         // compile time. A future change that turns `field_descriptor`
         // non-const, or changes its const default behaviour, fails to
         // const-evaluate here rather than producing a tautological
@@ -1149,7 +1149,7 @@ mod tests {
     fn index_order_and_nulls_order_variants_exist() {
         use super::{IndexNullsOrder, IndexOrder};
         // Exhaustive coverage: if a variant is renamed or removed, these
-        // matches stop compiling. The `let _ = ...` lines also pin the
+        // matches stop compiling. The `let _ =...` lines also pin the
         // variant construction surface.
         let orders = [IndexOrder::Asc, IndexOrder::Desc];
         for o in &orders {
@@ -1984,7 +1984,7 @@ mod protected_field_metadata_tests {
         assert!(
             no_using.type_change_using.is_none(),
             "constructor must default `type_change_using` to None for every \
-             new descriptor — adding the attribute is opt-in",
+    new descriptor — adding the attribute is opt-in",
         );
 
         let with_using = FieldDescriptor {
@@ -2056,7 +2056,7 @@ mod protected_field_metadata_tests {
 /// | `U8` | SMALLINT (INT2) | `i16::from(v)` | `u8::try_from(i16)` | range `0..=255` |
 /// | `U16` | INTEGER (INT4) | `i32::from(v)` | `u16::try_from(i32)` | range `0..=65535` |
 /// | `U32` | BIGINT (INT8) | `i64::from(v)` | `u32::try_from(i64)` | range `0..=4294967295` |
-/// | `U64`            | NUMERIC            | `Decimal::from(v)` | `Decimal::to_u64()`  | range + integrality (`col = trunc`)   |
+/// | `U64`   | NUMERIC   | `Decimal::from(v)` | `Decimal::to_u64()` | range + integrality (`col = trunc`) |
 /// | `Decimal` | NUMERIC | none (native impl) | none (native impl) | structural `mantissa ≤ 2^96 − 1` |
 /// # Why not `i8` in a native `ToSql` impl?
 /// `postgres-types` does implement `ToSql` for `i8`, but it maps to the
@@ -2105,7 +2105,7 @@ pub enum RustSourceType {
     /// can emit `scale(col) <= 28 AND abs(col) * power(10::numeric,
     /// scale(col)) <= 79228162514264337593543950335` against an adopter
     /// Decimal column instead of the U64 range CHECK that fires when
-    /// `rust_source_type == Some(U64)`. .
+    /// `rust_source_type == Some(U64)`..
     Decimal,
 }
 
@@ -2133,21 +2133,21 @@ pub struct FieldDescriptor {
     /// is set without a rationale — surfaces forgotten context at review time.
     pub rationale: Option<&'static str>,
     /// `#[field(outbox = "ignore")]` — exclude the field from the outbox
-    /// payload. Declared in ; outbox writes land in .
+    /// payload. Declared in ; outbox writes land in.
     pub outbox_exclude: bool,
     /// `#[field(sequence_within = "parent_fk_column")]` — parent FK
     /// column that scopes this field's monotonic sequence. When
     /// `Some(col)`, the emitted `Model::create` runs a counter
     /// upsert against `<table>_seq_<col>` inside the caller's
     /// atomic scope before inserting the row, captures the returned
-    /// `last_seq`, and writes it into this field. .
+    /// `last_seq`, and writes it into this field..
     /// `None` for every field that is not scope-sequenced. The
     /// macro enforces that at most one field per model carries this
     /// attribute (multi-scope sequencing is a future extension).
     pub sequence_within: Option<&'static str>,
     /// Override the index method for this field's implicit index.
     /// `None` falls back to `IndexType::BTree`. Declared in ;
-    /// migration generation for non-BTree methods lands in .
+    /// migration generation for non-BTree methods lands in.
     pub index_type: Option<IndexType>,
 
     // ── Relation metadata ────────────────────────────────
@@ -2202,7 +2202,7 @@ pub struct FieldDescriptor {
     /// the live-migration classifier consumes for transition routing.
     /// Distinct from `Sensitivity::None` inside a `Some(_)` value: an
     /// outer `None` means the adopter never invoked `protected(...)`,
-    /// while `Some(ProtectedFieldMetadata { sensitivity: None, .. })`
+    /// while `Some(ProtectedFieldMetadata { sensitivity: None,.. })`
     /// is an explicit "ordinary field" assertion. Auditing tools that
     /// surface unannotated fields rely on this distinction.
     pub protected: Option<ProtectedFieldMetadata>,
@@ -2220,10 +2220,10 @@ pub struct FieldDescriptor {
     /// classifier trusts it without re-checking, so a wrong override
     /// can produce unsafe online-migration plans. The macro enforces:
     /// - Only on fields that also carry `default = "..."` (otherwise
-    ///   there is no expression to classify).
+    /// there is no expression to classify).
     /// - Only the three documented variants (`"immutable"`, `"stable"`,
-    ///   `"volatile"`); unknown strings are rejected at macro-expansion
-    ///   time.
+    /// `"volatile"`); unknown strings are rejected at macro-expansion
+    /// time.
     pub default_volatility_override: Option<DefaultVolatility>,
 
     /// `#[field(generated = "<expr>", stored = true)]` stored generated
@@ -2244,37 +2244,37 @@ pub struct FieldDescriptor {
     /// applicable. 5.
     /// Two callers populate this slot today:
     /// - `#[model(auditable)]` on a model with a `created_by` field
-    ///   sets `composed_via: Some("Auditable")` on that field.
+    /// sets `composed_via: Some("Auditable")` on that field.
     /// - `#[model(soft_deletable)]` on a model with a `deleted_at`
-    ///   field sets `composed_via: Some("SoftDeletable")` on that
-    ///   field.
-    ///   `None` for every user-declared field that is not contributed
-    ///   by a recognised composition opt-in — including framework
-    ///   columns (`id`, `created_at`, `updated_at`) and any
-    ///   adopter-declared `created_by` / `deleted_at` field whose model
-    ///   did not opt into the matching `#[model(...)]` flag.
-    ///   Migration emission is byte-identical for composed vs hand-
-    ///   declared columns — this slot is provenance metadata only,
-    ///   surfaced to `djogi docs` and admin-UI consumers that want to
-    ///   distinguish framework-contributed columns from adopter-
-    ///   authored ones. The migration differ does NOT key off this
-    ///   field; a `composed_via: Some("Auditable")` column compares
-    ///   identical to a hand-declared `created_by: Option<String>`
-    ///   column under `diff_schemas`.
-    ///   **Do not use as a behavioral gate.** Today the tag is keyed off
-    ///   the model attribute (`auditable` / `soft_deletable`) AND the
-    ///   canonical column name (`created_by` / `deleted_at`); any future
-    ///   per-model column-rename path (e.g.
-    ///   `#[model(soft_deletable(column = "trashed_at"))]` overriding
-    ///   `<M as SoftDeletable>::COLUMN`) would re-introduce a different
-    ///   kind of mismatch — the descriptor field would still be tagged
-    ///   against the renamed column's name, but a behavioural-gate
-    ///   consumer that relied on this tag would key off a stale
-    ///   `"deleted_at"` literal and silently miss the renamed column.
-    ///   Future consumers that need to reason about composition
-    ///   behaviour must read it from the typed trait surface (`<M as
+    /// field sets `composed_via: Some("SoftDeletable")` on that
+    /// field.
+    /// `None` for every user-declared field that is not contributed
+    /// by a recognised composition opt-in — including framework
+    /// columns (`id`, `created_at`, `updated_at`) and any
+    /// adopter-declared `created_by` / `deleted_at` field whose model
+    /// did not opt into the matching `#[model(...)]` flag.
+    /// Migration emission is byte-identical for composed vs hand-
+    /// declared columns — this slot is provenance metadata only,
+    /// surfaced to `djogi docs` and admin-UI consumers that want to
+    /// distinguish framework-contributed columns from adopter-
+    /// authored ones. The migration differ does NOT key off this
+    /// field; a `composed_via: Some("Auditable")` column compares
+    /// identical to a hand-declared `created_by: Option<String>`
+    /// column under `diff_schemas`.
+    /// **Do not use as a behavioral gate.** Today the tag is keyed off
+    /// the model attribute (`auditable` / `soft_deletable`) AND the
+    /// canonical column name (`created_by` / `deleted_at`); any future
+    /// per-model column-rename path (e.g.
+    /// `#[model(soft_deletable(column = "trashed_at"))]` overriding
+    /// `<M as SoftDeletable>::COLUMN`) would re-introduce a different
+    /// kind of mismatch — the descriptor field would still be tagged
+    /// against the renamed column's name, but a behavioural-gate
+    /// consumer that relied on this tag would key off a stale
+    /// `"deleted_at"` literal and silently miss the renamed column.
+    /// Future consumers that need to reason about composition
+    /// behaviour must read it from the typed trait surface (`<M as
     /// SoftDeletable>` / `<M as Auditable>`) rather than from this
-    ///   metadata slot.
+    /// metadata slot.
     pub composed_via: Option<&'static str>,
 
     /// Rust source type discriminator for fields whose Rust type has no
@@ -2313,7 +2313,7 @@ pub struct FieldDescriptor {
     /// Both clauses must pass for an INSERT / UPDATE to land. The single
     /// constraint slot keeps the ADD / DROP / AMEND lifecycle in the
     /// differ unchanged.
-    /// .
+    ///.
     pub check_sql: Option<&'static str>,
 
     /// Adopter-supplied `#[field(comment = "<text>")]` free-text column
@@ -2352,56 +2352,56 @@ pub struct FieldDescriptor {
     /// (for the framework `id` column or for the FK target via
     /// `type_to_pk_family`), not from the resolved SQL type string:
     /// * `HeerId` / `HeerIdDesc` family (BIGINT carrier) → `<col> >= 0`.
-    ///   The single invariant `HeerId::from_i64` enforces is `bit 63 = 0`
-    ///   (i.e. the value is non-negative when interpreted as `i64`).
-    ///   All other 63 bits (41 timestamp + 9 node + 13 sequence) are
-    ///   structurally valid.
+    /// The single invariant `HeerId::from_i64` enforces is `bit 63 = 0`
+    /// (i.e. the value is non-negative when interpreted as `i64`).
+    /// All other 63 bits (41 timestamp + 9 node + 13 sequence) are
+    /// structurally valid.
     /// * `RanjId` / `RanjIdDesc` family (UUID carrier) → version=8 and
-    ///   variant=RFC4122. `RanjId::from_uuid` rejects every UUID whose
-    ///   version nibble is not 8 or whose variant high bits are not
-    ///   `10`. The flip-mask for `RanjIdDesc` preserves the version +
-    ///   variant nibbles, so both ascending and descending RanjId
-    ///   variants share this CHECK.
+    /// variant=RFC4122. `RanjId::from_uuid` rejects every UUID whose
+    /// version nibble is not 8 or whose variant high bits are not
+    /// `10`. The flip-mask for `RanjIdDesc` preserves the version +
+    /// variant nibbles, so both ascending and descending RanjId
+    /// variants share this CHECK.
     /// * Any other semantic family — `Serial`, `Custom`, `Composite`,
-    ///   `None` — no CHECK is emitted. This is the FK-to-Serial,
-    ///   FK-to-Custom, and FK-to-Composite case (e.g. an `FK<Vehicle>`
-    ///   where `Vehicle` has `pk = Serial`, or `pk = AppSnowflakeId`
-    ///   custom): the macro propagates the opt-in flag to every FK
-    ///   column when `#[model(strict_ids)]` is set, and the projection
-    ///   silently skips columns whose target PK family is not HeerId /
-    ///   RanjId. Custom PKs with a `BIGINT` or `UUID` inner SQL_TYPE
-    ///   are NOT coerced into the HeerRanjID family — the family
-    ///   dispatch correctly maps them to `None` despite the SQL-carrier
-    ///   collision.
-    ///   **Performance.** The HeerId structural CHECK is a single
-    ///   comparison (`<1 µs` per row). The RanjId CHECK extracts two hex
-    ///   digits from the canonical UUID text (`uuid::text` cast + two
-    ///   `substring` calls) and runs in ~1–3 µs per row. Both are opt-in
-    ///   because the **default-on** semantics would break every existing
-    ///   model that holds an ID generated outside HeeRanjID (raw SQL
-    ///   migrations, BI-tool writes, sister apps).
-    ///   **Combination with adopter `#[field(check = "...")]`.** When the
-    ///   adopter also declares a CHECK on a strict-ID-checked column, the
-    ///   projection combines all three (strict-ID + type-derived +
-    ///   adopter) into the single constraint slot via logical `AND`,
-    ///   mirroring the existing AND-merge contract.
-    ///   **Migration to Route B (centralized HeeRanjID validator).** The
-    ///   CHECK projected here lives inside djogi and tracks HeeRanjID's
-    ///   bit layout (verified against `~/projects/HeeRanjID/heeranjid/src`
-    ///   at the time this attribute landed). A future HeeRanjID release
-    ///   will ship `IMMUTABLE PARALLEL SAFE` Postgres validator functions
-    ///   (`heeranjid.is_valid_heerid(BIGINT)` /
-    ///   `heeranjid.is_valid_ranjid(UUID)`); when those land, djogi will
-    ///   migrate to projecting `CHECK (heeranjid.is_valid_heerid(<col>))`
-    ///   against them so the validator becomes a single source of truth.
-    ///   The opt-in attribute surface stays unchanged across that
-    ///   migration. See `docs/spec/decisions.md` "HeerId / RanjId
-    ///   structural CHECK" for the route-A / route-B trade.
-    ///   .
+    /// `None` — no CHECK is emitted. This is the FK-to-Serial,
+    /// FK-to-Custom, and FK-to-Composite case (e.g. an `FK<Vehicle>`
+    /// where `Vehicle` has `pk = Serial`, or `pk = AppSnowflakeId`
+    /// custom): the macro propagates the opt-in flag to every FK
+    /// column when `#[model(strict_ids)]` is set, and the projection
+    /// silently skips columns whose target PK family is not HeerId /
+    /// RanjId. Custom PKs with a `BIGINT` or `UUID` inner SQL_TYPE
+    /// are NOT coerced into the HeerRanjID family — the family
+    /// dispatch correctly maps them to `None` despite the SQL-carrier
+    /// collision.
+    /// **Performance.** The HeerId structural CHECK is a single
+    /// comparison (`<1 µs` per row). The RanjId CHECK extracts two hex
+    /// digits from the canonical UUID text (`uuid::text` cast + two
+    /// `substring` calls) and runs in ~1–3 µs per row. Both are opt-in
+    /// because the **default-on** semantics would break every existing
+    /// model that holds an ID generated outside HeeRanjID (raw SQL
+    /// migrations, BI-tool writes, sister apps).
+    /// **Combination with adopter `#[field(check = "...")]`.** When the
+    /// adopter also declares a CHECK on a strict-ID-checked column, the
+    /// projection combines all three (strict-ID + type-derived +
+    /// adopter) into the single constraint slot via logical `AND`,
+    /// mirroring the existing AND-merge contract.
+    /// **Migration to Route B (centralized HeeRanjID validator).** The
+    /// CHECK projected here lives inside djogi and tracks HeeRanjID's
+    /// bit layout (verified against `~/projects/HeeRanjID/heeranjid/src`
+    /// at the time this attribute landed). A future HeeRanjID release
+    /// will ship `IMMUTABLE PARALLEL SAFE` Postgres validator functions
+    /// (`heeranjid.is_valid_heerid(BIGINT)` /
+    /// `heeranjid.is_valid_ranjid(UUID)`); when those land, djogi will
+    /// migrate to projecting `CHECK (heeranjid.is_valid_heerid(<col>))`
+    /// against them so the validator becomes a single source of truth.
+    /// The opt-in attribute surface stays unchanged across that
+    /// migration. See `docs/spec/decisions.md` "HeerId / RanjId
+    /// structural CHECK" for the route-A / route-B trade.
+    ///.
     pub strict_id_check: bool,
 
     /// Adopter-supplied `#[field(type_change_using = "<sql expr>")]` — Phase
-    /// 8.5 .
+    /// 8.5.
     /// **One-time migration directive.** When the migration differ detects
     /// that this column's `sql_type` changed between the prior snapshot and
     /// the current descriptor, the SQL emitter appends the adopter's
@@ -2442,16 +2442,16 @@ pub struct FieldDescriptor {
 /// classifier consumes the override.
 /// Variants mirror Postgres's `provolatile` categories:
 /// - [`Self::Immutable`] — the expression always returns the same value
-///   for the same inputs and never reads database state. Safe to evaluate
-///   once and cache.
+/// for the same inputs and never reads database state. Safe to evaluate
+/// once and cache.
 /// - [`Self::Stable`] — the expression returns the same value within a
-///   single query / statement but can vary across statements (e.g.
-///   `now()` is STABLE, not VOLATILE).
+/// single query / statement but can vary across statements (e.g.
+/// `now()` is STABLE, not VOLATILE).
 /// - [`Self::Volatile`] — the expression can return different values on
-///   each call (e.g. `clock_timestamp()`, `random()`). Triggers the
-///   3-step ExpandContract pattern at compose time.
-///   Narrow constructor for [`FieldDescriptor`] — required identity
-///   fields at call site, every optional field defaulted.
+/// each call (e.g. `clock_timestamp()`, `random()`). Triggers the
+/// 3-step ExpandContract pattern at compose time.
+/// Narrow constructor for [`FieldDescriptor`] — required identity
+/// fields at call site, every optional field defaulted.
 /// # Why this exists
 /// New `FieldDescriptor` fields land roughly once per phase. Without
 /// this constructor, every test fixture that constructs a literal
@@ -2469,7 +2469,7 @@ pub struct FieldDescriptor {
 /// ```ignore
 /// FieldDescriptor {
 /// unique: true,
-/// ..field_descriptor("email", FieldSqlType::Text, false)
+///..field_descriptor("email", FieldSqlType::Text, false)
 /// }
 /// ```
 pub const fn field_descriptor(
@@ -2571,7 +2571,7 @@ impl Default for DefaultVolatility {
     }
 }
 
-/// Sensitivity classification for protected fields. .
+/// Sensitivity classification for protected fields..
 /// Drives downstream policy: redaction (logs / admin UI), codec
 /// selection (at-rest encryption), retention (purge cadence). Ordered
 /// from least to most sensitive — `None` is the explicit "ordinary
@@ -2605,7 +2605,7 @@ impl Default for Sensitivity {
 
 /// Redaction policy applied when a protected field is rendered into
 /// logs, admin UI, or any downstream surface that the adopter has not
-/// explicitly opted into. .
+/// explicitly opted into..
 /// `#[non_exhaustive]` so future strategies (tokenisation, format-
 /// preserving redaction, etc.) can be added without breaking matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2633,7 +2633,7 @@ impl Default for RedactionPolicy {
     }
 }
 
-/// Retention label drives later purge / archival policy. .
+/// Retention label drives later purge / archival policy..
 /// `Standard` is the neutral default — the project's default retention
 /// window applies unless an adopter calls out a different label.
 /// `#[non_exhaustive]` so future labels (e.g. legal-hold subclasses)
@@ -2660,7 +2660,7 @@ impl Default for RetentionLabel {
     }
 }
 
-/// Protected-field metadata attached to a [`FieldDescriptor`]. .
+/// Protected-field metadata attached to a [`FieldDescriptor`]..
 /// Attached as `Option<ProtectedFieldMetadata>` on `FieldDescriptor`;
 /// `None` means "no protected-field semantics set" (the absence is
 /// distinct from `Sensitivity::None` because absence also implies the
@@ -2744,7 +2744,7 @@ pub struct DeferrabilitySpec {
 /// Named struct (not bare enum-variant fields) so future fields can be
 /// added without rewriting every `PkType::Custom` match arm in the
 /// codebase. Added in alongside the
-/// [`PrimaryKey`](crate::primary_key::PrimaryKey) trait substrate; Task 3
+/// [`PrimaryKey`](crate::primary_key::PrimaryKey) trait substrate;
 /// wires the attribute-parse + macro emission path that populates the
 /// fields from `#[model(pk = MyCustomId)]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2797,7 +2797,7 @@ pub enum PkType {
 /// This is the single source of truth for every framework subsystem that
 /// reflects on schema: migrations, `djogi docs`, RLS
 /// generation, partitioning, the outbox system
-/// , visages (— `expose(...)` scope membership),
+///, visages (— `expose(...)` scope membership),
 /// protected-data governance (— sensitivity, codecs, redaction),
 /// data-lifecycle planning, and distributed topology
 /// (shard/residency/placement metadata). Extending this struct
@@ -2838,7 +2838,7 @@ pub struct ModelDescriptor {
     /// Column name used as the Row Level Security tenant isolation key.
     /// Set via `#[model(tenant_key = "org_id")]`.
     /// When set, `query()` warns if `set_tenant()` has not been called.
-    /// `query_insecurely` bypasses the check .
+    /// `query_insecurely` bypasses the check.
     pub tenant_key: Option<&'static str>,
 
     // ── Redis Write-Through Cache (item 29, realtime-tenancy-outbox plan) ────
@@ -2851,24 +2851,24 @@ pub struct ModelDescriptor {
     /// Human-readable rationale for why this model exists or non-obvious
     /// design choices. Set via `#[model(rationale = "...")]`. Included in
     /// `djogi docs` output. The proc macro emits an advisory warning when
-    /// `partition_by` is set without a rationale .
+    /// `partition_by` is set without a rationale.
     pub rationale: Option<&'static str>,
 
     // ── Indexes (items 43–46, graph-spatial-advanced-indexing plan) ─────────
     /// Named index declarations. emits an empty slice by default.
-    /// Migration generation for these lands in .
+    /// Migration generation for these lands in.
     pub indexes: &'static [IndexSpec],
 
-    // ── Many-to-many (Task 6, phase3-relations plan) ────────────────────────
+    // ── Many-to-many (, phase3-relations plan) ────────────────────────
     /// `true` when the model is a `#[model(table = "...", through)]`
     /// junction table for a specific `impl ManyToMany<Target> for Source`.
     /// Through models remain ordinary queryable `Model`s — this flag is
     /// purely a marker carried in the descriptor for downstream consumers:
     /// - the migration differ can suppress standalone admin /
-    ///   routing affordances for through tables (deferred).
+    /// routing affordances for through tables (deferred).
     /// - Human-facing tools (`djogi docs`, the shell's `.list_models`)
-    ///   can hide through tables from the primary model list.
-    ///   `#[derive(Model)]` without `through` sets this to `false`.
+    /// can hide through tables from the primary model list.
+    /// `#[derive(Model)]` without `through` sets this to `false`.
     pub is_through: bool,
 
     // ── Full-Text Search ──────────────────────────────────
@@ -2947,7 +2947,7 @@ pub struct ModelDescriptor {
 
     // ── Proxy models ──────────────────────────────
     /// `Some("Vehicle")` when this model is a proxy of `Vehicle`
-    /// shares its parent's table, has its own Rust type. .
+    /// shares its parent's table, has its own Rust type..
     /// Migration differ treats proxies as schema-passthrough: no
     /// `CREATE TABLE` emitted; the parent owns the table. Proxies
     /// can override the `Model` trait surface (`default_filter`,
@@ -2960,7 +2960,7 @@ pub struct ModelDescriptor {
     /// emitted as a constant string at expand time. Composed into
     /// every `QuerySet<ProxyModel>` via the `Model::default_filter_condition`
     /// override. The fragment is the lowered form of the
-    /// `default_filter = |f| ...` closure on `#[model(...)]`.
+    /// `default_filter = |f|...` closure on `#[model(...)]`.
     /// `None` for non-proxy models and for proxies without a
     /// `default_filter` clause.
     pub default_filter_sql: Option<&'static str>,
@@ -2998,9 +2998,9 @@ pub struct ModelDescriptor {
     /// Djogi#217).
     pub table_comment: Option<&'static str>,
 
-    /// Adopter-supplied `#[model(storage_params = "key=val, ...")]`
+    /// Adopter-supplied `#[model(storage_params = "key=val,...")]`
     /// per-table storage-parameter list. Lowered by the migration
-    /// composer to `ALTER TABLE <table> SET (key=val, ...)`.
+    /// composer to `ALTER TABLE <table> SET (key=val,...)`.
     /// The macro stores a canonical safe `key=value` fragment after
     /// parsing and validating structured entries. The SQL emitter
     /// re-parses the fragment and renders `SET` / `RESET` from those
@@ -3072,20 +3072,20 @@ impl ModelDescriptor {
     /// For each [`IndexSpec`] in `self.indexes`:
     /// 1. Skip entries whose `index_type` is not [`IndexType::Gist`].
     /// 2. Skip entries whose `target` is [`IndexTarget::Expression`]
-    ///    expression-target spatial indexes are legal but their column
-    ///    relationship is opaque here, so we conservatively answer "no"
-    ///    rather than guess.
+    /// expression-target spatial indexes are legal but their column
+    /// relationship is opaque here, so we conservatively answer "no"
+    /// rather than guess.
     /// 3. For each [`IndexColumnSpec`] in the spec's column list, check
-    ///    whether the corresponding [`FieldDescriptor`] has
-    ///    `sql_type == FieldSqlType::Geography { .. }`.
+    /// whether the corresponding [`FieldDescriptor`] has
+    /// `sql_type == FieldSqlType::Geography {.. }`.
     /// 4. Return `true` as soon as one such matching field is found.
-    ///    Composite indexes count if **any** column in the index is
-    ///    `Geography`-typed. This reflects Postgres's GiST-prefix behaviour:
-    ///    a GiST index on `(boundary, other_col)` is still a valid spatial
-    ///    index that accelerates `ST_Contains` / `ST_DWithin` lookups on
-    ///    `boundary`, so we treat such composite indexes as satisfying the
-    ///    "has GiST on geography" check.
-    ///    Returns `false` if no GiST + Geography combination is found.
+    /// Composite indexes count if **any** column in the index is
+    /// `Geography`-typed. This reflects Postgres's GiST-prefix behaviour:
+    /// a GiST index on `(boundary, other_col)` is still a valid spatial
+    /// index that accelerates `ST_Contains` / `ST_DWithin` lookups on
+    /// `boundary`, so we treat such composite indexes as satisfying the
+    /// "has GiST on geography" check.
+    /// Returns `false` if no GiST + Geography combination is found.
     pub fn has_gist_on_geography(&self) -> bool {
         for idx in self.indexes {
             if !matches!(idx.index_type, IndexType::Gist) {
@@ -3126,12 +3126,12 @@ impl ModelDescriptor {
     /// flag is `true`.
     /// Used by the recursive-query builder:
     /// - `0` — `T::tree_descendants(...)` is unavailable; caller must
-    ///   declare a self-FK before reaching for the tree-query API.
+    /// declare a self-FK before reaching for the tree-query API.
     /// - `1` — exactly one parent edge; the inherent sugar resolves
-    ///   the column without ambiguity.
+    /// the column without ambiguity.
     /// - `2+` — multiple self-FK edges; the model must declare
-    ///   `#[model(tree_edge = "...")]` to disambiguate, or the
-    ///   caller must pass an explicit `RelationPath<T, T>` argument.
+    /// `#[model(tree_edge = "...")]` to disambiguate, or the
+    /// caller must pass an explicit `RelationPath<T, T>` argument.
     pub fn self_fk_count(&self) -> usize {
         self.self_fk_fields().count()
     }
@@ -3215,7 +3215,7 @@ impl ModelDescriptor {
 /// ```ignore
 /// ModelDescriptor {
 /// tenant_key: Some("org_id"),
-/// ..model_descriptor("Widget", "widgets", PkType::HeerId, FIELDS)
+///..model_descriptor("Widget", "widgets", PkType::HeerId, FIELDS)
 /// }
 /// ```
 pub const fn model_descriptor(
@@ -3258,11 +3258,11 @@ pub const fn model_descriptor(
         // macro fills `Some(<text>)` from the attribute.
         table_comment: None,
         // Djogi#218) — adopter
-        // `#[model(storage_params = "key=val, ...")]` lowered to
-        // `ALTER TABLE ... SET (...)`. Defaults to `None`.
+        // `#[model(storage_params = "key=val,...")]` lowered to
+        // `ALTER TABLE... SET (...)`. Defaults to `None`.
         storage_params: None,
         // Djogi#219) — adopter
-        // `#[model(tablespace = "...")]` lowered to `ALTER TABLE ...
+        // `#[model(tablespace = "...")]` lowered to `ALTER TABLE...
         // SET TABLESPACE`. Defaults to `None`.
         tablespace: None,
     }
@@ -3317,10 +3317,10 @@ pub mod migration_shape {
         /// DDL runs. Collected from:
         /// - every `IndexSpec::extension_dependency` that is `Some`
         /// - every field whose `sql_type` is `FieldSqlType::Geography`
-        ///   (even if no index exists — the column itself requires PostGIS)
+        /// (even if no index exists — the column itself requires PostGIS)
         /// - every `ExclusionConstraintSpec::extension_dependency` that
-        ///   is `Some` (— typically `btree_gist` for gist
-        ///   EXCLUDEs that mix `=` with `&&` overlap operators)
+        /// is `Some` (— typically `btree_gist` for gist
+        /// EXCLUDEs that mix `=` with `&&` overlap operators)
         pub required_extensions: BTreeSet<&'static str>,
         /// One entry per [`ExclusionConstraintSpec`] in
         /// `ModelDescriptor::exclusion_constraints` (PR 7).
@@ -3339,12 +3339,12 @@ pub mod migration_shape {
         /// Case matches the `Display` impl exactly:
         /// - Standard types are uppercased (`"TEXT"`, `"BIGINT"`, `"TIMESTAMPTZ"`).
         /// - `Geography { srid }` is lowercase-prefixed:
-        ///   `"geography(Point, 4326)"`.
-        ///   The plan's prose example used `"GEOGRAPHY(Point, 4326)"` (uppercase
-        ///   prefix) as an illustration. The actual `Display` impl uses lowercase
-        ///   `"geography(Point, 4326)"`. Contract tests follow the Display impl
-        ///   keeping one canonical text path is more important than matching the
-        ///   prose example's capitalisation.
+        /// `"geography(Point, 4326)"`.
+        /// The plan's prose example used `"GEOGRAPHY(Point, 4326)"` (uppercase
+        /// prefix) as an illustration. The actual `Display` impl uses lowercase
+        /// `"geography(Point, 4326)"`. Contract tests follow the Display impl
+        /// keeping one canonical text path is more important than matching the
+        /// prose example's capitalisation.
         pub sql_type_text: String,
         /// `true` when `FieldDescriptor::nullable` is `false` (the column is
         /// `NOT NULL` in SQL).
@@ -3431,61 +3431,61 @@ pub mod migration_shape {
 
             // ── Indexes ────────────────────────────────────────────────────
             let indexes: Vec<IndexShape> = desc
-                .indexes
-                .iter()
-                .map(|spec| {
-                    // Collect extension dependencies from indexes too.
-                    if let Some(ext) = spec.extension_dependency {
-                        required_extensions.insert(ext);
-                    }
+   .indexes
+   .iter()
+   .map(|spec| {
+     // Collect extension dependencies from indexes too.
+     if let Some(ext) = spec.extension_dependency {
+      required_extensions.insert(ext);
+     }
 
-                    let type_kw = index_type_keyword(spec.index_type);
-                    // V3: IndexSpec now carries
-                    // `target: IndexTarget` (column list | expression) and
-                    // `kind: IndexKind`. Collapse back to the
-                    // `(columns: Vec<&str>, unique: bool)` shape the
-                    // MigrationShape contract expects — the richer per-column
-                    // knobs (opclass / order / nulls) stay on the underlying
-                    // IndexSpec for the real differ to consume.
-                    let (columns, target_sql) = match spec.target {
-                        IndexTarget::Columns(cs) => {
-                            let names: Vec<&'static str> = cs.iter().map(|c| c.name).collect();
-                            let joined = names.join(",");
-                            (names, joined)
-                        }
-                        IndexTarget::Expression(expr) => (Vec::new(), expr.to_string()),
-                    };
+     let type_kw = index_type_keyword(spec.index_type);
+     // V3: IndexSpec now carries
+     // `target: IndexTarget` (column list | expression) and
+     // `kind: IndexKind`. Collapse back to the
+     // `(columns: Vec<&str>, unique: bool)` shape the
+     // MigrationShape contract expects — the richer per-column
+     // knobs (opclass / order / nulls) stay on the underlying
+     // IndexSpec for the real differ to consume.
+     let (columns, target_sql) = match spec.target {
+      IndexTarget::Columns(cs) => {
+       let names: Vec<&'static str> = cs.iter().map(|c| c.name).collect();
+       let joined = names.join(",");
+       (names, joined)
+      }
+      IndexTarget::Expression(expr) => (Vec::new(), expr.to_string()),
+     };
 
-                    let is_unique = matches!(
-                        spec.kind,
-                        IndexKind::UniqueConstraint | IndexKind::UniqueIndex
-                    );
-                    let create_kw = if is_unique {
-                        "CREATE UNIQUE INDEX"
-                    } else {
-                        "CREATE INDEX"
-                    };
-                    let concurrently = if spec.requires_out_of_transaction {
-                        " CONCURRENTLY"
-                    } else {
-                        ""
-                    };
+     let is_unique = matches!(
+      spec.kind,
+      IndexKind::UniqueConstraint | IndexKind::UniqueIndex
+     );
+     let create_kw = if is_unique {
+      "CREATE UNIQUE INDEX"
+     } else {
+      "CREATE INDEX"
+     };
+     let concurrently = if spec.requires_out_of_transaction {
+      " CONCURRENTLY"
+     } else {
+      ""
+     };
 
-                    let sql_text = format!(
-                        "{create_kw}{concurrently} IF NOT EXISTS {name} ON {table} USING {type_kw}({target_sql})",
-                        name = spec.name,
-                    );
+     let sql_text = format!(
+      "{create_kw}{concurrently} IF NOT EXISTS {name} ON {table} USING {type_kw}({target_sql})",
+      name = spec.name,
+     );
 
-                    IndexShape {
-                        name: spec.name,
-                        columns,
-                        unique: is_unique,
-                        requires_out_of_transaction: spec.requires_out_of_transaction,
-                        extension_dependency: spec.extension_dependency,
-                        sql_text,
-                    }
-                })
-                .collect();
+     IndexShape {
+      name: spec.name,
+      columns,
+      unique: is_unique,
+      requires_out_of_transaction: spec.requires_out_of_transaction,
+      extension_dependency: spec.extension_dependency,
+      sql_text,
+     }
+    })
+   .collect();
 
             MigrationShape {
                 table_name: table,
@@ -3518,18 +3518,18 @@ pub mod migration_shape {
 }
 
 /// Full descriptor for a registered Postgres enum type — collected via `inventory::submit!`.
-/// `#[derive(DjogiEnum)]` emits one `inventory::submit!(EnumDescriptor { ... })` per enum.
+/// `#[derive(DjogiEnum)]` emits one `inventory::submit!(EnumDescriptor {... })` per enum.
 /// The migration differ consumes these via `inventory::iter::<EnumDescriptor>` to
 /// emit `CREATE TYPE <postgres_type> AS ENUM (...)` DDL statements.
 /// # Layout
 /// - `type_name` — Rust type name as a string (`"VehicleStatus"`). Used by the migration
-///   differ and `djogi docs` to identify the origin type.
+/// differ and `djogi docs` to identify the origin type.
 /// - `postgres_type` — Postgres type name from `#[djogi_enum(name = "...")]`
-///   (`"vehicle_status"`). This is the value passed to `CREATE TYPE ... AS ENUM`.
+/// (`"vehicle_status"`). This is the value passed to `CREATE TYPE... AS ENUM`.
 /// - `variants` — mapped string labels in declaration order. These are the wire values that
-///   appear in the Postgres `ENUM` definition and in every serialized row.
-///   Owns DDL emission; only supplies the descriptor so the collector is
-///   populated and ready for migration consumers.
+/// appear in the Postgres `ENUM` definition and in every serialized row.
+/// Owns DDL emission; only supplies the descriptor so the collector is
+/// populated and ready for migration consumers.
 #[derive(Debug)]
 pub struct EnumDescriptor {
     /// Rust type name — e.g. `"VehicleStatus"`.
@@ -3604,7 +3604,7 @@ inventory::collect!(EnumPredicateCodec);
 /// One derived projection entry — #231.
 /// `#[derived(name, ty, scopes, sql, rust, doc)]` parses into this
 /// shape at macro time, and the macro emits a fully-`&'static`-typed
-/// literal inside an `inventory::submit!(VisageDescriptor { ... })`
+/// literal inside an `inventory::submit!(VisageDescriptor {... })`
 /// block for the visages whose `scopes = [...]` list includes the
 /// owning visage's scope.
 /// # Why this exists separately from `ProjectionEntry`
@@ -3636,28 +3636,28 @@ inventory::collect!(EnumPredicateCodec);
 /// existing `DerivedProjection` literal site — only do it when load-
 /// bearing.
 /// # Layout
-/// - `name` — the entry's `name = ...` (also the SELECT alias and
-///   the visage struct's field name).
-/// - `ty_path` — token-string form of the entry's `ty = ...`,
-///   captured as the macro emitted it (token-level whitespace
-///   preserved; e.g. `"Site"`, `"Option < String >"`,
-///   `"crate :: domain :: Site"`). Documentation generators consume
-///   this verbatim rather than re-parsing it.
+/// - `name` — the entry's `name =...` (also the SELECT alias and
+/// the visage struct's field name).
+/// - `ty_path` — token-string form of the entry's `ty =...`,
+/// captured as the macro emitted it (token-level whitespace
+/// preserved; e.g. `"Site"`, `"Option < String >"`,
+/// `"crate :: domain :: Site"`). Documentation generators consume
+/// this verbatim rather than re-parsing it.
 /// - `sql` — the adopter's Postgres SQL expression (verbatim).
 /// - `rust` — the adopter's Rust expression source (verbatim).
 /// - `doc` — `Some("...")` when the entry declared `doc = "..."`,
-///   `None` otherwise.
+/// `None` otherwise.
 /// - `scopes` — every scope the entry was declared against, in source
-///   order. The per-`(Model, scope)` [`VisageDescriptor`] already
-///   keys on scope, but carrying the original set lets consumers
-///   walking across visages reconcile multi-scope declarations
-///   without re-walking the source model.
+/// order. The per-`(Model, scope)` [`VisageDescriptor`] already
+/// keys on scope, but carrying the original set lets consumers
+/// walking across visages reconcile multi-scope declarations
+/// without re-walking the source model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedProjection {
-    /// Output field name (the entry's `name = ...`).
+    /// Output field name (the entry's `name =...`).
     pub name: &'static str,
     /// Fully-qualified Rust type path for the output field, captured
-    /// as a token-string (the entry's `ty = ...`). Kept as
+    /// as a token-string (the entry's `ty =...`). Kept as
     /// `&'static str` so consumers see the source spelling rather
     /// than a re-parsed form.
     pub ty_path: &'static str,
@@ -3700,14 +3700,14 @@ pub struct DerivedProjection {
 /// migration differ, the `target/djogi_models.json` snapshot
 /// channel, and `build.rs` all consume. Adding a `derived` field to
 /// it would either (a) bleed projection state into the migration
-/// inventory or (b) introduce a `#[serde(skip)] derived: ...` slot
+/// inventory or (b) introduce a `#[serde(skip)] derived:...` slot
 /// that leaks a trap for any future descriptor consumer that walks
 /// the struct without the `#[serde]` annotation. A separate
 /// inventory surface keeps the boundary mechanical and the migration
 /// path strictly storage-shaped.
 /// # Emission contract
 /// The `#[model]` macro emits one `inventory::submit!(VisageDescriptor
-/// { ... })` block per `(Model, scope)` pair for which `scope_derived()`
+/// {... })` block per `(Model, scope)` pair for which `scope_derived()`
 /// returns at least one entry. `pk = None` source models are skipped
 /// (they have no `Model::table_name()`, hence no SELECT projection,
 /// hence nothing meaningful for a descriptor to describe).

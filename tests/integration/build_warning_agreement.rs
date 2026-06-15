@@ -1,15 +1,15 @@
-//!  — build.rs warning text agreement test.
+//! — build.rs warning text agreement test.
 //!
 //! Two independent code paths emit the exact same warning text:
 //!
 //! 1. [`djogi::migrate::build_match`] — production code, used by the
-//!    `migrations status` and library callers.
+//!  `migrations status` and library callers.
 //! 2. `djogi/build.rs` — the compile-time build script that surfaces
-//!    drift via `cargo:warning=`. Build scripts cannot import the
-//!    crate they're building, so the wording is duplicated.
+//!  drift via `cargo:warning=`. Build scripts cannot import the
+//!  crate they're building, so the wording is duplicated.
 //!
 //! This test is the byte-for-byte expectation pinning called out in the
-//! v3 §6 amendment. It pins the exact strings on the library side
+//! the specification amendment. It pins the exact strings on the library side
 //! (covered by `build_match::tests`) AND verifies that the build.rs
 //! source contains the same wording byte-for-byte. If a future change
 //! adjusts the message in one place but not the other, this test
@@ -32,7 +32,7 @@ fn outcome2_wording_matches_build_rs() {
         database: "main".into(),
         app: "billing".into(),
     };
-    // Codex B-8 / v3 §6: Outcome 2 wording must include the pending
+    // a past review / the specification: Outcome 2 wording must include the pending
     // migration's filename + version. With no version supplied the
     // placeholder fallback fires.
     let lib = djogi::migrate::build_match::format_warning_outcome2(&bucket, None);
@@ -47,18 +47,18 @@ fn outcome2_wording_matches_build_rs() {
     assert_eq!(
         with_version,
         "composed migration not yet applied: V20260425010203__add_invoices.sdjql \
-         (version V20260425010203__add_invoices; bucket main/billing)"
+     (version V20260425010203__add_invoices; bucket main/billing)"
     );
     let text = build_rs_text();
     // The build.rs's frozen-string format helper must contain the
     // same template literal modulo placeholders. The new wording
     // includes filename + version + bucket components.
     assert!(
-        text.contains(
-            "composed migration not yet applied: {filename} (version {version}; bucket {database}/{app})"
-        ),
-        "build.rs must carry the same wording as build_match::format_warning_outcome2"
-    );
+    text.contains(
+      "composed migration not yet applied: {filename} (version {version}; bucket {database}/{app})"
+    ),
+    "build.rs must carry the same wording as build_match::format_warning_outcome2"
+  );
 }
 
 #[test]
@@ -74,11 +74,11 @@ fn outcome3_wording_matches_build_rs() {
     );
     let text = build_rs_text();
     assert!(
-        text.contains(
-            "model drift detected for {database}/{app}; run `djogi migrations compose` to stage the delta"
-        ),
-        "build.rs must carry the same wording as build_match::format_warning_outcome3"
-    );
+    text.contains(
+      "model drift detected for {database}/{app}; run `djogi migrations compose` to stage the delta"
+    ),
+    "build.rs must carry the same wording as build_match::format_warning_outcome3"
+  );
 }
 
 #[test]
@@ -94,11 +94,11 @@ fn outcome4_wording_matches_build_rs() {
     );
     let text = build_rs_text();
     assert!(
-        text.contains(
-            "pending compose for {database}/{app} is stale relative to model state; re-run `djogi migrations compose`"
-        ),
-        "build.rs must carry the same wording as build_match::format_warning_outcome4"
-    );
+    text.contains(
+      "pending compose for {database}/{app} is stale relative to model state; re-run `djogi migrations compose`"
+    ),
+    "build.rs must carry the same wording as build_match::format_warning_outcome4"
+  );
 }
 
 #[test]
@@ -148,23 +148,23 @@ fn malformed_inventory_wording_matches_build_rs() {
     assert_eq!(
         lib,
         "descriptor inventory at target/djogi_models.json is malformed (not a JSON object); \
-         model state is treated as unavailable, so model-vs-snapshot checks are skipped for this build"
+     model state is treated as unavailable, so model-vs-snapshot checks are skipped for this build"
     );
     let text = build_rs_text();
     assert!(
-        text.contains(
-            "descriptor inventory at {path} is malformed ({detail}); model state is treated as unavailable, so model-vs-snapshot checks are skipped for this build"
-        ),
-        "build.rs must carry the same malformed-inventory wording as build_match::format_warning_inventory_malformed"
-    );
+    text.contains(
+      "descriptor inventory at {path} is malformed ({detail}); model state is treated as unavailable, so model-vs-snapshot checks are skipped for this build"
+    ),
+    "build.rs must carry the same malformed-inventory wording as build_match::format_warning_inventory_malformed"
+  );
 }
 
-/// B-6 — the suppression flag must only mute Outcome 3
+/// — the suppression flag must only mute Outcome 3
 /// (model drift). D004 mismatches, Outcome 2 (composed-not-applied),
 /// and Outcome 4 (stale pending) ALWAYS print regardless of the
 /// `suppress_drift_warning` setting.
 ///
-/// Round-2 strengthening: we now exercise the classifier under each
+/// strengthening: we now exercise the classifier under each
 /// suppression setting at runtime via the library entry point
 /// `classify_bucket_with_pending`, then apply the suppression
 /// predicate on `DriftKind::is_outcome3_drift()` — the same shape
@@ -173,18 +173,18 @@ fn malformed_inventory_wording_matches_build_rs() {
 /// case is what proves the four outcomes route correctly under the
 /// flag.
 ///
-/// Round-3 strengthening (Codex B-6):
+/// strengthening (a past review):
 ///
 /// - Outcome 1 (synced) is now exercised explicitly: when models ==
-///   pending == snapshot the classifier must return `None` (no
-///   diagnostic). This pins the silent path that build.rs depends on
-///   to avoid spurious warnings on a clean tree.
+///  pending == snapshot the classifier must return `None` (no
+///  diagnostic). This pins the silent path that build.rs depends on
+///  to avoid spurious warnings on a clean tree.
 /// - Outcome 2 / 3 / 4 wording is now asserted via EXACT-STRING
-///   equality (built from the v3-frozen format strings) rather than
-///   `contains` substring matches. A regression on any phrase will
-///   surface as a hard-string-mismatch at the assertion line.
+///  equality (built from the v3-frozen format strings) rather than
+///  `contains` substring matches. A regression on any phrase will
+///  surface as a hard-string-mismatch at the assertion line.
 /// - The multi-bucket emission case is asserted via exact equality on
-///   the single emitted text.
+///  the single emitted text.
 #[test]
 fn b6_suppression_only_mutes_outcome3() {
     use djogi::migrate::build_match::{
@@ -212,7 +212,7 @@ fn b6_suppression_only_mutes_outcome3() {
         app: "".into(),
     };
 
-    // Codex round B-6 — Outcome 1 (synced). When models == pending
+    // an internal review round — Outcome 1 (synced). When models == pending
     // == snapshot, the classifier returns `None` (silent — no
     // diagnostic). This is the path build.rs walks on a clean tree;
     // any regression that returns `Some(..)` would fire a spurious
@@ -228,7 +228,7 @@ fn b6_suppression_only_mutes_outcome3() {
     assert!(
         outcome1_with_pending.is_none(),
         "Outcome 1 (synced, pending == models == snapshot) must be silent: \
-         {outcome1_with_pending:?}"
+     {outcome1_with_pending:?}"
     );
 
     // Outcome 2 — pending matches models, snapshot diverges.
@@ -245,14 +245,14 @@ fn b6_suppression_only_mutes_outcome3() {
     .expect("outcome 2");
     assert_eq!(outcome2.kind, DriftKind::Outcome2ComposedNotApplied);
     assert!(!outcome2.kind.is_outcome3_drift());
-    // Codex round B-6 — exact-string equality. Built from the
+    // an internal review round — exact-string equality. Built from the
     // frozen format string in `build_match::format_warning_outcome2`
     // (no pending version → `<unknown>` placeholder; bucket main /
     // global → `_global_` via `app_dirname`).
     assert_eq!(
         outcome2.text,
         "composed migration not yet applied: <unknown>.sdjql \
-          (version <unknown>; bucket main/_global_)"
+     (version <unknown>; bucket main/_global_)"
     );
 
     // Outcome 3 — drift, no pending.
@@ -263,7 +263,7 @@ fn b6_suppression_only_mutes_outcome3() {
     assert_eq!(
         outcome3.text,
         "model drift detected for main/_global_; \
-         run `djogi migrations compose` to stage the delta"
+     run `djogi migrations compose` to stage the delta"
     );
 
     // Outcome 4 — pending diverges from models AND snapshot.
@@ -278,7 +278,7 @@ fn b6_suppression_only_mutes_outcome3() {
     assert_eq!(
         outcome4.text,
         "pending compose for main/_global_ is stale relative to model state; \
-         re-run `djogi migrations compose`"
+     re-run `djogi migrations compose`"
     );
 
     // Apply the suppression predicate matching build.rs's logic:
@@ -327,13 +327,13 @@ fn b6_suppression_only_mutes_outcome3() {
         1,
         "only bucket B's outcome2 must emit under suppression: {emitted:?}"
     );
-    // Codex round B-6 — exact-string equality on the multi-bucket
+    // an internal review round — exact-string equality on the multi-bucket
     // emitted text. Built from the v3-frozen Outcome 2 format string
     // with the explicit pending version threaded through.
     assert_eq!(
         emitted[0],
         "composed migration not yet applied: V20260425010203__b.sdjql \
-          (version V20260425010203__b; bucket main/beta)"
+     (version V20260425010203__b; bucket main/beta)"
     );
 
     // Confirm the wording functions still round-trip the frozen
@@ -355,12 +355,12 @@ fn b6_suppression_only_mutes_outcome3() {
         "build.rs must only suppress Outcome-3 diagnostics; D004 / Outcome 2 / Outcome 4 always print"
     );
     assert!(
-        !text.contains("if drift_warnings_suppressed(&workspace_root) {\n        return;\n    }"),
+        !text.contains("if drift_warnings_suppressed(&workspace_root) {\n    return;\n  }"),
         "build.rs must not blanket-return on suppress_drift_warning — selective suppression only"
     );
 }
 
-/// Codex B-7 — pending JSON format-version peek. build.rs must
+/// a past review — pending JSON format-version peek. build.rs must
 /// validate `format_version` BEFORE accepting a pending file as
 /// input to the three-way classifier; a future-version pending file
 /// surfaces a version-mismatch warning rather than feeding garbage

@@ -11,15 +11,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(JsonbSchema, Serialize, Deserialize, Default, Debug, Clone)]
 pub struct TypedMeta {
-    pub view_count: i64,
-    pub published: bool,
+ pub view_count: i64,
+ pub published: bool,
 }
 
 #[model(table = "phase85_mirjzson_attribute_on_jsonb_typed")]
 #[derive(Debug, Clone)]
 pub struct JsonbTyped {
-    #[mirjzson(justification = "Jsonb<T> is typed and does not need this gate")]
-    pub meta: Jsonb<TypedMeta>,
+ #[mirjzson(justification = "Jsonb<T> is typed and does not need this gate")]
+ pub meta: Jsonb<TypedMeta>,
 }
 
 fn main() {}

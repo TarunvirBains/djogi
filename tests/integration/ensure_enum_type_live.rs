@@ -5,16 +5,16 @@
 // # What this test pins
 //
 // 1. The helper successfully creates a Postgres enum type with the
-//    requested variants (single round-trip).
+//  requested variants (single round-trip).
 // 2. Re-invoking with the same name is a no-op — the inner
-//    `CREATE TYPE` raises `42710 duplicate_object`, the `EXCEPTION`
-//    arm catches it, the outer `DO` block returns successfully. This
-//    is the headline "idempotent" property the issue asked for.
+//  `CREATE TYPE` raises `42710 duplicate_object`, the `EXCEPTION`
+//  arm catches it, the outer `DO` block returns successfully. This
+//  is the headline "idempotent" property the issue asked for.
 // 3. Invalid-identifier names are rejected at the framework layer
-//    before any SQL hits the database — empty string, leading digit,
-//    non-ASCII byte, oversized.
+//  before any SQL hits the database — empty string, leading digit,
+//  non-ASCII byte, oversized.
 // 4. Empty `variants` is rejected (Postgres requires at least one
-//    label).
+//  label).
 
 #[djogi::djogi_test]
 async fn ensure_enum_type_creates_and_is_idempotent(mut ctx: djogi::DjogiContext) {
@@ -90,7 +90,7 @@ async fn ensure_enum_type_handles_quote_doubling_safely(mut ctx: djogi::DjogiCon
     // SQL-metacharacter sequences (`'`, `;`, `--`, `/* ... */`) must
     // still round-trip safely. The single-quote doubling path and the
     // single-quoted-literal context handle them; nothing escapes the
-    // DO body. This pins the safety claim Codex flagged in the
+    // DO body. This pins the safety claim an internal review flagged in the
     // re-review pass.
     let unique_name = format!("djogi_test_quote_doubling_{}", std::process::id());
 
@@ -108,7 +108,7 @@ async fn ensure_enum_type_handles_quote_doubling_safely(mut ctx: djogi::DjogiCon
 
 #[djogi::djogi_test]
 async fn ensure_enum_type_rejects_dollar_in_variants(mut ctx: djogi::DjogiContext) {
-    // Phase-boundary Codex review (heeranjid#30 review pass) caught
+    // Phase-boundary internal review (heeranjid#30 review pass) caught
     // that the prior bare-`$$` DO block had a SQL-injection surface:
     // a variant containing `$$` would close the dollar-quoted body
     // early because Postgres's lexer scans dollar-quoted strings for

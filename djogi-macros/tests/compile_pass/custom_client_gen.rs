@@ -18,22 +18,22 @@ use std::sync::atomic::{AtomicI64, Ordering};
 static NEXT: AtomicI64 = AtomicI64::new(1);
 
 djogi::primary_key! {
-    pub struct MyClientId(i64);
-    sql_type = "BIGINT";
-    default_sql = "0";
-    generate = || NEXT.fetch_add(1, Ordering::Relaxed);
+ pub struct MyClientId(i64);
+ sql_type = "BIGINT";
+ default_sql = "0";
+ generate = || NEXT.fetch_add(1, Ordering::Relaxed);
 }
 
 #[model(table = "widgets", pk = MyClientId)]
 #[derive(Debug, Clone)]
 pub struct Widget {
-    pub name: String,
+ pub name: String,
 }
 
 fn _client_gen_surface() {
-    // The emitted impl is reachable through the trait path.
-    let _one = <MyClientId as ::djogi::primary_key::PrimaryKeyClientGen>::generate_client();
-    let _two = <MyClientId as ::djogi::primary_key::PrimaryKeyClientGen>::generate_client();
+ // The emitted impl is reachable through the trait path.
+ let _one = <MyClientId as ::djogi::primary_key::PrimaryKeyClientGen>::generate_client();
+ let _two = <MyClientId as ::djogi::primary_key::PrimaryKeyClientGen>::generate_client();
 }
 
 fn main() {}

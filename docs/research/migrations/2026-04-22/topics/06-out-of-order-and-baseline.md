@@ -59,7 +59,7 @@ Djogi's planned model (first-class `baseline`, `fake`, and `out-of-order` ledger
 | **Prisma** `resolve --applied` | `prisma migrate resolve --applied <migration-name>` | Marks a specific named migration as applied; creates a new ledger row with `started_at = finished_at` | `markMigrationApplied` RPC: if migration already exists in failed state, marks it rolled-back then inserts fresh row; if absent, inserts directly | Yes — old failed row stays as audit trail |
 | **refinery** `Target::Fake` | `Runner::new(&migrations).set_target(Target::Fake)` | Records all pending migrations as applied without executing SQL | Inserts normal ledger rows | Yes; note: `Report.applied_migrations()` returns empty even for faked runs (surprise — see refinery note) |
 | **refinery** `Target::FakeVersion(v)` | `Runner::new(&migrations).set_target(Target::FakeVersion(v))` | Records all pending migrations up to version `v` as applied without executing SQL | Inserts normal ledger rows up to `v` | Yes |
-| **Liquibase** `changelog-sync` | `liquibase changelog-sync` | Writes `EXECTYPE='MARK_RAN'` for every un-ran changeset; no schema validation | `INSERT INTO DATABASECHANGELOG ... EXECTYPE='MARK_RAN'` per changeset via `ChangeLogSyncVisitor` | Yes — `MARK_RAN` rows are permanent |
+| **Liquibase** `changelog-sync` | `liquibase changelog-sync` | Writes `EXECTYPE='MARK_RAN'` for every un-ran changeset; no schema validation | `INSERT INTO DATABASECHANGELOG... EXECTYPE='MARK_RAN'` per changeset via `ChangeLogSyncVisitor` | Yes — `MARK_RAN` rows are permanent |
 | **Liquibase** `changelog-sync-to-tag` | `liquibase changelog-sync-to-tag <tag>` | Same as `changelog-sync` but stops at a tagged changeset | Same as above, up to the tag | Yes |
 | **Diesel** | None | No baseline/stamp/fake — manual INSERT required | N/A | N/A |
 | **SeaORM** | None | No baseline/stamp/fake | N/A | N/A |
@@ -129,8 +129,8 @@ Diesel's `pending_migrations` (`diesel_migrations/src/migration_harness.rs:115-1
 ```rust
 // compute set difference, then sort ascending by version
 let mut pending: Vec<_> = all.into_iter()
-    .filter(|m| !applied.contains(m.name()))
-    .collect();
+ .filter(|m| !applied.contains(m.name()))
+ .collect();
 pending.sort_by(|a, b| a.name().version().cmp(b.name().version()));
 ```
 
@@ -149,12 +149,12 @@ Flyway's `outOfOrder` is set on `MigrationInfoServiceImpl` (`MigrationInfoServic
 ```java
 // DbMigrate.java:243-246
 boolean isOutOfOrder = pendingMigration.getVersion() != null
-        && pendingMigration.getVersion().compareTo(currentSchemaVersion) < 0;
+    && pendingMigration.getVersion().compareTo(currentSchemaVersion) < 0;
 ```
 
 A pending migration with version less than the current max applied version is only scheduled when `configuration.isOutOfOrder()` is true; otherwise it stays `IGNORED`. When `outOfOrder=true`, Flyway emits a loud warning at `DbMigrate.java:193-197`:
 
-> "outOfOrder mode is active. Migration of schema ... may not be reproducible."
+> "outOfOrder mode is active. Migration of schema... may not be reproducible."
 
 Once the migration runs, the row sits in the history with `installed_rank > max` but `version < max applied version`. The computed state is permanently `MigrationState.OUT_OF_ORDER`. The ledger is the record that this migration was applied out of order. Confidence: **high** (read `flyway-core/src/main/java/org/flywaydb/core/internal/command/DbMigrate.java`).
 
@@ -168,14 +168,14 @@ Prisma models out-of-order as a specific variant of its `HistoryDiagnostic` type
 
 ```typescript
 export type HistoryDiagnostic =
-  | { diagnostic: 'databaseIsBehind'; unappliedMigrationNames: string[] }
-  | { diagnostic: 'migrationsDirectoryIsBehind'; unpersistedMigrationNames: string[] }
-  | {
-      diagnostic: 'historiesDiverge'
-      lastCommonMigrationName: string | null
-      unpersistedMigrationNames: string[]
-      unappliedMigrationNames: string[]
-    }
+ | { diagnostic: 'databaseIsBehind'; unappliedMigrationNames: string[] }
+ | { diagnostic: 'migrationsDirectoryIsBehind'; unpersistedMigrationNames: string[] }
+ | {
+   diagnostic: 'historiesDiverge'
+   lastCommonMigrationName: string | null
+   unpersistedMigrationNames: string[]
+   unappliedMigrationNames: string[]
+  }
 ```
 
 When a lower-numbered migration is present on disk but not in the DB while higher-numbered ones are applied, Prisma raises `historiesDiverge`. The user resolves this with `prisma migrate resolve --applied <name>` which calls the `markMigrationApplied` RPC (`packages/migrate/src/commands/MigrateResolve.ts:135-140`). This creates a new ledger row. Confidence: **high** on the diagnostic surface; **medium** on internal engine behavior.
@@ -280,10 +280,10 @@ Source: `refinery_core/src/runner.rs:44-50`.
 
 ```rust
 pub enum Target {
-    Latest,
-    Version(u32),
-    Fake,
-    FakeVersion(u32),
+  Latest,
+  Version(u32),
+  Fake,
+  FakeVersion(u32),
 }
 ```
 
@@ -315,7 +315,7 @@ This section exists to prevent conflation of three genuinely different primitive
 **Flyway's `baseline` command** is a floor declaration. After `flyway baseline --baselineVersion=N`:
 
 - Migrations 1..N are permanently ignored on all future `migrate` runs. Flyway will never try to apply them.
-- Migrations N+1, N+2, ... run normally on the next `migrate`.
+- Migrations N+1, N+2,... run normally on the next `migrate`.
 - The floor is encoded in a `type='BASELINE'` row in `flyway_schema_history`.
 
 This is the "adopt an existing production database" workflow. The DBA has manually brought the DB to the state that migration N would produce. Flyway is told: "start managing from here, never go back."

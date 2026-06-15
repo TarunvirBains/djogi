@@ -1,13 +1,13 @@
-//! Outbox worker primitives — .
+//! Outbox worker primitives —.
 //! These functions implement the consumer side of the transactional outbox
 //! pattern. They are gated on the `outbox` cargo feature so adopters who only
 //! write to the outbox (via `#[model(events)]`) do not pull in this module.
 //! # State machine
 //! ```text
 //! pending ──claim_pending──► processing ──mark_published──► published
-//!                                │
-//!                                ├──mark_failed(retryable=true, retry_count < MAX_RETRY)──► pending
-//!                                └──mark_failed(retryable=false OR retry_count >= MAX_RETRY)──► failed
+//!        │
+//!        ├──mark_failed(retryable=true, retry_count < MAX_RETRY)──► pending
+//!        └──mark_failed(retryable=false OR retry_count >= MAX_RETRY)──► failed
 //!
 //! processing ──recover_stale (lease expired)──► pending
 //! ```
@@ -22,7 +22,7 @@
 //! embedding it in SQL. A valid identifier is: an ASCII letter or underscore as
 //! the first byte, followed by ASCII alphanumerics or underscores, up to 63
 //! bytes total. Anything that fails this check returns
-//! `DjogiError::Db(DbError::other("invalid outbox table name: ..."))`.
+//! `DjogiError::Db(DbError::other("invalid outbox table name:..."))`.
 //! Validation is done with byte-level checks — no regex engine is used or
 //! permitted anywhere in this codebase.
 
@@ -86,25 +86,25 @@ pub struct OutboxRow {
 fn validate_table_ident(name: &str) -> Result<(), DjogiError> {
     use crate::ident::IdentError;
     crate::ident::check_user_supplied_ident(name, false).map_err(|e| {
-        let msg = match e {
-            IdentError::Empty | IdentError::TooLong { .. } => {
-                format!("invalid outbox table name {name:?}: must be 1–63 bytes")
-            }
-            IdentError::BadFirst { .. } => format!(
-                "invalid outbox table name {name:?}: first character must be an ASCII letter or underscore"
-            ),
-            IdentError::BadByte { byte, .. } => format!(
-                "invalid outbox table name {name:?}: contains disallowed character '{}'",
-                byte as char
-            ),
-            IdentError::Reserved => unreachable!("check_user_supplied_ident(reserved=false) cannot return Reserved"),
-            IdentError::ReservedDjogiPrefix => format!(
-                "invalid outbox table name {name:?}: starts with the framework-reserved \
-                 `__djogi_` prefix; choose a different name"
-            ),
-        };
-        DjogiError::Db(DbError::other(msg))
-    })
+  let msg = match e {
+   IdentError::Empty | IdentError::TooLong {.. } => {
+    format!("invalid outbox table name {name:?}: must be 1–63 bytes")
+   }
+   IdentError::BadFirst {.. } => format!(
+    "invalid outbox table name {name:?}: first character must be an ASCII letter or underscore"
+   ),
+   IdentError::BadByte { byte,.. } => format!(
+    "invalid outbox table name {name:?}: contains disallowed character '{}'",
+    byte as char
+   ),
+   IdentError::Reserved => unreachable!("check_user_supplied_ident(reserved=false) cannot return Reserved"),
+   IdentError::ReservedDjogiPrefix => format!(
+    "invalid outbox table name {name:?}: starts with the framework-reserved \
+     `__djogi_` prefix; choose a different name"
+   ),
+  };
+  DjogiError::Db(DbError::other(msg))
+ })
 }
 
 // ---------------------------------------------------------------------------
@@ -123,10 +123,10 @@ fn validate_table_ident(name: &str) -> Result<(), DjogiError> {
 /// `processing` rows.
 /// # Parameters
 /// - `outbox_table` — the bare table name (e.g. `"worker_outbox"`). Validated
-///   before SQL embedding; returns an error if invalid.
+/// before SQL embedding; returns an error if invalid.
 /// - `batch_size` — maximum number of rows to claim in one call.
 /// - `lease_duration` — how long the claimed rows are locked. Pass a value
-///   long enough to cover the publish round-trip plus reasonable retry padding.
+/// long enough to cover the publish round-trip plus reasonable retry padding.
 pub async fn claim_pending(
     ctx: &mut DjogiContext,
     outbox_table: &str,
@@ -149,16 +149,16 @@ pub async fn claim_pending(
     let lease_secs = lease_duration.whole_seconds();
     let sql = format!(
         "UPDATE {outbox_table} \
-         SET state = 'processing', leased_until = now() + make_interval(secs => {lease_secs}) \
-         WHERE id IN ( \
-            SELECT id FROM {outbox_table} \
-            WHERE state = 'pending' \
-              AND (leased_until IS NULL OR leased_until <= now()) \
-            ORDER BY created_at \
-            LIMIT $1 \
-            FOR UPDATE SKIP LOCKED \
-         ) \
-         RETURNING id, row_id::text, action, payload, created_at"
+   SET state = 'processing', leased_until = now() + make_interval(secs => {lease_secs}) \
+   WHERE id IN ( \
+   SELECT id FROM {outbox_table} \
+   WHERE state = 'pending' \
+    AND (leased_until IS NULL OR leased_until <= now()) \
+   ORDER BY created_at \
+   LIMIT $1 \
+   FOR UPDATE SKIP LOCKED \
+   ) \
+   RETURNING id, row_id::text, action, payload, created_at"
     );
 
     let batch_size_i64 = batch_size as i64;
@@ -219,8 +219,8 @@ pub async fn mark_published(
 
     let sql = format!(
         "UPDATE {outbox_table} \
-         SET state = 'published' \
-         WHERE id = $1 AND state = 'processing'"
+   SET state = 'published' \
+   WHERE id = $1 AND state = 'processing'"
     );
 
     let id_raw = row_id.as_i64();
@@ -231,12 +231,12 @@ pub async fn mark_published(
 
 /// Transition an outbox row from `processing` based on publish outcome.
 /// - **Retryable + below budget**: row moves back to `pending`, `retry_count`
-///   increments by one, and `leased_until` is cleared. The next
-///   [`claim_pending`] call will pick it up again.
+/// increments by one, and `leased_until` is cleared. The next
+/// [`claim_pending`] call will pick it up again.
 /// - **Non-retryable OR budget exhausted** (`retry_count >= MAX_RETRY_COUNT`):
-///   row transitions to `failed` terminally with `failed_reason` set to
-///   `error_message`.
-///   `row_id` is the outbox row's own `id` (from `OutboxRow::id`).
+/// row transitions to `failed` terminally with `failed_reason` set to
+/// `error_message`.
+/// `row_id` is the outbox row's own `id` (from `OutboxRow::id`).
 pub async fn mark_failed(
     ctx: &mut DjogiContext,
     outbox_table: &str,
@@ -286,10 +286,10 @@ pub async fn mark_failed(
 
         let sql = format!(
             "UPDATE {outbox_table} \
-             SET state = 'pending', retry_count = retry_count + 1, \
-                 leased_until = now() + make_interval(secs => {backoff_secs}), \
-                 failed_reason = $2 \
-             WHERE id = $1 AND state = 'processing'"
+    SET state = 'pending', retry_count = retry_count + 1, \
+     leased_until = now() + make_interval(secs => {backoff_secs}), \
+     failed_reason = $2 \
+    WHERE id = $1 AND state = 'processing'"
         );
         let params: &[&(dyn postgres_types::ToSql + Sync)] = &[&id_raw, &error_message];
         ctx.execute(&sql, params).await?;
@@ -297,8 +297,8 @@ pub async fn mark_failed(
         // Non-retryable or budget exhausted: mark terminal failure.
         let sql = format!(
             "UPDATE {outbox_table} \
-             SET state = 'failed', failed_reason = $2 \
-             WHERE id = $1 AND state = 'processing'"
+    SET state = 'failed', failed_reason = $2 \
+    WHERE id = $1 AND state = 'processing'"
         );
         let params: &[&(dyn postgres_types::ToSql + Sync)] = &[&id_raw, &error_message];
         ctx.execute(&sql, params).await?;
@@ -333,8 +333,8 @@ pub async fn recover_stale(
     let threshold_secs = stale_threshold.whole_seconds();
     let sql = format!(
         "UPDATE {outbox_table} \
-         SET state = 'pending', leased_until = NULL \
-         WHERE state = 'processing' AND leased_until < now() - make_interval(secs => {threshold_secs})"
+   SET state = 'pending', leased_until = NULL \
+   WHERE state = 'processing' AND leased_until < now() - make_interval(secs => {threshold_secs})"
     );
 
     let params: &[&(dyn postgres_types::ToSql + Sync)] = &[];

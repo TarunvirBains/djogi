@@ -1,18 +1,18 @@
 //! `SqlAccumulator` — a typed SQL builder with positional `$n` bind parameters.
 //! # What
 //! `SqlAccumulator` is the SQL construction layer inside Djogi. It accumulates:
-//! 1. An SQL string with `$1`, `$2`, ... placeholders for every bound value.
+//! 1. An SQL string with `$1`, `$2`,... placeholders for every bound value.
 //! 2. A `Vec<Box<dyn postgres_types::ToSql + Sync + Send>>` carrying the bound
-//!    values in positional order.
-//!    The caller calls `into_parts()` to get `(String, Vec<Box<dyn ToSql...>>)`,
-//!    then executes the query via `tokio_postgres::Client::query` or similar.
+//! values in positional order.
+//! The caller calls `into_parts()` to get `(String, Vec<Box<dyn ToSql...>>)`,
+//! then executes the query via `tokio_postgres::Client::query` or similar.
 //! # Design rationale
 //! `postgres_types::ToSql` is the bind trait for tokio-postgres. `SqlAccumulator`
 //! stores bound values as `Box<dyn ToSql + Sync + Send>` so the caller can push
 //! heterogeneous types into one list without repeated dynamic dispatch at query
 //! execution time. The accumulator owns the values for the lifetime of the query.
 //! # Parameter counter
-//! Postgres uses 1-indexed positional parameters (`$1`, `$2`, ...). Each call to
+//! Postgres uses 1-indexed positional parameters (`$1`, `$2`,...). Each call to
 //! `push_bind` appends `$<next_param>` to the SQL string and increments the counter.
 //! The accumulator is always created fresh per top-level query, so the counter
 //! resets naturally. For nested subqueries that share the outer accumulator (e.g.
@@ -22,11 +22,11 @@
 //! Only `push_sql` inserts raw text, and its callers are restricted to:
 //! - SQL keywords (e.g. `" WHERE "`, `" ORDER BY "`, `" AND "`)
 //! - `&'static str` table names and column names baked by `#[model]` macros
-//!   User data always flows through `push_bind` as a parameterised value.
-//!   `push_null_literal` is the one special case — it appends the literal token
-//!   `NULL` (not a bind slot) because Postgres's three-valued logic means
-//!   `col = $1` with `NULL` bound is never `TRUE`, whereas `col IS NULL` is the
-//!   correct SQL for null-equality checks.
+//! User data always flows through `push_bind` as a parameterised value.
+//! `push_null_literal` is the one special case — it appends the literal token
+//! `NULL` (not a bind slot) because Postgres's three-valued logic means
+//! `col = $1` with `NULL` bound is never `TRUE`, whereas `col IS NULL` is the
+//! correct SQL for null-equality checks.
 
 use postgres_types::ToSql;
 use std::fmt::Write;
@@ -54,11 +54,11 @@ const ACCUMULATOR_OVERFLOW_MSG: &str = "djogi accumulator exceeded u32::MAX bind
 /// + bind slice directly — they never construct an accumulator.
 #[doc(hidden)]
 pub struct SqlAccumulator {
-    /// The accumulated SQL text. Contains `$1`, `$2`, ... placeholders wherever
+    /// The accumulated SQL text. Contains `$1`, `$2`,... placeholders wherever
     /// `push_bind` was called.
     sql: String,
 
-    /// Bound values in positional order matching the `$1`, `$2`, ... placeholders.
+    /// Bound values in positional order matching the `$1`, `$2`,... placeholders.
     binds: Vec<Box<dyn ToSql + Sync + Send>>,
 
     /// The next positional parameter index. Starts at 1 (Postgres is 1-indexed).
@@ -124,7 +124,7 @@ impl SqlAccumulator {
     /// Push a list of bind values separated by commas, for `IN (...)` / `NOT IN (...)` lists.
     /// Each element gets its own `$n` slot. The caller is responsible for emitting
     /// the opening `(` before calling this and `)` after — this method emits only
-    /// the comma-separated `$n, $m, ...` list, not the surrounding parentheses.
+    /// the comma-separated `$n, $m,...` list, not the surrounding parentheses.
     /// Empty iterators are a no-op. Callers that need `IN ()` short-circuit
     /// behaviour (which is a Postgres syntax error) should check `is_empty()` and
     /// emit `FALSE` or `TRUE` before calling this.
@@ -173,7 +173,7 @@ impl SqlAccumulator {
     }
 
     /// Splice another accumulator's accumulated SQL and binds into this one.
-    /// The other accumulator's `$1`, `$2`, ... placeholders are renumbered to
+    /// The other accumulator's `$1`, `$2`,... placeholders are renumbered to
     /// continue this accumulator's `next_param` sequence so the merged SQL
     /// stays positional. Used by emitters that wrap an inner-built SQL in an
     /// outer scope (e.g. derived-table qualify lowering — see
@@ -189,11 +189,11 @@ impl SqlAccumulator {
     /// `u32` overflows occurs (every case is a framework-internal invariant
     /// break):
     /// - parsing an inner placeholder digit run yields a value greater than
-    ///   `u32::MAX` (e.g. `$9999999999`);
+    /// `u32::MAX` (e.g. `$9999999999`);
     /// - a renumbered placeholder `n + offset` exceeds `u32::MAX`;
     /// - the post-splice `next_param` increment by `other_binds.len()`
-    ///   exceeds `u32::MAX` (this also catches the case where `other_binds.len()`
-    ///   itself does not fit in `u32`).
+    /// exceeds `u32::MAX` (this also catches the case where `other_binds.len()`
+    /// itself does not fit in `u32`).
     pub fn extend_with(&mut self, other: SqlAccumulator) {
         let SqlAccumulator {
             sql: other_sql,
@@ -273,7 +273,7 @@ impl SqlAccumulator {
     }
 
     /// Consume the accumulator and return the `(sql_text, binds_vec)` pair.
-    /// The binds vec is in positional order matching the `$1`, `$2`, ... slots
+    /// The binds vec is in positional order matching the `$1`, `$2`,... slots
     /// in the SQL text. The caller uses [`as_params`] to reborrow the boxed
     /// vec as the `&[&(dyn ToSql + Sync)]` slice `tokio_postgres` expects:
     /// ```ignore

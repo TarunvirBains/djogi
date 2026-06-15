@@ -2,14 +2,14 @@
 //! # What
 //! Emits one `impl` block per `#[model]`-annotated struct:
 //! - `const COLUMNS: &'static [&'static str]` — column names in the
-//!   canonical SELECT order (`id`, `created_at`, `updated_at`, then
-//!   user fields in declaration order).
+//! canonical SELECT order (`id`, `created_at`, `updated_at`, then
+//! user fields in declaration order).
 //! - `const COLUMN_LIST: &'static str` — the same names joined with
-//!   `", "`, ready to interpolate into `SELECT {COLUMN_LIST} FROM t`
-//!   and `RETURNING {COLUMN_LIST}` SQL text.
+//! `", "`, ready to interpolate into `SELECT {COLUMN_LIST} FROM t`
+//! and `RETURNING {COLUMN_LIST}` SQL text.
 //! - `fn from_pg_row(row: &tokio_postgres::Row) -> Result<Self,
 //! DjogiError>` — positional (ordinal) decode via `row.try_get(0)`,
-//!   `row.try_get(1)`, … matching the `COLUMNS` order.
+//! `row.try_get(1)`, … matching the `COLUMNS` order.
 //! # Why ordinal, not name-based
 //! Ordinal decode is O(N) per row (one `try_get(i)` per column);
 //! name-based decode is O(N^2) (each `try_get(name)` does a linear
@@ -119,7 +119,7 @@ pub fn expand(
             let codec = codec_vec[i].clone();
             let decode_expr = decode_field_tokens(&kind, nullable, tracked, i, col_name, codec);
             quote! {
-                #fname: #decode_expr
+             #fname: #decode_expr
             }
         })
         .collect();
@@ -129,40 +129,40 @@ pub fn expand(
     let columns_lit = col_names.iter().map(|n| quote! { #n });
 
     quote! {
-        impl #impl_generics ::djogi::__private::pg::FromPgRow
-        for #name #ty_generics #where_clause
-        {
-            const COLUMNS: &'static [&'static str] = &[
-                #(#columns_lit,)*
-            ];
+     impl #impl_generics ::djogi::__private::pg::FromPgRow
+     for #name #ty_generics #where_clause
+     {
+      const COLUMNS: &'static [&'static str] = &[
+       #(#columns_lit,)*
+      ];
 
-            const COLUMN_LIST: &'static str = #column_list;
+      const COLUMN_LIST: &'static str = #column_list;
 
-            fn from_pg_row(
-                row: &::djogi::__private::tokio_postgres::Row,
-            ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
-                // Row must have at least `N_COLS` columns in canonical
-                // order at positions 0..N_COLS. Callers that add extra
-                // trailing columns (e.g. `annotate()` appending aggregate
-                // aliases, or `select_related` appending aliased joined
-                // columns) are allowed — the trailing columns are simply
-                // ignored by this decoder and fielded by their own decode
-                // paths (`AggregateTuple`, `FromJoinedPgRow`).
-                // Release builds skip the asserts entirely; the
-                // `try_get(i)` at each ordinal position still errors
-                // with a typed decode error if the wire type doesn't
-                // match, so misuse does not corrupt data — it just
-                // loses the up-front panic diagnostics.
-                ::std::debug_assert!(
-                    ::djogi::__private::tokio_postgres::Row::columns(row).len() >= #n_cols,
-                    "FromPgRow column-count mismatch: expected at least {}, got {}",
-                    #n_cols,
-                    ::djogi::__private::tokio_postgres::Row::columns(row).len(),
-                );
-                ::std::result::Result::Ok(Self {
-                    #(#field_assignments,)*
-                })
-            }
-        }
+      fn from_pg_row(
+       row: &::djogi::__private::tokio_postgres::Row,
+      ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+       // Row must have at least `N_COLS` columns in canonical
+       // order at positions 0..N_COLS. Callers that add extra
+       // trailing columns (e.g. `annotate()` appending aggregate
+       // aliases, or `select_related` appending aliased joined
+       // columns) are allowed — the trailing columns are simply
+       // ignored by this decoder and fielded by their own decode
+       // paths (`AggregateTuple`, `FromJoinedPgRow`).
+       // Release builds skip the asserts entirely; the
+       // `try_get(i)` at each ordinal position still errors
+       // with a typed decode error if the wire type doesn't
+       // match, so misuse does not corrupt data — it just
+       // loses the up-front panic diagnostics.
+       ::std::debug_assert!(
+        ::djogi::__private::tokio_postgres::Row::columns(row).len() >= #n_cols,
+        "FromPgRow column-count mismatch: expected at least {}, got {}",
+        #n_cols,
+        ::djogi::__private::tokio_postgres::Row::columns(row).len(),
+       );
+       ::std::result::Result::Ok(Self {
+        #(#field_assignments,)*
+       })
+      }
+     }
     }
 }

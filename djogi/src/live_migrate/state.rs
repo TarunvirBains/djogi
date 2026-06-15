@@ -39,7 +39,7 @@ use crate::types::HeerId;
 
 /// DDL that idempotently installs the `djogi_live_plans` table plus
 /// the per-bucket lookup index.
-/// Per .5, every live plan is scoped to a single
+/// Per.5, every live plan is scoped to a single
 /// `(target_database, app_label)` bucket. `plan_id` is a HeerId, so
 /// the table-level `PRIMARY KEY` already prevents collisions
 /// regardless of bucket. The composite index
@@ -54,43 +54,43 @@ use crate::types::HeerId;
 /// Idempotent — safe to call on every runner invocation.
 pub const INSTALL_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS djogi_live_plans (
-    plan_id               BIGINT PRIMARY KEY,
-    slug                  TEXT NOT NULL,
-    plan_file_checksum    VARCHAR(68) NOT NULL,
-    classification        TEXT NOT NULL
-                               CHECK (classification IN (
-                                   'online_safe', 'expand_contract', 'offline_only'
-                               )),
-    status                TEXT NOT NULL DEFAULT 'pending'
-                               CHECK (status IN (
-                                   'pending', 'running', 'paused',
-                                   'validating', 'cutover', 'finalizing',
-                                   'complete', 'abandoned', 'failed',
-                                   'failed_retriable', 'failed_terminal'
-                               )),
-    current_step          TEXT,
-    current_step_index    INTEGER NOT NULL DEFAULT 0,
-    backfill_rows_done    BIGINT NOT NULL DEFAULT 0,
-    backfill_rows_total   BIGINT,
-    started_at            TIMESTAMPTZ,
-    last_progress_at      TIMESTAMPTZ,
-    completed_at          TIMESTAMPTZ,
-    last_error            TEXT,
-    originating_migration TEXT NOT NULL,
-    target_database       TEXT NOT NULL DEFAULT 'main',
-    app_label             TEXT NOT NULL DEFAULT '',
-    daemon_session_token  TEXT
+ plan_id    BIGINT PRIMARY KEY,
+ slug     TEXT NOT NULL,
+ plan_file_checksum VARCHAR(68) NOT NULL,
+ classification  TEXT NOT NULL
+        CHECK (classification IN (
+         'online_safe', 'expand_contract', 'offline_only'
+        )),
+ status    TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN (
+         'pending', 'running', 'paused',
+         'validating', 'cutover', 'finalizing',
+         'complete', 'abandoned', 'failed',
+         'failed_retriable', 'failed_terminal'
+        )),
+ current_step   TEXT,
+ current_step_index INTEGER NOT NULL DEFAULT 0,
+ backfill_rows_done BIGINT NOT NULL DEFAULT 0,
+ backfill_rows_total BIGINT,
+ started_at   TIMESTAMPTZ,
+ last_progress_at  TIMESTAMPTZ,
+ completed_at   TIMESTAMPTZ,
+ last_error   TEXT,
+ originating_migration TEXT NOT NULL,
+ target_database  TEXT NOT NULL DEFAULT 'main',
+ app_label    TEXT NOT NULL DEFAULT '',
+ daemon_session_token TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS djogi_live_plans_bucket_plan_id_uidx
-    ON djogi_live_plans (target_database, app_label, plan_id);
+ ON djogi_live_plans (target_database, app_label, plan_id);
 ALTER TABLE djogi_live_plans
-    ADD COLUMN IF NOT EXISTS claimed_by_pid BIGINT;
+ ADD COLUMN IF NOT EXISTS claimed_by_pid BIGINT;
 ALTER TABLE djogi_live_plans
-    ADD COLUMN IF NOT EXISTS claimed_by_host TEXT;
+ ADD COLUMN IF NOT EXISTS claimed_by_host TEXT;
 ALTER TABLE djogi_live_plans
-    ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+ ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
 ALTER TABLE djogi_live_plans
-    ADD COLUMN IF NOT EXISTS daemon_session_token TEXT;
+ ADD COLUMN IF NOT EXISTS daemon_session_token TEXT;
 "#;
 
 // ── PlanStatus ────────────────────────────────────────────────────────
@@ -157,7 +157,7 @@ pub enum PlanStatus {
 /// lives in this table: adding a `PlanStatus` variant fails compile
 /// until the drift-guard match gets a new arm; updating the match
 /// without updating the slice causes `as_db_str` to panic for the new
-/// variant in tests (`expect("invariant: ...")`), and `from_db_str`
+/// variant in tests (`expect("invariant:...")`), and `from_db_str`
 /// stops recognising the new label.
 const PLAN_STATUS_LABELS: &[(PlanStatus, &str)] = &[
     (PlanStatus::Pending, "pending"),
@@ -284,12 +284,12 @@ pub async fn install(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
 /// rollback semantics.
 pub async fn insert_row(ctx: &mut DjogiContext, row: &LivePlanRow) -> Result<(), DjogiError> {
     let sql = "INSERT INTO djogi_live_plans \
-                (plan_id, slug, plan_file_checksum, classification, status, \
-                 current_step, current_step_index, backfill_rows_done, \
-                 backfill_rows_total, started_at, last_progress_at, completed_at, \
-                 last_error, originating_migration, target_database, app_label, \
-                 daemon_session_token) \
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)";
+    (plan_id, slug, plan_file_checksum, classification, status, \
+     current_step, current_step_index, backfill_rows_done, \
+     backfill_rows_total, started_at, last_progress_at, completed_at, \
+     last_error, originating_migration, target_database, app_label, \
+     daemon_session_token) \
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)";
     let plan_id = row.plan_id.as_i64();
     let classification = row.classification.as_db_str();
     let status = row.status.as_db_str();
@@ -328,12 +328,12 @@ pub async fn fetch_row_by_id(
     app_label: &str,
 ) -> Result<Option<LivePlanRow>, DjogiError> {
     let sql = "SELECT plan_id, slug, plan_file_checksum, classification, status, \
-                current_step, current_step_index, backfill_rows_done, \
-                backfill_rows_total, started_at, last_progress_at, completed_at, \
-                last_error, originating_migration, target_database, app_label, \
-                daemon_session_token \
-                FROM djogi_live_plans \
-                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+    current_step, current_step_index, backfill_rows_done, \
+    backfill_rows_total, started_at, last_progress_at, completed_at, \
+    last_error, originating_migration, target_database, app_label, \
+    daemon_session_token \
+    FROM djogi_live_plans \
+    WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     let row_opt = ctx
         .query_opt(sql, &[&target_database, &app_label, &plan_id_i64])
@@ -410,8 +410,8 @@ pub async fn update_progress(
     rows_done: i64,
 ) -> Result<(), DjogiError> {
     let sql = "UPDATE djogi_live_plans \
-                SET backfill_rows_done = $4, last_progress_at = now() \
-                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+    SET backfill_rows_done = $4, last_progress_at = now() \
+    WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     ctx.execute(
         sql,
@@ -437,8 +437,8 @@ pub async fn update_step_index(
     new_step_label: Option<&str>,
 ) -> Result<(), DjogiError> {
     let sql = "UPDATE djogi_live_plans \
-                SET current_step_index = $4, current_step = $5 \
-                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+    SET current_step_index = $4, current_step = $5 \
+    WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     ctx.execute(
         sql,
@@ -467,8 +467,8 @@ pub async fn stamp_completed_at(
     app_label: &str,
 ) -> Result<(), DjogiError> {
     let sql = "UPDATE djogi_live_plans \
-                SET completed_at = now() \
-                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+    SET completed_at = now() \
+    WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     ctx.execute(sql, &[&target_database, &app_label, &plan_id_i64])
         .await?;
@@ -488,8 +488,8 @@ pub async fn update_status(
     new_status: PlanStatus,
 ) -> Result<(), DjogiError> {
     let sql = "UPDATE djogi_live_plans \
-                SET status = $4 \
-                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+    SET status = $4 \
+    WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     let status = new_status.as_db_str();
     ctx.execute(sql, &[&target_database, &app_label, &plan_id_i64, &status])
@@ -510,8 +510,8 @@ pub async fn update_status_with_error(
     error_msg: String,
 ) -> Result<(), DjogiError> {
     let sql = "UPDATE djogi_live_plans \
-                SET status = $4, last_error = $5 \
-                WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+    SET status = $4, last_error = $5 \
+    WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
     let plan_id_i64 = plan_id.as_i64();
     let status_str = status.as_db_str();
     ctx.execute(

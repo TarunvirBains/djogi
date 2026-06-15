@@ -1,4 +1,4 @@
-//! `CASE WHEN ... THEN ... ELSE ... END` — multi-armed conditional
+//! `CASE WHEN... THEN... ELSE... END` — multi-armed conditional
 //! expression builder.
 //! # What
 //! [`Case::when`] opens a builder; [`CaseBuilder::when`] appends arms;
@@ -22,14 +22,14 @@
 //! use djogi::expr::case::Case;
 //!
 //! let status = Case::when(
-//!     f.balance().as_expr().lt(Expr::literal(0i64)),
-//!     Expr::literal("overdrawn".to_string()),
+//!  f.balance().as_expr().lt(Expr::literal(0i64)),
+//!  Expr::literal("overdrawn".to_string()),
 //! )
-//! .when(
-//!     f.balance().as_expr().eq(Expr::literal(0i64)),
-//!     Expr::literal("zero".to_string()),
+//!.when(
+//!  f.balance().as_expr().eq(Expr::literal(0i64)),
+//!  Expr::literal("zero".to_string()),
 //! )
-//! .otherwise(Expr::literal("ok".to_string()));
+//!.otherwise(Expr::literal("ok".to_string()));
 //! ```
 //! Each arm's `cond` is `Expr<bool>` and `then_val` is `Expr<V>` (the
 //! same `V` the builder carries). The final `Expr<V>` slots into
@@ -39,7 +39,7 @@
 //! # Where
 //! - [`super::node::ExprNode::Case`] — the untyped payload.
 //! - [`super::sql::emit_expr`] — renders the SQL tokens (one arm per
-//!   `(cond, val)` pair, then `ELSE <default> END`).
+//! `(cond, val)` pair, then `ELSE <default> END`).
 
 use crate::expr::Expr;
 use crate::expr::node::ExprNode;
@@ -91,10 +91,10 @@ impl<V> Case<V> {
 /// flagged here; the type-state also prevents `.otherwise`-less use
 /// from silently type-checking (the builder is not itself an `Expr<V>`,
 /// so any site expecting `Expr<V>` will reject it).
-#[must_use = "CaseBuilder must be closed with .otherwise(default) to produce an Expr<V>"]
+#[must_use = "CaseBuilder must be closed with.otherwise(default) to produce an Expr<V>"]
 pub struct CaseBuilder<V> {
     /// Accumulated `(condition, value)` pairs in emission order. The
-    /// emitter walks this Vec and renders `WHEN ... THEN ...` arms in
+    /// emitter walks this Vec and renders `WHEN... THEN...` arms in
     /// order; Postgres picks the first arm whose condition evaluates
     /// to true.
     arms: Vec<(ExprNode, ExprNode)>,

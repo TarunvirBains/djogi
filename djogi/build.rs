@@ -1,23 +1,23 @@
 //! Djogi build script — surfaces migration-tree drift diagnostics on
 //! every `cargo build`.
 //!
-//! Per Phase 7 v3 §6, build.rs walks three on-disk inputs:
+//! Per the migrations spec, build.rs walks three on-disk inputs:
 //!
 //! 1. `target/djogi_models.json` — the descriptor inventory, written
-//!    by `#[derive(Model)]` via a future macro side-channel hook.
-//!    When the file does not exist (the typical state today) the
-//!    model-vs-* legs are skipped silently, but the pending ↔ snapshot
-//!    comparison still runs so a composed migration can surface as
-//!    "not yet applied". If the file exists but is malformed, build.rs
-//!    emits one loud warning naming the path/cause, then degrades to
-//!    the same reduced pending ↔ snapshot path.
+//! by `#[derive(Model)]` via a future macro side-channel hook.
+//! When the file does not exist (the typical state today) the
+//! model-vs-* legs are skipped silently, but the pending ↔ snapshot
+//! comparison still runs so a composed migration can surface as
+//! "not yet applied". If the file exists but is malformed, build.rs
+//! emits one loud warning naming the path/cause, then degrades to
+//! the same reduced pending ↔ snapshot path.
 //!
 //! 2. `target/djogi_pending/<database>/<app>.json` plus
-//!    `target/djogi_pending/<database>/.phase_zero/<version>.json` —
-//!    pending compose artifacts written by `djogi migrations compose`.
+//! `target/djogi_pending/<database>/.phase_zero/<version>.json` —
+//! pending compose artifacts written by `djogi migrations compose`.
 //!
 //! 3. `migrations/<database>/<app>/schema_snapshot.json` — the
-//!    committed schema state per bucket.
+//! committed schema state per bucket.
 //!
 //! Drift surfaces as `cargo:warning=...` lines. Suppressed entirely
 //! by `Djogi.toml::build.suppress_drift_warning = true`.
@@ -596,7 +596,7 @@ fn validate_normal_pending_json(
     filename: &str,
 ) -> Result<(String, String), String> {
     let Some(stem) = filename.strip_suffix(".json") else {
-        return Err("filename must end with .json".to_string());
+        return Err("filename must end with.json".to_string());
     };
     let label = if stem == "_global_" {
         String::new()
@@ -629,7 +629,7 @@ fn validate_normal_pending_json(
         ));
     }
     if version == PHASE_ZERO_VERSION {
-        return Err("Phase 0 pending JSON must use the hidden .phase_zero namespace".to_string());
+        return Err("Phase 0 pending JSON must use the hidden.phase_zero namespace".to_string());
     }
     Ok((database.to_string(), label))
 }
@@ -683,7 +683,7 @@ fn registered_apps_per_database(
 }
 
 /// Compare three JSON snapshots modulo `generated_at`. Returns the
-/// frozen warning text matching the v3 §6 amendment.
+/// frozen warning text matching the the specification amendment.
 fn classify_outcome(
     bucket: &(String, String),
     inventory: InventoryMatch<'_>,

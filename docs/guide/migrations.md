@@ -5,9 +5,9 @@ Djogi's migration system is **descriptor-driven**: your model definitions are th
 ```rust
 #[model(table = "users", app = Auth)]
 pub struct User {
-    pub email: String,
-    pub display_name: String,
-    pub created_at: OffsetDateTime,
+ pub email: String,
+ pub display_name: String,
+ pub created_at: OffsetDateTime,
 }
 ```
 
@@ -24,15 +24,15 @@ Drift between any two surfaces is a typed diagnostic, not a silent recovery.
 ## The compose cycle
 
 ```
-edit #[model]   →   cargo build (drift warning)   →   djogi migrations compose
-                                                         ↓
-                                              review V<ts>__name.sdjql + .down.sdjql
-                                                         ↓
-                                                   commit + open PR
-                                                         ↓
-                                          apply via `djogi::migrate::apply_plan`
-                                                         ↓
-                                  schema_snapshot.json updated atomically
+edit #[model] → cargo build (drift warning) → djogi migrations compose
+        ↓
+      review V<ts>__name.sdjql +.down.sdjql
+        ↓
+       commit + open PR
+        ↓
+      apply via `djogi::migrate::apply_plan`
+        ↓
+     schema_snapshot.json updated atomically
 ```
 
 `build.rs` is **diagnostic-only** — it never writes migration files, never mutates snapshots, and never touches the `migrations/` submodule. It reads `target/djogi_models.json` (proc-macro side-channel), compares against the committed snapshot + any pending JSON staging, and emits `cargo:warning=` lines on drift.
@@ -42,29 +42,29 @@ The compose step is operator-driven. Reviewers see the SQL diff in the PR; nobod
 ## Filesystem layout
 
 ```
-migrations/                        ← git submodule
-├── main/                          ← database name
-│   ├── _global_/                  ← models with no #[model(app = ...)]
-│   │   ├── V20260301000000__init.sdjql
-│   │   ├── V20260301000000__init.down.sdjql
-│   │   └── schema_snapshot.json
-│   ├── auth/
-│   │   ├── V20260315120000__add_user_bio.sdjql
-│   │   ├── V20260315120000__add_user_bio.down.sdjql
-│   │   └── schema_snapshot.json
-│   └── billing/
-│       └── ...
-├── crud_log/                      ← separate database target
-│   └── ...
+migrations/   ← git submodule
+├── main/    ← database name
+│ ├── _global_/   ← models with no #[model(app =...)]
+│ │ ├── V20260301000000__init.sdjql
+│ │ ├── V20260301000000__init.down.sdjql
+│ │ └── schema_snapshot.json
+│ ├── auth/
+│ │ ├── V20260315120000__add_user_bio.sdjql
+│ │ ├── V20260315120000__add_user_bio.down.sdjql
+│ │ └── schema_snapshot.json
+│ └── billing/
+│ └──...
+├── crud_log/   ← separate database target
+│ └──...
 └── event_log/
-    └── ...
+ └──...
 ```
 
 - One directory per `(database, app)` bucket. Cross-database FKs are rejected at projection time. Cross-app FKs **within the same database** are fully supported — when a compose produces multiple buckets at the same version and one references another via foreign key, Djogi automatically derives the dependency graph and orders the apply so referenced tables are created first.
 - Sharing a `DjogiEnum` across apps works without special configuration: compose deduplicates shared enum types automatically, emitting exactly one `CREATE TYPE` in the first bucket (by alphabetical order when no FK edges exist). The other buckets that reference the same enum get a dependency edge pointing to the owning bucket, so they apply after the type exists. You just derive `DjogiEnum` once and use it from models in any app — compose and apply handle the rest.
 - **Upgrading from global to per-bucket enum snapshots.** If your `schema_snapshot.json` files were recorded by an older Djogi version that stored enum entries globally (before per-bucket scoping was introduced), running `djogi migrations compose` once will silently advance each stale snapshot to the current scoped state and print a `snapshot converged: <database>/<app>` line per affected bucket. No migration file is generated; this is a one-time convergence step that brings the on-disk snapshots in sync with the current layout so subsequent builds no longer emit a spurious "run compose" warning.
 - Filename grammar: `V<14-digit timestamp>__<slug>.sdjql` (up) plus `.down.sdjql` (reverse).
-- `_global_` is the synthetic bucket for models without an explicit `#[model(app = ...)]`.
+- `_global_` is the synthetic bucket for models without an explicit `#[model(app =...)]`.
 - `schema_snapshot.json` is the per-bucket applied-state side-car. The runner persists it atomically after every transactional segment commits and the ledger row reaches `applied`.
 
 The `migrations/` directory is a **git submodule**. It pins to a SHA in the parent repo so a checkout always matches the migration history that produced the schema. The `attune` command updates the parent's recorded pointer.
@@ -114,19 +114,19 @@ Applies pending migrations discovered from `target/djogi_pending/`.
 
 - `djogi migrations apply` applies SQL and snapshots exactly as composed.
 - `djogi migrations apply --fake --reason "<text>"` records the migration as
-  `faked` in the ledger without executing SQL; `--reason` is required and
-  must be non-empty.
+ `faked` in the ledger without executing SQL; `--reason` is required and
+ must be non-empty.
 - When there are no pending migrations, the command is a no-op and exits `0`
-  (no identity or pool validation).
+ (no identity or pool validation).
 - Exit codes: `0` success, `1` transient runtime error (connection, pool,
-  SQL execution failure — CI may retry), `2` refusal — the condition is
-  deterministic and requires operator action: a missing or invalid node
-  identity, a checksum mismatch or format error on a committed migration,
-  a version collision, a stale Phase 0 artifact, a segment execution-mode
-  conflict, a relpages threshold refusal, a target-table-not-found, an
-  out-of-order rejection under `Reject` policy, a PK-flip pre-flight
-  hazard, a snapshot persist failure after the ledger row was applied, or
-  an advisory-unlock correctness failure.
+ SQL execution failure — CI may retry), `2` refusal — the condition is
+ deterministic and requires operator action: a missing or invalid node
+ identity, a checksum mismatch or format error on a committed migration,
+ a version collision, a stale Phase 0 artifact, a segment execution-mode
+ conflict, a relpages threshold refusal, a target-table-not-found, an
+ out-of-order rejection under `Reject` policy, a PK-flip pre-flight
+ hazard, a snapshot persist failure after the ledger row was applied, or
+ an advisory-unlock correctness failure.
 
 ### `djogi migrations status`
 
@@ -147,11 +147,11 @@ Status does NOT acquire the workspace lock, so it is safe to run while another o
 
 ```
 djogi migrations attune [<git-target>]
-                              [--apply]
-                              [--record-ledger] [--record-reason "<note>"]
-                              [--squash --from <version> [--app <label>]]
-                              [--publish]
-                              [--record]
+    [--apply]
+    [--record-ledger] [--record-reason "<note>"]
+    [--squash --from <version> [--app <label>]]
+    [--publish]
+    [--record]
 ```
 
 Reconciles the local migration history with the ledger. Default mode is **read-only diff** — pass `--apply` to commit any mutation.
@@ -172,12 +172,12 @@ The `apply` command ships as `djogi migrations apply` (with `--fake` / `--reason
 
 ```rust
 use djogi::migrate::{
-    apply_plan, rollback_plan, fake_apply_plan, baseline_plan,
-    verify, RunnerCtx, WorkspaceGuard,
+ apply_plan, rollback_plan, fake_apply_plan, baseline_plan,
+ verify, RunnerCtx, WorkspaceGuard,
 };
 use djogi::migrate::repair::{
-    repair_checksum_drift, repair_partial_apply,
-    repair_resume_partial_apply, repair_snapshot_rebuild,
+ repair_checksum_drift, repair_partial_apply,
+ repair_resume_partial_apply, repair_snapshot_rebuild,
 };
 ```
 
@@ -218,13 +218,13 @@ djogi migrations apply --single-node-dev
 HEER_NODE_ID=3 djogi migrations apply
 
 # Refused: conflicting flags
-djogi migrations apply --node-id 7 --single-node-dev  # error
+djogi migrations apply --node-id 7 --single-node-dev # error
 
 # Refused: missing identity for non-dev mode (exit code 2)
-djogi migrations apply  # error — requires --node-id, HEER_NODE_ID, or --single-node-dev
+djogi migrations apply # error — requires --node-id, HEER_NODE_ID, or --single-node-dev
 
 # Refused: single-node-dev in production (exit code 2)
-DJOGI_ENV=production djogi migrations apply --single-node-dev  # error
+DJOGI_ENV=production djogi migrations apply --single-node-dev # error
 ```
 
 ### Identity-Free Paths
@@ -241,7 +241,7 @@ Explicit `--single-node-dev` keeps the on-disk Phase 0 SQL identity-free, then t
 
 Phase 0 artifact preflight is scoped to paths that would replay or record Phase 0 SQL. `apply`, `fake apply`, `repair resume`, reset replay, and CLI reapply cleanup allow only identity-free replay-current Phase 0 artifacts before mutation; seed-capable runtime helper SQL and seed-DML non-runtime artifacts are refused for replay. `rollback` preflights the authoritative materialized down SQL before changing ledger status or running down-side SQL, so seed-capable, seed-DML non-runtime, ambiguous/comment-only, and generated-stale Phase 0 down payloads refuse early. `migrations attune` remains identity-free; only Record/Squash with `--apply` refuse seed-capable, seed-DML non-runtime, ambiguous, or generated-stale Phase 0 files before ledger/file mutation. `baseline` does not broaden into Phase 0 artifact preflight; it keeps its snapshot refusal and identity checks.
 
-The Phase 0 classifier recognizes only exact banner lines for the current and legacy production/seeded banners. Identity-free production artifacts are the only replay-current shape; seeded current artifacts are runtime-only. Banner text embedded in SQL literals, suffixed banner strings, mixed literal/dynamic database defaults, seed-free incomplete generation, generated-stale literal database defaults, and non-runtime top-level seed-table mutation against HeeRanjID seed tables all fail closed on replay paths. The seed mutation scanner covers direct `INSERT`/`UPDATE`/`DELETE`, CTE-led data mutations, `MERGE INTO`, and `COPY ... FROM`, while skipping comments, strings, quoted identifiers, and dollar-quoted bodies. Rollback is stricter still: Phase 0 rollback requires a non-empty down payload that classifies as identity-free replay-current before any transactional or non-transactional down SQL or ledger mutation begins.
+The Phase 0 classifier recognizes only exact banner lines for the current and legacy production/seeded banners. Identity-free production artifacts are the only replay-current shape; seeded current artifacts are runtime-only. Banner text embedded in SQL literals, suffixed banner strings, mixed literal/dynamic database defaults, seed-free incomplete generation, generated-stale literal database defaults, and non-runtime top-level seed-table mutation against HeeRanjID seed tables all fail closed on replay paths. The seed mutation scanner covers direct `INSERT`/`UPDATE`/`DELETE`, CTE-led data mutations, `MERGE INTO`, and `COPY... FROM`, while skipping comments, strings, quoted identifiers, and dollar-quoted bodies. Rollback is stricter still: Phase 0 rollback requires a non-empty down payload that classifies as identity-free replay-current before any transactional or non-transactional down SQL or ledger mutation begins.
 
 ## Rollback Command
 
@@ -257,22 +257,22 @@ djogi migrations rollback --dry-run
 ```
 
 - The command reads the committed `migrations/<database>/<app>/<version>.down.sdjql`
-  file under the workspace lock, checks it against the ledger row's recorded
-  checksums, and refuses before execution if the files drifted.
+ file under the workspace lock, checks it against the ledger row's recorded
+ checksums, and refuses before execution if the files drifted.
 - Missing down files, comment-only down files, and down files containing
-  non-transactional statement shapes refuse with exit code `2`. If the rollback
-  already happened out of band, use
-  `djogi migrations repair partial-apply <version> rolled-back` to rewrite the
-  ledger state explicitly instead of pretending an empty down file did work.
+ non-transactional statement shapes refuse with exit code `2`. If the rollback
+ already happened out of band, use
+ `djogi migrations repair partial-apply <version> rolled-back` to rewrite the
+ ledger state explicitly instead of pretending an empty down file did work.
 - `--dry-run` is read-only: it prints the committed down SQL for the current
-  target set and then exits. The real run re-reads the ledger after acquiring
-  the workspace lock and refuses with "rerun the command" if the target set
-  changed while it was waiting.
+ target set and then exits. The real run re-reads the ledger after acquiring
+ the workspace lock and refuses with "rerun the command" if the target set
+ changed while it was waiting.
 - Lossy down files refuse unless you pass `--allow-data-loss --reason "<why>"`.
-  The reason is recorded in the rolled-back ledger row's note.
+ The reason is recorded in the rolled-back ledger row's note.
 - After any run in which at least one rollback committed, Djogi re-projects the
-  bucket snapshot from the live database so `schema_snapshot.json` reflects the
-  actual post-rollback catalog even if a later rollback target fails.
+ bucket snapshot from the live database so `schema_snapshot.json` reflects the
+ actual post-rollback catalog even if a later rollback target fails.
 
 Exit codes: `0` success, `1` runtime error, `2` refusal (unsupported shape,
 missing identity, checksum drift, lossy without opt-in, or lock/ledger drift).
@@ -295,11 +295,11 @@ file lock for its duration. Exit codes: `0` success, `1` runtime/I/O error
 # --checksum-up / --checksum-down recomputes them from the committed files
 # (a missing down file is a no-op).
 djogi migrations repair checksum-drift V20260101000000__add_users \
-  --checksum-up V1:<hex> --checksum-down V1:<hex>
+ --checksum-up V1:<hex> --checksum-down V1:<hex>
 
 # Resolve a partial-apply row by rewriting its status. Does NOT execute SQL.
 djogi migrations repair partial-apply V20260101000000__add_users rolled-back \
-  --note "reverted by hot-fix psql script"
+ --note "reverted by hot-fix psql script"
 
 # Resume an interrupted non-transactional apply by replaying remaining steps
 # from the committed <version>.plan.json.
@@ -322,14 +322,14 @@ cannot run against the populated database without a starting point.
 ```bash
 # Establish a baseline for the global bucket of the main database.
 djogi migrations baseline V00000000000000__baseline \
-  --reason "schema pre-exists from prior tooling"
+ --reason "schema pre-exists from prior tooling"
 
 # Baseline a specific app bucket in a non-default database, with a
 # custom ledger description.
 djogi migrations baseline V00000000000000__baseline \
-  --reason "imported from legacy system" \
-  --description "legacy billing schema" \
-  --app billing --database crud_log
+ --reason "imported from legacy system" \
+ --description "legacy billing schema" \
+ --app billing --database crud_log
 ```
 
 What it does: projects the bucket's **live** Postgres catalog into a single
@@ -375,20 +375,20 @@ Every `SchemaDelta` carries a `Classification` that determines runner behaviour:
 | `Unsupported { reason }` | Differ cannot lower the change safely | Operator must hand-edit the migration |
 | `PkTypeFlip { co_destructive, co_lossy }` | At least one PK-type flip | Routes through T9's expand/contract orchestration; `co_*` flags surface co-existing severity so destructive gating still applies even when the headline classification is the flip |
 
-Phase 7.5 layered a second classification dimension (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`) that captures lock-time and live-row impact orthogonally. The two dimensions compose: a change can be `Reversible` on the structural axis and `ExpandContract` on the online-safety axis (typical of FK additions), and the runner gates on both.
+ layered a second classification dimension (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`) that captures lock-time and live-row impact orthogonally. The two dimensions compose: a change can be `Reversible` on the structural axis and `ExpandContract` on the online-safety axis (typical of FK additions), and the runner gates on both.
 
 ## PK-type flip migrations
 
-Phase 7 T9 ships native support for PK-type flips between the four built-in HeerId / RanjId variants (`HeerId`, `HeerIdRecencyBiased`, `RanjId`, `RanjIdRecencyBiased`). The differ detects the flip, the segment planner emits the expand/contract dance (shadow column → backfill → cutover → finalise), and the runner walks segments transactionally where safe and non-transactionally where required.
+ T9 ships native support for PK-type flips between the four built-in HeerId / RanjId variants (`HeerId`, `HeerIdRecencyBiased`, `RanjId`, `RanjIdRecencyBiased`). The differ detects the flip, the segment planner emits the expand/contract dance (shadow column → backfill → cutover → finalise), and the runner walks segments transactionally where safe and non-transactionally where required.
 
 ```rust
 // Before
 #[model(table = "events", pk = HeerId)]
-pub struct Event { /* ... */ }
+pub struct Event { /*... */ }
 
 // After — flip to recency-biased
 #[model(table = "events", pk = HeerIdRecencyBiased)]
-pub struct Event { /* ... */ }
+pub struct Event { /*... */ }
 ```
 
 `djogi migrations compose` produces a single migration containing the full DAG: drop dependent FKs, prepare shadow column, backfill, swap columns, recreate FKs in dependency order. Composite cycles, partitioned tables, and join tables are handled. PK flips that involve a **custom** PK (declared via `djogi::primary_key!`) — either a Custom-to-Custom shape change or a Custom↔built-in transition — are explicitly rejected at compose time in v0.1.0 with a typed `SchemaOperation::Unsupported` diagnostic that surfaces the `type_name`, `sql_type`, and `default_sql` of both sides; adopters who genuinely need such a flip must write the migration by hand. See `docs/spec/migrations.md` §10.10a (Primary-Key Flip Support Matrix) for the full reject rationale and the post-v0.1.0 extensibility plan.
@@ -471,13 +471,13 @@ Each page covers the table name, every field's name + Rust type + SQL type + nul
 ```rust
 #[djogi_test(sync_models = [User, Post, Tag])]
 async fn user_can_create_post(mut ctx: DjogiContext) {
-    let u = User::create(&mut ctx, ...).await.unwrap();
-    let p = Post::create(&mut ctx, ...).await.unwrap();
-    /* ... */
+ let u = User::create(&mut ctx,...).await.unwrap();
+ let p = Post::create(&mut ctx,...).await.unwrap();
+ /*... */
 }
 ```
 
-`sync_models` reuses Phase 7's `project_from_iters → diff_bucket_maps → plan_delta` pipeline (the same code paths the production runner uses), then executes the additive plan directly without ledger writes, advisory locks, or classification gating. The Phase 7 test suite includes a parity test (`tests/integration/phase7_t10_sync_models_parity.rs`) that runs both `sync_models` and `apply_plan` against fresh databases and asserts byte-identical `pg_catalog` shape — drift between the two execution wrappers is caught before merge.
+`sync_models` reuses 's `project_from_iters → diff_bucket_maps → plan_delta` pipeline (the same code paths the production runner uses), then executes the additive plan directly without ledger writes, advisory locks, or classification gating. The test suite includes a parity test (`tests/integration/phase7_t10_sync_models_parity.rs`) that runs both `sync_models` and `apply_plan` against fresh databases and asserts byte-identical `pg_catalog` shape — drift between the two execution wrappers is caught before merge.
 
 The pre-flight FK validator refuses if any model in the supplied set references a target that isn't also in the set (FK-target-missing error names both the source column and the missing target).
 

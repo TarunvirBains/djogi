@@ -33,43 +33,43 @@ use djogi::relation::ForeignKey;
 #[model(table = "persons_mmc")]
 #[derive(Debug, Clone)]
 pub struct Person {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "groups_mmc")]
 #[derive(Debug, Clone)]
 pub struct Group {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "person_groups_mmc", through, no_default)]
 #[derive(Debug, Clone)]
 pub struct PersonGroup {
-    pub person_id: ForeignKey<Person>,
-    pub group_id: ForeignKey<Group>,
+ pub person_id: ForeignKey<Person>,
+ pub group_id: ForeignKey<Group>,
 }
 
 // First declaration — legitimate.
 djogi::many_to_many!(
-    Person, Group,
-    through = PersonGroup,
-    this_fk = person_id,
-    that_fk = group_id,
-    relation = "groups"
+ Person, Group,
+ through = PersonGroup,
+ this_fk = person_id,
+ that_fk = group_id,
+ relation = "groups"
 );
 
 // Second declaration with the same `relation` on the same source
 // type. The emitted per-relation trait `PersonGroupsManyToManyRelation`
-// (and its `impl ... for Person`) is defined twice, tripping rustc's
+// (and its `impl... for Person`) is defined twice, tripping rustc's
 // duplicate-definition check (E0428) and failing the build here. The
 // `impl ManyToMany<Group> for Person` blanket also duplicates, so
 // E0119 (conflicting trait implementation) fires alongside.
 djogi::many_to_many!(
-    Person, Group,
-    through = PersonGroup,
-    this_fk = person_id,
-    that_fk = group_id,
-    relation = "groups"
+ Person, Group,
+ through = PersonGroup,
+ this_fk = person_id,
+ that_fk = group_id,
+ relation = "groups"
 );
 
 fn main() {}

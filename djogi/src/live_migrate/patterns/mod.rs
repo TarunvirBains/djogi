@@ -11,28 +11,28 @@
 //! Nine patterns ship, paired with one documentation-only
 //! module that records why a tenth never will:
 //! - [`nullable_not_null`] — nullable add followed by backfill plus
-//!   `SET NOT NULL` finalize.
+//! `SET NOT NULL` finalize.
 //! - [`replacement_column`] — shadow column expand/contract for type
-//!   changes that require a row rewrite.
+//! changes that require a row rewrite.
 //! - [`codec_transition`] — protected-field codec rotation under a
-//!   compatibility window.
+//! compatibility window.
 //! - [`backfill_then_tighten`] — backfill before a deferred FK or
-//!   uniqueness `VALIDATE`.
+//! uniqueness `VALIDATE`.
 //! - [`index_dependent`] — `CREATE INDEX CONCURRENTLY` with an
-//!   `indvalid` gate.
+//! `indvalid` gate.
 //! - [`two_phase_validate`] — `ADD CONSTRAINT … NOT VALID` plus a
-//!   separate `VALIDATE` for CHECK / NOT NULL / FK above the
-//!   validation row threshold.
+//! separate `VALIDATE` for CHECK / NOT NULL / FK above the
+//! validation row threshold.
 //! - [`unique_via_index`] — `CREATE UNIQUE INDEX CONCURRENTLY` plus
-//!   `ADD CONSTRAINT … USING INDEX`, also covering index replacement
-//!   on overlapping columns.
+//! `ADD CONSTRAINT … USING INDEX`, also covering index replacement
+//! on overlapping columns.
 //! - [`three_step_default`] — three-step rollout for columns whose
-//!   default expression is Postgres-volatile.
+//! default expression is Postgres-volatile.
 //! - [`multi_fk_staging`] — split four-or-more FK additions on a
-//!   single table across paired NOT VALID + VALIDATE steps.
+//! single table across paired NOT VALID + VALIDATE steps.
 //! - [`generated_column_refusal`] — documentation breadcrumb
-//!   explaining why no shadow-column pattern ships for stored
-//!   generated column rewrites.
+//! explaining why no shadow-column pattern ships for stored
+//! generated column rewrites.
 //! # Why no `generated_column_replacement.rs`
 //! Stored generated column rewrites classify as
 //! [`OnlineSafetyClassification::OfflineOnly`](crate::migrate::OnlineSafetyClassification::OfflineOnly)
@@ -172,27 +172,27 @@ pub trait Pattern {
 /// operation variant. Selection is exhaustive over the variants the
 /// classifier can route here:
 /// - [`SchemaOperation::AlterColumn`] dispatches to
-///   [`replacement_column::ReplacementColumn`] for `ChangeType`,
-///   [`codec_transition::CodecTransition`] for codec rotations, and
-///   [`nullable_not_null::NullableNotNull`] for `SetNullable(false)`.
+/// [`replacement_column::ReplacementColumn`] for `ChangeType`,
+/// [`codec_transition::CodecTransition`] for codec rotations, and
+/// [`nullable_not_null::NullableNotNull`] for `SetNullable(false)`.
 /// - [`SchemaOperation::AddForeignKey`] dispatches to
-///   [`backfill_then_tighten::BackfillThenTighten`] for FK adds whose
-///   classifier picked `ExpandContract` (large table → multi-step
-///   validate path).
+/// [`backfill_then_tighten::BackfillThenTighten`] for FK adds whose
+/// classifier picked `ExpandContract` (large table → multi-step
+/// validate path).
 /// - [`SchemaOperation::AddIndex`] dispatches to
-///   [`unique_via_index::UniqueViaIndex`] for unique indexes and to
-///   [`index_dependent::IndexDependent`] for non-unique indexes.
+/// [`unique_via_index::UniqueViaIndex`] for unique indexes and to
+/// [`index_dependent::IndexDependent`] for non-unique indexes.
 /// - [`SchemaOperation::AddTable`] dispatches to
-///   [`multi_fk_staging::MultiFkStaging`] (only escalated here when the
-///   table carries 4+ outbound FKs; `multi_fk_staging::emit` enforces
-///   the count internally).
+/// [`multi_fk_staging::MultiFkStaging`] (only escalated here when the
+/// table carries 4+ outbound FKs; `multi_fk_staging::emit` enforces
+/// the count internally).
 /// - [`SchemaOperation::AddColumn`] dispatches to
-///   [`three_step_default::ThreeStepDefault`] for columns whose default
-///   expression is Postgres-volatile.
-///   Returns [`PatternError::CannotEmit`] for operation variants the
-///   classifier should never have routed onto this path (rename ops,
-///   drop ops, enum ops). The classifier's `OnlineSafetyClassification`
-///   verdict is the gate; this function is the dispatcher behind it.
+/// [`three_step_default::ThreeStepDefault`] for columns whose default
+/// expression is Postgres-volatile.
+/// Returns [`PatternError::CannotEmit`] for operation variants the
+/// classifier should never have routed onto this path (rename ops,
+/// drop ops, enum ops). The classifier's `OnlineSafetyClassification`
+/// verdict is the gate; this function is the dispatcher behind it.
 pub fn dispatch_pattern(
     op: &SchemaOperation,
     ctx: &PatternContext,
@@ -205,7 +205,7 @@ pub fn dispatch_pattern(
             // belt-and-braces refusal for adopter-supplied
             // `USING` expressions. The classifier
             // ([`crate::live_migrate::classify::classify_column_change`])
-            // already routes `ColumnChange::ChangeType { using: Some(_), .. }`
+            // already routes `ColumnChange::ChangeType { using: Some(_),.. }`
             // to `OnlineSafetyClassification::OfflineOnly` so the
             // dispatcher should never receive one. This explicit
             // refusal is a defense-in-depth guard against future
@@ -216,11 +216,11 @@ pub fn dispatch_pattern(
             ColumnChange::ChangeType { using: Some(_), .. } => Err(PatternError::CannotEmit {
                 pattern: "dispatch_pattern",
                 reason: "ColumnChange::ChangeType with adopter-supplied `using` (\
-                         #[field(type_change_using = \"...\")]) is offline-only — \
-                         the live-plan shadow-column pattern can only emit a default \
-                         SQL cast in its backfill and cannot replicate a custom \
-                         USING expression. Route through the offline-apply path \
-                         (see `live_migrate::classify` OfflineOnly verdict)"
+       #[field(type_change_using = \"...\")]) is offline-only — \
+       the live-plan shadow-column pattern can only emit a default \
+       SQL cast in its backfill and cannot replicate a custom \
+       USING expression. Route through the offline-apply path \
+       (see `live_migrate::classify` OfflineOnly verdict)"
                     .to_string(),
             }),
             // A genuine column type change (NOT codec-driven — codec
@@ -238,11 +238,11 @@ pub fn dispatch_pattern(
             ColumnChange::CodecChange { .. } => Err(PatternError::CannotEmit {
                 pattern: "dispatch_pattern",
                 reason: "an at-rest codec change (a column gained, swapped, or dropped a \
-                         `#[field(protected(codec = ...))]` codec) requires re-encoding every \
-                         row and is never an online SQL-cast backfill. The classifier routes \
-                         this OfflineOnly (add / drop) or ExpandContract (codec → codec); apply \
-                         via the offline compose path. Online codec rotation is deferred to a \
-                         post-v1 SchemaOperation (issue #371)."
+       `#[field(protected(codec =...))]` codec) requires re-encoding every \
+       row and is never an online SQL-cast backfill. The classifier routes \
+       this OfflineOnly (add / drop) or ExpandContract (codec → codec); apply \
+       via the offline compose path. Online codec rotation is deferred to a \
+       post-v1 SchemaOperation (issue #371)."
                     .to_string(),
             }),
             ColumnChange::SetNullable(false) => nullable_not_null::NullableNotNull::emit(op, ctx),
@@ -267,7 +267,7 @@ pub fn dispatch_pattern(
         SchemaOperation::DropTable(_) => Err(PatternError::CannotEmit {
             pattern: "dispatch_pattern",
             reason: "DropTable live-plan staging is deferred to a later phase (this build \
-                     dispatches AlterColumn / AddFK / AddIndex / AddTable / AddColumn)"
+      dispatches AlterColumn / AddFK / AddIndex / AddTable / AddColumn)"
                 .to_string(),
         }),
         _ => Err(PatternError::CannotEmit {
@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn dispatch_witness_steps_have_sequential_ordinals() {
         // Every pattern's emitted Vec<Step> must report ordinals
-        // 0, 1, 2, ... — `LivePlan::validate` refuses gaps or
+        // 0, 1, 2,... — `LivePlan::validate` refuses gaps or
         // duplicates, and the runner relies on the sort being a
         // no-op when the input is already canonical.
         let ctx = PatternContext::with_defaults();
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn dispatch_pattern_refuses_change_type_with_adopter_using() {
-        // `ChangeType { using: Some(_), .. }` is routed to
+        // `ChangeType { using: Some(_),.. }` is routed to
         // OfflineOnly by the classifier, so the dispatcher should
         // never receive one. This refusal is a defense-in-depth guard
         // against future composers that bypass the classifier

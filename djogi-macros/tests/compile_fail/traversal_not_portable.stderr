@@ -1,8 +1,8 @@
 error[E0599]: no method named `name` found for struct `DjogiField<M, V>` in the current scope
-  --> $DIR/traversal_not_portable.rs:47:42
-   |
-47 |         .filter_basic(|f| f.department().name().eq("Sales"));
-   |                                          ^^^^ method not found in `DjogiField<Employee, djogi::ForeignKey<Department>>`
+ --> $DIR/traversal_not_portable.rs:47:42
+ |
+47 |  .filter_basic(|f| f.department().name().eq("Sales"));
+ |           ^^^^ method not found in `DjogiField<Employee, djogi::ForeignKey<Department>>`
 
 error: aborting due to 1 previous error
 

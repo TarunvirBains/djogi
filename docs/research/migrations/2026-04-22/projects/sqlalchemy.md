@@ -6,16 +6,16 @@
 - Primary language: Python
 - Scope of this note: schema metadata and DDL generation (explicitly NOT the ORM or query layer)
 - Key modules inspected:
-  - `lib/sqlalchemy/sql/schema.py` (6703 lines)
-  - `lib/sqlalchemy/sql/naming.py` (210 lines)
-  - `lib/sqlalchemy/sql/ddl.py` (1928 lines)
-  - `lib/sqlalchemy/sql/compiler.py` (DDLCompiler section)
-  - `lib/sqlalchemy/engine/reflection.py` (2100 lines)
-  - `lib/sqlalchemy/dialects/postgresql/base.py` (5789 lines)
-  - `lib/sqlalchemy/dialects/postgresql/pg_catalog.py`
-  - `lib/sqlalchemy/dialects/postgresql/named_types.py`
-  - `lib/sqlalchemy/dialects/postgresql/types.py`
-  - `alembic-reference/alembic/autogenerate/compare/server_defaults.py`
+ - `lib/sqlalchemy/sql/schema.py` (6703 lines)
+ - `lib/sqlalchemy/sql/naming.py` (210 lines)
+ - `lib/sqlalchemy/sql/ddl.py` (1928 lines)
+ - `lib/sqlalchemy/sql/compiler.py` (DDLCompiler section)
+ - `lib/sqlalchemy/engine/reflection.py` (2100 lines)
+ - `lib/sqlalchemy/dialects/postgresql/base.py` (5789 lines)
+ - `lib/sqlalchemy/dialects/postgresql/pg_catalog.py`
+ - `lib/sqlalchemy/dialects/postgresql/named_types.py`
+ - `lib/sqlalchemy/dialects/postgresql/types.py`
+ - `alembic-reference/alembic/autogenerate/compare/server_defaults.py`
 
 ---
 
@@ -39,7 +39,7 @@ DDL compilation uses the visitor pattern throughout. The key class is `DDLCompil
 
 ```python
 def _compiler(self, dialect, **kw):
-    return dialect.ddl_compiler(dialect, self, **kw)
+  return dialect.ddl_compiler(dialect, self, **kw)
 ```
 (`lib/sqlalchemy/sql/ddl.py:87`)
 
@@ -82,17 +82,17 @@ Constructor signature (relevant attributes for migration systems):
 
 ```python
 Column(
-    name, type_,
-    autoincrement="auto",     # "auto" | True | False | "ignore_fk"
-    nullable=SchemaConst.NULL_UNSPECIFIED,  # three-way: True/False/unspecified
-    primary_key=False,
-    unique=None,
-    index=None,
-    server_default=None,      # FetchedValue | str | TextClause | ColumnElement
-    server_onupdate=None,
-    comment=None,
-    system=False,
-    insert_sentinel=False,
+  name, type_,
+  autoincrement="auto",   # "auto" | True | False | "ignore_fk"
+  nullable=SchemaConst.NULL_UNSPECIFIED, # three-way: True/False/unspecified
+  primary_key=False,
+  unique=None,
+  index=None,
+  server_default=None,   # FetchedValue | str | TextClause | ColumnElement
+  server_onupdate=None,
+  comment=None,
+  system=False,
+  insert_sentinel=False,
 )
 ```
 (`lib/sqlalchemy/sql/schema.py:1779–1812`)
@@ -109,9 +109,9 @@ Confidence: **high**
 
 ```python
 def sorted_tables(self) -> List[Table]:
-    return ddl.sort_tables(
-        sorted(self.tables.values(), key=lambda t: t.key)
-    )
+  return ddl.sort_tables(
+    sorted(self.tables.values(), key=lambda t: t.key)
+  )
 ```
 (`lib/sqlalchemy/sql/schema.py:6034–6079`)
 
@@ -125,7 +125,7 @@ See dedicated section below. The default is:
 
 ```python
 DEFAULT_NAMING_CONVENTION: _NamingSchemaParameter = util.immutabledict(
-    {"ix": "ix_%(column_0_label)s"}
+  {"ix": "ix_%(column_0_label)s"}
 )
 ```
 (`lib/sqlalchemy/sql/schema.py:5785–5787`)
@@ -161,15 +161,15 @@ All constraints inherit from `Constraint`:
 
 ```python
 class Constraint(DialectKWArgs, HasConditionalDDL, SchemaItem):
-    def __init__(
-        self,
-        name=None,
-        deferrable=None,   # Optional[bool] → DEFERRABLE / NOT DEFERRABLE
-        initially=None,    # Optional[str] → INITIALLY DEFERRED / IMMEDIATE
-        info=None,
-        comment=None,
-        ...
-    )
+  def __init__(
+    self,
+    name=None,
+    deferrable=None,  # Optional[bool] → DEFERRABLE / NOT DEFERRABLE
+    initially=None,  # Optional[str] → INITIALLY DEFERRED / IMMEDIATE
+    info=None,
+    comment=None,
+   ...
+  )
 ```
 (`lib/sqlalchemy/sql/schema.py:4469–4541`)
 
@@ -183,7 +183,7 @@ Confidence: **high**
 
 ```python
 class PrimaryKeyConstraint(ColumnCollectionConstraint):
-    __visit_name__ = "primary_key_constraint"
+  __visit_name__ = "primary_key_constraint"
 ```
 (`lib/sqlalchemy/sql/schema.py:5280–5344`)
 
@@ -199,7 +199,7 @@ Confidence: **high**
 
 ```python
 class UniqueConstraint(ColumnCollectionConstraint):
-    __visit_name__ = "unique_constraint"
+  __visit_name__ = "unique_constraint"
 ```
 (`lib/sqlalchemy/sql/schema.py:5525–5534`)
 
@@ -215,35 +215,35 @@ Confidence: **high**
 
 ```python
 class ForeignKeyConstraint(ColumnCollectionConstraint):
-    __visit_name__ = "foreign_key_constraint"
+  __visit_name__ = "foreign_key_constraint"
 
-    def __init__(
-        self,
-        columns,          # local column names
-        refcolumns,       # "table.column" strings or Column objects
-        name=None,
-        onupdate=None,    # "CASCADE" | "SET NULL" | "RESTRICT" | ...
-        ondelete=None,    # same
-        deferrable=None,
-        initially=None,
-        use_alter=False,  # defer to ALTER TABLE (cycle-breaking)
-        match=None,       # MATCH SIMPLE | PARTIAL | FULL
-        ...
-    )
+  def __init__(
+    self,
+    columns,     # local column names
+    refcolumns,    # "table.column" strings or Column objects
+    name=None,
+    onupdate=None,  # "CASCADE" | "SET NULL" | "RESTRICT" |...
+    ondelete=None,  # same
+    deferrable=None,
+    initially=None,
+    use_alter=False, # defer to ALTER TABLE (cycle-breaking)
+    match=None,    # MATCH SIMPLE | PARTIAL | FULL
+   ...
+  )
 ```
 (`lib/sqlalchemy/sql/schema.py:4983–5126`)
 
 - `onupdate` and `ondelete` are free-form strings. SQLAlchemy does not validate them.
-- `use_alter=True` causes the FK to be emitted as `ALTER TABLE ... ADD CONSTRAINT` after all tables are created, enabling FK cycles to be resolved.
+- `use_alter=True` causes the FK to be emitted as `ALTER TABLE... ADD CONSTRAINT` after all tables are created, enabling FK cycles to be resolved.
 - Duplicate source columns (e.g., `FOREIGN KEY (a, a) REFERENCES r (b, c)`) raise `ArgumentError` at construction time.
 - Internally creates `ForeignKey` element objects (one per column pair) which are attached to the `Column.foreign_keys` set.
 
 DDL rendering (`lib/sqlalchemy/sql/compiler.py:7517–7528`):
 ```python
 text = "FOREIGN KEY(%s) REFERENCES %s (%s)" % (
-    ", ".join(preparer.quote(f.parent.name) for f in constraint.elements),
-    self.define_constraint_remote_table(constraint, remote_table, preparer),
-    ", ".join(preparer.quote(f.column.name) for f in constraint.elements),
+  ", ".join(preparer.quote(f.parent.name) for f in constraint.elements),
+  self.define_constraint_remote_table(constraint, remote_table, preparer),
+  ", ".join(preparer.quote(f.column.name) for f in constraint.elements),
 )
 ```
 
@@ -253,9 +253,9 @@ Confidence: **high**
 
 ```python
 class CheckConstraint(ColumnCollectionConstraint):
-    __visit_name__ = "table_or_column_check_constraint"
+  __visit_name__ = "table_or_column_check_constraint"
 
-    def __init__(self, sqltext, name=None, deferrable=None, initially=None, ...)
+  def __init__(self, sqltext, name=None, deferrable=None, initially=None,...)
 ```
 (`lib/sqlalchemy/sql/schema.py:4856–4927`)
 
@@ -269,16 +269,16 @@ Confidence: **high**
 
 ```python
 class Index(DialectKWArgs, ColumnCollectionMixin, HasConditionalDDL, SchemaItem):
-    __visit_name__ = "index"
+  __visit_name__ = "index"
 
-    def __init__(
-        self,
-        name,
-        *expressions,     # Column objects, SQL expressions, text()
-        unique=False,
-        ...
-        **dialect_kw,     # postgresql_where, postgresql_using, postgresql_ops, etc.
-    )
+  def __init__(
+    self,
+    name,
+    *expressions,   # Column objects, SQL expressions, text()
+    unique=False,
+   ...
+    **dialect_kw,   # postgresql_where, postgresql_using, postgresql_ops, etc.
+  )
 ```
 (`lib/sqlalchemy/sql/schema.py:5537–5685`)
 
@@ -302,10 +302,10 @@ Confidence: **high** (directly read from source)
 @event.listens_for(Constraint, "after_parent_attach")
 @event.listens_for(Index, "after_parent_attach")
 def _constraint_name(const, table):
-    if isinstance(table, Table):
-        newname = _constraint_name_for_table(const, table)
-        if newname:
-            const.name = newname
+  if isinstance(table, Table):
+    newname = _constraint_name_for_table(const, table)
+    if newname:
+      const.name = newname
 ```
 (`lib/sqlalchemy/sql/naming.py:188–209`)
 
@@ -317,11 +317,11 @@ The five constraint type mnemonics (`lib/sqlalchemy/sql/naming.py:130–136`):
 
 ```python
 _prefix_dict = {
-    Index: "ix",
-    PrimaryKeyConstraint: "pk",
-    CheckConstraint: "ck",
-    UniqueConstraint: "uq",
-    ForeignKeyConstraint: "fk",
+  Index: "ix",
+  PrimaryKeyConstraint: "pk",
+  CheckConstraint: "ck",
+  UniqueConstraint: "uq",
+  ForeignKeyConstraint: "fk",
 }
 ```
 
@@ -366,11 +366,11 @@ The commonly-recommended fuller convention (from SQLAlchemy docs) is:
 
 ```python
 convention = {
-    "ix": "ix_%(column_0_label)s",
-    "uq": "uq_%(table_name)s_%(column_0_N_name)s",
-    "ck": "ck_%(table_name)s_%(constraint_name)s",
-    "fk": "fk_%(table_name)s_%(column_0_N_name)s_%(referred_table_name)s",
-    "pk": "pk_%(table_name)s",
+  "ix": "ix_%(column_0_label)s",
+  "uq": "uq_%(table_name)s_%(column_0_N_name)s",
+  "ck": "ck_%(table_name)s_%(constraint_name)s",
+  "fk": "fk_%(table_name)s_%(column_0_N_name)s_%(referred_table_name)s",
+  "pk": "pk_%(table_name)s",
 }
 ```
 
@@ -399,17 +399,17 @@ Confidence: **high**
 ```python
 text = "\nCREATE "
 if table._prefixes:
-    text += " ".join(table._prefixes) + " "
+  text += " ".join(table._prefixes) + " "
 text += "TABLE "
 ...
 text += preparer.format_table(table) + " "
 ...
 text += "("
 for create_column in create.columns:
-    ...
-const = self.create_table_constraints(table, ...)
+ ...
+const = self.create_table_constraints(table,...)
 if const:
-    text += separator + "\t" + const
+  text += separator + "\t" + const
 text += "\n)%s\n\n" % self.post_create_table(table)
 ```
 
@@ -420,16 +420,16 @@ The `create_table_constraints` method orders constraints: PK first, then FKs, th
 ```python
 text = "CREATE "
 if index.unique:
-    text += "UNIQUE "
+  text += "UNIQUE "
 text += "INDEX "
 ...
 text += "%s ON %s (%s)" % (
-    self._prepared_index_name(index, ...),
-    preparer.format_table(index.table, ...),
-    ", ".join(
-        self.sql_compiler.process(expr, include_table=False, literal_binds=True)
-        for expr in index.expressions
-    ),
+  self._prepared_index_name(index,...),
+  preparer.format_table(index.table,...),
+  ", ".join(
+    self.sql_compiler.process(expr, include_table=False, literal_binds=True)
+    for expr in index.expressions
+  ),
 )
 ```
 
@@ -437,12 +437,12 @@ text += "%s ON %s (%s)" % (
 
 ```python
 def define_constraint_preamble(self, constraint, **kw):
-    text = ""
-    if constraint.name is not None:
-        formatted_name = self.preparer.format_constraint(constraint)
-        if formatted_name is not None:
-            text += "CONSTRAINT %s " % formatted_name
-    return text
+  text = ""
+  if constraint.name is not None:
+    formatted_name = self.preparer.format_constraint(constraint)
+    if formatted_name is not None:
+      text += "CONSTRAINT %s " % formatted_name
+  return text
 ```
 
 A `None` constraint name silently produces no `CONSTRAINT name` clause — the constraint is anonymous.
@@ -457,11 +457,11 @@ Located at `lib/sqlalchemy/dialects/postgresql/base.py:2504`.
 
 ```python
 if isinstance(impl_type, sqltypes.BigInteger):
-    colspec += " BIGSERIAL"
+  colspec += " BIGSERIAL"
 elif isinstance(impl_type, sqltypes.SmallInteger):
-    colspec += " SMALLSERIAL"
+  colspec += " SMALLSERIAL"
 else:
-    colspec += " SERIAL"
+  colspec += " SERIAL"
 ```
 (`lib/sqlalchemy/dialects/postgresql/base.py:2532–2537`)
 
@@ -483,13 +483,13 @@ CREATE INDEX CONCURRENTLY ix_foo ON bar USING gin (col text_pattern_ops) INCLUDE
 
 ```python
 def visit_unique_constraint(self, constraint, **kw):
-    if len(constraint) == 0:
-        return ""
-    text = self.define_constraint_preamble(constraint, **kw)
-    text += self.define_unique_body(constraint, **kw)
-    text += self._define_include(constraint)   # INCLUDE support
-    text += self.define_constraint_deferrability(constraint)
-    return text
+  if len(constraint) == 0:
+    return ""
+  text = self.define_constraint_preamble(constraint, **kw)
+  text += self.define_unique_body(constraint, **kw)
+  text += self._define_include(constraint)  # INCLUDE support
+  text += self.define_constraint_deferrability(constraint)
+  return text
 ```
 
 PG unique constraints can also have `INCLUDE` columns (covering unique constraints). The PK constraint similarly has `_define_include` added (`lib/sqlalchemy/dialects/postgresql/base.py:2598–2603`).
@@ -537,7 +537,7 @@ Joins `pg_attribute` with `pg_class`, `pg_namespace`. Uses `pg_catalog.format_ty
 
 This query returns `filter_definition` (the partial index `WHERE` clause text) and `has_constraint` (whether the index backs a constraint). When `has_constraint=True`, the reflected index entry gets `"duplicates_constraint": index_name` (`lib/sqlalchemy/dialects/postgresql/base.py:5278–5279`).
 
-**Unique constraints query**: Delegates to `_reflect_constraint(connection, "u", ...)` — queries `pg_constraint` filtering on `contype = 'u'`. (`lib/sqlalchemy/dialects/postgresql/base.py:5335–5367`)
+**Unique constraints query**: Delegates to `_reflect_constraint(connection, "u",...)` — queries `pg_constraint` filtering on `contype = 'u'`. (`lib/sqlalchemy/dialects/postgresql/base.py:5335–5367`)
 
 ### How Alembic's autogenerate uses this
 
@@ -566,7 +566,7 @@ Confidence: **high** for declaration; **high** for rendering (directly read PGTy
 | TSVECTOR | `TSVECTOR` | `TSVECTOR` | `types.py` |
 | HSTORE | `HSTORE` | `HSTORE` | `hstore.py` |
 | ARRAY | `ARRAY` | `item_type[]` | `array.py` |
-| ENUM | `ENUM` (named type) | `CREATE TYPE ... AS ENUM` | `named_types.py` |
+| ENUM | `ENUM` (named type) | `CREATE TYPE... AS ENUM` | `named_types.py` |
 | Ranges | `INT4RANGE`, `TSTZRANGE`, etc. | `INT4RANGE`, etc. | `ranges.py` |
 
 ### Index modifiers (`postgresql_*` dialect kwargs)
@@ -619,12 +619,12 @@ Key behaviors:
 
 **Migration-hostile aspects:**
 
-- **Adding a value** to an existing ENUM: Postgres 10+ supports `ALTER TYPE ... ADD VALUE`. This is non-transactional — you cannot run it inside a transaction and have it visible within the same transaction. Alembic provides `op.execute("ALTER TYPE ...")` as the escape hatch; it does not generate this from autogenerate.
-- **Removing a value**: Not supported by Postgres at all. Requires `CREATE TYPE ... AS ENUM (new_values)`, then `ALTER TABLE ... ALTER COLUMN ... TYPE new_type USING col::text::new_type`, then `DROP TYPE old_type`. This must be done manually.
-- **Renaming a value**: `ALTER TYPE ... RENAME VALUE` (PG 10+), also non-transactional.
+- **Adding a value** to an existing ENUM: Postgres 10+ supports `ALTER TYPE... ADD VALUE`. This is non-transactional — you cannot run it inside a transaction and have it visible within the same transaction. Alembic provides `op.execute("ALTER TYPE...")` as the escape hatch; it does not generate this from autogenerate.
+- **Removing a value**: Not supported by Postgres at all. Requires `CREATE TYPE... AS ENUM (new_values)`, then `ALTER TABLE... ALTER COLUMN... TYPE new_type USING col::text::new_type`, then `DROP TYPE old_type`. This must be done manually.
+- **Renaming a value**: `ALTER TYPE... RENAME VALUE` (PG 10+), also non-transactional.
 - **Alembic autogenerate limitation**: Alembic does not detect ENUM value additions/removals in autogenerate. It only detects type-level changes (column type change from one ENUM to another). This means enum value drift accumulates silently unless the user manually adds the migration.
 
-**Djogi implication:** Djogi should represent ENUM as a named database type with explicit values in the descriptor. Migration generation should detect ENUM value changes. Value removals and renames must be flagged as requiring manual SQL (they are potentially breaking changes). Value additions should emit `ALTER TYPE ... ADD VALUE` with a note that it cannot run inside a transaction.
+**Djogi implication:** Djogi should represent ENUM as a named database type with explicit values in the descriptor. Migration generation should detect ENUM value changes. Value removals and renames must be flagged as requiring manual SQL (they are potentially breaking changes). Value additions should emit `ALTER TYPE... ADD VALUE` with a note that it cannot run inside a transaction.
 
 ---
 
@@ -638,7 +638,7 @@ Confidence: **high**
 
 - `DefaultClause(arg)` — wraps a string or SQL expression; emits `DEFAULT <value>` in DDL
 - `FetchedValue()` — marks the column as server-managed but emits no DEFAULT in DDL (used when a trigger or implicit sequence provides the value)
-- `Computed(sqltext, persisted=None)` — generated column (`GENERATED ALWAYS AS ...`)
+- `Computed(sqltext, persisted=None)` — generated column (`GENERATED ALWAYS AS...`)
 - `Identity(...)` — `GENERATED ALWAYS AS IDENTITY` / `GENERATED BY DEFAULT AS IDENTITY`
 
 (`lib/sqlalchemy/sql/schema.py:4355–4541`, `4416–4449`, `6418–6521`, `6524`)

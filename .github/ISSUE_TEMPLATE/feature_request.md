@@ -30,8 +30,8 @@ Workarounds you've tried, or different approaches you weighed.
 - Does it touch the migration / descriptor layer?
 - Is it gated behind a feature flag, or always-on?
 - Roughly which phase of the
-  [implementation plan](../../docs/spec/implementation-plan.md)
-  does it belong in?
+ [implementation plan](../../docs/spec/implementation-plan.md)
+ does it belong in?
 
 ## Additional context
 

@@ -10,25 +10,25 @@ use djogi::prelude::*;
 #[model(table = "users_t6_opt_arrow")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(expose(public))]
-    pub display_name: String,
+ #[field(expose(public))]
+ pub display_name: String,
 }
 
 #[model(table = "posts_t6_opt_arrow", no_default)]
 #[derive(Debug, Clone)]
 pub struct Post {
-    #[field(expose(public))]
-    pub title: String,
+ #[field(expose(public))]
+ pub title: String,
 
-    // Optional FK in relation-form expose — previously compile-fail;
-    // now emits `Option<UserPublic>` honestly at the type level.
-    #[field(expose(public -> UserPublic))]
-    pub author: Option<ForeignKey<User>>,
+ // Optional FK in relation-form expose — previously compile-fail;
+ // now emits `Option<UserPublic>` honestly at the type level.
+ #[field(expose(public -> UserPublic))]
+ pub author: Option<ForeignKey<User>>,
 }
 
 fn main() {
-    // PostPublic must carry an `Option<UserPublic>` author.
-    let _build = |post: &Post| -> Result<PostPublic, djogi::VisageError> {
-        PostPublic::try_from(post)
-    };
+ // PostPublic must carry an `Option<UserPublic>` author.
+ let _build = |post: &Post| -> Result<PostPublic, djogi::VisageError> {
+  PostPublic::try_from(post)
+ };
 }

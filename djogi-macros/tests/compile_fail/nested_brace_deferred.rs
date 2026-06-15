@@ -11,15 +11,15 @@ use djogi::prelude::*;
 #[model(table = "deps")]
 #[derive(Debug, Clone)]
 pub struct Dep {
-    #[field(expose(public))]
-    pub name: String,
+ #[field(expose(public))]
+ pub name: String,
 }
 
 #[model(table = "emps")]
 #[derive(Debug, Clone)]
 pub struct Emp {
-    #[field(expose(public -> Dep { name -> DepPublic }))]
-    pub dept: ForeignKey<Dep>,
+ #[field(expose(public -> Dep { name -> DepPublic }))]
+ pub dept: ForeignKey<Dep>,
 }
 
 fn main() {}

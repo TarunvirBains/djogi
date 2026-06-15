@@ -45,7 +45,7 @@ async fn pool_backed_context_atomic_reuses_parent_sassi(mut ctx: djogi::DjogiCon
     assert!(
         tx_used_parent_punnu,
         "atomic(&mut pool_ctx, ...) must share the parent context's Punnu; \
-         a rebuilt Sassi would allocate a distinct Punnu"
+     a rebuilt Sassi would allocate a distinct Punnu"
     );
 
     let count = AtomicRow::objects()
@@ -79,7 +79,7 @@ async fn compatibility_pool_atomic_keeps_fresh_context_boundary(mut ctx: djogi::
     assert!(
         !pool_atomic_used_parent_punnu,
         "atomic(&pool, ...) has no parent context and must keep a fresh \
-         top-level Sassi boundary"
+     top-level Sassi boundary"
     );
 }
 

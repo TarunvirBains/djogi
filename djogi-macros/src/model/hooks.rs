@@ -37,7 +37,7 @@ pub fn expand(model_ident: &Ident, model_attrs: &super::attrs::ModelAttrs) -> To
         return TokenStream::new();
     }
     quote! {
-        impl ::djogi::__private::hooks::Sealed for #model_ident {}
-        impl ::djogi::__private::hooks::HasHooks for #model_ident {}
+     impl ::djogi::__private::hooks::Sealed for #model_ident {}
+     impl ::djogi::__private::hooks::HasHooks for #model_ident {}
     }
 }

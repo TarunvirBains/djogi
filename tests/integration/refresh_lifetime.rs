@@ -4,22 +4,22 @@
 // # What this file pins
 //
 // 1. **`refresh_handle_survives_tokio_spawn`** — proves the handle is `Send`:
-//    constructs a handle in the test's main async scope, moves it into
-//    `tokio::spawn(async move { ... })`, calls `update().await` from the
-//    spawned task, and asserts the tick succeeded. If the handle were not
-//    `Send` this test would not compile.
+//  constructs a handle in the test's main async scope, moves it into
+//  `tokio::spawn(async move { ... })`, calls `update().await` from the
+//  spawned task, and asserts the tick succeeded. If the handle were not
+//  `Send` this test would not compile.
 //
 // 2. **`refresh_handle_survives_pool_drop_in_main`** — pins pool clone
-//    independence. `DjogiPool` is `Arc`-internal; the fetcher captures its
-//    own clone at `refresh_into` construction time. Dropping the original
-//    pool handle in the caller's scope decrements the refcount but the
-//    fetcher's clone keeps the pool alive. `handle.update().await` must
-//    succeed after `drop(original_pool)`.
+//  independence. `DjogiPool` is `Arc`-internal; the fetcher captures its
+//  own clone at `refresh_into` construction time. Dropping the original
+//  pool handle in the caller's scope decrements the refcount but the
+//  fetcher's clone keeps the pool alive. `handle.update().await` must
+//  succeed after `drop(original_pool)`.
 //
 // 3. **`refresh_handle_send_sync_compile_check`** — compile-time regression
-//    guard for `Send + Sync`. A zero-body `fn requires_send_sync<T: Send + Sync>()`
-//    witness prevents any future refactor from silently breaking the bounds
-//    without a build error.
+//  guard for `Send + Sync`. A zero-body `fn requires_send_sync<T: Send + Sync>()`
+//  witness prevents any future refactor from silently breaking the bounds
+//  without a build error.
 //
 // # Why these three tests belong together
 //
@@ -77,8 +77,8 @@ pub struct LifetimeRow {
 /// A successful compile + green test jointly prove:
 /// 1. The handle can cross a thread boundary (runtime proof via spawn).
 /// 2. `update().await` works from a thread other than the one that constructed
-///    the handle (exercising the "no thread-affinity" property of the owned
-///    substrate).
+///  the handle (exercising the "no thread-affinity" property of the owned
+///  substrate).
 ///
 #[djogi::djogi_test(sync_models = [LifetimeRow])]
 async fn refresh_handle_survives_tokio_spawn(mut ctx: djogi::DjogiContext) {
@@ -124,7 +124,7 @@ async fn refresh_handle_survives_tokio_spawn(mut ctx: djogi::DjogiContext) {
         result.applied,
         1,
         "spawned update() must return 1 row (the 'spawn-test' row); \
-         got {applied}",
+     got {applied}",
         applied = result.applied
     );
 }

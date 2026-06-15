@@ -1,8 +1,8 @@
 # Authentication
 
-> [Back to index](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to index](./index.md) · [Back to README](../../README.md)
 
-Djogi ships a **narrow authentication substrate** — typed primitives you plug your own provider into, not a full session platform. Phase 5.5 gives you:
+Djogi ships a **narrow authentication substrate** — typed primitives you plug your own provider into, not a full session platform. gives you:
 
 - A pluggable [`DjogiAuth`](#the-djogiauth-trait) trait (not sealed — third-party providers are first-class).
 - An [`AuthContext`](#authcontext) value type attached to [`DjogiContext`](./transactions.md).
@@ -20,20 +20,20 @@ use std::future::Future;
 use std::pin::Pin;
 
 pub trait DjogiAuth: Send + Sync + 'static {
-    fn authenticate<'a>(
-        &'a self,
-        token: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>>;
+ fn authenticate<'a>(
+ &'a self,
+ token: &'a str,
+ ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>>;
 
-    fn verify<'a>(
-        &'a self,
-        ctx: &'a AuthContext,
-        action: &'a dyn std::any::Any,
-    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>>;
+ fn verify<'a>(
+ &'a self,
+ ctx: &'a AuthContext,
+ action: &'a dyn std::any::Any,
+ ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>>;
 }
 ```
 
-Both methods are required — there is no default body for `verify`. A provider that wants authenticate-only semantics must explicitly return `Ok(())` from `verify`, making the choice visible at the implementation site; the framework refuses to teach fail-open authorization. Every other implementation should fail closed (typically `Err(AuthError::Denied { .. })`) unless an explicit policy authorises the resolved `AuthContext` for the supplied `action`. Both methods return boxed futures so the trait is **object-safe** — `Arc<dyn DjogiAuth>` works at runtime. The `action: &dyn Any` parameter lets apps pass arbitrary typed `Action` enums without forcing a generic on the trait (which would break object-safety); implementations downcast via `action.downcast_ref::<MyAction>()` to recover the concrete type.
+Both methods are required — there is no default body for `verify`. A provider that wants authenticate-only semantics must explicitly return `Ok(())` from `verify`, making the choice visible at the implementation site; the framework refuses to teach fail-open authorization. Every other implementation should fail closed (typically `Err(AuthError::Denied {.. })`) unless an explicit policy authorises the resolved `AuthContext` for the supplied `action`. Both methods return boxed futures so the trait is **object-safe** — `Arc<dyn DjogiAuth>` works at runtime. The `action: &dyn Any` parameter lets apps pass arbitrary typed `Action` enums without forcing a generic on the trait (which would break object-safety); implementations downcast via `action.downcast_ref::<MyAction>()` to recover the concrete type.
 
 ### Implementing a custom provider
 
@@ -49,96 +49,96 @@ use std::pin::Pin;
 // projections like this, implement it manually following the column
 // order baked into the SELECT.
 struct SessionRow {
-    user_id: HeerId,
-    tenant_id: Option<String>,
-    scopes: Vec<String>,
+ user_id: HeerId,
+ tenant_id: Option<String>,
+ scopes: Vec<String>,
 }
 
 impl djogi::FromPgRow for SessionRow {
-    const COLUMNS: &'static [&'static str] = &["user_id", "tenant_id", "scopes"];
-    const COLUMN_LIST: &'static str = "user_id, tenant_id, scopes";
+ const COLUMNS: &'static [&'static str] = &["user_id", "tenant_id", "scopes"];
+ const COLUMN_LIST: &'static str = "user_id, tenant_id, scopes";
 
-    fn from_pg_row(row: &tokio_postgres::Row) -> Result<Self, djogi::DjogiError> {
-        Ok(Self {
-            user_id: row
-                .try_get("user_id")
-                .map_err(|e| djogi::DjogiError::Decode(format!("column `user_id`: {e}")))?,
-            tenant_id: row
-                .try_get("tenant_id")
-                .map_err(|e| djogi::DjogiError::Decode(format!("column `tenant_id`: {e}")))?,
-            scopes: row
-                .try_get("scopes")
-                .map_err(|e| djogi::DjogiError::Decode(format!("column `scopes`: {e}")))?,
-        })
-    }
+ fn from_pg_row(row: &tokio_postgres::Row) -> Result<Self, djogi::DjogiError> {
+ Ok(Self {
+  user_id: row
+ .try_get("user_id")
+ .map_err(|e| djogi::DjogiError::Decode(format!("column `user_id`: {e}")))?,
+  tenant_id: row
+ .try_get("tenant_id")
+ .map_err(|e| djogi::DjogiError::Decode(format!("column `tenant_id`: {e}")))?,
+  scopes: row
+ .try_get("scopes")
+ .map_err(|e| djogi::DjogiError::Decode(format!("column `scopes`: {e}")))?,
+ })
+ }
 }
 
 pub struct MySessionProvider {
-    pool: djogi::pg::pool::DjogiPool,
+ pool: djogi::pg::pool::DjogiPool,
 }
 
 impl DjogiAuth for MySessionProvider {
-    #[djogi::deliberately_bypass_convention_with_raw_sql]
-    // JUSTIFICATION (djogi#234): provider-owned `sessions` table is not modelled
-    // as a djogi `#[model]`; the typed surface does not cover lookup-by-token.
-    fn authenticate<'a>(
-        &'a self,
-        token: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>> {
-        Box::pin(async move {
-            // Look the token up in your sessions table and build AuthContext.
-            // `raw_query::<SessionRow>` returns Vec<SessionRow>; take the first
-            // row via `.into_iter().next()` and map the empty case to
-            // AuthError::InvalidToken.
-            let mut ctx = djogi::DjogiContext::from_pool(self.pool.clone());
-            let rows: Vec<SessionRow> = ctx
-                .raw_query::<SessionRow>(
-                    "SELECT user_id, tenant_id, scopes FROM sessions \
-                     WHERE token = $1 AND expires_at > now()",
-                    &[&token],
-                )
-                .await
-                .map_err(|e| AuthError::Provider(Box::new(e)))?;
+ #[djogi::deliberately_bypass_convention_with_raw_sql]
+ // JUSTIFICATION (djogi#234): provider-owned `sessions` table is not modelled
+ // as a djogi `#[model]`; the typed surface does not cover lookup-by-token.
+ fn authenticate<'a>(
+ &'a self,
+ token: &'a str,
+ ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>> {
+ Box::pin(async move {
+  // Look the token up in your sessions table and build AuthContext.
+  // `raw_query::<SessionRow>` returns Vec<SessionRow>; take the first
+  // row via `.into_iter().next()` and map the empty case to
+  // AuthError::InvalidToken.
+  let mut ctx = djogi::DjogiContext::from_pool(self.pool.clone());
+  let rows: Vec<SessionRow> = ctx
+ .raw_query::<SessionRow>(
+   "SELECT user_id, tenant_id, scopes FROM sessions \
+   WHERE token = $1 AND expires_at > now()",
+   &[&token],
+  )
+ .await
+ .map_err(|e| AuthError::Provider(Box::new(e)))?;
 
-            let SessionRow { user_id, tenant_id, scopes } = rows
-                .into_iter()
-                .next()
-                .ok_or(AuthError::InvalidToken)?;
-            let mut auth = AuthContext::new(user_id).with_scopes(scopes);
-            if let Some(tid) = tenant_id {
-                auth = auth.with_tenant(tid);
-            }
-            Ok(auth)
-        })
-    }
+  let SessionRow { user_id, tenant_id, scopes } = rows
+ .into_iter()
+ .next()
+ .ok_or(AuthError::InvalidToken)?;
+  let mut auth = AuthContext::new(user_id).with_scopes(scopes);
+  if let Some(tid) = tenant_id {
+  auth = auth.with_tenant(tid);
+  }
+  Ok(auth)
+ })
+ }
 
-    fn verify<'a>(
-        &'a self,
-        ctx: &'a AuthContext,
-        action: &'a dyn std::any::Any,
-    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
-        let _ = (ctx, action);
-        Box::pin(async move {
-            // Fail closed: deny by default. A real provider downcasts
-            // `action` via `action.downcast_ref::<MyAction>()`, evaluates
-            // an explicit policy against the resolved `AuthContext`, and
-            // returns `Ok(())` only when that policy authorises the
-            // caller for the requested action. Returning `Ok(())`
-            // unconditionally is permitted but must be a deliberate,
-            // code-reviewed choice — the trait deliberately has no
-            // default body so the decision is visible at every impl site.
-            Err(AuthError::Denied {
-                reason: "no policy authorises this action".to_string(),
-            })
-        })
-    }
+ fn verify<'a>(
+ &'a self,
+ ctx: &'a AuthContext,
+ action: &'a dyn std::any::Any,
+ ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
+ let _ = (ctx, action);
+ Box::pin(async move {
+  // Fail closed: deny by default. A real provider downcasts
+  // `action` via `action.downcast_ref::<MyAction>()`, evaluates
+  // an explicit policy against the resolved `AuthContext`, and
+  // returns `Ok(())` only when that policy authorises the
+  // caller for the requested action. Returning `Ok(())`
+  // unconditionally is permitted but must be a deliberate,
+  // code-reviewed choice — the trait deliberately has no
+  // default body so the decision is visible at every impl site.
+  Err(AuthError::Denied {
+  reason: "no policy authorises this action".to_string(),
+  })
+ })
+ }
 }
 ```
 
 The `#[djogi::deliberately_bypass_convention_with_raw_sql]` attribute is
 mandatory wherever `ctx.raw_*` appears — it brings the sealed
 `djogi::__bypass::RawAccessExt` trait into scope for the decorated item.
-Pair it with an adjacent `// JUSTIFICATION (djogi#<n>): ...` comment that
+Pair it with an adjacent `// JUSTIFICATION (djogi#<n>):...` comment that
 names the typed-surface gap the bypass is filling (see
 [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)). Modelling
 the sessions table as a `#[model]` and using `Session::objects().filter(...)`
@@ -152,10 +152,10 @@ The `token` parameter is opaque to the trait — implementations decide whether 
 ```rust
 #[derive(Debug, Clone)]
 pub struct AuthContext {
-    pub user_id: HeerId,
-    pub tenant_id: Option<String>,
-    pub scopes: Vec<String>,
-    pub ext: std::collections::HashMap<String, String>,
+ pub user_id: HeerId,
+ pub tenant_id: Option<String>,
+ pub scopes: Vec<String>,
+ pub ext: std::collections::HashMap<String, String>,
 }
 ```
 
@@ -165,11 +165,11 @@ Builders:
 
 ```rust
 let auth = AuthContext::new(user_id)
-    .with_tenant("org_42")
-    .with_scopes(vec!["read".into(), "write".into()]);
+.with_tenant("org_42")
+.with_scopes(vec!["read".into(), "write".into()]);
 
 if auth.has_scope("admin") {
-    // ...
+ //...
 }
 ```
 
@@ -182,14 +182,14 @@ use djogi::auth::AuthContext;
 
 // Consuming builder — fine on a freshly-built ctx.
 let ctx = djogi::DjogiContext::from_pool(pool.clone())
-    .with_auth(auth.clone());
+.with_auth(auth.clone());
 
 // Mutating form — for use inside atomic() closures where the closure
 // receives &mut DjogiContext.
 djogi::transaction::atomic(&pool, |tx| Box::pin(async move {
-    tx.set_auth(auth);
-    // ... CRUD / QuerySet ops here ...
-    Ok::<_, djogi::DjogiError>(())
+ tx.set_auth(auth);
+ //... CRUD / QuerySet ops here...
+ Ok::<_, djogi::DjogiError>(())
 })).await?;
 ```
 
@@ -197,7 +197,7 @@ Read the attached context back via `ctx.auth()`, which returns `Option<&AuthCont
 
 ```rust
 if let Some(auth) = ctx.auth() {
-    println!("user = {}, tenant = {:?}", auth.user_id, auth.tenant_id);
+ println!("user = {}, tenant = {:?}", auth.user_id, auth.tenant_id);
 }
 ```
 
@@ -208,29 +208,29 @@ The big ergonomic win: once you've attached an `AuthContext` whose `tenant_id.is
 ```rust
 #[model(table = "posts", tenant_key = "org_id")]
 pub struct Post {
-    pub org_id: String,
-    pub title: String,
+ pub org_id: String,
+ pub title: String,
 }
 
 djogi::transaction::atomic(&pool, |tx| Box::pin(async move {
-    tx.set_auth(AuthContext::new(user_id).with_tenant("org_42"));
-    // No explicit set_tenant call needed — the next query auto-issues it.
-    let posts = Post::objects().fetch_all(tx).await?;
-    Ok::<_, djogi::DjogiError>(posts)
+ tx.set_auth(AuthContext::new(user_id).with_tenant("org_42"));
+ // No explicit set_tenant call needed — the next query auto-issues it.
+ let posts = Post::objects().fetch_all(tx).await?;
+ Ok::<_, djogi::DjogiError>(posts)
 })).await?;
 ```
 
-Under the hood `DjogiContext` tracks the currently-applied tenant id and re-issues `SET LOCAL app.tenant_id = ...` whenever the auth's `tenant_id` changes mid-transaction. That means switching tenants inside one `atomic()` scope is safe:
+Under the hood `DjogiContext` tracks the currently-applied tenant id and re-issues `SET LOCAL app.tenant_id =...` whenever the auth's `tenant_id` changes mid-transaction. That means switching tenants inside one `atomic()` scope is safe:
 
 ```rust
 djogi::transaction::atomic(&pool, |tx| Box::pin(async move {
-    tx.set_auth(auth_org_a);
-    let a_posts = Post::objects().fetch_all(tx).await?;  // scoped to org_a
+ tx.set_auth(auth_org_a);
+ let a_posts = Post::objects().fetch_all(tx).await?; // scoped to org_a
 
-    tx.set_auth(auth_org_b);
-    let b_posts = Post::objects().fetch_all(tx).await?;  // scoped to org_b
-    // ^ auto-wiring notices applied_tenant_id != "org_b" and re-issues SET LOCAL.
-    Ok::<_, djogi::DjogiError>((a_posts, b_posts))
+ tx.set_auth(auth_org_b);
+ let b_posts = Post::objects().fetch_all(tx).await?; // scoped to org_b
+ // ^ auto-wiring notices applied_tenant_id != "org_b" and re-issues SET LOCAL.
+ Ok::<_, djogi::DjogiError>((a_posts, b_posts))
 })).await?;
 ```
 
@@ -287,8 +287,8 @@ use djogi::auth::PasswordHash;
 
 #[model(table = "users")]
 pub struct User {
-    pub email: String,
-    pub password_hash: PasswordHash,
+ pub email: String,
+ pub password_hash: PasswordHash,
 }
 ```
 
@@ -300,16 +300,16 @@ Without the `auth-argon2` feature, `PasswordHash::hash` is unavailable but `Pass
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AuthError {
-    #[error("invalid token")]
-    InvalidToken,
-    #[error("expired session")]
-    ExpiredSession,
-    #[error("missing auth context")]
-    MissingAuth,
-    #[error("authorization denied: {reason}")]
-    Denied { reason: String },
-    #[error("provider error: {0}")]
-    Provider(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+ #[error("invalid token")]
+ InvalidToken,
+ #[error("expired session")]
+ ExpiredSession,
+ #[error("missing auth context")]
+ MissingAuth,
+ #[error("authorization denied: {reason}")]
+ Denied { reason: String },
+ #[error("provider error: {0}")]
+ Provider(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 ```
 
@@ -331,19 +331,19 @@ ctx.set_auth_insecurely(auth);
 
 These exist for **code with manually-established safety invariants** — tests, migrations, admin tooling, service-account flows. Calling `_insecurely` inside a production request handler is a design smell: if the situation genuinely requires bypassing an auth guard, name the pattern explicitly at the caller rather than silently skipping the check.
 
-The same convention applies to Phase 5's tenant bypass (`_insecurely` CRUD methods on tenant-keyed models) — every bypass call site in the repo is grep-able via the `_insecurely` suffix and the `auth guard bypassed` / `tenant scope bypassed` log messages.
+The same convention applies to 's tenant bypass (`_insecurely` CRUD methods on tenant-keyed models) — every bypass call site in the repo is grep-able via the `_insecurely` suffix and the `auth guard bypassed` / `tenant scope bypassed` log messages.
 
 ## Canonical users schema
 
-A minimal schema that uses every Phase 5.5 primitive:
+A minimal schema that uses every primitive:
 
 ```sql
 CREATE TABLE users (
-    id              BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    email           TEXT UNIQUE NOT NULL,
-    password_hash   TEXT NOT NULL
+ id  BIGINT PRIMARY KEY DEFAULT heerid_next_desc(),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ email  TEXT UNIQUE NOT NULL,
+ password_hash TEXT NOT NULL
 );
 
 CREATE INDEX users_email_idx ON users (email);
@@ -355,8 +355,8 @@ use djogi::auth::PasswordHash;
 #[model(table = "users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    pub email: String,
-    pub password_hash: PasswordHash,
+ pub email: String,
+ pub password_hash: PasswordHash,
 }
 ```
 
@@ -365,18 +365,18 @@ Signup and login become straight CRUD:
 ```rust
 // Signup
 let user = User::create(&mut ctx, User {
-    email: "alice@example.com".to_string(),
-    password_hash: PasswordHash::hash("s3cret").unwrap(),
-    ..Default::default()
+ email: "alice@example.com".to_string(),
+ password_hash: PasswordHash::hash("s3cret").unwrap(),
+..Default::default()
 }).await?;
 
 // Login
 let user = User::objects()
-    .filter(|u| u.email().eq("alice@example.com"))
-    .fetch_one(&mut ctx)
-    .await?;
+.filter(|u| u.email().eq("alice@example.com"))
+.fetch_one(&mut ctx)
+.await?;
 if !user.password_hash.verify(submitted_password) {
-    return Err(AuthError::InvalidToken.into());
+ return Err(AuthError::InvalidToken.into());
 }
 ```
 

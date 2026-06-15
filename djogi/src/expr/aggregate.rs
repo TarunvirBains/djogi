@@ -6,15 +6,15 @@
 //! aggregate decodes to at fetch time:
 //! | Aggregate | `Out` |
 //! |------------------|----------------------------------------|
-//! | `count()`        | `i64`                                  |
-//! | `count_star()`   | `i64`                                  |
-//! | `sum()`          | `V` (column's numeric type)            |
-//! | `avg()`          | `f64`                                  |
-//! | `min()` / `max()`| `V` (column's type)                    |
+//! | `count()`  | `i64`         |
+//! | `count_star()` | `i64`         |
+//! | `sum()`   | `V` (column's numeric type)   |
+//! | `avg()`   | `f64`         |
+//! | `min()` / `max()`| `V` (column's type)     |
 //! Every aggregate composes with the expression IR's existing walk — an
 //! [`AggregateExpr<Out, K>`] holds a plain [`ExprNode::Aggregate`] node and
 //! the emitter in [`super::sql::emit_expr`] lowers it to the matching
-//! Postgres keyword + optional `FILTER (WHERE ...)` tail.
+//! Postgres keyword + optional `FILTER (WHERE...)` tail.
 //! # Why typed `Out`
 //! The scalar terminal ([`crate::query::aggregate::AggregateQuery::fetch_one`])
 //! and the per-column decode on [`crate::query::annotate::AnnotatedQuerySet`]
@@ -43,13 +43,13 @@
 //! easiest to document.
 //! # Where
 //! - [`super::node::ExprNode::Aggregate`] / [`super::node::AggOp`] — the
-//!   untyped payload.
+//! untyped payload.
 //! - [`super::sql::emit_expr`] — renders the SQL tokens.
 //! - [`crate::query::aggregate::AggregateQuery`] — scalar terminal.
 //! - [`crate::query::annotate::AnnotatedQuerySet`] — typed-tuple
-//!   terminal that embeds value aggregates in the plain ungrouped SELECT list
-//!   alongside `T::*`. Grouped annotate and scalar aggregate remain generic
-//!   over all aggregate kinds because they do not synthesize `OVER ()`.
+//! terminal that embeds value aggregates in the plain ungrouped SELECT list
+//! alongside `T::*`. Grouped annotate and scalar aggregate remain generic
+//! over all aggregate kinds because they do not synthesize `OVER ()`.
 
 use crate::expr::Expr;
 use crate::expr::arithmetic::Numeric;
@@ -169,7 +169,7 @@ impl<Out, K: KindEvidence> AggregateExpr<Out, K> {
     /// Build an `AggregateExpr<Out>` for the unary `AGG(column)` shape.
     /// Eleven typed builders on `FieldRef` (`count`, `count_star`, `sum`,
     /// `avg`, `min`, `max`, `array_agg`, `json_agg`, `bool_and`, `bool_or`)
-    /// constructed the same six-field `ExprNode::Aggregate { ... }`
+    /// constructed the same six-field `ExprNode::Aggregate {... }`
     /// literal that varied only in `op`, `column`, and `cast_to`. This
     /// helper consolidates the construction; `string_agg` keeps its own
     /// path because it carries a separator.
@@ -275,21 +275,21 @@ impl<Out> AggregateExpr<Out, ValueAgg> {
     /// [`crate::DjogiError::UnsupportedAggregate`] from
     /// [`crate::expr::sql::check_aggregate_legality`]:
     /// - `COUNT(*)` with `DISTINCT`: `COUNT(DISTINCT *)` is not valid SQL.
-    ///   `count_star()` shares the `ValueAgg` type-state with `count()`,
-    ///   `sum()`, etc., so `.distinct()` is callable; the runtime check
-    ///   catches the COUNT-specific shape. Use `COUNT(DISTINCT col)`
-    ///   via [`FieldRef::count`] instead.
+    /// `count_star()` shares the `ValueAgg` type-state with `count()`,
+    /// `sum()`, etc., so `.distinct()` is callable; the runtime check
+    /// catches the COUNT-specific shape. Use `COUNT(DISTINCT col)`
+    /// via [`FieldRef::count`] instead.
     /// - `STRING_AGG(DISTINCT col, sep)` without a per-aggregate
-    ///   `ORDER BY`: Postgres requires `STRING_AGG(DISTINCT col, sep
-    /// ORDER BY ...)` to disambiguate the output tail. Chain
-    ///   [`Self::order_by`] with a deterministic key to make the
-    ///   combination well-formed.
+    /// `ORDER BY`: Postgres requires `STRING_AGG(DISTINCT col, sep
+    /// ORDER BY...)` to disambiguate the output tail. Chain
+    /// [`Self::order_by`] with a deterministic key to make the
+    /// combination well-formed.
     /// - `COUNT(*)` with a per-aggregate `ORDER BY`: the `COUNT(*)`
-    ///   emitter hard-codes `COUNT(*)` and ignores the `order_by` slot,
-    ///   so chaining `.order_by(...)` on `count_star()` would silently
-    ///   drop the modifier; the legality check rejects this at fetch
-    ///   time. Chain ORDER BY at the `QuerySet` level instead, or use
-    ///   `COUNT(col ORDER BY ...)` via [`FieldRef::count`].
+    /// emitter hard-codes `COUNT(*)` and ignores the `order_by` slot,
+    /// so chaining `.order_by(...)` on `count_star()` would silently
+    /// drop the modifier; the legality check rejects this at fetch
+    /// time. Chain ORDER BY at the `QuerySet` level instead, or use
+    /// `COUNT(col ORDER BY...)` via [`FieldRef::count`].
     #[must_use = "AggregateExpr is a value — dropping discards the DISTINCT flag"]
     pub fn distinct(mut self) -> Self {
         if let ExprNode::Aggregate { distinct, .. } = &mut self.node {
@@ -330,7 +330,7 @@ impl<Out> AggregateExpr<Out, OrderedSetAgg> {
         self
     }
 
-    /// Override the `WITHIN GROUP (ORDER BY ...)` target.
+    /// Override the `WITHIN GROUP (ORDER BY...)` target.
     #[must_use = "AggregateExpr is a value — dropping discards the WITHIN GROUP target"]
     pub fn within_group_order_by(mut self, target: crate::query::order::OrderExpr) -> Self {
         if let ExprNode::Aggregate {
@@ -354,7 +354,7 @@ impl<Out> AggregateExpr<Out, HypotheticalSetAgg> {
         self
     }
 
-    /// Override the `WITHIN GROUP (ORDER BY ...)` target.
+    /// Override the `WITHIN GROUP (ORDER BY...)` target.
     #[must_use = "AggregateExpr is a value — dropping discards the WITHIN GROUP target"]
     pub fn within_group_order_by(mut self, target: crate::query::order::OrderExpr) -> Self {
         if let ExprNode::Aggregate {
@@ -375,7 +375,7 @@ impl<Out> AggregateExpr<Out, HypotheticalSetAgg> {
 // does not need a column reference — users call it as
 // `AggregateExpr::<i64>::count_star()` or, from a field-closure context,
 // build it manually by reaching into the `ExprNode` (which they cannot
-// the enum is crate-private). Task 4 ships `.count` only; the
+// the enum is crate-private). ships `.count` only; the
 // `COUNT(*)` variant is exposed through `FieldRef::count_star()` as an
 // inherent method that uses any FieldRef to satisfy the receiver but
 // renders as `COUNT(*)`.
@@ -417,7 +417,7 @@ impl<M: Model, V> FieldRef<M, V> {
 // ── SUM / AVG ─────────────────────────────────────────────────────────
 // Gated on the sealed `Numeric` trait from `expr::arithmetic` — same
 // seal that gates `+` / `-` / `*` / `/` on `Expr<T>`. ships
-// `i16 / i32 / i64 / f32 / f64`; `Decimal` extends the trait in .
+// `i16 / i32 / i64 / f32 / f64`; `Decimal` extends the trait in.
 
 impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// `SUM(column)` — returns `V`.
@@ -494,9 +494,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // Per-org sample stddev of order amounts
     /// let scatter: Vec<(i64, f64)> = Order::objects()
-    ///     .group_by(|f| f.org_id())
-    ///     .annotate(|f| f.amount().stddev_samp())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .group_by(|f| f.org_id())
+    /// .annotate(|f| f.amount().stddev_samp())
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn stddev_samp(self) -> AggregateExpr<f64> {
@@ -522,9 +522,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // Population variance of latency across the day's request stream
     /// let var: f64 = Request::objects()
-    ///     .filter(|r| r.day().eq(today))
-    ///     .aggregate(|r| r.latency_ms().var_pop())
-    ///     .fetch_one(&mut ctx).await?;
+    /// .filter(|r| r.day().eq(today))
+    /// .aggregate(|r| r.latency_ms().var_pop())
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn var_pop(self) -> AggregateExpr<f64> {
@@ -540,9 +540,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // Per-region sample variance of customer order totals
     /// let dispersion: Vec<(i64, f64)> = Order::objects()
-    ///     .group_by(|f| f.region_id())
-    ///     .annotate(|f| f.amount().var_samp())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .group_by(|f| f.region_id())
+    /// .annotate(|f| f.amount().var_samp())
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn var_samp(self) -> AggregateExpr<f64> {
@@ -555,8 +555,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// # Example
     /// ```ignore
     /// let var: f64 = Order::objects()
-    ///     .aggregate(|f| f.amount().variance())
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|f| f.amount().variance())
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn variance(self) -> AggregateExpr<f64> {
@@ -577,8 +577,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // Population covariance of order_total vs cost
     /// let cov: f64 = Order::objects()
-    ///     .aggregate(|f| f.order_total().covar_pop(f.cost()))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|f| f.order_total().covar_pop(f.cost()))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn covar_pop<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
@@ -635,8 +635,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // Average ad-spend (x) on days that produced any conversions (y)
     /// let mean_x: f64 = Day::objects()
-    ///     .aggregate(|f| f.conversions().regr_avgx(f.ad_spend()))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|f| f.conversions().regr_avgx(f.ad_spend()))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_avgx<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
@@ -656,8 +656,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // Average response time (y) on rows where load (x) is also recorded
     /// let mean_y: f64 = Sample::objects()
-    ///     .aggregate(|f| f.response_ms().regr_avgy(f.load()))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|f| f.response_ms().regr_avgy(f.load()))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_avgy<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
@@ -681,8 +681,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // How many (y, x) pairs went into the regression?
     /// let n: i64 = Sample::objects()
-    ///     .aggregate(|f| f.response_ms().regr_count(f.load()))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|f| f.response_ms().regr_count(f.load()))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_count<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<i64> {
@@ -697,9 +697,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // Per-region regression intercept of conversions on ad-spend
     /// let intercepts: Vec<(i64, f64)> = Day::objects()
-    ///     .group_by(|f| f.region_id())
-    ///     .annotate(|f| f.conversions().regr_intercept(f.ad_spend()))
-    ///     .fetch_all(&mut ctx).await?;
+    /// .group_by(|f| f.region_id())
+    /// .annotate(|f| f.conversions().regr_intercept(f.ad_spend()))
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_intercept<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
@@ -720,9 +720,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // How well does ad-spend explain conversions in each region?
     /// let r2: Vec<(i64, f64)> = Day::objects()
-    ///     .group_by(|f| f.region_id())
-    ///     .annotate(|f| f.conversions().regr_r2(f.ad_spend()))
-    ///     .fetch_all(&mut ctx).await?;
+    /// .group_by(|f| f.region_id())
+    /// .annotate(|f| f.conversions().regr_r2(f.ad_spend()))
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_r2<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
@@ -741,9 +741,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // Per-region slope: how much does each $ of ad-spend buy in conversions?
     /// let slopes: Vec<(i64, f64)> = Day::objects()
-    ///     .group_by(|f| f.region_id())
-    ///     .annotate(|f| f.conversions().regr_slope(f.ad_spend()))
-    ///     .fetch_all(&mut ctx).await?;
+    /// .group_by(|f| f.region_id())
+    /// .annotate(|f| f.conversions().regr_slope(f.ad_spend()))
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_slope<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
@@ -764,8 +764,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// # Example
     /// ```ignore
     /// let sxx: f64 = Sample::objects()
-    ///     .aggregate(|f| f.y().regr_sxx(f.x()))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|f| f.y().regr_sxx(f.x()))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_sxx<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
@@ -786,8 +786,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // Sum of cross-deviations — input to manual covariance computation
     /// let sxy: f64 = Sample::objects()
-    ///     .aggregate(|f| f.y().regr_sxy(f.x()))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|f| f.y().regr_sxy(f.x()))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_sxy<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
@@ -808,8 +808,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// # Example
     /// ```ignore
     /// let syy: f64 = Sample::objects()
-    ///     .aggregate(|f| f.y().regr_syy(f.x()))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|f| f.y().regr_syy(f.x()))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_syy<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
@@ -958,18 +958,18 @@ impl<M: Model, V> FieldRef<M, V> {
     /// SELECT / HAVING when reporting hierarchical summaries:
     /// ```ignore
     /// // SELECT region, dept, SUM(sales),
-    /// //        GROUPING(region) AS is_region_subtotal,
-    /// //        GROUPING(dept)   AS is_dept_subtotal
-    /// // FROM   sales
+    /// //  GROUPING(region) AS is_region_subtotal,
+    /// //  GROUPING(dept) AS is_dept_subtotal
+    /// // FROM sales
     /// // GROUP BY ROLLUP(region, dept);
     /// Sales::objects()
-    ///     .rollup(|f| (f.region(), f.dept()))
-    ///     .annotate(|f| (
-    ///         f.sales().sum(),
-    ///         f.region().grouping(),
-    ///         f.dept().grouping(),
-    ///     ))
-    ///     .fetch_all(&mut ctx).await?;
+    /// .rollup(|f| (f.region(), f.dept()))
+    /// .annotate(|f| (
+    ///   f.sales().sum(),
+    ///   f.region().grouping(),
+    ///   f.dept().grouping(),
+    ///  ))
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     /// # Variadic form
     /// Postgres also accepts `GROUPING(c1, c2, …, cN)` returning a
@@ -1016,18 +1016,18 @@ impl<M: Model, V> FieldRef<M, V> {
 /// # Example
 /// ```ignore
 /// // SELECT region, dept, SUM(sales),
-/// //        GROUPING(region, dept) AS subtotal_bitmask
-/// // FROM   sales
+/// //  GROUPING(region, dept) AS subtotal_bitmask
+/// // FROM sales
 /// // GROUP BY ROLLUP(region, dept);
 /// use djogi::prelude::*;
 /// use djogi::grouping_of;
 /// Sales::objects()
-///     .rollup(|f| (f.region(), f.dept()))
-///     .annotate(|_f| (
-///         /* ... sum ... */,
-///         grouping_of(&["region", "dept"]),
-///     ))
-///     .fetch_all(&mut ctx).await?;
+/// .rollup(|f| (f.region(), f.dept()))
+/// .annotate(|_f| (
+///   /*... sum... */,
+///   grouping_of(&["region", "dept"]),
+///  ))
+/// .fetch_all(&mut ctx).await?;
 /// ```
 #[must_use = "aggregates are lazy — dropping one silently omits the column"]
 pub fn grouping_of(columns: &[&'static str]) -> AggregateExpr<i32, MetadataAgg> {
@@ -1072,7 +1072,7 @@ pub fn grouping_of(columns: &[&'static str]) -> AggregateExpr<i32, MetadataAgg> 
 // replaces (never empties) it. The runtime `debug_assert!` in
 // `check_aggregate_legality` catches future direct-IR construction
 // that bypasses the typed surface.
-// - FILTER (WHERE ...) is valid and exposed via `.filter(...)`.
+// - FILTER (WHERE...) is valid and exposed via `.filter(...)`.
 // `percentile_cont` is `Numeric`-gated because Postgres returns
 // `DOUBLE PRECISION` for numeric inputs and `INTERVAL` for interval
 // inputs; the typed surface pins `Out = f64` and emits a
@@ -1087,7 +1087,7 @@ impl<M: Model, V: crate::expr::arithmetic::Numeric> FieldRef<M, V> {
     /// `p` must be in `[0.0, 1.0]`. Postgres rejects out-of-range values
     /// at runtime with a typed error; Djogi binds `p` as a literal so
     /// the emitted SQL carries it in the function-call arg slot.
-    /// The receiver column becomes the `WITHIN GROUP (ORDER BY ...)`
+    /// The receiver column becomes the `WITHIN GROUP (ORDER BY...)`
     /// target with default ASC direction. Override via
     /// [`AggregateExpr::within_group_order_by`] if a different column or
     /// DESC direction is needed.
@@ -1099,15 +1099,15 @@ impl<M: Model, V: crate::expr::arithmetic::Numeric> FieldRef<M, V> {
     /// ```ignore
     /// // Median request latency per service
     /// let medians: Vec<(ServiceId, f64)> = Request::objects()
-    ///     .group_by(|f| f.service_id())
-    ///     .annotate(|f| f.latency_ms().percentile_cont(0.5))
-    ///     .fetch_all(&mut ctx).await?;
+    /// .group_by(|f| f.service_id())
+    /// .annotate(|f| f.latency_ms().percentile_cont(0.5))
+    /// .fetch_all(&mut ctx).await?;
     ///
     /// // p95 latency
     /// let p95: f64 = Request::objects()
-    ///     .filter(|r| r.day().eq(today))
-    ///     .aggregate(|r| r.latency_ms().percentile_cont(0.95))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .filter(|r| r.day().eq(today))
+    /// .aggregate(|r| r.latency_ms().percentile_cont(0.95))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn percentile_cont(self, p: f64) -> AggregateExpr<f64, OrderedSetAgg> {
@@ -1141,8 +1141,8 @@ where
     /// // Discrete median order amount (returns an actual order's
     /// // amount, not an interpolated value).
     /// let median_amount: i64 = Order::objects()
-    ///     .aggregate(|f| f.amount().percentile_disc(0.5))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|f| f.amount().percentile_disc(0.5))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn percentile_disc(self, p: f64) -> AggregateExpr<V, OrderedSetAgg> {
@@ -1158,7 +1158,7 @@ where
     /// `MODE() WITHIN GROUP (ORDER BY <col>)` — most common value in the
     /// group. Returns `AggregateExpr<V>` — the column's own type.
     /// Ties: Postgres returns the first value encountered in the
-    /// `WITHIN GROUP (ORDER BY ...)` ordering. Default ASC means ties
+    /// `WITHIN GROUP (ORDER BY...)` ordering. Default ASC means ties
     /// resolve to the smaller value; flip via
     /// [`AggregateExpr::within_group_order_by`] passing
     /// `self.desc()` to bias toward the larger.
@@ -1169,9 +1169,9 @@ where
     /// ```ignore
     /// // Most common payment method per region
     /// let popular: Vec<(RegionId, String)> = Order::objects()
-    ///     .group_by(|f| f.region_id())
-    ///     .annotate(|f| f.payment_method().mode())
-    ///     .fetch_all(&mut ctx).await?;
+    /// .group_by(|f| f.region_id())
+    /// .annotate(|f| f.payment_method().mode())
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn mode(self) -> AggregateExpr<V, OrderedSetAgg> {
@@ -1188,19 +1188,19 @@ where
     /// # Distinct from the window-form rank
     /// Postgres has two `RANK` functions:
     /// - **Window form** ([`crate::expr::Rank`]) — ranks each row within
-    ///   a `PARTITION BY ... ORDER BY ...` window.
+    /// a `PARTITION BY... ORDER BY...` window.
     /// - **Hypothetical-set form** (this method) — answers "what rank
-    ///   would this hypothetical value have in the sorted set?" without
-    ///   inserting the row. The argument matches the column type.
+    /// would this hypothetical value have in the sorted set?" without
+    /// inserting the row. The argument matches the column type.
     /// # Postgres NULL behaviour
     /// Empty groups produce SQL NULL.
     /// # Example
     /// ```ignore
     /// // What rank would a $7,500 salary have among the engineering team?
     /// let rank: i64 = Employee::objects()
-    ///     .filter(|e| e.dept().eq("engineering"))
-    ///     .aggregate(|e| e.salary().rank_of(7_500))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .filter(|e| e.dept().eq("engineering"))
+    /// .aggregate(|e| e.salary().rank_of(7_500))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn rank_of(self, value: V) -> AggregateExpr<i64, HypotheticalSetAgg> {
@@ -1231,8 +1231,8 @@ where
     /// ```ignore
     /// // What percentile (as a fraction) would a 100 ms latency be at?
     /// let pct: f64 = Request::objects()
-    ///     .aggregate(|r| r.latency_ms().percent_rank_of(100.0))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|r| r.latency_ms().percent_rank_of(100.0))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn percent_rank_of(self, value: V) -> AggregateExpr<f64, HypotheticalSetAgg> {
@@ -1255,8 +1255,8 @@ where
     /// ```ignore
     /// // What fraction of orders are at or below a $500 amount?
     /// let pct: f64 = Order::objects()
-    ///     .aggregate(|o| o.amount().cume_dist_of(500))
-    ///     .fetch_one(&mut ctx).await?;
+    /// .aggregate(|o| o.amount().cume_dist_of(500))
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn cume_dist_of(self, value: V) -> AggregateExpr<f64, HypotheticalSetAgg> {
@@ -1287,9 +1287,9 @@ impl<M: Model> FieldRef<M, String> {
     /// # Example
     /// ```ignore
     /// Post::objects()
-    ///     .annotate(|f| f.title().string_agg(", "))
-    ///     .fetch_all(&mut ctx).await?
-    /// // → Vec<(Post, String)>  where the String is "Post A, Post B, ..."
+    /// .annotate(|f| f.title().string_agg(", "))
+    /// .fetch_all(&mut ctx).await?
+    /// // → Vec<(Post, String)> where the String is "Post A, Post B,..."
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn string_agg(self, sep: impl Into<String>) -> AggregateExpr<String> {
@@ -1404,15 +1404,15 @@ impl<M: Model, V: IntegerColumn> FieldRef<M, V> {
     /// the set of bits set in *every* non-null row of the group.
     /// Identity (no rows or all NULL): all-bits-set in two's complement
     /// (`-1` for signed types). Empty groups decode as NULL — wrap `Out`
-    /// in `Option<V>` at the call site (or use a `FILTER (WHERE ...)`
+    /// in `Option<V>` at the call site (or use a `FILTER (WHERE...)`
     /// guard) for NULL-safe handling.
     /// # Example
     /// ```ignore
     /// // Bits common to every flag value across the org's users
     /// let common_bits: i32 = User::objects()
-    ///     .filter(|u| u.org_id().eq(my_org))
-    ///     .aggregate(|u| u.flags().bit_and())
-    ///     .fetch_one(&mut ctx).await?;
+    /// .filter(|u| u.org_id().eq(my_org))
+    /// .aggregate(|u| u.flags().bit_and())
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn bit_and(self) -> AggregateExpr<V> {
@@ -1433,9 +1433,9 @@ impl<M: Model, V: IntegerColumn> FieldRef<M, V> {
     /// ```ignore
     /// // Union of every set flag across the active session set
     /// let any_set: i32 = Session::objects()
-    ///     .filter(|s| s.active().eq(true))
-    ///     .aggregate(|s| s.flags().bit_or())
-    ///     .fetch_one(&mut ctx).await?;
+    /// .filter(|s| s.active().eq(true))
+    /// .aggregate(|s| s.flags().bit_or())
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn bit_or(self) -> AggregateExpr<V> {
@@ -1453,9 +1453,9 @@ impl<M: Model, V: IntegerColumn> FieldRef<M, V> {
     /// ```ignore
     /// // Parity bit across a row's per-event flag stream
     /// let parity: i64 = Event::objects()
-    ///     .filter(|e| e.session_id().eq(session))
-    ///     .aggregate(|e| e.checksum_part().bit_xor())
-    ///     .fetch_one(&mut ctx).await?;
+    /// .filter(|e| e.session_id().eq(session))
+    /// .aggregate(|e| e.checksum_part().bit_xor())
+    /// .fetch_one(&mut ctx).await?;
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn bit_xor(self) -> AggregateExpr<V> {
@@ -1693,7 +1693,7 @@ mod tests {
         assert_eq!(sql.trim(), "BOOL_OR(active)", "got: {sql}");
     }
 
-    // ── .distinct tests ────────────────────────────────────────────────
+    // ──.distinct tests ────────────────────────────────────────────────
 
     #[test]
     fn sum_distinct_emits_sum_distinct() {
@@ -1875,7 +1875,7 @@ mod tests {
         let result = crate::expr::sql::check_aggregate_legality(&agg.node);
         assert!(
             result.is_err(),
-            "expected UnsupportedAggregate error for STRING_AGG(DISTINCT ...) with no ORDER BY"
+            "expected UnsupportedAggregate error for STRING_AGG(DISTINCT...) with no ORDER BY"
         );
         let err = result.unwrap_err();
         assert!(
@@ -1918,7 +1918,7 @@ mod tests {
         );
     }
 
-    // ── .order_by(...) per-aggregate ORDER BY tests ─────────────────────
+    // ──.order_by(...) per-aggregate ORDER BY tests ─────────────────────
 
     #[test]
     fn order_by_appends_to_aggregate_node() {
@@ -1929,7 +1929,7 @@ mod tests {
             assert_eq!(
                 order_by.len(),
                 1,
-                "single .order_by call should append exactly one OrderExpr"
+                "single.order_by call should append exactly one OrderExpr"
             );
         } else {
             panic!("AggregateExpr did not wrap an Aggregate node");
@@ -1947,7 +1947,7 @@ mod tests {
             assert_eq!(
                 order_by.len(),
                 2,
-                "chained .order_by calls should append in order"
+                "chained.order_by calls should append in order"
             );
         } else {
             panic!("AggregateExpr did not wrap an Aggregate node");
@@ -1981,7 +1981,7 @@ mod tests {
         let sql = acc.sql().to_string();
         assert!(
             sql.contains("ARRAY_AGG(DISTINCT id ORDER BY id ASC"),
-            "expected ARRAY_AGG(DISTINCT ... ORDER BY ...), got: {sql}"
+            "expected ARRAY_AGG(DISTINCT... ORDER BY...), got: {sql}"
         );
     }
 
@@ -2016,7 +2016,7 @@ mod tests {
         // assert the structural shape rather than the exact $N.
         assert!(
             sql.starts_with("STRING_AGG(name, $") && sql.contains(" ORDER BY rank ASC"),
-            "expected STRING_AGG(col, $sep ORDER BY ...), got: {sql}"
+            "expected STRING_AGG(col, $sep ORDER BY...), got: {sql}"
         );
     }
 
@@ -2031,7 +2031,7 @@ mod tests {
         let result = crate::expr::sql::check_aggregate_legality(&agg.node);
         assert!(
             result.is_ok(),
-            "STRING_AGG(DISTINCT ... ORDER BY ...) should be accepted, got: {result:?}"
+            "STRING_AGG(DISTINCT... ORDER BY...) should be accepted, got: {result:?}"
         );
     }
 
@@ -2048,7 +2048,7 @@ mod tests {
         let sql = acc.sql().to_string();
         assert!(
             sql.starts_with("STRING_AGG(DISTINCT name, $") && sql.contains(" ORDER BY rank ASC"),
-            "expected STRING_AGG(DISTINCT col, $sep ORDER BY ...), got: {sql}"
+            "expected STRING_AGG(DISTINCT col, $sep ORDER BY...), got: {sql}"
         );
     }
 
@@ -2074,8 +2074,8 @@ mod tests {
         );
     }
 
-    // ── .over(|w| ...) end-to-end tests ──────────────────────────────────────
-    // These tests exercise the round-trip: `.over(|w| ...)` on `AggregateExpr`
+    // ──.over(|w|...) end-to-end tests ──────────────────────────────────────
+    // These tests exercise the round-trip: `.over(|w|...)` on `AggregateExpr`
     // stores a `WindowSpec` on the node, then `emit_aggregate_with_window_and_cast`
     // picks it up and emits the correct `OVER (...)` clause. The bare
     // `emit_expr` path (used for nested aggregates) does NOT emit the window
@@ -2259,7 +2259,7 @@ mod tests {
 
     #[test]
     fn bit_aggregates_compose_with_order_by() {
-        // BIT aggregates support the .order_by modifier — useful for
+        // BIT aggregates support the.order_by modifier — useful for
         // deterministic emission when paired with DISTINCT, even though
         // BIT_AND/OR/XOR are commutative and the result is order-invariant.
         let f: FieldRef<Txn, i32> = FieldRef::new("flags");
@@ -2948,7 +2948,7 @@ mod tests {
 
     #[test]
     fn within_group_order_by_overrides_default_target() {
-        // .within_group_order_by(other.desc()) replaces the default ASC target
+        //.within_group_order_by(other.desc()) replaces the default ASC target
         // the typed builder set on construction. The replacement column must
         // be the same SQL/Rust decode type as the receiver (both f64 here) so
         // the aggregate's return-type contract is preserved — crossing types
@@ -2969,7 +2969,7 @@ mod tests {
 
     #[test]
     fn mode_with_filter_accepted_at_fetch() {
-        // FILTER (WHERE ...) is valid on ordered-set aggregates.
+        // FILTER (WHERE...) is valid on ordered-set aggregates.
         let f: FieldRef<Txn, String> = FieldRef::new("category");
         let g: FieldRef<Txn, i64> = FieldRef::new("active");
         let agg = f.mode().filter(g.as_expr().gt(Expr::literal(0i64)));
@@ -3124,7 +3124,7 @@ mod tests {
 
     #[test]
     fn hypothetical_rank_within_group_override_works() {
-        // The .within_group_order_by(...) modifier works for
+        // The.within_group_order_by(...) modifier works for
         // hypothetical-set aggregates too — same IR slot.
         // Both the receiver (salary: i64), the supplied argument (7_500: i64),
         // and the replacement column (base_salary: i64) are the same type,

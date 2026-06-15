@@ -3,11 +3,11 @@
 // label; the old declaration must go away in the same commit.
 
 djogi::apps! {
-    #[app(database = "main")]
-    pub struct Vehicles;
+ #[app(database = "main")]
+ pub struct Vehicles;
 
-    #[app(database = "main", renamed_from = "vehicles")]
-    pub struct NewVehicles;
+ #[app(database = "main", renamed_from = "vehicles")]
+ pub struct NewVehicles;
 }
 
 fn main() {}

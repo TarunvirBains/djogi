@@ -9,30 +9,30 @@
 //! (no `transmute`) so consumers can downcast registry entries back to
 //! the concrete trait object.
 //! # Why a separate attribute macro
-//! Adopters writing `impl Searchable for Vehicle { ... }` register
+//! Adopters writing `impl Searchable for Vehicle {... }` register
 //! with one attribute prefix:
 //! ```ignore
 //! #[djogi::trait_impl]
 //! impl Searchable for Vehicle {
-//!     fn searchable_columns(&self) -> &[&'static str] { &["title"] }
+//!  fn searchable_columns(&self) -> &[&'static str] { &["title"] }
 //! }
 //! ```
 //! No additional code at the impl block; the macro emits a
-//! `inventory::submit!(TraitRegistration { ... })` alongside the
+//! `inventory::submit!(TraitRegistration {... })` alongside the
 //! unchanged impl block. The impl block reaches rustc verbatim so
 //! adopter-side compile errors (e.g. wrong method signature) point
 //! at the adopter's own code, not at the macro expansion.
 //! # What we accept
-//! - Trait impls only — `impl Trait for Type { ... }`. Inherent
-//!   `impl Type { ... }` rejected.
+//! - Trait impls only — `impl Trait for Type {... }`. Inherent
+//! `impl Type {... }` rejected.
 //! - Concrete (non-generic) impls only — `impl<T> Trait for Vec<T>`
-//!   rejected. Generic impls would require parameter substitution
-//!   for the `TypeId::of` lookup at registration time, which is
-//!   deferred to a future phase per `feedback_anchored_deferrals`.
+//! rejected. Generic impls would require parameter substitution
+//! for the `TypeId::of` lookup at registration time, which is
+//! deferred to a future phase per `feedback_anchored_deferrals`.
 //! - Single-segment `Self` types — `impl Trait for Vehicle` works,
-//!   `impl Trait for crate::module::Vehicle` works (path resolved
-//!   verbatim), `impl Trait for some_fn()::Vehicle` rejected (not a
-//!   nameable type at parse time).
+//! `impl Trait for crate::module::Vehicle` works (path resolved
+//! verbatim), `impl Trait for some_fn()::Vehicle` rejected (not a
+//! nameable type at parse time).
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
@@ -59,9 +59,9 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
         syn::Error::new_spanned(
             &item_impl,
             "`#[djogi::trait_impl]` requires a trait impl — \
-             inherent impl blocks (`impl Type { ... }`) cannot be \
-             registered for cross-type queries; rewrite as \
-             `impl SomeTrait for Type { ... }`",
+    inherent impl blocks (`impl Type {... }`) cannot be \
+    registered for cross-type queries; rewrite as \
+    `impl SomeTrait for Type {... }`",
         )
     })?;
     // syn::ItemImpl::trait_ is `Option<(Option<!>, Path, Token![for])>`.
@@ -76,8 +76,8 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
         return Err(syn::Error::new_spanned(
             &item_impl.generics,
             "`#[djogi::trait_impl]` does not yet support generic impls \
-             — concrete `impl Trait for ConcreteType { ... }` only in \
-             v0.1.0; generic impls deferred to a future phase",
+    — concrete `impl Trait for ConcreteType {... }` only in \
+    v0.1.0; generic impls deferred to a future phase",
         ));
     }
 
@@ -92,8 +92,8 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
         return Err(syn::Error::new_spanned(
             self_ty,
             "`#[djogi::trait_impl]`'s self type must be a named type \
-             — tuple, reference, or function-pointer types are not \
-             supported",
+    — tuple, reference, or function-pointer types are not \
+    supported",
         ));
     }
 
@@ -144,79 +144,79 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
     );
 
     Ok(quote! {
-        #item_impl
+     #item_impl
 
-        // Per-impl carrier struct — wraps the unsized `Arc<dyn Trait>`
-        // in a sized `Send + Sync + 'static` shell so it satisfies
-        // the `Any` bound the registry's wire type requires. The
-        // inner field is `pub` so the consuming side can extract
-        // the Arc through the `into_arc` accessor.
-        #[doc(hidden)]
-        pub struct #carrier_struct_ident(
-            pub ::std::sync::Arc<dyn #trait_path + ::core::marker::Send + ::core::marker::Sync>,
-        );
+     // Per-impl carrier struct — wraps the unsized `Arc<dyn Trait>`
+     // in a sized `Send + Sync + 'static` shell so it satisfies
+     // the `Any` bound the registry's wire type requires. The
+     // inner field is `pub` so the consuming side can extract
+     // the Arc through the `into_arc` accessor.
+     #[doc(hidden)]
+     pub struct #carrier_struct_ident(
+      pub ::std::sync::Arc<dyn #trait_path + ::core::marker::Send + ::core::marker::Sync>,
+     );
 
-        impl #carrier_struct_ident {
-            /// Extract the underlying `Arc<dyn Trait>` from the
-            /// carrier. The consuming side calls this after the
-            /// `Arc<dyn Any>` → `Arc<#carrier>` downcast succeeds.
-            #[doc(hidden)]
-            pub fn into_arc(
-                self,
-            ) -> ::std::sync::Arc<dyn #trait_path + ::core::marker::Send + ::core::marker::Sync>
-            {
-                self.0
-            }
-        }
+     impl #carrier_struct_ident {
+      /// Extract the underlying `Arc<dyn Trait>` from the
+      /// carrier. The consuming side calls this after the
+      /// `Arc<dyn Any>` → `Arc<#carrier>` downcast succeeds.
+      #[doc(hidden)]
+      pub fn into_arc(
+       self,
+      ) -> ::std::sync::Arc<dyn #trait_path + ::core::marker::Send + ::core::marker::Sync>
+      {
+       self.0
+      }
+     }
 
-        // Type-erased caster — safe carrier pattern; no `transmute`.
-        // Returns `Some(arc_to_carrier)` when the input downcasts to
-        // the registered model type; `None` otherwise.
-        #[doc(hidden)]
-        pub fn #caster_fn_ident(
-            any: &::std::sync::Arc<dyn ::std::any::Any + ::core::marker::Send + ::core::marker::Sync>,
-        ) -> ::core::option::Option<
-            ::std::sync::Arc<dyn ::std::any::Any + ::core::marker::Send + ::core::marker::Sync>,
-        > {
-            // Step 1 — downcast the erased Arc to `Arc<Self>`.
-            // `Arc::downcast` on `Arc<dyn Any + Send + Sync>` returns
-            // `Result<Arc<T>, Arc<dyn Any + Send + Sync>>` when `T:
-            // Any + Send + Sync` — we discard the `Err` arm via `.ok()`.
-            let arc_model: ::std::sync::Arc<#self_ty> =
-                match ::std::sync::Arc::clone(any).downcast::<#self_ty>() {
-                    ::core::result::Result::Ok(arc) => arc,
-                    ::core::result::Result::Err(_) => return ::core::option::Option::None,
-                };
+     // Type-erased caster — safe carrier pattern; no `transmute`.
+     // Returns `Some(arc_to_carrier)` when the input downcasts to
+     // the registered model type; `None` otherwise.
+     #[doc(hidden)]
+     pub fn #caster_fn_ident(
+      any: &::std::sync::Arc<dyn ::std::any::Any + ::core::marker::Send + ::core::marker::Sync>,
+     ) -> ::core::option::Option<
+      ::std::sync::Arc<dyn ::std::any::Any + ::core::marker::Send + ::core::marker::Sync>,
+     > {
+      // Step 1 — downcast the erased Arc to `Arc<Self>`.
+      // `Arc::downcast` on `Arc<dyn Any + Send + Sync>` returns
+      // `Result<Arc<T>, Arc<dyn Any + Send + Sync>>` when `T:
+      // Any + Send + Sync` — we discard the `Err` arm via `.ok()`.
+      let arc_model: ::std::sync::Arc<#self_ty> =
+       match ::std::sync::Arc::clone(any).downcast::<#self_ty>() {
+        ::core::result::Result::Ok(arc) => arc,
+        ::core::result::Result::Err(_) => return ::core::option::Option::None,
+       };
 
-            // Step 2 — unsizing coercion: `Arc<Self>` → `Arc<dyn Trait + Send + Sync>`.
-            // The coercion is sound because `Self: Trait` (the
-            // surrounding `impl Trait for Self` block proves it) and
-            // `Self: Send + Sync + 'static` (every model's struct
-            // injection guarantees these bounds).
-            let arc_trait: ::std::sync::Arc<dyn #trait_path + ::core::marker::Send + ::core::marker::Sync> =
-                arc_model;
+      // Step 2 — unsizing coercion: `Arc<Self>` → `Arc<dyn Trait + Send + Sync>`.
+      // The coercion is sound because `Self: Trait` (the
+      // surrounding `impl Trait for Self` block proves it) and
+      // `Self: Send + Sync + 'static` (every model's struct
+      // injection guarantees these bounds).
+      let arc_trait: ::std::sync::Arc<dyn #trait_path + ::core::marker::Send + ::core::marker::Sync> =
+       arc_model;
 
-            // Step 3 — wrap in the per-impl carrier so the result is
-            // `Sized + Any + Send + Sync`.
-            let carrier = #carrier_struct_ident(arc_trait);
-            let arc_carrier: ::std::sync::Arc<#carrier_struct_ident> =
-                ::std::sync::Arc::new(carrier);
+      // Step 3 — wrap in the per-impl carrier so the result is
+      // `Sized + Any + Send + Sync`.
+      let carrier = #carrier_struct_ident(arc_trait);
+      let arc_carrier: ::std::sync::Arc<#carrier_struct_ident> =
+       ::std::sync::Arc::new(carrier);
 
-            // Step 4 — erase the carrier to `Arc<dyn Any + Send + Sync>`
-            // for the registry wire type. This is a coercion (`Arc<T>`
-            // → `Arc<dyn Any>` for `T: Any`), not a transmute.
-            ::core::option::Option::Some(arc_carrier)
-        }
+      // Step 4 — erase the carrier to `Arc<dyn Any + Send + Sync>`
+      // for the registry wire type. This is a coercion (`Arc<T>`
+      // → `Arc<dyn Any>` for `T: Any`), not a transmute.
+      ::core::option::Option::Some(arc_carrier)
+     }
 
-        ::djogi::__private::inventory::submit! {
-            ::djogi::trait_registry::TraitRegistration {
-                model_type_id: || ::std::any::TypeId::of::<#self_ty>(),
-                trait_type_id: || ::std::any::TypeId::of::<dyn #trait_path>(),
-                model_type_name: #model_type_name,
-                trait_type_name: #trait_type_name,
-                caster: #caster_fn_ident,
-            }
-        }
+     ::djogi::__private::inventory::submit! {
+      ::djogi::trait_registry::TraitRegistration {
+       model_type_id: || ::std::any::TypeId::of::<#self_ty>(),
+       trait_type_id: || ::std::any::TypeId::of::<dyn #trait_path>(),
+       model_type_name: #model_type_name,
+       trait_type_name: #trait_type_name,
+       caster: #caster_fn_ident,
+      }
+     }
     })
 }
 
@@ -231,11 +231,11 @@ mod tests {
     #[test]
     fn parses_trait_impl_attribute() {
         let item: TokenStream = quote! {
-            impl Searchable for Vehicle {
-                fn searchable_columns(&self) -> &'static [&'static str] {
-                    &["title"]
-                }
-            }
+         impl Searchable for Vehicle {
+          fn searchable_columns(&self) -> &'static [&'static str] {
+           &["title"]
+          }
+         }
         };
         let out = expand(quote! {}, item).to_string();
         assert!(out.contains("impl Searchable for Vehicle"));
@@ -250,12 +250,12 @@ mod tests {
     #[test]
     fn rejects_inherent_impl() {
         let item: TokenStream = quote! {
-            impl Vehicle {
-                fn helper(&self) {}
-            }
+         impl Vehicle {
+          fn helper(&self) {}
+         }
         };
         let out = expand(quote! {}, item).to_string();
-        // The compile-error tokens render as `compile_error ! { ... }`.
+        // The compile-error tokens render as `compile_error ! {... }`.
         assert!(out.contains("compile_error"));
         assert!(out.contains("inherent impl"));
     }
@@ -264,11 +264,11 @@ mod tests {
     #[test]
     fn rejects_generic_impl() {
         let item: TokenStream = quote! {
-            impl<T> Searchable for Vec<T> {
-                fn searchable_columns(&self) -> &'static [&'static str] {
-                    &[]
-                }
-            }
+         impl<T> Searchable for Vec<T> {
+          fn searchable_columns(&self) -> &'static [&'static str] {
+           &[]
+          }
+         }
         };
         let out = expand(quote! {}, item).to_string();
         assert!(out.contains("compile_error"));

@@ -7,21 +7,21 @@
 //! shape, but with two sides.
 //! Three flavours of pair-tuple query are supported in v0.1.0:
 //! 1. **Single-model self-join** — pair the same model with itself, e.g.
-//!    `(Elephant, Elephant)`. The canonical target: mating-pair
-//!    candidate generation where left is "female" and right is "male".
-//!    Entered via [`QuerySet::self_pairs`](crate::query::QuerySet::self_pairs);
-//!    the default emission excludes the same-PK identity row
-//!    (`WHERE l.id <> r.id`).
+//! `(Elephant, Elephant)`. The canonical target: mating-pair
+//! candidate generation where left is "female" and right is "male".
+//! Entered via [`QuerySet::self_pairs`](crate::query::QuerySet::self_pairs);
+//! the default emission excludes the same-PK identity row
+//! (`WHERE l.id <> r.id`).
 //! 2. **Two-model cross-join** — pair different models, e.g.
-//!    `(Sighting, Herd)`. Entered via
-//!    [`QuerySet::cross_join_with`](crate::query::QuerySet::cross_join_with).
+//! `(Sighting, Herd)`. Entered via
+//! [`QuerySet::cross_join_with`](crate::query::QuerySet::cross_join_with).
 //! 3. **Closure-self-join** — extends the self-join with one or two
-//!    `LEFT JOIN`s against a [`ClosureModel`] table so kinship-style
-//!    queries can sum over shared ancestors per pair. Entered via
-//!    [`JoinedQuerySet::left_join_closure_pair`]; the
-//!    typed [`PairClosureKinshipSum`] aggregate emits the Wright-style
-//!    `SUM(la.path_count × ra.path_count × 0.5^(la.depth + ra.depth + 1))`
-//!    over the joined pair.
+//! `LEFT JOIN`s against a [`ClosureModel`] table so kinship-style
+//! queries can sum over shared ancestors per pair. Entered via
+//! [`JoinedQuerySet::left_join_closure_pair`]; the
+//! typed [`PairClosureKinshipSum`] aggregate emits the Wright-style
+//! `SUM(la.path_count × ra.path_count × 0.5^(la.depth + ra.depth + 1))`
+//! over the joined pair.
 //! # Why
 //! The pre-Cluster-4A typed surface ([`QuerySet<T>`](crate::query::QuerySet),
 //! plus [`AnnotatedQuerySet<T, A>`](crate::query::AnnotatedQuerySet)) requires
@@ -45,8 +45,8 @@
 //! with a non-empty prefix:
 //! ```sql
 //! SELECT
-//! l.<c1> AS l_<c1>, l.<c2> AS l_<c2>, ...,
-//! r.<c1> AS r_<c1>, r.<c2> AS r_<c2>, ...
+//! l.<c1> AS l_<c1>, l.<c2> AS l_<c2>,...,
+//! r.<c1> AS r_<c1>, r.<c2> AS r_<c2>,...
 //! FROM <l_table> AS l CROSS JOIN <r_table> AS r
 //! [WHERE l.<pk> <> r.<pk> AND <left_filters> AND <right_filters>]
 //! [ORDER BY l.<col> ASC, r.<col> ASC]
@@ -64,11 +64,11 @@
 //! aim at. Mirrors [`QuerySet<T>`](crate::query::QuerySet)'s variance.
 //! # Where
 //! - Entry: [`QuerySet::self_pairs`](crate::query::QuerySet::self_pairs)
-//!   and [`QuerySet::cross_join_with`](crate::query::QuerySet::cross_join_with).
+//! and [`QuerySet::cross_join_with`](crate::query::QuerySet::cross_join_with).
 //! - Annotated extension: [`JoinedAnnotatedQuerySet`].
 //! - Closure-pair extension: [`JoinedQuerySet::left_join_closure_pair`].
 //! - SQL emitters: `build_joined_select`, `build_joined_count`,
-//!   `build_joined_annotated_select_for_fetch` (crate-private).
+//! `build_joined_annotated_select_for_fetch` (crate-private).
 
 #![allow(clippy::manual_async_fn)]
 
@@ -86,12 +86,12 @@ use crate::query::terminal::auto_set_tenant;
 use std::future::Future;
 use std::marker::PhantomData;
 
-/// SQL alias for the left side of a pair-tuple query (`FROM ... AS l`).
+/// SQL alias for the left side of a pair-tuple query (`FROM... AS l`).
 /// Framework-fixed so `WHERE`, `ORDER BY`, `PARTITION BY`, and other
 /// emission sites always agree on which alias maps to which side.
 pub(crate) const LEFT_ALIAS: &str = "l";
 
-/// SQL alias for the right side of a pair-tuple query (`CROSS JOIN ... AS r`).
+/// SQL alias for the right side of a pair-tuple query (`CROSS JOIN... AS r`).
 pub(crate) const RIGHT_ALIAS: &str = "r";
 
 /// Column-name prefix applied in the SELECT list for the left side
@@ -275,22 +275,22 @@ impl ClosurePairJoin {
 /// Returns [`DjogiError::Validation`] for:
 /// - [`PkType::None`] — the model has no primary key, so `l.<pk> <>
 /// r.<pk>` self-pair anti-equality and `la.<src> = l.<pk>`
-///   closure-pair joins both have no column to reference.
+/// closure-pair joins both have no column to reference.
 /// - [`PkType::Composite`] — multi-column PKs would need multi-column
-///   `(l.c1, l.c2) <> (r.c1, r.c2)` emission, multi-column closure
-///   join keys, and multi-column GROUP BY. The v0.1.0 pair-tuple
-///   substrate does not implement multi-column emission, so composite
-///   PKs are rejected at the terminal-call gate rather than silently
-///   degenerating to a single-column emission (the pre-fix
-///   `unwrap_or("id")` fallback).
-///   Called from the terminals before SQL build:
-///   [`JoinedQuerySet::fetch_all`], [`JoinedQuerySet::count`], and
-///   [`JoinedAnnotatedQuerySet::fetch_all`] each invoke this for both
-///   sides whenever the path requires per-row identity (self-pair
-///   anti-equality, closure-pair joins, or pair-aggregate GROUP BY).
-///   The validated `&'static str` is then threaded through the emitter
-///   helpers as a parameter so no helper carries a silent
-///   `unwrap_or("id")` fallback.
+/// `(l.c1, l.c2) <> (r.c1, r.c2)` emission, multi-column closure
+/// join keys, and multi-column GROUP BY. The v0.1.0 pair-tuple
+/// substrate does not implement multi-column emission, so composite
+/// PKs are rejected at the terminal-call gate rather than silently
+/// degenerating to a single-column emission (the pre-fix
+/// `unwrap_or("id")` fallback).
+/// Called from the terminals before SQL build:
+/// [`JoinedQuerySet::fetch_all`], [`JoinedQuerySet::count`], and
+/// [`JoinedAnnotatedQuerySet::fetch_all`] each invoke this for both
+/// sides whenever the path requires per-row identity (self-pair
+/// anti-equality, closure-pair joins, or pair-aggregate GROUP BY).
+/// The validated `&'static str` is then threaded through the emitter
+/// helpers as a parameter so no helper carries a silent
+/// `unwrap_or("id")` fallback.
 pub(crate) fn validated_pk_column_for_pair_identity<M: Model>() -> Result<&'static str, DjogiError>
 {
     let desc = M::descriptor();
@@ -305,17 +305,17 @@ pub(crate) fn validated_pk_column_for_pair_identity<M: Model>() -> Result<&'stat
         )),
         PkType::None => Err(DjogiError::Validation(format!(
             "model {} has no primary key (PkType::None); pair-tuple paths that reference \
-             per-row identity (`l.<pk> <> r.<pk>` self-pair anti-equality, closure-pair \
-             joins, or pair-aggregate GROUP BY) require a single-column PK. Either give \
-             the model a PK or build the query through a path that does not need row \
-             identity (cross-join with `include_equal_pk` and no closure-pair join).",
+    per-row identity (`l.<pk> <> r.<pk>` self-pair anti-equality, closure-pair \
+    joins, or pair-aggregate GROUP BY) require a single-column PK. Either give \
+    the model a PK or build the query through a path that does not need row \
+    identity (cross-join with `include_equal_pk` and no closure-pair join).",
             M::table_name()
         ))),
         PkType::Composite(cols) => Err(DjogiError::Validation(format!(
             "model {} has a composite primary key ({:?}); the v0.1.0 pair-tuple substrate \
-             does not emit multi-column anti-equality, closure-pair join keys, or GROUP BY. \
-             A future slice will add multi-column emission; until then, pair-tuple paths \
-             that require per-row identity are rejected at the terminal gate.",
+    does not emit multi-column anti-equality, closure-pair join keys, or GROUP BY. \
+    A future slice will add multi-column emission; until then, pair-tuple paths \
+    that require per-row identity are rejected at the terminal gate.",
             M::table_name(),
             cols
         ))),
@@ -674,7 +674,7 @@ impl<L: Model, R: Model> JoinedQuerySet<L, R> {
     /// Count the number of pair tuples this query would return,
     /// without decoding any of them.
     /// Emits `SELECT COUNT(*) FROM <l> AS l CROSS JOIN <r> AS r
-    /// [LEFT JOIN ...] [WHERE ...]`. `ORDER BY` / `LIMIT` / `OFFSET` are
+    /// [LEFT JOIN...] [WHERE...]`. `ORDER BY` / `LIMIT` / `OFFSET` are
     /// not emitted because they do not affect a `COUNT(*)`.
     pub fn count<'ctx>(
         self,
@@ -731,10 +731,10 @@ impl<L: Model> QuerySet<L> {
     ///
     /// // Pair every Elephant with every Herd the Sighting records cover.
     /// let pairs: Vec<(Sighting, Herd)> = Sighting::objects()
-    /// .filter(|s| s.observed_at().gte(season_start))
-    /// .cross_join_with(Herd::objects().filter(|h| h.estimated_population().gte(50)))
-    /// .fetch_all(&mut ctx)
-    /// .await?;
+    ///.filter(|s| s.observed_at().gte(season_start))
+    ///.cross_join_with(Herd::objects().filter(|h| h.estimated_population().gte(50)))
+    ///.fetch_all(&mut ctx)
+    ///.await?;
     /// ```
     /// `exclude_equal_pk` defaults to `false` for cross-joins — different
     /// models almost never share a primary-key namespace, and forcing
@@ -772,10 +772,10 @@ impl<L: Model> QuerySet<L> {
     /// // Mating-pairs candidate generation: every mature Elephant paired
     /// // with every other mature Elephant.
     /// let pairs: Vec<(Elephant, Elephant)> = Elephant::objects()
-    /// .filter(|e| e.estimated_birth_year().lte(mature_cutoff))
-    /// .self_pairs()
-    /// .fetch_all(&mut ctx)
-    /// .await?;
+    ///.filter(|e| e.estimated_birth_year().lte(mature_cutoff))
+    ///.self_pairs()
+    ///.fetch_all(&mut ctx)
+    ///.await?;
     /// ```
     #[must_use = "joined querysets are lazy — dropping one silently omits the query"]
     pub fn self_pairs(self) -> JoinedQuerySet<L, L> {
@@ -836,16 +836,16 @@ impl<L: Model, R: Model, A: IntoAggregateTuple> JoinedAnnotatedQuerySet<L, R, A>
     ///
     /// // Top-3 male per female by combined score.
     /// let scored: Vec<((Elephant, Elephant), i64)> = Elephant::objects()
-    /// .self_pairs()
-    /// .annotate(|female, male| {
+    ///.self_pairs()
+    ///.annotate(|female, male| {
     /// RowNumber::new()
-    /// .partition_by_pair(PairSide::Left, female.id())
-    /// .order_by_pair_asc(PairSide::Right, male.name())
-    /// .alias("rank")
+    ///.partition_by_pair(PairSide::Left, female.id())
+    ///.order_by_pair_asc(PairSide::Right, male.name())
+    ///.alias("rank")
     /// })
-    /// .qualify(|w| w.lte(3))
-    /// .fetch_all(&mut ctx)
-    /// .await?;
+    ///.qualify(|w| w.lte(3))
+    ///.fetch_all(&mut ctx)
+    ///.await?;
     /// ```
     #[must_use = "joined querysets are lazy — dropping one silently omits the query"]
     pub fn qualify<F>(mut self, f: F) -> Self
@@ -949,10 +949,10 @@ where
             if aggregates.requires_closure_pair_join() && inner.closure_pair.is_none() {
                 return Err(DjogiError::Validation(
                     "annotated joined-queryset terminal includes a closure-pair aggregate \
-                     (e.g. PairClosureKinshipSum) but the queryset has no \
-                     `left_join_closure_pair::<C>()` join. Call \
-                     `.left_join_closure_pair::<YourClosure>()` on the JoinedQuerySet \
-                     before `.annotate(...)`."
+      (e.g. PairClosureKinshipSum) but the queryset has no \
+      `left_join_closure_pair::<C>()` join. Call \
+      `.left_join_closure_pair::<YourClosure>()` on the JoinedQuerySet \
+      before `.annotate(...)`."
                         .to_string(),
                 ));
             }
@@ -993,14 +993,14 @@ where
             if !aggregates.is_joined_safe() {
                 return Err(DjogiError::Validation(
                     "joined-queryset `.annotate(...)` rejected an annotation slot that is \
-                     not joined-context-safe. Ordinary single-Model aggregates \
-                     (e.g. `l.age().sum()`) emit a bare column reference like `SUM(age) \
-                     OVER ()` that is ambiguous when both pair sides share column names \
-                     (always true for self-joins). Use a pair-aware annotation: \
-                     `PairClosureKinshipSum<C>` for kinship summation, or a window \
-                     function with `partition_by_pair(PairSide::Left, ...)` / \
-                     `order_by_pair_asc(PairSide::Right, ...)`. A pair-aware ordinary \
-                     aggregate surface is a future slice."
+      not joined-context-safe. Ordinary single-Model aggregates \
+      (e.g. `l.age().sum()`) emit a bare column reference like `SUM(age) \
+      OVER ()` that is ambiguous when both pair sides share column names \
+      (always true for self-joins). Use a pair-aware annotation: \
+      `PairClosureKinshipSum<C>` for kinship summation, or a window \
+      function with `partition_by_pair(PairSide::Left,...)` / \
+      `order_by_pair_asc(PairSide::Right,...)`. A pair-aware ordinary \
+      aggregate surface is a future slice."
                         .to_string(),
                 ));
             }
@@ -1049,14 +1049,14 @@ where
 /// SQL shape:
 /// ```sql
 /// SELECT
-/// l.<c1> AS l_<c1>, ..., l.<cN> AS l_<cN>,
-/// r.<c1> AS r_<c1>, ..., r.<cM> AS r_<cM>
+/// l.<c1> AS l_<c1>,..., l.<cN> AS l_<cN>,
+/// r.<c1> AS r_<c1>,..., r.<cM> AS r_<cM>
 /// FROM <l_table> AS l CROSS JOIN <r_table> AS r
 /// [LEFT JOIN <closure> AS la ON la.<source> = l.<pk>
 /// LEFT JOIN <closure> AS ra ON ra.<source> = r.<pk>
 /// AND ra.<ancestor> = la.<ancestor>]
 /// [WHERE l.<pk> <> r.<pk> AND <left filter> AND <right filter>]
-/// [ORDER BY <pair order ...>]
+/// [ORDER BY <pair order...>]
 /// [LIMIT $n] [OFFSET $n]
 /// ```
 /// Aliases are framework-fixed per [`LEFT_ALIAS`] / [`RIGHT_ALIAS`].
@@ -1133,7 +1133,7 @@ pub(crate) fn build_joined_count<L: Model, R: Model>(
 
 /// Build the annotated SELECT for [`JoinedAnnotatedQuerySet`].
 /// Mirrors [`build_annotated_select_for_fetch`](crate::query::sql::build_annotated_select_for_fetch)
-/// but with the pair-tuple `SELECT l.<c1> AS l_<c1>, ..., r.<c1> AS r_<c1>, ...`
+/// but with the pair-tuple `SELECT l.<c1> AS l_<c1>,..., r.<c1> AS r_<c1>,...`
 /// prefix plus the optional `__djogi_agg_<N>` aggregate slots. If
 /// `qualify` is `Some`, the inner select is wrapped in a derived table
 /// and the outer scope applies the qualify predicate as a `WHERE`.
@@ -1254,11 +1254,11 @@ fn push_joined_group_by_if_needed<L, R, A>(
     }
     let l_pk = l_pk.expect(
         "terminal must validate left PK via validated_pk_column_for_pair_identity \
-         when the aggregate tuple requires a closure-pair join",
+   when the aggregate tuple requires a closure-pair join",
     );
     let r_pk = r_pk.expect(
         "terminal must validate right PK via validated_pk_column_for_pair_identity \
-         when the aggregate tuple requires a closure-pair join",
+   when the aggregate tuple requires a closure-pair join",
     );
     acc.push_sql(" GROUP BY ");
     acc.push_sql(LEFT_ALIAS);
@@ -1311,11 +1311,11 @@ fn push_closure_pair_joins<L: Model, R: Model>(
     };
     let l_pk = l_pk.expect(
         "terminal must validate left PK via validated_pk_column_for_pair_identity \
-         before emitting closure-pair LEFT JOIN ON-clauses",
+   before emitting closure-pair LEFT JOIN ON-clauses",
     );
     let r_pk = r_pk.expect(
         "terminal must validate right PK via validated_pk_column_for_pair_identity \
-         before emitting closure-pair LEFT JOIN ON-clauses",
+   before emitting closure-pair LEFT JOIN ON-clauses",
     );
 
     // LEFT JOIN <closure> AS la ON la.<source> = l.<pk>
@@ -1400,11 +1400,11 @@ fn push_joined_where<L: Model, R: Model>(
                 // l.<pk> <> r.<pk>
                 let l_pk = l_pk.expect(
                     "terminal must validate left PK via validated_pk_column_for_pair_identity \
-                     before emitting self-pair anti-equality (exclude_equal_pk=true)",
+      before emitting self-pair anti-equality (exclude_equal_pk=true)",
                 );
                 let r_pk = r_pk.expect(
                     "terminal must validate right PK via validated_pk_column_for_pair_identity \
-                     before emitting self-pair anti-equality (exclude_equal_pk=true)",
+      before emitting self-pair anti-equality (exclude_equal_pk=true)",
                 );
                 acc.push_sql(LEFT_ALIAS);
                 acc.push_sql(".");
@@ -1463,9 +1463,9 @@ fn push_joined_order_by(acc: &mut SqlAccumulator, ordering: &[PairOrderExpr]) {
 /// adopters write:
 /// ```ignore
 /// RowNumber::new()
-/// .partition_by_pair(PairSide::Left, l_fields.female_id())
-/// .order_by_pair_desc(PairSide::Left, l_fields.score())
-/// .alias("rank")
+///.partition_by_pair(PairSide::Left, l_fields.female_id())
+///.order_by_pair_desc(PairSide::Left, l_fields.score())
+///.alias("rank")
 /// ```
 /// alongside the single-Model `partition_by` they already know.
 /// # Accepted field handles
@@ -1808,7 +1808,7 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
     /// aggregate's `C` matches the join's `C` by comparing every
     /// captured identifier on `cp` against `C`'s same-named accessor.
     /// This catches the
-    /// `left_join_closure_pair::<C1>() ... PairClosureKinshipSum::<C2>::new()`
+    /// `left_join_closure_pair::<C1>()... PairClosureKinshipSum::<C2>::new()`
     /// (C1 ≠ C2) mismatch case before SQL build — the aggregate
     /// would otherwise reference closure columns the join clauses do
     /// not provide and surface as a Postgres `42703 column does not
@@ -1841,17 +1841,17 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
             {
                 return Err(crate::DjogiError::Validation(format!(
                     "ClosureModel mismatch on PairClosureKinshipSum: \
-                     `left_join_closure_pair::<...>()` captured \
-                     {{ table: {join_table:?}, source: {join_source:?}, \
-                     ancestor: {join_ancestor:?}, depth: {join_depth:?}, \
-                     path_count: {join_path_count:?} }} but \
-                     PairClosureKinshipSum<{c_type}> emits \
-                     {{ table: {c_table:?}, source: {c_source:?}, \
-                     ancestor: {c_ancestor:?}, depth: {c_depth:?}, \
-                     path_count: {c_path_count:?} }}. \
-                     The aggregate and the join must reference the same \
-                     ClosureModel — use the same `C` type parameter on both \
-                     `left_join_closure_pair::<C>()` and `PairClosureKinshipSum::<C>::new()`.",
+      `left_join_closure_pair::<...>()` captured \
+      {{ table: {join_table:?}, source: {join_source:?}, \
+      ancestor: {join_ancestor:?}, depth: {join_depth:?}, \
+      path_count: {join_path_count:?} }} but \
+      PairClosureKinshipSum<{c_type}> emits \
+      {{ table: {c_table:?}, source: {c_source:?}, \
+      ancestor: {c_ancestor:?}, depth: {c_depth:?}, \
+      path_count: {c_path_count:?} }}. \
+      The aggregate and the join must reference the same \
+      ClosureModel — use the same `C` type parameter on both \
+      `left_join_closure_pair::<C>()` and `PairClosureKinshipSum::<C>::new()`.",
                     join_table = cp.table,
                     join_source = cp.source_column,
                     join_ancestor = cp.ancestor_column,
@@ -1884,7 +1884,7 @@ fn annotation_alias(slot: usize) -> &'static str {
         3 => "__djogi_agg_3",
         _ => unreachable!(
             "djogi annotate arity max is 4 — slot {slot} not reachable. \
-             A new impl_into_aggregate_tuple! arity must extend this match."
+    A new impl_into_aggregate_tuple! arity must extend this match."
         ),
     }
 }
@@ -1944,22 +1944,22 @@ impl<C: ClosureModel> crate::query::annotate::annotation_slot_sealed::Sealed
 /// Before this slot existed, adopters whose per-pair scoring needed
 /// `(left_geometry, right_geometry) → overlap_ratio` had three options:
 /// 1. Pre-fetch one hull-per-`Model`-row into Rust and call the scalar
-///    `Expr::area_of_intersection(&a, &b)` API per pair — N round trips.
+/// `Expr::area_of_intersection(&a, &b)` API per pair — N round trips.
 /// 2. Drop to raw SQL via the bypass attribute — escapes the typed
-///    projection pipeline.
+/// projection pipeline.
 /// 3. Compute the intersection in Rust — djogi does not ship a polygon-
-///    intersection algorithm and pulling in `geo` is outside the
-///    framework's spatial scope (the framework's role is to expose
-///    PostGIS, not to wrap it locally).
-///    `PairAreaOverlapRatio` provides the typed fourth path: one query
-///    emits the full pair-tuple plus overlap ratio per pair, mirroring how
-///    [`PairClosureKinshipSum<C>`] gives the typed kinship sum without the
-///    per-pair-roundtrip workaround.
+/// intersection algorithm and pulling in `geo` is outside the
+/// framework's spatial scope (the framework's role is to expose
+/// PostGIS, not to wrap it locally).
+/// `PairAreaOverlapRatio` provides the typed fourth path: one query
+/// emits the full pair-tuple plus overlap ratio per pair, mirroring how
+/// [`PairClosureKinshipSum<C>`] gives the typed kinship sum without the
+/// per-pair-roundtrip workaround.
 /// # How — SQL shape
 /// In a [`JoinedAnnotatedQuerySet::fetch_all`] terminal the slot
 /// contributes one SELECT-list column:
 /// ```sql
-/// , COALESCE(ST_Area(ST_Intersection(l.<lcol>::geometry, r.<rcol>::geometry)::geography), 0)::float8
+///, COALESCE(ST_Area(ST_Intersection(l.<lcol>::geometry, r.<rcol>::geometry)::geography), 0)::float8
 /// / NULLIF(ST_Area(l.<lcol>::geography), 0)::float8
 /// AS __djogi_agg_<N>
 /// ```
@@ -1967,29 +1967,29 @@ impl<C: ClosureModel> crate::query::annotate::annotation_slot_sealed::Sealed
 /// denominator `NULLIF(..., 0)::float8`) keeps every NULL / empty /
 /// zero-area edge case decodable:
 /// - Either side's geometry column is `NULL`: `ST_Intersection` returns
-///   `NULL`, `COALESCE(NULL, 0) = 0`. Left area = `NULL`, `NULLIF(NULL,
+/// `NULL`, `COALESCE(NULL, 0) = 0`. Left area = `NULL`, `NULLIF(NULL,
 /// 0) = NULL`. Final = `0 / NULL = NULL` → decodes as `0.0`.
 /// - Disjoint geometries: `ST_Intersection` returns empty,
-///   `ST_Area(empty::geography) = 0`. `COALESCE(0, 0) = 0`. Left area =
-///   nonzero. Final = `0 / nonzero = 0.0`. ✓
+/// `ST_Area(empty::geography) = 0`. `COALESCE(0, 0) = 0`. Left area =
+/// nonzero. Final = `0 / nonzero = 0.0`. ✓
 /// - Coincident geometries: numerator = `ST_Area(l)`, denominator =
-///   `ST_Area(l)`. Final = `1.0`. ✓
+/// `ST_Area(l)`. Final = `1.0`. ✓
 /// - Left has zero area (degenerate point / linestring): `NULLIF(0, 0)
 /// = NULL`. Final = `0.0`. ✓ (Avoids divide-by-zero.)
-///   Decode uses `Option<f64>` and maps `None` to `0.0` so a `NULL`
-///   result never trips an `f64` `FromSql` error.
+/// Decode uses `Option<f64>` and maps `None` to `0.0` so a `NULL`
+/// result never trips an `f64` `FromSql` error.
 /// # Where
 /// - SQL is emitted in [`JoinedAnnotatedQuerySet::fetch_all`] via the
-///   `AnnotationSlot::push_column` trait surface.
+/// `AnnotationSlot::push_column` trait surface.
 /// - The `l` / `r` alias prefixes come from the pair-tuple substrate
-///   ([`LEFT_ALIAS`] / [`RIGHT_ALIAS`]). The column names come from
-///   `IntoSqlField::into_sql_field().column()` at construction time,
-///   which is macro-validated against the unquoted-identifier byte
-///   grammar at field-handle construction.
+/// ([`LEFT_ALIAS`] / [`RIGHT_ALIAS`]). The column names come from
+/// `IntoSqlField::into_sql_field().column()` at construction time,
+/// which is macro-validated against the unquoted-identifier byte
+/// grammar at field-handle construction.
 /// - `is_joined_safe()` returns `true` because both column references
-///   are explicitly alias-qualified in the emitted SQL — there is no
-///   ambiguity between `l.<lcol>` and `r.<rcol>` even on self-joins
-///   (Mating-pairs of `(Herd, Herd)` etc.).
+/// are explicitly alias-qualified in the emitted SQL — there is no
+/// ambiguity between `l.<lcol>` and `r.<rcol>` even on self-joins
+/// (Mating-pairs of `(Herd, Herd)` etc.).
 /// # Constructing
 /// Build a `PairAreaOverlapRatio<L, R>` from two field handles whose
 /// value types implement [`crate::geo::GeographyValue`]:
@@ -1999,11 +1999,11 @@ impl<C: ClosureModel> crate::query::annotate::annotation_slot_sealed::Sealed
 ///
 /// // Per-pair territory overlap ratio in [0, 1].
 /// let overlaps: Vec<((Herd, Herd), f64)> = Herd::objects()
-/// .self_pairs()
-/// .include_equal_pk() // same-herd pairs yield 1.0; left in by default
-/// .annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
-/// .fetch_all(&mut ctx)
-/// .await?;
+///.self_pairs()
+///.include_equal_pk() // same-herd pairs yield 1.0; left in by default
+///.annotate(|l, r| PairAreaOverlapRatio::new(l.territory(), r.territory()))
+///.fetch_all(&mut ctx)
+///.await?;
 /// ```
 /// Both columns must be present on their respective sides; the
 /// `IntoSqlField` bound types-checks that at compile time. The columns
@@ -2016,7 +2016,7 @@ impl<C: ClosureModel> crate::query::annotate::annotation_slot_sealed::Sealed
 /// "what fraction of L's territory is shared with R", which is
 /// asymmetric in `(L, R)`. For a symmetric Jaccard-style ratio adopters
 /// can compose the inverse pair as a sibling annotation slot in a
-/// 4-arity tuple (`(forward_overlap, reverse_overlap, ...)`) and
+/// 4-arity tuple (`(forward_overlap, reverse_overlap,...)`) and
 /// combine in Rust.
 /// # Feature gating
 /// `PairAreaOverlapRatio` is part of the spatial surface and is
@@ -2554,11 +2554,11 @@ mod tests {
         // shared-ancestor semi-join that turns the pair of LEFT JOINs
         // into a per-pair "common ancestor" aggregator).
         assert!(
-            sql.contains(
-                "LEFT JOIN mini_ancestries AS ra ON ra.mini_id = r.id AND ra.ancestor_id = la.ancestor_id"
-            ),
-            "right closure LEFT JOIN with shared-ancestor predicate missing: {sql}"
-        );
+   sql.contains(
+    "LEFT JOIN mini_ancestries AS ra ON ra.mini_id = r.id AND ra.ancestor_id = la.ancestor_id"
+   ),
+   "right closure LEFT JOIN with shared-ancestor predicate missing: {sql}"
+  );
     }
 
     #[test]
@@ -2995,8 +2995,8 @@ mod tests {
         assert!(
             tuple_view.requires_closure_pair_join(),
             "PairClosureKinshipSum reports it requires a closure-pair join through the tuple bridge \
-             — single-Model annotate's `requires_closure_pair_join` check uses this same signal \
-             to reject the slot at terminal-call time"
+    — single-Model annotate's `requires_closure_pair_join` check uses this same signal \
+    to reject the slot at terminal-call time"
         );
     }
 
@@ -3558,7 +3558,7 @@ mod tests {
         assert!(
             !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
             "FirstValueWindow must always be rejected in joined annotations \
-             (bare target column has no pair-aware constructor)"
+    (bare target column has no pair-aware constructor)"
         );
     }
 
@@ -3616,7 +3616,7 @@ mod tests {
         assert!(
             !crate::query::annotate::AnnotationSlot::is_joined_safe(&win),
             "PercentRankWindow with bare partition_by must be rejected — \
-             no PairWindowExt impl exists for this type"
+    no PairWindowExt impl exists for this type"
         );
     }
 

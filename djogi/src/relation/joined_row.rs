@@ -16,7 +16,7 @@
 //! The two terminals produce structurally identical maps from
 //! `source_column -> Box<dyn Any>`, but they ship on opt-in terminals
 //! (`fetch_all_prefetched` / `fetch_all_joined`) with distinct generic
-//! bounds — prefetch needs `T::Pk: Encode + Type + ...` for the
+//! bounds — prefetch needs `T::Pk: Encode + Type +...` for the
 //! follow-up `IN (...)` bind, whereas select_related needs `T:
 //! FromJoinedPgRow` for single-row decoding. Giving each path its own
 //! wrapper type keeps those bounds from leaking into the other
@@ -33,9 +33,9 @@
 //! [`RelationPath::source_column`]:
 //! ```sql
 //! SELECT vehicles_p3.*,
-//!        rel_owner_id.id   AS "rel_owner_id.id",
-//!        rel_owner_id.name AS "rel_owner_id.name",
-//!        …
+//!  rel_owner_id.id AS "rel_owner_id.id",
+//!  rel_owner_id.name AS "rel_owner_id.name",
+//!  …
 //! FROM vehicles_p3
 //! LEFT JOIN owners_p3 rel_owner_id ON vehicles_p3.owner_id = rel_owner_id.id
 //! ```
@@ -44,7 +44,7 @@
 //! cross-table projection. `row.try_get("rel_owner_id.id")` returns
 //! the child's `id` — and `try_get_raw("rel_owner_id.id").is_null()`
 //! distinguishes LEFT JOIN misses (all child columns NULL) from live
-//! child rows, matching the probe Task 4's prefetch loader established.
+//! child rows, matching the probe 's prefetch loader established.
 //! # Where
 //! Consumed by [`crate::relation::select_related::apply_select_related`]
 //! and emitted from [`crate::query::terminal::QuerySet::fetch_all_joined`].

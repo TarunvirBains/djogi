@@ -60,7 +60,7 @@
 //! djogi's already-emitted companion — no second struct, no
 //! collision, and the `Cacheable` impl shape stays in lock-step with
 //! sassi's own evolution. Adopters reach the field handle through the
-//! same accessor surface `QuerySet::filter(|f| ...)` already exposes,
+//! same accessor surface `QuerySet::filter(|f|...)` already exposes,
 //! so Sassi-side predicate builders (`Punnu::scope(...).filter_basic(...)`)
 //! and Djogi-side closures share one DSL.
 //! `{Model}Fields::new()` is `const` and zero-cost — the ZST has no
@@ -108,8 +108,8 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
     }
 
     // Sassi-codegen routes emitted-code paths through this prefix. The
-    // emitted impl writes `impl ::djogi::types::Cacheable for ...` and
-    // `impl ::djogi::types::DeltaSyncCacheable for ...`, never
+    // emitted impl writes `impl ::djogi::types::Cacheable for...` and
+    // `impl ::djogi::types::DeltaSyncCacheable for...`, never
     // `::sassi::*` directly — adopters consume djogi's re-export
     // surface only.
     let sassi_path: TokenStream = quote! { ::djogi::types };
@@ -132,8 +132,8 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
     // the diagnostic message can name "watermark_field" specifically
     // (sassi-codegen's message says "Cacheable: watermark_field …",
     // which is correct in both contexts but reads less cleanly when
-    // the user wrote `#[model(watermark_field = ...)]` rather than
-    // `#[cacheable(watermark_field = ...)]`).
+    // the user wrote `#[model(watermark_field =...)]` rather than
+    // `#[cacheable(watermark_field =...)]`).
     // The check inspects the post-injection struct (`struct_item` is
     // passed into `model::expand_inner` after `inject::expand` ran),
     // so framework-injected `id` / `created_at` / `updated_at` are
@@ -155,9 +155,9 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
             watermark_span,
             format!(
                 "`watermark_field = \"{watermark_name}\"` does not name a field on this model — \
-                 the named field must exist on the post-injection struct \
-                 (framework-injected fields `id`, `created_at`, `updated_at` \
-                 are eligible; user fields are eligible)"
+     the named field must exist on the post-injection struct \
+     (framework-injected fields `id`, `created_at`, `updated_at` \
+     are eligible; user fields are eligible)"
             ),
         ));
     }
@@ -186,7 +186,7 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
     // `model::stubs::expand` emits the companion as `{Model}Fields`. Reach
     // for the same identifier here so `Cacheable::Fields` lines up with the
     // accessor surface adopters already use through
-    // `QuerySet::filter(|f| ...)`. `CacheableFieldsMode::external` instructs
+    // `QuerySet::filter(|f|...)`. `CacheableFieldsMode::external` instructs
     // sassi-codegen to emit `type Fields = #fields_name` and
     // `fn fields() -> Self::Fields { #fields_name::new() }` against djogi's
     // already-emitted companion — sidestepping
@@ -239,12 +239,12 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
     // constructor so the emission keeps compiling against the narrowed
     // v0.1.0 surface.
     let boot_hook = quote! {
-        ::djogi::__private::inventory::submit! {
-            ::djogi::SassiBootHook::__djogi_from_model_macro(|sassi: &mut ::djogi::cache::Sassi| {
-                let punnu = ::djogi::cache::Punnu::<#struct_name>::builder().build();
-                sassi.register::<#struct_name>(::std::sync::Arc::new(punnu));
-            })
-        }
+     ::djogi::__private::inventory::submit! {
+      ::djogi::SassiBootHook::__djogi_from_model_macro(|sassi: &mut ::djogi::cache::Sassi| {
+       let punnu = ::djogi::cache::Punnu::<#struct_name>::builder().build();
+       sassi.register::<#struct_name>(::std::sync::Arc::new(punnu));
+      })
+     }
     };
 
     // 5 — emit `impl DjogiDeltaSyncMeta for {Model}` so the
@@ -255,15 +255,15 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
     // `feedback_macro_path_routing.md`.
     let watermark_name_lit = watermark_name.as_str();
     let delta_sync_meta_impl = quote! {
-        impl ::djogi::cache::DjogiDeltaSyncMeta for #struct_name {
-            const WATERMARK_COLUMN: &'static str = #watermark_name_lit;
-        }
+     impl ::djogi::cache::DjogiDeltaSyncMeta for #struct_name {
+      const WATERMARK_COLUMN: &'static str = #watermark_name_lit;
+     }
     };
 
     Ok(quote! {
-        #cacheable_impl
-        #delta_sync_impl
-        #delta_sync_meta_impl
-        #boot_hook
+     #cacheable_impl
+     #delta_sync_impl
+     #delta_sync_meta_impl
+     #boot_hook
     })
 }

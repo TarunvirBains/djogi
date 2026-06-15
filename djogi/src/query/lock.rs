@@ -26,7 +26,7 @@
 //! Every row-level lock — `FOR UPDATE` or `FOR SHARE` — is held until
 //! the end of the enclosing transaction. A pool-backed
 //! [`DjogiContext`](crate::DjogiContext) auto-commits each statement,
-//! so a `SELECT ... FOR UPDATE` (or `... FOR SHARE`) on a pool-backed
+//! so a `SELECT... FOR UPDATE` (or `... FOR SHARE`) on a pool-backed
 //! context acquires the lock, then releases it instantly when the
 //! implicit transaction closes — **no protection whatsoever** against
 //! a concurrent writer between `fetch_*` and any follow-up step.
@@ -49,7 +49,7 @@
 /// hand-construct a variant that bypasses the `push_tail` emitter,
 /// which is the only path that produces Postgres-valid lock SQL.
 /// `Default` is `None` so a fresh `QuerySet<T>` carries no lock tail
-/// the same behaviour shipped before Task 7 landed.
+/// the same behaviour shipped before landed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum LockMode {
     /// No row-level lock. Ordinary `SELECT` with no trailing clause.
@@ -72,16 +72,16 @@ pub(crate) enum LockMode {
     /// `FOR SHARE` — acquire a shared (non-exclusive) row lock for
     /// the duration of the enclosing transaction. Blocks `UPDATE` /
     /// `DELETE` of the locked rows but allows other readers to take
-    /// the same `FOR SHARE` lock concurrently. .
+    /// the same `FOR SHARE` lock concurrently..
     ForShare,
     /// `FOR SHARE NOWAIT` — same shared-lock semantics as
     /// [`LockMode::ForShare`], but fail immediately with Postgres
     /// SQLSTATE `55P03` (`lock_not_available`) when another session
-    /// holds a conflicting writer lock. .
+    /// holds a conflicting writer lock..
     ForShareNowait,
     /// `FOR SHARE SKIP LOCKED` — same shared-lock semantics as
     /// [`LockMode::ForShare`], but silently skip rows currently
-    /// locked exclusively by another session. .
+    /// locked exclusively by another session..
     ForShareSkipLocked,
 }
 

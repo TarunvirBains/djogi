@@ -15,28 +15,28 @@ use djogi::prelude::*;
 #[model(table = "phase8_owner_b5")]
 #[derive(Debug, Clone)]
 pub struct OwnerB5 {
-    pub name: String,
+ pub name: String,
 }
 
 #[model(table = "phase8_node_b5", no_default)]
 #[derive(Debug, Clone)]
 pub struct NodeB5 {
-    pub owner_id: ForeignKey<OwnerB5>,
-    pub label: String,
+ pub owner_id: ForeignKey<OwnerB5>,
+ pub label: String,
 }
 
 fn main() {
-    // `NodeB5Related::owner()` returns `RelationPath<NodeB5, OwnerB5>`.
-    // `QuerySet::<NodeB5>::tree_descendants` requires
-    // `RelationPath<NodeB5, NodeB5>`. The mismatch on the second type
-    // parameter (`OwnerB5` vs `NodeB5`) surfaces as E0308.
-    //
-    // Resolve `id` through the model's own `Pk` associated type — the
-    // default PK is `HeerIdDesc`, not `HeerId`, so
-    // hard-coding `<HeerId as PrimaryKey>::sentinel()` would also
-    // produce a SECOND unrelated `expected HeerIdDesc, found HeerId`
-    // error and pollute the test signal. Going through the trait keeps
-    // this fixture asserting *only* the `RelationPath<T, T>` mismatch.
-    let id = <<NodeB5 as Model>::Pk as PrimaryKey>::sentinel();
-    let _qs = NodeB5::objects().tree_descendants(NodeB5Related::owner(), id);
+ // `NodeB5Related::owner()` returns `RelationPath<NodeB5, OwnerB5>`.
+ // `QuerySet::<NodeB5>::tree_descendants` requires
+ // `RelationPath<NodeB5, NodeB5>`. The mismatch on the second type
+ // parameter (`OwnerB5` vs `NodeB5`) surfaces as E0308.
+ //
+ // Resolve `id` through the model's own `Pk` associated type — the
+ // default PK is `HeerIdDesc`, not `HeerId`, so
+ // hard-coding `<HeerId as PrimaryKey>::sentinel()` would also
+ // produce a SECOND unrelated `expected HeerIdDesc, found HeerId`
+ // error and pollute the test signal. Going through the trait keeps
+ // this fixture asserting *only* the `RelationPath<T, T>` mismatch.
+ let id = <<NodeB5 as Model>::Pk as PrimaryKey>::sentinel();
+ let _qs = NodeB5::objects().tree_descendants(NodeB5Related::owner(), id);
 }

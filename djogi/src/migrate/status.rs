@@ -106,10 +106,10 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
             let ooo_marker = if row.out_of_order_flag {
                 "[ooo] "
             } else {
-                "      "
+                "  "
             };
             let line = format!(
-                "  {marker}{version}  {status:<11}  {applied_at}  {applied_by}  run={run_short}  {ms}ms",
+                " {marker}{version} {status:<11} {applied_at} {applied_by} run={run_short} {ms}ms",
                 marker = ooo_marker,
                 version = row.version,
                 status = status_str,
@@ -120,7 +120,7 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
             );
             lines.push(line);
             if let Some(note) = &row.partial_apply_note {
-                lines.push(format!("    partial-apply-note: {note}"));
+                lines.push(format!(" partial-apply-note: {note}"));
             }
             if matches!(row.status, LedgerStatus::Pending | LedgerStatus::Failed) {
                 any_pending_or_failed = true;
@@ -146,18 +146,18 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
 /// [`super::segment::plan_delta`]. When the plan classifies as
 /// `PkTypeFlip`, this fn returns the operator-facing warning lines:
 /// - The exact PoNR sentence for every flip plan — see
-///   [`POINT_OF_NO_RETURN_WARNING`] for the verbatim byte string.
+/// [`POINT_OF_NO_RETURN_WARNING`] for the verbatim byte string.
 /// - `"⚠ Partitioned-table cutover is seconds-to-minutes class
 /// benchmark in staging first"` when any segment in the plan
-///   carries a partitioned-cutover label
-///   (`PkFlipPartitionedCutover`).
-///   Non-flip plans return an empty `Vec`. The warnings are
-///   pre-formatted strings ready to print; the CLI prepends them to
-///   the regular status output for the affected pending plan.
-///   The PoNR sentence wording is contractual — operators cite it in
-///   runbooks. The unit test `point_of_no_return_warning_byte_exact`
-///   asserts the exact bytes so review-driven wording drift produces a
-///   loud test failure rather than silent rephrasing.
+/// carries a partitioned-cutover label
+/// (`PkFlipPartitionedCutover`).
+/// Non-flip plans return an empty `Vec`. The warnings are
+/// pre-formatted strings ready to print; the CLI prepends them to
+/// the regular status output for the affected pending plan.
+/// The PoNR sentence wording is contractual — operators cite it in
+/// runbooks. The unit test `point_of_no_return_warning_byte_exact`
+/// asserts the exact bytes so review-driven wording drift produces a
+/// loud test failure rather than silent rephrasing.
 pub fn render_pending_plan_warnings(plan: &MigrationPlan) -> Vec<String> {
     if !matches!(plan.classification, Classification::PkTypeFlip { .. }) {
         return Vec::new();
@@ -208,11 +208,11 @@ pub async fn render_invalid_index_warnings(
     let rows = ctx
         .query_all(
             "SELECT n.nspname, c.relname, i.indrelid::regclass::text \
-             FROM pg_index i \
-             JOIN pg_class c ON c.oid = i.indexrelid \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE NOT i.indisvalid \
-             ORDER BY n.nspname, c.relname",
+    FROM pg_index i \
+    JOIN pg_class c ON c.oid = i.indexrelid \
+    JOIN pg_namespace n ON n.oid = c.relnamespace \
+    WHERE NOT i.indisvalid \
+    ORDER BY n.nspname, c.relname",
             &[],
         )
         .await?;
@@ -231,7 +231,7 @@ pub async fn render_invalid_index_warnings(
 /// The full line is `format!("{D010_PREFIX}{app}…")`.
 /// Pinned as a constant so byte-equality tests and operator runbooks
 /// can assert on the exact wording without parsing the formatted line.
-pub const D010_PREFIX: &str = "  D010: ledger references app \"";
+pub const D010_PREFIX: &str = " D010: ledger references app \"";
 
 /// Produce the full D010 warning line for a given `app` label.
 /// Format: `D010_PREFIX + app + suffix`. The suffix is frozen;
@@ -240,7 +240,7 @@ pub const D010_PREFIX: &str = "  D010: ledger references app \"";
 pub fn format_d010(app: &str) -> String {
     format!(
         "{D010_PREFIX}{app}\" which is no longer in AppRegistry; \
-         was the app removed without a #[app(tombstone)]?"
+   was the app removed without a #[app(tombstone)]?"
     )
 }
 
@@ -255,8 +255,8 @@ pub const INVALID_INDEX_PREFIX: &str = "\u{26a0} INVALID index detected: ";
 pub fn format_invalid_index(schema: &str, index: &str, table: &str) -> String {
     format!(
         "{INVALID_INDEX_PREFIX}{schema}.{index} on {table} \u{2014} likely \
-         an interrupted CREATE INDEX CONCURRENTLY. Run \
-         `REINDEX INDEX CONCURRENTLY {schema}.{index}` or DROP and recreate.",
+   an interrupted CREATE INDEX CONCURRENTLY. Run \
+   `REINDEX INDEX CONCURRENTLY {schema}.{index}` or DROP and recreate.",
     )
 }
 
@@ -554,7 +554,7 @@ mod tests {
             actual_bytes.len(),
             expected_bytes.len(),
             "POINT_OF_NO_RETURN_WARNING byte length drifted from contract; \
-             expected {} bytes, got {}; constant body: {:?}",
+    expected {} bytes, got {}; constant body: {:?}",
             expected_bytes.len(),
             actual_bytes.len(),
             POINT_OF_NO_RETURN_WARNING,
@@ -568,7 +568,7 @@ mod tests {
         // Also keep the str-level equality assertion as a readability
         // safety net so a future test reader sees the exact wording.
         let expected = "\u{26a0} POINT OF NO RETURN after this cutover commits \u{2014} \
-                        reverse requires an inverse migration";
+      reverse requires an inverse migration";
         assert_eq!(POINT_OF_NO_RETURN_WARNING, expected);
     }
 
@@ -630,7 +630,7 @@ mod tests {
         assert!(!line_a.contains("[ooo]"));
         assert!(line_b.contains("[ooo]"));
         // Both lines start with two indenting spaces matching `App :`.
-        assert!(line_a.starts_with("  "));
-        assert!(line_b.starts_with("  "));
+        assert!(line_a.starts_with(" "));
+        assert!(line_b.starts_with(" "));
     }
 }

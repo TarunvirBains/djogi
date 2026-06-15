@@ -32,13 +32,13 @@
 //! composition derives on one model exercises:
 //!
 //! - The model macro's `auditable` flag flowing through to descriptor
-//!   emission (`#[model(auditable)]` path).
+//!  emission (`#[model(auditable)]` path).
 //! - The `#[model(soft_deletable)]` opt-in emitting the trait
-//!   impl alongside the auditable surface.
+//!  impl alongside the auditable surface.
 //! - The descriptor emitter tagging both `created_by` and `deleted_at`
-//!   independently with the right provenance string.
+//!  independently with the right provenance string.
 //! - The migration emitter NOT discriminating between composed and
-//!   hand-declared columns when it lowers either to SQL.
+//!  hand-declared columns when it lowers either to SQL.
 
 use std::collections::BTreeMap;
 
@@ -95,7 +95,7 @@ fn extract_add_table_delta(deltas: Vec<SchemaDelta>, target_table: &str) -> Sche
     }
     panic!(
         "no AddTable operation found for `{target_table}` in the projected delta set; \
-         the model macro emitted no descriptor or the projection lost the table",
+     the model macro emitted no descriptor or the projection lost the table",
     );
 }
 
@@ -231,7 +231,7 @@ fn composed_columns_match_hand_declared_baseline() {
         normalized_column_body(&composed_sql, "compose_round_trip"),
         normalized_column_body(&baseline_sql, "compose_round_trip_baseline"),
         "composed `Auditable + SoftDeletable` model must emit the same column body \
-         as a hand-declared model with the same fields; emission must NOT depend \
-         on `composed_via`. composed:\n{composed_sql}\n\nbaseline:\n{baseline_sql}",
+     as a hand-declared model with the same fields; emission must NOT depend \
+     on `composed_via`. composed:\n{composed_sql}\n\nbaseline:\n{baseline_sql}",
     );
 }

@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Visage-Derived Fields
 
@@ -28,11 +28,11 @@ Under this framing, a visage's projection is a list of *entries*. Each
 entry produces one output field. Two kinds of entry exist:
 
 - **Column reference** — copies a field directly from the source
-  model. The SQL projects the column; the in-memory conversion reads
-  it from `model.<field>`.
+ model. The SQL projects the column; the in-memory conversion reads
+ it from `model.<field>`.
 - **Derived expression** — evaluates a SQL expression server-side and
-  a paired Rust expression in-memory. The two expressions are
-  adopter-provided; the framework does not translate between them.
+ a paired Rust expression in-memory. The two expressions are
+ adopter-provided; the framework does not translate between them.
 
 Both kinds compose into one ordered list at the trait level. The kind
 discriminant is an internal implementation detail of the SQL emitter
@@ -58,12 +58,12 @@ newtype around a text column) and `Direction` is an enum:
 #[derive(Model, Debug, Clone)]
 #[model(table = "consignments")]
 pub struct Consignment {
-    #[field(expose(public, admin, export))]
-    pub inbound_site: Site,
-    #[field(expose(public, admin, export))]
-    pub outbound_site: Site,
-    #[field(expose(public, admin, export))]
-    pub direction: Direction,
+ #[field(expose(public, admin, export))]
+ pub inbound_site: Site,
+ #[field(expose(public, admin, export))]
+ pub outbound_site: Site,
+ #[field(expose(public, admin, export))]
+ pub direction: Direction,
 }
 ```
 
@@ -84,7 +84,7 @@ The derivation lives on the transport shape, not on the storage shape.
 The model still records both raw sites; each visage projects the
 unified single value.
 
-Phase 8.5 makes this constructible: visage emission projects both
+ makes this constructible: visage emission projects both
 fields that carry `#[field(expose(...))]` on real model columns and
 struct-level `#[derived(...)]` entries scoped to generated visages.
 The existing model-side `#[computed(sql = "...")]` remains a
@@ -106,23 +106,23 @@ Ownership is split cleanly between the two existing macro entry
 points:
 
 1. **`#[derive(Model)]` REGISTERS `derived` as a helper.** The
-   proc-macro derive declaration registers
-   `#[proc_macro_derive(Model, attributes(field, derived))]`. This
-   registration is purely a rustc-syntax-acceptance contract — it
-   tells the compiler "this attribute is legal on a struct that
-   `#[derive(Model)]`." The derive itself remains a no-op stub; it
-   does no parsing.
+ proc-macro derive declaration registers
+ `#[proc_macro_derive(Model, attributes(field, derived))]`. This
+ registration is purely a rustc-syntax-acceptance contract — it
+ tells the compiler "this attribute is legal on a struct that
+ `#[derive(Model)]`." The derive itself remains a no-op stub; it
+ does no parsing.
 2. **`#[model(...)]` OWNS the parsing, validation, and stripping.**
-   The `#[model(...)]` attribute macro at the entry point is the
-   single site where `#[derived(...)]` attributes are walked,
-   parsed, validated, and stripped from `item_struct.attrs` before
-   the struct is re-emitted. The emitted struct therefore contains
-   neither per-field `#[field(...)]` helper attributes nor
-   struct-level `#[derived(...)]` helper attributes. Without this
-   stripping, a surviving `#[derived(...)]` attribute would reach the
-   user crate's compiled output and trigger an "unknown attribute"
-   error downstream — rustc only recognises helper attributes within
-   the macro's expansion scope, not on the post-expansion item.
+ The `#[model(...)]` attribute macro at the entry point is the
+ single site where `#[derived(...)]` attributes are walked,
+ parsed, validated, and stripped from `item_struct.attrs` before
+ the struct is re-emitted. The emitted struct therefore contains
+ neither per-field `#[field(...)]` helper attributes nor
+ struct-level `#[derived(...)]` helper attributes. Without this
+ stripping, a surviving `#[derived(...)]` attribute would reach the
+ user crate's compiled output and trigger an "unknown attribute"
+ error downstream — rustc only recognises helper attributes within
+ the macro's expansion scope, not on the post-expansion item.
 
 In practice every Djogi model carries both `#[derive(Model)]` and
 `#[model(...)]`, so this split is invisible to adopters: the
@@ -145,24 +145,24 @@ projection entry scoped to one or more visages:
 #[derive(Model, Debug, Clone)]
 #[model(table = "consignments")]
 #[derived(
-    name   = facility_site,
-    ty     = Site,
-    scopes = [public, admin, export],
-    sql    = "CASE WHEN direction = 'inbound' \
-                   THEN inbound_site \
-                   ELSE outbound_site END",
-    rust   = "match model.direction { \
-                 Direction::Inbound => model.inbound_site.clone(), \
-                 _                  => model.outbound_site.clone(), \
-              }",
+ name = facility_site,
+ ty = Site,
+ scopes = [public, admin, export],
+ sql = "CASE WHEN direction = 'inbound' \
+  THEN inbound_site \
+  ELSE outbound_site END",
+ rust = "match model.direction { \
+  Direction::Inbound => model.inbound_site.clone(), \
+  _  => model.outbound_site.clone(), \
+ }",
 )]
 pub struct Consignment {
-    #[field(expose(public, admin, export))]
-    pub inbound_site: Site,
-    #[field(expose(public, admin, export))]
-    pub outbound_site: Site,
-    #[field(expose(public, admin, export))]
-    pub direction: Direction,
+ #[field(expose(public, admin, export))]
+ pub inbound_site: Site,
+ #[field(expose(public, admin, export))]
+ pub outbound_site: Site,
+ #[field(expose(public, admin, export))]
+ pub direction: Direction,
 }
 ```
 
@@ -192,28 +192,28 @@ All five required keys must be present. Missing any required key is
 The `name` value must be:
 
 1. A bare ASCII lowercase identifier. The first byte must be a `_`
-   byte or an ASCII lowercase letter byte (`'a'..='z'`); every
-   subsequent byte must be a `_` byte, an ASCII lowercase letter
-   byte, or an ASCII digit byte. Total length at most 63 bytes.
-   Rejecting uppercase bytes at parse time is what keeps the alias
-   stable through Postgres's unquoted-identifier case-folding — see
-   [Alias case-folding](#alias-case-folding-and-quoting). General
-   shape violations (length, leading-byte class, body-byte class)
-   surface as [E_DJG_VDF_004](#error-taxonomy); the uppercase-byte
-   case has its own code at [E_DJG_VDF_012](#error-taxonomy) so the
-   more precise diagnostic helps adopters who reach for camelCase.
+ byte or an ASCII lowercase letter byte (`'a'..='z'`); every
+ subsequent byte must be a `_` byte, an ASCII lowercase letter
+ byte, or an ASCII digit byte. Total length at most 63 bytes.
+ Rejecting uppercase bytes at parse time is what keeps the alias
+ stable through Postgres's unquoted-identifier case-folding — see
+ [Alias case-folding](#alias-case-folding-and-quoting). General
+ shape violations (length, leading-byte class, body-byte class)
+ surface as [E_DJG_VDF_004](#error-taxonomy); the uppercase-byte
+ case has its own code at [E_DJG_VDF_012](#error-taxonomy) so the
+ more precise diagnostic helps adopters who reach for camelCase.
 2. Not a Postgres reserved keyword (rejected at parse time using the
-   sorted const slice in `djogi-macros/src/ident.rs::RESERVED_KEYWORDS`;
-   the lookup is byte-level via `binary_search`, never via regex).
-   Violations surface as [E_DJG_VDF_014](#error-taxonomy) — a
-   separate code from the general shape rule (E_DJG_VDF_004) so the
-   diagnostic can point at the keyword conflict directly.
+ sorted const slice in `djogi-macros/src/ident.rs::RESERVED_KEYWORDS`;
+ the lookup is byte-level via `binary_search`, never via regex).
+ Violations surface as [E_DJG_VDF_014](#error-taxonomy) — a
+ separate code from the general shape rule (E_DJG_VDF_004) so the
+ diagnostic can point at the keyword conflict directly.
 3. Not prefixed by `__djogi_` (ASCII case-insensitive byte compare) —
-   [E_DJG_VDF_005](#error-taxonomy).
+ [E_DJG_VDF_005](#error-taxonomy).
 4. Not collide with any column exposed in the same scope on the same
-   model — [E_DJG_VDF_002](#error-taxonomy).
+ model — [E_DJG_VDF_002](#error-taxonomy).
 5. Not collide with any other derived field in any of its `scopes` —
-   [E_DJG_VDF_003](#error-taxonomy).
+ [E_DJG_VDF_003](#error-taxonomy).
 
 Identifier violations are therefore split across five codes:
 [E_DJG_VDF_002](#error-taxonomy) (column collision),
@@ -241,11 +241,11 @@ is the smaller surface.
 Each scope listed in `scopes` must:
 
 1. Be one of the four supported names: `public`, `self_view`, `admin`,
-   `export`. Unknown scope identifiers are rejected with
-   [E_DJG_VDF_006](#error-taxonomy) at parse time, with the diagnostic
-   span anchored at the offending identifier.
+ `export`. Unknown scope identifiers are rejected with
+ [E_DJG_VDF_006](#error-taxonomy) at parse time, with the diagnostic
+ span anchored at the offending identifier.
 2. Not be a scope that elsewhere declares relation-form embedding —
-   see [Relation-form visages](#relation-form-visages-deferred).
+ see [Relation-form visages](#relation-form-visages-deferred).
 
 Additionally, the `scopes = [...]` list itself must be a **set**:
 duplicate scope identifiers in the same list — `scopes = [public,
@@ -316,67 +316,67 @@ projection with surrounding parentheses and an alias matching `name`.
 Validations performed at parse time:
 
 1. **No statement separators.** The string must not contain `;`
-   outside string-literal or dollar-quoted context (rejected with
-   [E_DJG_VDF_007](#error-taxonomy)). This guards accidental
-   sub-statements.
+ outside string-literal or dollar-quoted context (rejected with
+ [E_DJG_VDF_007](#error-taxonomy)). This guards accidental
+ sub-statements.
 2. **No DDL / DML keywords as a leading token.** Strings whose first
-   non-whitespace, non-comment token (case-insensitive byte compare)
-   matches `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `CREATE`, `DROP`,
-   `ALTER`, `GRANT`, `REVOKE`, `TRUNCATE`, `COPY`, or `WITH`
-   (top-level) are rejected. Postgres is case-insensitive for
-   unquoted identifiers and keywords; the parser matches in either
-   case via byte comparison against a sorted const slice — no
-   regex (see `feedback_no_regex_in_djogi.md`).
+ non-whitespace, non-comment token (case-insensitive byte compare)
+ matches `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `CREATE`, `DROP`,
+ `ALTER`, `GRANT`, `REVOKE`, `TRUNCATE`, `COPY`, or `WITH`
+ (top-level) are rejected. Postgres is case-insensitive for
+ unquoted identifiers and keywords; the parser matches in either
+ case via byte comparison against a sorted const slice — no
+ regex (see `feedback_no_regex_in_djogi.md`).
 3. **Reserved `$N` placeholders.** Any token consisting of a literal
-   `$` byte followed by one or more ASCII digit bytes is reserved
-   for future cross-model references and rejects at parse time with
-   [E_DJG_VDF_008](#error-taxonomy). The grammar locks now even
-   though execution is deferred; see
-   [Reserved syntax: `$N`](#reserved-syntax-n).
+ `$` byte followed by one or more ASCII digit bytes is reserved
+ for future cross-model references and rejects at parse time with
+ [E_DJG_VDF_008](#error-taxonomy). The grammar locks now even
+ though execution is deferred; see
+ [Reserved syntax: `$N`](#reserved-syntax-n).
 4. **Aggregate / window function rejection (best-effort guard).**
-   The parser performs a token-level scan for a recognised set of
-   common SQL aggregate function names — `COUNT`, `SUM`, `AVG`,
-   `MIN`, `MAX`, `ARRAY_AGG`, `STRING_AGG`, `JSONB_AGG`, `JSON_AGG`,
-   `JSONB_OBJECT_AGG`, `JSON_OBJECT_AGG`, `RANGE_AGG`,
-   `MULTIRANGE_AGG`, `XMLAGG`, `BOOL_AND`, `BOOL_OR`, `EVERY`,
-   `BIT_AND`, `BIT_OR` — and for the `OVER` keyword (with optional
-   whitespace before `(`). Match is case-insensitive. Detection is
-   **best-effort against a recognised set**, not exhaustive: custom
-   aggregates, user-defined aggregates, and other built-in
-   aggregates outside this list slip through and surface at query
-   time as Postgres errors. The guard exists to catch the foot-gun
-   where an adopter accidentally tries to scope an aggregate to a
-   per-row projection; aggregates and window functions must route
-   through **Shape Q** (QuerySet-side `.annotate(...)`) or **Shape V**
-   (`#[derived(..., aggregate = true)]` with the explicit opt-in marker
-   — **Shape V is not yet accepted by the parser; see djogi#226-container**)
-   — both locked in [`docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site)
-   (see [Non-goals](#non-goals) item 2).
-   Tokens inside single-quoted strings and dollar-quoted bodies are
-   skipped so `'COUNT'` does not false-positive.
+ The parser performs a token-level scan for a recognised set of
+ common SQL aggregate function names — `COUNT`, `SUM`, `AVG`,
+ `MIN`, `MAX`, `ARRAY_AGG`, `STRING_AGG`, `JSONB_AGG`, `JSON_AGG`,
+ `JSONB_OBJECT_AGG`, `JSON_OBJECT_AGG`, `RANGE_AGG`,
+ `MULTIRANGE_AGG`, `XMLAGG`, `BOOL_AND`, `BOOL_OR`, `EVERY`,
+ `BIT_AND`, `BIT_OR` — and for the `OVER` keyword (with optional
+ whitespace before `(`). Match is case-insensitive. Detection is
+ **best-effort against a recognised set**, not exhaustive: custom
+ aggregates, user-defined aggregates, and other built-in
+ aggregates outside this list slip through and surface at query
+ time as Postgres errors. The guard exists to catch the foot-gun
+ where an adopter accidentally tries to scope an aggregate to a
+ per-row projection; aggregates and window functions must route
+ through **Shape Q** (QuerySet-side `.annotate(...)`) or **Shape V**
+ (`#[derived(..., aggregate = true)]` with the explicit opt-in marker
+ — **Shape V is not yet accepted by the parser; see djogi#226-container**)
+ — both locked in [`docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site)
+ (see [Non-goals](#non-goals) item 2).
+ Tokens inside single-quoted strings and dollar-quoted bodies are
+ skipped so `'COUNT'` does not false-positive.
 
 Validations the parser **does not** perform:
 
 - **Column reference checking.** Identifiers inside `sql` are not
-  cross-validated against the model's `{Model}Fields` set. Typos
-  surface at the database as a `tokio_postgres::Error` wrapped into
-  `DjogiError` via the existing `From<tokio_postgres::Error> for
-  DjogiError` conversion (`djogi/src/error.rs:690`). The trade-off:
-  compile-time identifier validation would require lexing a closed
-  SQL grammar inside the proc macro — a substantial dependency
-  surface incompatible with the no-regex discipline. The runtime
-  cost is one round trip on the first execution of a broken derived
-  field, with a precise error citing the SQL fragment.
+ cross-validated against the model's `{Model}Fields` set. Typos
+ surface at the database as a `tokio_postgres::Error` wrapped into
+ `DjogiError` via the existing `From<tokio_postgres::Error> for
+ DjogiError` conversion (`djogi/src/error.rs:690`). The trade-off:
+ compile-time identifier validation would require lexing a closed
+ SQL grammar inside the proc macro — a substantial dependency
+ surface incompatible with the no-regex discipline. The runtime
+ cost is one round trip on the first execution of a broken derived
+ field, with a precise error citing the SQL fragment.
 - **Type inference.** The Postgres type of the expression is not
-  inferred. Row decode at runtime relies on the `ty` declaration; a
-  mismatch surfaces as
-  [VisageError::DbComputedTypeMismatch](#runtime-errors).
+ inferred. Row decode at runtime relies on the `ty` declaration; a
+ mismatch surfaces as
+ [VisageError::DbComputedTypeMismatch](#runtime-errors).
 - **Volatility classification.** Derived SQL may be `STABLE`,
-  `VOLATILE`, or `IMMUTABLE`; the framework does not annotate or
-  enforce. Adopters writing `now()` or `random()` accept that the
-  in-memory `rust` path will diverge unless they reproduce the
-  same source of nondeterminism. The
-  [parity helper](#test-helper-assert_derived_parity) flags drift.
+ `VOLATILE`, or `IMMUTABLE`; the framework does not annotate or
+ enforce. Adopters writing `now()` or `random()` accept that the
+ in-memory `rust` path will diverge unless they reproduce the
+ same source of nondeterminism. The
+ [parity helper](#test-helper-assert_derived_parity) flags drift.
 
 ### Rust expression rules
 
@@ -389,13 +389,13 @@ nomenclature:
 
 ```rust
 fn from(src: &Consignment) -> Self {
-    Self {
-        // ... column entries via `src.<field>` ...
-        facility_site: {
-            let model: &Consignment = src;
-            // <rust expression>
-        },
-    }
+ Self {
+ //... column entries via `src.<field>`...
+ facility_site: {
+ let model: &Consignment = src;
+ // <rust expression>
+ },
+ }
 }
 ```
 
@@ -409,24 +409,24 @@ uses `src` extensively.
 The expression must be a valid Rust expression that:
 
 1. Refers to model fields via `model.<field>` syntax. The `model`
-   binding is `&{Model}` in scope.
+ binding is `&{Model}` in scope.
 2. Evaluates either to the declared `ty` (infallible shape) or to a
-   `Result<ty, E>` where `VisageError: From<E>` (fallible shape).
-   The `VisageError: From<E>` bound is what the `?` operator desugars
-   to (`Err(From::from(e))`); the equivalent trait-bound vocabulary
-   `E: Into<VisageError>` is interchangeable via the blanket
-   `impl<T, U: From<T>> Into<U> for T`. The spec uses `From<E>` when
-   describing what `?` requires at the call site, and
-   `Into<VisageError>` when describing trait-bound declarations.
-   Fallibility is selected from the expression's syntactic tail —
-   see [Fallibility detection](#fallibility-detection-syntactic-tail-not-type)
-   for the closed pattern set the macro recognises.
+ `Result<ty, E>` where `VisageError: From<E>` (fallible shape).
+ The `VisageError: From<E>` bound is what the `?` operator desugars
+ to (`Err(From::from(e))`); the equivalent trait-bound vocabulary
+ `E: Into<VisageError>` is interchangeable via the blanket
+ `impl<T, U: From<T>> Into<U> for T`. The spec uses `From<E>` when
+ describing what `?` requires at the call site, and
+ `Into<VisageError>` when describing trait-bound declarations.
+ Fallibility is selected from the expression's syntactic tail —
+ see [Fallibility detection](#fallibility-detection-syntactic-tail-not-type)
+ for the closed pattern set the macro recognises.
 3. Does not perform `async` operations, `await`, or I/O. The
-   in-memory path is synchronous and infallible-except-for-explicit-
-   `Result`.
+ in-memory path is synchronous and infallible-except-for-explicit-
+ `Result`.
 4. Does not depend on borrowed data outside `model` — the function
-   body sees only `model: &{Model}` as input, where `{Model}` is the
-   source model on which `#[derived(...)]` appears.
+ body sees only `model: &{Model}` as input, where `{Model}` is the
+ source model on which `#[derived(...)]` appears.
 
 ### Fallibility detection (syntactic tail, not type)
 
@@ -436,21 +436,21 @@ recognises **exactly** the following syntactic shapes as fallible
 (the closed set), and the emission shape depends on which one matches:
 
 1. **Shape 1 — trailing `?`.** Expression `<expr>?` at the outermost
-   tail (after stripping outer parentheses). The inner `?` propagates
-   from inside the splice block; the macro emits the splice **without**
-   an outer `?`.
+ tail (after stripping outer parentheses). The inner `?` propagates
+ from inside the splice block; the macro emits the splice **without**
+ an outer `?`.
 2. **Shape 2 — outermost `match`.** A `match` whose every arm body
-   ends in `Ok(...)` or `Err(...)` (or itself satisfies this rule
-   recursively). The whole block evaluates to `Result<T, E>`; the
-   macro emits the splice **with** an outer `?` to unwrap.
+ ends in `Ok(...)` or `Err(...)` (or itself satisfies this rule
+ recursively). The whole block evaluates to `Result<T, E>`; the
+ macro emits the splice **with** an outer `?` to unwrap.
 3. **Shape 3 — outermost `if`/`else`.** Every branch's tail body
-   satisfies this rule. Same emission as Shape 2 — block evaluates to
-   `Result<T, E>`; outer `?` unwraps.
-4. **Shape 4 — outermost block `{ ... ; <tail> }`.** `<tail>`
-   satisfies this rule. Block evaluates to `Result<T, E>`; outer `?`
-   unwraps.
+ satisfies this rule. Same emission as Shape 2 — block evaluates to
+ `Result<T, E>`; outer `?` unwraps.
+4. **Shape 4 — outermost block `{... ; <tail> }`.** `<tail>`
+ satisfies this rule. Block evaluates to `Result<T, E>`; outer `?`
+ unwraps.
 5. **Shape 5 — bare `Ok(...)` or `Err(...)` call at the outermost
-   tail.** Expression evaluates to `Result<T, E>`; outer `?` unwraps.
+ tail.** Expression evaluates to `Result<T, E>`; outer `?` unwraps.
 
 The split matters because Shape 1 already contains the `?` operator;
 re-wrapping it with `<expr>?` would double-apply. Shapes 2–5
@@ -477,14 +477,14 @@ surrounding `From<&Model>` impl's type check. The remediation
 depends on the intent:
 
 - **If the adopter wants the fallibility to propagate** (the common
-  case): rewrite to `compute(model)?` — a Shape 1 trailing `?`. The
-  inner `?` propagates from the surrounding `try_from`, the macro
-  emits the Shape 1 splice without an outer `?`, and the visage
-  lifts to `TryFrom<&Model>`.
+ case): rewrite to `compute(model)?` — a Shape 1 trailing `?`. The
+ inner `?` propagates from the surrounding `try_from`, the macro
+ emits the Shape 1 splice without an outer `?`, and the visage
+ lifts to `TryFrom<&Model>`.
 - **If the adopter wants to handle the Result inline and return the
-  unwrapped value**: rewrite to `compute(model).unwrap_or(default)`
-  or an explicit `match`. The expression then evaluates to `T` and
-  the visage stays on the `From<&Model>` infallible path.
+ unwrapped value**: rewrite to `compute(model).unwrap_or(default)`
+ or an explicit `match`. The expression then evaluates to `T` and
+ the visage stays on the `From<&Model>` infallible path.
 
 Wrapping in `Ok(compute(model))` is **incorrect** — it produces
 `Ok(Result<T, E>)`, double-wrapping the `Result` and breaking the
@@ -495,26 +495,26 @@ An explicit `fallible = true` key is not provided in v0.1.0: the
 syntactic-tail rule covers the common cases, and an explicit key
 would force the adopter to keep two declarations in sync (the
 expression's behavior and the key). See
-[Open Question 2](#open-questions-for-round-1-dual-review) for the
+[Open Question 2](#open-questions-for--dual-review) for the
 discussion.
 
 Mixed fallibility within a single visage:
 
 - All-infallible derived entries → `impl From<&Model> for V`.
 - Any fallible derived entry → `impl TryFrom<&Model, Error = VisageError>
-  for V`; infallible entries lift to the fallible path via the
-  existing `impl From<Infallible> for VisageError` in `djogi::visage`.
+ for V`; infallible entries lift to the fallible path via the
+ existing `impl From<Infallible> for VisageError` in `djogi::visage`.
 
 ### Nullability
 
 The output column's nullability is determined by the Rust `ty`:
 
 - `ty = Site` → NOT NULL at the visage struct level; the row decoder
-  errors with `VisageError::DbComputedNullForNonOptional` (wrapped in
-  `DjogiError::Visage(...)` at the fetch boundary — see
-  [Runtime errors](#runtime-errors)) if Postgres returns NULL.
+ errors with `VisageError::DbComputedNullForNonOptional` (wrapped in
+ `DjogiError::Visage(...)` at the fetch boundary — see
+ [Runtime errors](#runtime-errors)) if Postgres returns NULL.
 - `ty = Option<Site>` → nullable; the row decoder yields `None` on
-  NULL.
+ NULL.
 
 The `sql` expression's nullability is not statically known to the
 framework. Adopters are responsible for matching declared `ty` to the
@@ -536,26 +536,26 @@ case explicitly):
 #[derive(Model, Debug, Clone)]
 #[model(table = "consignments")]
 #[derived(
-    name   = shipper_country,
-    ty     = String,
-    scopes = [admin],
-    sql    = "(SELECT country FROM sites WHERE id = consignments.outbound_site_id)",
-    rust   = "Ok::<_, ::djogi::VisageError>(
-                model.outbound_site
-                     .resolved()
-                     .ok_or(::djogi::VisageError::UnresolvedRelation {
-                         model:  \"Consignment\",
-                         field:  \"outbound_site\",
-                         scope:  \"admin\",
-                     })?
-                     .country
-                     .clone()
-              )",
+ name = shipper_country,
+ ty = String,
+ scopes = [admin],
+ sql = "(SELECT country FROM sites WHERE id = consignments.outbound_site_id)",
+ rust = "Ok::<_, ::djogi::VisageError>(
+ model.outbound_site
+ .resolved()
+ .ok_or(::djogi::VisageError::UnresolvedRelation {
+  model: \"Consignment\",
+  field: \"outbound_site\",
+  scope: \"admin\",
+  })?
+ .country
+ .clone()
+ )",
 )]
 pub struct Consignment {
-    #[field(expose(admin))]
-    pub outbound_site: ForeignKey<Site>,
-    // ...
+ #[field(expose(admin))]
+ pub outbound_site: ForeignKey<Site>,
+ //...
 }
 ```
 
@@ -584,82 +584,82 @@ as a Rust compile error at `model.<rel>.resolved()`.
 
 ## Generated visage shape
 
-For each scope `S` named in any `#[derived(scopes = [S, ...], ...)]`
+For each scope `S` named in any `#[derived(scopes = [S,...],...)]`
 attribute on a model, the macro emits:
 
 1. The visage struct, with fields in this order:
-   - Framework columns (`id`, `created_at`, `updated_at`) — always
-     present at the head of every visage regardless of explicit
-     `#[field(expose(...))]` annotations (see
-     `djogi-macros/src/model/visages.rs::framework_field_decls`).
-   - All user columns marked `#[field(expose(S, ...))]`, in model
-     struct-declaration order.
-   - All derived entries with `S` in their `scopes`, in attribute
-     declaration order.
+ - Framework columns (`id`, `created_at`, `updated_at`) — always
+ present at the head of every visage regardless of explicit
+ `#[field(expose(...))]` annotations (see
+ `djogi-macros/src/model/visages.rs::framework_field_decls`).
+ - All user columns marked `#[field(expose(S,...))]`, in model
+ struct-declaration order.
+ - All derived entries with `S` in their `scopes`, in attribute
+ declaration order.
 2. `impl ::djogi::__private::DjogiVisageSealed for <VisageName> {}` — the
-   metadata seal required by `DjogiVisage`; macro-emitted visages satisfy
-   it via `::djogi::__private::DjogiVisageSealed`, which is outside the
-   public API surface. Ordinary adopter code cannot satisfy it without
-   naming `__private` paths; deliberate hand-impls through those paths are
-   outside the supported public contract rather than compiler-impossible (see
-   [Trait surface](#trait-surface)).
+ metadata seal required by `DjogiVisage`; macro-emitted visages satisfy
+ it via `::djogi::__private::DjogiVisageSealed`, which is outside the
+ public API surface. Ordinary adopter code cannot satisfy it without
+ naming `__private` paths; deliberate hand-impls through those paths are
+ outside the supported public contract rather than compiler-impossible (see
+ [Trait surface](#trait-surface)).
 3. The visage's `DjogiVisage` trait impl, with the trait surface
-   defined in [Trait surface](#trait-surface).
+ defined in [Trait surface](#trait-surface).
 4. A `FromPgRow` impl matching the visage struct's field order
-   exactly (one positional decode per field).
+ exactly (one positional decode per field).
 5. Either `impl From<&Model> for V` (all derived entries
-   infallible) or `impl TryFrom<&Model> for V` (any derived
-   entry fallible) — see [In-memory derivation](#in-memory-derivation).
+ infallible) or `impl TryFrom<&Model> for V` (any derived
+ entry fallible) — see [In-memory derivation](#in-memory-derivation).
 6. The existing `DjogiVisageOf<Model>` pairing impl.
 
 Example expansion for `ConsignmentPublic`:
 
 ```rust
 pub struct ConsignmentPublic {
-    pub id: HeerIdRecencyBiased,
-    pub created_at: DateTime,
-    pub updated_at: DateTime,
-    pub inbound_site: Site,
-    pub outbound_site: Site,
-    pub direction: Direction,
-    pub facility_site: Site,   // derived
+ pub id: HeerIdRecencyBiased,
+ pub created_at: DateTime,
+ pub updated_at: DateTime,
+ pub inbound_site: Site,
+ pub outbound_site: Site,
+ pub direction: Direction,
+ pub facility_site: Site, // derived
 }
 
 impl djogi::__private::DjogiVisageSealed for ConsignmentPublic {}
 
 impl djogi::DjogiVisage for ConsignmentPublic {
-    type Model = Consignment;
-    const SCOPE: &'static str = "public";
-    const COLUMNS: &'static [&'static str] = &[
-        "id", "created_at", "updated_at",
-        "inbound_site", "outbound_site", "direction",
-        "facility_site",
-    ];
-    const PROJECTIONS: &'static [djogi::__private::ProjectionEntry] = &[ /* ... */ ];
-    const PROJECTION_LIST: &'static str =
-        "id, created_at, updated_at, inbound_site, outbound_site, direction, \
-         (CASE WHEN direction = 'inbound' THEN inbound_site ELSE outbound_site END) \
-         AS facility_site";
+ type Model = Consignment;
+ const SCOPE: &'static str = "public";
+ const COLUMNS: &'static [&'static str] = &[
+ "id", "created_at", "updated_at",
+ "inbound_site", "outbound_site", "direction",
+ "facility_site",
+ ];
+ const PROJECTIONS: &'static [djogi::__private::ProjectionEntry] = &[ /*... */ ];
+ const PROJECTION_LIST: &'static str =
+ "id, created_at, updated_at, inbound_site, outbound_site, direction, \
+ (CASE WHEN direction = 'inbound' THEN inbound_site ELSE outbound_site END) \
+ AS facility_site";
 }
 
 impl From<&Consignment> for ConsignmentPublic {
-    fn from(src: &Consignment) -> Self {
-        Self {
-            id: src.id,
-            created_at: src.created_at,
-            updated_at: src.updated_at,
-            inbound_site: src.inbound_site.clone(),
-            outbound_site: src.outbound_site.clone(),
-            direction: src.direction,
-            facility_site: {
-                let model: &Consignment = src;
-                match model.direction {
-                    Direction::Inbound => model.inbound_site.clone(),
-                    _                  => model.outbound_site.clone(),
-                }
-            },
-        }
-    }
+ fn from(src: &Consignment) -> Self {
+ Self {
+ id: src.id,
+ created_at: src.created_at,
+ updated_at: src.updated_at,
+ inbound_site: src.inbound_site.clone(),
+ outbound_site: src.outbound_site.clone(),
+ direction: src.direction,
+ facility_site: {
+ let model: &Consignment = src;
+ match model.direction {
+  Direction::Inbound => model.inbound_site.clone(),
+  _  => model.outbound_site.clone(),
+ }
+ },
+ }
+ }
 }
 ```
 
@@ -696,8 +696,8 @@ constructed during macro expansion). The rendering rules are:
 
 - For each **column entry**: push the bare column identifier.
 - For each **derived entry**: push `(<sql>) AS <alias>` — outer
-  parentheses around the adopter's SQL, then `AS <alias>` where
-  `<alias>` is the entry's `name`.
+ parentheses around the adopter's SQL, then `AS <alias>` where
+ `<alias>` is the entry's `name`.
 
 Entries are joined with `", "` to produce the final
 `PROJECTION_LIST` string. This rendering happens **at macro
@@ -712,7 +712,7 @@ documentation generators read: `ProjectionEntry::Derived` carries
 only `alias` + `sql`, which is insufficient to render a derived
 field's rustdoc (no `ty_path`, `rust`, or `doc`). The richer public
 descriptor/inventory surface for documentation generators ships
-alongside this trait in Phase 8.5 — see
+alongside this trait in — see
 [Stage 2](#stage-2--visage-side-descriptor-inventory) for the
 `VisageDescriptor` / `DerivedProjection` shapes and their
 inventory-collection guarantees.
@@ -728,32 +728,32 @@ time — `PROJECTION_LIST` is the textual rendering of
 
 - `PROJECTION_LIST`: SELECT-slot emission. Single-string splice.
 - `PROJECTIONS`: metadata. Walked by **framework-internal**
-  consumers only — framework-side lints, debug formatters, and
-  future Tier-2 per-entry SQL renderers; never on the queryset hot
-  path. It is not the public documentation descriptor surface; that
-  richer descriptor/inventory channel ships via `VisageDescriptor`
-  / `DerivedProjection` in
-  [Stage 2](#stage-2--visage-side-descriptor-inventory).
+ consumers only — framework-side lints, debug formatters, and
+ future Tier-2 per-entry SQL renderers; never on the queryset hot
+ path. It is not the public documentation descriptor surface; that
+ richer descriptor/inventory channel ships via `VisageDescriptor`
+ / `DerivedProjection` in
+ [Stage 2](#stage-2--visage-side-descriptor-inventory).
 
 A future feature (per-call SQL variation, e.g., a queryset method
 that disables a derived entry per request) would either require a
 new rendered string per variation or fall back to walking
 `PROJECTIONS`. Neither is in Tier 1 scope — see
-[Open Question 9](#open-questions-for-round-1-dual-review).
+[Open Question 9](#open-questions-for--dual-review).
 
 ### Column-list constants: `COLUMNS` vs `PROJECTION_LIST`
 
 The visage trait carries two related projection constants:
 
 - `const COLUMNS: &'static [&'static str]` — the names that appear
-  at each ordinal position of the visage's SELECT row, in
-  struct-field order. For column entries this is the raw column
-  name; for derived entries this is the entry's alias. This is the
-  slice that drives `FromPgRow`'s positional decode and its
-  debug-build name guard.
+ at each ordinal position of the visage's SELECT row, in
+ struct-field order. For column entries this is the raw column
+ name; for derived entries this is the entry's alias. This is the
+ slice that drives `FromPgRow`'s positional decode and its
+ debug-build name guard.
 - `const PROJECTION_LIST: &'static str` — the full projection string
-  (columns + derived expressions with aliases) used by
-  `VisageQuerySet` to emit the SELECT clause.
+ (columns + derived expressions with aliases) used by
+ `VisageQuerySet` to emit the SELECT clause.
 
 `FromPgRow::COLUMN_LIST` for a visage equals `PROJECTION_LIST` so
 the wire shape matches the positional decode shape exactly. The
@@ -816,7 +816,7 @@ decision composes with the existing scalar-vs-relation-form rule in
 In other words, `TryFrom` wins if either:
 
 - the visage embeds a peer visage via `#[field(expose(scope -> Peer))]`
-  (existing rule), or
+ (existing rule), or
 - at least one derived entry is fallible (new rule).
 
 A scalar-only visage with all-infallible derived entries continues
@@ -828,15 +828,15 @@ total.
 
 ```rust
 impl From<&{Model}> for {Visage} {
-    fn from(src: &{Model}) -> Self {
-        Self {
-            <col>: src.<col>.clone(),               // for each column entry
-            <name>: {                                // for each derived entry
-                let model: &{Model} = src;
-                <rust>
-            },
-        }
-    }
+ fn from(src: &{Model}) -> Self {
+ Self {
+ <col>: src.<col>.clone(), // for each column entry
+ <name>: {  // for each derived entry
+ let model: &{Model} = src;
+ <rust>
+ },
+ }
+ }
 }
 ```
 
@@ -844,28 +844,28 @@ impl From<&{Model}> for {Visage} {
 
 ```rust
 impl TryFrom<&{Model}> for {Visage} {
-    type Error = djogi::VisageError;
-    fn try_from(src: &{Model}) -> Result<Self, Self::Error> {
-        Ok(Self {
-            <col>: src.<col>.clone(),
+ type Error = djogi::VisageError;
+ fn try_from(src: &{Model}) -> Result<Self, Self::Error> {
+ Ok(Self {
+ <col>: src.<col>.clone(),
 
-            // Shape 1 — trailing `?`. Inner `?` propagates from the
-            // surrounding `try_from` body; no outer `?`.
-            <name_shape_1>: { let model: &{Model} = src; <rust> },
+ // Shape 1 — trailing `?`. Inner `?` propagates from the
+ // surrounding `try_from` body; no outer `?`.
+ <name_shape_1>: { let model: &{Model} = src; <rust> },
 
-            // Shapes 2–5 — block evaluates to `Result<T, E>`. Outer
-            // `?` unwraps, calling `Err(From::from(e))` per `?`
-            // desugaring; the bound `VisageError: From<E>` is what
-            // makes the propagation type-check.
-            <name_shapes_2_5>: { let model: &{Model} = src; <rust> }?,
+ // Shapes 2–5 — block evaluates to `Result<T, E>`. Outer
+ // `?` unwraps, calling `Err(From::from(e))` per `?`
+ // desugaring; the bound `VisageError: From<E>` is what
+ // makes the propagation type-check.
+ <name_shapes_2_5>: { let model: &{Model} = src; <rust> }?,
 
-            // Infallible entry inside an otherwise-fallible visage —
-            // lifted via `impl From<Infallible> for VisageError`;
-            // no outer `?` because the block returns `T`, not
-            // `Result<T, _>`.
-            <name_infallible>: { let model: &{Model} = src; <rust> },
-        })
-    }
+ // Infallible entry inside an otherwise-fallible visage —
+ // lifted via `impl From<Infallible> for VisageError`;
+ // no outer `?` because the block returns `T`, not
+ // `Result<T, _>`.
+ <name_infallible>: { let model: &{Model} = src; <rust> },
+ })
+ }
 }
 ```
 
@@ -946,7 +946,7 @@ macro emission) is the closed-world gate on `DjogiVisage` itself.
 `visage_boundary::private::Sealed<M>` carries a reflexive
 `impl<M: Model> Sealed<M> for M` blanket — every model already
 satisfies `DjogiVisageOf<M>` trivially, so a hand-rolled
-`impl DjogiVisage for MyModel { type Model = Self; ... }` would pass
+`impl DjogiVisage for MyModel { type Model = Self;... }` would pass
 the pairing supertrait unchallenged. The metadata seal has no reflexive
 blanket; the single emitter is the `#[model]` macro. The macro emits
 `impl ::djogi::__private::DjogiVisageSealed for {Visage}`,
@@ -982,86 +982,86 @@ time.
 
 The `ProjectionEntry` discriminant is sealed off the public surface.
 
-[`VisageDescriptor`]: ../../djogi/src/descriptor.rs
-[`DerivedProjection`]: ../../djogi/src/descriptor.rs
+[`VisageDescriptor`]:../../djogi/src/descriptor.rs
+[`DerivedProjection`]:../../djogi/src/descriptor.rs
 
 ### Trait shape
 
 ```rust
 pub trait DjogiVisage:
-    crate::visage_boundary::DjogiVisageOf<<Self as DjogiVisage>::Model>
-    + private::Sealed
+ crate::visage_boundary::DjogiVisageOf<<Self as DjogiVisage>::Model>
+ + private::Sealed
 {
-    /// Source model the visage is a projection of. Every macro-emitted
-    /// `impl DjogiVisage for {Visage}` sets `type Model = {Source}`.
-    /// Generic code reaches the source table via
-    /// `<V::Model as Model>::table_name()` — the canonical entry
-    /// point already established by `Model`.
-    type Model: crate::model::Model;
+ /// Source model the visage is a projection of. Every macro-emitted
+ /// `impl DjogiVisage for {Visage}` sets `type Model = {Source}`.
+ /// Generic code reaches the source table via
+ /// `<V::Model as Model>::table_name()` — the canonical entry
+ /// point already established by `Model`.
+ type Model: crate::model::Model;
 
-    /// Stable scope key (`"public"` / `"self_view"` / `"admin"` /
-    /// `"export"`). A `&'static str` rather than a typed enum to
-    /// match the existing `SCOPES` tuple shape in
-    /// `djogi-macros/src/model/visages.rs` and to avoid introducing
-    /// a sibling enum to `VisageError`'s string-typed `scope` field.
-    /// A future phase may swap this to a sealed `enum djogi::Scope`
-    /// once the surrounding surface justifies the migration.
-    const SCOPE: &'static str;
+ /// Stable scope key (`"public"` / `"self_view"` / `"admin"` /
+ /// `"export"`). A `&'static str` rather than a typed enum to
+ /// match the existing `SCOPES` tuple shape in
+ /// `djogi-macros/src/model/visages.rs` and to avoid introducing
+ /// a sibling enum to `VisageError`'s string-typed `scope` field.
+ /// A future phase may swap this to a sealed `enum djogi::Scope`
+ /// once the surrounding surface justifies the migration.
+ const SCOPE: &'static str;
 
-    // Note: there is intentionally no `TABLE` constant on this trait.
-    // Source-table access goes through
-    // `<V::Model as Model>::table_name()` — the supertrait bound
-    // makes that callable from generic code, and a parallel `TABLE`
-    // const would duplicate state the supertrait already pins.
+ // Note: there is intentionally no `TABLE` constant on this trait.
+ // Source-table access goes through
+ // `<V::Model as Model>::table_name()` — the supertrait bound
+ // makes that callable from generic code, and a parallel `TABLE`
+ // const would duplicate state the supertrait already pins.
 
-    /// Names that appear at each ordinal position of the visage's
-    /// SELECT row, in struct-field order. For column entries this is
-    /// the raw column name; for derived entries this is the entry's
-    /// `name` (which equals the alias emitted into the SELECT —
-    /// see [Alias case-folding](#alias-case-folding-and-quoting)).
-    /// `COLUMNS[i]` is what `decode_at` will compare against the
-    /// `i`-th row column's name in the debug-build name guard.
-    ///
-    /// This **is** the visage's `FromPgRow::COLUMNS` (the visage's
-    /// `FromPgRow` impl re-exports the same slice). The historical
-    /// `FromPgRow::COLUMN_LIST == COLUMNS.join(", ")` invariant
-    /// becomes `FromPgRow::COLUMN_LIST == PROJECTION_LIST` for
-    /// visages — the only callers that interpolated `COLUMN_LIST`
-    /// directly were the visage queryset builders, which now route
-    /// through `PROJECTION_LIST` instead.
-    const COLUMNS: &'static [&'static str];
+ /// Names that appear at each ordinal position of the visage's
+ /// SELECT row, in struct-field order. For column entries this is
+ /// the raw column name; for derived entries this is the entry's
+ /// `name` (which equals the alias emitted into the SELECT —
+ /// see [Alias case-folding](#alias-case-folding-and-quoting)).
+ /// `COLUMNS[i]` is what `decode_at` will compare against the
+ /// `i`-th row column's name in the debug-build name guard.
+ ///
+ /// This **is** the visage's `FromPgRow::COLUMNS` (the visage's
+ /// `FromPgRow` impl re-exports the same slice). The historical
+ /// `FromPgRow::COLUMN_LIST == COLUMNS.join(", ")` invariant
+ /// becomes `FromPgRow::COLUMN_LIST == PROJECTION_LIST` for
+ /// visages — the only callers that interpolated `COLUMN_LIST`
+ /// directly were the visage queryset builders, which now route
+ /// through `PROJECTION_LIST` instead.
+ const COLUMNS: &'static [&'static str];
 
-    /// Full projection (columns and derived expressions) in
-    /// struct-field order. **Metadata-only** at this phase: walked
-    /// by **framework-internal** consumers only — framework-side
-    /// lints, debug formatters, and the future Tier-2 per-entry SQL
-    /// renderer. **Not** the surface documentation generators
-    /// consume: `ProjectionEntry::Derived` carries only `alias` +
-    /// `sql`, lacking the `ty_path` / `rust` / `doc` fields rustdoc
-    /// reference tables and the `djogi docs` CLI need. The richer
-    /// `VisageDescriptor` / `DerivedProjection` inventory channel
-    /// (see [Stage 2](#stage-2--visage-side-descriptor-inventory))
-    /// ships in Phase 8.5 alongside this trait — documentation
-    /// generators reach the richer shape through
-    /// `inventory::iter::<VisageDescriptor>()`.
-    /// The parity helper does not read this — it is emitted as an
-    /// inherent method per visage (plus a parallel `DerivedParity`
-    /// trait impl) with derived fields hard-coded at macro time.
-    /// The queryset hot path uses `PROJECTION_LIST` instead.
-    /// Adopters do not name `ProjectionEntry` — the type is `pub` to
-    /// satisfy the trait constant's type, but lives under
-    /// `__private` and carries the "do-not-construct" convention
-    /// warning matching `__private::VisageSealed` and
-    /// `__private::pk_seal`.
-    const PROJECTIONS: &'static [crate::__private::ProjectionEntry];
+ /// Full projection (columns and derived expressions) in
+ /// struct-field order. **Metadata-only** at this phase: walked
+ /// by **framework-internal** consumers only — framework-side
+ /// lints, debug formatters, and the future Tier-2 per-entry SQL
+ /// renderer. **Not** the surface documentation generators
+ /// consume: `ProjectionEntry::Derived` carries only `alias` +
+ /// `sql`, lacking the `ty_path` / `rust` / `doc` fields rustdoc
+ /// reference tables and the `djogi docs` CLI need. The richer
+ /// `VisageDescriptor` / `DerivedProjection` inventory channel
+ /// (see [Stage 2](#stage-2--visage-side-descriptor-inventory))
+ /// ships in alongside this trait — documentation
+ /// generators reach the richer shape through
+ /// `inventory::iter::<VisageDescriptor>()`.
+ /// The parity helper does not read this — it is emitted as an
+ /// inherent method per visage (plus a parallel `DerivedParity`
+ /// trait impl) with derived fields hard-coded at macro time.
+ /// The queryset hot path uses `PROJECTION_LIST` instead.
+ /// Adopters do not name `ProjectionEntry` — the type is `pub` to
+ /// satisfy the trait constant's type, but lives under
+ /// `__private` and carries the "do-not-construct" convention
+ /// warning matching `__private::VisageSealed` and
+ /// `__private::pk_seal`.
+ const PROJECTIONS: &'static [crate::__private::ProjectionEntry];
 
-    /// Rendered SQL projection list rendered once at macro time:
-    /// `"id, name, (CASE ... END) AS facility_site"`. `VisageQuerySet`
-    /// splices this single string into the SELECT slot at query time —
-    /// no runtime walk over `PROJECTIONS`. Equal to
-    /// `COLUMNS.join(", ")` when there are no derived entries
-    /// (because the column entry's name and its alias coincide).
-    const PROJECTION_LIST: &'static str;
+ /// Rendered SQL projection list rendered once at macro time:
+ /// `"id, name, (CASE... END) AS facility_site"`. `VisageQuerySet`
+ /// splices this single string into the SELECT slot at query time —
+ /// no runtime walk over `PROJECTIONS`. Equal to
+ /// `COLUMNS.join(", ")` when there are no derived entries
+ /// (because the column entry's name and its alias coincide).
+ const PROJECTION_LIST: &'static str;
 }
 ```
 
@@ -1084,32 +1084,32 @@ surfaces (see `djogi/src/lib.rs:186-213`):
 ```rust
 #[doc(hidden)]
 pub mod __private {
-    pub use crate::visage::projection::ProjectionEntry;
+ pub use crate::visage::projection::ProjectionEntry;
 }
 
 pub(crate) mod visage {
-    pub mod projection {
-        /// Sealed discriminant — **do not construct or match on this
-        /// type from downstream code**. The variants are public only
-        /// because the `DjogiVisage::PROJECTIONS` trait constant
-        /// requires the enum to be nameable through
-        /// `::djogi::__private::ProjectionEntry`; reaching this type
-        /// from outside the macro-emitted path is breaking the
-        /// framework boundary, and the framework reserves the right
-        /// to change the variants in any future release without
-        /// notice. Same convention as `__private::VisageSealed` and
-        /// `__private::pk_seal` — the warning is the seal.
-        #[non_exhaustive]
-        pub enum ProjectionEntry {
-            #[doc(hidden)]
-            Column(&'static str),
-            #[doc(hidden)]
-            Derived {
-                alias: &'static str,
-                sql: &'static str,
-            },
-        }
-    }
+ pub mod projection {
+ /// Sealed discriminant — **do not construct or match on this
+ /// type from downstream code**. The variants are public only
+ /// because the `DjogiVisage::PROJECTIONS` trait constant
+ /// requires the enum to be nameable through
+ /// `::djogi::__private::ProjectionEntry`; reaching this type
+ /// from outside the macro-emitted path is breaking the
+ /// framework boundary, and the framework reserves the right
+ /// to change the variants in any future release without
+ /// notice. Same convention as `__private::VisageSealed` and
+ /// `__private::pk_seal` — the warning is the seal.
+ #[non_exhaustive]
+ pub enum ProjectionEntry {
+ #[doc(hidden)]
+ Column(&'static str),
+ #[doc(hidden)]
+ Derived {
+ alias: &'static str,
+ sql: &'static str,
+ },
+ }
+ }
 }
 ```
 
@@ -1176,9 +1176,9 @@ Adopters can:
 
 - Declare derived fields with `#[derived(...)]`.
 - Fetch derived visages via `VisageQuerySet<V>::fetch_all` /
-  `fetch_one` / `first`.
+ `fetch_one` / `first`.
 - Construct derived visages in-memory via `From<&Model>` /
-  `TryFrom<&Model>`.
+ `TryFrom<&Model>`.
 - Run the parity helper in tests.
 
 Adopters cannot (Tier 2 / Tier 3 scope; see below):
@@ -1222,20 +1222,20 @@ Deferral anchor: the predicate-pushdown work in the visage queryset
 cluster. The contract this spec leaves for that cluster:
 
 - Tier 2 must reuse **per-entry SQL renderers from `V::PROJECTIONS`**,
-  not the rendered `PROJECTION_LIST` string. `PROJECTION_LIST` is a
-  comma-joined SELECT list (with aliases of the form `(<sql>) AS
-  <alias>`); a WHERE clause needs a single predicate expression, so
-  Tier 2 walks `PROJECTIONS` looking up the matching entry by name
-  and emits its `sql` fragment alone — with the same outer
-  parenthesisation discipline used at SELECT time, but without the
-  `AS <alias>` suffix and without the surrounding commas. The macro
-  may consolidate the per-entry rendering into a helper shared
-  between SELECT and WHERE paths; the point is that the rendered
-  textual `PROJECTION_LIST` is the wrong source.
+ not the rendered `PROJECTION_LIST` string. `PROJECTION_LIST` is a
+ comma-joined SELECT list (with aliases of the form `(<sql>) AS
+ <alias>`); a WHERE clause needs a single predicate expression, so
+ Tier 2 walks `PROJECTIONS` looking up the matching entry by name
+ and emits its `sql` fragment alone — with the same outer
+ parenthesisation discipline used at SELECT time, but without the
+ `AS <alias>` suffix and without the surrounding commas. The macro
+ may consolidate the per-entry rendering into a helper shared
+ between SELECT and WHERE paths; the point is that the rendered
+ textual `PROJECTION_LIST` is the wrong source.
 - Tier 2 must reject filters that reference an unresolved relation in
-  the derived `sql` at predicate-emit time, surfacing
-  `VisageError::UnresolvedRelationInPredicate` (new variant; not
-  added until Tier 2 lands).
+ the derived `sql` at predicate-emit time, surfacing
+ `VisageError::UnresolvedRelationInPredicate` (new variant; not
+ added until Tier 2 lands).
 
 ### Tier 3 — ordering and annotation (deferred to a named phase)
 
@@ -1263,14 +1263,14 @@ not a permanent constraint:
 emit derived expressions. Adding it requires:
 
 1. The peer-projection path renders each derived entry alongside its
-   column entries in the outer SELECT.
+ column entries in the outer SELECT.
 2. The peer-projection path validates that any column the derived
-   `sql` references is either a column on the parent table or a
-   column on a prefetched / select-related relation; otherwise it
-   rejects with `E_DJG_VDF_011` at predicate-emit time.
+ `sql` references is either a column on the parent table or a
+ column on a prefetched / select-related relation; otherwise it
+ rejects with `E_DJG_VDF_011` at predicate-emit time.
 3. The hydration path materialises derived columns into the visage
-   struct via the existing `FromPgRow` machinery (already correct
-   for derived once the SELECT shape is correct).
+ struct via the existing `FromPgRow` machinery (already correct
+ for derived once the SELECT shape is correct).
 
 **Unblock contract.** When the peer-projection cluster ships, it
 must satisfy the three points above. This spec leaves no Tier-1
@@ -1307,10 +1307,10 @@ must appear in the output, until proper escaping lands).
 Cross-model references, when designed:
 
 - Will likely take the form `$<ref>` where `<ref>` resolves a
-  prefetched / select-related relation.
+ prefetched / select-related relation.
 - Will require co-design with the Tier 2 predicate work because
-  cross-model derived predicates need both SELECT and WHERE
-  emission to align.
+ cross-model derived predicates need both SELECT and WHERE
+ emission to align.
 
 This grammar work is out of scope for this spec.
 
@@ -1332,25 +1332,25 @@ field in its scope, the macro emits:
 
 ```rust
 impl ConsignmentPublic {
-    /// Compare derived fields between two visage instances and
-    /// return `Err(DerivedParityError::Drift { ... })` on first
-    /// mismatch. Framework columns (`id`, `created_at`,
-    /// `updated_at`) and storage columns are NEVER compared — only
-    /// fields populated from `#[derived(...)]` declarations whose
-    /// `scopes = [...]` includes this visage's scope.
-    pub fn assert_derived_parity(
-        &self,
-        other: &Self,
-    ) -> Result<(), djogi::testing::DerivedParityError> {
-        if self.facility_site != other.facility_site {
-            return Err(djogi::testing::DerivedParityError::Drift {
-                visage: "ConsignmentPublic",
-                field: "facility_site",
-            });
-        }
-        // ... one such check per derived field exposed in this scope ...
-        Ok(())
-    }
+ /// Compare derived fields between two visage instances and
+ /// return `Err(DerivedParityError::Drift {... })` on first
+ /// mismatch. Framework columns (`id`, `created_at`,
+ /// `updated_at`) and storage columns are NEVER compared — only
+ /// fields populated from `#[derived(...)]` declarations whose
+ /// `scopes = [...]` includes this visage's scope.
+ pub fn assert_derived_parity(
+ &self,
+ other: &Self,
+ ) -> Result<(), djogi::testing::DerivedParityError> {
+ if self.facility_site != other.facility_site {
+ return Err(djogi::testing::DerivedParityError::Drift {
+ visage: "ConsignmentPublic",
+ field: "facility_site",
+ });
+ }
+ //... one such check per derived field exposed in this scope...
+ Ok(())
+ }
 }
 ```
 
@@ -1369,24 +1369,24 @@ The method compares **only** the fields populated from
 the visage's scope.
 
 - **Framework columns** (`id`, `created_at`, `updated_at`) — never
-  compared. These are populated identically on both sides (the
-  in-memory side reads them from `&Model`; the from-DB side reads
-  them from the row), but `tokio-postgres` round-trips truncate
-  `DateTime` nanoseconds to microseconds. A naive whole-struct
-  equality would false-positive `Drift` on any high-precision
-  timestamp even when the derived fields are byte-identical. By
-  comparing only the derived fields, the helper never observes the
-  truncation.
+ compared. These are populated identically on both sides (the
+ in-memory side reads them from `&Model`; the from-DB side reads
+ them from the row), but `tokio-postgres` round-trips truncate
+ `DateTime` nanoseconds to microseconds. A naive whole-struct
+ equality would false-positive `Drift` on any high-precision
+ timestamp even when the derived fields are byte-identical. By
+ comparing only the derived fields, the helper never observes the
+ truncation.
 - **Storage columns** exposed via `#[field(expose(...))]` — never
-  compared. These pass through the same `&Model → from_pg_row`
-  round-trip and could in principle suffer similar lossy
-  conversions; more importantly, parity is a property of the *SQL/
-  Rust* expression pair, not of column transport. Comparing column
-  entries would test the framework's transport layer, not the
-  adopter's derivation logic.
+ compared. These pass through the same `&Model → from_pg_row`
+ round-trip and could in principle suffer similar lossy
+ conversions; more importantly, parity is a property of the *SQL/
+ Rust* expression pair, not of column transport. Comparing column
+ entries would test the framework's transport layer, not the
+ adopter's derivation logic.
 - **Derived entries scoped to this visage** — every such entry is
-  compared with a per-field `!=` check, in attribute declaration
-  order. The method short-circuits at the first mismatch.
+ compared with a per-field `!=` check, in attribute declaration
+ order. The method short-circuits at the first mismatch.
 
 ### Equality bound on derived `ty`
 
@@ -1415,21 +1415,21 @@ Result<(), DerivedParityError> where V: PartialEq` helper. Three
 problems made that shape unworkable:
 
 1. **Visages don't auto-derive `PartialEq`.** Generated visages
-   carry `Debug, Clone, Serialize, Deserialize` only (see
-   `djogi-macros/src/model/visages.rs::derive_path`). A
-   `V: PartialEq` bound on the helper would force every adopter to
-   manually add `#[derive(PartialEq)]` to their visage shapes,
-   which the macro does not control.
+ carry `Debug, Clone, Serialize, Deserialize` only (see
+ `djogi-macros/src/model/visages.rs::derive_path`). A
+ `V: PartialEq` bound on the helper would force every adopter to
+ manually add `#[derive(PartialEq)]` to their visage shapes,
+ which the macro does not control.
 2. **Round-trip lossy framework columns.** Even with `PartialEq`
-   added, `tokio-postgres` truncates `DateTime` nanoseconds to
-   microseconds on round-trip. `in_memory.created_at !=
-   from_db.created_at` for high-precision timestamps, false-
-   positiving `Drift` even when the derived fields are perfectly
-   identical.
+ added, `tokio-postgres` truncates `DateTime` nanoseconds to
+ microseconds on round-trip. `in_memory.created_at !=
+ from_db.created_at` for high-precision timestamps, false-
+ positiving `Drift` even when the derived fields are perfectly
+ identical.
 3. **Wrong contract surface.** A helper that claims to test
-   *derived-field* parity but actually tests *whole-struct*
-   equality is misnamed. The new emission limits the comparison to
-   the derived surface, matching the name.
+ *derived-field* parity but actually tests *whole-struct*
+ equality is misnamed. The new emission limits the comparison to
+ the derived surface, matching the name.
 
 The macro knows exactly which derived fields are in scope for each
 visage; emitting per-field comparisons hard-codes the right surface
@@ -1440,26 +1440,26 @@ at expansion time and side-steps all three problems.
 ```rust
 #[djogi::djogi_test(sync_models = [Consignment])]
 async fn consignment_facility_site_parity(mut ctx: DjogiContext) {
-    let inbound = Consignment::create(
-        &mut ctx,
-        Consignment {
-            inbound_site: facility(),
-            outbound_site: warehouse(),
-            direction: Direction::Inbound,
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+ let inbound = Consignment::create(
+ &mut ctx,
+ Consignment {
+ inbound_site: facility(),
+ outbound_site: warehouse(),
+ direction: Direction::Inbound,
+..Default::default()
+ },
+ )
+.await
+.unwrap();
 
-    let in_memory: ConsignmentPublic = (&inbound).into();
-    let from_db: ConsignmentPublic =
-        ConsignmentPublic::filter(|f| f.id().eq(inbound.id))
-            .fetch_one(&mut ctx)
-            .await
-            .unwrap();
+ let in_memory: ConsignmentPublic = (&inbound).into();
+ let from_db: ConsignmentPublic =
+ ConsignmentPublic::filter(|f| f.id().eq(inbound.id))
+.fetch_one(&mut ctx)
+.await
+.unwrap();
 
-    in_memory.assert_derived_parity(&from_db).unwrap();
+ in_memory.assert_derived_parity(&from_db).unwrap();
 }
 ```
 
@@ -1473,14 +1473,14 @@ for every generated visage that has at least one derived entry in
 its scope:
 
 1. **Inherent `assert_derived_parity` method** — `visage.assert_derived_parity(&other)`
-   resolves via Rust's inherent-method-first method resolution.
-   This is the ergonomic shape integration tests use; no trait
-   import required at the call site.
+ resolves via Rust's inherent-method-first method resolution.
+ This is the ergonomic shape integration tests use; no trait
+ import required at the call site.
 2. **`impl djogi::testing::DerivedParity for {Visage}`** — same
-   body, reachable from generic code that bounds
-   `where V: DerivedParity`. The trait is sealed
-   (`djogi::testing::private::DerivedParitySealed` is the empty
-   supertrait); only macro-emitted visages may satisfy it.
+ body, reachable from generic code that bounds
+ `where V: DerivedParity`. The trait is sealed
+ (`djogi::testing::private::DerivedParitySealed` is the empty
+ supertrait); only macro-emitted visages may satisfy it.
 
 Both surfaces share the same body and the same `where <Ty>: PartialEq`
 bound per distinct derived type. Method resolution prefers the
@@ -1498,17 +1498,17 @@ use djogi::testing::{DerivedParity, assert_derived_parity_fetched};
 
 #[djogi::djogi_test(sync_models = [Consignment])]
 async fn parity_via_async_helper(mut ctx: DjogiContext) {
-    let inbound = Consignment::create(&mut ctx, /* ... */).await.unwrap();
-    let in_memory: ConsignmentPublic = (&inbound).into();
-    let target_id = inbound.id;
+ let inbound = Consignment::create(&mut ctx, /*... */).await.unwrap();
+ let in_memory: ConsignmentPublic = (&inbound).into();
+ let target_id = inbound.id;
 
-    assert_derived_parity_fetched(&in_memory, || async {
-        ConsignmentPublic::filter(|f| f.id().eq(target_id))
-            .fetch_one(&mut ctx)
-            .await
-    })
-    .await
-    .unwrap();
+ assert_derived_parity_fetched(&in_memory, || async {
+ ConsignmentPublic::filter(|f| f.id().eq(target_id))
+.fetch_one(&mut ctx)
+.await
+ })
+.await
+.unwrap();
 }
 ```
 
@@ -1553,27 +1553,27 @@ straddles both sides, so it lands under `Derived*`.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum DerivedParityError {
-    #[error(
-        "derived field parity drift in `{visage}` at field `{field}`"
-    )]
-    Drift {
-        /// The visage type name (e.g. `"ConsignmentPublic"`).
-        visage: &'static str,
-        /// The derived field name that mismatched (e.g.
-        /// `"facility_site"`).
-        field: &'static str,
-    },
+ #[error(
+ "derived field parity drift in `{visage}` at field `{field}`"
+ )]
+ Drift {
+ /// The visage type name (e.g. `"ConsignmentPublic"`).
+ visage: &'static str,
+ /// The derived field name that mismatched (e.g.
+ /// `"facility_site"`).
+ field: &'static str,
+ },
 
-    /// Produced only by the async `assert_derived_parity_fetched`
-    /// convenience helper when the fetch closure's future yields
-    /// `Err`. The sync per-visage inherent method (and the
-    /// `DerivedParity` trait impl) never returns this variant — they
-    /// re-introduce no IO.
-    #[error("derived parity fetch failed: {source}")]
-    Fetch {
-        #[source]
-        source: djogi::DjogiError,
-    },
+ /// Produced only by the async `assert_derived_parity_fetched`
+ /// convenience helper when the fetch closure's future yields
+ /// `Err`. The sync per-visage inherent method (and the
+ /// `DerivedParity` trait impl) never returns this variant — they
+ /// re-introduce no IO.
+ #[error("derived parity fetch failed: {source}")]
+ Fetch {
+ #[source]
+ source: djogi::DjogiError,
+ },
 }
 ```
 
@@ -1608,32 +1608,32 @@ A column may not share a name with a derived entry in any scope
 where both appear; this is the
 [identifier collision rule](#identifier-rules).
 
-### `#[computed(sql = ...)]` (model-side virtual columns)
+### `#[computed(sql =...)]` (model-side virtual columns)
 
 The pre-existing `#[computed]` attribute (model-side virtual / stored
 generated columns) is **a different surface**:
 
 - `#[computed]` is a *field-level* attribute on the model struct,
-  representing a virtual or stored generated column that lives on
-  the table.
+ representing a virtual or stored generated column that lives on
+ the table.
 - `#[derived]` (this spec) is a *struct-level* attribute, representing
-  a projection entry that lives on one or more visages and has no
-  storage footprint.
+ a projection entry that lives on one or more visages and has no
+ storage footprint.
 
 The two surfaces compose naturally:
 
 - `#[computed]` is model-side only. It does not create visage struct
-  fields and cannot project onto visages through
-  `#[computed(... expose(...))]` or `#[computed(expose = ...)]`; both
-  forms are rejected by the macro.
+ fields and cannot project onto visages through
+ `#[computed(... expose(...))]` or `#[computed(expose =...)]`; both
+ forms are rejected by the macro.
 - A model field cannot combine `#[computed(...)]` with
-  `#[field(expose(...))]` to publish the computed value through a
-  visage. Computed properties remain model-side virtual / stored
-  columns, not Phase 8.5 visage projection entries.
+ `#[field(expose(...))]` to publish the computed value through a
+ visage. Computed properties remain model-side virtual / stored
+ columns, not visage projection entries.
 - A `#[derived]` entry never appears on the model struct or in the
-  table schema; it exists only on visages. `#[derived(...)]` is the
-  shipped Phase 8.5 surface for adding computed projection fields to
-  generated visages.
+ table schema; it exists only on visages. `#[derived(...)]` is the
+ shipped surface for adding computed projection fields to
+ generated visages.
 
 The current spec deliberately does not unify the two surfaces under
 one attribute name — the storage / projection distinction is real and
@@ -1703,7 +1703,7 @@ documentation reference; the user-facing diagnostic uses prose.
 | `E_DJG_VDF_006` | `scopes` contains an unknown scope identifier (not one of `public`, `self_view`, `admin`, `export`) | offending identifier inside `scopes = [...]` |
 | `E_DJG_VDF_007` | `sql` contains a `;` statement separator or leading DDL/DML keyword | `sql = "..."` |
 | `E_DJG_VDF_008` | `sql` contains a reserved `$N` placeholder token | offending `$N` position inside `sql` literal |
-| `E_DJG_VDF_009` | `sql` contains a token from the recognised aggregate-name set (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `ARRAY_AGG`, `STRING_AGG`, `JSONB_AGG`, `JSON_AGG`, `JSONB_OBJECT_AGG`, `JSON_OBJECT_AGG`, `RANGE_AGG`, `MULTIRANGE_AGG`, `XMLAGG`, `BOOL_AND`, `BOOL_OR`, `EVERY`, `BIT_AND`, `BIT_OR`) or the `OVER` keyword, detected by a **context-blind case-insensitive token scan**. The scan skips tokens inside single-quoted string literals and dollar-quoted bodies (`$$...$$` / `$tag$...$tag$`), but does **not** skip tokens inside scalar subqueries — the scan cannot distinguish subquery-scoped aggregates (same-row container reconstruction) from top-level row aggregates without a SQL parser (forbidden by the no-regex, no-in-tree-parser rule). The guard therefore fires unconditionally whenever a recognised aggregate token appears anywhere in the `sql` value outside of single-quoted or dollar-quoted bodies, including inside a `(SELECT jsonb_agg(...) FROM ...)` scalar subquery. Until the Shape V `aggregate = true` marker ships (see `docs/spec/decisions.md` §Aggregate annotation declaration site), this check is unconditional. Detection is best-effort: aggregates outside this set or custom user-defined aggregates pass macro parsing and surface as Postgres errors at query time. | offending function call position |
+| `E_DJG_VDF_009` | `sql` contains a token from the recognised aggregate-name set (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `ARRAY_AGG`, `STRING_AGG`, `JSONB_AGG`, `JSON_AGG`, `JSONB_OBJECT_AGG`, `JSON_OBJECT_AGG`, `RANGE_AGG`, `MULTIRANGE_AGG`, `XMLAGG`, `BOOL_AND`, `BOOL_OR`, `EVERY`, `BIT_AND`, `BIT_OR`) or the `OVER` keyword, detected by a **context-blind case-insensitive token scan**. The scan skips tokens inside single-quoted string literals and dollar-quoted bodies (`$$...$$` / `$tag$...$tag$`), but does **not** skip tokens inside scalar subqueries — the scan cannot distinguish subquery-scoped aggregates (same-row container reconstruction) from top-level row aggregates without a SQL parser (forbidden by the no-regex, no-in-tree-parser rule). The guard therefore fires unconditionally whenever a recognised aggregate token appears anywhere in the `sql` value outside of single-quoted or dollar-quoted bodies, including inside a `(SELECT jsonb_agg(...) FROM...)` scalar subquery. Until the Shape V `aggregate = true` marker ships (see `docs/spec/decisions.md` §Aggregate annotation declaration site), this check is unconditional. Detection is best-effort: aggregates outside this set or custom user-defined aggregates pass macro parsing and surface as Postgres errors at query time. | offending function call position |
 | `E_DJG_VDF_010` | A scope listed in `scopes` is also declared as a relation-form embedding scope elsewhere on the same model | `scopes = [...]` |
 | `E_DJG_VDF_011` | (Reserved for Tier 2 — emitted by the peer-projection cluster when it lands) | n/a |
 | `E_DJG_VDF_012` | `name` contains an uppercase ASCII byte (Postgres unquoted-identifier case folding would silently rename the alias) | `name = <ident>` |
@@ -1721,24 +1721,24 @@ documentation reference; the user-facing diagnostic uses prose.
 ```rust
 #[non_exhaustive]
 pub enum VisageError {
-    UnresolvedRelation { /* existing */ },
+ UnresolvedRelation { /* existing */ },
 
-    /// A derived field declared as NOT NULL (`ty = T`) decoded NULL
-    /// from the database row.
-    DbComputedNullForNonOptional {
-        visage: &'static str,
-        field: &'static str,
-    },
+ /// A derived field declared as NOT NULL (`ty = T`) decoded NULL
+ /// from the database row.
+ DbComputedNullForNonOptional {
+ visage: &'static str,
+ field: &'static str,
+ },
 
-    /// A derived field's runtime type did not match `ty`.
-    /// Surfaces from `FromPgRow` after Postgres returns a value the
-    /// declared Rust type cannot accept.
-    DbComputedTypeMismatch {
-        visage: &'static str,
-        field: &'static str,
-        expected: &'static str,
-        actual: &'static str,
-    },
+ /// A derived field's runtime type did not match `ty`.
+ /// Surfaces from `FromPgRow` after Postgres returns a value the
+ /// declared Rust type cannot accept.
+ DbComputedTypeMismatch {
+ visage: &'static str,
+ field: &'static str,
+ expected: &'static str,
+ actual: &'static str,
+ },
 }
 ```
 
@@ -1755,24 +1755,24 @@ to callers **wrapped in `DjogiError::Visage(VisageError)`**, not as
 bare `VisageError`:
 
 - The generated `FromPgRow` impl for a visage with derived entries
-  constructs a `VisageError::DbComputedNullForNonOptional { ... }` or
-  `VisageError::DbComputedTypeMismatch { ... }` at the offending
-  ordinal position, then wraps it via the existing
-  `impl From<VisageError> for DjogiError` (at
-  `djogi/src/error.rs:351`) before returning.
+ constructs a `VisageError::DbComputedNullForNonOptional {... }` or
+ `VisageError::DbComputedTypeMismatch {... }` at the offending
+ ordinal position, then wraps it via the existing
+ `impl From<VisageError> for DjogiError` (at
+ `djogi/src/error.rs:351`) before returning.
 - Callers fetching through `VisageQuerySet` see a `DjogiError::Visage(
-  VisageError::DbComputedNullForNonOptional { .. })` — the outer
-  `DjogiError` is what propagates through `?` from a `fetch_all`
-  call; the inner `VisageError` carries the variant detail.
+ VisageError::DbComputedNullForNonOptional {.. })` — the outer
+ `DjogiError` is what propagates through `?` from a `fetch_all`
+ call; the inner `VisageError` carries the variant detail.
 - Callers using `<V as TryFrom<&Model>>::try_from(...)` directly (the
-  in-memory path) see `VisageError` un-wrapped, because the
-  `TryFrom::Error` is exactly `VisageError`. The row-decode boundary
-  is the only place the wrapping happens.
+ in-memory path) see `VisageError` un-wrapped, because the
+ `TryFrom::Error` is exactly `VisageError`. The row-decode boundary
+ is the only place the wrapping happens.
 
 The wrapping is intentional symmetry with the existing
 `VisageError::UnresolvedRelation` variant, which the visage emitter
 already surfaces through the same `DjogiError::Visage` path for
-relation-nesting visages (Phase 7-Zero-2 T9, per
+relation-nesting visages ( T9, per
 `djogi/src/error.rs:339`).
 
 ---
@@ -1783,51 +1783,51 @@ These are deliberate omissions for this phase. Each has a tracking
 issue or named future phase.
 
 1. **SQL-to-Rust automatic translation.** Adopters write both `sql`
-   and `rust`. The framework does not infer one from the other.
-   Tracking: future spec round if adopter friction proves serious.
+ and `rust`. The framework does not infer one from the other.
+ Tracking: future spec round if adopter friction proves serious.
 2. **Aggregates and window functions.** Out of scope for `#[derived]`
-   Tier 1. The declaration site for any future aggregate / window-function
-   surface is **locked** by [the aggregate-annotation declaration-site
-   decision in `docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site): per-query
-   group-by aggregates land as a typed `.annotate(...)` on
-   `QuerySet<T>` / `VisageQuerySet<V>` (**Shape Q**), and per-row
-   window expressions / correlated-subquery scalars land on the
-   existing `#[derived]` helper attribute with an explicit
-   `aggregate = true` opt-in marker (**Shape V**). No future surface
-   places aggregate declarations on **model fields**; the locked rule
-   exists pre-emptively because the same Shape A bundling that the
-   Path B reshape eliminated for `#[computed(sql, expose)]` would
-   silently re-emerge if a model-field-level `#[annotation(sql, expose)]`
-   attribute landed. The `aggregate = true` marker is also the
-   deliberate opt-in that relaxes Tier 1's
-   [E_DJG_VDF_009](#error-taxonomy) aggregate rejection — without it,
-   aggregates inside `#[derived]` `sql` continue to fail at parse
-   time. Tracking: future phase (no earlier scheduling commitment,
-   ahead of which a `docs/spec/aggregate-annotations.md` spec ships).
+ Tier 1. The declaration site for any future aggregate / window-function
+ surface is **locked** by [the aggregate-annotation declaration-site
+ decision in `docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site): per-query
+ group-by aggregates land as a typed `.annotate(...)` on
+ `QuerySet<T>` / `VisageQuerySet<V>` (**Shape Q**), and per-row
+ window expressions / correlated-subquery scalars land on the
+ existing `#[derived]` helper attribute with an explicit
+ `aggregate = true` opt-in marker (**Shape V**). No future surface
+ places aggregate declarations on **model fields**; the locked rule
+ exists pre-emptively because the same Shape A bundling that the
+ Path B reshape eliminated for `#[computed(sql, expose)]` would
+ silently re-emerge if a model-field-level `#[annotation(sql, expose)]`
+ attribute landed. The `aggregate = true` marker is also the
+ deliberate opt-in that relaxes Tier 1's
+ [E_DJG_VDF_009](#error-taxonomy) aggregate rejection — without it,
+ aggregates inside `#[derived]` `sql` continue to fail at parse
+ time. Tracking: future phase (no earlier scheduling commitment,
+ ahead of which a `docs/spec/aggregate-annotations.md` spec ships).
 3. **Filter / order-by on derived fields from `VisageQuerySet`.**
-   Tier 2 / Tier 3 work; see [Capability tiers](#capability-tiers).
+ Tier 2 / Tier 3 work; see [Capability tiers](#capability-tiers).
 4. **Cross-model `$N` references.** Reserved syntax only;
-   [Reserved syntax: `$N`](#reserved-syntax-n) holds the grammar.
+ [Reserved syntax: `$N`](#reserved-syntax-n) holds the grammar.
 5. **Multi-visage shared derived declarations.** Each `#[derived]`
-   attribute declares one entry; if the same logical derivation
-   belongs in two unrelated scopes with different visibility shapes,
-   declare twice. A shared-registry surface is tracked separately.
+ attribute declares one entry; if the same logical derivation
+ belongs in two unrelated scopes with different visibility shapes,
+ declare twice. A shared-registry surface is tracked separately.
 6. **Compile-time SQL column-reference validation.** Identifier
-   typos in `sql` surface at query time, not macro time. See
-   [SQL grammar and validation](#sql-grammar-and-validation).
+ typos in `sql` surface at query time, not macro time. See
+ [SQL grammar and validation](#sql-grammar-and-validation).
 7. **Automatic parity gating in tests.** The parity helper is
-   opt-in; no `#[djogi_test]` integration auto-runs it.
+ opt-in; no `#[djogi_test]` integration auto-runs it.
 8. **Derived-field migrations.** `#[derived]` entries are
-   projection-only and never appear in `target/djogi_models.json` /
-   the `ModelDescriptor` inventory channel that feeds `build.rs`.
-   The richer `VisageDescriptor` / `DerivedProjection` inventory
-   surface that documentation generators consume ships in Phase 8.5
-   (see [Stage 2](#stage-2--visage-side-descriptor-inventory)) but
-   registers against its own `inventory::collect!(VisageDescriptor)`
-   collection — structurally separate from the `ModelDescriptor` /
-   `EnumDescriptor` collections the migration differ walks. The
-   storage-vs-projection split is preserved: migration / snapshot /
-   `build.rs` paths never observe `VisageDescriptor` entries.
+ projection-only and never appear in `target/djogi_models.json` /
+ the `ModelDescriptor` inventory channel that feeds `build.rs`.
+ The richer `VisageDescriptor` / `DerivedProjection` inventory
+ surface that documentation generators consume ships in 
+ (see [Stage 2](#stage-2--visage-side-descriptor-inventory)) but
+ registers against its own `inventory::collect!(VisageDescriptor)`
+ collection — structurally separate from the `ModelDescriptor` /
+ `EnumDescriptor` collections the migration differ walks. The
+ storage-vs-projection split is preserved: migration / snapshot /
+ `build.rs` paths never observe `VisageDescriptor` entries.
 
 ---
 
@@ -1840,41 +1840,41 @@ phase and not visible to adopters.
 ### Stage 1 — attribute parser and helper-attribute registration
 
 - **Register `derived` as a `Model`-derive helper attribute.** The
-  shipped proc-macro declaration is
-  `#[proc_macro_derive(Model, attributes(field, derived))]`. This
-  keeps `#[derived(...)]` legal during rustc syntax checking before
-  the macro expands. See
-  [§Declaration](#derived-is-a-helper-attribute-not-an-attribute-macro).
+ shipped proc-macro declaration is
+ `#[proc_macro_derive(Model, attributes(field, derived))]`. This
+ keeps `#[derived(...)]` legal during rustc syntax checking before
+ the macro expands. See
+ [§Declaration](#derived-is-a-helper-attribute-not-an-attribute-macro).
 - **Strip `#[derived(...)]` from the re-emitted struct attributes.**
-  The macro expansion filters every outer attribute whose `path()` is
-  `derived` out of `item_struct.attrs` before re-emitting the struct.
-  This mirrors the existing per-field `#[field(...)]` helper
-  stripping and prevents helper attributes from surviving into the
-  user crate's compiled output.
+ The macro expansion filters every outer attribute whose `path()` is
+ `derived` out of `item_struct.attrs` before re-emitting the struct.
+ This mirrors the existing per-field `#[field(...)]` helper
+ stripping and prevents helper attributes from surviving into the
+ user crate's compiled output.
 - Add `#[derived(...)]` parser to `djogi-macros/src/model/attrs.rs`.
-  The parser is invoked from the `#[model(...)]` attribute-macro
-  expansion path (walking `item_struct.attrs` for outer attributes
-  whose `path()` is `derived`); it is **not** wired into the
-  `#[derive(Model)]` proc-macro derive as a separate entry point,
-  because `Model`'s derive is a no-op stub at
-  `djogi-macros/src/lib.rs:111`. The two paths share one parser
-  module; the `#[model]` attribute-macro is the routine call site.
+ The parser is invoked from the `#[model(...)]` attribute-macro
+ expansion path (walking `item_struct.attrs` for outer attributes
+ whose `path()` is `derived`); it is **not** wired into the
+ `#[derive(Model)]` proc-macro derive as a separate entry point,
+ because `Model`'s derive is a no-op stub at
+ `djogi-macros/src/lib.rs:111`. The two paths share one parser
+ module; the `#[model]` attribute-macro is the routine call site.
 - Parse the six keys (`name`, `ty`, `scopes`, `sql`, `rust`, `doc`)
-  into a `DerivedAttr` struct. Five are required; `doc` is optional.
+ into a `DerivedAttr` struct. Five are required; `doc` is optional.
 - Validation pass: identifier rules
-  ([E_DJG_VDF_002–005](#error-taxonomy), [E_DJG_VDF_012](#error-taxonomy),
-  [E_DJG_VDF_014](#error-taxonomy)),
-  scope rules ([E_DJG_VDF_006](#error-taxonomy),
-  [E_DJG_VDF_013](#error-taxonomy)).
+ ([E_DJG_VDF_002–005](#error-taxonomy), [E_DJG_VDF_012](#error-taxonomy),
+ [E_DJG_VDF_014](#error-taxonomy)),
+ scope rules ([E_DJG_VDF_006](#error-taxonomy),
+ [E_DJG_VDF_013](#error-taxonomy)).
 - SQL token-level scan (no full parse): statement-separator check,
-  leading-keyword check, `$N` rejection, aggregate detection. Tokeniser
-  shape: byte-walk handling single-quoted strings, dollar-quoted
-  strings, and bare identifiers. See the no-regex discipline in
-  `feedback_no_regex_in_djogi.md`.
+ leading-keyword check, `$N` rejection, aggregate detection. Tokeniser
+ shape: byte-walk handling single-quoted strings, dollar-quoted
+ strings, and bare identifiers. See the no-regex discipline in
+ `feedback_no_regex_in_djogi.md`.
 
 ### Stage 2 — visage-side descriptor inventory
 
-A separate visage-side descriptor inventory ships in Phase 8.5
+A separate visage-side descriptor inventory ships in 
 alongside the runtime trait surface. Derived metadata MUST NOT appear
 on `ModelDescriptor` or in the `target/djogi_models.json` channel
 that feeds `build.rs` migrations (see [Non-goals item 8](#non-goals));
@@ -1883,108 +1883,108 @@ metadata against a SEPARATE inventory collection that the migration
 differ does not iterate.
 
 - **Shipped: `VisageDescriptor`.** Lives at
-  `djogi::descriptor::VisageDescriptor` — one descriptor per
-  `(Model, scope)` pair the macro emits that has at least one
-  derived entry in scope. Fields:
-  - `model_name: &'static str` — source model type name.
-  - `scope: &'static str` — visage scope key
-    (`"public"` / `"self_view"` / `"admin"` / `"export"`).
-  - `visage_name: &'static str` — visage struct type name
-    (`"ConsignmentPublic"`).
-  - `derived: &'static [DerivedProjection]` — derived entries in
-    struct-field order.
+ `djogi::descriptor::VisageDescriptor` — one descriptor per
+ `(Model, scope)` pair the macro emits that has at least one
+ derived entry in scope. Fields:
+ - `model_name: &'static str` — source model type name.
+ - `scope: &'static str` — visage scope key
+ (`"public"` / `"self_view"` / `"admin"` / `"export"`).
+ - `visage_name: &'static str` — visage struct type name
+ (`"ConsignmentPublic"`).
+ - `derived: &'static [DerivedProjection]` — derived entries in
+ struct-field order.
 
-  The `derived` field is a `&'static` slice — not a `Vec` — because
-  `inventory::submit!` requires fully-static data, matching the
-  existing descriptors in `djogi/src/descriptor.rs`. Registers
-  against its own `inventory::collect!(VisageDescriptor)` collection,
-  structurally separate from `ModelDescriptor` /
-  `EnumDescriptor` / `AppDescriptor`; migration / snapshot /
-  `build.rs` paths walk only their respective collections and never
-  observe `VisageDescriptor` entries.
+ The `derived` field is a `&'static` slice — not a `Vec` — because
+ `inventory::submit!` requires fully-static data, matching the
+ existing descriptors in `djogi/src/descriptor.rs`. Registers
+ against its own `inventory::collect!(VisageDescriptor)` collection,
+ structurally separate from `ModelDescriptor` /
+ `EnumDescriptor` / `AppDescriptor`; migration / snapshot /
+ `build.rs` paths walk only their respective collections and never
+ observe `VisageDescriptor` entries.
 - **Shipped: `DerivedProjection`.** Per-entry metadata for downstream
-  consumers (documentation generation, framework-side lints, debug
-  formatting, future Tier-2 predicate rendering):
+ consumers (documentation generation, framework-side lints, debug
+ formatting, future Tier-2 predicate rendering):
 
-  ```rust
-  pub struct DerivedProjection {
-      /// Output field name (the entry's `name = ...`).
-      pub name: &'static str,
-      /// Fully-qualified Rust type path for the output field, captured
-      /// as a token-string (the entry's `ty = ...`). Kept as a
-      /// `&'static str` rather than a structured representation because
-      /// downstream consumers (rustdoc reference tables, the `djogi
-      /// docs` CLI) want the source spelling, not a re-parsed form.
-      pub ty_path: &'static str,
-      /// The adopter's Postgres SQL expression (the entry's `sql =
-      /// "..."`). Verbatim — the same string spliced into
-      /// `PROJECTION_LIST` (with outer parentheses added at SELECT
-      /// emission time, not here).
-      pub sql: &'static str,
-      /// The adopter's Rust expression (the entry's `rust = "..."`),
-      /// verbatim. Surfaced for documentation; not re-parsed.
-      pub rust: &'static str,
-      /// The optional `doc = "..."` rustdoc attached to the generated
-      /// field. `None` when the entry did not declare `doc`.
-      pub doc: Option<&'static str>,
-      /// Scopes the entry was declared against, in source order. The
-      /// per-`(Model, scope)` `VisageDescriptor` already keys on
-      /// scope, but carrying the original set here lets consumers
-      /// that walk across visages reconcile multi-scope declarations
-      /// without re-walking the model.
-      pub scopes: &'static [&'static str],
-  }
-  ```
+ ```rust
+ pub struct DerivedProjection {
+ /// Output field name (the entry's `name =...`).
+ pub name: &'static str,
+ /// Fully-qualified Rust type path for the output field, captured
+ /// as a token-string (the entry's `ty =...`). Kept as a
+ /// `&'static str` rather than a structured representation because
+ /// downstream consumers (rustdoc reference tables, the `djogi
+ /// docs` CLI) want the source spelling, not a re-parsed form.
+ pub ty_path: &'static str,
+ /// The adopter's Postgres SQL expression (the entry's `sql =
+ /// "..."`). Verbatim — the same string spliced into
+ /// `PROJECTION_LIST` (with outer parentheses added at SELECT
+ /// emission time, not here).
+ pub sql: &'static str,
+ /// The adopter's Rust expression (the entry's `rust = "..."`),
+ /// verbatim. Surfaced for documentation; not re-parsed.
+ pub rust: &'static str,
+ /// The optional `doc = "..."` rustdoc attached to the generated
+ /// field. `None` when the entry did not declare `doc`.
+ pub doc: Option<&'static str>,
+ /// Scopes the entry was declared against, in source order. The
+ /// per-`(Model, scope)` `VisageDescriptor` already keys on
+ /// scope, but carrying the original set here lets consumers
+ /// that walk across visages reconcile multi-scope declarations
+ /// without re-walking the model.
+ pub scopes: &'static [&'static str],
+ }
+ ```
 
-  **Const-construction contract.** Every field of `DerivedProjection`
-  is a type with a `const` constructor usable in static contexts —
-  `&'static str`, `Option<&'static str>` (`Some("...")` is `const`
-  on every supported toolchain), and `&'static [&'static str]`. The
-  macro emits the entire `&'static [DerivedProjection]` slice as a
-  static-context expression at the `inventory::submit!` site without
-  runtime allocation:
+ **Const-construction contract.** Every field of `DerivedProjection`
+ is a type with a `const` constructor usable in static contexts —
+ `&'static str`, `Option<&'static str>` (`Some("...")` is `const`
+ on every supported toolchain), and `&'static [&'static str]`. The
+ macro emits the entire `&'static [DerivedProjection]` slice as a
+ static-context expression at the `inventory::submit!` site without
+ runtime allocation:
 
-  ```rust
-  inventory::submit! {
-      djogi::descriptor::VisageDescriptor {
-          model_name:  "Consignment",
-          scope:       "public",
-          visage_name: "ConsignmentPublic",
-          derived:     &[
-              djogi::descriptor::DerivedProjection {
-                  name:    "facility_site",
-                  ty_path: "Site",
-                  sql:     "CASE WHEN direction = 'inbound' \
-                            THEN inbound_site ELSE outbound_site END",
-                  rust:    "match model.direction { /* ... */ }",
-                  doc:     None,
-                  scopes:  &["public", "admin", "export"],
-              },
-          ],
-      }
-  }
-  ```
+ ```rust
+ inventory::submit! {
+ djogi::descriptor::VisageDescriptor {
+ model_name: "Consignment",
+ scope: "public",
+ visage_name: "ConsignmentPublic",
+ derived: &[
+ djogi::descriptor::DerivedProjection {
+  name: "facility_site",
+  ty_path: "Site",
+  sql: "CASE WHEN direction = 'inbound' \
+  THEN inbound_site ELSE outbound_site END",
+  rust: "match model.direction { /*... */ }",
+  doc: None,
+  scopes: &["public", "admin", "export"],
+ },
+ ],
+ }
+ }
+ ```
 
-  Owned types (`String`, `Vec<T>`) are forbidden anywhere in
-  `DerivedProjection`'s field list because they would force a runtime
-  allocator and break `inventory::submit!`'s static-data
-  requirement. The same constraint binds `FieldDescriptor` (every
-  field is `&'static str` / primitive / `Option<&'static str>` /
-  `Option<RelationKind>` etc., per `djogi/src/descriptor.rs:1491`);
-  `DerivedProjection` inherits the convention rather than
-  introducing a new pattern.
+ Owned types (`String`, `Vec<T>`) are forbidden anywhere in
+ `DerivedProjection`'s field list because they would force a runtime
+ allocator and break `inventory::submit!`'s static-data
+ requirement. The same constraint binds `FieldDescriptor` (every
+ field is `&'static str` / primitive / `Option<&'static str>` /
+ `Option<RelationKind>` etc., per `djogi/src/descriptor.rs:1491`);
+ `DerivedProjection` inherits the convention rather than
+ introducing a new pattern.
 - **Per-scope descriptor emission.** The macro emits one
-  `inventory::submit!` block per `(Source, Scope)` pair for which
-  `scope_derived()` (the iterator over derived attributes whose
-  `scopes = [...]` includes `self.scope`) returns at least one
-  entry. Visages with no derived entries in scope do not get a
-  `VisageDescriptor` — there is nothing for the descriptor to
-  describe. `pk = None` source models are skipped (they have no
-  `Model::table_name()`, hence no SELECT projection).
+ `inventory::submit!` block per `(Source, Scope)` pair for which
+ `scope_derived()` (the iterator over derived attributes whose
+ `scopes = [...]` includes `self.scope`) returns at least one
+ entry. Visages with no derived entries in scope do not get a
+ `VisageDescriptor` — there is nothing for the descriptor to
+ describe. `pk = None` source models are skipped (they have no
+ `Model::table_name()`, hence no SELECT projection).
 - **`ModelDescriptor` stays pure storage.** No `derived` field is
-  added to `ModelDescriptor`. Migration / snapshot / `build.rs` code
-  paths see only storage-side metadata; derived entries are
-  structurally invisible to them.
+ added to `ModelDescriptor`. Migration / snapshot / `build.rs` code
+ paths see only storage-side metadata; derived entries are
+ structurally invisible to them.
 
 The reason for a separate `VisageDescriptor` (rather than adding
 `#[serde(skip)] derived: Vec<...>` to `ModelDescriptor`): the
@@ -1999,99 +1999,99 @@ mechanical.
 
 - Emit derived fields as struct fields on each scoped visage.
 - Generate the new trait constants: `COLUMNS`, `PROJECTIONS`,
-  `PROJECTION_LIST`.
+ `PROJECTION_LIST`.
 - Emit the sealed `ProjectionEntry` re-export and the
-  `__private::ProjectionEntry` path in macro output.
+ `__private::ProjectionEntry` path in macro output.
 
 ### Stage 4 — `VisageQuerySet` projection emission
 
 - Replace the `columns: &'static [&'static str]` field on
-  `VisageQuerySet<V>` with `projection_list: &'static str`. The
-  queryset constructor (`new_for_visage`) takes the table name and
-  the projection list directly; the macro emits the visage's
-  `PROJECTION_LIST` constant into the constructor call.
+ `VisageQuerySet<V>` with `projection_list: &'static str`. The
+ queryset constructor (`new_for_visage`) takes the table name and
+ the projection list directly; the macro emits the visage's
+ `PROJECTION_LIST` constant into the constructor call.
 - The `COLUMNS` slice is no longer carried on `VisageQuerySet` —
-  callers that need the column-only view reach it through the visage
-  trait constant (`<V as DjogiVisage>::COLUMNS`) on demand.
+ callers that need the column-only view reach it through the visage
+ trait constant (`<V as DjogiVisage>::COLUMNS`) on demand.
 - Update `build_visage_select` / `build_visage_count` /
-  `build_visage_exists` to splice `qs.projection_list` into the
-  SELECT projection slot. (Count and exists builders still emit
-  `COUNT(*)` and `EXISTS (SELECT 1 ...)`, so they ignore the
-  projection list.)
+ `build_visage_exists` to splice `qs.projection_list` into the
+ SELECT projection slot. (Count and exists builders still emit
+ `COUNT(*)` and `EXISTS (SELECT 1...)`, so they ignore the
+ projection list.)
 - Preserve byte-level test surface (`__sql_for_test`) so existing
-  pin tests on column ordering continue to assert; the new emission
-  produces strictly more text (added derived expressions with
-  aliases) but the existing column ordering is unchanged.
+ pin tests on column ordering continue to assert; the new emission
+ produces strictly more text (added derived expressions with
+ aliases) but the existing column ordering is unchanged.
 
 ### Stage 5 — codegen: `From<&Model>` / `TryFrom<&Model>`
 
 - Walk derived entries' `rust` expressions; detect fallibility via
-  the [syntactic-tail rule](#fallibility-detection-syntactic-tail-not-type).
-  Record the matched shape per entry (Shape 1 vs Shapes 2–5 vs
-  infallible) — the emission shape depends on it.
+ the [syntactic-tail rule](#fallibility-detection-syntactic-tail-not-type).
+ Record the matched shape per entry (Shape 1 vs Shapes 2–5 vs
+ infallible) — the emission shape depends on it.
 - Splice each derived expression inside a `{ let model: &{Model} =
-  src; <rust> }` block so the adopter's `model.<field>` syntax binds
-  to the existing emitter's `src` parameter. The outer `?` is
-  shape-dependent:
-  - Shape 1 (trailing `?` in adopter expression): no outer `?` —
-    inner `?` propagates from the splice block to the surrounding
-    `try_from` body.
-  - Shapes 2–5 (block evaluates to `Result<T, E>`): outer `?` —
-    `?` desugars to `Err(From::from(e))`, requiring `VisageError:
-    From<E>` (held by all error types adopters return today).
-  - Infallible entry inside a fallible visage: no outer `?` — block
-    returns `T`, not `Result<T, _>`; the visage's `TryFrom` body
-    accepts the value directly.
+ src; <rust> }` block so the adopter's `model.<field>` syntax binds
+ to the existing emitter's `src` parameter. The outer `?` is
+ shape-dependent:
+ - Shape 1 (trailing `?` in adopter expression): no outer `?` —
+ inner `?` propagates from the splice block to the surrounding
+ `try_from` body.
+ - Shapes 2–5 (block evaluates to `Result<T, E>`): outer `?` —
+ `?` desugars to `Err(From::from(e))`, requiring `VisageError:
+ From<E>` (held by all error types adopters return today).
+ - Infallible entry inside a fallible visage: no outer `?` — block
+ returns `T`, not `Result<T, _>`; the visage's `TryFrom` body
+ accepts the value directly.
 - Emit `From<&Model>` if all-infallible.
 - Emit `TryFrom<&Model>` if any-fallible; mixed entries lift via the
-  existing `Infallible → VisageError` blanket.
+ existing `Infallible → VisageError` blanket.
 - Do **not** retouch the existing model-side parameter name (`src`)
-  in `djogi-macros/src/model/visages.rs`; the per-entry rebind is
-  the entire surface change.
+ in `djogi-macros/src/model/visages.rs`; the per-entry rebind is
+ the entire surface change.
 
 ### Stage 6 — error taxonomy extensions
 
 - Extend `VisageError` with `DbComputedNullForNonOptional` and
-  `DbComputedTypeMismatch` variants. Surface them from `FromPgRow`
-  wrapped in `DjogiError::Visage(...)` at the row-decode boundary —
-  see [Wrapping at the row-decode boundary](#wrapping-at-the-row-decode-boundary).
+ `DbComputedTypeMismatch` variants. Surface them from `FromPgRow`
+ wrapped in `DjogiError::Visage(...)` at the row-decode boundary —
+ see [Wrapping at the row-decode boundary](#wrapping-at-the-row-decode-boundary).
 - Update `FromPgRow` for each derived visage to surface these on
-  decode failure.
+ decode failure.
 
 ### Stage 7 — `assert_derived_parity` emission
 
 - Emit an **inherent method** `pub fn assert_derived_parity(&self,
-  other: &Self) -> Result<(), djogi::testing::DerivedParityError>`
-  on every generated visage struct that has at least one derived
-  field in its scope. Visages with zero derived fields do not
-  receive the method.
+ other: &Self) -> Result<(), djogi::testing::DerivedParityError>`
+ on every generated visage struct that has at least one derived
+ field in its scope. Visages with zero derived fields do not
+ receive the method.
 - The method body emits one `if self.<field> != other.<field> {
-  return Err(...); }` block per derived field in declaration order,
-  followed by a final `Ok(())`. Framework columns (`id`,
-  `created_at`, `updated_at`) and exposed storage columns are not
-  compared — only derived fields are walked. See
-  [Comparison surface](#comparison-surface) for the rationale.
+ return Err(...); }` block per derived field in declaration order,
+ followed by a final `Ok(())`. Framework columns (`id`,
+ `created_at`, `updated_at`) and exposed storage columns are not
+ compared — only derived fields are walked. See
+ [Comparison surface](#comparison-surface) for the rationale.
 - Emit a mandatory `where <Ty>: PartialEq` bound (one bound per
-  distinct derived `ty`) on the inherent impl block, so a `ty` that
-  does not implement `PartialEq` surfaces as a cleaner E0277
-  diagnostic anchored at the `assert_derived_parity` impl site
-  rather than at the inner `!=` token. Macro-time tracking code:
-  [E_DJG_VDF_016](#error-taxonomy).
+ distinct derived `ty`) on the inherent impl block, so a `ty` that
+ does not implement `PartialEq` surfaces as a cleaner E0277
+ diagnostic anchored at the `assert_derived_parity` impl site
+ rather than at the inner `!=` token. Macro-time tracking code:
+ [E_DJG_VDF_016](#error-taxonomy).
 - Add `DerivedParityError` enum to `djogi::testing` with a single
-  `Drift { visage: &'static str, field: &'static str }` variant. The
-  enum is shared across all visages; the macro-emitted methods all
-  return the same error type.
+ `Drift { visage: &'static str, field: &'static str }` variant. The
+ enum is shared across all visages; the macro-emitted methods all
+ return the same error type.
 - Doctest the emission against the consignment scenario.
 - The helper is **synchronous and IO-free**. No transaction
-  wrapping is needed because no IO happens. The earlier draft
-  wrapped a fetch in `djogi::transaction::atomic(...)` based on
-  incorrect Postgres semantics claims (caught in Round 2 dual
-  review); a Round 3 follow-on removed the fetch and the wrapping
-  together. The Round 3 generic-helper shape was further removed
-  in favour of per-visage macro emission to side-step missing
-  `PartialEq` derives on visages and to keep framework-column
-  round-trip lossiness from false-positiving `Drift` — see
-  [Why the macro emits per-visage instead of a generic helper](#why-the-macro-emits-per-visage-instead-of-a-generic-helper).
+ wrapping is needed because no IO happens. The earlier draft
+ wrapped a fetch in `djogi::transaction::atomic(...)` based on
+ incorrect Postgres semantics claims (caught in Round 2 dual
+ review); a Round 3 follow-on removed the fetch and the wrapping
+ together. The Round 3 generic-helper shape was further removed
+ in favour of per-visage macro emission to side-step missing
+ `PartialEq` derives on visages and to keep framework-column
+ round-trip lossiness from false-positiving `Drift` — see
+ [Why the macro emits per-visage instead of a generic helper](#why-the-macro-emits-per-visage-instead-of-a-generic-helper).
 
 ### Stage 8 — documentation (HARD CLOSING CONDITION)
 
@@ -2101,53 +2101,53 @@ is a hard closing condition; the issue does not close while any item
 remains unchecked.
 
 - **User-guide page** at `docs/guide/visages.md` (extend) or
-  `docs/guide/derived-projections.md` (new) — adopter-facing prose
-  covering: the `#[derived(...)]` attribute, the consignment scenario
-  end-to-end, the SQL/Rust parity rule, the fallibility detection,
-  the parity helper, the capability tiers (Tier 1 ships here, Tier 2/3
-  deferred — name the deferral anchors), and the relation-form
-  interaction (deferred and why). The user-guide page is the primary
-  artifact adopters reach for — rustdoc supplements it but does not
-  replace it.
+ `docs/guide/derived-projections.md` (new) — adopter-facing prose
+ covering: the `#[derived(...)]` attribute, the consignment scenario
+ end-to-end, the SQL/Rust parity rule, the fallibility detection,
+ the parity helper, the capability tiers (Tier 1 ships here, Tier 2/3
+ deferred — name the deferral anchors), and the relation-form
+ interaction (deferred and why). The user-guide page is the primary
+ artifact adopters reach for — rustdoc supplements it but does not
+ replace it.
 - **Rustdoc** on every new public surface:
-  - `#[derived]` helper attribute (documented on the `#[derive(Model)]`
-    derive macro's rustdoc, since `#[derived]` is a helper attribute
-    consumed by `Model` — not an independent attribute-macro entry
-    point; see [§Declaration](#derived-is-a-helper-attribute-not-an-attribute-macro)).
-  - `DjogiVisage` trait + its `type Model` associated type + its
-    three associated constants (`COLUMNS`, `PROJECTIONS`,
-    `PROJECTION_LIST`) + the `SCOPE` associated constant. There is
-    no `TABLE` const: source-table access goes through
-    `<V::Model as Model>::table_name()` — the `type Model: Model`
-    supertrait bound makes that callable from generic code, and a
-    parallel `TABLE` const would duplicate state the supertrait
-    already pins. `DjogiVisage` carries two supertraits:
-    `DjogiVisageOf<Self::Model>` for the source-model pairing and a
-    separate metadata-only `private::Sealed` (re-exported as
-    `__private::DjogiVisageSealed`) as the closed-world gate. The
-    macro emits both the pairing impl and the metadata seal impl; the
-    two supertraits serve distinct roles and neither alone covers
-    both.
-  - The `__private::ProjectionEntry` sealed type (with the standard
-    "do not name this" warning matching the existing
-    `__private::VisageSealed` precedent).
-  - The two new `VisageError` variants
-    (`DbComputedNullForNonOptional`, `DbComputedTypeMismatch`).
-  - The macro-emitted `assert_derived_parity` inherent method on
-    each derived visage (documented as part of the
-    `#[derive(Model)]` rustdoc surface, since the method is emitted
-    by the macro — not as a standalone item in
-    `djogi::testing`) + the `djogi::testing::DerivedParityError`
-    enum it returns.
+ - `#[derived]` helper attribute (documented on the `#[derive(Model)]`
+ derive macro's rustdoc, since `#[derived]` is a helper attribute
+ consumed by `Model` — not an independent attribute-macro entry
+ point; see [§Declaration](#derived-is-a-helper-attribute-not-an-attribute-macro)).
+ - `DjogiVisage` trait + its `type Model` associated type + its
+ three associated constants (`COLUMNS`, `PROJECTIONS`,
+ `PROJECTION_LIST`) + the `SCOPE` associated constant. There is
+ no `TABLE` const: source-table access goes through
+ `<V::Model as Model>::table_name()` — the `type Model: Model`
+ supertrait bound makes that callable from generic code, and a
+ parallel `TABLE` const would duplicate state the supertrait
+ already pins. `DjogiVisage` carries two supertraits:
+ `DjogiVisageOf<Self::Model>` for the source-model pairing and a
+ separate metadata-only `private::Sealed` (re-exported as
+ `__private::DjogiVisageSealed`) as the closed-world gate. The
+ macro emits both the pairing impl and the metadata seal impl; the
+ two supertraits serve distinct roles and neither alone covers
+ both.
+ - The `__private::ProjectionEntry` sealed type (with the standard
+ "do not name this" warning matching the existing
+ `__private::VisageSealed` precedent).
+ - The two new `VisageError` variants
+ (`DbComputedNullForNonOptional`, `DbComputedTypeMismatch`).
+ - The macro-emitted `assert_derived_parity` inherent method on
+ each derived visage (documented as part of the
+ `#[derive(Model)]` rustdoc surface, since the method is emitted
+ by the macro — not as a standalone item in
+ `djogi::testing`) + the `djogi::testing::DerivedParityError`
+ enum it returns.
 - **Doctest** parity: every documented example compiles and runs.
-  Specifically the consignment scenario is doctested end to end (one
-  pass through `From<&Model>`, one pass through `VisageQuerySet`, one
-  pass through the parity helper).
+ Specifically the consignment scenario is doctested end to end (one
+ pass through `From<&Model>`, one pass through `VisageQuerySet`, one
+ pass through the parity helper).
 - **Spec index**: update `docs/spec/index.md` to link this spec.
 - **Cross-references**: any existing user-guide page that mentions
-  visages (`docs/guide/models.md`, `docs/guide/visages.md` if it
-  exists) gets a one-line "see also: derived projections" pointer
-  with a link to the new user-guide page.
+ visages (`docs/guide/models.md`, `docs/guide/visages.md` if it
+ exists) gets a one-line "see also: derived projections" pointer
+ with a link to the new user-guide page.
 
 The user-guide update is non-negotiable: shipping the feature with
 only rustdoc would force adopters to assemble the workflow from
@@ -2157,69 +2157,69 @@ debt the framework's docs convention exists to prevent.
 ### Stage 9 — lihaaf fixtures
 
 - `compile_pass`: consignment-shaped fixture, single-derived-field
-  visage, multi-scope shared derived
-  (`phase85_derived_fields.rs`); fallibility-shape variant
-  exercising the syntactic-tail `?` lift
-  (`phase85_derived_fields_fallible.rs`); restored
-  `DjogiVisage::Model` associated-type contract
-  (`phase85_derived_visage_model_assoc.rs`) — pins the spec's
-  `<V::Model as Model>::table_name()` ergonomics across every
-  emitted visage scope.
+ visage, multi-scope shared derived
+ (`phase85_derived_fields.rs`); fallibility-shape variant
+ exercising the syntactic-tail `?` lift
+ (`phase85_derived_fields_fallible.rs`); restored
+ `DjogiVisage::Model` associated-type contract
+ (`phase85_derived_visage_model_assoc.rs`) — pins the spec's
+ `<V::Model as Model>::table_name()` ergonomics across every
+ emitted visage scope.
 - `compile_fail`: one fixture per `E_DJG_VDF_*` macro-time error,
-  with span-anchored expected diagnostic. The shipped inventory:
-  - `phase85_derived_001_missing_required_key.rs` — E_DJG_VDF_001
-    (missing required `name` key, anchored at attribute span).
-  - `phase85_derived_002_column_collision.rs` — E_DJG_VDF_002
-    (collision against an exposed model column in any overlapping
-    scope; anchored at `name = ...` token).
-  - `phase85_derived_003_derived_collision.rs` — E_DJG_VDF_003
-    (collision between two derived `name`s in an overlapping scope;
-    anchored at the second declaration).
-  - `phase85_derived_004_name_shape_too_long.rs` — E_DJG_VDF_004
-    (length cap; complement of the parser-side unit tests covering
-    leading byte / body byte rules).
-  - `phase85_derived_005_djogi_prefix.rs` — E_DJG_VDF_005
-    (framework-reserved `__djogi_` prefix).
-  - `phase85_derived_006_unknown_scope.rs` — E_DJG_VDF_006
-    (unknown scope identifier in `scopes = [...]`).
-  - `phase85_derived_007_sql_statement_separator.rs` —
-    E_DJG_VDF_007 (statement-separator arm; the leading
-    DDL/DML-keyword arm shares the same diagnostic surface and is
-    covered by parser-side unit tests).
-  - `phase85_derived_008_sql_dollar_placeholder.rs` —
-    E_DJG_VDF_008 (`$N` placeholder reservation).
-  - `phase85_derived_009_sql_aggregate_keyword.rs` —
-    E_DJG_VDF_009 (aggregate / window guard).
-  - `phase85_derived_relation_form_overlap.rs` — E_DJG_VDF_010
-    (relation-form / derived overlap in the same scope).
-  - `phase85_derived_012_name_uppercase_byte.rs` —
-    E_DJG_VDF_012 (uppercase byte in `name`).
-  - `phase85_derived_013_duplicate_scope.rs` — E_DJG_VDF_013
-    (per-list duplicate scope identifier).
-  - `phase85_derived_014_reserved_keyword_name.rs` —
-    E_DJG_VDF_014 (Postgres reserved keyword as `name`).
-  - `phase85_derived_015_pk_none_host.rs` — E_DJG_VDF_015
-    (`#[derived(...)]` on a `pk = None` host model).
-  - `phase85_derived_partial_eq_required.rs` — E_DJG_VDF_016
-    (derived `ty` lacks `PartialEq`; diagnostic anchored at the
-    macro-emitted impl block, not the inner `!=` token).
+ with span-anchored expected diagnostic. The shipped inventory:
+ - `phase85_derived_001_missing_required_key.rs` — E_DJG_VDF_001
+ (missing required `name` key, anchored at attribute span).
+ - `phase85_derived_002_column_collision.rs` — E_DJG_VDF_002
+ (collision against an exposed model column in any overlapping
+ scope; anchored at `name =...` token).
+ - `phase85_derived_003_derived_collision.rs` — E_DJG_VDF_003
+ (collision between two derived `name`s in an overlapping scope;
+ anchored at the second declaration).
+ - `phase85_derived_004_name_shape_too_long.rs` — E_DJG_VDF_004
+ (length cap; complement of the parser-side unit tests covering
+ leading byte / body byte rules).
+ - `phase85_derived_005_djogi_prefix.rs` — E_DJG_VDF_005
+ (framework-reserved `__djogi_` prefix).
+ - `phase85_derived_006_unknown_scope.rs` — E_DJG_VDF_006
+ (unknown scope identifier in `scopes = [...]`).
+ - `phase85_derived_007_sql_statement_separator.rs` —
+ E_DJG_VDF_007 (statement-separator arm; the leading
+ DDL/DML-keyword arm shares the same diagnostic surface and is
+ covered by parser-side unit tests).
+ - `phase85_derived_008_sql_dollar_placeholder.rs` —
+ E_DJG_VDF_008 (`$N` placeholder reservation).
+ - `phase85_derived_009_sql_aggregate_keyword.rs` —
+ E_DJG_VDF_009 (aggregate / window guard).
+ - `phase85_derived_relation_form_overlap.rs` — E_DJG_VDF_010
+ (relation-form / derived overlap in the same scope).
+ - `phase85_derived_012_name_uppercase_byte.rs` —
+ E_DJG_VDF_012 (uppercase byte in `name`).
+ - `phase85_derived_013_duplicate_scope.rs` — E_DJG_VDF_013
+ (per-list duplicate scope identifier).
+ - `phase85_derived_014_reserved_keyword_name.rs` —
+ E_DJG_VDF_014 (Postgres reserved keyword as `name`).
+ - `phase85_derived_015_pk_none_host.rs` — E_DJG_VDF_015
+ (`#[derived(...)]` on a `pk = None` host model).
+ - `phase85_derived_partial_eq_required.rs` — E_DJG_VDF_016
+ (derived `ty` lacks `PartialEq`; diagnostic anchored at the
+ macro-emitted impl block, not the inner `!=` token).
 - `compile_fail`: **Tier-1 accessor exclusion pin.** Visage with a
-  derived field; test calls `V::filter(|f| f.<derived>()...)`.
-  Expected diagnostic: rustc's "no method named `<derived>`" error
-  surfacing from `{Visage}Fields`. Pin the message stem; the rest
-  may drift across rustc versions
-  (`phase85_derived_tier1_accessor_excluded.rs`).
+ derived field; test calls `V::filter(|f| f.<derived>()...)`.
+ Expected diagnostic: rustc's "no method named `<derived>`" error
+ surfacing from `{Visage}Fields`. Pin the message stem; the rest
+ may drift across rustc versions
+ (`phase85_derived_tier1_accessor_excluded.rs`).
 - E_DJG_VDF_011 is reserved for Tier 2 (peer-projection cluster);
-  no Tier-1 fixture exists because the diagnostic is not yet
-  emitted by the macro. The fixture lands alongside the
-  predicate-pushdown work that owns the code's emission site.
+ no Tier-1 fixture exists because the diagnostic is not yet
+ emitted by the macro. The fixture lands alongside the
+ predicate-pushdown work that owns the code's emission site.
 
 ### Stage 10 — integration tests
 
 - Per [feedback_no_raw_execute_in_tests.md], every integration test
-  uses `#[djogi_test(sync_models = [...])]` and the typed surface;
-  no `raw_*` escapes. One pin test per new raw API only — there are
-  no new raw APIs in this work.
+ uses `#[djogi_test(sync_models = [...])]` and the typed surface;
+ no `raw_*` escapes. One pin test per new raw API only — there are
+ no new raw APIs in this work.
 - Parity helper exercised in one integration test.
 
 ---
@@ -2231,61 +2231,61 @@ called out so reviewers can challenge the framing rather than only
 catching downstream errors.
 
 1. **Attribute name (`#[derived]`).** Alternatives considered:
-   `#[projection_entry]`, `#[visage_field]`, `#[computed_field]`.
-   `#[derived]` is short and aligns with prior internal terminology
-   ("visage-derived field"). Reviewers: does this collide
-   conceptually with anything in adopter codebases or the wider Rust
-   ecosystem? `serde(rename = "...")` and the like are field-level,
-   not struct-level, so direct collision is unlikely.
+ `#[projection_entry]`, `#[visage_field]`, `#[computed_field]`.
+ `#[derived]` is short and aligns with prior internal terminology
+ ("visage-derived field"). Reviewers: does this collide
+ conceptually with anything in adopter codebases or the wider Rust
+ ecosystem? `serde(rename = "...")` and the like are field-level,
+ not struct-level, so direct collision is unlikely.
 2. **Fallibility detection via syntactic tail.** The macro
-   recognises a closed set of syntactic shapes as fallible — see
-   [Fallibility detection](#fallibility-detection-syntactic-tail-not-type).
-   The spec rejects the alternative of an explicit `fallible = true`
-   key because the key would force the adopter to keep two
-   declarations in sync (the expression's behavior and the key); a
-   single syntactic-tail rule makes the expression itself the
-   source of truth. Reviewers: are the five recognised tail shapes
-   the right closed set, or is there a real-world expression that
-   falls in the gap?
+ recognises a closed set of syntactic shapes as fallible — see
+ [Fallibility detection](#fallibility-detection-syntactic-tail-not-type).
+ The spec rejects the alternative of an explicit `fallible = true`
+ key because the key would force the adopter to keep two
+ declarations in sync (the expression's behavior and the key); a
+ single syntactic-tail rule makes the expression itself the
+ source of truth. Reviewers: are the five recognised tail shapes
+ the right closed set, or is there a real-world expression that
+ falls in the gap?
 3. **Mixed fallibility lifts the whole visage to `TryFrom`.**
-   Alternative: emit one helper per entry (`fn project_<name>(model)`),
-   let the caller chain. Spec rejects this because it doubles the
-   public surface per visage. Reviewers: is the lift surprising
-   when only one entry is fallible?
+ Alternative: emit one helper per entry (`fn project_<name>(model)`),
+ let the caller chain. Spec rejects this because it doubles the
+ public surface per visage. Reviewers: is the lift surprising
+ when only one entry is fallible?
 4. **Sealed `ProjectionEntry` vs two parallel slices.** Spec uses
-   a sealed enum so the framework's emitter walks one ordered list.
-   Alternative: `COLUMNS` + `DERIVED` as two parallel slices and let
-   the emitter zip-merge them. Reviewers: is the seal worth the
-   slight surface-area cost?
+ a sealed enum so the framework's emitter walks one ordered list.
+ Alternative: `COLUMNS` + `DERIVED` as two parallel slices and let
+ the emitter zip-merge them. Reviewers: is the seal worth the
+ slight surface-area cost?
 5. **`$N` reservation is parse-time, not codegen-time.** Spec
-   rejects `$N` tokens during attribute parsing rather than letting
-   them through to SQL emission. Reviewers: is this the right
-   pre-emption, or should we allow `$N` through and surface a
-   runtime error from Postgres?
+ rejects `$N` tokens during attribute parsing rather than letting
+ them through to SQL emission. Reviewers: is this the right
+ pre-emption, or should we allow `$N` through and surface a
+ runtime error from Postgres?
 6. **Aggregate detection is keyword-based, not semantic.** The
-   tokeniser flags `COUNT(`, `SUM(`, etc. Adopters with a function
-   named `count` in their schema (case-sensitive) would trip the
-   detection. Spec says: this is acceptable because Postgres
-   convention is uppercase aggregate names and lowercase identifiers.
-   Reviewers: any real-world cases where this breaks?
+ tokeniser flags `COUNT(`, `SUM(`, etc. Adopters with a function
+ named `count` in their schema (case-sensitive) would trip the
+ detection. Spec says: this is acceptable because Postgres
+ convention is uppercase aggregate names and lowercase identifiers.
+ Reviewers: any real-world cases where this breaks?
 7. **No column-reference validation inside `sql`.** Spec
-   deliberately does not parse `sql` for identifiers. Reviewers: is
-   the runtime-error trade-off acceptable, or should the macro
-   attempt best-effort identifier extraction (find tokens, match
-   against `{Model}Fields`, warn on unknown)?
+ deliberately does not parse `sql` for identifiers. Reviewers: is
+ the runtime-error trade-off acceptable, or should the macro
+ attempt best-effort identifier extraction (find tokens, match
+ against `{Model}Fields`, warn on unknown)?
 8. **Relation-form rejection is per-scope, not per-derived.** Spec
-   rejects a `scopes` list that overlaps any relation-form scope.
-   Alternative: allow the overlap but reject only the specific
-   derived entry whose SQL doesn't fit the relation projector. Spec
-   rejects the alternative because it requires the relation projector
-   to exist; the simpler per-scope rejection lets Tier 1 ship before
-   the cluster.
+ rejects a `scopes` list that overlaps any relation-form scope.
+ Alternative: allow the overlap but reject only the specific
+ derived entry whose SQL doesn't fit the relation projector. Spec
+ rejects the alternative because it requires the relation projector
+ to exist; the simpler per-scope rejection lets Tier 1 ship before
+ the cluster.
 9. **`PROJECTION_LIST` vs runtime walk.** Spec emits
-   `PROJECTION_LIST` as a static `&'static str` at macro time.
-   Alternative: build the string at query time by walking
-   `PROJECTIONS`. Spec prefers static for SQL caching and emitted-SQL
-   pin tests. Reviewers: does any future feature (per-call SQL
-   variation) make this a bad bet?
+ `PROJECTION_LIST` as a static `&'static str` at macro time.
+ Alternative: build the string at query time by walking
+ `PROJECTIONS`. Spec prefers static for SQL caching and emitted-SQL
+ pin tests. Reviewers: does any future feature (per-call SQL
+ variation) make this a bad bet?
 
 (A tenth open question on parity-helper Postgres dependency
 appeared in earlier rounds; it was removed when the helper was
@@ -2303,24 +2303,24 @@ helper's surface. See [Test helper:
 The following ship as anchored deferrals to named future phases.
 
 - **Tier 2: predicate use of derived fields.** Filtering on derived
-  expressions through `VisageQuerySet`. Anchored to the visage
-  queryset predicate-pushdown cluster.
+ expressions through `VisageQuerySet`. Anchored to the visage
+ queryset predicate-pushdown cluster.
 - **Tier 3: ordering and annotation.** `ORDER BY <derived>` and
-  `.annotate(...)`. Anchored to Tier 2's completion.
+ `.annotate(...)`. Anchored to Tier 2's completion.
 - **Aggregate and window-function projections.** Declaration site
-  locked pre-implementation per [the aggregate-annotation
-  declaration-site decision in `docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site):
-  per-query aggregates land on `QuerySet` / `VisageQuerySet` via
-  `.annotate(...)` (Shape Q); per-row aggregates land on the
-  `#[derived]` helper attribute with an explicit `aggregate = true`
-  marker (Shape V); never on a model field. Implementation spec
-  (`docs/spec/aggregate-annotations.md`) ships when this work is
-  scheduled and amends the locked rules rather than supplanting them.
+ locked pre-implementation per [the aggregate-annotation
+ declaration-site decision in `docs/spec/decisions.md`](./decisions.md#aggregate-annotation-declaration-site):
+ per-query aggregates land on `QuerySet` / `VisageQuerySet` via
+ `.annotate(...)` (Shape Q); per-row aggregates land on the
+ `#[derived]` helper attribute with an explicit `aggregate = true`
+ marker (Shape V); never on a model field. Implementation spec
+ (`docs/spec/aggregate-annotations.md`) ships when this work is
+ scheduled and amends the locked rules rather than supplanting them.
 - **Cross-model `$N` references.** Locked grammar; design pending.
 - **Relation-form derived intersection.** Anchored to the
-  peer-projection cluster's contract; this spec specifies the contract.
+ peer-projection cluster's contract; this spec specifies the contract.
 - **Shared derived registry.** Multi-model derivations. Out of scope
-  until adopter demand surfaces.
+ until adopter demand surfaces.
 
 Each deferral is a *named* dependency on a future phase, not a vague
 "someday." When the dependency lands, the relevant section of this
@@ -2335,10 +2335,10 @@ fields as virtual model fields under an extended `#[computed]`
 attribute. That shape conflated three concepts:
 
 - Model-side virtual / stored generated columns (existing
-  `#[computed]` semantics).
+ `#[computed]` semantics).
 - Visage-side projection entries (the actual new feature).
 - A `VisageProjection` enum at the trait surface that discriminated
-  column from computed entries.
+ column from computed entries.
 
 The conflation forced compile cliffs in the consignment scenario
 (see the audit at `docs/spec/visage-derived-fields-ux-audit.md` for
@@ -2353,24 +2353,24 @@ The prior draft's contributions that survive into this spec:
 - The capability-tier framing.
 - The parity-helper concept.
 - The identifier-validation rules (reserved keywords,
-  `__djogi_` prefix).
+ `__djogi_` prefix).
 
 The prior draft's contributions that do not survive:
 
 - `#[computed(sql, expose)]` declaration site → replaced by
-  `#[derived(scopes, sql, rust)]`.
+ `#[derived(scopes, sql, rust)]`.
 - `source_ordinal: u16` on descriptors → no longer needed
-  (struct-field order is the projection-entry collection order).
+ (struct-field order is the projection-entry collection order).
 - `pub enum VisageProjection` in the public surface → sealed under
-  `__private` as `ProjectionEntry`.
+ `__private` as `ProjectionEntry`.
 - "Column-only `COLUMNS` slice with `PROJECTION_LIST` as an additive
-  sibling" framing → corrected: `COLUMNS` carries every ordinal
-  position's name (column name or derived alias), so the visage's
-  `FromPgRow::COLUMN_LIST` equals `PROJECTION_LIST`. The model-side
-  `FromPgRow::COLUMN_LIST == COLUMNS.join(", ")` invariant survives
-  unchanged for the model-side path; the visage-side path simply
-  has a different relationship between the two constants when
-  derived entries are present.
+ sibling" framing → corrected: `COLUMNS` carries every ordinal
+ position's name (column name or derived alias), so the visage's
+ `FromPgRow::COLUMN_LIST` equals `PROJECTION_LIST`. The model-side
+ `FromPgRow::COLUMN_LIST == COLUMNS.join(", ")` invariant survives
+ unchanged for the model-side path; the visage-side path simply
+ has a different relationship between the two constants when
+ derived entries are present.
 
 This spec is the artifact the next dual-review round dispatches
 against. Prior rounds 1–10 are historical; the next round is Round 1

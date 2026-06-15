@@ -37,16 +37,16 @@ async fn raw_ddl_bare_top_level_begin_atomic_rejected_by_postgres(mut ctx: djogi
     match outcome {
         Ok(_) => panic!(
             "Postgres must reject a bare top-level BEGIN ATOMIC ... COMMIT; an Ok \
-             result would mean the COMMIT executed past djogi's transaction-control guard"
+       result would mean the COMMIT executed past djogi's transaction-control guard"
         ),
         Err(djogi::DjogiError::RawTransactionControlDisallowedInTransaction {
             statement, ..
         }) => {
             panic!(
                 "raw_ddl returned a djogi-side scanner refusal ({statement:?}) instead of a \
-                 Postgres error; the #364 scanner change lets BEGIN ATOMIC through so Postgres \
-                 is the backstop — a scanner refusal here means the scanner regressed and the \
-                 Postgres backstop is silently untested"
+         Postgres error; the #364 scanner change lets BEGIN ATOMIC through so Postgres \
+         is the backstop — a scanner refusal here means the scanner regressed and the \
+         Postgres backstop is silently untested"
             );
         }
         Err(djogi::DjogiError::Db(_)) => {
@@ -54,7 +54,7 @@ async fn raw_ddl_bare_top_level_begin_atomic_rejected_by_postgres(mut ctx: djogi
         }
         Err(other) => panic!(
             "unexpected error variant from raw_ddl: {other:?}; expected DjogiError::Db \
-             wrapping a Postgres parse/protocol rejection of bare BEGIN ATOMIC"
+       wrapping a Postgres parse/protocol rejection of bare BEGIN ATOMIC"
         ),
     }
 }

@@ -14,8 +14,8 @@ use djogi::prelude::*;
 #[model(table = "tags_216_maxlen", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Tag216MaxLen {
-    #[field(domain = "email_address", max_length = 64)]
-    pub email: String,
+ #[field(domain = "email_address", max_length = 64)]
+ pub email: String,
 }
 
 fn main() {}

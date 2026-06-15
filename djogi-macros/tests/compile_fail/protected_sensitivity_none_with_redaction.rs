@@ -11,8 +11,8 @@ use djogi::prelude::*;
 #[model(table = "users")]
 #[derive(Debug, Clone)]
 pub struct User {
-    #[field(protected(sensitivity = "none", redaction = "mask"))]
-    pub note: String,
+ #[field(protected(sensitivity = "none", redaction = "mask"))]
+ pub note: String,
 }
 
 fn main() {}

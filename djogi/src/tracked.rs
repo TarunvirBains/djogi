@@ -51,7 +51,7 @@ impl<T> Tracked<T> {
     /// Called by macro-emitted `save()` bodies after `RETURNING *` rehydration
     /// to ensure every `Tracked<T>` field is clean once `save()` returns.
     /// `from_pg_row` already constructs `Tracked::new(T)` with `dirty = false`,
-    /// so this is defensive — but required by the Task 2 contract so that future
+    /// so this is defensive — but required by the contract so that future
     /// in-place rehydration changes cannot silently break the invariant.
     /// `#[doc(hidden)]` — this is an implementation detail of the `#[model]`
     /// macro, not intended for direct caller use. Visibility is `pub` only

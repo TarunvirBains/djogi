@@ -1,6 +1,6 @@
-//  fixup: prefetch null-probe type safety for non-BIGINT PKs.
+// fixup: prefetch null-probe type safety for non-BIGINT PKs.
 //
-// Regression coverage for a Codex-flagged blocker in the  landing:
+// Regression coverage for a an internal review-flagged blocker in the landing:
 // `prefetch_loader` decoded the target's `id` column as `Option<i64>`
 // to distinguish a LEFT JOIN miss from a real row. That probe works
 // for the default `HeerId` (BIGINT) but silently fails for
@@ -42,7 +42,7 @@ pub struct Category {
 // (`secondary_category_id`) exercises the LEFT JOIN miss branch on
 // a NULL source column, which is the other way a prefetch slot can
 // end up `None`.
-//  default flip — this model carries the HeerId-typed
+// default flip — this model carries the HeerId-typed
 // FK key back into the prefetch loader, so pin `pk = HeerId` explicitly.
 #[model(table = "fixup_items", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
@@ -105,7 +105,7 @@ async fn prefetch_resolves_serial_pk_target(mut ctx: djogi::DjogiContext) {
     assert_eq!(rows.len(), 1, "one item seeded");
     let resolved = rows[0].get(ItemRelated::category()).expect(
         "Serial-PK target must resolve — this test is the regression pin \
-             for the Option<i64> null-probe bug",
+       for the Option<i64> null-probe bug",
     );
     assert_eq!(resolved.name, "Books");
     assert_eq!(resolved.id, category.id);

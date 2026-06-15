@@ -15,21 +15,21 @@
 # isolation. Closes djogi#176.
 #
 # HOW TO ENABLE (per worktree):
-#   cp .envrc.example .envrc
-#   direnv allow
+# cp.envrc.example.envrc
+# direnv allow
 #
 # Without direnv, source this file from your shell, or inline the same SHA-256
 # derivation when wrapping a cargo invocation. Using just `basename "$PWD"`
 # would re-introduce the sibling-basename collision the SHA-256 id exists to
 # prevent (and would orphan caches on `cargo xtask gc-target-cache`):
-#   source .envrc.example
-#   # — or, self-contained one-shot —
-#   CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(printf '%s' "$(pwd -P)" | sha256sum | cut -c1-12)" cargo test
+# source.envrc.example
+# # — or, self-contained one-shot —
+# CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(printf '%s' "$(pwd -P)" | sha256sum | cut -c1-12)" cargo test
 #
 # DISK USAGE: each worktree's target tree accumulates roughly 5-10 GB of
 # incremental artifacts. After deleting a worktree (e.g. `git worktree
 # remove`), prune the matching cache directory with:
-#   cargo xtask gc-target-cache
+# cargo xtask gc-target-cache
 #
 # WORKTREE-ID DERIVATION: we hash the absolute worktree path to a short stable
 # identifier so sibling worktrees that share a basename (a hazard when nested
@@ -39,13 +39,13 @@
 # Compute a 12-char SHA-256-derived id from the absolute worktree path.
 # Fallback to the basename if `sha256sum` is unavailable.
 __djogi_worktree_id() {
-    local abs_path
-    abs_path="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
-    if command -v sha256sum >/dev/null 2>&1; then
-        printf '%s' "$abs_path" | sha256sum | cut -c1-12
-    else
-        basename "$abs_path"
-    fi
+ local abs_path
+ abs_path="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+ if command -v sha256sum >/dev/null 2>&1; then
+  printf '%s' "$abs_path" | sha256sum | cut -c1-12
+ else
+  basename "$abs_path"
+ fi
 }
 
 export CARGO_TARGET_DIR="$HOME/.cache/djogi-target/$(__djogi_worktree_id)"

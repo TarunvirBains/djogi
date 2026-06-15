@@ -6,18 +6,18 @@
 // Locks in three properties simultaneously:
 //
 // 1. `Jsonb<T>` is NOT subject to the `#[mirjzson(...)]` gate — the
-//    typed schema IS the justification.
+// typed schema IS the justification.
 // 2. Multiple `MirJzSON` fields each carry their own justification.
 // 3. The attribute parsing and stripping are independent per field;
-//    other field types coexist freely.
+// other field types coexist freely.
 
 use djogi::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(JsonbSchema, Serialize, Deserialize, Default, Debug, Clone)]
 pub struct TypedMeta {
-    pub view_count: i64,
-    pub published: bool,
+ pub view_count: i64,
+ pub published: bool,
 }
 
 // `MirJzSON` is not `Default`, so the bare-field variant requires
@@ -28,12 +28,12 @@ pub struct TypedMeta {
 #[model(table = "phase85_mirjzson_mixed_payloads", no_default)]
 #[derive(Debug, Clone)]
 pub struct MixedPayload {
-    pub source: String,
-    pub typed_meta: Jsonb<TypedMeta>,
-    #[mirjzson(justification = "raw audit blob with shape varying per row")]
-    pub raw_request: MirJzSON,
-    #[mirjzson(justification = "optional response payload owned by external SDK")]
-    pub raw_response: Option<MirJzSON>,
+ pub source: String,
+ pub typed_meta: Jsonb<TypedMeta>,
+ #[mirjzson(justification = "raw audit blob with shape varying per row")]
+ pub raw_request: MirJzSON,
+ #[mirjzson(justification = "optional response payload owned by external SDK")]
+ pub raw_response: Option<MirJzSON>,
 }
 
 fn main() {}

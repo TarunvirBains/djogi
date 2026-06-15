@@ -2,14 +2,14 @@
 //! # What
 //! `FtsFieldRef` is the typed handle returned by a macro-generated
 //! `{Model}Fields::search()` accessor on models that declare
-//! `#[model(fts = { ... })]`. It carries the tsvector column name and the
+//! `#[model(fts = {... })]`. It carries the tsvector column name and the
 //! Postgres text-search dictionary name baked in at codegen time, so call
 //! sites only supply the user-facing `TsQuery` value.
 //! Two operations are available:
 //! - `.matches(q)` — builds a `Condition` leaf that emits
-//!   `<col> @@ to_tsquery('<dict>', $n)` in the WHERE clause.
+//! `<col> @@ to_tsquery('<dict>', $n)` in the WHERE clause.
 //! - `.rank(q)` — builds an `Expr<f32>` that emits
-//!   `ts_rank(<col>, to_tsquery('<dict>', $n))` in ORDER BY / SELECT.
+//! `ts_rank(<col>, to_tsquery('<dict>', $n))` in ORDER BY / SELECT.
 //! - `.rank_cd(q)` — same but uses `ts_rank_cd` (cover-density).
 //! # Path routing
 //! All emitted type paths go through `::djogi::*`. Macro output that
@@ -21,14 +21,14 @@
 //!
 //! #[model(app = "library", fts = { source = "title, body", dictionary = "english" })]
 //! pub struct Book {
-//!     pub title: String,
-//!     pub body: String,
+//!  pub title: String,
+//!  pub body: String,
 //! }
 //!
 //! let hits = Book::objects()
-//!     .filter(|b| b.search().matches(TsQuery::new("planet & earth")))
-//!     .order_by(|b| b.search().rank(TsQuery::new("planet & earth")).desc())
-//!     .fetch_all(&mut ctx).await?;
+//! .filter(|b| b.search().matches(TsQuery::new("planet & earth")))
+//! .order_by(|b| b.search().rank(TsQuery::new("planet & earth")).desc())
+//! .fetch_all(&mut ctx).await?;
 //! ```
 //! # Note on dictionary embedding
 //! The dictionary name in the emitted SQL is a literal (single-quoted),

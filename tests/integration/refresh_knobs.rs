@@ -5,21 +5,21 @@
 // # What this file pins
 //
 // 1. **`lru_warn_one_shot_per_subscription`** — creates a `Punnu` with
-//    `lru_size: 1`, starts a `refresh_into` subscription, and inserts 2 rows
-//    into the backing table. The first full-scan tick applies both rows to the
-//    Punnu, causing an LRU eviction. The second tick's `fetch_delta` drains
-//    the events receiver via `try_recv`, observes `LruEvict`, and emits a
-//    one-shot `tracing::warn!` on `djogi::cache`. A third tick does NOT emit
-//    the warn again (one-shot flag already set).
+//  `lru_size: 1`, starts a `refresh_into` subscription, and inserts 2 rows
+//  into the backing table. The first full-scan tick applies both rows to the
+//  Punnu, causing an LRU eviction. The second tick's `fetch_delta` drains
+//  the events receiver via `try_recv`, observes `LruEvict`, and emits a
+//  one-shot `tracing::warn!` on `djogi::cache`. A third tick does NOT emit
+//  the warn again (one-shot flag already set).
 //
 // 2. **`with_eviction_recovery_method_reachable`** — verifies that a
-//    PR4-gated successful `qs.refresh_into(...)` handle can still call
-//    `.with_eviction_recovery(true)`. Sassi owns the runtime behavior; djogi
-//    only verifies the method is reachable through its public surface.
+//  PR4-gated successful `qs.refresh_into(...)` handle can still call
+//  `.with_eviction_recovery(true)`. Sassi owns the runtime behavior; djogi
+//  only verifies the method is reachable through its public surface.
 //
 // 3. **`with_periodic_full_refresh_method_reachable`** — verifies that a
-//    PR4-gated successful `qs.refresh_into(...)` handle can still call
-//    `.with_periodic_full_refresh(NonZeroUsize::new(10))`.
+//  PR4-gated successful `qs.refresh_into(...)` handle can still call
+//  `.with_periodic_full_refresh(NonZeroUsize::new(10))`.
 //
 // # Spec anchor
 //
@@ -89,10 +89,10 @@ fn logs_since(since: usize) -> String {
 /// Verifies that:
 ///
 /// 1. A `Punnu` with `lru_size: 1` emits an `LruEvict` event when a PREVIOUSLY
-///    RESIDENT item is displaced by a new insert.
+///  RESIDENT item is displaced by a new insert.
 /// 2. The djogi fetcher's `try_recv` loop in `fetch_delta` observes the
-///    `LruEvict` event on the NEXT tick after the eviction fires, and emits a
-///    one-shot `tracing::warn!` on the `djogi::cache` target.
+///  `LruEvict` event on the NEXT tick after the eviction fires, and emits a
+///  one-shot `tracing::warn!` on the `djogi::cache` target.
 /// 3. The djogi warn fires exactly once (one-shot `AtomicBool` flag).
 /// 4. Subsequent ticks do NOT re-emit the djogi warn.
 ///
@@ -117,9 +117,9 @@ fn logs_since(since: usize) -> String {
 /// The test uses this sequence:
 /// - Tick 1 (full scan): empty Punnu → inserts row A → no eviction.
 /// - Tick 2 (watermark): Punnu at capacity with row A → inserts row B → evicts
-///   row A → `LruEvict` event broadcast (sassi's own warn fires here too).
+///  row A → `LruEvict` event broadcast (sassi's own warn fires here too).
 /// - Tick 3 (watermark): `try_recv` at START of `fetch_delta` drains the channel,
-///   sees `LruEvict` from Tick 2 → djogi warn fires.
+///  sees `LruEvict` from Tick 2 → djogi warn fires.
 /// - Tick 4 + 5: another eviction cycle, but one-shot flag set → no second warn.
 ///
 #[djogi::djogi_test(sync_models = [KnobRow])]
@@ -176,7 +176,7 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
     assert!(
         !logs_after_tick_1.contains("undersized"),
         "no djogi LRU warn expected after tick 1 (Punnu was empty, no resident evicted); \
-         logs so far: {logs_after_tick_1:?}"
+     logs so far: {logs_after_tick_1:?}"
     );
 
     // Insert row B after Tick 1 so it passes the watermark filter.
@@ -210,8 +210,8 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
     assert!(
         !logs_after_tick_2.contains("undersized"),
         "djogi LRU warn must NOT fire yet after tick 2 (try_recv at start of \
-         tick 2 saw no events; tick 2's eviction is queued for tick 3); \
-         logs so far: {logs_after_tick_2:?}"
+     tick 2 saw no events; tick 2's eviction is queued for tick 3); \
+     logs so far: {logs_after_tick_2:?}"
     );
 
     // ── Tick 3 — try_recv sees LruEvict from Tick 2 → djogi warn fires ──────
@@ -226,14 +226,14 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
     assert!(
         logs_after_tick_3.contains("djogi::cache"),
         "djogi LRU warn must be targeted at the djogi::cache tracing target \
-         (sassi's own LRU warn fires at sassi::punnu::delta_refresh — different \
-          target); logs so far: {logs_after_tick_3:?}"
+     (sassi's own LRU warn fires at sassi::punnu::delta_refresh — different \
+     target); logs so far: {logs_after_tick_3:?}"
     );
     assert!(
         logs_after_tick_3.contains("undersized"),
         "djogi LRU eviction warn must contain the unique 'undersized' marker \
-         (sassi's warn message is 'consider raising lru_size'); logs so far: \
-         {logs_after_tick_3:?}"
+     (sassi's warn message is 'consider raising lru_size'); logs so far: \
+     {logs_after_tick_3:?}"
     );
 
     // Count occurrences of the djogi LRU warn specifically by the
@@ -253,7 +253,7 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
     assert_eq!(
         djogi_warn_count, 1,
         "djogi LRU eviction warn must fire exactly once (one-shot AtomicBool); \
-         found {djogi_warn_count} 'undersized' occurrences in logs: {logs_after_tick_3:?}"
+     found {djogi_warn_count} 'undersized' occurrences in logs: {logs_after_tick_3:?}"
     );
 
     // ── Tick 4 + 5 — one-shot flag already set → no second djogi warn ────────
@@ -288,9 +288,9 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
         djogi_warn_count_final,
         djogi_warn_count,
         "djogi LRU warn must NOT repeat after tick 5 (one-shot flag prevents \
-         double-warn); expected {djogi_warn_count} total, got \
-         {djogi_warn_count_final}; \
-         new logs since tick 3: {:?}",
+     double-warn); expected {djogi_warn_count} total, got \
+     {djogi_warn_count_final}; \
+     new logs since tick 3: {:?}",
         &logs_after_tick_5[logs_after_tick_3.len()..],
     );
 }

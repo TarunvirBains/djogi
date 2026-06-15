@@ -1,16 +1,16 @@
 error[E0599]: no method named `raw_execute` found for struct `DjogiContext` in the current scope
  --> $DIR/raw_execute_without_bypass.rs:3:21
-  |
-3 |         let _ = ctx.raw_execute("SELECT 1", &[]).await;
-  |                     ^^^^^^^^^^^ method not found in `DjogiContext`
-  |
-  = help: items from traits can only be used if the trait is in scope
+ |
+3 |   let _ = ctx.raw_execute("SELECT 1", &[]).await;
+ |      ^^^^^^^^^^^ method not found in `DjogiContext`
+ |
+ = help: items from traits can only be used if the trait is in scope
 help: the following traits which provide `raw_execute` are implemented but not in scope; perhaps you want to import one of them
-  |
+ |
 1 + use djogi::__bypass::RawAccessExt;
-  |
+ |
 1 + use djogi::__bypass::RawAccessExtBase;
-  |
+ |
 
 error: aborting due to 1 previous error
 

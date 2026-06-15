@@ -3,18 +3,18 @@
 //! ## What this demonstrates
 //!
 //! - The `Herd` side of a many-to-many relationship to `Country` through
-//!   the explicit `HerdRange` model. Djogi does not provide implicit M2M
-//!   fields — every M2M is an explicit through model with whatever
-//!   payload the relationship needs. The macro invocation lives in
-//!   `mod.rs` because `many_to_many!` takes bare type identifiers.
+//! the explicit `HerdRange` model. Djogi does not provide implicit M2M
+//! fields — every M2M is an explicit through model with whatever
+//! payload the relationship needs. The macro invocation lives in
+//! `mod.rs` because `many_to_many!` takes bare type identifiers.
 //!
 //! - A materialised `territory` polygon column — the convex hull of all
-//!   sightings observed for this herd, cached on the row so the
-//!   `mating-pairs` demo's `PairAreaOverlapRatio` pair-tuple annotation
-//!   can compute per-pair territory overlap in one SQL pass instead of
-//!   pre-aggregating from `Sighting` per query. Populated post-seed by
-//!   `seed::populate_herd_territories` and refreshed by adopter code on
-//!   the same cadence as the `Sighting` write stream.
+//! sightings observed for this herd, cached on the row so the
+//! `mating-pairs` demo's `PairAreaOverlapRatio` pair-tuple annotation
+//! can compute per-pair territory overlap in one SQL pass instead of
+//! pre-aggregating from `Sighting` per query. Populated post-seed by
+//! `seed::populate_herd_territories` and refreshed by adopter code on
+//! the same cadence as the `Sighting` write stream.
 //!
 //! Adopters write `herd.countries(ctx).await` for the M2M side; they
 //! construct `HerdSummary::from(&herd)` to get a hand-rolled projection

@@ -12,14 +12,14 @@
 //! deliberately deterministic — the same inputs always produce the
 //! exact same output bytes. Two consequences fall out:
 //! 1. **Byte-stable JSON.** When the serialiser sorts a
-//!    `Vec<(table_name, Recommendation)>` to `serde_json`, the result
-//!    is reproducible across runs / hosts / Postgres restarts. CI
-//!    dashboards that diff yesterday's `analyze --format json` output
-//!    against today's see only real changes, never iteration-order
-//!    churn.
+//! `Vec<(table_name, Recommendation)>` to `serde_json`, the result
+//! is reproducible across runs / hosts / Postgres restarts. CI
+//! dashboards that diff yesterday's `analyze --format json` output
+//! against today's see only real changes, never iteration-order
+//! churn.
 //! 2. **Trivial unit-testability.** No `tokio` runtime, no fixture DB,
-//!    no temp dirs — every recommendation rule is exercised in-process
-//!    against hand-built `TableHealth` values.
+//! no temp dirs — every recommendation rule is exercised in-process
+//! against hand-built `TableHealth` values.
 //! # Threshold rationale
 //! Both thresholds are runtime arguments rather than constants because
 //! healthy bloat / partition-row ceilings vary per workload. The
@@ -43,15 +43,15 @@ use djogi::pg::pool::DjogiPool;
 /// Field provenance (per the live-DB query plan):
 /// - `table_name` — `pg_stat_user_tables.relname`
 /// - `n_live_tup`, `n_dead_tup` — `pg_stat_user_tables` columns of the
-///   same name; Postgres-maintained per-row visibility counters.
+/// same name; Postgres-maintained per-row visibility counters.
 /// - `last_analyze` — `pg_stat_user_tables.last_analyze`; `None` when
-///   the table has never been analysed (e.g. freshly created).
+/// the table has never been analysed (e.g. freshly created).
 /// - `partition_count` — `0` for plain tables, `>= 1` for partitioned
-///   parents (sourced via `pg_partitioned_table` join, with a
-///   `pg_partman` fallback when the extension is installed).
-///   `last_analyze` is intentionally `time::OffsetDateTime`, not
-///   `chrono::DateTime` — djogi forbids `chrono` workspace-wide
-///   (CLAUDE.md "Dependencies excluded").
+/// parents (sourced via `pg_partitioned_table` join, with a
+/// `pg_partman` fallback when the extension is installed).
+/// `last_analyze` is intentionally `time::OffsetDateTime`, not
+/// `chrono::DateTime` — djogi forbids `chrono` workspace-wide
+/// (CLAUDE.md "Dependencies excluded").
 #[derive(Debug, Clone, Serialize)]
 pub struct TableHealth {
     pub table_name: String,
@@ -66,14 +66,14 @@ pub struct TableHealth {
 /// When multiple rules would fire, [`recommend`] returns the
 /// highest-priority match per this strict ordering (highest first):
 /// 1. [`Recommendation::VacuumNeeded`] — bloat dominates everything;
-///    autovacuum lag is the most operationally urgent signal because
-///    dead tuples block index health and inflate disk usage.
+/// autovacuum lag is the most operationally urgent signal because
+/// dead tuples block index health and inflate disk usage.
 /// 2. [`Recommendation::PartitionRecommended`] — an unpartitioned table
-///    has crossed the row-count threshold; partitioning is structural
-///    work that should land before the table grows further.
+/// has crossed the row-count threshold; partitioning is structural
+/// work that should land before the table grows further.
 /// 3. [`Recommendation::PartitionCountIncrease`] — partitions exist
-///    but average row count per partition exceeds the threshold;
-///    expanding the partition count is incremental tuning.
+/// but average row count per partition exceeds the threshold;
+/// expanding the partition count is incremental tuning.
 /// 4. [`Recommendation::Healthy`] — no rule fires.
 /// # JSON shape
 /// The `#[serde(tag = "kind", rename_all = "snake_case")]` attribute
@@ -127,22 +127,22 @@ pub enum Recommendation {
 /// `recommend_is_deterministic` test asserts this with 100 repetitions.
 /// # Threshold semantics
 /// - `threshold_vacuum`: dead-tuple ratio strictly above which
-///   [`Recommendation::VacuumNeeded`] fires. Typical: `0.2` (20% bloat).
-///   Higher values mean the operator tolerates more bloat before
-///   flagging.
+/// [`Recommendation::VacuumNeeded`] fires. Typical: `0.2` (20% bloat).
+/// Higher values mean the operator tolerates more bloat before
+/// flagging.
 /// - `threshold_partition_rows`: live row count strictly above which
-///   an unpartitioned table triggers [`Recommendation::PartitionRecommended`].
-///   Typical: `10_000_000`. The same threshold is reused for the
-///   per-partition row average that drives
-///   [`Recommendation::PartitionCountIncrease`].
+/// an unpartitioned table triggers [`Recommendation::PartitionRecommended`].
+/// Typical: `10_000_000`. The same threshold is reused for the
+/// per-partition row average that drives
+/// [`Recommendation::PartitionCountIncrease`].
 /// # Edge cases
 /// - Empty table (`n_live_tup == 0 && n_dead_tup == 0`): vacuum check
-///   is short-circuited (division-by-zero guard). Partition checks
-///   still run but neither fires for an empty table.
+/// is short-circuited (division-by-zero guard). Partition checks
+/// still run but neither fires for an empty table.
 /// - `partition_count == 0`: treated as "not partitioned" — only the
-///   `PartitionRecommended` rule can fire.
+/// `PartitionRecommended` rule can fire.
 /// - `partition_count >= 1` but row count below threshold: falls
-///   through to `Healthy`.
+/// through to `Healthy`.
 /// # See also
 /// [`Recommendation`] for the precedence ordering.
 pub fn recommend(
@@ -250,31 +250,31 @@ impl std::fmt::Display for AnalyzeError {
             AnalyzeError::Config(message) => write!(
                 f,
                 "config load: {message}. \
-                 Verify the Djogi.toml workspace path and the [database] section.",
+     Verify the Djogi.toml workspace path and the [database] section.",
             ),
             AnalyzeError::Pool { url, message } => write!(
                 f,
                 "application DB at `{url}` unreachable: {message}. \
-                 Verify Djogi.toml::database.url is reachable and the \
-                 credentials grant CONNECT.",
+     Verify Djogi.toml::database.url is reachable and the \
+     credentials grant CONNECT.",
             ),
             AnalyzeError::Db(message) => write!(
                 f,
                 "live-DB query: {message}. \
-                 Verify the app DB is reachable and the role has SELECT \
-                 privilege on pg_stat_user_tables (and on partman.* if \
-                 pg_partman is installed).",
+     Verify the app DB is reachable and the role has SELECT \
+     privilege on pg_stat_user_tables (and on partman.* if \
+     pg_partman is installed).",
             ),
             AnalyzeError::Io(e) => write!(
                 f,
                 "writing analyze output: {e}. \
-                 Check stdout/stderr permissions and the workspace path.",
+     Check stdout/stderr permissions and the workspace path.",
             ),
             AnalyzeError::Json(e) => write!(
                 f,
                 "encoding analyze output as JSON: {e}. \
-                 This is an internal bug — please file an issue with the \
-                 input that triggered it.",
+     This is an internal bug — please file an issue with the \
+     input that triggered it.",
             ),
         }
     }
@@ -312,7 +312,7 @@ impl From<serde_json::Error> for AnalyzeError {
 pub enum AnalyzeFormat {
     /// One sorted ASCII line per table — `table | live | dead | parts | recommendation`.
     Human,
-    /// Pretty-printed JSON array of `{table_name, recommendation, ...}`
+    /// Pretty-printed JSON array of `{table_name, recommendation,...}`
     /// rows, sorted by `table_name`. Pretty rather than compact so
     /// `git diff` between dashboard runs is reviewable.
     Json,
@@ -395,9 +395,9 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
     let partman_present = !ctx
         .raw_rows(
             "SELECT 1 \
-             FROM pg_namespace n \
-             JOIN pg_proc p ON p.pronamespace = n.oid \
-             WHERE n.nspname = 'partman' AND p.proname = 'show_partitions'",
+    FROM pg_namespace n \
+    JOIN pg_proc p ON p.pronamespace = n.oid \
+    WHERE n.nspname = 'partman' AND p.proname = 'show_partitions'",
             &[],
         )
         .await
@@ -409,12 +409,12 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
     // joined into `table_name` so partitioned tables in non-public
     // schemas show up unambiguously in the operator output.
     let stats_sql = "SELECT \
-                     schemaname || '.' || relname AS table_name, \
-                     n_live_tup, \
-                     n_dead_tup, \
-                     last_analyze \
-                     FROM pg_stat_user_tables \
-                     ORDER BY schemaname, relname";
+      schemaname || '.' || relname AS table_name, \
+      n_live_tup, \
+      n_dead_tup, \
+      last_analyze \
+      FROM pg_stat_user_tables \
+      ORDER BY schemaname, relname";
     let stats_rows = ctx
         .raw_rows(stats_sql, &[])
         .await
@@ -496,12 +496,12 @@ enum PartmanError {
 /// Returns `Err(PartmanError::Absent)` for the three SQLSTATEs that
 /// indicate "pg_partman not installed":
 /// - `42883` `UNDEFINED_FUNCTION` — `partman` schema present but
-///   `show_partitions` not (e.g. partial install).
+/// `show_partitions` not (e.g. partial install).
 /// - `42P01` `UNDEFINED_TABLE` — `show_partitions` resolves but the
-///   underlying `part_config` lookup fails because no partitioned
-///   parents are registered.
+/// underlying `part_config` lookup fails because no partitioned
+/// parents are registered.
 /// - `3F000` `INVALID_SCHEMA_NAME` — `partman` schema entirely
-///   absent.
+/// absent.
 async fn query_partition_count(
     ctx: &mut DjogiContext,
     table_name: &str,
@@ -659,12 +659,12 @@ fn render_human<W: Write>(
     let h_rec = "RECOMMENDATION";
     writeln!(
         out,
-        "{h_table:<48} {h_live:>14} {h_dead:>14} {h_parts:>10}  {h_rec}",
+        "{h_table:<48} {h_live:>14} {h_dead:>14} {h_parts:>10} {h_rec}",
     )?;
     for (h, r) in report {
         writeln!(
             out,
-            "{:<48} {:>14} {:>14} {:>10}  {}",
+            "{:<48} {:>14} {:>14} {:>10} {}",
             h.table_name,
             h.n_live_tup,
             h.n_dead_tup,
@@ -739,7 +739,7 @@ fn render_json<W: Write>(
     serde_json::to_writer_pretty(&mut *out, &rows)?;
     // serde_json::to_writer_pretty does NOT emit a trailing newline;
     // adding one keeps the output well-behaved for shell pipelines
-    // (e.g. `djogi analyze --format json | jq .`).
+    // (e.g. `djogi analyze --format json | jq.`).
     writeln!(out)?;
     Ok(())
 }

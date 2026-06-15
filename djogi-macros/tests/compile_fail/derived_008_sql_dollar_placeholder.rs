@@ -12,15 +12,15 @@ use djogi::prelude::*;
 #[model(table = "phase85_e008_consignments")]
 #[derive(Model, Debug, Clone)]
 #[derived(
-    name   = facility_site,
-    ty     = String,
-    scopes = [public],
-    sql    = "COALESCE(inbound_site, $1)",
-    rust   = "model.inbound_site.clone()",
+ name = facility_site,
+ ty  = String,
+ scopes = [public],
+ sql = "COALESCE(inbound_site, $1)",
+ rust = "model.inbound_site.clone()",
 )]
 pub struct Consignment {
-    #[field(expose(public))]
-    pub inbound_site: String,
+ #[field(expose(public))]
+ pub inbound_site: String,
 }
 
 fn main() {}

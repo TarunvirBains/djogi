@@ -36,7 +36,7 @@ pub struct C4bArchive {
     /// mapping type-checks at compile time —
     /// `target.original_id().copy_from(source.id().as_insert_source())`
     /// where both sides resolve to `HeerIdDesc`. This is the Phase
-    /// 7-Zero-2 "ambient PK kinds are usable in any field position"
+    /// 7 "ambient PK kinds are usable in any field position"
     /// pattern.
     pub original_id: djogi::HeerIdDesc,
     pub label: String,
@@ -202,7 +202,7 @@ async fn insert_select_framework_columns_populated_by_defaults(mut ctx: djogi::D
         assert!(
             !source_ids.contains(&archive_id),
             "archive id {} collided with a source id — framework columns must \
-             come from the target's defaults, not the source's projection",
+    come from the target's defaults, not the source's projection",
             archive_id,
         );
     }

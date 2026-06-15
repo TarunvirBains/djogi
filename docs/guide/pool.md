@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Connection Pool — DjogiPool
 
@@ -29,7 +29,7 @@ the `post_connect` hook for per-physical-connection setup, and the
 > **Status — public pool surface.** `DjogiPool::builder`,
 > `DjogiPool::status`, and the explicit
 > `RawPoolAccessExt::raw_with_client` bypass are the supported public
-> surface for Phase 8.5. COPY, server-side cursors, cold-start DDL, and
+> surface for. COPY, server-side cursors, cold-start DDL, and
 > third-party direct-driver integrations intentionally stay behind the
 > raw bypass; no separate typed COPY/streaming wrapper is part of this
 > surface.
@@ -43,14 +43,14 @@ use djogi::pg::pool::DjogiPool;
 use std::time::Duration;
 
 let pool = DjogiPool::builder("postgres://localhost/myapp")
-    .max_size(20)
-    .timeout(Duration::from_secs(5))
-    .post_connect(|client| Box::pin(async move {
-        client.batch_execute("SET statement_timeout = '5s'").await?;
-        Ok(())
-    }))
-    .build()
-    .await?;
+.max_size(20)
+.timeout(Duration::from_secs(5))
+.post_connect(|client| Box::pin(async move {
+ client.batch_execute("SET statement_timeout = '5s'").await?;
+ Ok(())
+ }))
+.build()
+.await?;
 ```
 
 Defaults if you skip the builder knobs (or call `DjogiPool::connect(url)`):
@@ -110,12 +110,12 @@ The `phase` field carries `"wait"`, `"create"`, or `"recycle"`
 identifying which deadpool timeout fired:
 
 - `"wait"` — pool at `max_size`, no slot freed in time. Tune
-  `max_size` upward or stop holding connections across awaits
-  unrelated to the database.
+ `max_size` upward or stop holding connections across awaits
+ unrelated to the database.
 - `"create"` — `Manager::create` (opening a fresh socket) timed out.
-  Network or DB-side problem, not pool sizing.
+ Network or DB-side problem, not pool sizing.
 - `"recycle"` — recycling on the checkout path timed out. Same root
-  cause as `"create"` for `Verified`/`Clean` recycling methods.
+ cause as `"create"` for `Verified`/`Clean` recycling methods.
 
 ---
 
@@ -127,11 +127,11 @@ one-time `SET` statements:
 
 ```rust
 .post_connect(|client| Box::pin(async move {
-    client.batch_execute("SET application_name = 'web'").await?;
-    client.batch_execute("SET heer.node_id = '1'").await?;
-    client.batch_execute("SET heer.ranj_node_id = '1'").await?;
-    client.batch_execute("SET statement_timeout = '5s'").await?;
-    Ok(())
+ client.batch_execute("SET application_name = 'web'").await?;
+ client.batch_execute("SET heer.node_id = '1'").await?;
+ client.batch_execute("SET heer.ranj_node_id = '1'").await?;
+ client.batch_execute("SET statement_timeout = '5s'").await?;
+ Ok(())
 }))
 ```
 
@@ -155,15 +155,71 @@ permissions issue — fail loudly at startup rather than silently.
 
 ```rust
 F: for<'a> Fn(
-        &'a mut tokio_postgres::Client,
-    ) -> Pin<Box<dyn Future<Output = Result<(), DjogiError>> + Send + 'a>>
-    + Send + Sync + 'static
+ &'a mut tokio_postgres::Client,
+ ) -> Pin<Box<dyn Future<Output = Result<(), DjogiError>> + Send + 'a>>
+ + Send + Sync + 'static
 ```
 
-Inline `Box::pin(async move { ... })` blocks satisfy the bound
+Inline `Box::pin(async move {... })` blocks satisfy the bound
 directly. The closure is stored behind an `Arc`, so a single hook is
 shared across all physical connections without per-create
 allocation.
+
+## Storing and Sharing — DjogiPool vs DjogiContext
+
+A common pattern when migrating from other ORMs is to attempt to store a
+`DjogiContext` inside a service struct or clone it across async tasks.
+This will fail: `DjogiContext` does **not** implement `Clone`.
+
+### Why no `Clone` for `DjogiContext`?
+
+A `DjogiContext` represents a single, potentially stateful database
+session. It may hold an active transaction, uncommitted savepoints, or
+session-local state (like the current tenant ID). Cloning a context
+would lead to ambiguous ownership of the underlying connection and its
+transactional state — especially dangerous if two clones attempted to
+commit or roll back the same transaction.
+
+### The pattern: Store `DjogiPool`
+
+The correct pattern is to store the `DjogiPool` (which is `Clone` and
+cheap to copy) and create a fresh `DjogiContext` for each request or
+operation.
+
+```rust
+use djogi::prelude::*;
+use djogi::pg::pool::DjogiPool;
+
+pub struct UserService {
+ pool: DjogiPool,
+}
+
+impl UserService {
+ pub fn new(pool: DjogiPool) -> Self {
+ Self { pool }
+ }
+
+ pub async fn get_user(&self, id: i32) -> djogi::Result<User> {
+ // Create a fresh context for this call.
+ // `self.pool.clone()` is just an Arc clone.
+ let mut ctx = DjogiContext::from_pool(self.pool.clone());
+ 
+ User::objects().filter(|f| f.id().eq(id)).fetch_one(&mut ctx).await
+ }
+}
+```
+
+### Anti-patterns to avoid
+
+- **Wrapping `DjogiContext` in `RefCell<...>`** — `RefCell` is not `Send`,
+ so you cannot use it in async task handlers (e.g., Axum routes) that
+ require `Send` bounds.
+- **Wrapping `DjogiContext` in `Arc<Mutex<...>>`** — While this compiles,
+ it introduces a global lock on your database access. If one request
+ holds a transaction open, every other request to the same service
+ will block waiting for the mutex.
+
+Always prefer the **"Pool-per-Service, Context-per-Call"** pattern.
 
 ---
 
@@ -177,31 +233,31 @@ reaches the same behaviour through the sealed
 [`RawPoolAccessExt::raw_with_client`](../spec/raw-sql-escape-hatches.md)
 trait. Do not import `djogi::__bypass` directly; decorate the enclosing item
 with `#[djogi::deliberately_bypass_convention_with_raw_sql]` and an adjacent
-`// JUSTIFICATION ...` comment so the bypass macro injects the hidden trait.
+`// JUSTIFICATION...` comment so the bypass macro injects the hidden trait.
 
 Use `raw_with_client` for operations that genuinely cannot route
 through `DjogiContext`:
 
 - `COPY FROM STDIN` / `COPY TO STDOUT` and other binary-protocol
-  features.
+ features.
 - Server-side cursors driven via the driver API.
 - `CREATE EXTENSION` and other one-time DDL at cold-start /
-  bootstrap.
+ bootstrap.
 - Bridging into third-party crates that take a
-  `&tokio_postgres::Client` directly (e.g. installing HeeRanjID's
-  schema, third-party migration helpers).
+ `&tokio_postgres::Client` directly (e.g. installing HeeRanjID's
+ schema, third-party migration helpers).
 
 ```rust
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): one-time extension bootstrap requires direct driver DDL.
 async fn install_postgis(pool: &DjogiPool) -> djogi::Result<()> {
-    pool.raw_with_client(|client| Box::pin(async move {
-        client
-            .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
-            .await?;
-        Ok(())
-    })).await?;
-    Ok(())
+ pool.raw_with_client(|client| Box::pin(async move {
+ client
+ .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
+ .await?;
+ Ok(())
+ })).await?;
+ Ok(())
 }
 ```
 
@@ -213,23 +269,23 @@ detach it on error/cancellation:
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#66): COPY IN needs tokio-postgres' binary protocol.
 async fn copy_payloads(pool: &DjogiPool) -> djogi::Result<()> {
-    pool.raw_with_client(|client| Box::pin(async move {
-        let sink = client
-            .copy_in("COPY payloads (id, body) FROM STDIN BINARY")
-            .await?;
-        let writer = tokio_postgres::binary_copy::BinaryCopyInWriter::new(
-            sink,
-            &[
-                tokio_postgres::types::Type::INT4,
-                tokio_postgres::types::Type::BYTEA,
-            ],
-        );
-        tokio::pin!(writer);
-        let body: &[u8] = b"example payload";
-        writer.as_mut().write(&[&1_i32, &body]).await?;
-        writer.as_mut().finish().await?;
-        Ok(())
-    })).await
+ pool.raw_with_client(|client| Box::pin(async move {
+ let sink = client
+ .copy_in("COPY payloads (id, body) FROM STDIN BINARY")
+ .await?;
+ let writer = tokio_postgres::binary_copy::BinaryCopyInWriter::new(
+  sink,
+  &[
+  tokio_postgres::types::Type::INT4,
+  tokio_postgres::types::Type::BYTEA,
+  ],
+ );
+ tokio::pin!(writer);
+ let body: &[u8] = b"example payload";
+ writer.as_mut().write(&[&1_i32, &body]).await?;
+ writer.as_mut().finish().await?;
+ Ok(())
+ })).await
 }
 ```
 
@@ -261,13 +317,13 @@ This is the safety guarantee: `raw_with_client` is dirty-by-default.
 The behaviour on the way out depends on how the closure exits:
 
 - **Clean exit (`Ok`).** The `Object` drops normally and deadpool
-  returns the connection to the pool. The next checkout reuses the
-  same physical connection.
+ returns the connection to the pool. The next checkout reuses the
+ same physical connection.
 - **Dirty exit (`Err`, panic, future cancellation).** The `Object` is
-  detached via `deadpool::managed::Object::take`, which removes it
-  from the pool's tracker; the underlying `ClientWrapper` is dropped
-  immediately, closing the `tokio_postgres::Client` and the socket.
-  The pool creates a fresh physical connection on the next demand.
+ detached via `deadpool::managed::Object::take`, which removes it
+ from the pool's tracker; the underlying `ClientWrapper` is dropped
+ immediately, closing the `tokio_postgres::Client` and the socket.
+ The pool creates a fresh physical connection on the next demand.
 
 The dirty-exit detach is important because Djogi's pool runs
 `RecyclingMethod::Fast`, which only checks `is_closed()` on return —
@@ -283,8 +339,8 @@ Even on the clean-exit path, session-level state set inside the
 closure (`SET ROLE`, `SET search_path`, advisory locks, prepared
 statements outside the cache) leaves the connection in a non-default
 state when it returns to the pool. Prefer transaction-local settings
-(`SET LOCAL ...`, `set_config(name, value, true)`,
-`BEGIN; ... COMMIT;`) or reset what you set before the closure
+(`SET LOCAL...`, `set_config(name, value, true)`,
+`BEGIN;... COMMIT;`) or reset what you set before the closure
 resolves.
 
 ### The closure signature
@@ -300,14 +356,14 @@ the lifetime explicitly:
 
 ```rust
 fn install_extensions<'a>(
-    client: &'a mut tokio_postgres::Client,
+ client: &'a mut tokio_postgres::Client,
 ) -> djogi::pg::pool::ClientFuture<'a, ()> {
-    Box::pin(async move {
-        client
-            .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
-            .await
-            .map_err(djogi::DjogiError::from)
-    })
+ Box::pin(async move {
+ client
+ .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
+ .await
+ .map_err(djogi::DjogiError::from)
+ })
 }
 
 pool.raw_with_client(install_extensions).await?;
@@ -322,7 +378,7 @@ pool.raw_with_client(install_extensions).await?;
 variables:
 
 1. `DJOGI_DATABASE_MAX_CONNECTIONS` env var — if set and parseable as a
-   positive integer.
+ positive integer.
 2. `[database].max_connections` from the loaded `Djogi.toml`, if non-zero.
 3. Builder default (`DEFAULT_MAX_SIZE = 5`).
 
@@ -347,15 +403,15 @@ use djogi::pg::pool::{DjogiPool, resolve_max_connections};
 let cfg = djogi::DjogiConfig::load()?;
 let mut b = DjogiPool::builder(&cfg.database.url);
 if let Some(n) = resolve_max_connections(&cfg.database) {
-    b = b.max_size(n);
+ b = b.max_size(n);
 }
 let pool = b
-    .post_connect(|client| Box::pin(async move {
-        client.batch_execute("SET application_name = 'web'").await?;
-        Ok(())
-    }))
-    .build()
-    .await?;
+.post_connect(|client| Box::pin(async move {
+ client.batch_execute("SET application_name = 'web'").await?;
+ Ok(())
+ }))
+.build()
+.await?;
 ```
 
 ---
@@ -369,10 +425,10 @@ let pool = b
 ```rust
 let s = pool.status();
 tracing::info!(
-    max_size = s.max_size,
-    size = s.size,
-    available = s.available,
-    "pool snapshot"
+ max_size = s.max_size,
+ size = s.size,
+ available = s.available,
+ "pool snapshot"
 );
 ```
 
@@ -415,18 +471,18 @@ https://github.com/TarunvirBains/HeeRanjID/issues/49.
 - `djogi::pg::pool::DjogiPool` — the pool type
 - `djogi::pg::pool::DjogiPoolBuilder` — the builder
 - `djogi::pg::pool::ClientFuture<'a, R>` — boxed future alias for
-  `raw_with_client` closures
+ `raw_with_client` closures
 - `djogi::pg::pool::resolve_max_connections` — the env > config
-  resolver, exposed for adopters who need both the chain and a hook
+ resolver, exposed for adopters who need both the chain and a hook
 - `djogi::pg::pool::ENV_DATABASE_MAX_CONNECTIONS` — the env var name
-  (`"DJOGI_DATABASE_MAX_CONNECTIONS"`) read by the resolver
+ (`"DJOGI_DATABASE_MAX_CONNECTIONS"`) read by the resolver
 - `djogi::pg::pool::DEFAULT_MAX_SIZE` — `5`
 - `djogi::__bypass::RawPoolAccessExt` — sealed bypass trait that
-  exposes `raw_with_client` (and `raw_pool` / `raw_conn`) on
-  `DjogiPool` and `DjogiContext`. The trait module is `#[doc(hidden)]`;
-  see [raw SQL escape hatches](../spec/raw-sql-escape-hatches.md).
+ exposes `raw_with_client` (and `raw_pool` / `raw_conn`) on
+ `DjogiPool` and `DjogiContext`. The trait module is `#[doc(hidden)]`;
+ see [raw SQL escape hatches](../spec/raw-sql-escape-hatches.md).
 - `djogi::DjogiError::PoolTimeout { phase }` — saturation error
-  variant; `phase` is `"wait"`, `"create"`, or `"recycle"`
+ variant; `phase` is `"wait"`, `"create"`, or `"recycle"`
 
 ---
 
@@ -437,7 +493,7 @@ Run
 
 ```bash
 cargo test --test phase8_zero_pool_bench -p djogi --all-features --release \
-    -- --test-threads=1 --nocapture
+ -- --test-threads=1 --nocapture
 ```
 
 to see throughput on your hardware. The benchmarks are not perf

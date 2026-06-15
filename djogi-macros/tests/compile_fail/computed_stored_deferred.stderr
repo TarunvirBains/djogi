@@ -1,7 +1,7 @@
 error: `stored` computed columns are not yet supported — the migration differ has not yet accumulated 6+ months of long-running stability evidence, so generating column DDL from `#[computed(stored)]` is out of scope for now; ship a non-stored computed (drop the `stored` keyword)
-  --> $DIR/computed_stored_deferred.rs:17:40
-   |
-17 |     #[computed(sql = "base_price * 2", stored)]
-   |                                        ^^^^^^
+ --> $DIR/computed_stored_deferred.rs:17:40
+ |
+17 |  #[computed(sql = "base_price * 2", stored)]
+ |          ^^^^^^
 
 error: aborting due to 1 previous error

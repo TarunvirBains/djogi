@@ -11,28 +11,28 @@ use djogi::prelude::*;
 pub struct Range<T>(std::marker::PhantomData<T>);
 
 #[model(
-    table = "phase85_g0_range_unsupported_crate_self_outer",
-    pk = HeerId,
-    no_default
+ table = "phase85_g0_range_unsupported_crate_self_outer",
+ pk = HeerId,
+ no_default
 )]
 #[derive(Debug, Clone)]
 pub struct UnsupportedCrateSelfOuterRange {
-    pub crate_relative: crate::Range<i32>,
-    pub self_relative: self::Range<i32>,
+ pub crate_relative: crate::Range<i32>,
+ pub self_relative: self::Range<i32>,
 }
 
 mod nested {
-    use super::*;
+ use super::*;
 
-    #[model(
-        table = "phase85_g0_range_unsupported_super_outer",
-        pk = HeerId,
-        no_default
-    )]
-    #[derive(Debug, Clone)]
-    pub struct UnsupportedSuperOuterRange {
-        pub super_relative: super::Range<i32>,
-    }
+ #[model(
+  table = "phase85_g0_range_unsupported_super_outer",
+  pk = HeerId,
+  no_default
+ )]
+ #[derive(Debug, Clone)]
+ pub struct UnsupportedSuperOuterRange {
+  pub super_relative: super::Range<i32>,
+ }
 }
 
 fn main() {}

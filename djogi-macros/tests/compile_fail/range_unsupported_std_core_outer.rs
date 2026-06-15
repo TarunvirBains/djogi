@@ -8,14 +8,14 @@
 use djogi::prelude::*;
 
 #[model(
-    table = "phase85_g0_range_unsupported_std_core_outer",
-    pk = HeerId,
-    no_default
+ table = "phase85_g0_range_unsupported_std_core_outer",
+ pk = HeerId,
+ no_default
 )]
 #[derive(Debug, Clone)]
 pub struct UnsupportedStdCoreOuterRange {
-    pub std_ops: std::ops::Range<i32>,
-    pub core_ops: core::ops::Range<i32>,
+ pub std_ops: std::ops::Range<i32>,
+ pub core_ops: core::ops::Range<i32>,
 }
 
 fn main() {}

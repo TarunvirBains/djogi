@@ -1,7 +1,7 @@
-//! Window function support — `OVER (PARTITION BY ... ORDER BY ... frame EXCLUDE ...)`.
+//! Window function support — `OVER (PARTITION BY... ORDER BY... frame EXCLUDE...)`.
 //! # What
 //! [`WindowSpec`] describes a SQL window clause. [`WindowBuilder`] is the fluent
-//! builder handed to the user's `.over(|w| ...)` closure on
+//! builder handed to the user's `.over(|w|...)` closure on
 //! [`super::aggregate::AggregateExpr`]. An empty builder (`.over(|w| w)`) emits
 //! `OVER ()` — identical to the default wrapping used by ungrouped `.annotate`
 //! for value-aggregate annotations. Non-windowable aggregate kinds do not
@@ -12,9 +12,9 @@
 //! All Postgres window-frame variants are reachable:
 //! - Frame kinds: ROWS, RANGE, GROUPS (see [`FrameKind`]).
 //! - Frame bounds: UNBOUNDED PRECEDING, N PRECEDING, CURRENT ROW,
-//!   N FOLLOWING, UNBOUNDED FOLLOWING (see [`FrameBound`]).
+//! N FOLLOWING, UNBOUNDED FOLLOWING (see [`FrameBound`]).
 //! - Frame exclusion: EXCLUDE CURRENT ROW, EXCLUDE GROUP, EXCLUDE TIES,
-//!   EXCLUDE NO OTHERS (see [`FrameExclude`]).
+//! EXCLUDE NO OTHERS (see [`FrameExclude`]).
 //! # Design note
 //! `WindowBuilder::partition_by` and `WindowBuilder::order_by` both take a
 //! [`crate::query::field::FieldRef`], which carries a validated `&'static str`
@@ -28,7 +28,7 @@ use crate::query::order::Direction;
 /// A fully specified window clause — partition, ordering, and optional frame.
 /// Constructed via [`WindowBuilder`] and stored inside
 /// [`crate::expr::node::ExprNode::Aggregate`] when the user calls
-/// `.over(|w| ...)` on an [`super::aggregate::AggregateExpr`].
+/// `.over(|w|...)` on an [`super::aggregate::AggregateExpr`].
 /// The `Default` impl produces an empty spec that emits `OVER ()`.
 #[derive(Debug, Clone, Default)]
 pub struct WindowSpec {
@@ -38,7 +38,7 @@ pub struct WindowSpec {
 }
 
 /// A window frame clause — `ROWS | RANGE | GROUPS BETWEEN <start> AND <end>
-/// [EXCLUDE ...]`.
+/// [EXCLUDE...]`.
 /// Attached to a [`WindowSpec`] by calling `.rows(...)`, `.range(...)`, or
 /// `.groups(...)` on a [`WindowBuilder`], optionally followed by `.exclude(...)`.
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ pub struct Frame {
 /// - `Rows` — physical row offsets from the current row.
 /// - `Range` — logical value offsets from the current row's sort key.
 /// - `Groups` — peer-group offsets; each peer group is a set of rows that
-///   compare equal under the window's `ORDER BY`.
+/// compare equal under the window's `ORDER BY`.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum FrameKind {
@@ -109,7 +109,7 @@ pub enum FrameExclude {
     NoOthers,
 }
 
-/// Fluent builder for a [`WindowSpec`], handed to the `.over(|w| ...)` closure.
+/// Fluent builder for a [`WindowSpec`], handed to the `.over(|w|...)` closure.
 /// Every method consumes `self` and returns a new `WindowBuilder` so the
 /// closures chain naturally: `.over(|w| w.partition_by(f.org_id()).order_by(f.created_at()))`.
 /// An empty builder (`.over(|w| w)`) produces an empty [`WindowSpec`] that
@@ -132,7 +132,7 @@ impl WindowBuilder {
     /// The column name is taken from the validated `&'static str` inside
     /// the field handle, so no extra identifier validation is needed here.
     /// Calling this method multiple times appends columns in call order
-    /// `PARTITION BY first_col, second_col, ...`.
+    /// `PARTITION BY first_col, second_col,...`.
     /// PR3: accepts both legacy `FieldRef<M, V>` and the post-flip root
     /// accessor return type `DjogiField<M, V>` through the sealed
     /// [`IntoSqlField`](crate::query::field::IntoSqlField) bridge — window
@@ -151,7 +151,7 @@ impl WindowBuilder {
     /// Add an `ORDER BY <col> ASC` term to the window.
     /// For descending order use [`WindowBuilder::order_by_desc`].
     /// Multiple calls append terms in call order
-    /// `ORDER BY first_col ASC, second_col ASC, ...`.
+    /// `ORDER BY first_col ASC, second_col ASC,...`.
     /// PR3: accepts `FieldRef<M, V>` or `DjogiField<M, V>` through
     /// `IntoSqlField`. Window ordering is a SQL-only emission boundary.
     pub fn order_by<M, V, S>(mut self, f: S) -> Self
@@ -220,7 +220,7 @@ impl WindowBuilder {
         self
     }
 
-    /// Attach an `EXCLUDE ...` clause to the current frame.
+    /// Attach an `EXCLUDE...` clause to the current frame.
     /// Has no effect if no frame has been set via `.rows(...)`, `.range(...)`,
     /// or `.groups(...)` — a frameless window cannot have an exclusion clause.
     pub fn exclude(mut self, ex: FrameExclude) -> Self {
@@ -275,7 +275,7 @@ impl WindowSpec {
             && self.order_by.iter().all(|(c, _)| is_pair_prefixed(c))
     }
 
-    /// Emit ` OVER (PARTITION BY ... ORDER BY ... frame EXCLUDE ...)` onto
+    /// Emit ` OVER (PARTITION BY... ORDER BY... frame EXCLUDE...)` onto
     /// `acc`. The leading space is part of the emission — callers append
     /// this directly after the aggregate function call and optional FILTER
     /// clause.
@@ -359,7 +359,7 @@ mod tests {
     //! Unit tests for `WindowSpec::emit` — each variant combination produces
     //! the expected SQL fragment. These tests construct `WindowSpec` values
     //! directly (bypassing `WindowBuilder`) to isolate the emitter from the
-    //! builder; round-trip tests through `.over(|w| ...)` live in
+    //! builder; round-trip tests through `.over(|w|...)` live in
     //! `expr::aggregate::tests`.
 
     use super::*;

@@ -24,7 +24,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ItemStruct;
 
-/// Emits a `FieldDescriptor { ... }` literal for a framework-injected
+/// Emits a `FieldDescriptor {... }` literal for a framework-injected
 /// column (`id`, `created_at`, `updated_at`).
 /// Framework fields share every descriptor knob except `name`,
 /// `sql_type`, and the `unique` bit: PK columns are unique,
@@ -54,68 +54,68 @@ fn framework_field_descriptor(
     strict_id_check: bool,
 ) -> TokenStream {
     quote! {
-        ::djogi::FieldDescriptor {
-            name: #name,
-            sql_type: #sql_type_tokens,
-            nullable: false,
-            unique: #pk,
-            // The PRIMARY KEY constraint's implicit BTree index already covers
-            // the `id` column — `indexed: true` would cause the projection's
-            // field-level index fanout to synthesise a redundant
-            // `<table>_id_idx` on every model. Always `false` here;
-            // `unique: #pk` is the correct uniqueness signal for the snapshot.
-            indexed: false,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            // Framework-injected columns (`id`, `created_at`,
-            // `updated_at`) are never relation fields, so the
-            // self-FK flag is always `false`.
-            is_self_fk: false,
-            visage_map: &[
-                ("admin", #name),
-                ("export", #name),
-                ("public", #name),
-                ("self_view", #name),
-            ],
-            protected: ::std::option::Option::None,
-            default_volatility_override: ::std::option::Option::None,
-            generated: ::std::option::Option::None,
-            // 5 — framework-injected columns are never
-            // contributed by a composition derive.
-            composed_via: ::std::option::Option::None,
-            // Framework-injected columns use identity-mapped types
-            // (HeerId → BIGINT, DateTime → TIMESTAMPTZ, etc.); no shim.
-            rust_source_type: ::std::option::Option::None,
-            // Framework-injected columns carry no adopter
-            // `#[field(check = "...")]`; the slot is always `None`.
-            check_sql: ::std::option::Option::None,
-            // Djogi#217) — framework-injected
-            // columns carry no adopter `#[field(comment)]`; the slot
-            // is always `None`. Adopters who want descriptive labels
-            // on the framework columns can read from the descriptor's
-            // `rationale` slot instead.
-            comment: ::std::option::Option::None,
-            // Djogi#189 — propagated from `#[model(strict_ids)]`
-            // for the `id` column. Strict ID dispatch matches on the
-            // HeerRanjID semantic family (HeerId / HeerIdDesc / RanjId /
-            // RanjIdDesc) derived from the parent model's PkType; the
-            // resolved SQL column type is not consulted for this decision.
-            // Always `false` for `created_at` / `updated_at`.
-            strict_id_check: #strict_id_check,
-            // Djogi#220 — framework-injected columns
-            // (`id`, `created_at`, `updated_at`) carry no adopter
-            // `#[field(type_change_using)]`. Their SQL types are fixed
-            // by the framework and never participate in adopter-driven
-            // type-change migrations.
-            type_change_using: ::std::option::Option::None,
-        }
+     ::djogi::FieldDescriptor {
+      name: #name,
+      sql_type: #sql_type_tokens,
+      nullable: false,
+      unique: #pk,
+      // The PRIMARY KEY constraint's implicit BTree index already covers
+      // the `id` column — `indexed: true` would cause the projection's
+      // field-level index fanout to synthesise a redundant
+      // `<table>_id_idx` on every model. Always `false` here;
+      // `unique: #pk` is the correct uniqueness signal for the snapshot.
+      indexed: false,
+      max_length: None,
+      renamed_from: None,
+      rationale: None,
+      outbox_exclude: false,
+      sequence_within: None,
+      index_type: None,
+      relation_kind: None,
+      on_delete: None,
+      target_type_name: None,
+      // Framework-injected columns (`id`, `created_at`,
+      // `updated_at`) are never relation fields, so the
+      // self-FK flag is always `false`.
+      is_self_fk: false,
+      visage_map: &[
+       ("admin", #name),
+       ("export", #name),
+       ("public", #name),
+       ("self_view", #name),
+      ],
+      protected: ::std::option::Option::None,
+      default_volatility_override: ::std::option::Option::None,
+      generated: ::std::option::Option::None,
+      // 5 — framework-injected columns are never
+      // contributed by a composition derive.
+      composed_via: ::std::option::Option::None,
+      // Framework-injected columns use identity-mapped types
+      // (HeerId → BIGINT, DateTime → TIMESTAMPTZ, etc.); no shim.
+      rust_source_type: ::std::option::Option::None,
+      // Framework-injected columns carry no adopter
+      // `#[field(check = "...")]`; the slot is always `None`.
+      check_sql: ::std::option::Option::None,
+      // Djogi#217) — framework-injected
+      // columns carry no adopter `#[field(comment)]`; the slot
+      // is always `None`. Adopters who want descriptive labels
+      // on the framework columns can read from the descriptor's
+      // `rationale` slot instead.
+      comment: ::std::option::Option::None,
+      // Djogi#189 — propagated from `#[model(strict_ids)]`
+      // for the `id` column. Strict ID dispatch matches on the
+      // HeerRanjID semantic family (HeerId / HeerIdDesc / RanjId /
+      // RanjIdDesc) derived from the parent model's PkType; the
+      // resolved SQL column type is not consulted for this decision.
+      // Always `false` for `created_at` / `updated_at`.
+      strict_id_check: #strict_id_check,
+      // Djogi#220 — framework-injected columns
+      // (`id`, `created_at`, `updated_at`) carry no adopter
+      // `#[field(type_change_using)]`. Their SQL types are fixed
+      // by the framework and never participate in adopter-driven
+      // type-change migrations.
+      type_change_using: ::std::option::Option::None,
+     }
     }
 }
 
@@ -170,7 +170,7 @@ fn try_expand(
         PkStrategy::Serial => quote! { ::djogi::PkType::Serial },
         PkStrategy::None => quote! { ::djogi::PkType::None },
         PkStrategy::Custom(path) => quote! {
-            <#path as ::djogi::primary_key::PrimaryKey>::KIND
+         <#path as ::djogi::primary_key::PrimaryKey>::KIND
         },
     };
 
@@ -229,8 +229,8 @@ fn try_expand(
                 lit,
                 format!(
                     "`tree_edge = \"{edge_name}\"` does not match any field on `{source_name_string}`; \
-                     declare a `ForeignKey<{source_name_string}>` (or its `Option<…>` form) field \
-                     with that name first",
+      declare a `ForeignKey<{source_name_string}>` (or its `Option<…>` form) field \
+      with that name first",
                 ),
             ));
         }
@@ -239,10 +239,10 @@ fn try_expand(
                 lit,
                 format!(
                     "`tree_edge = \"{edge_name}\"` must name a self-FK field; the column exists \
-                     on `{source_name_string}` but its target type is not `{source_name_string}`. \
-                     Tree-recursive queries walk a self-referential parent edge — point \
-                     `tree_edge` at a `ForeignKey<{source_name_string}>` or \
-                     `Option<ForeignKey<{source_name_string}>>` field on the same struct",
+      on `{source_name_string}` but its target type is not `{source_name_string}`. \
+      Tree-recursive queries walk a self-referential parent edge — point \
+      `tree_edge` at a `ForeignKey<{source_name_string}>` or \
+      `Option<ForeignKey<{source_name_string}>>` field on the same struct",
                 ),
             ));
         }
@@ -309,9 +309,9 @@ fn try_expand(
         PkStrategy::Custom(path) => Some(framework_field_descriptor(
             "id",
             quote! {
-                ::djogi::FieldSqlType::Custom(
-                    <#path as ::djogi::primary_key::PrimaryKey>::SQL_TYPE,
-                )
+             ::djogi::FieldSqlType::Custom(
+              <#path as ::djogi::primary_key::PrimaryKey>::SQL_TYPE,
+             )
             },
             true,
             // (post-review hardening) — Custom PK types are
@@ -352,434 +352,434 @@ fn try_expand(
     // ── User-field FieldDescriptors ───────────────────────────────────────────
 
     let user_field_descriptors: Vec<TokenStream> = user_fields
-        .iter()
-        .map(|(field, fa)| {
-            let name = crate::syn_util::column_name_from_field(field);
-            // `#[field(outbox = "ignore")]` marks the
-            // column as excluded from the transactional outbox payload.
-            // `FieldAttrs::parse` has already validated the string value,
-            // so a non-`None` `outbox` attr always means "ignore" here.
-            let outbox_exclude = fa.outbox.as_deref() == Some("ignore");
-            // `#[field(sequence_within = "col")]`
-            // scopes a monotonic sequence to a parent FK column. The
-            // macro runtime uses this descriptor slot to detect the
-            // scoped-sequence field in `Model::create`.
-            let sequence_within_tokens = match &fa.sequence_within {
-                Some(col) => quote! { ::std::option::Option::Some(#col) },
-                None => quote! { ::std::option::Option::None },
-            };
+ .iter()
+ .map(|(field, fa)| {
+   let name = crate::syn_util::column_name_from_field(field);
+   // `#[field(outbox = "ignore")]` marks the
+   // column as excluded from the transactional outbox payload.
+   // `FieldAttrs::parse` has already validated the string value,
+   // so a non-`None` `outbox` attr always means "ignore" here.
+   let outbox_exclude = fa.outbox.as_deref() == Some("ignore");
+   // `#[field(sequence_within = "col")]`
+   // scopes a monotonic sequence to a parent FK column. The
+   // macro runtime uses this descriptor slot to detect the
+   // scoped-sequence field in `Model::create`.
+   let sequence_within_tokens = match &fa.sequence_within {
+    Some(col) => quote! { ::std::option::Option::Some(#col) },
+    None => quote! { ::std::option::Option::None },
+   };
 
-            // Detect FK / O2O relation shape before the generic scalar
-            // `unwrap_option` strip — `detect_relation` itself handles the
-            // `Option<…>` layer so nullable FK fields are recognized.
-            let relation = detect_relation(&field.ty);
+   // Detect FK / O2O relation shape before the generic scalar
+   // `unwrap_option` strip — `detect_relation` itself handles the
+   // `Option<…>` layer so nullable FK fields are recognized.
+   let relation = detect_relation(&field.ty);
 
-            let (inner_ty, nullable) = unwrap_schema_type(&field.ty);
+   let (inner_ty, nullable) = unwrap_schema_type(&field.ty);
 
-            // For relation fields the SQL column type is the target's PK
-            // type, not the Rust wrapper type. the migration emitter
-            // consumes `sql_type` alongside `target_type_name` to produce
-            // `REFERENCES` clauses; uses the `target_type_name`
-            // as the primary signal and leaves `sql_type` as the
-            // best-effort scalar mapping. A future amendment
-            // can extend this to look the target PK type up via a second
-            // `ModelDescriptor` pass.
-            // Djogi#216 Piece A — `#[field(domain = "<name>")]`
-            // intercepts the sql_type selection BEFORE the type-driven
-            // mapping runs. The descriptor's `FieldSqlType::Domain {
-            // name, base }` variant carries the bare domain name (the
-            // Display contract — rendered into column DDL by the
-            // migration composer) and the inferred Rust-side base type
-            // for documentation / future Piece B use. The relation
-            // arm above wins over the domain arm because `attrs.parse`
-            // already rejects `domain` on relation fields, so the
-            // ordering here is defense-in-depth: an FK field with
-            // `domain` set could not reach this point, but the
-            // explicit `relation.is_some()` branch keeps the FK SQL
-            // type stable even if the parse-time guard ever regresses.
-            // `base: &<base_tokens>` relies on Rust's constant-promotion
-            // rule: a `&EXPR` where EXPR is const-evaluable promotes to
-            // `&'static T`. Every `FieldSqlType` variant the macro
-            // emits — `Text`, `Numeric`, `BigInt`, `Custom(<T as
-            // DjogiSqlType>::SQL_TYPE)`, etc. — is const-evaluable, so
-            // the reference promotes cleanly into the descriptor's
-            // static-lifetime slot. `&` (not `Box::new(...)`) keeps the
-            // enclosing enum trivially droppable, which the existing
-            // `pub const fn field_descriptor` constructor and every
-            // static / const `FieldDescriptor` literal in the test
-            // suite depend on.
-            let sql_type = if relation.is_some() {
-                // FK columns use the target's PK SQL type, resolved at
-                // projection time. Emit TEXT as a placeholder here;
-                // `migrate::projection` overwrites it with the actual
-                // target PK type when it has access to all descriptors.
-                sql_str_to_tokens("TEXT")
-            } else if fa
-                .protected
-                .as_ref()
-                .and_then(|p| p.codec.as_deref())
-                .is_some()
-            {
-                // A field with an at-rest codec stores its ciphertext as
-                // BYTEA — the codec's Encoded type is `Vec<u8>` regardless of
-                // the decoded Rust type (e.g. an encrypted `String` column is
-                // BYTEA, not VARCHAR/TEXT). The codec ID is validated against
-                // KNOWN_CODEC_IDS at parse time; every shipped codec uses
-                // BYTEA storage. Ordered AFTER the FK arm so a codec on an FK
-                // field cannot override the FK's target-PK type — FK + codec
-                // is not a supported combination and the FK arm wins safely.
-                sql_str_to_tokens("BYTEA")
-            } else if let Some(domain_name) = &fa.domain {
-                let domain_name = domain_name.as_str();
-                let base = field_sql_type_tokens(&inner_ty);
-                quote! {
-                    ::djogi::FieldSqlType::Domain {
-                        name: #domain_name,
-                        base: &#base,
-                    }
-                }
-            } else if let Some(n) = fa.max_length {
-                // `#[field(max_length = N)]` on a `String` field emits
-                // `VARCHAR(N)` instead of `TEXT`. The attribute is now
-                // validated at macro-expansion time, so non-`String` fields
-                // cannot reach this branch with `max_length` set.
-                match rust_type_to_sql(&inner_ty) {
-                    Some("TEXT") => quote! { ::djogi::FieldSqlType::Varchar(#n) },
-                    _ => field_sql_type_tokens(&inner_ty),
-                }
-            } else {
-                field_sql_type_tokens(&inner_ty)
-            };
-            let unique = fa.unique;
-            let indexed = fa.index || fa.index_method.is_some();
-            let max_length = match fa.max_length {
-                Some(n) => quote! { Some(#n) },
-                None => quote! { None },
-            };
-            let renamed_from = match &fa.renamed_from {
-                Some(s) => quote! { Some(#s) },
-                None => quote! { None },
-            };
+   // For relation fields the SQL column type is the target's PK
+   // type, not the Rust wrapper type. the migration emitter
+   // consumes `sql_type` alongside `target_type_name` to produce
+   // `REFERENCES` clauses; uses the `target_type_name`
+   // as the primary signal and leaves `sql_type` as the
+   // best-effort scalar mapping. A future amendment
+   // can extend this to look the target PK type up via a second
+   // `ModelDescriptor` pass.
+   // Djogi#216 Piece A — `#[field(domain = "<name>")]`
+   // intercepts the sql_type selection BEFORE the type-driven
+   // mapping runs. The descriptor's `FieldSqlType::Domain {
+   // name, base }` variant carries the bare domain name (the
+   // Display contract — rendered into column DDL by the
+   // migration composer) and the inferred Rust-side base type
+   // for documentation / future Piece B use. The relation
+   // arm above wins over the domain arm because `attrs.parse`
+   // already rejects `domain` on relation fields, so the
+   // ordering here is defense-in-depth: an FK field with
+   // `domain` set could not reach this point, but the
+   // explicit `relation.is_some()` branch keeps the FK SQL
+   // type stable even if the parse-time guard ever regresses.
+   // `base: &<base_tokens>` relies on Rust's constant-promotion
+   // rule: a `&EXPR` where EXPR is const-evaluable promotes to
+   // `&'static T`. Every `FieldSqlType` variant the macro
+   // emits — `Text`, `Numeric`, `BigInt`, `Custom(<T as
+   // DjogiSqlType>::SQL_TYPE)`, etc. — is const-evaluable, so
+   // the reference promotes cleanly into the descriptor's
+   // static-lifetime slot. `&` (not `Box::new(...)`) keeps the
+   // enclosing enum trivially droppable, which the existing
+   // `pub const fn field_descriptor` constructor and every
+   // static / const `FieldDescriptor` literal in the test
+   // suite depend on.
+   let sql_type = if relation.is_some() {
+    // FK columns use the target's PK SQL type, resolved at
+    // projection time. Emit TEXT as a placeholder here;
+    // `migrate::projection` overwrites it with the actual
+    // target PK type when it has access to all descriptors.
+    sql_str_to_tokens("TEXT")
+   } else if fa
+   .protected
+   .as_ref()
+   .and_then(|p| p.codec.as_deref())
+   .is_some()
+   {
+    // A field with an at-rest codec stores its ciphertext as
+    // BYTEA — the codec's Encoded type is `Vec<u8>` regardless of
+    // the decoded Rust type (e.g. an encrypted `String` column is
+    // BYTEA, not VARCHAR/TEXT). The codec ID is validated against
+    // KNOWN_CODEC_IDS at parse time; every shipped codec uses
+    // BYTEA storage. Ordered AFTER the FK arm so a codec on an FK
+    // field cannot override the FK's target-PK type — FK + codec
+    // is not a supported combination and the FK arm wins safely.
+    sql_str_to_tokens("BYTEA")
+   } else if let Some(domain_name) = &fa.domain {
+    let domain_name = domain_name.as_str();
+    let base = field_sql_type_tokens(&inner_ty);
+    quote! {
+     ::djogi::FieldSqlType::Domain {
+      name: #domain_name,
+      base: &#base,
+     }
+    }
+   } else if let Some(n) = fa.max_length {
+    // `#[field(max_length = N)]` on a `String` field emits
+    // `VARCHAR(N)` instead of `TEXT`. The attribute is now
+    // validated at macro-expansion time, so non-`String` fields
+    // cannot reach this branch with `max_length` set.
+    match rust_type_to_sql(&inner_ty) {
+     Some("TEXT") => quote! { ::djogi::FieldSqlType::Varchar(#n) },
+     _ => field_sql_type_tokens(&inner_ty),
+    }
+   } else {
+    field_sql_type_tokens(&inner_ty)
+   };
+   let unique = fa.unique;
+   let indexed = fa.index || fa.index_method.is_some();
+   let max_length = match fa.max_length {
+    Some(n) => quote! { Some(#n) },
+    None => quote! { None },
+   };
+   let renamed_from = match &fa.renamed_from {
+    Some(s) => quote! { Some(#s) },
+    None => quote! { None },
+   };
 
-            // `#[field(index)]` or `#[field(index = "method")]`.
-            // Three cases:
-            // 1. fa.index = true, index_method = None → bare `#[field(index)]`, apply auto-default
-            // 2. fa.index_method = Some(method) → explicit method (may or may not have bare index)
-            // 3. Neither → no index
-            let index_type_tokens = if let Some(method) = &fa.index_method {
-                // Explicit method string. The method was already validated
-                // in FieldAttrs::parse, so this should not fail. Re-parse to
-                // get the token stream for emission.
-                // In theory we could cache the tokens in FieldAttrs, but the
-                // two-pass pattern (validate in attrs, emit in descriptor)
-                // mirrors on_delete and keeps spans recoverable if needed.
-                match method.as_str() {
-                    "btree" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::BTree) },
-                    "gin" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gin) },
-                    "gist" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gist) },
-                    "brin" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Brin) },
-                    "hash" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Hash) },
-                    "spgist" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Spgist) },
-                    _ => quote! { ::std::option::Option::None }, // Unreachable — already validated.
-                }
-            } else if fa.index {
-                // Bare `#[field(index)]` — apply auto-default.
-                default_index_type(&field.ty)
-            } else {
-                quote! { ::std::option::Option::None }
-            };
+   // `#[field(index)]` or `#[field(index = "method")]`.
+   // Three cases:
+   // 1. fa.index = true, index_method = None → bare `#[field(index)]`, apply auto-default
+   // 2. fa.index_method = Some(method) → explicit method (may or may not have bare index)
+   // 3. Neither → no index
+   let index_type_tokens = if let Some(method) = &fa.index_method {
+    // Explicit method string. The method was already validated
+    // in FieldAttrs::parse, so this should not fail. Re-parse to
+    // get the token stream for emission.
+    // In theory we could cache the tokens in FieldAttrs, but the
+    // two-pass pattern (validate in attrs, emit in descriptor)
+    // mirrors on_delete and keeps spans recoverable if needed.
+    match method.as_str() {
+     "btree" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::BTree) },
+     "gin" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gin) },
+     "gist" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gist) },
+     "brin" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Brin) },
+     "hash" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Hash) },
+     "spgist" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Spgist) },
+     _ => quote! { ::std::option::Option::None }, // Unreachable — already validated.
+    }
+   } else if fa.index {
+    // Bare `#[field(index)]` — apply auto-default.
+    default_index_type(&field.ty)
+   } else {
+    quote! { ::std::option::Option::None }
+   };
 
-            // populate visage_map from the parsed
-            // `#[field(expose(...))]` spec. Scalar scopes map to this
-            // column's name; relation scopes map to the peer visage
-            // type name. Empty / suppressed specs emit `&[]`.
-            let projection_map_tokens = build_projection_map_tokens(&fa.expose, &name);
-            // Relation metadata — `None`/`&[]` for scalar columns.
-            // Descriptor lookup keys off the short target name (last path
-            // segment) — the migration differ matches this against
-            // `ModelDescriptor::type_name`, which is also just the short
-            // ident — so we deliberately use `info.target_name` here rather
-            // than the full `info.target_type`. The full type path is only
-            // needed by codegen sites that emit the target in type position
-            // (see `relations::expand`).
-            let (relation_kind_tokens, on_delete_tokens, target_type_name_tokens, is_self_fk_lit) =
-                match &relation {
-                    Some(info) => {
-                        let kind_tokens = match info.kind {
-                            MacroRelationKind::ForeignKey => {
-                                quote! { Some(::djogi::descriptor::RelationKind::ForeignKey) }
-                            }
-                            MacroRelationKind::OneToOne => {
-                                quote! { Some(::djogi::descriptor::RelationKind::OneToOne) }
-                            }
-                        };
-                        let on_delete = match &fa.on_delete {
-                            Some(s) => {
-                                let variant = on_delete_str_to_tokens(s);
-                                quote! { Some(#variant) }
-                            }
-                            None => quote! { None },
-                        };
-                        let target_lit = info.target_name.as_str();
-                        // Name-based self-FK
-                        // detection. Matches the detector's `target_name`
-                        // (last-segment ident of the inner type) against the
-                        // source struct's short name. Same heuristic the
-                        // migration differ uses to resolve relations across
-                        // descriptors, so the descriptor consumers stay on a
-                        // single lookup key.
-                        let is_self_fk = info.target_name == source_name_string;
-                        (
-                            kind_tokens,
-                            on_delete,
-                            quote! { Some(#target_lit) },
-                            is_self_fk,
-                        )
-                    }
-                    None => (quote! { None }, quote! { None }, quote! { None }, false),
-                };
+   // populate visage_map from the parsed
+   // `#[field(expose(...))]` spec. Scalar scopes map to this
+   // column's name; relation scopes map to the peer visage
+   // type name. Empty / suppressed specs emit `&[]`.
+   let projection_map_tokens = build_projection_map_tokens(&fa.expose, &name);
+   // Relation metadata — `None`/`&[]` for scalar columns.
+   // Descriptor lookup keys off the short target name (last path
+   // segment) — the migration differ matches this against
+   // `ModelDescriptor::type_name`, which is also just the short
+   // ident — so we deliberately use `info.target_name` here rather
+   // than the full `info.target_type`. The full type path is only
+   // needed by codegen sites that emit the target in type position
+   // (see `relations::expand`).
+   let (relation_kind_tokens, on_delete_tokens, target_type_name_tokens, is_self_fk_lit) =
+    match &relation {
+     Some(info) => {
+      let kind_tokens = match info.kind {
+       MacroRelationKind::ForeignKey => {
+        quote! { Some(::djogi::descriptor::RelationKind::ForeignKey) }
+       }
+       MacroRelationKind::OneToOne => {
+        quote! { Some(::djogi::descriptor::RelationKind::OneToOne) }
+       }
+      };
+      let on_delete = match &fa.on_delete {
+       Some(s) => {
+        let variant = on_delete_str_to_tokens(s);
+        quote! { Some(#variant) }
+       }
+       None => quote! { None },
+      };
+      let target_lit = info.target_name.as_str();
+      // Name-based self-FK
+      // detection. Matches the detector's `target_name`
+      // (last-segment ident of the inner type) against the
+      // source struct's short name. Same heuristic the
+      // migration differ uses to resolve relations across
+      // descriptors, so the descriptor consumers stay on a
+      // single lookup key.
+      let is_self_fk = info.target_name == source_name_string;
+      (
+       kind_tokens,
+       on_delete,
+       quote! { Some(#target_lit) },
+       is_self_fk,
+      )
+     }
+     None => (quote! { None }, quote! { None }, quote! { None }, false),
+    };
 
-            // `#[field(protected(...))]` lowers to
-            // `Some(::djogi::ProtectedFieldMetadata { ... })`; absent
-            // attribute keeps the explicit `None` (distinct from
-            // `Sensitivity::None` per the descriptor's contract).
-            let protected_tokens = match &fa.protected {
-                Some(spec) => spec.to_tokens(),
-                None => quote! { ::std::option::Option::None },
-            };
-            // `#[field(default_volatility = "...")]` override. Already
-            // validated in `FieldAttrs::parse`, so a non-`None` value
-            // is guaranteed to parse cleanly here.
-            let default_volatility_tokens = match fa.default_volatility.as_deref() {
-                Some(value) => {
-                    let lit = crate::model::protected::DefaultVolatilityLit::parse(
-                        value,
-                        ::proc_macro2::Span::call_site(),
-                    )
-                    .expect("invariant: default_volatility validated in FieldAttrs::parse");
-                    let path = lit.to_tokens();
-                    quote! { ::std::option::Option::Some(#path) }
-                }
-                None => quote! { ::std::option::Option::None },
-            };
-            // PR 7 — `#[field(generated = "<expr>")]`. The
-            // expression is emitted verbatim; `stored: true` is hard-
-            // coded because Pg18 supports only stored generated columns
-            // (the descriptor's `stored` flag is reserved for future
-            // Pg19+ VIRTUAL support, but the macro syntax does not
-            // accept an explicit `stored = ...` today — see
-            // `FieldAttrs::parse`).
-            let generated_tokens = match &fa.generated {
-                Some(lit_str) => {
-                    let expr = lit_str.value();
-                    let expr = expr.as_str();
-                    quote! {
-                        ::std::option::Option::Some(::djogi::descriptor::GeneratedColumnSpec {
-                            expression: #expr,
-                            stored: true,
-                        })
-                    }
-                }
-                None => quote! { ::std::option::Option::None },
-            };
+   // `#[field(protected(...))]` lowers to
+   // `Some(::djogi::ProtectedFieldMetadata {... })`; absent
+   // attribute keeps the explicit `None` (distinct from
+   // `Sensitivity::None` per the descriptor's contract).
+   let protected_tokens = match &fa.protected {
+    Some(spec) => spec.to_tokens(),
+    None => quote! { ::std::option::Option::None },
+   };
+   // `#[field(default_volatility = "...")]` override. Already
+   // validated in `FieldAttrs::parse`, so a non-`None` value
+   // is guaranteed to parse cleanly here.
+   let default_volatility_tokens = match fa.default_volatility.as_deref() {
+    Some(value) => {
+     let lit = crate::model::protected::DefaultVolatilityLit::parse(
+      value,
+      ::proc_macro2::Span::call_site(),
+     )
+    .expect("invariant: default_volatility validated in FieldAttrs::parse");
+     let path = lit.to_tokens();
+     quote! { ::std::option::Option::Some(#path) }
+    }
+    None => quote! { ::std::option::Option::None },
+   };
+   // PR 7 — `#[field(generated = "<expr>")]`. The
+   // expression is emitted verbatim; `stored: true` is hard-
+   // coded because Pg18 supports only stored generated columns
+   // (the descriptor's `stored` flag is reserved for future
+   // Pg19+ VIRTUAL support, but the macro syntax does not
+   // accept an explicit `stored =...` today — see
+   // `FieldAttrs::parse`).
+   let generated_tokens = match &fa.generated {
+    Some(lit_str) => {
+     let expr = lit_str.value();
+     let expr = expr.as_str();
+     quote! {
+      ::std::option::Option::Some(::djogi::descriptor::GeneratedColumnSpec {
+       expression: #expr,
+       stored: true,
+      })
+     }
+    }
+    None => quote! { ::std::option::Option::None },
+   };
 
-            // 5 — composition-derive provenance.
-            // Both composition surfaces are now driven by `#[model(...)]`
-            // attributes (pivoted 2026-05-03 / 2026-05-04):
-            // - `#[model(auditable)]`: `model_attrs.auditable
-            // == true` flips the `created_by` column to
-            // `composed_via: Some("Auditable")`.
-            // - `#[model(soft_deletable)]` (supersedes the legacy
-            // `#[derive(SoftDeletable)]`): `model_attrs.soft_deletable
-            // == true` flips the `deleted_at` column to
-            // `composed_via: Some("SoftDeletable")`. Tightens the
-            // detection from field-name-only to field-name-plus-flag,
-            // eliminating the false-positive risk that an adopter who
-            // declares a `deleted_at` column without opting into the
-            // composition would see the (informational) tag on that
-            // column.
-            // Order matters: `created_by` checked first so a model that
-            // declares both `auditable` and `soft_deletable` tags each
-            // column with its own provenance independently.
-            // Per spec line 1124, `composed_via` is metadata only — the
-            // migration differ does NOT key off it. Reading
-            // `composed_via` to decide migration strategy or
-            // default-filter composition would re-introduce a different
-            // kind of mismatch (a future column-rename override would
-            // diverge from the tag); the descriptor doc comment at
-            // `djogi/src/descriptor.rs` carries that warning explicitly.
-            let composed_via_tokens: TokenStream = if name == "created_by" && model_attrs.auditable
-            {
-                quote! { ::std::option::Option::Some("Auditable") }
-            } else if name == "deleted_at" && model_attrs.soft_deletable {
-                quote! { ::std::option::Option::Some("SoftDeletable") }
-            } else {
-                quote! { ::std::option::Option::None }
-            };
+   // 5 — composition-derive provenance.
+   // Both composition surfaces are now driven by `#[model(...)]`
+   // attributes (pivoted 2026-05-03 / 2026-05-04):
+   // - `#[model(auditable)]`: `model_attrs.auditable
+   // == true` flips the `created_by` column to
+   // `composed_via: Some("Auditable")`.
+   // - `#[model(soft_deletable)]` (supersedes the legacy
+   // `#[derive(SoftDeletable)]`): `model_attrs.soft_deletable
+   // == true` flips the `deleted_at` column to
+   // `composed_via: Some("SoftDeletable")`. Tightens the
+   // detection from field-name-only to field-name-plus-flag,
+   // eliminating the false-positive risk that an adopter who
+   // declares a `deleted_at` column without opting into the
+   // composition would see the (informational) tag on that
+   // column.
+   // Order matters: `created_by` checked first so a model that
+   // declares both `auditable` and `soft_deletable` tags each
+   // column with its own provenance independently.
+   // Per spec line 1124, `composed_via` is metadata only — the
+   // migration differ does NOT key off it. Reading
+   // `composed_via` to decide migration strategy or
+   // default-filter composition would re-introduce a different
+   // kind of mismatch (a future column-rename override would
+   // diverge from the tag); the descriptor doc comment at
+   // `djogi/src/descriptor.rs` carries that warning explicitly.
+   let composed_via_tokens: TokenStream = if name == "created_by" && model_attrs.auditable
+   {
+    quote! { ::std::option::Option::Some("Auditable") }
+   } else if name == "deleted_at" && model_attrs.soft_deletable {
+    quote! { ::std::option::Option::Some("SoftDeletable") }
+   } else {
+    quote! { ::std::option::Option::None }
+   };
 
-            // — source-type discriminator.
-            // FK columns always get `None` (their type is the target's PK,
-            // which is always identity-width). Relation fields are scalar
-            // proxies for the FK column; the source type is irrelevant there.
-            let rust_source_type_tokens: TokenStream = if relation.is_some() {
-                quote! { ::std::option::Option::None }
-            } else {
-                rust_source_type_tokens_for_type(&inner_ty)
-            };
+   // — source-type discriminator.
+   // FK columns always get `None` (their type is the target's PK,
+   // which is always identity-width). Relation fields are scalar
+   // proxies for the FK column; the source type is irrelevant there.
+   let rust_source_type_tokens: TokenStream = if relation.is_some() {
+    quote! { ::std::option::Option::None }
+   } else {
+    rust_source_type_tokens_for_type(&inner_ty)
+   };
 
-            // — adopter `#[field(check = "...")]`
-            // raw-SQL CHECK expression. The string is already validated as
-            // non-empty / non-whitespace by `FieldAttrs::parse`; emit it
-            // verbatim into the descriptor so the projection layer can
-            // combine it with any type-derived CHECK.
-            let check_sql_tokens: TokenStream = match &fa.check {
-                Some(expr) => {
-                    let expr_str = expr.as_str();
-                    quote! { ::std::option::Option::Some(#expr_str) }
-                }
-                None => quote! { ::std::option::Option::None },
-            };
+   // — adopter `#[field(check = "...")]`
+   // raw-SQL CHECK expression. The string is already validated as
+   // non-empty / non-whitespace by `FieldAttrs::parse`; emit it
+   // verbatim into the descriptor so the projection layer can
+   // combine it with any type-derived CHECK.
+   let check_sql_tokens: TokenStream = match &fa.check {
+    Some(expr) => {
+     let expr_str = expr.as_str();
+     quote! { ::std::option::Option::Some(#expr_str) }
+    }
+    None => quote! { ::std::option::Option::None },
+   };
 
-            // Djogi#217) — adopter
-            // `#[field(comment = "<text>")]` column-level free-text
-            // comment. Validated as non-empty / non-whitespace-only
-            // by `FieldAttrs::parse`; emit verbatim into the
-            // descriptor so the migration composer can lower it to
-            // `COMMENT ON COLUMN <t>.<c> IS '<text>'`. The composer
-            // owns single-quote escaping at SQL-emission time so the
-            // descriptor carries the adopter's original prose.
-            let comment_tokens: TokenStream = match &fa.comment {
-                Some(text) => {
-                    let text_str = text.as_str();
-                    quote! { ::std::option::Option::Some(#text_str) }
-                }
-                None => quote! { ::std::option::Option::None },
-            };
+   // Djogi#217) — adopter
+   // `#[field(comment = "<text>")]` column-level free-text
+   // comment. Validated as non-empty / non-whitespace-only
+   // by `FieldAttrs::parse`; emit verbatim into the
+   // descriptor so the migration composer can lower it to
+   // `COMMENT ON COLUMN <t>.<c> IS '<text>'`. The composer
+   // owns single-quote escaping at SQL-emission time so the
+   // descriptor carries the adopter's original prose.
+   let comment_tokens: TokenStream = match &fa.comment {
+    Some(text) => {
+     let text_str = text.as_str();
+     quote! { ::std::option::Option::Some(#text_str) }
+    }
+    None => quote! { ::std::option::Option::None },
+   };
 
-            // Djogi#220) — adopter
-            // `#[field(type_change_using = "<sql expr>")]` USING clause
-            // for non-default-cast column type changes. Validated as
-            // non-empty / non-whitespace-only by `FieldAttrs::parse`;
-            // emit verbatim into the descriptor so the SQL emitter can
-            // append `USING (<expr>)` to `ALTER COLUMN … TYPE` whenever
-            // the differ records a `ColumnChange::ChangeType` for this
-            // column.
-            let type_change_using_tokens: TokenStream = match &fa.type_change_using {
-                Some(expr) => {
-                    let expr_str = expr.as_str();
-                    quote! { ::std::option::Option::Some(#expr_str) }
-                }
-                None => quote! { ::std::option::Option::None },
-            };
+   // Djogi#220) — adopter
+   // `#[field(type_change_using = "<sql expr>")]` USING clause
+   // for non-default-cast column type changes. Validated as
+   // non-empty / non-whitespace-only by `FieldAttrs::parse`;
+   // emit verbatim into the descriptor so the SQL emitter can
+   // append `USING (<expr>)` to `ALTER COLUMN … TYPE` whenever
+   // the differ records a `ColumnChange::ChangeType` for this
+   // column.
+   let type_change_using_tokens: TokenStream = match &fa.type_change_using {
+    Some(expr) => {
+     let expr_str = expr.as_str();
+     quote! { ::std::option::Option::Some(#expr_str) }
+    }
+    None => quote! { ::std::option::Option::None },
+   };
 
-            // Djogi#189 — opt-in HeerId / RanjId structural CHECK.
-            // Set `strict_id_check: true` on the descriptor when:
-            // 1. `#[field(strict_id_check)]` was declared on this field
-            // (already validated as type-compatible by `FieldAttrs::parse`).
-            // 2. `#[model(strict_ids)]` is on AND the field is a
-            // bare HeerId / RanjId family scalar OR a relation
-            // field (`ForeignKey<T>` / `OneToOneField<T>`).
-            // For (2), the macro relies on the field's declared Rust type;
-            // it does not (and cannot) inspect FK target PK types here.
-            // Relation-field propagation is deliberately broad — every FK
-            // carries the flag — because the macro cannot reach across
-            // crates to discover the target's PK semantic family. The
-            // projection layer is the single place that has every
-            // descriptor in scope; it resolves each FK target's HeerRanjID
-            // family via `type_to_pk_family` and silently skips the CHECK
-            // for FK-to-Serial, FK-to-Custom, FK-to-None, and FK-to-Composite
-            // targets. The macro propagates; the projection filters.
-            // (post-review hardening): the projection filter
-            // is family-based, not SQL-type-based, so an FK to a
-            // `PkType::Custom { sql_type: "BIGINT" / "UUID", .. }` no
-            // longer accidentally inherits the HeerId / RanjId CHECK
-            // from a coincidental SQL-carrier match.
-            let strict_id_check_lit: bool = fa.strict_id_check
-                || (model_attrs.strict_ids
-                    && (relation.is_some()
-                        || crate::model::attrs::is_bare_heeranjid_family_type(&field.ty)));
+   // Djogi#189 — opt-in HeerId / RanjId structural CHECK.
+   // Set `strict_id_check: true` on the descriptor when:
+   // 1. `#[field(strict_id_check)]` was declared on this field
+   // (already validated as type-compatible by `FieldAttrs::parse`).
+   // 2. `#[model(strict_ids)]` is on AND the field is a
+   // bare HeerId / RanjId family scalar OR a relation
+   // field (`ForeignKey<T>` / `OneToOneField<T>`).
+   // For (2), the macro relies on the field's declared Rust type;
+   // it does not (and cannot) inspect FK target PK types here.
+   // Relation-field propagation is deliberately broad — every FK
+   // carries the flag — because the macro cannot reach across
+   // crates to discover the target's PK semantic family. The
+   // projection layer is the single place that has every
+   // descriptor in scope; it resolves each FK target's HeerRanjID
+   // family via `type_to_pk_family` and silently skips the CHECK
+   // for FK-to-Serial, FK-to-Custom, FK-to-None, and FK-to-Composite
+   // targets. The macro propagates; the projection filters.
+   // (post-review hardening): the projection filter
+   // is family-based, not SQL-type-based, so an FK to a
+   // `PkType::Custom { sql_type: "BIGINT" / "UUID",.. }` no
+   // longer accidentally inherits the HeerId / RanjId CHECK
+   // from a coincidental SQL-carrier match.
+   let strict_id_check_lit: bool = fa.strict_id_check
+    || (model_attrs.strict_ids
+     && (relation.is_some()
+      || crate::model::attrs::is_bare_heeranjid_family_type(&field.ty)));
 
-            quote! {
-                ::djogi::FieldDescriptor {
-                    name: #name,
-                    sql_type: #sql_type,
-                    nullable: #nullable,
-                    unique: #unique,
-                    indexed: #indexed,
-                    max_length: #max_length,
-                    renamed_from: #renamed_from,
-                    rationale: None,
-                    // `#[field(outbox = "ignore")]` toggles
-                    // per-column outbox exclusion. The outbox helper walks
-                    // `descriptor.fields` at emit time and strips any key
-                    // flagged here from the JSONB payload.
-                    outbox_exclude: #outbox_exclude,
-                    sequence_within: #sequence_within_tokens,
-                    index_type: #index_type_tokens,
-                    // relation metadata emitted only for FK/O2O
-                    // columns. Non-relation columns keep `None`/`&[]`.
-                    relation_kind: #relation_kind_tokens,
-                    on_delete: #on_delete_tokens,
-                    target_type_name: #target_type_name_tokens,
-                    // True when the FK / O2O target is the same model
-                    // the field belongs to. Always `false` for scalar
-                    // columns and for relation fields whose target is a
-                    // different model.
-                    is_self_fk: #is_self_fk_lit,
-                    visage_map: #projection_map_tokens,
-                    protected: #protected_tokens,
-                    default_volatility_override: #default_volatility_tokens,
-                    // PR 7 — stored generated column metadata.
-                    // Lowered from `#[field(generated = "<expr>")]`;
-                    // `stored: true` is implicit (Pg18 supports only
-                    // STORED). `None` for non-generated columns.
-                    generated: #generated_tokens,
-                    // Composition-derive provenance.
-                    // `Some("Auditable")` for the `created_by` column on
-                    // a `#[model(auditable)]` model; `Some("SoftDeletable")`
-                    // for the `deleted_at` column on a
-                    // `#[model(soft_deletable)]` model (detection
-                    // tightened from field-name-only to
-                    // field-name + attribute opt-in to eliminate the
-                    // adopter false-positive risk); `None` otherwise.
-                    composed_via: #composed_via_tokens,
-                    // — bind/decode
-                    // source-type discriminator. `Some(RustSourceType::*)`
-                    // for i8/u8/u16/u32/u64; `None` for direct-mapped types.
-                    rust_source_type: #rust_source_type_tokens,
-                    // — adopter
-                    // `#[field(check = "<sql>")]` raw-SQL CHECK expression.
-                    // `None` for fields without an adopter check.
-                    check_sql: #check_sql_tokens,
-                    // Djogi#217) — adopter
-                    // `#[field(comment = "<text>")]` column-level
-                    // comment. `None` for fields without an adopter
-                    // comment.
-                    comment: #comment_tokens,
-                    // Djogi#189 — opt-in strict HeerRanjID CHECK
-                    // propagation. `true` when the field carries
-                    // `#[field(strict_id_check)]` or the model carries
-                    // `#[model(strict_ids)]` and the field qualifies.
-                    // The projection layer dispatches CHECK shape via
-                    // three branches: (1) the framework `id` field uses
-                    // the parent model's PkType semantic family; (2) FK /
-                    // O2O relation columns use the FK target's PkType
-                    // semantic family; (3) bare user scalar fields use
-                    // the field's sql_type only after macro parse-time
-                    // HeerRanjID family validation confirms membership.
-                    strict_id_check: #strict_id_check_lit,
-                    // Djogi#220 — adopter
-                    // `#[field(type_change_using = "<sql expr>")]` USING
-                    // clause for non-default-cast column type changes.
-                    // The SQL emitter appends `USING (<expr>)` only when
-                    // the differ emits `ColumnChange::ChangeType` for
-                    // this column; leaving the attribute on a field whose
-                    // type does not change is a dormant no-op.
-                    type_change_using: #type_change_using_tokens,
-                }
-            }
-        })
-        .collect();
+   quote! {
+    ::djogi::FieldDescriptor {
+     name: #name,
+     sql_type: #sql_type,
+     nullable: #nullable,
+     unique: #unique,
+     indexed: #indexed,
+     max_length: #max_length,
+     renamed_from: #renamed_from,
+     rationale: None,
+     // `#[field(outbox = "ignore")]` toggles
+     // per-column outbox exclusion. The outbox helper walks
+     // `descriptor.fields` at emit time and strips any key
+     // flagged here from the JSONB payload.
+     outbox_exclude: #outbox_exclude,
+     sequence_within: #sequence_within_tokens,
+     index_type: #index_type_tokens,
+     // relation metadata emitted only for FK/O2O
+     // columns. Non-relation columns keep `None`/`&[]`.
+     relation_kind: #relation_kind_tokens,
+     on_delete: #on_delete_tokens,
+     target_type_name: #target_type_name_tokens,
+     // True when the FK / O2O target is the same model
+     // the field belongs to. Always `false` for scalar
+     // columns and for relation fields whose target is a
+     // different model.
+     is_self_fk: #is_self_fk_lit,
+     visage_map: #projection_map_tokens,
+     protected: #protected_tokens,
+     default_volatility_override: #default_volatility_tokens,
+     // PR 7 — stored generated column metadata.
+     // Lowered from `#[field(generated = "<expr>")]`;
+     // `stored: true` is implicit (Pg18 supports only
+     // STORED). `None` for non-generated columns.
+     generated: #generated_tokens,
+     // Composition-derive provenance.
+     // `Some("Auditable")` for the `created_by` column on
+     // a `#[model(auditable)]` model; `Some("SoftDeletable")`
+     // for the `deleted_at` column on a
+     // `#[model(soft_deletable)]` model (detection
+     // tightened from field-name-only to
+     // field-name + attribute opt-in to eliminate the
+     // adopter false-positive risk); `None` otherwise.
+     composed_via: #composed_via_tokens,
+     // — bind/decode
+     // source-type discriminator. `Some(RustSourceType::*)`
+     // for i8/u8/u16/u32/u64; `None` for direct-mapped types.
+     rust_source_type: #rust_source_type_tokens,
+     // — adopter
+     // `#[field(check = "<sql>")]` raw-SQL CHECK expression.
+     // `None` for fields without an adopter check.
+     check_sql: #check_sql_tokens,
+     // Djogi#217) — adopter
+     // `#[field(comment = "<text>")]` column-level
+     // comment. `None` for fields without an adopter
+     // comment.
+     comment: #comment_tokens,
+     // Djogi#189 — opt-in strict HeerRanjID CHECK
+     // propagation. `true` when the field carries
+     // `#[field(strict_id_check)]` or the model carries
+     // `#[model(strict_ids)]` and the field qualifies.
+     // The projection layer dispatches CHECK shape via
+     // three branches: (1) the framework `id` field uses
+     // the parent model's PkType semantic family; (2) FK /
+     // O2O relation columns use the FK target's PkType
+     // semantic family; (3) bare user scalar fields use
+     // the field's sql_type only after macro parse-time
+     // HeerRanjID family validation confirms membership.
+     strict_id_check: #strict_id_check_lit,
+     // Djogi#220 — adopter
+     // `#[field(type_change_using = "<sql expr>")]` USING
+     // clause for non-default-cast column type changes.
+     // The SQL emitter appends `USING (<expr>)` only when
+     // the differ emits `ColumnChange::ChangeType` for
+     // this column; leaving the attribute on a field whose
+     // type does not change is a dormant no-op.
+     type_change_using: #type_change_using_tokens,
+    }
+   }
+  })
+ .collect();
     let deferrability_submits: Vec<TokenStream> = user_fields
         .iter()
         .filter_map(|(field, fa)| {
@@ -790,14 +790,14 @@ fn try_expand(
                     let deferrable = fa.deferrable;
                     let initially_deferred = fa.initially_deferred;
                     Some(quote! {
-                        ::djogi::__private::inventory::submit! {
-                            ::djogi::DeferrabilitySpec {
-                                model_type_name: #type_name,
-                                field_name: #name,
-                                deferrable: #deferrable,
-                                initially_deferred: #initially_deferred,
-                            }
-                        }
+                     ::djogi::__private::inventory::submit! {
+                      ::djogi::DeferrabilitySpec {
+                       model_type_name: #type_name,
+                       field_name: #name,
+                       deferrable: #deferrable,
+                       initially_deferred: #initially_deferred,
+                      }
+                     }
                     })
                 }
                 None => None,
@@ -823,13 +823,13 @@ fn try_expand(
             }
             match codec_id {
                 "aes256_gcm_v1" => Some(quote! {
-                    ::djogi::__private::inventory::submit! {
-                        ::djogi::field_codec::FieldCodecStartupRequirement::const_new(
-                            "aes256_gcm_v1",
-                            ::djogi::__private::field_codec_aes::ENV_VAR,
-                            ::djogi::__private::field_codec_aes::load_ring,
-                        )
-                    }
+                 ::djogi::__private::inventory::submit! {
+                  ::djogi::field_codec::FieldCodecStartupRequirement::const_new(
+                   "aes256_gcm_v1",
+                   ::djogi::__private::field_codec_aes::ENV_VAR,
+                   ::djogi::__private::field_codec_aes::load_ring,
+                  )
+                 }
                 }),
                 _ => None, // Unknown codec — already rejected by rule (c) at parse time.
             }
@@ -849,7 +849,7 @@ fn try_expand(
     let is_through = model_attrs.through;
     let has_outbox = model_attrs.events;
 
-    // emit FtsDescriptor tokens when `#[model(fts = ...)]`
+    // emit FtsDescriptor tokens when `#[model(fts =...)]`
     // is set. Both `source` and `dictionary` are `&'static str` literals.
     let fts_tokens = fts_descriptor_tokens(&model_attrs.fts);
     // `#[model(idempotency_key = "column")]` emits the
@@ -908,7 +908,7 @@ fn try_expand(
     // `kind: IndexKind::NonUnique`, and three new optional fields (`predicate`,
     // `include`, `nulls_not_distinct`) default to benign values. No behavior
     // change: the emitted DDL under the differ is still
-    // `CREATE INDEX CONCURRENTLY ... USING gist ("<col>")` after the
+    // `CREATE INDEX CONCURRENTLY... USING gist ("<col>")` after the
     // `CREATE EXTENSION IF NOT EXISTS postgis` guard.
     // The names are baked in as `'static str` string literals — they are
     // compile-time constants derived from the model attrs and field names.
@@ -930,19 +930,19 @@ fn try_expand(
         reserved_generated_names.push(index_name.clone());
         let col_str = col.as_str();
         let tokens = quote! {
-            ::djogi::descriptor::IndexSpec {
-                name: #index_name,
-                target: ::djogi::descriptor::IndexTarget::Columns(&[
-                    ::djogi::descriptor::IndexColumnSpec::simple(#col_str),
-                ]),
-                kind: ::djogi::descriptor::IndexKind::NonUnique,
-                index_type: ::djogi::descriptor::IndexType::Gist,
-                predicate: ::std::option::Option::None,
-                include: &[],
-                nulls_not_distinct: false,
-                requires_out_of_transaction: true,
-                extension_dependency: ::std::option::Option::Some("postgis"),
-            }
+         ::djogi::descriptor::IndexSpec {
+          name: #index_name,
+          target: ::djogi::descriptor::IndexTarget::Columns(&[
+           ::djogi::descriptor::IndexColumnSpec::simple(#col_str),
+          ]),
+          kind: ::djogi::descriptor::IndexKind::NonUnique,
+          index_type: ::djogi::descriptor::IndexType::Gist,
+          predicate: ::std::option::Option::None,
+          include: &[],
+          nulls_not_distinct: false,
+          requires_out_of_transaction: true,
+          extension_dependency: ::std::option::Option::Some("postgis"),
+         }
         };
         named_index_specs.push((index_name, tokens));
     }
@@ -1005,28 +1005,28 @@ fn try_expand(
     let (app_tokens, tombstone_guard_tokens) = match &model_attrs.app {
         Some(path) => (
             quote! {
-                ::core::option::Option::Some(
-                    <#path as ::djogi::apps::App>::LABEL,
-                )
+             ::core::option::Option::Some(
+              <#path as ::djogi::apps::App>::LABEL,
+             )
             },
             quote! {
-                const _: () = {
-                    assert!(
-                        !<#path as ::djogi::apps::App>::TOMBSTONE,
-                        "cannot declare an active model on a tombstoned \
-                         app; use `#[model(app = NewApp, moved_from_app = \
-                         OldApp)]` to record historical metadata",
-                    );
-                };
+             const _: () = {
+              assert!(
+               !<#path as ::djogi::apps::App>::TOMBSTONE,
+               "cannot declare an active model on a tombstoned \
+                app; use `#[model(app = NewApp, moved_from_app = \
+                OldApp)]` to record historical metadata",
+              );
+             };
             },
         ),
         None => (quote! { ::core::option::Option::None }, quote! {}),
     };
     let moved_from_app_tokens = match &model_attrs.moved_from_app {
         Some(path) => quote! {
-            ::core::option::Option::Some(
-                <#path as ::djogi::apps::App>::LABEL,
-            )
+         ::core::option::Option::Some(
+          <#path as ::djogi::apps::App>::LABEL,
+         )
         },
         None => quote! { ::core::option::Option::None },
     };
@@ -1039,7 +1039,7 @@ fn try_expand(
 
     // PR 7 — `#[model(exclusion(...))]` lowering. Each parsed
     // ExclusionDecl emits one ExclusionConstraintSpec struct literal;
-    // the descriptor field receives the wrapped `&[ ... ]` slice. Empty
+    // the descriptor field receives the wrapped `&[... ]` slice. Empty
     // slice when no exclusion(...) entry was declared.
     let exclusion_constraints_tokens = if model_attrs.exclusions.is_empty() {
         quote! { &[] }
@@ -1077,7 +1077,7 @@ fn try_expand(
         None => quote! { ::core::option::Option::None },
     };
 
-    // 3 — `#[model(default_filter = |f| ...)]` is lowered to
+    // 3 — `#[model(default_filter = |f|...)]` is lowered to
     // a SQL fragment string at expand time. The closure body is walked
     // through the closed grammar in `crate::model::proxy::lower_default_filter_to_sql`;
     // anything outside that grammar surfaces a span-precise compile
@@ -1096,7 +1096,7 @@ fn try_expand(
 
     // 5 — populate `ModelDescriptor.computed_fields` from
     // the captured `#[computed(sql = "...")]` attributes. Emits one
-    // `ComputedFieldDescriptor { ... }` literal per entry; empty slice
+    // `ComputedFieldDescriptor {... }` literal per entry; empty slice
     // when no computed fields are declared. The descriptor's
     // `value_type` is set to `FieldSqlType::Custom` keyed off the
     // declared Rust return-type token stream — the migration differ
@@ -1128,11 +1128,11 @@ fn try_expand(
                     }
                 };
                 quote! {
-                    ::djogi::descriptor::ComputedFieldDescriptor {
-                        name: #name,
-                        sql: #sql,
-                        value_type: #value_type_ts,
-                    }
+                 ::djogi::descriptor::ComputedFieldDescriptor {
+                  name: #name,
+                  sql: #sql,
+                  value_type: #value_type_ts,
+                 }
                 }
             })
             .collect();
@@ -1140,77 +1140,77 @@ fn try_expand(
     };
 
     Ok(quote! {
-        #tombstone_guard_tokens
+     #tombstone_guard_tokens
 
-        ::djogi::__private::inventory::submit! {
-            ::djogi::ModelDescriptor {
-                type_name: #type_name,
-                table_name: #table_name,
-                pk_type: #pk_type_tokens,
-                fields: &[
-                    #(#all_field_descriptors,)*
-                ],
-                // Defaults — populated by later phases' attr parsers.
-                partition_by: None,
-                // `#[model(table = "...", events)]` toggles
-                // transactional outbox emission on every ctx-scoped
-                // create/save/delete. `djogi::outbox::emit_event` keys off
-                // this flag at codegen time.
-                has_outbox: #has_outbox,
-                idempotency_key: #idempotency_key_tokens,
-                // RLS tenant discriminator column.
-                tenant_key: #tenant_key_tokens,
-                cache_ttl: None,
-                rationale: None,
-                // implicit GiST IndexSpec for every GeoPoint
-                // field. Non-spatial models keep the empty slice default.
-                indexes: #indexes_tokens,
-                // Task 6 (phase3-relations): `#[model(table = "...", through)]`
-                is_through: #is_through,
-                // Full-Text Search.
-                fts: #fts_tokens,
-                // Apps subsystem linkage.
-                app: #app_tokens,
-                moved_from_app: #moved_from_app_tokens,
-                // Table-rename hint.
-                renamed_from: #renamed_from_tokens,
-                // PR 7 — `EXCLUDE` constraint declarations.
-                // Lowered from the parsed `#[model(exclusion(...))]`
-                // entries on `model_attrs.exclusions`. Empty slice when
-                // no `exclusion(...)` group is present.
-                exclusion_constraints: #exclusion_constraints_tokens,
-                // `#[model(tree_edge = "col")]` — default self-FK column
-                // for tree-recursive queries. Validated at the top of
-                // `try_expand` against the user-field list and the
-                // self-FK detector; reaches here only when the named
-                // column resolves to a self-FK on this model.
-                tree_edge: #tree_edge_tokens,
-                // Proxy-model schema-passthrough surface.
-                // Populated from `#[model(proxy_for = ParentType,
-                // default_filter = |f| ...)]`. The migration differ keys
-                // off `proxy_for.is_some()` to skip DDL emission for proxy
-                // descriptors; the runtime composer keys off
-                // `default_filter_sql` to AND-compose the lowered fragment
-                // into every `QuerySet<Self>::new`.
-                proxy_for: #proxy_for_tokens,
-                default_filter_sql: #default_filter_sql_tokens,
-                // Computed-field descriptors populated from
-                // `#[computed(sql = "...")]` field attributes;
-                // empty slice for non-computed models.
-                computed_fields: #computed_fields_tokens,
-                // Djogi#217) — adopter
-                // `#[model(table_comment = "<text>")]` free-text
-                // table comment. `None` when the attribute is absent.
-                table_comment: #table_comment_tokens,
-                // Djogi#218/#219) — adopter
-                // `#[model(storage_params = "...")]` and
-                // `#[model(tablespace = "...")]` metadata.
-                storage_params: #storage_params_tokens,
-                tablespace: #tablespace_tokens,
-            }
-        }
-        #(#deferrability_submits)*
-        #(#codec_startup_submits)*
+     ::djogi::__private::inventory::submit! {
+      ::djogi::ModelDescriptor {
+       type_name: #type_name,
+       table_name: #table_name,
+       pk_type: #pk_type_tokens,
+       fields: &[
+        #(#all_field_descriptors,)*
+       ],
+       // Defaults — populated by later phases' attr parsers.
+       partition_by: None,
+       // `#[model(table = "...", events)]` toggles
+       // transactional outbox emission on every ctx-scoped
+       // create/save/delete. `djogi::outbox::emit_event` keys off
+       // this flag at codegen time.
+       has_outbox: #has_outbox,
+       idempotency_key: #idempotency_key_tokens,
+       // RLS tenant discriminator column.
+       tenant_key: #tenant_key_tokens,
+       cache_ttl: None,
+       rationale: None,
+       // implicit GiST IndexSpec for every GeoPoint
+       // field. Non-spatial models keep the empty slice default.
+       indexes: #indexes_tokens,
+       // (phase3-relations): `#[model(table = "...", through)]`
+       is_through: #is_through,
+       // Full-Text Search.
+       fts: #fts_tokens,
+       // Apps subsystem linkage.
+       app: #app_tokens,
+       moved_from_app: #moved_from_app_tokens,
+       // Table-rename hint.
+       renamed_from: #renamed_from_tokens,
+       // PR 7 — `EXCLUDE` constraint declarations.
+       // Lowered from the parsed `#[model(exclusion(...))]`
+       // entries on `model_attrs.exclusions`. Empty slice when
+       // no `exclusion(...)` group is present.
+       exclusion_constraints: #exclusion_constraints_tokens,
+       // `#[model(tree_edge = "col")]` — default self-FK column
+       // for tree-recursive queries. Validated at the top of
+       // `try_expand` against the user-field list and the
+       // self-FK detector; reaches here only when the named
+       // column resolves to a self-FK on this model.
+       tree_edge: #tree_edge_tokens,
+       // Proxy-model schema-passthrough surface.
+       // Populated from `#[model(proxy_for = ParentType,
+       // default_filter = |f|...)]`. The migration differ keys
+       // off `proxy_for.is_some()` to skip DDL emission for proxy
+       // descriptors; the runtime composer keys off
+       // `default_filter_sql` to AND-compose the lowered fragment
+       // into every `QuerySet<Self>::new`.
+       proxy_for: #proxy_for_tokens,
+       default_filter_sql: #default_filter_sql_tokens,
+       // Computed-field descriptors populated from
+       // `#[computed(sql = "...")]` field attributes;
+       // empty slice for non-computed models.
+       computed_fields: #computed_fields_tokens,
+       // Djogi#217) — adopter
+       // `#[model(table_comment = "<text>")]` free-text
+       // table comment. `None` when the attribute is absent.
+       table_comment: #table_comment_tokens,
+       // Djogi#218/#219) — adopter
+       // `#[model(storage_params = "...")]` and
+       // `#[model(tablespace = "...")]` metadata.
+       storage_params: #storage_params_tokens,
+       tablespace: #tablespace_tokens,
+      }
+     }
+     #(#deferrability_submits)*
+     #(#codec_startup_submits)*
     })
 }
 
@@ -1219,17 +1219,17 @@ fn try_expand(
 /// The emitted SQL contains two statements:
 /// 1. `ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;`
 /// 2. `CREATE POLICY {table}_tenant_isolation ON {table} USING (col = current_setting(...));`
-///    The cast in the `USING` expression depends on the tenant column's SQL type:
+/// The cast in the `USING` expression depends on the tenant column's SQL type:
 /// - `BigInt` → `::bigint`
 /// - `Uuid` → `::uuid`
 /// - `Text` → no cast
 /// - Any other type → compile error (via `proc_macro_error` note, non-fatal).
-///   The migration differ will consume this file. Until then, the file
-///   serves as documentation and as an integration-test fixture the test can
-///   verify was created.
-///   The function is intentionally non-fatal on I/O errors (uses `eprintln!` not
-///   `panic!`) so a proc macro failure due to a missing `target/` directory does
-///   not break builds in unusual environments.
+/// The migration differ will consume this file. Until then, the file
+/// serves as documentation and as an integration-test fixture the test can
+/// verify was created.
+/// The function is intentionally non-fatal on I/O errors (uses `eprintln!` not
+/// `panic!`) so a proc macro failure due to a missing `target/` directory does
+/// not break builds in unusual environments.
 fn emit_rls_side_channel(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
@@ -1270,8 +1270,8 @@ fn emit_rls_side_channel(
                 // runtime must declare `tenant_key` against a non-FK column.
                 eprintln!(
                     "djogi-macros: tenant_key column `{tenant_col}` on struct `{}` \
-                     has unsupported SQL type `{other}`; RLS cast will be empty. \
-                     Only BigInt, Uuid, and Text/Citext are supported.",
+      has unsupported SQL type `{other}`; RLS cast will be empty. \
+      Only BigInt, Uuid, and Text/Citext are supported.",
                     struct_item.ident
                 );
                 ""
@@ -1282,7 +1282,7 @@ fn emit_rls_side_channel(
         // or a typo. Emit with empty cast; will tighten validation.
         eprintln!(
             "djogi-macros: tenant_key value `{tenant_col}` does not match any \
-             user-declared field on struct `{}`; check spelling.",
+    user-declared field on struct `{}`; check spelling.",
             struct_item.ident
         );
         ""
@@ -1290,14 +1290,14 @@ fn emit_rls_side_channel(
 
     let sql = format!(
         "-- RLS DDL for {table} — generated by #[model(tenant_key = \"{tenant_col}\")].\n\
-         -- Djogi's migration differ consumes this file to apply RLS policies.\n\
-         -- The `true` flag in current_setting makes a missing GUC return NULL\n\
-         -- instead of raising, keeping connections without set_tenant() safe.\n\
-         \n\
-         ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;\n\
-         \n\
-         CREATE POLICY {table}_tenant_isolation ON {table}\n\
-             USING ({tenant_col} = current_setting('app.tenant_id', true){cast_suffix});\n",
+   -- Djogi's migration differ consumes this file to apply RLS policies.\n\
+   -- The `true` flag in current_setting makes a missing GUC return NULL\n\
+   -- instead of raising, keeping connections without set_tenant() safe.\n\
+   \n\
+   ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;\n\
+   \n\
+   CREATE POLICY {table}_tenant_isolation ON {table}\n\
+    USING ({tenant_col} = current_setting('app.tenant_id', true){cast_suffix});\n",
     );
 
     // Write to `target/djogi_rls/{table}_rls.sql`. Proc macros run with
@@ -1364,9 +1364,9 @@ fn field_sql_type_tokens(ty: &syn::Type) -> TokenStream {
     match rust_type_to_sql(ty) {
         Some(sql) => sql_str_to_tokens(sql),
         None => quote! {
-            ::djogi::FieldSqlType::Custom(
-                <#ty as ::djogi::descriptor::DjogiSqlType>::SQL_TYPE
-            )
+         ::djogi::FieldSqlType::Custom(
+          <#ty as ::djogi::descriptor::DjogiSqlType>::SQL_TYPE
+         )
         },
     }
 }
@@ -1411,42 +1411,42 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         // Display text. This match covers all five geometry types.
         "GEOGRAPHY(Point, 4326)" => {
             quote! {
-                ::djogi::FieldSqlType::Geography {
-                    subtype: ::djogi::descriptor::GeographySubtype::Point,
-                    srid: 4326u32,
-                }
+             ::djogi::FieldSqlType::Geography {
+              subtype: ::djogi::descriptor::GeographySubtype::Point,
+              srid: 4326u32,
+             }
             }
         }
         "GEOGRAPHY(LineString, 4326)" => {
             quote! {
-                ::djogi::FieldSqlType::Geography {
-                    subtype: ::djogi::descriptor::GeographySubtype::LineString,
-                    srid: 4326u32,
-                }
+             ::djogi::FieldSqlType::Geography {
+              subtype: ::djogi::descriptor::GeographySubtype::LineString,
+              srid: 4326u32,
+             }
             }
         }
         "GEOGRAPHY(Polygon, 4326)" => {
             quote! {
-                ::djogi::FieldSqlType::Geography {
-                    subtype: ::djogi::descriptor::GeographySubtype::Polygon,
-                    srid: 4326u32,
-                }
+             ::djogi::FieldSqlType::Geography {
+              subtype: ::djogi::descriptor::GeographySubtype::Polygon,
+              srid: 4326u32,
+             }
             }
         }
         "GEOGRAPHY(MultiPoint, 4326)" => {
             quote! {
-                ::djogi::FieldSqlType::Geography {
-                    subtype: ::djogi::descriptor::GeographySubtype::MultiPoint,
-                    srid: 4326u32,
-                }
+             ::djogi::FieldSqlType::Geography {
+              subtype: ::djogi::descriptor::GeographySubtype::MultiPoint,
+              srid: 4326u32,
+             }
             }
         }
         "GEOGRAPHY(MultiPolygon, 4326)" => {
             quote! {
-                ::djogi::FieldSqlType::Geography {
-                    subtype: ::djogi::descriptor::GeographySubtype::MultiPolygon,
-                    srid: 4326u32,
-                }
+             ::djogi::FieldSqlType::Geography {
+              subtype: ::djogi::descriptor::GeographySubtype::MultiPolygon,
+              srid: 4326u32,
+             }
             }
         }
         // `INTERVAL` lowers to the typed `FieldSqlType::Interval`
@@ -1470,34 +1470,34 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         // namespace policy for runtime-backed `djogi::Range<T>`; one arm
         // per Postgres built-in range type the public surface ships.
         "INT4RANGE" | "int4range" => quote! {
-            ::djogi::FieldSqlType::Range {
-                subtype: ::djogi::descriptor::RangeSubtypeKind::Int4,
-            }
+         ::djogi::FieldSqlType::Range {
+          subtype: ::djogi::descriptor::RangeSubtypeKind::Int4,
+         }
         },
         "INT8RANGE" | "int8range" => quote! {
-            ::djogi::FieldSqlType::Range {
-                subtype: ::djogi::descriptor::RangeSubtypeKind::Int8,
-            }
+         ::djogi::FieldSqlType::Range {
+          subtype: ::djogi::descriptor::RangeSubtypeKind::Int8,
+         }
         },
         "NUMRANGE" | "numrange" => quote! {
-            ::djogi::FieldSqlType::Range {
-                subtype: ::djogi::descriptor::RangeSubtypeKind::Num,
-            }
+         ::djogi::FieldSqlType::Range {
+          subtype: ::djogi::descriptor::RangeSubtypeKind::Num,
+         }
         },
         "TSRANGE" | "tsrange" => quote! {
-            ::djogi::FieldSqlType::Range {
-                subtype: ::djogi::descriptor::RangeSubtypeKind::Ts,
-            }
+         ::djogi::FieldSqlType::Range {
+          subtype: ::djogi::descriptor::RangeSubtypeKind::Ts,
+         }
         },
         "TSTZRANGE" | "tstzrange" => quote! {
-            ::djogi::FieldSqlType::Range {
-                subtype: ::djogi::descriptor::RangeSubtypeKind::Tstz,
-            }
+         ::djogi::FieldSqlType::Range {
+          subtype: ::djogi::descriptor::RangeSubtypeKind::Tstz,
+         }
         },
         "DATERANGE" | "daterange" => quote! {
-            ::djogi::FieldSqlType::Range {
-                subtype: ::djogi::descriptor::RangeSubtypeKind::Date,
-            }
+         ::djogi::FieldSqlType::Range {
+          subtype: ::djogi::descriptor::RangeSubtypeKind::Date,
+         }
         },
         other => {
             let s = other.to_string();
@@ -1585,7 +1585,7 @@ fn is_geography_type(ty: &syn::Type) -> bool {
 /// present without an explicit method.
 /// - `Jsonb<T>` → `IndexType::Gin`
 /// - Any geography type (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
-///   `MultiPolygon`) or raw `Geography<…>` wrapper → `IndexType::Gist`
+/// `MultiPolygon`) or raw `Geography<…>` wrapper → `IndexType::Gist`
 /// - Everything else → `IndexType::BTree`
 fn default_index_type(ty: &syn::Type) -> TokenStream {
     if is_jsonb_type(ty) {
@@ -1600,7 +1600,7 @@ fn default_index_type(ty: &syn::Type) -> TokenStream {
 /// Emit the `fts: Option<FtsDescriptor>` token stream for the
 /// `inventory::submit!` block.
 /// When `spec` is `None`, emits `::std::option::Option::None`. When `Some`,
-/// emits `::std::option::Option::Some(::djogi::descriptor::FtsDescriptor { ... })`.
+/// emits `::std::option::Option::Some(::djogi::descriptor::FtsDescriptor {... })`.
 /// The `source` and `dictionary` strings become `&'static str` literals baked
 /// into the descriptor at compile time — they are constant data, not runtime
 /// allocations.
@@ -1611,13 +1611,13 @@ fn fts_descriptor_tokens(spec: &Option<FtsSpec>) -> TokenStream {
             let source = &s.source;
             let dictionary = &s.dictionary;
             quote! {
-                ::std::option::Option::Some(::djogi::descriptor::FtsDescriptor {
-                    // Default generated column name. will add a
-                    // `column = "..."` override; until then it is always "search".
-                    column: "search",
-                    source: #source,
-                    dictionary: #dictionary,
-                })
+             ::std::option::Option::Some(::djogi::descriptor::FtsDescriptor {
+              // Default generated column name. will add a
+              // `column = "..."` override; until then it is always "search".
+              column: "search",
+              source: #source,
+              dictionary: #dictionary,
+             })
             }
         }
     }

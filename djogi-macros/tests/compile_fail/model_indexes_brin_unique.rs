@@ -7,11 +7,11 @@
 use djogi::prelude::*;
 
 #[model(table = "events", no_default, indexes(
-    unique(fields = [happened_at], using = "brin"),
+ unique(fields = [happened_at], using = "brin"),
 ))]
 #[derive(Debug, Clone)]
 pub struct Event {
-    pub happened_at: DateTime,
+ pub happened_at: DateTime,
 }
 
 fn main() {}

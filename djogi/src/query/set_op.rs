@@ -10,26 +10,26 @@
 //! [`FromPgRow`] impl without any cross-model row reconstruction.
 //! # Why a sibling type, not a `QuerySet<T>`
 //! A set-op result is structurally distinct from a plain
-//! `SELECT ... FROM <table>`:
+//! `SELECT... FROM <table>`:
 //! - Further `.filter(...)` / `.exclude(...)` on the combined result
-//!   is NOT the same as filtering each arm — Postgres semantics treat
-//!   filters as belonging to whichever arm they appear in, and a
-//!   "filter the union" requires wrapping the entire set-op as a
-//!   derived table. Forcing that wrap silently into every chained
-//!   builder method would surprise adopters who expect their `.filter`
-//!   to compose under the same semantics they got from a plain
-//!   queryset.
+//! is NOT the same as filtering each arm — Postgres semantics treat
+//! filters as belonging to whichever arm they appear in, and a
+//! "filter the union" requires wrapping the entire set-op as a
+//! derived table. Forcing that wrap silently into every chained
+//! builder method would surprise adopters who expect their `.filter`
+//! to compose under the same semantics they got from a plain
+//! queryset.
 //! - `select_related` / `prefetch` extend the SELECT projection on the
-//!   left arm in incompatible ways with the right arm (which projects
-//!   only `T`'s canonical column list). Letting them ride through a
-//!   set op would either silently drop the join columns or produce a
-//!   row shape that does not decode as `T`.
+//! left arm in incompatible ways with the right arm (which projects
+//! only `T`'s canonical column list). Letting them ride through a
+//! set op would either silently drop the join columns or produce a
+//! row shape that does not decode as `T`.
 //! - Row-level locks (`FOR UPDATE`) on a set-op subquery are rejected
-//!   by Postgres at parse time.
-//!   Keeping the surface narrow — a fresh [`SetOpQuerySet<T>`] with an
-//!   outer `ORDER BY` / `LIMIT` / `OFFSET` slot and read terminals — is
-//!   the minimum viable design that matches both PG semantics and the
-//!   adopter's intuition.
+//! by Postgres at parse time.
+//! Keeping the surface narrow — a fresh [`SetOpQuerySet<T>`] with an
+//! outer `ORDER BY` / `LIMIT` / `OFFSET` slot and read terminals — is
+//! the minimum viable design that matches both PG semantics and the
+//! adopter's intuition.
 //! # Postgres semantics this layer enforces
 //! Each arm is **always parenthesised** in the emitted SQL so a
 //! per-arm `ORDER BY` / `LIMIT` / `OFFSET` (legal Postgres when
@@ -37,13 +37,13 @@
 //! can therefore write:
 //! ```ignore
 //! let recent = Dog::objects()
-//!     .filter(|f| f.status().eq(Status::Adopted))
-//!     .order_by(|f| f.adopted_at().desc())
-//!     .limit(10);
+//! .filter(|f| f.status().eq(Status::Adopted))
+//! .order_by(|f| f.adopted_at().desc())
+//! .limit(10);
 //! let waitlist = Dog::objects()
-//!     .filter(|f| f.status().eq(Status::Fostered))
-//!     .order_by(|f| f.fostered_at().desc())
-//!     .limit(5);
+//! .filter(|f| f.status().eq(Status::Fostered))
+//! .order_by(|f| f.fostered_at().desc())
+//! .limit(5);
 //! let rows = recent.union(waitlist).fetch_all(&mut ctx).await?;
 //! ```
 //! and Postgres parses the per-arm `ORDER BY` and `LIMIT` exactly
@@ -64,11 +64,11 @@
 //! - `.select_related(...)` registrations,
 //! - `.select_for_update(...)` / `.nowait()` / `.skip_locked()` locks,
 //! - `.cache(...)` Punnu bindings.
-//!   These leak structural shape (extra projections, locks, side
-//!   effects) into a context where the type signature pretends the arm
-//!   is a plain `SELECT t.* FROM t`. Silently dropping them would be a
-//!   correctness bug. The rejection happens at SQL-build time so the
-//!   call site reports the error before any database round trip.
+//! These leak structural shape (extra projections, locks, side
+//! effects) into a context where the type signature pretends the arm
+//! is a plain `SELECT t.* FROM t`. Silently dropping them would be a
+//! correctness bug. The rejection happens at SQL-build time so the
+//! call site reports the error before any database round trip.
 //! ## Outer ordering expressions
 //! [`SetOpOuterOrderingInvalid`](DjogiError::SetOpOuterOrderingInvalid)
 //! surfaces when the outer
@@ -94,7 +94,7 @@
 //! later is additive.
 //! # Why RPITIT (not `async fn`)
 //! Matches the existing [`QuerySet`] terminals — every terminal
-//! returns `impl Future<Output = ...> + Send` rather than using bare
+//! returns `impl Future<Output =...> + Send` rather than using bare
 //! `async fn`. The explicit `+ Send` bound matches `Model::create` /
 //! `QuerySet::fetch_all` and guarantees the returned future can be
 //! `.await`ed across task boundaries. `clippy::manual_async_fn` fires
@@ -216,12 +216,12 @@ mod sealed {
 /// # What it accepts
 /// - `QuerySet<T>` — a plain queryset arm.
 /// - `SetOpQuerySet<T>` — a previously-built set-op result, allowing
-///   chained composition (`a.union(b).intersect(c)`).
-///   Adopters never name this trait directly; they pass either a
-///   `QuerySet<T>` or a `SetOpQuerySet<T>` to [`QuerySet::union`] /
-///   [`SetOpQuerySet::union`] and the bound is satisfied automatically.
-///   The trait is sealed (no external impls) so the arm storage stays
-///   closed for SQL emission.
+/// chained composition (`a.union(b).intersect(c)`).
+/// Adopters never name this trait directly; they pass either a
+/// `QuerySet<T>` or a `SetOpQuerySet<T>` to [`QuerySet::union`] /
+/// [`SetOpQuerySet::union`] and the bound is satisfied automatically.
+/// The trait is sealed (no external impls) so the arm storage stays
+/// closed for SQL emission.
 pub trait IntoSetOpArm<T: Model>: sealed::Sealed {
     /// Lift `self` into the internal arm representation. Public only
     /// because the trait itself is — the produced [`SetOpArm`] stays
@@ -336,7 +336,7 @@ impl<T: Model> Clone for SetOpQuerySet<T> {
 /// there — not supported by this surface today.
 // `T` is consumed by the spatial-error path (`T::table_name()`) when
 // the `spatial` feature is enabled. Without that feature, the only
-// reachable arm is `OrderExpr::Column { .. }` (which does not need
+// reachable arm is `OrderExpr::Column {.. }` (which does not need
 // `T`), so clippy correctly flags the parameter as unused. We keep
 // `T` in the signature for API consistency — adding a new
 // expression-form `OrderExpr` variant in the future is much easier
@@ -357,11 +357,11 @@ fn validate_outer_ordering<T: Model>(ordering: &[OrderExpr]) -> Result<(), Djogi
                 return Err(DjogiError::SetOpOuterOrderingInvalid {
                     table: T::table_name(),
                     reason: "spatial distance ordering (ST_Distance(...) from \
-                             `order_by_distance`) is an expression, but Postgres \
-                             set-operation outer ORDER BY accepts only output \
-                             column names. Apply spatial ordering on a per-arm \
-                             basis instead, or wrap the set-op result in a \
-                             subquery before ordering by distance",
+        `order_by_distance`) is an expression, but Postgres \
+        set-operation outer ORDER BY accepts only output \
+        column names. Apply spatial ordering on a per-arm \
+        basis instead, or wrap the set-op result in a \
+        subquery before ordering by distance",
                 });
             }
         }
@@ -379,18 +379,18 @@ fn validate_arm<T: Model>(qs: &QuerySet<T>, side: &'static str) -> Result<(), Dj
         return Err(DjogiError::SetOpArmInvalid {
             table: T::table_name(),
             side,
-            reason: "arm has registered .prefetch(...) paths; \
-                     prefetch is not supported on set-op arms — \
-                     run the set op then prefetch on the combined result",
+            reason: "arm has registered.prefetch(...) paths; \
+      prefetch is not supported on set-op arms — \
+      run the set op then prefetch on the combined result",
         });
     }
     if !qs.select_related_paths.is_empty() {
         return Err(DjogiError::SetOpArmInvalid {
             table: T::table_name(),
             side,
-            reason: "arm has registered .select_related(...) paths; \
-                     select_related is not supported on set-op arms because \
-                     the joined projection would not match the other arm's column list",
+            reason: "arm has registered.select_related(...) paths; \
+      select_related is not supported on set-op arms because \
+      the joined projection would not match the other arm's column list",
         });
     }
     if !matches!(qs.lock, crate::query::lock::LockMode::None) {
@@ -398,17 +398,17 @@ fn validate_arm<T: Model>(qs: &QuerySet<T>, side: &'static str) -> Result<(), Dj
             table: T::table_name(),
             side,
             reason: "arm has a row-level lock (FOR UPDATE / FOR SHARE / NOWAIT \
-                     / SKIP LOCKED); Postgres rejects FOR UPDATE and FOR \
-                     SHARE inside a set-op subquery",
+      / SKIP LOCKED); Postgres rejects FOR UPDATE and FOR \
+      SHARE inside a set-op subquery",
         });
     }
     if qs.cache_target.is_some() {
         return Err(DjogiError::SetOpArmInvalid {
             table: T::table_name(),
             side,
-            reason: "arm has a .cache(&punnu) binding; cache hooks are not yet \
-                     supported on set-op terminals — bind the cache on a plain \
-                     fetch instead",
+            reason: "arm has a.cache(&punnu) binding; cache hooks are not yet \
+      supported on set-op terminals — bind the cache on a plain \
+      fetch instead",
         });
     }
     Ok(())
@@ -465,7 +465,7 @@ fn emit_arm<T: Model + FromPgRow>(
 /// Inner emitter for [`SetOpQuerySet<T>`] — assumes the outer
 /// `SELECT FROM (...) AS sub` wrap (for `count`) or no wrap at all
 /// (for `fetch_all` / `first`) is the caller's concern. Emits:
-/// `(<left>) <OP> (<right>) [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
+/// `(<left>) <OP> (<right>) [ORDER BY...] [LIMIT $n] [OFFSET $n]`.
 /// Validates the outer `ORDER BY` shape before emission via
 /// [`validate_outer_ordering`] — spatial `ST_Distance(...)` ordering on
 /// the combined result is rejected as a typed
@@ -791,10 +791,10 @@ impl<T: Model> SetOpQuerySet<T> {
     /// let recent = Dog::objects().filter(|f| f.status().eq(Status::Adopted));
     /// let waitlist = Dog::objects().filter(|f| f.status().eq(Status::Fostered));
     /// let rows = recent
-    ///     .union(waitlist)
-    ///     .order_by(|f| f.name().asc())
-    ///     .limit(20)
-    ///     .fetch_all(&mut ctx).await?;
+    /// .union(waitlist)
+    /// .order_by(|f| f.name().asc())
+    /// .limit(20)
+    /// .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn order_by<F, O>(mut self, f: F) -> Self

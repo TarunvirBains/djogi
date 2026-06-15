@@ -102,7 +102,7 @@ pub fn codec_id_to_type_path(codec_id: &str) -> TokenStream {
         "aes256_gcm_v1" => quote! { ::djogi::__private::field_codec_aes::Aes256GcmV1 },
         _ => unreachable!(
             "codec_id_to_type_path called with unknown codec \"{codec_id}\"; \
-             the macro should have validated this against KNOWN_CODEC_IDS at parse time"
+    the macro should have validated this against KNOWN_CODEC_IDS at parse time"
         ),
     }
 }
@@ -150,44 +150,44 @@ pub fn push_bind_tokens(
             // the `.map` closure cannot work — the closure returns the success
             // type, not a `Result`; transpose is the correct combinator.
             return quote! {
-                __acc.push_bind(
-                    #field_expr
-                        .map(|__v| {
-                            <#codec_ty as ::djogi::field_codec::FieldCodec>::encode(
-                                #model_lit,
-                                #field_lit,
-                                &__v,
-                            )
-                            .map_err(|__e| {
-                                ::djogi::DjogiError::field_codec_encode(
-                                    #model_lit,
-                                    #field_lit,
-                                    <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
-                                    __e.to_string(),
-                                )
-                            })
-                        })
-                        .transpose()?
+             __acc.push_bind(
+              #field_expr
+              .map(|__v| {
+                <#codec_ty as ::djogi::field_codec::FieldCodec>::encode(
+                 #model_lit,
+                 #field_lit,
+                 &__v,
                 )
+               .map_err(|__e| {
+                 ::djogi::DjogiError::field_codec_encode(
+                  #model_lit,
+                  #field_lit,
+                  <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+                  __e.to_string(),
+                 )
+                })
+               })
+              .transpose()?
+             )
             };
         } else {
             // Non-nullable with codec: encode then bind.
             return quote! {
-                __acc.push_bind({
-                    <#codec_ty as ::djogi::field_codec::FieldCodec>::encode(
-                        #model_lit,
-                        #field_lit,
-                        &#field_expr,
-                    )
-                    .map_err(|__e| {
-                        ::djogi::DjogiError::field_codec_encode(
-                            #model_lit,
-                            #field_lit,
-                            <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
-                            __e.to_string(),
-                        )
-                    })?
-                })
+             __acc.push_bind({
+              <#codec_ty as ::djogi::field_codec::FieldCodec>::encode(
+               #model_lit,
+               #field_lit,
+               &#field_expr,
+              )
+             .map_err(|__e| {
+               ::djogi::DjogiError::field_codec_encode(
+                #model_lit,
+                #field_lit,
+                <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+                __e.to_string(),
+               )
+              })?
+             })
             };
         }
     }
@@ -242,16 +242,16 @@ pub fn push_bind_tokens(
 
         (BindKind::WidenToDecimal, false) => {
             quote! {
-                __acc.push_bind(
-                    ::djogi::__private::rust_decimal::Decimal::from(#effective)
-                )
+             __acc.push_bind(
+              ::djogi::__private::rust_decimal::Decimal::from(#effective)
+             )
             }
         }
         (BindKind::WidenToDecimal, true) => {
             quote! {
-                __acc.push_bind(
-                    #effective.map(::djogi::__private::rust_decimal::Decimal::from)
-                )
+             __acc.push_bind(
+              #effective.map(::djogi::__private::rust_decimal::Decimal::from)
+             )
             }
         }
     }
@@ -265,14 +265,14 @@ pub fn push_bind_tokens(
 /// **before** the slice literal.
 /// Returns `(pre_decl, entry)` where:
 /// - `pre_decl` — a `let __bind_<slot>: WideType = widen(val);` statement,
-///   or the empty token stream for direct types.
+/// or the empty token stream for direct types.
 /// - `entry` — `&__bind_<slot> as &(dyn ToSql + Sync)` for widened types,
-///   or `&(val_expr) as &(dyn ToSql + Sync)` for direct types.
-///   `slot` is the zero-based index of the field in the user-field list,
-///   used to generate a unique local binding name that does not clash across
-///   fields.
-///   `val_expr` evaluates to an **owned** copy of the field value (e.g.
-///   `value.count` or `value.count.clone()`).
+/// or `&(val_expr) as &(dyn ToSql + Sync)` for direct types.
+/// `slot` is the zero-based index of the field in the user-field list,
+/// used to generate a unique local binding name that does not clash across
+/// fields.
+/// `val_expr` evaluates to an **owned** copy of the field value (e.g.
+/// `value.count` or `value.count.clone()`).
 pub fn create_param_tokens(
     kind: &BindKind,
     nullable: bool,
@@ -308,7 +308,7 @@ pub fn create_param_tokens(
         (BindKind::Direct, _) => {
             // No temporary needed — bind the field directly.
             let entry = quote! {
-                &#val_expr as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)
+             &#val_expr as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)
             };
             (TokenStream::new(), entry)
         }
@@ -354,8 +354,8 @@ pub fn create_param_tokens(
 
         (BindKind::WidenToDecimal, false) => {
             let pre = quote! {
-                let #bind_name: ::djogi::__private::rust_decimal::Decimal =
-                    ::djogi::__private::rust_decimal::Decimal::from(#extract);
+             let #bind_name: ::djogi::__private::rust_decimal::Decimal =
+              ::djogi::__private::rust_decimal::Decimal::from(#extract);
             };
             let entry =
                 quote! { &#bind_name as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) };
@@ -363,8 +363,8 @@ pub fn create_param_tokens(
         }
         (BindKind::WidenToDecimal, true) => {
             let pre = quote! {
-                let #bind_name: Option<::djogi::__private::rust_decimal::Decimal> =
-                    #extract.map(::djogi::__private::rust_decimal::Decimal::from);
+             let #bind_name: Option<::djogi::__private::rust_decimal::Decimal> =
+              #extract.map(::djogi::__private::rust_decimal::Decimal::from);
             };
             let entry =
                 quote! { &#bind_name as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) };
@@ -392,8 +392,8 @@ pub fn create_param_tokens(
 /// - `tracked=false, nullable=true` → `Option<T>` (e.g. `Option<u8>`)
 /// - `tracked=true, nullable=false` → `Tracked::new(value)` (e.g. `Tracked<u8>`)
 /// - `tracked=true, nullable=true` → `option.map(Tracked::new)` (e.g. `Option<Tracked<u8>>`)
-///   `col_name` is a `&'static str` literal baked at macro time;
-///   `col_idx` is the ordinal position in the SELECT column list.
+/// `col_name` is a `&'static str` literal baked at macro time;
+/// `col_idx` is the ordinal position in the SELECT column list.
 pub fn decode_field_tokens(
     kind: &BindKind,
     nullable: bool,
@@ -414,50 +414,50 @@ pub fn decode_field_tokens(
 
         // Helper to wrap raw postgres decode errors into DjogiError::Decode.
         let decode_err_wrap = quote! {
-            |__e| ::djogi::DjogiError::Decode(
-                ::std::format!("column `{}`: {}", #col_name_lit, __e)
-            )
+         |__e| ::djogi::DjogiError::Decode(
+          ::std::format!("column `{}`: {}", #col_name_lit, __e)
+         )
         };
 
         let decoded = if nullable {
             // Option<T> with codec: read Option<Vec<u8>>, map through decode.
             quote! {
-                row.try_get::<_, ::std::option::Option<Vec<u8>>>(#col_idx)
-                    .map_err(#decode_err_wrap)?
-                    .map(|__bytes| {
-                        <#codec_ty as ::djogi::field_codec::FieldCodec>::decode(
-                            #model_lit,
-                            #field_lit,
-                            &__bytes,
-                        )
-                    })
-                    .transpose()
-                    .map_err(|__e| {
-                        ::djogi::DjogiError::field_codec_decode(
-                            #model_lit,
-                            #field_lit,
-                            <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
-                            __e.to_string(),
-                        )
-                    })?
+             row.try_get::<_, ::std::option::Option<Vec<u8>>>(#col_idx)
+             .map_err(#decode_err_wrap)?
+             .map(|__bytes| {
+               <#codec_ty as ::djogi::field_codec::FieldCodec>::decode(
+                #model_lit,
+                #field_lit,
+                &__bytes,
+               )
+              })
+             .transpose()
+             .map_err(|__e| {
+               ::djogi::DjogiError::field_codec_decode(
+                #model_lit,
+                #field_lit,
+                <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+                __e.to_string(),
+               )
+              })?
             }
         } else {
             // Non-nullable with codec: read Vec<u8>, decode.
             quote! {
-                <#codec_ty as ::djogi::field_codec::FieldCodec>::decode(
-                    #model_lit,
-                    #field_lit,
-                    &row.try_get::<_, Vec<u8>>(#col_idx)
-                        .map_err(#decode_err_wrap)?,
-                )
-                .map_err(|__e| {
-                    ::djogi::DjogiError::field_codec_decode(
-                        #model_lit,
-                        #field_lit,
-                        <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
-                        __e.to_string(),
-                    )
-                })?
+             <#codec_ty as ::djogi::field_codec::FieldCodec>::decode(
+              #model_lit,
+              #field_lit,
+              &row.try_get::<_, Vec<u8>>(#col_idx)
+              .map_err(#decode_err_wrap)?,
+             )
+            .map_err(|__e| {
+              ::djogi::DjogiError::field_codec_decode(
+               #model_lit,
+               #field_lit,
+               <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+               __e.to_string(),
+              )
+             })?
             }
         };
 
@@ -466,7 +466,7 @@ pub fn decode_field_tokens(
         if tracked {
             if nullable {
                 return quote! {
-                    { let __v = #decoded; __v.map(::djogi::Tracked::new) }
+                 { let __v = #decoded; __v.map(::djogi::Tracked::new) }
                 };
             } else {
                 return quote! { ::djogi::Tracked::new(#decoded) };
@@ -482,36 +482,36 @@ pub fn decode_field_tokens(
     let raw = match (kind, nullable) {
         (BindKind::Direct, _) => {
             quote! {
-                ::djogi::__private::pg::decode_at::<_>(row, #col_idx, #col_name_lit)?
+             ::djogi::__private::pg::decode_at::<_>(row, #col_idx, #col_name_lit)?
             }
         }
 
         (BindKind::WidenToI16, false) => quote! {
-            ::djogi::__private::pg::decode_narrowed::<i16, _>(row, #col_idx, #col_name_lit)?
+         ::djogi::__private::pg::decode_narrowed::<i16, _>(row, #col_idx, #col_name_lit)?
         },
         (BindKind::WidenToI16, true) => quote! {
-            ::djogi::__private::pg::decode_narrowed_opt::<i16, _>(row, #col_idx, #col_name_lit)?
+         ::djogi::__private::pg::decode_narrowed_opt::<i16, _>(row, #col_idx, #col_name_lit)?
         },
 
         (BindKind::WidenToI32, false) => quote! {
-            ::djogi::__private::pg::decode_narrowed::<i32, _>(row, #col_idx, #col_name_lit)?
+         ::djogi::__private::pg::decode_narrowed::<i32, _>(row, #col_idx, #col_name_lit)?
         },
         (BindKind::WidenToI32, true) => quote! {
-            ::djogi::__private::pg::decode_narrowed_opt::<i32, _>(row, #col_idx, #col_name_lit)?
+         ::djogi::__private::pg::decode_narrowed_opt::<i32, _>(row, #col_idx, #col_name_lit)?
         },
 
         (BindKind::WidenToI64, false) => quote! {
-            ::djogi::__private::pg::decode_narrowed::<i64, _>(row, #col_idx, #col_name_lit)?
+         ::djogi::__private::pg::decode_narrowed::<i64, _>(row, #col_idx, #col_name_lit)?
         },
         (BindKind::WidenToI64, true) => quote! {
-            ::djogi::__private::pg::decode_narrowed_opt::<i64, _>(row, #col_idx, #col_name_lit)?
+         ::djogi::__private::pg::decode_narrowed_opt::<i64, _>(row, #col_idx, #col_name_lit)?
         },
 
         (BindKind::WidenToDecimal, false) => quote! {
-            ::djogi::__private::pg::decode_u64_from_decimal(row, #col_idx, #col_name_lit)?
+         ::djogi::__private::pg::decode_u64_from_decimal(row, #col_idx, #col_name_lit)?
         },
         (BindKind::WidenToDecimal, true) => quote! {
-            ::djogi::__private::pg::decode_opt_u64_from_decimal(row, #col_idx, #col_name_lit)?
+         ::djogi::__private::pg::decode_opt_u64_from_decimal(row, #col_idx, #col_name_lit)?
         },
     };
 
@@ -566,52 +566,52 @@ pub fn decode_joined_field_tokens(
 
         let decoded = if nullable {
             quote! {
-                row.try_get::<_, ::std::option::Option<Vec<u8>>>(#col_name_expr)
-                    .map_err(|__e| ::djogi::DjogiError::Decode(
-                        ::std::format!("column `{}: {}", #col_name_expr, __e)
-                    ))?
-                    .map(|__bytes| {
-                        <#codec_ty as ::djogi::field_codec::FieldCodec>::decode(
-                            #model_lit,
-                            #field_lit,
-                            &__bytes,
-                        )
-                    })
-                    .transpose()
-                    .map_err(|__e| {
-                        ::djogi::DjogiError::field_codec_decode(
-                            #model_lit,
-                            #field_lit,
-                            <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
-                            __e.to_string(),
-                        )
-                    })?
+             row.try_get::<_, ::std::option::Option<Vec<u8>>>(#col_name_expr)
+             .map_err(|__e| ::djogi::DjogiError::Decode(
+               ::std::format!("column `{}: {}", #col_name_expr, __e)
+              ))?
+             .map(|__bytes| {
+               <#codec_ty as ::djogi::field_codec::FieldCodec>::decode(
+                #model_lit,
+                #field_lit,
+                &__bytes,
+               )
+              })
+             .transpose()
+             .map_err(|__e| {
+               ::djogi::DjogiError::field_codec_decode(
+                #model_lit,
+                #field_lit,
+                <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+                __e.to_string(),
+               )
+              })?
             }
         } else {
             quote! {
-                <#codec_ty as ::djogi::field_codec::FieldCodec>::decode(
-                    #model_lit,
-                    #field_lit,
-                    &row.try_get::<_, Vec<u8>>(#col_name_expr)
-                        .map_err(|__e| ::djogi::DjogiError::Decode(
-                            ::std::format!("column `{}: {}", #col_name_expr, __e)
-                        ))?,
-                )
-                .map_err(|__e| {
-                    ::djogi::DjogiError::field_codec_decode(
-                        #model_lit,
-                        #field_lit,
-                        <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
-                        __e.to_string(),
-                    )
-                })?
+             <#codec_ty as ::djogi::field_codec::FieldCodec>::decode(
+              #model_lit,
+              #field_lit,
+              &row.try_get::<_, Vec<u8>>(#col_name_expr)
+              .map_err(|__e| ::djogi::DjogiError::Decode(
+                ::std::format!("column `{}: {}", #col_name_expr, __e)
+               ))?,
+             )
+            .map_err(|__e| {
+              ::djogi::DjogiError::field_codec_decode(
+               #model_lit,
+               #field_lit,
+               <#codec_ty as ::djogi::field_codec::FieldCodec>::ID,
+               __e.to_string(),
+              )
+             })?
             }
         };
 
         if tracked {
             if nullable {
                 return quote! {
-                    { let __v = #decoded; __v.map(::djogi::Tracked::new) }
+                 { let __v = #decoded; __v.map(::djogi::Tracked::new) }
                 };
             } else {
                 return quote! { ::djogi::Tracked::new(#decoded) };
@@ -623,39 +623,39 @@ pub fn decode_joined_field_tokens(
     let raw = match (kind, nullable) {
         (BindKind::Direct, _) => {
             quote! {
-                row.try_get::<_, _>(#col_name_expr)
-                    .map_err(|__e| ::djogi::DjogiError::Decode(
-                        ::std::format!("column `{}: {}", #col_name_expr, __e)
-                    ))?
+             row.try_get::<_, _>(#col_name_expr)
+             .map_err(|__e| ::djogi::DjogiError::Decode(
+               ::std::format!("column `{}: {}", #col_name_expr, __e)
+              ))?
             }
         }
 
         (BindKind::WidenToI16, false) => quote! {
-            ::djogi::__private::pg::decode_narrowed_by_name::<i16, _>(row, #col_name_expr)?
+         ::djogi::__private::pg::decode_narrowed_by_name::<i16, _>(row, #col_name_expr)?
         },
         (BindKind::WidenToI16, true) => quote! {
-            ::djogi::__private::pg::decode_narrowed_opt_by_name::<i16, _>(row, #col_name_expr)?
+         ::djogi::__private::pg::decode_narrowed_opt_by_name::<i16, _>(row, #col_name_expr)?
         },
 
         (BindKind::WidenToI32, false) => quote! {
-            ::djogi::__private::pg::decode_narrowed_by_name::<i32, _>(row, #col_name_expr)?
+         ::djogi::__private::pg::decode_narrowed_by_name::<i32, _>(row, #col_name_expr)?
         },
         (BindKind::WidenToI32, true) => quote! {
-            ::djogi::__private::pg::decode_narrowed_opt_by_name::<i32, _>(row, #col_name_expr)?
+         ::djogi::__private::pg::decode_narrowed_opt_by_name::<i32, _>(row, #col_name_expr)?
         },
 
         (BindKind::WidenToI64, false) => quote! {
-            ::djogi::__private::pg::decode_narrowed_by_name::<i64, _>(row, #col_name_expr)?
+         ::djogi::__private::pg::decode_narrowed_by_name::<i64, _>(row, #col_name_expr)?
         },
         (BindKind::WidenToI64, true) => quote! {
-            ::djogi::__private::pg::decode_narrowed_opt_by_name::<i64, _>(row, #col_name_expr)?
+         ::djogi::__private::pg::decode_narrowed_opt_by_name::<i64, _>(row, #col_name_expr)?
         },
 
         (BindKind::WidenToDecimal, false) => quote! {
-            ::djogi::__private::pg::decode_u64_from_decimal_by_name(row, #col_name_expr)?
+         ::djogi::__private::pg::decode_u64_from_decimal_by_name(row, #col_name_expr)?
         },
         (BindKind::WidenToDecimal, true) => quote! {
-            ::djogi::__private::pg::decode_opt_u64_from_decimal_by_name(row, #col_name_expr)?
+         ::djogi::__private::pg::decode_opt_u64_from_decimal_by_name(row, #col_name_expr)?
         },
     };
 
@@ -680,7 +680,7 @@ pub fn decode_joined_field_tokens(
 /// even though the bind/decode path is `BindKind::Direct` (no shim)
 /// the discriminator is read by the projection layer to emit a
 /// structural CHECK enforcing rust_decimal's 96-bit-mantissa / scale-≤-28
-/// representable range. .
+/// representable range..
 pub fn rust_source_type_tokens_for_type(ty: &Type) -> TokenStream {
     let (inner, _nullable) = unwrap_schema_type(ty);
     let s = quote::quote!(#inner).to_string().replace(' ', "");

@@ -6,11 +6,11 @@ use djogi::prelude::*;
 #[derive(Model)]
 #[model(table = "elephants")]
 pub struct Elephant {
-    pub name: String,
+ pub name: String,
 }
 
 #[derive(Model)]
 #[model(table = "herds")]
 pub struct Herd {
-    pub region: String,
+ pub region: String,
 }

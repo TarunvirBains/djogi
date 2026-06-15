@@ -1,7 +1,7 @@
-error: field `owner` is a relation field, so `protected(per_scope = { ... })` is not allowed here. Presentation codecs are scalar-only and must be attached to fields exposed with `expose(scope)`, not `expose(scope -> Peer)` relation embeds.
-  --> $DIR/227_per_scope_relation_field.rs:23:13
-   |
-23 |             per_scope = {
-   |             ^^^^^^^^^
+error: field `owner` is a relation field, so `protected(per_scope = {... })` is not allowed here. Presentation codecs are scalar-only and must be attached to fields exposed with `expose(scope)`, not `expose(scope -> Peer)` relation embeds.
+ --> $DIR/227_per_scope_relation_field.rs:23:13
+ |
+23 |    per_scope = {
+ |    ^^^^^^^^^
 
 error: aborting due to 1 previous error

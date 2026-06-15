@@ -1,18 +1,18 @@
 //! Primary-key trait surface.
 //! Three-trait split per `docs/spec/decisions.md`:
 //! - [`PrimaryKey`] (required) — every PK type declares its [`PkType`]
-//!   discriminant and the schema-emission bits (`SQL_TYPE`, `DEFAULT_SQL`),
-//!   plus a zero-valued [`sentinel`](PrimaryKey::sentinel) factory used by
-//!   the macro-emitted `Default` impl.
+//! discriminant and the schema-emission bits (`SQL_TYPE`, `DEFAULT_SQL`),
+//! plus a zero-valued [`sentinel`](PrimaryKey::sentinel) factory used by
+//! the macro-emitted `Default` impl.
 //! - [`PrimaryKeyDbGen`] (optional) — DB-sourced bulk allocation. Every
-//!   built-in variant except `Serial` implements it; its deliberate
-//!   absence on `i32` is load-bearing for `bulk_create` dispatch.
+//! built-in variant except `Serial` implements it; its deliberate
+//! absence on `i32` is load-bearing for `bulk_create` dispatch.
 //! - [`PrimaryKeyClientGen`] (optional, custom-only) — client-side single
-//!   and bulk generation. Built-in PKs never client-generate: HeeRanjId's
-//!   node/sequence/epoch model requires a database round-trip.
-//!   Every generation helper takes `&mut DjogiContext`, never a raw pool.
-//!   The context dispatches to the pool or the active transaction without
-//!   the caller caring which.
+//! and bulk generation. Built-in PKs never client-generate: HeeRanjId's
+//! node/sequence/epoch model requires a database round-trip.
+//! Every generation helper takes `&mut DjogiContext`, never a raw pool.
+//! The context dispatches to the pool or the active transaction without
+//! the caller caring which.
 //! # Const-position sentinels via heeranjid 0.3.5+
 //! The trait function `<T as PrimaryKey>::sentinel()` is the
 //! polymorphic-context entry point. When the caller knows the concrete
@@ -21,9 +21,9 @@
 //! ```ignore
 //! // Inside #[model(no_default)] constructor helpers:
 //! Widget {
-//!     id: HeerId::ZERO,                         // const-position OK
-//!     created_at: DateTime::UNIX_EPOCH,
-//!     // ...
+//!  id: HeerId::ZERO,       // const-position OK
+//!  created_at: DateTime::UNIX_EPOCH,
+//!  //...
 //! }
 //! ```
 //! `T::ZERO` is the wire-zero bit pattern, declared `pub const` on each
@@ -68,7 +68,7 @@ impl PkSealToken {
     /// `pub(crate)` constructor so the [`crate::__private::pk_seal`]
     /// module can mint the witness without exposing a public path on
     /// the type itself. The empty private field still keeps
-    /// downstream code from naming `PkSealToken { ... }` directly.
+    /// downstream code from naming `PkSealToken {... }` directly.
     pub(crate) const fn __new() -> Self {
         Self { _private: () }
     }

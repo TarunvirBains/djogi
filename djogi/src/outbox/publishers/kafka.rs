@@ -1,4 +1,4 @@
-//! Kafka publisher stub — .
+//! Kafka publisher stub —.
 //! Gated on the `outbox-kafka` feature flag. The actual integration
 //! including adding `rdkafka` as a workspace dependency — ships in a future
 //! task once the provider dependency matrix is decided. Today this file
@@ -22,7 +22,7 @@ impl Publisher for KafkaPublisher {
         // production use is caught immediately.
         unimplemented!(
             "KafkaPublisher is not yet implemented; \
-             the full integration ships in a future task"
+    the full integration ships in a future task"
         )
     }
 }

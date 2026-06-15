@@ -1,6 +1,6 @@
-> [Back to Guides](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to Guides](./index.md) · [Back to README](../../README.md)
 
-Spec: [`docs/spec/models.md`](../spec/models.md) — Phase 5 array field operators.
+Spec: [`docs/spec/models.md`](../spec/models.md) — array field operators.
 
 # Array Fields
 
@@ -73,7 +73,7 @@ makes the portability trade-off explicit.
 
 ```rust
 AuditLog::objects()
-    .filter(|f| f.touched_ids().explicit_pg_predicate().contains(&ids))
+.filter(|f| f.touched_ids().explicit_pg_predicate().contains(&ids))
 ```
 
 `len()` is the exception — it returns `Expr<i32>` and is available directly on
@@ -81,7 +81,7 @@ AuditLog::objects()
 
 ```rust
 AuditLog::objects()
-    .filter(|f| f.tags().len().gt(3_i32))
+.filter(|f| f.tags().len().gt(3_i32))
 ```
 
 ---
@@ -94,46 +94,46 @@ use djogi::prelude::*;
 #[model(table = "articles")]
 #[derive(Debug, Clone)]
 pub struct Article {
-    pub title: String,
-    pub tags: Vec<String>,
-    pub reviewer_ids: Vec<djogi::HeerId>,
+ pub title: String,
+ pub tags: Vec<String>,
+ pub reviewer_ids: Vec<djogi::HeerId>,
 }
 
 async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
-    let mut ctx = DjogiContext::from_pool(pool.clone());
+ let mut ctx = DjogiContext::from_pool(pool.clone());
 
-    // Find articles tagged with both "rust" AND "postgres".
-    let both = Article::objects()
-        .filter(|f| {
-            f.tags()
-                .explicit_pg_predicate()
-                .contains(&["rust".to_string(), "postgres".to_string()])
-        })
-        .fetch_all(&mut ctx).await?;
-    // WHERE tags @> ARRAY[$1, $2]
+ // Find articles tagged with both "rust" AND "postgres".
+ let both = Article::objects()
+.filter(|f| {
+  f.tags()
+ .explicit_pg_predicate()
+ .contains(&["rust".to_string(), "postgres".to_string()])
+ })
+.fetch_all(&mut ctx).await?;
+ // WHERE tags @> ARRAY[$1, $2]
 
-    // Find articles whose tag set is fully within an allowed list.
-    let allowed = ["rust".to_string(), "async".to_string(), "postgres".to_string()];
-    let contained = Article::objects()
-        .filter(|f| f.tags().explicit_pg_predicate().contained_by(&allowed))
-        .fetch_all(&mut ctx).await?;
-    // WHERE tags <@ ARRAY[$1, $2, $3]
+ // Find articles whose tag set is fully within an allowed list.
+ let allowed = ["rust".to_string(), "async".to_string(), "postgres".to_string()];
+ let contained = Article::objects()
+.filter(|f| f.tags().explicit_pg_predicate().contained_by(&allowed))
+.fetch_all(&mut ctx).await?;
+ // WHERE tags <@ ARRAY[$1, $2, $3]
 
-    // Find articles that share at least one reviewer with a given set.
-    let known_ids: Vec<djogi::HeerId> = vec![];
-    let overlapping = Article::objects()
-        .filter(|f| f.reviewer_ids().explicit_pg_predicate().overlap(&known_ids))
-        .fetch_all(&mut ctx).await?;
-    // WHERE reviewer_ids && ARRAY[...]
+ // Find articles that share at least one reviewer with a given set.
+ let known_ids: Vec<djogi::HeerId> = vec![];
+ let overlapping = Article::objects()
+.filter(|f| f.reviewer_ids().explicit_pg_predicate().overlap(&known_ids))
+.fetch_all(&mut ctx).await?;
+ // WHERE reviewer_ids && ARRAY[...]
 
-    // Find articles with more than three tags.
-    let long_tagged = Article::objects()
-        .filter(|f| f.tags().len().gt(3_i32))
-        .fetch_all(&mut ctx).await?;
-    // WHERE array_length(tags, 1) > $1
+ // Find articles with more than three tags.
+ let long_tagged = Article::objects()
+.filter(|f| f.tags().len().gt(3_i32))
+.fetch_all(&mut ctx).await?;
+ // WHERE array_length(tags, 1) > $1
 
-    let _ = (both, contained, overlapping, long_tagged);
-    Ok(())
+ let _ = (both, contained, overlapping, long_tagged);
+ Ok(())
 }
 ```
 
@@ -163,13 +163,13 @@ standard `and_with` / `or_with` combinators:
 
 ```rust
 Article::objects()
-    .filter(|f| {
-        f.tags()
-            .explicit_pg_predicate()
-            .contains(&["rust".to_string()])
-            .and_with(f.tags().len().gte(2_i32))
-    })
-    .fetch_all(&mut ctx).await?;
+.filter(|f| {
+ f.tags()
+ .explicit_pg_predicate()
+ .contains(&["rust".to_string()])
+ .and_with(f.tags().len().gte(2_i32))
+ })
+.fetch_all(&mut ctx).await?;
 // WHERE (tags @> ARRAY[$1]) AND (array_length(tags, 1) >= $2)
 ```
 
@@ -194,7 +194,7 @@ explicit junction model instead when:
 - The element set is large or unbounded (hundreds of elements per row).
 - You need to ORDER or LIMIT the element set independently.
 - Each element carries its own columns (e.g., a `Tag` model with a `color`
-  field).
+ field).
 
 See the [relations guide](./relations.md) for the explicit-through M2M pattern.
 
@@ -207,7 +207,7 @@ For array predicates that the typed operators do not cover — `ANY($1)`,
 The `raw_*` methods live on the sealed `djogi::__bypass::RawAccessExt`
 extension trait, so every call site must decorate the enclosing item with
 `#[djogi::deliberately_bypass_convention_with_raw_sql]` and pair it with an
-adjacent `// JUSTIFICATION (djogi#<n>): ...` comment naming the typed-surface
+adjacent `// JUSTIFICATION (djogi#<n>):...` comment naming the typed-surface
 gap (see [Raw SQL escape hatches](../spec/raw-sql-escape-hatches.md)).
 
 ```rust
@@ -216,15 +216,15 @@ use djogi::prelude::*;
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#234): scalar-vs-array `ANY($1)` not exposed by QuerySet.
 async fn articles_tagged_with(
-    ctx: &mut DjogiContext,
-    tag: &str,
+ ctx: &mut DjogiContext,
+ tag: &str,
 ) -> djogi::Result<Vec<Article>> {
-    // ANY scalar pattern: "is the given value in the column's array?"
-    let found: Vec<Article> = ctx.raw_query(
-        "SELECT * FROM articles WHERE $1 = ANY(tags)",
-        &[&tag],
-    ).await?;
-    Ok(found)
+ // ANY scalar pattern: "is the given value in the column's array?"
+ let found: Vec<Article> = ctx.raw_query(
+ "SELECT * FROM articles WHERE $1 = ANY(tags)",
+ &[&tag],
+ ).await?;
+ Ok(found)
 }
 ```
 

@@ -2,19 +2,19 @@
 //! `#[field(default_volatility = "...")]`.
 //! Owns:
 //! 1. **Parsing** the `protected(...)` nested attribute into a
-//!    [`ProtectedSpec`] that the descriptor emitter consumes when
-//!    building the `Option<ProtectedFieldMetadata>` literal.
+//! [`ProtectedSpec`] that the descriptor emitter consumes when
+//! building the `Option<ProtectedFieldMetadata>` literal.
 //! 2. **Validating** the four rules from the v3 plan §6 with
-//!    span-precise errors:
+//! span-precise errors:
 //! - `sensitivity = "none"` cannot be combined with any other
-//!   protected field.
+//! protected field.
 //! - `sensitivity > none` requires a non-empty `rationale`.
 //! - `codec = "X"` must reference a registered codec ID.
 //! - `redaction = "hash_id"` is only valid on a HeerId / RanjId /
-//!   custom-PK-compatible field type.
+//! custom-PK-compatible field type.
 //! 3. **Parsing and validating** the optional
-//!    `#[field(default_volatility = "...")]` override into
-//!    [`DefaultVolatilityLit`].
+//! `#[field(default_volatility = "...")]` override into
+//! [`DefaultVolatilityLit`].
 //! # Codec ID validation strategy
 //! Proc macros run before any runtime dependency is available, so the
 //! macro crate cannot read `djogi::field_codec::REGISTRY` directly.
@@ -71,7 +71,7 @@ impl SensitivityLit {
                 span,
                 format!(
                     "unknown sensitivity `{other}`; expected one of: \
-                     none, internal, pii, sensitive, secret",
+      none, internal, pii, sensitive, secret",
                 ),
             )),
         }
@@ -109,7 +109,7 @@ impl RedactionLit {
                 span,
                 format!(
                     "unknown redaction `{other}`; expected one of: \
-                     none, hash_id, mask, drop",
+      none, hash_id, mask, drop",
                 ),
             )),
         }
@@ -146,7 +146,7 @@ impl RetentionLit {
                 span,
                 format!(
                     "unknown retention `{other}`; expected one of: \
-                     transient, standard, extended, archival",
+      transient, standard, extended, archival",
                 ),
             )),
         }
@@ -183,7 +183,7 @@ impl DefaultVolatilityLit {
                 span,
                 format!(
                     "unknown `default_volatility = \"{other}\"`; \
-                     expected one of: \"immutable\", \"stable\", \"volatile\"",
+      expected one of: \"immutable\", \"stable\", \"volatile\"",
                 ),
             )),
         }
@@ -210,7 +210,7 @@ impl DefaultVolatilityLit {
 /// Per-scope presentation-codec declaration parsed from
 /// `protected(per_scope = { scope = { presentation_codec = Path } })`
 /// GH #227.
-/// One entry exists per scope key declared inside a `per_scope = { ... }`
+/// One entry exists per scope key declared inside a `per_scope = {... }`
 /// block. `fallible = false` selects the infallible
 /// `PresentationCodec<Input>` dispatch path; `fallible = true` selects the
 /// fallible `TryPresentationCodec<Input>` path (which surfaces
@@ -231,7 +231,7 @@ pub struct PerScopeCodecEntry {
     /// Span of the scope ident literal in the user's source, used to
     /// anchor downstream diagnostics (e.g. "scope `support` is not in
     /// `visage_scopes(...)`") at the offending key rather than the
-    /// whole `per_scope = { ... }` block.
+    /// whole `per_scope = {... }` block.
     pub scope_span: Span,
     /// Rust type path of the codec — typically
     /// `djogi::presentation::builtins::MaskString` or an adopter type.
@@ -275,7 +275,7 @@ pub struct ProtectedSpec {
     /// block. Source order is preserved so downstream emission is
     /// deterministic.
     pub per_scope: Vec<PerScopeCodecEntry>,
-    /// `Some(span)` when the user wrote a `per_scope = { ... }` block
+    /// `Some(span)` when the user wrote a `per_scope = {... }` block
     /// the span anchors rule (a) "sensitivity = none cannot be
     /// combined with any other knob" so the diagnostic points at the
     /// `per_scope` key rather than the unrelated keys (rationale /
@@ -288,7 +288,7 @@ pub struct ProtectedSpec {
 }
 
 impl ProtectedSpec {
-    /// Emit `Some(::djogi::ProtectedFieldMetadata { ... })` token stream
+    /// Emit `Some(::djogi::ProtectedFieldMetadata {... })` token stream
     /// for the descriptor literal. The codec / rationale fields lower
     /// to their literal forms; absent values use the matching `None` /
     /// neutral defaults declared on the descriptor.
@@ -312,13 +312,13 @@ impl ProtectedSpec {
             None => quote! { ::std::option::Option::None },
         };
         quote! {
-            ::std::option::Option::Some(::djogi::ProtectedFieldMetadata {
-                sensitivity: ::djogi::Sensitivity::#sensitivity,
-                rationale: #rationale,
-                redaction: ::djogi::RedactionPolicy::#redaction,
-                codec: #codec,
-                retention: ::djogi::RetentionLabel::#retention,
-            })
+         ::std::option::Option::Some(::djogi::ProtectedFieldMetadata {
+          sensitivity: ::djogi::Sensitivity::#sensitivity,
+          rationale: #rationale,
+          redaction: ::djogi::RedactionPolicy::#redaction,
+          codec: #codec,
+          retention: ::djogi::RetentionLabel::#retention,
+         })
         }
     }
 }
@@ -355,17 +355,17 @@ pub fn parse_from_field(field: &syn::Field) -> syn::Result<Option<ProtectedSpec>
                 Meta::Path(path) if path.is_ident("protected") => {
                     return Err(syn::Error::new(
                         path.span(),
-                        "`protected` must be invoked as `protected(sensitivity = \"...\", ...)`. \
-                         Bare `protected` and name-value `protected = \"...\"` forms are not \
-                         valid syntax for protected-field metadata.",
+                        "`protected` must be invoked as `protected(sensitivity = \"...\",...)`. \
+       Bare `protected` and name-value `protected = \"...\"` forms are not \
+       valid syntax for protected-field metadata.",
                     ));
                 }
                 Meta::NameValue(nv) if nv.path.is_ident("protected") => {
                     return Err(syn::Error::new(
                         nv.value.span(),
-                        "`protected` must be invoked as `protected(sensitivity = \"...\", ...)`. \
-                         Bare `protected` and name-value `protected = \"...\"` forms are not \
-                         valid syntax for protected-field metadata.",
+                        "`protected` must be invoked as `protected(sensitivity = \"...\",...)`. \
+       Bare `protected` and name-value `protected = \"...\"` forms are not \
+       valid syntax for protected-field metadata.",
                     ));
                 }
                 _ => {}
@@ -378,7 +378,7 @@ pub fn parse_from_field(field: &syn::Field) -> syn::Result<Option<ProtectedSpec>
                 return Err(syn::Error::new(
                     list.span(),
                     "duplicate `protected(...)` annotation on the same field; \
-                     a prior `protected(...)` was already declared",
+      a prior `protected(...)` was already declared",
                 ));
             }
             let spec = parse_protected_list(list)?;
@@ -403,7 +403,7 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
 
     for meta in &entries {
         // GH #227 — `per_scope = { scope = { codec_key = Path } }`
-        // arrives as `Meta::NameValue { value: Expr::Block { ... } }`, which
+        // arrives as `Meta::NameValue { value: Expr::Block {... } }`, which
         // does NOT match the string-literal let-else below. Handle it first
         // so the generic "every entry must be `key = \"value\"`" rejection
         // does not swallow this shape with a misleading diagnostic.
@@ -438,8 +438,8 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
             return Err(syn::Error::new(
                 meta.span(),
                 "every `protected(...)` entry must be `key = \"value\"` with a \
-                 string literal; supported keys are `sensitivity`, `rationale`, \
-                 `redaction`, `codec`, `retention`, `per_scope`",
+     string literal; supported keys are `sensitivity`, `rationale`, \
+     `redaction`, `codec`, `retention`, `per_scope`",
             ));
         };
         let Some(key) = path.get_ident().map(|i| i.to_string()) else {
@@ -497,7 +497,7 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
                 retention = Some((RetentionLit::parse(&value, lit_span)?, lit_span));
             }
             "per_scope" => {
-                // `per_scope` requires the `{ ... }` block-expression
+                // `per_scope` requires the `{... }` block-expression
                 // form (handled above). Reach this arm only when the
                 // user wrote `per_scope = "<string>"` or similar
                 // surface a dedicated diagnostic instead of the
@@ -506,9 +506,9 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
                 return Err(syn::Error::new(
                     path.span(),
                     "`per_scope` requires a `{ scope = { presentation_codec = Path } }` \
-                     block expression, not a string literal. See GH #227 — the \
-                     per-scope codec grammar uses a nested block to declare scope \
-                     entries.",
+      block expression, not a string literal. See GH #227 — the \
+      per-scope codec grammar uses a nested block to declare scope \
+      entries.",
                 ));
             }
             other => {
@@ -516,7 +516,7 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
                     path.span(),
                     format!(
                         "unknown `protected` key `{other}`; expected one of: \
-                         sensitivity, rationale, redaction, codec, retention, per_scope",
+       sensitivity, rationale, redaction, codec, retention, per_scope",
                     ),
                 ));
             }
@@ -527,7 +527,7 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
         return Err(syn::Error::new(
             list_span,
             "`protected(...)` requires `sensitivity = \"...\"`; \
-             expected one of: none, internal, pii, sensitive, secret",
+    expected one of: none, internal, pii, sensitive, secret",
         ));
     };
 
@@ -562,7 +562,7 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
 /// Grammar (one statement):
 /// ```text
 /// scope_ident = {
-///     (presentation_codec | try_presentation_codec) = SomeCodec::Path,
+///  (presentation_codec | try_presentation_codec) = SomeCodec::Path,
 /// }
 /// ```
 /// Both `presentation_codec` (infallible) and `try_presentation_codec`
@@ -583,8 +583,8 @@ fn parse_per_scope_block(block: &syn::Block) -> syn::Result<Vec<PerScopeCodecEnt
             other => {
                 return Err(syn::Error::new(
                     other.span(),
-                    "every `per_scope = { ... }` statement must be a \
-                     `scope_ident = { codec_key = Path }` assignment expression",
+                    "every `per_scope = {... }` statement must be a \
+      `scope_ident = { codec_key = Path }` assignment expression",
                 ));
             }
         };
@@ -592,8 +592,8 @@ fn parse_per_scope_block(block: &syn::Block) -> syn::Result<Vec<PerScopeCodecEnt
         let Expr::Assign(outer_assign) = outer_expr else {
             return Err(syn::Error::new(
                 outer_expr.span(),
-                "every `per_scope = { ... }` entry must be a \
-                 `scope_ident = { codec_key = Path }` assignment expression",
+                "every `per_scope = {... }` entry must be a \
+     `scope_ident = { codec_key = Path }` assignment expression",
             ));
         };
 
@@ -603,7 +603,7 @@ fn parse_per_scope_block(block: &syn::Block) -> syn::Result<Vec<PerScopeCodecEnt
             return Err(syn::Error::new(
                 outer_assign.left.span(),
                 "`per_scope` entries must start with a bare scope ident — \
-                 write `support = { ... }`, not a path / literal / etc.",
+     write `support = {... }`, not a path / literal / etc.",
             ));
         };
         let Some(scope_ident) = scope_path_expr.path.get_ident() else {
@@ -620,7 +620,7 @@ fn parse_per_scope_block(block: &syn::Block) -> syn::Result<Vec<PerScopeCodecEnt
                 scope_span,
                 format!(
                     "scope `{scope_name}` declared twice inside the same \
-                     `per_scope = {{ ... }}` block",
+      `per_scope = {{... }}` block",
                 ),
             ));
         }
@@ -630,7 +630,7 @@ fn parse_per_scope_block(block: &syn::Block) -> syn::Result<Vec<PerScopeCodecEnt
             return Err(syn::Error::new(
                 outer_assign.right.span(),
                 "`per_scope` entry value must be a `{ codec_key = Path }` \
-                 block expression",
+     block expression",
             ));
         };
 
@@ -642,7 +642,7 @@ fn parse_per_scope_block(block: &syn::Block) -> syn::Result<Vec<PerScopeCodecEnt
 }
 
 /// Parse the inner `{ presentation_codec = Path }` block for a single
-/// scope entry inside `per_scope = { ... }`.
+/// scope entry inside `per_scope = {... }`.
 /// Accepts exactly one of `presentation_codec` or `try_presentation_codec`.
 /// Declaring both keys within the same inner block is rejected; future
 /// extensions (e.g. a queryability-override key) slot in alongside these
@@ -660,7 +660,7 @@ fn parse_per_scope_inner_block(
                 return Err(syn::Error::new(
                     other.span(),
                     "every per-scope codec entry must be a \
-                     `(try_)?presentation_codec = Path` assignment expression",
+      `(try_)?presentation_codec = Path` assignment expression",
                 ));
             }
         };
@@ -668,21 +668,21 @@ fn parse_per_scope_inner_block(
             return Err(syn::Error::new(
                 inner_expr.span(),
                 "every per-scope codec entry must be a \
-                 `(try_)?presentation_codec = Path` assignment expression",
+     `(try_)?presentation_codec = Path` assignment expression",
             ));
         };
         let Expr::Path(key_path_expr) = inner_assign.left.as_ref() else {
             return Err(syn::Error::new(
                 inner_assign.left.span(),
                 "per-scope codec key must be `presentation_codec` or \
-                 `try_presentation_codec`",
+     `try_presentation_codec`",
             ));
         };
         let Some(key_ident) = key_path_expr.path.get_ident() else {
             return Err(syn::Error::new(
                 key_path_expr.path.span(),
                 "per-scope codec key must be a single-segment ident — \
-                 `presentation_codec` or `try_presentation_codec`",
+     `presentation_codec` or `try_presentation_codec`",
             ));
         };
         let key_name = key_ident.to_string();
@@ -694,8 +694,8 @@ fn parse_per_scope_inner_block(
                     key_ident.span(),
                     format!(
                         "unknown per-scope codec key `{other}`; expected \
-                         `presentation_codec` (infallible) or \
-                         `try_presentation_codec` (fallible)",
+       `presentation_codec` (infallible) or \
+       `try_presentation_codec` (fallible)",
                     ),
                 ));
             }
@@ -705,7 +705,7 @@ fn parse_per_scope_inner_block(
             return Err(syn::Error::new(
                 inner_assign.right.span(),
                 "per-scope codec value must be a Rust type path — \
-                 e.g. `djogi::presentation::builtins::MaskString`",
+     e.g. `djogi::presentation::builtins::MaskString`",
             ));
         };
         let codec_path = codec_path_expr.path.clone();
@@ -721,7 +721,7 @@ fn parse_per_scope_inner_block(
                 key_ident.span(),
                 format!(
                     "scope `{scope_name}` already declared `{prev_key}`; \
-                     each scope block accepts exactly one codec key",
+      each scope block accepts exactly one codec key",
                 ),
             ));
         }
@@ -733,10 +733,10 @@ fn parse_per_scope_inner_block(
             scope_span,
             format!(
                 "scope `{scope_name}` declares no codec; write \
-                 `{scope_name} = {{ presentation_codec = SomeCodec }}` \
-                 (infallible) or \
-                 `{scope_name} = {{ try_presentation_codec = SomeCodec }}` \
-                 (fallible)",
+     `{scope_name} = {{ presentation_codec = SomeCodec }}` \
+     (infallible) or \
+     `{scope_name} = {{ try_presentation_codec = SomeCodec }}` \
+     (fallible)",
             ),
         ));
     };
@@ -774,9 +774,9 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
             return Err(syn::Error::new(
                 span,
                 "`sensitivity = \"none\"` cannot be combined with other \
-                 protected-field metadata (rationale / redaction / codec / \
-                 retention / per_scope). Either drop the `protected(...)` \
-                 attribute entirely or set `sensitivity` higher.",
+     protected-field metadata (rationale / redaction / codec / \
+     retention / per_scope). Either drop the `protected(...)` \
+     attribute entirely or set `sensitivity` higher.",
             ));
         }
     }
@@ -797,10 +797,10 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
             let span = spec.rationale_span.unwrap_or(spec.sensitivity_span);
             return Err(syn::Error::new(
                 span,
-                "`protected(sensitivity = ...)` requires a non-empty \
-                 `rationale = \"...\"` when sensitivity is above `none`. \
-                 Per §6 the rationale documents the legitimate basis \
-                 (e.g., GDPR article reference).",
+                "`protected(sensitivity =...)` requires a non-empty \
+     `rationale = \"...\"` when sensitivity is above `none`. \
+     Per §6 the rationale documents the legitimate basis \
+     (e.g., GDPR article reference).",
             ));
         }
     }
@@ -811,8 +811,8 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
     {
         let valid = if KNOWN_CODEC_IDS.is_empty() {
             "(none). The registry will be populated in future \
-             phases — codecs ship with the framework, not adopter \
-             code."
+    phases — codecs ship with the framework, not adopter \
+    code."
                 .to_string()
         } else {
             KNOWN_CODEC_IDS.join(", ")
@@ -822,7 +822,7 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
             span,
             format!(
                 "unregistered codec ID `{id}`. Valid codec IDs in \
-                 this build of Djogi: {valid}",
+     this build of Djogi: {valid}",
             ),
         ));
     }
@@ -849,16 +849,16 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
             span,
             format!(
                 "`redaction = \"hash_id\"` is only valid on fields whose \
-                 stored type is `HeerId`, `RanjId`, or one of their family \
-                 aliases (`HeerIdDesc` / `HeerIdRecencyBiased` / \
-                 `RanjIdDesc` / `RanjIdRecencyBiased`). Field \
-                 `{field_name}` has type `{rust_type}` which is not a \
-                 HeerId/RanjId-compatible type. Custom-PK newtypes \
-                 declared via `djogi::primary_key!` are not yet \
-                 accepted by this rule — the macro cannot prove a \
-                 user-named ident implements `PrimaryKey` at parse \
-                 time, and a wrong accept ships an unsafe redaction \
-                 policy at runtime.",
+     stored type is `HeerId`, `RanjId`, or one of their family \
+     aliases (`HeerIdDesc` / `HeerIdRecencyBiased` / \
+     `RanjIdDesc` / `RanjIdRecencyBiased`). Field \
+     `{field_name}` has type `{rust_type}` which is not a \
+     HeerId/RanjId-compatible type. Custom-PK newtypes \
+     declared via `djogi::primary_key!` are not yet \
+     accepted by this rule — the macro cannot prove a \
+     user-named ident implements `PrimaryKey` at parse \
+     time, and a wrong accept ships an unsafe redaction \
+     policy at runtime.",
             ),
         ));
     }
@@ -923,9 +923,9 @@ mod tests {
 
     fn field(input: proc_macro2::TokenStream) -> syn::Field {
         let parsed: syn::ItemStruct = syn::parse2(quote! {
-            struct Wrapper {
-                #input
-            }
+         struct Wrapper {
+          #input
+         }
         })
         .expect("failed to parse wrapper struct");
         match parsed.fields {
@@ -954,8 +954,8 @@ mod tests {
     #[test]
     fn parse_minimal_protected_attr() {
         let f = field(quote! {
-            #[field(protected(sensitivity = "none"))]
-            pub note: String,
+         #[field(protected(sensitivity = "none"))]
+         pub note: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         assert_eq!(spec.sensitivity, SensitivityLit::None);
@@ -968,13 +968,13 @@ mod tests {
     #[test]
     fn parse_full_protected_attr_round_trips_via_to_tokens() {
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GDPR Art. 6(1)(b)",
-                redaction = "mask",
-                retention = "extended"
-            ))]
-            pub email: String,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GDPR Art. 6(1)(b)",
+          redaction = "mask",
+          retention = "extended"
+         ))]
+         pub email: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         validate(&spec, &f).expect("valid");
@@ -993,7 +993,7 @@ mod tests {
     #[test]
     fn no_attribute_returns_none() {
         let f = field(quote! {
-            pub name: String,
+         pub name: String,
         });
         assert!(parse_from_field(&f).expect("parse").is_none());
     }
@@ -1001,8 +1001,8 @@ mod tests {
     #[test]
     fn rule_a_sensitivity_none_with_other_knob_rejects() {
         let f = field(quote! {
-            #[field(protected(sensitivity = "none", redaction = "mask"))]
-            pub note: String,
+         #[field(protected(sensitivity = "none", redaction = "mask"))]
+         pub note: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         let err = validate(&spec, &f).expect_err("rule (a)");
@@ -1018,13 +1018,13 @@ mod tests {
         // rule (a) treats the *presence* of the key as a contradiction
         // so the macro must reject this.
         let f = field(quote! {
-            #[field(protected(sensitivity = "none", redaction = "none"))]
-            pub note: String,
+         #[field(protected(sensitivity = "none", redaction = "none"))]
+         pub note: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         assert!(
             spec.redaction_span.is_some(),
-            "redaction_span must be populated when `redaction = ...` was written",
+            "redaction_span must be populated when `redaction =...` was written",
         );
         let err = validate(&spec, &f).expect_err("rule (a) presence check");
         let msg = err.to_string();
@@ -1037,13 +1037,13 @@ mod tests {
         // "standard"` — the previous value-comparison gate accepted
         // this silently. Span-presence rejects it correctly.
         let f = field(quote! {
-            #[field(protected(sensitivity = "none", retention = "standard"))]
-            pub note: String,
+         #[field(protected(sensitivity = "none", retention = "standard"))]
+         pub note: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         assert!(
             spec.retention_span.is_some(),
-            "retention_span must be populated when `retention = ...` was written",
+            "retention_span must be populated when `retention =...` was written",
         );
         let err = validate(&spec, &f).expect_err("rule (a) retention presence");
         assert!(err.to_string().contains("cannot be combined"));
@@ -1052,8 +1052,8 @@ mod tests {
     #[test]
     fn parse_from_field_rejects_bare_protected_path() {
         let f = field(quote! {
-            #[field(protected)]
-            pub note: String,
+         #[field(protected)]
+         pub note: String,
         });
         let err = parse_from_field(&f).expect_err("bare path form");
         let msg = err.to_string();
@@ -1063,8 +1063,8 @@ mod tests {
     #[test]
     fn parse_from_field_rejects_name_value_protected() {
         let f = field(quote! {
-            #[field(protected = "pii")]
-            pub note: String,
+         #[field(protected = "pii")]
+         pub note: String,
         });
         let err = parse_from_field(&f).expect_err("name-value form");
         let msg = err.to_string();
@@ -1074,8 +1074,8 @@ mod tests {
     #[test]
     fn rule_b_pii_without_rationale_rejects() {
         let f = field(quote! {
-            #[field(protected(sensitivity = "pii"))]
-            pub email: String,
+         #[field(protected(sensitivity = "pii"))]
+         pub email: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         let err = validate(&spec, &f).expect_err("rule (b)");
@@ -1085,8 +1085,8 @@ mod tests {
     #[test]
     fn rule_b_pii_with_empty_rationale_rejects() {
         let f = field(quote! {
-            #[field(protected(sensitivity = "pii", rationale = "   "))]
-            pub email: String,
+         #[field(protected(sensitivity = "pii", rationale = " "))]
+         pub email: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         let err = validate(&spec, &f).expect_err("rule (b) empty");
@@ -1096,12 +1096,12 @@ mod tests {
     #[test]
     fn rule_c_unknown_codec_rejects() {
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GDPR",
-                codec = "unknown_codec_v1"
-            ))]
-            pub email: String,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GDPR",
+          codec = "unknown_codec_v1"
+         ))]
+         pub email: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         let err = validate(&spec, &f).expect_err("rule (c)");
@@ -1114,12 +1114,12 @@ mod tests {
     #[test]
     fn rule_d_hash_id_on_string_rejects() {
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GDPR",
-                redaction = "hash_id"
-            ))]
-            pub email: String,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GDPR",
+          redaction = "hash_id"
+         ))]
+         pub email: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         let err = validate(&spec, &f).expect_err("rule (d)");
@@ -1129,12 +1129,12 @@ mod tests {
     #[test]
     fn rule_d_hash_id_on_heerid_passes() {
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GDPR",
-                redaction = "hash_id"
-            ))]
-            pub owner: HeerId,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GDPR",
+          redaction = "hash_id"
+         ))]
+         pub owner: HeerId,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         validate(&spec, &f).expect("HeerId is hash_id-compatible");
@@ -1143,12 +1143,12 @@ mod tests {
     #[test]
     fn rule_d_hash_id_on_optional_ranjid_passes() {
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GDPR",
-                redaction = "hash_id"
-            ))]
-            pub owner: Option<RanjId>,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GDPR",
+          redaction = "hash_id"
+         ))]
+         pub owner: Option<RanjId>,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         validate(&spec, &f).expect("Option<RanjId> is hash_id-compatible");
@@ -1157,8 +1157,8 @@ mod tests {
     #[test]
     fn missing_sensitivity_rejects() {
         let f = field(quote! {
-            #[field(protected(rationale = "no sensitivity given"))]
-            pub email: String,
+         #[field(protected(rationale = "no sensitivity given"))]
+         pub email: String,
         });
         let err = parse_from_field(&f).expect_err("requires sensitivity");
         assert!(err.to_string().contains("sensitivity"));
@@ -1167,8 +1167,8 @@ mod tests {
     #[test]
     fn unknown_protected_key_rejects() {
         let f = field(quote! {
-            #[field(protected(sensitivity = "none", flavour = "vanilla"))]
-            pub note: String,
+         #[field(protected(sensitivity = "none", flavour = "vanilla"))]
+         pub note: String,
         });
         let err = parse_from_field(&f).expect_err("unknown key");
         assert!(err.to_string().contains("flavour"));
@@ -1177,9 +1177,9 @@ mod tests {
     #[test]
     fn duplicate_protected_attr_rejects() {
         let f: syn::Field = parse_quote! {
-            #[field(protected(sensitivity = "none"))]
-            #[field(protected(sensitivity = "pii", rationale = "x"))]
-            pub note: String
+         #[field(protected(sensitivity = "none"))]
+         #[field(protected(sensitivity = "pii", rationale = "x"))]
+         pub note: String
         };
         let err = parse_from_field(&f).expect_err("duplicate");
         assert!(err.to_string().contains("duplicate"));
@@ -1224,7 +1224,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // GH #227 — `per_scope = { ... }` presentation-codec block
+    // GH #227 — `per_scope = {... }` presentation-codec block
     // parser tests.
     // The visage codegen pass consumes [`ProtectedSpec::per_scope`]
     // directly off the field's parsed spec; these tests cover the
@@ -1234,16 +1234,16 @@ mod tests {
     #[test]
     fn per_scope_single_infallible_codec_parses() {
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GH #227 — codec parser smoke test",
-                per_scope = {
-                    public = {
-                        presentation_codec = djogi::presentation::builtins::MaskString
-                    }
-                }
-            ))]
-            pub email: String,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GH #227 — codec parser smoke test",
+          per_scope = {
+           public = {
+            presentation_codec = djogi::presentation::builtins::MaskString
+           }
+          }
+         ))]
+         pub email: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         assert_eq!(spec.per_scope.len(), 1, "exactly one scope entry");
@@ -1269,16 +1269,16 @@ mod tests {
     #[test]
     fn per_scope_try_presentation_codec_marks_fallible() {
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GH #227 — fallible codec smoke test",
-                per_scope = {
-                    public = {
-                        try_presentation_codec = djogi::presentation::builtins::MaskString
-                    }
-                }
-            ))]
-            pub phone: String,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GH #227 — fallible codec smoke test",
+          per_scope = {
+           public = {
+            try_presentation_codec = djogi::presentation::builtins::MaskString
+           }
+          }
+         ))]
+         pub phone: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         assert_eq!(spec.per_scope.len(), 1);
@@ -1292,16 +1292,16 @@ mod tests {
     #[test]
     fn per_scope_rejects_unknown_codec_key() {
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GH #227 — unknown codec key",
-                per_scope = {
-                    public = {
-                        encrypted = djogi::presentation::builtins::MaskString
-                    }
-                }
-            ))]
-            pub email: String,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GH #227 — unknown codec key",
+          per_scope = {
+           public = {
+            encrypted = djogi::presentation::builtins::MaskString
+           }
+          }
+         ))]
+         pub email: String,
         });
         let err = parse_from_field(&f).expect_err("unknown codec key");
         let msg = err.to_string();
@@ -1315,23 +1315,23 @@ mod tests {
         // Two entries for the same `public` scope inside one
         // per_scope block — the second must surface as a parse-time
         // error so the diagnostic anchors at the duplicate ident.
-        // The `per_scope = { ... }` body parses as a Rust block, so
+        // The `per_scope = {... }` body parses as a Rust block, so
         // statements separate via `;` (not `,`); the trailing entry
         // omits the separator.
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GH #227 — duplicate scope",
-                per_scope = {
-                    public = {
-                        presentation_codec = djogi::presentation::builtins::MaskString
-                    };
-                    public = {
-                        try_presentation_codec = djogi::presentation::builtins::MaskString
-                    }
-                }
-            ))]
-            pub email: String,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GH #227 — duplicate scope",
+          per_scope = {
+           public = {
+            presentation_codec = djogi::presentation::builtins::MaskString
+           };
+           public = {
+            try_presentation_codec = djogi::presentation::builtins::MaskString
+           }
+          }
+         ))]
+         pub email: String,
         });
         let err = parse_from_field(&f).expect_err("duplicate scope");
         let msg = err.to_string();
@@ -1345,17 +1345,17 @@ mod tests {
         // codec block — the user writes the second key after a
         // semicolon to express "and also try_presentation_codec".
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GH #227 — both codec keys",
-                per_scope = {
-                    public = {
-                        presentation_codec = djogi::presentation::builtins::MaskString;
-                        try_presentation_codec = djogi::presentation::builtins::MaskString
-                    }
-                }
-            ))]
-            pub email: String,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GH #227 — both codec keys",
+          per_scope = {
+           public = {
+            presentation_codec = djogi::presentation::builtins::MaskString;
+            try_presentation_codec = djogi::presentation::builtins::MaskString
+           }
+          }
+         ))]
+         pub email: String,
         });
         let err = parse_from_field(&f).expect_err("both codec keys");
         let msg = err.to_string();
@@ -1368,15 +1368,15 @@ mod tests {
         // it up alongside the other "extra knob" spans so the
         // diagnostic anchors at the offending block.
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "none",
-                per_scope = {
-                    public = {
-                        presentation_codec = djogi::presentation::builtins::MaskString
-                    }
-                }
-            ))]
-            pub email: String,
+         #[field(protected(
+          sensitivity = "none",
+          per_scope = {
+           public = {
+            presentation_codec = djogi::presentation::builtins::MaskString
+           }
+          }
+         ))]
+         pub email: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         assert!(spec.per_scope_span.is_some());
@@ -1394,16 +1394,16 @@ mod tests {
         // the migration differ stays isolated from runtime codec
         // changes.
         let f = field(quote! {
-            #[field(protected(
-                sensitivity = "pii",
-                rationale = "GH #227 — descriptor isolation",
-                per_scope = {
-                    public = {
-                        presentation_codec = djogi::presentation::builtins::MaskString
-                    }
-                }
-            ))]
-            pub email: String,
+         #[field(protected(
+          sensitivity = "pii",
+          rationale = "GH #227 — descriptor isolation",
+          per_scope = {
+           public = {
+            presentation_codec = djogi::presentation::builtins::MaskString
+           }
+          }
+         ))]
+         pub email: String,
         });
         let spec = parse_from_field(&f).expect("parse").expect("present");
         let tokens = spec.to_tokens().to_string();

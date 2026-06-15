@@ -20,8 +20,8 @@ use djogi::prelude::*;
 #[model(table = "tokens_216_strict", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Token216Strict {
-    #[field(domain = "positive_id_range", strict_id_check)]
-    pub owner_id: ::djogi::types::HeerId,
+ #[field(domain = "positive_id_range", strict_id_check)]
+ pub owner_id: ::djogi::types::HeerId,
 }
 
 fn main() {}

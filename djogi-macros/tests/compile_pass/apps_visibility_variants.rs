@@ -5,14 +5,14 @@
 use djogi::prelude::*;
 
 djogi::apps! {
-    #[app(database = "main")]
-    pub(crate) struct Internal;
+ #[app(database = "main")]
+ pub(crate) struct Internal;
 
-    #[app(database = "main")]
-    struct _Hidden;
+ #[app(database = "main")]
+ struct _Hidden;
 }
 
 fn main() {
-    assert_eq!(<Internal as App>::LABEL, "internal");
-    assert_eq!(<_Hidden as App>::LABEL, "_hidden");
+ assert_eq!(<Internal as App>::LABEL, "internal");
+ assert_eq!(<_Hidden as App>::LABEL, "_hidden");
 }

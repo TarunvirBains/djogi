@@ -4,12 +4,12 @@
 //! # Wire format
 //! EWKB layout (little-endian, SRID 4326):
 //! ```text
-//! Offset  Size  Content
-//!      0     1  Endianness marker: 0x01 (little-endian)
-//!      1     4  Geometry type word: 0x20000002 (LineString | SRID flag), LE
-//!      5     4  SRID 4326, LE  → [0xE6, 0x10, 0x00, 0x00]
-//!      9     4  Number of points (u32 LE)
-//!     13  16*n  Points: lon f64 LE, lat f64 LE (16 bytes each)
+//! Offset Size Content
+//!  0  1 Endianness marker: 0x01 (little-endian)
+//!  1  4 Geometry type word: 0x20000002 (LineString | SRID flag), LE
+//!  5  4 SRID 4326, LE → [0xE6, 0x10, 0x00, 0x00]
+//!  9  4 Number of points (u32 LE)
+//!  13 16*n Points: lon f64 LE, lat f64 LE (16 bytes each)
 //! ```
 
 use std::fmt;
@@ -24,7 +24,7 @@ use crate::geo::{GeoError, GeoPoint, ewkb};
 /// `points.len() >= 2`. The constructor enforces this; deserialization
 /// re-validates so a value in memory always satisfies the constraint.
 /// # Display
-/// `Display` emits `LINESTRING(<lon> <lat>, ...)` per the OGC WKT convention
+/// `Display` emits `LINESTRING(<lon> <lat>,...)` per the OGC WKT convention
 /// (longitude first within each coordinate pair).
 /// # Serde
 /// Serializes as a JSON array of `{"lat": f64, "lon": f64}` objects
@@ -74,7 +74,7 @@ impl LineString {
 // ── Display (WKT) ─────────────────────────────────────────────────────────────
 
 impl fmt::Display for LineString {
-    /// Emit `LINESTRING(<lon> <lat>, <lon> <lat>, ...)` per OGC WKT.
+    /// Emit `LINESTRING(<lon> <lat>, <lon> <lat>,...)` per OGC WKT.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("LINESTRING(")?;
         for (i, p) in self.points.iter().enumerate() {

@@ -3,20 +3,20 @@
 // What this file pins:
 //
 // 1. `#[model(auditable)]` emits an `impl ::djogi::Auditable for #ident`
-//    block whose `created_by()` getter returns `Option<&str>` borrowed
-//    from the adopter-declared `created_by: Option<String>` field.
+//  block whose `created_by()` getter returns `Option<&str>` borrowed
+//  from the adopter-declared `created_by: Option<String>` field.
 // 2. The attribute does **not** inject the field — the adopter declares
-//    it explicitly (preserved across the surface pivot).
+//  it explicitly (preserved across the surface pivot).
 // 3. The `Auditable` trait is convention-sealed only; the macro routes
-//    the impl through the public `::djogi::Auditable` re-export, not
-//    through `::djogi::__private::*`.
+//  the impl through the public `::djogi::Auditable` re-export, not
+//  through `::djogi::__private::*`.
 // 4. The macro-emitted `__djogi_auditable_populate` helper runs from
-//    `Model::create` between `auto_set_tenant` and the user
-//    `before_create` hook. It captures
-//    `format!("{}", ctx.auth().user_id)` (Display, not Debug) when
-//    auth is present; leaves `created_by = None` when auth is absent
-//    (no warn-on-null); never clobbers a user-set
-//    value (`if self.created_by.is_none()` guard).
+//  `Model::create` between `auto_set_tenant` and the user
+//  `before_create` hook. It captures
+//  `format!("{}", ctx.auth().user_id)` (Display, not Debug) when
+//  auth is present; leaves `created_by = None` when auth is absent
+//  (no warn-on-null); never clobbers a user-set
+//  value (`if self.created_by.is_none()` guard).
 //
 // # Surface pivot
 //
@@ -121,7 +121,7 @@ async fn created_by_returns_none_when_unset(mut ctx: djogi::DjogiContext) {
         row.created_by(),
         None,
         "Auditable::created_by() must return None when the column is NULL — \
-         no warn-on-null",
+     no warn-on-null",
     );
 }
 
@@ -230,7 +230,7 @@ async fn created_by_null_without_auth(mut ctx: djogi::DjogiContext) {
         row.created_by(),
         None,
         "populator must leave `created_by = None` when ctx.auth() is None — \
-         framework-internal contexts (seeds, migrations) run without auth",
+     framework-internal contexts (seeds, migrations) run without auth",
     );
 
     // Verify no `tracing::warn!` was emitted by the populator path.
@@ -284,6 +284,6 @@ async fn created_by_user_override_wins(mut ctx: djogi::DjogiContext) {
         row.created_by(),
         Some("override"),
         "populator's `if self.created_by.is_none()` guard is load-bearing — \
-         a user-set value must never be clobbered",
+     a user-set value must never be clobbered",
     );
 }

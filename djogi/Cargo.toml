@@ -9,7 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Model-first web framework for Rust — web-framework-agnostic core; Axum integration opt-in via the `axum` feature flag"
 documentation = "https://docs.rs/djogi"
-readme = "../ReadMe.MD"
+readme = "../README.md"
 keywords = ["orm", "postgres", "web-framework", "model", "migrations"]
 categories = ["database", "web-programming", "asynchronous"]
 
@@ -59,13 +59,13 @@ spatial = []
 # (djogi#213, part of the djogi#170 typed-Postgres-coverage umbrella):
 #
 # - `std::net::IpAddr` → `INET` (via the always-on `postgres-types`
-#   `IpAddr` `ToSql` / `FromSql` impls; netmask defaults to /32 or /128 —
-#   the host-address case).
+# `IpAddr` `ToSql` / `FromSql` impls; netmask defaults to /32 or /128 —
+# the host-address case).
 # - `djogi::CidrAddr { addr, prefix }` → `CIDR` (typed newtype with a
-#   hand-rolled wire codec — no third-party crate dependency for the
-#   `cidr` family).
+# hand-rolled wire codec — no third-party crate dependency for the
+# `cidr` family).
 # - `djogi::MacAddr([u8; 6])` → `MACADDR` (typed newtype with a
-#   hand-rolled wire codec — no `eui48` / `mac_address` dep).
+# hand-rolled wire codec — no `eui48` / `mac_address` dep).
 #
 # All three column types ship behind this single feature flag. The
 # descriptor variants (`FieldSqlType::Inet` / `Cidr` / `Macaddr`) are
@@ -81,24 +81,24 @@ network = []
 # trgm — gates the pg_trgm typed surface on text columns:
 #
 # - `f.col().explicit_pg_predicate().trgm_similar_to(pattern)` — a WHERE-
-#   clause predicate that compiles to the `%` operator, which gin_trgm_ops /
-#   gist_trgm_ops index opclasses accelerate. Threshold is the session GUC
-#   `pg_trgm.similarity_threshold` (Postgres default 0.3); there is no per-
-#   call numeric-threshold argument. Postgres-specific — not evaluable in
-#   Punnu's in-memory cache. Reached via `.explicit_pg_predicate()`, the same
-#   pattern as `regex` / `iregex`.
+# clause predicate that compiles to the `%` operator, which gin_trgm_ops /
+# gist_trgm_ops index opclasses accelerate. Threshold is the session GUC
+# `pg_trgm.similarity_threshold` (Postgres default 0.3); there is no per-
+# call numeric-threshold argument. Postgres-specific — not evaluable in
+# Punnu's in-memory cache. Reached via `.explicit_pg_predicate()`, the same
+# pattern as `regex` / `iregex`.
 #
 # - `f.col().trgm_similarity(pattern)` — a scored `Expr<f64>` evaluating
-#   `similarity(col, $pattern)` per row. Compose with the `Expr<T>` comparison
-#   API inside `filter_expr` for a per-query numeric threshold (e.g.
-#   `.gte(Expr::literal(0.5_f64))`). NOT index-accelerated by the trgm
-#   opclasses. Using the score in `order_by` or as an `annotate` payload is a
-#   framework gap — generic-Expr integration on OrderExpr / AnnotationSlot
-#   does not yet exist; see docs/guide/trgm.md#limitations-and-future-work.
+# `similarity(col, $pattern)` per row. Compose with the `Expr<T>` comparison
+# API inside `filter_expr` for a per-query numeric threshold (e.g.
+# `.gte(Expr::literal(0.5_f64))`). NOT index-accelerated by the trgm
+# opclasses. Using the score in `order_by` or as an `annotate` payload is a
+# framework gap — generic-Expr integration on OrderExpr / AnnotationSlot
+# does not yet exist; see docs/guide/trgm.md#limitations-and-future-work.
 #
 # Requires `pg_trgm` installed in the target Postgres database:
 #
-#   CREATE EXTENSION IF NOT EXISTS pg_trgm;
+# CREATE EXTENSION IF NOT EXISTS pg_trgm;
 #
 # No extra Rust dependencies are pulled in — the trigram logic runs entirely
 # server-side via Postgres. The only adopter change required is enabling this
@@ -197,13 +197,13 @@ serial_test = { workspace = true }
 # This gate covers two djogi-runtime fixture categories:
 #
 # 1) raw-SQL bypass enforcement
-#   - prove `pool()`, `conn()`, `with_client`, and `raw_*` methods are
-#     unreachable from `DjogiContext` / `DjogiPool` without
-#     `RawAccessExt` / `RawPoolAccessExt`.
+# - prove `pool()`, `conn()`, `with_client`, and `raw_*` methods are
+#  unreachable from `DjogiContext` / `DjogiPool` without
+#  `RawAccessExt` / `RawPoolAccessExt`.
 #
 # 2) typed-query API misuse failures
-#   - prove typed-query misuse at use sites fails cleanly at compile-time
-#     (e.g. wrong builder chaining at projection/mode/aggregate boundaries).
+# - prove typed-query misuse at use sites fails cleanly at compile-time
+#  (e.g. wrong builder chaining at projection/mode/aggregate boundaries).
 #
 # Every fixture is a standalone rustc invocation against the djogi dylib.
 # Inputs are compile-fail `.rs` files with blessed `.stderr` snapshots
@@ -218,7 +218,7 @@ serial_test = { workspace = true }
 # alongside the djogi-macros lihaaf step (see
 # `.github/workflows/ci.yml`). Re-bless locally whenever the bypass
 # diagnostics change:
-#   `cargo lihaaf --manifest-path djogi/Cargo.toml --bless -j 4`
+# `cargo lihaaf --manifest-path djogi/Cargo.toml --bless -j 4`
 # then commit the updated `.stderr` files alongside the change.
 #
 # `features = ["testing"]` matches the feature set the historical
@@ -283,7 +283,7 @@ path = "../tests/pin/raw_ddl_pin.rs"
 harness = true
 
 # djogi#364 — security backstop pin: Postgres must reject a bare top-level
-# `BEGIN ATOMIC ... COMMIT`. The raw_ddl scanner now lets the BEGIN ATOMIC head
+# `BEGIN ATOMIC... COMMIT`. The raw_ddl scanner now lets the BEGIN ATOMIC head
 # through (it is a compound-statement delimiter, not transaction control), so
 # this asserts Postgres rejects the unterminated block before the trailing
 # COMMIT can bypass djogi's transaction-control bookkeeping.
@@ -736,13 +736,13 @@ harness = true
 
 # Adopter `#[field(check)]` (#105) and Decimal
 # structural CHECK projection (#188). Exercises:
-#   - Decimal round-trip across the rust_decimal representable range.
-#   - Raw-NUMERIC OOB rejection for scale > 28 and coefficient > 2^96 - 1.
-#   - Adopter `#[field(check = "...")]` accept/reject through the typed
-#     surface for fields without a type-derived CHECK (f64 / DOUBLE PRECISION).
-#   - Combined type-derived + adopter CHECK on a `u32` column: both clauses
-#     enforced via the projection layer's AND-merge into a single constraint.
-#   - Catalog assertions on the deployed constraint expressions (pg_get_constraintdef).
+# - Decimal round-trip across the rust_decimal representable range.
+# - Raw-NUMERIC OOB rejection for scale > 28 and coefficient > 2^96 - 1.
+# - Adopter `#[field(check = "...")]` accept/reject through the typed
+#  surface for fields without a type-derived CHECK (f64 / DOUBLE PRECISION).
+# - Combined type-derived + adopter CHECK on a `u32` column: both clauses
+#  enforced via the projection layer's AND-merge into a single constraint.
+# - Catalog assertions on the deployed constraint expressions (pg_get_constraintdef).
 # OOB-rejection cases need raw_execute because rust_decimal cannot construct
 # values outside its representable range and u32 cannot exceed u32::MAX.
 [[test]]
@@ -834,7 +834,7 @@ harness = true
 
 # Issue #168 — typed isolation-level surface.
 # Verifies `atomic_with(IsolationLevel::{ReadCommitted, RepeatableRead,
-# Serializable}, ...)` opens a Postgres transaction at the requested
+# Serializable},...)` opens a Postgres transaction at the requested
 # level, mirrors `atomic`'s commit/rollback semantics, rejects nested-
 # savepoint isolation requests with
 # `DjogiError::IsolationLevelOnNestedScope`, and composes with
@@ -907,12 +907,12 @@ required-features = ["testing"]
 # Internal test pinning the two DDL gaps closed by djogi#220 and djogi#221:
 #
 # - djogi#220: `#[field(type_change_using = "<sql expr>")]` USING clause for
-#   non-default-cast column type changes, plus the known-incompatible-pair
-#   heuristic that emits a `-- WARNING:` SQL comment naming the corrective
-#   attribute when the cast pair is on the incompatible list and no
-#   adopter USING is supplied.
+# non-default-cast column type changes, plus the known-incompatible-pair
+# heuristic that emits a `-- WARNING:` SQL comment naming the corrective
+# attribute when the cast pair is on the incompatible list and no
+# adopter USING is supplied.
 # - djogi#221: in-place `ALTER COLUMN … SET EXPRESSION AS …` lowering for
-#   generated-column expression changes (PG 17+ form; djogi targets PG 18+).
+# generated-column expression changes (PG 17+ form; djogi targets PG 18+).
 #
 # The fixture builds `AppliedSchema` literals directly via the public
 # `djogi::migrate::*` re-exports so it never needs a live database; the
@@ -982,7 +982,7 @@ harness = true
 # Pins the Cartesian product round trip end-to-end against a real database:
 # basic 2×2 product, empty-VALUES short-circuit, none()-queryset short-circuit,
 # count() product cardinality, model-side WHERE filter reduction,
-# exists() truth, and the .distinct() incompatible-state rejection.
+# exists() truth, and the.distinct() incompatible-state rejection.
 [[test]]
 name = "values_crossjoin_live"
 path = "../tests/integration/values_crossjoin_live.rs"
@@ -1237,10 +1237,10 @@ required-features = ["trgm"]
 #
 # Closes the gap: the projection-layer unit test constructs
 # `FieldDescriptor` manually and cannot detect drift in
-# `framework_field_descriptor` itself.  These
+# `framework_field_descriptor` itself. These
 # two fixtures exercise the full pipeline:
 #
-#   proc-macro → inventory → `project_from_inventory()` → assertion
+# proc-macro → inventory → `project_from_inventory()` → assertion
 #
 # Assertions are via `project_from_inventory()` (typed projection
 # surface) per the CLAUDE.md no-raw-escape-hatches rule.

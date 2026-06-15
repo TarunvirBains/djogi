@@ -1,15 +1,15 @@
 //! `djogi db` and `djogi docs` subcommand glue
 //! Three leaves:
 //! - `db reset` — drops, recreates, and replays committed migrations
-//!   for the application database. Triple-gated (localhost +
-//!   non-production profile + explicit `--yes`) per the brief.
+//! for the application database. Triple-gated (localhost +
+//! non-production profile + explicit `--yes`) per the brief.
 //! - `db seed` — runs operator-authored SQL fixtures from
-//!   `seeds/<database>/`. Localhost-or-`--allow-non-localhost`.
+//! `seeds/<database>/`. Localhost-or-`--allow-non-localhost`.
 //! - `docs` — renders per-model markdown reference pages from the
-//!   descriptor inventory.
-//!   All three flow through public APIs in `djogi::migrate` (or
-//!   `::config`) so integration tests can exercise the underlying logic
-//!   without spawning subprocesses.
+//! descriptor inventory.
+//! All three flow through public APIs in `djogi::migrate` (or
+//! `::config`) so integration tests can exercise the underlying logic
+//! without spawning subprocesses.
 //! # Exit codes
 //! Every subcommand in this module obeys a uniform three-value matrix
 //! so shell integrations can distinguish "operation refused" from
@@ -27,7 +27,7 @@
 //! CI script can treat any `2` as "operator must intervene; nothing
 //! happened" without distinguishing the two cases. `1` is reserved
 //! for "we tried; something broke" so a CI can retry. The matrix is
-//! also documented in `ReadMe.MD` and `docs/spec/configuration.md`
+//! also documented in `README.md` and `docs/spec/configuration.md`
 //! so the operator-facing surface stays in sync.
 
 use std::io::{BufRead, Write};
@@ -108,7 +108,7 @@ pub fn reset_cmd(
                 crate::identity::CliResolvedIdentity::Selected(id) => {
                     eprintln!(
                         "djogi db reset: refused — selected node {id} is not \
-                         permitted for destructive reset; use --single-node-dev"
+       permitted for destructive reset; use --single-node-dev"
                     );
                     return ExitCode::from(2);
                 }
@@ -132,7 +132,7 @@ pub fn reset_cmd(
                 // I/O error reading stdin — refuse rather than guess.
                 eprintln!(
                     "djogi db reset: failed to read confirmation; \
-                     refusing without an explicit `--yes`"
+      refusing without an explicit `--yes`"
                 );
                 return ExitCode::from(1);
             }
@@ -246,38 +246,38 @@ async fn run_reset(
 /// resolves to an audit DB URL and the pool can be constructed from
 /// that URL. Returns `None` (with a `tracing::warn!`) on any of:
 /// - URL resolution failure (no path component to splice; no
-///   `CRUD_LOG_URL` / `[database].crud_log_url` override; self-audit
-///   refusal because `database.url` already ends in `/crud_log`).
+/// `CRUD_LOG_URL` / `[database].crud_log_url` override; self-audit
+/// refusal because `database.url` already ends in `/crud_log`).
 /// - Syntactically invalid pool configuration or immediate pool
-///   construction failure.
-///   **Why best-effort.** The audit overlay is a defence-in-depth
-///   mechanism: an audit row exists so a future `db reset` cannot erase
-///   the migration history. Refusing the destructive `db reset` over an
-///   audit-side configuration glitch would invert the priority — the
-///   operator's recovery path (re-run reset to rebuild the DB) gets
-///   blocked by a sibling-DB outage. The runner's own audit-write loop
-///   already follows the same stance: a `Some(audit_pool)` whose first
-///   `INSERT` fails is logged + skipped without rolling back the
-///   committed app DDL (see [`super::audit`]'s
-///   `record_ddl_audit_for_plan` doc).
-///   **Operator visibility.** Degradation paths detected before replay
-///   print a warning to stderr and also emit a `tracing::warn!` with the
-///   offending URL (when known). A syntactically valid but unreachable
-///   audit DB may not fail until the runner's first audit insert; that
-///   later path follows the runner's existing best-effort tracing warning.
+/// construction failure.
+/// **Why best-effort.** The audit overlay is a defence-in-depth
+/// mechanism: an audit row exists so a future `db reset` cannot erase
+/// the migration history. Refusing the destructive `db reset` over an
+/// audit-side configuration glitch would invert the priority — the
+/// operator's recovery path (re-run reset to rebuild the DB) gets
+/// blocked by a sibling-DB outage. The runner's own audit-write loop
+/// already follows the same stance: a `Some(audit_pool)` whose first
+/// `INSERT` fails is logged + skipped without rolling back the
+/// committed app DDL (see [`super::audit`]'s
+/// `record_ddl_audit_for_plan` doc).
+/// **Operator visibility.** Degradation paths detected before replay
+/// print a warning to stderr and also emit a `tracing::warn!` with the
+/// offending URL (when known). A syntactically valid but unreachable
+/// audit DB may not fail until the runner's first audit insert; that
+/// later path follows the runner's existing best-effort tracing warning.
 async fn resolve_audit_pool_best_effort(config: &DjogiConfig) -> Option<deadpool_postgres::Pool> {
     let url = match djogi::migrate::resolve_audit_url(config) {
         Ok(u) => u,
         Err(e) => {
             eprintln!(
                 "djogi db reset: warning — audit-pool URL resolution failed; \
-                 proceeding without djogi_ddl_audit rows: {e}"
+     proceeding without djogi_ddl_audit rows: {e}"
             );
             tracing::warn!(
-                target: "djogi::cli::db::reset",
-                error = %e,
-                "audit-pool URL resolution failed; db reset will proceed without writing \
-                 djogi_ddl_audit rows"
+             target: "djogi::cli::db::reset",
+             error = %e,
+             "audit-pool URL resolution failed; db reset will proceed without writing \
+              djogi_ddl_audit rows"
             );
             return None;
         }
@@ -287,14 +287,14 @@ async fn resolve_audit_pool_best_effort(config: &DjogiConfig) -> Option<deadpool
         Err(e) => {
             eprintln!(
                 "djogi db reset: warning — audit-pool construction failed for `{url}`; \
-                 proceeding without djogi_ddl_audit rows: {e}"
+     proceeding without djogi_ddl_audit rows: {e}"
             );
             tracing::warn!(
-                target: "djogi::cli::db::reset",
-                audit_url = %url,
-                error = %e,
-                "audit-pool construction failed; db reset will proceed without writing \
-                 djogi_ddl_audit rows"
+             target: "djogi::cli::db::reset",
+             audit_url = %url,
+             error = %e,
+             "audit-pool construction failed; db reset will proceed without writing \
+              djogi_ddl_audit rows"
             );
             None
         }
@@ -309,7 +309,7 @@ fn print_reset_report(report: &ResetReport) {
         report.database
     );
     if report.replayed_versions.is_empty() {
-        println!("  no committed migrations replayed");
+        println!(" no committed migrations replayed");
         return;
     }
     for entry in &report.replayed_versions {
@@ -319,13 +319,13 @@ fn print_reset_report(report: &ResetReport) {
             entry.bucket.app.as_str()
         };
         println!(
-            "  replayed {database}/{app}: {version}",
+            " replayed {database}/{app}: {version}",
             database = entry.bucket.database,
             version = entry.version,
         );
     }
     println!(
-        "  total: {} migration(s) replayed",
+        " total: {} migration(s) replayed",
         report.replayed_versions.len()
     );
 }
@@ -339,9 +339,9 @@ fn interactive_confirm(database_url: &str) -> std::io::Result<bool> {
     writeln!(
         handle,
         "WARNING: db reset will DROP and RECREATE the application database \
-         pointed at by DATABASE_URL ({database_url}); every row will be lost. \
-         Migrations under `migrations/<database>/` will be replayed onto the \
-         freshly-created database. This action cannot be undone."
+   pointed at by DATABASE_URL ({database_url}); every row will be lost. \
+   Migrations under `migrations/<database>/` will be replayed onto the \
+   freshly-created database. This action cannot be undone."
     )?;
     write!(handle, "Type `yes` to confirm, anything else to abort: ")?;
     handle.flush()?;
@@ -447,7 +447,7 @@ async fn run_seed(
         Err(SeedError::LocalhostGate { database_url }) => {
             eprintln!(
                 "djogi db seed: refused — DATABASE_URL `{database_url}` is not \
-                 localhost; pass `--allow-non-localhost` to override"
+     localhost; pass `--allow-non-localhost` to override"
             );
             2
         }
@@ -476,7 +476,7 @@ fn print_seed_report(report: &SeedReport) {
                 "skipped (already applied)"
             }
         };
-        println!("  {label:>30}  {name}", name = entry.seed_name);
+        println!(" {label:>30} {name}", name = entry.seed_name);
     }
     println!("db seed: {applied} applied, {skipped} skipped");
 }
@@ -489,24 +489,24 @@ fn print_seed_report(report: &SeedReport) {
 /// [`djogi::testing::teardown_test_db`] could fire.
 /// Triple-gated identical to `db reset`:
 /// 1. **Localhost.** `DjogiConfig::database.url` MUST resolve to
-///    `127.0.0.1` / `localhost` / `[::1]`, unless the operator passed
-///    `--allow-non-localhost` to override (parity with `db seed`'s
-///    lighter gate — sometimes operators run a remote dev cluster).
+/// `127.0.0.1` / `localhost` / `[::1]`, unless the operator passed
+/// `--allow-non-localhost` to override (parity with `db seed`'s
+/// lighter gate — sometimes operators run a remote dev cluster).
 /// 2. **Non-production.** `Djogi.toml::profile` MUST NOT equal
-///    `"production"`. Mirrors `db reset`'s second gate so the same
-///    rules govern any operation that issues `DROP DATABASE`.
+/// `"production"`. Mirrors `db reset`'s second gate so the same
+/// rules govern any operation that issues `DROP DATABASE`.
 /// 3. **Confirmation.** `--yes` is required, unless `--dry-run` is
-///    passed. `--dry-run` lists candidates without dropping; no
-///    confirmation needed because no side effect occurs.
-///    `maintenance_database` defaults to `"postgres"` — the conventional
-///    administrative DB present on every cluster — and is spliced into
-///    `database.url`'s path component to produce the admin connection
-///    URL (the application database itself can't drop other databases on
-///    the same cluster).
-///    Exit codes match the `db` matrix at the top of this module: `0` on
-///    success, `1` on runtime / SQL / connect failure, `2` on gate
-///    refusal (non-localhost without override, production profile,
-///    missing `--yes`).
+/// passed. `--dry-run` lists candidates without dropping; no
+/// confirmation needed because no side effect occurs.
+/// `maintenance_database` defaults to `"postgres"` — the conventional
+/// administrative DB present on every cluster — and is spliced into
+/// `database.url`'s path component to produce the admin connection
+/// URL (the application database itself can't drop other databases on
+/// the same cluster).
+/// Exit codes match the `db` matrix at the top of this module: `0` on
+/// success, `1` on runtime / SQL / connect failure, `2` on gate
+/// refusal (non-localhost without override, production profile,
+/// missing `--yes`).
 pub fn cleanup_test_dbs_cmd(
     dry_run: bool,
     yes: bool,
@@ -531,7 +531,7 @@ pub fn cleanup_test_dbs_cmd(
     if !allow_non_localhost && !djogi::migrate::is_localhost_connection(&config.database.url) {
         eprintln!(
             "djogi db cleanup-test-dbs: refused — DATABASE_URL `{}` is not \
-             localhost; pass `--allow-non-localhost` to override",
+    localhost; pass `--allow-non-localhost` to override",
             config.database.url
         );
         return ExitCode::from(2);
@@ -543,7 +543,7 @@ pub fn cleanup_test_dbs_cmd(
     if config.profile == "production" {
         eprintln!(
             "djogi db cleanup-test-dbs: refused — Djogi.toml::profile = `{}`; \
-             refusing to run on a production profile",
+    refusing to run on a production profile",
             config.profile
         );
         return ExitCode::from(2);
@@ -554,7 +554,7 @@ pub fn cleanup_test_dbs_cmd(
     if !dry_run && !yes {
         eprintln!(
             "djogi db cleanup-test-dbs: refused — pass `--yes` to confirm, \
-             or `--dry-run` to list candidates without dropping"
+    or `--dry-run` to list candidates without dropping"
         );
         return ExitCode::from(2);
     }
@@ -583,7 +583,7 @@ pub fn cleanup_test_dbs_cmd(
         None => {
             eprintln!(
                 "djogi db cleanup-test-dbs: malformed application URL `{}` — \
-                 cannot derive maintenance connection URL",
+     cannot derive maintenance connection URL",
                 config.database.url
             );
             return ExitCode::from(1);
@@ -612,7 +612,7 @@ async fn run_cleanup_test_dbs(admin_url: &str, dry_run: bool) -> i32 {
                         candidates.len()
                     );
                     for name in &candidates {
-                        println!("  {name}");
+                        println!(" {name}");
                     }
                 }
                 0
@@ -633,7 +633,7 @@ async fn run_cleanup_test_dbs(admin_url: &str, dry_run: bool) -> i32 {
                         dropped.len()
                     );
                     for name in &dropped {
-                        println!("  {name}");
+                        println!(" {name}");
                     }
                 }
                 0
@@ -793,8 +793,8 @@ mod tests {
     fn reset_cmd_refuses_when_identity_is_missing() {
         let work = temp_workspace("reset_remote");
         let toml = "[database]\nurl = \"postgres://prod.example.com/main\"\n\
-                    max_connections = 1\ndev_mode = false\n\
-                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let exit = without_database_url(|| {
             reset_cmd(
@@ -821,9 +821,9 @@ mod tests {
     fn reset_cmd_refuses_single_node_dev_in_production_profile() {
         let work = temp_workspace("reset_prod");
         let toml = "profile = \"production\"\n\
-                    [database]\nurl = \"postgres://localhost/main\"\n\
-                    max_connections = 1\ndev_mode = false\n\
-                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+     [database]\nurl = \"postgres://localhost/main\"\n\
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let exit = without_database_url(|| {
             reset_cmd(
@@ -852,8 +852,8 @@ mod tests {
     fn cleanup_test_dbs_refuses_non_localhost_without_override() {
         let work = temp_workspace("cleanup_remote");
         let toml = "[database]\nurl = \"postgres://prod.example.com/main\"\n\
-                    max_connections = 1\ndev_mode = false\n\
-                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         // `--yes` set, `--allow-non-localhost` NOT set, `--dry-run`
         // NOT set — localhost gate must refuse first.
@@ -880,9 +880,9 @@ mod tests {
     fn cleanup_test_dbs_refuses_on_production_profile() {
         let work = temp_workspace("cleanup_prod");
         let toml = "profile = \"production\"\n\
-                    [database]\nurl = \"postgres://localhost/main\"\n\
-                    max_connections = 1\ndev_mode = false\n\
-                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+     [database]\nurl = \"postgres://localhost/main\"\n\
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let exit = without_database_url(|| {
             cleanup_test_dbs_cmd(
@@ -903,8 +903,8 @@ mod tests {
     fn cleanup_test_dbs_refuses_without_yes_or_dry_run() {
         let work = temp_workspace("cleanup_no_yes");
         let toml = "[database]\nurl = \"postgres://localhost/main\"\n\
-                    max_connections = 1\ndev_mode = false\n\
-                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let exit = without_database_url(|| {
             cleanup_test_dbs_cmd(
@@ -931,8 +931,8 @@ mod tests {
     fn cleanup_test_dbs_rejects_invalid_maintenance_database() {
         let work = temp_workspace("cleanup_bad_maint");
         let toml = "[database]\nurl = \"postgres://localhost/main\"\n\
-                    max_connections = 1\ndev_mode = false\n\
-                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+     max_connections = 1\ndev_mode = false\n\
+     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
         fs::write(work.join("Djogi.toml"), toml).unwrap();
         let exit = without_database_url(|| {
             cleanup_test_dbs_cmd(

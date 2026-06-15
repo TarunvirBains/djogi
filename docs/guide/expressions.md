@@ -2,7 +2,7 @@
 
 # Expressions
 
-Phase 4's expression IR: typed `Expr<T>`, arithmetic, field-vs-field,
+'s expression IR: typed `Expr<T>`, arithmetic, field-vs-field,
 CASE/WHEN, correlated subqueries, aggregates, and annotations. One IR
 feeds filters, SET assignments, and aggregate terminals — no parallel
 SQL assembler.
@@ -16,7 +16,7 @@ etc. Operators on `Expr<T>` compose while preserving `T`:
 - `Expr<T> + Expr<T>` (and `-`, `*`, `/`) for `T: Numeric`
 - `expr.eq(other)` / `.gt` / `.lt` / etc. → `Expr<bool>`
 - `case().when(cond, then_val).otherwise(else_val)` — typestate
-  builder that terminates at `.otherwise()` into `Expr<T>`
+ builder that terminates at `.otherwise()` into `Expr<T>`
 
 Field handles lift into expressions via `.as_expr()`:
 
@@ -38,9 +38,9 @@ reference other columns:
 ```rust
 // SET view_count = view_count + 1
 Post::objects()
-    .filter(|f| f.id().eq(post_id))
-    .update(|f| f.view_count().set(f.view_count().as_expr() + Expr::from(1i64)))
-    .execute(ctx).await?;
+  .filter(|f| f.id().eq(post_id))
+  .update(|f| f.view_count().set(f.view_count().as_expr() + Expr::from(1i64)))
+  .execute(ctx).await?;
 ```
 
 ## Aggregates + annotations
@@ -53,8 +53,8 @@ Terminal:
 
 ```rust
 let total: i64 = Order::objects()
-    .aggregate(|f| f.amount().sum())
-    .fetch_one(ctx).await?;
+  .aggregate(|f| f.amount().sum())
+  .fetch_one(ctx).await?;
 ```
 
 Annotations attach per-row aggregate columns via `QuerySet::annotate`
@@ -63,13 +63,13 @@ and return a typed tuple:
 ```rust
 // Vec<(User, i64)> — each user + their order count
 let rows: Vec<(User, i64)> = User::objects()
-    .annotate(|f| f.orders().count())
-    .fetch_all(ctx).await?;
+  .annotate(|f| f.orders().count())
+  .fetch_all(ctx).await?;
 
 // Arity 2+: nested tuples
 let rows: Vec<(User, (i64, Decimal))> = User::objects()
-    .annotate(|f| (f.orders().count(), f.orders().sum(|o| o.amount())))
-    .fetch_all(ctx).await?;
+  .annotate(|f| (f.orders().count(), f.orders().sum(|o| o.amount())))
+  .fetch_all(ctx).await?;
 ```
 
 `IntoAggregateTuple` is sealed; implementations exist for arity 1
@@ -84,16 +84,16 @@ subquery.
 ```rust
 // Posts whose author has ≥ 10 followers.
 let subquery = Author::objects()
-    .filter_expr(|f| {
-        f.id()
-            .as_expr()
-            .eq(PostOuterRef::author_id().as_qualified_expr())
-    })
-    .filter(|f| f.follower_count().gte(10i64));
+  .filter_expr(|f| {
+    f.id()
+      .as_expr()
+      .eq(PostOuterRef::author_id().as_qualified_expr())
+  })
+  .filter(|f| f.follower_count().gte(10i64));
 
 Post::objects()
-    .filter_expr(|_| Exists::new(subquery).as_expr())
-    .fetch_all(ctx).await?;
+  .filter_expr(|_| Exists::new(subquery).as_expr())
+  .fetch_all(ctx).await?;
 ```
 
 `PostOuterRef::author_id()` is the macro-emitted helper. It returns a
@@ -108,11 +108,11 @@ explicit exposed column:
 use djogi::prelude::*;
 
 let gold_authors = AuthorPublic::filter(|a| a.tier().eq("gold".to_string()))
-    .selecting(AuthorPublic::id())?;
+  .selecting(AuthorPublic::id())?;
 
 Post::objects()
-    .filter(|f| f.author_id().in_visage(gold_authors))
-    .fetch_all(&mut ctx).await?;
+  .filter(|f| f.author_id().in_visage(gold_authors))
+  .fetch_all(&mut ctx).await?;
 ```
 
 `EXISTS` over a visage queryset uses `VisageExists` and keeps the same
@@ -122,17 +122,17 @@ outer-ref pattern:
 use djogi::prelude::*;
 
 let has_published = VisageExists::new(PostPublic::filter(|p| {
-    Q::Expression(p.published().as_expr().eq(Expr::literal(true)))
-        & Q::Expression(
-            p.author_id()
-                .as_expr()
-                .eq(AuthorOuterRef::id().as_qualified_expr()),
-        )
+  Q::Expression(p.published().as_expr().eq(Expr::literal(true)))
+    & Q::Expression(
+      p.author_id()
+        .as_expr()
+        .eq(AuthorOuterRef::id().as_qualified_expr()),
+    )
 }))?;
 
 Author::objects()
-    .filter(|_| has_published)
-    .fetch_all(&mut ctx).await?;
+  .filter(|_| has_published)
+  .fetch_all(&mut ctx).await?;
 ```
 
 `selecting(...)` and `VisageExists::new(...)` are both fallible: they reject
@@ -145,12 +145,12 @@ silently.
 ```rust
 // SET status = CASE WHEN balance < 0 THEN 'overdrawn' ELSE 'ok' END
 Account::objects()
-    .update(|f| f.status().set(
-        case()
-            .when(f.balance().as_expr().lt(Expr::from(0i64)), Expr::from("overdrawn".to_string()))
-            .otherwise(Expr::from("ok".to_string()))
-    ))
-    .execute(ctx).await?;
+  .update(|f| f.status().set(
+    case()
+      .when(f.balance().as_expr().lt(Expr::from(0i64)), Expr::from("overdrawn".to_string()))
+      .otherwise(Expr::from("ok".to_string()))
+  ))
+  .execute(ctx).await?;
 ```
 
 The `CaseBuilder<V>` typestate rejects `.otherwise()` before any

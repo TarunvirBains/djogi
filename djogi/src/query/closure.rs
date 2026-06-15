@@ -17,104 +17,104 @@
 //! # SQL shape
 //! ```sql
 //! WITH inserted AS (
-//!     INSERT INTO <closure_table> (
-//!         <source_col>, <ancestor_col>, <depth_col>, <path_count_col>
-//!     )
-//!     WITH RECURSIVE __djogi_closure AS (
-//!         -- anchor: every source row is its own ancestor at depth 0
-//!         SELECT s.id AS source_id, s.id AS ancestor_id, 0 AS depth,
-//!                ARRAY[]::text[] AS path
-//!         FROM <source_table> s
-//!         WHERE <root_predicate or TRUE>
-//!         UNION ALL
-//!         -- recursive: walk every self-FK edge inside ONE recursive
-//!         -- term. The closure CTE only carries
-//!         -- `(source_id, ancestor_id, depth, path)` — it does not
-//!         -- project T's self-FK columns — so we double-join the
-//!         -- source table: first to resolve the current ancestor row
-//!         -- (`a`) by `closure.ancestor_id`, then to follow each edge
-//!         -- column up to its parent row (`p`). A `CROSS JOIN LATERAL
-//!         -- VALUES (...)` enumerates every self-FK edge of `T` in
-//!         -- one fan-out so multi-edge models still satisfy
-//!         -- Postgres's "exactly one self-reference" rule for
-//!         -- recursive terms.
-//!         SELECT closure.source_id, p.id, closure.depth + 1,
-//!                closure.path || ARRAY[step.label]
-//!         FROM __djogi_closure closure
-//!         JOIN <source_table> a ON a.id = closure.ancestor_id
-//!         CROSS JOIN LATERAL (VALUES
-//!             (a.<edge_col_1>, '<edge_col_1>'::text),
-//!             (a.<edge_col_2>, '<edge_col_2>'::text),
-//!             ...
-//!         ) AS step(pid, label)
-//!         JOIN <source_table> p ON p.id = step.pid
-//!         WHERE closure.depth < <max_depth>?
-//!     ) CYCLE source_id, ancestor_id SET is_cycle USING cycle_path
-//!     SELECT
-//!         source_id, ancestor_id, depth,
-//!         COUNT(*) AS path_count
-//!     FROM __djogi_closure
-//!     WHERE NOT is_cycle
-//!     GROUP BY source_id, ancestor_id, depth
-//!     ON CONFLICT (<source_col>, <ancestor_col>, <depth_col>)
-//!     DO UPDATE SET <path_count_col> = EXCLUDED.<path_count_col>
-//!     RETURNING <source_col>
+//!  INSERT INTO <closure_table> (
+//!   <source_col>, <ancestor_col>, <depth_col>, <path_count_col>
+//!  )
+//!  WITH RECURSIVE __djogi_closure AS (
+//!   -- anchor: every source row is its own ancestor at depth 0
+//!   SELECT s.id AS source_id, s.id AS ancestor_id, 0 AS depth,
+//!    ARRAY[]::text[] AS path
+//!   FROM <source_table> s
+//!   WHERE <root_predicate or TRUE>
+//!   UNION ALL
+//!   -- recursive: walk every self-FK edge inside ONE recursive
+//!   -- term. The closure CTE only carries
+//!   -- `(source_id, ancestor_id, depth, path)` — it does not
+//!   -- project T's self-FK columns — so we double-join the
+//!   -- source table: first to resolve the current ancestor row
+//!   -- (`a`) by `closure.ancestor_id`, then to follow each edge
+//!   -- column up to its parent row (`p`). A `CROSS JOIN LATERAL
+//!   -- VALUES (...)` enumerates every self-FK edge of `T` in
+//!   -- one fan-out so multi-edge models still satisfy
+//!   -- Postgres's "exactly one self-reference" rule for
+//!   -- recursive terms.
+//!   SELECT closure.source_id, p.id, closure.depth + 1,
+//!    closure.path || ARRAY[step.label]
+//!   FROM __djogi_closure closure
+//!   JOIN <source_table> a ON a.id = closure.ancestor_id
+//!   CROSS JOIN LATERAL (VALUES
+//!    (a.<edge_col_1>, '<edge_col_1>'::text),
+//!    (a.<edge_col_2>, '<edge_col_2>'::text),
+//!   ...
+//!   ) AS step(pid, label)
+//!   JOIN <source_table> p ON p.id = step.pid
+//!   WHERE closure.depth < <max_depth>?
+//!  ) CYCLE source_id, ancestor_id SET is_cycle USING cycle_path
+//!  SELECT
+//!   source_id, ancestor_id, depth,
+//!   COUNT(*) AS path_count
+//!  FROM __djogi_closure
+//!  WHERE NOT is_cycle
+//!  GROUP BY source_id, ancestor_id, depth
+//!  ON CONFLICT (<source_col>, <ancestor_col>, <depth_col>)
+//!  DO UPDATE SET <path_count_col> = EXCLUDED.<path_count_col>
+//!  RETURNING <source_col>
 //! )
 //! SELECT COUNT(*) AS rows_written,
-//!        COUNT(DISTINCT <source_col>) AS sources_visited
+//!  COUNT(DISTINCT <source_col>) AS sources_visited
 //! FROM inserted;
 //! ```
 //! ## Design notes baked into the SQL
 //! - **Direction is ANCESTORS.** The closure table walks *up* from each
-//!   source row to its transitive ancestors. The named driver for this
-//!   helper is kinship / pedigree analysis, where the "every ancestor of
-//!   every source row" frame is the natural shape.
+//! source row to its transitive ancestors. The named driver for this
+//! helper is kinship / pedigree analysis, where the "every ancestor of
+//! every source row" frame is the natural shape.
 //! - **Single recursive reference + `CROSS JOIN LATERAL VALUES`.**
-//!   Postgres rejects recursive CTEs whose recursive term references
-//!   the CTE name more than once. Multi-edge models (e.g.
-//!   `mother_id` + `father_id` on an animal model) therefore enumerate
-//!   self-FK edges via a `CROSS JOIN LATERAL (VALUES …) AS step(pid,
+//! Postgres rejects recursive CTEs whose recursive term references
+//! the CTE name more than once. Multi-edge models (e.g.
+//! `mother_id` + `father_id` on an animal model) therefore enumerate
+//! self-FK edges via a `CROSS JOIN LATERAL (VALUES …) AS step(pid,
 //! label)` clause that fans every edge column out into its own
-//!   row pair — every distinct edge-sequence path still surfaces as
-//!   its own CTE row, then the outer `GROUP BY` collapses
-//!   `(source, ancestor, depth)` triples while surfacing the count as
-//!   `path_count`. This preserves Wright-style multiplicity: an
-//!   ancestor reachable by two distinct edge sequences shows up with
-//!   `path_count = 2`. NULL-valued edge columns get filtered by the
-//!   inner `JOIN T p ON p.id = step.pid` (NULL = anything is unknown).
+//! row pair — every distinct edge-sequence path still surfaces as
+//! its own CTE row, then the outer `GROUP BY` collapses
+//! `(source, ancestor, depth)` triples while surfacing the count as
+//! `path_count`. This preserves Wright-style multiplicity: an
+//! ancestor reachable by two distinct edge sequences shows up with
+//! `path_count = 2`. NULL-valued edge columns get filtered by the
+//! inner `JOIN T p ON p.id = step.pid` (NULL = anything is unknown).
 //! - **Cycle column is `cycle_path`** (not `path`) so it does not
-//!   collide with our user-visible edge-name accumulator.
+//! collide with our user-visible edge-name accumulator.
 //! - **`ON CONFLICT … DO UPDATE` replaces, it does not add.** Each
-//!   helper invocation walks the current graph from scratch via the
-//!   recursive CTE, so EXCLUDED's `path_count` is already the correct
-//!   total of distinct paths between every `(source, ancestor, depth)`
-//!   triple in the present graph state. The pre-existing closure row's
-//!   value is the previous (possibly stale) total; replacing it with
-//!   EXCLUDED keeps the closure aligned with whatever lives in the
-//!   source table now. Re-running the helper twice in a row is therefore
-//!   idempotent — the second run computes the same totals and writes
-//!   them on top of themselves. An `additive` merge would double on
-//!   straight rerun and over-count on every incremental rerun (because
-//!   the recursive walk re-derives existing paths on top of new ones),
-//!   so it is wrong on every callsite that matters.
+//! helper invocation walks the current graph from scratch via the
+//! recursive CTE, so EXCLUDED's `path_count` is already the correct
+//! total of distinct paths between every `(source, ancestor, depth)`
+//! triple in the present graph state. The pre-existing closure row's
+//! value is the previous (possibly stale) total; replacing it with
+//! EXCLUDED keeps the closure aligned with whatever lives in the
+//! source table now. Re-running the helper twice in a row is therefore
+//! idempotent — the second run computes the same totals and writes
+//! them on top of themselves. An `additive` merge would double on
+//! straight rerun and over-count on every incremental rerun (because
+//! the recursive walk re-derives existing paths on top of new ones),
+//! so it is wrong on every callsite that matters.
 //! - **`RETURNING <source_col>`** plus the outer `COUNT` /
-//!   `COUNT(DISTINCT)` lets the helper report both `rows_written`
-//!   (unique `(source, ancestor, depth)` triples touched) and
-//!   `sources_visited` (distinct source rows whose ancestors were
-//!   walked) in a single round trip — no second query against the
-//!   closure table.
+//! `COUNT(DISTINCT)` lets the helper report both `rows_written`
+//! (unique `(source, ancestor, depth)` triples touched) and
+//! `sources_visited` (distinct source rows whose ancestors were
+//! walked) in a single round trip — no second query against the
+//! closure table.
 //! ## Required closure-table schema
 //! Adopters must create the closure table with at least:
 //! ```sql
 //! CREATE TABLE <closure_table> (
-//!     id           BIGINT PRIMARY KEY DEFAULT heerid_next(),
-//!     <source>     <PK type> NOT NULL REFERENCES <source_table>(id) ON DELETE CASCADE,
-//!     <ancestor>   <PK type> NOT NULL REFERENCES <source_table>(id) ON DELETE CASCADE,
-//!     <depth>      INTEGER NOT NULL,
-//!     <path_count> BIGINT NOT NULL,
-//!     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-//!     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-//!     UNIQUE (<source>, <ancestor>, <depth>)
+//!  id   BIGINT PRIMARY KEY DEFAULT heerid_next(),
+//!  <source>  <PK type> NOT NULL REFERENCES <source_table>(id) ON DELETE CASCADE,
+//!  <ancestor> <PK type> NOT NULL REFERENCES <source_table>(id) ON DELETE CASCADE,
+//!  <depth>  INTEGER NOT NULL,
+//!  <path_count> BIGINT NOT NULL,
+//!  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+//!  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+//!  UNIQUE (<source>, <ancestor>, <depth>)
 //! );
 //! ```
 //! `<path_count>` does not need a column-level `DEFAULT` — every row
@@ -405,18 +405,18 @@ pub(crate) fn validate_closure_metadata_idents<C: ClosureModel>() -> Result<(), 
 /// database.
 /// # Bind ordering
 /// 1. `roots` ids (when `Some(ids)` with non-empty `ids`)
-///    one bind slot per id, in caller-supplied order.
+/// one bind slot per id, in caller-supplied order.
 /// 2. `max_depth` — one bind slot total, attached to the WHERE on
-///    the consolidated single recursive SELECT. Bound as `i32` to
-///    match `closure.depth` (INTEGER / int4); `tokio_postgres`
-///    requires exact bind/column type match. Edge count does not
-///    affect this — every self-FK edge fans out through one
-///    `CROSS JOIN LATERAL VALUES` clause, not per-edge UNION ALL
-///    branches.
-///    `tokio_postgres` re-receives bind values in the order the helper
-///    pushes them; downstream readers should not assume `$1` is always
-///    `max_depth` etc. The bind count returned by
-///    [`SqlAccumulator::bind_count`] is the authoritative ordering.
+/// the consolidated single recursive SELECT. Bound as `i32` to
+/// match `closure.depth` (INTEGER / int4); `tokio_postgres`
+/// requires exact bind/column type match. Edge count does not
+/// affect this — every self-FK edge fans out through one
+/// `CROSS JOIN LATERAL VALUES` clause, not per-edge UNION ALL
+/// branches.
+/// `tokio_postgres` re-receives bind values in the order the helper
+/// pushes them; downstream readers should not assume `$1` is always
+/// `max_depth` etc. The bind count returned by
+/// [`SqlAccumulator::bind_count`] is the authoritative ordering.
 pub(crate) fn build_materialize_closure_sql<T, C>(
     opts: MaterializeClosureOptions<T::Pk>,
 ) -> SqlAccumulator
@@ -427,7 +427,7 @@ where
 {
     let mut acc = SqlAccumulator::new("");
 
-    // ── Outer CTE wrap: WITH inserted AS (INSERT ... RETURNING ...) ───
+    // ── Outer CTE wrap: WITH inserted AS (INSERT... RETURNING...) ───
     // Wrapping the INSERT inside a CTE lets the outer SELECT compute
     // both `rows_written` and `sources_visited` from the RETURNING
     // result set in one round trip. Without the wrap we would have
@@ -459,7 +459,7 @@ where
     // self-pairs at depth 0 (Wright-style: `path_count = 1` for the
     // identity path). The anchor's `WHERE` either selects every
     // source row (`TRUE`) or restricts to the explicit `roots` Vec
-    // via `s.id IN ($a, $b, ...)`.
+    // via `s.id IN ($a, $b,...)`.
     acc.push_sql("SELECT s.id, s.id, 0, ARRAY[]::text[] FROM ");
     acc.push_sql(T::table_name());
     acc.push_sql(" s WHERE ");
@@ -474,7 +474,7 @@ where
             acc.push_sql("TRUE");
         }
         Some(ids) => {
-            // Bounded mode — `s.id IN ($n, $n+1, ...)`. Empty Vec was
+            // Bounded mode — `s.id IN ($n, $n+1,...)`. Empty Vec was
             // short-circuited in `materialize_closure_impl` before
             // reaching the SQL emitter, so we always emit at least
             // one bind slot here.
@@ -501,11 +501,11 @@ where
     // (rejecting both "non-recursive term contains a recursive
     // reference" and "recursive reference must not appear more than
     // once" forms). For multi-edge models we therefore enumerate
-    // edges via `CROSS JOIN LATERAL (VALUES ...) AS step(pid, label)`
+    // edges via `CROSS JOIN LATERAL (VALUES...) AS step(pid, label)`
     // and join `p` against `step.pid` once — fanning out one row per
     // (closure-row, edge) pair while keeping the SELF-reference
     // count at exactly 1. NULL-valued edge columns get filtered out
-    // by the inner `JOIN T p ON p.id = step.pid` since `NULL = ...`
+    // by the inner `JOIN T p ON p.id = step.pid` since `NULL =...`
     // is unknown. Multi-path multiplicity is preserved because each
     // edge that fires emits its own row, which the outer
     // `GROUP BY (source, ancestor, depth)` collapses to
@@ -513,7 +513,7 @@ where
     let edges: Vec<&'static str> = T::descriptor().self_fk_columns().collect();
     acc.push_sql(
         " UNION ALL SELECT closure.source_id, p.id, closure.depth + 1, \
-         closure.path || ARRAY[step.label] FROM __djogi_closure closure JOIN ",
+   closure.path || ARRAY[step.label] FROM __djogi_closure closure JOIN ",
     );
     acc.push_sql(T::table_name());
     acc.push_sql(" a ON a.id = closure.ancestor_id CROSS JOIN LATERAL (VALUES ");
@@ -569,8 +569,8 @@ where
     // multiplicity information.
     acc.push_sql(
         " SELECT source_id, ancestor_id, depth, COUNT(*) AS path_count \
-         FROM __djogi_closure WHERE NOT is_cycle \
-         GROUP BY source_id, ancestor_id, depth",
+   FROM __djogi_closure WHERE NOT is_cycle \
+   GROUP BY source_id, ancestor_id, depth",
     );
 
     // ── ON CONFLICT (...) DO UPDATE SET <col> = EXCLUDED.<col> ──────────
@@ -1030,11 +1030,11 @@ mod tests {
         let acc = build_materialize_closure_sql::<MiniTree, MiniClosure>(opts_default());
         let sql = acc.sql();
         assert!(
-            sql.contains(
-                "ON CONFLICT (mini_tree_id, ancestor_id, depth) DO UPDATE SET path_count = EXCLUDED.path_count"
-            ),
-            "ON CONFLICT clause must replace path_count from EXCLUDED: {sql}"
-        );
+   sql.contains(
+    "ON CONFLICT (mini_tree_id, ancestor_id, depth) DO UPDATE SET path_count = EXCLUDED.path_count"
+   ),
+   "ON CONFLICT clause must replace path_count from EXCLUDED: {sql}"
+  );
         assert!(
             !sql.contains("mini_tree_closures.path_count + EXCLUDED.path_count"),
             "additive merge must not appear (would double on rerun): {sql}"
@@ -1043,7 +1043,7 @@ mod tests {
 
     #[test]
     fn returning_source_col_drives_outer_count() {
-        // The CTE wrap pattern: INSERT ... RETURNING <source_col>
+        // The CTE wrap pattern: INSERT... RETURNING <source_col>
         // feeds a CTE named `inserted`; the outer SELECT computes
         // (COUNT(*), COUNT(DISTINCT <source_col>)) in a single round
         // trip. Verifies both halves are present.

@@ -1,23 +1,23 @@
 //! `lineage` — matrilineal descent from a named matriarch via raw
-//! recursive-CTE SQL **or** the typed Cluster B builder.
+//! recursive-CTE SQL **or** the typed builder.
 //!
 //! ## What this demonstrates
 //!
 //! The typed builder is the preferred path. The legacy raw path still
 //! exists in the current CLI so adopters can compare behavior while
-//! Phase 8.5 removes non-`djqry` raw SQL from the demo surface:
+//! removes non-`djqry` raw SQL from the demo surface:
 //!
 //! ### Legacy mode — raw recursive-CTE SQL via `ctx.raw_rows`
 //!
 //! Single-edge matrilineal descent rendered via raw SQL. This is
 //! current-state raw-SQL debt, not the canonical adopter path:
 //! matriarchal society biology is naturally a single-edge walk
-//! through `mother_id`, and the typed builder below is the Phase 8.5
+//! through `mother_id`, and the typed builder below is the
 //! end state for that shape.
 //!
 //! ### Typed mode — `Elephant::objects().tree_descendants(ElephantRelated::mother(), id)`
 //!
-//! Pass `--typed` to use Phase 8-Zero Cluster B's typed tree-walk
+//! Pass `--typed` to use 's typed tree-walk
 //! builder. Compose with `--order=bfs|dfs` to lower into
 //! `SEARCH BREADTH FIRST BY estimated_birth_year` /
 //! `SEARCH DEPTH FIRST BY estimated_birth_year` on the recursive CTE
@@ -44,7 +44,7 @@
 //! ## Output formats
 //!
 //! - `json` (default): a flat list of
-//!   `{depth, id, name, mother_id, mother_name, birth_year, sex}`.
+//! `{depth, id, name, mother_id, mother_name, birth_year, sex}`.
 //! - `mermaid`: `graph TD` with one edge per mother->child relation.
 //! - `markdown`: the Mermaid block followed by an attribute table.
 
@@ -62,7 +62,7 @@ use crate::output::{self, Format};
 
 /// Traversal order for `lineage --typed` mode. Maps onto the
 /// framework's `RecursiveQuerySet::search_breadth_first_by` /
-/// `search_depth_first_by` builders (Phase 8-Zero Cluster B), which
+/// `search_depth_first_by` builders ( ), which
 /// emit `SEARCH BREADTH FIRST BY <col> SET __djogi_search_seq` /
 /// `SEARCH DEPTH FIRST BY <col> SET __djogi_search_seq` on the
 /// recursive CTE and auto-prepend `ORDER BY __djogi_search_seq` on
@@ -117,38 +117,38 @@ pub async fn run(
     // so Postgres prunes early rather than forming the entire tree
     // before filtering.
     const SQL: &str = "WITH RECURSIVE descent AS (
-            SELECT
-                e.id,
-                e.name,
-                e.mother_id,
-                e.estimated_birth_year,
-                e.tags,
-                0 AS depth
-            FROM elephants e
-            WHERE e.name = $1 AND e.mother_id IS NULL
-            UNION ALL
-            SELECT
-                e.id,
-                e.name,
-                e.mother_id,
-                e.estimated_birth_year,
-                e.tags,
-                d.depth + 1
-            FROM elephants e
-            JOIN descent d ON e.mother_id = d.id
-            WHERE d.depth + 1 <= $2
-        )
-        SELECT
-            d.depth          AS depth,
-            d.id             AS id,
-            d.name           AS name,
-            d.mother_id      AS mother_id,
-            p.name           AS mother_name,
-            d.estimated_birth_year AS birth_year,
-            d.tags->>'sex'   AS sex
-        FROM descent d
-        LEFT JOIN elephants p ON p.id = d.mother_id
-        ORDER BY d.depth, d.name";
+  SELECT
+  e.id,
+  e.name,
+  e.mother_id,
+  e.estimated_birth_year,
+  e.tags,
+  0 AS depth
+  FROM elephants e
+  WHERE e.name = $1 AND e.mother_id IS NULL
+  UNION ALL
+  SELECT
+  e.id,
+  e.name,
+  e.mother_id,
+  e.estimated_birth_year,
+  e.tags,
+  d.depth + 1
+  FROM elephants e
+  JOIN descent d ON e.mother_id = d.id
+  WHERE d.depth + 1 <= $2
+ )
+ SELECT
+  d.depth  AS depth,
+  d.id  AS id,
+  d.name  AS name,
+  d.mother_id AS mother_id,
+  p.name  AS mother_name,
+  d.estimated_birth_year AS birth_year,
+  d.tags->>'sex' AS sex
+ FROM descent d
+ LEFT JOIN elephants p ON p.id = d.mother_id
+ ORDER BY d.depth, d.name";
     let binds: &[&(dyn ToSql + Sync)] = &[&matriarch, &max_depth];
     let rows = ctx.raw_rows(SQL, binds).await?;
 
@@ -184,19 +184,19 @@ fn render_mermaid(
     output::write_line(target, "graph TD")?;
     if rows.is_empty() {
         let m = output::escape_label(matriarch);
-        output::write_line(target, &format!("    n0[\"{m} (not found)\"]"))?;
+        output::write_line(target, &format!(" n0[\"{m} (not found)\"]"))?;
         return Ok(());
     }
     for r in rows {
         let id = output::mermaid_node_id(r.id.parse::<i64>().unwrap_or(0));
         let label = output::escape_label(&r.name);
-        output::write_line(target, &format!("    {id}[\"{label}\"]"))?;
+        output::write_line(target, &format!(" {id}[\"{label}\"]"))?;
     }
     for r in rows {
         let id = output::mermaid_node_id(r.id.parse::<i64>().unwrap_or(0));
         if let Some(mid) = &r.mother_id {
             let mid_node = output::mermaid_node_id(mid.parse::<i64>().unwrap_or(0));
-            output::write_line(target, &format!("    {mid_node} --> {id}"))?;
+            output::write_line(target, &format!(" {mid_node} --> {id}"))?;
         }
     }
     Ok(())
@@ -239,7 +239,7 @@ fn render_markdown(
     Ok(())
 }
 
-/// Typed-builder lineage walk — exercises Phase 8-Zero Cluster B's
+/// Typed-builder lineage walk — exercises 's
 /// `tree_descendants(edge, root_id)` + `search_breadth_first_by` /
 /// `search_depth_first_by` end-to-end. Same matrilineal direction as
 /// the raw-SQL path above: walks `mother_id` only (single-edge),
@@ -278,7 +278,7 @@ async fn run_typed(
         djogi::HeerId::from_i64(matriarch_id).context("matriarch id is not a valid HeerId")?;
 
     // The depth cap is bound as a u32 by the framework's
-    // `with_max_depth(u32)` (Phase 8-Zero Cluster B post-fixup —
+    // `with_max_depth(u32)` ( post-fixup —
     // bound as i32 against int4 internally). Clamp negative
     // user-supplied values to zero to match the contract.
     let depth_cap: u32 = max_depth.max(0) as u32;
@@ -318,7 +318,7 @@ async fn run_typed(
     // joining mother names into the recursive CTE projection isn't
     // available in the typed builder today (would require a
     // post-fetch eager-load surface for self-FK chains, which is
-    // outside Phase 8-Zero scope).
+    // outside scope).
     let mother_ids: Vec<djogi::HeerId> = walked
         .iter()
         .filter_map(|(e, _, _)| e.mother_id.as_ref().map(|fk| fk.key()))

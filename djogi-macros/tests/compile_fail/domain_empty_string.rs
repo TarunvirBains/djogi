@@ -12,8 +12,8 @@ use djogi::prelude::*;
 #[model(table = "orders_216_empty", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Order216Empty {
-    #[field(domain = "")]
-    pub amount: rust_decimal::Decimal,
+ #[field(domain = "")]
+ pub amount: rust_decimal::Decimal,
 }
 
 fn main() {}

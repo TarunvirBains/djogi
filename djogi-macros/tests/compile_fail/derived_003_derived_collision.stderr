@@ -1,7 +1,7 @@
 error: derived `name = facility_site` declared twice in scope `public` — each derived entry's name must be unique within every scope it targets (E_DJG_VDF_003)
-  --> $DIR/derived_003_derived_collision.rs:25:14
-   |
-25 |     name   = facility_site,
-   |              ^^^^^^^^^^^^^
+ --> $DIR/derived_003_derived_collision.rs:25:14
+ |
+25 |  name = facility_site,
+ |    ^^^^^^^^^^^^^
 
 error: aborting due to 1 previous error

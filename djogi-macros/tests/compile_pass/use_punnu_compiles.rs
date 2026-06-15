@@ -2,7 +2,7 @@
 //
 // Witnesses that `ctx.use_punnu(&p)` resolves to the expected signature:
 //
-//   fn(&DjogiContext, &Arc<Punnu<T>>) -> Arc<Punnu<T>>
+// fn(&DjogiContext, &Arc<Punnu<T>>) -> Arc<Punnu<T>>
 //
 // This is a non-emitted, non-macro method on `DjogiContext`; the fixture
 // lives here (alongside other T7 compile_pass checks) rather than in
@@ -27,22 +27,22 @@ use djogi::prelude::*;
 #[model(table = "phase8_t7_6_compile_pass_rows")]
 #[derive(Debug, Clone)]
 pub struct Phase8T76CompilePassRow {
-    pub value: String,
+ pub value: String,
 }
 
 fn _accept_use_punnu<T: ::djogi::types::Cacheable + 'static>() {
-    fn _signature_check<U: ::djogi::types::Cacheable + 'static>(
-        ctx: &::djogi::DjogiContext,
-        p: &::std::sync::Arc<::djogi::cache::Punnu<U>>,
-    ) -> ::std::sync::Arc<::djogi::cache::Punnu<U>> {
-        ctx.use_punnu(p)
-    }
-    let _: fn(
-        &::djogi::DjogiContext,
-        &::std::sync::Arc<::djogi::cache::Punnu<T>>,
-    ) -> ::std::sync::Arc<::djogi::cache::Punnu<T>> = _signature_check::<T>;
+ fn _signature_check<U: ::djogi::types::Cacheable + 'static>(
+  ctx: &::djogi::DjogiContext,
+  p: &::std::sync::Arc<::djogi::cache::Punnu<U>>,
+ ) -> ::std::sync::Arc<::djogi::cache::Punnu<U>> {
+  ctx.use_punnu(p)
+ }
+ let _: fn(
+  &::djogi::DjogiContext,
+  &::std::sync::Arc<::djogi::cache::Punnu<T>>,
+ ) -> ::std::sync::Arc<::djogi::cache::Punnu<T>> = _signature_check::<T>;
 }
 
 fn main() {
-    _accept_use_punnu::<Phase8T76CompilePassRow>();
+ _accept_use_punnu::<Phase8T76CompilePassRow>();
 }
