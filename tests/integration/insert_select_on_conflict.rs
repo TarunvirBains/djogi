@@ -328,9 +328,10 @@ async fn do_update_with_conflict_coalesce_excluded_keeps_existing_non_null_value
             ]
         })
         .on_conflict_do_update(ConflictTarget::columns([OcTarget::fields().slug()]), |t| {
-            vec![t
-                .maybe_hits()
-                .conflict_set_expr(t.maybe_hits().conflict_coalesce_excluded())]
+            vec![
+                t.maybe_hits()
+                    .conflict_set_expr(t.maybe_hits().conflict_coalesce_excluded()),
+            ]
         })
         .execute(&mut ctx)
         .await

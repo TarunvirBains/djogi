@@ -1851,10 +1851,9 @@ mod tests {
 
     #[test]
     fn check_aggregate_legality_recurses_into_is_null_operand() {
-        let err = check_aggregate_legality(&ExprNode::IsNull(Box::new(
-            invalid_count_star_distinct(),
-        )))
-        .unwrap_err();
+        let err =
+            check_aggregate_legality(&ExprNode::IsNull(Box::new(invalid_count_star_distinct())))
+                .unwrap_err();
         assert!(matches!(
             err,
             crate::DjogiError::UnsupportedAggregate { op, .. } if op == "COUNT(*)"

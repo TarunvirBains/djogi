@@ -2800,13 +2800,17 @@ mod tests {
 
     #[test]
     fn conflict_coalesce_excluded_builds_same_column_coalesce_expr() {
-        let expr = FieldRef::<Target, Option<i32>>::new("maybe_view_count")
-            .conflict_coalesce_excluded();
+        let expr =
+            FieldRef::<Target, Option<i32>>::new("maybe_view_count").conflict_coalesce_excluded();
         match expr.node {
             ExprNode::Coalesce(args) => {
                 assert_eq!(args.len(), 2);
-                assert!(matches!(args[0], ExprNode::Field { column } if column == "maybe_view_count"));
-                assert!(matches!(args[1], ExprNode::Excluded { column } if column == "maybe_view_count"));
+                assert!(
+                    matches!(args[0], ExprNode::Field { column } if column == "maybe_view_count")
+                );
+                assert!(
+                    matches!(args[1], ExprNode::Excluded { column } if column == "maybe_view_count")
+                );
             }
             other => panic!("expected Coalesce(Field, Excluded), got {other:?}"),
         }
