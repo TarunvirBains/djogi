@@ -43,6 +43,21 @@ fn non_recursive_cte_renumbers_body_and_consumer_binds() {
 }
 
 #[test]
+fn non_recursive_cte_accepts_set_op_body() {
+    let body = Node::objects()
+        .filter(|f| f.active().eq(true))
+        .union_all(Node::objects().filter(|f| f.parent_id().eq(0_i64)));
+    let cte = Node::objects()
+        .with("recent", body)
+        .expect("with")
+        .from_cte("recent")
+        .expect("from_cte");
+    let sql = cte.__sql_for_test().expect("sql");
+    assert!(sql.contains("WITH recent AS (("), "{sql}");
+    assert!(sql.contains(") UNION ALL ("), "{sql}");
+}
+
+#[test]
 fn recursive_cte_with_cycle_shape() {
     let anchor = Node::objects().filter(|f| f.parent_id().eq(0_i64));
     let arm = RecursiveArm::<Node>::referencing("walk")
@@ -65,6 +80,25 @@ fn recursive_cte_with_cycle_shape() {
     );
     assert!(sql.contains(") CYCLE id SET is_cycle USING cycle_path"), "{sql}");
     assert!(sql.contains("FROM walk WHERE NOT is_cycle"), "{sql}");
+}
+
+#[test]
+fn recursive_cte_renumbers_anchor_arm_and_consumer_binds() {
+    let anchor = Node::objects().filter(|f| f.parent_id().eq(0_i64));
+    let arm = RecursiveArm::<Node>::referencing("walk")
+        .join_on("parent_id", "id")
+        .expect("join_on")
+        .filter(|f| f.active().eq(true));
+    let cte = Node::objects()
+        .with_recursive("walk", anchor, arm)
+        .expect("with_recursive")
+        .from_cte("walk")
+        .expect("from_cte")
+        .filter(|f| f.parent_id().eq(7_i64));
+    let sql = cte.__sql_for_test().expect("sql");
+    assert!(sql.contains("parent_id = $1"), "{sql}");
+    assert!(sql.contains("t.active = $2"), "{sql}");
+    assert!(sql.contains("FROM walk WHERE parent_id = $3"), "{sql}");
 }
 
 #[test]

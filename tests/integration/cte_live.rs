@@ -65,6 +65,34 @@ async fn non_recursive_cte_count_matches(mut ctx: djogi::DjogiContext) {
     assert_eq!(n, 3);
 }
 
+#[djogi::djogi_test(sync_models = [Node])]
+async fn non_recursive_cte_exists_and_first_match(mut ctx: djogi::DjogiContext) {
+    seed_nodes(&mut ctx).await;
+
+    let active_nodes = Node::objects().filter(|f| f.active().eq(true));
+    let exists = Node::objects()
+        .with("active_nodes", active_nodes.clone())
+        .expect("with")
+        .from_cte("active_nodes")
+        .expect("from_cte")
+        .exists(&mut ctx)
+        .await
+        .expect("exists");
+    assert!(exists);
+
+    let first = Node::objects()
+        .with("active_nodes", active_nodes)
+        .expect("with")
+        .from_cte("active_nodes")
+        .expect("from_cte")
+        .order_by(|f| f.label().asc())
+        .first(&mut ctx)
+        .await
+        .expect("first")
+        .expect("first active row");
+    assert_eq!(first.label, "alpha");
+}
+
 #[model(table = "c442_cte_live_tree", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct TreeNode {
