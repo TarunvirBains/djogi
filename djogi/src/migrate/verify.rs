@@ -2210,7 +2210,7 @@ mod tests {
             has_outbox: true,
             ..model_descriptor("Invoice", "invoices", PkType::HeerIdDesc, &[])
         };
-        let sets = scope_table_sets([&M].into_iter(), "billing");
+        let sets = scope_table_sets([&M], "billing");
         assert!(sets.this_bucket_tables.contains("invoices"));
         assert!(sets.this_bucket_tables.contains("invoices_outbox"));
         assert!(!sets.inventory_is_empty);
@@ -2223,7 +2223,7 @@ mod tests {
             has_outbox: true,
             ..model_descriptor("Invoice", "invoices", PkType::HeerIdDesc, &[])
         };
-        let sets = scope_table_sets([&M].into_iter(), "");
+        let sets = scope_table_sets([&M], "");
         assert!(sets.all_app_tables.contains("invoices"));
         assert!(sets.all_app_tables.contains("invoices_outbox"));
         assert!(sets.this_bucket_tables.is_empty());
@@ -2236,7 +2236,7 @@ mod tests {
             has_outbox: true,
             ..model_descriptor("Event", "events", PkType::HeerIdDesc, &[])
         };
-        let sets = scope_table_sets([&M].into_iter(), "");
+        let sets = scope_table_sets([&M], "");
         assert!(sets.all_app_tables.is_empty());
         assert!(sets.this_bucket_tables.contains("events"));
         assert!(sets.this_bucket_tables.contains("events_outbox"));
@@ -2249,7 +2249,7 @@ mod tests {
             has_outbox: false,
             ..model_descriptor("Message", "messages", PkType::HeerIdDesc, &[])
         };
-        let sets = scope_table_sets([&M].into_iter(), "chat");
+        let sets = scope_table_sets([&M], "chat");
         assert!(sets.this_bucket_tables.contains("messages"));
         assert!(!sets.this_bucket_tables.contains("messages_outbox"));
         assert!(!sets.all_app_tables.contains("messages_outbox"));
