@@ -601,6 +601,88 @@ impl ExplicitPgOrderable for crate::CidrAddr {}
 #[cfg(feature = "network")]
 impl ExplicitPgOrderable for crate::MacAddr {}
 
+mod visage_scalar_seal {
+    pub trait Sealed {}
+}
+
+/// Marker for value types that may appear in a non-nullable visage subquery
+/// predicate (`in_visage`, `not_in_visage`, `gt_any`, `gte_any`, `lt_any`,
+/// `lte_any`, `gt_all`, `gte_all`, `lt_all`, `lte_all`).
+///
+/// # Design
+/// The non-nullable visage methods live on TWO blanket impls:
+/// `impl<M, V> DjogiField<M, V>` (the public adopter surface, reached by
+/// root-model filter closures) and `impl<M, V> FieldRef<M, V>` (reached by
+/// visage filter closures). Without this bound, each overlaps with its
+/// dedicated `Option<U>` counterpart block (`DjogiField<M, Option<U>>` /
+/// `FieldRef<M, Option<U>>`), producing E0592. Bounding both visage surfaces
+/// with `where V: DjogiVisageScalar` — a trait NOT implemented for `Option<_>`
+/// — makes each pair of impls disjoint. (General-purpose methods such as
+/// `in_list` / `eq` stay on the UNBOUNDED blocks; only the visage subquery
+/// surface is bounded.)
+///
+/// Cf. `DjogiPortableOrd`, which uses "no blanket impl" rather than a seal
+/// to keep `Option<_>` out. `DjogiPortableOrd` is **open** to adopter
+/// extension (`impl DjogiPortableOrd for MyType {}` is permitted); it does
+/// NOT use a sealed supertrait. `DjogiVisageScalar` is sealed so that no
+/// adopter can accidentally enable `impl DjogiVisageScalar for Option<X>`
+/// and reintroduce the E0592 collision.
+///
+/// # Adopter limitation
+/// This trait is sealed for correctness. Custom column types cannot use these
+/// visage predicates in v0.1.0-alpha; this surface will be opened in a future
+/// release.
+///
+/// # Sealed
+/// Implemented via `visage_scalar_seal::Sealed` supertrait. External crates
+/// cannot add impls.
+pub trait DjogiVisageScalar: visage_scalar_seal::Sealed {}
+
+macro_rules! impl_djogi_visage_scalar {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            impl visage_scalar_seal::Sealed for $t {}
+            impl DjogiVisageScalar for $t {}
+        )+
+    };
+}
+
+impl_djogi_visage_scalar!(
+    i8,
+    i16,
+    i32,
+    i64,
+    u8,
+    u16,
+    u32,
+    u64,
+    f32,
+    f64,
+    bool,
+    String,
+    &'static str,
+    rust_decimal::Decimal,
+    time::OffsetDateTime,
+    time::Date,
+    time::PrimitiveDateTime,
+    uuid::Uuid,
+    crate::HeerId,
+    crate::RanjId,
+    crate::HeerIdDesc,
+    crate::RanjIdDesc,
+    crate::Interval,
+);
+
+#[cfg(feature = "network")]
+impl_djogi_visage_scalar!(crate::CidrAddr, crate::MacAddr);
+#[cfg(feature = "network")]
+impl visage_scalar_seal::Sealed for std::net::IpAddr {}
+#[cfg(feature = "network")]
+impl DjogiVisageScalar for std::net::IpAddr {}
+
+impl<V: DjogiVisageScalar> visage_scalar_seal::Sealed for crate::Tracked<V> {}
+impl<V: DjogiVisageScalar> DjogiVisageScalar for crate::Tracked<V> {}
+
 /// Marker for array element types whose `Vec<T>` equality has been
 /// parity-checked between Rust/Punnu and PostgreSQL.
 /// `IntoArrayFilterValue` is intentionally wider: it also contains
@@ -2250,7 +2332,7 @@ where
     }
 }
 
-impl<M: Model, V> DjogiField<M, V> {
+impl<M: Model, V: DjogiVisageScalar> DjogiField<M, V> {
     fn quantified_visage<__V>(
         self,
         op: crate::expr::node::QuantifiedCmpOp,
@@ -2875,6 +2957,266 @@ where
         P: IntoPortableFieldValue<U>,
     {
         self.some().between(low, high)
+    }
+}
+
+// ── DjogiField<M, Option<U>> — visage subquery predicates ──────────────────
+// Mirrors the non-nullable visage family (the `DjogiVisageScalar`-bounded
+// blanket near the `in_visage` reference impl), but accepts a subquery
+// projecting the INNER value type `U` (`VisageSubquery<__V, U>`), not
+// `VisageSubquery<__V, Option<U>>`. A nullable column compared with
+// `IN` / `ANY` / `ALL` follows Postgres three-valued NULL propagation at
+// execution time (`NULL <op> ANY (...)` is `NULL`, excluded by `WHERE`),
+// so the emitted SQL — and therefore the IR — is identical to the
+// non-nullable case. Dropping the `Option` wrapper is what keeps the
+// caller projecting the column's real value type instead of a redundant
+// `Option<U>`. `DjogiVisageScalar` (not `DjogiPortableOrd`) bounds `U` so
+// equality-only members (`in_visage` / `not_in_visage`) are covered too,
+// and so the receiver domain is disjoint from the non-nullable blanket
+// (no E0592).
+impl<M: Model, U: DjogiVisageScalar + Send + Sync + 'static> DjogiField<M, Option<U>> {
+    /// `column IN (SELECT <visage-column> FROM ...)` for a nullable column.
+    ///
+    /// The subquery projects the inner value type `U`; the column's
+    /// nullability is handled by Postgres at execution. A `NULL` row never
+    /// satisfies `IN` (the comparison is UNKNOWN), so nullable rows are
+    /// excluded from the result — matching SQL `IN` semantics, not Rust
+    /// `Option` semantics.
+    ///
+    /// ```ignore
+    /// // posts.author_id is `Option<HeerId>`; project authors.id (HeerId).
+    /// // Root-model filter closure: `p.author_id()` is
+    /// // `DjogiField<Post, Option<HeerId>>` (this impl block).
+    /// Post::objects().filter(|p| p.author_id().in_visage(active_author_ids))
+    /// ```
+    ///
+    /// > **Note for implementers:** the example above is a *root-model* closure
+    /// > (`Post::objects().filter(...)`), where `{Model}Fields` accessors emit
+    /// > `DjogiField<Self, V>` directly — so `p.author_id()` is the
+    /// > `DjogiField<M, Option<U>>` this block adds. The parallel *visage*
+    /// > filter closure (`PostPublic::filter(...)`) returns
+    /// > `FieldRef<Root, Option<U>>` and is served by the sibling
+    /// > `FieldRef<M, Option<U>>` block (Task 3 Step 2). Both surfaces are
+    /// > covered: the `DjogiField` path by the `djogi_field_option_*` tests
+    /// > and the `FieldRef` path by the `field_ref_option_*` tests.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn in_visage<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InSubquery {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column(),
+            }),
+            negated: false,
+            subquery: Box::new(subquery.__into_subquery_node()),
+        })
+    }
+
+    /// `column NOT IN (SELECT <visage-column> FROM ...)` for a nullable
+    /// column.
+    ///
+    /// Beware Postgres `NOT IN` + NULL: if the **subquery** yields any
+    /// `NULL`, `NOT IN` evaluates to UNKNOWN for every row and excludes
+    /// all of them. Project a non-null visage column (or filter the
+    /// subquery's nulls) when using `not_in_visage`. The nullability of
+    /// the **outer** column behaves as for [`Self::in_visage`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn not_in_visage<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InSubquery {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column(),
+            }),
+            negated: true,
+            subquery: Box::new(subquery.__into_subquery_node()),
+        })
+    }
+
+    /// Private quantified-subquery constructor shared by the nullable
+    /// `*_any` / `*_all` methods. Identical IR to the non-nullable
+    /// `quantified_visage`; the only difference is the inner-`U` subquery
+    /// type on the public callers.
+    fn quantified_visage_opt<__V>(
+        self,
+        op: crate::expr::node::QuantifiedCmpOp,
+        quantifier: crate::expr::node::SubqueryQuantifier,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::QuantifiedSubquery {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column(),
+            }),
+            op,
+            quantifier,
+            subquery: Box::new(subquery.__into_subquery_node()),
+        })
+    }
+
+    /// `column > ANY (SELECT <visage-column> FROM ...)` for a nullable
+    /// column. NULL outer rows compare UNKNOWN and are excluded;
+    /// `> ANY (∅)` is false.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gt_any<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Gt,
+            crate::expr::node::SubqueryQuantifier::Any,
+            subquery,
+        )
+    }
+
+    /// `column >= ANY (SELECT <visage-column> FROM ...)` for a nullable
+    /// column. NULL / empty-set semantics: see [`Self::gt_any`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gte_any<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Gte,
+            crate::expr::node::SubqueryQuantifier::Any,
+            subquery,
+        )
+    }
+
+    /// `column < ANY (SELECT <visage-column> FROM ...)` for a nullable
+    /// column. NULL / empty-set semantics: see [`Self::gt_any`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lt_any<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Lt,
+            crate::expr::node::SubqueryQuantifier::Any,
+            subquery,
+        )
+    }
+
+    /// `column <= ANY (SELECT <visage-column> FROM ...)` for a nullable
+    /// column. NULL / empty-set semantics: see [`Self::gt_any`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lte_any<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Lte,
+            crate::expr::node::SubqueryQuantifier::Any,
+            subquery,
+        )
+    }
+
+    /// `column > ALL (SELECT <visage-column> FROM ...)` for a nullable
+    /// column. NULL outer rows compare UNKNOWN and are excluded;
+    /// `> ALL (∅)` is true.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gt_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Gt,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
+
+    /// `column >= ALL (SELECT <visage-column> FROM ...)` for a nullable
+    /// column. NULL / empty-set semantics: see [`Self::gt_all`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gte_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Gte,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
+
+    /// `column < ALL (SELECT <visage-column> FROM ...)` for a nullable
+    /// column. NULL / empty-set semantics: see [`Self::gt_all`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lt_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Lt,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
+
+    /// `column <= ALL (SELECT <visage-column> FROM ...)` for a nullable
+    /// column. NULL / empty-set semantics: see [`Self::gt_all`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lte_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Lte,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
+
+    /// `column = ALL (SELECT <visage-column> FROM ...)` — true when *every*
+    /// row the subquery returns equals this column.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn eq_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Eq,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
     }
 }
 
@@ -4017,25 +4359,6 @@ where
 // ── Generic lookup methods (any V: IntoFilterValue) ───────────────────────
 
 impl<M: Model, V> FieldRef<M, V> {
-    fn quantified_visage<__V>(
-        self,
-        op: crate::expr::node::QuantifiedCmpOp,
-        quantifier: crate::expr::node::SubqueryQuantifier,
-        subquery: crate::query::visage_queryset::VisageSubquery<__V, V>,
-    ) -> crate::expr::Expr<bool>
-    where
-        __V: crate::visage::DjogiVisage,
-    {
-        crate::expr::Expr::from_node(crate::expr::node::ExprNode::QuantifiedSubquery {
-            lhs: Box::new(crate::expr::node::ExprNode::Field {
-                column: self.column,
-            }),
-            op,
-            quantifier,
-            subquery: Box::new(subquery.__into_subquery_node()),
-        })
-    }
-
     /// `column = value` — SQL equality.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn eq<P>(self, value: P) -> Condition
@@ -4186,6 +4509,33 @@ impl<M: Model, V> FieldRef<M, V> {
                 .collect::<Vec<_>>(),
         );
         Condition::Leaf(Leaf::new(self.column, LookupOp::NotIn, list))
+    }
+}
+
+// ── FieldRef<M, V> — non-nullable visage subquery predicates ────────────────
+// Extracted into a DjogiVisageScalar-bounded block so the parallel
+// `impl<M, U> FieldRef<M, Option<U>>` visage block is disjoint and
+// does not trigger E0592. `in_list` / `not_in_list` (general list membership)
+// stay in the unbounded `FieldRef<M, V>` block — only the visage subquery
+// surface moves here.
+impl<M: Model, V: DjogiVisageScalar> FieldRef<M, V> {
+    fn quantified_visage<__V>(
+        self,
+        op: crate::expr::node::QuantifiedCmpOp,
+        quantifier: crate::expr::node::SubqueryQuantifier,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, V>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::QuantifiedSubquery {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.column,
+            }),
+            op,
+            quantifier,
+            subquery: Box::new(subquery.__into_subquery_node()),
+        })
     }
 
     /// `column IN (SELECT ... FROM ... WHERE ...)` over a single-column
@@ -4393,6 +4743,249 @@ impl<M: Model, V> FieldRef<M, V> {
         __V: crate::visage::DjogiVisage,
     {
         self.quantified_visage(
+            crate::expr::node::QuantifiedCmpOp::Eq,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
+}
+
+// ── FieldRef<M, Option<U>> — visage subquery predicates ─────────────────────
+// Parallel to the non-nullable bounded FieldRef visage block (Task 2 Step 3b)
+// and to the DjogiField<M, Option<U>> block above. Reached by visage filter
+// closures, which return `FieldRef<Root, Option<U>>`. Accepts a subquery
+// projecting the INNER value type `U` (`VisageSubquery<__V, U>`), not
+// `Option<U>` — Postgres handles the column's nullability at execution
+// (three-valued IN/ANY/ALL), so the emitted SQL is identical to the
+// non-nullable case. The `DjogiVisageScalar` bound keeps this block's receiver
+// domain disjoint from the non-nullable `FieldRef<M, V>` visage block (no
+// E0592). Bodies read `self.column` exactly as the non-nullable FieldRef
+// visage methods do.
+impl<M: Model, U: DjogiVisageScalar> FieldRef<M, Option<U>> {
+    /// `column IN (SELECT <visage-column> FROM ...)` for a nullable column.
+    ///
+    /// The subquery projects the inner value type `U`; nullability is handled
+    /// by Postgres at execution. A `NULL` outer row never satisfies `IN`
+    /// (the comparison is UNKNOWN), so nullable rows are excluded — matching
+    /// SQL `IN` semantics, not Rust `Option` semantics.
+    ///
+    /// ```ignore
+    /// // In a visage filter closure, `f.author_id()` is `FieldRef<Post, Option<HeerId>>`
+    /// // when `author_id` is declared `Option<HeerId>` on the model.
+    /// PostPublic::filter(|f| f.author_id().in_visage(active_author_ids))
+    /// ```
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn in_visage<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InSubquery {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.column,
+            }),
+            negated: false,
+            subquery: Box::new(subquery.__into_subquery_node()),
+        })
+    }
+
+    /// `column NOT IN (SELECT <visage-column> FROM ...)` for a nullable column.
+    ///
+    /// Beware Postgres `NOT IN` + NULL: if the **subquery** yields any `NULL`,
+    /// `NOT IN` evaluates to UNKNOWN for every row and excludes all of them.
+    /// Project a non-null visage column (or filter the subquery's nulls) when
+    /// using `not_in_visage`. The nullability of the **outer** column behaves
+    /// as for [`Self::in_visage`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn not_in_visage<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InSubquery {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.column,
+            }),
+            negated: true,
+            subquery: Box::new(subquery.__into_subquery_node()),
+        })
+    }
+
+    /// Private quantified-subquery constructor shared by the nullable
+    /// `*_any` / `*_all` methods on this block. Identical IR to the
+    /// non-nullable `FieldRef::quantified_visage`; the only difference is the
+    /// inner-`U` subquery type on the public callers. Named `_opt` to avoid
+    /// any reader confusion with the non-nullable helper of the same role.
+    fn quantified_visage_opt<__V>(
+        self,
+        op: crate::expr::node::QuantifiedCmpOp,
+        quantifier: crate::expr::node::SubqueryQuantifier,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::QuantifiedSubquery {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.column,
+            }),
+            op,
+            quantifier,
+            subquery: Box::new(subquery.__into_subquery_node()),
+        })
+    }
+
+    /// `column > ANY (SELECT <visage-column> FROM ...)` for a nullable column.
+    /// NULL outer rows compare UNKNOWN and are excluded; `> ANY (∅)` is false.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gt_any<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Gt,
+            crate::expr::node::SubqueryQuantifier::Any,
+            subquery,
+        )
+    }
+
+    /// `column >= ANY (SELECT <visage-column> FROM ...)` for a nullable column.
+    /// NULL / empty-set semantics: see [`Self::gt_any`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gte_any<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Gte,
+            crate::expr::node::SubqueryQuantifier::Any,
+            subquery,
+        )
+    }
+
+    /// `column < ANY (SELECT <visage-column> FROM ...)` for a nullable column.
+    /// NULL / empty-set semantics: see [`Self::gt_any`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lt_any<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Lt,
+            crate::expr::node::SubqueryQuantifier::Any,
+            subquery,
+        )
+    }
+
+    /// `column <= ANY (SELECT <visage-column> FROM ...)` for a nullable column.
+    /// NULL / empty-set semantics: see [`Self::gt_any`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lte_any<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Lte,
+            crate::expr::node::SubqueryQuantifier::Any,
+            subquery,
+        )
+    }
+
+    /// `column > ALL (SELECT <visage-column> FROM ...)` for a nullable column.
+    /// NULL outer rows compare UNKNOWN and are excluded; `> ALL (∅)` is true.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gt_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Gt,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
+
+    /// `column >= ALL (SELECT <visage-column> FROM ...)` for a nullable column.
+    /// NULL / empty-set semantics: see [`Self::gt_all`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn gte_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Gte,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
+
+    /// `column < ALL (SELECT <visage-column> FROM ...)` for a nullable column.
+    /// NULL / empty-set semantics: see [`Self::gt_all`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lt_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Lt,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
+
+    /// `column <= ALL (SELECT <visage-column> FROM ...)` for a nullable column.
+    /// NULL / empty-set semantics: see [`Self::gt_all`].
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn lte_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
+            crate::expr::node::QuantifiedCmpOp::Lte,
+            crate::expr::node::SubqueryQuantifier::All,
+            subquery,
+        )
+    }
+
+    /// `column = ALL (SELECT <visage-column> FROM ...)` — true when *every*
+    /// row the subquery returns equals this column.
+    #[must_use = "predicates are lazy — dropping one silently omits the filter"]
+    pub fn eq_all<__V>(
+        self,
+        subquery: crate::query::visage_queryset::VisageSubquery<__V, U>,
+    ) -> crate::expr::Expr<bool>
+    where
+        __V: crate::visage::DjogiVisage,
+    {
+        self.quantified_visage_opt(
             crate::expr::node::QuantifiedCmpOp::Eq,
             crate::expr::node::SubqueryQuantifier::All,
             subquery,
@@ -6702,6 +7295,634 @@ mod tests {
                 .expect("clean queryset");
         let expr = FieldRef::<FakeRow, i64>::new("age").lte_all(subquery);
         assert_eq!(emit_expr_sql(expr), "age <= ALL (SELECT id FROM fake_rows)");
+    }
+
+    /// Issue #447 guard: bounding the non-nullable visage blanket with
+    /// `DjogiVisageScalar` (Option A) must NOT shrink the set of value
+    /// types that can use `in_visage` / quantified visage predicates.
+    /// Every value type an adopter realistically projects through a visage
+    /// subquery must still compile here. If this stops compiling after the
+    /// bound is added, `DjogiVisageScalar` membership is too narrow — widen
+    /// it, do not relax the test.
+    #[test]
+    fn non_nullable_visage_blanket_domain_is_preserved() {
+        fn _assert_i64(
+            f: FieldRef<FakeRow, i64>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, i64>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        fn _assert_string(
+            f: FieldRef<FakeRow, String>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, String>,
+        ) {
+            let _ = f.gt_any(q);
+        }
+        fn _assert_i32(
+            f: FieldRef<FakeRow, i32>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, i32>,
+        ) {
+            let _ = f.lt_all(q);
+        }
+        // ── ExplicitPgOrderable-only members (the at-risk slice) ────────────────
+        fn _assert_field_ref_static_str(
+            f: FieldRef<FakeRow, &'static str>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, &'static str>,
+        ) {
+            let _ = f.gt_any(q);
+        }
+        fn _assert_field_ref_u8(
+            f: FieldRef<FakeRow, u8>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, u8>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_field_ref_u16(
+            f: FieldRef<FakeRow, u16>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, u16>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_field_ref_u64(
+            f: FieldRef<FakeRow, u64>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, u64>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_field_ref_f32(
+            f: FieldRef<FakeRow, f32>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, f32>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_field_ref_f64(
+            f: FieldRef<FakeRow, f64>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, f64>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_field_ref_primitivedatetime(
+            f: FieldRef<FakeRow, time::PrimitiveDateTime>,
+            q: crate::query::visage_queryset::VisageSubquery<
+                FakeRowPublic,
+                time::PrimitiveDateTime,
+            >,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_field_ref_interval(
+            f: FieldRef<FakeRow, crate::Interval>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::Interval>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        #[cfg(feature = "network")]
+        fn _assert_field_ref_ipaddr(
+            f: FieldRef<FakeRow, std::net::IpAddr>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, std::net::IpAddr>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        #[cfg(feature = "network")]
+        fn _assert_field_ref_cidraddr(
+            f: FieldRef<FakeRow, crate::CidrAddr>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::CidrAddr>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        #[cfg(feature = "network")]
+        fn _assert_field_ref_macaddr(
+            f: FieldRef<FakeRow, crate::MacAddr>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::MacAddr>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        // Compilation IS the assertion; this test never runs against a DB.
+        let _ = (
+            _assert_i64,
+            _assert_string,
+            _assert_i32,
+            _assert_field_ref_static_str,
+            _assert_field_ref_u8,
+            _assert_field_ref_u16,
+            _assert_field_ref_u64,
+            _assert_field_ref_f32,
+            _assert_field_ref_f64,
+            _assert_field_ref_primitivedatetime,
+            _assert_field_ref_interval,
+        );
+        #[cfg(feature = "network")]
+        let _ = (
+            _assert_field_ref_ipaddr,
+            _assert_field_ref_cidraddr,
+            _assert_field_ref_macaddr,
+        );
+    }
+
+    /// Companion to `non_nullable_visage_blanket_domain_is_preserved`, but on
+    /// the `DjogiField` surface — that is the impl that gains the
+    /// `DjogiVisageScalar` bound in Task 2, so this is where a too-narrow
+    /// membership would actually bite an adopter.
+    #[test]
+    fn non_nullable_djogi_field_visage_domain_is_preserved() {
+        // Signed integers.
+        fn _assert_i8(
+            f: DjogiField<FakeRow, i8>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, i8>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        fn _assert_i16(
+            f: DjogiField<FakeRow, i16>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, i16>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        fn _assert_i32(
+            f: DjogiField<FakeRow, i32>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, i32>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        fn _assert_i64(
+            f: DjogiField<FakeRow, i64>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, i64>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        // Unsigned integers — u8/u16/u64 are ExplicitPgOrderable-only.
+        fn _assert_u8(
+            f: DjogiField<FakeRow, u8>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, u8>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_u16(
+            f: DjogiField<FakeRow, u16>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, u16>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_u32(
+            f: DjogiField<FakeRow, u32>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, u32>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        fn _assert_u64(
+            f: DjogiField<FakeRow, u64>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, u64>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        // Floats — ExplicitPgOrderable-only.
+        fn _assert_f32(
+            f: DjogiField<FakeRow, f32>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, f32>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_f64(
+            f: DjogiField<FakeRow, f64>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, f64>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        // Equality / string types.
+        fn _assert_bool(
+            f: DjogiField<FakeRow, bool>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, bool>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        fn _assert_string(
+            f: DjogiField<FakeRow, String>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, String>,
+        ) {
+            let _ = f.gt_any(q);
+        }
+        fn _assert_static_str(
+            f: DjogiField<FakeRow, &'static str>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, &'static str>,
+        ) {
+            let _ = f.gt_any(q);
+        }
+        // Numeric.
+        fn _assert_decimal(
+            f: DjogiField<FakeRow, rust_decimal::Decimal>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, rust_decimal::Decimal>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        // Date / time.
+        fn _assert_offsetdatetime(
+            f: DjogiField<FakeRow, time::OffsetDateTime>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, time::OffsetDateTime>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_date(
+            f: DjogiField<FakeRow, time::Date>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, time::Date>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        fn _assert_primitivedatetime(
+            f: DjogiField<FakeRow, time::PrimitiveDateTime>,
+            q: crate::query::visage_queryset::VisageSubquery<
+                FakeRowPublic,
+                time::PrimitiveDateTime,
+            >,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        // UUID.
+        fn _assert_uuid(
+            f: DjogiField<FakeRow, uuid::Uuid>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, uuid::Uuid>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        // HeeRanjId family.
+        fn _assert_heerid(
+            f: DjogiField<FakeRow, crate::HeerId>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::HeerId>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        fn _assert_ranjid(
+            f: DjogiField<FakeRow, crate::RanjId>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::RanjId>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        fn _assert_heeriddesc(
+            f: DjogiField<FakeRow, crate::HeerIdDesc>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::HeerIdDesc>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        fn _assert_ranjiddesc(
+            f: DjogiField<FakeRow, crate::RanjIdDesc>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::RanjIdDesc>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        // Interval.
+        fn _assert_interval(
+            f: DjogiField<FakeRow, crate::Interval>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::Interval>,
+        ) {
+            let _ = f.gt_all(q);
+        }
+        // Tracked<V> blanket.
+        fn _assert_tracked(
+            f: DjogiField<FakeRow, crate::Tracked<i64>>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::Tracked<i64>>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        #[cfg(feature = "network")]
+        fn _assert_ipaddr(
+            f: DjogiField<FakeRow, std::net::IpAddr>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, std::net::IpAddr>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        #[cfg(feature = "network")]
+        fn _assert_cidraddr(
+            f: DjogiField<FakeRow, crate::CidrAddr>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::CidrAddr>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        #[cfg(feature = "network")]
+        fn _assert_macaddr(
+            f: DjogiField<FakeRow, crate::MacAddr>,
+            q: crate::query::visage_queryset::VisageSubquery<FakeRowPublic, crate::MacAddr>,
+        ) {
+            let _ = f.in_visage(q);
+        }
+        let _ = (
+            _assert_i8,
+            _assert_i16,
+            _assert_i32,
+            _assert_i64,
+            _assert_u8,
+            _assert_u16,
+            _assert_u32,
+            _assert_u64,
+            _assert_f32,
+            _assert_f64,
+            _assert_bool,
+            _assert_string,
+            _assert_static_str,
+            _assert_decimal,
+            _assert_offsetdatetime,
+            _assert_date,
+            _assert_primitivedatetime,
+            _assert_uuid,
+            _assert_heerid,
+            _assert_ranjid,
+            _assert_heeriddesc,
+            _assert_ranjiddesc,
+            _assert_interval,
+            _assert_tracked,
+        );
+        #[cfg(feature = "network")]
+        let _ = (_assert_ipaddr, _assert_cidraddr, _assert_macaddr);
+    }
+
+    #[test]
+    fn djogi_field_option_in_visage_emits_field_in_select_col() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+        let expr = f.in_visage(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age IN (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn djogi_field_option_not_in_visage_emits_field_not_in_select_col() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+        let expr = f.not_in_visage(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age NOT IN (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn djogi_field_option_gt_any_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+        assert_eq!(
+            emit_expr_sql(f.gt_any(subquery)),
+            "maybe_age > ANY (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn djogi_field_option_gte_any_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+        assert_eq!(
+            emit_expr_sql(f.gte_any(subquery)),
+            "maybe_age >= ANY (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn djogi_field_option_lt_any_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+        assert_eq!(
+            emit_expr_sql(f.lt_any(subquery)),
+            "maybe_age < ANY (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn djogi_field_option_lte_any_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+        assert_eq!(
+            emit_expr_sql(f.lte_any(subquery)),
+            "maybe_age <= ANY (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn djogi_field_option_gt_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+        assert_eq!(
+            emit_expr_sql(f.gt_all(subquery)),
+            "maybe_age > ALL (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn djogi_field_option_gte_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+        assert_eq!(
+            emit_expr_sql(f.gte_all(subquery)),
+            "maybe_age >= ALL (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn djogi_field_option_lt_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+        assert_eq!(
+            emit_expr_sql(f.lt_all(subquery)),
+            "maybe_age < ALL (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn djogi_field_option_lte_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+        assert_eq!(
+            emit_expr_sql(f.lte_all(subquery)),
+            "maybe_age <= ALL (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn field_ref_option_in_visage_emits_field_in_select_col() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, Option<i64>>::new("maybe_age").in_visage(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age IN (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn field_ref_option_not_in_visage_emits_field_not_in_select_col() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, Option<i64>>::new("maybe_age").not_in_visage(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age NOT IN (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn field_ref_option_gt_any_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, Option<i64>>::new("maybe_age").gt_any(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age > ANY (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn field_ref_option_gte_any_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, Option<i64>>::new("maybe_age").gte_any(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age >= ANY (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn field_ref_option_lt_any_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, Option<i64>>::new("maybe_age").lt_any(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age < ANY (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn field_ref_option_lte_any_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, Option<i64>>::new("maybe_age").lte_any(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age <= ANY (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn field_ref_option_gt_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, Option<i64>>::new("maybe_age").gt_all(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age > ALL (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn field_ref_option_gte_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, Option<i64>>::new("maybe_age").gte_all(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age >= ALL (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn field_ref_option_lt_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, Option<i64>>::new("maybe_age").lt_all(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age < ALL (SELECT id FROM fake_rows)"
+        );
+    }
+
+    #[test]
+    fn field_ref_option_lte_all_visage_emits_quantified_subquery() {
+        let subquery =
+            crate::query::VisageQuerySet::<FakeRowPublic>::new_for_visage("fake_rows", "id")
+                .selecting(test_visage_col::<i64>("id"))
+                .expect("clean queryset");
+        let expr = FieldRef::<FakeRow, Option<i64>>::new("maybe_age").lte_all(subquery);
+        assert_eq!(
+            emit_expr_sql(expr),
+            "maybe_age <= ALL (SELECT id FROM fake_rows)"
+        );
     }
 
     /// FIX_BEFORE_BETA-4: the new
