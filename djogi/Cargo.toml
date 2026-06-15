@@ -1280,3 +1280,8 @@ name = "field_codec_aes_roundtrip"
 path = "../tests/integration/field_codec_aes_roundtrip.rs"
 harness = true
 required-features = ["aes-codec"]
+
+[[test]]
+name = "verify_outbox_scoping"
+path = "../tests/integration/verify_outbox_scoping.rs"
+harness = true

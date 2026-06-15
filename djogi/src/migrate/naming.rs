@@ -65,6 +65,15 @@ pub const MIGRATION_FILE_EXT_LEN: usize = MIGRATION_FILE_EXT.len();
 /// Suffix for the down-side extension (`.down.sdjql`).
 pub(crate) const MIGRATION_DOWN_SUFFIX: &str = ".down.sdjql";
 
+/// Derive the ancillary transactional outbox table for a model table.
+///
+/// This is the single source of truth for the `{parent}_outbox`
+/// convention used across projection, verify, runtime outbox writes,
+/// and refresh polling so those sites cannot drift.
+pub(crate) fn outbox_table_name(parent_table: &str) -> String {
+    format!("{parent_table}_outbox")
+}
+
 /// Prefix used to make a slug identifier-safe when its first byte
 /// would otherwise be a digit. Two letters so the result still fits
 /// `MAX_SLUG_LEN`.
@@ -382,5 +391,24 @@ mod tests {
         let a = sanitize_slug("Add some VERY long migration name -- with junk!!!!");
         let b = sanitize_slug("Add some VERY long migration name -- with junk!!!!");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn outbox_table_name_appends_suffix() {
+        assert_eq!(outbox_table_name("messages"), "messages_outbox");
+        assert_eq!(outbox_table_name("invoices"), "invoices_outbox");
+    }
+
+    #[test]
+    fn outbox_table_name_matches_projection_convention() {
+        let parent = "custom_widgets";
+        assert_eq!(outbox_table_name(parent), format!("{parent}_outbox"));
+    }
+
+    #[test]
+    fn outbox_table_name_matches_runtime_convention() {
+        let parent = "events";
+        let historical = format!("{parent}_outbox");
+        assert_eq!(outbox_table_name(parent), historical);
     }
 }

@@ -443,7 +443,7 @@ where
                 {
                     // Defense-in-depth ident check before SQL embedding,
                     // mirroring `outbox/worker.rs::validate_table_ident`.
-                    let outbox_table = format!("{table_name}_outbox");
+                    let outbox_table = crate::migrate::naming::outbox_table_name(table_name);
                     crate::ident::check_plain_ident(&outbox_table, false).map_err(|e| {
                         crate::DjogiError::Db(crate::error::DbError::other(format!(
                             "outbox poll: invalid outbox table name {outbox_table:?}: {e:?}"
