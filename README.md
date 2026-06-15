@@ -63,6 +63,76 @@ When a query shape still falls outside the typed surface, the raw SQL escape hat
 
 **Planned (not yet shipped):** Rhai interactive shell for model inspection and query building; Maahi admin console — a Dioxus operations UI derived from your model descriptors.
 
+## Visage Subquery Predicates
+
+*Shipped in issues #309 / #446 / #447.*
+
+A **visage** is a typed projection of a model — a smaller struct that exposes only the fields relevant for a given audience or query. `VisageQuerySet` lets you build a subquery from a visage and embed it directly into a model filter without a round-trip.
+
+### Non-nullable fields
+
+```rust
+use djogi::prelude::*;
+
+// Build a subquery projecting the `score` column from AuthorPublic visage rows
+// where score >= 100.
+let high_score_authors = AuthorPublic::filter(|a| a.score().gte(100))
+    .selecting(AuthorPublic::score())
+    .expect("no subquery-modifying calls made");
+
+// Find all Posts whose author_id is in the high-score subquery.
+let posts = Post::objects()
+    .filter(|p| p.author_id().in_visage(high_score_authors))
+    .fetch_all(&ctx)
+    .await?;
+```
+
+Other predicates: `not_in_visage`, `gt_any`, `gte_any`, `lt_any`, `lte_any`, `gt_all`, `gte_all`, `lt_all`, `lte_all`.
+
+### Nullable fields
+
+Nullable model fields (`Option<V>`) accept the same predicates. The subquery must project the **inner value type** `V` — build it from a non-nullable projected column:
+
+```rust
+// ScoreLog has `score: i32` (non-nullable).
+// User has `score: Option<i32>` (nullable).
+// Find all Users whose nullable score equals any score in the log:
+
+let logged_scores = ScoreLogPublic::filter(|s| s.score().gte(0_i32))
+    .selecting(ScoreLogPublic::score())
+    .expect("no subquery-modifying calls");
+
+// `logged_scores` projects `i32`, not `Option<i32>`.
+// The nullable field `user.score: Option<i32>` accepts a VisageSubquery<_, i32>.
+let users = User::objects()
+    .filter(|u| u.score().in_visage(logged_scores))
+    .fetch_all(&ctx)
+    .await?;
+```
+
+The same nullable predicates also work inside a **visage filter closure**, not just a root-model one. A visage column accessor for a nullable field hands you the field handle bound to `Option<V>`, and it accepts the identical inner-type subquery:
+
+```rust
+// `UserPublic` is a visage of `User`; `score` is exposed and declared
+// `Option<i32>` on the model. Inside a visage filter closure, the same
+// `in_visage` (and `not_in_visage` / `*_any` / `*_all`) family is available
+// on the nullable field, accepting a VisageSubquery<_, i32>.
+let public_users = UserPublic::filter(|u| u.score().in_visage(logged_scores))
+    .fetch_all(&ctx)
+    .await?;
+```
+
+> **Design note:** The subquery on the right-hand side of `in_visage` (and the rest of the family) is always built from a **visage column** via `VisageQuerySet::selecting(...)` — that is the only constructor of a `VisageSubquery<_, U>`. A visage column accessor preserves the field's declared type exactly: a field declared `V` yields a `VisageColumn<_, V>` (and a `VisageSubquery<_, V>`), while a field declared `Option<V>` yields a `VisageColumn<_, Option<V>>` (and a `VisageSubquery<_, Option<V>>`). Because the nullable predicates require the **inner** type `U`, the subquery source must be a **non-nullable visage column** — a field declared *without* `Option<_>` on the visage's backing struct. If a nullable visage column's inner values are needed as the subquery source, use a separate visage or visage field that declares that inner type without the `Option` wrapper. The nullable predicate family itself is available symmetrically on both the root-model filter surface (`Model::objects().filter(...)`, where accessors return `DjogiField`) and the visage filter surface (`Visage::filter(...)`, where accessors return `FieldRef`).
+
+### NULL semantics
+
+Standard SQL NULL propagation applies:
+
+- `col IN (subquery)` — if the subquery is empty, returns `FALSE` for every row. If `col` is `NULL`, returns `NULL` (not `FALSE`).
+- `col NOT IN (subquery)` — **trap**: if the subquery contains any `NULL`, the result is `NULL` for every row (no rows match). Use `not_in_visage` only with subqueries that project non-nullable columns, or apply an explicit `IS NOT NULL` filter on the subquery first.
+- `col > ANY (subquery)` — `TRUE` if col is greater than at least one non-NULL row.
+- `col > ALL (subquery)` — vacuously `TRUE` when the subquery is empty (SQL standard).
+
 ## Status
 
 **Current release:** `v0.1.0-alpha.16` (public alpha — API may change before v0.1.0 stable)
