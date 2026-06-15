@@ -1255,9 +1255,12 @@ impl<T: Model, V> IntoConflictExpr<T, V> for ConflictExpr<T, V> {
     }
 }
 
-pub trait IntoConflictUpdates<S: Model, T: Model> {
+pub trait IntoConflictUpdates<S: Model, T: Model>: __conflict_sealed::Sealed {
     fn into_conflict_updates(self) -> Vec<ConflictUpdate<S, T>>;
 }
+
+impl<S: Model, T: Model> __conflict_sealed::Sealed for ConflictUpdate<S, T> {}
+impl<S: Model, T: Model> __conflict_sealed::Sealed for Vec<ConflictUpdate<S, T>> {}
 
 impl<S: Model, T: Model> IntoConflictUpdates<S, T> for ConflictUpdate<S, T> {
     fn into_conflict_updates(self) -> Vec<ConflictUpdate<S, T>> {

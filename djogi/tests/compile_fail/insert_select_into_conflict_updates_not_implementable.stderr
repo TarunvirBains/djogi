@@ -1,0 +1,37 @@
+error[E0277]: the trait bound `Rogue: insert_select::__conflict_sealed::Sealed` is not satisfied
+    --> $DIR/insert_select_into_conflict_updates_not_implementable.rs:8:88
+     |
+   8 | impl<S: djogi::prelude::Model, T: djogi::prelude::Model> IntoConflictUpdates<S, T> for Rogue {
+     |                                                                                        ^^^^^ unsatisfied trait bound
+     |
+help: the trait `insert_select::__conflict_sealed::Sealed` is not implemented for `Rogue`
+    --> $DIR/insert_select_into_conflict_updates_not_implementable.rs:6:1
+     |
+   6 | struct Rogue;
+     | ^^^^^^^^^^^^
+     = help: the following other types implement trait `insert_select::__conflict_sealed::Sealed`:
+               ConflictCondition<T>
+               ConflictExpr<T, V>
+               DjogiField<T, V>
+               ExcludedRef<T, V>
+               FieldRef<T, V>
+               Vec<djogi::ConflictUpdate<S, T>>
+               djogi::ConflictUpdate<S, T>
+note: required by a bound in `djogi::IntoConflictUpdates`
+    --> djogi/src/query/insert_select.rs:1258:52
+     |
+1258 | pub trait IntoConflictUpdates<S: Model, T: Model>: __conflict_sealed::Sealed {
+     |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IntoConflictUpdates`
+     = note: `IntoConflictUpdates` is a "sealed trait", because to implement it you also need to implement `djogi::query::insert_select::__conflict_sealed::Sealed`, which is not accessible; this is usually done to force you to use one of the provided types that already implement it
+     = help: the following types implement the trait:
+               djogi::FieldRef<T, V>
+               djogi::query::DjogiField<T, V>
+               djogi::ConflictCondition<T>
+               djogi::ExcludedRef<T, V>
+               djogi::ConflictExpr<T, V>
+               djogi::ConflictUpdate<S, T>
+               std::vec::Vec<djogi::ConflictUpdate<S, T>>
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0277`.
