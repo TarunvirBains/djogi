@@ -8,18 +8,18 @@ error[E0277]: the trait bound `Vec<InsertSelectColumn<..., ...>>: IntoInsertColu
      |
 help: the trait `IntoInsertColumns<TargetAsSourceSource, TargetAsSourceTarget>` is not implemented for `Vec<InsertSelectColumn<TargetAsSourceTarget, TargetAsSourceTarget>>`
       but trait `IntoInsertColumns<TargetAsSourceTarget, TargetAsSourceTarget>` is implemented for it
-    --> djogi/src/query/insert_select.rs:899:1
+    --> djogi/src/query/insert_select.rs:980:1
      |
- 899 | impl<S: Model, T: Model> IntoInsertColumns<S, T> for Vec<InsertSelectColumn<S, T>> {
+ 980 | impl<S: Model, T: Model> IntoInsertColumns<S, T> for Vec<InsertSelectColumn<S, T>> {
      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
      = help: for that trait implementation, expected `TargetAsSourceTarget`, found `TargetAsSourceSource`
 note: required by a bound in `insert_select::<impl QuerySet<S>>::insert_into`
-    --> djogi/src/query/insert_select.rs:1954:12
+    --> djogi/src/query/insert_select.rs:2324:12
      |
-1950 |     pub fn insert_into<T, F, I>(self, f: F) -> InsertSelectStmt<S, T>
+2320 |     pub fn insert_into<T, F, I>(self, f: F) -> InsertSelectStmt<S, T>
      |            ----------- required by a bound in this associated function
 ...
-1954 |         I: IntoInsertColumns<S, T>,
+2324 |         I: IntoInsertColumns<S, T>,
      |            ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `insert_select::<impl QuerySet<S>>::insert_into`
      = note: the full name for the type has been written to '$LONGTYPE_FILE'
      = note: consider using `--verbose` to print the full type name to the console
