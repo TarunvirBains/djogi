@@ -1,8 +1,8 @@
 error[E0599]: no method named `over` found for struct `AggregateExpr<i64, HypotheticalSetAgg>` in the current scope
   --> $DIR/rank_of_over.rs:12:79
    |
-12 | ....salary().rank_of(7_500).over(|w| w));
-   |                             ^^^^ method not found in `AggregateExpr<i64, HypotheticalSetAgg>`
+12 |     let _ = RankOfOverModel::objects().annotate(|f| f.salary().rank_of(7_500).over(|w| w));
+   |                                                                               ^^^^ method not found in `AggregateExpr<i64, HypotheticalSetAgg>`
    |
    = note: the method was found for `AggregateExpr<Out>`
 

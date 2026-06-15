@@ -4,7 +4,7 @@ error[E0308]: mismatched types
   9 |     let _: InlineValues<(i64, f64)> = InlineValues::new(
     |                                       ----------------- arguments to this function are incorrect
 ...
- 12 |         ("a", "b", "c"),  // ← wrong arity: three names for a two-colum...
+ 12 |         ("a", "b", "c"),  // ← wrong arity: three names for a two-column row
     |         ^^^^^^^^^^^^^^^ expected a tuple with 2 elements, found one with 3 elements
     |
     = note: expected tuple `(&'static str, &'static str)`
@@ -12,7 +12,7 @@ error[E0308]: mismatched types
 note: associated function defined here
    --> djogi/src/query/values.rs:805:12
     |
-805 |     pub fn new(rows: Vec<Row>, alias: &str, columns: Row::Columns) -> R...
+805 |     pub fn new(rows: Vec<Row>, alias: &str, columns: Row::Columns) -> Result<Self, DjogiError> {
     |            ^^^
 
 error: aborting due to 1 previous error

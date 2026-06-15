@@ -1,4 +1,4 @@
-error[E0277]: the trait bound `Vec<...>: IntoMergeUpdates<..., ...>` is not satisfied
+error[E0277]: the trait bound `Vec<MergeUpdateAssignment<..., ...>>: IntoMergeUpdates<..., ...>` is not satisfied
    --> $DIR/merge_wrong_side.rs:31:96
     |
  31 |           .when_matched_and_update(None::<MergeWhenCondition<WrongSideSource, WrongSideTarget>>, vec![
@@ -12,7 +12,7 @@ error[E0277]: the trait bound `Vec<...>: IntoMergeUpdates<..., ...>` is not sati
  36 | |         ]);
     | |_________^ unsatisfied trait bound
     |
-help: the trait `IntoMergeUpdates<WrongSideSource, WrongSideTarget>` is not implemented for `Vec<MergeUpdateAssignment<..., ...>>`
+help: the trait `IntoMergeUpdates<WrongSideSource, WrongSideTarget>` is not implemented for `Vec<MergeUpdateAssignment<WrongSideTarget, WrongSideSource>>`
       but trait `IntoMergeUpdates<WrongSideTarget, WrongSideSource>` is implemented for it
    --> djogi/src/query/merge.rs:869:1
     |
@@ -21,7 +21,7 @@ help: the trait `IntoMergeUpdates<WrongSideSource, WrongSideTarget>` is not impl
 note: required by a bound in `MergeStmt::<S, T>::when_matched_and_update`
    --> djogi/src/query/merge.rs:97:12
     |
- 94 |     pub fn when_matched_and_update<C, U>(mut self, condition: Option<C>...
+ 94 |     pub fn when_matched_and_update<C, U>(mut self, condition: Option<C>, updates: U) -> Self
     |            ----------------------- required by a bound in this associated function
 ...
  97 |         U: IntoMergeUpdates<S, T>,

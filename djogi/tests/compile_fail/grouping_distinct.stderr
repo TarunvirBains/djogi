@@ -1,8 +1,8 @@
 error[E0599]: no method named `distinct` found for struct `AggregateExpr<i32, MetadataAgg>` in the current scope
   --> $DIR/grouping_distinct.rs:12:81
    |
-12 | ...().distinct());
-   |       ^^^^^^^^ method not found in `AggregateExpr<i32, MetadataAgg>`
+12 |     let _ = GroupingDistinctModel::objects().annotate(|f| f.region().grouping().distinct());
+   |                                                                                 ^^^^^^^^ method not found in `AggregateExpr<i32, MetadataAgg>`
    |
    = note: the method was found for `AggregateExpr<Out>`
 

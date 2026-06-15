@@ -3,14 +3,11 @@ error[E0599]: no method named `over` found for struct `AsMvtTerminal<T, A>` in t
    |
 14 |       let _ = TileFeature::objects()
    |  _____________-
-15 | |         .as_mvt_with_options(MvtOptions::new("tiles").with_geom_name("...
+15 | |         .as_mvt_with_options(MvtOptions::new("tiles").with_geom_name("location"))
 16 | |         .over(|w| w);
-   | |         -^^^^ method not found in `AsMvtTerminal<TileFeature, ...>`
+   | |         -^^^^ method not found in `AsMvtTerminal<TileFeature, djogi::query::EmptyAnnotation>`
    | |_________|
    |
-   |
-   = note: the full name for the type has been written to '$LONGTYPE_FILE'
-   = note: consider using `--verbose` to print the full type name to the console
 
 error: aborting due to 1 previous error
 

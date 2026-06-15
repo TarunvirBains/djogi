@@ -1,10 +1,10 @@
 error[E0277]: expected a `FnOnce(AnimalFields, ValuesFields<(i64, f64)>)` closure, found `&str`
    --> $DIR/values_join_raw_on_unavailable.rs:20:55
     |
- 20 | ...bjects().join_values(weights, "w.animal_id = animals.id");
-    |             -----------          ^^^^^^^^^^^^^^^^^^^^^^^^^^ expected an `FnOnce(AnimalFields, ValuesFields<(i64, f64)>)` closure, found `&str`
-    |             |
-    |             required by a bound introduced by this call
+ 20 |     let _bad = Animal::objects().join_values(weights, "w.animal_id = animals.id");
+    |                                  -----------          ^^^^^^^^^^^^^^^^^^^^^^^^^^ expected an `FnOnce(AnimalFields, ValuesFields<(i64, f64)>)` closure, found `&str`
+    |                                  |
+    |                                  required by a bound introduced by this call
     |
     = help: the trait `Fn(AnimalFields, ValuesFields<(i64, f64)>)` is not implemented for `str`
     = note: required for `&str` to implement `FnOnce(AnimalFields, ValuesFields<(i64, f64)>)`

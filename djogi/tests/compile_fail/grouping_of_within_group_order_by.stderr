@@ -1,8 +1,8 @@
 error[E0599]: no method named `within_group_order_by` found for struct `AggregateExpr<i32, MetadataAgg>` in the current scope
   --> $DIR/grouping_of_within_group_order_by.rs:14:49
    |
-14 | ..."region", "dept"]).within_group_order_by(f.region().asc())
-   |                       ^^^^^^^^^^^^^^^^^^^^^ method not found in `AggregateExpr<i32, MetadataAgg>`
+14 |         djogi::grouping_of(&["region", "dept"]).within_group_order_by(f.region().asc())
+   |                                                 ^^^^^^^^^^^^^^^^^^^^^ method not found in `AggregateExpr<i32, MetadataAgg>`
    |
    = note: the method was found for
            - `AggregateExpr<Out, HypotheticalSetAgg>`

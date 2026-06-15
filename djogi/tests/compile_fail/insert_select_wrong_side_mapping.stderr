@@ -1,4 +1,4 @@
-error[E0277]: the trait bound `Vec<...>: IntoInsertColumns<..., ...>` is not satisfied
+error[E0277]: the trait bound `Vec<InsertSelectColumn<..., ...>>: IntoInsertColumns<..., ...>` is not satisfied
     --> $DIR/insert_select_wrong_side_mapping.rs:37:44
      |
   37 |         .insert_into::<WrongSideTarget, _, _>(|target, source| {
@@ -6,7 +6,7 @@ error[E0277]: the trait bound `Vec<...>: IntoInsertColumns<..., ...>` is not sat
      |          |
      |          required by a bound introduced by this call
      |
-help: the trait `IntoInsertColumns<WrongSideSource, WrongSideTarget>` is not implemented for `Vec<InsertSelectColumn<..., ...>>`
+help: the trait `IntoInsertColumns<WrongSideSource, WrongSideTarget>` is not implemented for `Vec<InsertSelectColumn<WrongSideTarget, WrongSideSource>>`
       but trait `IntoInsertColumns<WrongSideTarget, WrongSideSource>` is implemented for it
     --> djogi/src/query/insert_select.rs:1113:1
      |

@@ -1,8 +1,8 @@
 error[E0599]: no method named `where_predicate` found for enum `Option<T>` in the current scope
     --> $DIR/insert_select_on_conflict_where_predicate_on_none.rs:11:48
      |
-  11 | ...pNoneTarget>::none().where_predicate(|t| t.published().conflict_is_...
-     |                         ^^^^^^^^^^^^^^^ method not found in `Option<djogi::ConflictTarget<WpNoneTarget>>`
+  11 |         ConflictTarget::<WpNoneTarget>::none().where_predicate(|t| t.published().conflict_is_true());
+     |                                                ^^^^^^^^^^^^^^^ method not found in `Option<djogi::ConflictTarget<WpNoneTarget>>`
      |
 note: the method `where_predicate` exists on the type `djogi::ConflictTarget<WpNoneTarget>`
     --> djogi/src/query/insert_select.rs:1696:5
