@@ -359,6 +359,9 @@ impl<S: Model, V> FieldRef<S, V> {
 }
 
 impl<T: Model, V> FieldRef<T, V> {
+    /// Reference this column on the `EXCLUDED` pseudo-row — the
+    /// would-have-been-inserted value — for use inside `DO UPDATE SET` or
+    /// a conflict `WHERE` predicate.
     #[must_use = "an ExcludedRef is lazy — use it in a DO UPDATE SET assignment or a condition"]
     pub fn excluded(self) -> ExcludedRef<T, V> {
         ExcludedRef::from_node(ExprNode::Excluded {
@@ -366,6 +369,8 @@ impl<T: Model, V> FieldRef<T, V> {
         })
     }
 
+    /// Reference this column on the existing (target) row as a
+    /// [`ConflictExpr`], e.g. the left operand of `col = col + EXCLUDED.col`.
     #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
     pub fn as_conflict_expr(self) -> ConflictExpr<T, V> {
         ConflictExpr::from_node(ExprNode::Field {
@@ -527,6 +532,8 @@ impl<T: Model, V> FieldRef<T, V> {
         }
     }
 
+    /// Build a `DO UPDATE SET` assignment that sets this target column to
+    /// an `EXCLUDED` column value.
     #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
     pub fn conflict_set<S: Model>(self, value: ExcludedRef<T, V>) -> ConflictUpdate<S, T> {
         ConflictUpdate {
@@ -536,6 +543,9 @@ impl<T: Model, V> FieldRef<T, V> {
         }
     }
 
+    /// Build a `DO UPDATE SET` assignment that sets this target column to
+    /// an arbitrary conflict expression (a target column, an `EXCLUDED`
+    /// column, or arithmetic over them).
     #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
     pub fn conflict_set_expr<S: Model, E>(self, value: E) -> ConflictUpdate<S, T>
     where
@@ -550,6 +560,8 @@ impl<T: Model, V> FieldRef<T, V> {
         }
     }
 
+    /// Build a `DO UPDATE SET` assignment that sets this target column to
+    /// a bound literal value.
     #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
     pub fn conflict_set_value<S: Model>(self, value: V) -> ConflictUpdate<S, T>
     where
@@ -563,6 +575,9 @@ impl<T: Model, V> FieldRef<T, V> {
         }
     }
 
+    /// Build a `DO UPDATE SET` assignment that sets this target column to
+    /// its own `EXCLUDED` value (`col = EXCLUDED.col`) — the common
+    /// "overwrite with the incoming value" case.
     #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
     pub fn conflict_excluded<S: Model>(self) -> ConflictUpdate<S, T> {
         let column = self.column();
@@ -575,6 +590,8 @@ impl<T: Model, V> FieldRef<T, V> {
         }
     }
 
+    /// Build a `DO UPDATE SET` assignment that adds a literal to this
+    /// target column's existing value (`col = col + value`).
     #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
     pub fn conflict_add<S: Model>(self, value: V) -> ConflictUpdate<S, T>
     where
@@ -583,6 +600,8 @@ impl<T: Model, V> FieldRef<T, V> {
         self.conflict_arith::<S>(value, ExprNode::Add)
     }
 
+    /// Build a `DO UPDATE SET` assignment that subtracts a literal from
+    /// this target column's existing value (`col = col - value`).
     #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
     pub fn conflict_sub<S: Model>(self, value: V) -> ConflictUpdate<S, T>
     where
@@ -591,6 +610,8 @@ impl<T: Model, V> FieldRef<T, V> {
         self.conflict_arith::<S>(value, ExprNode::Sub)
     }
 
+    /// Build a `DO UPDATE SET` assignment that multiplies this target
+    /// column's existing value by a literal (`col = col * value`).
     #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
     pub fn conflict_mul<S: Model>(self, value: V) -> ConflictUpdate<S, T>
     where
@@ -599,6 +620,8 @@ impl<T: Model, V> FieldRef<T, V> {
         self.conflict_arith::<S>(value, ExprNode::Mul)
     }
 
+    /// Build a `DO UPDATE SET` assignment that divides this target
+    /// column's existing value by a literal (`col = col / value`).
     #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
     pub fn conflict_div<S: Model>(self, value: V) -> ConflictUpdate<S, T>
     where
@@ -626,6 +649,8 @@ impl<T: Model, V> FieldRef<T, V> {
         }
     }
 
+    /// Build an equality predicate comparing this target column to another
+    /// conflict expression, for use in a conflict `WHERE` guard.
     pub fn conflict_eq<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(
             ExprNode::Field {
@@ -636,6 +661,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build an inequality (`<>`) predicate comparing this target column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
     pub fn conflict_neq<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(
             ExprNode::Field {
@@ -646,6 +673,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build a greater-than predicate comparing this target column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
     pub fn conflict_gt<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(
             ExprNode::Field {
@@ -656,6 +685,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build a greater-than-or-equal predicate comparing this target column
+    /// to another conflict expression, for use in a conflict `WHERE` guard.
     pub fn conflict_gte<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(
             ExprNode::Field {
@@ -666,6 +697,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build a less-than predicate comparing this target column to another
+    /// conflict expression, for use in a conflict `WHERE` guard.
     pub fn conflict_lt<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(
             ExprNode::Field {
@@ -676,6 +709,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build a less-than-or-equal predicate comparing this target column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
     pub fn conflict_lte<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(
             ExprNode::Field {
@@ -686,6 +721,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build an equality predicate comparing this target column to a bound
+    /// literal value, for use in a conflict `WHERE` guard.
     pub fn conflict_eq_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -700,6 +737,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build an inequality (`<>`) predicate comparing this target column to
+    /// a bound literal value, for use in a conflict `WHERE` guard.
     pub fn conflict_neq_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -714,6 +753,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build a greater-than predicate comparing this target column to a
+    /// bound literal value, for use in a conflict `WHERE` guard.
     pub fn conflict_gt_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -728,6 +769,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build a greater-than-or-equal predicate comparing this target column
+    /// to a bound literal value, for use in a conflict `WHERE` guard.
     pub fn conflict_gte_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -742,6 +785,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build a less-than predicate comparing this target column to a bound
+    /// literal value, for use in a conflict `WHERE` guard.
     pub fn conflict_lt_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -756,6 +801,8 @@ impl<T: Model, V> FieldRef<T, V> {
         )
     }
 
+    /// Build a less-than-or-equal predicate comparing this target column to
+    /// a bound literal value, for use in a conflict `WHERE` guard.
     pub fn conflict_lte_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -772,6 +819,8 @@ impl<T: Model, V> FieldRef<T, V> {
 }
 
 impl<T: Model> FieldRef<T, bool> {
+    /// Build a predicate that is true when this boolean target column is
+    /// true, for use in a conflict `WHERE` guard.
     pub fn conflict_is_true(self) -> ConflictCondition<T> {
         ConflictCondition {
             node: ExprNode::Field {
@@ -781,6 +830,8 @@ impl<T: Model> FieldRef<T, bool> {
         }
     }
 
+    /// Build a predicate that is true when this boolean target column is
+    /// false, for use in a conflict `WHERE` guard.
     pub fn conflict_is_false(self) -> ConflictCondition<T> {
         ConflictCondition {
             node: ExprNode::Not(Box::new(ExprNode::Field {
@@ -792,30 +843,47 @@ impl<T: Model> FieldRef<T, bool> {
 }
 
 impl<T: Model, V> ExcludedRef<T, V> {
+    /// Build an equality predicate comparing this `EXCLUDED` column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
     pub fn conflict_eq<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(self.node, CmpOp::Eq, rhs.into_conflict_expr().node)
     }
 
+    /// Build an inequality (`<>`) predicate comparing this `EXCLUDED`
+    /// column to another conflict expression, for use in a conflict
+    /// `WHERE` guard.
     pub fn conflict_neq<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(self.node, CmpOp::Neq, rhs.into_conflict_expr().node)
     }
 
+    /// Build a greater-than predicate comparing this `EXCLUDED` column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
     pub fn conflict_gt<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(self.node, CmpOp::Gt, rhs.into_conflict_expr().node)
     }
 
+    /// Build a greater-than-or-equal predicate comparing this `EXCLUDED`
+    /// column to another conflict expression, for use in a conflict
+    /// `WHERE` guard.
     pub fn conflict_gte<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(self.node, CmpOp::Gte, rhs.into_conflict_expr().node)
     }
 
+    /// Build a less-than predicate comparing this `EXCLUDED` column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
     pub fn conflict_lt<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(self.node, CmpOp::Lt, rhs.into_conflict_expr().node)
     }
 
+    /// Build a less-than-or-equal predicate comparing this `EXCLUDED`
+    /// column to another conflict expression, for use in a conflict
+    /// `WHERE` guard.
     pub fn conflict_lte<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
         conflict_condition(self.node, CmpOp::Lte, rhs.into_conflict_expr().node)
     }
 
+    /// Build an equality predicate comparing this `EXCLUDED` column to a
+    /// bound literal value, for use in a conflict `WHERE` guard.
     pub fn conflict_eq_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -824,6 +892,9 @@ impl<T: Model, V> ExcludedRef<T, V> {
         conflict_condition(self.node, CmpOp::Eq, e.node)
     }
 
+    /// Build an inequality (`<>`) predicate comparing this `EXCLUDED`
+    /// column to a bound literal value, for use in a conflict `WHERE`
+    /// guard.
     pub fn conflict_neq_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -832,6 +903,8 @@ impl<T: Model, V> ExcludedRef<T, V> {
         conflict_condition(self.node, CmpOp::Neq, e.node)
     }
 
+    /// Build a greater-than predicate comparing this `EXCLUDED` column to
+    /// a bound literal value, for use in a conflict `WHERE` guard.
     pub fn conflict_gt_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -840,6 +913,9 @@ impl<T: Model, V> ExcludedRef<T, V> {
         conflict_condition(self.node, CmpOp::Gt, e.node)
     }
 
+    /// Build a greater-than-or-equal predicate comparing this `EXCLUDED`
+    /// column to a bound literal value, for use in a conflict `WHERE`
+    /// guard.
     pub fn conflict_gte_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -848,6 +924,8 @@ impl<T: Model, V> ExcludedRef<T, V> {
         conflict_condition(self.node, CmpOp::Gte, e.node)
     }
 
+    /// Build a less-than predicate comparing this `EXCLUDED` column to a
+    /// bound literal value, for use in a conflict `WHERE` guard.
     pub fn conflict_lt_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -856,6 +934,9 @@ impl<T: Model, V> ExcludedRef<T, V> {
         conflict_condition(self.node, CmpOp::Lt, e.node)
     }
 
+    /// Build a less-than-or-equal predicate comparing this `EXCLUDED`
+    /// column to a bound literal value, for use in a conflict `WHERE`
+    /// guard.
     pub fn conflict_lte_value(self, value: V) -> ConflictCondition<T>
     where
         V: Into<Expr<V>>,
@@ -906,6 +987,15 @@ mod __conflict_sealed {
     pub trait Sealed {}
 }
 
+/// The accumulated `ON CONFLICT` clause attached to an
+/// [`InsertSelectStmt`]. Holds an optional [`ConflictTarget`] (the
+/// arbiter — which unique index or constraint the conflict is detected
+/// on) and a [`ConflictAction`] (`DO NOTHING` or `DO UPDATE SET ...`).
+/// Inert until the statement executes; build it through
+/// [`InsertSelectStmt::on_conflict_do_nothing`],
+/// [`InsertSelectStmt::on_conflict_do_update`], or
+/// [`InsertSelectStmt::on_conflict_do_update_where`] rather than
+/// constructing it directly.
 #[must_use = "an OnConflictClause is inert until attached to an InsertSelectStmt and executed"]
 pub struct OnConflictClause<S: Model, T: Model> {
     pub(crate) target: Option<ConflictTarget<T>>,
@@ -930,16 +1020,49 @@ impl<S: Model, T: Model> std::fmt::Debug for OnConflictClause<S, T> {
     }
 }
 
+/// The conflict arbiter for an `ON CONFLICT` clause — which unique index
+/// or named constraint Postgres checks the incoming row against.
+/// # Variants
+/// - `Columns` — infer the arbiter from a column list (`ON CONFLICT
+///   (col, ...)`), optionally narrowed by a partial-index inference
+///   predicate via [`ConflictTarget::where_predicate`].
+/// - `Constraint` — name a constraint explicitly (`ON CONFLICT ON
+///   CONSTRAINT <name>`).
+///
+/// Construct via [`ConflictTarget::columns`] /
+/// [`ConflictTarget::columns_of`] / [`ConflictTarget::constraint`]; pass
+/// [`ConflictTarget::none`] for a bare `ON CONFLICT` with no arbiter
+/// (only valid with `DO NOTHING`).
+/// # Why the fields are validated at execution, not just construction
+/// The variant fields are public. The constructors validate identifiers,
+/// but a re-validation runs in the execution path so post-construction
+/// mutation cannot route an unchecked identifier into the emitted SQL.
 #[non_exhaustive]
 pub enum ConflictTarget<T: Model> {
+    /// Infer the conflict arbiter from a column list (`ON CONFLICT
+    /// (col, ...)`). `inference_predicate` narrows the match to a
+    /// partial unique index.
     #[non_exhaustive]
     Columns {
+        /// The arbiter columns, in declaration order. Validated against
+        /// the target descriptor and the plain-identifier contract
+        /// before emission.
         columns: Vec<&'static str>,
+        /// Optional `WHERE` predicate selecting a partial unique index;
+        /// may reference only target-table columns, never `EXCLUDED`.
         inference_predicate: Option<Box<ConflictCondition<T>>>,
     },
+    /// Name a unique or exclusion constraint explicitly (`ON CONFLICT ON
+    /// CONSTRAINT <name>`). A constraint target cannot carry an
+    /// inference predicate.
     #[non_exhaustive]
     Constraint {
+        /// The constraint name. Validated against the plain-identifier
+        /// contract before it is emitted unquoted.
         name: &'static str,
+        /// Always `None` for a constraint target — a `WHERE` inference
+        /// predicate is rejected at execution because Postgres does not
+        /// accept one on `ON CONFLICT ON CONSTRAINT`.
         inference_predicate: Option<Box<ConflictCondition<T>>>,
     },
 }
@@ -988,6 +1111,11 @@ impl<T: Model> std::fmt::Debug for ConflictTarget<T> {
     }
 }
 
+/// A builder for a column-inferred [`ConflictTarget`] that accepts
+/// heterogeneous column value types in one chain —
+/// `ConflictColumns::new().column(f.a()).column(f.b())` — where
+/// [`ConflictTarget::columns`]'s single-`V` iterator signature cannot.
+/// Pass the finished builder to [`ConflictTarget::columns_of`].
 #[must_use = "a ConflictColumns builder is inert until passed to ConflictTarget::columns_of"]
 pub struct ConflictColumns<T: Model> {
     cols: Vec<&'static str>,
@@ -995,6 +1123,9 @@ pub struct ConflictColumns<T: Model> {
 }
 
 impl<T: Model> ConflictColumns<T> {
+    /// Start an empty arbiter-column builder. Add columns with
+    /// [`ConflictColumns::column`], then hand the result to
+    /// [`ConflictTarget::columns_of`].
     pub fn new() -> Self {
         Self {
             cols: Vec::new(),
@@ -1002,6 +1133,9 @@ impl<T: Model> ConflictColumns<T> {
         }
     }
 
+    /// Append one arbiter column. Each call may carry a different value
+    /// type `V`, which is why this builder exists alongside the
+    /// homogeneous [`ConflictTarget::columns`] iterator constructor.
     pub fn column<V, C>(mut self, col: C) -> Self
     where
         C: IntoConflictColumn<T, V>,
@@ -1017,7 +1151,13 @@ impl<T: Model> Default for ConflictColumns<T> {
     }
 }
 
+/// Sealed bridge that lets a typed field reference ([`FieldRef`] or
+/// [`DjogiField`]) act as a conflict-arbiter column. Carries the value
+/// type `V` so [`ConflictColumns::column`] can accept heterogeneous
+/// column types. Not implementable downstream.
 pub trait IntoConflictColumn<T: Model, V>: __conflict_sealed::Sealed {
+    /// Extract the underlying column name. Implementors return the
+    /// already-validated `&'static str` column identifier.
     fn conflict_column_name(self) -> &'static str;
 }
 
@@ -1036,6 +1176,12 @@ impl<T: Model, V> IntoConflictColumn<T, V> for DjogiField<T, V> {
     }
 }
 
+/// A typed expression in the `DO UPDATE SET` right-hand side or a
+/// conflict `WHERE` predicate. Wraps the crate-private expression IR and
+/// carries the target model `T` and value type `V` at compile time.
+/// Produced by [`FieldRef::as_conflict_expr`],
+/// [`ExcludedRef::into_conflict_expr`], or arithmetic on those; consumed
+/// by [`FieldRef::conflict_set_expr`].
 pub struct ConflictExpr<T: Model, V> {
     pub(crate) node: ExprNode,
     pub(crate) _marker: PhantomData<fn() -> (T, V)>,
@@ -1064,6 +1210,12 @@ impl<T: Model, V> std::fmt::Debug for ConflictExpr<T, V> {
     }
 }
 
+/// A reference to a column of the `EXCLUDED` pseudo-row — the
+/// would-have-been-inserted values, available inside `DO UPDATE SET` and
+/// the conflict `WHERE` predicate. Produced by [`FieldRef::excluded`].
+/// Use [`ExcludedRef::into_conflict_expr`] to place it in an assignment,
+/// or the `conflict_*` comparison methods to build a predicate against
+/// it.
 pub struct ExcludedRef<T: Model, V> {
     pub(crate) node: ExprNode,
     pub(crate) _marker: PhantomData<fn() -> (T, V)>,
@@ -1077,6 +1229,9 @@ impl<T: Model, V> ExcludedRef<T, V> {
         }
     }
 
+    /// Convert this `EXCLUDED.<col>` reference into a [`ConflictExpr`] so
+    /// it can be assigned in a `DO UPDATE SET` list or composed with
+    /// arithmetic.
     #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
     pub fn into_conflict_expr(self) -> ConflictExpr<T, V> {
         ConflictExpr::from_node(self.node)
@@ -1097,6 +1252,11 @@ impl<T: Model, V> std::fmt::Debug for ExcludedRef<T, V> {
     }
 }
 
+/// A boolean predicate over target-table columns and/or `EXCLUDED`
+/// columns. Used as a partial-index inference predicate
+/// ([`ConflictTarget::where_predicate`]) or a `DO UPDATE ... WHERE`
+/// guard ([`InsertSelectStmt::on_conflict_do_update_where`]). Compose
+/// with [`ConflictCondition::and`] / [`ConflictCondition::or`] / `!`.
 pub struct ConflictCondition<T: Model> {
     pub(crate) node: ExprNode,
     pub(crate) _marker: PhantomData<fn() -> T>,
@@ -1119,7 +1279,14 @@ impl<T: Model> std::fmt::Debug for ConflictCondition<T> {
     }
 }
 
+/// Sealed bridge for the predicate closures on
+/// [`ConflictTarget::where_predicate`] and
+/// [`InsertSelectStmt::on_conflict_do_update_where`], letting a closure
+/// return a [`ConflictCondition`] directly. Not implementable
+/// downstream.
 pub trait IntoConflictCondition<T: Model>: __conflict_sealed::Sealed {
+    /// Convert `self` into the canonical [`ConflictCondition`] the
+    /// builder stores.
     fn into_conflict_condition(self) -> ConflictCondition<T>;
 }
 
@@ -1144,6 +1311,11 @@ impl Clone for ConflictUpdateValue {
     }
 }
 
+/// A single `column = expression` assignment in a `DO UPDATE SET` list.
+/// Built by the `conflict_set*` / `conflict_excluded` / `conflict_add`
+/// (etc.) methods on a target [`FieldRef`]; the closure passed to
+/// [`InsertSelectStmt::on_conflict_do_update`] returns one or a `Vec` of
+/// them.
 pub struct ConflictUpdate<S: Model, T: Model> {
     pub(crate) target_column: &'static str,
     pub(crate) value: ConflictUpdateValue,
@@ -1181,12 +1353,26 @@ impl<S: Model, T: Model> ConflictUpdate<S, T> {
     }
 }
 
+/// What Postgres does when an incoming row conflicts on the
+/// [`ConflictTarget`] arbiter: `DO NOTHING` (skip the row) or `DO UPDATE
+/// SET ...` (merge into the existing row using the `EXCLUDED` pseudo-row
+/// for incoming values). Built indirectly by the `on_conflict_*` builders
+/// on [`InsertSelectStmt`].
 #[non_exhaustive]
 pub enum ConflictAction<S: Model, T: Model> {
+    /// Skip the conflicting row, leaving the existing row unchanged
+    /// (`ON CONFLICT ... DO NOTHING`).
     DoNothing,
+    /// Merge the conflicting row into the existing one
+    /// (`ON CONFLICT ... DO UPDATE SET ...`), optionally guarded by a
+    /// `WHERE` clause.
     #[non_exhaustive]
     DoUpdate {
+        /// The `SET column = expr` assignments; never empty (an empty
+        /// list is rejected at execution).
         assignments: Vec<ConflictUpdate<S, T>>,
+        /// Optional `WHERE` guard; when false Postgres skips the row
+        /// rather than updating it.
         where_clause: Option<Box<ConflictCondition<T>>>,
     },
 }
@@ -1222,7 +1408,13 @@ impl<S: Model, T: Model> std::fmt::Debug for ConflictAction<S, T> {
     }
 }
 
+/// Sealed bridge that lets a typed field reference, an [`ExcludedRef`],
+/// or an existing [`ConflictExpr`] be used as the right-hand side of a
+/// conflict assignment or comparison. Carries the value type `V` so the
+/// two sides of a comparison are pinned to the same type. Not
+/// implementable downstream.
 pub trait IntoConflictExpr<T: Model, V>: __conflict_sealed::Sealed {
+    /// Convert `self` into the canonical [`ConflictExpr`].
     fn into_conflict_expr(self) -> ConflictExpr<T, V>;
 }
 
@@ -1255,7 +1447,14 @@ impl<T: Model, V> IntoConflictExpr<T, V> for ConflictExpr<T, V> {
     }
 }
 
+/// Sealed bridge for the update closures on
+/// [`InsertSelectStmt::on_conflict_do_update`] and
+/// [`InsertSelectStmt::on_conflict_do_update_where`], letting the closure
+/// return either a single [`ConflictUpdate`] or a `Vec` of them. Not
+/// implementable downstream.
 pub trait IntoConflictUpdates<S: Model, T: Model>: __conflict_sealed::Sealed {
+    /// Normalize `self` into the `Vec<ConflictUpdate<S, T>>` the builder
+    /// stores.
     fn into_conflict_updates(self) -> Vec<ConflictUpdate<S, T>>;
 }
 
@@ -1275,6 +1474,14 @@ impl<S: Model, T: Model> IntoConflictUpdates<S, T> for Vec<ConflictUpdate<S, T>>
 }
 
 impl<T: Model> ConflictTarget<T> {
+    /// Infer the conflict arbiter from a homogeneous list of target
+    /// fields (`ON CONFLICT (col, ...)`). All fields must share the same
+    /// value type `V`; for a mix of column types use
+    /// [`ConflictColumns`] + [`ConflictTarget::columns_of`] instead.
+    /// # Example
+    /// ```ignore
+    /// ConflictTarget::columns([DailyTotal::fields().day()])
+    /// ```
     #[must_use]
     pub fn columns<I, C, V>(fields: I) -> Self
     where
@@ -1290,6 +1497,17 @@ impl<T: Model> ConflictTarget<T> {
         }
     }
 
+    /// Infer the conflict arbiter from a [`ConflictColumns`] builder,
+    /// which (unlike [`ConflictTarget::columns`]) accepts arbiter columns
+    /// of differing value types.
+    /// # Example
+    /// ```ignore
+    /// ConflictTarget::columns_of(
+    ///     ConflictColumns::new()
+    ///         .column(Account::fields().tenant_id())
+    ///         .column(Account::fields().email()),
+    /// )
+    /// ```
     #[must_use]
     pub fn columns_of(builder: ConflictColumns<T>) -> Self {
         Self::Columns {
@@ -1298,6 +1516,17 @@ impl<T: Model> ConflictTarget<T> {
         }
     }
 
+    /// Name a unique or exclusion constraint explicitly (`ON CONFLICT ON
+    /// CONSTRAINT <name>`).
+    /// # Panics
+    /// Panics if `name` is not a valid Postgres identifier (non-empty,
+    /// ≤63 bytes, ASCII letter/underscore start, not a reserved keyword)
+    /// — the name lands unquoted in the emitted SQL, so a malformed name
+    /// is a framework-misuse bug, not a recoverable runtime condition.
+    /// # Example
+    /// ```ignore
+    /// ConflictTarget::constraint("accounts_email_key")
+    /// ```
     #[must_use]
     pub fn constraint(name: &'static str) -> Self {
         crate::ident::assert_plain_ident(name, "conflict constraint name");
@@ -1307,12 +1536,29 @@ impl<T: Model> ConflictTarget<T> {
         }
     }
 
+    /// A bare `ON CONFLICT` with no arbiter — Postgres treats any unique
+    /// conflict as a match. Only valid with `DO NOTHING`; returns
+    /// `None`, which the `on_conflict_*` builders accept via
+    /// `impl Into<Option<ConflictTarget<T>>>`.
+    /// # Example
+    /// ```ignore
+    /// .on_conflict_do_nothing(ConflictTarget::<Account>::none())
+    /// ```
     #[must_use]
     #[allow(clippy::self_named_constructors)]
     pub fn none() -> Option<Self> {
         None
     }
 
+    /// Narrow a column arbiter to a partial unique index by attaching an
+    /// inference `WHERE` predicate. The predicate may reference only
+    /// target-table columns (never `EXCLUDED`); a constraint target with
+    /// a predicate is rejected at execution.
+    /// # Example
+    /// ```ignore
+    /// ConflictTarget::columns([Doc::fields().slug()])
+    ///     .where_predicate(|t| t.published().conflict_is_true())
+    /// ```
     #[must_use]
     pub fn where_predicate<F, C>(self, f: F) -> Self
     where
@@ -1337,6 +1583,8 @@ impl<T: Model> ConflictTarget<T> {
 }
 
 impl<T: Model> ConflictCondition<T> {
+    /// Combine two predicates with `AND`. Use `!cond` (via
+    /// [`std::ops::Not`]) for negation.
     pub fn and(self, other: ConflictCondition<T>) -> ConflictCondition<T> {
         ConflictCondition {
             node: ExprNode::And(Box::new(self.node), Box::new(other.node)),
@@ -1344,6 +1592,7 @@ impl<T: Model> ConflictCondition<T> {
         }
     }
 
+    /// Combine two predicates with `OR`.
     pub fn or(self, other: ConflictCondition<T>) -> ConflictCondition<T> {
         ConflictCondition {
             node: ExprNode::Or(Box::new(self.node), Box::new(other.node)),
@@ -1710,6 +1959,28 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
         Ok(())
     }
 
+    /// Attach an `ON CONFLICT (...) DO NOTHING` clause: when an incoming
+    /// row conflicts on `target`, skip it and leave the existing row
+    /// untouched.
+    /// # Why
+    /// Idempotent bulk insert — copy rows that do not already exist on a
+    /// unique key, in one statement, without a per-row existence check.
+    /// `target` accepts a [`ConflictTarget`] or
+    /// [`ConflictTarget::none`] (bare `ON CONFLICT`, any unique conflict
+    /// matches).
+    /// # Example
+    /// ```ignore
+    /// CompletedOrder::objects()
+    ///     .insert_into::<OrderArchive, _, _>(|t, s| vec![
+    ///         t.original_id().copy_from(s.id().as_insert_source()),
+    ///         t.total().copy_from(s.total().as_insert_source()),
+    ///     ])
+    ///     .on_conflict_do_nothing(
+    ///         ConflictTarget::columns([OrderArchive::fields().original_id()]),
+    ///     )
+    ///     .execute(&mut ctx)
+    ///     .await?;
+    /// ```
     #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
     pub fn on_conflict_do_nothing(mut self, target: impl Into<Option<ConflictTarget<T>>>) -> Self {
         self.on_conflict = Some(OnConflictClause {
@@ -1719,6 +1990,45 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
         self
     }
 
+    /// Attach an `ON CONFLICT (...) DO UPDATE SET ...` clause: when an
+    /// incoming row conflicts on `target`, merge it into the existing row
+    /// using the assignments the `updates` closure returns.
+    /// # Why
+    /// Bulk upsert — insert-or-update on a unique key in one statement,
+    /// without a read-modify-write round trip per row. The closure
+    /// receives the target model's `Fields`; build assignments with the
+    /// `conflict_set*` / `conflict_excluded` / `conflict_add` (etc.)
+    /// methods, referencing the incoming values through `EXCLUDED` via
+    /// [`FieldRef::excluded`].
+    /// # `updated_at` is NOT auto-stamped
+    /// Unlike [`Model::save`], a `DO UPDATE SET` does not touch
+    /// `updated_at` automatically — the column `DEFAULT` only fires on
+    /// the INSERT path, not on the conflict-update path. The conflicting
+    /// row's `updated_at` therefore retains its existing value unless the
+    /// closure assigns it explicitly, e.g.
+    /// `t.updated_at().conflict_set_value(OffsetDateTime::now_utc())` or
+    /// `t.updated_at().conflict_excluded()` to take the incoming value.
+    /// This is deliberate: the SET list is exactly what you specify, with
+    /// no hidden columns — consistent with djogi's explicit-over-magic
+    /// design.
+    /// # Example
+    /// ```ignore
+    /// PageViewBatch::objects()
+    ///     .insert_into::<DailyTotal, _, _>(|t, s| vec![
+    ///         t.day().copy_from(s.day().as_insert_source()),
+    ///         t.hits().copy_from(s.hits().as_insert_source()),
+    ///     ])
+    ///     .on_conflict_do_update(
+    ///         ConflictTarget::columns([DailyTotal::fields().day()]),
+    ///         // Accumulate hits across batches; updated_at left untouched
+    ///         // unless you add t.updated_at().conflict_set_value(...).
+    ///         |t| vec![t.hits().conflict_set_expr(
+    ///             t.hits().as_conflict_expr() + t.hits().excluded().into_conflict_expr(),
+    ///         )],
+    ///     )
+    ///     .execute(&mut ctx)
+    ///     .await?;
+    /// ```
     #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
     pub fn on_conflict_do_update<F, U>(mut self, target: ConflictTarget<T>, updates: F) -> Self
     where
@@ -1735,6 +2045,30 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
         self
     }
 
+    /// Attach an `ON CONFLICT (...) DO UPDATE SET ... WHERE <guard>`
+    /// clause: like [`on_conflict_do_update`](Self::on_conflict_do_update),
+    /// but the merge applies only to conflicting rows for which the
+    /// `predicate` guard is true. When the guard is false, Postgres skips
+    /// the row (no update, no insert).
+    /// # Why
+    /// Conditional upsert — e.g. only overwrite when the incoming row is
+    /// newer. The guard closure receives the target model's `Fields` and
+    /// may compare target columns against `EXCLUDED` columns. The same
+    /// `updated_at` policy as
+    /// [`on_conflict_do_update`](Self::on_conflict_do_update) applies:
+    /// nothing stamps `updated_at` unless the update closure assigns it.
+    /// # Example
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![
+    ///         t.body().conflict_set(t.body().excluded()),
+    ///         t.version().conflict_set(t.version().excluded()),
+    ///     ],
+    ///     // Only overwrite when the incoming version is greater.
+    ///     |t| t.version().excluded().conflict_gt(t.version()),
+    /// )
+    /// ```
     #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
     pub fn on_conflict_do_update_where<F, U, P, C>(
         mut self,

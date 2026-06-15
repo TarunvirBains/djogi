@@ -46,6 +46,30 @@ PageViewBatch::objects()
     .await?;
 ```
 
+## updated_at is not auto-stamped
+
+`DO UPDATE SET` updates **exactly** the columns you list — nothing more.
+Unlike `Model::save`, it does not bump `updated_at` for you: the column
+`DEFAULT` only fires on the INSERT path, never on the conflict-update
+path. If you want the conflicting row's `updated_at` refreshed, assign it
+explicitly in the update closure:
+
+```rust,ignore
+.on_conflict_do_update(
+    ConflictTarget::columns([DailyTotal::fields().day()]),
+    |t| vec![
+        t.hits().conflict_set_expr(
+            t.hits().as_conflict_expr() + t.hits().excluded().into_conflict_expr(),
+        ),
+        // Stamp the update time yourself — nothing else will.
+        t.updated_at().conflict_set_value(OffsetDateTime::now_utc()),
+    ],
+)
+```
+
+This is deliberate: the SET list has no hidden columns, matching djogi's
+explicit-over-magic design.
+
 ## Conditional updates
 
 ```rust,ignore
