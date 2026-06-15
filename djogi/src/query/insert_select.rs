@@ -2454,10 +2454,6 @@ mod tests {
             FieldRef::new("view_count")
         }
 
-        fn maybe_view_count(self) -> FieldRef<Target, Option<i32>> {
-            FieldRef::new("maybe_view_count")
-        }
-
         fn published(self) -> FieldRef<Target, bool> {
             FieldRef::new("published")
         }
