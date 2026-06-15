@@ -10,9 +10,9 @@ error[E0277]: the trait bound `ConflictExpr<..., ...>: IntoConflictExpr<..., ...
      |
 help: the trait `IntoConflictExpr<ConflictCoalesceWrongModelTarget, Option<_>>` is not implemented for `ConflictExpr<ConflictCoalesceWrongModelOtherTarget, Option<i32>>`
       but trait `IntoConflictExpr<ConflictCoalesceWrongModelOtherTarget, Option<_>>` is implemented for it
-    --> djogi/src/query/insert_select.rs:1536:1
+    --> djogi/src/query/insert_select.rs:1577:1
      |
-1536 | impl<T: Model, V> IntoConflictExpr<T, V> for ConflictExpr<T, V> {
+1577 | impl<T: Model, V> IntoConflictExpr<T, V> for ConflictExpr<T, V> {
      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
      = help: for that trait implementation, expected `ConflictCoalesceWrongModelOtherTarget`, found `ConflictCoalesceWrongModelTarget`
 note: required by a bound in `DjogiField::<M, V>::conflict_set_expr`

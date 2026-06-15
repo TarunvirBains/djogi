@@ -5,12 +5,12 @@ error[E0599]: no method named `where_predicate` found for enum `Option<T>` in th
      |                                                ^^^^^^^^^^^^^^^ method not found in `Option<djogi::ConflictTarget<WpNoneTarget>>`
      |
 note: the method `where_predicate` exists on the type `djogi::ConflictTarget<WpNoneTarget>`
-    --> djogi/src/query/insert_select.rs:1655:5
+    --> djogi/src/query/insert_select.rs:1696:5
      |
-1655 | /     pub fn where_predicate<F, C>(self, f: F) -> Self
-1656 | |     where
-1657 | |         F: FnOnce(T::Fields) -> C,
-1658 | |         C: IntoConflictCondition<T>,
+1696 | /     pub fn where_predicate<F, C>(self, f: F) -> Self
+1697 | |     where
+1698 | |         F: FnOnce(T::Fields) -> C,
+1699 | |         C: IntoConflictCondition<T>,
      | |____________________________________^
 help: consider using `Option::expect` to unwrap the `djogi::ConflictTarget<WpNoneTarget>` value, panicking if the value is an `Option::None`
      |
