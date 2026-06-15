@@ -1571,6 +1571,32 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
+    /// Begin a CTE-augmented query by adding a non-recursive CTE term named
+    /// `name` whose body is `body`.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn with<B: crate::query::cte::IntoCteBody<T>>(
+        self,
+        name: &'static str,
+        body: B,
+    ) -> Result<crate::query::cte::CteQuerySet<T>, crate::DjogiError> {
+        crate::query::cte::CteQuerySet::__begin(self, name, body)
+    }
+
+    /// Begin a recursive CTE-augmented query by pairing an anchor queryset
+    /// with a typed recursive arm.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn with_recursive(
+        self,
+        name: &'static str,
+        anchor: QuerySet<T>,
+        arm: crate::query::cte::RecursiveArm<T>,
+    ) -> Result<crate::query::cte::CteQuerySet<T>, crate::DjogiError>
+    where
+        T: crate::pg::decode::FromPgRow,
+    {
+        crate::query::cte::CteQuerySet::__begin_recursive(self, name, anchor, arm)
+    }
+
     // ── Tree-recursive transitions ───────────
     // `tree_descendants` / `tree_ancestors` consume the queryset and
     // return a [`RecursiveQuerySet<T>`], which has its own filter /

@@ -1,0 +1,19 @@
+error[E0308]: mismatched types
+    --> $DIR/cte_recursive_arm_requires_join_on.rs:15:60
+     |
+  15 |     let _ = Node::objects().with_recursive("walk", anchor, Node::objects());
+     |                             --------------                 ^^^^^^^^^^^^^^^ expected `RecursiveArm<Node>`, found `QuerySet<Node>`
+     |                             |
+     |                             arguments to this method are incorrect
+     |
+     = note: expected struct `RecursiveArm<Node>`
+                found struct `QuerySet<Node>`
+note: method defined here
+    --> djogi/src/query/queryset.rs:1588:12
+     |
+1588 |     pub fn with_recursive(
+     |            ^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0308`.

@@ -32,7 +32,12 @@
 pub mod aggregate;
 pub mod annotate;
 pub mod closure;
+// CTE query builder (issue #442) — typed `WITH` / `WITH RECURSIVE`
+// surface. `pub` so adopters can name `CteQuerySet` / `IntoCteBody` as
+// parameter and return types; the common chained-builder case never
+// names the module path.
 pub mod condition;
+pub mod cte;
 pub mod field;
 pub mod filter;
 pub mod grouped;
@@ -185,6 +190,7 @@ pub use predicate::{IntoPortablePredicate, PortablePredicate, Predicate};
 // generated overrides; routing them through `__private` (see `lib.rs`)
 // keeps adopter code from naming them while letting macro-expanded
 // `impl Model for {Model}` blocks compile.
+pub use cte::{CteQuerySet, IntoCteBody, RecursiveArm};
 #[doc(hidden)]
 pub use portable::{PortablePredicateError, SqlEmitContext};
 pub use q::{ArrayPredicate, IntoQ, Q};

@@ -4,7 +4,7 @@
 
 ---
 
-Most Rust data libraries solve one slice — a query builder, migrations, or an audit log. Djogi treats the data tier as a single, model-first surface: typed queries, schema evolution, relations, change tracking, row-level security, transport projections via visages, in-memory cache, cross-runtime predicate algebra, and spatial predicates all derive from your model declarations. You bring your own HTTP/application stack; Djogi owns the data layer end-to-end.
+Most Rust data libraries solve one slice — a query builder, migrations, or an audit log. Djogi treats the data tier as a single, model-first surface: typed queries, typed CTEs, schema evolution, relations, change tracking, row-level security, transport projections via visages, in-memory cache, cross-runtime predicate algebra, and spatial predicates all derive from your model declarations. You bring your own HTTP/application stack; Djogi owns the data layer end-to-end.
 
 ## Why Postgres Only
 
@@ -24,6 +24,7 @@ Djogi targets PostgreSQL exclusively — permanently, not as a temporary limitat
 |---|---|
 | Models & schema derivation via `#[derive(Model)]` | [Models guide](docs/guide/models.md) |
 | Lazy typed queries with relations and eager loading | [Queries guide](docs/guide/queries.md), [Relations guide](docs/guide/relations.md) |
+| Typed `WITH` / `WITH RECURSIVE` queries with cycle filtering | [Queries guide](docs/guide/queries.md) |
 | Build-time migrations with advisory-locked runner | [Migrations guide](docs/guide/migrations.md) |
 | Typed JSONB columns preserving unknown fields | [JSONB guide](docs/guide/jsonb.md) |
 | Spatial types and geographic predicates | [Spatial guide](docs/guide/spatial.md) |
@@ -31,11 +32,40 @@ Djogi targets PostgreSQL exclusively — permanently, not as a temporary limitat
 | Audience-specific transport projections via visages, in-memory cache, and cross-runtime predicate algebra | [Visages guide](docs/guide/visages.md) |
 | Transactions, outbox pattern, expressions & aggregates | [Transactions](docs/guide/transactions.md), [Outbox](docs/guide/outbox.md), [Expressions](docs/guide/expressions.md) guides |
 
+## Typed CTE Queries
+
+Djogi now exposes typed Common Table Expressions directly from `QuerySet`: plain `WITH` terms through `.with(...)`, recursive `WITH RECURSIVE` terms through `.with_recursive(...)`, consumer selection through `.from_cte(...)`, and Postgres cycle filtering through `.cycle(...)` plus `.exclude_cycle_rows()`. This covers the common “build a reusable subquery, then read from it” and “walk a hierarchy without dropping to raw SQL” cases inside the typed query surface.
+
+```rust
+use djogi::prelude::*;
+
+let active_posts = Post::objects().filter(|f| f.published().eq(true));
+
+let rows = Post::objects()
+    .with("active_posts", active_posts)?
+    .from_cte("active_posts")?
+    .fetch_all(&mut ctx)
+    .await?;
+
+let ancestors = Category::objects()
+    .with_recursive(
+        "ancestors",
+        Category::objects().filter(|f| f.id().eq(target_id)),
+        RecursiveArm::<Category>::referencing("ancestors")
+            .join_on("id", "parent_id")?,
+    )?
+    .from_cte("ancestors")?
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+When a query shape still falls outside the typed surface, the raw SQL escape hatches remain available. The point is that ordinary non-recursive and recursive CTE work no longer needs them.
+
 **Planned (not yet shipped):** Rhai interactive shell for model inspection and query building; Maahi admin console — a Dioxus operations UI derived from your model descriptors.
 
 ## Status
 
-**Current release:** `v0.1.0-alpha.11` (public alpha — API may change before v0.1.0 stable)
+**Current release:** `v0.1.0-alpha.16` (public alpha — API may change before v0.1.0 stable)
 
 ## Project Layout
 

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- feat(#442): typed CTE query builder — `QuerySet::with` and
+  `QuerySet::with_recursive` compose `WITH` / `WITH RECURSIVE` preambles;
+  `CteQuerySet<M>` exposes `from_cte`, `filter`, `order_by`, `limit`,
+  `offset`, `cycle`, `exclude_cycle_rows`, and typed terminal methods
+  (`fetch_all`, `first`, `count`, `exists`). `RecursiveArm<M>` builds
+  self-referential recursive terms with a typed join edge.
+
 ## [0.1.0-alpha.15] - 2026-06-13
 
 ### Added
