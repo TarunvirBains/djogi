@@ -3773,6 +3773,57 @@ mod tests {
     }
 
     #[test]
+    fn insert_select_source_literal_and_conflict_literal_bind_sequentially() {
+        // Pin: a literal bind on the SELECT side gets $1 and a literal bind
+        // in the ON CONFLICT clause gets $2. The SqlAccumulator numbers binds
+        // monotonically across the whole statement (SELECT projection emits
+        // before push_on_conflict), so a future emitter reorder that resets
+        // or double-numbers binds would break this.
+        use crate::query::insert_select::{
+            ConflictAction, ConflictTarget, ConflictUpdate, InsertSelectColumn, InsertSelectSource,
+            OnConflictClause,
+        };
+
+        let qs: QuerySet<Fake> = QuerySet::new();
+
+        // SELECT side: one target column whose source is a literal -> $1.
+        let target: crate::query::FieldRef<Fake, i32> = crate::query::FieldRef::new("payload");
+        let source_literal_col: InsertSelectColumn<Fake, Fake> =
+            target.copy_from(InsertSelectSource::<Fake, _>::literal(7i32));
+        let cols = vec![source_literal_col];
+
+        // ON CONFLICT side: DO UPDATE SET payload = <literal> -> $2.
+        let conflict_assignment: ConflictUpdate<Fake, Fake> =
+            crate::query::FieldRef::<Fake, i32>::new("payload").conflict_set_value::<Fake>(42i32);
+        let clause = OnConflictClause {
+            target: Some(ConflictTarget::Columns {
+                columns: vec!["id"],
+                inference_predicate: None,
+            }),
+            action: ConflictAction::DoUpdate {
+                assignments: vec![conflict_assignment],
+                where_clause: None,
+            },
+        };
+
+        let acc = build_insert_select_with_conflict::<Fake, Fake>(&qs, &cols, Some(&clause));
+        let sql = acc.sql();
+
+        // Exactly two binds, sequenced $1 (source) then $2 (conflict).
+        assert_eq!(acc.bind_count(), 2, "expected two binds, got sql: {sql}");
+        // Source literal is the SELECT projection -> $1.
+        assert!(
+            sql.contains("SELECT $1 FROM fakes"),
+            "source literal must bind as $1: {sql}"
+        );
+        // Conflict literal is the DO UPDATE SET assignment -> $2.
+        assert!(
+            sql.contains("DO UPDATE SET payload = $2"),
+            "conflict literal must bind as $2: {sql}"
+        );
+    }
+
+    #[test]
     fn insert_select_no_filter_emits_bare_shape() {
         // The simplest shape — no WHERE, no ORDER BY, no LIMIT. The
         // emitted SQL is the literal `INSERT ... SELECT ... FROM ...`
